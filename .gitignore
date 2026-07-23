@@ -1,0 +1,14 @@
+node_modules/
+dist/
+target/
+src-tauri/target/
+
+.DS_Store
+*.log
+*.tmp
+
+.env
+.env.*
+
+# Research repos - external project forks
+_research/repos/

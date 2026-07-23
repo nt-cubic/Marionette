@@ -1,0 +1,10 @@
+{
+  "identifier": "default",
+  "description": "Default capabilities for AgentShell",
+  "windows": ["*"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:default"
+  ]
+}

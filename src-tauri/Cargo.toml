@@ -1,0 +1,20 @@
+[package]
+name = "agentshell"
+version = "0.1.0"
+description = "A lightweight local shell for multiple agent CLIs."
+authors = ["AgentShell"]
+edition = "2021"
+license = "MIT"
+repository = ""
+default-run = "agentshell"
+build = "build.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+portable-pty = "0.9"
+agent-client-protocol-schema = "1.4.0"
