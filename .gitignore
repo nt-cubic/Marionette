@@ -12,3 +12,6 @@ src-tauri/target/
 
 # Research repos - external project forks
 _research/repos/
+
+# IDE / AI config
+.claude/

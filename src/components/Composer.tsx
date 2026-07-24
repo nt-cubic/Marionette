@@ -1,10 +1,9 @@
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { Expand, Plus, Search, SendHorizontal, Shrink, Square, Target } from "lucide-react";
+import { Expand, Plus, Search, SendHorizontal, Shrink, Square } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from "react";
-import { expandAcpConfigAttempts, mergeAcpCapabilities } from "../lib/acpSupplements";
-import { activityHealth, composerBusyCopy } from "../lib/activityHealth";
-import { getSessionCapabilities, isTauriRuntime, updateAcpSession } from "../lib/api";
+import { expandAcpConfigAttempts, getAcpSupplement, mergeAcpCapabilities } from "../lib/acpSupplements";
+import { getSessionCapabilities, isTauriRuntime, sendAcpPrompt, updateAcpSession } from "../lib/api";
 import { ptyCommandsForPatch, ptyProfileToCapabilities } from "../lib/ptyProfiles";
 import type {
   AcpEvent,
@@ -158,6 +157,10 @@ const COMPOSER_HEIGHT_MIN = 100;
 const COMPOSER_HEIGHT_MAX = 480;
 const COMPOSER_HEIGHT_DEFAULT = 112;
 const COMPOSER_HEIGHT_KEY = "agentshell-composer-height";
+/** Extra inline height while the warming strip is shown — added on top of
+ * composerHeight (not via a CSS auto-height override) so it can never fight
+ * the inline style the resize/expand feature sets on the same element. */
+const COMPOSER_WARMING_STRIP_HEIGHT = 26;
 
 function readComposerHeight(): number {
   try {
@@ -240,12 +243,11 @@ export function Composer({
   lastActivityAt = null,
 }: ComposerProps) {
   const [caps, setCaps] = useState<CapabilitySnapshot | null>(null);
-  const [healthNow, setHealthNow] = useState(() => Date.now());
   const [currentMode, setCurrentMode] = useState<string | null>(null);
   const [currentModel, setCurrentModel] = useState<string | null>(null);
   const [currentEffort, setCurrentEffort] = useState<number | null>(null);
   const [currentEffortId, setCurrentEffortId] = useState<string | null>(null);
-  const [menu, setMenu] = useState<"mode" | "model" | "effort" | null>(null);
+  const [menu, setMenu] = useState<"mode" | "model" | "effort" | "agent" | null>(null);
   const [modelQuery, setModelQuery] = useState("");
   const [draft, setDraft] = useState("");
   const [composerHeight, setComposerHeight] = useState(readComposerHeight);
@@ -485,6 +487,21 @@ export function Composer({
               throw new Error("Agent is not connected yet — type or wait for ACP warm-up");
             }
           }
+          // Some agents (Grok Build) don't support session/set_config_option —
+          // use prompt injection for mode changes instead.
+          const sup = getAcpSupplement(agent.id);
+          if (typeof patch.mode === "string" && sup?.promptModeCommands) {
+            const cmd = sup.promptModeCommands[patch.mode];
+            if (!cmd) {
+              throw new Error(`No prompt command for mode "${patch.mode}"`);
+            }
+            await sendAcpPrompt(sessionId, cmd);
+            // Persist the mode preference; skip caps reload — agent won't
+            // reflect the change in ACP caps, and the local UI state is correct.
+            persistPrefs({ preferredMode: patch.mode });
+            return;
+          }
+
           const attempts = expandAcpConfigAttempts(agent.id, patch, caps);
           if (attempts.length === 0) {
             if (patch.effortId != null || patch.thinkingEffort != null) {
@@ -627,23 +644,6 @@ export function Composer({
   const isWarming = isAcp && sessionStatus === "starting";
   // Prefer advertised cancel; still offer interrupt while running (Esc×2 / button).
   const canCancel = isBusy && (isPty || (caps?.supportsCancel ?? true));
-  useEffect(() => {
-    if (!isBusy && !isWarming) return;
-    const id = window.setInterval(() => setHealthNow(Date.now()), 2000);
-    return () => window.clearInterval(id);
-  }, [isBusy, isWarming]);
-  const busyHealth = activityHealth(sessionStatus, lastActivityAt, healthNow);
-  const busyCopy = isBusy
-    ? composerBusyCopy(busyHealth)
-    : "Connecting agent in background…";
-  const busySeverity =
-    isBusy && busyHealth === "stuck"
-      ? "stuck"
-      : isBusy && busyHealth === "stalled"
-        ? "stalled"
-        : isBusy && busyHealth === "quiet"
-          ? "stale"
-          : "";
   const submit = () => {
     // Empty draft is OK when parent has quote-pins (App merges on send).
     if (isBusy) return;
@@ -940,7 +940,7 @@ export function Composer({
       ref={composerRef}
       className={[
         "composer",
-        isBusy ? `is-busy${busySeverity ? ` is-${busySeverity}` : ""}` : "",
+        isBusy ? "is-busy" : "",
         isWarming ? "is-warming" : "",
         resizingComposer ? "is-resizing" : "",
         hasModes ? "has-mode" : "",
@@ -948,7 +948,9 @@ export function Composer({
         .filter(Boolean)
         .join(" ")}
       data-mode-tone={tone}
-      style={{ height: composerHeight }}
+      style={{
+        height: composerHeight + (isWarming ? COMPOSER_WARMING_STRIP_HEIGHT : 0),
+      }}
       aria-label="Composer"
     >
       {/* Drag handle: top edge — free height between MIN/MAX, remembered. */}
@@ -962,17 +964,16 @@ export function Composer({
           setResizingComposer(true);
         }}
       />
-      {/* Subtle left rail — OpenCode-like mode cue without rainbow chrome. */}
+      {/* Left rail — always-on mode cue, colored by tone. The top status bar
+          covers the live/running turn; this strip below only covers the
+          connect/warm phase, which the top bar doesn't render for a lazy
+          reconnect until the session object catches up. */}
       {hasModes && <div className="composer__mode-rail" aria-hidden />}
       {flashError && <div className="composer__error-toast">{flashError}</div>}
-      {(isBusy || isWarming) && (
-        <div
-          className={`composer__activity${busySeverity ? ` is-${busySeverity}` : ""}`}
-          role="status"
-          aria-live="polite"
-        >
-          <span className="composer__activity-pulse" aria-hidden />
-          <span>{busyCopy}</span>
+      {isWarming && (
+        <div className="composer__warming" role="status" aria-live="polite">
+          <span className="composer__warming-pulse" aria-hidden />
+          <span>Agent connecting in background…</span>
         </div>
       )}
       <div
@@ -982,73 +983,29 @@ export function Composer({
         onDragLeave={onComposerDragLeave}
         onDrop={onComposerDrop}
       >
-        <div className="composer__topbar">
-          {/* Mode lives top-left so it is always visible (not buried bottom-right). */}
-          {hasModes && displayMode ? (
-            <div className="composer-menu-anchor composer-menu-anchor--mode">
-              <button
-                className="composer-mode-chip"
-                type="button"
-                title="Execution mode (Tab to cycle)"
-                aria-expanded={menu === "mode"}
-                onClick={() => setMenu(menu === "mode" ? null : "mode")}
-              >
-                <Target size={12} aria-hidden />
-                <span className="composer-mode-chip__label">{displayModeLabel}</span>
-              </button>
-              {menu === "mode" && (
-                <div className="composer-menu composer-menu--mode" role="menu" aria-label="Execution mode">
-                  {caps!.modes.map((m) => (
-                    <button
-                      key={m.id}
-                      className={displayMode === m.id ? "is-selected" : ""}
-                      type="button"
-                      role="menuitem"
-                      data-mode-tone={modeTone(m.id)}
-                      onClick={() => {
-                        const prev = displayMode;
-                        lockMode(m.id);
-                        setCurrentMode(m.id);
-                        setMenu(null);
-                        void commitUpdate({ mode: m.id }, () => {
-                          modeLockRef.current = null;
-                          setCurrentMode(prev);
-                        });
-                      }}
-                    >
-                      <span className="composer-menu__mode-dot" aria-hidden />
-                      {m.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          ) : (
-            <span className="composer__topbar-spacer" />
-          )}
-          <button
-            className="composer-expand"
-            type="button"
-            title={isTall ? "Collapse composer height" : "Expand composer height"}
-            aria-label={isTall ? "Collapse composer height" : "Expand composer height"}
-            aria-pressed={isTall}
-            onMouseDown={(event) => {
-              event.preventDefault();
-            }}
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              setComposerHeight((h) =>
-                h > COMPOSER_HEIGHT_DEFAULT + 40
-                  ? COMPOSER_HEIGHT_DEFAULT
-                  : Math.min(COMPOSER_HEIGHT_MAX, Math.round(window.innerHeight * 0.36))
-              );
-              requestAnimationFrame(() => textareaRef.current?.focus());
-            }}
-          >
-            {isTall ? <Shrink size={13} /> : <Expand size={13} />}
-          </button>
-        </div>
+        {/* Expand/collapse height — floats top-right, clear of the textarea. */}
+        <button
+          className="composer-expand"
+          type="button"
+          title={isTall ? "Collapse composer height" : "Expand composer height"}
+          aria-label={isTall ? "Collapse composer height" : "Expand composer height"}
+          aria-pressed={isTall}
+          onMouseDown={(event) => {
+            event.preventDefault();
+          }}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setComposerHeight((h) =>
+              h > COMPOSER_HEIGHT_DEFAULT + 40
+                ? COMPOSER_HEIGHT_DEFAULT
+                : Math.min(COMPOSER_HEIGHT_MAX, Math.round(window.innerHeight * 0.36))
+            );
+            requestAnimationFrame(() => textareaRef.current?.focus());
+          }}
+        >
+          {isTall ? <Shrink size={13} /> : <Expand size={13} />}
+        </button>
         {dropActive && <div className="composer__drop-hint">Drop to insert file path</div>}
         <textarea
           ref={textareaRef}
@@ -1119,6 +1076,46 @@ export function Composer({
             <button className="composer-tool" type="button" title="Add files or context">
               <Plus size={14} />
             </button>
+            {/* Execution mode — flat control beside the tools, matching model/agent. */}
+            {hasModes && displayMode && (
+              <div className="composer-menu-anchor composer-menu-anchor--mode">
+                <button
+                  className="composer-mode-chip"
+                  type="button"
+                  title="Execution mode (Tab to cycle)"
+                  aria-expanded={menu === "mode"}
+                  onClick={() => setMenu(menu === "mode" ? null : "mode")}
+                >
+                  <span className="composer-mode-chip__label">{displayModeLabel}</span>
+                </button>
+                {menu === "mode" && (
+                  <div className="composer-menu composer-menu--mode" role="menu" aria-label="Execution mode">
+                    {caps!.modes.map((m) => (
+                      <button
+                        key={m.id}
+                        className={displayMode === m.id ? "is-selected" : ""}
+                        type="button"
+                        role="menuitem"
+                        data-mode-tone={modeTone(m.id)}
+                        onClick={() => {
+                          const prev = displayMode;
+                          lockMode(m.id);
+                          setCurrentMode(m.id);
+                          setMenu(null);
+                          void commitUpdate({ mode: m.id }, () => {
+                            modeLockRef.current = null;
+                            setCurrentMode(prev);
+                          });
+                        }}
+                      >
+                        <span className="composer-menu__mode-dot" aria-hidden />
+                        {m.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
           <div className="composer__actions">
             {/* ── Model + Effort selector ─────────────────────────────── */}
@@ -1295,28 +1292,39 @@ export function Composer({
             )}
 
             {/* ── Agent switcher ──────────────────────────────────────── */}
-            <label
-              className="composer-select composer-select--agent"
-              title={`Agent for this dialog (bound to session · ${agent.id})`}
-            >
-              <select
-                aria-label="Switch Agent"
-                // Always mirror session.agentId (via agent prop), never a floating selection.
-                value={agent.id}
-                onChange={(event) => {
-                  setMenu(null);
-                  onAgentChange(event.target.value);
-                }}
+            <div className="composer-menu-anchor">
+              <button
+                className="composer-select composer-select--agent"
+                type="button"
+                title={`Agent for this dialog (bound to session · ${agent.id})`}
+                aria-expanded={menu === "agent"}
+                onClick={() => setMenu(menu === "agent" ? null : "agent")}
               >
-                {agents
-                  .filter((candidate) => candidate.enabled)
-                  .map((candidate) => (
-                    <option key={candidate.id} value={candidate.id}>
-                      {candidate.label}
-                    </option>
-                  ))}
-              </select>
-            </label>
+                {agent.label}
+              </button>
+              {menu === "agent" && (
+                <div className="composer-menu composer-menu--agent" role="listbox" aria-label="Switch agent">
+                  {agents
+                    .filter((candidate) => candidate.enabled)
+                    .map((candidate) => (
+                      <button
+                        key={candidate.id}
+                        className={agent.id === candidate.id ? "is-selected" : ""}
+                        type="button"
+                        role="option"
+                        aria-selected={agent.id === candidate.id}
+                        onClick={() => {
+                          setMenu(null);
+                          // Always mirror session.agentId (via agent prop), never a floating selection.
+                          onAgentChange(candidate.id);
+                        }}
+                      >
+                        {candidate.label}
+                      </button>
+                    ))}
+                </div>
+              )}
+            </div>
 
             {/* ── Send / Interrupt (Esc×2 also interrupts) ── */}
             <button
