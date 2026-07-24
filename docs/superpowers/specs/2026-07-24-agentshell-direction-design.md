@@ -1,15 +1,19 @@
 # AgentShell 方向设计文档
 
 > 日期：2026-07-24
-> 状态：草稿 — 待审查
+> 状态：已收敛 — 内部协议定名为 **ASP（AgentShell Protocol）**
+> 正式协议草案：[`2026-07-24-agentshell-asp-protocol.md`](./2026-07-24-agentshell-asp-protocol.md)
 
 ---
 
 ## 0. 为什么有这个文档
 
-AgentShell 项目已完成基础骨架（Tauri + React + PTY + 持久化），但在架构方向上有一个核心决策未定：**ACP 协议 vs 纯 PTY**。
+AgentShell 项目已完成基础骨架（Tauri + React + PTY + 持久化），但在架构方向上曾有一个核心分歧：**ACP 协议 vs 纯 PTY**。
 
-本文档记录当前项目状态、核心分歧、以及建议的混合方案，供明日讨论定稿。
+讨论结论：**两者都是 Backend，不是产品语义本身。**  
+产品层统一讲 **ASP（AgentShell Protocol）**；ACP / PTY 由适配器翻译。详见 ASP 草案。
+
+本文档保留当时的状态盘点与混合架构动机；**命令/事件/Capabilities 以 ASP 文档为准。**
 
 ---
 
@@ -102,22 +106,26 @@ AgentShell 项目已完成基础骨架（Tauri + React + PTY + 持久化），�
 
 ---
 
-## 3. 建议方案：ACP/PTY 分层混合架构
+## 3. 建议方案：ASP + ACP/PTY Backend
 
 ### 3.1 核心理念
 
-不需要二选一。**根据 Agent 的能力自动选择通信方式：**
+不需要在 ACP 与 PTY 里二选一当「唯一信仰」。
+
+- **ASP**：UI / Session Runtime 的统一语言（能力、发送、handoff、错误）
+- **Backend**：按 Agent 选择 `acp` 或 `pty`（及未来扩展）
+- **诚实降级**：无 model/effort/cancel 就不画假控件；跨 Agent 上下文靠 handoff，不靠协议魔法
 
 ```
                     ┌──────────────────────────────────┐
-                    │        统一 Composer 界面          │
-                    │  Agent 切换 · 输入 · 显示 · 上下文 │
+                    │     UI 只讲 ASP（asp/0）            │
+                    │  Agent · 输入 · Capabilities · 交接 │
                     ├──────────────────────────────────┤
-                    │     OpenCode → ACP（原生协议）     │
-                    │     Codex    → PTY（通用回退）     │
-                    │     Claude   → PTY（通用回退）     │
-                    │     Grok     → PTY（通用回退）     │
-                    │     Custom   → PTY（通用回退）     │
+                    │     OpenCode → AcpBackend          │
+                    │     Codex    → PtyBackend          │
+                    │     Claude   → PtyBackend          │
+                    │     Grok     → PtyBackend          │
+                    │     Custom   → PtyBackend          │
                     └──────────────────────────────────┘
 ```
 
@@ -214,12 +222,19 @@ type AgentConfig = {
 
 ---
 
-## 5. 未决策项（明日讨论）
+## 5. 决策记录（相对原稿）
 
-1. **ACP 依赖库**：是否保留 `agent-client-protocol-schema` crate，还是用轻量 JSON-RPC 替代？
-2. **PTY Agent 的统一控件**：model/mode 切换是否完全不支持 PTY Agent，还是尝试通过 TUI 命令注入？
-3. **OpenCode 优先级**：是否先全力把 OpenCode ACP 体验打透，再扩展其他 Agent？
-4. **多 Agent 互通的时间点**：第一版要不要考虑，还是留到第二版？
+| 项 | 结论 |
+|----|------|
+| 内部协议名称 | **ASP（AgentShell Protocol）**，版本 `asp/0` |
+| ACP vs PTY | 都是 Backend；默认矩阵见 ASP §7.2 |
+| PTY 统一 model/mode 控件 | **v0 不做**；无 Capabilities 则隐藏 |
+| 跨 Agent 上下文 | **handoff.md + 用户确认**；不承诺无缝共享 session |
+| ACP 依赖库 | **先保留**现有实现，不阻塞 ASP 语义落地 |
+| OpenCode | ACP 增强继续做，但不阻塞 PTY 真启动校正 |
+| `/` 命令 | PTY 透传；ACP 仅 advertised；`/connect` 类指向 Raw/原厂 CLI |
+
+仍可后续讨论（不阻塞 asp/0）：见 ASP 文档 §16。
 
 ---
 
