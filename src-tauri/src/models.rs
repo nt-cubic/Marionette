@@ -29,6 +29,18 @@ pub struct Session {
     pub transcript_path: String,
     pub handoff_path: String,
     pub view_mode: String,
+    /// Last Composer model id for this dialog (ACP option value). Restored when caps allow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_model: Option<String>,
+    /// Last execution mode id (e.g. build / plan).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_mode: Option<String>,
+    /// Numeric effort 0–1 when agent uses a slider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_effort: Option<f64>,
+    /// Discrete effort id (e.g. Claude low/high) when agent uses select options.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_effort_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -49,35 +61,54 @@ pub struct AgentConfig {
 impl AgentConfig {
     pub fn defaults() -> Vec<Self> {
         vec![
-            Self::new("opencode", "OpenCode", "opencode", vec!["acp".to_string()]),
+            // Clean View product path = ACP for every first-class agent.
+            // PTY remains a fallback for custom CLIs without a protocol.
+            Self::new(
+                "opencode",
+                "OpenCode",
+                "opencode",
+                vec!["acp".to_string()],
+                "acp",
+                "stdin",
+            ),
+            // Global installs: npm i -g @agentclientprotocol/codex-acp
+            // process_util rewrites .cmd → node dist/index.js for working stdio pipes.
             Self::new(
                 "codex",
                 "Codex CLI",
-                "npx",
-                vec![
-                    "-y".to_string(),
-                    "@agentclientprotocol/codex-acp".to_string(),
-                ],
+                "codex-acp",
+                vec![],
+                "acp",
+                "stdin",
             ),
             Self::new(
                 "claude-code",
                 "Claude Code",
-                "npx",
-                vec![
-                    "-y".to_string(),
-                    "@agentclientprotocol/claude-agent-acp".to_string(),
-                ],
+                "claude-agent-acp",
+                vec![],
+                "acp",
+                "stdin",
             ),
+            // Native ACP: `grok agent stdio` (not the interactive TUI).
             Self::new(
                 "grok-build",
                 "Grok Build",
                 "grok",
-                vec!["build".to_string()],
+                vec!["agent".to_string(), "stdio".to_string()],
+                "acp",
+                "stdin",
             ),
         ]
     }
 
-    fn new(id: &str, label: &str, command: &str, args: Vec<String>) -> Self {
+    fn new(
+        id: &str,
+        label: &str,
+        command: &str,
+        args: Vec<String>,
+        transport: &str,
+        send_strategy: &str,
+    ) -> Self {
         Self {
             id: id.to_string(),
             label: label.to_string(),
@@ -85,13 +116,9 @@ impl AgentConfig {
             args,
             cwd_mode: "project-root".to_string(),
             launch_mode: "pty".to_string(),
-            send_strategy: "bracketed-paste".to_string(),
+            send_strategy: send_strategy.to_string(),
             parser: "ansi-raw".to_string(),
-            transport: if id == "grok-build" {
-                "pty".to_string()
-            } else {
-                "acp".to_string()
-            },
+            transport: transport.to_string(),
             enabled: true,
         }
     }
@@ -105,3 +132,23 @@ pub struct AgentCommandStatus {
     pub path: Option<String>,
     pub message: String,
 }
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HandoffResult {
+    pub project_id: String,
+    pub target_agent_id: String,
+    pub handoff_path: String,
+    pub prompt: String,
+    pub created_at: String,
+    pub summary: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangedFile {
+    pub path: String,
+    pub change_type: String,
+}
+
+

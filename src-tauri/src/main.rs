@@ -2,8 +2,12 @@
 
 mod acp;
 mod commands;
+mod debug_log;
+mod git_service;
+mod handoff;
 mod models;
 mod process_util;
+mod provider_usage;
 mod pty;
 mod session_manager;
 mod storage;
@@ -38,7 +42,15 @@ fn main() {
             commands::test_agent_command,
             commands::list_sessions,
             commands::create_session,
+            commands::update_session_agent,
+            commands::update_session_prefs,
+            commands::update_session_label,
             commands::delete_session,
+            commands::write_transcript,
+            commands::load_transcript,
+            commands::search_sessions,
+            commands::probe_agent_auth,
+            commands::start_agent_login,
             commands::read_terminal_snapshot,
             commands::start_acp_session,
             commands::send_acp_prompt,
@@ -49,7 +61,14 @@ fn main() {
             commands::start_terminal,
             commands::write_terminal,
             commands::resize_terminal,
-            commands::stop_terminal
+            commands::stop_terminal,
+            commands::append_debug_log,
+            commands::debug_log_path,
+            commands::probe_provider_usage,
+            commands::generate_handoff,
+            commands::get_changed_files,
+            commands::get_file_diff,
+            commands::respond_acp_permission
         ])
         .run(tauri::generate_context!())
         .expect("error while running AgentShell");

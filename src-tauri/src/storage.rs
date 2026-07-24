@@ -131,10 +131,16 @@ impl StorageService {
                 .to_string_lossy()
                 .to_string(),
             handoff_path: project_path
-                .join(".agentshell/handoff.md")
+                .join(".agentshell/handoff")
+                .join(format!("{id}.md"))
                 .to_string_lossy()
                 .to_string(),
-            view_mode: "raw-terminal".to_string(),
+            // Product primary surface is Clean View (Raw is always available as toggle).
+            view_mode: "clean".to_string(),
+            preferred_model: None,
+            preferred_mode: None,
+            preferred_effort: None,
+            preferred_effort_id: None,
         };
         self.save_session(&session)?;
         Ok(session)
@@ -186,6 +192,152 @@ impl StorageService {
             session.exited_at = Some(session.last_active_at.clone());
         }
         self.save_session(&session)
+    }
+
+    /// Persist which agent owns this dialog. Session.agent_id is the single source of truth.
+    pub fn update_session_agent(&self, session_id: &str, agent_id: &str) -> Result<(), String> {
+        let Some(mut session) = self.find_session(session_id)? else {
+            return Err(format!("Session not found: {session_id}"));
+        };
+        session.agent_id = agent_id.to_string();
+        session.last_active_at = now_string();
+        // Transport is torn down on agent switch — mark idle until next warm.
+        session.status = "exited".to_string();
+        session.exited_at = Some(session.last_active_at.clone());
+        session.process_id = None;
+        session.pty_id = None;
+        // Model/mode/effort are agent-specific — wipe so we don't apply Claude effort to OpenCode.
+        session.preferred_model = None;
+        session.preferred_mode = None;
+        session.preferred_effort = None;
+        session.preferred_effort_id = None;
+        self.save_session(&session)
+    }
+
+    /// Persist Composer model / mode / effort for this dialog (SSOT on disk).
+    pub fn update_session_prefs(
+        &self,
+        session_id: &str,
+        preferred_model: Option<String>,
+        preferred_mode: Option<String>,
+        preferred_effort: Option<f64>,
+        preferred_effort_id: Option<String>,
+    ) -> Result<(), String> {
+        let Some(mut session) = self.find_session(session_id)? else {
+            return Err(format!("Session not found: {session_id}"));
+        };
+        session.preferred_model = preferred_model
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        session.preferred_mode = preferred_mode
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        session.preferred_effort = preferred_effort.filter(|v| v.is_finite());
+        session.preferred_effort_id = preferred_effort_id
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        session.last_active_at = now_string();
+        self.save_session(&session)
+    }
+
+    pub fn update_session_label(&self, session_id: &str, label: &str) -> Result<(), String> {
+        let Some(mut session) = self.find_session(session_id)? else {
+            return Err(format!("Session not found: {session_id}"));
+        };
+        let trimmed = label.trim();
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+        // Keep labels short for the left shelf.
+        let next = if trimmed.chars().count() > 48 {
+            let short: String = trimmed.chars().take(46).collect();
+            format!("{short}…")
+        } else {
+            trimmed.to_string()
+        };
+        session.label = next;
+        session.last_active_at = now_string();
+        self.save_session(&session)
+    }
+
+    /// Rewrite Clean-view transcript as JSONL (one SessionEvent per line).
+    pub fn write_transcript(
+        &self,
+        session_id: &str,
+        events: &[serde_json::Value],
+    ) -> Result<(), String> {
+        let session = self
+            .find_session(session_id)?
+            .ok_or_else(|| format!("Session not found: {session_id}"))?;
+        let path = PathBuf::from(&session.transcript_path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("Create transcript dir failed: {error}"))?;
+        }
+        let mut body = String::new();
+        for event in events {
+            let line = serde_json::to_string(event)
+                .map_err(|error| format!("Serialize transcript event failed: {error}"))?;
+            body.push_str(&line);
+            body.push('\n');
+        }
+        fs::write(&path, body).map_err(|error| format!("Write transcript failed: {error}"))
+    }
+
+    pub fn load_transcript(&self, session_id: &str) -> Result<Vec<serde_json::Value>, String> {
+        let session = self
+            .find_session(session_id)?
+            .ok_or_else(|| format!("Session not found: {session_id}"))?;
+        let path = PathBuf::from(&session.transcript_path);
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let content = fs::read_to_string(&path)
+            .map_err(|error| format!("Read transcript failed: {error}"))?;
+        let mut events = Vec::new();
+        for (index, line) in content.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<serde_json::Value>(line) {
+                Ok(value) => events.push(value),
+                Err(error) => {
+                    // Skip corrupt lines rather than failing the whole load.
+                    let _ = error;
+                    let _ = index;
+                }
+            }
+        }
+        Ok(events)
+    }
+
+    /// Search project/session labels and transcript text. Returns matching session ids.
+    pub fn search_sessions(&self, query: &str) -> Result<Vec<String>, String> {
+        let q = query.trim().to_ascii_lowercase();
+        if q.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut hits = Vec::new();
+        for project in self.list_projects()? {
+            for session in self.list_sessions(&project.id)? {
+                let mut matched = session.label.to_ascii_lowercase().contains(&q)
+                    || session.agent_id.to_ascii_lowercase().contains(&q)
+                    || project.name.to_ascii_lowercase().contains(&q);
+                if !matched {
+                    let path = PathBuf::from(&session.transcript_path);
+                    if path.exists() {
+                        if let Ok(text) = fs::read_to_string(&path) {
+                            matched = text.to_ascii_lowercase().contains(&q);
+                        }
+                    }
+                }
+                if matched {
+                    hits.push(session.id);
+                }
+            }
+        }
+        Ok(hits)
     }
 
     fn project_by_id(&self, project_id: &str) -> Result<Project, String> {

@@ -93,6 +93,45 @@ pub fn resolve_command_display_path(command: &str) -> Result<Option<String>, Str
     }
 }
 
+/// Prefer a globally-installed ACP binary over slow `npx -y …` cold starts.
+///
+/// Example: `npx -y @agentclientprotocol/codex-acp` → `codex-acp` when on PATH.
+pub fn prefer_fast_acp_launch(command: &str, args: &[String]) -> (String, Vec<String>) {
+    let cmd = command.trim();
+    let is_npx = cmd.eq_ignore_ascii_case("npx")
+        || cmd.eq_ignore_ascii_case("npx.cmd")
+        || cmd.to_ascii_lowercase().ends_with("\\npx.cmd")
+        || cmd.to_ascii_lowercase().ends_with("/npx");
+
+    if !is_npx {
+        return (command.to_string(), args.to_vec());
+    }
+
+    let package = args
+        .iter()
+        .find(|a| a.contains("agentclientprotocol") || a.ends_with("-acp"))
+        .map(|s| s.as_str());
+
+    let candidates: &[&str] = match package {
+        Some(p) if p.contains("codex") => &["codex-acp"],
+        Some(p) if p.contains("claude") => &["claude-agent-acp", "claude-code-acp"],
+        _ => &[],
+    };
+
+    for bin in candidates {
+        if resolve_spawn_command(bin).is_ok() {
+            return ((*bin).to_string(), Vec::new());
+        }
+    }
+
+    // Keep npx, but drop redundant noise; ensure -y for non-interactive
+    let mut next_args = args.to_vec();
+    if !next_args.iter().any(|a| a == "-y" || a == "--yes") {
+        next_args.insert(0, "-y".to_string());
+    }
+    (command.to_string(), next_args)
+}
+
 fn rank_candidate(path: &Path) -> i32 {
     let name = path
         .file_name()
@@ -127,6 +166,10 @@ fn finalize_path(path: PathBuf) -> Result<ResolvedCommand, String> {
     {
         let lower = path_str.to_ascii_lowercase();
         if lower.ends_with(".cmd") || lower.ends_with(".bat") {
+            // Prefer node + script.js: cmd /C breaks piped stdin for ACP adapters on Windows.
+            if let Some(resolved) = unwrap_npm_cmd_to_node(&path) {
+                return Ok(resolved);
+            }
             // Prefer unwrapping npm .cmd → real .exe when possible
             if let Some(exe) = unwrap_npm_cmd_to_exe(&path) {
                 return Ok(ResolvedCommand {
@@ -135,6 +178,7 @@ fn finalize_path(path: PathBuf) -> Result<ResolvedCommand, String> {
                     resolved_path: exe,
                 });
             }
+            // Last resort: cmd /C (may break interactive stdio)
             return Ok(ResolvedCommand {
                 program: "cmd.exe".to_string(),
                 prefix_args: vec!["/D".into(), "/S".into(), "/C".into(), path_str.clone()],
@@ -234,6 +278,55 @@ fn windows_extra_candidates(command: &str) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+/// Parse npm `.cmd` shim → `node path\to\dist\index.js` so stdin/stdout pipes work for ACP.
+#[cfg(target_os = "windows")]
+fn unwrap_npm_cmd_to_node(cmd_path: &Path) -> Option<ResolvedCommand> {
+    let content = std::fs::read_to_string(cmd_path).ok()?;
+    let dir = cmd_path.parent()?;
+
+    // Typical npm shim:
+    //   "%_prog%"  "%dp0%\node_modules\@scope\pkg\dist\index.js" %*
+    for raw in content.split(|c: char| c == '"' || c == '%' || c.is_whitespace()) {
+        let token = raw.trim().replace('/', "\\");
+        if token.is_empty() {
+            continue;
+        }
+        let lower = token.to_ascii_lowercase();
+        if !(lower.contains("node_modules") && lower.ends_with(".js")) {
+            continue;
+        }
+        // Strip optional leading .\ or absolute-looking dp0 fragments
+        let rel = token
+            .trim_start_matches(".\\")
+            .trim_start_matches("./");
+        let js_path = if Path::new(rel).is_absolute() {
+            PathBuf::from(rel)
+        } else {
+            dir.join(rel)
+        };
+        if !js_path.is_file() {
+            continue;
+        }
+        let js_str = js_path
+            .canonicalize()
+            .unwrap_or(js_path)
+            .to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .to_string();
+
+        // Resolve node.exe the same way we resolve other commands
+        let node = resolve_spawn_command("node").ok()?;
+        let mut prefix = node.prefix_args;
+        prefix.push(js_str.clone());
+        return Some(ResolvedCommand {
+            program: node.program,
+            prefix_args: prefix,
+            resolved_path: js_str,
+        });
+    }
+    None
 }
 
 /// Parse npm's .cmd shim and/or look beside it for the real .exe.

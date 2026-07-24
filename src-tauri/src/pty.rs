@@ -42,6 +42,8 @@ impl PtyService {
         app: AppHandle,
         session_id: String,
         cwd: String,
+        command: String,
+        args: Vec<String>,
         manager: SessionManager,
     ) -> Result<(), String> {
         if !Path::new(&cwd).is_dir() {
@@ -85,21 +87,66 @@ impl PtyService {
             })
             .map_err(|error| format!("Open PTY failed: {error}"))?;
 
-        #[cfg(target_os = "windows")]
-        let mut command = CommandBuilder::new("powershell.exe");
-        #[cfg(not(target_os = "windows"))]
-        let mut command = CommandBuilder::new("sh");
+        // Resolve npm shims / PATH (same rules as ACP spawn). Empty command → shell for debug.
+        let mut builder = if command.trim().is_empty() {
+            #[cfg(target_os = "windows")]
+            {
+                let mut builder = CommandBuilder::new("powershell.exe");
+                builder.arg("-NoLogo");
+                builder.arg("-NoProfile");
+                builder
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                CommandBuilder::new("sh")
+            }
+        } else {
+            let resolved = crate::process_util::resolve_spawn_command(&command).map_err(|error| {
+                format!("Start agent PTY failed: {error}")
+            })?;
+            let mut builder = CommandBuilder::new(&resolved.program);
+            for arg in &resolved.prefix_args {
+                builder.arg(arg);
+            }
+            for arg in &args {
+                builder.arg(arg);
+            }
+            builder
+        };
+        builder.cwd(&cwd);
+
+        // Keep npm global bin on PATH for nested tools (Windows).
         #[cfg(target_os = "windows")]
         {
-            command.arg("-NoLogo");
-            command.arg("-NoProfile");
+            if let Some(appdata) = std::env::var_os("APPDATA") {
+                let npm_bin = Path::new(&appdata).join("npm");
+                if npm_bin.is_dir() {
+                    let mut path = std::env::var_os("PATH").unwrap_or_default();
+                    let npm_str = npm_bin.to_string_lossy();
+                    if !path
+                        .to_string_lossy()
+                        .to_ascii_lowercase()
+                        .contains(&npm_str.to_ascii_lowercase())
+                    {
+                        let mut new_path = npm_bin.into_os_string();
+                        new_path.push(";");
+                        new_path.push(&path);
+                        path = new_path;
+                    }
+                    builder.env("PATH", path);
+                }
+            }
         }
-        command.cwd(cwd);
 
         let child = pair
             .slave
-            .spawn_command(command)
-            .map_err(|error| format!("Start terminal failed: {error}"))?;
+            .spawn_command(builder)
+            .map_err(|error| {
+                format!(
+                    "Start agent PTY failed for `{command} {}`: {error}",
+                    args.join(" ")
+                )
+            })?;
         let reader = pair
             .master
             .try_clone_reader()
