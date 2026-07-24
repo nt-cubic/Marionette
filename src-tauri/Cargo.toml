@@ -18,3 +18,4 @@ serde_json = "1"
 tauri = { version = "2", features = [] }
 portable-pty = "0.9"
 agent-client-protocol-schema = "1.4.0"
+ureq = { version = "2", features = ["json"] }
