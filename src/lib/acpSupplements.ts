@@ -19,25 +19,32 @@ export type AcpSupplement = {
   modeConfigIds?: string[];
   effortConfigIds?: string[];
   modelConfigIds?: string[];
+  /**
+   * When set, mode changes use prompt injection (session/prompt) instead of
+   * session/set_config_option. Key = mode id, value = command text to send.
+   * Used by agents (e.g. Grok Build) whose ACP lacks set_config_option but
+   * accepts slash commands via prompt.
+   */
+  promptModeCommands?: Record<string, string>;
 };
 
 const SUPPLEMENTS: Record<string, AcpSupplement> = {
   "grok-build": {
-    // From `grok --permission-mode` help
+    // Grok's ACP does NOT support session/set_config_option.
+    // The only runtime permission control is /always-approve via prompt injection.
+    // Reasoning effort (High/Medium/Low) and model can only be set at launch time.
     modes: [
-      { id: "default", label: "Default" },
-      { id: "plan", label: "Plan" },
-      { id: "acceptEdits", label: "Accept edits" },
-      { id: "auto", label: "Auto" },
-      { id: "dontAsk", label: "Don't ask" },
-      { id: "bypassPermissions", label: "Bypass permissions" },
+      { id: "ask", label: "Ask" },
+      { id: "auto-approve", label: "Auto-approve" },
     ],
     models: [{ id: "grok-4.5", label: "Grok 4.5" }],
-    thinkingEffort: { min: 0, max: 1, default: 0.5 },
-    defaultMode: "default",
+    defaultMode: "ask",
     defaultModel: "grok-4.5",
-    modeConfigIds: ["permission-mode", "permissionMode", "mode", "permission_mode"],
-    effortConfigIds: ["reasoning-effort", "reasoningEffort", "effort", "thought_level", "thinking"],
+    // Mode changes are injected as slash commands via session/prompt
+    promptModeCommands: {
+      "ask": "/always-approve off",
+      "auto-approve": "/always-approve on",
+    },
     modelConfigIds: ["model"],
   },
   "claude-code": {

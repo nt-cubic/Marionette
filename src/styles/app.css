@@ -1350,75 +1350,6 @@ body.is-panel-resizing .context-panel {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--red, #e35d6a) 25%, transparent);
 }
 
-.composer__activity {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  min-height: 22px;
-  padding: 4px 12px 0;
-  color: var(--text-muted);
-  font-size: 11px;
-  line-height: 1.3;
-  background: var(--composer-bg);
-  border-top: 1px solid var(--border);
-}
-
-.composer.is-busy .composer__activity,
-.composer.is-warming .composer__activity {
-  border-top-color: color-mix(in srgb, var(--accent) 35%, var(--border));
-}
-
-.composer__activity.is-stale,
-.composer.is-stale .composer__activity {
-  color: var(--text);
-  border-top-color: color-mix(in srgb, var(--orange) 40%, var(--border));
-}
-
-.composer__activity.is-stalled,
-.composer.is-stalled .composer__activity {
-  color: var(--text);
-  border-top-color: color-mix(in srgb, var(--orange) 55%, var(--border));
-  font-weight: 600;
-}
-
-.composer__activity.is-stuck,
-.composer.is-stuck .composer__activity {
-  color: var(--text);
-  border-top-color: color-mix(in srgb, var(--red, #e35d6a) 50%, var(--border));
-  font-weight: 600;
-}
-
-.composer__activity-pulse {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
-  animation: activity-pulse 1.2s ease-in-out infinite;
-}
-
-.composer__activity.is-stale .composer__activity-pulse,
-.composer__activity.is-stalled .composer__activity-pulse {
-  background: var(--orange);
-}
-
-.composer__activity.is-stuck .composer__activity-pulse {
-  background: var(--red, #e35d6a);
-  animation: none;
-  opacity: 1;
-}
-
-/* Activity strip sits above the field — don't clip it with fixed 104px. */
-.composer.is-busy:not(.is-expanded),
-.composer.is-warming:not(.is-expanded) {
-  height: auto;
-  min-height: 104px;
-}
-
-.composer.is-busy:not(.is-expanded) .composer__field,
-.composer.is-warming:not(.is-expanded) .composer__field {
-  height: 104px;
-}
-
 .editor-tab__new {
   flex: 0 0 auto;
   margin-left: 2px;
@@ -3077,6 +3008,32 @@ body.is-panel-resizing .context-panel {
   height: min(42vh, 360px);
 }
 
+/* Connect/warm phase only — height is added on top of composerHeight inline
+   (see COMPOSER_WARMING_STRIP_HEIGHT in Composer.tsx), never via a CSS
+   height override, so it can't fight the resize feature's inline style. */
+.composer__warming {
+  box-sizing: border-box; /* border-top must fit inside the 26px the inline
+                             height math in Composer.tsx allocates for this */
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  height: 26px;
+  padding: 0 12px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.3;
+  background: var(--composer-bg);
+  border-top: 1px solid var(--border);
+}
+
+.composer__warming-pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: activity-pulse 1.2s ease-in-out infinite;
+}
+
 .composer__field {
   position: relative;
   display: grid;
@@ -3170,67 +3127,61 @@ body.is-composer-resizing .composer {
 }
 
 /* ── Mode rail (left accent bar, OpenCode-like) ─────────────────────── */
+/* Tone drives both the left rail and the toolbar mode chip (single source). */
+.composer[data-mode-tone="plan"] {
+  --mode-chip: #a78bfa;
+}
+
+.composer[data-mode-tone="ask"] {
+  --mode-chip: #60a5fa;
+}
+
+.composer[data-mode-tone="debug"] {
+  --mode-chip: var(--orange);
+}
+
+.composer[data-mode-tone="build"] {
+  --mode-chip: var(--accent);
+}
+
+.composer[data-mode-tone="default"] {
+  --mode-chip: var(--text-faint);
+}
+
 .composer__mode-rail {
   position: absolute;
   left: 0;
   top: 0;
   bottom: 0;
   width: 3px;
+  z-index: 1; /* .composer__field is also a positioned z-index:auto sibling that
+                 paints later in DOM order with an opaque background — without
+                 this the rail is fully hidden underneath it. */
   border-radius: 0 2px 2px 0;
+  background: var(--mode-chip, var(--text-faint));
   pointer-events: none;
-  opacity: 0.55;
+  opacity: 0.9;
   transition: background-color 200ms ease;
 }
 
-.composer[data-mode-tone="plan"] .composer__mode-rail {
-  background: #a78bfa;
-}
-
-.composer[data-mode-tone="ask"] .composer__mode-rail {
-  background: #60a5fa;
-}
-
-.composer[data-mode-tone="debug"] .composer__mode-rail {
-  background: var(--orange);
-}
-
-.composer[data-mode-tone="build"] .composer__mode-rail {
-  background: var(--accent);
-}
-
-.composer[data-mode-tone="default"] .composer__mode-rail {
-  background: var(--text-faint);
-}
-
-/* ── Top bar (mode chip left · expand right) ────────────────────────── */
-.composer__topbar {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  min-height: 22px;
-}
-
-.composer__topbar-spacer {
-  flex: 1;
-  min-width: 4px;
-}
-
-/* ── Mode chip (pill in top-left of composer) ───────────────────────── */
+/* ── Mode chip (flat control in the toolbar, tone-colored text) ─────── */
+/* Always tinted (not just on hover) so the active mode reads at a glance. */
 .composer-mode-chip {
+  --tone: var(--mode-chip, var(--text-faint));
   display: inline-flex;
   gap: 5px;
   align-items: center;
   height: 22px;
-  padding: 0 8px;
-  border: 1px solid transparent;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, var(--tone) 30%, transparent);
   border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  background: transparent;
+  color: var(--tone);
+  background: color-mix(in srgb, var(--tone) 12%, transparent);
   font-size: 12px;
+  font-weight: 500;
   white-space: nowrap;
   cursor: pointer;
+  text-transform: capitalize;
   transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
 }
 
@@ -3242,41 +3193,35 @@ body.is-composer-resizing .composer {
 }
 
 .composer-mode-chip:hover {
-  color: var(--text);
-  background: var(--panel-soft);
-  border-color: var(--border);
+  background: color-mix(in srgb, var(--tone) 20%, transparent);
+  border-color: color-mix(in srgb, var(--tone) 48%, transparent);
 }
 
 .composer-mode-chip[aria-expanded="true"] {
-  color: var(--text);
-  background: var(--panel-raised);
-  border-color: var(--border-strong);
+  background: color-mix(in srgb, var(--tone) 26%, transparent);
+  border-color: color-mix(in srgb, var(--tone) 60%, transparent);
 }
 
-.composer-mode-chip svg {
-  flex-shrink: 0;
-  opacity: 0.55;
-}
-
-.composer-mode-chip:hover svg,
-.composer-mode-chip[aria-expanded="true"] svg {
-  opacity: 0.85;
-}
-
-/* ── Mode menu (drops down from top-bar chip) ───────────────────────── */
+/* ── Mode menu (drops up from the toolbar chip) ─────────────────────── */
 .composer-menu--mode {
   left: 0;
   right: auto;
-  bottom: auto;
-  top: calc(100% + 4px);
+  top: auto;
+  bottom: calc(100% + 6px);
   min-width: 150px;
+}
+
+/* `button` resets text-transform in the UA stylesheet, so it must be set here
+   directly rather than inherited from the menu container. */
+.composer-menu--mode button {
+  text-transform: capitalize;
 }
 
 .composer-menu__mode-dot {
   display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
+  width: 7px;
+  height: 7px;
+  border-radius: 1px;
   flex-shrink: 0;
   margin-right: 2px;
 }
@@ -3302,6 +3247,7 @@ body.is-composer-resizing .composer {
 }
 
 .composer textarea {
+  display: block; /* kill inline-block baseline offset; own the flexible row */
   min-width: 0;
   height: 100%;
   resize: none;
@@ -3329,7 +3275,8 @@ body.is-composer-resizing .composer {
 }
 
 .composer__controls {
-  overflow: hidden;
+  /* visible so the mode menu can rise out of the toolbar without clipping */
+  overflow: visible;
 }
 
 .composer-tool,
@@ -3347,6 +3294,22 @@ body.is-composer-resizing .composer {
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+/* Same dark-bg hover treatment everywhere — plus button, model, agent. */
+.composer-tool:hover,
+.composer-select:hover {
+  color: var(--text);
+  background: var(--panel-soft);
+  border-color: var(--border);
+}
+
+.composer-select[aria-expanded="true"] {
+  color: var(--text);
+  background: var(--panel-raised);
+  border-color: var(--border-strong);
 }
 
 .composer-tool {
@@ -3365,7 +3328,6 @@ body.is-composer-resizing .composer {
 
 .composer-select--agent {
   max-width: 180px;
-  padding-right: 0;
 }
 
 .composer-menu-anchor {
@@ -3557,17 +3519,6 @@ body.is-composer-resizing .composer {
 
 .composer-menu button.is-selected {
   color: var(--accent);
-}
-
-.composer-select select {
-  max-width: 100%;
-  padding: 0;
-  border: 0;
-  outline: none;
-  color: inherit;
-  background: transparent;
-  font: inherit;
-  cursor: pointer;
 }
 
 .composer-select--ratio {

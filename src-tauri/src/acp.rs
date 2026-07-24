@@ -216,7 +216,7 @@ impl AcpService {
             format!(
                 "Start ACP agent failed: {error}. \
                  Tip: install the adapter globally once: npm i -g @agentclientprotocol/codex-acp \
-                 (or claude-agent-acp) so AgentShell can skip slow npx."
+                 (or @agentclientprotocol/claude-agent-acp) so AgentShell can skip slow npx."
             )
         })?;
         let mut child_command = Command::new(&resolved.program);
