@@ -13,22 +13,79 @@
 
 .workspace-grid {
   display: grid;
-  grid-template-columns: 224px minmax(0, 1fr) 270px;
+  /* Widths are set inline from remembered left/right panel sizes. */
+  grid-template-columns: var(--left-panel-width, 224px) minmax(0, 1fr) var(--right-panel-width, 270px);
   width: 100%;
   height: 100%;
   min-height: 0;
 }
 
 .workspace-grid.is-left-collapsed {
-  grid-template-columns: 34px minmax(0, 1fr) 270px;
+  grid-template-columns: 34px minmax(0, 1fr) var(--right-panel-width, 270px);
 }
 
 .workspace-grid.is-right-collapsed {
-  grid-template-columns: 224px minmax(0, 1fr) 34px;
+  grid-template-columns: var(--left-panel-width, 224px) minmax(0, 1fr) 34px;
 }
 
 .workspace-grid.is-left-collapsed.is-right-collapsed {
   grid-template-columns: 34px minmax(0, 1fr) 34px;
+}
+
+/* Drag handles on the inner seams of side panels. */
+.panel-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 8;
+  width: 6px;
+  padding: 0;
+  border: 0;
+  cursor: col-resize;
+  background: transparent;
+}
+
+.panel-resizer:hover,
+.panel-resizer:focus-visible,
+.panel-resizer.is-dragging {
+  background: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.panel-resizer--left {
+  right: -3px;
+}
+
+.panel-resizer--right {
+  left: -3px;
+}
+
+.left-rail.is-collapsed .panel-resizer,
+.context-panel.is-collapsed .panel-resizer {
+  display: none;
+}
+
+body.is-panel-resizing {
+  cursor: col-resize !important;
+  user-select: none !important;
+  /* Avoid expensive hover/paint work while dragging rails. */
+  pointer-events: none;
+}
+
+body.is-panel-resizing .panel-resizer {
+  pointer-events: auto;
+}
+
+body.is-panel-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+/* During resize, skip layout thrash from nested scroll/reflow paints. */
+body.is-panel-resizing .event-list,
+body.is-panel-resizing .project-list,
+body.is-panel-resizing .context-panel {
+  pointer-events: none;
+  contain: strict;
 }
 
 .center-workspace {
@@ -219,6 +276,7 @@
 
 .left-rail,
 .context-panel {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -537,7 +595,6 @@
 .project-list,
 .session-list,
 .changed-list,
-.event-list,
 .todo-list {
   display: grid;
   gap: 6px;
@@ -589,6 +646,7 @@
 }
 
 .project-sessions {
+  position: relative;
   display: grid;
   gap: 1px;
   min-width: 0;
@@ -676,6 +734,122 @@
   color: var(--text-muted);
   background: transparent;
   cursor: pointer;
+}
+
+.project-row__action:hover {
+  color: var(--text);
+  background: var(--panel-soft);
+}
+
+.project-row__action--danger:hover {
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+}
+
+/*
+ * Shelf collapse control — same language as tool-card ClippedBody:
+ * soft bottom fade + translucent “Show more / Show less”.
+ */
+.shelf-clip {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  margin-top: -2px;
+  padding-top: 0;
+  min-width: 0;
+}
+
+.shelf-clip__fade {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  height: 28px;
+  pointer-events: none;
+  z-index: 1;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--panel) 0%, transparent),
+    color-mix(in srgb, var(--panel) 88%, transparent)
+  );
+}
+
+.shelf-clip--sessions .shelf-clip__fade {
+  /* Sit over the last visible session rows */
+  height: 32px;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--panel) 0%, transparent),
+    color-mix(in srgb, var(--panel) 92%, transparent)
+  );
+}
+
+.shelf-clip__more {
+  position: relative;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  width: 100%;
+  min-height: 26px;
+  margin: 0;
+  padding: 4px 8px 4px 28px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--panel) 55%, transparent);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  text-align: left;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+}
+
+.shelf-clip--projects .shelf-clip__more {
+  padding-left: 8px;
+  justify-content: center;
+  background: color-mix(in srgb, var(--panel-soft) 70%, transparent);
+}
+
+.shelf-clip__more:hover {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 45%, var(--panel));
+}
+
+.shelf-clip__count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--panel-soft) 80%, transparent);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.shelf-clip__more:hover .shelf-clip__count {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, var(--panel-soft));
+}
+
+.shelf-clip--expanded {
+  margin-top: 2px;
+}
+
+.shelf-clip--expanded .shelf-clip__more {
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  opacity: 0.85;
 }
 
 .project-row__action:hover {
@@ -948,6 +1122,17 @@
   color: var(--text);
 }
 
+.session-activity.is-stalled {
+  background: color-mix(in srgb, var(--orange) 18%, var(--editor-toolbar-bg));
+  color: var(--text);
+}
+
+.session-activity.is-stuck {
+  background: color-mix(in srgb, var(--red, #e35d6a) 16%, var(--editor-toolbar-bg));
+  color: var(--text);
+  border-bottom-color: color-mix(in srgb, var(--red, #e35d6a) 35%, var(--border));
+}
+
 .session-activity__pulse {
   width: 7px;
   height: 7px;
@@ -960,9 +1145,16 @@
   background: var(--yellow);
 }
 
-.session-activity.is-stale .session-activity__pulse {
+.session-activity.is-stale .session-activity__pulse,
+.session-activity.is-stalled .session-activity__pulse {
   background: var(--orange);
   animation-duration: 0.85s;
+}
+
+.session-activity.is-stuck .session-activity__pulse {
+  background: var(--red, #e35d6a);
+  animation: none;
+  opacity: 1;
 }
 
 .session-activity__label {
@@ -1039,11 +1231,76 @@
   background: color-mix(in srgb, var(--orange) 8%, var(--panel));
 }
 
+.event-card--waiting.is-stalled {
+  border-color: color-mix(in srgb, var(--orange) 55%, var(--border));
+  background: color-mix(in srgb, var(--orange) 12%, var(--panel));
+}
+
+.event-card--waiting.is-stuck {
+  border-color: color-mix(in srgb, var(--red, #e35d6a) 50%, var(--border));
+  background: color-mix(in srgb, var(--red, #e35d6a) 10%, var(--panel));
+}
+
 .event-card__waiting-copy {
   margin: 4px 0 0;
   color: var(--text-muted);
   font-size: 12px;
   line-height: 1.4;
+}
+
+.event-card__stall-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.event-card__interrupt {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  padding: 4px 10px;
+  border: 1px solid color-mix(in srgb, var(--orange) 45%, var(--border));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--orange) 14%, var(--panel));
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.event-card__interrupt:hover {
+  background: color-mix(in srgb, var(--orange) 22%, var(--panel));
+}
+
+.event-card--waiting.is-stuck .event-card__interrupt {
+  border-color: color-mix(in srgb, var(--red, #e35d6a) 45%, var(--border));
+  background: color-mix(in srgb, var(--red, #e35d6a) 14%, var(--panel));
+}
+
+.event-card__stall-hint {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.event-card__stall-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  color: #1a1a1a;
+  background: var(--orange);
+}
+
+.event-card__stall-mark.is-stuck {
+  background: var(--red, #e35d6a);
+  color: #fff;
 }
 
 .event-card__live-dot {
@@ -1057,8 +1314,40 @@
   animation: activity-pulse 1s ease-in-out infinite;
 }
 
+.event-card__stall-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 6px;
+  vertical-align: middle;
+  border-radius: 50%;
+  background: var(--orange);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--orange) 25%, transparent);
+}
+
 .event-card.is-tool-running .event-card__type {
   color: var(--accent);
+}
+
+.event-card.is-tool-stalled {
+  border-color: color-mix(in srgb, var(--orange) 40%, var(--border));
+}
+
+.event-card.is-tool-stalled .event-card__type {
+  color: var(--orange);
+}
+
+.event-card.is-tool-stuck {
+  border-color: color-mix(in srgb, var(--red, #e35d6a) 45%, var(--border));
+}
+
+.event-card.is-tool-stuck .event-card__type {
+  color: var(--red, #e35d6a);
+}
+
+.event-card.is-tool-stuck .event-card__stall-dot {
+  background: var(--red, #e35d6a);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--red, #e35d6a) 25%, transparent);
 }
 
 .composer__activity {
@@ -1079,12 +1368,43 @@
   border-top-color: color-mix(in srgb, var(--accent) 35%, var(--border));
 }
 
+.composer__activity.is-stale,
+.composer.is-stale .composer__activity {
+  color: var(--text);
+  border-top-color: color-mix(in srgb, var(--orange) 40%, var(--border));
+}
+
+.composer__activity.is-stalled,
+.composer.is-stalled .composer__activity {
+  color: var(--text);
+  border-top-color: color-mix(in srgb, var(--orange) 55%, var(--border));
+  font-weight: 600;
+}
+
+.composer__activity.is-stuck,
+.composer.is-stuck .composer__activity {
+  color: var(--text);
+  border-top-color: color-mix(in srgb, var(--red, #e35d6a) 50%, var(--border));
+  font-weight: 600;
+}
+
 .composer__activity-pulse {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: var(--accent);
   animation: activity-pulse 1.2s ease-in-out infinite;
+}
+
+.composer__activity.is-stale .composer__activity-pulse,
+.composer__activity.is-stalled .composer__activity-pulse {
+  background: var(--orange);
+}
+
+.composer__activity.is-stuck .composer__activity-pulse {
+  background: var(--red, #e35d6a);
+  animation: none;
+  opacity: 1;
 }
 
 /* Activity strip sits above the field — don't clip it with fixed 104px. */
@@ -1219,18 +1539,22 @@
 .clean-surface__body {
   position: relative;
   display: block;
-  min-height: 0;
   min-width: 0;
+  max-width: 100%;
+  min-height: 0;
   height: 100%;
   overflow: hidden;
 }
 
 .clean-surface__body > .event-list {
   height: 100%;
+  min-width: 0;
+  max-width: 100%;
   min-height: 0;
   margin-top: 0;
   padding-right: 20px; /* room for outline rail */
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 /* User-message outline: thin rail + hover panel list */
@@ -1501,9 +1825,13 @@
 
 .event-list {
   position: relative;
-  display: grid;
-  align-content: start;
-  gap: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
   min-height: 0;
   margin-top: 8px;
@@ -1512,6 +1840,15 @@
   scrollbar-width: thin; /* Firefox */
   scrollbar-color: color-mix(in srgb, var(--text-muted) 35%, transparent) transparent;
   user-select: text;
+}
+
+/* Every transcript row is width-bound by the clean column — never content. */
+.event-list > .event-card,
+.event-list > .event-card--collapsible {
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .quote-pop {
@@ -1703,13 +2040,39 @@
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--panel-raised);
+  overflow: hidden;
   overflow-wrap: anywhere;
   word-break: break-word;
 }
 
 .event-card--collapsible {
   display: block;
-  padding: 8px 10px;
+  padding: 6px 10px;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  /* Never let long tool/thought content set this card's width. */
+  contain: inline-size;
+}
+
+/*
+ * Closed details: force non-summary content completely out of layout.
+ * Some WebViews still contribute min-content width from hidden pre blocks.
+ */
+.event-card--collapsible:not([open]) > *:not(summary) {
+  display: none !important;
+  position: absolute !important;
+  width: 0 !important;
+  height: 0 !important;
+  max-width: 0 !important;
+  max-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
 }
 
 .event-card--thought,
@@ -1719,10 +2082,14 @@
 }
 
 .event-card__summary {
-  display: grid;
-  grid-template-columns: 14px auto minmax(0, 1fr);
-  gap: 8px;
+  display: flex;
   align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
   cursor: pointer;
   list-style: none;
   user-select: none;
@@ -1734,6 +2101,7 @@
 
 .event-card__summary::before {
   content: "▸";
+  flex: 0 0 auto;
   color: var(--text-muted);
   font-size: 11px;
   line-height: 1;
@@ -1754,6 +2122,7 @@
 }
 
 .event-card__type {
+  flex: 0 0 auto;
   color: var(--text-muted);
   font-size: 12px;
   font-weight: 700;
@@ -1761,14 +2130,47 @@
   white-space: nowrap;
 }
 
-.event-card__preview {
+/* flex:1 1 0 + min-width:0 is the reliable single-line truncate pattern. */
+.event-card__preview-wrap {
+  position: relative;
+  flex: 1 1 0%;
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.event-card__preview {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--text-muted);
+  color: var(--text-faint);
   font-size: 12px;
-  opacity: 0.85;
+  font-weight: 500;
+}
+
+/* Solid edge fade so long teasers don't look like a full-width wall of text. */
+.event-card__preview-wrap::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 36px;
+  pointer-events: none;
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--panel-soft) 0%, transparent),
+    color-mix(in srgb, var(--panel-soft) 92%, var(--panel-raised))
+  );
+}
+
+.event-card__expand-slot {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .event-card__body {
@@ -1783,6 +2185,143 @@
   overflow-x: hidden;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+/*
+ * Tool body: NO wrap. Natural width may exceed the card; the *parent*
+ * `.clipped-body__content` is the clip box (overflow:hidden).
+ * Do NOT set max-width:100% here — that hides overflow from measurement.
+ */
+.event-card__body--tool {
+  display: block;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  width: max-content;
+  max-width: none;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  font-family: "Cascadia Mono", Consolas, "Segoe UI Mono", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+/* Markdown thought: allow block flow but still clipped by parent. */
+.event-card__body--clipped-md {
+  width: max-content;
+  max-width: none;
+  min-width: 100%;
+}
+
+.event-card__body--clipped-md pre,
+.event-card__body--clipped-md code {
+  white-space: pre !important;
+  word-break: normal !important;
+  overflow-wrap: normal !important;
+}
+
+/* Tool / thought bodies: clamp to clean column — never stretch layout. */
+.event-card__clip {
+  margin: 8px 0 0 0;
+  min-width: 0;
+  max-width: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+.event-card__clip .event-card__body {
+  margin: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.clipped-body {
+  position: relative;
+  min-width: 0;
+  max-width: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+/* THE clip box — width comes from parent card, children may paint wider. */
+.clipped-body__content {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+/*
+ * Fixed box: width hard-clipped (no layout grow), height scrolls with wheel.
+ * Keep overflow-x hidden so long pre lines never stretch the clean column.
+ */
+.clipped-body--hard .clipped-body__content {
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text-muted) 35%, transparent) transparent;
+}
+
+.clipped-body--hard .clipped-body__content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.clipped-body--hard .clipped-body__content::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-muted) 30%, transparent);
+}
+
+.clipped-body--hard .clipped-body__content::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text-muted) 50%, transparent);
+}
+
+.clipped-body__fade {
+  position: absolute;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Soft hint at the bottom that more content exists below (scrollable). */
+.clipped-body__fade--bottom {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 28px;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--panel-soft) 0%, transparent),
+    color-mix(in srgb, var(--panel-soft) 88%, var(--panel-raised))
+  );
+}
+
+/* Right-edge fade: long unwrapped tool lines clip at card edge. */
+.clipped-body__fade--right {
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 40px;
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--panel-soft) 0%, transparent),
+    color-mix(in srgb, var(--panel-soft) 92%, var(--panel-raised))
+  );
+}
+
+/* When vertically scrollable, don't cover the scrollbar with the right fade. */
+.clipped-body.is-clipped .clipped-body__fade--right {
+  right: 6px;
+  bottom: 0;
+}
+
+.clipped-body.is-clipped .clipped-body__fade--bottom {
+  right: 6px;
 }
 
 .event-card p,
@@ -2553,6 +3092,27 @@
   background: var(--composer-bg);
 }
 
+.composer__field.is-drop-target {
+  outline: 1px dashed color-mix(in srgb, var(--accent) 55%, var(--border));
+  outline-offset: -3px;
+  background: color-mix(in srgb, var(--accent-soft) 40%, var(--composer-bg));
+}
+
+.composer__drop-hint {
+  position: absolute;
+  inset: 8px 12px 36px;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  border: 1px dashed color-mix(in srgb, var(--accent) 50%, var(--border));
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--panel-raised) 88%, transparent);
+  font-size: 12px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
 .composer-expand {
   position: absolute;
   top: 8px;
@@ -2579,6 +3139,166 @@
 .composer-expand[aria-pressed="true"] {
   color: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+
+/* ── Resize handle (top edge drag) ──────────────────────────────────── */
+.composer__resize {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 6;
+  height: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: ns-resize;
+}
+
+.composer__resize:hover,
+.composer__resize:focus-visible {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+body.is-composer-resizing {
+  cursor: ns-resize !important;
+  user-select: none !important;
+}
+
+body.is-composer-resizing .composer {
+  transition: none !important;
+}
+
+/* ── Mode rail (left accent bar, OpenCode-like) ─────────────────────── */
+.composer__mode-rail {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+  pointer-events: none;
+  opacity: 0.55;
+  transition: background-color 200ms ease;
+}
+
+.composer[data-mode-tone="plan"] .composer__mode-rail {
+  background: #a78bfa;
+}
+
+.composer[data-mode-tone="ask"] .composer__mode-rail {
+  background: #60a5fa;
+}
+
+.composer[data-mode-tone="debug"] .composer__mode-rail {
+  background: var(--orange);
+}
+
+.composer[data-mode-tone="build"] .composer__mode-rail {
+  background: var(--accent);
+}
+
+.composer[data-mode-tone="default"] .composer__mode-rail {
+  background: var(--text-faint);
+}
+
+/* ── Top bar (mode chip left · expand right) ────────────────────────── */
+.composer__topbar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 22px;
+}
+
+.composer__topbar-spacer {
+  flex: 1;
+  min-width: 4px;
+}
+
+/* ── Mode chip (pill in top-left of composer) ───────────────────────── */
+.composer-mode-chip {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  background: transparent;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.composer-mode-chip__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-mode-chip:hover {
+  color: var(--text);
+  background: var(--panel-soft);
+  border-color: var(--border);
+}
+
+.composer-mode-chip[aria-expanded="true"] {
+  color: var(--text);
+  background: var(--panel-raised);
+  border-color: var(--border-strong);
+}
+
+.composer-mode-chip svg {
+  flex-shrink: 0;
+  opacity: 0.55;
+}
+
+.composer-mode-chip:hover svg,
+.composer-mode-chip[aria-expanded="true"] svg {
+  opacity: 0.85;
+}
+
+/* ── Mode menu (drops down from top-bar chip) ───────────────────────── */
+.composer-menu--mode {
+  left: 0;
+  right: auto;
+  bottom: auto;
+  top: calc(100% + 4px);
+  min-width: 150px;
+}
+
+.composer-menu__mode-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-right: 2px;
+}
+
+.composer-menu button[data-mode-tone="plan"] .composer-menu__mode-dot {
+  background: #a78bfa;
+}
+
+.composer-menu button[data-mode-tone="ask"] .composer-menu__mode-dot {
+  background: #60a5fa;
+}
+
+.composer-menu button[data-mode-tone="debug"] .composer-menu__mode-dot {
+  background: var(--orange);
+}
+
+.composer-menu button[data-mode-tone="build"] .composer-menu__mode-dot {
+  background: var(--accent);
+}
+
+.composer-menu button[data-mode-tone="default"] .composer-menu__mode-dot {
+  background: var(--text-faint);
 }
 
 .composer textarea {
