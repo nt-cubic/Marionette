@@ -1,7 +1,9 @@
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { Expand, Plus, Search, SendHorizontal, Shrink, Square, Target } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from "react";
 import { expandAcpConfigAttempts, mergeAcpCapabilities } from "../lib/acpSupplements";
+import { activityHealth, composerBusyCopy } from "../lib/activityHealth";
 import { getSessionCapabilities, isTauriRuntime, updateAcpSession } from "../lib/api";
 import { ptyCommandsForPatch, ptyProfileToCapabilities } from "../lib/ptyProfiles";
 import type {
@@ -39,6 +41,8 @@ type ComposerProps = {
   onWarmAgent?: () => void;
   /** Ensure ACP is ready before set_config_option (returns false if failed). */
   onEnsureAgentReady?: () => Promise<boolean>;
+  /** Last stream activity (ms) — escalates busy strip when the turn goes quiet. */
+  lastActivityAt?: number | null;
 };
 
 function effortLabel(value: number): string {
@@ -130,6 +134,48 @@ function displayModeSafe(caps: CapabilitySnapshot): string | null {
   return caps.currentMode ?? (caps.modes.length > 0 ? caps.modes[0].id : null);
 }
 
+/** Soft visual family for the mode rail (muted, not rainbow). */
+function modeTone(modeId: string | null | undefined): string {
+  const id = (modeId ?? "").toLowerCase();
+  if (!id) return "default";
+  if (id.includes("plan")) return "plan";
+  if (id.includes("ask") || id.includes("chat") || id.includes("talk")) return "ask";
+  if (id.includes("debug") || id.includes("review")) return "debug";
+  if (
+    id.includes("build") ||
+    id.includes("agent") ||
+    id.includes("code") ||
+    id.includes("edit") ||
+    id.includes("default") ||
+    id.includes("auto")
+  ) {
+    return "build";
+  }
+  return "default";
+}
+
+const COMPOSER_HEIGHT_MIN = 100;
+const COMPOSER_HEIGHT_MAX = 480;
+const COMPOSER_HEIGHT_DEFAULT = 112;
+const COMPOSER_HEIGHT_KEY = "agentshell-composer-height";
+
+function readComposerHeight(): number {
+  try {
+    const raw = window.localStorage.getItem(COMPOSER_HEIGHT_KEY);
+    const n = raw ? Number(raw) : NaN;
+    if (Number.isFinite(n)) {
+      return Math.min(COMPOSER_HEIGHT_MAX, Math.max(COMPOSER_HEIGHT_MIN, n));
+    }
+  } catch {
+    // ignore
+  }
+  return COMPOSER_HEIGHT_DEFAULT;
+}
+
+function clampComposerHeight(n: number): number {
+  return Math.min(COMPOSER_HEIGHT_MAX, Math.max(COMPOSER_HEIGHT_MIN, Math.round(n)));
+}
+
 function applyCapabilities(
   result: CapabilitySnapshot | null | undefined,
   setters: {
@@ -139,6 +185,8 @@ function applyCapabilities(
     setCurrentEffort: (e: number | null) => void;
     setCurrentEffortId: (e: string | null) => void;
   },
+  /** While locked, ignore server currentMode so the chip does not flash old→new→old. */
+  modeLock?: { id: string; until: number } | null,
 ) {
   if (!result) return;
   // Normalize in case arrays arrived missing (event bridge edge cases)
@@ -158,7 +206,8 @@ function applyCapabilities(
     effortConfigId: result.effortConfigId ?? null,
   };
   setters.setCaps(normalized);
-  setters.setCurrentMode(normalized.currentMode);
+  const lockLive = modeLock && Date.now() < modeLock.until ? modeLock.id : null;
+  setters.setCurrentMode(lockLive ?? normalized.currentMode);
   setters.setCurrentModel(normalized.currentModel);
   setters.setCurrentEffortId(normalized.currentEffortId);
   if (normalized.currentEffort != null) {
@@ -188,8 +237,10 @@ export function Composer({
   onActiveModelChange,
   onWarmAgent,
   onEnsureAgentReady,
+  lastActivityAt = null,
 }: ComposerProps) {
   const [caps, setCaps] = useState<CapabilitySnapshot | null>(null);
+  const [healthNow, setHealthNow] = useState(() => Date.now());
   const [currentMode, setCurrentMode] = useState<string | null>(null);
   const [currentModel, setCurrentModel] = useState<string | null>(null);
   const [currentEffort, setCurrentEffort] = useState<number | null>(null);
@@ -197,12 +248,16 @@ export function Composer({
   const [menu, setMenu] = useState<"mode" | "model" | "effort" | null>(null);
   const [modelQuery, setModelQuery] = useState("");
   const [draft, setDraft] = useState("");
-  const [expanded, setExpanded] = useState(false);
+  const [composerHeight, setComposerHeight] = useState(readComposerHeight);
+  const [resizingComposer, setResizingComposer] = useState(false);
   const [flashError, setFlashError] = useState("");
+  const [dropActive, setDropActive] = useState(false);
   const errorTimer = useRef<ReturnType<typeof setTimeout>>();
   const updating = useRef(false);
   const modelSearchRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composerRef = useRef<HTMLElement>(null);
+  const dropDepth = useRef(0);
   /** IME composition must not re-render placeholder / warm ACP mid-input. */
   const composingRef = useRef(false);
   const warmedThisFocusRef = useRef(false);
@@ -211,6 +266,14 @@ export function Composer({
   const appliedPrefillToken = useRef(0);
   /** Restore disk prefs once per (session, agent) after caps are known. */
   const prefsRestoredKey = useRef("");
+  /** After user picks a mode, ignore server echoes that still report the old one. */
+  const modeLockRef = useRef<{ id: string; until: number } | null>(null);
+  const composerHeightRef = useRef(composerHeight);
+  composerHeightRef.current = composerHeight;
+
+  const lockMode = useCallback((id: string) => {
+    modeLockRef.current = { id, until: Date.now() + 4000 };
+  }, []);
 
   // Handoff / external prefill — never auto-send.
   useEffect(() => {
@@ -228,6 +291,14 @@ export function Composer({
     setCurrentEffortId,
   };
 
+  const applyCaps = useCallback(
+    (result: CapabilitySnapshot | null | undefined) => {
+      applyCapabilities(result, capSetters, modeLockRef.current);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
   // ── Shared capability loader ────────────────────────────────────────────────
   const loadCapabilities = useCallback(
     (id: string) => {
@@ -236,12 +307,52 @@ export function Composer({
         if (seq !== loadSeq.current) return;
         // Merge ACP negotiation with static supplements (e.g. Grok modes).
         const merged = mergeAcpCapabilities(agent.id, result);
-        if (merged) applyCapabilities(merged, capSetters);
+        if (merged) applyCaps(merged);
       });
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [agent.id],
+    [agent.id, applyCaps],
   );
+
+  // Persist composer height.
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(COMPOSER_HEIGHT_KEY, String(composerHeight));
+    } catch {
+      // ignore
+    }
+  }, [composerHeight]);
+
+  // Drag-resize composer from the top edge (no React thrash mid-drag).
+  useEffect(() => {
+    if (!resizingComposer) return;
+    let raf = 0;
+    const onMove = (event: MouseEvent) => {
+      if (raf) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        const el = composerRef.current;
+        if (!el) return;
+        const bottom = el.getBoundingClientRect().bottom;
+        const next = clampComposerHeight(bottom - event.clientY);
+        composerHeightRef.current = next;
+        el.style.height = `${next}px`;
+      });
+    };
+    const onUp = () => {
+      if (raf) cancelAnimationFrame(raf);
+      setComposerHeight(composerHeightRef.current);
+      setResizingComposer(false);
+    };
+    document.body.classList.add("is-composer-resizing");
+    window.addEventListener("mousemove", onMove, { passive: true });
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+      document.body.classList.remove("is-composer-resizing");
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [resizingComposer]);
 
   const isAcp = agent.transport === "acp";
   const isPty = agent.transport === "pty";
@@ -252,7 +363,7 @@ export function Composer({
     const profileCaps = ptyProfileToCapabilities(agent.id);
     loadSeq.current += 1;
     if (profileCaps) {
-      applyCapabilities(profileCaps, capSetters);
+      applyCaps(profileCaps);
     } else {
       setCaps(null);
       setCurrentMode(null);
@@ -260,7 +371,7 @@ export function Composer({
       setCurrentEffort(null);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPty, agent.id]);
+  }, [isPty, agent.id, applyCaps]);
 
   // HARD RULE: wipe composer capability state whenever dialog identity changes.
   // Prevents "OpenCode selected but Claude models still listed".
@@ -273,8 +384,8 @@ export function Composer({
     setCurrentEffortId(null);
     setMenu(null);
     setModelQuery("");
-    // Keep draft/prefill; collapse tall composer when switching dialog/agent.
-    setExpanded(false);
+    modeLockRef.current = null;
+    // Keep draft/prefill + remembered height when switching dialog/agent.
     prefsRestoredKey.current = "";
   }, [sessionId, agent.id]);
 
@@ -284,12 +395,12 @@ export function Composer({
     if (capabilitiesProp) {
       loadSeq.current += 1;
       const merged = mergeAcpCapabilities(agent.id, capabilitiesProp);
-      if (merged) applyCapabilities(merged, capSetters);
+      if (merged) applyCaps(merged);
     } else {
       // Parent cleared caps (session switch) — already wiped by identity effect.
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAcp, agent.id, capabilitiesProp]);
+  }, [isAcp, agent.id, capabilitiesProp, applyCaps]);
 
   // ── Fetch capabilities when session is ready (ACP only) ────────────────────
   useEffect(() => {
@@ -317,7 +428,7 @@ export function Composer({
         if (data?.capabilities) {
           loadSeq.current += 1; // invalidate in-flight null fetches
           const merged = mergeAcpCapabilities(agent.id, data.capabilities);
-          if (merged) applyCapabilities(merged, capSetters);
+          if (merged) applyCaps(merged);
         } else {
           loadCapabilities(sessionId);
         }
@@ -403,7 +514,14 @@ export function Composer({
                   : "Agent rejected the config change";
             throw new Error(msg);
           }
-          loadCapabilities(sessionId);
+          // Mode-only: skip immediate caps reload — agent often still echoes the
+          // previous currentMode for a beat, which made the chip flicker.
+          if (typeof patch.mode !== "string") {
+            loadCapabilities(sessionId);
+          } else {
+            // Soft refresh later after the agent has settled.
+            window.setTimeout(() => loadCapabilities(sessionId), 1200);
+          }
         }
         // Disk SSOT: only fields that changed (parent merges; never wipe siblings).
         const prefsPatch: SessionComposerPrefs = {};
@@ -509,6 +627,23 @@ export function Composer({
   const isWarming = isAcp && sessionStatus === "starting";
   // Prefer advertised cancel; still offer interrupt while running (Esc×2 / button).
   const canCancel = isBusy && (isPty || (caps?.supportsCancel ?? true));
+  useEffect(() => {
+    if (!isBusy && !isWarming) return;
+    const id = window.setInterval(() => setHealthNow(Date.now()), 2000);
+    return () => window.clearInterval(id);
+  }, [isBusy, isWarming]);
+  const busyHealth = activityHealth(sessionStatus, lastActivityAt, healthNow);
+  const busyCopy = isBusy
+    ? composerBusyCopy(busyHealth)
+    : "Connecting agent in background…";
+  const busySeverity =
+    isBusy && busyHealth === "stuck"
+      ? "stuck"
+      : isBusy && busyHealth === "stalled"
+        ? "stalled"
+        : isBusy && busyHealth === "quiet"
+          ? "stale"
+          : "";
   const submit = () => {
     // Empty draft is OK when parent has quote-pins (App merges on send).
     if (isBusy) return;
@@ -517,6 +652,168 @@ export function Composer({
     onSend(draft);
     setDraft("");
   };
+
+  /** Insert dropped file paths into the draft (Tauri exposes absolute `path` on File). */
+  const insertDroppedPaths = useCallback((paths: string[]) => {
+    const unique = [...new Set(paths.map((p) => p.trim()).filter(Boolean))];
+    if (unique.length === 0) return;
+    const chunk = unique.join("\n");
+    const el = textareaRef.current;
+    if (!el) {
+      setDraft((current) => (current ? `${current}\n${chunk}` : chunk));
+      return;
+    }
+    const start = el.selectionStart ?? el.value.length;
+    const end = el.selectionEnd ?? start;
+    const before = el.value.slice(0, start);
+    const after = el.value.slice(end);
+    const needsLead = before.length > 0 && !before.endsWith("\n") && !before.endsWith(" ");
+    const needsTrail = after.length > 0 && !after.startsWith("\n") && !after.startsWith(" ");
+    const inserted = `${needsLead ? "\n" : ""}${chunk}${needsTrail ? "\n" : ""}`;
+    const next = `${before}${inserted}${after}`;
+    setDraft(next);
+    requestAnimationFrame(() => {
+      const caret = before.length + inserted.length;
+      el.focus();
+      el.setSelectionRange(caret, caret);
+    });
+  }, []);
+
+  const pathsFromDataTransfer = (dt: DataTransfer | null): string[] => {
+    if (!dt) return [];
+    const fromFiles: string[] = [];
+    if (dt.files?.length) {
+      for (const file of Array.from(dt.files)) {
+        // Tauri webview File objects often include absolute path.
+        const path = (file as File & { path?: string }).path;
+        fromFiles.push(path && path.trim() ? path : file.name);
+      }
+    }
+    if (fromFiles.length > 0) return fromFiles;
+
+    const uriList = dt.getData("text/uri-list");
+    if (uriList) {
+      return uriList
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line && !line.startsWith("#"))
+        .map((line) => {
+          if (line.startsWith("file:///")) {
+            try {
+              const decoded = decodeURIComponent(line.replace(/^file:\/\/\//, "").replace(/^file:\/\//, ""));
+              // Windows: file:///D:/foo → D:/foo
+              return decoded.replace(/^\/([A-Za-z]:)/, "$1").replace(/\//g, "\\");
+            } catch {
+              return line;
+            }
+          }
+          return line;
+        });
+    }
+
+    const plain = dt.getData("text/plain");
+    if (plain && /[\\/]/.test(plain)) {
+      return plain
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+    }
+    return [];
+  };
+
+  // Browser mock: HTML5 DnD. Desktop (Tauri) uses onDragDropEvent below for absolute paths.
+  const onComposerDragEnter = (event: ReactDragEvent) => {
+    if (isTauriRuntime()) return;
+    if (![...event.dataTransfer.types].some((t) => t === "Files" || t === "text/uri-list" || t === "text/plain")) {
+      return;
+    }
+    event.preventDefault();
+    dropDepth.current += 1;
+    setDropActive(true);
+  };
+
+  const onComposerDragOver = (event: ReactDragEvent) => {
+    if (isTauriRuntime()) return;
+    if (![...event.dataTransfer.types].some((t) => t === "Files" || t === "text/uri-list" || t === "text/plain")) {
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  };
+
+  const onComposerDragLeave = (event: ReactDragEvent) => {
+    if (isTauriRuntime()) return;
+    event.preventDefault();
+    dropDepth.current = Math.max(0, dropDepth.current - 1);
+    if (dropDepth.current === 0) setDropActive(false);
+  };
+
+  const onComposerDrop = (event: ReactDragEvent) => {
+    if (isTauriRuntime()) return;
+    event.preventDefault();
+    dropDepth.current = 0;
+    setDropActive(false);
+    const paths = pathsFromDataTransfer(event.dataTransfer);
+    if (paths.length === 0) {
+      flash("Could not read dropped file path");
+      return;
+    }
+    insertDroppedPaths(paths);
+  };
+
+  // Tauri-native file drops give absolute paths (HTML5 File.path is not always present).
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    const field = () => textareaRef.current?.closest(".composer__field") as HTMLElement | null;
+
+    void getCurrentWebview()
+      .onDragDropEvent((event) => {
+        if (disposed) return;
+        const payload = event.payload;
+        const el = field();
+        if (!el) return;
+
+        if (payload.type === "leave") {
+          dropDepth.current = 0;
+          setDropActive(false);
+          return;
+        }
+
+        const pos = "position" in payload ? payload.position : null;
+        if (!pos) return;
+        const rect = el.getBoundingClientRect();
+        // Tauri reports physical pixels; scale back to CSS coords.
+        const scale = window.devicePixelRatio || 1;
+        const x = pos.x / scale;
+        const y = pos.y / scale;
+        const over =
+          x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+
+        if (payload.type === "enter" || payload.type === "over") {
+          setDropActive(over);
+          return;
+        }
+
+        if (payload.type === "drop") {
+          setDropActive(false);
+          dropDepth.current = 0;
+          if (!over || !payload.paths?.length) return;
+          insertDroppedPaths(payload.paths);
+        }
+      })
+      .then((dispose) => {
+        if (disposed) dispose();
+        else unlisten = dispose;
+      })
+      .catch(() => undefined);
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [insertDroppedPaths]);
 
   /** OpenCode-style: Tab cycles execution mode when ≥2 modes exist. */
   const cycleMode = useCallback(
@@ -530,14 +827,17 @@ export function Composer({
       const next = modes[(idx < 0 ? 0 : idx + direction + modes.length) % modes.length];
       if (!next || next.id === current) return;
       const prev = current;
+      lockMode(next.id);
       setCurrentMode(next.id);
       setMenu(null);
-      void commitUpdate({ mode: next.id }, () => setCurrentMode(prev));
-      flash(`Mode · ${next.label}`);
+      void commitUpdate({ mode: next.id }, () => {
+        modeLockRef.current = null;
+        setCurrentMode(prev);
+      });
+      // No flash toast — label lives on the mode chip; toast felt like flicker.
     },
-    // commitUpdate / flash defined above; displayMode computed later — use caps only
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [caps, currentMode, commitUpdate, flash],
+    [caps, currentMode, commitUpdate, lockMode],
   );
 
   const warmIfNeeded = useCallback(
@@ -632,51 +932,124 @@ export function Composer({
     }
   }, [menu]);
 
+  const tone = modeTone(displayMode);
+  const isTall = composerHeight > COMPOSER_HEIGHT_DEFAULT + 40;
+
   return (
     <footer
-      className={
-        expanded
-          ? "composer is-expanded"
-          : isBusy
-            ? "composer is-busy"
-            : isWarming
-              ? "composer is-warming"
-              : "composer"
-      }
+      ref={composerRef}
+      className={[
+        "composer",
+        isBusy ? `is-busy${busySeverity ? ` is-${busySeverity}` : ""}` : "",
+        isWarming ? "is-warming" : "",
+        resizingComposer ? "is-resizing" : "",
+        hasModes ? "has-mode" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      data-mode-tone={tone}
+      style={{ height: composerHeight }}
       aria-label="Composer"
     >
+      {/* Drag handle: top edge — free height between MIN/MAX, remembered. */}
+      <button
+        type="button"
+        className="composer__resize"
+        aria-label="Resize composer height"
+        title="Drag to resize"
+        onMouseDown={(event) => {
+          event.preventDefault();
+          setResizingComposer(true);
+        }}
+      />
+      {/* Subtle left rail — OpenCode-like mode cue without rainbow chrome. */}
+      {hasModes && <div className="composer__mode-rail" aria-hidden />}
       {flashError && <div className="composer__error-toast">{flashError}</div>}
       {(isBusy || isWarming) && (
-        <div className="composer__activity" role="status" aria-live="polite">
+        <div
+          className={`composer__activity${busySeverity ? ` is-${busySeverity}` : ""}`}
+          role="status"
+          aria-live="polite"
+        >
           <span className="composer__activity-pulse" aria-hidden />
-          <span>
-            {isBusy
-              ? "Agent working — Esc×2 or ■ to interrupt"
-              : "Connecting agent in background…"}
-          </span>
+          <span>{busyCopy}</span>
         </div>
       )}
-      <div className="composer__field">
-        <button
-          className="composer-expand"
-          type="button"
-          title={expanded ? "Collapse composer" : "Expand composer"}
-          aria-label={expanded ? "Collapse composer" : "Expand composer"}
-          aria-pressed={expanded}
-          onMouseDown={(event) => {
-            // Don't steal focus from IME mid-composition; still toggle on click.
-            event.preventDefault();
-          }}
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            setExpanded((v) => !v);
-            // Keep caret focus after layout change.
-            requestAnimationFrame(() => textareaRef.current?.focus());
-          }}
-        >
-          {expanded ? <Shrink size={13} /> : <Expand size={13} />}
-        </button>
+      <div
+        className={dropActive ? "composer__field is-drop-target" : "composer__field"}
+        onDragEnter={onComposerDragEnter}
+        onDragOver={onComposerDragOver}
+        onDragLeave={onComposerDragLeave}
+        onDrop={onComposerDrop}
+      >
+        <div className="composer__topbar">
+          {/* Mode lives top-left so it is always visible (not buried bottom-right). */}
+          {hasModes && displayMode ? (
+            <div className="composer-menu-anchor composer-menu-anchor--mode">
+              <button
+                className="composer-mode-chip"
+                type="button"
+                title="Execution mode (Tab to cycle)"
+                aria-expanded={menu === "mode"}
+                onClick={() => setMenu(menu === "mode" ? null : "mode")}
+              >
+                <Target size={12} aria-hidden />
+                <span className="composer-mode-chip__label">{displayModeLabel}</span>
+              </button>
+              {menu === "mode" && (
+                <div className="composer-menu composer-menu--mode" role="menu" aria-label="Execution mode">
+                  {caps!.modes.map((m) => (
+                    <button
+                      key={m.id}
+                      className={displayMode === m.id ? "is-selected" : ""}
+                      type="button"
+                      role="menuitem"
+                      data-mode-tone={modeTone(m.id)}
+                      onClick={() => {
+                        const prev = displayMode;
+                        lockMode(m.id);
+                        setCurrentMode(m.id);
+                        setMenu(null);
+                        void commitUpdate({ mode: m.id }, () => {
+                          modeLockRef.current = null;
+                          setCurrentMode(prev);
+                        });
+                      }}
+                    >
+                      <span className="composer-menu__mode-dot" aria-hidden />
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <span className="composer__topbar-spacer" />
+          )}
+          <button
+            className="composer-expand"
+            type="button"
+            title={isTall ? "Collapse composer height" : "Expand composer height"}
+            aria-label={isTall ? "Collapse composer height" : "Expand composer height"}
+            aria-pressed={isTall}
+            onMouseDown={(event) => {
+              event.preventDefault();
+            }}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              setComposerHeight((h) =>
+                h > COMPOSER_HEIGHT_DEFAULT + 40
+                  ? COMPOSER_HEIGHT_DEFAULT
+                  : Math.min(COMPOSER_HEIGHT_MAX, Math.round(window.innerHeight * 0.36))
+              );
+              requestAnimationFrame(() => textareaRef.current?.focus());
+            }}
+          >
+            {isTall ? <Shrink size={13} /> : <Expand size={13} />}
+          </button>
+        </div>
+        {dropActive && <div className="composer__drop-hint">Drop to insert file path</div>}
         <textarea
           ref={textareaRef}
           aria-label="Prompt composer"
@@ -684,10 +1057,10 @@ export function Composer({
             isAcp
               ? isWarming && !composingRef.current
                 ? "Agent connecting in background… keep typing"
-                : "Message the Agent (Ctrl+Enter to send)"
-              : "Message the TUI (Ctrl+Enter) · model/mode/effort inject slash commands"
+                : "Message the Agent (Ctrl+Enter to send) · Tab cycles mode · drop files for paths"
+              : "Message the TUI (Ctrl+Enter) · drop files for paths"
           }
-          rows={expanded ? 12 : 2}
+          rows={isTall ? 10 : 2}
           value={draft}
           onFocus={() => {
             warmedThisFocusRef.current = false;
@@ -725,7 +1098,7 @@ export function Composer({
               cycleMode(event.shiftKey ? -1 : 1);
               return;
             }
-            // Esc: close menus first; if expanded with no menu, collapse height.
+            // Esc: close menus first; if tall with no menu, collapse height.
             if (event.key === "Escape") {
               if (menu) {
                 event.preventDefault();
@@ -733,10 +1106,10 @@ export function Composer({
                 setMenu(null);
                 return;
               }
-              if (expanded) {
+              if (isTall) {
                 event.preventDefault();
                 event.stopPropagation();
-                setExpanded(false);
+                setComposerHeight(COMPOSER_HEIGHT_DEFAULT);
               }
             }
           }}
@@ -748,45 +1121,6 @@ export function Composer({
             </button>
           </div>
           <div className="composer__actions">
-            {/* ── Mode selector (only if agent exposes ≥2 modes) ──────── */}
-            {hasModes && displayMode && (
-              <div className="composer-menu-anchor">
-                <button
-                  className="composer-select"
-                  type="button"
-                  title="Execution mode"
-                  aria-expanded={menu === "mode"}
-                  onClick={() => setMenu(menu === "mode" ? null : "mode")}
-                >
-                  <Target size={13} />
-                  {displayModeLabel}
-                </button>
-                {menu === "mode" && (
-                  <div className="composer-menu" role="menu" aria-label="Execution mode">
-                    {caps!.modes.map((m) => (
-                      <button
-                        key={m.id}
-                        className={displayMode === m.id ? "is-selected" : ""}
-                        type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          const prev = displayMode;
-                          setCurrentMode(m.id);
-                          setMenu(null);
-                          void commitUpdate(
-                            { mode: m.id },
-                            () => setCurrentMode(prev),
-                          );
-                        }}
-                      >
-                        {m.label}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
             {/* ── Model + Effort selector ─────────────────────────────── */}
             {(hasModels || hasEffort) && (
               <div className="composer-menu-anchor">

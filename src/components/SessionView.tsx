@@ -1,12 +1,21 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { listen } from "@tauri-apps/api/event";
-import { Eye, EyeOff, FileText, MessageSquareQuote, Pencil, Plus, TerminalSquare, X } from "lucide-react";
+import { Eye, EyeOff, FileText, MessageSquareQuote, Pencil, Plus, Square, TerminalSquare, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { extractAcpUpdateText, mergeStreamText, userMessageAnchorId } from "../lib/acpTranscript";
+import {
+  activityBarLabel,
+  activityHealth,
+  formatAgo,
+  isToolInProgress,
+  stallBannerCopy,
+  type ActivityHealth,
+} from "../lib/activityHealth";
 import { isTauriRuntime, readTerminalSnapshot, resizeTerminal, startTerminal, writeTerminal } from "../lib/api";
 import { newQuotePinId, type QuotePin } from "../lib/quoteComment";
 import type { AcpEvent, AgentConfig, CapabilitySnapshot, Session, SessionEvent, SessionStatus, SessionViewMode, TerminalOutput } from "../lib/types";
+import { ClippedBody } from "./ClippedBody";
 import { MarkdownBody } from "./MarkdownBody";
 import { MessageOutline } from "./MessageOutline";
 
@@ -40,24 +49,9 @@ type SessionViewProps = {
   /** Pending inline quote-comments for this dialog (sent with Composer text). */
   quotePins?: QuotePin[];
   onQuotePinsChange?: (pins: QuotePin[]) => void;
+  /** Interrupt the live turn (same as Esc×2 / ■). */
+  onInterrupt?: () => void | Promise<void>;
 };
-
-function activityLabel(status: SessionStatus, stale: boolean): string {
-  if (status === "starting") return stale ? "Connecting is slow…" : "Connecting…";
-  if (status === "running") {
-    return stale ? "Still working… no updates recently" : "Working";
-  }
-  if (status === "error") return "Error";
-  return "";
-}
-
-function formatAgo(ms: number, now: number): string {
-  const sec = Math.max(0, Math.floor((now - ms) / 1000));
-  if (sec < 2) return "just now";
-  if (sec < 60) return `${sec}s ago`;
-  const min = Math.floor(sec / 60);
-  return `${min}m ago`;
-}
 
 export function SessionView({
   agent,
@@ -78,6 +72,7 @@ export function SessionView({
   lastActivityAt = null,
   quotePins = [],
   onQuotePinsChange,
+  onInterrupt,
 }: SessionViewProps) {
   // Show thinking/tool rows by default (they render collapsed). Eye can hide them entirely.
   const [detailsVisible, setDetailsVisible] = useState(true);
@@ -175,6 +170,7 @@ export function SessionView({
             lastActivityAt={lastActivityAt}
             quotePins={quotePins}
             onQuotePinsChange={onQuotePinsChange}
+            onInterrupt={onInterrupt}
           />
         </div>
         <div className="session-stage__raw" data-active={showRaw ? "true" : "false"} aria-hidden={!showRaw}>
@@ -557,6 +553,7 @@ function CleanPlaceholder({
   lastActivityAt = null,
   quotePins = [],
   onQuotePinsChange,
+  onInterrupt,
 }: {
   agent: AgentConfig;
   session: Session;
@@ -571,6 +568,7 @@ function CleanPlaceholder({
   lastActivityAt?: number | null;
   quotePins?: QuotePin[];
   onQuotePinsChange?: (pins: QuotePin[]) => void;
+  onInterrupt?: () => void | Promise<void>;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   /** When true, new content may stick the viewport to the bottom. */
@@ -587,6 +585,13 @@ function CleanPlaceholder({
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
   const [editBusy, setEditBusy] = useState(false);
+  // Local clock for stall UI only — does not drive list scroll keys.
+  const [healthNow, setHealthNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!isRunning && !isStarting) return;
+    const id = window.setInterval(() => setHealthNow(Date.now()), 2000);
+    return () => window.clearInterval(id);
+  }, [isRunning, isStarting]);
 
   // After send: last card is still You → show ghost "Waiting for agent…"
   const lastVisible = visibleEvents[visibleEvents.length - 1];
@@ -596,14 +601,29 @@ function CleanPlaceholder({
       lastVisible.type === "user_message" ||
       lastVisible.type === "handoff_prepared");
 
+  const health = activityHealth(session.status, lastActivityAt, healthNow);
+  const openTool = useMemo(() => {
+    for (let i = visibleEvents.length - 1; i >= 0; i -= 1) {
+      const e = visibleEvents[i];
+      if (e.type === "tool_call" && isToolInProgress(e.status)) {
+        return e;
+      }
+    }
+    return null;
+  }, [visibleEvents]);
+  const midTurn = isRunning && !awaitingFirstChunk;
+  const showStallBanner =
+    (isRunning || isStarting) &&
+    (awaitingFirstChunk || health === "quiet" || health === "stalled" || health === "stuck");
+
   // Content fingerprint — only real transcript changes should pin-scroll (never a clock tick).
   const scrollKey = useMemo(() => {
     const last = visibleEvents[visibleEvents.length - 1];
     const lastSig = last
       ? `${last.type}:${last.createdAt}:${"text" in last ? String(last.text).length : ""}:${"status" in last ? last.status : ""}`
       : "empty";
-    return `${session.id}|${visibleEvents.length}|${lastSig}|start:${isStarting}|wait:${awaitingFirstChunk}`;
-  }, [session.id, visibleEvents, isStarting, awaitingFirstChunk]);
+    return `${session.id}|${visibleEvents.length}|${lastSig}|start:${isStarting}|wait:${awaitingFirstChunk}|health:${health}`;
+  }, [session.id, visibleEvents, isStarting, awaitingFirstChunk, health]);
 
   useEffect(() => {
     if (!isStarting || !isTauriRuntime()) return;
@@ -733,15 +753,27 @@ function CleanPlaceholder({
         {visibleEvents.map((event, index) => {
           const isCollapsible = event.type === "thought" || event.type === "tool_call";
           const toolRunning =
-            event.type === "tool_call" &&
-            typeof event.status === "string" &&
-            /run|progress|in_progress|pending/i.test(event.status);
+            event.type === "tool_call" && isToolInProgress(event.status);
+          const toolStalled =
+            toolRunning && (health === "stalled" || health === "stuck" || health === "quiet");
 
+          const toolStatusLabel = toolStalled
+            ? health === "stuck"
+              ? "no updates · appears stuck"
+              : health === "stalled"
+                ? "no updates · may be stuck"
+                : "no updates recently"
+            : event.type === "tool_call"
+              ? event.status
+              : undefined;
+
+          // Collapsed summary: fixed short type + SHORT one-line teaser.
+          // Full body only lives in the expanded clip box (never in the summary).
           const label =
             event.type === "thought"
               ? "Thinking"
               : event.type === "tool_call"
-                ? `Tool${event.title ? ` · ${event.title}` : ""}${event.status ? ` · ${event.status}` : ""}`
+                ? "Tool"
                 : event.type === "user_message"
                   ? "You"
                   : event.type === "assistant_message"
@@ -755,10 +787,25 @@ function CleanPlaceholder({
                 ? `${event.changeType}: ${event.path}`
                 : event.text;
 
-          const preview =
-            typeof body === "string" && body.length > 0
-              ? body.replace(/\s+/g, " ").slice(0, 72) + (body.length > 72 ? "…" : "")
-              : "…";
+          const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
+          const clipTeaser = (s: string, max = 42) => {
+            const t = oneLine(s);
+            if (!t) return "";
+            return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+          };
+
+          // Tools: title + status only (not the whole payload). Thoughts: short teaser.
+          let previewFull = "";
+          if (event.type === "tool_call") {
+            const bits = [
+              event.title ? oneLine(String(event.title)) : "",
+              toolStatusLabel || (event.status ? String(event.status) : ""),
+            ].filter(Boolean);
+            previewFull = bits.join(" · ");
+          } else if (typeof body === "string") {
+            previewFull = oneLine(body);
+          }
+          const preview = clipTeaser(previewFull, 48) || "…";
 
           const useMarkdown =
             event.type === "assistant_message" ||
@@ -767,26 +814,37 @@ function CleanPlaceholder({
             event.type === "handoff_prepared";
           // raw_chunk is ANSI-stripped TUI text — keep plain, not markdown
 
-          // Thinking / tool_call: always collapsed by default for every agent.
+          // Thinking / tool_call: collapsed by default; auto-expand when a tool looks stuck.
           // User message / assistant: always fully visible.
           if (isCollapsible) {
             return (
               <details
-                className={`event-card event-card--collapsible event-card--${event.type}${toolRunning ? " is-tool-running" : ""}`}
+                className={`event-card event-card--collapsible event-card--${event.type}${toolRunning ? " is-tool-running" : ""}${toolStalled ? " is-tool-stalled" : ""}${toolStalled && health === "stuck" ? " is-tool-stuck" : ""}`}
                 key={`${event.type}-${event.createdAt}-${index}`}
+                open={toolStalled && (health === "stalled" || health === "stuck") ? true : undefined}
               >
-                <summary className="event-card__summary">
+                <summary className="event-card__summary" title={previewFull || label}>
                   <span className="event-card__type">
                     {label}
-                    {toolRunning && <span className="event-card__live-dot" aria-hidden />}
+                    {toolRunning && !toolStalled && <span className="event-card__live-dot" aria-hidden />}
+                    {toolStalled && <span className="event-card__stall-dot" aria-hidden />}
                   </span>
-                  <span className="event-card__preview">{preview}</span>
+                  <span className="event-card__preview-wrap">
+                    <span className="event-card__preview">{preview}</span>
+                  </span>
                 </summary>
-                {useMarkdown && typeof body === "string" ? (
-                  <MarkdownBody text={body} className="event-card__body" />
-                ) : (
-                  <p className="event-card__body" style={{ whiteSpace: "pre-wrap" }}>{body}</p>
-                )}
+                <div className="event-card__expand-slot">
+                  <ClippedBody
+                    className="event-card__clip"
+                    maxHeight={event.type === "tool_call" ? 220 : 260}
+                  >
+                    {useMarkdown && typeof body === "string" ? (
+                      <MarkdownBody text={body} className="event-card__body event-card__body--clipped-md" />
+                    ) : (
+                      <pre className="event-card__body event-card__body--tool">{body}</pre>
+                    )}
+                  </ClippedBody>
+                </div>
               </details>
             );
           }
@@ -908,8 +966,15 @@ function CleanPlaceholder({
             </article>
           );
         })}
-        {awaitingFirstChunk && (
-          <WaitingGhost lastActivityAt={lastActivityAt} />
+        {showStallBanner && (
+          <StallBanner
+            health={health}
+            midTurn={midTurn}
+            openToolTitle={openTool?.title ?? null}
+            lastActivityAt={lastActivityAt}
+            now={healthNow}
+            onInterrupt={onInterrupt}
+          />
         )}
       </div>
       <MessageOutline events={visibleEvents} sessionId={session.id} />
@@ -1159,12 +1224,14 @@ function SessionActivityBar({
     const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, []);
-  const stale = lastActivityAt != null && now - lastActivityAt >= 20_000;
-  const barLabel = activityLabel(status, stale);
+  const health = activityHealth(status, lastActivityAt, now);
+  const barLabel = activityBarLabel(status, health);
   if (!barLabel) return null;
+  const severity =
+    health === "stuck" ? "stuck" : health === "stalled" ? "stalled" : health === "quiet" ? "stale" : "";
   return (
     <div
-      className={`session-activity${stale ? " is-stale" : ""} is-${status}`}
+      className={`session-activity${severity ? ` is-${severity}` : ""} is-${status}`}
       role="status"
       aria-live="polite"
     >
@@ -1176,43 +1243,81 @@ function SessionActivityBar({
         </span>
       )}
       {status === "running" && (
-        <span className="session-activity__hint">Esc×2 to interrupt</span>
+        <span className="session-activity__hint">
+          {health === "stuck" || health === "stalled"
+            ? "Esc×2 or ■ to interrupt"
+            : "Esc×2 to interrupt"}
+        </span>
       )}
     </div>
   );
 }
 
-function WaitingGhost({ lastActivityAt }: { lastActivityAt: number | null }) {
-  const [stale, setStale] = useState(false);
-  useEffect(() => {
-    const tick = () => {
-      setStale(lastActivityAt != null && Date.now() - lastActivityAt >= 20_000);
-    };
-    tick();
-    const id = window.setInterval(tick, 2000);
-    return () => window.clearInterval(id);
-  }, [lastActivityAt]);
+/** Mid-turn / first-chunk stall card with clear severity + interrupt CTA. */
+function StallBanner({
+  health,
+  midTurn,
+  openToolTitle,
+  lastActivityAt,
+  now,
+  onInterrupt,
+}: {
+  health: ActivityHealth;
+  midTurn: boolean;
+  openToolTitle?: string | null;
+  lastActivityAt: number | null;
+  now: number;
+  onInterrupt?: () => void | Promise<void>;
+}) {
+  const ago = lastActivityAt != null ? formatAgo(lastActivityAt, now) : undefined;
+  const copy =
+    stallBannerCopy(health, { midTurn, openToolTitle, ago }) ??
+    (midTurn
+      ? null
+      : {
+          title: "Waiting for agent",
+          body: "Message sent. Streaming will show thinking / tools / reply here.",
+        });
+  if (!copy) return null;
+
+  const severity =
+    health === "stuck" ? "stuck" : health === "stalled" ? "stalled" : health === "quiet" ? "stale" : "";
+  const showInterrupt =
+    Boolean(onInterrupt) && (health === "quiet" || health === "stalled" || health === "stuck");
 
   return (
     <article
-      className={`event-card event-card--waiting${stale ? " is-stale" : ""}`}
+      className={`event-card event-card--waiting${severity ? ` is-${severity}` : ""}`}
       role="status"
       aria-live="polite"
     >
       <div className="event-card__icon">
-        <span className="activity-dots" aria-hidden>
-          <i /><i /><i />
-        </span>
+        {health === "live" || health === "idle" ? (
+          <span className="activity-dots" aria-hidden>
+            <i /><i /><i />
+          </span>
+        ) : (
+          <span className={`event-card__stall-mark is-${severity || "stale"}`} aria-hidden>
+            !
+          </span>
+        )}
       </div>
       <div className="event-card__main">
-        <span className="event-card__type">
-          {stale ? "Still waiting" : "Waiting for agent"}
-        </span>
-        <p className="event-card__waiting-copy">
-          {stale
-            ? "No stream updates for a while — the agent may still be thinking, or it may be stuck. Try Esc×2 to interrupt."
-            : "Message sent. Streaming will show thinking / tools / reply here."}
-        </p>
+        <span className="event-card__type">{copy.title}</span>
+        <p className="event-card__waiting-copy">{copy.body}</p>
+        {showInterrupt && (
+          <div className="event-card__stall-actions">
+            <button
+              type="button"
+              className="event-card__interrupt"
+              onClick={() => void onInterrupt?.()}
+            >
+              <Square size={11} fill="currentColor" />
+              Interrupt turn
+            </button>
+            <span className="event-card__stall-hint">or press Esc twice</span>
+          </div>
+        )}
       </div>
     </article>
   );

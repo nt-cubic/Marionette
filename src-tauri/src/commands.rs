@@ -24,6 +24,15 @@ pub fn add_project(path: String, state: State<'_, AppState>) -> Result<Project, 
 }
 
 #[tauri::command]
+pub fn delete_project(project_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let storage = state
+        .storage
+        .lock()
+        .map_err(|_| "Storage lock poisoned".to_string())?;
+    storage.delete_project(&project_id)
+}
+
+#[tauri::command]
 pub fn list_agents() -> Vec<AgentConfig> {
     AgentConfig::defaults()
 }

@@ -6,7 +6,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -122,6 +122,9 @@ struct AcpProcess {
     next_id: AtomicU64,
     pending: Arc<Mutex<HashMap<u64, Sender<Result<Value, String>>>>>,
     agent_session_id: Mutex<Option<String>>,
+    /// Set when AgentShell intentionally stops the process (agent switch / delete).
+    /// Suppresses false "process/ended" crash UX on the UI.
+    intentional_stop: AtomicBool,
 }
 
 struct PendingPermission {
@@ -161,13 +164,22 @@ impl AcpService {
                 .sessions
                 .lock()
                 .map_err(|_| "ACP session lock poisoned".to_string())?;
-            if sessions.contains_key(&session_id) {
-                if let Some(caps) = self.get_capabilities(&session_id) {
-                    return Ok(caps);
+            if let Some(process) = sessions.get(&session_id) {
+                let alive = process
+                    .child
+                    .lock()
+                    .ok()
+                    .and_then(|mut child| child.try_wait().ok())
+                    .map(|status| status.is_none())
+                    .unwrap_or(false);
+                if alive {
+                    if let Some(caps) = self.get_capabilities(&session_id) {
+                        return Ok(caps);
+                    }
                 }
             }
         }
-        // Stale process without capabilities — kill and restart
+        // Dead process, missing caps, or partial warm — kill and restart
         let _ = self.stop(&session_id);
 
         // Prefer global ACP bins over `npx -y …` (npx cold start can hang UI for minutes).
@@ -264,6 +276,7 @@ impl AcpService {
             next_id: AtomicU64::new(1),
             pending: Arc::clone(&pending),
             agent_session_id: Mutex::new(None),
+            intentional_stop: AtomicBool::new(false),
         });
         sessions.insert(session_id.clone(), Arc::clone(&process));
         drop(sessions);
@@ -534,6 +547,7 @@ impl AcpService {
             .lock()
             .map(|mut map| map.remove(session_id));
         if let Some(process) = process {
+            process.intentional_stop.store(true, Ordering::SeqCst);
             let mut child = process
                 .child
                 .lock()
@@ -1227,6 +1241,42 @@ fn read_stdout(
             message,
         );
     }
+
+    // Stdout closed (agent crash/exit/EOF). Fail any pending RPC waiters and tell the UI
+    // so status does not stay "Working" forever with no stream updates.
+    if let Ok(mut pending_map) = pending.lock() {
+        for (_, sender) in pending_map.drain() {
+            let _ = sender.send(Err(
+                "Agent process ended (stdout closed) before a response arrived".to_string(),
+            ));
+        }
+    }
+    let _ = process.child.lock().map(|mut child| {
+        let _ = child.try_wait();
+    });
+    if process.intentional_stop.load(Ordering::SeqCst) {
+        emit_event(
+            &app,
+            &session_id,
+            "system",
+            Some("process/stopped"),
+            json!({
+                "message": "Agent process stopped by AgentShell.",
+                "sessionId": session_id,
+            }),
+        );
+        return;
+    }
+    emit_event(
+        &app,
+        &session_id,
+        "error",
+        Some("process/ended"),
+        json!({
+            "message": "Agent process stream ended (process exited or stdout closed).",
+            "sessionId": session_id,
+        }),
+    );
 }
 
 /// Client methods the agent may call. Permission is gated by the UI (no silent allow).

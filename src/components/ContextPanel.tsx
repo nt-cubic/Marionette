@@ -13,6 +13,9 @@ type ContextPanelProps = {
   onRefreshChangedFiles?: () => void;
   onOpenDiff?: (path: string) => void;
   handoff?: HandoffResult | null;
+  /** Parent-driven panel width drag. */
+  resizeDragging?: boolean;
+  onResizeStart?: () => void;
 };
 
 function meterTone(window: UsageWindow): "ok" | "warn" | "hot" | "none" {
@@ -64,6 +67,8 @@ export function ContextPanel({
   onRefreshChangedFiles,
   onOpenDiff,
   handoff = null,
+  resizeDragging = false,
+  onResizeStart,
 }: ContextPanelProps) {
   if (collapsed) {
     return (
@@ -84,6 +89,18 @@ export function ContextPanel({
 
   return (
     <aside className="context-panel" aria-label="Context panel">
+      {onResizeStart && (
+        <button
+          type="button"
+          className={resizeDragging ? "panel-resizer panel-resizer--right is-dragging" : "panel-resizer panel-resizer--right"}
+          aria-label="Resize information panel"
+          title="Drag to resize"
+          onMouseDown={(event) => {
+            event.preventDefault();
+            onResizeStart();
+          }}
+        />
+      )}
       <div className="context-panel__top titlebar-row">
         <span className="context-panel__title titlebar-drag-fill" data-tauri-drag-region>
           Information

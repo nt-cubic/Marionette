@@ -38,6 +38,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::list_projects,
             commands::add_project,
+            commands::delete_project,
             commands::list_agents,
             commands::test_agent_command,
             commands::list_sessions,

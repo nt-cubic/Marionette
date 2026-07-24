@@ -28,6 +28,15 @@ export async function addProject(path: string): Promise<Project> {
   };
 }
 
+/** Remove project from AgentShell list (does not delete workspace files). */
+export async function deleteProject(projectId: string): Promise<void> {
+  if (isTauriRuntime()) {
+    await invoke("delete_project", { projectId });
+    return;
+  }
+  // Browser mock: caller updates local state.
+}
+
 export async function listAgents(): Promise<AgentConfig[]> {
   if (!isTauriRuntime()) return mockAgents;
   try {

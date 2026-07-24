@@ -4,6 +4,35 @@ import type { AgentConfig, Project, Session, SessionStatus } from "../lib/types"
 
 type ThemeMode = "dark" | "light";
 
+/** Visible projects before "…" collapse (Codex-style). */
+const PROJECT_LIST_PREVIEW = 5;
+/** Visible sessions per project before "…" collapse. */
+const SESSION_LIST_PREVIEW = 5;
+
+function sessionRecency(session: Session): number {
+  const raw = session.lastActiveAt || session.startedAt || "";
+  const asNum = Number(raw);
+  if (Number.isFinite(asNum) && asNum > 1e11) return asNum;
+  const parsed = Date.parse(raw);
+  if (Number.isFinite(parsed)) return parsed;
+  // Fallback: session-… millis ids
+  const idNum = Number(String(session.id).replace(/^session-/, ""));
+  return Number.isFinite(idNum) ? idNum : 0;
+}
+
+function sortSessionsNewestFirst(list: Session[]): Session[] {
+  return [...list].sort((a, b) => sessionRecency(b) - sessionRecency(a));
+}
+
+/** Active session first, then newest — matches “new dialog on top” + keep selection visible. */
+function orderSessionsForShelf(list: Session[], currentSessionId?: string): Session[] {
+  const sorted = sortSessionsNewestFirst(list);
+  if (!currentSessionId) return sorted;
+  const active = sorted.find((s) => s.id === currentSessionId);
+  if (!active) return sorted;
+  return [active, ...sorted.filter((s) => s.id !== currentSessionId)];
+}
+
 type ProjectShelfProps = {
   agents: AgentConfig[];
   projects: Project[];
@@ -23,6 +52,7 @@ type ProjectShelfProps = {
   onProjectSelect: (projectId: string) => void;
   onSessionSelect: (session: Session) => void;
   onDeleteSession: (sessionId: string) => void;
+  onDeleteProject: (projectId: string) => void;
 };
 
 const statusIcon: Record<SessionStatus, typeof Circle> = {
@@ -49,11 +79,15 @@ export function ProjectShelf({
   theme,
   onToggleTheme,
   onDeleteSession,
+  onDeleteProject,
   searchHitIds = null,
   onSearchQueryChange,
 }: ProjectShelfProps) {
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => new Set(projects.map((project) => project.id)));
   const [query, setQuery] = useState("");
+  const [projectsExpanded, setProjectsExpanded] = useState(false);
+  /** Project ids whose session list is fully expanded past the preview cap. */
+  const [sessionsExpandedByProject, setSessionsExpandedByProject] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
     setExpandedProjects((current) => new Set([...current, ...projects.map((project) => project.id)]));
@@ -141,7 +175,22 @@ export function ProjectShelf({
     );
   }
 
-  const visibleProjects = filtered.projects;
+  const allVisibleProjects = filtered.projects;
+  const searching = Boolean(query.trim());
+  // While searching, always show full match list; otherwise cap at preview count.
+  // Always keep the active project in the preview so selection never "disappears".
+  const shouldCollapseList = !searching && !projectsExpanded && allVisibleProjects.length > PROJECT_LIST_PREVIEW;
+  let visibleProjects = allVisibleProjects;
+  if (shouldCollapseList) {
+    const head = allVisibleProjects.slice(0, PROJECT_LIST_PREVIEW);
+    if (head.some((p) => p.id === currentProjectId)) {
+      visibleProjects = head;
+    } else {
+      const active = allVisibleProjects.find((p) => p.id === currentProjectId);
+      visibleProjects = active ? [...head.slice(0, PROJECT_LIST_PREVIEW - 1), active] : head;
+    }
+  }
+  const hiddenCount = Math.max(0, allVisibleProjects.length - visibleProjects.length);
 
   return (
     <section className="project-tree">
@@ -172,15 +221,28 @@ export function ProjectShelf({
       </button>
 
       <div className="project-list" aria-label="Projects with sessions">
-        {visibleProjects.length === 0 && (
+        {allVisibleProjects.length === 0 && (
           <div className="project-list__empty">
-            {query.trim() ? `No threads match “${query.trim()}”` : "No projects yet"}
+            {searching ? `No threads match “${query.trim()}”` : "No projects yet"}
           </div>
         )}
         {visibleProjects.map((project) => {
-          const projectSessions =
+          const rawSessions =
             filtered.sessionsByProject?.get(project.id) ??
             sessions.filter((session) => session.projectId === project.id);
+          // Active project: keep current session pinned first. Others: newest first.
+          const projectSessions = orderSessionsForShelf(
+            rawSessions,
+            project.id === currentProjectId ? currentSessionId : undefined
+          );
+          const sessionsFullyExpanded = searching || sessionsExpandedByProject.has(project.id);
+          const shouldCollapseSessions =
+            !sessionsFullyExpanded && projectSessions.length > SESSION_LIST_PREVIEW;
+          const visibleSessions = shouldCollapseSessions
+            ? projectSessions.slice(0, SESSION_LIST_PREVIEW)
+            : projectSessions;
+          const hiddenSessionCount = Math.max(0, projectSessions.length - visibleSessions.length);
+
           return (
             <div className="project-group" key={project.id}>
               <div className={project.id === currentProjectId ? "project-row is-active" : "project-row"}>
@@ -197,6 +259,19 @@ export function ProjectShelf({
                   <button className="project-row__action" type="button" title="New session" onClick={() => onNewSession(project.id)}>
                     <Plus size={13} />
                   </button>
+                  <button
+                    className="project-row__action project-row__action--danger"
+                    type="button"
+                    title={`Remove project ${project.name}`}
+                    aria-label={`Remove project ${project.name}`}
+                    onClick={() => {
+                      if (window.confirm(`Remove project “${project.name}” from the list?\n\nThis does not delete files on disk.`)) {
+                        onDeleteProject(project.id);
+                      }
+                    }}
+                  >
+                    <Trash2 size={13} />
+                  </button>
                   <button className="project-row__action" type="button" title="Project settings">
                     <Settings2 size={13} />
                   </button>
@@ -208,7 +283,7 @@ export function ProjectShelf({
                   {projectSessions.length === 0 && (
                     <div className="session-row session-row--empty">No sessions</div>
                   )}
-                  {projectSessions.map((session) => {
+                  {visibleSessions.map((session) => {
                     const StatusIcon = statusIcon[session.status] ?? Circle;
                     return (
                       <div
@@ -233,11 +308,81 @@ export function ProjectShelf({
                       </div>
                     );
                   })}
+                  {shouldCollapseSessions && (
+                    <div className="shelf-clip shelf-clip--sessions">
+                      <div className="shelf-clip__fade" aria-hidden />
+                      <button
+                        className="shelf-clip__more"
+                        type="button"
+                        title={`Show ${hiddenSessionCount} more session${hiddenSessionCount === 1 ? "" : "s"}`}
+                        aria-label={`Show ${hiddenSessionCount} more sessions`}
+                        onClick={() => {
+                          setSessionsExpandedByProject((current) => {
+                            const next = new Set(current);
+                            next.add(project.id);
+                            return next;
+                          });
+                        }}
+                      >
+                        Show more
+                        <span className="shelf-clip__count">{hiddenSessionCount}</span>
+                      </button>
+                    </div>
+                  )}
+                  {!searching &&
+                    sessionsExpandedByProject.has(project.id) &&
+                    projectSessions.length > SESSION_LIST_PREVIEW && (
+                      <div className="shelf-clip shelf-clip--sessions shelf-clip--expanded">
+                        <button
+                          className="shelf-clip__more"
+                          type="button"
+                          title="Show fewer sessions"
+                          aria-label="Show fewer sessions"
+                          onClick={() => {
+                            setSessionsExpandedByProject((current) => {
+                              const next = new Set(current);
+                              next.delete(project.id);
+                              return next;
+                            });
+                          }}
+                        >
+                          Show less
+                        </button>
+                      </div>
+                    )}
                 </div>
               )}
             </div>
           );
         })}
+        {shouldCollapseList && (
+          <div className="shelf-clip shelf-clip--projects">
+            <div className="shelf-clip__fade" aria-hidden />
+            <button
+              className="shelf-clip__more"
+              type="button"
+              title={`Show ${hiddenCount} more project${hiddenCount === 1 ? "" : "s"}`}
+              aria-label={`Show ${hiddenCount} more projects`}
+              onClick={() => setProjectsExpanded(true)}
+            >
+              Show more
+              <span className="shelf-clip__count">{hiddenCount}</span>
+            </button>
+          </div>
+        )}
+        {!searching && projectsExpanded && allVisibleProjects.length > PROJECT_LIST_PREVIEW && (
+          <div className="shelf-clip shelf-clip--projects shelf-clip--expanded">
+            <button
+              className="shelf-clip__more"
+              type="button"
+              title="Show fewer projects"
+              aria-label="Show fewer projects"
+              onClick={() => setProjectsExpanded(false)}
+            >
+              Show less
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="sidebar-footer">

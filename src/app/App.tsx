@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { agents, projects, sessions } from "../lib/mockData";
 import {
   applyAcpPartToEvents,
@@ -12,7 +12,7 @@ import {
   userMessageEvent,
 } from "../lib/acpTranscript";
 import { armPtyBridge, createPtyBridgeState, flushPtyBridge, ingestPtyOutput, type PtyBridgeState } from "../lib/ptyCleanBridge";
-import { addProject, appendDebugLog, cancelAcpSession, createSession as createSessionApi, deleteSession as deleteSessionApi, generateHandoff, getChangedFiles, getFileDiff, getSessionCapabilities, isTauriRuntime, listAgents, listProjects, listSessions, loadTranscript, preparePtyInput, probeAgentAuth, probeProviderUsage, respondAcpPermission, searchSessions, sendAcpPrompt, startAcpSession, startAgentLogin, stopAcpSession, stopTerminal, updateSessionAgent, updateSessionLabel, updateSessionPrefs, writeTerminal, writeTranscript } from "../lib/api";
+import { addProject, appendDebugLog, cancelAcpSession, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, generateHandoff, getChangedFiles, getFileDiff, getSessionCapabilities, isTauriRuntime, listAgents, listProjects, listSessions, loadTranscript, preparePtyInput, probeAgentAuth, probeProviderUsage, respondAcpPermission, searchSessions, sendAcpPrompt, startAcpSession, startAgentLogin, stopAcpSession, stopTerminal, updateSessionAgent, updateSessionLabel, updateSessionPrefs, writeTerminal, writeTranscript } from "../lib/api";
 import type { AcpEvent, CapabilitySnapshot, ChangedFile, HandoffResult, Project, Session, SessionComposerPrefs, SessionEvent, SessionViewMode, TerminalOutput, UsageSnapshot } from "../lib/types";
 import {
   buildUsageSnapshot,
@@ -31,6 +31,7 @@ import {
 } from "../lib/transcript";
 import { buildHistoryInjection, withHistoryInjection } from "../lib/sessionHistory";
 import { formatPinsForSend } from "../lib/quoteComment";
+import { isToolInProgress } from "../lib/activityHealth";
 import { classifyAgentError, formatClassifiedError } from "../lib/errors";
 import { Composer } from "../components/Composer";
 import { ContextPanel } from "../components/ContextPanel";
@@ -39,6 +40,30 @@ import { ProjectShelf } from "../components/ProjectShelf";
 import { SessionView, type UserMessageAnchor } from "../components/SessionView";
 
 type ThemeMode = "dark" | "light";
+
+const LEFT_PANEL_MIN = 180;
+const LEFT_PANEL_MAX = 420;
+const LEFT_PANEL_DEFAULT = 224;
+const RIGHT_PANEL_MIN = 220;
+const RIGHT_PANEL_MAX = 480;
+const RIGHT_PANEL_DEFAULT = 270;
+const LAYOUT_STORAGE_KEY = "agentshell-layout";
+
+function clamp(n: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, n));
+}
+
+function readStoredPanelWidth(key: "leftWidth" | "rightWidth", fallback: number, min: number, max: number): number {
+  try {
+    const raw = window.localStorage.getItem(LAYOUT_STORAGE_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as { leftWidth?: number; rightWidth?: number };
+    const value = parsed[key];
+    return typeof value === "number" && Number.isFinite(value) ? clamp(value, min, max) : fallback;
+  } catch {
+    return fallback;
+  }
+}
 
 /** Pull a human-readable error from ACP JSON-RPC error payloads. */
 function formatAcpRpcError(data: unknown): string | null {
@@ -69,6 +94,26 @@ function formatAcpRpcError(data: unknown): string | null {
   }
 }
 
+/** Close out tools that never received a terminal status (stuck in_progress). */
+function markOpenTools(
+  events: SessionEvent[],
+  sessionId: string,
+  status: "cancelled" | "failed"
+): SessionEvent[] {
+  return events.map((event) => {
+    if (event.sessionId !== sessionId || event.type !== "tool_call") return event;
+    if (!isToolInProgress(event.status)) return event;
+    const title = event.title ?? "tool";
+    const line1 = `${title} · ${status}`;
+    const rest = event.text.includes("\n") ? event.text.slice(event.text.indexOf("\n")) : "";
+    return {
+      ...event,
+      status,
+      text: rest ? `${line1}${rest}` : line1,
+    };
+  });
+}
+
 export function App() {
   const [availableProjects, setAvailableProjects] = useState<Project[]>(projects);
   const [availableAgents, setAvailableAgents] = useState(agents);
@@ -79,6 +124,19 @@ export function App() {
   const [viewMode, setViewMode] = useState<SessionViewMode>("clean");
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
+  const [leftWidth, setLeftWidth] = useState(() =>
+    readStoredPanelWidth("leftWidth", LEFT_PANEL_DEFAULT, LEFT_PANEL_MIN, LEFT_PANEL_MAX)
+  );
+  const [rightWidth, setRightWidth] = useState(() =>
+    readStoredPanelWidth("rightWidth", RIGHT_PANEL_DEFAULT, RIGHT_PANEL_MIN, RIGHT_PANEL_MAX)
+  );
+  /** Which rail is being dragged — set once per gesture (not every mouse move). */
+  const [resizingSide, setResizingSide] = useState<"left" | "right" | null>(null);
+  const workspaceGridRef = useRef<HTMLDivElement>(null);
+  const leftWidthRef = useRef(leftWidth);
+  const rightWidthRef = useRef(rightWidth);
+  leftWidthRef.current = leftWidth;
+  rightWidthRef.current = rightWidth;
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const [projectPath, setProjectPath] = useState("");
   const [projectError, setProjectError] = useState("");
@@ -307,6 +365,50 @@ export function App() {
           )
         );
       }
+      // Agent process stdout closed (crash / exit) — never leave the UI "Working" forever.
+      if (payload.method === "process/ended") {
+        const detail =
+          payload.data && typeof payload.data === "object"
+            ? String((payload.data as { message?: unknown }).message ?? "Agent process ended")
+            : "Agent process ended";
+        setLiveEvents((current) => {
+          const last = current[current.length - 1];
+          if (
+            last?.type === "assistant_message" &&
+            last.sessionId === payload.sessionId &&
+            last.text.includes("Agent process ended")
+          ) {
+            return markOpenTools(current, payload.sessionId, "failed");
+          }
+          return [
+            ...markOpenTools(current, payload.sessionId, "failed"),
+            {
+              type: "assistant_message" as const,
+              sessionId: payload.sessionId,
+              text: `**Agent process ended.**\n\n${detail}\n\nThe turn is no longer live. Warm the agent again (focus composer / send) or start a new session.`,
+              createdAt: new Date().toISOString(),
+            },
+          ];
+        });
+        setAvailableSessions((current) =>
+          current.map((session) =>
+            session.id === payload.sessionId ? { ...session, status: "exited" } : session
+          )
+        );
+        if (payload.sessionId === currentSessionIdRef.current) {
+          setSessionCapabilities(null);
+        }
+        // Drop dead process bookkeeping so the next warm can respawn cleanly.
+        void stopAcpSession(payload.sessionId).catch(() => undefined);
+        pushDebug({
+          sessionId: payload.sessionId,
+          level: "error",
+          source: "acp",
+          summary: "process/ended",
+          detail,
+        });
+      }
+
       if (payload.kind === "error" && (payload.method === "rpc/response" || payload.method == null)) {
         // Surface auth/turn failures in Clean (Claude often returns
         // { error: { message: "Authentication required" } } with no message chunks).
@@ -670,6 +772,66 @@ export function App() {
     window.localStorage.setItem("agentshell-theme", theme);
   }, [theme]);
 
+  // Drag-resize: mutate CSS vars on the grid during move (no React re-render).
+  // Commit width to state + localStorage only on mouseup.
+  useEffect(() => {
+    if (!resizingSide) return;
+
+    let raf = 0;
+    const side = resizingSide;
+
+    const applyCss = (left: number, right: number) => {
+      const el = workspaceGridRef.current;
+      if (!el) return;
+      el.style.setProperty("--left-panel-width", `${left}px`);
+      el.style.setProperty("--right-panel-width", `${right}px`);
+    };
+
+    const onMove = (event: MouseEvent) => {
+      if (raf) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        if (side === "left") {
+          leftWidthRef.current = clamp(event.clientX, LEFT_PANEL_MIN, LEFT_PANEL_MAX);
+        } else {
+          rightWidthRef.current = clamp(
+            window.innerWidth - event.clientX,
+            RIGHT_PANEL_MIN,
+            RIGHT_PANEL_MAX
+          );
+        }
+        applyCss(leftWidthRef.current, rightWidthRef.current);
+      });
+    };
+
+    const onUp = () => {
+      if (raf) cancelAnimationFrame(raf);
+      const nextLeft = leftWidthRef.current;
+      const nextRight = rightWidthRef.current;
+      setLeftWidth(nextLeft);
+      setRightWidth(nextRight);
+      try {
+        window.localStorage.setItem(
+          LAYOUT_STORAGE_KEY,
+          JSON.stringify({ leftWidth: nextLeft, rightWidth: nextRight })
+        );
+      } catch {
+        // ignore quota / private mode
+      }
+      setResizingSide(null);
+    };
+
+    document.body.classList.add("is-panel-resizing");
+    window.addEventListener("mousemove", onMove, { passive: true });
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+      document.body.classList.remove("is-panel-resizing");
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [resizingSide]);
+
   const currentProject = useMemo(
     () => availableProjects.find((project) => project.id === currentProjectId) ?? availableProjects[0] ?? (isTauriRuntime() ? undefined : projects[0]),
     [availableProjects, currentProjectId]
@@ -724,18 +886,29 @@ export function App() {
     [availableSessions, openSessionIds]
   );
 
-  const createSessionForProject = async (projectId: string, agentId = (availableAgents[0] ?? agents[0]).id) => {
-    const project = availableProjects.find((item) => item.id === projectId);
+  const createSessionForProject = async (
+    projectId: string,
+    agentId = (availableAgents[0] ?? agents[0]).id,
+    /** Use when React state has not yet committed a brand-new project. */
+    projectHint?: Project
+  ) => {
+    const project =
+      projectHint?.id === projectId
+        ? projectHint
+        : availableProjects.find((item) => item.id === projectId);
     if (!project) return;
 
     const newSession = await createSessionApi(projectId, agentId);
     if (!newSession) return;
-    setAvailableSessions((current) => [...current, newSession]);
-    setOpenSessionIds((current) => [...current.filter((id) => id !== newSession.id), newSession.id]);
+    // Newest dialog sits at the top of the project shelf (and left of tabs).
+    setAvailableSessions((current) => [newSession, ...current.filter((s) => s.id !== newSession.id)]);
+    setOpenSessionIds((current) => [newSession.id, ...current.filter((id) => id !== newSession.id)]);
     setCurrentProjectId(projectId);
     setCurrentSessionId(newSession.id);
     // Product default is always Clean View — transport is an implementation detail.
     setViewMode("clean");
+    setSessionCapabilities(null);
+    setActiveModelId(null);
     ptyBridgesRef.current.set(newSession.id, createPtyBridgeState());
   };
 
@@ -1074,22 +1247,38 @@ export function App() {
       agentsRef.current[0];
     if (!agent) return;
 
+    const sid = currentSessionId;
+    let cancelNote = "";
+
     if (agent.transport === "acp") {
       // True turn cancel — do not kill the session process.
       try {
-        await cancelAcpSession(currentSessionId);
+        await cancelAcpSession(sid);
+        cancelNote = "Cancel request sent to the agent.";
       } catch (error) {
+        cancelNote = `Cancel request failed (${error instanceof Error ? error.message : String(error)}). Local UI was still released so you can send again.`;
         pushDebug({
-          sessionId: currentSessionId,
+          sessionId: sid,
           level: "warn",
           source: "interrupt",
           summary: "cancel failed",
           detail: error instanceof Error ? error.message : String(error),
         });
       }
-      setSessionStatusById(currentSessionId, "waiting");
+      // Always free the composer — even if the agent ignored cancel.
+      setSessionStatusById(sid, "waiting");
+      touchActivity(sid);
+      setLiveEvents((current) => [
+        ...markOpenTools(current, sid, "cancelled"),
+        {
+          type: "assistant_message" as const,
+          sessionId: sid,
+          text: `**Interrupted.**\n\n${cancelNote}\n\nYou can send a new message now. If the agent stays silent, warm it again or start a new session.`,
+          createdAt: new Date().toISOString(),
+        },
+      ]);
       pushDebug({
-        sessionId: currentSessionId,
+        sessionId: sid,
         level: "info",
         source: "interrupt",
         summary: "ACP cancel (interrupt)",
@@ -1099,9 +1288,20 @@ export function App() {
 
     // PTY: best-effort Ctrl+C — does not stop the whole session.
     try {
-      await writeTerminal(currentSessionId, "\x03");
+      await writeTerminal(sid, "\x03");
+      setSessionStatusById(sid, "waiting");
+      touchActivity(sid);
+      setLiveEvents((current) => [
+        ...markOpenTools(current, sid, "cancelled"),
+        {
+          type: "assistant_message" as const,
+          sessionId: sid,
+          text: "**Interrupted** (Ctrl+C sent to terminal).\n\nYou can send a new message. If the TUI is still busy, interrupt again or switch to Raw Terminal.",
+          createdAt: new Date().toISOString(),
+        },
+      ]);
       pushDebug({
-        sessionId: currentSessionId,
+        sessionId: sid,
         level: "info",
         source: "interrupt",
         summary: "PTY Ctrl+C",
@@ -1109,7 +1309,7 @@ export function App() {
     } catch {
       // ignore
     }
-  }, [currentSessionId, pushDebug, setSessionStatusById]);
+  }, [currentSessionId, pushDebug, setSessionStatusById, touchActivity]);
 
   // P2-UX-3: double Esc → interrupt (after closing overlays).
   useEffect(() => {
@@ -1388,6 +1588,8 @@ export function App() {
       setCurrentProjectId(project.id);
       setProjectDialogOpen(false);
       setProjectPath("");
+      // Auto-open a conversation so ACP/composer are usable immediately.
+      await createSessionForProject(project.id, availableAgents[0]?.id ?? agents[0].id, project);
     } catch (error) {
       setProjectError(String(error));
     } finally {
@@ -1395,9 +1597,73 @@ export function App() {
     }
   };
 
+  const handleDeleteProject = (projectId: string) => {
+    const project = availableProjects.find((item) => item.id === projectId);
+    if (!project) return;
+
+    const projectSessions = availableSessions.filter((session) => session.projectId === projectId);
+    for (const session of projectSessions) {
+      if (session.status === "starting" || session.status === "running" || session.status === "waiting") {
+        const agent = availableAgents.find((item) => item.id === session.agentId);
+        void (agent?.transport === "acp" ? stopAcpSession(session.id) : stopTerminal(session.id)).catch(() => undefined);
+      }
+      void deleteSessionApi(projectId, session.id).catch(() => undefined);
+    }
+
+    void deleteProjectApi(projectId).catch(() => undefined);
+
+    const remainingProjects = availableProjects.filter((item) => item.id !== projectId);
+    const removedSessionIds = new Set(projectSessions.map((session) => session.id));
+
+    setAvailableProjects(remainingProjects);
+    setAvailableSessions((current) => current.filter((session) => session.projectId !== projectId));
+    setOpenSessionIds((current) => current.filter((id) => !removedSessionIds.has(id)));
+    setSessionUsageById((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const id of removedSessionIds) {
+        if (id in next) {
+          delete next[id];
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+
+    if (currentProjectId === projectId) {
+      const nextProject = remainingProjects[0];
+      if (nextProject) {
+        setCurrentProjectId(nextProject.id);
+        const nextSession = availableSessions.find(
+          (session) => session.projectId === nextProject.id && !removedSessionIds.has(session.id)
+        );
+        if (nextSession) {
+          openSession(nextSession);
+        } else {
+          void createSessionForProject(nextProject.id);
+        }
+      } else {
+        setCurrentProjectId("");
+        setCurrentSessionId("");
+        setOpenSessionIds([]);
+        setViewMode("clean");
+        setSessionCapabilities(null);
+      }
+    }
+  };
+
   return (
     <main className="app-shell">
-      <div className={`workspace-grid${leftCollapsed ? " is-left-collapsed" : ""}${rightCollapsed ? " is-right-collapsed" : ""}`}>
+      <div
+        ref={workspaceGridRef}
+        className={`workspace-grid${leftCollapsed ? " is-left-collapsed" : ""}${rightCollapsed ? " is-right-collapsed" : ""}`}
+        style={
+          {
+            "--left-panel-width": `${leftWidth}px`,
+            "--right-panel-width": `${rightWidth}px`,
+          } as CSSProperties
+        }
+      >
         <aside className={leftCollapsed ? "left-rail is-collapsed" : "left-rail"} aria-label="Projects and sessions">
           <ProjectShelf
             agents={availableAgents}
@@ -1424,13 +1690,26 @@ export function App() {
               if (nextSession) {
                 openSession(nextSession);
               } else {
-                setCurrentSessionId("");
-                setViewMode("clean");
+                // Selecting a project with no sessions should still get a usable dialog.
+                void createSessionForProject(projectId);
               }
             }}
             onSessionSelect={openSession}
             onDeleteSession={deleteSession}
+            onDeleteProject={handleDeleteProject}
           />
+          {!leftCollapsed && (
+            <button
+              type="button"
+              className={resizingSide === "left" ? "panel-resizer panel-resizer--left is-dragging" : "panel-resizer panel-resizer--left"}
+              aria-label="Resize projects panel"
+              title="Drag to resize"
+              onMouseDown={(event) => {
+                event.preventDefault();
+                setResizingSide("left");
+              }}
+            />
+          )}
         </aside>
 
         <section className="center-workspace" aria-label="Active workspace">
@@ -1453,6 +1732,7 @@ export function App() {
             onEditResend={(anchor, text) => void handleEditResend(anchor, text)}
             quotePins={quotePins}
             onQuotePinsChange={setQuotePins}
+            onInterrupt={() => void handleInterrupt()}
           />
           <Composer
             // Remount when dialog identity changes so model/mode state cannot leak.
@@ -1462,6 +1742,7 @@ export function App() {
             currentAgentId={displaySession.agentId}
             sessionId={displaySession.id}
             sessionStatus={displaySession.status}
+            lastActivityAt={lastActivityById[displaySession.id] ?? null}
             capabilities={sessionCapabilities}
             prefillText={composerPrefill?.text ?? null}
             prefillToken={composerPrefill?.token ?? 0}
@@ -1552,6 +1833,8 @@ export function App() {
           onRefreshChangedFiles={() => void refreshChangedFiles()}
           onOpenDiff={(path) => void handleOpenDiff(path)}
           handoff={lastHandoff}
+          resizeDragging={resizingSide === "right"}
+          onResizeStart={() => setResizingSide("right")}
         />
       </div>
       {permissionPrompt && (

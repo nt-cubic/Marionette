@@ -80,6 +80,17 @@ impl StorageService {
         Ok(project)
     }
 
+    /// Remove a project from the global list only — never deletes workspace files.
+    pub fn delete_project(&self, project_id: &str) -> Result<(), String> {
+        let mut projects = self.list_projects()?;
+        let before = projects.len();
+        projects.retain(|project| project.id != project_id);
+        if projects.len() == before {
+            return Err(format!("Unknown project: {project_id}"));
+        }
+        self.write_projects(&projects)
+    }
+
     pub fn list_sessions(&self, project_id: &str) -> Result<Vec<Session>, String> {
         let project = self.project_by_id(project_id)?;
         let file = sessions_file(Path::new(&project.root_path));
@@ -142,7 +153,11 @@ impl StorageService {
             preferred_effort: None,
             preferred_effort_id: None,
         };
-        self.save_session(&session)?;
+        // Prepend so newest dialogs appear at the top of the project shelf.
+        let mut sessions = self.list_sessions(project_id)?;
+        sessions.retain(|s| s.id != session.id);
+        sessions.insert(0, session.clone());
+        self.write_sessions(project_path, &sessions)?;
         Ok(session)
     }
 
@@ -482,6 +497,28 @@ mod tests {
             .parent()
             .unwrap()
             .is_dir());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn delete_project_removes_from_list_only() {
+        let root = test_root();
+        let global_dir = root.join("global");
+        let project_dir = root.join("workspace");
+        fs::create_dir_all(&project_dir).unwrap();
+
+        let service = StorageService::from_global_dir(global_dir.clone()).unwrap();
+        let project = service
+            .add_project(project_dir.to_string_lossy().to_string())
+            .unwrap();
+        assert_eq!(service.list_projects().unwrap().len(), 1);
+
+        service.delete_project(&project.id).unwrap();
+        assert!(service.list_projects().unwrap().is_empty());
+        // Workspace folder and .agentshell data stay on disk.
+        assert!(project_dir.is_dir());
+        assert!(project_dir.join(".agentshell").is_dir());
 
         fs::remove_dir_all(root).unwrap();
     }
