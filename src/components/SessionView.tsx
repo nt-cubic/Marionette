@@ -1,10 +1,20 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { listen } from "@tauri-apps/api/event";
-import { Eye, EyeOff, FileText, Plus, TerminalSquare, X } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { isTauriRuntime, readTerminalSnapshot, resizeTerminal, startAcpSession, startTerminal, stopAcpSession, stopTerminal, writeTerminal } from "../lib/api";
-import type { AcpEvent, AgentConfig, Session, SessionEvent, SessionStatus, SessionViewMode, TerminalOutput } from "../lib/types";
+import { Eye, EyeOff, FileText, MessageSquareQuote, Pencil, Plus, TerminalSquare, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { extractAcpUpdateText, mergeStreamText, userMessageAnchorId } from "../lib/acpTranscript";
+import { isTauriRuntime, readTerminalSnapshot, resizeTerminal, startTerminal, writeTerminal } from "../lib/api";
+import { newQuotePinId, type QuotePin } from "../lib/quoteComment";
+import type { AcpEvent, AgentConfig, CapabilitySnapshot, Session, SessionEvent, SessionStatus, SessionViewMode, TerminalOutput } from "../lib/types";
+import { MarkdownBody } from "./MarkdownBody";
+import { MessageOutline } from "./MessageOutline";
+
+export type UserMessageAnchor = {
+  messageId?: string;
+  createdAt: string;
+  text: string;
+};
 
 type SessionViewProps = {
   agent: AgentConfig;
@@ -12,52 +22,188 @@ type SessionViewProps = {
   session: Session;
   viewMode: SessionViewMode;
   openSessions: Session[];
+  /** Sticky auth / account warning for the active agent (e.g. Claude not logged in). */
+  authBanner?: string | null;
+  /** Start native login (browser/CLI). */
+  onSignIn?: () => void | Promise<void>;
+  signInBusy?: boolean;
   onTabSelect: (session: Session) => void;
   onTabClose: (sessionId: string) => void;
   onNewTab: () => void;
   onSessionStatusChange?: (status: SessionStatus) => void;
+  onCapabilities?: (caps: import("../lib/types").CapabilitySnapshot | null) => void;
   onViewModeToggle: () => void;
+  /** P2-UX-4: edit You → truncate following + resend. */
+  onEditResend?: (anchor: UserMessageAnchor, newText: string) => void | Promise<void>;
+  /** Last ACP/PTY activity ms for this session (heartbeat / stale). */
+  lastActivityAt?: number | null;
+  /** Pending inline quote-comments for this dialog (sent with Composer text). */
+  quotePins?: QuotePin[];
+  onQuotePinsChange?: (pins: QuotePin[]) => void;
 };
 
-export function SessionView({ agent, events, session, viewMode, openSessions, onTabSelect, onTabClose, onNewTab, onSessionStatusChange, onViewModeToggle }: SessionViewProps) {
-  const [detailsVisible, setDetailsVisible] = useState(false);
+function activityLabel(status: SessionStatus, stale: boolean): string {
+  if (status === "starting") return stale ? "Connecting is slow…" : "Connecting…";
+  if (status === "running") {
+    return stale ? "Still working… no updates recently" : "Working";
+  }
+  if (status === "error") return "Error";
+  return "";
+}
+
+function formatAgo(ms: number, now: number): string {
+  const sec = Math.max(0, Math.floor((now - ms) / 1000));
+  if (sec < 2) return "just now";
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  return `${min}m ago`;
+}
+
+export function SessionView({
+  agent,
+  events,
+  session,
+  viewMode,
+  openSessions,
+  authBanner = null,
+  onSignIn,
+  signInBusy = false,
+  onTabSelect,
+  onTabClose,
+  onNewTab,
+  onSessionStatusChange,
+  onCapabilities,
+  onViewModeToggle,
+  onEditResend,
+  lastActivityAt = null,
+  quotePins = [],
+  onQuotePinsChange,
+}: SessionViewProps) {
+  // Show thinking/tool rows by default (they render collapsed). Eye can hide them entirely.
+  const [detailsVisible, setDetailsVisible] = useState(true);
+  const showRaw = viewMode === "raw-terminal";
+  const isLive = session.status === "running" || session.status === "starting";
+
   return (
     <section className="session-view" aria-label="Session view">
-      <div className="editor-tabs" role="tablist" aria-label="Session tabs">
-        {openSessions.map((openSession) => (
-          <div className={openSession.id === session.id ? "editor-tab is-active" : "editor-tab"} key={openSession.id} role="tab" aria-selected={openSession.id === session.id}>
-            <button className="editor-tab__select" type="button" title={openSession.cwd} onClick={() => onTabSelect(openSession)}>
-              <span>{openSession.label}</span>
-            </button>
-            <button className="editor-tab__close" type="button" title={`Close ${openSession.label}`} aria-label={`Close ${openSession.label}`} onClick={() => onTabClose(openSession.id)}>
-              <X size={12} />
-            </button>
-          </div>
-        ))}
+      <div className="editor-tabs titlebar-row" role="tablist" aria-label="Session tabs">
+        {openSessions.map((openSession) => {
+          const busy =
+            openSession.status === "running" || openSession.status === "starting";
+          return (
+            <div
+              className={
+                openSession.id === session.id
+                  ? `editor-tab is-active is-${openSession.status}`
+                  : `editor-tab is-${openSession.status}`
+              }
+              key={openSession.id}
+              role="tab"
+              aria-selected={openSession.id === session.id}
+            >
+              {busy && (
+                <span
+                  className={`editor-tab__pulse is-${openSession.status}`}
+                  aria-hidden
+                />
+              )}
+              <button className="editor-tab__select" type="button" title={openSession.cwd} onClick={() => onTabSelect(openSession)}>
+                <span>{openSession.label}</span>
+              </button>
+              <button className="editor-tab__close" type="button" title={`Close ${openSession.label}`} aria-label={`Close ${openSession.label}`} onClick={() => onTabClose(openSession.id)}>
+                <X size={12} />
+              </button>
+            </div>
+          );
+        })}
         <button className="editor-tab__new" type="button" title="New conversation" aria-label="New conversation" onClick={onNewTab}>
           <Plus size={14} />
         </button>
+        {/* Only empty mid-bar is draggable — never wrap interactive controls. */}
+        <div className="editor-tabs__spacer" data-tauri-drag-region />
         <button
           className="editor-toggle"
           type="button"
-          title={viewMode === "raw-terminal" ? "Switch to Clean View" : "Switch to Raw Terminal"}
-          aria-label={viewMode === "raw-terminal" ? "Switch to Clean View" : "Switch to Raw Terminal"}
+          title={showRaw ? "Switch to Clean View" : "Switch to Raw Terminal"}
+          aria-label={showRaw ? "Switch to Clean View" : "Switch to Raw Terminal"}
           onClick={onViewModeToggle}
         >
-          {viewMode === "raw-terminal" ? <FileText size={14} /> : <TerminalSquare size={14} />}
+          {showRaw ? <FileText size={14} /> : <TerminalSquare size={14} />}
         </button>
       </div>
 
-      {viewMode === "raw-terminal" ? (
-        <RawTerminal agent={agent} session={session} onSessionStatusChange={onSessionStatusChange} />
-      ) : (
-        <CleanPlaceholder events={events} detailsVisible={detailsVisible} onDetailsToggle={() => setDetailsVisible((visible) => !visible)} />
+      {isLive && (
+        <SessionActivityBar status={session.status} lastActivityAt={lastActivityAt} />
       )}
+
+      {authBanner && (
+        <div className="session-auth-banner" role="status">
+          <div className="session-auth-banner__copy">
+            <strong>Sign in required</strong>
+            <span>{authBanner}</span>
+          </div>
+          {onSignIn && (
+            <button
+              className="session-auth-banner__button"
+              type="button"
+              disabled={signInBusy}
+              onClick={() => void onSignIn()}
+            >
+              {signInBusy ? "Opening login…" : "Sign in with Claude"}
+            </button>
+          )}
+        </div>
+      )}
+
+      {/*
+        First principles: transport is always running. Clean/Raw are only presentation.
+        Hiding (not unmounting) keeps PTY/ACP alive while Clean is primary.
+      */}
+      <div className={showRaw ? "session-stage is-raw" : "session-stage is-clean"}>
+        <div className="session-stage__clean" hidden={showRaw} aria-hidden={showRaw}>
+          <CleanPlaceholder
+            agent={agent}
+            session={session}
+            events={events}
+            detailsVisible={detailsVisible}
+            onDetailsToggle={() => setDetailsVisible((visible) => !visible)}
+            onShowRaw={onViewModeToggle}
+            authBanner={authBanner}
+            onSignIn={onSignIn}
+            signInBusy={signInBusy}
+            onEditResend={onEditResend}
+            lastActivityAt={lastActivityAt}
+            quotePins={quotePins}
+            onQuotePinsChange={onQuotePinsChange}
+          />
+        </div>
+        <div className="session-stage__raw" data-active={showRaw ? "true" : "false"} aria-hidden={!showRaw}>
+          <RawTerminal
+            agent={agent}
+            session={session}
+            visible={showRaw}
+            onSessionStatusChange={onSessionStatusChange}
+            onCapabilities={onCapabilities}
+          />
+        </div>
+      </div>
     </section>
   );
 }
 
-function RawTerminal({ agent, session, onSessionStatusChange }: { agent: AgentConfig; session: Session; onSessionStatusChange?: (status: SessionStatus) => void }) {
+function RawTerminal({
+  agent,
+  session,
+  visible,
+  onSessionStatusChange,
+  onCapabilities,
+}: {
+  agent: AgentConfig;
+  session: Session;
+  visible: boolean;
+  onSessionStatusChange?: (status: SessionStatus) => void;
+  onCapabilities?: (caps: CapabilitySnapshot | null) => void;
+}) {
   const reportStatus = useCallback((nextStatus: SessionStatus) => {
     onSessionStatusChange?.(nextStatus);
   }, [onSessionStatusChange]);
@@ -68,19 +214,54 @@ function RawTerminal({ agent, session, onSessionStatusChange }: { agent: AgentCo
         <span>
           <TerminalSquare size={15} />
           {agent.label}
+          {!visible && <em className="terminal-toolbar__bg"> · running in background</em>}
         </span>
       </div>
       {agent.transport === "acp" ? (
-        <AcpTerminalSurface sessionId={session.id} cwd={session.cwd} command={agent.command} args={agent.args} onStatusChange={reportStatus} />
+        <AcpTerminalSurface
+          sessionId={session.id}
+          cwd={session.cwd}
+          command={agent.command}
+          args={agent.args}
+          onStatusChange={reportStatus}
+          onCapabilities={onCapabilities}
+        />
       ) : (
-        <TerminalSurface sessionId={session.id} cwd={session.cwd} onStatusChange={reportStatus} />
+        <TerminalSurface
+          sessionId={session.id}
+          cwd={session.cwd}
+          command={agent.command}
+          args={agent.args}
+          agentLabel={agent.label}
+          visible={visible}
+          onStatusChange={reportStatus}
+        />
       )}
     </div>
   );
 }
 
-function AcpTerminalSurface({ sessionId, cwd, command, args, onStatusChange }: { sessionId: string; cwd: string; command: string; args: string[]; onStatusChange: (status: SessionStatus) => void }) {
+function AcpTerminalSurface({
+  sessionId,
+  cwd,
+  command,
+  args,
+  onStatusChange,
+  onCapabilities,
+}: {
+  sessionId: string;
+  cwd: string;
+  command: string;
+  args: string[];
+  onStatusChange: (status: SessionStatus) => void;
+  onCapabilities?: (caps: CapabilitySnapshot | null) => void;
+}) {
   const hostRef = useRef<HTMLDivElement>(null);
+  // Keep signature stable for call sites; lifecycle is owned by App (lazy warm).
+  void cwd;
+  void command;
+  void args;
+  void onCapabilities;
 
   useEffect(() => {
     const host = hostRef.current;
@@ -102,52 +283,86 @@ function AcpTerminalSurface({ sessionId, cwd, command, args, onStatusChange }: {
     terminal.open(host);
     let disposed = false;
     let unlisten: (() => void) | undefined;
+    // Per-session stream buffer so we only write *new* characters to xterm
+    let assistantBuffer = "";
     const fit = () => fitAddon.fit();
     const resizeObserver = new ResizeObserver(fit);
     resizeObserver.observe(host);
 
+    // Passive only — App owns lazy ACP start (warm on type / ensure on send).
+    // Auto-starting here freezes the shell on every tab open.
+    terminal.write(
+      "ACP idle · type in the composer to warm the agent in the background.\r\n"
+    );
+
     const setup = async () => {
       if (!isTauriRuntime()) {
         terminal.write("ACP requires the Tauri desktop runtime.\r\n");
-        onStatusChange("error");
         return;
       }
       try {
-        // Listen before start so session/ready and tool events are not missed
-        unlisten = await listen<AcpEvent>("acp-event", (event) => {
+        const dispose = await listen<AcpEvent>("acp-event", (event) => {
           const payload = event.payload;
           if (payload.sessionId !== sessionId || disposed) return;
-          const body = typeof payload.data === "string" ? payload.data : JSON.stringify(payload.data);
-          // Keep terminal readable: short lines for large payloads
-          const clipped = body.length > 1200 ? `${body.slice(0, 1200)}…` : body;
-          terminal.write(`[${payload.method ?? payload.kind}] ${clipped}\r\n`);
-          if (payload.kind === "system" && payload.method === "session/ready") onStatusChange("waiting");
+
+          if (payload.method === "session/starting") {
+            const data = payload.data as { hint?: string; command?: string; args?: string[] } | null;
+            const line = data?.command
+              ? [data.command, ...(data.args ?? [])].join(" ")
+              : data?.hint ?? "starting…";
+            terminal.write(`[starting] ${line}\r\n`);
+            return;
+          }
+
+          if (payload.method === "session/update") {
+            const extracted = extractAcpUpdateText(payload.data);
+            if (extracted?.role === "assistant" && extracted.text) {
+              const next = mergeStreamText(assistantBuffer, extracted.text, extracted.isDelta);
+              if (next.length > assistantBuffer.length && next.startsWith(assistantBuffer)) {
+                terminal.write(next.slice(assistantBuffer.length));
+                assistantBuffer = next;
+              } else if (next !== assistantBuffer && assistantBuffer.length === 0) {
+                terminal.write(next);
+                assistantBuffer = next;
+              } else if (next.startsWith(assistantBuffer) && next.length > assistantBuffer.length) {
+                terminal.write(next.slice(assistantBuffer.length));
+                assistantBuffer = next;
+              }
+              return;
+            }
+            if (extracted?.role === "thought" && extracted.text) {
+              terminal.write(extracted.isDelta ? extracted.text : `\r\n[think] ${extracted.text}`);
+              return;
+            }
+            if (extracted?.role === "tool") {
+              const title = extracted.toolTitle ?? "tool";
+              const status = extracted.toolStatus ?? "";
+              terminal.write(`\r\n[tool] ${title}${status ? ` (${status})` : ""}\r\n`);
+              return;
+            }
+          }
+
+          if (payload.kind === "system" && payload.method === "session/ready") {
+            terminal.write("[ready] ACP session ready\r\n");
+            onStatusChange("waiting");
+            return;
+          }
+          if (payload.method === "rpc/response") {
+            terminal.write("\r\n[turn complete]\r\n");
+            assistantBuffer = "";
+            if (payload.kind === "error") onStatusChange("error");
+            else onStatusChange("waiting");
+            return;
+          }
         });
-
-        terminal.write(`Starting ${command} ${args.join(" ")} …\r\n`);
-        onStatusChange("starting");
-        const caps = await startAcpSession(sessionId, command, args, cwd);
-        if (disposed) return;
-
-        if (caps) {
-          const model = caps.currentModel ?? "(default)";
-          const mode = caps.currentMode ?? "-";
-          const modelCount = caps.models?.length ?? 0;
-          const modeCount = caps.modes?.length ?? 0;
-          terminal.write(
-            `ACP ready · model=${model} (${modelCount} available) · mode=${mode} (${modeCount})\r\n`
-          );
-        } else {
-          terminal.write("ACP ready\r\n");
+        if (disposed) {
+          dispose();
+          return;
         }
-
-        if (!disposed) {
-          onStatusChange("waiting");
-          requestAnimationFrame(fit);
-        }
+        unlisten = dispose;
+        requestAnimationFrame(fit);
       } catch (error) {
-        terminal.write(`ACP could not start: ${String(error)}\r\n`);
-        onStatusChange("error");
+        terminal.write(`ACP listener error: ${String(error)}\r\n`);
       }
     };
     void setup();
@@ -157,31 +372,65 @@ function AcpTerminalSurface({ sessionId, cwd, command, args, onStatusChange }: {
       unlisten?.();
       resizeObserver.disconnect();
       terminal.dispose();
-      if (isTauriRuntime()) void stopAcpSession(sessionId).catch(() => undefined);
+      // Do NOT stopAcpSession here: Clean↔Raw toggle must keep the agent alive.
     };
-  }, [args, command, cwd, onStatusChange, sessionId]);
+  }, [onStatusChange, sessionId]);
 
   return <div ref={hostRef} className="terminal-surface" aria-label="ACP session output" />;
 }
 
-function TerminalSurface({ sessionId, cwd, onStatusChange }: { sessionId: string; cwd: string; onStatusChange: (status: SessionStatus) => void }) {
+function TerminalSurface({
+  sessionId,
+  cwd,
+  command,
+  args,
+  agentLabel,
+  visible,
+  onStatusChange
+}: {
+  sessionId: string;
+  cwd: string;
+  command: string;
+  args: string[];
+  agentLabel: string;
+  visible: boolean;
+  onStatusChange: (status: SessionStatus) => void;
+}) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const argsKey = args.join("\0");
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
 
     const style = getComputedStyle(document.documentElement);
+    // Full-screen TUI agents need real VT handling. convertEol:true breaks them.
+    const isWindows = navigator.userAgent.includes("Windows");
     const terminal = new Terminal({
-      convertEol: true,
+      convertEol: false,
       cursorBlink: true,
-      fontFamily: '"Cascadia Mono", Consolas, monospace',
+      fontFamily: '"Cascadia Mono", Consolas, "Courier New", monospace',
       fontSize: 13,
+      lineHeight: 1.2,
+      scrollback: 5000,
+      allowTransparency: false,
+      cols: 120,
+      rows: 40,
+      ...(isWindows
+        ? {
+            windowsPty: {
+              backend: "conpty" as const,
+              buildNumber: 22621,
+            },
+          }
+        : {}),
       theme: {
-        background: style.getPropertyValue("--terminal-bg").trim(),
-        foreground: style.getPropertyValue("--text").trim(),
-        cursor: style.getPropertyValue("--accent").trim()
-      }
+        background: style.getPropertyValue("--terminal-bg").trim() || "#0f1115",
+        foreground: style.getPropertyValue("--text").trim() || "#e6e6e6",
+        cursor: style.getPropertyValue("--accent").trim() || "#6cb6ff",
+      },
     });
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
@@ -190,12 +439,23 @@ function TerminalSurface({ sessionId, cwd, onStatusChange }: { sessionId: string
     let disposed = false;
     let unlisten: (() => void) | undefined;
     const fitAndResize = () => {
-      fitAddon.fit();
-      if (isTauriRuntime() && terminal.cols > 0 && terminal.rows > 0) {
-        void resizeTerminal(sessionId, terminal.cols, terminal.rows).catch(() => undefined);
+      // When Clean is primary, host may be 1×1 — keep a usable PTY geometry for the agent.
+      if (visibleRef.current) {
+        try {
+          fitAddon.fit();
+        } catch {
+          /* ignore */
+        }
+      }
+      const cols = visibleRef.current && terminal.cols >= 40 ? terminal.cols : Math.max(terminal.cols, 120);
+      const rows = visibleRef.current && terminal.rows >= 12 ? terminal.rows : Math.max(terminal.rows, 40);
+      if (isTauriRuntime()) {
+        void resizeTerminal(sessionId, cols, rows).catch(() => undefined);
       }
     };
-    const resizeObserver = new ResizeObserver(fitAndResize);
+    const resizeObserver = new ResizeObserver(() => {
+      requestAnimationFrame(fitAndResize);
+    });
     resizeObserver.observe(host);
     const input = terminal.onData((data) => {
       void writeTerminal(sessionId, data).catch(() => undefined);
@@ -208,13 +468,13 @@ function TerminalSurface({ sessionId, cwd, onStatusChange }: { sessionId: string
         return;
       }
       if (!isTauriRuntime()) {
-        terminal.write("AgentShell M3 Raw Terminal requires the Tauri desktop runtime.\r\n");
+        terminal.write("AgentShell Raw Terminal requires the Tauri desktop runtime.\r\n");
         onStatusChange("error");
         return;
       }
 
       try {
-        unlisten = await listen<TerminalOutput>("session-output", (event) => {
+        const dispose = await listen<TerminalOutput>("session-output", (event) => {
           const output = event.payload;
           if (output.sessionId !== sessionId || disposed) return;
           if (output.data) terminal.write(output.data);
@@ -224,20 +484,40 @@ function TerminalSurface({ sessionId, cwd, onStatusChange }: { sessionId: string
           }
           if (output.exited) onStatusChange("exited");
         });
-        const snapshot = await readTerminalSnapshot(sessionId, cwd);
-        if (snapshot && !disposed) terminal.write(snapshot);
-        await startTerminal(sessionId, cwd);
-        if (!disposed) {
-          onStatusChange("running");
-          requestAnimationFrame(fitAndResize);
+        if (disposed) {
+          dispose();
+          return;
         }
+        unlisten = dispose;
+
+        fitAndResize();
+
+        const snapshot = await readTerminalSnapshot(sessionId, cwd);
+        const reattaching = Boolean(snapshot && snapshot.length > 0);
+
+        onStatusChange("starting");
+        await startTerminal(sessionId, cwd, command, args);
+        if (disposed) return;
+
+        if (reattaching) {
+          terminal.reset();
+          terminal.write(snapshot);
+        }
+
+        onStatusChange("running");
+        requestAnimationFrame(() => {
+          fitAndResize();
+          requestAnimationFrame(fitAndResize);
+        });
       } catch (error) {
-        terminal.write(`AgentShell could not start the terminal: ${String(error)}\r\n`);
+        terminal.write(
+          `\r\nAgentShell could not start ${agentLabel}: ${String(error)}\r\n` +
+            `Command: ${[command, ...args].filter(Boolean).join(" ")}\r\n`,
+        );
         onStatusChange("error");
       }
     };
     void setup();
-    requestAnimationFrame(fitAndResize);
 
     return () => {
       disposed = true;
@@ -246,24 +526,228 @@ function TerminalSurface({ sessionId, cwd, onStatusChange }: { sessionId: string
       resizeObserver.disconnect();
       terminal.dispose();
     };
-  }, [cwd, onStatusChange, sessionId]);
+  }, [agentLabel, argsKey, command, cwd, onStatusChange, sessionId]);
+
+  // When becoming visible, re-fit to the real panel size
+  useEffect(() => {
+    if (!visible) return;
+    const id = requestAnimationFrame(() => {
+      const host = hostRef.current;
+      if (!host) return;
+      // Trigger resize observer path by dispatching a fake size check via window event
+      window.dispatchEvent(new Event("resize"));
+    });
+    return () => cancelAnimationFrame(id);
+  }, [visible]);
 
   return <div ref={hostRef} className="terminal-surface" aria-label="Raw terminal" />;
 }
 
-function CleanPlaceholder({ events, detailsVisible, onDetailsToggle }: { events: SessionEvent[]; detailsVisible: boolean; onDetailsToggle: () => void }) {
+function CleanPlaceholder({
+  agent,
+  session,
+  events,
+  detailsVisible,
+  onDetailsToggle,
+  onShowRaw,
+  authBanner = null,
+  onSignIn,
+  signInBusy = false,
+  onEditResend,
+  lastActivityAt = null,
+  quotePins = [],
+  onQuotePinsChange,
+}: {
+  agent: AgentConfig;
+  session: Session;
+  events: SessionEvent[];
+  detailsVisible: boolean;
+  onDetailsToggle: () => void;
+  onShowRaw?: () => void;
+  authBanner?: string | null;
+  onSignIn?: () => void | Promise<void>;
+  signInBusy?: boolean;
+  onEditResend?: (anchor: UserMessageAnchor, newText: string) => void | Promise<void>;
+  lastActivityAt?: number | null;
+  quotePins?: QuotePin[];
+  onQuotePinsChange?: (pins: QuotePin[]) => void;
+}) {
+  const listRef = useRef<HTMLDivElement>(null);
+  /** When true, new content may stick the viewport to the bottom. */
+  const stickToBottomRef = useRef(true);
+  const isPty = agent.transport === "pty";
+  const isStarting = session.status === "starting";
+  const isRunning = session.status === "running";
+  // Ignore raw_chunk dumps in Clean (legacy / accidental) — they are not You/Thinking/Reply.
+  const visibleEvents = useMemo(
+    () => events.filter((e) => e.type !== "raw_chunk"),
+    [events]
+  );
+  const [startHint, setStartHint] = useState("Starting agent…");
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState("");
+  const [editBusy, setEditBusy] = useState(false);
+
+  // After send: last card is still You → show ghost "Waiting for agent…"
+  const lastVisible = visibleEvents[visibleEvents.length - 1];
+  const awaitingFirstChunk =
+    isRunning &&
+    (!lastVisible ||
+      lastVisible.type === "user_message" ||
+      lastVisible.type === "handoff_prepared");
+
+  // Content fingerprint — only real transcript changes should pin-scroll (never a clock tick).
+  const scrollKey = useMemo(() => {
+    const last = visibleEvents[visibleEvents.length - 1];
+    const lastSig = last
+      ? `${last.type}:${last.createdAt}:${"text" in last ? String(last.text).length : ""}:${"status" in last ? last.status : ""}`
+      : "empty";
+    return `${session.id}|${visibleEvents.length}|${lastSig}|start:${isStarting}|wait:${awaitingFirstChunk}`;
+  }, [session.id, visibleEvents, isStarting, awaitingFirstChunk]);
+
+  useEffect(() => {
+    if (!isStarting || !isTauriRuntime()) return;
+    let unlisten: (() => void) | undefined;
+    void listen<AcpEvent>("acp-event", (event) => {
+      const p = event.payload;
+      if (p.sessionId !== session.id) return;
+      if (p.method === "session/starting") {
+        const data = p.data as { hint?: string; command?: string; args?: string[]; phase?: string } | null;
+        if (data?.hint) setStartHint(data.hint);
+        else if (data?.phase) setStartHint(`Starting (${data.phase})…`);
+        if (data?.command) {
+          const line = [data.command, ...(data.args ?? [])].join(" ");
+          setStartHint((h) => `${h}\n${line}`);
+        }
+      }
+    }).then((d) => {
+      unlisten = d;
+    });
+    return () => unlisten?.();
+  }, [isStarting, session.id]);
+
+  const prevAwaitingRef = useRef(false);
+
+  // Own send → jump back to live tail (even if you were reading history).
+  useEffect(() => {
+    if (awaitingFirstChunk && !prevAwaitingRef.current) {
+      stickToBottomRef.current = true;
+    }
+    prevAwaitingRef.current = awaitingFirstChunk;
+  }, [awaitingFirstChunk]);
+
+  // Switching dialog → follow the new session's tail by default.
+  useEffect(() => {
+    stickToBottomRef.current = true;
+  }, [session.id]);
+
+  const onListScroll = useCallback(() => {
+    const el = listRef.current;
+    if (!el) return;
+    // User scrolled up to read history → stop auto-jumping to bottom.
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickToBottomRef.current = distance < 80;
+  }, []);
+
+  // Stick to bottom only while the user is already near the end (chat apps pattern).
+  // Never key this off the 1s activity clock / stale flag — that caused the 5–10s jump bug.
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    if (!stickToBottomRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [scrollKey]);
+
   return (
     <div className="clean-surface">
       <div className="clean-surface__notice">
         <FileText size={16} />
-        Clean View placeholder. Parser-backed cards arrive after Raw Terminal is wired.
-        <button className="icon-button icon-button--small" type="button" title={detailsVisible ? "Hide tool calls and thinking" : "Show tool calls and thinking"} onClick={onDetailsToggle}>
+        {isPty
+          ? "Clean View · You / Thinking / Tool / Reply (from terminal stream)"
+          : "Clean View · live stream · thinking/tools collapsed by default"}
+        <button
+          className="icon-button icon-button--small"
+          type="button"
+          title={detailsVisible ? "Hide thinking and tool rows" : "Show thinking and tool rows (still collapsed)"}
+          onClick={onDetailsToggle}
+        >
           {detailsVisible ? <Eye size={13} /> : <EyeOff size={13} />}
         </button>
       </div>
 
-      <div className={detailsVisible ? "event-list" : "event-list is-details-hidden"}>
-        {events.map((event) => {
+      <div className="clean-surface__body">
+      <div
+        ref={listRef}
+        className={detailsVisible ? "event-list" : "event-list is-details-hidden"}
+        onScroll={onListScroll}
+      >
+        {/* Quote UI is isolated so its setState does not re-render cards (keeps selection). */}
+        {onQuotePinsChange && (
+          <QuoteOverlay
+            listRef={listRef}
+            pins={quotePins}
+            onPinsChange={onQuotePinsChange}
+          />
+        )}
+        {/* Soft banner only — never clear the transcript while ACP warms. */}
+        {isStarting && (
+          <article className="event-card event-card--hint">
+            <div className="event-card__icon">
+              <TerminalSquare size={15} />
+            </div>
+            <div className="event-card__main">
+              <span className="event-card__type">Connecting {agent.label}…</span>
+              <p style={{ whiteSpace: "pre-wrap" }}>
+                {startHint}
+                {"\n"}
+                You can keep typing. The message will send when the agent is ready.
+              </p>
+            </div>
+          </article>
+        )}
+        {visibleEvents.length === 0 && !isStarting && (
+          <div className="clean-empty" role="status">
+            <p className="clean-empty__title">
+              {authBanner ? "Sign in to continue" : `Message ${agent.label}`}
+            </p>
+            <p className="clean-empty__hint">
+              {authBanner
+                ? "Use the Sign in button above — it opens Claude’s browser login. Come back here when done."
+                : isPty
+                  ? "Send from the composer. Thinking / tools / replies show up as cards here."
+                  : "Type below to warm the agent in the background, then send when ready."}
+              {isPty && onShowRaw ? viewModeToggleHint(onShowRaw) : null}
+            </p>
+            {authBanner && onSignIn && (
+              <button
+                className="session-auth-banner__button"
+                type="button"
+                disabled={signInBusy}
+                onClick={() => void onSignIn()}
+              >
+                {signInBusy ? "Opening login…" : "Sign in with Claude"}
+              </button>
+            )}
+          </div>
+        )}
+        {visibleEvents.map((event, index) => {
+          const isCollapsible = event.type === "thought" || event.type === "tool_call";
+          const toolRunning =
+            event.type === "tool_call" &&
+            typeof event.status === "string" &&
+            /run|progress|in_progress|pending/i.test(event.status);
+
+          const label =
+            event.type === "thought"
+              ? "Thinking"
+              : event.type === "tool_call"
+                ? `Tool${event.title ? ` · ${event.title}` : ""}${event.status ? ` · ${event.status}` : ""}`
+                : event.type === "user_message"
+                  ? "You"
+                  : event.type === "assistant_message"
+                    ? "Reply"
+                    : event.type.replace(/_/g, " ");
+
           const body =
             event.type === "handoff_prepared"
               ? event.prompt
@@ -271,19 +755,476 @@ function CleanPlaceholder({ events, detailsVisible, onDetailsToggle }: { events:
                 ? `${event.changeType}: ${event.path}`
                 : event.text;
 
+          const preview =
+            typeof body === "string" && body.length > 0
+              ? body.replace(/\s+/g, " ").slice(0, 72) + (body.length > 72 ? "…" : "")
+              : "…";
+
+          const useMarkdown =
+            event.type === "assistant_message" ||
+            event.type === "user_message" ||
+            event.type === "thought" ||
+            event.type === "handoff_prepared";
+          // raw_chunk is ANSI-stripped TUI text — keep plain, not markdown
+
+          // Thinking / tool_call: always collapsed by default for every agent.
+          // User message / assistant: always fully visible.
+          if (isCollapsible) {
+            return (
+              <details
+                className={`event-card event-card--collapsible event-card--${event.type}${toolRunning ? " is-tool-running" : ""}`}
+                key={`${event.type}-${event.createdAt}-${index}`}
+              >
+                <summary className="event-card__summary">
+                  <span className="event-card__type">
+                    {label}
+                    {toolRunning && <span className="event-card__live-dot" aria-hidden />}
+                  </span>
+                  <span className="event-card__preview">{preview}</span>
+                </summary>
+                {useMarkdown && typeof body === "string" ? (
+                  <MarkdownBody text={body} className="event-card__body" />
+                ) : (
+                  <p className="event-card__body" style={{ whiteSpace: "pre-wrap" }}>{body}</p>
+                )}
+              </details>
+            );
+          }
+
+          const isUser = event.type === "user_message";
+          const userKey = isUser
+            ? userMessageAnchorId(event)
+            : `${event.type}-${event.createdAt}-${index}`;
+          const isEditing = isUser && editingKey === userKey;
+
           return (
-            <article className={`event-card event-card--${event.type}`} key={`${event.type}-${event.createdAt}`}>
+            <article
+              className={`event-card event-card--${event.type}${isEditing ? " is-editing" : ""}`}
+              key={`${event.type}-${event.createdAt}-${index}`}
+              id={isUser ? userKey : undefined}
+            >
               <div className="event-card__icon">
                 <FileText size={15} />
               </div>
-              <div>
-                <span className="event-card__type">{event.type.replace("_", " ")}</span>
-                <p>{body}</p>
+              <div className="event-card__main">
+                <div className="event-card__type-row">
+                  <span className="event-card__type">{label}</span>
+                  {isUser && onEditResend && !isEditing && (
+                    <button
+                      type="button"
+                      className="event-card__edit"
+                      title="Edit & resend (drops later messages)"
+                      aria-label="Edit and resend this message"
+                      onClick={() => {
+                        setEditingKey(userKey);
+                        setEditDraft(event.text);
+                      }}
+                    >
+                      <Pencil size={12} />
+                      Edit
+                    </button>
+                  )}
+                </div>
+                {isEditing ? (
+                  <div className="event-card__edit-form">
+                    <textarea
+                      className="event-card__edit-input"
+                      value={editDraft}
+                      rows={Math.min(12, Math.max(3, editDraft.split("\n").length + 1))}
+                      disabled={editBusy}
+                      autoFocus
+                      onChange={(e) => setEditDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") {
+                          e.preventDefault();
+                          setEditingKey(null);
+                        }
+                        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                          e.preventDefault();
+                          const next = editDraft.trim();
+                          if (!next || editBusy) return;
+                          setEditBusy(true);
+                          void Promise.resolve(
+                            onEditResend?.(
+                              {
+                                messageId: event.messageId,
+                                createdAt: event.createdAt,
+                                text: event.text,
+                              },
+                              next
+                            )
+                          ).finally(() => {
+                            setEditBusy(false);
+                            setEditingKey(null);
+                          });
+                        }
+                      }}
+                    />
+                    <p className="event-card__edit-hint">
+                      Resend truncates everything after this message. Ctrl+Enter to confirm.
+                    </p>
+                    <div className="event-card__edit-actions">
+                      <button
+                        type="button"
+                        className="event-card__edit-cancel"
+                        disabled={editBusy}
+                        onClick={() => setEditingKey(null)}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        className="event-card__edit-confirm"
+                        disabled={editBusy || !editDraft.trim()}
+                        onClick={() => {
+                          const next = editDraft.trim();
+                          if (!next) return;
+                          setEditBusy(true);
+                          void Promise.resolve(
+                            onEditResend?.(
+                              {
+                                messageId: event.messageId,
+                                createdAt: event.createdAt,
+                                text: event.text,
+                              },
+                              next
+                            )
+                          ).finally(() => {
+                            setEditBusy(false);
+                            setEditingKey(null);
+                          });
+                        }}
+                      >
+                        {editBusy ? "Resending…" : "Resend from here"}
+                      </button>
+                    </div>
+                  </div>
+                ) : useMarkdown && typeof body === "string" ? (
+                  <MarkdownBody text={body} />
+                ) : (
+                  <pre className="event-card__plain">{body}</pre>
+                )}
               </div>
             </article>
           );
         })}
+        {awaitingFirstChunk && (
+          <WaitingGhost lastActivityAt={lastActivityAt} />
+        )}
+      </div>
+      <MessageOutline events={visibleEvents} sessionId={session.id} />
       </div>
     </div>
+  );
+}
+
+/**
+ * Floating quote / comment UI. Own state only — never re-renders event cards,
+ * so browser text selection highlight stays after mouseup.
+ */
+function QuoteOverlay({
+  listRef,
+  pins,
+  onPinsChange,
+}: {
+  listRef: React.RefObject<HTMLDivElement | null>;
+  pins: QuotePin[];
+  onPinsChange: (pins: QuotePin[]) => void;
+}) {
+  const [btn, setBtn] = useState<{ quoted: string; x: number; y: number } | null>(null);
+  const [draft, setDraft] = useState<{
+    quoted: string;
+    x: number;
+    y: number;
+    comment: string;
+  } | null>(null);
+  const draftRootRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const pinsRef = useRef(pins);
+  pinsRef.current = pins;
+  const committingRef = useRef(false);
+
+  const readSelection = useCallback(() => {
+    const list = listRef.current;
+    if (!list) return null;
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+    const text = sel.toString().replace(/\r\n/g, "\n").trim();
+    if (text.length < 1) return null;
+    const range = sel.getRangeAt(0);
+    if (!list.contains(range.commonAncestorContainer)) return null;
+    const rect = range.getBoundingClientRect();
+    // Ignore zero-size (can happen after reflow)
+    if (rect.width < 1 && rect.height < 1) return null;
+    const host = list.getBoundingClientRect();
+    return {
+      quoted: text,
+      x: Math.min(Math.max(16, rect.left - host.left + rect.width / 2), Math.max(40, host.width - 16)),
+      y: Math.max(12, rect.top - host.top + list.scrollTop),
+    };
+  }, [listRef]);
+
+  // Attach to the list element so we don't rely on React bubble (and avoid parent setState).
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+    const onUp = (e: MouseEvent) => {
+      if (draftRef.current) return;
+      // Ignore mouseup that originated on our own chrome
+      if (e.target instanceof Node) {
+        const t = e.target as HTMLElement;
+        if (t.closest(".quote-pop, .quote-draft, .quote-pin")) return;
+      }
+      const pos = readSelection();
+      setBtn(pos);
+    };
+    list.addEventListener("mouseup", onUp);
+    return () => list.removeEventListener("mouseup", onUp);
+  }, [listRef, readSelection]);
+
+  const commit = useCallback(
+    (d: { quoted: string; x: number; y: number; comment: string }) => {
+      if (committingRef.current) return;
+      const comment = d.comment.trim();
+      if (!comment) {
+        setDraft(null);
+        return;
+      }
+      committingRef.current = true;
+      const pin: QuotePin = {
+        id: newQuotePinId(),
+        quoted: d.quoted,
+        comment,
+        x: d.x,
+        y: d.y + 36,
+      };
+      onPinsChange([...pinsRef.current, pin]);
+      setDraft(null);
+      setBtn(null);
+      window.setTimeout(() => {
+        committingRef.current = false;
+      }, 250);
+    },
+    [onPinsChange]
+  );
+
+  // Focus input when draft opens — do NOT use onBlur-to-cancel (that ate the empty box).
+  useEffect(() => {
+    if (!draft) return;
+    const t = window.setTimeout(() => inputRef.current?.focus(), 0);
+    return () => window.clearTimeout(t);
+  }, [draft]);
+
+  // Click outside draft → pin if has text, else close (mousedown so we don't fight focus).
+  useEffect(() => {
+    if (!draft) return;
+    const onDocDown = (e: MouseEvent) => {
+      const root = draftRootRef.current;
+      if (root && e.target instanceof Node && root.contains(e.target)) return;
+      const d = draftRef.current;
+      if (!d) return;
+      if (d.comment.trim()) commit(d);
+      else setDraft(null);
+    };
+    // Delay so the 评论 button click that opened the draft doesn't immediately close it.
+    const t = window.setTimeout(() => {
+      document.addEventListener("mousedown", onDocDown);
+    }, 0);
+    return () => {
+      window.clearTimeout(t);
+      document.removeEventListener("mousedown", onDocDown);
+    };
+  }, [draft, commit]);
+
+  return (
+    <>
+      {pins.map((pin, index) => (
+        <button
+          key={pin.id}
+          type="button"
+          className="quote-pin"
+          style={{ left: pin.x, top: pin.y }}
+          title={`${index + 1}. ${pin.comment}`}
+          aria-label={`Comment ${index + 1}`}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => {
+            setDraft({
+              quoted: pin.quoted,
+              x: pin.x,
+              y: Math.max(12, pin.y - 36),
+              comment: pin.comment,
+            });
+            onPinsChange(pins.filter((p) => p.id !== pin.id));
+            setBtn(null);
+          }}
+        >
+          {index + 1}
+        </button>
+      ))}
+
+      {btn && !draft && (
+        <div className="quote-pop" style={{ left: btn.x, top: btn.y }} role="toolbar">
+          <button
+            type="button"
+            className="quote-pop__btn"
+            onMouseDown={(e) => {
+              // Critical: preventDefault keeps the text selection highlight.
+              e.preventDefault();
+              e.stopPropagation();
+            }}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              const pos = readSelection() ?? btn;
+              setDraft({
+                quoted: pos.quoted,
+                x: pos.x,
+                y: pos.y,
+                comment: "",
+              });
+              setBtn(null);
+            }}
+          >
+            <MessageSquareQuote size={13} />
+            评论
+          </button>
+        </div>
+      )}
+
+      {draft && (
+        <div
+          ref={draftRootRef}
+          className="quote-draft"
+          style={{ left: draft.x, top: draft.y }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <div className="quote-draft__quote" title={draft.quoted}>
+            {draft.quoted.length > 120 ? `${draft.quoted.slice(0, 120)}…` : draft.quoted}
+          </div>
+          <textarea
+            ref={inputRef}
+            className="quote-draft__input"
+            rows={3}
+            placeholder="写评论…（Ctrl+Enter 落针）"
+            value={draft.comment}
+            onChange={(e) => setDraft((d) => (d ? { ...d, comment: e.target.value } : d))}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setDraft(null);
+              }
+              if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault();
+                commit(draft);
+              }
+            }}
+          />
+          <div className="quote-draft__actions">
+            <button
+              type="button"
+              className="quote-draft__cancel"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => setDraft(null)}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              className="quote-draft__ok"
+              onMouseDown={(e) => e.preventDefault()}
+              disabled={!draft.comment.trim()}
+              onClick={() => commit(draft)}
+            >
+              落针
+            </button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+/** Isolated clock — does NOT re-render the event list (fixes selection wipe). */
+function SessionActivityBar({
+  status,
+  lastActivityAt,
+}: {
+  status: SessionStatus;
+  lastActivityAt: number | null;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  const stale = lastActivityAt != null && now - lastActivityAt >= 20_000;
+  const barLabel = activityLabel(status, stale);
+  if (!barLabel) return null;
+  return (
+    <div
+      className={`session-activity${stale ? " is-stale" : ""} is-${status}`}
+      role="status"
+      aria-live="polite"
+    >
+      <span className="session-activity__pulse" aria-hidden />
+      <span className="session-activity__label">{barLabel}</span>
+      {lastActivityAt != null && (
+        <span className="session-activity__ago">
+          last update {formatAgo(lastActivityAt, now)}
+        </span>
+      )}
+      {status === "running" && (
+        <span className="session-activity__hint">Esc×2 to interrupt</span>
+      )}
+    </div>
+  );
+}
+
+function WaitingGhost({ lastActivityAt }: { lastActivityAt: number | null }) {
+  const [stale, setStale] = useState(false);
+  useEffect(() => {
+    const tick = () => {
+      setStale(lastActivityAt != null && Date.now() - lastActivityAt >= 20_000);
+    };
+    tick();
+    const id = window.setInterval(tick, 2000);
+    return () => window.clearInterval(id);
+  }, [lastActivityAt]);
+
+  return (
+    <article
+      className={`event-card event-card--waiting${stale ? " is-stale" : ""}`}
+      role="status"
+      aria-live="polite"
+    >
+      <div className="event-card__icon">
+        <span className="activity-dots" aria-hidden>
+          <i /><i /><i />
+        </span>
+      </div>
+      <div className="event-card__main">
+        <span className="event-card__type">
+          {stale ? "Still waiting" : "Waiting for agent"}
+        </span>
+        <p className="event-card__waiting-copy">
+          {stale
+            ? "No stream updates for a while — the agent may still be thinking, or it may be stuck. Try Esc×2 to interrupt."
+            : "Message sent. Streaming will show thinking / tools / reply here."}
+        </p>
+      </div>
+    </article>
+  );
+}
+
+function viewModeToggleHint(onShowRaw: () => void) {
+  return (
+    <>
+      {" "}
+      <button type="button" className="link-button" onClick={onShowRaw}>
+        Switch to Raw Terminal
+      </button>
+    </>
   );
 }

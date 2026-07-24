@@ -22,10 +22,10 @@ export const agents: AgentConfig[] = [
     id: "opencode",
     label: "OpenCode",
     command: "opencode",
-    args: [],
+    args: ["acp"],
     cwdMode: "project-root",
     launchMode: "pty",
-    sendStrategy: "bracketed-paste",
+    sendStrategy: "stdin",
     parser: "ansi-raw",
     transport: "acp",
     enabled: true
@@ -33,11 +33,11 @@ export const agents: AgentConfig[] = [
   {
     id: "codex",
     label: "Codex CLI",
-    command: "npx",
-    args: ["-y", "@agentclientprotocol/codex-acp"],
+    command: "codex-acp",
+    args: [],
     cwdMode: "project-root",
     launchMode: "pty",
-    sendStrategy: "bracketed-paste",
+    sendStrategy: "stdin",
     parser: "ansi-raw",
     transport: "acp",
     enabled: true
@@ -45,11 +45,11 @@ export const agents: AgentConfig[] = [
   {
     id: "claude-code",
     label: "Claude Code",
-    command: "npx",
-    args: ["-y", "@agentclientprotocol/claude-agent-acp"],
+    command: "claude-agent-acp",
+    args: [],
     cwdMode: "project-root",
     launchMode: "pty",
-    sendStrategy: "bracketed-paste",
+    sendStrategy: "stdin",
     parser: "ansi-raw",
     transport: "acp",
     enabled: true
@@ -58,12 +58,12 @@ export const agents: AgentConfig[] = [
     id: "grok-build",
     label: "Grok Build",
     command: "grok",
-    args: ["build"],
+    args: ["agent", "stdio"],
     cwdMode: "project-root",
     launchMode: "pty",
-    sendStrategy: "bracketed-paste",
+    sendStrategy: "stdin",
     parser: "ansi-raw",
-    transport: "pty",
+    transport: "acp",
     enabled: true
   }
 ];
@@ -83,7 +83,7 @@ export const sessions: Session[] = [
     rawLogPath: "D:\\Project\\AgentsShell\\.agentshell\\sessions\\codex-20260709.raw.log",
     transcriptPath: "D:\\Project\\AgentsShell\\.agentshell\\transcripts\\codex-20260709.jsonl",
     handoffPath: "D:\\Project\\AgentsShell\\.agentshell\\handoff.md",
-    viewMode: "raw-terminal"
+    viewMode: "clean"
   },
   {
     id: "session-claude-1",

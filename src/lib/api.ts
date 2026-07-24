@@ -81,9 +81,105 @@ export async function deleteSession(projectId: string, sessionId: string): Promi
   if (isTauriRuntime()) await invoke("delete_session", { projectId, sessionId });
 }
 
-export async function startTerminal(sessionId: string, cwd: string): Promise<void> {
+/** Persist session ↔ agent binding (source of truth for Composer). */
+export async function updateSessionAgent(sessionId: string, agentId: string): Promise<void> {
   if (!isTauriRuntime()) return;
-  await invoke("start_terminal", { sessionId, cwd });
+  await invoke("update_session_agent", { sessionId, agentId });
+}
+
+/** Persist per-dialog model / mode / effort (SSOT on disk with session list). */
+export async function updateSessionPrefs(
+  sessionId: string,
+  prefs: import("./types").SessionComposerPrefs
+): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("update_session_prefs", {
+    sessionId,
+    preferredModel: prefs.preferredModel ?? null,
+    preferredMode: prefs.preferredMode ?? null,
+    preferredEffort: prefs.preferredEffort ?? null,
+    preferredEffortId: prefs.preferredEffortId ?? null,
+  });
+}
+
+export async function updateSessionLabel(sessionId: string, label: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("update_session_label", { sessionId, label });
+}
+
+export async function writeTranscript(sessionId: string, events: unknown[]): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("write_transcript", { sessionId, events });
+}
+
+export async function loadTranscript(sessionId: string): Promise<unknown[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    return await invoke<unknown[]>("load_transcript", { sessionId });
+  } catch {
+    return [];
+  }
+}
+
+export async function searchSessions(query: string): Promise<string[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    return await invoke<string[]>("search_sessions", { query });
+  } catch {
+    return [];
+  }
+}
+
+export type AgentAuthProbe = {
+  agentId: string;
+  status: "logged_in" | "logged_out" | "unknown";
+  loggedIn?: boolean;
+  message?: string;
+  raw?: unknown;
+};
+
+export async function probeAgentAuth(agentId: string): Promise<AgentAuthProbe | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await invoke<AgentAuthProbe>("probe_agent_auth", { agentId });
+  } catch {
+    return null;
+  }
+}
+
+/** Open the agent’s native login flow (Claude: `claude auth login` → browser). */
+export async function startAgentLogin(agentId: string): Promise<{ started: boolean; message?: string } | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await invoke("start_agent_login", { agentId });
+  } catch (error) {
+    return {
+      started: false,
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+export async function startTerminal(
+  sessionId: string,
+  cwd: string,
+  command: string,
+  args: string[] = []
+): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("start_terminal", { sessionId, cwd, command, args });
+}
+
+/** Prepare Composer text for PTY stdin (bracketed paste when configured). */
+export function preparePtyInput(
+  text: string,
+  strategy: "stdin" | "bracketed-paste" | "http" = "bracketed-paste"
+): string {
+  if (strategy === "bracketed-paste") {
+    return `\x1b[200~${text}\x1b[201~\r`;
+  }
+  if (text.endsWith("\r") || text.endsWith("\n")) return text;
+  return `${text}\r`;
 }
 
 export async function readTerminalSnapshot(sessionId: string, cwd: string): Promise<string> {
@@ -145,4 +241,98 @@ export async function getSessionCapabilities(sessionId: string): Promise<Capabil
 export async function updateAcpSession(sessionId: string, config: Record<string, unknown>): Promise<unknown> {
   if (!isTauriRuntime()) return null;
   return invoke("update_acp_session", { sessionId, config });
+}
+
+/** Probe provider balance for an OpenCode-style `provider/model` id (uses local OpenCode auth.json). */
+export async function probeProviderUsage(modelId?: string | null): Promise<import("./usage").ProviderUsageProbe | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await invoke("probe_provider_usage", { modelId: modelId ?? null });
+  } catch {
+    return null;
+  }
+}
+
+/** Write a line to the local developer diary (`%USERPROFILE%\\.agentshell\\logs\\dev.log`). Not a UI surface. */
+export async function appendDebugLog(entry: {
+  source: string;
+  level?: "info" | "warn" | "error";
+  sessionId?: string;
+  summary: string;
+  detail?: string;
+}): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    await invoke("append_debug_log", {
+      source: entry.source,
+      level: entry.level ?? "info",
+      sessionId: entry.sessionId ?? "",
+      summary: entry.summary,
+      detail: entry.detail ?? null,
+    });
+  } catch {
+    // Never break the product UI for logging
+  }
+}
+
+export async function getDebugLogPath(): Promise<string> {
+  if (!isTauriRuntime()) return "";
+  try {
+    return await invoke<string>("debug_log_path");
+  } catch {
+    return "";
+  }
+}
+
+export async function generateHandoff(params: {
+  projectId: string;
+  sessionId: string;
+  targetAgentId: string;
+  sourceAgentId?: string;
+}): Promise<import("./types").HandoffResult | null> {
+  if (!isTauriRuntime()) {
+    return {
+      projectId: params.projectId,
+      targetAgentId: params.targetAgentId,
+      handoffPath: ".agentshell/handoff.md",
+      prompt: `Continue from handoff (browser mock) → ${params.targetAgentId}`,
+      createdAt: new Date().toISOString(),
+    };
+  }
+  try {
+    return await invoke("generate_handoff", {
+      projectId: params.projectId,
+      sessionId: params.sessionId,
+      targetAgentId: params.targetAgentId,
+      sourceAgentId: params.sourceAgentId ?? null,
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function getChangedFiles(projectId: string): Promise<import("./types").ChangedFile[]> {
+  if (!isTauriRuntime()) {
+    const { changedFiles } = await import("./mockData");
+    return changedFiles;
+  }
+  try {
+    return await invoke("get_changed_files", { projectId });
+  } catch {
+    return [];
+  }
+}
+
+export async function getFileDiff(projectId: string, path: string): Promise<string> {
+  if (!isTauriRuntime()) return "";
+  try {
+    return await invoke<string>("get_file_diff", { projectId, path });
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+export async function respondAcpPermission(requestId: string, optionId: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("respond_acp_permission", { requestId, optionId });
 }
