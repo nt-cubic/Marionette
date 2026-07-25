@@ -71,9 +71,26 @@ export function activityBarLabel(
   return "";
 }
 
+/**
+ * Tools that run a nested agent inside the agent process.
+ *
+ * These are the ones that go silent: a subagent's approval prompt is handled
+ * inside its own runtime, and at least opencode's `task` never forwards it over
+ * ACP — so the client is never asked, nothing appears on screen, and the tool
+ * sits `in_progress` forever. Observed: two 6-minute hangs with 2–4 ACP events
+ * total and zero `session/request_permission`, while the same read done by the
+ * main model asked for permission in 1ms and finished in 19s.
+ */
+export function isSubagentTool(toolName: string | null | undefined): boolean {
+  if (!toolName) return false;
+  return /^(task|agent|subagent|delegate|dispatch_agent|spawn_agent)$/i.test(toolName.trim());
+}
+
 export function stallBannerCopy(health: ActivityHealth, opts: {
   midTurn: boolean;
   openToolTitle?: string | null;
+  /** The open tool runs a nested agent — different failure mode, different advice. */
+  openToolIsSubagent?: boolean;
   ago?: string;
 }): { title: string; body: string } | null {
   if (health === "idle" || health === "live") return null;
@@ -82,6 +99,19 @@ export function stallBannerCopy(health: ActivityHealth, opts: {
   const toolBit = opts.openToolTitle
     ? ` Last open tool: ${opts.openToolTitle}.`
     : "";
+
+  // A silent subagent is almost never "thinking" — name the real cause.
+  if (opts.openToolIsSubagent && (health === "stalled" || health === "stuck")) {
+    return {
+      title: "Subagent has gone silent",
+      body:
+        `No stream updates${ago}.${toolBit} Subagents run inside the agent process, and their ` +
+        `permission prompts are not forwarded over ACP — if it touched a file outside the project ` +
+        `(or anything else needing approval), it is waiting on a dialog that can never reach you. ` +
+        `Interrupt with Esc×2 or ■, then either do the step in this dialog directly, or pre-approve ` +
+        `the path in the agent's own config.`,
+    };
+  }
 
   if (health === "stuck") {
     return {

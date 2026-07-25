@@ -43,6 +43,55 @@ pub struct Session {
     pub preferred_effort_id: Option<String>,
 }
 
+/// A CLI the ACP bridge shells out to (installed separately from the bridge).
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentDependency {
+    pub command: String,
+    pub label: String,
+    /// npm package that provides `command`, when there is one.
+    pub package: Option<String>,
+}
+
+/// How AgentShell can put this agent's ACP command on the machine.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentInstallSpec {
+    /// `npm` → one-click install; `manual` → vendor installer only.
+    pub manager: String,
+    pub package: Option<String>,
+    pub requires: Vec<AgentDependency>,
+    pub note: Option<String>,
+}
+
+impl AgentInstallSpec {
+    fn npm(package: &str, requires: Vec<AgentDependency>) -> Self {
+        Self {
+            manager: "npm".to_string(),
+            package: Some(package.to_string()),
+            requires,
+            note: None,
+        }
+    }
+
+    fn manual(note: &str) -> Self {
+        Self {
+            manager: "manual".to_string(),
+            package: None,
+            requires: Vec::new(),
+            note: Some(note.to_string()),
+        }
+    }
+}
+
+fn dependency(command: &str, label: &str, package: Option<&str>) -> AgentDependency {
+    AgentDependency {
+        command: command.to_string(),
+        label: label.to_string(),
+        package: package.map(str::to_string),
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentConfig {
@@ -56,6 +105,8 @@ pub struct AgentConfig {
     pub parser: String,
     pub transport: String,
     pub enabled: bool,
+    /// Where `command` comes from — drives the in-app installer.
+    pub install: AgentInstallSpec,
 }
 
 impl AgentConfig {
@@ -70,8 +121,8 @@ impl AgentConfig {
                 vec!["acp".to_string()],
                 "acp",
                 "stdin",
+                AgentInstallSpec::npm("opencode-ai", Vec::new()),
             ),
-            // Global installs: npm i -g @agentclientprotocol/codex-acp
             // process_util rewrites .cmd → node dist/index.js for working stdio pipes.
             Self::new(
                 "codex",
@@ -80,6 +131,11 @@ impl AgentConfig {
                 vec![],
                 "acp",
                 "stdin",
+                AgentInstallSpec::npm(
+                    "@agentclientprotocol/codex-acp",
+                    // The bridge drives the Codex CLI; without it the session dies at prompt time.
+                    vec![dependency("codex", "Codex CLI", Some("@openai/codex"))],
+                ),
             ),
             Self::new(
                 "claude-code",
@@ -88,6 +144,14 @@ impl AgentConfig {
                 vec![],
                 "acp",
                 "stdin",
+                AgentInstallSpec::npm(
+                    "@agentclientprotocol/claude-agent-acp",
+                    vec![dependency(
+                        "claude",
+                        "Claude Code CLI",
+                        Some("@anthropic-ai/claude-code"),
+                    )],
+                ),
             ),
             // Native ACP: `grok agent stdio` (not the interactive TUI).
             Self::new(
@@ -97,6 +161,9 @@ impl AgentConfig {
                 vec!["agent".to_string(), "stdio".to_string()],
                 "acp",
                 "stdin",
+                AgentInstallSpec::manual(
+                    "Grok ships its own installer (no npm package) — install the Grok CLI, then make sure `grok` is on PATH.",
+                ),
             ),
         ]
     }
@@ -108,6 +175,7 @@ impl AgentConfig {
         args: Vec<String>,
         transport: &str,
         send_strategy: &str,
+        install: AgentInstallSpec,
     ) -> Self {
         Self {
             id: id.to_string(),
@@ -120,6 +188,7 @@ impl AgentConfig {
             parser: "ansi-raw".to_string(),
             transport: transport.to_string(),
             enabled: true,
+            install,
         }
     }
 }
@@ -131,6 +200,12 @@ pub struct AgentCommandStatus {
     pub status: String,
     pub path: Option<String>,
     pub message: String,
+    /// AgentShell knows an npm package for whatever is missing here.
+    #[serde(default)]
+    pub installable: bool,
+    /// Labels of the pieces that are not on PATH (bridge and/or its CLIs).
+    #[serde(default)]
+    pub missing: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]

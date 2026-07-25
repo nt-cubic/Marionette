@@ -2,7 +2,7 @@ use crate::models::{AgentCommandStatus, AgentConfig, Project, Session};
 use crate::AppState;
 use serde_json::Value;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, State};
 
 #[tauri::command]
@@ -43,27 +43,194 @@ pub fn test_agent_command(agent_id: String) -> Result<AgentCommandStatus, String
         .into_iter()
         .find(|agent| agent.id == agent_id)
         .ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
+    Ok(agent_command_status(&agent))
+}
 
-    match resolve_command(&agent.command) {
-        Ok(Some(path)) => Ok(AgentCommandStatus {
-            id: agent.id,
-            status: "installed".to_string(),
-            path: Some(path),
-            message: format!("{} is available", agent.command),
-        }),
-        Ok(None) => Ok(AgentCommandStatus {
-            id: agent.id,
-            status: "missing".to_string(),
-            path: None,
-            message: format!("{} was not found on PATH", agent.command),
-        }),
-        Err(error) => Ok(AgentCommandStatus {
-            id: agent.id,
-            status: "failed".to_string(),
-            path: None,
-            message: format!("Command lookup failed: {error}"),
-        }),
+/// Status for every agent in one round-trip (the agent menu asks on open).
+#[tauri::command]
+pub fn list_agent_commands() -> Vec<AgentCommandStatus> {
+    AgentConfig::defaults()
+        .iter()
+        .map(agent_command_status)
+        .collect()
+}
+
+/// Is the agent's own command on PATH, and are the CLIs it drives present too?
+fn agent_command_status(agent: &AgentConfig) -> AgentCommandStatus {
+    let bridge = resolve_command(&agent.command);
+    let mut missing: Vec<String> = Vec::new();
+    let mut installable = false;
+
+    let (status, path, mut message) = match bridge {
+        Ok(Some(path)) => (
+            "installed".to_string(),
+            Some(path),
+            format!("{} is available", agent.command),
+        ),
+        Ok(None) => {
+            missing.push(format!("{} (`{}`)", agent.label, agent.command));
+            installable = agent.install.package.is_some();
+            (
+                "missing".to_string(),
+                None,
+                format!("{} was not found on PATH", agent.command),
+            )
+        }
+        Err(error) => (
+            "failed".to_string(),
+            None,
+            format!("Command lookup failed: {error}"),
+        ),
+    };
+
+    // A present bridge with an absent CLI still cannot answer a prompt.
+    for dependency in &agent.install.requires {
+        if matches!(resolve_command(&dependency.command), Ok(None)) {
+            missing.push(format!("{} (`{}`)", dependency.label, dependency.command));
+            installable = installable || dependency.package.is_some();
+        }
     }
+
+    if status == "installed" && !missing.is_empty() {
+        message = format!("{} needs: {}", agent.label, missing.join(", "));
+    }
+    if let Some(note) = &agent.install.note {
+        if !missing.is_empty() {
+            message = format!("{message}. {note}");
+        }
+    }
+
+    AgentCommandStatus {
+        id: agent.id.clone(),
+        // "installed" only when the whole chain can actually run.
+        status: if status == "installed" && !missing.is_empty() {
+            "incomplete".to_string()
+        } else {
+            status
+        },
+        path,
+        message,
+        installable,
+        missing,
+    }
+}
+
+/// Install the agent's ACP command (and optionally the CLIs it drives) with npm.
+///
+/// Packages come from the built-in table only — never from the UI — so this
+/// cannot be talked into installing something the app does not ship support for.
+#[tauri::command]
+pub async fn install_agent(
+    agent_id: String,
+    include_dependencies: bool,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || install_agent_blocking(&agent_id, include_dependencies))
+        .await
+        .map_err(|error| format!("Install task failed: {error}"))?
+}
+
+fn install_agent_blocking(
+    agent_id: &str,
+    include_dependencies: bool,
+) -> Result<serde_json::Value, String> {
+    let agent = AgentConfig::defaults()
+        .into_iter()
+        .find(|agent| agent.id == agent_id)
+        .ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
+
+    if agent.install.manager != "npm" {
+        return Err(agent
+            .install
+            .note
+            .clone()
+            .unwrap_or_else(|| format!("{} has no automatic installer", agent.label)));
+    }
+
+    let mut packages: Vec<String> = Vec::new();
+    if let Some(package) = &agent.install.package {
+        if matches!(resolve_command(&agent.command), Ok(None)) {
+            packages.push(package.clone());
+        }
+    }
+    if include_dependencies {
+        for dependency in &agent.install.requires {
+            if let Some(package) = &dependency.package {
+                if matches!(resolve_command(&dependency.command), Ok(None)) {
+                    packages.push(package.clone());
+                }
+            }
+        }
+    }
+
+    if packages.is_empty() {
+        return Ok(serde_json::json!({
+            "agentId": agent.id,
+            "installed": [],
+            "message": format!("{} is already installed", agent.label),
+            "status": agent_command_status(&agent),
+        }));
+    }
+
+    let mut installed: Vec<String> = Vec::new();
+    for package in &packages {
+        npm_install_global(&agent.id, package)?;
+        installed.push(package.clone());
+    }
+
+    let status = agent_command_status(&agent);
+    Ok(serde_json::json!({
+        "agentId": agent.id,
+        "installed": installed,
+        "message": format!("Installed {}", installed.join(", ")),
+        "status": status,
+    }))
+}
+
+fn npm_install_global(agent_id: &str, package: &str) -> Result<(), String> {
+    use std::process::Command;
+
+    let resolved = crate::process_util::resolve_spawn_command("npm")
+        .map_err(|error| format!("`npm` not found — install Node.js first ({error})"))?;
+    crate::debug_log::append(
+        "install",
+        "info",
+        agent_id,
+        &format!("npm install -g {package}"),
+        Some(&resolved.resolved_path),
+    );
+
+    let mut command = Command::new(&resolved.program);
+    resolved.apply_to(&mut command);
+    command.args(["install", "-g", package]);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let output = command
+        .output()
+        .map_err(|error| format!("Run npm install -g {package} failed: {error}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    crate::debug_log::append(
+        "install",
+        if output.status.success() { "info" } else { "error" },
+        agent_id,
+        &format!("npm install -g {package} → {}", output.status),
+        Some(&format!("{stdout}\n{stderr}")),
+    );
+    if output.status.success() {
+        return Ok(());
+    }
+    // npm's last stderr lines carry the actual reason (EACCES, 404, proxy…).
+    let reason = stderr
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("npm install failed");
+    Err(format!("npm install -g {package} failed: {reason}"))
 }
 
 #[tauri::command]
@@ -75,7 +242,10 @@ pub fn list_sessions(
         .storage
         .lock()
         .map_err(|_| "Storage lock poisoned".to_string())?;
-    storage.list_sessions(&project_id)
+    // Only this process can own a live agent — anything else on disk is stale.
+    storage.list_sessions_healed(&project_id, |session_id| {
+        state.acp.is_live(session_id) || state.sessions.is_live(session_id).unwrap_or(false)
+    })
 }
 
 #[tauri::command]
@@ -366,11 +536,25 @@ pub async fn start_acp_session(
         Some(&cwd),
     );
 
+    // session.agentId is the source of truth for which harness owns this dialog,
+    // and it decides what project context gets lent to it.
+    let agent_id = {
+        let storage = state
+            .storage
+            .lock()
+            .map_err(|_| "Storage lock poisoned".to_string())?;
+        storage
+            .find_session(&session_id)
+            .ok()
+            .flatten()
+            .map(|session| session.agent_id)
+    };
+
     let acp = state.acp.clone();
     let app_for_start = app.clone();
     let sid = session_id.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        acp.start(app_for_start, sid, command, args, cwd)
+        acp.start(app_for_start, sid, command, args, cwd, agent_id)
     })
     .await
     .map_err(|error| format!("ACP start task failed: {error}"))?;
@@ -643,6 +827,122 @@ pub fn respond_acp_permission(
 
 fn resolve_command(command: &str) -> Result<Option<String>, String> {
     crate::process_util::resolve_command_display_path(command)
+}
+
+// ─── Project context: MCP servers + skills lent to agents that lack them ────
+
+fn project_root_of(project_id: &str, state: &State<'_, AppState>) -> Result<PathBuf, String> {
+    let storage = state
+        .storage
+        .lock()
+        .map_err(|_| "Storage lock poisoned".to_string())?;
+    let project = storage
+        .list_projects()?
+        .into_iter()
+        .find(|project| project.id == project_id)
+        .ok_or_else(|| format!("Unknown project: {project_id}"))?;
+    Ok(PathBuf::from(project.root_path))
+}
+
+/// Scan this machine + project for MCP servers and skills, with what the user
+/// has already decided to lend. Cheap enough to call whenever the panel opens.
+#[tauri::command]
+pub fn scan_project_context(
+    project_id: String,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let root = project_root_of(&project_id, &state)?;
+    let inventory = crate::context_inventory::scan(&root);
+    let selection = crate::context_inventory::load_selection(&root);
+    Ok(serde_json::json!({
+        "projectId": project_id,
+        "inventory": inventory,
+        "selection": selection,
+    }))
+}
+
+#[tauri::command]
+pub fn set_project_context_enabled(
+    project_id: String,
+    kind: String,
+    id: String,
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let root = project_root_of(&project_id, &state)?;
+    let selection = crate::context_inventory::set_enabled(&root, &kind, &id, enabled)?;
+    crate::debug_log::append(
+        "context",
+        "info",
+        "",
+        &format!("{kind} {id} → {}", if enabled { "lend" } else { "off" }),
+        Some(&root.display().to_string()),
+    );
+    Ok(serde_json::to_value(selection).unwrap_or_default())
+}
+
+/// Which paths in a draft message point outside the project and are not granted.
+#[tauri::command]
+pub fn check_outside_project_paths(
+    project_id: String,
+    paths: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let root = project_root_of(&project_id, &state)?;
+    Ok(crate::context_inventory::outside_project_paths(&root, &paths))
+}
+
+/// Grant a folder outside the project to this project's agents.
+///
+/// Returns `restartNeeded` when a live ACP session already exists: the scope is
+/// fixed at `session/new`, so it only applies from the next connection.
+#[tauri::command]
+pub fn grant_workspace_root(
+    project_id: String,
+    dir: String,
+    session_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let root = project_root_of(&project_id, &state)?;
+    let roots = crate::context_inventory::grant_workspace_root(&root, &dir)?;
+    let restart_needed = session_id
+        .as_deref()
+        .map(|id| state.acp.is_live(id))
+        .unwrap_or(false);
+    crate::debug_log::append(
+        "context",
+        "info",
+        session_id.as_deref().unwrap_or(""),
+        &format!("granted workspace root: {dir}"),
+        Some(if restart_needed {
+            "live session will be restarted to apply it"
+        } else {
+            "applies on next connect"
+        }),
+    );
+    Ok(serde_json::json!({ "workspaceRoots": roots, "restartNeeded": restart_needed }))
+}
+
+#[tauri::command]
+pub fn revoke_workspace_root(
+    project_id: String,
+    dir: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let root = project_root_of(&project_id, &state)?;
+    crate::context_inventory::revoke_workspace_root(&root, &dir)
+}
+
+/// Skills preamble for an agent that has no skill system of its own.
+/// Returns null when the agent already ships everything that is enabled.
+#[tauri::command]
+pub fn project_context_prompt(
+    project_id: String,
+    agent_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let root = project_root_of(&project_id, &state)?;
+    Ok(crate::context_inventory::skills_prompt_for_agent(&root, &agent_id))
 }
 
 #[cfg(test)]

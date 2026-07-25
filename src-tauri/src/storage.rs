@@ -106,6 +106,42 @@ impl StorageService {
         serde_json::from_str(&content).map_err(|error| format!("Parse sessions failed: {error}"))
     }
 
+    /// Sessions with the stored live status repaired.
+    ///
+    /// `status` is runtime state: a stored `running` only means the previous run
+    /// was closed mid-turn. Nothing is live unless this process says so, and a
+    /// dialog restored as "Working" would lie to the user (and lock the composer
+    /// into interrupt mode). The repair is written back so the file stops lying.
+    pub fn list_sessions_healed<F>(
+        &self,
+        project_id: &str,
+        is_live: F,
+    ) -> Result<Vec<Session>, String>
+    where
+        F: Fn(&str) -> bool,
+    {
+        let mut sessions = self.list_sessions(project_id)?;
+        let mut healed = false;
+        for session in sessions.iter_mut() {
+            let claims_live = matches!(session.status.as_str(), "starting" | "running" | "waiting");
+            if !claims_live || is_live(&session.id) {
+                continue;
+            }
+            session.status = "exited".to_string();
+            session.process_id = None;
+            session.pty_id = None;
+            if session.exited_at.is_none() {
+                session.exited_at = Some(session.last_active_at.clone());
+            }
+            healed = true;
+        }
+        if healed {
+            let project = self.project_by_id(project_id)?;
+            self.write_sessions(Path::new(&project.root_path), &sessions)?;
+        }
+        Ok(sessions)
+    }
+
     pub fn create_session(
         &self,
         project_id: &str,
@@ -497,6 +533,41 @@ mod tests {
             .parent()
             .unwrap()
             .is_dir());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stale_running_status_is_healed_on_read_and_on_disk() {
+        let root = test_root();
+        let global_dir = root.join("global");
+        let project_dir = root.join("workspace");
+        fs::create_dir_all(&project_dir).unwrap();
+
+        let service = StorageService::from_global_dir(global_dir.clone()).unwrap();
+        let project = service
+            .add_project(project_dir.to_string_lossy().to_string())
+            .unwrap();
+        let session = service
+            .create_session(&project.id, "opencode".to_string(), "M4".to_string())
+            .unwrap();
+        service.update_session_status(&session.id, "running").unwrap();
+
+        // Restart: nothing is live, so the dialog must come back idle — and the
+        // file must be repaired so the next reader sees the same truth.
+        let restarted = StorageService::from_global_dir(global_dir).unwrap();
+        let healed = restarted.list_sessions_healed(&project.id, |_| false).unwrap();
+        assert_eq!(healed[0].status, "exited");
+        assert!(healed[0].exited_at.is_some());
+        assert_eq!(
+            restarted.list_sessions(&project.id).unwrap()[0].status,
+            "exited"
+        );
+
+        // A session this process really owns keeps its live status.
+        restarted.update_session_status(&session.id, "running").unwrap();
+        let live = restarted.list_sessions_healed(&project.id, |_| true).unwrap();
+        assert_eq!(live[0].status, "running");
 
         fs::remove_dir_all(root).unwrap();
     }

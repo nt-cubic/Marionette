@@ -12,8 +12,8 @@ import {
   userMessageEvent,
 } from "../lib/acpTranscript";
 import { armPtyBridge, createPtyBridgeState, flushPtyBridge, ingestPtyOutput, type PtyBridgeState } from "../lib/ptyCleanBridge";
-import { addProject, appendDebugLog, cancelAcpSession, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, generateHandoff, getChangedFiles, getFileDiff, getSessionCapabilities, isTauriRuntime, listAgents, listProjects, listSessions, loadTranscript, preparePtyInput, probeAgentAuth, probeProviderUsage, respondAcpPermission, searchSessions, sendAcpPrompt, startAcpSession, startAgentLogin, stopAcpSession, stopTerminal, updateSessionAgent, updateSessionLabel, updateSessionPrefs, writeTerminal, writeTranscript } from "../lib/api";
-import type { AcpEvent, CapabilitySnapshot, ChangedFile, HandoffResult, Project, Session, SessionComposerPrefs, SessionEvent, SessionViewMode, TerminalOutput, UsageSnapshot } from "../lib/types";
+import { addProject, appendDebugLog, cancelAcpSession, checkOutsideProjectPaths, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, generateHandoff, getChangedFiles, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgents, listProjects, listSessions, loadTranscript, preparePtyInput, probeAgentAuth, probeProviderUsage, projectContextPrompt, respondAcpPermission, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, startAcpSession, startAgentLogin, stopAcpSession, stopTerminal, updateSessionAgent, updateSessionLabel, updateSessionPrefs, writeTerminal, writeTranscript, type OutsidePath } from "../lib/api";
+import type { AcpEvent, CapabilitySnapshot, ChangedFile, HandoffResult, Project, ProjectContext, Session, SessionComposerPrefs, SessionEvent, SessionViewMode, TerminalOutput, UsageSnapshot } from "../lib/types";
 import {
   buildUsageSnapshot,
   emptySessionUsage,
@@ -29,8 +29,14 @@ import {
   shouldAutoRenameLabel,
   titleFromUserText,
 } from "../lib/transcript";
-import { buildHistoryInjection, withHistoryInjection } from "../lib/sessionHistory";
+import {
+  buildHistoryInjection,
+  pendingHandoff,
+  withHandoffAttachment,
+  withHistoryInjection,
+} from "../lib/sessionHistory";
 import { formatPinsForSend } from "../lib/quoteComment";
+import { findLinkTargets } from "../lib/linkTargets";
 import { isToolInProgress } from "../lib/activityHealth";
 import { classifyAgentError, formatClassifiedError } from "../lib/errors";
 import { Composer } from "../components/Composer";
@@ -92,6 +98,20 @@ function formatAcpRpcError(data: unknown): string | null {
   } catch {
     return "Unknown agent error";
   }
+}
+
+/**
+ * Status is runtime state, not history. A freshly started app owns no agent
+ * process, whatever the previous run left on disk — restoring a dialog as
+ * "running" would show a Working bar and a locked composer for a turn that
+ * ended when the app closed. (Rust heals the file too; this keeps the browser
+ * mock and any future read path honest.)
+ */
+function asIdleOnLoad(session: Session): Session {
+  if (session.status !== "starting" && session.status !== "running" && session.status !== "waiting") {
+    return session;
+  }
+  return { ...session, status: "exited", processId: null, ptyId: null };
 }
 
 /** Close out tools that never received a terminal status (stuck in_progress). */
@@ -175,6 +195,16 @@ export function App() {
   const [diffPreview, setDiffPreview] = useState<{ path: string; text: string } | null>(null);
   const [permissionPrompt, setPermissionPrompt] = useState<PermissionPrompt | null>(null);
   const [permissionBusy, setPermissionBusy] = useState(false);
+  /** MCP servers + skills found for the active project (needs 5). */
+  const [projectContext, setProjectContext] = useState<ProjectContext | null>(null);
+  const [projectContextScanning, setProjectContextScanning] = useState(false);
+  /** Draft held back because it points outside the project. */
+  const [pathGrantPrompt, setPathGrantPrompt] = useState<{
+    paths: OutsidePath[];
+    text: string;
+    sessionId: string;
+  } | null>(null);
+  const [pathGrantBusy, setPathGrantBusy] = useState(false);
   const lastEscAtRef = useRef(0);
   /** Last ACP/PTY activity timestamp per session — for heartbeat / stale-working UI. */
   const [lastActivityById, setLastActivityById] = useState<Record<string, number>>({});
@@ -253,7 +283,9 @@ export function App() {
       }
       setAvailableAgents(nextAgents.length > 0 ? nextAgents : agents);
 
-      const loadedSessions = (await Promise.all(resolvedProjects.map((project) => listSessions(project.id)))).flat();
+      const loadedSessions = (await Promise.all(resolvedProjects.map((project) => listSessions(project.id))))
+        .flat()
+        .map(asIdleOnLoad);
       if (loadedSessions.length > 0 || isTauriRuntime()) {
         setAvailableSessions(loadedSessions);
         if (loadedSessions[0]) {
@@ -1090,6 +1122,70 @@ export function App() {
     return () => window.clearInterval(timer);
   }, [refreshChangedFiles]);
 
+  /**
+   * Scan timing: on project switch / add, and on demand — never at startup.
+   * It is a handful of file reads, but the launch path stays untouched, and a
+   * stale inventory would be worse than no inventory: the user installs a skill
+   * in another tool and expects the panel to notice next time they look.
+   */
+  const refreshProjectContext = useCallback(
+    async (projectId: string) => {
+      if (!projectId) {
+        setProjectContext(null);
+        return;
+      }
+      setProjectContextScanning(true);
+      try {
+        const scanned = await scanProjectContext(projectId);
+        setProjectContext(scanned);
+        if (scanned) {
+          pushDebug({
+            level: "info",
+            source: "context",
+            summary: `scan: ${scanned.inventory.mcpServers.length} mcp · ${scanned.inventory.skills.length} skills`,
+          });
+        }
+      } finally {
+        setProjectContextScanning(false);
+      }
+    },
+    [pushDebug]
+  );
+
+  useEffect(() => {
+    if (rightCollapsed) return; // nothing on screen to feed
+    void refreshProjectContext(currentProjectId);
+  }, [currentProjectId, rightCollapsed, refreshProjectContext]);
+
+  const handleToggleProjectContext = useCallback(
+    async (kind: "mcp" | "skill", id: string, enabled: boolean) => {
+      if (!currentProjectId) return;
+      // Optimistic: the checkbox must not lag behind a disk write.
+      setProjectContext((current) => {
+        if (!current) return current;
+        const selection = { ...current.selection };
+        if (kind === "skill") {
+          selection.skills = { ...selection.skills, [id]: enabled };
+        } else {
+          selection.mcpServers = { ...selection.mcpServers, [id]: enabled };
+        }
+        return { ...current, selection };
+      });
+      try {
+        await setProjectContextEnabled(currentProjectId, kind, id, enabled);
+      } catch (error) {
+        pushDebug({
+          level: "warn",
+          source: "context",
+          summary: "persist context selection failed",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+        void refreshProjectContext(currentProjectId);
+      }
+    },
+    [currentProjectId, pushDebug, refreshProjectContext]
+  );
+
   const handleOpenDiff = useCallback(
     async (path: string) => {
       if (!currentProjectId) return;
@@ -1161,7 +1257,8 @@ export function App() {
       });
       if (handoff) {
         setLastHandoff(handoff);
-        setComposerPrefill({ text: handoff.prompt, token: Date.now() });
+        // Never prefill the composer: the notes ride along with the next message
+        // the user actually sends (see pendingHandoffPrompt in handleSend).
         setLiveEvents((current) => [
           ...current,
           {
@@ -1483,6 +1580,14 @@ export function App() {
     [ensureAcpReady, pushDebug, renameSessionFromText, setSessionStatusById]
   );
 
+  /**
+   * Ask about paths outside the project *before* sending.
+   *
+   * A subagent's approval prompt never reaches us (its runtime handles it
+   * in-process and does not forward it over ACP), so it would sit silent
+   * forever. The only moment we can widen the scope is `session/new`, which
+   * means the answer has to be collected before the turn starts.
+   */
   const handleSend = async (text: string) => {
     if (!currentSessionId) return;
     const sid = currentSessionId;
@@ -1490,9 +1595,28 @@ export function App() {
     const pins = quotePins;
     const composed = pins.length > 0 ? formatPinsForSend(pins, text) : text;
     if (!composed.trim()) return;
-    setQuotePins([]);
 
+    const projectId = displaySession.projectId || currentProjectId;
+    const candidates = findLinkTargets(composed)
+      .filter((target) => target.kind === "path")
+      .map((target) => target.raw);
+    const outside = await checkOutsideProjectPaths(projectId, candidates).catch(() => []);
+    if (outside.length > 0) {
+      // Hold the draft (and its pins) until the user decides.
+      setPathGrantPrompt({ paths: outside, text: composed, sessionId: sid });
+      return;
+    }
+
+    setQuotePins([]);
+    await performSend(sid, composed);
+  };
+
+  const performSend = async (sid: string, composed: string) => {
     try {
+      // An agent switch leaves handoff notes waiting — attach them to this send
+      // (the composer stays clean; only the wire payload carries them).
+      const handoff = pendingHandoff(liveEventsRef.current, sid);
+
       if (currentAgent.transport === "acp") {
         // Show the user message immediately; wait for ACP only after that.
         // History injection uses events *before* this message.
@@ -1509,11 +1633,41 @@ export function App() {
         // Ensure agent is up (may already be warming from keystrokes).
         await ensureAcpReady(sid);
 
-        let promptText = composed;
+        // The reconnect send already carries the whole transcript — then the
+        // handoff shrinks to a pointer instead of repeating the same context.
+        const willInjectHistory = acpNeedsHistoryRef.current.has(sid);
+        let promptText = withHandoffAttachment(handoff, composed, {
+          compact: willInjectHistory,
+        });
+        if (handoff) {
+          pushDebug({
+            sessionId: sid,
+            level: "info",
+            source: "handoff",
+            summary: `attached pending handoff to this send${willInjectHistory ? " (compact)" : ""}`,
+            detail: handoff.handoffPath,
+          });
+        }
         if (acpNeedsHistoryRef.current.has(sid)) {
           acpNeedsHistoryRef.current.delete(sid);
+          // Skills this agent does not ship with — a pointer list, once per
+          // connection, so it can read the SKILL.md itself when relevant.
+          const skillsPrefix = await projectContextPrompt(
+            displaySession.projectId || currentProjectId,
+            currentAgent.id
+          ).catch(() => null);
+          if (skillsPrefix) {
+            promptText = `${skillsPrefix}${promptText}`;
+            pushDebug({
+              sessionId: sid,
+              level: "info",
+              source: "context",
+              summary: "injected project skills list",
+              detail: `chars=${skillsPrefix.length}`,
+            });
+          }
           const prefix = buildHistoryInjection(priorForInject, sid);
-          promptText = withHistoryInjection(prefix, composed);
+          promptText = withHistoryInjection(prefix, promptText);
           if (prefix) {
             pushDebug({
               sessionId: sid,
@@ -1549,7 +1703,10 @@ export function App() {
           summary: `pty send (${currentAgent.sendStrategy})`,
         });
         setSessionStatusById(sid, "running");
-        await writeTerminal(sid, preparePtyInput(composed, currentAgent.sendStrategy));
+        await writeTerminal(
+          sid,
+          preparePtyInput(withHandoffAttachment(handoff, composed), currentAgent.sendStrategy)
+        );
         touchActivity(sid);
       }
     } catch (error) {
@@ -1574,6 +1731,58 @@ export function App() {
     }
   };
 
+  /** Grant the folders, restart the agent if it is live, then send the held draft. */
+  const resolvePathGrant = useCallback(
+    async (grant: boolean) => {
+      const prompt = pathGrantPrompt;
+      if (!prompt || pathGrantBusy) return;
+      setPathGrantBusy(true);
+      try {
+        let mustRestart = false;
+        if (grant) {
+          const projectId = displaySession.projectId || currentProjectId;
+          for (const item of prompt.paths) {
+            try {
+              const result = await grantWorkspaceRoot(projectId, item.dir, prompt.sessionId);
+              mustRestart = mustRestart || result.restartNeeded;
+            } catch (error) {
+              pushDebug({
+                sessionId: prompt.sessionId,
+                level: "warn",
+                source: "context",
+                summary: "grant workspace root failed",
+                detail: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+          if (mustRestart) {
+            // Scope is fixed at session/new — the live process cannot learn it.
+            await stopAcpSession(prompt.sessionId).catch(() => undefined);
+            acpBootstrapRef.current.delete(prompt.sessionId);
+            setSessionCapabilities(null);
+            setSessionStatusById(prompt.sessionId, "exited");
+            acpNeedsHistoryRef.current.add(prompt.sessionId);
+            pushDebug({
+              sessionId: prompt.sessionId,
+              level: "info",
+              source: "context",
+              summary: "reconnecting to apply new workspace roots",
+            });
+          }
+          void refreshProjectContext(projectId);
+        }
+        setQuotePins([]);
+        setPathGrantPrompt(null);
+        await performSend(prompt.sessionId, prompt.text);
+      } finally {
+        setPathGrantBusy(false);
+      }
+    },
+    // performSend is defined below in the same component scope
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pathGrantPrompt, pathGrantBusy, displaySession.projectId, currentProjectId, pushDebug, refreshProjectContext, setSessionStatusById]
+  );
+
   const handleAddProject = async () => {
     const path = projectPath.trim();
     if (!path) {
@@ -1590,6 +1799,8 @@ export function App() {
       setProjectPath("");
       // Auto-open a conversation so ACP/composer are usable immediately.
       await createSessionForProject(project.id, availableAgents[0]?.id ?? agents[0].id, project);
+      // First look at a new folder: show what this machine can lend it.
+      void refreshProjectContext(project.id);
     } catch (error) {
       setProjectError(String(error));
     } finally {
@@ -1833,6 +2044,13 @@ export function App() {
           onRefreshChangedFiles={() => void refreshChangedFiles()}
           onOpenDiff={(path) => void handleOpenDiff(path)}
           handoff={lastHandoff}
+          projectContext={projectContext}
+          projectContextScanning={projectContextScanning}
+          onRescanProjectContext={() => void refreshProjectContext(currentProjectId)}
+          onToggleProjectContext={(kind, id, enabled) =>
+            void handleToggleProjectContext(kind, id, enabled)
+          }
+          activeAgentId={currentAgent.id}
           resizeDragging={resizingSide === "right"}
           onResizeStart={() => setResizingSide("right")}
         />
@@ -1843,6 +2061,50 @@ export function App() {
           busy={permissionBusy}
           onChoose={(optionId) => void handlePermissionChoose(optionId)}
         />
+      )}
+      {pathGrantPrompt && (
+        <div className="project-dialog-backdrop" role="presentation">
+          <div className="project-dialog" role="dialog" aria-modal="true" aria-labelledby="path-grant-title">
+            <div className="project-dialog__header">
+              <div>
+                <strong id="path-grant-title">Outside this project</strong>
+                <span>Grant access before sending?</span>
+              </div>
+            </div>
+            <ul className="path-grant__list">
+              {pathGrantPrompt.paths.map((item) => (
+                <li key={item.dir} title={item.path}>
+                  <code>{item.dir}</code>
+                  {!item.isDirectory && <span className="path-grant__from">from {item.path.split(/[\\/]/).pop()}</span>}
+                </li>
+              ))}
+            </ul>
+            <p className="path-grant__hint">
+              Scope is fixed when the agent session starts, and a
+              <strong> subagent’s permission prompt never reaches AgentShell</strong> — it would just
+              hang there. Granting saves the folder for this project and reconnects the agent so it
+              starts already allowed.
+            </p>
+            <div className="project-dialog__actions">
+              <button
+                type="button"
+                className="project-dialog__cancel"
+                disabled={pathGrantBusy}
+                onClick={() => void resolvePathGrant(false)}
+              >
+                Send without access
+              </button>
+              <button
+                type="button"
+                className="project-dialog__submit"
+                disabled={pathGrantBusy}
+                onClick={() => void resolvePathGrant(true)}
+              >
+                {pathGrantBusy ? "Granting…" : "Grant and send"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       {diffPreview && (
         <div

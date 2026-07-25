@@ -6,6 +6,21 @@ export type Project = {
   lastOpenedAt: string;
 };
 
+/** A CLI the ACP bridge shells out to (installed separately from the bridge). */
+export type AgentDependency = {
+  command: string;
+  label: string;
+  package: string | null;
+};
+
+/** How AgentShell can put an agent's ACP command on the machine. */
+export type AgentInstallSpec = {
+  manager: "npm" | "manual";
+  package: string | null;
+  requires: AgentDependency[];
+  note: string | null;
+};
+
 export type AgentConfig = {
   id: string;
   label: string;
@@ -18,13 +33,26 @@ export type AgentConfig = {
   parser: "ansi-raw" | "opencode-sse" | "none";
   transport: "pty" | "acp";
   enabled: boolean;
+  install: AgentInstallSpec;
 };
 
 export type AgentCommandStatus = {
   id: string;
-  status: "installed" | "missing" | "failed";
+  /** `incomplete` = bridge present but a CLI it drives is missing. */
+  status: "installed" | "incomplete" | "missing" | "failed";
   path: string | null;
   message: string;
+  /** AgentShell knows an npm package for whatever is missing. */
+  installable?: boolean;
+  /** Human labels of the missing pieces. */
+  missing?: string[];
+};
+
+export type AgentInstallResult = {
+  agentId: string;
+  installed: string[];
+  message: string;
+  status: AgentCommandStatus;
 };
 
 export type TerminalOutput = {
@@ -106,10 +134,23 @@ export type SessionEvent =
   | {
       type: "tool_call";
       sessionId: string;
+      /** Rendered card body (header + path + output) — composed from the fields below. */
       text: string;
       toolCallId?: string;
       status?: string;
       title?: string;
+      /**
+       * Tool name from the first `tool_call` (`task`, `read`, `bash`…).
+       * Updates rename `title` to a human summary, so this is the only stable
+       * way to tell *what kind* of tool is running.
+       */
+      toolName?: string;
+      /** File the tool is working on (ACP `locations[0]`). */
+      path?: string;
+      /** What the tool produced (ACP `content[]` / `rawOutput`), clipped. */
+      detail?: string;
+      /** Clipped `rawInput`, shown only until real output arrives. */
+      input?: string;
       createdAt: string;
     }
   | {
@@ -133,6 +174,53 @@ export type SessionEvent =
       changeType: "added" | "modified" | "deleted";
       createdAt: string;
     };
+
+// ─── Project context (MCP servers + skills lent between agents) ─────────────
+
+export type McpServerSpec = {
+  id: string;
+  name: string;
+  transport: "stdio" | "http" | "sse";
+  command: string | null;
+  args: string[];
+  /** Key names only — values stay in the owning agent's config. */
+  envKeys: string[];
+  url: string | null;
+  sources: string[];
+  sourcePaths: string[];
+  /** Agents that already load it themselves (never injected into these). */
+  agents: string[];
+};
+
+export type SkillSpec = {
+  id: string;
+  name: string;
+  description: string;
+  dir: string;
+  file: string;
+  sources: string[];
+  agents: string[];
+};
+
+export type ContextInventory = {
+  mcpServers: McpServerSpec[];
+  skills: SkillSpec[];
+  notes: string[];
+  scannedAt: string;
+};
+
+export type ContextSelection = {
+  version: number;
+  mcpServers: Record<string, boolean>;
+  skills: Record<string, boolean>;
+  updatedAt: string;
+};
+
+export type ProjectContext = {
+  projectId: string;
+  inventory: ContextInventory;
+  selection: ContextSelection;
+};
 
 export type ChangedFile = {
   path: string;

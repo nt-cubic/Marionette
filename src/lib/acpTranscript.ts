@@ -10,6 +10,12 @@ export type AcpTextPart = {
   toolCallId?: string;
   toolStatus?: string;
   toolTitle?: string;
+  /** First `locations[]` entry — what file the tool is working on. */
+  toolPath?: string;
+  /** Rendered `content[]` / `rawOutput` — what the tool actually produced. */
+  toolDetail?: string;
+  /** Clipped `rawInput` — only useful until real output arrives. */
+  toolInput?: string;
 };
 
 type UpdateObj = Record<string, unknown>;
@@ -39,6 +45,147 @@ function contentBlockType(content: unknown): string {
   return typeof c.type === "string" ? c.type.toLowerCase() : "";
 }
 
+/** Per-card ceiling for tool output — enough to follow along, not a file dump. */
+const MAX_TOOL_DETAIL = 4000;
+
+function clipToolDetail(text: string): string {
+  const trimmed = text.trimEnd();
+  if (trimmed.length <= MAX_TOOL_DETAIL) return trimmed;
+  const extra = trimmed.length - MAX_TOOL_DETAIL;
+  return `${trimmed.slice(0, MAX_TOOL_DETAIL)}\n… (+${extra} more characters)`;
+}
+
+/** `locations[0].path` — the file a tool is reading/editing (follow-along cue). */
+function firstToolLocation(update: UpdateObj): string | undefined {
+  const locations = update.locations ?? update.location;
+  const list = Array.isArray(locations) ? locations : locations != null ? [locations] : [];
+  for (const entry of list) {
+    if (typeof entry === "string" && entry.trim()) return entry.trim();
+    const record = asRecord(entry);
+    const path = record && typeof record.path === "string" ? record.path.trim() : "";
+    if (path) return path;
+  }
+  return undefined;
+}
+
+/** Windows vs POSIX separators and escaping differ per agent — compare loosely. */
+function samePath(a: string, b: string): boolean {
+  const normalize = (value: string) =>
+    value.replace(/\\\\/g, "\\").replace(/\\/g, "/").trim().toLowerCase();
+  return normalize(a) === normalize(b);
+}
+
+/** True when rawInput carries nothing beyond the location already on screen. */
+function inputIsOnlyPath(rawInput: unknown, path: string | undefined): boolean {
+  if (!path) return false;
+  const record = asRecord(rawInput);
+  if (!record) return typeof rawInput === "string" && samePath(rawInput, path);
+  const values = Object.values(record);
+  return (
+    values.length === 1 && typeof values[0] === "string" && samePath(values[0], path)
+  );
+}
+
+/**
+ * Render ACP `ToolCallContent[]` — text blocks, diffs and terminals.
+ *
+ * ACP says these collections are *overwritten* by each update, so this is
+ * always a full snapshot of what the tool has produced so far.
+ */
+function renderToolContent(content: unknown): string {
+  if (!Array.isArray(content) || content.length === 0) return "";
+  const parts: string[] = [];
+
+  for (const block of content) {
+    const record = asRecord(block);
+    if (!record) {
+      const plain = extractTextContent(block);
+      if (plain) parts.push(plain);
+      continue;
+    }
+    const blockType = typeof record.type === "string" ? record.type.toLowerCase() : "";
+
+    if (blockType === "diff") {
+      const path = typeof record.path === "string" ? record.path : "";
+      const oldText = typeof record.oldText === "string" ? record.oldText : "";
+      const newText = typeof record.newText === "string" ? record.newText : "";
+      const removed = oldText ? oldText.split("\n").length : 0;
+      const added = newText ? newText.split("\n").length : 0;
+      parts.push(`[diff] ${path || "(file)"} · +${added} / -${removed} lines`);
+      continue;
+    }
+    if (blockType === "terminal") {
+      const id =
+        (typeof record.terminalId === "string" && record.terminalId) ||
+        (typeof record.terminal_id === "string" && record.terminal_id) ||
+        "";
+      parts.push(id ? `[terminal ${id}]` : "[terminal]");
+      continue;
+    }
+
+    // `{ type: "content", content: <ContentBlock> }` or a bare content block.
+    const inner = record.content ?? record;
+    const text = extractTextContent(inner);
+    if (text) {
+      parts.push(text);
+      continue;
+    }
+    const innerType = contentBlockType(inner);
+    if (innerType === "image") {
+      parts.push("[image]");
+    } else if (innerType === "audio") {
+      parts.push("[audio]");
+    } else if (innerType.startsWith("resource")) {
+      const innerRecord = asRecord(inner);
+      const uri =
+        innerRecord && typeof innerRecord.uri === "string" ? innerRecord.uri : "";
+      parts.push(uri ? `[resource ${uri}]` : "[resource]");
+    }
+  }
+
+  const body = parts.filter(Boolean).join("\n\n").trim();
+  return body ? clipToolDetail(body) : "";
+}
+
+/** Fallback when a tool reports results only as `rawOutput`. */
+function renderToolRawOutput(rawOutput: unknown): string {
+  if (rawOutput == null) return "";
+  const text = extractTextContent(rawOutput);
+  if (text.trim()) return clipToolDetail(text);
+  if (typeof rawOutput === "object") {
+    try {
+      const json = JSON.stringify(rawOutput, null, 2);
+      return json && json !== "{}" ? clipToolDetail(json) : "";
+    } catch {
+      return "";
+    }
+  }
+  return clipToolDetail(String(rawOutput));
+}
+
+/**
+ * Compose the tool card body.
+ *
+ * Line 1 stays `title · status` — App's stuck-tool cleanup rewrites exactly that
+ * line and keeps the rest.
+ */
+export function renderToolText(fields: {
+  title?: string;
+  status?: string;
+  path?: string;
+  input?: string;
+  detail?: string;
+}): string {
+  const title = fields.title || "tool";
+  const status = fields.status || "pending";
+  const lines = [`${title} · ${status}`];
+  if (fields.path) lines.push(fields.path);
+  // Input is a placeholder for "what was asked" — real output replaces it.
+  if (!fields.detail && fields.input) lines.push(fields.input);
+  if (fields.detail) lines.push("", fields.detail);
+  return lines.join("\n");
+}
+
 /** Extract human-readable progress from ACP session/update payloads. */
 export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
   const update = getSessionUpdate(data);
@@ -59,14 +206,17 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
       : typeof update.tool_call_id === "string"
         ? update.tool_call_id
         : undefined;
+    // Only report what this update actually carried: ACP updates are partial,
+    // and a fabricated fallback here would rename a finished tool back to
+    // "tool" (or flip "completed" to "updated") on a bare status ping.
     const title =
       (typeof update.title === "string" && update.title) ||
       (typeof update.name === "string" && update.name) ||
       (typeof update.kind === "string" && update.kind !== "other" && update.kind) ||
-      "tool";
+      undefined;
     const status =
       (typeof update.status === "string" && update.status) ||
-      (sessionUpdate === "tool_call" ? "pending" : "updated");
+      (sessionUpdate === "tool_call" ? "pending" : undefined);
     const rawInput = update.rawInput ?? update.raw_input ?? update.input;
     const inputPreview =
       rawInput == null
@@ -76,17 +226,27 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
           : Object.keys(rawInput as object).length === 0
             ? ""
             : JSON.stringify(rawInput);
-    const clipped = inputPreview.length > 200 ? `${inputPreview.slice(0, 200)}…` : inputPreview;
-    const text = clipped ? `${title} · ${status}\n${clipped}` : `${title} · ${status}`;
+    const clippedInput = inputPreview.length > 200 ? `${inputPreview.slice(0, 200)}…` : inputPreview;
+    // What the tool is actually doing / produced — agents stream this and the
+    // card used to throw it away, which is why long tools looked frozen.
+    const toolPath = firstToolLocation(update);
+    const toolDetail =
+      renderToolContent(update.content) || renderToolRawOutput(update.rawOutput ?? update.raw_output);
+    // `{"filePath":"…"}` under a line that already shows that path is noise.
+    const toolInput = inputIsOnlyPath(rawInput, toolPath) ? "" : clippedInput;
+
     return {
       role: "tool",
-      text,
+      text: renderToolText({ title, status, path: toolPath, input: toolInput, detail: toolDetail }),
       isDelta: false,
       sessionUpdate,
       messageId,
       toolCallId,
       toolStatus: status,
       toolTitle: title,
+      toolPath,
+      toolDetail,
+      toolInput,
     };
   }
 
@@ -294,6 +454,7 @@ export function toolCallEvent(
   toolCallId?: string,
   status?: string,
   title?: string,
+  extra?: { path?: string; detail?: string; input?: string },
 ): SessionEvent {
   return {
     type: "tool_call",
@@ -302,6 +463,11 @@ export function toolCallEvent(
     toolCallId,
     status,
     title,
+    // First title is the tool name; later updates replace it with a summary.
+    toolName: title,
+    path: extra?.path,
+    detail: extra?.detail,
+    input: extra?.input,
     createdAt: new Date().toISOString(),
   };
 }
@@ -445,19 +611,36 @@ export function applyAcpPartToEvents(
       if (idx >= 0) {
         const prev = base[idx];
         if (prev.type !== "tool_call") return base;
+        // Updates carry only the fields that changed: a bare status update must
+        // not wipe the output the tool already produced.
+        const merged = {
+          title: part.toolTitle ?? prev.title,
+          status: part.toolStatus ?? prev.status,
+          path: part.toolPath ?? prev.path,
+          detail: part.toolDetail || prev.detail,
+          input: part.toolInput || prev.input,
+        };
         const next = [...base];
         next[idx] = {
           ...prev,
-          text: part.text || prev.text,
-          status: part.toolStatus ?? prev.status,
-          title: part.toolTitle ?? prev.title,
+          ...merged,
+          // Never overwritten: `title` becomes a summary, the name must not.
+          toolName: prev.toolName ?? part.toolTitle,
+          text: renderToolText(merged),
         };
         return next;
       }
     }
     return [
       ...base,
-      toolCallEvent(sessionId, part.text, part.toolCallId, part.toolStatus, part.toolTitle),
+      toolCallEvent(
+        sessionId,
+        part.text,
+        part.toolCallId,
+        part.toolStatus ?? "pending",
+        part.toolTitle ?? "tool",
+        { path: part.toolPath, detail: part.toolDetail, input: part.toolInput },
+      ),
     ];
   }
 

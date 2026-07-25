@@ -2,10 +2,12 @@
 
 mod acp;
 mod commands;
+mod context_inventory;
 mod debug_log;
 mod git_service;
 mod handoff;
 mod models;
+mod open_target;
 mod process_util;
 mod provider_usage;
 mod pty;
@@ -25,8 +27,48 @@ pub struct AppState {
     pub sessions: SessionManager,
 }
 
+/// Shut down our own state, then leave — deliberately without unwinding.
+///
+/// Closing the window makes tao tear down the WebView2 host, which pumps a
+/// paint while a redraw is already in flight and trips
+/// `assert!(flush_paint_messages(..))` in tao 0.35.3
+/// (`platform_impl/windows/event_loop.rs:2344`, tao#1180 / tauri#14088).
+/// A panic hook cannot save us there: tao stashes the payload and re-raises it
+/// with `panic::resume_unwind` on the message loop, so the process dies with
+/// 101 no matter what the hook prints — and our agent processes get orphaned
+/// with it. So we do the cleanup ourselves and exit before that path runs.
+fn shutdown_and_exit(app: &tauri::AppHandle) -> ! {
+    use tauri::Manager;
+
+    if let Some(state) = app.try_state::<AppState>() {
+        let acp = state.acp.stop_all();
+        let pty = state.pty.stop_all();
+        debug_log::append(
+            "shutdown",
+            "info",
+            "",
+            &format!("stopped {acp} acp · {pty} pty"),
+            Some("exiting before tao window teardown (tao#1180)"),
+        );
+    }
+    std::process::exit(0);
+}
+
 fn main() {
+    // A panic anywhere else should still leave a trace in the dev diary.
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        debug_log::append("panic", "error", "", &info.to_string(), None);
+        previous_hook(info);
+    }));
+
     tauri::Builder::default()
+        .on_window_event(|window, event| {
+            use tauri::Manager;
+            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                shutdown_and_exit(window.app_handle());
+            }
+        })
         .manage(AppState {
             storage: Mutex::new(
                 StorageService::new().expect("failed to initialize AgentShell storage"),
@@ -41,6 +83,8 @@ fn main() {
             commands::delete_project,
             commands::list_agents,
             commands::test_agent_command,
+            commands::list_agent_commands,
+            commands::install_agent,
             commands::list_sessions,
             commands::create_session,
             commands::update_session_agent,
@@ -69,7 +113,16 @@ fn main() {
             commands::generate_handoff,
             commands::get_changed_files,
             commands::get_file_diff,
-            commands::respond_acp_permission
+            commands::respond_acp_permission,
+            commands::scan_project_context,
+            commands::set_project_context_enabled,
+            commands::project_context_prompt,
+            commands::check_outside_project_paths,
+            commands::grant_workspace_root,
+            commands::revoke_workspace_root,
+            open_target::resolve_link_target,
+            open_target::open_external,
+            open_target::reveal_in_file_manager
         ])
         .run(tauri::generate_context!())
         .expect("error while running AgentShell");

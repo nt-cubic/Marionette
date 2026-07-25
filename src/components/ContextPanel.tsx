@@ -1,5 +1,12 @@
 import { FileDiff, PanelRightClose, PanelRightOpen, RefreshCw } from "lucide-react";
-import type { ChangedFile, HandoffResult, UsageSnapshot, UsageWindow } from "../lib/types";
+import { useState } from "react";
+import type {
+  ChangedFile,
+  HandoffResult,
+  ProjectContext,
+  UsageSnapshot,
+  UsageWindow,
+} from "../lib/types";
 import { WindowControls } from "./WindowControls";
 
 type ContextPanelProps = {
@@ -13,6 +20,13 @@ type ContextPanelProps = {
   onRefreshChangedFiles?: () => void;
   onOpenDiff?: (path: string) => void;
   handoff?: HandoffResult | null;
+  /** MCP servers + skills found on this machine / in this project. */
+  projectContext?: ProjectContext | null;
+  projectContextScanning?: boolean;
+  onRescanProjectContext?: () => void;
+  onToggleProjectContext?: (kind: "mcp" | "skill", id: string, enabled: boolean) => void;
+  /** Agent of the active dialog — decides what is already native. */
+  activeAgentId?: string;
   /** Parent-driven panel width drag. */
   resizeDragging?: boolean;
   onResizeStart?: () => void;
@@ -67,9 +81,15 @@ export function ContextPanel({
   onRefreshChangedFiles,
   onOpenDiff,
   handoff = null,
+  projectContext = null,
+  projectContextScanning = false,
+  onRescanProjectContext,
+  onToggleProjectContext,
+  activeAgentId,
   resizeDragging = false,
   onResizeStart,
 }: ContextPanelProps) {
+  const [showAllSkills, setShowAllSkills] = useState(false);
   if (collapsed) {
     return (
       <aside className="context-panel is-collapsed" aria-label="Context panel">
@@ -171,6 +191,123 @@ export function ContextPanel({
               </li>
             ))}
           </ul>
+        )}
+      </section>
+
+      <section className="context-card">
+        <div className="context-card__heading">
+          <span>Project context</span>
+          {onRescanProjectContext && (
+            <button
+              className="icon-button icon-button--small context-panel__button"
+              type="button"
+              title="Rescan agent configs and skill folders"
+              aria-label="Rescan project context"
+              onClick={onRescanProjectContext}
+            >
+              <RefreshCw size={13} />
+            </button>
+          )}
+        </div>
+        {projectContext == null ? (
+          <p className="context-card__empty">
+            {projectContextScanning ? "Scanning…" : "Open a project to scan MCP servers and skills."}
+          </p>
+        ) : (
+          <div className="context-lend">
+            <p className="context-lend__hint">
+              Lend these to agents that don’t have them. Checked items go into the next
+              connection — MCP servers via <code>session/new</code>, skills as a pointer list.
+            </p>
+
+            <span className="context-lend__label">
+              MCP servers ({projectContext.inventory.mcpServers.length})
+            </span>
+            {projectContext.inventory.mcpServers.length === 0 ? (
+              <p className="context-card__empty">None found in agent configs.</p>
+            ) : (
+              <ul className="context-lend__list">
+                {projectContext.inventory.mcpServers.map((server) => {
+                  const enabled = projectContext.selection.mcpServers[server.id] ?? false;
+                  const native = activeAgentId ? server.agents.includes(activeAgentId) : false;
+                  return (
+                    <li key={server.id}>
+                      <label className="context-lend__row" title={server.sourcePaths.join("\n")}>
+                        <input
+                          type="checkbox"
+                          checked={enabled}
+                          onChange={(event) =>
+                            onToggleProjectContext?.("mcp", server.id, event.target.checked)
+                          }
+                        />
+                        <span className="context-lend__name">{server.name}</span>
+                        <span className="context-lend__meta">
+                          {server.transport}
+                          {server.agents.length > 0 ? ` · has: ${server.agents.join(", ")}` : ""}
+                          {native ? " · native here" : ""}
+                        </span>
+                      </label>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+
+            <span className="context-lend__label">
+              Skills ({projectContext.inventory.skills.length})
+            </span>
+            {projectContext.inventory.skills.length === 0 ? (
+              <p className="context-card__empty">No SKILL.md folders found.</p>
+            ) : (
+              <ul className="context-lend__list">
+                {(showAllSkills
+                  ? projectContext.inventory.skills
+                  : projectContext.inventory.skills.slice(0, 6)
+                ).map((skill) => {
+                  const enabled = projectContext.selection.skills[skill.id] ?? true;
+                  const native = activeAgentId ? skill.agents.includes(activeAgentId) : false;
+                  return (
+                    <li key={skill.id}>
+                      <label
+                        className="context-lend__row"
+                        title={`${skill.description || skill.name}\n${skill.file}`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={enabled}
+                          onChange={(event) =>
+                            onToggleProjectContext?.("skill", skill.id, event.target.checked)
+                          }
+                        />
+                        <span className="context-lend__name">{skill.name}</span>
+                        <span className="context-lend__meta">
+                          {skill.sources.join(", ")}
+                          {native ? " · native here" : ""}
+                        </span>
+                      </label>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            {projectContext.inventory.skills.length > 6 && (
+              <button
+                type="button"
+                className="context-lend__more"
+                onClick={() => setShowAllSkills((current) => !current)}
+              >
+                {showAllSkills
+                  ? "Show fewer"
+                  : `Show all ${projectContext.inventory.skills.length}`}
+              </button>
+            )}
+
+            {projectContext.inventory.notes.map((note) => (
+              <p className="context-card__empty" key={note}>
+                {note}
+              </p>
+            ))}
+          </div>
         )}
       </section>
 

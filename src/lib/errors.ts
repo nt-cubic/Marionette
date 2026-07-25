@@ -52,7 +52,8 @@ export function classifyAgentError(raw: unknown): ClassifiedError {
       kind: "command_missing",
       title: "Agent command missing",
       message,
-      actionHint: "Install the CLI and ensure it is on PATH.",
+      actionHint:
+        "Open the agent menu in the composer — agents with a known package have an Install button.",
     };
   }
 
