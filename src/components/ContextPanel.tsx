@@ -1,5 +1,4 @@
 import { FileDiff, PanelRightClose, PanelRightOpen, RefreshCw } from "lucide-react";
-import { useState } from "react";
 import type {
   ChangedFile,
   HandoffResult,
@@ -89,7 +88,6 @@ export function ContextPanel({
   resizeDragging = false,
   onResizeStart,
 }: ContextPanelProps) {
-  const [showAllSkills, setShowAllSkills] = useState(false);
   if (collapsed) {
     return (
       <aside className="context-panel is-collapsed" aria-label="Context panel">
@@ -260,10 +258,7 @@ export function ContextPanel({
               <p className="context-card__empty">No SKILL.md folders found.</p>
             ) : (
               <ul className="context-lend__list">
-                {(showAllSkills
-                  ? projectContext.inventory.skills
-                  : projectContext.inventory.skills.slice(0, 6)
-                ).map((skill) => {
+                {projectContext.inventory.skills.map((skill) => {
                   const enabled = projectContext.selection.skills[skill.id] ?? true;
                   const native = activeAgentId ? skill.agents.includes(activeAgentId) : false;
                   return (
@@ -290,18 +285,6 @@ export function ContextPanel({
                 })}
               </ul>
             )}
-            {projectContext.inventory.skills.length > 6 && (
-              <button
-                type="button"
-                className="context-lend__more"
-                onClick={() => setShowAllSkills((current) => !current)}
-              >
-                {showAllSkills
-                  ? "Show fewer"
-                  : `Show all ${projectContext.inventory.skills.length}`}
-              </button>
-            )}
-
             {projectContext.inventory.notes.map((note) => (
               <p className="context-card__empty" key={note}>
                 {note}
