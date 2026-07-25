@@ -1,15 +1,16 @@
-# AgentShell
+# Marionette
 
-**统一的多 Agent 桌面终端**
+**Agent Harness, All in One**  
+**操控所有 Agent，一个窗口就够了**
 
 把 OpenCode、Claude Code、Codex CLI、Grok Build…… 全部放进一个窗口。  
 切换 Agent 不断上下文，用量一目了然，对话结构化呈现。
 
-> 目前版本 **0.1.0** —— 核心流程可用了，界面在持续打磨。
+> 目前版本 **0.1.0** —— 核心流程已可用，界面在持续打磨。
 
 ---
 
-## 为什么要有 AgentShell
+## 为什么要有 Marionette
 
 AI 编码 Agent 爆发了一年，格局是这样的：
 
@@ -21,7 +22,7 @@ AI 编码 Agent 爆发了一年，格局是这样的：
 每个都是 CLI，各有各的认证、模型、界面风格。  
 想在同一个项目里混合使用？上下文断了，体验支离破碎。
 
-**AgentShell 不做新的 Agent**——它做一个**管理 Agent 的桌面 Shell**，让所有 Agent 在统一的界面里工作。
+Marionette 不做新的 Agent——它做一个 **Agent 操控台**，让你在统一的界面里自如地指挥所有 Agent。
 
 ---
 
@@ -101,15 +102,15 @@ Composer 下拉框 → 选 Agent → 自动检测可用性
 ### 构建运行
 
 ```bash
-git clone https://github.com/your/agentshell
-cd agentshell
+git clone https://github.com/your/marionette
+cd marionette
 npm install
 npm run tauri dev
 ```
 
 ### 添加第一个项目
 
-1. 打开 AgentShell
+1. 打开 Marionette
 2. 左侧 Project Shelf → 「Add Project」
 3. 选择你的项目目录
 4. 在 Composer 里选 Agent，开始对话
@@ -120,17 +121,17 @@ npm run tauri dev
 
 ```
 ┌──────────────────────────────────────┐
-│              UI (React)              │
-│   Clean View · Composer · Context    │
-│   Panel · Project Shelf · Comments   │
+│             UI (React)               │
+│  Clean View · Composer · Context     │
+│  Panel · Project Shelf · Comments    │
 ├──────────────────────────────────────┤
-│          ASP (AgentShell Protocol)   │
-│    Agent · Input · Capabilities ·    │
-│    Handoff · Clean Event             │
+│         ASP (Agent Service Protocol) │
+│   Agent · Input · Capabilities ·     │
+│   Handoff · Clean Event              │
 ├──────────────┬───────────────────────┤
-│   ACP Agent  │    PTY Agent          │
-│  (OpenCode,  │  (Codex, Claude,      │
-│   Grok)      │   Grok fallback)      │
+│  ACP Agent   │    PTY Agent          │
+│ (OpenCode,   │  (Codex, Claude,      │
+│  Grok)       │   Grok fallback)      │
 └──────────────┴───────────────────────┘
 ```
 
@@ -180,6 +181,7 @@ npm run dev:mock
 - **Clean View 优先**：所有 Agent 默认看结构化视图，Raw Terminal 是 toggle
 - **跨 Agent 上下文靠文件**：`handoff.md` 是纯文本，用户能看懂、能手动改、能 Git 提交
 - **持久化优先**：所有会话存 JSONL 文件，全文可搜索，应用重开不丢
+- **你是操控者**：Agent 是木偶，你才是提线师——Marionette 让你掌控全局
 
 ---
 

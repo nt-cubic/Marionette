@@ -74,3 +74,67 @@ export function withHistoryInjection(
   if (!historyPrefix) return userText;
   return `${historyPrefix}${userText}`;
 }
+
+export type PendingHandoff = {
+  prompt: string;
+  handoffPath: string;
+  targetAgentId: string;
+};
+
+/**
+ * Handoff notes written by an agent switch, still waiting to be sent.
+ *
+ * Switching harness must not dump a wall of text into the composer — the notes
+ * ride along with whatever the user types next. A handoff is pending while no
+ * user message follows it in this dialog, which also means it survives an app
+ * restart (the transcript is the source of truth, not in-memory state).
+ */
+export function pendingHandoff(
+  events: SessionEvent[],
+  sessionId: string,
+): PendingHandoff | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.sessionId !== sessionId) continue;
+    if (event.type === "user_message") return null;
+    if (event.type === "handoff_prepared") {
+      const prompt = event.prompt.trim();
+      if (!prompt) return null;
+      return {
+        prompt,
+        handoffPath: event.handoffPath,
+        targetAgentId: event.targetAgentId,
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Send the pending handoff together with the user's own message.
+ *
+ * `compact` is for the send that also carries the whole local transcript: the
+ * agent is already getting the conversation, so repeating the handoff summary
+ * would just spend context twice — a pointer to the notes file is enough.
+ */
+export function withHandoffAttachment(
+  handoff: PendingHandoff | null,
+  userText: string,
+  opts?: { compact?: boolean },
+): string {
+  if (!handoff) return userText;
+  if (opts?.compact) {
+    return [
+      `[AgentShell — you are taking over this dialog from another agent. Full handoff notes: \`${handoff.handoffPath}\`]`,
+      "",
+      userText,
+    ].join("\n");
+  }
+  return [
+    "[AgentShell — handoff from the previous agent in this dialog]",
+    handoff.prompt,
+    "[End of handoff. The user's new message follows.]",
+    "",
+    userText,
+  ].join("\n\n");
+}

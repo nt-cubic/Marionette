@@ -1,6 +1,8 @@
 import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
+import { linkifyChildren } from "./LinkedText";
+import { openExternal } from "../lib/api";
 
 type MarkdownBodyProps = {
   text: string;
@@ -35,16 +37,37 @@ export function MarkdownBody({ text, className }: MarkdownBodyProps) {
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkBreaks]}
         components={{
+          // Never let a link navigate the app window — hand it to the OS.
           a: ({ href, children }) => (
-            <a href={href} target="_blank" rel="noreferrer noopener">
+            <a
+              href={href}
+              target="_blank"
+              rel="noreferrer noopener"
+              onClick={(event) => {
+                if (!href) return;
+                event.preventDefault();
+                void openExternal(href);
+              }}
+            >
               {children}
             </a>
           ),
           img: ({ src, alt }) => (
             <img src={src} alt={alt ?? ""} loading="lazy" className="md-body__img" />
           ),
-          p: ({ children }) => <p className="md-body__p">{children}</p>,
-          li: ({ children }) => <li className="md-body__li">{children}</li>,
+          // Paths / URLs written as prose become clickable too.
+          p: ({ children }) => <p className="md-body__p">{linkifyChildren(children)}</p>,
+          li: ({ children }) => <li className="md-body__li">{linkifyChildren(children)}</li>,
+          td: ({ children }) => <td>{linkifyChildren(children)}</td>,
+          code: ({ children, className }) => {
+            // Fenced blocks arrive as `pre > code`; inline code is short and
+            // single-line, and is where models usually put a path.
+            const isInline =
+              typeof children === "string" && children.length < 200 && !children.includes("\n");
+            return (
+              <code className={className}>{isInline ? linkifyChildren(children) : children}</code>
+            );
+          },
         }}
       >
         {prepareMarkdown(text)}

@@ -53,6 +53,30 @@ export async function testAgentCommand(agentId: string): Promise<AgentCommandSta
   return invoke<AgentCommandStatus>("test_agent_command", { agentId });
 }
 
+/** Status of every agent CLI in one round-trip (bridge + the CLIs it drives). */
+export async function listAgentCommands(): Promise<AgentCommandStatus[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    return await invoke<AgentCommandStatus[]>("list_agent_commands");
+  } catch {
+    return [];
+  }
+}
+
+/** Install the agent's ACP command with npm (package comes from the Rust table). */
+export async function installAgent(
+  agentId: string,
+  includeDependencies = true
+): Promise<import("./types").AgentInstallResult> {
+  if (!isTauriRuntime()) {
+    throw new Error("Installing agents is available in the desktop app");
+  }
+  return invoke<import("./types").AgentInstallResult>("install_agent", {
+    agentId,
+    includeDependencies,
+  });
+}
+
 export async function listSessions(projectId: string): Promise<Session[]> {
   if (!isTauriRuntime()) return mockSessions.filter((session) => session.projectId === projectId);
   try {
@@ -344,4 +368,126 @@ export async function getFileDiff(projectId: string, path: string): Promise<stri
 export async function respondAcpPermission(requestId: string, optionId: string): Promise<void> {
   if (!isTauriRuntime()) return;
   await invoke("respond_acp_permission", { requestId, optionId });
+}
+
+// ─── Project context: MCP servers + skills lent to agents that lack them ────
+
+/** Scan machine + project for MCP servers and skills (cheap; call on demand). */
+export async function scanProjectContext(
+  projectId: string
+): Promise<import("./types").ProjectContext | null> {
+  if (!isTauriRuntime()) {
+    const { projectContext } = await import("./mockData");
+    return projectId ? { ...projectContext, projectId } : null;
+  }
+  if (!projectId) return null;
+  try {
+    return await invoke<import("./types").ProjectContext>("scan_project_context", { projectId });
+  } catch {
+    return null;
+  }
+}
+
+export async function setProjectContextEnabled(
+  projectId: string,
+  kind: "mcp" | "skill",
+  id: string,
+  enabled: boolean
+): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("set_project_context_enabled", { projectId, kind, id, enabled });
+}
+
+export type OutsidePath = {
+  path: string;
+  /** Folder to grant (a file grants its parent). */
+  dir: string;
+  isDirectory: boolean;
+};
+
+/** Which paths in a draft point outside the project and are not granted yet. */
+export async function checkOutsideProjectPaths(
+  projectId: string,
+  paths: string[]
+): Promise<OutsidePath[]> {
+  if (!isTauriRuntime()) {
+    // Browser mock: treat any absolute path as outside so the grant dialog is
+    // reachable without the desktop runtime. Desktop asks Rust for the truth.
+    return paths
+      .filter((path) => /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("/"))
+      .map((path) => ({
+        path,
+        dir: path.slice(0, Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/"))),
+        isDirectory: false,
+      }));
+  }
+  if (!projectId || paths.length === 0) return [];
+  try {
+    return await invoke<OutsidePath[]>("check_outside_project_paths", { projectId, paths });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Grant a folder outside the project. Applies via ACP `additionalDirectories`
+ * at `session/new`, so a live session has to reconnect to pick it up.
+ */
+export async function grantWorkspaceRoot(
+  projectId: string,
+  dir: string,
+  sessionId?: string | null
+): Promise<{ workspaceRoots: string[]; restartNeeded: boolean }> {
+  if (!isTauriRuntime()) return { workspaceRoots: [], restartNeeded: false };
+  return invoke("grant_workspace_root", { projectId, dir, sessionId: sessionId ?? null });
+}
+
+/** Skills preamble for an agent that has no skill system of its own. */
+export async function projectContextPrompt(
+  projectId: string,
+  agentId: string
+): Promise<string | null> {
+  if (!isTauriRuntime() || !projectId || !agentId) return null;
+  try {
+    return await invoke<string | null>("project_context_prompt", { projectId, agentId });
+  } catch {
+    return null;
+  }
+}
+
+// ─── Opening paths / URLs found in agent output ─────────────────────────────
+
+export type LinkResolution = {
+  kind: "url" | "file" | "directory" | "missing";
+  target: string;
+  /** Windows would execute this rather than open it — never launched silently. */
+  risky: boolean;
+};
+
+export async function resolveLinkTarget(
+  target: string,
+  cwd?: string | null
+): Promise<LinkResolution> {
+  if (!isTauriRuntime()) {
+    const isUrl = /^https?:\/\//i.test(target);
+    return { kind: isUrl ? "url" : "missing", target, risky: false };
+  }
+  return invoke<LinkResolution>("resolve_link_target", { target, cwd: cwd ?? null });
+}
+
+/** Hand a file / folder / URL to the OS default handler (user-initiated only). */
+export async function openExternal(
+  target: string,
+  cwd?: string | null,
+  force = false
+): Promise<{ opened: boolean; reason?: string; message?: string; target?: string }> {
+  if (!isTauriRuntime()) {
+    return { opened: false, reason: "browser", message: "Opening is available in the desktop app" };
+  }
+  return invoke("open_external", { target, cwd: cwd ?? null, force });
+}
+
+export async function revealInFileManager(target: string, cwd?: string | null): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("reveal_in_file_manager", { target, cwd: cwd ?? null });
 }

@@ -3,10 +3,19 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { Expand, Plus, Search, SendHorizontal, Shrink, Square } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from "react";
 import { expandAcpConfigAttempts, getAcpSupplement, mergeAcpCapabilities } from "../lib/acpSupplements";
-import { getSessionCapabilities, isTauriRuntime, sendAcpPrompt, updateAcpSession } from "../lib/api";
+import {
+  getSessionCapabilities,
+  installAgent,
+  isTauriRuntime,
+  listAgentCommands,
+  sendAcpPrompt,
+  updateAcpSession,
+} from "../lib/api";
+import { cacheAgentCapabilities, cachedCapabilitiesFor } from "../lib/capabilityCache";
 import { ptyCommandsForPatch, ptyProfileToCapabilities } from "../lib/ptyProfiles";
 import type {
   AcpEvent,
+  AgentCommandStatus,
   AgentConfig,
   CapabilitySnapshot,
   ModelDef,
@@ -157,10 +166,6 @@ const COMPOSER_HEIGHT_MIN = 100;
 const COMPOSER_HEIGHT_MAX = 480;
 const COMPOSER_HEIGHT_DEFAULT = 112;
 const COMPOSER_HEIGHT_KEY = "agentshell-composer-height";
-/** Extra inline height while the warming strip is shown — added on top of
- * composerHeight (not via a CSS auto-height override) so it can never fight
- * the inline style the resize/expand feature sets on the same element. */
-const COMPOSER_WARMING_STRIP_HEIGHT = 26;
 
 function readComposerHeight(): number {
   try {
@@ -188,8 +193,6 @@ function applyCapabilities(
     setCurrentEffort: (e: number | null) => void;
     setCurrentEffortId: (e: string | null) => void;
   },
-  /** While locked, ignore server currentMode so the chip does not flash old→new→old. */
-  modeLock?: { id: string; until: number } | null,
 ) {
   if (!result) return;
   // Normalize in case arrays arrived missing (event bridge edge cases)
@@ -209,8 +212,7 @@ function applyCapabilities(
     effortConfigId: result.effortConfigId ?? null,
   };
   setters.setCaps(normalized);
-  const lockLive = modeLock && Date.now() < modeLock.until ? modeLock.id : null;
-  setters.setCurrentMode(lockLive ?? normalized.currentMode);
+  setters.setCurrentMode(normalized.currentMode);
   setters.setCurrentModel(normalized.currentModel);
   setters.setCurrentEffortId(normalized.currentEffortId);
   if (normalized.currentEffort != null) {
@@ -220,6 +222,73 @@ function applyCapabilities(
   } else {
     setters.setCurrentEffort(null);
   }
+}
+
+/** A pick the user just made, held while the agent echoes the old value back. */
+type OptionPins = {
+  model?: string;
+  mode?: string;
+  effortId?: string;
+  effort?: number;
+};
+
+/** How long a local pick outranks server echoes (agents settle within ~1–2s). */
+const OPTION_PIN_MS = 4000;
+
+/**
+ * Keep the dialog's saved choice on the chips even when the agent reports its
+ * own defaults. Display only — the snapshot stays live, so the restore pass can
+ * still tell what needs pushing (and what to revert to).
+ *
+ * This is what makes the controls stop flickering: disk prefs are the dialog's
+ * truth, and every snapshot (cache, handshake, set_config echo) is filtered
+ * through them instead of overwriting them.
+ */
+function applyPreferredDisplay(
+  caps: CapabilitySnapshot,
+  prefs: SessionComposerPrefs | null | undefined,
+  setters: {
+    setCurrentMode: (m: string | null) => void;
+    setCurrentModel: (m: string | null) => void;
+    setCurrentEffort: (e: number | null) => void;
+    setCurrentEffortId: (e: string | null) => void;
+  },
+) {
+  if (!prefs) return;
+  const model = prefs.preferredModel?.trim();
+  const mode = prefs.preferredMode?.trim();
+  const effortId = prefs.preferredEffortId?.trim();
+  const effort = prefs.preferredEffort;
+  if (model && (caps.models ?? []).some((m) => m.id === model)) setters.setCurrentModel(model);
+  if (mode && (caps.modes ?? []).some((m) => m.id === mode)) setters.setCurrentMode(mode);
+  if (effortId && (caps.effortOptions ?? []).some((o) => o.id === effortId)) {
+    setters.setCurrentEffortId(effortId);
+  } else if (
+    typeof effort === "number" &&
+    Number.isFinite(effort) &&
+    caps.thinkingEffort != null &&
+    effort >= caps.thinkingEffort.min &&
+    effort <= caps.thinkingEffort.max
+  ) {
+    setters.setCurrentEffort(effort);
+  }
+}
+
+/** A pick made seconds ago outranks both the snapshot and the saved prefs. */
+function applyPinnedDisplay(
+  pin: { pins: OptionPins; until: number } | null,
+  setters: {
+    setCurrentMode: (m: string | null) => void;
+    setCurrentModel: (m: string | null) => void;
+    setCurrentEffort: (e: number | null) => void;
+    setCurrentEffortId: (e: string | null) => void;
+  },
+) {
+  if (!pin || Date.now() >= pin.until) return;
+  if (pin.pins.model != null) setters.setCurrentModel(pin.pins.model);
+  if (pin.pins.mode != null) setters.setCurrentMode(pin.pins.mode);
+  if (pin.pins.effortId != null) setters.setCurrentEffortId(pin.pins.effortId);
+  if (pin.pins.effort != null) setters.setCurrentEffort(pin.pins.effort);
 }
 
 export function Composer({
@@ -242,11 +311,26 @@ export function Composer({
   onEnsureAgentReady,
   lastActivityAt = null,
 }: ComposerProps) {
-  const [caps, setCaps] = useState<CapabilitySnapshot | null>(null);
-  const [currentMode, setCurrentMode] = useState<string | null>(null);
-  const [currentModel, setCurrentModel] = useState<string | null>(null);
-  const [currentEffort, setCurrentEffort] = useState<number | null>(null);
-  const [currentEffortId, setCurrentEffortId] = useState<string | null>(null);
+  /**
+   * Offline-first controls: the last catalog this agent advertised, with this
+   * dialog's saved model/mode/effort overlaid. Computed once per mount (App
+   * remounts Composer whenever dialog identity changes) so the chips are on
+   * screen in the first paint instead of appearing after a handshake.
+   */
+  const initialCaps = useMemo(
+    () => (agent.transport === "acp" ? cachedCapabilitiesFor(agent.id, sessionPrefs) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+  const [caps, setCaps] = useState<CapabilitySnapshot | null>(initialCaps);
+  const [currentMode, setCurrentMode] = useState<string | null>(initialCaps?.currentMode ?? null);
+  const [currentModel, setCurrentModel] = useState<string | null>(initialCaps?.currentModel ?? null);
+  const [currentEffort, setCurrentEffort] = useState<number | null>(initialCaps?.currentEffort ?? null);
+  const [currentEffortId, setCurrentEffortId] = useState<string | null>(
+    initialCaps?.currentEffortId ?? null,
+  );
+  /** True once caps came from a live agent — cached caps must not act as live. */
+  const [capsLive, setCapsLive] = useState(false);
   const [menu, setMenu] = useState<"mode" | "model" | "effort" | "agent" | null>(null);
   const [modelQuery, setModelQuery] = useState("");
   const [draft, setDraft] = useState("");
@@ -254,6 +338,10 @@ export function Composer({
   const [resizingComposer, setResizingComposer] = useState(false);
   const [flashError, setFlashError] = useState("");
   const [dropActive, setDropActive] = useState(false);
+  /** CLI availability per agent — loaded when the agent menu opens. */
+  const [agentStatuses, setAgentStatuses] = useState<Record<string, AgentCommandStatus>>({});
+  const [installingAgentId, setInstallingAgentId] = useState<string | null>(null);
+  const [installNote, setInstallNote] = useState("");
   const errorTimer = useRef<ReturnType<typeof setTimeout>>();
   const updating = useRef(false);
   const modelSearchRef = useRef<HTMLInputElement>(null);
@@ -268,13 +356,27 @@ export function Composer({
   const appliedPrefillToken = useRef(0);
   /** Restore disk prefs once per (session, agent) after caps are known. */
   const prefsRestoredKey = useRef("");
-  /** After user picks a mode, ignore server echoes that still report the old one. */
-  const modeLockRef = useRef<{ id: string; until: number } | null>(null);
+  /** After the user picks an option, ignore server echoes still reporting the old one. */
+  const pinsRef = useRef<{ pins: OptionPins; until: number } | null>(null);
   const composerHeightRef = useRef(composerHeight);
   composerHeightRef.current = composerHeight;
+  /** Latest disk prefs, read by effects that must not re-run on every write. */
+  const sessionPrefsRef = useRef(sessionPrefs);
+  sessionPrefsRef.current = sessionPrefs;
 
-  const lockMode = useCallback((id: string) => {
-    modeLockRef.current = { id, until: Date.now() + 4000 };
+  const pinOptions = useCallback((patch: OptionPins) => {
+    const live =
+      pinsRef.current && Date.now() < pinsRef.current.until ? pinsRef.current.pins : {};
+    pinsRef.current = { pins: { ...live, ...patch }, until: Date.now() + OPTION_PIN_MS };
+  }, []);
+
+  /** Drop a pin when the agent rejected the change (revert path). */
+  const unpinOption = useCallback((key: keyof OptionPins) => {
+    const current = pinsRef.current;
+    if (!current) return;
+    const pins = { ...current.pins };
+    delete pins[key];
+    pinsRef.current = Object.keys(pins).length > 0 ? { pins, until: current.until } : null;
   }, []);
 
   // Handoff / external prefill — never auto-send.
@@ -293,12 +395,33 @@ export function Composer({
     setCurrentEffortId,
   };
 
+  /**
+   * `source` tells the difference between what an agent is really offering
+   * right now and what we remembered from last time:
+   *  - `acp`      live negotiation → refresh the offline cache
+   *  - `handshake` live session/new → also refresh the remembered defaults
+   *  - `profile`  static PTY profile (nothing to cache)
+   *  - `cache`    replay of the offline snapshot (must not count as live)
+   */
   const applyCaps = useCallback(
-    (result: CapabilitySnapshot | null | undefined) => {
-      applyCapabilities(result, capSetters, modeLockRef.current);
+    (
+      result: CapabilitySnapshot | null | undefined,
+      source: "acp" | "handshake" | "profile" | "cache" = "acp",
+    ) => {
+      applyCapabilities(result, capSetters);
+      if (!result) return;
+      // Layered display: snapshot → this dialog's saved choice → the pick the
+      // user just made. Without this the chips flash agent-default → saved →
+      // picked on every connect and every set_config echo.
+      applyPreferredDisplay(result, sessionPrefsRef.current, capSetters);
+      applyPinnedDisplay(pinsRef.current, capSetters);
+      if (source === "cache") return;
+      setCapsLive(true);
+      if (source === "profile") return;
+      cacheAgentCapabilities(agent.id, result, { handshake: source === "handshake" });
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
+    [agent.id],
   );
 
   // ── Shared capability loader ────────────────────────────────────────────────
@@ -307,6 +430,10 @@ export function Composer({
       const seq = ++loadSeq.current;
       getSessionCapabilities(id).then((result) => {
         if (seq !== loadSeq.current) return;
+        // No live ACP session → keep what is on screen (cached catalog / last
+        // negotiation). Replacing it with a static supplement stub would drop
+        // the real model list and mark a dead agent as live.
+        if (!result) return;
         // Merge ACP negotiation with static supplements (e.g. Grok modes).
         const merged = mergeAcpCapabilities(agent.id, result);
         if (merged) applyCaps(merged);
@@ -365,7 +492,7 @@ export function Composer({
     const profileCaps = ptyProfileToCapabilities(agent.id);
     loadSeq.current += 1;
     if (profileCaps) {
-      applyCaps(profileCaps);
+      applyCaps(profileCaps, "profile");
     } else {
       setCaps(null);
       setCurrentMode(null);
@@ -375,20 +502,33 @@ export function Composer({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isPty, agent.id, applyCaps]);
 
-  // HARD RULE: wipe composer capability state whenever dialog identity changes.
-  // Prevents "OpenCode selected but Claude models still listed".
+  // HARD RULE: capability state is rebound whenever dialog identity changes.
+  // Prevents "OpenCode selected but Claude models still listed". Re-seeding from
+  // the cache of *this* agent keeps that rule while avoiding an empty toolbar.
   useEffect(() => {
     loadSeq.current += 1;
+    setMenu(null);
+    setModelQuery("");
+    pinsRef.current = null;
+    // Keep draft/prefill + remembered height when switching dialog/agent.
+    prefsRestoredKey.current = "";
+    setCapsLive(false);
+    // Rebind from this agent's own source: static profile for PTY, last known
+    // catalog for ACP. (Runs after the profile effect, so it must re-apply the
+    // profile rather than blank it.)
+    const rebound = isPty
+      ? ptyProfileToCapabilities(agent.id)
+      : cachedCapabilitiesFor(agent.id, sessionPrefsRef.current);
+    if (rebound) {
+      applyCaps(rebound, isPty ? "profile" : "cache");
+      return;
+    }
     setCaps(null);
     setCurrentMode(null);
     setCurrentModel(null);
     setCurrentEffort(null);
     setCurrentEffortId(null);
-    setMenu(null);
-    setModelQuery("");
-    modeLockRef.current = null;
-    // Keep draft/prefill + remembered height when switching dialog/agent.
-    prefsRestoredKey.current = "";
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, agent.id]);
 
   // Parent-pushed caps from startAcpSession + supplements for missing mode/effort.
@@ -397,9 +537,13 @@ export function Composer({
     if (capabilitiesProp) {
       loadSeq.current += 1;
       const merged = mergeAcpCapabilities(agent.id, capabilitiesProp);
-      if (merged) applyCaps(merged);
+      if (merged) applyCaps(merged, "handshake");
     } else {
-      // Parent cleared caps (session switch) — already wiped by identity effect.
+      // Parent cleared caps (session switch / process died). Keep the last known
+      // controls on screen, but the agent is gone: the next connect starts from
+      // its own defaults, so this dialog's saved prefs must be pushed again.
+      setCapsLive(false);
+      prefsRestoredKey.current = "";
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAcp, agent.id, capabilitiesProp, applyCaps]);
@@ -430,7 +574,7 @@ export function Composer({
         if (data?.capabilities) {
           loadSeq.current += 1; // invalidate in-flight null fetches
           const merged = mergeAcpCapabilities(agent.id, data.capabilities);
-          if (merged) applyCaps(merged);
+          if (merged) applyCaps(merged, "handshake");
         } else {
           loadCapabilities(sessionId);
         }
@@ -563,8 +707,10 @@ export function Composer({
   );
 
   // Restore preferred model/mode/effort once caps are available for this dialog.
+  // Cached caps only paint the chips — pushing set_config at an agent that is
+  // not connected would start a process the user never asked for.
   useEffect(() => {
-    if (!caps || sessionId.startsWith("session-empty-")) return;
+    if (!caps || !capsLive || sessionId.startsWith("session-empty-")) return;
     const key = `${sessionId}:${agent.id}`;
     if (prefsRestoredKey.current === key) return;
 
@@ -633,7 +779,7 @@ export function Composer({
     })();
     // commitUpdate changes often; restore only when caps identity for this dialog lands.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [caps, sessionId, agent.id, sessionPrefs]);
+  }, [caps, capsLive, sessionId, agent.id, sessionPrefs]);
 
   // ── Send / Interrupt ───────────────────────────────────────────────────────
   // Only a live turn (`running`) blocks send. `starting` must NOT freeze the
@@ -827,17 +973,17 @@ export function Composer({
       const next = modes[(idx < 0 ? 0 : idx + direction + modes.length) % modes.length];
       if (!next || next.id === current) return;
       const prev = current;
-      lockMode(next.id);
+      pinOptions({ mode: next.id });
       setCurrentMode(next.id);
       setMenu(null);
       void commitUpdate({ mode: next.id }, () => {
-        modeLockRef.current = null;
+        unpinOption("mode");
         setCurrentMode(prev);
       });
       // No flash toast — label lives on the mode chip; toast felt like flicker.
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [caps, currentMode, commitUpdate, lockMode],
+    [caps, currentMode, commitUpdate, pinOptions, unpinOption],
   );
 
   const warmIfNeeded = useCallback(
@@ -932,6 +1078,44 @@ export function Composer({
     }
   }, [menu]);
 
+  // Which agents can actually run — probed when the switcher opens, so the list
+  // never offers a harness that would fail with "command not found" on send.
+  const refreshAgentStatuses = useCallback(async () => {
+    const list = await listAgentCommands();
+    if (list.length === 0) return;
+    setAgentStatuses(Object.fromEntries(list.map((status) => [status.id, status])));
+  }, []);
+
+  useEffect(() => {
+    if (menu !== "agent") return;
+    void refreshAgentStatuses();
+  }, [menu, refreshAgentStatuses]);
+
+  const runInstall = useCallback(
+    async (agentId: string) => {
+      if (installingAgentId) return;
+      setInstallingAgentId(agentId);
+      setInstallNote(`Installing ${agentId}… (npm global, this can take a minute)`);
+      try {
+        const result = await installAgent(agentId, true);
+        setAgentStatuses((current) => ({ ...current, [agentId]: result.status }));
+        setInstallNote(result.message);
+        // Pick up anything the install pulled in for the other agents too.
+        void refreshAgentStatuses();
+      } catch (error) {
+        setInstallNote(error instanceof Error ? error.message : String(error));
+      } finally {
+        setInstallingAgentId(null);
+      }
+    },
+    [installingAgentId, refreshAgentStatuses],
+  );
+
+  // A note about a finished install should not outlive the menu.
+  useEffect(() => {
+    if (menu !== "agent" && installNote && !installingAgentId) setInstallNote("");
+  }, [menu, installNote, installingAgentId]);
+
   const tone = modeTone(displayMode);
   const isTall = composerHeight > COMPOSER_HEIGHT_DEFAULT + 40;
 
@@ -948,9 +1132,7 @@ export function Composer({
         .filter(Boolean)
         .join(" ")}
       data-mode-tone={tone}
-      style={{
-        height: composerHeight + (isWarming ? COMPOSER_WARMING_STRIP_HEIGHT : 0),
-      }}
+      style={{ height: composerHeight }}
       aria-label="Composer"
     >
       {/* Drag handle: top edge — free height between MIN/MAX, remembered. */}
@@ -964,12 +1146,12 @@ export function Composer({
           setResizingComposer(true);
         }}
       />
-      {/* Left rail — always-on mode cue, colored by tone. The top status bar
-          covers the live/running turn; this strip below only covers the
-          connect/warm phase, which the top bar doesn't render for a lazy
-          reconnect until the session object catches up. */}
+      {/* Left rail — always-on mode cue, colored by tone. */}
       {hasModes && <div className="composer__mode-rail" aria-hidden />}
       {flashError && <div className="composer__error-toast">{flashError}</div>}
+      {/* Connect/warm phase. Floats above the composer like the error toast:
+          reconnecting is background work and must never resize the transcript
+          or the composer under the user's cursor. */}
       {isWarming && (
         <div className="composer__warming" role="status" aria-live="polite">
           <span className="composer__warming-pulse" aria-hidden />
@@ -1099,11 +1281,11 @@ export function Composer({
                         data-mode-tone={modeTone(m.id)}
                         onClick={() => {
                           const prev = displayMode;
-                          lockMode(m.id);
+                          pinOptions({ mode: m.id });
                           setCurrentMode(m.id);
                           setMenu(null);
                           void commitUpdate({ mode: m.id }, () => {
-                            modeLockRef.current = null;
+                            unpinOption("mode");
                             setCurrentMode(prev);
                           });
                         }}
@@ -1170,11 +1352,15 @@ export function Composer({
                                   title={[m.label || m.id, m.description, m.id].filter(Boolean).join("\n")}
                                   onClick={() => {
                                     const prev = displayModel;
+                                    pinOptions({ model: m.id });
                                     setCurrentModel(m.id);
                                     // Never jump to Effort before the agent re-negotiates
                                     // options — Haiku drops effort and a stale menu white-screens.
                                     setMenu(null);
-                                    void commitUpdate({ model: m.id }, () => setCurrentModel(prev));
+                                    void commitUpdate({ model: m.id }, () => {
+                                      unpinOption("model");
+                                      setCurrentModel(prev);
+                                    });
                                   }}
                                 >
                                   <span className="composer-menu__model-name">{shortModelName(m)}</span>
@@ -1200,11 +1386,13 @@ export function Composer({
                                 type="button"
                                 onClick={() => {
                                   const prev = currentEffortId;
+                                  pinOptions({ effortId: opt.id });
                                   setCurrentEffortId(opt.id);
                                   setMenu(null);
-                                  void commitUpdate({ effortId: opt.id }, () =>
-                                    setCurrentEffortId(prev),
-                                  );
+                                  void commitUpdate({ effortId: opt.id }, () => {
+                                    unpinOption("effortId");
+                                    setCurrentEffortId(prev);
+                                  });
                                 }}
                               >
                                 {opt.label}
@@ -1222,12 +1410,13 @@ export function Composer({
                                 type="button"
                                 onClick={() => {
                                   const prev = currentEffort;
+                                  pinOptions({ effort: preset.value });
                                   setCurrentEffort(preset.value);
                                   setMenu(null);
-                                  void commitUpdate(
-                                    { thinkingEffort: preset.value },
-                                    () => setCurrentEffort(prev),
-                                  );
+                                  void commitUpdate({ thinkingEffort: preset.value }, () => {
+                                    unpinOption("effort");
+                                    setCurrentEffort(prev);
+                                  });
                                 }}
                               >
                                 {preset.label}
@@ -1252,11 +1441,13 @@ export function Composer({
                             role="menuitem"
                             onClick={() => {
                               const prev = currentEffortId;
+                              pinOptions({ effortId: opt.id });
                               setCurrentEffortId(opt.id);
                               setMenu(null);
-                              void commitUpdate({ effortId: opt.id }, () =>
-                                setCurrentEffortId(prev),
-                              );
+                              void commitUpdate({ effortId: opt.id }, () => {
+                                unpinOption("effortId");
+                                setCurrentEffortId(prev);
+                              });
                             }}
                           >
                             {opt.label}
@@ -1275,12 +1466,13 @@ export function Composer({
                             role="menuitem"
                             onClick={() => {
                               const prev = currentEffort;
+                              pinOptions({ effort: preset.value });
                               setCurrentEffort(preset.value);
                               setMenu(null);
-                              void commitUpdate(
-                                { thinkingEffort: preset.value },
-                                () => setCurrentEffort(prev),
-                              );
+                              void commitUpdate({ thinkingEffort: preset.value }, () => {
+                                unpinOption("effort");
+                                setCurrentEffort(prev);
+                              });
                             }}
                           >
                             {preset.label} ({preset.value.toFixed(1)})
@@ -1306,22 +1498,54 @@ export function Composer({
                 <div className="composer-menu composer-menu--agent" role="listbox" aria-label="Switch agent">
                   {agents
                     .filter((candidate) => candidate.enabled)
-                    .map((candidate) => (
-                      <button
-                        key={candidate.id}
-                        className={agent.id === candidate.id ? "is-selected" : ""}
-                        type="button"
-                        role="option"
-                        aria-selected={agent.id === candidate.id}
-                        onClick={() => {
-                          setMenu(null);
-                          // Always mirror session.agentId (via agent prop), never a floating selection.
-                          onAgentChange(candidate.id);
-                        }}
-                      >
-                        {candidate.label}
-                      </button>
-                    ))}
+                    .map((candidate) => {
+                      const status = agentStatuses[candidate.id];
+                      const ready = !status || status.status === "installed";
+                      const busyInstall = installingAgentId === candidate.id;
+                      const canInstall =
+                        !ready && (status?.installable ?? false) && !busyInstall;
+                      return (
+                        <div className="composer-agent-row" key={candidate.id}>
+                          <button
+                            className={agent.id === candidate.id ? "is-selected" : ""}
+                            type="button"
+                            role="option"
+                            aria-selected={agent.id === candidate.id}
+                            title={status?.message ?? candidate.command}
+                            onClick={() => {
+                              setMenu(null);
+                              // Always mirror session.agentId (via agent prop), never a floating selection.
+                              onAgentChange(candidate.id);
+                            }}
+                          >
+                            <span className="composer-agent-row__name">{candidate.label}</span>
+                            {!ready && (
+                              <span className="composer-agent-row__tag">
+                                {busyInstall
+                                  ? "installing…"
+                                  : status?.status === "incomplete"
+                                    ? "needs CLI"
+                                    : "not installed"}
+                              </span>
+                            )}
+                          </button>
+                          {canInstall && (
+                            <button
+                              className="composer-agent-row__install"
+                              type="button"
+                              title={`npm install -g ${candidate.install.package ?? ""}`.trim()}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void runInstall(candidate.id);
+                              }}
+                            >
+                              Install
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  {installNote && <div className="composer-menu__note">{installNote}</div>}
                 </div>
               )}
             </div>

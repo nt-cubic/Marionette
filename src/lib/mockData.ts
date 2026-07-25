@@ -17,6 +17,12 @@ export const projects: Project[] = [
   }
 ];
 
+/** Browser mock only — the desktop app gets install specs from Rust. */
+const mockInstall = (pkg: string | null): AgentConfig["install"] =>
+  pkg
+    ? { manager: "npm", package: pkg, requires: [], note: null }
+    : { manager: "manual", package: null, requires: [], note: "Vendor installer only." };
+
 export const agents: AgentConfig[] = [
   {
     id: "opencode",
@@ -28,7 +34,8 @@ export const agents: AgentConfig[] = [
     sendStrategy: "stdin",
     parser: "ansi-raw",
     transport: "acp",
-    enabled: true
+    enabled: true,
+    install: mockInstall("opencode-ai")
   },
   {
     id: "codex",
@@ -40,7 +47,8 @@ export const agents: AgentConfig[] = [
     sendStrategy: "stdin",
     parser: "ansi-raw",
     transport: "acp",
-    enabled: true
+    enabled: true,
+    install: mockInstall("@agentclientprotocol/codex-acp")
   },
   {
     id: "claude-code",
@@ -52,7 +60,8 @@ export const agents: AgentConfig[] = [
     sendStrategy: "stdin",
     parser: "ansi-raw",
     transport: "acp",
-    enabled: true
+    enabled: true,
+    install: mockInstall("@agentclientprotocol/claude-agent-acp")
   },
   {
     id: "grok-build",
@@ -64,9 +73,66 @@ export const agents: AgentConfig[] = [
     sendStrategy: "stdin",
     parser: "ansi-raw",
     transport: "acp",
-    enabled: true
+    enabled: true,
+    install: mockInstall(null)
   }
 ];
+
+/** Browser mock for the Project context card (desktop scans the real machine). */
+export const projectContext: import("./types").ProjectContext = {
+  projectId: "project-agentshell",
+  inventory: {
+    mcpServers: [
+      {
+        id: "blender",
+        name: "blender",
+        transport: "stdio",
+        command: "cmd",
+        args: ["/c", "uvx", "blender-mcp"],
+        envKeys: [],
+        url: null,
+        sources: ["opencode", "codex"],
+        sourcePaths: ["~/.config/opencode/opencode.jsonc", "~/.codex/config.toml"],
+        agents: ["opencode", "codex"]
+      },
+      {
+        id: "ai-game-developer",
+        name: "ai-game-developer",
+        transport: "http",
+        command: null,
+        args: [],
+        envKeys: [],
+        url: "https://ai-game.dev/mcp",
+        sources: ["codex"],
+        sourcePaths: ["~/.codex/config.toml"],
+        agents: ["codex"]
+      }
+    ],
+    skills: [
+      {
+        id: "unity-tools",
+        name: "unity-tools",
+        description: "Unity project helpers",
+        dir: ".agentshell/skills/unity-tools",
+        file: ".agentshell/skills/unity-tools/SKILL.md",
+        sources: ["project"],
+        agents: []
+      },
+      {
+        id: "docx",
+        name: "docx",
+        description: "Word documents",
+        dir: "~/.config/opencode/skills/docx",
+        file: "~/.config/opencode/skills/docx/SKILL.md",
+        sources: ["opencode", "grok-build"],
+        agents: ["opencode", "grok-build"]
+      }
+    ],
+    notes: [],
+    scannedAt: "0"
+  },
+  selection: { version: 1, mcpServers: {}, skills: {}, updatedAt: "0" }
+};
 
 export const sessions: Session[] = [
   {

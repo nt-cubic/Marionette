@@ -52,6 +52,11 @@ export function parseTranscriptEvents(raw: unknown[]): SessionEvent[] {
         toolCallId: typeof e.toolCallId === "string" ? e.toolCallId : undefined,
         status: typeof e.status === "string" ? e.status : undefined,
         title: typeof e.title === "string" ? e.title : undefined,
+        toolName: typeof e.toolName === "string" ? e.toolName : undefined,
+        // Older transcripts only have `text`; the card falls back to it.
+        path: typeof e.path === "string" ? e.path : undefined,
+        detail: typeof e.detail === "string" ? e.detail : undefined,
+        input: typeof e.input === "string" ? e.input : undefined,
       });
       continue;
     }

@@ -230,6 +230,20 @@ impl PtyService {
         }
         Ok(())
     }
+
+    /// Kill every terminal we own — nothing should outlive the window.
+    pub fn stop_all(&self) -> usize {
+        let ids: Vec<String> = self
+            .sessions
+            .lock()
+            .map(|sessions| sessions.keys().cloned().collect())
+            .unwrap_or_default();
+        let count = ids.len();
+        for id in ids {
+            let _ = self.stop(&id);
+        }
+        count
+    }
 }
 
 fn read_output(

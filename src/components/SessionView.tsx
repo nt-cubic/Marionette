@@ -8,6 +8,7 @@ import {
   activityBarLabel,
   activityHealth,
   formatAgo,
+  isSubagentTool,
   isToolInProgress,
   stallBannerCopy,
   type ActivityHealth,
@@ -16,6 +17,7 @@ import { isTauriRuntime, readTerminalSnapshot, resizeTerminal, startTerminal, wr
 import { newQuotePinId, type QuotePin } from "../lib/quoteComment";
 import type { AcpEvent, AgentConfig, CapabilitySnapshot, Session, SessionEvent, SessionStatus, SessionViewMode, TerminalOutput } from "../lib/types";
 import { ClippedBody } from "./ClippedBody";
+import { LinkCwdContext, LinkedText } from "./LinkedText";
 import { MarkdownBody } from "./MarkdownBody";
 import { MessageOutline } from "./MessageOutline";
 
@@ -77,7 +79,9 @@ export function SessionView({
   // Show thinking/tool rows by default (they render collapsed). Eye can hide them entirely.
   const [detailsVisible, setDetailsVisible] = useState(true);
   const showRaw = viewMode === "raw-terminal";
-  const isLive = session.status === "running" || session.status === "starting";
+  // Only a real turn earns the top bar. Connecting is background work — the
+  // composer floats a pill for it so the stage never resizes mid-reconnect.
+  const isLive = session.status === "running";
 
   return (
     <section className="session-view" aria-label="Session view">
@@ -115,16 +119,10 @@ export function SessionView({
           <Plus size={14} />
         </button>
         {/* Only empty mid-bar is draggable — never wrap interactive controls. */}
+        {/* No Raw Terminal toggle here: Clean View is the product surface for
+            every ACP agent, and the toggle only made the tab bar look busy.
+            PTY dialogs still offer the switch from their empty-state hint. */}
         <div className="editor-tabs__spacer" data-tauri-drag-region />
-        <button
-          className="editor-toggle"
-          type="button"
-          title={showRaw ? "Switch to Clean View" : "Switch to Raw Terminal"}
-          aria-label={showRaw ? "Switch to Clean View" : "Switch to Raw Terminal"}
-          onClick={onViewModeToggle}
-        >
-          {showRaw ? <FileText size={14} /> : <TerminalSquare size={14} />}
-        </button>
       </div>
 
       {isLive && (
@@ -574,24 +572,22 @@ function CleanPlaceholder({
   /** When true, new content may stick the viewport to the bottom. */
   const stickToBottomRef = useRef(true);
   const isPty = agent.transport === "pty";
-  const isStarting = session.status === "starting";
   const isRunning = session.status === "running";
   // Ignore raw_chunk dumps in Clean (legacy / accidental) — they are not You/Thinking/Reply.
   const visibleEvents = useMemo(
     () => events.filter((e) => e.type !== "raw_chunk"),
     [events]
   );
-  const [startHint, setStartHint] = useState("Starting agent…");
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
   const [editBusy, setEditBusy] = useState(false);
   // Local clock for stall UI only — does not drive list scroll keys.
   const [healthNow, setHealthNow] = useState(() => Date.now());
   useEffect(() => {
-    if (!isRunning && !isStarting) return;
+    if (!isRunning) return;
     const id = window.setInterval(() => setHealthNow(Date.now()), 2000);
     return () => window.clearInterval(id);
-  }, [isRunning, isStarting]);
+  }, [isRunning]);
 
   // After send: last card is still You → show ghost "Waiting for agent…"
   const lastVisible = visibleEvents[visibleEvents.length - 1];
@@ -612,8 +608,10 @@ function CleanPlaceholder({
     return null;
   }, [visibleEvents]);
   const midTurn = isRunning && !awaitingFirstChunk;
+  // Stall copy is about a live turn going quiet. A reconnect is not a stalled
+  // turn — inserting this card while warming up only shoves the transcript.
   const showStallBanner =
-    (isRunning || isStarting) &&
+    isRunning &&
     (awaitingFirstChunk || health === "quiet" || health === "stalled" || health === "stuck");
 
   // Content fingerprint — only real transcript changes should pin-scroll (never a clock tick).
@@ -622,29 +620,8 @@ function CleanPlaceholder({
     const lastSig = last
       ? `${last.type}:${last.createdAt}:${"text" in last ? String(last.text).length : ""}:${"status" in last ? last.status : ""}`
       : "empty";
-    return `${session.id}|${visibleEvents.length}|${lastSig}|start:${isStarting}|wait:${awaitingFirstChunk}|health:${health}`;
-  }, [session.id, visibleEvents, isStarting, awaitingFirstChunk, health]);
-
-  useEffect(() => {
-    if (!isStarting || !isTauriRuntime()) return;
-    let unlisten: (() => void) | undefined;
-    void listen<AcpEvent>("acp-event", (event) => {
-      const p = event.payload;
-      if (p.sessionId !== session.id) return;
-      if (p.method === "session/starting") {
-        const data = p.data as { hint?: string; command?: string; args?: string[]; phase?: string } | null;
-        if (data?.hint) setStartHint(data.hint);
-        else if (data?.phase) setStartHint(`Starting (${data.phase})…`);
-        if (data?.command) {
-          const line = [data.command, ...(data.args ?? [])].join(" ");
-          setStartHint((h) => `${h}\n${line}`);
-        }
-      }
-    }).then((d) => {
-      unlisten = d;
-    });
-    return () => unlisten?.();
-  }, [isStarting, session.id]);
+    return `${session.id}|${visibleEvents.length}|${lastSig}|wait:${awaitingFirstChunk}|health:${health}`;
+  }, [session.id, visibleEvents, awaitingFirstChunk, health]);
 
   const prevAwaitingRef = useRef(false);
 
@@ -679,6 +656,8 @@ function CleanPlaceholder({
   }, [scrollKey]);
 
   return (
+    // Relative paths in agent text resolve against this dialog's project root.
+    <LinkCwdContext.Provider value={session.cwd || null}>
     <div className="clean-surface">
       <div className="clean-surface__notice">
         <FileText size={16} />
@@ -709,23 +688,9 @@ function CleanPlaceholder({
             onPinsChange={onQuotePinsChange}
           />
         )}
-        {/* Soft banner only — never clear the transcript while ACP warms. */}
-        {isStarting && (
-          <article className="event-card event-card--hint">
-            <div className="event-card__icon">
-              <TerminalSquare size={15} />
-            </div>
-            <div className="event-card__main">
-              <span className="event-card__type">Connecting {agent.label}…</span>
-              <p style={{ whiteSpace: "pre-wrap" }}>
-                {startHint}
-                {"\n"}
-                You can keep typing. The message will send when the agent is ready.
-              </p>
-            </div>
-          </article>
-        )}
-        {visibleEvents.length === 0 && !isStarting && (
+        {/* No connect card here on purpose: warming shows as a floating pill on
+            the composer, so the transcript never reflows while reconnecting. */}
+        {visibleEvents.length === 0 && (
           <div className="clean-empty" role="status">
             <p className="clean-empty__title">
               {authBanner ? "Sign in to continue" : `Message ${agent.label}`}
@@ -778,11 +743,16 @@ function CleanPlaceholder({
                   ? "You"
                   : event.type === "assistant_message"
                     ? "Reply"
-                    : event.type.replace(/_/g, " ");
+                    : event.type === "handoff_prepared"
+                      ? "Handoff"
+                      : event.type.replace(/_/g, " ");
 
+          // Handoff: a marker, not a wall of text. The notes themselves ride
+          // along with the next message the user sends (never shown here or
+          // pasted into the composer).
           const body =
             event.type === "handoff_prepared"
-              ? event.prompt
+              ? `Notes prepared for **${event.targetAgentId}** — they will be attached to your next message.\n\nFull notes: \`${event.handoffPath}\``
               : event.type === "file_change"
                 ? `${event.changeType}: ${event.path}`
                 : event.text;
@@ -794,11 +764,16 @@ function CleanPlaceholder({
             return t.length > max ? `${t.slice(0, max - 1)}…` : t;
           };
 
-          // Tools: title + status only (not the whole payload). Thoughts: short teaser.
+          // Tools: title + status + which file (never the whole payload) — enough
+          // to tell a long tool from a dead one without expanding the card.
           let previewFull = "";
           if (event.type === "tool_call") {
+            const fileName = event.path
+              ? event.path.split(/[\\/]/).filter(Boolean).pop() ?? ""
+              : "";
             const bits = [
               event.title ? oneLine(String(event.title)) : "",
+              fileName && fileName !== event.title ? fileName : "",
               toolStatusLabel || (event.status ? String(event.status) : ""),
             ].filter(Boolean);
             previewFull = bits.join(" · ");
@@ -841,7 +816,9 @@ function CleanPlaceholder({
                     {useMarkdown && typeof body === "string" ? (
                       <MarkdownBody text={body} className="event-card__body event-card__body--clipped-md" />
                     ) : (
-                      <pre className="event-card__body event-card__body--tool">{body}</pre>
+                      <pre className="event-card__body event-card__body--tool">
+                        {typeof body === "string" ? <LinkedText text={body} /> : body}
+                      </pre>
                     )}
                   </ClippedBody>
                 </div>
@@ -960,7 +937,9 @@ function CleanPlaceholder({
                 ) : useMarkdown && typeof body === "string" ? (
                   <MarkdownBody text={body} />
                 ) : (
-                  <pre className="event-card__plain">{body}</pre>
+                  <pre className="event-card__plain">
+                    {typeof body === "string" ? <LinkedText text={body} /> : body}
+                  </pre>
                 )}
               </div>
             </article>
@@ -971,6 +950,7 @@ function CleanPlaceholder({
             health={health}
             midTurn={midTurn}
             openToolTitle={openTool?.title ?? null}
+            openToolIsSubagent={isSubagentTool(openTool?.toolName)}
             lastActivityAt={lastActivityAt}
             now={healthNow}
             onInterrupt={onInterrupt}
@@ -980,6 +960,7 @@ function CleanPlaceholder({
       <MessageOutline events={visibleEvents} sessionId={session.id} />
       </div>
     </div>
+    </LinkCwdContext.Provider>
   );
 }
 
@@ -1258,6 +1239,7 @@ function StallBanner({
   health,
   midTurn,
   openToolTitle,
+  openToolIsSubagent = false,
   lastActivityAt,
   now,
   onInterrupt,
@@ -1265,13 +1247,14 @@ function StallBanner({
   health: ActivityHealth;
   midTurn: boolean;
   openToolTitle?: string | null;
+  openToolIsSubagent?: boolean;
   lastActivityAt: number | null;
   now: number;
   onInterrupt?: () => void | Promise<void>;
 }) {
   const ago = lastActivityAt != null ? formatAgo(lastActivityAt, now) : undefined;
   const copy =
-    stallBannerCopy(health, { midTurn, openToolTitle, ago }) ??
+    stallBannerCopy(health, { midTurn, openToolTitle, openToolIsSubagent, ago }) ??
     (midTurn
       ? null
       : {

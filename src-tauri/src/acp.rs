@@ -154,6 +154,8 @@ impl AcpService {
         command: String,
         args: Vec<String>,
         cwd: String,
+        // Which agent this dialog is bound to — decides what gets lent to it.
+        agent_id: Option<String>,
     ) -> Result<CapabilitySnapshot, String> {
         if !std::path::Path::new(&cwd).is_dir() {
             return Err(format!("ACP cwd is not a directory: {cwd}"));
@@ -245,6 +247,28 @@ impl AcpService {
                 }
             }
         }
+        // Folders the user granted outside the project. opencode gates these
+        // behind its `external_directory` permission and reads the grant from
+        // this env var — the only lever that works for a *subagent*, whose
+        // permission prompt never reaches us (ACP `additionalDirectories` is
+        // accepted but does not widen the scope; measured both ways).
+        if agent_id.as_deref() == Some("opencode") {
+            let existing = std::env::var("OPENCODE_PERMISSION").ok();
+            if let Some(value) = crate::context_inventory::opencode_permission_env(
+                std::path::Path::new(&cwd),
+                existing.as_deref(),
+            ) {
+                crate::debug_log::append(
+                    "context",
+                    "info",
+                    &session_id,
+                    "OPENCODE_PERMISSION set for granted folders",
+                    Some(&value),
+                );
+                child_command.env("OPENCODE_PERMISSION", value);
+            }
+        }
+
         #[cfg(target_os = "windows")]
         {
             use std::os::windows::process::CommandExt;
@@ -335,9 +359,59 @@ impl AcpService {
                 "clientInfo": { "name": "AgentShell", "version": "0.1.0" }
             }),
         );
-        if let Err(error) = initialized {
-            let _ = self.stop(&session_id);
-            return Err(format!("ACP initialize failed: {error}"));
+        let initialized = match initialized {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = self.stop(&session_id);
+                return Err(format!("ACP initialize failed: {error}"));
+            }
+        };
+
+        // Project context (needs 1: what this agent is missing). Remote transports
+        // are only offered when the agent said it can take them.
+        let mcp_caps = initialized
+            .get("agentCapabilities")
+            .and_then(|caps| caps.get("mcpCapabilities"));
+        let supports_http = mcp_caps
+            .and_then(|caps| caps.get("http"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let supports_sse = mcp_caps
+            .and_then(|caps| caps.get("sse"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let (mcp_servers, mcp_skipped) = match agent_id.as_deref() {
+            Some(agent) => crate::context_inventory::mcp_payload_for_agent(
+                std::path::Path::new(&cwd),
+                agent,
+                supports_http,
+                supports_sse,
+            ),
+            None => (Vec::new(), Vec::new()),
+        };
+        if !mcp_servers.is_empty() || !mcp_skipped.is_empty() {
+            // Names only — an MCP env can hold API tokens.
+            let injected: Vec<String> = mcp_servers
+                .iter()
+                .filter_map(|server| server.get("name").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect();
+            let skipped_note = if mcp_skipped.is_empty() {
+                String::new()
+            } else {
+                format!("skipped: {}", mcp_skipped.join(", "))
+            };
+            crate::debug_log::append(
+                "context",
+                "info",
+                &session_id,
+                &format!("mcp inject: {}", injected.join(", ")),
+                if skipped_note.is_empty() {
+                    None
+                } else {
+                    Some(&skipped_note)
+                },
+            );
         }
 
         let _ = app.emit(
@@ -354,10 +428,28 @@ impl AcpService {
         );
 
         // ── Phase 2: session/new ────────────────────────────────────────
+        // Folders the user granted outside the project. Must be set here: a
+        // subagent's permission prompt never reaches us, so scope has to be
+        // agreed before the turn starts.
+        let extra_roots = crate::context_inventory::workspace_roots(std::path::Path::new(&cwd));
+        if !extra_roots.is_empty() {
+            crate::debug_log::append(
+                "context",
+                "info",
+                &session_id,
+                &format!("additionalDirectories: {}", extra_roots.join(" · ")),
+                None,
+            );
+        }
+
         let new_session = match request(
             &process,
             "session/new",
-            json!({ "cwd": cwd, "mcpServers": [] }),
+            json!({
+                "cwd": cwd,
+                "mcpServers": mcp_servers,
+                "additionalDirectories": extra_roots,
+            }),
         ) {
             Ok(value) => value,
             Err(error) => {
@@ -396,6 +488,28 @@ impl AcpService {
             },
         );
         Ok(caps)
+    }
+
+    /// Kill every agent process we own — nothing should outlive the window.
+    pub fn stop_all(&self) -> usize {
+        let ids: Vec<String> = self
+            .sessions
+            .lock()
+            .map(|sessions| sessions.keys().cloned().collect())
+            .unwrap_or_default();
+        let count = ids.len();
+        for id in ids {
+            let _ = self.stop(&id);
+        }
+        count
+    }
+
+    /// Is an agent process for this dialog alive in *this* app run?
+    pub fn is_live(&self, session_id: &str) -> bool {
+        self.sessions
+            .lock()
+            .map(|map| map.contains_key(session_id))
+            .unwrap_or(false)
     }
 
     pub fn get_capabilities(&self, session_id: &str) -> Option<CapabilitySnapshot> {
