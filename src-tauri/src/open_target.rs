@@ -82,7 +82,7 @@ fn resolve_path(raw: &str, cwd: Option<&str>) -> Option<PathBuf> {
 }
 
 /// What a link in agent text points at — drives click behaviour and the menu.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn resolve_link_target(target: String, cwd: Option<String>) -> Value {
     if is_url(&target) {
         return json!({ "kind": "url", "target": target.trim(), "risky": false });
@@ -120,7 +120,7 @@ fn spawn_detached(program: &str, args: &[&str]) -> Result<(), String> {
 ///
 /// Returns `{ opened: false, reason: "risky" }` for things Windows would
 /// execute — the caller must confirm with the user and retry with `force`.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_external(
     target: String,
     cwd: Option<String>,
@@ -156,7 +156,7 @@ pub fn open_external(
 }
 
 /// Show the item in the OS file manager (selected, not opened).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn reveal_in_file_manager(target: String, cwd: Option<String>) -> Result<Value, String> {
     let path = resolve_path(&target, cwd.as_deref())
         .ok_or_else(|| format!("Not found on disk: {}", strip_extended_prefix(&target)))?;
