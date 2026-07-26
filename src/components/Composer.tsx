@@ -4,6 +4,7 @@ import { Expand, Plus, Search, SendHorizontal, Shrink, Square } from "lucide-rea
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from "react";
 import { expandAcpConfigAttempts, getAcpSupplement, mergeAcpCapabilities } from "../lib/acpSupplements";
 import {
+  agentVersions,
   getSessionCapabilities,
   installAgent,
   isTauriRuntime,
@@ -13,10 +14,13 @@ import {
 } from "../lib/api";
 import { cacheAgentCapabilities, cachedCapabilitiesFor } from "../lib/capabilityCache";
 import { ptyCommandsForPatch, ptyProfileToCapabilities } from "../lib/ptyProfiles";
+import { ProviderConfigDialog } from "./ProviderConfigDialog";
+import { recordModelUsage, getRecentModels } from "../lib/recentModels";
 import type {
   AcpEvent,
   AgentCommandStatus,
   AgentConfig,
+  AgentVersionInfo,
   CapabilitySnapshot,
   ModelDef,
   SessionComposerPrefs,
@@ -40,7 +44,14 @@ type ComposerProps = {
   onSessionPrefsChange?: (prefs: SessionComposerPrefs) => void;
   onAgentChange: (agentId: string) => void;
   onInterrupt: () => void;
-  onSend: (text: string) => void;
+  /**
+   * `droppedPaths` are the exact absolute paths the OS reported on drop.
+   * They are passed separately because the parent's outside-project check
+   * otherwise has to re-find them by parsing the composed text, and the path
+   * regex deliberately stops at whitespace — so `…\Screen Shot.png` came back
+   * as `…\Screen`, failed the exists() check, and silently skipped the prompt.
+   */
+  onSend: (text: string, droppedPaths?: string[]) => void;
   /** PTY: inject slash commands into the live terminal. */
   onPtyCommand?: (commandLine: string) => void | Promise<void>;
   /** Notify parent when the active model id changes (for provider balance probes). */
@@ -52,6 +63,14 @@ type ComposerProps = {
   /** Last stream activity (ms) — escalates busy strip when the turn goes quiet. */
   lastActivityAt?: number | null;
 };
+
+function formatRecentTime(timestamp: number): string {
+  const diff = Date.now() - timestamp;
+  if (diff < 60_000) return "刚刚";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
+  return `${Math.floor(diff / 86_400_000)} 天前`;
+}
 
 function effortLabel(value: number): string {
   if (value <= 0.1) return "Low";
@@ -336,10 +355,12 @@ export function Composer({
   const [draft, setDraft] = useState("");
   const [composerHeight, setComposerHeight] = useState(readComposerHeight);
   const [resizingComposer, setResizingComposer] = useState(false);
+  const [showProviderDialog, setShowProviderDialog] = useState(false);
   const [flashError, setFlashError] = useState("");
   const [dropActive, setDropActive] = useState(false);
   /** CLI availability per agent — loaded when the agent menu opens. */
   const [agentStatuses, setAgentStatuses] = useState<Record<string, AgentCommandStatus>>({});
+  const [agentVersionInfo, setAgentVersionInfo] = useState<Record<string, AgentVersionInfo>>({});
   const [installingAgentId, setInstallingAgentId] = useState<string | null>(null);
   const [installNote, setInstallNote] = useState("");
   const errorTimer = useRef<ReturnType<typeof setTimeout>>();
@@ -356,6 +377,8 @@ export function Composer({
   const appliedPrefillToken = useRef(0);
   /** Restore disk prefs once per (session, agent) after caps are known. */
   const prefsRestoredKey = useRef("");
+  /** Exact absolute paths from OS drops, kept verbatim for the grant check. */
+  const droppedPathsRef = useRef<Set<string>>(new Set());
   /** After the user picks an option, ignore server echoes still reporting the old one. */
   const pinsRef = useRef<{ pins: OptionPins; until: number } | null>(null);
   const composerHeightRef = useRef(composerHeight);
@@ -691,6 +714,10 @@ export function Composer({
         if (typeof patch.thinkingEffort === "number") prefsPatch.preferredEffort = patch.thinkingEffort;
         if (typeof patch.effortId === "string") prefsPatch.preferredEffortId = patch.effortId;
         if (Object.keys(prefsPatch).length > 0) persistPrefs(prefsPatch);
+        // Track recently used model
+        if (typeof patch.model === "string") {
+          recordModelUsage(patch.model);
+        }
       } catch (error) {
         revert();
         const msg =
@@ -763,17 +790,37 @@ export function Composer({
           setCurrentMode(caps.currentMode);
         });
       }
-      if (effortIdOk && prefEffortId && prefEffortId !== caps.currentEffortId) {
+      // Effort options are per-model. `caps` here still describes the model that
+      // was live at session/new, so the check above validated the saved effort
+      // against the *wrong* list — a saved "max" survived the switch to a model
+      // that never offered it, and the agent rejected it every session with
+      // "effort not found: max". Re-check against what the new model advertises.
+      const live = modelOk && prefModel && prefModel !== caps.currentModel
+        ? ((await getSessionCapabilities(sessionId).catch(() => null)) ?? caps)
+        : caps;
+      const liveEffortIdOk =
+        Boolean(prefEffortId) && (live.effortOptions ?? []).some((o) => o.id === prefEffortId);
+      const liveNumericOk =
+        prefEffort != null &&
+        live.thinkingEffort != null &&
+        prefEffort >= live.thinkingEffort.min &&
+        prefEffort <= live.thinkingEffort.max;
+      if (effortIdOk && !liveEffortIdOk) {
+        // Keep it on disk — switching back to a model that has it should restore it.
+        setCurrentEffortId(live.currentEffortId);
+      }
+
+      if (liveEffortIdOk && prefEffortId && prefEffortId !== live.currentEffortId) {
         await commitUpdate({ effortId: prefEffortId }, () => {
-          setCurrentEffortId(caps.currentEffortId);
+          setCurrentEffortId(live.currentEffortId);
         });
       } else if (
-        numericOk &&
+        liveNumericOk &&
         prefEffort != null &&
-        (caps.currentEffort == null || Math.abs(caps.currentEffort - prefEffort) > 1e-6)
+        (live.currentEffort == null || Math.abs(live.currentEffort - prefEffort) > 1e-6)
       ) {
         await commitUpdate({ thinkingEffort: prefEffort }, () => {
-          setCurrentEffort(caps.currentEffort);
+          setCurrentEffort(live.currentEffort);
         });
       }
     })();
@@ -795,7 +842,11 @@ export function Composer({
     if (isBusy) return;
     if (!sessionId || sessionId.startsWith("session-empty-")) return;
     onWarmAgent?.();
-    onSend(draft);
+    // Only paths the user actually left in the draft — deleting the text should
+    // not still trigger a grant prompt for it.
+    const dropped = [...droppedPathsRef.current].filter((p) => draft.includes(p));
+    onSend(draft, dropped);
+    droppedPathsRef.current.clear();
     setDraft("");
   };
 
@@ -803,6 +854,7 @@ export function Composer({
   const insertDroppedPaths = useCallback((paths: string[]) => {
     const unique = [...new Set(paths.map((p) => p.trim()).filter(Boolean))];
     if (unique.length === 0) return;
+    for (const path of unique) droppedPathsRef.current.add(path);
     const chunk = unique.join("\n");
     const el = textareaRef.current;
     if (!el) {
@@ -1070,6 +1122,12 @@ export function Composer({
     return groupModels(filtered);
   }, [caps?.models, modelQuery]);
 
+  const recentModels = useMemo(() => {
+    if (!caps?.models?.length) return [];
+    const validIds = new Set(caps.models.map((m) => m.id));
+    return getRecentModels(validIds);
+  }, [caps?.models]);
+
   // Reset + focus search when opening model menu
   useEffect(() => {
     if (menu === "model") {
@@ -1089,6 +1147,22 @@ export function Composer({
   useEffect(() => {
     if (menu !== "agent") return;
     void refreshAgentStatuses();
+    // Two passes: `--version` is local and paints immediately, the registry
+    // lookup is network and only fills in "update available" when it lands.
+    let live = true;
+    void (async () => {
+      const local = await agentVersions(false);
+      if (live && local.length > 0) {
+        setAgentVersionInfo(Object.fromEntries(local.map((v) => [v.id, v])));
+      }
+      const remote = await agentVersions(true);
+      if (live && remote.length > 0) {
+        setAgentVersionInfo(Object.fromEntries(remote.map((v) => [v.id, v])));
+      }
+    })();
+    return () => {
+      live = false;
+    };
   }, [menu, refreshAgentStatuses]);
 
   const runInstall = useCallback(
@@ -1301,7 +1375,8 @@ export function Composer({
           </div>
           <div className="composer__actions">
             {/* ── Model + Effort selector ─────────────────────────────── */}
-            {(hasModels || hasEffort) && (
+            {/* Always show when caps exist (even empty for add-key prompt), or has effort */}
+            {(hasModels || hasEffort || (caps && caps.models.length === 0)) && (
               <div className="composer-menu-anchor">
                 <button
                   className="composer-select composer-select--model"
@@ -1316,113 +1391,178 @@ export function Composer({
 
                 {menu === "model" && (
                   <div className="composer-menu composer-menu--models" role="listbox" aria-label={`${agent.label} models`}>
-                    {hasModels && (
-                      <>
-                        <div className="composer-menu__search">
-                          <Search size={13} aria-hidden />
-                          <input
-                            ref={modelSearchRef}
-                            type="search"
-                            value={modelQuery}
-                            placeholder="Search provider or model…"
-                            aria-label="Search models"
-                            onChange={(e) => setModelQuery(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Escape") {
-                                e.stopPropagation();
-                                setMenu(null);
-                              }
-                            }}
-                          />
+                    {!hasModels && caps?.models.length === 0 ? (
+                      /* ── Empty state: no models / no keys ── */
+                      <div className="composer-menu__empty-state">
+                        <div className="composer-menu__empty-icon">🔑</div>
+                        <div className="composer-menu__empty-title">还没有配置 API Key</div>
+                        <div className="composer-menu__empty-desc">
+                          选择服务商并输入 Key 即可开始使用
                         </div>
-                        <div className="composer-menu__scroll">
-                          {modelGroups.length === 0 && (
-                            <div className="composer-menu__empty">No models match “{modelQuery}”</div>
-                          )}
-                          {modelGroups.map((group) => (
-                            <div className="composer-menu__group" key={group.provider}>
-                              <span className="composer-menu__label">{group.provider}</span>
-                              {group.models.map((m) => (
-                                <button
-                                  key={m.id}
-                                  className={displayModel === m.id ? "is-selected" : ""}
-                                  type="button"
-                                  role="option"
-                                  aria-selected={displayModel === m.id}
-                                  title={[m.label || m.id, m.description, m.id].filter(Boolean).join("\n")}
-                                  onClick={() => {
-                                    const prev = displayModel;
-                                    pinOptions({ model: m.id });
-                                    setCurrentModel(m.id);
-                                    // Never jump to Effort before the agent re-negotiates
-                                    // options — Haiku drops effort and a stale menu white-screens.
+                        <button
+                          className="composer-menu__add-key-btn"
+                          type="button"
+                          onClick={() => { setMenu(null); setShowProviderDialog(true); }}
+                        >
+                          添加 API Key
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        {hasModels && (
+                          <>
+                            {/* ── Recent models ── */}
+                            {recentModels.length > 0 && (
+                              <div className="composer-menu__recent">
+                                <span className="composer-menu__label">最近使用</span>
+                                {recentModels.map((entry) => {
+                                  const model = caps?.models.find((m) => m.id === entry.modelId);
+                                  if (!model) return null;
+                                  return (
+                                    <button
+                                      key={entry.modelId}
+                                      className={displayModel === entry.modelId ? "is-selected" : ""}
+                                      type="button"
+                                      role="option"
+                                      aria-selected={displayModel === entry.modelId}
+                                      onClick={() => {
+                                        const prev = displayModel;
+                                        pinOptions({ model: entry.modelId });
+                                        setCurrentModel(entry.modelId);
+                                        setMenu(null);
+                                        void commitUpdate({ model: entry.modelId }, () => {
+                                          unpinOption("model");
+                                          setCurrentModel(prev);
+                                        });
+                                      }}
+                                    >
+                                      <span className="composer-menu__model-name">{shortModelName(model)}</span>
+                                      <span className="composer-menu__model-recent-hint">{formatRecentTime(entry.lastUsedAt)}</span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+                            {recentModels.length > 0 && <span className="composer-menu__divider" />}
+
+                            {/* ── Search ── */}
+                            <div className="composer-menu__search">
+                              <Search size={13} aria-hidden />
+                              <input
+                                ref={modelSearchRef}
+                                type="search"
+                                value={modelQuery}
+                                placeholder="Search provider or model…"
+                                aria-label="Search models"
+                                onChange={(e) => setModelQuery(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Escape") {
+                                    e.stopPropagation();
                                     setMenu(null);
-                                    void commitUpdate({ model: m.id }, () => {
-                                      unpinOption("model");
-                                      setCurrentModel(prev);
-                                    });
-                                  }}
-                                >
-                                  <span className="composer-menu__model-name">{shortModelName(m)}</span>
-                                  <span className="composer-menu__model-id">{m.id}</span>
-                                </button>
+                                  }
+                                }}
+                              />
+                            </div>
+                            <div className="composer-menu__scroll">
+                              {modelGroups.length === 0 && (
+                                <div className="composer-menu__empty">No models match “{modelQuery}”</div>
+                              )}
+                              {modelGroups.map((group) => (
+                                <div className="composer-menu__group" key={group.provider}>
+                                  <span className="composer-menu__label">{group.provider}</span>
+                                  {group.models.map((m) => (
+                                    <button
+                                      key={m.id}
+                                      className={displayModel === m.id ? "is-selected" : ""}
+                                      type="button"
+                                      role="option"
+                                      aria-selected={displayModel === m.id}
+                                      title={[m.label || m.id, m.description, m.id].filter(Boolean).join("\n")}
+                                      onClick={() => {
+                                        const prev = displayModel;
+                                        pinOptions({ model: m.id });
+                                        setCurrentModel(m.id);
+                                        // Never jump to Effort before the agent re-negotiates
+                                        // options — Haiku drops effort and a stale menu white-screens.
+                                        setMenu(null);
+                                        void commitUpdate({ model: m.id }, () => {
+                                          unpinOption("model");
+                                          setCurrentModel(prev);
+                                        });
+                                      }}
+                                    >
+                                      <span className="composer-menu__model-name">{shortModelName(m)}</span>
+                                      <span className="composer-menu__model-id">{m.id}</span>
+                                    </button>
+                                  ))}
+                                </div>
                               ))}
                             </div>
-                          ))}
-                        </div>
+
+                            {/* ── Add API Key entry at bottom ── */}
+                            <span className="composer-menu__divider" />
+                            <button
+                              className="composer-menu__add-key-item"
+                              type="button"
+                              onClick={() => { setMenu(null); setShowProviderDialog(true); }}
+                            >
+                              ＋ 添加 API Key…
+                            </button>
+                          </>
+                        )}
                         {hasEffort && <span className="composer-menu__divider" />}
+                        {hasEffort && (
+                          <div className="composer-menu__effort-inline">
+                            <span className="composer-menu__label">
+                              {hasStringEffort ? "Effort" : "Response strength"}
+                            </span>
+                            {hasStringEffort
+                              ? effortOptions.map((opt) => (
+                                  <button
+                                    key={opt.id}
+                                    className={currentEffortId === opt.id ? "is-selected" : ""}
+                                    type="button"
+                                    onClick={() => {
+                                      const prev = currentEffortId;
+                                      pinOptions({ effortId: opt.id });
+                                      setCurrentEffortId(opt.id);
+                                      setMenu(null);
+                                      void commitUpdate({ effortId: opt.id }, () => {
+                                        unpinOption("effortId");
+                                        setCurrentEffortId(prev);
+                                      });
+                                    }}
+                                  >
+                                    {opt.label}
+                                  </button>
+                                ))
+                              : numericEffortPresets.map((preset) => (
+                                  <button
+                                    key={preset.label}
+                                    className={
+                                      currentEffort != null &&
+                                      Math.abs(currentEffort - preset.value) < 0.01
+                                        ? "is-selected"
+                                        : ""
+                                    }
+                                    type="button"
+                                    onClick={() => {
+                                      const prev = currentEffort;
+                                      pinOptions({ effort: preset.value });
+                                      setCurrentEffort(preset.value);
+                                      setMenu(null);
+                                      void commitUpdate({ thinkingEffort: preset.value }, () => {
+                                        unpinOption("effort");
+                                        setCurrentEffort(prev);
+                                      });
+                                    }}
+                                  >
+                                    {preset.label}
+                                  </button>
+                                ))}
+                          </div>
+                        )}
                       </>
-                    )}
-                    {hasEffort && (
-                      <div className="composer-menu__effort-inline">
-                        <span className="composer-menu__label">
-                          {hasStringEffort ? "Effort" : "Response strength"}
-                        </span>
-                        {hasStringEffort
-                          ? effortOptions.map((opt) => (
-                              <button
-                                key={opt.id}
-                                className={currentEffortId === opt.id ? "is-selected" : ""}
-                                type="button"
-                                onClick={() => {
-                                  const prev = currentEffortId;
-                                  pinOptions({ effortId: opt.id });
-                                  setCurrentEffortId(opt.id);
-                                  setMenu(null);
-                                  void commitUpdate({ effortId: opt.id }, () => {
-                                    unpinOption("effortId");
-                                    setCurrentEffortId(prev);
-                                  });
-                                }}
-                              >
-                                {opt.label}
-                              </button>
-                            ))
-                          : numericEffortPresets.map((preset) => (
-                              <button
-                                key={preset.label}
-                                className={
-                                  currentEffort != null &&
-                                  Math.abs(currentEffort - preset.value) < 0.01
-                                    ? "is-selected"
-                                    : ""
-                                }
-                                type="button"
-                                onClick={() => {
-                                  const prev = currentEffort;
-                                  pinOptions({ effort: preset.value });
-                                  setCurrentEffort(preset.value);
-                                  setMenu(null);
-                                  void commitUpdate({ thinkingEffort: preset.value }, () => {
-                                    unpinOption("effort");
-                                    setCurrentEffort(prev);
-                                  });
-                                }}
-                              >
-                                {preset.label}
-                              </button>
-                            ))}
-                      </div>
                     )}
                   </div>
                 )}
@@ -1504,6 +1644,12 @@ export function Composer({
                       const busyInstall = installingAgentId === candidate.id;
                       const canInstall =
                         !ready && (status?.installable ?? false) && !busyInstall;
+                      const version = agentVersionInfo[candidate.id];
+                      // Offer the upgrade even when startup already tried it —
+                      // it may have failed, or the release may be newer than
+                      // this app launch.
+                      const canUpdate =
+                        ready && (version?.updateAvailable ?? false) && !busyInstall;
                       return (
                         <div className="composer-agent-row" key={candidate.id}>
                           <button
@@ -1519,6 +1665,18 @@ export function Composer({
                             }}
                           >
                             <span className="composer-agent-row__name">{candidate.label}</span>
+                            {version?.installed && (
+                              <span
+                                className="composer-agent-row__version"
+                                title={
+                                  version.latest
+                                    ? `installed ${version.installed} · latest ${version.latest}`
+                                    : (version.note ?? `installed ${version.installed}`)
+                                }
+                              >
+                                v{version.installed}
+                              </span>
+                            )}
                             {!ready && (
                               <span className="composer-agent-row__tag">
                                 {busyInstall
@@ -1529,6 +1687,19 @@ export function Composer({
                               </span>
                             )}
                           </button>
+                          {canUpdate && (
+                            <button
+                              className="composer-agent-row__install"
+                              type="button"
+                              title={`npm install -g ${version?.package ?? ""} (${version?.installed} → ${version?.latest})`}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void runInstall(candidate.id);
+                              }}
+                            >
+                              {`→ ${version?.latest}`}
+                            </button>
+                          )}
                           {canInstall && (
                             <button
                               className="composer-agent-row__install"
@@ -1585,6 +1756,18 @@ export function Composer({
           </div>
         </div>
       </div>
+      {showProviderDialog && (
+        <ProviderConfigDialog
+          onClose={() => setShowProviderDialog(false)}
+          onSaved={() => {
+            setShowProviderDialog(false);
+            // Refresh capabilities to pick up new models
+            if (sessionId && !sessionId.startsWith("session-empty-")) {
+              loadCapabilities(sessionId);
+            }
+          }}
+        />
+      )}
     </footer>
   );
 }
