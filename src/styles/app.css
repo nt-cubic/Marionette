@@ -15,6 +15,7 @@
   display: grid;
   /* Widths are set inline from remembered left/right panel sizes. */
   grid-template-columns: var(--left-panel-width, 224px) minmax(0, 1fr) var(--right-panel-width, 270px);
+  grid-template-rows: 34px minmax(0, 1fr);
   width: 100%;
   height: 100%;
   min-height: 0;
@@ -30,6 +31,24 @@
 
 .workspace-grid.is-left-collapsed.is-right-collapsed {
   grid-template-columns: 34px minmax(0, 1fr) 34px;
+}
+
+/* Shared titlebar across center + right columns (Zed-style). */
+.workspace-titlebar {
+  grid-column: 2 / -1;
+  grid-row: 1;
+  display: flex;
+  align-items: stretch;
+  height: 34px;
+  border-bottom: 1px solid var(--border);
+  background: var(--editor-toolbar-bg);
+}
+
+.workspace-titlebar__spacer {
+  flex: 1;
+  min-width: 24px;
+  align-self: stretch;
+  height: 100%;
 }
 
 /* Drag handles on the inner seams of side panels. */
@@ -89,6 +108,7 @@ body.is-panel-resizing .context-panel {
 }
 
 .center-workspace {
+  grid-row: 2;
   display: grid;
   /* Composer row is auto-sized so expand can grow without a fixed 104px trap. */
   grid-template-rows: minmax(0, 1fr) auto;
@@ -286,10 +306,12 @@ body.is-panel-resizing .context-panel {
 }
 
 .left-rail {
+  grid-row: 1 / -1;
   border-right: 1px solid var(--border);
 }
 
 .context-panel {
+  grid-row: 2;
   gap: 0;
   padding: 0;
   border-left: 1px solid var(--border);
@@ -1035,6 +1057,14 @@ body.is-panel-resizing .context-panel {
   background: var(--editor-toolbar-bg);
 }
 
+.editor-tabs__tablist {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  overflow: hidden;
+}
+
 .editor-tabs__spacer {
   flex: 1;
   min-width: 24px;
@@ -1481,9 +1511,12 @@ body.is-panel-resizing .context-panel {
 }
 
 .clean-surface {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
   min-width: 0;
+  min-height: 0;
   padding: 8px 12px 12px;
   overflow: hidden;
   background: var(--panel-muted);
@@ -1491,16 +1524,17 @@ body.is-panel-resizing .context-panel {
 
 .clean-surface__body {
   position: relative;
-  display: block;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
   min-width: 0;
   max-width: 100%;
   min-height: 0;
-  height: 100%;
   overflow: hidden;
 }
 
 .clean-surface__body > .event-list {
-  height: 100%;
+  flex: 1;
   min-width: 0;
   max-width: 100%;
   min-height: 0;
@@ -1513,14 +1547,14 @@ body.is-panel-resizing .context-panel {
 /* User-message outline: thin rail + hover panel list */
 .message-outline {
   position: absolute;
-  top: 8px;
-  right: 4px;
+  top: 32px;
+  right: 10px;
   z-index: 12;
   display: flex;
   flex-direction: row-reverse;
   align-items: flex-start;
   gap: 0;
-  max-height: calc(100% - 16px);
+  max-height: calc(100% - 44px);
   pointer-events: auto;
 }
 
@@ -1672,6 +1706,21 @@ body.is-panel-resizing .context-panel {
   gap: 8px;
 }
 
+.event-card__type-row__right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+/* Time-edit container: edit overlays timestamp on hover */
+.event-card__time-edit {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
 .event-card__edit {
   display: inline-flex;
   gap: 4px;
@@ -1685,12 +1734,34 @@ body.is-panel-resizing .context-panel {
   font: inherit;
   font-size: 11px;
   cursor: pointer;
+}
+
+/* You card: edit floats over timestamp, time fades on hover */
+.event-card--user_message .event-card__edit {
+  position: absolute;
+  right: 0;
   opacity: 0;
+  transition: opacity 0.12s ease;
+  white-space: nowrap;
+  z-index: 1;
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: var(--panel-raised);
+  font-size: 10px;
+}
+
+.event-card--user_message .event-card__timestamp {
+  transition: opacity 0.12s ease;
 }
 
 .event-card--user_message:hover .event-card__edit,
 .event-card--user_message:focus-within .event-card__edit {
   opacity: 1;
+}
+
+.event-card--user_message:hover .event-card__timestamp {
+  opacity: 0;
 }
 
 .event-card__edit:hover {
@@ -1760,20 +1831,28 @@ body.is-panel-resizing .context-panel {
   cursor: wait;
 }
 
-.clean-surface__notice {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  padding: 10px;
+.icon-button--eye {
+  position: absolute;
+  top: 4px;
+  right: 18px;
+  z-index: 13;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
   background: var(--panel);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  cursor: pointer;
 }
 
-.clean-surface__notice .icon-button {
-  margin-left: auto;
-  flex: 0 0 auto;
+.icon-button--eye:hover {
+  color: var(--text);
+  background: var(--panel-soft);
 }
 
 .event-list {
@@ -2302,6 +2381,115 @@ body.is-panel-resizing .context-panel {
   line-height: 1.45;
   color: var(--text-muted);
   font-size: 13px;
+}
+
+/* ── Message metadata: timestamp + tags ─────────────────────────────── */
+
+/* Hide icon for You + Reply (they have timestamp + mode bar / tags instead) */
+.event-card--user_message,
+.event-card--assistant_message {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.event-card--user_message .event-card__icon,
+.event-card--assistant_message .event-card__icon {
+  display: none;
+}
+
+/* You card: 3px left color bar (mode accent) */
+.event-card--user_message {
+  position: relative;
+  overflow: hidden;
+}
+
+.event-card--user_message::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.event-card--user_message[data-mode-tone="plan"]::before    { background: #a78bfa; }
+.event-card--user_message[data-mode-tone="ask"]::before     { background: #60a5fa; }
+.event-card--user_message[data-mode-tone="debug"]::before   { background: var(--orange); }
+.event-card--user_message[data-mode-tone="build"]::before   { background: var(--accent); }
+.event-card--user_message[data-mode-tone="default"]::before { background: var(--text-faint); }
+
+/* Timestamp — top-right of the type row */
+.event-card__timestamp {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: default;
+  line-height: 1;
+}
+
+.event-card__timestamp:hover {
+  color: var(--text-muted);
+}
+
+/* Meta tags row — bottom of Reply cards */
+.event-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 10px;
+  margin-top: 7px;
+  padding-top: 0;
+  border-top: none;
+}
+
+/* Individual tag — plain text style */
+.meta-tag {
+  display: inline;
+  padding: 0;
+  background: none;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 400;
+  height: auto;
+  border-radius: 0;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+/* Mode symbol — ▣ colored by mode tone */
+.meta-tag__symbol {
+  color: var(--mode-chip, var(--text-faint));
+  font-size: 10px;
+}
+
+.meta-tag__symbol + .meta-tag--mode {
+  margin-left: 0;
+}
+
+/* Mode tag — colored text only, no background */
+.meta-tag--mode {
+  color: var(--mode-chip, var(--text-faint));
+  background: none;
+  text-transform: capitalize;
+}
+
+.meta-tag--mode[data-mode-tone="plan"],
+.meta-tag__symbol[data-mode-tone="plan"]    { --mode-chip: #a78bfa; }
+.meta-tag--mode[data-mode-tone="ask"],
+.meta-tag__symbol[data-mode-tone="ask"]     { --mode-chip: #60a5fa; }
+.meta-tag--mode[data-mode-tone="debug"],
+.meta-tag__symbol[data-mode-tone="debug"]   { --mode-chip: var(--orange); }
+.meta-tag--mode[data-mode-tone="build"],
+.meta-tag__symbol[data-mode-tone="build"]   { --mode-chip: var(--accent); }
+.meta-tag--mode[data-mode-tone="default"],
+.meta-tag__symbol[data-mode-tone="default"] { --mode-chip: var(--text-faint); }
+
+/* Duration — monospace numbers */
+.meta-tag--duration {
+  font-variant-numeric: tabular-nums;
 }
 
 .link-button {
@@ -3619,6 +3807,60 @@ body.is-composer-resizing .composer {
   text-transform: uppercase;
 }
 
+.context-lend__labelrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.context-lend__labelrow .context-lend__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-lend__reconnect {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  /* The panel is drag-resizable — the label truncates, the control does not. */
+  flex: 0 0 auto;
+  white-space: nowrap;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.context-lend__reconnect:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--border-strong, var(--border));
+  background: var(--surface-hover, rgba(127, 127, 127, 0.08));
+}
+
+.context-lend__reconnect:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.context-lend__reconnect .is-spinning {
+  animation: context-lend-spin 900ms linear infinite;
+}
+
+@keyframes context-lend-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .context-lend__list {
   display: grid;
   gap: 2px;
@@ -3820,6 +4062,14 @@ body.is-composer-resizing .composer {
   letter-spacing: 0.02em;
 }
 
+.composer-agent-row__version {
+  flex-shrink: 0;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
 .composer-agent-row__install {
   flex-shrink: 0;
   min-height: 22px;
@@ -3872,4 +4122,149 @@ body.is-composer-resizing .composer {
   .workspace-grid {
     grid-template-columns: 220px minmax(0, 1fr) 250px;
   }
+}
+
+/* ── Provider Config Dialog ────────────────────────────────────────────── */
+.provider-dialog {
+  min-width: 400px;
+}
+
+.provider-dialog__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.provider-dialog__label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.provider-dialog__select,
+.provider-dialog__input {
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-secondary);
+  color: var(--text-primary);
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.provider-dialog__select:focus,
+.provider-dialog__input:focus {
+  border-color: var(--accent);
+}
+
+.provider-dialog__error {
+  color: var(--danger);
+  font-size: 13px;
+  padding: 6px 0;
+}
+
+/* ── Model Dropdown Empty State ────────────────────────────────────────── */
+.composer-menu__empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 24px 16px;
+  text-align: center;
+}
+
+.composer-menu__empty-icon {
+  font-size: 28px;
+  line-height: 1;
+}
+
+.composer-menu__empty-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.composer-menu__empty-desc {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin-bottom: 4px;
+}
+
+.composer-menu__add-key-btn {
+  padding: 6px 16px;
+  border-radius: 6px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.composer-menu__add-key-btn:hover {
+  opacity: 0.9;
+}
+
+/* ── Recent Models ─────────────────────────────────────────────────────── */
+.composer-menu__recent {
+  padding: 4px 0;
+}
+
+.composer-menu__recent .composer-menu__label {
+  display: block;
+  padding: 4px 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-tertiary);
+}
+
+.composer-menu__recent button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  background: none;
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  border-radius: 4px;
+}
+
+.composer-menu__recent button:hover,
+.composer-menu__recent button.is-selected {
+  background: var(--hover);
+}
+
+.composer-menu__model-recent-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  margin-left: 8px;
+}
+
+/* ── Add Key item in model list ────────────────────────────────────────── */
+.composer-menu__add-key-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  border-radius: 4px;
+  gap: 4px;
+}
+
+.composer-menu__add-key-item:hover {
+  background: var(--hover);
 }
