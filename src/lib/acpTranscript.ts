@@ -406,13 +406,25 @@ function extractTextContent(content: unknown): string {
   return "";
 }
 
-export function userMessageEvent(sessionId: string, text: string): SessionEvent {
+export function userMessageEvent(
+  sessionId: string,
+  text: string,
+  meta?: {
+    agentId?: string;
+    agentLabel?: string;
+    modelId?: string;
+    modelLabel?: string;
+    modeLabel?: string;
+    effortLabel?: string;
+  },
+): SessionEvent {
   return {
     type: "user_message",
     sessionId,
     text,
     messageId: `um-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     createdAt: new Date().toISOString(),
+    ...meta,
   };
 }
 
@@ -428,14 +440,50 @@ export function userMessageAnchorId(event: {
   return `user-msg-${slug}`;
 }
 
-export function assistantMessageEvent(sessionId: string, text: string, messageId?: string): SessionEvent {
+export function assistantMessageEvent(
+  sessionId: string,
+  text: string,
+  messageId?: string,
+  meta?: {
+    agentId?: string;
+    agentLabel?: string;
+    modelId?: string;
+    modelLabel?: string;
+    modeLabel?: string;
+    effortLabel?: string;
+  },
+): SessionEvent {
   return {
     type: "assistant_message",
     sessionId,
     text,
     messageId,
     createdAt: new Date().toISOString(),
+    ...meta,
   };
+}
+
+/** Scan events backward for the last user_message with metadata. */
+export function metaFromLastUser(events: SessionEvent[], sessionId: string):
+  | { agentId?: string; agentLabel?: string; modelId?: string; modelLabel?: string; modeLabel?: string; effortLabel?: string }
+  | undefined {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e.sessionId === sessionId && e.type === "user_message") {
+      if (e.agentId || e.agentLabel || e.modelId || e.modelLabel || e.modeLabel || e.effortLabel) {
+        return {
+          agentId: e.agentId,
+          agentLabel: e.agentLabel,
+          modelId: e.modelId,
+          modelLabel: e.modelLabel,
+          modeLabel: e.modeLabel,
+          effortLabel: e.effortLabel,
+        };
+      }
+      return undefined;
+    }
+  }
+  return undefined;
 }
 
 export function thoughtEvent(sessionId: string, text: string, messageId?: string): SessionEvent {
@@ -538,7 +586,8 @@ export function applyAcpPartToEvents(
       };
       return next;
     }
-    return [...current, assistantMessageEvent(sessionId, part.text, part.messageId)];
+    const meta = metaFromLastUser(current, sessionId);
+    return [...current, assistantMessageEvent(sessionId, part.text, part.messageId, meta)];
   }
 
   if (part.role === "thought") {

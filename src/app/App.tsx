@@ -43,7 +43,8 @@ import { Composer } from "../components/Composer";
 import { ContextPanel } from "../components/ContextPanel";
 import { PermissionDialog, type PermissionPrompt } from "../components/PermissionDialog";
 import { ProjectShelf } from "../components/ProjectShelf";
-import { SessionView, type UserMessageAnchor } from "../components/SessionView";
+import { SessionTabs, SessionView, type UserMessageAnchor } from "../components/SessionView";
+import { WindowControls } from "../components/WindowControls";
 
 type ThemeMode = "dark" | "light";
 
@@ -114,6 +115,13 @@ function asIdleOnLoad(session: Session): Session {
   return { ...session, status: "exited", processId: null, ptyId: null };
 }
 
+/**
+ * How long an agent may stay silent after `session/cancel` before we call the
+ * turn unrecoverable. Cancel gets no reply, so renewed output is the only ack;
+ * an agent that honours it reacts within a second or two.
+ */
+const CANCEL_ACK_GRACE_MS = 6_000;
+
 /** Close out tools that never received a terminal status (stuck in_progress). */
 function markOpenTools(
   events: SessionEvent[],
@@ -132,6 +140,13 @@ function markOpenTools(
       text: rest ? `${line1}${rest}` : line1,
     };
   });
+}
+
+function effortLabel(value: number): string {
+  if (value <= 0.1) return "Low";
+  if (value >= 0.9) return "High";
+  if (Math.abs(value - 0.5) < 0.1) return "Auto";
+  return value < 0.5 ? "Medium" : "High";
 }
 
 export function App() {
@@ -178,8 +193,29 @@ export function App() {
   const lastProviderProbeKey = useRef("");
   /** In-flight ACP bootstrap promises (lazy warm / ensure-on-send). */
   const acpBootstrapRef = useRef<Map<string, Promise<CapabilitySnapshot | null>>>(new Map());
+  /** Snapshot of Composer config taken at send time, used to stamp user_message events. */
+  const sendMetaRef = useRef<{
+    agentId?: string;
+    agentLabel?: string;
+    modelId?: string;
+    modelLabel?: string;
+    modeLabel?: string;
+    effortLabel?: string;
+  } | null>(null);
+  /** When the current turn's first assistant_message chunk arrived (for duration tracking). */
+  const turnStartedAtRef = useRef<Record<string, number>>({});
   /** Fresh ACP process needs local transcript injected once (no session/load yet). */
   const acpNeedsHistoryRef = useRef<Set<string>>(new Set());
+  /** When each session's turn last actually finished (`rpc/response` / process end). */
+  const turnEndedAtRef = useRef<Record<string, number>>({});
+  /**
+   * Sessions whose `session/cancel` went unanswered. Cancel is a fire-and-forget
+   * notification, so an agent wedged inside a tool or a model call never reads
+   * it — the process is unrecoverable from that point and the next send has to
+   * replace it rather than write into a pipe nobody drains.
+   */
+  const cancelIgnoredRef = useRef<Set<string>>(new Set());
+  const cancelWatchdogsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const transcriptSaveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const transcriptLoadedRef = useRef<Set<string>>(new Set());
   const [searchHitIds, setSearchHitIds] = useState<string[] | null>(null);
@@ -198,6 +234,8 @@ export function App() {
   /** MCP servers + skills found for the active project (needs 5). */
   const [projectContext, setProjectContext] = useState<ProjectContext | null>(null);
   const [projectContextScanning, setProjectContextScanning] = useState(false);
+  /** A reconnect tears down and re-warms the agent — the button must show it. */
+  const [reconnecting, setReconnecting] = useState(false);
   /** Draft held back because it points outside the project. */
   const [pathGrantPrompt, setPathGrantPrompt] = useState<{
     paths: OutsidePath[];
@@ -342,6 +380,15 @@ export function App() {
       // ACP wire already logged in Rust emit_event → dev.log
       if (payload.sessionId) touchActivity(payload.sessionId);
 
+      // Did the *turn* end? That — not mere output — is what proves a cancel
+      // landed. An agent can keep streaming tokens while its stdin reader is
+      // wedged, which is exactly the runaway case people hit pause for, so
+      // "the agent made a sound" would be the wrong signal here.
+      if (payload.sessionId && (payload.method === "rpc/response" || payload.method === "process/ended")) {
+        turnEndedAtRef.current[payload.sessionId] = Date.now();
+        cancelIgnoredRef.current.delete(payload.sessionId);
+      }
+
       // Live transcript: thinking / tool / assistant stream as events arrive
       if (payload.method === "session/update") {
         // Context window / cost / vendor rate-limit meta
@@ -377,7 +424,22 @@ export function App() {
             });
           }
           setLiveEvents((current) => {
+            const prevLast = current[current.length - 1];
             let next = applyAcpPartToEvents(current, payload.sessionId, extracted);
+            // Track turn start for duration: first new assistant_message card
+            if (extracted.role === "assistant") {
+              const newLast = next[next.length - 1];
+              if (
+                newLast?.type === "assistant_message" &&
+                newLast.sessionId === payload.sessionId &&
+                (prevLast?.type !== "assistant_message" || prevLast.sessionId !== payload.sessionId) &&
+                !turnStartedAtRef.current[payload.sessionId]
+              ) {
+                turnStartedAtRef.current[payload.sessionId] = Date.now();
+                // Clear sendMetaRef — snapshot consumed by the first assistant chunk
+                sendMetaRef.current = null;
+              }
+            }
             // Glue fragment thoughts that landed next to each other mid-stream.
             if (extracted.role === "thought" || extracted.role === "assistant") {
               next = coalesceAdjacentThoughts(next, payload.sessionId);
@@ -387,8 +449,23 @@ export function App() {
         }
       }
       if (payload.kind === "response" && payload.method === "rpc/response") {
-        // OpenCode streams CoT as agent_message_chunk — fold intermediate bubbles into Thinking.
-        setLiveEvents((current) => collapseIntermediateAssistantAsThought(current, payload.sessionId));
+        // Compute duration and stamp on the last assistant_message
+        const startedAt = turnStartedAtRef.current[payload.sessionId];
+        if (startedAt) {
+          const durationMs = Date.now() - startedAt;
+          delete turnStartedAtRef.current[payload.sessionId];
+          setLiveEvents((current) => {
+            const last = current[current.length - 1];
+            if (last?.type === "assistant_message" && last.sessionId === payload.sessionId && last.durationMs == null) {
+              const next = [...current];
+              next[next.length - 1] = { ...last, durationMs };
+              return collapseIntermediateAssistantAsThought(next, payload.sessionId);
+            }
+            return collapseIntermediateAssistantAsThought(current, payload.sessionId);
+          });
+        } else {
+          setLiveEvents((current) => collapseIntermediateAssistantAsThought(current, payload.sessionId));
+        }
         setAvailableSessions((current) =>
           current.map((session) =>
             session.id === payload.sessionId && session.status === "running"
@@ -535,6 +612,8 @@ export function App() {
       unlistenAcp?.();
       for (const t of ptyFlushTimersRef.current.values()) clearTimeout(t);
       ptyFlushTimersRef.current.clear();
+      for (const t of cancelWatchdogsRef.current.values()) clearTimeout(t);
+      cancelWatchdogsRef.current.clear();
     };
   }, [pushDebug, schedulePtyFlush, touchActivity]);
   // note: pushDebug is stable via useCallback
@@ -1336,6 +1415,154 @@ export function App() {
     setSessionStatusById(currentSessionId, status);
   }, [currentSessionId, setSessionStatusById]);
 
+  const disarmCancelWatchdog = useCallback((sid: string) => {
+    const timer = cancelWatchdogsRef.current.get(sid);
+    if (timer) clearTimeout(timer);
+    cancelWatchdogsRef.current.delete(sid);
+  }, []);
+
+  /**
+   * Replace a wedged ACP process and make the next prompt carry the transcript.
+   * Same dance as the path-grant restart below: a live agent cannot pick up new
+   * state, so `session/new` is the only way back.
+   */
+  const restartAcpProcess = useCallback(async (sid: string) => {
+    disarmCancelWatchdog(sid);
+    cancelIgnoredRef.current.delete(sid);
+    await stopAcpSession(sid).catch(() => undefined);
+    acpBootstrapRef.current.delete(sid);
+    setSessionCapabilities(null);
+    setSessionStatusById(sid, "exited");
+    acpNeedsHistoryRef.current.add(sid);
+    pushDebug({
+      sessionId: sid,
+      level: "info",
+      source: "interrupt",
+      summary: "replaced wedged ACP process",
+    });
+  }, [disarmCancelWatchdog, pushDebug, setSessionStatusById]);
+
+  /**
+   * Re-negotiate the agent connection so newly-reachable MCP servers attach.
+   *
+   * MCP servers are handed to the agent exactly once, in `session/new`. One that
+   * was not listening at that moment — Unity or UE started after AgentShell — is
+   * recorded as unavailable for the life of that session and never retried, so
+   * rescanning the inventory changes nothing on its own: it takes a fresh
+   * `session/new`. Conversation context survives, because the replacement
+   * session gets the local transcript replayed with the next message.
+   */
+  const handleReconnectAgent = useCallback(async () => {
+    const sid = currentSessionIdRef.current;
+    if (!sid) return;
+    const session = sessionsRef.current.find((s) => s.id === sid);
+    const agent = agentsRef.current.find((a) => a.id === session?.agentId);
+    if (agent?.transport !== "acp") return;
+
+    setReconnecting(true);
+    try {
+      await refreshProjectContext(currentProjectId);
+      await restartAcpProcess(sid);
+      await ensureAcpReady(sid);
+      setLiveEvents((current) => [
+        ...current,
+        {
+          type: "assistant_message" as const,
+          sessionId: sid,
+          text:
+            "**Reconnected.**\n\nMCP servers were re-negotiated for this session, so anything that started after the agent (Unity, UE, …) should be attached now. Your conversation is kept — it is replayed to the new session with your next message.",
+          createdAt: new Date().toISOString(),
+        },
+      ]);
+      pushDebug({
+        sessionId: sid,
+        level: "info",
+        source: "context",
+        summary: "reconnected agent to pick up MCP servers",
+      });
+    } catch (error) {
+      pushDebug({
+        sessionId: sid,
+        level: "warn",
+        source: "context",
+        summary: "reconnect failed",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setReconnecting(false);
+    }
+  }, [currentProjectId, ensureAcpReady, pushDebug, refreshProjectContext, restartAcpProcess]);
+
+  /**
+   * Replace the agent process after provider keys were edited, so it re-reads
+   * OpenCode's `auth.json`.
+   *
+   * A key saved from the composer dialog is invisible to a running agent:
+   * OpenCode loads auth.json once at startup, so the live session keeps
+   * reporting the model list it negotiated before the key existed — the model
+   * selector stays empty and the user is back where they started. Same
+   * constraint as `handleReconnectAgent` above: only a fresh `session/new`
+   * picks up new state.
+   */
+  const handleProviderKeysChanged = useCallback(async () => {
+    const sid = currentSessionIdRef.current;
+    if (!sid || sid.startsWith("session-empty-")) return;
+    const session = sessionsRef.current.find((s) => s.id === sid);
+    const agent = agentsRef.current.find((a) => a.id === session?.agentId);
+    if (agent?.transport !== "acp") return;
+    try {
+      await restartAcpProcess(sid);
+      await ensureAcpReady(sid);
+      pushDebug({
+        sessionId: sid,
+        level: "info",
+        source: "session",
+        summary: "restarted agent to load new provider key",
+      });
+    } catch (error) {
+      pushDebug({
+        sessionId: sid,
+        level: "warn",
+        source: "session",
+        summary: "restart after provider key change failed",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, [ensureAcpReady, pushDebug, restartAcpProcess]);
+
+  /**
+   * `session/cancel` is a notification the agent never replies to, so the only
+   * evidence it landed is the turn actually ending. If the turn is still open
+   * after the grace period, it is stuck inside the agent process where nothing
+   * on this side can reach it — flag the session so the next send starts over.
+   */
+  const armCancelWatchdog = useCallback((sid: string, cancelAt: number) => {
+    const previous = cancelWatchdogsRef.current.get(sid);
+    if (previous) clearTimeout(previous);
+    const timer = setTimeout(() => {
+      cancelWatchdogsRef.current.delete(sid);
+      if ((turnEndedAtRef.current[sid] ?? 0) > cancelAt) return; // cancel honoured
+      cancelIgnoredRef.current.add(sid);
+      pushDebug({
+        sessionId: sid,
+        level: "warn",
+        source: "interrupt",
+        summary: "cancel unacknowledged — agent silent, will restart on next send",
+      });
+      setLiveEvents((current) => [
+        ...current,
+        {
+          type: "assistant_message" as const,
+          sessionId: sid,
+          text:
+            "**The agent did not answer the cancel.**\n\nIt has stayed silent since the interrupt, so the turn is stuck inside the agent process — a hung tool or model call, which nothing on this side can reach.\n\nSend your next message as usual: AgentShell will replace the agent process first and replay this conversation to the new one.",
+          createdAt: new Date().toISOString(),
+        },
+      ]);
+    }, CANCEL_ACK_GRACE_MS);
+    cancelWatchdogsRef.current.set(sid, timer);
+  }, [pushDebug]);
+
   const handleInterrupt = useCallback(async () => {
     if (!currentSessionId) return;
     const session = sessionsRef.current.find((s) => s.id === currentSessionId);
@@ -1348,12 +1575,21 @@ export function App() {
     let cancelNote = "";
 
     if (agent.transport === "acp") {
+      // Esc×2 fires regardless of state, and an idle agent has nothing to say —
+      // silence only means "ignored the cancel" when a turn was actually live.
+      const midTurn = session?.status === "running";
       // True turn cancel — do not kill the session process.
+      const cancelAt = Date.now();
       try {
         await cancelAcpSession(sid);
         cancelNote = "Cancel request sent to the agent.";
+        if (midTurn) armCancelWatchdog(sid, cancelAt);
       } catch (error) {
-        cancelNote = `Cancel request failed (${error instanceof Error ? error.message : String(error)}). Local UI was still released so you can send again.`;
+        // The pipe or the process is already gone — only a restart recovers.
+        if (midTurn) cancelIgnoredRef.current.add(sid);
+        cancelNote = `Cancel request failed (${error instanceof Error ? error.message : String(error)}).${
+          midTurn ? " The agent will be restarted on your next message." : ""
+        }`;
         pushDebug({
           sessionId: sid,
           level: "warn",
@@ -1370,7 +1606,7 @@ export function App() {
         {
           type: "assistant_message" as const,
           sessionId: sid,
-          text: `**Interrupted.**\n\n${cancelNote}\n\nYou can send a new message now. If the agent stays silent, warm it again or start a new session.`,
+          text: `**Interrupted.**\n\n${cancelNote}\n\nYou can send a new message now.`,
           createdAt: new Date().toISOString(),
         },
       ]);
@@ -1406,7 +1642,7 @@ export function App() {
     } catch {
       // ignore
     }
-  }, [currentSessionId, pushDebug, setSessionStatusById, touchActivity]);
+  }, [armCancelWatchdog, currentSessionId, pushDebug, setSessionStatusById, touchActivity]);
 
   // P2-UX-3: double Esc → interrupt (after closing overlays).
   useEffect(() => {
@@ -1519,7 +1755,7 @@ export function App() {
         if (e.sessionId !== sid) return true;
         return i < cut;
       });
-      const nextEvents = [...kept, userMessageEvent(sid, newText.trim())];
+      const nextEvents = [...kept, userMessageEvent(sid, newText.trim(), sendMetaRef.current ?? undefined)];
       setLiveEvents(nextEvents);
       liveEventsRef.current = nextEvents;
 
@@ -1547,6 +1783,10 @@ export function App() {
 
       try {
         if (agent.transport === "acp") {
+          disarmCancelWatchdog(sid);
+          if (cancelIgnoredRef.current.has(sid)) {
+            await restartAcpProcess(sid);
+          }
           await ensureAcpReady(sid);
           let promptText = newText.trim();
           if (acpNeedsHistoryRef.current.has(sid)) {
@@ -1588,7 +1828,7 @@ export function App() {
    * forever. The only moment we can widen the scope is `session/new`, which
    * means the answer has to be collected before the turn starts.
    */
-  const handleSend = async (text: string) => {
+  const handleSend = async (text: string, droppedPaths: string[] = []) => {
     if (!currentSessionId) return;
     const sid = currentSessionId;
     // Merge numbered quote-comments + free Composer text (pins first, free text last).
@@ -1597,9 +1837,17 @@ export function App() {
     if (!composed.trim()) return;
 
     const projectId = displaySession.projectId || currentProjectId;
-    const candidates = findLinkTargets(composed)
-      .filter((target) => target.kind === "path")
-      .map((target) => target.raw);
+    // Dropped paths come straight from the OS, so they are exact. Parsing the
+    // text only finds the rest — and it cannot find a path containing a space,
+    // which is most screenshots and most image folders.
+    const candidates = [
+      ...new Set([
+        ...droppedPaths,
+        ...findLinkTargets(composed)
+          .filter((target) => target.kind === "path")
+          .map((target) => target.raw),
+      ]),
+    ];
     const outside = await checkOutsideProjectPaths(projectId, candidates).catch(() => []);
     if (outside.length > 0) {
       // Hold the draft (and its pins) until the user decides.
@@ -1617,11 +1865,31 @@ export function App() {
       // (the composer stays clean; only the wire payload carries them).
       const handoff = pendingHandoff(liveEventsRef.current, sid);
 
+      // Snapshot current Composer config for metadata
+      const caps = sessionCapabilities;
+      const modeId = caps?.currentMode;
+      const modeLabel = modeId ? (caps?.modes.find((m) => m.id === modeId)?.label ?? modeId) : undefined;
+      const effortId = displaySession.preferredEffortId;
+      const effortLabelVal = effortId
+        ? (caps?.effortOptions?.find((o) => o.id === effortId)?.label ?? effortId)
+        : displaySession.preferredEffort != null
+          ? effortLabel(displaySession.preferredEffort)
+          : undefined;
+      sendMetaRef.current = {
+        agentId: currentAgent.id,
+        agentLabel: currentAgent.label,
+        modelId: activeModelId ?? undefined,
+        modelLabel: activeModelId ?? undefined,
+        modeLabel,
+        effortLabel: effortLabelVal,
+      };
+      delete turnStartedAtRef.current[sid];
+
       if (currentAgent.transport === "acp") {
         // Show the user message immediately; wait for ACP only after that.
         // History injection uses events *before* this message.
         const priorForInject = liveEventsRef.current.filter((e) => e.sessionId === sid);
-        setLiveEvents((current) => [...current, userMessageEvent(sid, composed)]);
+        setLiveEvents((current) => [...current, userMessageEvent(sid, composed, sendMetaRef.current ?? undefined)]);
         renameSessionFromText(sid, composed);
         touchActivity(sid);
         pushDebug({
@@ -1630,6 +1898,14 @@ export function App() {
           source: "composer",
           summary: `send: ${composed.length > 80 ? `${composed.slice(0, 80)}…` : composed}`,
         });
+        // Sending supersedes any pending verdict on the last interrupt — do not
+        // let a stale watchdog fire mid-turn and mark this session for restart.
+        disarmCancelWatchdog(sid);
+        // A cancel the agent never acknowledged leaves the process wedged;
+        // prompting it again would just hang. Replace it before sending.
+        if (cancelIgnoredRef.current.has(sid)) {
+          await restartAcpProcess(sid);
+        }
         // Ensure agent is up (may already be warming from keystrokes).
         await ensureAcpReady(sid);
 
@@ -1691,7 +1967,7 @@ export function App() {
         });
       } else {
         // PTY: Composer is source of truth for "You"; bridge extracts Thinking/Tool/Reply.
-        setLiveEvents((current) => [...current, userMessageEvent(sid, composed)]);
+        setLiveEvents((current) => [...current, userMessageEvent(sid, composed, sendMetaRef.current ?? undefined)]);
         renameSessionFromText(sid, composed);
         touchActivity(sid);
         const bridge = ptyBridgesRef.current.get(sid) ?? createPtyBridgeState();
@@ -1875,6 +2151,7 @@ export function App() {
           } as CSSProperties
         }
       >
+        {/* Left sidebar: full height (spans both rows) */}
         <aside className={leftCollapsed ? "left-rail is-collapsed" : "left-rail"} aria-label="Projects and sessions">
           <ProjectShelf
             agents={availableAgents}
@@ -1923,6 +2200,20 @@ export function App() {
           )}
         </aside>
 
+        {/* Shared titlebar across center + right columns */}
+        <div className="workspace-titlebar">
+          <SessionTabs
+            openSessions={openSessions}
+            session={displaySession}
+            onTabSelect={openSession}
+            onTabClose={closeSessionTab}
+            onNewTab={() => createSessionForProject(currentProject?.id ?? "")}
+          />
+          <div className="workspace-titlebar__spacer" data-tauri-drag-region />
+          <WindowControls />
+        </div>
+
+        {/* Center workspace */}
         <section className="center-workspace" aria-label="Active workspace">
           <SessionView
             agent={currentAgent}
@@ -1954,6 +2245,7 @@ export function App() {
             sessionId={displaySession.id}
             sessionStatus={displaySession.status}
             lastActivityAt={lastActivityById[displaySession.id] ?? null}
+            onProviderKeysChanged={handleProviderKeysChanged}
             capabilities={sessionCapabilities}
             prefillText={composerPrefill?.text ?? null}
             prefillToken={composerPrefill?.token ?? 0}
@@ -2006,7 +2298,7 @@ export function App() {
             }}
             onAgentChange={(id) => void handleAgentChange(id)}
             onInterrupt={() => void handleInterrupt()}
-            onSend={(text) => void handleSend(text)}
+            onSend={(text, droppedPaths) => void handleSend(text, droppedPaths)}
             onPtyCommand={async (commandLine) => {
               if (!currentSessionId) return;
               // Slash commands: plain line + CR (not bracketed paste).
@@ -2047,6 +2339,8 @@ export function App() {
           projectContext={projectContext}
           projectContextScanning={projectContextScanning}
           onRescanProjectContext={() => void refreshProjectContext(currentProjectId)}
+          onReconnectAgent={() => void handleReconnectAgent()}
+          reconnecting={reconnecting}
           onToggleProjectContext={(kind, id, enabled) =>
             void handleToggleProjectContext(kind, id, enabled)
           }

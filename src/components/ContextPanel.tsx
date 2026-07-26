@@ -6,7 +6,7 @@ import type {
   UsageSnapshot,
   UsageWindow,
 } from "../lib/types";
-import { WindowControls } from "./WindowControls";
+
 
 type ContextPanelProps = {
   collapsed: boolean;
@@ -23,6 +23,9 @@ type ContextPanelProps = {
   projectContext?: ProjectContext | null;
   projectContextScanning?: boolean;
   onRescanProjectContext?: () => void;
+  /** Re-run `session/new` so MCP servers that came up late can attach. */
+  onReconnectAgent?: () => void;
+  reconnecting?: boolean;
   onToggleProjectContext?: (kind: "mcp" | "skill", id: string, enabled: boolean) => void;
   /** Agent of the active dialog — decides what is already native. */
   activeAgentId?: string;
@@ -83,6 +86,8 @@ export function ContextPanel({
   projectContext = null,
   projectContextScanning = false,
   onRescanProjectContext,
+  onReconnectAgent,
+  reconnecting = false,
   onToggleProjectContext,
   activeAgentId,
   resizeDragging = false,
@@ -91,10 +96,9 @@ export function ContextPanel({
   if (collapsed) {
     return (
       <aside className="context-panel is-collapsed" aria-label="Context panel">
-        {/* Drag strip is a sibling — never wrap WindowControls in data-tauri-drag-region. */}
+        {/* Drag strip only — WindowControls moved to SessionView center titlebar */}
         <div className="context-panel__chrome context-panel__chrome--collapsed">
           <div className="titlebar-drag-fill" data-tauri-drag-region />
-          <WindowControls />
         </div>
         <div className="context-panel__collapsed-rail">
           <button className="icon-button icon-button--small context-panel__button" type="button" title="Show information panel" aria-label="Show information panel" onClick={onExpand}>
@@ -119,13 +123,6 @@ export function ContextPanel({
           }}
         />
       )}
-      <div className="context-panel__top titlebar-row">
-        <span className="context-panel__title titlebar-drag-fill" data-tauri-drag-region>
-          Information
-        </span>
-        <WindowControls />
-      </div>
-
       <section className="context-card">
         <div className="context-card__heading">
           <span>Usage</span>
@@ -218,9 +215,27 @@ export function ContextPanel({
               connection — MCP servers via <code>session/new</code>, skills as a pointer list.
             </p>
 
-            <span className="context-lend__label">
-              MCP servers ({projectContext.inventory.mcpServers.length})
-            </span>
+            <div className="context-lend__labelrow">
+              <span className="context-lend__label">
+                MCP servers ({projectContext.inventory.mcpServers.length})
+              </span>
+              {onReconnectAgent && (
+                <button
+                  type="button"
+                  className="context-lend__reconnect"
+                  disabled={reconnecting}
+                  onClick={onReconnectAgent}
+                  title={
+                    "Restart the agent connection so MCP servers that came up late can attach.\n" +
+                    "Servers are only offered at session/new, so one that was not listening then " +
+                    "stays unavailable until the session is replaced. Your conversation is kept."
+                  }
+                >
+                  <RefreshCw size={11} className={reconnecting ? "is-spinning" : undefined} aria-hidden />
+                  {reconnecting ? "Reconnecting…" : "Reconnect"}
+                </button>
+              )}
+            </div>
             {projectContext.inventory.mcpServers.length === 0 ? (
               <p className="context-card__empty">None found in agent configs.</p>
             ) : (

@@ -120,6 +120,14 @@ function appendEvent(
   sessionId: string,
   kind: "thought" | "tool" | "assistant_message",
   text: string,
+  meta?: {
+    agentId?: string;
+    agentLabel?: string;
+    modelId?: string;
+    modelLabel?: string;
+    modeLabel?: string;
+    effortLabel?: string;
+  },
 ): SessionEvent[] {
   const last = events[events.length - 1];
   if (last && last.sessionId === sessionId && last.type === kind && "text" in last) {
@@ -151,7 +159,7 @@ function appendEvent(
     const title = text.replace(/^[◆●]\s*/, "").split(/\s+/).slice(0, 4).join(" ");
     return [...events, { type: "tool_call", sessionId, text, title, status: "running", createdAt }];
   }
-  return [...events, { type: "assistant_message", sessionId, text, createdAt }];
+  return [...events, { type: "assistant_message", sessionId, text, createdAt, ...meta }];
 }
 
 /**
@@ -207,7 +215,27 @@ export function ingestPtyOutput(
     } else if (kind === "tool") {
       ops.push((prev) => appendEvent(prev, sessionId, "tool", text));
     } else {
-      ops.push((prev) => appendEvent(prev, sessionId, "assistant_message", text));
+      ops.push((prev) => {
+        // Inherit metadata from the last user_message
+        let meta: Record<string, string> | undefined;
+        for (let i = prev.length - 1; i >= 0; i--) {
+          const e = prev[i];
+          if (e.sessionId === sessionId && e.type === "user_message") {
+            if (e.agentId || e.agentLabel || e.modelId || e.modelLabel || e.modeLabel || e.effortLabel) {
+              meta = {
+                ...(e.agentId ? { agentId: e.agentId } : {}),
+                ...(e.agentLabel ? { agentLabel: e.agentLabel } : {}),
+                ...(e.modelId ? { modelId: e.modelId } : {}),
+                ...(e.modelLabel ? { modelLabel: e.modelLabel } : {}),
+                ...(e.modeLabel ? { modeLabel: e.modeLabel } : {}),
+                ...(e.effortLabel ? { effortLabel: e.effortLabel } : {}),
+              };
+            }
+            break;
+          }
+        }
+        return appendEvent(prev, sessionId, "assistant_message", text, meta as any);
+      });
     }
   }
 
