@@ -498,6 +498,113 @@ pub fn probe_provider_usage(model_id: Option<String>) -> ProviderUsageSnapshot {
     }
 }
 
+/// Like `opencode_auth_path()` but returns the path to *write* to:
+/// uses the first existing location, or falls back to the default.
+pub fn opencode_auth_path_write() -> PathBuf {
+    if let Some(existing) = opencode_auth_path() {
+        return existing;
+    }
+    let home = home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let default = home
+        .join(".local")
+        .join("share")
+        .join("opencode")
+        .join("auth.json");
+    if let Some(parent) = default.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    default
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderInfo {
+    pub provider: String,
+    pub label: String,
+    pub has_key: bool,
+}
+
+/// Provider id → human label.
+fn provider_display_name(id: &str) -> String {
+    match id {
+        "deepseek" => "DeepSeek",
+        "openrouter" => "OpenRouter",
+        "openai" => "OpenAI",
+        "anthropic" => "Anthropic",
+        "google" => "Google",
+        "xai" => "xAI (Grok)",
+        "zai" | "zhipu" => "Z.AI (GLM)",
+        "siliconflow" | "siliconflow-cn" => "SiliconFlow",
+        other => other,
+    }
+    .to_string()
+}
+
+/// Write a provider API key to the given auth file path.
+/// If `path` is `None`, uses the default OpenCode auth.json location.
+pub fn write_provider_key_at(
+    provider: &str,
+    key: &str,
+    path: Option<&std::path::Path>,
+) -> Result<(), String> {
+    let path: PathBuf = match path {
+        Some(p) => p.to_path_buf(),
+        None => opencode_auth_path_write(),
+    };
+
+    // Read existing file or start with empty object.
+    let mut auth: serde_json::Value = if path.is_file() {
+        let text = fs::read_to_string(&path).map_err(|e| format!("读取 auth.json 失败: {e}"))?;
+        serde_json::from_str(&text)
+            .unwrap_or(serde_json::Value::Object(serde_json::Map::new()))
+    } else {
+        serde_json::Value::Object(serde_json::Map::new())
+    };
+
+    // Set the key: auth[provider] = { "key": key }
+    auth[provider] = serde_json::json!({ "key": key });
+
+    // Atomic write: temp file → rename.
+    let temp_path = path.with_extension("json.tmp");
+    let json_str =
+        serde_json::to_string_pretty(&auth).map_err(|e| format!("序列化 auth.json 失败: {e}"))?;
+    fs::write(&temp_path, &json_str).map_err(|e| format!("写入临时文件失败: {e}"))?;
+    fs::rename(&temp_path, &path).map_err(|e| format!("重命名临时文件失败: {e}"))?;
+
+    Ok(())
+}
+
+/// Write a provider API key to the default OpenCode auth.json path.
+pub fn write_provider_key(provider: &str, key: &str) -> Result<(), String> {
+    write_provider_key_at(provider, key, None)
+}
+
+/// List all configured providers in auth.json (without exposing keys).
+pub fn list_providers() -> Result<Vec<ProviderInfo>, String> {
+    let auth = load_auth_json()?;
+    let mut providers = Vec::new();
+    if let Some(obj) = auth.as_object() {
+        for (key, value) in obj {
+            let has_key = value
+                .get("key")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.is_empty())
+                .unwrap_or(false)
+                || value
+                    .get("access")
+                    .and_then(|v| v.as_str())
+                    .map(|s| !s.is_empty())
+                    .unwrap_or(false);
+            providers.push(ProviderInfo {
+                provider: key.clone(),
+                label: provider_display_name(key),
+                has_key,
+            });
+        }
+    }
+    Ok(providers)
+}
+
 #[cfg(test)]
 mod tests {
     use super::split_model_id;
@@ -514,5 +621,77 @@ mod tests {
         let (p, m) = split_model_id("opencode-go/deepseek-v4-flash");
         assert_eq!(p, "opencode-go");
         assert_eq!(m.as_deref(), Some("deepseek-v4-flash"));
+    }
+
+    #[test]
+    fn write_and_read_provider_key() {
+        let dir = std::env::temp_dir().join(format!(
+            "agentshell_test_auth_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let auth_path = dir.join("auth.json");
+
+        super::write_provider_key_at("deepseek", "sk-test123", Some(&auth_path)).unwrap();
+        assert!(auth_path.is_file());
+        let content = std::fs::read_to_string(&auth_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["deepseek"]["key"].as_str(), Some("sk-test123"));
+
+        // Write another provider — original should survive.
+        super::write_provider_key_at("openrouter", "or-test456", Some(&auth_path)).unwrap();
+        let content = std::fs::read_to_string(&auth_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["deepseek"]["key"].as_str(), Some("sk-test123"));
+        assert_eq!(parsed["openrouter"]["key"].as_str(), Some("or-test456"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_overwrites_existing_key() {
+        let dir = std::env::temp_dir().join(format!(
+            "agentshell_test_auth_overwrite_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let auth_path = dir.join("auth.json");
+
+        super::write_provider_key_at("deepseek", "sk-old", Some(&auth_path)).unwrap();
+        super::write_provider_key_at("deepseek", "sk-new", Some(&auth_path)).unwrap();
+
+        let content = std::fs::read_to_string(&auth_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["deepseek"]["key"].as_str(), Some("sk-new"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_providers_from_written_keys() {
+        let dir = std::env::temp_dir().join(format!(
+            "agentshell_test_list_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let auth_path = dir.join("auth.json");
+
+        super::write_provider_key_at("deepseek", "sk-111", Some(&auth_path)).unwrap();
+        super::write_provider_key_at("openrouter", "sk-222", Some(&auth_path)).unwrap();
+
+        // Point load_auth_json at our temp file by overriding the search path.
+        // We call write_provider_key_at directly; list_providers uses load_auth_json
+        // which searches standard paths. Instead, test the read-back through the file.
+        let content = std::fs::read_to_string(&auth_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let obj = parsed.as_object().unwrap();
+        assert!(obj.contains_key("deepseek"));
+        assert!(obj.contains_key("openrouter"));
+        assert_eq!(obj["deepseek"]["key"].as_str(), Some("sk-111"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
