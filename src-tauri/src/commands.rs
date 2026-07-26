@@ -7,6 +7,7 @@ use tauri::{AppHandle, State};
 
 #[tauri::command]
 pub fn list_projects(state: State<'_, AppState>) -> Result<Vec<Project>, String> {
+    let _trace = crate::debug_log::CmdTrace::new("list_projects");
     let storage = state
         .storage
         .lock()
@@ -16,6 +17,7 @@ pub fn list_projects(state: State<'_, AppState>) -> Result<Vec<Project>, String>
 
 #[tauri::command]
 pub fn add_project(path: String, state: State<'_, AppState>) -> Result<Project, String> {
+    let _trace = crate::debug_log::CmdTrace::new("add_project");
     let storage = state
         .storage
         .lock()
@@ -25,6 +27,7 @@ pub fn add_project(path: String, state: State<'_, AppState>) -> Result<Project, 
 
 #[tauri::command]
 pub fn delete_project(project_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let _trace = crate::debug_log::CmdTrace::new("delete_project");
     let storage = state
         .storage
         .lock()
@@ -34,10 +37,11 @@ pub fn delete_project(project_id: String, state: State<'_, AppState>) -> Result<
 
 #[tauri::command]
 pub fn list_agents() -> Vec<AgentConfig> {
+    let _trace = crate::debug_log::CmdTrace::new("list_agents");
     AgentConfig::defaults()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn test_agent_command(agent_id: String) -> Result<AgentCommandStatus, String> {
     let agent = AgentConfig::defaults()
         .into_iter()
@@ -47,12 +51,67 @@ pub fn test_agent_command(agent_id: String) -> Result<AgentCommandStatus, String
 }
 
 /// Status for every agent in one round-trip (the agent menu asks on open).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_agent_commands() -> Vec<AgentCommandStatus> {
     AgentConfig::defaults()
         .iter()
         .map(agent_command_status)
         .collect()
+}
+
+/// Installed + published versions for every agent.
+///
+/// `check_registry: false` skips the network and answers from `--version` only,
+/// which is what the agent menu wants on open.
+#[tauri::command]
+pub async fn agent_versions(
+    check_registry: bool,
+) -> Result<Vec<crate::agent_update::AgentVersionInfo>, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::agent_update::all_version_info(check_registry))
+        .await
+        .map_err(|error| format!("Version check failed: {error}"))
+}
+
+/// Update every npm-managed agent that has a newer published version.
+///
+/// Called once at startup — before any session exists — so an upgrade can never
+/// swap the binary out from under a running agent.
+pub fn auto_update_agents_in_background() {
+    std::thread::spawn(|| {
+        for info in crate::agent_update::all_version_info(true) {
+            if !info.update_available {
+                continue;
+            }
+            let (Some(package), Some(latest), Some(installed)) =
+                (info.package.as_deref(), info.latest.as_deref(), info.installed.as_deref())
+            else {
+                continue;
+            };
+            crate::debug_log::append(
+                "update",
+                "info",
+                &info.id,
+                &format!("auto-update {installed} → {latest}"),
+                Some(package),
+            );
+            match install_agent_blocking(&info.id, false) {
+                Ok(_) => crate::debug_log::append(
+                    "update",
+                    "info",
+                    &info.id,
+                    &format!("auto-update to {latest} done"),
+                    None,
+                ),
+                Err(error) => crate::debug_log::append(
+                    "update",
+                    "warn",
+                    &info.id,
+                    "auto-update failed — the installed version still works",
+                    Some(&error),
+                ),
+            }
+        }
+    });
 }
 
 /// Is the agent's own command on PATH, and are the CLIs it drives present too?
@@ -238,6 +297,7 @@ pub fn list_sessions(
     project_id: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<Session>, String> {
+    let _trace = crate::debug_log::CmdTrace::new("list_sessions");
     let storage = state
         .storage
         .lock()
@@ -255,6 +315,7 @@ pub fn create_session(
     label: String,
     state: State<'_, AppState>,
 ) -> Result<Session, String> {
+    let _trace = crate::debug_log::CmdTrace::new("create_session");
     let storage = state
         .storage
         .lock()
@@ -268,6 +329,7 @@ pub fn update_session_agent(
     agent_id: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let _trace = crate::debug_log::CmdTrace::new("update_session_agent");
     let storage = state
         .storage
         .lock()
@@ -285,6 +347,7 @@ pub fn update_session_prefs(
     preferred_effort_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let _trace = crate::debug_log::CmdTrace::new("update_session_prefs");
     let storage = state
         .storage
         .lock()
@@ -304,6 +367,7 @@ pub fn delete_session(
     session_id: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let _trace = crate::debug_log::CmdTrace::new("delete_session");
     let storage = state
         .storage
         .lock()
@@ -317,6 +381,7 @@ pub fn update_session_label(
     label: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let _trace = crate::debug_log::CmdTrace::new("update_session_label");
     let storage = state
         .storage
         .lock()
@@ -324,7 +389,7 @@ pub fn update_session_label(
     storage.update_session_label(&session_id, &label)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn write_transcript(
     session_id: String,
     events: Vec<serde_json::Value>,
@@ -337,7 +402,7 @@ pub fn write_transcript(
     storage.write_transcript(&session_id, &events)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn load_transcript(
     session_id: String,
     state: State<'_, AppState>,
@@ -349,7 +414,7 @@ pub fn load_transcript(
     storage.load_transcript(&session_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn search_sessions(
     query: String,
     state: State<'_, AppState>,
@@ -362,7 +427,7 @@ pub fn search_sessions(
 }
 
 /// Best-effort local auth probe for agents that expose a CLI status command.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn probe_agent_auth(agent_id: String) -> Result<serde_json::Value, String> {
     match agent_id.as_str() {
         "claude-code" | "claude" => probe_claude_auth(),
@@ -438,7 +503,7 @@ fn probe_claude_auth() -> Result<serde_json::Value, String> {
 }
 
 /// Kick off agent login (opens browser / CLI flow). Non-blocking spawn.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn start_agent_login(agent_id: String) -> Result<serde_json::Value, String> {
     match agent_id.as_str() {
         "claude-code" | "claude" => start_claude_login(),
@@ -489,7 +554,7 @@ fn start_claude_login() -> Result<serde_json::Value, String> {
     }))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn read_terminal_snapshot(session_id: String, cwd: String) -> Result<String, String> {
     if !Path::new(&cwd).is_dir() {
         return Err(format!("Terminal cwd is not a directory: {cwd}"));
@@ -588,7 +653,12 @@ pub async fn start_acp_session(
     }
 }
 
-#[tauri::command]
+// Everything that talks to a live agent process runs off the main thread.
+// A plain `#[tauri::command]` executes on the main thread, so any wait inside
+// it freezes the whole window — that is how a stuck turn used to take the UI
+// down with it when the user hit pause. `(async)` keeps the sync body and just
+// moves it onto the async runtime.
+#[tauri::command(async)]
 pub fn send_acp_prompt(
     session_id: String,
     text: String,
@@ -597,7 +667,7 @@ pub fn send_acp_prompt(
     state.acp.send_prompt(&session_id, text)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn cancel_acp_session(session_id: String, state: State<'_, AppState>) -> Result<(), String> {
     state.acp.cancel(&session_id)
 }
@@ -607,21 +677,35 @@ pub fn get_session_capabilities(
     session_id: String,
     state: State<'_, AppState>,
 ) -> Result<Option<crate::acp::CapabilitySnapshot>, String> {
+    let _trace = crate::debug_log::CmdTrace::new("get_session_capabilities");
     Ok(state.acp.get_capabilities(&session_id))
 }
 
+/// Blocks on a 60s RPC round-trip, and `expand_config_updates` can issue several
+/// in a row — so this goes to the blocking pool, not a tokio worker. `(async)`
+/// alone would run the wait *on* a worker thread, and those same workers are
+/// what deliver every other command's response.
 #[tauri::command]
-pub fn update_acp_session(
+pub async fn update_acp_session(
     session_id: String,
     config: serde_json::Value,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    state.acp.update_session(&session_id, config)
+    let acp = state.acp.clone();
+    tauri::async_runtime::spawn_blocking(move || acp.update_session(&session_id, config))
+        .await
+        .map_err(|error| format!("ACP update task failed: {error}"))?
 }
 
+/// Blocks on `child.kill()` + `child.wait()` — blocking pool, same reasoning as
+/// `update_acp_session` above.
 #[tauri::command]
-pub fn stop_acp_session(session_id: String, state: State<'_, AppState>) -> Result<(), String> {
-    state.acp.stop(&session_id)?;
+pub async fn stop_acp_session(session_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let acp = state.acp.clone();
+    let sid = session_id.clone();
+    tauri::async_runtime::spawn_blocking(move || acp.stop(&sid))
+        .await
+        .map_err(|error| format!("ACP stop task failed: {error}"))??;
     let storage = state
         .storage
         .lock()
@@ -629,7 +713,10 @@ pub fn stop_acp_session(session_id: String, state: State<'_, AppState>) -> Resul
     storage.update_session_status(&session_id, "exited")
 }
 
-#[tauri::command]
+// Same main-thread rule as the ACP commands above: these drive a live child
+// process (spawn / blocking pty write / kill+wait), and `write_terminal` is the
+// PTY interrupt path — a wedged TUI must not be able to freeze the window.
+#[tauri::command(async)]
 pub fn start_terminal(
     app: AppHandle,
     session_id: String,
@@ -667,7 +754,7 @@ pub fn start_terminal(
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn write_terminal(
     session_id: String,
     data: String,
@@ -676,7 +763,7 @@ pub fn write_terminal(
     state.pty.write(&session_id, &data)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn resize_terminal(
     session_id: String,
     cols: u16,
@@ -686,7 +773,7 @@ pub fn resize_terminal(
     state.pty.resize(&session_id, cols, rows)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn stop_terminal(session_id: String, state: State<'_, AppState>) -> Result<(), String> {
     state.pty.stop(&session_id)?;
     state.sessions.mark_exited(&session_id)?;
@@ -697,7 +784,7 @@ pub fn stop_terminal(session_id: String, state: State<'_, AppState>) -> Result<(
     storage.update_session_status(&session_id, "exited")
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn append_debug_log(
     source: String,
     level: String,
@@ -716,12 +803,13 @@ pub fn append_debug_log(
 
 #[tauri::command]
 pub fn debug_log_path() -> String {
+    let _trace = crate::debug_log::CmdTrace::new("debug_log_path");
     crate::debug_log::log_path_display()
 }
 
 /// Probe billing/balance for the active OpenCode-style model id (`provider/model`).
 /// Uses keys from OpenCode `auth.json`; never returns secrets.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn probe_provider_usage(
     model_id: Option<String>,
 ) -> crate::provider_usage::ProviderUsageSnapshot {
@@ -730,7 +818,7 @@ pub fn probe_provider_usage(
 
 /// Generate `.agentshell/handoff.md` and a composer prefill prompt. Does not send.
 /// Pass `source_agent_id` when the session may already be rebound to the target.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn generate_handoff(
     project_id: String,
     session_id: String,
@@ -780,7 +868,7 @@ pub fn generate_handoff(
     )
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_changed_files(
     project_id: String,
     state: State<'_, AppState>,
@@ -797,7 +885,7 @@ pub fn get_changed_files(
     crate::git_service::get_changed_files(Path::new(&project.root_path))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_file_diff(
     project_id: String,
     path: String,
@@ -816,7 +904,7 @@ pub fn get_file_diff(
 }
 
 /// Answer a pending ACP `session/request_permission` prompt.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn respond_acp_permission(
     request_id: String,
     option_id: String,
@@ -846,7 +934,7 @@ fn project_root_of(project_id: &str, state: &State<'_, AppState>) -> Result<Path
 
 /// Scan this machine + project for MCP servers and skills, with what the user
 /// has already decided to lend. Cheap enough to call whenever the panel opens.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn scan_project_context(
     project_id: String,
     state: State<'_, AppState>,
@@ -869,6 +957,7 @@ pub fn set_project_context_enabled(
     enabled: bool,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
+    let _trace = crate::debug_log::CmdTrace::new("set_project_context_enabled");
     let root = project_root_of(&project_id, &state)?;
     let selection = crate::context_inventory::set_enabled(&root, &kind, &id, enabled)?;
     crate::debug_log::append(
@@ -882,7 +971,7 @@ pub fn set_project_context_enabled(
 }
 
 /// Which paths in a draft message point outside the project and are not granted.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn check_outside_project_paths(
     project_id: String,
     paths: Vec<String>,
@@ -896,7 +985,7 @@ pub fn check_outside_project_paths(
 ///
 /// Returns `restartNeeded` when a live ACP session already exists: the scope is
 /// fixed at `session/new`, so it only applies from the next connection.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn grant_workspace_root(
     project_id: String,
     dir: String,
@@ -923,7 +1012,7 @@ pub fn grant_workspace_root(
     Ok(serde_json::json!({ "workspaceRoots": roots, "restartNeeded": restart_needed }))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn revoke_workspace_root(
     project_id: String,
     dir: String,
@@ -935,7 +1024,7 @@ pub fn revoke_workspace_root(
 
 /// Skills preamble for an agent that has no skill system of its own.
 /// Returns null when the agent already ships everything that is enabled.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn project_context_prompt(
     project_id: String,
     agent_id: String,
@@ -943,6 +1032,18 @@ pub fn project_context_prompt(
 ) -> Result<Option<String>, String> {
     let root = project_root_of(&project_id, &state)?;
     Ok(crate::context_inventory::skills_prompt_for_agent(&root, &agent_id))
+}
+
+/// Save a provider API key to OpenCode's auth.json.
+#[tauri::command(async)]
+pub fn save_provider_key(provider: String, key: String) -> Result<(), String> {
+    crate::provider_usage::write_provider_key(&provider, &key)
+}
+
+/// List configured providers (without exposing keys).
+#[tauri::command(async)]
+pub fn list_providers() -> Result<Vec<crate::provider_usage::ProviderInfo>, String> {
+    crate::provider_usage::list_providers()
 }
 
 #[cfg(test)]
