@@ -948,6 +948,36 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// Screenshots and art folders are where spaces live, and the composer's
+    /// path regex stops at whitespace — so the frontend now forwards the exact
+    /// path the OS reported on drop instead of re-parsing it out of the text.
+    /// This pins the half of that contract that lives here.
+    #[test]
+    fn a_dropped_image_in_a_folder_with_spaces_still_needs_a_grant() {
+        let root = std::env::temp_dir().join(format!("agentshell-spaces-{}", std::process::id()));
+        let project = root.join("project");
+        let outside = root.join("My Pictures").join("角色 立绘");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let image = outside.join("Screen Shot 2026.png");
+        fs::write(&image, "x").unwrap();
+
+        let found = outside_project_paths(&project, &[image.to_string_lossy().to_string()]);
+        assert_eq!(
+            found.len(),
+            1,
+            "a path with spaces must still be flagged for a grant: {found:?}"
+        );
+        assert_eq!(
+            found[0]["dir"].as_str().unwrap().to_lowercase(),
+            outside.to_string_lossy().to_lowercase(),
+            "a file grants its folder, spaces and all"
+        );
+
+        // Best-effort: a temp-dir cleanup failing must not fail a grant test.
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn workspace_roots_grant_dedupe_and_detect_outside_paths() {
         let root = std::env::temp_dir().join(format!("agentshell-roots-{}", std::process::id()));
