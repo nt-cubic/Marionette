@@ -521,3 +521,7 @@ export async function saveProviderKey(
 export async function listProviders(): Promise<ProviderInfo[]> {
   return invoke("list_providers");
 }
+
+export async function deleteProviderKey(provider: string): Promise<void> {
+  await invoke("delete_provider_key", { provider });
+}
