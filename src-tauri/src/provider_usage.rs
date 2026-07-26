@@ -516,12 +516,50 @@ pub fn opencode_auth_path_write() -> PathBuf {
     default
 }
 
+/// How a provider's `auth.json` entry stores its credential.
+///
+/// An OAuth entry holds a refresh token that this app cannot re-create — once
+/// it is replaced by `{ "key": … }` or removed, the only way back is
+/// `opencode auth login`. Both the write and the delete path therefore refuse
+/// to touch an OAuth entry unless the caller explicitly confirms.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthKind {
+    Api,
+    #[serde(rename = "oauth")]
+    OAuth,
+    Unknown,
+}
+
+/// Classify one `auth.json` entry. OAuth wins over `key` when both are present,
+/// because losing the refresh token is the irreversible half.
+fn classify_entry(entry: &Value) -> AuthKind {
+    let non_empty = |field: &str| {
+        entry
+            .get(field)
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.is_empty())
+    };
+    if entry.get("type").and_then(|v| v.as_str()) == Some("oauth")
+        || non_empty("refresh")
+        || non_empty("access")
+    {
+        return AuthKind::OAuth;
+    }
+    if non_empty("key") {
+        return AuthKind::Api;
+    }
+    AuthKind::Unknown
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderInfo {
     pub provider: String,
     pub label: String,
     pub has_key: bool,
+    /// Lets the UI warn before overwriting or deleting an OAuth login.
+    pub auth_kind: AuthKind,
 }
 
 /// Provider id → human label.
@@ -540,43 +578,92 @@ fn provider_display_name(id: &str) -> String {
     .to_string()
 }
 
+/// Read `auth.json` for a mutation.
+///
+/// Deliberately stricter than [`load_auth_json`]: unparseable content is an
+/// error instead of an empty object. Treating a half-written or hand-edited file
+/// as `{}` means the very next write persists only the key being added and drops
+/// every other provider's credential — a silent wipe of the whole auth store.
+fn read_auth_for_write(path: &std::path::Path) -> Result<serde_json::Map<String, Value>, String> {
+    if !path.is_file() {
+        return Ok(serde_json::Map::new());
+    }
+    let text = fs::read_to_string(path).map_err(|e| format!("读取 auth.json 失败: {e}"))?;
+    if text.trim().is_empty() {
+        return Ok(serde_json::Map::new());
+    }
+    match serde_json::from_str::<Value>(&text) {
+        Ok(Value::Object(obj)) => Ok(obj),
+        Ok(_) => Err("auth.json 顶层不是 JSON 对象 — 已中止，以免覆盖其中的凭证".to_string()),
+        Err(error) => Err(format!(
+            "auth.json 解析失败（{error}）— 已中止，以免覆盖其他服务商的凭证"
+        )),
+    }
+}
+
+/// Temp sibling for the atomic rename, unique per process *and* per call.
+///
+/// A single fixed `auth.json.tmp` lets two concurrent writes (say a save racing
+/// a delete) clobber each other's staging file and rename a half-merged result
+/// into place.
+fn temp_sibling(path: &std::path::Path) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("auth.json");
+    path.with_file_name(format!("{name}.{}.{seq}.tmp", std::process::id()))
+}
+
+fn write_auth_atomic(
+    path: &std::path::Path,
+    auth: &serde_json::Map<String, Value>,
+) -> Result<(), String> {
+    let json_str = serde_json::to_string_pretty(&Value::Object(auth.clone()))
+        .map_err(|e| format!("序列化 auth.json 失败: {e}"))?;
+    let temp_path = temp_sibling(path);
+    fs::write(&temp_path, &json_str).map_err(|e| format!("写入临时文件失败: {e}"))?;
+    if let Err(error) = fs::rename(&temp_path, path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(format!("重命名临时文件失败: {error}"));
+    }
+    Ok(())
+}
+
 /// Write a provider API key to the given auth file path.
 /// If `path` is `None`, uses the default OpenCode auth.json location.
+///
+/// `force` is required to overwrite an OAuth login — see [`AuthKind`].
 pub fn write_provider_key_at(
     provider: &str,
     key: &str,
     path: Option<&std::path::Path>,
+    force: bool,
 ) -> Result<(), String> {
     let path: PathBuf = match path {
         Some(p) => p.to_path_buf(),
         None => opencode_auth_path_write(),
     };
 
-    // Read existing file or start with empty object.
-    let mut auth: serde_json::Value = if path.is_file() {
-        let text = fs::read_to_string(&path).map_err(|e| format!("读取 auth.json 失败: {e}"))?;
-        serde_json::from_str(&text)
-            .unwrap_or(serde_json::Value::Object(serde_json::Map::new()))
-    } else {
-        serde_json::Value::Object(serde_json::Map::new())
-    };
+    let mut auth = read_auth_for_write(&path)?;
 
-    // Set the key: auth[provider] = { "key": key }
-    auth[provider] = serde_json::json!({ "key": key });
+    if let Some(existing) = auth.get(provider) {
+        if classify_entry(existing) == AuthKind::OAuth && !force {
+            return Err(format!(
+                "`{provider}` 目前是 OAuth 登录。写入 API Key 会覆盖登录凭证，refresh token 无法从本应用恢复。"
+            ));
+        }
+    }
 
-    // Atomic write: temp file → rename.
-    let temp_path = path.with_extension("json.tmp");
-    let json_str =
-        serde_json::to_string_pretty(&auth).map_err(|e| format!("序列化 auth.json 失败: {e}"))?;
-    fs::write(&temp_path, &json_str).map_err(|e| format!("写入临时文件失败: {e}"))?;
-    fs::rename(&temp_path, &path).map_err(|e| format!("重命名临时文件失败: {e}"))?;
-
-    Ok(())
+    auth.insert(provider.to_string(), serde_json::json!({ "key": key }));
+    write_auth_atomic(&path, &auth)
 }
 
 /// Write a provider API key to the default OpenCode auth.json path.
-pub fn write_provider_key(provider: &str, key: &str) -> Result<(), String> {
-    write_provider_key_at(provider, key, None)
+pub fn write_provider_key(provider: &str, key: &str, force: bool) -> Result<(), String> {
+    write_provider_key_at(provider, key, None, force)
 }
 
 /// List all configured providers in auth.json (without exposing keys).
@@ -585,20 +672,12 @@ pub fn list_providers() -> Result<Vec<ProviderInfo>, String> {
     let mut providers = Vec::new();
     if let Some(obj) = auth.as_object() {
         for (key, value) in obj {
-            let has_key = value
-                .get("key")
-                .and_then(|v| v.as_str())
-                .map(|s| !s.is_empty())
-                .unwrap_or(false)
-                || value
-                    .get("access")
-                    .and_then(|v| v.as_str())
-                    .map(|s| !s.is_empty())
-                    .unwrap_or(false);
+            let auth_kind = classify_entry(value);
             providers.push(ProviderInfo {
                 provider: key.clone(),
                 label: provider_display_name(key),
-                has_key,
+                has_key: auth_kind != AuthKind::Unknown,
+                auth_kind,
             });
         }
     }
@@ -607,38 +686,38 @@ pub fn list_providers() -> Result<Vec<ProviderInfo>, String> {
 
 /// Delete a provider API key from auth.json.
 /// If `path` is `None`, uses the default OpenCode auth.json location.
-pub fn delete_provider_key_at(provider: &str, path: Option<&std::path::Path>) -> Result<(), String> {
+///
+/// `force` is required to remove an OAuth login — see [`AuthKind`].
+pub fn delete_provider_key_at(
+    provider: &str,
+    path: Option<&std::path::Path>,
+    force: bool,
+) -> Result<(), String> {
     let path: PathBuf = match path {
         Some(p) => p.to_path_buf(),
         None => opencode_auth_path_write(),
     };
 
-    if !path.is_file() {
-        return Err("auth.json not found".to_string());
+    // A non-object or unparseable file used to fall through the `if let` below
+    // and still get rewritten — reporting success while deleting nothing.
+    let mut auth = read_auth_for_write(&path)?;
+
+    let Some(existing) = auth.get(provider) else {
+        return Err(format!("Provider `{provider}` not found in auth.json"));
+    };
+    if classify_entry(existing) == AuthKind::OAuth && !force {
+        return Err(format!(
+            "`{provider}` 是 OAuth 登录，删除后只能用 `opencode auth login` 重新登录。"
+        ));
     }
 
-    let text = fs::read_to_string(&path).map_err(|e| format!("读取 auth.json 失败: {e}"))?;
-    let mut auth: serde_json::Value =
-        serde_json::from_str(&text).unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
-
-    if let Some(obj) = auth.as_object_mut() {
-        if obj.remove(provider).is_none() {
-            return Err(format!("Provider `{provider}` not found in auth.json"));
-        }
-    }
-
-    let temp_path = path.with_extension("json.tmp");
-    let json_str =
-        serde_json::to_string_pretty(&auth).map_err(|e| format!("序列化 auth.json 失败: {e}"))?;
-    fs::write(&temp_path, &json_str).map_err(|e| format!("写入临时文件失败: {e}"))?;
-    fs::rename(&temp_path, &path).map_err(|e| format!("重命名临时文件失败: {e}"))?;
-
-    Ok(())
+    auth.remove(provider);
+    write_auth_atomic(&path, &auth)
 }
 
 /// Delete a provider API key from the default OpenCode auth.json path.
-pub fn delete_provider_key(provider: &str) -> Result<(), String> {
-    delete_provider_key_at(provider, None)
+pub fn delete_provider_key(provider: &str, force: bool) -> Result<(), String> {
+    delete_provider_key_at(provider, None, force)
 }
 
 #[cfg(test)]
@@ -669,14 +748,14 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let auth_path = dir.join("auth.json");
 
-        super::write_provider_key_at("deepseek", "sk-test123", Some(&auth_path)).unwrap();
+        super::write_provider_key_at("deepseek", "sk-test123", Some(&auth_path), false).unwrap();
         assert!(auth_path.is_file());
         let content = std::fs::read_to_string(&auth_path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(parsed["deepseek"]["key"].as_str(), Some("sk-test123"));
 
         // Write another provider — original should survive.
-        super::write_provider_key_at("openrouter", "or-test456", Some(&auth_path)).unwrap();
+        super::write_provider_key_at("openrouter", "or-test456", Some(&auth_path), false).unwrap();
         let content = std::fs::read_to_string(&auth_path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(parsed["deepseek"]["key"].as_str(), Some("sk-test123"));
@@ -695,8 +774,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let auth_path = dir.join("auth.json");
 
-        super::write_provider_key_at("deepseek", "sk-old", Some(&auth_path)).unwrap();
-        super::write_provider_key_at("deepseek", "sk-new", Some(&auth_path)).unwrap();
+        super::write_provider_key_at("deepseek", "sk-old", Some(&auth_path), false).unwrap();
+        super::write_provider_key_at("deepseek", "sk-new", Some(&auth_path), false).unwrap();
 
         let content = std::fs::read_to_string(&auth_path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
@@ -715,11 +794,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let auth_path = dir.join("auth.json");
 
-        super::write_provider_key_at("deepseek", "sk-111", Some(&auth_path)).unwrap();
-        super::write_provider_key_at("openrouter", "sk-222", Some(&auth_path)).unwrap();
+        super::write_provider_key_at("deepseek", "sk-111", Some(&auth_path), false).unwrap();
+        super::write_provider_key_at("openrouter", "sk-222", Some(&auth_path), false).unwrap();
 
         // Delete one provider
-        super::delete_provider_key_at("deepseek", Some(&auth_path)).unwrap();
+        super::delete_provider_key_at("deepseek", Some(&auth_path), false).unwrap();
 
         let content = std::fs::read_to_string(&auth_path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
@@ -731,8 +810,86 @@ mod tests {
         );
 
         // Delete non-existent returns error
-        let err = super::delete_provider_key_at("nonexistent", Some(&auth_path)).unwrap_err();
+        let err = super::delete_provider_key_at("nonexistent", Some(&auth_path), false).unwrap_err();
         assert!(err.contains("not found"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An `opencode auth login` entry must survive both a save and a delete
+    /// unless the caller passes `force` — the refresh token is unrecoverable.
+    #[test]
+    fn oauth_entries_are_protected_unless_forced() {
+        let dir = std::env::temp_dir().join(format!(
+            "agentshell_test_oauth_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let auth_path = dir.join("auth.json");
+        std::fs::write(
+            &auth_path,
+            r#"{"anthropic":{"type":"oauth","refresh":"rt-secret","access":"at-secret"}}"#,
+        )
+        .unwrap();
+
+        let err = super::write_provider_key_at("anthropic", "sk-new", Some(&auth_path), false)
+            .unwrap_err();
+        assert!(err.contains("OAuth"), "write should refuse: {err}");
+        let err =
+            super::delete_provider_key_at("anthropic", Some(&auth_path), false).unwrap_err();
+        assert!(err.contains("OAuth"), "delete should refuse: {err}");
+
+        // Refusing must not have touched the file.
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&auth_path).unwrap()).unwrap();
+        assert_eq!(parsed["anthropic"]["refresh"].as_str(), Some("rt-secret"));
+
+        // `force` goes through.
+        super::write_provider_key_at("anthropic", "sk-new", Some(&auth_path), true).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&auth_path).unwrap()).unwrap();
+        assert_eq!(parsed["anthropic"]["key"].as_str(), Some("sk-new"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A corrupt auth.json used to parse as `{}`, so the next write persisted
+    /// only the new key and silently dropped every other provider.
+    #[test]
+    fn corrupt_auth_json_aborts_instead_of_wiping() {
+        let dir = std::env::temp_dir().join(format!(
+            "agentshell_test_corrupt_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let auth_path = dir.join("auth.json");
+        let corrupt = r#"{"deepseek":{"key":"sk-keep"},"openrouter":{"key":"#;
+        std::fs::write(&auth_path, corrupt).unwrap();
+
+        let err =
+            super::write_provider_key_at("zai", "sk-new", Some(&auth_path), false).unwrap_err();
+        assert!(err.contains("解析失败"), "unexpected error: {err}");
+        assert_eq!(
+            std::fs::read_to_string(&auth_path).unwrap(),
+            corrupt,
+            "file must be left exactly as it was"
+        );
+
+        // A top-level array is refused too, rather than rewritten as an object.
+        std::fs::write(&auth_path, "[]").unwrap();
+        let err =
+            super::delete_provider_key_at("deepseek", Some(&auth_path), false).unwrap_err();
+        assert!(err.contains("JSON 对象"), "unexpected error: {err}");
+        assert_eq!(std::fs::read_to_string(&auth_path).unwrap(), "[]");
+
+        // An empty file is a legitimate fresh start, not corruption.
+        std::fs::write(&auth_path, "").unwrap();
+        super::write_provider_key_at("zai", "sk-new", Some(&auth_path), false).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&auth_path).unwrap()).unwrap();
+        assert_eq!(parsed["zai"]["key"].as_str(), Some("sk-new"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -747,8 +904,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let auth_path = dir.join("auth.json");
 
-        super::write_provider_key_at("deepseek", "sk-111", Some(&auth_path)).unwrap();
-        super::write_provider_key_at("openrouter", "sk-222", Some(&auth_path)).unwrap();
+        super::write_provider_key_at("deepseek", "sk-111", Some(&auth_path), false).unwrap();
+        super::write_provider_key_at("openrouter", "sk-222", Some(&auth_path), false).unwrap();
 
         // Point load_auth_json at our temp file by overriding the search path.
         // We call write_provider_key_at directly; list_providers uses load_auth_json

@@ -1035,9 +1035,11 @@ pub fn project_context_prompt(
 }
 
 /// Save a provider API key to OpenCode's auth.json.
+///
+/// `force` is the UI's confirmation that overwriting an OAuth login is intended.
 #[tauri::command(async)]
-pub fn save_provider_key(provider: String, key: String) -> Result<(), String> {
-    crate::provider_usage::write_provider_key(&provider, &key)
+pub fn save_provider_key(provider: String, key: String, force: Option<bool>) -> Result<(), String> {
+    crate::provider_usage::write_provider_key(&provider, &key, force.unwrap_or(false))
 }
 
 /// List configured providers (without exposing keys).
@@ -1048,8 +1050,8 @@ pub fn list_providers() -> Result<Vec<crate::provider_usage::ProviderInfo>, Stri
 
 /// Delete a provider API key from OpenCode's auth.json.
 #[tauri::command(async)]
-pub fn delete_provider_key(provider: String) -> Result<(), String> {
-    crate::provider_usage::delete_provider_key(&provider)
+pub fn delete_provider_key(provider: String, force: Option<bool>) -> Result<(), String> {
+    crate::provider_usage::delete_provider_key(&provider, force.unwrap_or(false))
 }
 
 #[cfg(test)]
