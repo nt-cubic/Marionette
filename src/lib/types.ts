@@ -327,4 +327,9 @@ export type ProviderInfo = {
   provider: string;
   label: string;
   hasKey: boolean;
+  /**
+   * `oauth` entries come from `opencode auth login` and hold a refresh token
+   * this app cannot re-create — overwriting or deleting one needs confirmation.
+   */
+  authKind: "api" | "oauth" | "unknown";
 };

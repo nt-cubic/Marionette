@@ -15,10 +15,20 @@ const PROVIDERS = [
 
 type Props = {
   onClose: () => void;
-  onSaved: () => void;
+  /**
+   * A key was added or removed. The dialog stays open — managing several keys in
+   * one visit is the point — so the parent should only note that auth changed
+   * and act on it when the dialog closes.
+   */
+  onKeysChanged: () => void;
+  /** True once `onKeysChanged` fired, so the footer can explain the restart. */
+  restartPending?: boolean;
 };
 
-export function ProviderConfigDialog({ onClose, onSaved }: Props) {
+/** A pending destructive action awaiting a second click. */
+type Confirming = { action: "save" | "delete"; provider: string };
+
+export function ProviderConfigDialog({ onClose, onKeysChanged, restartPending }: Props) {
   const [configuredProviders, setConfiguredProviders] = useState<ProviderInfo[]>([]);
   const [provider, setProvider] = useState(PROVIDERS[0].id);
   const [apiKey, setApiKey] = useState("");
@@ -26,6 +36,7 @@ export function ProviderConfigDialog({ onClose, onSaved }: Props) {
   const [deleting, setDeleting] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [loaded, setLoaded] = useState(false);
+  const [confirming, setConfirming] = useState<Confirming | null>(null);
 
   const loadProviders = useCallback(async () => {
     try {
@@ -42,7 +53,13 @@ export function ProviderConfigDialog({ onClose, onSaved }: Props) {
     void loadProviders();
   }, [loadProviders]);
 
-  const isConfigured = configuredProviders.some((p) => p.provider === provider);
+  const selected = configuredProviders.find((p) => p.provider === provider);
+  const isConfigured = selected != null;
+  // Overwriting an OAuth login destroys a refresh token this app cannot mint
+  // again, so it takes a deliberate second click and an explicit `force`.
+  const selectedIsOauth = selected?.authKind === "oauth";
+  const saveConfirmed =
+    confirming?.action === "save" && confirming.provider === provider;
 
   const handleSave = async () => {
     const trimmed = apiKey.trim();
@@ -50,14 +67,19 @@ export function ProviderConfigDialog({ onClose, onSaved }: Props) {
       setError("请输入 API Key");
       return;
     }
+    if (selectedIsOauth && !saveConfirmed) {
+      setConfirming({ action: "save", provider });
+      setError("");
+      return;
+    }
     setSaving(true);
     setError("");
     try {
-      await saveProviderKey(provider, trimmed);
+      await saveProviderKey(provider, trimmed, selectedIsOauth);
       setApiKey("");
-      // Refresh list and notify parent
+      setConfirming(null);
       await loadProviders();
-      onSaved();
+      onKeysChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -65,17 +87,23 @@ export function ProviderConfigDialog({ onClose, onSaved }: Props) {
     }
   };
 
-  const handleDelete = async (providerId: string) => {
-    setDeleting(providerId);
+  const handleDelete = async (target: ProviderInfo) => {
+    const confirmed =
+      confirming?.action === "delete" && confirming.provider === target.provider;
+    if (!confirmed) {
+      setConfirming({ action: "delete", provider: target.provider });
+      setError("");
+      return;
+    }
+    setDeleting(target.provider);
     setError("");
     try {
-      await deleteProviderKey(providerId);
-      setConfiguredProviders((prev) => prev.filter((p) => p.provider !== providerId));
-      // If the user was editing this provider, reset the form
-      if (provider === providerId) {
-        setApiKey("");
-      }
-      onSaved();
+      await deleteProviderKey(target.provider, target.authKind === "oauth");
+      setConfiguredProviders((prev) => prev.filter((p) => p.provider !== target.provider));
+      setConfirming(null);
+      // If the user was editing this provider, drop the half-typed key.
+      if (provider === target.provider) setApiKey("");
+      onKeysChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -84,9 +112,10 @@ export function ProviderConfigDialog({ onClose, onSaved }: Props) {
   };
 
   const configuredIds = new Set(configuredProviders.map((p) => p.provider));
+  const busy = saving || deleting !== null;
 
   return (
-    <div className="project-dialog-backdrop" onClick={onClose}>
+    <div className="project-dialog-backdrop" onClick={busy ? undefined : onClose}>
       <div
         className="project-dialog provider-dialog"
         onClick={(e) => e.stopPropagation()}
@@ -98,23 +127,50 @@ export function ProviderConfigDialog({ onClose, onSaved }: Props) {
             <div className="provider-dialog__section">
               <span className="provider-dialog__section-title">已配置的 Key</span>
               <div className="provider-dialog__list">
-                {configuredProviders.map((p) => (
-                  <div key={p.provider} className="provider-dialog__item">
-                    <span className="provider-dialog__item-name">
-                      <span className="provider-dialog__item-dot" />
-                      {p.label}
-                    </span>
-                    <button
-                      className="provider-dialog__delete-btn"
-                      type="button"
-                      onClick={() => void handleDelete(p.provider)}
-                      disabled={deleting === p.provider}
-                      title={`删除 ${p.label} 的 API Key`}
-                    >
-                      {deleting === p.provider ? "删除中…" : "删除"}
-                    </button>
-                  </div>
-                ))}
+                {configuredProviders.map((p) => {
+                  const pendingDelete =
+                    confirming?.action === "delete" && confirming.provider === p.provider;
+                  const isOauth = p.authKind === "oauth";
+                  return (
+                    <div key={p.provider} className="provider-dialog__item">
+                      <span className="provider-dialog__item-name">
+                        <span className="provider-dialog__item-dot" />
+                        {p.label}
+                        {isOauth && (
+                          <span
+                            className="provider-dialog__item-badge"
+                            title="通过 opencode auth login 登录，删除后需要重新登录"
+                          >
+                            OAuth
+                          </span>
+                        )}
+                      </span>
+                      <button
+                        className={
+                          pendingDelete
+                            ? "provider-dialog__delete-btn is-confirming"
+                            : "provider-dialog__delete-btn"
+                        }
+                        type="button"
+                        onClick={() => void handleDelete(p)}
+                        disabled={deleting === p.provider}
+                        title={
+                          isOauth
+                            ? `删除 ${p.label} 的 OAuth 登录（需重新 opencode auth login）`
+                            : `删除 ${p.label} 的 API Key`
+                        }
+                      >
+                        {deleting === p.provider
+                          ? "删除中…"
+                          : pendingDelete
+                            ? isOauth
+                              ? "确认删除登录"
+                              : "确认删除"
+                            : "删除"}
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -137,6 +193,7 @@ export function ProviderConfigDialog({ onClose, onSaved }: Props) {
                 value={provider}
                 onChange={(e) => {
                   setProvider(e.target.value);
+                  setConfirming(null);
                   setError("");
                 }}
                 disabled={saving}
@@ -161,15 +218,27 @@ export function ProviderConfigDialog({ onClose, onSaved }: Props) {
                 autoFocus
               />
             </label>
+            {selectedIsOauth && (
+              <div className="provider-dialog__warning">
+                {selected?.label} 目前是 OAuth 登录。写入 API Key 会覆盖登录凭证，
+                之后只能用 <code>opencode auth login</code> 重新登录。
+              </div>
+            )}
             {error && <div className="provider-dialog__error">{error}</div>}
           </div>
+
+          {restartPending && (
+            <div className="provider-dialog__note">
+              关闭后会重启 agent，让它重新读取 auth.json。
+            </div>
+          )}
         </div>
         <div className="project-dialog__actions">
           <button
             className="project-dialog__cancel"
             type="button"
             onClick={onClose}
-            disabled={saving || deleting !== null}
+            disabled={busy}
           >
             关闭
           </button>
@@ -179,7 +248,15 @@ export function ProviderConfigDialog({ onClose, onSaved }: Props) {
             onClick={handleSave}
             disabled={saving || !apiKey.trim()}
           >
-            {saving ? "保存中…" : isConfigured ? "更新 Key" : "保存"}
+            {saving
+              ? "保存中…"
+              : selectedIsOauth
+                ? saveConfirmed
+                  ? "确认覆盖 OAuth 登录"
+                  : "覆盖 OAuth 登录…"
+                : isConfigured
+                  ? "更新 Key"
+                  : "保存"}
           </button>
         </div>
       </div>

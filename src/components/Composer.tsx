@@ -62,7 +62,18 @@ type ComposerProps = {
   onEnsureAgentReady?: () => Promise<boolean>;
   /** Last stream activity (ms) — escalates busy strip when the turn goes quiet. */
   lastActivityAt?: number | null;
+  /**
+   * Provider keys were edited. The agent process reads auth.json only at
+   * startup, so the parent must replace it for the new key to take effect.
+   */
+  onProviderKeysChanged?: () => void | Promise<void>;
 };
+
+/**
+ * Agents whose credentials live in OpenCode's `auth.json` — the file the provider
+ * key dialog writes. Everything else authenticates its own way.
+ */
+const OPENCODE_AUTH_AGENTS = new Set(["opencode"]);
 
 function formatRecentTime(timestamp: number): string {
   const diff = Date.now() - timestamp;
@@ -329,6 +340,7 @@ export function Composer({
   onWarmAgent,
   onEnsureAgentReady,
   lastActivityAt = null,
+  onProviderKeysChanged,
 }: ComposerProps) {
   /**
    * Offline-first controls: the last catalog this agent advertised, with this
@@ -356,6 +368,8 @@ export function Composer({
   const [composerHeight, setComposerHeight] = useState(readComposerHeight);
   const [resizingComposer, setResizingComposer] = useState(false);
   const [showProviderDialog, setShowProviderDialog] = useState(false);
+  /** A key was added/removed this visit — the agent must restart to see it. */
+  const [providerKeysDirty, setProviderKeysDirty] = useState(false);
   const [flashError, setFlashError] = useState("");
   const [dropActive, setDropActive] = useState(false);
   /** CLI availability per agent — loaded when the agent menu opens. */
@@ -845,6 +859,10 @@ export function Composer({
     // Only paths the user actually left in the draft — deleting the text should
     // not still trigger a grant prompt for it.
     const dropped = [...droppedPathsRef.current].filter((p) => draft.includes(p));
+    // Record on send, not only on switch: a user who never opens the model menu
+    // would otherwise never build up a "recent" list at all.
+    const sentWith = currentModel ?? (caps && caps.models.length > 0 ? caps.models[0].id : null);
+    if (sentWith) recordModelUsage(sentWith);
     onSend(draft, dropped);
     droppedPathsRef.current.clear();
     setDraft("");
@@ -1071,6 +1089,13 @@ export function Composer({
     caps.thinkingEffort != null &&
     (isPty || Boolean(caps.effortConfigId));
   const hasEffort = hasStringEffort || hasNumericEffort;
+  // The key dialog writes OpenCode's auth.json, so only offer it for the agent
+  // that reads that file. Codex / Claude Code / Grok each own their credentials;
+  // showing them "add API key" would write a key none of them ever looks at.
+  const usesOpencodeAuth = OPENCODE_AUTH_AGENTS.has(agent.id);
+  // An empty model list means "no key yet" only for OpenCode. Note this is
+  // rendered *alongside* the effort block, never instead of it — see the menu.
+  const showKeyPrompt = usesOpencodeAuth && caps != null && caps.models.length === 0;
   const numericEffortPresets =
     hasNumericEffort && caps?.thinkingEffort
       ? [
@@ -1376,7 +1401,7 @@ export function Composer({
           <div className="composer__actions">
             {/* ── Model + Effort selector ─────────────────────────────── */}
             {/* Always show when caps exist (even empty for add-key prompt), or has effort */}
-            {(hasModels || hasEffort || (caps && caps.models.length === 0)) && (
+            {(hasModels || hasEffort || showKeyPrompt) && (
               <div className="composer-menu-anchor">
                 <button
                   className="composer-select composer-select--model"
@@ -1391,8 +1416,12 @@ export function Composer({
 
                 {menu === "model" && (
                   <div className="composer-menu composer-menu--models" role="listbox" aria-label={`${agent.label} models`}>
-                    {!hasModels && caps?.models.length === 0 ? (
-                      /* ── Empty state: no models / no keys ── */
+                    {/* The key prompt renders *above* the rest instead of replacing
+                        it. As a ternary it also swallowed the effort block below,
+                        and since nothing ever sets `menu = "effort"`, an agent with
+                        effort options but no model list lost every way to change
+                        effort. */}
+                    {!hasModels && showKeyPrompt && (
                       <div className="composer-menu__empty-state">
                         <div className="composer-menu__empty-icon">🔑</div>
                         <div className="composer-menu__empty-title">还没有配置 API Key</div>
@@ -1407,8 +1436,10 @@ export function Composer({
                           添加 API Key
                         </button>
                       </div>
-                    ) : (
-                      <>
+                    )}
+                    {!hasModels && !showKeyPrompt && !hasEffort && (
+                      <div className="composer-menu__empty">这个 agent 没有可切换的模型</div>
+                    )}
                         {hasModels && (
                           <>
                             {/* ── Recent models ── */}
@@ -1500,17 +1531,23 @@ export function Composer({
                             </div>
 
                             {/* ── Add API Key entry at bottom ── */}
-                            <span className="composer-menu__divider" />
-                            <button
-                              className="composer-menu__add-key-item"
-                              type="button"
-                              onClick={() => { setMenu(null); setShowProviderDialog(true); }}
-                            >
-                              ＋ 添加 API Key…
-                            </button>
+                            {usesOpencodeAuth && (
+                              <>
+                                <span className="composer-menu__divider" />
+                                <button
+                                  className="composer-menu__add-key-item"
+                                  type="button"
+                                  onClick={() => { setMenu(null); setShowProviderDialog(true); }}
+                                >
+                                  ＋ 添加 API Key…
+                                </button>
+                              </>
+                            )}
                           </>
                         )}
-                        {hasEffort && <span className="composer-menu__divider" />}
+                        {hasEffort && (hasModels || showKeyPrompt) && (
+                          <span className="composer-menu__divider" />
+                        )}
                         {hasEffort && (
                           <div className="composer-menu__effort-inline">
                             <span className="composer-menu__label">
@@ -1562,8 +1599,6 @@ export function Composer({
                                 ))}
                           </div>
                         )}
-                      </>
-                    )}
                   </div>
                 )}
 
@@ -1758,13 +1793,19 @@ export function Composer({
       </div>
       {showProviderDialog && (
         <ProviderConfigDialog
-          onClose={() => setShowProviderDialog(false)}
-          onSaved={() => {
+          restartPending={providerKeysDirty}
+          onKeysChanged={() => setProviderKeysDirty(true)}
+          onClose={() => {
             setShowProviderDialog(false);
-            // Refresh capabilities to pick up new models
-            if (sessionId && !sessionId.startsWith("session-empty-")) {
-              loadCapabilities(sessionId);
-            }
+            if (!providerKeysDirty) return;
+            setProviderKeysDirty(false);
+            // Re-reading capabilities off the *live* process is not enough:
+            // OpenCode loads auth.json once at startup, so the running agent
+            // still reports the old (empty) model list and the selector stays
+            // blank — the exact dead end this dialog exists to fix. Only a new
+            // process picks the key up. Batched to dialog close so adding three
+            // keys restarts once.
+            void onProviderKeysChanged?.();
           }}
         />
       )}

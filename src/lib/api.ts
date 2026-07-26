@@ -511,17 +511,24 @@ export async function revealInFileManager(target: string, cwd?: string | null): 
 
 // ─── Provider API Key Management ────────────────────────────────────────────
 
+/**
+ * `force` confirms overwriting an OAuth login. Without it the backend refuses,
+ * because replacing `{ type: "oauth", refresh, … }` with an API key throws away
+ * a refresh token that only `opencode auth login` can mint again.
+ */
 export async function saveProviderKey(
   provider: string,
   key: string,
+  force = false,
 ): Promise<void> {
-  await invoke("save_provider_key", { provider, key });
+  await invoke("save_provider_key", { provider, key, force });
 }
 
 export async function listProviders(): Promise<ProviderInfo[]> {
   return invoke("list_providers");
 }
 
-export async function deleteProviderKey(provider: string): Promise<void> {
-  await invoke("delete_provider_key", { provider });
+/** `force` confirms deleting an OAuth login — see {@link saveProviderKey}. */
+export async function deleteProviderKey(provider: string, force = false): Promise<void> {
+  await invoke("delete_provider_key", { provider, force });
 }
