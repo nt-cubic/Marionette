@@ -20,6 +20,8 @@ import { ClippedBody } from "./ClippedBody";
 import { LinkCwdContext, LinkedText } from "./LinkedText";
 import { MarkdownBody } from "./MarkdownBody";
 import { MessageOutline } from "./MessageOutline";
+import { MessageTimestamp } from "./MessageTimestamp";
+
 
 export type UserMessageAnchor = {
   messageId?: string;
@@ -55,6 +57,58 @@ type SessionViewProps = {
   onInterrupt?: () => void | Promise<void>;
 };
 
+/** Tabs-only for the shared workspace-titlebar (rendered by App.tsx). */
+export function SessionTabs({
+  openSessions,
+  session,
+  onTabSelect,
+  onTabClose,
+  onNewTab,
+}: {
+  openSessions: Session[];
+  session: Session;
+  onTabSelect: (session: Session) => void;
+  onTabClose: (sessionId: string) => void;
+  onNewTab: () => void;
+}) {
+  return (
+    <div className="editor-tabs__tablist" role="tablist" aria-label="Session tabs">
+      {openSessions.map((openSession) => {
+        const busy =
+          openSession.status === "running" || openSession.status === "starting";
+        return (
+          <div
+            className={
+              openSession.id === session.id
+                ? `editor-tab is-active is-${openSession.status}`
+                : `editor-tab is-${openSession.status}`
+            }
+            key={openSession.id}
+            role="tab"
+            aria-selected={openSession.id === session.id}
+          >
+            {busy && (
+              <span
+                className={`editor-tab__pulse is-${openSession.status}`}
+                aria-hidden
+              />
+            )}
+            <button className="editor-tab__select" type="button" title={openSession.cwd} onClick={() => onTabSelect(openSession)}>
+              <span>{openSession.label}</span>
+            </button>
+            <button className="editor-tab__close" type="button" title={`Close ${openSession.label}`} aria-label={`Close ${openSession.label}`} onClick={() => onTabClose(openSession.id)}>
+              <X size={12} />
+            </button>
+          </div>
+        );
+      })}
+      <button className="editor-tab__new" type="button" title="New conversation" aria-label="New conversation" onClick={onNewTab}>
+        <Plus size={14} />
+      </button>
+    </div>
+  );
+}
+
 export function SessionView({
   agent,
   events,
@@ -85,45 +139,6 @@ export function SessionView({
 
   return (
     <section className="session-view" aria-label="Session view">
-      <div className="editor-tabs titlebar-row" role="tablist" aria-label="Session tabs">
-        {openSessions.map((openSession) => {
-          const busy =
-            openSession.status === "running" || openSession.status === "starting";
-          return (
-            <div
-              className={
-                openSession.id === session.id
-                  ? `editor-tab is-active is-${openSession.status}`
-                  : `editor-tab is-${openSession.status}`
-              }
-              key={openSession.id}
-              role="tab"
-              aria-selected={openSession.id === session.id}
-            >
-              {busy && (
-                <span
-                  className={`editor-tab__pulse is-${openSession.status}`}
-                  aria-hidden
-                />
-              )}
-              <button className="editor-tab__select" type="button" title={openSession.cwd} onClick={() => onTabSelect(openSession)}>
-                <span>{openSession.label}</span>
-              </button>
-              <button className="editor-tab__close" type="button" title={`Close ${openSession.label}`} aria-label={`Close ${openSession.label}`} onClick={() => onTabClose(openSession.id)}>
-                <X size={12} />
-              </button>
-            </div>
-          );
-        })}
-        <button className="editor-tab__new" type="button" title="New conversation" aria-label="New conversation" onClick={onNewTab}>
-          <Plus size={14} />
-        </button>
-        {/* Only empty mid-bar is draggable — never wrap interactive controls. */}
-        {/* No Raw Terminal toggle here: Clean View is the product surface for
-            every ACP agent, and the toggle only made the tab bar look busy.
-            PTY dialogs still offer the switch from their empty-state hint. */}
-        <div className="editor-tabs__spacer" data-tauri-drag-region />
-      </div>
 
       {isLive && (
         <SessionActivityBar status={session.status} lastActivityAt={lastActivityAt} />
@@ -659,21 +674,19 @@ function CleanPlaceholder({
     // Relative paths in agent text resolve against this dialog's project root.
     <LinkCwdContext.Provider value={session.cwd || null}>
     <div className="clean-surface">
-      <div className="clean-surface__notice">
-        <FileText size={16} />
-        {isPty
-          ? "Clean View · You / Thinking / Tool / Reply (from terminal stream)"
-          : "Clean View · live stream · thinking/tools collapsed by default"}
-        <button
-          className="icon-button icon-button--small"
-          type="button"
-          title={detailsVisible ? "Hide thinking and tool rows" : "Show thinking and tool rows (still collapsed)"}
-          onClick={onDetailsToggle}
-        >
-          {detailsVisible ? <Eye size={13} /> : <EyeOff size={13} />}
-        </button>
-      </div>
-
+      <button
+        className="icon-button icon-button--eye"
+        type="button"
+        title={
+          (isPty
+            ? "Clean View · You / Thinking / Tool / Reply (from terminal stream)"
+            : "Clean View · live stream · thinking/tools collapsed by default")
+          + " — " + (detailsVisible ? "hide" : "show") + " details"
+        }
+        onClick={onDetailsToggle}
+      >
+        {detailsVisible ? <Eye size={14} /> : <EyeOff size={14} />}
+      </button>
       <div className="clean-surface__body">
       <div
         ref={listRef}
@@ -742,7 +755,7 @@ function CleanPlaceholder({
                 : event.type === "user_message"
                   ? "You"
                   : event.type === "assistant_message"
-                    ? "Reply"
+                    ? (event.agentId ? "Reply" : "Notification")
                     : event.type === "handoff_prepared"
                       ? "Handoff"
                       : event.type.replace(/_/g, " ");
@@ -832,33 +845,49 @@ function CleanPlaceholder({
             : `${event.type}-${event.createdAt}-${index}`;
           const isEditing = isUser && editingKey === userKey;
 
+          // Mode tone for color accent (You card bar + Reply mode tag)
+          const tone =
+            isUser && "modeLabel" in event
+              ? modeTone(event.modeLabel)
+              : !isUser && "modeLabel" in event
+                ? modeTone(event.modeLabel)
+                : undefined;
+
           return (
             <article
               className={`event-card event-card--${event.type}${isEditing ? " is-editing" : ""}`}
               key={`${event.type}-${event.createdAt}-${index}`}
               id={isUser ? userKey : undefined}
+              {...(tone ? { "data-mode-tone": tone } : {})}
             >
-              <div className="event-card__icon">
-                <FileText size={15} />
-              </div>
+              {event.type !== "user_message" && event.type !== "assistant_message" && (
+                <div className="event-card__icon">
+                  <FileText size={15} />
+                </div>
+              )}
               <div className="event-card__main">
                 <div className="event-card__type-row">
                   <span className="event-card__type">{label}</span>
-                  {isUser && onEditResend && !isEditing && (
-                    <button
-                      type="button"
-                      className="event-card__edit"
-                      title="Edit & resend (drops later messages)"
-                      aria-label="Edit and resend this message"
-                      onClick={() => {
-                        setEditingKey(userKey);
-                        setEditDraft(event.text);
-                      }}
-                    >
-                      <Pencil size={12} />
-                      Edit
-                    </button>
-                  )}
+                  <span className="event-card__type-row__right">
+                    <span className="event-card__time-edit">
+                      <MessageTimestamp createdAt={event.createdAt} />
+                      {isUser && onEditResend && !isEditing && (
+                        <button
+                          type="button"
+                          className="event-card__edit"
+                          title="Edit & resend (drops later messages)"
+                          aria-label="Edit and resend this message"
+                          onClick={() => {
+                            setEditingKey(userKey);
+                            setEditDraft(event.text);
+                          }}
+                        >
+                          <Pencil size={12} />
+                          Edit
+                        </button>
+                      )}
+                    </span>
+                  </span>
                 </div>
                 {isEditing ? (
                   <div className="event-card__edit-form">
@@ -940,6 +969,41 @@ function CleanPlaceholder({
                   <pre className="event-card__plain">
                     {typeof body === "string" ? <LinkedText text={body} /> : body}
                   </pre>
+                )}
+                {/* Reply metadata: mode · agent · model · effort · duration (only for real replies with metadata) */}
+                {event.type === "assistant_message" && event.agentId && (
+                  <div className="event-card__meta">
+                    {event.modeLabel && (
+                      <>
+                        <span
+                          className="meta-tag__symbol"
+                          data-mode-tone={modeTone(event.modeLabel)}
+                        >
+                          ▣
+                        </span>
+                        <span
+                          className="meta-tag meta-tag--mode"
+                          data-mode-tone={modeTone(event.modeLabel)}
+                        >
+                          {event.modeLabel}
+                        </span>
+                      </>
+                    )}
+                    {event.agentLabel && (
+                      <span className="meta-tag">{event.agentLabel}</span>
+                    )}
+                    {event.modelLabel && (
+                      <span className="meta-tag">{event.modelLabel}</span>
+                    )}
+                    {event.effortLabel && (
+                      <span className="meta-tag">{event.effortLabel}</span>
+                    )}
+                    {event.durationMs != null && (
+                      <span className="meta-tag meta-tag--duration">
+                        {(event.durationMs / 1000).toFixed(1)}s
+                      </span>
+                    )}
+                  </div>
                 )}
               </div>
             </article>
@@ -1304,6 +1368,26 @@ function StallBanner({
       </div>
     </article>
   );
+}
+
+/** Map a mode id to a tone category for colored accent. */
+function modeTone(modeId: string | null | undefined): string {
+  const id = (modeId ?? "").toLowerCase();
+  if (!id) return "default";
+  if (id.includes("plan")) return "plan";
+  if (id.includes("ask") || id.includes("chat") || id.includes("talk")) return "ask";
+  if (id.includes("debug") || id.includes("review")) return "debug";
+  if (
+    id.includes("build") ||
+    id.includes("agent") ||
+    id.includes("code") ||
+    id.includes("edit") ||
+    id.includes("default") ||
+    id.includes("auto")
+  ) {
+    return "build";
+  }
+  return "default";
 }
 
 function viewModeToggleHint(onShowRaw: () => void) {
