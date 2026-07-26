@@ -605,6 +605,42 @@ pub fn list_providers() -> Result<Vec<ProviderInfo>, String> {
     Ok(providers)
 }
 
+/// Delete a provider API key from auth.json.
+/// If `path` is `None`, uses the default OpenCode auth.json location.
+pub fn delete_provider_key_at(provider: &str, path: Option<&std::path::Path>) -> Result<(), String> {
+    let path: PathBuf = match path {
+        Some(p) => p.to_path_buf(),
+        None => opencode_auth_path_write(),
+    };
+
+    if !path.is_file() {
+        return Err("auth.json not found".to_string());
+    }
+
+    let text = fs::read_to_string(&path).map_err(|e| format!("读取 auth.json 失败: {e}"))?;
+    let mut auth: serde_json::Value =
+        serde_json::from_str(&text).unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+
+    if let Some(obj) = auth.as_object_mut() {
+        if obj.remove(provider).is_none() {
+            return Err(format!("Provider `{provider}` not found in auth.json"));
+        }
+    }
+
+    let temp_path = path.with_extension("json.tmp");
+    let json_str =
+        serde_json::to_string_pretty(&auth).map_err(|e| format!("序列化 auth.json 失败: {e}"))?;
+    fs::write(&temp_path, &json_str).map_err(|e| format!("写入临时文件失败: {e}"))?;
+    fs::rename(&temp_path, &path).map_err(|e| format!("重命名临时文件失败: {e}"))?;
+
+    Ok(())
+}
+
+/// Delete a provider API key from the default OpenCode auth.json path.
+pub fn delete_provider_key(provider: &str) -> Result<(), String> {
+    delete_provider_key_at(provider, None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::split_model_id;
@@ -665,6 +701,38 @@ mod tests {
         let content = std::fs::read_to_string(&auth_path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(parsed["deepseek"]["key"].as_str(), Some("sk-new"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_removes_provider_key() {
+        let dir = std::env::temp_dir().join(format!(
+            "agentshell_test_delete_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let auth_path = dir.join("auth.json");
+
+        super::write_provider_key_at("deepseek", "sk-111", Some(&auth_path)).unwrap();
+        super::write_provider_key_at("openrouter", "sk-222", Some(&auth_path)).unwrap();
+
+        // Delete one provider
+        super::delete_provider_key_at("deepseek", Some(&auth_path)).unwrap();
+
+        let content = std::fs::read_to_string(&auth_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert!(parsed.get("deepseek").is_none(), "deepseek should be removed");
+        assert_eq!(
+            parsed["openrouter"]["key"].as_str(),
+            Some("sk-222"),
+            "openrouter should survive"
+        );
+
+        // Delete non-existent returns error
+        let err = super::delete_provider_key_at("nonexistent", Some(&auth_path)).unwrap_err();
+        assert!(err.contains("not found"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

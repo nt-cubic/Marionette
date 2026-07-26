@@ -196,6 +196,7 @@ fn main() {
             commands::grant_workspace_root,
             commands::revoke_workspace_root,
             commands::save_provider_key,
+            commands::delete_provider_key,
             open_target::resolve_link_target,
             open_target::open_external,
             open_target::reveal_in_file_manager

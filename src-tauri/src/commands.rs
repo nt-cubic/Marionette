@@ -1046,6 +1046,12 @@ pub fn list_providers() -> Result<Vec<crate::provider_usage::ProviderInfo>, Stri
     crate::provider_usage::list_providers()
 }
 
+/// Delete a provider API key from OpenCode's auth.json.
+#[tauri::command(async)]
+pub fn delete_provider_key(provider: String) -> Result<(), String> {
+    crate::provider_usage::delete_provider_key(&provider)
+}
+
 #[cfg(test)]
 mod tests {
     use super::resolve_command;
