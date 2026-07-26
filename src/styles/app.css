@@ -4165,6 +4165,79 @@ body.is-composer-resizing .composer {
   padding: 6px 0;
 }
 
+.provider-dialog__section {
+  margin-bottom: 16px;
+}
+
+.provider-dialog__section-title {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-tertiary);
+  margin-bottom: 8px;
+}
+
+.provider-dialog__empty {
+  font-size: 13px;
+  color: var(--text-tertiary);
+  padding: 8px 0 16px;
+}
+
+.provider-dialog__list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.provider-dialog__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--surface-secondary);
+}
+
+.provider-dialog__item-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.provider-dialog__item-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green, #22c55e);
+  flex-shrink: 0;
+}
+
+.provider-dialog__delete-btn {
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--danger, #ef4444);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.provider-dialog__delete-btn:hover {
+  background: color-mix(in srgb, var(--danger, #ef4444) 10%, transparent);
+}
+
+.provider-dialog__delete-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* ── Model Dropdown Empty State ────────────────────────────────────────── */
 .composer-menu__empty-state {
   display: flex;
