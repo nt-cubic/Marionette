@@ -36,6 +36,17 @@ export type AgentConfig = {
   install: AgentInstallSpec;
 };
 
+/** What version of an agent CLI is on disk, and what npm has published. */
+export type AgentVersionInfo = {
+  id: string;
+  package: string | null;
+  installed: string | null;
+  latest: string | null;
+  updateAvailable: boolean;
+  /** Why a field is empty (offline, no `--version`, manual install, …). */
+  note: string | null;
+};
+
 export type AgentCommandStatus = {
   id: string;
   /** `incomplete` = bridge present but a CLI it drives is missing. */
@@ -116,6 +127,13 @@ export type SessionEvent =
       /** Stable anchor for outline / edit&resend. */
       messageId?: string;
       createdAt: string;
+      /** Snapshot of Composer config at send time. */
+      agentId?: string;
+      agentLabel?: string;
+      modelId?: string;
+      modelLabel?: string;
+      modeLabel?: string;
+      effortLabel?: string;
     }
   | {
       type: "assistant_message";
@@ -123,6 +141,15 @@ export type SessionEvent =
       text: string;
       messageId?: string;
       createdAt: string;
+      /** Metadata inherited from preceding user_message snapshot. */
+      agentId?: string;
+      agentLabel?: string;
+      modelId?: string;
+      modelLabel?: string;
+      modeLabel?: string;
+      effortLabel?: string;
+      /** Generation duration in ms, computed at turn completion. */
+      durationMs?: number;
     }
   | {
       type: "thought";
@@ -294,4 +321,10 @@ export type CapabilitySnapshot = {
   modelConfigId: string | null;
   modeConfigId: string | null;
   effortConfigId: string | null;
+};
+
+export type ProviderInfo = {
+  provider: string;
+  label: string;
+  hasKey: boolean;
 };

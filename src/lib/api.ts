@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { agents as mockAgents, projects as mockProjects, sessions as mockSessions } from "./mockData";
-import type { AgentConfig, AgentCommandStatus, CapabilitySnapshot, Project, Session } from "./types";
+import type { AgentConfig, AgentCommandStatus, CapabilitySnapshot, Project, ProviderInfo, Session } from "./types";
 
 export function isTauriRuntime() {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -58,6 +58,23 @@ export async function listAgentCommands(): Promise<AgentCommandStatus[]> {
   if (!isTauriRuntime()) return [];
   try {
     return await invoke<AgentCommandStatus[]>("list_agent_commands");
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Installed (and optionally published) versions for every agent.
+ *
+ * `checkRegistry` costs a network round-trip, so the menu opens without it and
+ * asks again in the background.
+ */
+export async function agentVersions(
+  checkRegistry: boolean
+): Promise<import("./types").AgentVersionInfo[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    return await invoke<import("./types").AgentVersionInfo[]>("agent_versions", { checkRegistry });
   } catch {
     return [];
   }
@@ -490,4 +507,17 @@ export async function openExternal(
 export async function revealInFileManager(target: string, cwd?: string | null): Promise<void> {
   if (!isTauriRuntime()) return;
   await invoke("reveal_in_file_manager", { target, cwd: cwd ?? null });
+}
+
+// ─── Provider API Key Management ────────────────────────────────────────────
+
+export async function saveProviderKey(
+  provider: string,
+  key: string,
+): Promise<void> {
+  await invoke("save_provider_key", { provider, key });
+}
+
+export async function listProviders(): Promise<ProviderInfo[]> {
+  return invoke("list_providers");
 }
