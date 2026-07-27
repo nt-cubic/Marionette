@@ -33,6 +33,10 @@ pub struct McpServerSpec {
     pub args: Vec<String>,
     /// Names only — values live in the agent's config and are read on demand.
     pub env_keys: Vec<String>,
+    /// HTTP header *names* only (e.g. `Authorization`). Values are re-read at
+    /// inject time — Unity MCP and similar servers 401 without them.
+    #[serde(default)]
+    pub header_keys: Vec<String>,
     pub url: Option<String>,
     /// Where it was found (agent id or `project`).
     pub sources: Vec<String>,
@@ -201,6 +205,11 @@ impl Collector {
                 existing.url = spec.url;
                 existing.transport = spec.transport;
                 existing.env_keys = spec.env_keys;
+                existing.header_keys = spec.header_keys;
+            } else if existing.header_keys.is_empty() && !spec.header_keys.is_empty() {
+                // Same url from another source that actually carries auth.
+                // (source_paths already merged above so inject can re-read values.)
+                existing.header_keys = spec.header_keys;
             }
             return;
         }
@@ -262,14 +271,21 @@ fn scan_opencode_config(path: &Path, source: &str, agent: Option<&str>, out: &mu
             .and_then(Value::as_object)
             .map(|env| env.keys().cloned().collect())
             .unwrap_or_default();
+        let header_keys = header_keys_from_json(obj.get("headers"));
 
         out.add_server(McpServerSpec {
             id: name.to_lowercase(),
             name: name.clone(),
-            transport: if url.is_some() { "http".into() } else { "stdio".into() },
+            transport: match obj.get("type").and_then(Value::as_str) {
+                Some("sse") => "sse".into(),
+                Some("remote") | Some("http") if url.is_some() => "http".into(),
+                _ if url.is_some() => "http".into(),
+                _ => "stdio".into(),
+            },
             command: command_list.first().cloned(),
             args: command_list.iter().skip(1).cloned().collect(),
             env_keys,
+            header_keys,
             url,
             sources: vec![source.to_string()],
             source_paths: vec![path.display().to_string()],
@@ -278,7 +294,24 @@ fn scan_opencode_config(path: &Path, source: &str, agent: Option<&str>, out: &mu
     }
 }
 
-/// Codex: `[mcp_servers.name]` with `command` / `args` / `[.env]` or `url`.
+/// Header *names* from a JSON object/array — never the secret values.
+fn header_keys_from_json(headers: Option<&Value>) -> Vec<String> {
+    match headers {
+        Some(Value::Object(map)) => map.keys().cloned().collect(),
+        Some(Value::Array(list)) => list
+            .iter()
+            .filter_map(|item| {
+                item.get("name")
+                    .or_else(|| item.get("key"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Codex / Grok: `[mcp_servers.name]` with `command` / `args` / `[.env]` or `url`.
 fn scan_codex_config(path: &Path, out: &mut Collector) {
     let Ok(raw) = fs::read_to_string(path) else {
         return;
@@ -321,6 +354,12 @@ fn scan_codex_config(path: &Path, out: &mut Collector) {
             .map(|env| env.keys().cloned().collect())
             .unwrap_or_default();
 
+        let header_keys = table
+            .get("headers")
+            .and_then(toml::Value::as_table)
+            .map(|h| h.keys().cloned().collect())
+            .unwrap_or_default();
+
         out.add_server(McpServerSpec {
             id: name.to_lowercase(),
             name: name.clone(),
@@ -328,10 +367,75 @@ fn scan_codex_config(path: &Path, out: &mut Collector) {
             command,
             args,
             env_keys,
+            header_keys,
             url,
             sources: vec!["codex".to_string()],
             source_paths: vec![path.display().to_string()],
             agents: vec!["codex".to_string()],
+        });
+    }
+}
+
+/// Grok: same `[mcp_servers.*]` table shape as Codex, but own agent id.
+fn scan_grok_config(path: &Path, out: &mut Collector) {
+    let Ok(raw) = fs::read_to_string(path) else {
+        return;
+    };
+    let parsed: toml::Value = match toml::from_str(&raw) {
+        Ok(value) => value,
+        Err(error) => {
+            out.notes.push(format!("Could not parse {}: {error}", path.display()));
+            return;
+        }
+    };
+    let Some(servers) = parsed.get("mcp_servers").and_then(|v| v.as_table()) else {
+        return;
+    };
+    for (name, entry) in servers {
+        let Some(table) = entry.as_table() else { continue };
+        if table.get("enabled").and_then(toml::Value::as_bool) == Some(false) {
+            continue;
+        }
+        let url = table
+            .get("url")
+            .and_then(toml::Value::as_str)
+            .map(str::to_string);
+        let command = table
+            .get("command")
+            .and_then(toml::Value::as_str)
+            .map(str::to_string);
+        let args = table
+            .get("args")
+            .and_then(toml::Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let env_keys = table
+            .get("env")
+            .and_then(toml::Value::as_table)
+            .map(|env| env.keys().cloned().collect())
+            .unwrap_or_default();
+        let header_keys = table
+            .get("headers")
+            .and_then(toml::Value::as_table)
+            .map(|h| h.keys().cloned().collect())
+            .unwrap_or_default();
+
+        out.add_server(McpServerSpec {
+            id: name.to_lowercase(),
+            name: name.clone(),
+            transport: if url.is_some() { "http".into() } else { "stdio".into() },
+            command,
+            args,
+            env_keys,
+            header_keys,
+            url,
+            sources: vec!["grok-build".to_string()],
+            source_paths: vec![path.display().to_string()],
+            agents: vec!["grok-build".to_string()],
         });
     }
 }
@@ -368,6 +472,7 @@ fn scan_mcp_json(path: &Path, source: &str, agent: Option<&str>, out: &mut Colle
                 .and_then(Value::as_object)
                 .map(|env| env.keys().cloned().collect())
                 .unwrap_or_default(),
+            header_keys: header_keys_from_json(obj.get("headers")),
             url,
             sources: vec![source.to_string()],
             source_paths: vec![path.display().to_string()],
@@ -458,6 +563,10 @@ pub fn scan(project_root: &Path) -> ContextInventory {
             &mut out,
         );
         scan_codex_config(&home.join(".codex/config.toml"), &mut out);
+        // Grok uses the same `[mcp_servers.*]` table as Codex. Without this scan
+        // we re-inject servers Grok already owns — and used to drop their auth
+        // headers, so Unity MCP came up as 401 and the agent only saw `tasks`.
+        scan_grok_config(&home.join(".grok/config.toml"), &mut out);
         scan_mcp_json(&home.join(".claude.json"), "claude-code", Some("claude-code"), &mut out);
 
         scan_skills_dir(&home.join(".config/opencode/skills"), "opencode", Some("opencode"), &mut out);
@@ -471,6 +580,7 @@ pub fn scan(project_root: &Path) -> ContextInventory {
     scan_opencode_config(&project_root.join("opencode.jsonc"), "project", None, &mut out);
     scan_opencode_config(&project_root.join("opencode.json"), "project", None, &mut out);
     scan_skills_dir(&project_root.join(".claude/skills"), "project", Some("claude-code"), &mut out);
+    scan_skills_dir(&project_root.join(".agents/skills"), "project", None, &mut out);
     scan_skills_dir(&project_root.join(".agentshell/skills"), "project", None, &mut out);
 
     out.servers.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -685,6 +795,91 @@ pub fn outside_project_paths(project_root: &Path, paths: &[String]) -> Vec<Value
     out
 }
 
+// ─── Grok folder trust ──────────────────────────────────────────────────────
+
+/// Record `project_root` as trusted in `~/.grok/trusted_folders.toml`.
+///
+/// Grok refuses to start **project-scoped** MCP (`.grok/config.toml`, `mcps/`)
+/// until the folder is trusted. AgentShell is opening the project on the user's
+/// behalf, so we grant trust the same way `/hooks-trust` / `grok --trust` do.
+/// Idempotent: already-trusted paths are left alone.
+pub fn ensure_grok_folder_trust(project_root: &Path) {
+    let Some(home) = home_dir() else { return };
+    let path = home.join(".grok").join("trusted_folders.toml");
+    let key = normalize_trust_path(project_root);
+    if key.is_empty() {
+        return;
+    }
+
+    let mut raw = fs::read_to_string(&path).unwrap_or_default();
+    // Cheap membership check — section header uses the absolute path in quotes.
+    let section = format!("[folders.'{key}']");
+    if raw.contains(&section) && raw.contains("trusted = true") {
+        // May still be untrusted for this path if another folder block matches
+        // first; re-write this section explicitly below when needed.
+        if let Ok(parsed) = toml::from_str::<toml::Value>(&raw) {
+            if parsed
+                .get("folders")
+                .and_then(|f| f.get(&key))
+                .and_then(|e| e.get("trusted"))
+                .and_then(|v| v.as_bool())
+                == Some(true)
+            {
+                return;
+            }
+        }
+    }
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let block = format!(
+        "\n[folders.'{key}']\ntrusted = true\ndecided_at = {now}\n"
+    );
+    if let Ok(mut parsed) = toml::from_str::<toml::Value>(&raw) {
+        let folders = parsed
+            .as_table_mut()
+            .map(|t| {
+                t.entry("folders")
+                    .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+            })
+            .and_then(|v| v.as_table_mut());
+        if let Some(folders) = folders {
+            let mut entry = toml::map::Map::new();
+            entry.insert("trusted".into(), toml::Value::Boolean(true));
+            entry.insert("decided_at".into(), toml::Value::Integer(now as i64));
+            folders.insert(key.clone(), toml::Value::Table(entry));
+            if let Ok(serialized) = toml::to_string_pretty(&parsed) {
+                raw = serialized;
+            } else {
+                raw.push_str(&block);
+            }
+        } else {
+            raw.push_str(&block);
+        }
+    } else if raw.trim().is_empty() {
+        raw = format!("[folders.'{key}']\ntrusted = true\ndecided_at = {now}\n");
+    } else {
+        raw.push_str(&block);
+    }
+
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(&path, raw);
+}
+
+fn normalize_trust_path(project_root: &Path) -> String {
+    // Match Grok's store keys: absolute, as displayed on this OS.
+    fs::canonicalize(project_root)
+        .unwrap_or_else(|_| project_root.to_path_buf())
+        .to_string_lossy()
+        // Windows canonicalize adds `\\?\` — Grok's store uses plain paths.
+        .trim_start_matches(r"\\?\")
+        .to_string()
+}
+
 // ─── Injection ──────────────────────────────────────────────────────────────
 
 /// Re-read a server's env from its own config. Values never leave this call.
@@ -728,10 +923,79 @@ fn env_values_for(spec: &McpServerSpec) -> Vec<(String, String)> {
     values
 }
 
+/// Re-read HTTP headers (e.g. `Authorization: Bearer …`) at inject time.
+///
+/// Without these, remote Unity MCP answers 401 and the agent only sees whatever
+/// other servers still connected — often just a generic `tasks` toolset.
+fn header_values_for(spec: &McpServerSpec) -> Vec<(String, String)> {
+    let mut values: Vec<(String, String)> = Vec::new();
+    // Project sources are usually last in `source_paths` — prefer them so a
+    // repo-local Bearer token wins over a stale global one.
+    for path in spec.source_paths.iter().rev() {
+        let path = Path::new(path);
+        if path.extension().and_then(|e| e.to_str()) == Some("toml") {
+            if let Ok(raw) = fs::read_to_string(path) {
+                if let Ok(parsed) = toml::from_str::<toml::Value>(&raw) {
+                    if let Some(headers) = parsed
+                        .get("mcp_servers")
+                        .and_then(|v| v.get(&spec.name))
+                        .and_then(|v| v.get("headers"))
+                        .and_then(|v| v.as_table())
+                    {
+                        for (key, value) in headers {
+                            if let Some(text) = value.as_str() {
+                                values.push((key.clone(), text.to_string()));
+                            }
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+        if let Some(value) = read_jsonc(path) {
+            let entry = value
+                .get("mcp")
+                .and_then(|v| v.get(&spec.name))
+                .or_else(|| value.get("mcpServers").and_then(|v| v.get(&spec.name)));
+            if let Some(headers) = entry.and_then(|v| v.get("headers")) {
+                match headers {
+                    Value::Object(map) => {
+                        for (key, value) in map {
+                            if let Some(text) = value.as_str() {
+                                values.push((key.clone(), text.to_string()));
+                            }
+                        }
+                    }
+                    Value::Array(list) => {
+                        for item in list {
+                            let name = item
+                                .get("name")
+                                .or_else(|| item.get("key"))
+                                .and_then(Value::as_str);
+                            let value = item.get("value").and_then(Value::as_str);
+                            if let (Some(name), Some(value)) = (name, value) {
+                                values.push((name.to_string(), value.to_string()));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    // First source wins per header name (project opencode.json usually first).
+    let mut seen = std::collections::BTreeSet::new();
+    values.retain(|(k, _)| seen.insert(k.clone()));
+    values
+}
+
 /// ACP `session/new.mcpServers` payload for one agent.
 ///
-/// Skips anything the agent already loads itself (a second `blender` would give
-/// it two conflicting tool namespaces) and anything the transport can't carry.
+/// Skips stdio servers the agent already owns (a second `blender` would give
+/// two conflicting tool namespaces). **HTTP/SSE are never skipped for
+/// "already native"**: Grok lists servers in `config.toml` that do not actually
+/// attach in ACP (`_x.ai/mcp/servers_updated` only had `ue58_official` while
+/// `ai-game-developer` was marked native and left uninjected).
 pub fn mcp_payload_for_agent(
     project_root: &Path,
     agent_id: &str,
@@ -747,26 +1011,57 @@ pub fn mcp_payload_for_agent(
         if !selection.is_enabled("mcp", &spec.id) {
             continue;
         }
-        if spec.agents.iter().any(|a| a == agent_id) {
-            skipped.push(format!("{} (already native)", spec.name));
-            continue;
-        }
+        let claimed_native = spec.agents.iter().any(|a| a == agent_id);
         match spec.transport.as_str() {
             "http" | "sse" => {
-                let ok = if spec.transport == "sse" { supports_sse } else { supports_http };
+                // Config-file ownership ≠ ACP session attachment for remote MCP.
+                // Always inject when the user enabled lending + agent can do HTTP.
+                let ok = if spec.transport == "sse" {
+                    supports_sse
+                } else {
+                    supports_http
+                };
                 let Some(url) = spec.url.clone() else { continue };
                 if !ok {
-                    skipped.push(format!("{} ({} unsupported by agent)", spec.name, spec.transport));
+                    skipped.push(format!(
+                        "{} ({} unsupported by agent)",
+                        spec.name, spec.transport
+                    ));
                     continue;
+                }
+                // ACP `HttpHeader { name, value }` — never ship an empty list when
+                // the source config has Authorization (Unity MCP 401 otherwise).
+                let headers: Vec<Value> = header_values_for(&spec)
+                    .into_iter()
+                    .map(|(name, value)| json!({ "name": name, "value": value }))
+                    .collect();
+                if headers.is_empty() && !spec.header_keys.is_empty() {
+                    skipped.push(format!(
+                        "{} (headers {:?} configured but unreadable)",
+                        spec.name, spec.header_keys
+                    ));
+                    continue;
+                }
+                if claimed_native {
+                    // Still inject; note so logs explain why we ignore "native".
+                    skipped.push(format!(
+                        "{} (config native — still injecting HTTP for ACP)",
+                        spec.name
+                    ));
                 }
                 let mut entry = Map::new();
                 entry.insert("name".into(), json!(spec.name));
                 entry.insert("url".into(), json!(url));
-                entry.insert("headers".into(), json!([]));
+                entry.insert("headers".into(), json!(headers));
                 entry.insert("type".into(), json!(spec.transport));
                 payload.push(Value::Object(entry));
             }
             _ => {
+                // Stdio: a second process with the same name is a real conflict.
+                if claimed_native {
+                    skipped.push(format!("{} (already native)", spec.name));
+                    continue;
+                }
                 let Some(command) = spec.command.clone() else {
                     skipped.push(format!("{} (no command)", spec.name));
                     continue;
@@ -850,7 +1145,13 @@ mod tests {
               // user config
               "mcp": {
                 "blender": { "type": "local", "command": ["cmd", "/c", "uvx", "blender-mcp"], "enabled": true },
-                "off": { "type": "local", "command": ["x"], "enabled": false }
+                "off": { "type": "local", "command": ["x"], "enabled": false },
+                "ai-game-developer": {
+                  "type": "remote",
+                  "url": "http://localhost:23915",
+                  "headers": { "Authorization": "Bearer secret-token" },
+                  "enabled": true
+                }
               }
             }"#,
         )
@@ -885,6 +1186,83 @@ mod tests {
 
         let remote = out.servers.iter().find(|s| s.name == "remote").unwrap();
         assert_eq!(remote.transport, "http");
+
+        let unity = out
+            .servers
+            .iter()
+            .find(|s| s.name == "ai-game-developer")
+            .unwrap();
+        assert_eq!(unity.transport, "http");
+        assert_eq!(unity.header_keys, vec!["Authorization".to_string()]);
+        let inv_json = serde_json::to_string(&unity).unwrap();
+        assert!(
+            !inv_json.contains("secret-token"),
+            "header values must not be inventoried"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Unity MCP rejects unauthenticated HTTP; inject must carry Authorization.
+    #[test]
+    fn http_mcp_payload_includes_authorization_header() {
+        let root = std::env::temp_dir().join(format!("agentshell-hdr-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let oc = root.join("opencode.json");
+        fs::write(
+            &oc,
+            r#"{
+              "mcp": {
+                "ai-game-developer": {
+                  "type": "remote",
+                  "url": "http://localhost:23915",
+                  "headers": { "Authorization": "Bearer secret-token" },
+                  "enabled": true
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        // Enable lending for this project.
+        fs::create_dir_all(root.join(".agentshell")).unwrap();
+        fs::write(
+            root.join(".agentshell/context.json"),
+            r#"{"version":1,"mcpServers":{"ai-game-developer":true},"skills":{}}"#,
+        )
+        .unwrap();
+
+        // Use an agent that does not natively own this server on the machine
+        // (grok-build / opencode may already list it in ~/.grok or ~/.config).
+        let (payload, skipped) = mcp_payload_for_agent(&root, "claude-code", true, true);
+        assert!(
+            !skipped.iter().any(|s| s.contains("already native")),
+            "claude-code should receive a lend, not a native skip: {skipped:?}"
+        );
+        assert_eq!(payload.len(), 1, "expected inject for claude: {payload:?} skipped={skipped:?}");
+        let headers = payload[0]
+            .get("headers")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        assert!(!headers.is_empty(), "headers={headers:?}");
+        assert_eq!(headers[0]["name"], "Authorization");
+        let value = headers[0]["value"].as_str().unwrap_or("");
+        assert!(
+            value.starts_with("Bearer "),
+            "expected Bearer token, got {value:?}"
+        );
+        // Inventory model stores key names only — never the secret.
+        let inv = scan(&root);
+        let unity = inv
+            .mcp_servers
+            .iter()
+            .find(|s| s.name == "ai-game-developer")
+            .unwrap();
+        let inv_json = serde_json::to_string(unity).unwrap();
+        assert!(
+            !inv_json.contains("Bearer "),
+            "header values must not appear in inventory JSON"
+        );
 
         fs::remove_dir_all(root).unwrap();
     }
@@ -923,6 +1301,57 @@ mod tests {
         let selection = ContextSelection::default();
         assert!(selection.is_enabled("skill", "unity"));
         assert!(!selection.is_enabled("mcp", "blender"));
+    }
+
+    #[test]
+    fn ensure_grok_folder_trust_writes_trusted_entry() {
+        let home = std::env::temp_dir().join(format!("agentshell-trust-home-{}", std::process::id()));
+        let project = std::env::temp_dir().join(format!("agentshell-trust-proj-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        let _ = fs::remove_dir_all(&project);
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&project).unwrap();
+        // Point USERPROFILE at temp so we don't touch the real store.
+        let prev = std::env::var_os("USERPROFILE");
+        std::env::set_var("USERPROFILE", &home);
+        #[cfg(not(windows))]
+        {
+            let prev_home = std::env::var_os("HOME");
+            std::env::set_var("HOME", &home);
+            ensure_grok_folder_trust(&project);
+            if let Some(v) = prev_home {
+                std::env::set_var("HOME", v);
+            } else {
+                std::env::remove_var("HOME");
+            }
+        }
+        #[cfg(windows)]
+        {
+            ensure_grok_folder_trust(&project);
+        }
+        if let Some(v) = prev {
+            std::env::set_var("USERPROFILE", v);
+        } else {
+            std::env::remove_var("USERPROFILE");
+        }
+
+        let raw = fs::read_to_string(home.join(".grok/trusted_folders.toml")).unwrap();
+        assert!(raw.contains("trusted = true"), "{raw}");
+        assert!(
+            raw.contains("[folders.") || raw.contains("folders."),
+            "expected a folders table in:\n{raw}"
+        );
+        // Path may be canonicalized / slash-normalized — just require the unique leaf.
+        let leaf = project
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("agentshell-trust-proj");
+        assert!(
+            raw.contains(leaf),
+            "expected path leaf {leaf} in:\n{raw}"
+        );
+        let _ = fs::remove_dir_all(&home);
+        let _ = fs::remove_dir_all(&project);
     }
 
     #[test]

@@ -188,6 +188,7 @@ impl StorageService {
             preferred_mode: None,
             preferred_effort: None,
             preferred_effort_id: None,
+            preferred_always_approve: None,
         };
         // Prepend so newest dialogs appear at the top of the project shelf.
         let mut sessions = self.list_sessions(project_id)?;
@@ -262,10 +263,11 @@ impl StorageService {
         session.preferred_mode = None;
         session.preferred_effort = None;
         session.preferred_effort_id = None;
+        session.preferred_always_approve = None;
         self.save_session(&session)
     }
 
-    /// Persist Composer model / mode / effort for this dialog (SSOT on disk).
+    /// Persist Composer model / mode / effort / always-approve for this dialog (SSOT on disk).
     pub fn update_session_prefs(
         &self,
         session_id: &str,
@@ -273,6 +275,7 @@ impl StorageService {
         preferred_mode: Option<String>,
         preferred_effort: Option<f64>,
         preferred_effort_id: Option<String>,
+        preferred_always_approve: Option<bool>,
     ) -> Result<(), String> {
         let Some(mut session) = self.find_session(session_id)? else {
             return Err(format!("Session not found: {session_id}"));
@@ -287,6 +290,7 @@ impl StorageService {
         session.preferred_effort_id = preferred_effort_id
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
+        session.preferred_always_approve = preferred_always_approve;
         session.last_active_at = now_string();
         self.save_session(&session)
     }

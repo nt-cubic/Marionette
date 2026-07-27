@@ -337,7 +337,7 @@ pub fn update_session_agent(
     storage.update_session_agent(&session_id, &agent_id)
 }
 
-/// Persist per-dialog Composer prefs (model / mode / effort).
+/// Persist per-dialog Composer prefs (model / mode / effort / always-approve).
 #[tauri::command]
 pub fn update_session_prefs(
     session_id: String,
@@ -345,6 +345,7 @@ pub fn update_session_prefs(
     preferred_mode: Option<String>,
     preferred_effort: Option<f64>,
     preferred_effort_id: Option<String>,
+    preferred_always_approve: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let _trace = crate::debug_log::CmdTrace::new("update_session_prefs");
@@ -358,6 +359,7 @@ pub fn update_session_prefs(
         preferred_mode,
         preferred_effort,
         preferred_effort_id,
+        preferred_always_approve,
     )
 }
 
@@ -814,6 +816,17 @@ pub fn probe_provider_usage(
     model_id: Option<String>,
 ) -> crate::provider_usage::ProviderUsageSnapshot {
     crate::provider_usage::probe_provider_usage(model_id)
+}
+
+/// Grok weekly credit usage via ACP extension `_x.ai/billing` (live session only).
+/// Same data the TUI `/usage` panel shows (`creditUsagePercent` + period end).
+#[tauri::command(async)]
+pub fn probe_acp_billing(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let _trace = crate::debug_log::CmdTrace::new("probe_acp_billing");
+    state.acp.probe_billing(&session_id)
 }
 
 /// Generate `.agentshell/handoff.md` and a composer prefill prompt. Does not send.

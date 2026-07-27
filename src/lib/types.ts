@@ -109,6 +109,11 @@ export type Session = {
   preferredEffort?: number | null;
   /** Discrete effort id (e.g. low / high) when agent uses select options. */
   preferredEffortId?: string | null;
+  /**
+   * Grok `/always-approve` (and similar permission auto-approve). Separate from
+   * plan/build mode — restored by replaying the slash command on warm-up.
+   */
+  preferredAlwaysApprove?: boolean | null;
 };
 
 /** Snapshot of Composer model/mode/effort bound to a dialog. */
@@ -117,6 +122,7 @@ export type SessionComposerPrefs = {
   preferredMode?: string | null;
   preferredEffort?: number | null;
   preferredEffortId?: string | null;
+  preferredAlwaysApprove?: boolean | null;
 };
 
 export type SessionEvent =
@@ -212,6 +218,8 @@ export type McpServerSpec = {
   args: string[];
   /** Key names only — values stay in the owning agent's config. */
   envKeys: string[];
+  /** HTTP header names only (e.g. Authorization) — values re-read at inject time. */
+  headerKeys?: string[];
   url: string | null;
   sources: string[];
   sourcePaths: string[];

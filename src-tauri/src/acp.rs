@@ -1,7 +1,7 @@
 use agent_client_protocol_schema::v1 as acp_schema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -128,6 +128,15 @@ struct AcpProcess {
     /// Set when AgentShell intentionally stops the process (agent switch / delete).
     /// Suppresses false "process/ended" crash UX on the UI.
     intentional_stop: AtomicBool,
+    /// Request ids whose *failure* is an expected answer, not a fault.
+    ///
+    /// Capability probes live here: a -32601 for `session/set_config_option` is
+    /// how a pre-v2 agent says "use the older RPC", and the UI must not render
+    /// that as "Agent error: Method not found" when we went on to succeed.
+    quiet_ids: Arc<Mutex<HashSet<u64>>>,
+    /// Latched once an agent answers -32601 to `session/set_config_option`, so
+    /// later changes skip the doomed probe entirely.
+    config_option_unsupported: AtomicBool,
 }
 
 struct PendingPermission {
@@ -188,8 +197,22 @@ impl AcpService {
         let _ = self.stop(&session_id);
 
         // Prefer global ACP bins over `npx -y …` (npx cold start can hang UI for minutes).
-        let (command, args) =
+        let (command, mut args) =
             crate::process_util::prefer_fast_acp_launch(&command, &args);
+        // Grok: project-scoped MCP is gated by folder trust. AgentShell opens
+        // the project on the user's behalf — grant trust for this cwd and make
+        // sure `--trust` is on the argv even if an older agent row lacked it.
+        if command_looks_like_grok(&command) {
+            crate::context_inventory::ensure_grok_folder_trust(std::path::Path::new(&cwd));
+            args = with_grok_trust_flag(args);
+            crate::debug_log::append(
+                "context",
+                "info",
+                &session_id,
+                "grok folder trust ensured for project MCP",
+                Some(&cwd),
+            );
+        }
 
         let _ = app.emit(
             ACP_EVENT,
@@ -333,6 +356,8 @@ impl AcpService {
             pending: Arc::clone(&pending),
             agent_session_id: Mutex::new(None),
             intentional_stop: AtomicBool::new(false),
+            quiet_ids: Arc::new(Mutex::new(HashSet::new())),
+            config_option_unsupported: AtomicBool::new(false),
         });
         sessions.insert(session_id.clone(), Arc::clone(&process));
         drop(sessions);
@@ -426,11 +451,22 @@ impl AcpService {
             None => (Vec::new(), Vec::new()),
         };
         if !mcp_servers.is_empty() || !mcp_skipped.is_empty() {
-            // Names only — an MCP env can hold API tokens.
+            // Names + header *counts* only — values are secrets (Bearer tokens).
             let injected: Vec<String> = mcp_servers
                 .iter()
-                .filter_map(|server| server.get("name").and_then(Value::as_str))
-                .map(str::to_string)
+                .filter_map(|server| {
+                    let name = server.get("name").and_then(Value::as_str)?;
+                    let n = server
+                        .get("headers")
+                        .and_then(Value::as_array)
+                        .map(|a| a.len())
+                        .unwrap_or(0);
+                    Some(if n > 0 {
+                        format!("{name}(headers={n})")
+                    } else {
+                        name.to_string()
+                    })
+                })
                 .collect();
             let skipped_note = if mcp_skipped.is_empty() {
                 String::new()
@@ -441,7 +477,14 @@ impl AcpService {
                 "context",
                 "info",
                 &session_id,
-                &format!("mcp inject: {}", injected.join(", ")),
+                &format!(
+                    "mcp inject: {}",
+                    if injected.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        injected.join(", ")
+                    }
+                ),
                 if skipped_note.is_empty() {
                     None
                 } else {
@@ -520,6 +563,9 @@ impl AcpService {
                     "configOptions": new_session.get("configOptions").cloned().unwrap_or(Value::Null),
                     "modes": new_session.get("modes").cloned().unwrap_or(Value::Null),
                     "capabilities": caps,
+                    // Seeds the Usage panel before the first usage_update lands
+                    // (and is the only size Grok ever reports).
+                    "contextSize": advertised_context_size(&new_session),
                 }),
             },
         );
@@ -578,13 +624,50 @@ impl AcpService {
         }
 
         let mut last_result = Value::Null;
-        for (config_id, value) in updates {
-            let params = json!({
-                "sessionId": agent_session_id,
-                "configId": config_id,
-                "value": value,
-            });
-            last_result = request(&process, "session/set_config_option", params)?;
+        for update in updates {
+            let skip_config_option = process
+                .config_option_unsupported
+                .load(Ordering::Relaxed);
+            let attempted = match &update.config_id {
+                // Already know this agent has no set_config_option — don't probe again.
+                Some(_) if skip_config_option => self.legacy_set_config(
+                    &process,
+                    &agent_session_id,
+                    session_id,
+                    &update,
+                ),
+                Some(config_id) => {
+                    let params = json!({
+                        "sessionId": agent_session_id,
+                        "configId": config_id,
+                        "value": update.value,
+                    });
+                    // Quiet: a -32601 here is an expected capability answer, not a
+                    // fault. Without this the UI renders "Agent error: Method not
+                    // found" even when the legacy fallback succeeds.
+                    match request_quiet(&process, "session/set_config_option", params) {
+                        Ok(value) => Ok(value),
+                        // Pre-v2 agents (Grok) have no set_config_option at all;
+                        // the per-knob RPCs are the only way in. A value rejection
+                        // is a different thing and must still surface.
+                        Err(error) if is_method_not_found(&error) => {
+                            process
+                                .config_option_unsupported
+                                .store(true, Ordering::Relaxed);
+                            self.legacy_set_config(
+                                &process,
+                                &agent_session_id,
+                                session_id,
+                                &update,
+                            )
+                        }
+                        Err(error) => Err(error),
+                    }
+                }
+                // No advertised config id: legacy RPC is the only transport.
+                None => self.legacy_set_config(&process, &agent_session_id, session_id, &update),
+            };
+            last_result = attempted?;
 
             // Prefer refreshed options from the response when present
             if let Some(refreshed) = last_result.get("configOptions") {
@@ -601,11 +684,102 @@ impl AcpService {
                 }
             } else if let Ok(mut caps_map) = self.capabilities.lock() {
                 if let Some(caps) = caps_map.get_mut(session_id) {
-                    apply_local_config_change(caps, &config_id, &value);
+                    let id = update.config_id.clone().unwrap_or_else(|| {
+                        match update.target {
+                            ConfigTarget::Model => "model",
+                            ConfigTarget::Mode => "mode",
+                            ConfigTarget::Effort => "effort",
+                            ConfigTarget::Other => "",
+                        }
+                        .to_string()
+                    });
+                    apply_local_config_change(caps, &id, &update.value);
                 }
             }
         }
         Ok(last_result)
+    }
+
+    /// Pre-v2 ACP per-knob RPCs, used when `session/set_config_option` is absent.
+    ///
+    /// Grok exposes exactly these: `session/set_mode` for plan/build, and
+    /// `session/set_model` for both the model and (via `_meta.reasoningEffort`)
+    /// the reasoning level.
+    fn legacy_set_config(
+        &self,
+        process: &Arc<AcpProcess>,
+        agent_session_id: &str,
+        session_id: &str,
+        update: &ConfigUpdate,
+    ) -> Result<Value, String> {
+        match update.target {
+            ConfigTarget::Mode => {
+                let mode_id = update
+                    .value
+                    .as_str()
+                    .ok_or_else(|| "Mode id must be a string".to_string())?;
+                request(
+                    process,
+                    "session/set_mode",
+                    json!({ "sessionId": agent_session_id, "modeId": mode_id }),
+                )
+            }
+            ConfigTarget::Model => {
+                let model_id = update
+                    .value
+                    .as_str()
+                    .ok_or_else(|| "Model id must be a string".to_string())?;
+                let mut params = json!({
+                    "sessionId": agent_session_id,
+                    "modelId": model_id,
+                });
+                // A bare set_model snaps effort back to the model default, which
+                // would leave the Effort chip claiming a level the agent dropped.
+                // Re-assert whatever the session is on.
+                if let Some(effort) = self
+                    .get_capabilities(session_id)
+                    .and_then(|caps| caps.current_effort_id)
+                    .filter(|id| matches!(id.as_str(), "low" | "medium" | "high"))
+                {
+                    params["_meta"] = json!({ "reasoningEffort": effort });
+                }
+                request(process, "session/set_model", params)
+            }
+            ConfigTarget::Effort => {
+                // Effort rides along with the model on this transport, so we need
+                // whatever model the session is on right now.
+                let caps = self.get_capabilities(session_id);
+                let model_id = caps
+                    .as_ref()
+                    .and_then(|c| c.current_model.clone())
+                    .or_else(|| {
+                        caps.as_ref()
+                            .and_then(|c| c.models.first().map(|m| m.id.clone()))
+                    })
+                    .ok_or_else(|| {
+                        "Cannot set effort: no current model known for this session".to_string()
+                    })?;
+                let effort = update
+                    .value
+                    .as_str()
+                    .map(str::to_string)
+                    .or_else(|| update.value.as_f64().map(numeric_effort_to_level))
+                    .ok_or_else(|| "Effort must be a string level or number".to_string())?;
+                request(
+                    process,
+                    "session/set_model",
+                    json!({
+                        "sessionId": agent_session_id,
+                        "modelId": model_id,
+                        "_meta": { "reasoningEffort": effort },
+                    }),
+                )
+            }
+            ConfigTarget::Other => Err(format!(
+                "Agent does not support session/set_config_option, and \"{}\" has no legacy equivalent",
+                update.config_id.as_deref().unwrap_or("(unknown)")
+            )),
+        }
     }
 
     /// Resolve a UI-gated `session/request_permission` with the chosen optionId.
@@ -633,6 +807,17 @@ impl AcpService {
             }),
         );
         Ok(())
+    }
+
+    /// Grok account billing / weekly credit usage (`_x.ai/billing`).
+    ///
+    /// This is what the TUI `/usage` panel shows (creditUsagePercent + period end).
+    /// It is a pager/shell extension, not `session/set_config_option`, and is
+    /// only available while a live ACP process is up.
+    pub fn probe_billing(&self, session_id: &str) -> Result<Value, String> {
+        let process = self.process(session_id)?;
+        // Quiet: missing method on non-Grok agents must not flash "Agent error".
+        request_quiet(&process, "_x.ai/billing", json!({}))
     }
 
     /// Fire `session/prompt` and return immediately so the UI can stream
@@ -722,10 +907,33 @@ impl AcpService {
     }
 }
 
+/// Which session knob an update is aiming at.
+///
+/// Needed because the pre-v2 ACP methods (`session/set_mode`, `session/set_model`)
+/// are *per-knob* RPCs, so a `session/set_config_option` rejection can only be
+/// retried if we still know what the config id meant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigTarget {
+    Model,
+    Mode,
+    Effort,
+    Other,
+}
+
+#[derive(Debug, Clone)]
+struct ConfigUpdate {
+    target: ConfigTarget,
+    /// `None` = the agent advertised no config option for this knob, so only the
+    /// legacy per-knob RPC can carry it. Never invent an id here: sending a
+    /// fabricated `effort` makes Claude answer "Unknown config option: effort".
+    config_id: Option<String>,
+    value: Value,
+}
+
 fn expand_config_updates(
     config: &Value,
     caps: Option<&CapabilitySnapshot>,
-) -> Result<Vec<(String, Value)>, String> {
+) -> Result<Vec<ConfigUpdate>, String> {
     let obj = config
         .as_object()
         .ok_or_else(|| "Config update must be a JSON object".to_string())?;
@@ -735,36 +943,98 @@ fn expand_config_updates(
             .as_str()
             .ok_or_else(|| "configId must be a string".to_string())?
             .to_string();
-        return Ok(vec![(id, value.clone())]);
+        let target = match id.as_str() {
+            "model" => ConfigTarget::Model,
+            "mode" | "approval-policy" | "approvalPolicy" => ConfigTarget::Mode,
+            "effort" | "reasoning" | "reasoning-effort" | "thought_level" => ConfigTarget::Effort,
+            _ => ConfigTarget::Other,
+        };
+        return Ok(vec![ConfigUpdate {
+            target,
+            config_id: Some(id),
+            value: value.clone(),
+        }]);
     }
 
     let mut updates = Vec::new();
     if let Some(model) = obj.get("model") {
-        let id = caps
-            .and_then(|c| c.model_config_id.clone())
-            .unwrap_or_else(|| "model".to_string());
-        updates.push((id, model.clone()));
+        updates.push(ConfigUpdate {
+            target: ConfigTarget::Model,
+            config_id: Some(
+                caps.and_then(|c| c.model_config_id.clone())
+                    .unwrap_or_else(|| "model".to_string()),
+            ),
+            value: model.clone(),
+        });
     }
     if let Some(mode) = obj.get("mode") {
-        let id = caps
-            .and_then(|c| c.mode_config_id.clone())
-            .unwrap_or_else(|| "mode".to_string());
-        updates.push((id, mode.clone()));
+        updates.push(ConfigUpdate {
+            target: ConfigTarget::Mode,
+            config_id: Some(
+                caps.and_then(|c| c.mode_config_id.clone())
+                    .unwrap_or_else(|| "mode".to_string()),
+            ),
+            value: mode.clone(),
+        });
     }
-    if let Some(effort) = obj.get("thinkingEffort") {
-        let id = caps
-            .and_then(|c| c.effort_config_id.clone())
-            .ok_or_else(|| "Agent does not expose a thinking/effort config option".to_string())?;
-        // Prefer string form when agent uses select options
-        let value = if let Some(n) = effort.as_f64() {
-            // Keep numeric if that's what we got; many agents use string ids
-            json!(n)
-        } else {
-            effort.clone()
-        };
-        updates.push((id, value));
+    // `effortId` (string level) and `thinkingEffort` (0..1) are the same knob.
+    if let Some(effort) = obj.get("effortId").or_else(|| obj.get("thinkingEffort")) {
+        updates.push(ConfigUpdate {
+            target: ConfigTarget::Effort,
+            // Absent id is legal: Grok carries effort on session/set_model instead.
+            config_id: caps.and_then(|c| c.effort_config_id.clone()),
+            value: effort.clone(),
+        });
     }
     Ok(updates)
+}
+
+/// True when the agent does not implement the method at all (JSON-RPC -32601),
+/// as opposed to rejecting the value we sent.
+fn is_method_not_found(error: &str) -> bool {
+    error.contains("-32601") || error.to_lowercase().contains("method not found")
+}
+
+/// Collapse a 0..1 UI strength onto the discrete levels legacy agents accept.
+fn numeric_effort_to_level(n: f64) -> String {
+    if n <= 0.25 {
+        "low".to_string()
+    } else if n >= 0.75 {
+        "high".to_string()
+    } else {
+        "medium".to_string()
+    }
+}
+
+/// Context window size the agent advertised for the model the session is on.
+///
+/// Standard ACP only reports context size inside `usage_update`, which some
+/// agents (Grok) never send — but they do publish the ceiling per model at
+/// session setup, so the UI can show `used / size` from turn one.
+fn advertised_context_size(session_response: &Value) -> Option<u64> {
+    let models = session_response.get("models")?;
+    let available = models.get("availableModels")?.as_array()?;
+    let current = models.get("currentModelId").and_then(Value::as_str);
+    let pick = available
+        .iter()
+        .find(|m| {
+            current.is_some() && m.get("modelId").and_then(Value::as_str) == current
+        })
+        .or_else(|| available.first())?;
+
+    for key in ["totalContextTokens", "contextWindow", "contextWindowTokens"] {
+        if let Some(n) = pick
+            .get("_meta")
+            .and_then(|meta| meta.get(key))
+            .and_then(Value::as_u64)
+        {
+            return Some(n);
+        }
+        if let Some(n) = pick.get(key).and_then(Value::as_u64) {
+            return Some(n);
+        }
+    }
+    None
 }
 
 fn apply_local_config_change(caps: &mut CapabilitySnapshot, config_id: &str, value: &Value) {
@@ -799,12 +1069,138 @@ fn apply_local_config_change(caps: &mut CapabilitySnapshot, config_id: &str, val
 // ─── Capability parsing from session/new response ──────────────────────────
 
 fn parse_session_capabilities(session_response: &Value) -> CapabilitySnapshot {
-    if let Ok(response) =
+    let mut caps = if let Ok(response) =
         serde_json::from_value::<acp_schema::NewSessionResponse>(session_response.clone())
     {
-        return parse_capabilities_from_typed(response);
+        // Typed ACP NewSessionResponse has no `models` field — Grok (and other
+        // pre-v2 agents) put the list under top-level `models.currentModelId` /
+        // `availableModels`. Ignoring that left current_model=None and made
+        // effort changes fail with "no current model known for this session".
+        parse_capabilities_from_typed(response)
+    } else {
+        parse_capabilities_fallback(session_response)
+    };
+    merge_legacy_models_field(session_response, &mut caps);
+    caps
+}
+
+/// Grok / pre-v2 ACP: `session/new` returns
+/// `{ models: { currentModelId, availableModels: [{ modelId, name, _meta }] } }`.
+fn merge_legacy_models_field(session_response: &Value, caps: &mut CapabilitySnapshot) {
+    let Some(models_obj) = session_response.get("models") else {
+        return;
+    };
+
+    if caps.current_model.is_none() {
+        if let Some(id) = models_obj
+            .get("currentModelId")
+            .or_else(|| models_obj.get("current_model_id"))
+            .and_then(Value::as_str)
+        {
+            caps.current_model = Some(id.to_string());
+        }
     }
-    parse_capabilities_fallback(session_response)
+
+    let available = models_obj
+        .get("availableModels")
+        .or_else(|| models_obj.get("available_models"))
+        .and_then(Value::as_array);
+
+    if let Some(list) = available {
+        if caps.models.is_empty() {
+            for entry in list {
+                let id = entry
+                    .get("modelId")
+                    .or_else(|| entry.get("model_id"))
+                    .or_else(|| entry.get("id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                if id.is_empty() {
+                    continue;
+                }
+                let name = entry
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or(id.as_str())
+                    .to_string();
+                let description = entry
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                caps.models.push(ModelDef {
+                    id: id.clone(),
+                    label: model_display_label(&name, description.as_deref()),
+                    description,
+                });
+            }
+        }
+
+        // Effort levels live on the current model's `_meta` for Grok.
+        let current = caps.current_model.clone();
+        let pick = list.iter().find(|m| {
+            let id = m
+                .get("modelId")
+                .or_else(|| m.get("model_id"))
+                .or_else(|| m.get("id"))
+                .and_then(Value::as_str);
+            current.as_deref().zip(id).is_some_and(|(c, i)| c == i)
+        }).or_else(|| list.first());
+
+        if let Some(entry) = pick {
+            if let Some(meta) = entry.get("_meta") {
+                if caps.current_effort_id.is_none() {
+                    if let Some(effort) = meta
+                        .get("reasoningEffort")
+                        .or_else(|| meta.get("reasoning_effort"))
+                        .and_then(Value::as_str)
+                    {
+                        caps.current_effort_id = Some(effort.to_string());
+                    }
+                }
+                if caps.effort_options.is_empty() {
+                    if let Some(levels) = meta
+                        .get("reasoningEfforts")
+                        .or_else(|| meta.get("reasoning_efforts"))
+                        .and_then(Value::as_array)
+                    {
+                        for level in levels {
+                            let id = level
+                                .get("id")
+                                .or_else(|| level.get("value"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string();
+                            if id.is_empty() {
+                                continue;
+                            }
+                            let label = level
+                                .get("label")
+                                .or_else(|| level.get("name"))
+                                .and_then(Value::as_str)
+                                .unwrap_or(id.as_str())
+                                .to_string();
+                            caps.effort_options.push(ModeDef { id, label });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Ensure current is in the list for the UI / set_model path.
+    if let Some(current) = &caps.current_model {
+        if !caps.models.iter().any(|m| &m.id == current) {
+            caps.models.insert(
+                0,
+                ModelDef {
+                    id: current.clone(),
+                    label: current.clone(),
+                    description: None,
+                },
+            );
+        }
+    }
 }
 
 fn parse_capabilities_from_typed(response: acp_schema::NewSessionResponse) -> CapabilitySnapshot {
@@ -1247,8 +1643,36 @@ fn parse_capabilities_fallback(session_response: &Value) -> CapabilitySnapshot {
     }
 }
 
+fn command_looks_like_grok(command: &str) -> bool {
+    let base = std::path::Path::new(command)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(command)
+        .to_ascii_lowercase();
+    base == "grok" || base.starts_with("grok-")
+}
+
+/// `grok --trust agent stdio` — `--trust` is a top-level flag, before `agent`.
+fn with_grok_trust_flag(args: Vec<String>) -> Vec<String> {
+    if args.iter().any(|a| a == "--trust") {
+        return args;
+    }
+    let mut out = Vec::with_capacity(args.len() + 1);
+    out.push("--trust".to_string());
+    out.extend(args);
+    out
+}
+
 fn request(process: &Arc<AcpProcess>, method: &str, params: Value) -> Result<Value, String> {
-    request_with_timeout(process, method, params, Duration::from_secs(60))
+    request_with_timeout(process, method, params, Duration::from_secs(60), false)
+}
+
+/// Like `request`, but a failure is not emitted as a user-visible ACP error.
+///
+/// Used for capability probes: the caller inspects the Err and either retries
+/// on a different transport or surfaces a real error itself.
+fn request_quiet(process: &Arc<AcpProcess>, method: &str, params: Value) -> Result<Value, String> {
+    request_with_timeout(process, method, params, Duration::from_secs(60), true)
 }
 
 fn request_with_timeout(
@@ -1256,8 +1680,14 @@ fn request_with_timeout(
     method: &str,
     params: Value,
     timeout: Duration,
+    quiet: bool,
 ) -> Result<Value, String> {
     let id = process.next_id.fetch_add(1, Ordering::Relaxed);
+    if quiet {
+        if let Ok(mut quiet_ids) = process.quiet_ids.lock() {
+            quiet_ids.insert(id);
+        }
+    }
     let (sender, receiver) = channel();
     process
         .pending
@@ -1272,15 +1702,31 @@ fn request_with_timeout(
             .pending
             .lock()
             .map(|mut pending| pending.remove(&id));
+        let _ = process
+            .quiet_ids
+            .lock()
+            .map(|mut quiet_ids| quiet_ids.remove(&id));
         return Err(error);
     }
     match receiver.recv_timeout(timeout) {
-        Ok(result) => result,
+        Ok(result) => {
+            // Successful quiet probes still clean up; failures are cleaned in
+            // read_stdout when deciding whether to emit the error.
+            let _ = process
+                .quiet_ids
+                .lock()
+                .map(|mut quiet_ids| quiet_ids.remove(&id));
+            result
+        }
         Err(error) => {
             let _ = process
                 .pending
                 .lock()
                 .map(|mut pending| pending.remove(&id));
+            let _ = process
+                .quiet_ids
+                .lock()
+                .map(|mut quiet_ids| quiet_ids.remove(&id));
             Err(format!(
                 "ACP request `{method}` timed out after {}s: {error}",
                 timeout.as_secs()
@@ -1440,14 +1886,37 @@ fn read_stdout(
                 } else {
                     Ok(message.get("result").cloned().unwrap_or(Value::Null))
                 };
-                // Also surface on the event bus so the UI/debug log can see turn completion.
-                emit_event(
-                    &app,
-                    &session_id,
-                    if result.is_ok() { "response" } else { "error" },
-                    Some("rpc/response"),
-                    message.clone(),
-                );
+                // Capability probes register here before the write. Their -32601
+                // is how a pre-v2 agent declines set_config_option; the caller
+                // recovers via legacy RPCs. Emitting that as kind="error" made
+                // the UI scream "Agent error: Method not found" on every model
+                // / mode / effort change against Grok.
+                let quiet_failure = result.is_err()
+                    && process
+                        .quiet_ids
+                        .lock()
+                        .map(|mut set| set.remove(&id))
+                        .unwrap_or(false);
+                if !quiet_failure {
+                    // Also surface on the event bus so the UI/debug log can see turn completion.
+                    emit_event(
+                        &app,
+                        &session_id,
+                        if result.is_ok() { "response" } else { "error" },
+                        Some("rpc/response"),
+                        message.clone(),
+                    );
+                } else {
+                    // Keep a low-noise trail for debug without tripping App.tsx
+                    // error → "Agent error" rendering.
+                    emit_event(
+                        &app,
+                        &session_id,
+                        "response",
+                        Some("rpc/probe"),
+                        message.clone(),
+                    );
+                }
                 if let Ok(mut pending) = pending.lock() {
                     if let Some(sender) = pending.remove(&id) {
                         let _ = sender.send(result);
@@ -1847,6 +2316,92 @@ fn read_stderr(app: AppHandle, session_id: String, stderr: impl std::io::Read) {
 mod tests {
     use super::*;
     use std::sync::mpsc::Receiver;
+
+    /// Effort must survive an agent that advertises no effort config option —
+    /// that is exactly Grok, whose only transport is session/set_model `_meta`.
+    #[test]
+    fn effort_expands_without_a_config_id() {
+        let updates = expand_config_updates(&json!({ "effortId": "low" }), None).unwrap();
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].target, ConfigTarget::Effort);
+        assert_eq!(updates[0].config_id, None);
+        assert_eq!(updates[0].value, json!("low"));
+    }
+
+    /// A mode change must stay recognisable as a *mode* after expansion, or the
+    /// -32601 retry has no way to pick session/set_mode.
+    #[test]
+    fn mode_keeps_its_target_through_expansion() {
+        let updates = expand_config_updates(&json!({ "mode": "plan" }), None).unwrap();
+        assert_eq!(updates[0].target, ConfigTarget::Mode);
+        assert_eq!(updates[0].config_id.as_deref(), Some("mode"));
+
+        // Passthrough form must classify too (Composer sends this shape).
+        let passthrough =
+            expand_config_updates(&json!({ "configId": "mode", "value": "build" }), None).unwrap();
+        assert_eq!(passthrough[0].target, ConfigTarget::Mode);
+    }
+
+    #[test]
+    fn method_not_found_is_distinguished_from_a_rejected_value() {
+        assert!(is_method_not_found(
+            r#"{"code":-32601,"message":"Method not found"}"#
+        ));
+        // A rejected *value* must not trigger the legacy retry.
+        assert!(!is_method_not_found(
+            r#"{"code":-32602,"message":"Unknown config option: effort"}"#
+        ));
+    }
+
+    /// Grok reports its ceiling only here, so this is the whole reason the
+    /// Usage panel can show `used / size` for it at all.
+    #[test]
+    fn context_size_comes_from_the_current_model_entry() {
+        let response = json!({
+            "sessionId": "s1",
+            "models": {
+                "currentModelId": "grok-4.5",
+                "availableModels": [
+                    { "modelId": "other", "_meta": { "totalContextTokens": 111 } },
+                    { "modelId": "grok-4.5", "_meta": { "totalContextTokens": 500000 } }
+                ]
+            }
+        });
+        assert_eq!(advertised_context_size(&response), Some(500000));
+
+        // Agents that never advertise a ceiling must yield None, not a guess.
+        assert_eq!(advertised_context_size(&json!({ "sessionId": "s1" })), None);
+    }
+
+    /// Grok puts model + effort on `models.*`, not configOptions — typed ACP
+    /// parse alone must not leave current_model empty.
+    #[test]
+    fn grok_models_field_fills_current_model_and_effort() {
+        let response = json!({
+            "sessionId": "s1",
+            "models": {
+                "currentModelId": "grok-4.5",
+                "availableModels": [{
+                    "modelId": "grok-4.5",
+                    "name": "Grok 4.5",
+                    "_meta": {
+                        "reasoningEffort": "high",
+                        "reasoningEfforts": [
+                            { "id": "high", "label": "High Effort" },
+                            { "id": "medium", "label": "Medium Effort" },
+                            { "id": "low", "label": "Low Effort" }
+                        ]
+                    }
+                }]
+            }
+        });
+        let caps = parse_session_capabilities(&response);
+        assert_eq!(caps.current_model.as_deref(), Some("grok-4.5"));
+        assert_eq!(caps.current_effort_id.as_deref(), Some("high"));
+        assert_eq!(caps.models.len(), 1);
+        assert_eq!(caps.effort_options.len(), 3);
+        assert!(caps.effort_options.iter().any(|o| o.id == "low"));
+    }
 
     /// Stands in for an agent that stopped draining its stdin: every write parks.
     struct WedgedPipe(Receiver<()>);

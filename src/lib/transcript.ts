@@ -40,6 +40,14 @@ export function parseTranscriptEvents(raw: unknown[]): SessionEvent[] {
         text,
         createdAt,
         ...(messageId ? { messageId } : {}),
+        // Optional metadata — old transcripts won't have them, new ones will restore correctly
+        ...(typeof e.agentId === "string" ? { agentId: e.agentId } : {}),
+        ...(typeof e.agentLabel === "string" ? { agentLabel: e.agentLabel } : {}),
+        ...(typeof e.modelId === "string" ? { modelId: e.modelId } : {}),
+        ...(typeof e.modelLabel === "string" ? { modelLabel: e.modelLabel } : {}),
+        ...(typeof e.modeLabel === "string" ? { modeLabel: e.modeLabel } : {}),
+        ...(typeof e.effortLabel === "string" ? { effortLabel: e.effortLabel } : {}),
+        ...(typeof e.durationMs === "number" ? { durationMs: e.durationMs } : {}),
       } as SessionEvent);
       continue;
     }

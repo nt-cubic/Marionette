@@ -185,6 +185,7 @@ fn main() {
             commands::append_debug_log,
             commands::debug_log_path,
             commands::probe_provider_usage,
+            commands::probe_acp_billing,
             commands::generate_handoff,
             commands::get_changed_files,
             commands::get_file_diff,
