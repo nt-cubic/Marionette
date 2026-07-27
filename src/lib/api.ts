@@ -80,10 +80,16 @@ export async function agentVersions(
   }
 }
 
-/** Install the agent's ACP command with npm (package comes from the Rust table). */
+/**
+ * Install the agent's ACP command with npm (package comes from the Rust table).
+ *
+ * Pass `force: true` to reinstall even when the CLI is already on PATH — that is
+ * the update path. Without force, an installed agent is a no-op.
+ */
 export async function installAgent(
   agentId: string,
-  includeDependencies = true
+  includeDependencies = true,
+  force = false
 ): Promise<import("./types").AgentInstallResult> {
   if (!isTauriRuntime()) {
     throw new Error("Installing agents is available in the desktop app");
@@ -91,6 +97,7 @@ export async function installAgent(
   return invoke<import("./types").AgentInstallResult>("install_agent", {
     agentId,
     includeDependencies,
+    force,
   });
 }
 
