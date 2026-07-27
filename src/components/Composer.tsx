@@ -809,6 +809,11 @@ export function Composer({
   // Restore preferred model/mode/effort once caps are available for this dialog.
   // Cached caps only paint the chips — pushing set_config at an agent that is
   // not connected would start a process the user never asked for.
+  //
+  // Order matters: model first, then wait for the agent to republish effort
+  // options for that model, then push effort. OpenCode resets thought level to
+  // the model default (often "high") on every set_model — if we skip or race
+  // the effort step, a disk-saved "max" never reaches the agent.
   useEffect(() => {
     if (!caps || !capsLive || sessionId.startsWith("session-empty-")) return;
     const key = `${sessionId}:${agent.id}`;
@@ -827,16 +832,6 @@ export function Composer({
         : null;
     const aaSpec = getAcpSupplement(agent.id)?.alwaysApprove;
 
-    // After agent / ACP updates: surface prefs that no longer map onto caps.
-    if (driftCheckedKey.current !== key) {
-      driftCheckedKey.current = key;
-      const drift = detectCapabilityDrift(sessionPrefs, caps);
-      if (drift) {
-        flash(drift.summary.length > 140 ? `${drift.summary.slice(0, 140)}…` : drift.summary);
-        onSessionPrefsChange?.(drift.clearedPrefs);
-      }
-    }
-
     const hasAny = Boolean(
       prefModel || prefMode || prefEffortId || prefEffort != null || (aaSpec && prefAlways != null),
     );
@@ -845,6 +840,8 @@ export function Composer({
       return;
     }
 
+    // Claim the key before the async work so handshake re-entries do not fan
+    // out parallel restores. Failures still leave disk prefs intact for next warm.
     prefsRestoredKey.current = key;
 
     const modelOk =
@@ -853,75 +850,155 @@ export function Composer({
     const modeOk =
       prefMode &&
       (caps.modes.length === 0 || caps.modes.some((m) => m.id === prefMode));
-    const effortIdOk =
+
+    // Optimistic UI for model/mode; effort waits until we know the model list.
+    if (modelOk && prefModel) setCurrentModel(prefModel);
+    if (modeOk && prefMode) setCurrentMode(prefMode);
+    if (aaSpec && prefAlways != null) setAlwaysApprove(prefAlways);
+    // Show saved effort immediately when the *current* catalog already has it
+    // (same-model reconnect). After a model switch the list is wrong until live.
+    if (
       prefEffortId &&
-      (caps.effortOptions ?? []).some((o) => o.id === prefEffortId);
-    const numericOk =
+      (caps.effortOptions ?? []).some((o) => o.id === prefEffortId)
+    ) {
+      setCurrentEffortId(prefEffortId);
+    } else if (
       prefEffort != null &&
       caps.thinkingEffort != null &&
       prefEffort >= caps.thinkingEffort.min &&
-      prefEffort <= caps.thinkingEffort.max;
+      prefEffort <= caps.thinkingEffort.max
+    ) {
+      setCurrentEffort(prefEffort);
+    }
 
-    // Optimistic UI so the trigger labels update before set_config returns.
-    if (modelOk && prefModel) setCurrentModel(prefModel);
-    if (modeOk && prefMode) setCurrentMode(prefMode);
-    if (effortIdOk && prefEffortId) setCurrentEffortId(prefEffortId);
-    if (numericOk && prefEffort != null) setCurrentEffort(prefEffort);
-    if (aaSpec && prefAlways != null) setAlwaysApprove(prefAlways);
+    // Pin so late set_config / loadCapabilities echoes of "high" cannot paint
+    // over the dialog's saved "max" while we finish the push.
+    if (prefEffortId) pinOptions({ effortId: prefEffortId });
+    else if (prefEffort != null) pinOptions({ effort: prefEffort });
+    if (prefModel) pinOptions({ model: prefModel });
+    if (prefMode) pinOptions({ mode: prefMode });
+
+    let cancelled = false;
 
     void (async () => {
-      // Only push options that differ from live caps (avoid noisy set_config on every open).
-      if (modelOk && prefModel && prefModel !== caps.currentModel) {
+      const baseline = caps;
+
+      // 1) Model — switching resets agent-side effort to the model default.
+      if (modelOk && prefModel && prefModel !== baseline.currentModel) {
         await commitUpdate({ model: prefModel }, () => {
-          setCurrentModel(caps.currentModel);
+          if (!cancelled) setCurrentModel(baseline.currentModel);
         });
       }
-      if (modeOk && prefMode && prefMode !== caps.currentMode) {
+
+      // 2) Wait until live caps reflect the preferred model (effort options
+      //    are re-advertised with it). getSessionCapabilities is in-memory and
+      //    cheap; a few short polls cover OpenCode's post-set_model refresh.
+      const needModelWait =
+        Boolean(modelOk && prefModel) && prefModel !== baseline.currentModel;
+      let live = baseline;
+      if (needModelWait) {
+        for (let i = 0; i < 8; i++) {
+          if (cancelled) return;
+          await new Promise((r) => window.setTimeout(r, 80 + i * 40));
+          const next = await getSessionCapabilities(sessionId).catch(() => null);
+          if (!next) continue;
+          live = next;
+          if (next.currentModel === prefModel) break;
+        }
+      } else {
+        const next = await getSessionCapabilities(sessionId).catch(() => null);
+        if (next) live = next;
+      }
+      if (cancelled) return;
+
+      // 3) Drift only after the preferred model is the one we are judging —
+      //    otherwise a default-model catalog (no "max") erases a deepseek "max".
+      if (driftCheckedKey.current !== key) {
+        driftCheckedKey.current = key;
+        const drift = detectCapabilityDrift(sessionPrefs, live);
+        if (drift) {
+          flash(drift.summary.length > 140 ? `${drift.summary.slice(0, 140)}…` : drift.summary);
+          onSessionPrefsChange?.(drift.clearedPrefs);
+        }
+      }
+
+      // 4) Mode
+      if (modeOk && prefMode && prefMode !== live.currentMode) {
         await commitUpdate({ mode: prefMode }, () => {
-          setCurrentMode(caps.currentMode);
+          if (!cancelled) setCurrentMode(live.currentMode);
         });
       }
-      // Always-approve is session-local on the agent; replay the slash after warm.
+
+      // 5) Always-approve is session-local; replay the slash after warm.
       if (aaSpec && prefAlways != null) {
         await commitUpdate({ alwaysApprove: prefAlways }, () => {
-          setAlwaysApprove(!prefAlways);
+          if (!cancelled) setAlwaysApprove(!prefAlways);
         });
       }
-      // Effort options are per-model. `caps` here still describes the model that
-      // was live at session/new, so the check above validated the saved effort
-      // against the *wrong* list — a saved "max" survived the switch to a model
-      // that never offered it, and the agent rejected it every session with
-      // "effort not found: max". Re-check against what the new model advertises.
-      const live = modelOk && prefModel && prefModel !== caps.currentModel
-        ? ((await getSessionCapabilities(sessionId).catch(() => null)) ?? caps)
-        : caps;
+
+      // 6) Effort — always against post-model caps. OpenCode's model switch
+      //    leaves currentEffortId at "high" even when disk says "max".
+      //
+      // Prefer membership in effortOptions, but after a model switch the
+      // refreshed list can lag: if the agent still advertises an effort
+      // config id, try the saved value once. Rejection keeps disk intact
+      // (commitUpdate reverts the chip).
+      const options = live.effortOptions ?? [];
       const liveEffortIdOk =
-        Boolean(prefEffortId) && (live.effortOptions ?? []).some((o) => o.id === prefEffortId);
+        Boolean(prefEffortId) && options.some((o) => o.id === prefEffortId);
       const liveNumericOk =
         prefEffort != null &&
         live.thinkingEffort != null &&
         prefEffort >= live.thinkingEffort.min &&
         prefEffort <= live.thinkingEffort.max;
-      if (effortIdOk && !liveEffortIdOk) {
-        // Keep it on disk — switching back to a model that has it should restore it.
-        setCurrentEffortId(live.currentEffortId);
+      const canTryEffortId =
+        Boolean(prefEffortId) &&
+        (liveEffortIdOk || (Boolean(live.effortConfigId) && needModelWait));
+
+      if (prefEffortId && !canTryEffortId) {
+        // Not on this model's menu and we have no config id to probe — leave
+        // the agent default on the chip; disk still holds the preference.
+        if (!cancelled) setCurrentEffortId(live.currentEffortId);
+        unpinOption("effortId");
+      } else if (canTryEffortId && prefEffortId) {
+        if (!cancelled) setCurrentEffortId(prefEffortId);
+        if (prefEffortId !== live.currentEffortId) {
+          await commitUpdate({ effortId: prefEffortId }, () => {
+            if (!cancelled) {
+              unpinOption("effortId");
+              setCurrentEffortId(live.currentEffortId);
+            }
+          });
+        } else {
+          unpinOption("effortId");
+        }
+      } else if (liveNumericOk && prefEffort != null) {
+        if (!cancelled) setCurrentEffort(prefEffort);
+        if (live.currentEffort == null || Math.abs(live.currentEffort - prefEffort) > 1e-6) {
+          await commitUpdate({ thinkingEffort: prefEffort }, () => {
+            if (!cancelled) {
+              unpinOption("effort");
+              setCurrentEffort(live.currentEffort);
+            }
+          });
+        } else {
+          unpinOption("effort");
+        }
+      } else {
+        unpinOption("effortId");
+        unpinOption("effort");
       }
 
-      if (liveEffortIdOk && prefEffortId && prefEffortId !== live.currentEffortId) {
-        await commitUpdate({ effortId: prefEffortId }, () => {
-          setCurrentEffortId(live.currentEffortId);
-        });
-      } else if (
-        liveNumericOk &&
-        prefEffort != null &&
-        (live.currentEffort == null || Math.abs(live.currentEffort - prefEffort) > 1e-6)
-      ) {
-        await commitUpdate({ thinkingEffort: prefEffort }, () => {
-          setCurrentEffort(live.currentEffort);
-        });
-      }
+      // Drop model/mode pins after the full restore sequence settles.
+      unpinOption("model");
+      unpinOption("mode");
     })();
-    // commitUpdate changes often; restore only when caps identity for this dialog lands.
+
+    return () => {
+      cancelled = true;
+    };
+    // commitUpdate / pin helpers are stable enough; re-run only when the
+    // dialog's live caps identity or saved prefs change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [caps, capsLive, sessionId, agent.id, sessionPrefs]);
 

@@ -52,47 +52,32 @@ export function detectCapabilityDrift(
     (caps.effortOptions?.length ?? 0) > 0 ||
     caps.thinkingEffort != null;
 
-  if (effortId) {
-    if (!hasEffortControl) {
-      issues.push({
-        field: "effortId",
-        preferred: effortId,
-        reason: "effort control removed",
-      });
-      clearedPrefs.preferredEffortId = null;
-    } else if (
-      (caps.effortOptions?.length ?? 0) > 0 &&
-      !caps.effortOptions.some((o) => o.id === effortId)
-    ) {
-      issues.push({
-        field: "effortId",
-        preferred: effortId,
-        reason: "level not offered by current model",
-      });
-      clearedPrefs.preferredEffortId = null;
-    }
+  // Effort levels are model-dependent (OpenCode: deepseek offers "max", many
+  // others top out at "high"). Wiping the disk pref when the *current*
+  // catalog lacks the level was wrong twice over:
+  //   1) handshake still has the default model when a preferred model switch
+  //      is pending — "max" vanished before deepseek was ever selected;
+  //   2) after set_model, caps can lag a beat before the new thought levels
+  //      land — same wipe, permanent "high" next launch.
+  // Only clear when the agent has no effort control at all. A level that is
+  // simply not on this model stays on disk so switching back can restore it.
+  if (effortId && !hasEffortControl) {
+    issues.push({
+      field: "effortId",
+      preferred: effortId,
+      reason: "effort control removed",
+    });
+    clearedPrefs.preferredEffortId = null;
   }
 
   const effort = prefs.preferredEffort;
-  if (typeof effort === "number" && Number.isFinite(effort)) {
-    if (!hasEffortControl) {
-      issues.push({
-        field: "effort",
-        preferred: String(effort),
-        reason: "effort control removed",
-      });
-      clearedPrefs.preferredEffort = null;
-    } else if (
-      caps.thinkingEffort != null &&
-      (effort < caps.thinkingEffort.min || effort > caps.thinkingEffort.max)
-    ) {
-      issues.push({
-        field: "effort",
-        preferred: String(effort),
-        reason: "outside agent range",
-      });
-      clearedPrefs.preferredEffort = null;
-    }
+  if (typeof effort === "number" && Number.isFinite(effort) && !hasEffortControl) {
+    issues.push({
+      field: "effort",
+      preferred: String(effort),
+      reason: "effort control removed",
+    });
+    clearedPrefs.preferredEffort = null;
   }
 
   if (issues.length === 0) return null;
