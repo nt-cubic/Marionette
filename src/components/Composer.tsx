@@ -8,7 +8,6 @@ import {
   mergeAcpCapabilities,
 } from "../lib/acpSupplements";
 import {
-  agentVersions,
   getSessionCapabilities,
   installAgent,
   isTauriRuntime,
@@ -16,6 +15,12 @@ import {
   sendAcpPrompt,
   updateAcpSession,
 } from "../lib/api";
+import {
+  getCachedAgentVersions,
+  patchAgentVersion,
+  refreshAgentVersions,
+  subscribeAgentVersions,
+} from "../lib/agentVersionCache";
 import {
   cacheAgentCapabilities,
   cachedCapabilitiesFor,
@@ -84,6 +89,15 @@ type ComposerProps = {
    * startup, so the parent must replace it for the new key to take effect.
    */
   onProviderKeysChanged?: () => void | Promise<void>;
+  /**
+   * Agent CLI binary is about to change / has changed.
+   * - `stop`: release the live process so Windows can replace the binary
+   * - `restart`: load the new binary into this dialog (session/new)
+   */
+  onAgentBinaryUpdated?: (
+    agentId: string,
+    phase: "stop" | "restart",
+  ) => void | Promise<void>;
   /**
    * Live ACP-advertised slash commands for this dialog. Static fallbacks apply
    * when null/empty (see `resolveSlashCommands`).
@@ -363,6 +377,7 @@ export function Composer({
   onEnsureAgentReady,
   lastActivityAt = null,
   onProviderKeysChanged,
+  onAgentBinaryUpdated,
   availableCommands = null,
 }: ComposerProps) {
   /**
@@ -401,7 +416,10 @@ export function Composer({
   const [dropActive, setDropActive] = useState(false);
   /** CLI availability per agent — loaded when the agent menu opens. */
   const [agentStatuses, setAgentStatuses] = useState<Record<string, AgentCommandStatus>>({});
-  const [agentVersionInfo, setAgentVersionInfo] = useState<Record<string, AgentVersionInfo>>({});
+  /** Versions live in a module cache so remounts / reopening the menu keep them. */
+  const [agentVersionInfo, setAgentVersionInfo] = useState<Record<string, AgentVersionInfo>>(
+    () => getCachedAgentVersions(),
+  );
   const [installingAgentId, setInstallingAgentId] = useState<string | null>(null);
   const [installNote, setInstallNote] = useState("");
   /** Highlighted row in the `/` autocomplete list. */
@@ -907,21 +925,25 @@ export function Composer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [caps, capsLive, sessionId, agent.id, sessionPrefs]);
 
+  // Keep version badges warm for the whole app life: subscribe + background
+  // refresh (local `--version` always, registry on a TTL). Opening the menu
+  // no longer re-probes from scratch.
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    setAgentVersionInfo(getCachedAgentVersions());
+    const unsub = subscribeAgentVersions(setAgentVersionInfo);
+    void refreshAgentVersions();
+    return unsub;
+  }, []);
+
   // Drop offline catalog when the installed CLI version advanced (post-update).
   useEffect(() => {
     if (!isTauriRuntime() || agent.transport !== "acp") return;
-    let live = true;
-    void agentVersions(false).then((list) => {
-      if (!live) return;
-      const info = list.find((v) => v.id === agent.id);
-      if (info?.installed) {
-        invalidateCapsIfAgentUpdated(agent.id, info.installed);
-      }
-    });
-    return () => {
-      live = false;
-    };
-  }, [agent.id, agent.transport]);
+    const info = agentVersionInfo[agent.id];
+    if (info?.installed) {
+      invalidateCapsIfAgentUpdated(agent.id, info.installed);
+    }
+  }, [agent.id, agent.transport, agentVersionInfo]);
 
   // ── Send / Interrupt ───────────────────────────────────────────────────────
   // Only a live turn (`running`) blocks send. `starting` must NOT freeze the
@@ -1259,45 +1281,70 @@ export function Composer({
   useEffect(() => {
     if (menu !== "agent") return;
     void refreshAgentStatuses();
-    // Two passes: `--version` is local and paints immediately, the registry
-    // lookup is network and only fills in "update available" when it lands.
-    let live = true;
-    void (async () => {
-      const local = await agentVersions(false);
-      if (live && local.length > 0) {
-        setAgentVersionInfo(Object.fromEntries(local.map((v) => [v.id, v])));
-      }
-      const remote = await agentVersions(true);
-      if (live && remote.length > 0) {
-        setAgentVersionInfo(Object.fromEntries(remote.map((v) => [v.id, v])));
-      }
-    })();
-    return () => {
-      live = false;
-    };
+    // Versions are already cached; a quiet refresh picks up anything that
+    // changed since the last background pass without blanking the UI.
+    void refreshAgentVersions();
   }, [menu, refreshAgentStatuses]);
 
   const runInstall = useCallback(
-    async (agentId: string) => {
+    async (agentId: string, options?: { upgrade?: boolean }) => {
       if (installingAgentId) return;
+      const upgrade = options?.upgrade === true;
+      const touchesCurrent = agentId === agent.id;
       setInstallingAgentId(agentId);
-      setInstallNote(`Installing ${agentId}… (npm global, this can take a minute)`);
+      setInstallNote(
+        upgrade
+          ? `Updating ${agentId}… (npm global, this can take a minute)`
+          : `Installing ${agentId}… (npm global, this can take a minute)`,
+      );
       try {
-        const result = await installAgent(agentId, true);
+        // Windows locks the running binary — release it before `npm install -g`.
+        if (upgrade && touchesCurrent && onAgentBinaryUpdated) {
+          setInstallNote(`Stopping ${agent.label} so the binary can be replaced…`);
+          await onAgentBinaryUpdated(agentId, "stop");
+        }
+        setInstallNote(
+          upgrade
+            ? `Updating ${agentId}… (npm global, this can take a minute)`
+            : `Installing ${agentId}… (npm global, this can take a minute)`,
+        );
+        // `force: true` is what actually upgrades an already-present CLI.
+        const result = await installAgent(agentId, true, upgrade);
         setAgentStatuses((current) => ({ ...current, [agentId]: result.status }));
         setInstallNote(result.message);
         // New binary → forget stale model/mode/effort catalog.
         clearAgentCapabilities(agentId);
-        // Pick up anything the install pulled in for the other agents too.
+        // Re-read `--version` so the badge and update flag match the disk.
+        const versions = await refreshAgentVersions({ forceRegistry: true });
+        const info = versions[agentId];
+        if (info?.installed) {
+          patchAgentVersion(agentId, {
+            installed: info.installed,
+            latest: info.latest,
+            updateAvailable: info.updateAvailable,
+          });
+        } else if (upgrade) {
+          patchAgentVersion(agentId, { updateAvailable: false });
+        }
         void refreshAgentStatuses();
+        // Reload the dialog's agent so the next prompt uses the new binary —
+        // no app restart required.
+        if (touchesCurrent && onAgentBinaryUpdated) {
+          setInstallNote(`${result.message} — restarting agent…`);
+          await onAgentBinaryUpdated(agentId, "restart");
+          setInstallNote(`${result.message} — agent restarted.`);
+        }
       } catch (error) {
         setInstallNote(error instanceof Error ? error.message : String(error));
       } finally {
         setInstallingAgentId(null);
       }
     },
-    [installingAgentId, refreshAgentStatuses],
+    [installingAgentId, refreshAgentStatuses, agent.id, agent.label, onAgentBinaryUpdated],
   );
+
+  const currentAgentVersion = agentVersionInfo[agent.id];
+  const currentHasUpdate = currentAgentVersion?.updateAvailable === true;
 
   // ── Slash command autocomplete ────────────────────────────────────────────
   const slashCatalog = useMemo(
@@ -1877,13 +1924,33 @@ export function Composer({
             {/* ── Agent switcher ──────────────────────────────────────── */}
             <div className="composer-menu-anchor">
               <button
-                className="composer-select composer-select--agent"
+                className={
+                  currentHasUpdate
+                    ? "composer-select composer-select--agent has-update"
+                    : "composer-select composer-select--agent"
+                }
                 type="button"
-                title={`Agent for this dialog (bound to session · ${agent.id})`}
+                title={
+                  currentAgentVersion?.installed
+                    ? currentHasUpdate
+                      ? `${agent.label} v${currentAgentVersion.installed} · update ${currentAgentVersion.latest} available`
+                      : `${agent.label} v${currentAgentVersion.installed}`
+                    : `Agent for this dialog (bound to session · ${agent.id})`
+                }
                 aria-expanded={menu === "agent"}
                 onClick={() => setMenu(menu === "agent" ? null : "agent")}
               >
-                {agent.label}
+                <span className="composer-select__agent-label">{agent.label}</span>
+                {currentAgentVersion?.installed && (
+                  <span className="composer-select__agent-version">
+                    v{currentAgentVersion.installed}
+                  </span>
+                )}
+                {currentHasUpdate && (
+                  <span className="composer-select__agent-update" aria-label="Update available">
+                    ↑
+                  </span>
+                )}
               </button>
               {menu === "agent" && (
                 <div className="composer-menu composer-menu--agent" role="listbox" aria-label="Switch agent">
@@ -1896,9 +1963,8 @@ export function Composer({
                       const canInstall =
                         !ready && (status?.installable ?? false) && !busyInstall;
                       const version = agentVersionInfo[candidate.id];
-                      // Offer the upgrade even when startup already tried it —
-                      // it may have failed, or the release may be newer than
-                      // this app launch.
+                      // Offer the upgrade from cached registry state — no need
+                      // to re-open the menu to re-test.
                       const canUpdate =
                         ready && (version?.updateAvailable ?? false) && !busyInstall;
                       return (
@@ -1916,7 +1982,7 @@ export function Composer({
                             }}
                           >
                             <span className="composer-agent-row__name">{candidate.label}</span>
-                            {version?.installed && (
+                            {version?.installed ? (
                               <span
                                 className="composer-agent-row__version"
                                 title={
@@ -1927,7 +1993,14 @@ export function Composer({
                               >
                                 v{version.installed}
                               </span>
-                            )}
+                            ) : version?.note ? (
+                              <span
+                                className="composer-agent-row__version"
+                                title={version.note}
+                              >
+                                ?
+                              </span>
+                            ) : null}
                             {!ready && (
                               <span className="composer-agent-row__tag">
                                 {busyInstall
@@ -1945,7 +2018,7 @@ export function Composer({
                               title={`npm install -g ${version?.package ?? ""} (${version?.installed} → ${version?.latest})`}
                               onClick={(event) => {
                                 event.stopPropagation();
-                                void runInstall(candidate.id);
+                                void runInstall(candidate.id, { upgrade: true });
                               }}
                             >
                               {`→ ${version?.latest}`}

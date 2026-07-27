@@ -935,7 +935,7 @@ body.is-panel-resizing .context-panel {
 }
 
 .session-row {
-  grid-template-columns: minmax(0, 1fr) 24px;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 2px;
   align-items: center;
   width: calc(100% - 20px);
@@ -946,8 +946,8 @@ body.is-panel-resizing .context-panel {
 
 .session-row__select {
   display: grid;
-  grid-template-columns: 14px minmax(0, 1fr);
-  gap: 7px;
+  grid-template-columns: 10px minmax(0, 1fr);
+  gap: 8px;
   align-items: center;
   min-width: 0;
   min-height: 25px;
@@ -958,11 +958,58 @@ body.is-panel-resizing .context-panel {
   text-align: left;
 }
 
-.session-row__status {
-  display: flex;
+/* Same language as top-tab pulse: green blink while the agent is working. */
+.session-row__pulse {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: activity-pulse 1.2s ease-in-out infinite;
 }
 
-.session-row__delete {
+.session-row__pulse.is-starting {
+  background: var(--yellow);
+}
+
+.session-row__pulse.is-running {
+  background: var(--accent);
+}
+
+.session-row__dot {
+  flex: 0 0 auto;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  opacity: 0.45;
+}
+
+.session-row__dot.is-waiting {
+  background: var(--yellow);
+  opacity: 0.7;
+}
+
+.session-row__dot.is-error {
+  background: var(--red);
+  opacity: 0.85;
+}
+
+.session-row__actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 1px;
+  align-items: center;
+  opacity: 0;
+}
+
+.session-row:hover .session-row__actions,
+.session-row:focus-within .session-row__actions,
+.session-row.is-active .session-row__actions {
+  opacity: 1;
+}
+
+.session-row__action {
   display: grid;
   width: 22px;
   height: 22px;
@@ -973,24 +1020,22 @@ body.is-panel-resizing .context-panel {
   color: var(--text-faint);
   background: transparent;
   cursor: pointer;
-  opacity: 0;
 }
 
-.session-row:hover .session-row__delete,
-.session-row:focus-within .session-row__delete,
-.session-row.is-active .session-row__delete {
-  opacity: 1;
+.session-row__action:hover {
+  color: var(--text);
+  background: var(--panel-soft);
 }
 
-.session-row__delete:hover {
+.session-row__action--danger:hover {
   color: var(--red);
   background: var(--panel-soft);
 }
 
 .session-row__rename {
   display: grid;
-  grid-template-columns: 14px minmax(0, 1fr);
-  gap: 7px;
+  grid-template-columns: 10px minmax(0, 1fr);
+  gap: 8px;
   align-items: center;
   min-width: 0;
   min-height: 25px;
@@ -3704,7 +3749,36 @@ body.is-composer-resizing .composer {
 }
 
 .composer-select--agent {
-  max-width: 180px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 220px;
+}
+
+.composer-select--agent.has-update {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border-strong));
+}
+
+.composer-select__agent-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-select__agent-version {
+  flex-shrink: 0;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+
+.composer-select__agent-update {
+  flex-shrink: 0;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
 }
 
 .composer-menu-anchor {

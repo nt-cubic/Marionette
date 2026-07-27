@@ -1147,11 +1147,17 @@ export function App() {
     [availableSessions, openSessionIds]
   );
 
+  /**
+   * Open a new dialog. When the caller does not pick an agent/prefs, inherit
+   * the active dialog's agent + model/mode/effort so a new tab does not snap
+   * back to the global default (OpenCode / first model).
+   */
   const createSessionForProject = async (
     projectId: string,
-    agentId = (availableAgents[0] ?? agents[0]).id,
+    agentId?: string,
     /** Use when React state has not yet committed a brand-new project. */
-    projectHint?: Project
+    projectHint?: Project,
+    prefs?: SessionComposerPrefs | null,
   ) => {
     const project =
       projectHint?.id === projectId
@@ -1159,18 +1165,79 @@ export function App() {
         : availableProjects.find((item) => item.id === projectId);
     if (!project) return;
 
-    const newSession = await createSessionApi(projectId, agentId);
+    // Prefer the open dialog when it belongs to this project; otherwise the
+    // most recent session for the project. Falls back to the first agent.
+    const source =
+      (currentSession && currentSession.projectId === projectId ? currentSession : null) ??
+      availableSessions.find((s) => s.projectId === projectId) ??
+      null;
+    const resolvedAgentId =
+      agentId ??
+      source?.agentId ??
+      (availableAgents[0] ?? agents[0]).id;
+    // Model/mode/effort only transfer when the agent is the same (or the
+    // caller passed prefs explicitly). A different agent has a different catalog.
+    const sameAgentAsSource = !source || source.agentId === resolvedAgentId;
+    const resolvedPrefs: SessionComposerPrefs | null =
+      prefs !== undefined
+        ? prefs
+        : source && sameAgentAsSource
+          ? {
+              preferredModel: source.preferredModel ?? null,
+              preferredMode: source.preferredMode ?? null,
+              preferredEffort: source.preferredEffort ?? null,
+              preferredEffortId: source.preferredEffortId ?? null,
+              preferredAlwaysApprove: source.preferredAlwaysApprove ?? null,
+            }
+          : null;
+
+    const newSession = await createSessionApi(projectId, resolvedAgentId);
     if (!newSession) return;
+
+    let sessionWithPrefs = newSession;
+    if (resolvedPrefs) {
+      const next = {
+        ...newSession,
+        preferredModel: resolvedPrefs.preferredModel ?? null,
+        preferredMode: resolvedPrefs.preferredMode ?? null,
+        preferredEffort: resolvedPrefs.preferredEffort ?? null,
+        preferredEffortId: resolvedPrefs.preferredEffortId ?? null,
+        preferredAlwaysApprove: resolvedPrefs.preferredAlwaysApprove ?? null,
+      };
+      sessionWithPrefs = next;
+      void updateSessionPrefs(newSession.id, {
+        preferredModel: next.preferredModel,
+        preferredMode: next.preferredMode,
+        preferredEffort: next.preferredEffort,
+        preferredEffortId: next.preferredEffortId,
+        preferredAlwaysApprove: next.preferredAlwaysApprove,
+      }).catch((error) => {
+        pushDebug({
+          sessionId: newSession.id,
+          level: "warn",
+          source: "session",
+          summary: "persist inherited composer prefs failed",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
+
     // Newest dialog sits at the top of the project shelf (and left of tabs).
-    setAvailableSessions((current) => [newSession, ...current.filter((s) => s.id !== newSession.id)]);
-    setOpenSessionIds((current) => [newSession.id, ...current.filter((id) => id !== newSession.id)]);
+    setAvailableSessions((current) => [
+      sessionWithPrefs,
+      ...current.filter((s) => s.id !== sessionWithPrefs.id),
+    ]);
+    setOpenSessionIds((current) => [
+      sessionWithPrefs.id,
+      ...current.filter((id) => id !== sessionWithPrefs.id),
+    ]);
     setCurrentProjectId(projectId);
-    setCurrentSessionId(newSession.id);
+    setCurrentSessionId(sessionWithPrefs.id);
     // Product default is always Clean View — transport is an implementation detail.
     setViewMode("clean");
     setSessionCapabilities(null);
     setActiveModelId(null);
-    ptyBridgesRef.current.set(newSession.id, createPtyBridgeState());
+    ptyBridgesRef.current.set(sessionWithPrefs.id, createPtyBridgeState());
   };
 
   const openSession = (nextSession: Session) => {
@@ -1680,6 +1747,53 @@ export function App() {
       });
     }
   }, [ensureAcpReady, pushDebug, restartAcpProcess]);
+
+  /**
+   * Composer install/upgrade path: stop the live process so the binary can be
+   * replaced, then start a fresh ACP session so the dialog uses the new build
+   * without quitting the app.
+   */
+  const handleAgentBinaryUpdated = useCallback(
+    async (agentId: string, phase: "stop" | "restart") => {
+      const sid = currentSessionIdRef.current;
+      if (!sid || sid.startsWith("session-empty-")) return;
+      const session = sessionsRef.current.find((s) => s.id === sid);
+      if (session?.agentId !== agentId) return;
+      const agent = agentsRef.current.find((a) => a.id === agentId);
+      if (agent?.transport !== "acp") return;
+
+      if (phase === "stop") {
+        await restartAcpProcess(sid);
+        pushDebug({
+          sessionId: sid,
+          level: "info",
+          source: "session",
+          summary: "stopped agent before CLI upgrade",
+        });
+        return;
+      }
+
+      try {
+        await restartAcpProcess(sid);
+        await ensureAcpReady(sid);
+        pushDebug({
+          sessionId: sid,
+          level: "info",
+          source: "session",
+          summary: "restarted agent after CLI upgrade",
+        });
+      } catch (error) {
+        pushDebug({
+          sessionId: sid,
+          level: "warn",
+          source: "session",
+          summary: "restart after CLI upgrade failed",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+    [ensureAcpReady, pushDebug, restartAcpProcess],
+  );
 
   /**
    * `session/cancel` is a notification the agent never replies to, so the only
@@ -2399,6 +2513,7 @@ export function App() {
             sessionStatus={displaySession.status}
             lastActivityAt={lastActivityById[displaySession.id] ?? null}
             onProviderKeysChanged={handleProviderKeysChanged}
+            onAgentBinaryUpdated={handleAgentBinaryUpdated}
             capabilities={sessionCapabilities}
             prefillText={composerPrefill?.text ?? null}
             prefillToken={composerPrefill?.token ?? 0}

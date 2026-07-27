@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Circle, ChevronDown, ChevronRight, Folder, Moon, PanelLeftClose, PanelLeftOpen, Plus, Search, Settings2, Square, Sun, Trash2 } from "lucide-react";
-import type { AgentConfig, Project, Session, SessionStatus } from "../lib/types";
+import { ChevronDown, ChevronRight, Folder, Moon, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings2, Sun, Trash2 } from "lucide-react";
+import type { AgentConfig, Project, Session } from "../lib/types";
 
 type ThemeMode = "dark" | "light";
 
@@ -57,13 +57,9 @@ type ProjectShelfProps = {
   onRenameSession?: (sessionId: string, label: string) => void;
 };
 
-const statusIcon: Record<SessionStatus, typeof Circle> = {
-  starting: Circle,
-  running: Circle,
-  waiting: Circle,
-  exited: Square,
-  error: Circle
-};
+function sessionIsBusy(status: Session["status"]): boolean {
+  return status === "running" || status === "starting";
+}
 
 export function ProjectShelf({
   agents,
@@ -306,11 +302,20 @@ export function ProjectShelf({
                     <div className="session-row session-row--empty">No sessions</div>
                   )}
                   {visibleSessions.map((session) => {
-                    const StatusIcon = statusIcon[session.status] ?? Circle;
+                    const busy = sessionIsBusy(session.status);
                     const isRenaming = renamingId === session.id;
+                    const beginRename = () => {
+                      if (!onRenameSession) return;
+                      setRenamingId(session.id);
+                      setRenameDraft(session.label);
+                    };
                     return (
                       <div
-                        className={session.id === currentSessionId ? "session-row is-active" : "session-row"}
+                        className={
+                          session.id === currentSessionId
+                            ? `session-row is-active is-${session.status}`
+                            : `session-row is-${session.status}`
+                        }
                         key={session.id}
                       >
                         {isRenaming ? (
@@ -321,7 +326,14 @@ export function ProjectShelf({
                               commitRename();
                             }}
                           >
-                            <StatusIcon size={10} className={`session-row__status is-${session.status}`} />
+                            {busy ? (
+                              <span
+                                className={`session-row__pulse is-${session.status}`}
+                                aria-hidden
+                              />
+                            ) : (
+                              <span className="session-row__dot" aria-hidden />
+                            )}
                             <input
                               ref={renameInputRef}
                               className="session-row__rename-input"
@@ -341,26 +353,61 @@ export function ProjectShelf({
                           <button
                             className="session-row__select"
                             type="button"
-                            title={`${agentLabel(session.agentId)} · ${session.status} · double-click to rename`}
+                            title={
+                              busy
+                                ? `${agentLabel(session.agentId)} · ${session.status} · double-click or pencil to rename`
+                                : `${agentLabel(session.agentId)} · double-click or pencil to rename`
+                            }
                             onClick={() => onSessionSelect(session)}
                             onDoubleClick={(e) => {
-                              if (!onRenameSession) return;
                               e.preventDefault();
                               e.stopPropagation();
-                              setRenamingId(session.id);
-                              setRenameDraft(session.label);
+                              beginRename();
                             }}
                           >
-                            <StatusIcon size={10} className={`session-row__status is-${session.status}`} />
+                            {busy ? (
+                              <span
+                                className={`session-row__pulse is-${session.status}`}
+                                title={session.status}
+                                aria-label={session.status}
+                              />
+                            ) : (
+                              <span
+                                className={`session-row__dot is-${session.status}`}
+                                aria-hidden
+                              />
+                            )}
                             <span className="session-row__content">
                               <strong>{session.label}</strong>
                               <em>{agentLabel(session.agentId)}</em>
                             </span>
                           </button>
                         )}
-                        <button className="session-row__delete" type="button" title={`Delete ${session.label}`} aria-label={`Delete ${session.label}`} onClick={() => onDeleteSession(session.id)}>
-                          <Trash2 size={12} />
-                        </button>
+                        <span className="session-row__actions">
+                          {onRenameSession && !isRenaming && (
+                            <button
+                              className="session-row__action"
+                              type="button"
+                              title={`Rename ${session.label}`}
+                              aria-label={`Rename ${session.label}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                beginRename();
+                              }}
+                            >
+                              <Pencil size={12} />
+                            </button>
+                          )}
+                          <button
+                            className="session-row__action session-row__action--danger"
+                            type="button"
+                            title={`Delete ${session.label}`}
+                            aria-label={`Delete ${session.label}`}
+                            onClick={() => onDeleteSession(session.id)}
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </span>
                       </div>
                     );
                   })}

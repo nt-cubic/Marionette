@@ -94,7 +94,10 @@ pub fn auto_update_agents_in_background() {
                 &format!("auto-update {installed} → {latest}"),
                 Some(package),
             );
-            match install_agent_blocking(&info.id, false) {
+            // `force: true` — the package is already on PATH; without it the
+            // installer no-ops with "already installed" and the upgrade never
+            // lands.
+            match install_agent_blocking(&info.id, false, true) {
                 Ok(_) => crate::debug_log::append(
                     "update",
                     "info",
@@ -178,19 +181,28 @@ fn agent_command_status(agent: &AgentConfig) -> AgentCommandStatus {
 ///
 /// Packages come from the built-in table only — never from the UI — so this
 /// cannot be talked into installing something the app does not ship support for.
+///
+/// `force` reinstalls the main package even when the command is already on PATH
+/// (the update button path). Without it an installed agent is a no-op, which
+/// made "→ 1.2.3" look successful while the binary never changed.
 #[tauri::command]
 pub async fn install_agent(
     agent_id: String,
     include_dependencies: bool,
+    force: Option<bool>,
 ) -> Result<serde_json::Value, String> {
-    tauri::async_runtime::spawn_blocking(move || install_agent_blocking(&agent_id, include_dependencies))
-        .await
-        .map_err(|error| format!("Install task failed: {error}"))?
+    let force = force.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || {
+        install_agent_blocking(&agent_id, include_dependencies, force)
+    })
+    .await
+    .map_err(|error| format!("Install task failed: {error}"))?
 }
 
 fn install_agent_blocking(
     agent_id: &str,
     include_dependencies: bool,
+    force: bool,
 ) -> Result<serde_json::Value, String> {
     let agent = AgentConfig::defaults()
         .into_iter()
@@ -207,14 +219,17 @@ fn install_agent_blocking(
 
     let mut packages: Vec<String> = Vec::new();
     if let Some(package) = &agent.install.package {
-        if matches!(resolve_command(&agent.command), Ok(None)) {
+        let missing = matches!(resolve_command(&agent.command), Ok(None));
+        if force || missing {
             packages.push(package.clone());
         }
     }
     if include_dependencies {
         for dependency in &agent.install.requires {
             if let Some(package) = &dependency.package {
-                if matches!(resolve_command(&dependency.command), Ok(None)) {
+                let missing = matches!(resolve_command(&dependency.command), Ok(None));
+                // Force upgrades only the agent package; deps install when absent.
+                if missing {
                     packages.push(package.clone());
                 }
             }
@@ -237,10 +252,11 @@ fn install_agent_blocking(
     }
 
     let status = agent_command_status(&agent);
+    let verb = if force { "Updated" } else { "Installed" };
     Ok(serde_json::json!({
         "agentId": agent.id,
         "installed": installed,
-        "message": format!("Installed {}", installed.join(", ")),
+        "message": format!("{verb} {}", installed.join(", ")),
         "status": status,
     }))
 }
