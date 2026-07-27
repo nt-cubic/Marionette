@@ -12,8 +12,20 @@ import {
   sendAcpPrompt,
   updateAcpSession,
 } from "../lib/api";
-import { cacheAgentCapabilities, cachedCapabilitiesFor } from "../lib/capabilityCache";
+import {
+  cacheAgentCapabilities,
+  cachedCapabilitiesFor,
+  clearAgentCapabilities,
+  invalidateCapsIfAgentUpdated,
+} from "../lib/capabilityCache";
+import { detectCapabilityDrift } from "../lib/capabilityDrift";
 import { ptyCommandsForPatch, ptyProfileToCapabilities } from "../lib/ptyProfiles";
+import {
+  applySlashCommand,
+  filterSlashCommands,
+  resolveSlashCommands,
+  slashQueryAtCursor,
+} from "../lib/slashCommands";
 import { ProviderConfigDialog } from "./ProviderConfigDialog";
 import { recordModelUsage, getRecentModels } from "../lib/recentModels";
 import type {
@@ -21,6 +33,7 @@ import type {
   AgentCommandStatus,
   AgentConfig,
   AgentVersionInfo,
+  AvailableCommand,
   CapabilitySnapshot,
   ModelDef,
   SessionComposerPrefs,
@@ -67,6 +80,11 @@ type ComposerProps = {
    * startup, so the parent must replace it for the new key to take effect.
    */
   onProviderKeysChanged?: () => void | Promise<void>;
+  /**
+   * Live ACP-advertised slash commands for this dialog. Static fallbacks apply
+   * when null/empty (see `resolveSlashCommands`).
+   */
+  availableCommands?: AvailableCommand[] | null;
 };
 
 /**
@@ -341,6 +359,7 @@ export function Composer({
   onEnsureAgentReady,
   lastActivityAt = null,
   onProviderKeysChanged,
+  availableCommands = null,
 }: ComposerProps) {
   /**
    * Offline-first controls: the last catalog this agent advertised, with this
@@ -377,6 +396,12 @@ export function Composer({
   const [agentVersionInfo, setAgentVersionInfo] = useState<Record<string, AgentVersionInfo>>({});
   const [installingAgentId, setInstallingAgentId] = useState<string | null>(null);
   const [installNote, setInstallNote] = useState("");
+  /** Highlighted row in the `/` autocomplete list. */
+  const [slashIndex, setSlashIndex] = useState(0);
+  /** Caret position — drives `/` token detection without remounting the textarea. */
+  const [caret, setCaret] = useState(0);
+  /** One drift toast per (session, agent) after live caps land. */
+  const driftCheckedKey = useRef("");
   const errorTimer = useRef<ReturnType<typeof setTimeout>>();
   const updating = useRef(false);
   const modelSearchRef = useRef<HTMLInputElement>(null);
@@ -685,6 +710,19 @@ export function Composer({
 
           const attempts = expandAcpConfigAttempts(agent.id, patch, caps);
           if (attempts.length === 0) {
+            // Launch-time-only options (Grok model/effort): keep the local chip
+            // + disk prefs, but do not pretend set_config succeeded on the wire.
+            if (agent.id === "grok-build" && (patch.model != null || patch.effortId != null || patch.thinkingEffort != null)) {
+              const prefsPatch: SessionComposerPrefs = {};
+              if (typeof patch.model === "string") prefsPatch.preferredModel = patch.model;
+              if (typeof patch.thinkingEffort === "number") prefsPatch.preferredEffort = patch.thinkingEffort;
+              if (typeof patch.effortId === "string") prefsPatch.preferredEffortId = patch.effortId;
+              if (Object.keys(prefsPatch).length > 0) persistPrefs(prefsPatch);
+              if (patch.effortId != null || patch.thinkingEffort != null) {
+                flash("Grok thinking level is fixed at agent launch — not changed live");
+              }
+              return;
+            }
             if (patch.effortId != null || patch.thinkingEffort != null) {
               throw new Error(
                 "This model does not expose an Effort control (not a login issue)",
@@ -762,6 +800,16 @@ export function Composer({
       typeof sessionPrefs?.preferredEffort === "number" && Number.isFinite(sessionPrefs.preferredEffort)
         ? sessionPrefs.preferredEffort
         : null;
+
+    // After agent / ACP updates: surface prefs that no longer map onto caps.
+    if (driftCheckedKey.current !== key) {
+      driftCheckedKey.current = key;
+      const drift = detectCapabilityDrift(sessionPrefs, caps);
+      if (drift) {
+        flash(drift.summary.length > 140 ? `${drift.summary.slice(0, 140)}…` : drift.summary);
+        onSessionPrefsChange?.(drift.clearedPrefs);
+      }
+    }
 
     const hasAny = Boolean(prefModel || prefMode || prefEffortId || prefEffort != null);
     if (!hasAny) {
@@ -841,6 +889,22 @@ export function Composer({
     // commitUpdate changes often; restore only when caps identity for this dialog lands.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [caps, capsLive, sessionId, agent.id, sessionPrefs]);
+
+  // Drop offline catalog when the installed CLI version advanced (post-update).
+  useEffect(() => {
+    if (!isTauriRuntime() || agent.transport !== "acp") return;
+    let live = true;
+    void agentVersions(false).then((list) => {
+      if (!live) return;
+      const info = list.find((v) => v.id === agent.id);
+      if (info?.installed) {
+        invalidateCapsIfAgentUpdated(agent.id, info.installed);
+      }
+    });
+    return () => {
+      live = false;
+    };
+  }, [agent.id, agent.transport]);
 
   // ── Send / Interrupt ───────────────────────────────────────────────────────
   // Only a live turn (`running`) blocks send. `starting` must NOT freeze the
@@ -1199,6 +1263,8 @@ export function Composer({
         const result = await installAgent(agentId, true);
         setAgentStatuses((current) => ({ ...current, [agentId]: result.status }));
         setInstallNote(result.message);
+        // New binary → forget stale model/mode/effort catalog.
+        clearAgentCapabilities(agentId);
         // Pick up anything the install pulled in for the other agents too.
         void refreshAgentStatuses();
       } catch (error) {
@@ -1208,6 +1274,42 @@ export function Composer({
       }
     },
     [installingAgentId, refreshAgentStatuses],
+  );
+
+  // ── Slash command autocomplete ────────────────────────────────────────────
+  const slashCatalog = useMemo(
+    () => resolveSlashCommands(agent.id, availableCommands),
+    [agent.id, availableCommands],
+  );
+  const slashToken = useMemo(
+    () => slashQueryAtCursor(draft, caret),
+    [draft, caret],
+  );
+  const slashMatches = useMemo(() => {
+    if (!slashToken) return [] as AvailableCommand[];
+    return filterSlashCommands(slashCatalog, slashToken.query);
+  }, [slashCatalog, slashToken]);
+  const showSlashMenu = slashMatches.length > 0 && slashToken != null;
+
+  useEffect(() => {
+    setSlashIndex(0);
+  }, [slashToken?.query, showSlashMenu]);
+
+  const pickSlash = useCallback(
+    (cmd: AvailableCommand) => {
+      if (!slashToken) return;
+      const next = applySlashCommand(draft, slashToken.start, slashToken.end, cmd);
+      const pos = slashToken.start + cmd.name.length + 2; // `/name `
+      setDraft(next);
+      setCaret(pos);
+      requestAnimationFrame(() => {
+        const el = textareaRef.current;
+        if (!el) return;
+        el.focus();
+        el.setSelectionRange(pos, pos);
+      });
+    },
+    [draft, slashToken],
   );
 
   // A note about a finished install should not outlive the menu.
@@ -1288,6 +1390,31 @@ export function Composer({
           {isTall ? <Shrink size={13} /> : <Expand size={13} />}
         </button>
         {dropActive && <div className="composer__drop-hint">Drop to insert file path</div>}
+        {showSlashMenu && (
+          <div className="composer-slash" role="listbox" aria-label="Slash commands">
+            <div className="composer-slash__hint">Commands</div>
+            {slashMatches.map((cmd, i) => (
+              <button
+                key={cmd.name}
+                type="button"
+                role="option"
+                aria-selected={i === slashIndex}
+                className={i === slashIndex ? "composer-slash__item is-active" : "composer-slash__item"}
+                onMouseDown={(e) => {
+                  // Prevent textarea blur before click applies.
+                  e.preventDefault();
+                }}
+                onClick={() => pickSlash(cmd)}
+              >
+                <span className="composer-slash__name">/{cmd.name}</span>
+                <span className="composer-slash__desc">
+                  {cmd.description}
+                  {cmd.input?.hint ? ` · ${cmd.input.hint}` : ""}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
         <textarea
           ref={textareaRef}
           aria-label="Prompt composer"
@@ -1295,8 +1422,8 @@ export function Composer({
             isAcp
               ? isWarming && !composingRef.current
                 ? "Agent connecting in background… keep typing"
-                : "Message the Agent (Ctrl+Enter to send) · Tab cycles mode · drop files for paths"
-              : "Message the TUI (Ctrl+Enter) · drop files for paths"
+                : "Message the Agent (Ctrl+Enter to send) · / commands · Tab cycles mode"
+              : "Message the TUI (Ctrl+Enter) · / commands · drop files for paths"
           }
           rows={isTall ? 10 : 2}
           value={draft}
@@ -1319,9 +1446,44 @@ export function Composer({
           }}
           onChange={(event) => {
             setDraft(event.target.value);
+            setCaret(event.target.selectionStart ?? event.target.value.length);
             // Do not warm on every keypress — freezes IME while ACP handshake runs.
           }}
+          onSelect={(event) => {
+            setCaret(event.currentTarget.selectionStart ?? 0);
+          }}
           onKeyDown={(event) => {
+            if (showSlashMenu && !composingRef.current) {
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                setSlashIndex((i) => Math.min(slashMatches.length - 1, i + 1));
+                return;
+              }
+              if (event.key === "ArrowUp") {
+                event.preventDefault();
+                setSlashIndex((i) => Math.max(0, i - 1));
+                return;
+              }
+              if (event.key === "Enter" && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+                event.preventDefault();
+                const cmd = slashMatches[slashIndex];
+                if (cmd) pickSlash(cmd);
+                return;
+              }
+              if (event.key === "Tab" && !event.altKey && !event.metaKey && !event.ctrlKey) {
+                event.preventDefault();
+                const cmd = slashMatches[slashIndex];
+                if (cmd) pickSlash(cmd);
+                return;
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                event.stopPropagation();
+                // Leave the token incomplete but close the menu (caret off token).
+                setCaret(-1);
+                return;
+              }
+            }
             if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
               event.preventDefault();
               if (composingRef.current) return;

@@ -15,7 +15,8 @@ import type { CapabilitySnapshot, SessionComposerPrefs } from "./types";
  */
 
 const KEY_PREFIX = "agentshell-caps:";
-const VERSION = 1;
+/** Bump when CapabilitySnapshot shape changes in a breaking way. */
+const VERSION = 2;
 /** Forget catalogs nobody has refreshed in a month (agent uninstalled / renamed). */
 const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -23,6 +24,8 @@ type CacheEntry = {
   version: number;
   savedAt: number;
   snapshot: CapabilitySnapshot;
+  /** CLI `--version` when this catalog was written — used to detect agent updates. */
+  agentVersion?: string | null;
 };
 
 function keyFor(agentId: string): string {
@@ -75,14 +78,15 @@ function normalize(snapshot: CapabilitySnapshot): CapabilitySnapshot {
 export function cacheAgentCapabilities(
   agentId: string,
   caps: CapabilitySnapshot | null | undefined,
-  opts: { handshake: boolean },
+  opts: { handshake: boolean; agentVersion?: string | null },
 ): void {
   if (!agentId || !caps) return;
   const next = normalize(caps);
   // An empty catalog is not worth remembering — it would only blank the chips.
   if (next.models.length === 0 && next.modes.length === 0) return;
 
-  const previous = readEntry(agentId)?.snapshot;
+  const previousEntry = readEntry(agentId);
+  const previous = previousEntry?.snapshot;
   const keepDefaults = !opts.handshake && previous != null;
   const snapshot: CapabilitySnapshot = keepDefaults
     ? {
@@ -94,11 +98,57 @@ export function cacheAgentCapabilities(
       }
     : next;
 
-  const entry: CacheEntry = { version: VERSION, savedAt: Date.now(), snapshot };
+  const agentVersion =
+    opts.agentVersion !== undefined
+      ? opts.agentVersion
+      : previousEntry?.agentVersion ?? null;
+
+  const entry: CacheEntry = {
+    version: VERSION,
+    savedAt: Date.now(),
+    snapshot,
+    agentVersion,
+  };
   try {
     window.localStorage.setItem(keyFor(agentId), JSON.stringify(entry));
   } catch {
     // Quota / private mode: the UI just falls back to live-only capabilities.
+  }
+}
+
+/** CLI version that last wrote this agent's catalog (if known). */
+export function cachedAgentVersion(agentId: string): string | null {
+  return readEntry(agentId)?.agentVersion ?? null;
+}
+
+/**
+ * Drop the offline catalog when the installed CLI version changed so Composer
+ * cannot paint stale model/mode/effort chips after an agent update.
+ */
+export function invalidateCapsIfAgentUpdated(
+  agentId: string,
+  installedVersion: string | null | undefined,
+): boolean {
+  if (!agentId || !installedVersion) return false;
+  const entry = readEntry(agentId);
+  if (!entry) return false;
+  const prev = entry.agentVersion?.trim() || null;
+  if (!prev || prev === installedVersion.trim()) return false;
+  try {
+    window.localStorage.removeItem(keyFor(agentId));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Force-drop a catalog (e.g. after npm install of the agent). */
+export function clearAgentCapabilities(agentId: string): void {
+  if (!agentId) return;
+  try {
+    window.localStorage.removeItem(keyFor(agentId));
+  } catch {
+    // ignore
   }
 }
 

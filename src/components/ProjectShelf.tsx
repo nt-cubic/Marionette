@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Circle, ChevronDown, ChevronRight, Folder, Moon, PanelLeftClose, PanelLeftOpen, Plus, Search, Settings2, Square, Sun, Trash2 } from "lucide-react";
 import type { AgentConfig, Project, Session, SessionStatus } from "../lib/types";
 
@@ -53,6 +53,8 @@ type ProjectShelfProps = {
   onSessionSelect: (session: Session) => void;
   onDeleteSession: (sessionId: string) => void;
   onDeleteProject: (projectId: string) => void;
+  /** Manual rename — always persists (unlike first-message auto-title). */
+  onRenameSession?: (sessionId: string, label: string) => void;
 };
 
 const statusIcon: Record<SessionStatus, typeof Circle> = {
@@ -80,6 +82,7 @@ export function ProjectShelf({
   onToggleTheme,
   onDeleteSession,
   onDeleteProject,
+  onRenameSession,
   searchHitIds = null,
   onSearchQueryChange,
 }: ProjectShelfProps) {
@@ -88,6 +91,25 @@ export function ProjectShelf({
   const [projectsExpanded, setProjectsExpanded] = useState(false);
   /** Project ids whose session list is fully expanded past the preview cap. */
   const [sessionsExpandedByProject, setSessionsExpandedByProject] = useState<Set<string>>(() => new Set());
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const renameInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!renamingId) return;
+    renameInputRef.current?.focus();
+    renameInputRef.current?.select();
+  }, [renamingId]);
+
+  const commitRename = () => {
+    if (!renamingId || !onRenameSession) {
+      setRenamingId(null);
+      return;
+    }
+    const next = renameDraft.trim() || "New session";
+    onRenameSession(renamingId, next);
+    setRenamingId(null);
+  };
 
   useEffect(() => {
     setExpandedProjects((current) => new Set([...current, ...projects.map((project) => project.id)]));
@@ -285,23 +307,57 @@ export function ProjectShelf({
                   )}
                   {visibleSessions.map((session) => {
                     const StatusIcon = statusIcon[session.status] ?? Circle;
+                    const isRenaming = renamingId === session.id;
                     return (
                       <div
                         className={session.id === currentSessionId ? "session-row is-active" : "session-row"}
                         key={session.id}
                       >
-                        <button
-                          className="session-row__select"
-                          type="button"
-                          title={`${agentLabel(session.agentId)} · ${session.status}`}
-                          onClick={() => onSessionSelect(session)}
-                        >
-                          <StatusIcon size={10} className={`session-row__status is-${session.status}`} />
-                          <span className="session-row__content">
-                            <strong>{session.label}</strong>
-                            <em>{agentLabel(session.agentId)}</em>
-                          </span>
-                        </button>
+                        {isRenaming ? (
+                          <form
+                            className="session-row__rename"
+                            onSubmit={(e) => {
+                              e.preventDefault();
+                              commitRename();
+                            }}
+                          >
+                            <StatusIcon size={10} className={`session-row__status is-${session.status}`} />
+                            <input
+                              ref={renameInputRef}
+                              className="session-row__rename-input"
+                              value={renameDraft}
+                              aria-label="Rename session"
+                              onChange={(e) => setRenameDraft(e.target.value)}
+                              onBlur={() => commitRename()}
+                              onKeyDown={(e) => {
+                                if (e.key === "Escape") {
+                                  e.preventDefault();
+                                  setRenamingId(null);
+                                }
+                              }}
+                            />
+                          </form>
+                        ) : (
+                          <button
+                            className="session-row__select"
+                            type="button"
+                            title={`${agentLabel(session.agentId)} · ${session.status} · double-click to rename`}
+                            onClick={() => onSessionSelect(session)}
+                            onDoubleClick={(e) => {
+                              if (!onRenameSession) return;
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setRenamingId(session.id);
+                              setRenameDraft(session.label);
+                            }}
+                          >
+                            <StatusIcon size={10} className={`session-row__status is-${session.status}`} />
+                            <span className="session-row__content">
+                              <strong>{session.label}</strong>
+                              <em>{agentLabel(session.agentId)}</em>
+                            </span>
+                          </button>
+                        )}
                         <button className="session-row__delete" type="button" title={`Delete ${session.label}`} aria-label={`Delete ${session.label}`} onClick={() => onDeleteSession(session.id)}>
                           <Trash2 size={12} />
                         </button>
