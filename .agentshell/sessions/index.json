@@ -1,5 +1,23 @@
 [
   {
+    "id": "session-1785157085445",
+    "projectId": "project-6f037406d49a738c",
+    "agentId": "opencode",
+    "label": "New session",
+    "cwd": "\\\\?\\D:\\Project\\AgentsShell",
+    "status": "exited",
+    "processId": null,
+    "ptyId": null,
+    "startedAt": "",
+    "lastActiveAt": "1785157085445",
+    "exitedAt": null,
+    "exitCode": null,
+    "rawLogPath": "\\\\?\\D:\\Project\\AgentsShell\\.agentshell\\sessions\\session-1785157085445.raw.log",
+    "transcriptPath": "\\\\?\\D:\\Project\\AgentsShell\\.agentshell\\transcripts\\session-1785157085445.jsonl",
+    "handoffPath": "\\\\?\\D:\\Project\\AgentsShell\\.agentshell\\handoff\\session-1785157085445.md",
+    "viewMode": "clean"
+  },
+  {
     "id": "session-1784860385219",
     "projectId": "project-65b0525cca463995",
     "agentId": "grok-build",
