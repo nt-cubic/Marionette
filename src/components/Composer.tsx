@@ -2,7 +2,11 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { Expand, Plus, Search, SendHorizontal, Shrink, Square } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from "react";
-import { expandAcpConfigAttempts, getAcpSupplement, mergeAcpCapabilities } from "../lib/acpSupplements";
+import {
+  expandAcpConfigAttempts,
+  getAcpSupplement,
+  mergeAcpCapabilities,
+} from "../lib/acpSupplements";
 import {
   agentVersions,
   getSessionCapabilities,
@@ -379,6 +383,10 @@ export function Composer({
   const [currentEffortId, setCurrentEffortId] = useState<string | null>(
     initialCaps?.currentEffortId ?? null,
   );
+  // Grok always-approve: not an ACP mode. Default false (ask) until prefs/restore say otherwise.
+  const [alwaysApprove, setAlwaysApprove] = useState<boolean>(
+    sessionPrefs?.preferredAlwaysApprove === true,
+  );
   /** True once caps came from a live agent — cached caps must not act as live. */
   const [capsLive, setCapsLive] = useState(false);
   const [menu, setMenu] = useState<"mode" | "model" | "effort" | "agent" | null>(null);
@@ -693,34 +701,26 @@ export function Composer({
               throw new Error("Agent is not connected yet — type or wait for ACP warm-up");
             }
           }
-          // Some agents (Grok Build) don't support session/set_config_option —
-          // use prompt injection for mode changes instead.
-          const sup = getAcpSupplement(agent.id);
-          if (typeof patch.mode === "string" && sup?.promptModeCommands) {
-            const cmd = sup.promptModeCommands[patch.mode];
-            if (!cmd) {
-              throw new Error(`No prompt command for mode "${patch.mode}"`);
-            }
+          // Agents without session/set_config_option (Grok) are handled in Rust,
+          // which retries the pre-v2 per-knob RPCs on -32601.
+          // alwaysApprove is a slash command, not set_config — handled separately.
+          if (typeof patch.alwaysApprove === "boolean") {
+            const aa = getAcpSupplement(agent.id)?.alwaysApprove;
+            if (!aa) throw new Error("This agent has no always-approve control");
+            const cmd = patch.alwaysApprove ? aa.on : aa.off;
             await sendAcpPrompt(sessionId, cmd);
-            // Persist the mode preference; skip caps reload — agent won't
-            // reflect the change in ACP caps, and the local UI state is correct.
-            persistPrefs({ preferredMode: patch.mode });
+            persistPrefs({ preferredAlwaysApprove: patch.alwaysApprove });
             return;
           }
-
           const attempts = expandAcpConfigAttempts(agent.id, patch, caps);
           if (attempts.length === 0) {
-            // Launch-time-only options (Grok model/effort): keep the local chip
+            // Launch-time-only options (Grok model): keep the local chip
             // + disk prefs, but do not pretend set_config succeeded on the wire.
-            if (agent.id === "grok-build" && (patch.model != null || patch.effortId != null || patch.thinkingEffort != null)) {
-              const prefsPatch: SessionComposerPrefs = {};
-              if (typeof patch.model === "string") prefsPatch.preferredModel = patch.model;
-              if (typeof patch.thinkingEffort === "number") prefsPatch.preferredEffort = patch.thinkingEffort;
-              if (typeof patch.effortId === "string") prefsPatch.preferredEffortId = patch.effortId;
-              if (Object.keys(prefsPatch).length > 0) persistPrefs(prefsPatch);
-              if (patch.effortId != null || patch.thinkingEffort != null) {
-                flash("Grok thinking level is fixed at agent launch — not changed live");
-              }
+            // Effort is NOT launch-time — it routes through legacy_set_config
+            // (see effortViaLegacyModel in acpSupplements.ts), so it will have
+            // produced an attempt above and this block won't be reached.
+            if (agent.id === "grok-build" && typeof patch.model === "string") {
+              persistPrefs({ preferredModel: patch.model });
               return;
             }
             if (patch.effortId != null || patch.thinkingEffort != null) {
@@ -765,6 +765,9 @@ export function Composer({
         if (typeof patch.mode === "string") prefsPatch.preferredMode = patch.mode;
         if (typeof patch.thinkingEffort === "number") prefsPatch.preferredEffort = patch.thinkingEffort;
         if (typeof patch.effortId === "string") prefsPatch.preferredEffortId = patch.effortId;
+        if (typeof patch.alwaysApprove === "boolean") {
+          prefsPatch.preferredAlwaysApprove = patch.alwaysApprove;
+        }
         if (Object.keys(prefsPatch).length > 0) persistPrefs(prefsPatch);
         // Track recently used model
         if (typeof patch.model === "string") {
@@ -800,6 +803,11 @@ export function Composer({
       typeof sessionPrefs?.preferredEffort === "number" && Number.isFinite(sessionPrefs.preferredEffort)
         ? sessionPrefs.preferredEffort
         : null;
+    const prefAlways =
+      typeof sessionPrefs?.preferredAlwaysApprove === "boolean"
+        ? sessionPrefs.preferredAlwaysApprove
+        : null;
+    const aaSpec = getAcpSupplement(agent.id)?.alwaysApprove;
 
     // After agent / ACP updates: surface prefs that no longer map onto caps.
     if (driftCheckedKey.current !== key) {
@@ -811,7 +819,9 @@ export function Composer({
       }
     }
 
-    const hasAny = Boolean(prefModel || prefMode || prefEffortId || prefEffort != null);
+    const hasAny = Boolean(
+      prefModel || prefMode || prefEffortId || prefEffort != null || (aaSpec && prefAlways != null),
+    );
     if (!hasAny) {
       prefsRestoredKey.current = key;
       return;
@@ -839,6 +849,7 @@ export function Composer({
     if (modeOk && prefMode) setCurrentMode(prefMode);
     if (effortIdOk && prefEffortId) setCurrentEffortId(prefEffortId);
     if (numericOk && prefEffort != null) setCurrentEffort(prefEffort);
+    if (aaSpec && prefAlways != null) setAlwaysApprove(prefAlways);
 
     void (async () => {
       // Only push options that differ from live caps (avoid noisy set_config on every open).
@@ -850,6 +861,12 @@ export function Composer({
       if (modeOk && prefMode && prefMode !== caps.currentMode) {
         await commitUpdate({ mode: prefMode }, () => {
           setCurrentMode(caps.currentMode);
+        });
+      }
+      // Always-approve is session-local on the agent; replay the slash after warm.
+      if (aaSpec && prefAlways != null) {
+        await commitUpdate({ alwaysApprove: prefAlways }, () => {
+          setAlwaysApprove(!prefAlways);
         });
       }
       // Effort options are per-model. `caps` here still describes the model that
@@ -1141,13 +1158,19 @@ export function Composer({
   const hasModes = caps != null && caps.modes.length > 1;
   const hasModels = caps != null && caps.models.length > 0;
   const effortOptions = caps?.effortOptions ?? [];
+  const agentSupplement = getAcpSupplement(agent.id);
+  const alwaysApproveSpec = agentSupplement?.alwaysApprove ?? null;
   // ACP: only show effort when the live agent registered the option.
   // Claude omits `effort` entirely for models without supportsEffort
   // (e.g. Haiku after model switch) — inventing it yields:
   //   Unknown config option: effort
   // and a stale Effort menu would crash on thinkingEffort!.default.
+  // Exception: Grok carries effort on session/set_model `_meta` (no config id).
   const hasStringEffort =
-    effortOptions.length > 0 && (isPty || Boolean(caps?.effortConfigId));
+    effortOptions.length > 0 &&
+    (isPty ||
+      Boolean(caps?.effortConfigId) ||
+      agentSupplement?.effortViaLegacyModel === true);
   const hasNumericEffort =
     caps != null &&
     caps.thinkingEffort != null &&
@@ -1558,6 +1581,37 @@ export function Composer({
                   </div>
                 )}
               </div>
+            )}
+            {/* Grok always-approve: the important permission axis (not plan/build). */}
+            {alwaysApproveSpec && !isPty && (
+              <button
+                className={
+                  alwaysApprove
+                    ? "composer-mode-chip composer-mode-chip--always-on"
+                    : "composer-mode-chip composer-mode-chip--always-off"
+                }
+                type="button"
+                title={
+                  alwaysApprove
+                    ? "Always approve is ON — agent skips permission prompts (click to ask first)"
+                    : "Ask permissions — agent will prompt before edits (click for always-approve)"
+                }
+                aria-pressed={alwaysApprove}
+                onClick={() => {
+                  const next = !alwaysApprove;
+                  const prev = alwaysApprove;
+                  setAlwaysApprove(next);
+                  void commitUpdate({ alwaysApprove: next }, () => {
+                    setAlwaysApprove(prev);
+                  });
+                }}
+              >
+                <span className="composer-mode-chip__label">
+                  {alwaysApprove
+                    ? (alwaysApproveSpec.onLabel ?? "Always approve")
+                    : (alwaysApproveSpec.offLabel ?? "Ask permissions")}
+                </span>
+              </button>
             )}
           </div>
           <div className="composer__actions">

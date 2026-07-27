@@ -149,6 +149,7 @@ export async function updateSessionPrefs(
     preferredMode: prefs.preferredMode ?? null,
     preferredEffort: prefs.preferredEffort ?? null,
     preferredEffortId: prefs.preferredEffortId ?? null,
+    preferredAlwaysApprove: prefs.preferredAlwaysApprove ?? null,
   });
 }
 
@@ -298,6 +299,19 @@ export async function probeProviderUsage(modelId?: string | null): Promise<impor
   if (!isTauriRuntime()) return null;
   try {
     return await invoke("probe_provider_usage", { modelId: modelId ?? null });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Grok account weekly credit usage (`_x.ai/billing` on a live ACP session).
+ * Same numbers the native TUI `/usage` panel shows.
+ */
+export async function probeAcpBilling(sessionId: string): Promise<unknown | null> {
+  if (!isTauriRuntime() || !sessionId) return null;
+  try {
+    return await invoke("probe_acp_billing", { sessionId });
   } catch {
     return null;
   }

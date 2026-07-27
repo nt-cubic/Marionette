@@ -52,22 +52,19 @@ export function resolveSlashCommands(
 
   const staticList = staticSlashCommands(agentId);
   const sup = getAcpSupplement(agentId);
-  const fromMode: AvailableCommand[] = [];
-  if (sup?.promptModeCommands) {
-    for (const [modeId, cmd] of Object.entries(sup.promptModeCommands)) {
-      const name = cmd.replace(/^\//, "").split(/\s+/)[0];
-      if (!name) continue;
-      if (staticList.some((c) => c.name === name) || fromMode.some((c) => c.name === name)) {
-        continue;
-      }
-      fromMode.push({
+  const extra: AvailableCommand[] = [];
+  // Always-approve toggle (Grok) — exposed as a slash command for the prompt input.
+  if (sup?.alwaysApprove) {
+    const name = sup.alwaysApprove.on.replace(/^\//, "").split(/\s+/)[0];
+    if (name && !staticList.some((c) => c.name === name) && !extra.some((c) => c.name === name)) {
+      extra.push({
         name,
-        description: `Mode: ${modeId}`,
-        input: cmd.includes(" ") ? { hint: cmd.slice(cmd.indexOf(" ") + 1) } : undefined,
+        description: "Toggle permission auto-approval on/off",
+        input: { hint: "on|off" },
       });
     }
   }
-  return [...staticList, ...fromMode];
+  return [...staticList, ...extra];
 }
 
 /** Parse `available_commands_update` from an ACP session/update payload. */

@@ -3568,6 +3568,17 @@ body.is-composer-resizing .composer {
   border-color: color-mix(in srgb, var(--tone) 60%, transparent);
 }
 
+/* Grok always-approve — separate permission axis (not plan/build mode). */
+.composer-mode-chip--always-on {
+  --tone: var(--orange, #f59e0b);
+  text-transform: none;
+}
+
+.composer-mode-chip--always-off {
+  --tone: var(--text-faint);
+  text-transform: none;
+}
+
 /* ── Mode menu (drops up from the toolbar chip) ─────────────────────── */
 .composer-menu--mode {
   left: 0;

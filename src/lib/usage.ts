@@ -15,6 +15,20 @@ export type SessionUsageState = {
   providerModel: string | null;
   refreshedAt: string | null;
   source: string | null;
+  /** Last turn's token split, from the session/prompt response. */
+  turnTokens: TurnTokens | null;
+};
+
+/**
+ * End-of-turn token split. Reported in the `session/prompt` *response*, which
+ * every agent fills in — including the ones that never send `usage_update`.
+ */
+export type TurnTokens = {
+  input: number | null;
+  output: number | null;
+  cached: number | null;
+  reasoning: number | null;
+  total: number | null;
 };
 
 export function emptySessionUsage(): SessionUsageState {
@@ -29,6 +43,7 @@ export function emptySessionUsage(): SessionUsageState {
     providerModel: null,
     refreshedAt: null,
     source: null,
+    turnTokens: null,
   };
 }
 
@@ -106,6 +121,24 @@ function formatTokenCount(n: number): string {
   if (n >= 10_000) return `${Math.round(n / 1000)}K`;
   if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
   return String(Math.round(n));
+}
+
+/** `13K in · 29 out · 2.8K cached` — omits whatever the agent left null. */
+function formatTurnTokens(tokens: TurnTokens | null): string | null {
+  if (!tokens) return null;
+  const parts: string[] = [];
+  if (tokens.input != null) parts.push(`${formatTokenCount(tokens.input)} in`);
+  if (tokens.output != null) parts.push(`${formatTokenCount(tokens.output)} out`);
+  if (tokens.cached != null && tokens.cached > 0) {
+    parts.push(`${formatTokenCount(tokens.cached)} cached`);
+  }
+  if (tokens.reasoning != null && tokens.reasoning > 0) {
+    parts.push(`${formatTokenCount(tokens.reasoning)} thinking`);
+  }
+  if (parts.length === 0 && tokens.total != null) {
+    parts.push(`${formatTokenCount(tokens.total)} total`);
+  }
+  return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 function formatCost(amount: number, currency: string): string {
@@ -221,6 +254,64 @@ export function parseClaudeRateLimitsBucket(meta: unknown): UsageWindow[] {
       label,
       percentage: utilization,
       detail: reset,
+      kind: "rate_limit",
+    });
+  }
+  return out;
+}
+
+/**
+ * Parse Claude Code `/usage` output.
+ *
+ * This is the *only* way to get plan limits on demand: `_claude/rateLimit` meta
+ * rides on a `rate_limit_event`, which the CLI emits only when a limit is
+ * actually being approached — so a healthy account reports nothing all day.
+ * `/usage` is a local slash command (no model turn, no tokens), and the adapter
+ * forwards its stdout as ordinary assistant text.
+ *
+ * Live shape (claude-agent-acp 0.61.0):
+ *   Current session: 18% used · resets Jul 28, 3:10am (Asia/Tokyo)
+ *   Current week (all models): 68% used · resets Jul 30, 7pm (Asia/Tokyo)
+ *   Current week (Opus): 4% used · resets Jul 30, 7pm (Asia/Tokyo)
+ *
+ * Note these are percentages *used*, unlike Codex's "% left".
+ */
+export function parseClaudeUsageText(text: string): UsageWindow[] {
+  if (!text || !text.includes("%")) return [];
+  const out: UsageWindow[] = [];
+  const re =
+    /^\s*Current\s+(session|week)\s*(?:\(([^)]*)\))?\s*:\s*(\d+(?:\.\d+)?)\s*%\s*used([^\n]*)/gim;
+
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    const scope = match[1].toLowerCase();
+    const qualifier = (match[2] ?? "").trim().toLowerCase();
+    const used = Number(match[3]);
+    if (!Number.isFinite(used)) continue;
+
+    let id: string;
+    let label: string;
+    if (scope === "session") {
+      // Claude's rolling session window is the 5-hour limit.
+      id = "five-hour";
+      label = "5-hour limit";
+    } else if (qualifier && qualifier !== "all models") {
+      // Per-model weekly buckets (Opus/Sonnet) get their own row.
+      const pretty = qualifier.replace(/\b\w/g, (c) => c.toUpperCase());
+      id = `weekly-${qualifier.replace(/\s+/g, "-")}`;
+      label = `Weekly (${pretty})`;
+    } else {
+      id = "weekly";
+      label = "Weekly limit";
+    }
+
+    // `· resets Jul 30, 7pm (Asia/Tokyo)` → `resets Jul 30, 7pm (Asia/Tokyo)`
+    const detail = (match[4] ?? "").replace(/^[\s·\-]+/, "").trim();
+    out.push({
+      id,
+      label,
+      percentage: Math.max(0, Math.min(100, Math.round(used * 10) / 10)),
+      detail: detail || null,
       kind: "rate_limit",
     });
   }
@@ -427,12 +518,141 @@ export function mergeUsageFromAcp(
   };
 }
 
+/**
+ * Pull the end-of-turn token split out of a `session/prompt` response.
+ *
+ * This is the only usage Grok ever reports — it sends no `usage_update` at all
+ * (verified against `grok agent stdio` 0.2.104). The other three agents fill in
+ * the same field, so this also adds the input/output/cached split they omit
+ * from `usage_update`.
+ *
+ * Shapes seen in the wild:
+ * - ACP `PromptResponse.usage`: `{ inputTokens, outputTokens, totalTokens, … }`
+ * - Grok:  `_meta.{ totalTokens, inputTokens, outputTokens, cachedReadTokens }`
+ * - Codex: `_meta.quota.token_count.{ …, cachedInputTokens, reasoningOutputTokens }`
+ */
+export function extractTurnTokens(data: unknown): TurnTokens | null {
+  const root = asRecord(data);
+  if (!root) return null;
+
+  // Unwrap common envelopes:
+  // - JSON-RPC response: { result: { _meta / usage } }
+  // - ACP notification:  { method, params: { update: { usage } } }  (Grok)
+  // - Bare result / update object
+  let result = asRecord(root.result) ?? root;
+  if (typeof root.method === "string") {
+    const params = asRecord(root.params) ?? root;
+    const update = asRecord(params.update) ?? params;
+    // Only turn_completed (and prompt results) carry usage. Ignore model_changed etc.
+    const kind =
+      (typeof update.sessionUpdate === "string" && update.sessionUpdate) ||
+      (typeof params.sessionUpdate === "string" && params.sessionUpdate) ||
+      "";
+    if (kind && kind !== "turn_completed" && !asRecord(update.usage) && !asRecord(params.usage)) {
+      return null;
+    }
+    result = update;
+  }
+
+  const meta = asRecord(result._meta);
+  const candidates = [
+    asRecord(result.usage),
+    asRecord(meta?.usage),
+    meta,
+    result,
+    asRecord(asRecord(meta?.quota)?.token_count),
+    asRecord(asRecord(meta?.quota)?.tokenCount),
+  ].filter(Boolean) as Record<string, unknown>[];
+  if (candidates.length === 0) return null;
+
+  const pick = (...keys: string[]): number | null => {
+    for (const source of candidates) {
+      for (const key of keys) {
+        const n = asNumber(source[key]);
+        if (n != null) return n;
+      }
+    }
+    return null;
+  };
+
+  const input = pick("inputTokens", "input_tokens");
+  const output = pick("outputTokens", "output_tokens");
+  const cached = pick(
+    "cachedReadTokens",
+    "cached_read_tokens",
+    "cachedInputTokens",
+    "cached_input_tokens"
+  );
+  const reasoning = pick(
+    "thoughtTokens",
+    "thought_tokens",
+    "reasoningOutputTokens",
+    "reasoning_output_tokens",
+    "reasoningTokens"
+  );
+  const total = pick("totalTokens", "total_tokens");
+
+  if (input == null && output == null && total == null) return null;
+  return { input, output, cached, reasoning, total };
+}
+
+/**
+ * Merge a turn result into usage state.
+ *
+ * `contextUsed` is only *seeded* here, never overwritten: `usage_update` is the
+ * authoritative context figure for agents that send it, and a turn total is not
+ * the same number as tokens-in-context once history is compacted.
+ */
+export function mergeUsageFromPromptResult(
+  prev: SessionUsageState | undefined,
+  data: unknown,
+  now = new Date()
+): SessionUsageState | null {
+  const tokens = extractTurnTokens(data);
+  if (!tokens) return null;
+  const base = prev ?? emptySessionUsage();
+  const label = "acp prompt result";
+  return {
+    ...base,
+    turnTokens: tokens,
+    contextUsed: base.contextUsed ?? tokens.total ?? tokens.input,
+    refreshedAt: now.toISOString(),
+    source: base.source?.includes(label)
+      ? base.source
+      : base.source
+        ? `${base.source} + ${label}`
+        : label,
+  };
+}
+
+/**
+ * Seed the context ceiling from `session/ready`.
+ *
+ * Agents that never send `usage_update` still advertise a per-model ceiling at
+ * session setup, and without it `used` has nothing to be a percentage of.
+ */
+export function seedContextSize(
+  prev: SessionUsageState | undefined,
+  size: number | null | undefined
+): SessionUsageState | null {
+  if (size == null || !Number.isFinite(size) || size <= 0) return null;
+  const base = prev ?? emptySessionUsage();
+  // A live usage_update always wins — this is only a floor for agents with none.
+  if (base.contextSize != null) return null;
+  return { ...base, contextSize: size };
+}
+
 export function mergeUsageFromText(
   prev: SessionUsageState | undefined,
   text: string,
   now = new Date()
 ): SessionUsageState | null {
-  const rateWindows = parseCodexStatusRateLimits(text);
+  // Codex /status, Claude /usage and Grok /usage-style text all land here.
+  const rateWindows = [
+    ...parseCodexStatusRateLimits(text),
+    ...parseClaudeUsageText(text),
+    ...parseGrokCostText(text),
+  ];
   if (rateWindows.length === 0) return null;
   const base = prev ?? emptySessionUsage();
   const windows = { ...base.windows };
@@ -441,7 +661,159 @@ export function mergeUsageFromText(
     ...base,
     windows,
     refreshedAt: now.toISOString(),
-    source: base.source?.includes("status") ? base.source : "agent /status text",
+    source: base.source?.includes("status") || base.source?.includes("cost")
+      ? base.source
+      : base.source
+        ? `${base.source} + agent text`
+        : "agent text",
+  };
+}
+
+/**
+ * Parse Grok TUI `/usage` (or `/cost`) text if it ever shows up in chat, e.g.
+ * `Weekly limit: 5%` / `Next reset: August 1, 01:12`.
+ */
+export function parseGrokCostText(text: string): UsageWindow[] {
+  if (!text) return [];
+  const out: UsageWindow[] = [];
+  const weekly = text.match(/Weekly\s+limit\s*:\s*(\d+(?:\.\d+)?)\s*%/i);
+  if (weekly) {
+    const pct = Number(weekly[1]);
+    if (Number.isFinite(pct)) {
+      const resetLine = text.match(/Next\s+reset\s*:\s*([^\n]+)/i);
+      out.push({
+        id: "weekly",
+        label: "Weekly limit",
+        percentage: Math.max(0, Math.min(100, pct)),
+        detail: resetLine ? `resets ${resetLine[1].trim()}` : null,
+        kind: "rate_limit",
+      });
+    }
+  }
+  const monthly = text.match(/Monthly\s+limit\s*:\s*(\d+(?:\.\d+)?)\s*%/i);
+  if (monthly) {
+    const pct = Number(monthly[1]);
+    if (Number.isFinite(pct)) {
+      out.push({
+        id: "monthly",
+        label: "Monthly limit",
+        percentage: Math.max(0, Math.min(100, pct)),
+        detail: null,
+        kind: "rate_limit",
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Parse Grok ACP `_x.ai/billing` (what the TUI `/usage` panel actually loads).
+ *
+ * Live shape (grok 0.2.104):
+ * ```
+ * { config: { creditUsagePercent: 6,
+ *             currentPeriod: { type: "USAGE_PERIOD_TYPE_WEEKLY", start, end },
+ *             billingPeriodEnd: "…" },
+ *   subscription_tier: "SuperGrok" }
+ * ```
+ */
+export function parseGrokBilling(data: unknown): {
+  windows: UsageWindow[];
+  tier: string | null;
+} | null {
+  const root = asRecord(data);
+  if (!root) return null;
+  const config = asRecord(root.config) ?? root;
+  const pct = asNumber(config.creditUsagePercent);
+  if (pct == null) return null;
+
+  const period = asRecord(config.currentPeriod);
+  const periodType =
+    (typeof period?.type === "string" && period.type) ||
+    (typeof config.periodType === "string" && config.periodType) ||
+    "";
+  const isWeekly = /weekly/i.test(periodType) || !periodType;
+  const isMonthly = /monthly/i.test(periodType);
+  const id = isMonthly ? "monthly" : "weekly";
+  const label = isMonthly ? "Monthly limit" : "Weekly limit";
+
+  const end =
+    period?.end ??
+    config.billingPeriodEnd ??
+    config.billing_period_end ??
+    null;
+  const reset = formatResetHint(end);
+  // Prefer a wall-clock reset when we have a real date (matches TUI "Next reset").
+  let detail = reset;
+  if (typeof end === "string" || typeof end === "number") {
+    const ms =
+      typeof end === "number"
+        ? end < 1e12
+          ? end * 1000
+          : end
+        : Date.parse(end);
+    if (!Number.isNaN(ms)) {
+      try {
+        detail = `resets ${new Date(ms).toLocaleString(undefined, {
+          month: "short",
+          day: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+        })}`;
+      } catch {
+        /* keep relative */
+      }
+    }
+  }
+
+  const tier =
+    (typeof root.subscription_tier === "string" && root.subscription_tier) ||
+    (typeof root.subscriptionTier === "string" && root.subscriptionTier) ||
+    null;
+
+  // creditUsagePercent is already 0–100 (live: 6 ≈ TUI "Weekly limit: 5%").
+  // Only treat values in (0, 1] as fractions if the field ever changes shape.
+  const percentage =
+    pct > 0 && pct <= 1
+      ? normalizeUtilizationPercent(pct) ?? pct * 100
+      : Math.max(0, Math.min(100, pct));
+
+  return {
+    windows: [
+      {
+        id,
+        label,
+        percentage,
+        detail,
+        kind: "rate_limit",
+      },
+    ],
+    tier,
+  };
+}
+
+/** Merge a live `_x.ai/billing` probe into session usage state. */
+export function mergeGrokBilling(
+  prev: SessionUsageState | undefined,
+  data: unknown,
+  now = new Date()
+): SessionUsageState | null {
+  const parsed = parseGrokBilling(data);
+  if (!parsed || parsed.windows.length === 0) return null;
+  const base = prev ?? emptySessionUsage();
+  const windows = { ...base.windows };
+  for (const w of parsed.windows) windows[w.id] = w;
+  const label = "grok _x.ai/billing";
+  const tierBit = parsed.tier ? ` · ${parsed.tier}` : "";
+  return {
+    ...base,
+    windows,
+    refreshedAt: now.toISOString(),
+    source: base.source?.includes(label)
+      ? base.source
+      : base.source
+        ? `${base.source} + ${label}${tierBit}`
+        : `${label}${tierBit}`,
   };
 }
 
@@ -499,6 +871,19 @@ export function buildUsageSnapshot(args: {
     });
   }
 
+  // Last turn's token split (session/prompt response — every agent fills this in).
+  const turnDetail = formatTurnTokens(state?.turnTokens ?? null);
+  if (turnDetail) {
+    windows.push({
+      id: "turn",
+      label: "Last turn",
+      percentage: null,
+      detail: turnDetail,
+      // `cost` kind renders detail as the primary value — no meter, no "N/A".
+      kind: "cost",
+    });
+  }
+
   // Provider balance (OpenCode: based on selected provider/model)
   const providerRows = Object.values(state?.providerWindows ?? {});
   if (providerRows.length > 0) {
@@ -520,29 +905,33 @@ export function buildUsageSnapshot(args: {
   const rateWindows = Object.values(state?.windows ?? {}).filter(
     (w) => w.kind === "rate_limit" || w.kind == null
   );
-  const wantsPlanLimits = agentId === "codex" || agentId === "claude-code" || agentId === "claude";
+  const isGrok = agentId === "grok-build" || agentId === "grok";
+  const wantsPlanLimits =
+    agentId === "codex" ||
+    agentId === "claude-code" ||
+    agentId === "claude" ||
+    isGrok;
   const byId = new Map(rateWindows.map((w) => [w.id, w]));
   // Don't duplicate ids already shown from provider probe (Go 5h/weekly).
   for (const row of providerRows) {
     byId.delete(row.id);
   }
 
+  // Plan limits are shown only when the agent actually reported them. ACP has no
+  // rate-limit field at all, so a permanent "5-hour limit — N/A" pair was two
+  // dead rows that made a working Usage panel read as broken; the absence is
+  // explained once in `note` instead.
+  // Grok: weekly comes from `_x.ai/billing` (TUI /usage), not Claude meta.
   if (wantsPlanLimits) {
-    for (const slot of [
-      { id: "five-hour", label: "5-hour limit" },
-      { id: "weekly", label: "Weekly limit" },
-    ] as const) {
-      if (providerRows.some((r) => r.id === slot.id)) continue;
-      windows.push(
-        byId.get(slot.id) ?? {
-          id: slot.id,
-          label: slot.label,
-          percentage: null,
-          detail: null,
-          kind: "rate_limit",
-        }
-      );
-      byId.delete(slot.id);
+    const slots = isGrok
+      ? (["weekly", "monthly"] as const)
+      : (["five-hour", "weekly"] as const);
+    for (const slot of slots) {
+      if (providerRows.some((r) => r.id === slot)) continue;
+      const row = byId.get(slot);
+      if (!row) continue;
+      windows.push(row);
+      byId.delete(slot);
     }
   }
 
@@ -556,21 +945,16 @@ export function buildUsageSnapshot(args: {
     };
     extras.sort((a, b) => order(a.id) - order(b.id) || a.label.localeCompare(b.label));
     windows.push(...extras);
-  } else if (!wantsPlanLimits && !isOpenCode && agentId === "grok") {
-    windows.push({
-      id: "provider",
-      label: "Provider usage",
-      percentage: null,
-      detail: connected ? "Waiting for agent usage_update" : null,
-      kind: "provider",
-    });
   }
 
   // Honest empty-state labels: never imply a live % when we only know plan ceilings.
   for (const w of windows) {
     if (w.percentage == null && !w.detail) {
       if (w.kind === "context") {
-        w.detail = connected ? "Waiting for usage_update" : "Not connected";
+        // Say what to *do*. Every ACP agent reports context only once a turn has
+        // produced tokens, so before the first message there is nothing to wait
+        // for — the old "Waiting for usage_update" read as a malfunction.
+        w.detail = connected ? "Send a message to fill this in" : "Not connected";
       } else if (w.kind === "rate_limit") {
         w.detail = "No live remaining % from agent";
       } else if (w.kind === "provider") {
@@ -578,6 +962,20 @@ export function buildUsageSnapshot(args: {
       }
     }
   }
+
+  /**
+   * Did the agent ever actually report anything? `refreshedAt` alone is not
+   * evidence: a manual refresh stamps it even when the probe returned nothing,
+   * which used to replace the "send a message" hint with a bare
+   * "Source: manual refresh".
+   */
+  const hasUsageData =
+    state != null &&
+    (state.contextUsed != null ||
+      state.turnTokens != null ||
+      state.costAmount != null ||
+      Object.keys(state.windows).length > 0 ||
+      Object.keys(state.providerWindows).length > 0);
 
   let note: string | null = null;
   if (state?.providerLabel) {
@@ -592,14 +990,29 @@ export function buildUsageSnapshot(args: {
     note = isOpenCode
       ? "Open an OpenCode session and pick a model (provider/model) to probe balance."
       : "Start an ACP session to receive live usage.";
-  } else if (!state?.refreshedAt) {
-    note = wantsPlanLimits
-      ? "Context fills in after the first turn. Plan limits appear when the adapter reports them (Claude meta / Codex /status)."
-      : isOpenCode
-        ? "Click refresh to query the provider for the selected model."
-        : "Waiting for the agent to report usage_update.";
-  } else if (state.source) {
+  } else if (!hasUsageData) {
+    note = isGrok
+      ? "Context fills in after the first turn. Click refresh for weekly credit usage (_x.ai/billing)."
+      : wantsPlanLimits
+        ? "Context fills in after the first turn. Click refresh for plan limits."
+        : isOpenCode
+          ? "Click refresh to query the provider for the selected model."
+          : "Context fills in after the first turn.";
+  } else if (state?.source) {
     note = `Source: ${state.source}`;
+  }
+
+  // The limit rows are gone unless real, so say why — otherwise their absence
+  // just looks like a missing feature.
+  const hasRateRows = windows.some((w) => w.kind === "rate_limit");
+  if (!hasRateRows && wantsPlanLimits && connected) {
+    const how =
+      agentId === "codex"
+        ? "click refresh (runs /status)"
+        : isGrok
+          ? "click refresh (Grok _x.ai/billing)"
+          : "click refresh (runs /usage)";
+    note = `${note ? `${note} · ` : ""}Plan limits: ${how}.`;
   }
 
   return {

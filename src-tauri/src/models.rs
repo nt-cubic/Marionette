@@ -41,6 +41,9 @@ pub struct Session {
     /// Discrete effort id (e.g. Claude low/high) when agent uses select options.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_effort_id: Option<String>,
+    /// Grok `/always-approve` (permission auto-approve). Not a session mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_always_approve: Option<bool>,
 }
 
 /// A CLI the ACP bridge shells out to (installed separately from the bridge).
@@ -153,12 +156,19 @@ impl AgentConfig {
                     )],
                 ),
             ),
-            // Native ACP: `grok agent stdio` (not the interactive TUI).
+            // Native ACP: `grok --trust agent stdio` (not the interactive TUI).
+            // `--trust` is required so project-scoped MCP (Unity under `.grok/` /
+            // `mcps/`) actually attaches — otherwise Grok silently loads only
+            // global servers and AgentShell's lend path has nothing to talk to.
             Self::new(
                 "grok-build",
                 "Grok Build",
                 "grok",
-                vec!["agent".to_string(), "stdio".to_string()],
+                vec![
+                    "--trust".to_string(),
+                    "agent".to_string(),
+                    "stdio".to_string(),
+                ],
                 "acp",
                 "stdin",
                 AgentInstallSpec::manual(

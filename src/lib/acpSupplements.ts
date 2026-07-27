@@ -20,32 +20,70 @@ export type AcpSupplement = {
   effortConfigIds?: string[];
   modelConfigIds?: string[];
   /**
-   * When set, mode changes use prompt injection (session/prompt) instead of
-   * session/set_config_option. Key = mode id, value = command text to send.
-   * Used by agents (e.g. Grok Build) whose ACP lacks set_config_option but
-   * accepts slash commands via prompt.
+   * Effort is carried by `session/set_model`'s `_meta.reasoningEffort` rather
+   * than a config option, so `effortOptions` here are real even though live
+   * negotiation advertises no effort config id. Rust routes these (see
+   * `legacy_set_config`); the id stays null on purpose so we never send a
+   * fabricated `effort` config option.
    */
-  promptModeCommands?: Record<string, string>;
+  effortViaLegacyModel?: boolean;
+  /**
+   * Permission auto-approval is a *separate axis* from plan/build modes.
+   * Grok exposes it only as the `/always-approve on|off` slash command
+   * (verified: off → session/request_permission, on → tools run without).
+   * Composer renders a dedicated chip and drives it via session/prompt.
+   */
+  alwaysApprove?: {
+    on: string;
+    off: string;
+    /** Chip label when enabled. */
+    onLabel?: string;
+    /** Chip label when disabled. */
+    offLabel?: string;
+  };
 };
 
 const SUPPLEMENTS: Record<string, AcpSupplement> = {
   "grok-build": {
-    // Grok's ACP does NOT support session/set_config_option.
-    // The only runtime permission control is /always-approve via prompt injection.
-    // Reasoning effort (High/Medium/Low) and model can only be set at launch time.
+    // Grok answers -32601 to session/set_config_option; its knobs are the
+    // pre-v2 RPCs (session/set_mode, session/set_model). Verified against
+    // `grok agent stdio` 0.2.104: session/new advertises neither `modes` nor
+    // `configOptions`, so every list below has to come from here.
+    //
+    // plan/build verified *behaviourally*, not by echo: in `plan` Grok refuses
+    // a file write and calls exit_plan_mode; in `build` the same prompt writes.
+    // Do not trust `current_mode_update` as validation — Grok echoes back any
+    // string you send it (`yolo`, `chat`, … all "confirm"), so the echo says
+    // nothing about whether a mode exists.
     modes: [
-      { id: "ask", label: "Ask" },
-      { id: "auto-approve", label: "Auto-approve" },
+      { id: "plan", label: "Plan" },
+      { id: "build", label: "Build" },
     ],
     models: [{ id: "grok-4.5", label: "Grok 4.5" }],
-    defaultMode: "ask",
+    // Grok publishes these under _meta["x.ai/sessionConfig"] (confusingly with
+    // category "mode") and _meta.modelState[].reasoningEfforts.
+    effortOptions: [
+      { id: "high", label: "High" },
+      { id: "medium", label: "Medium" },
+      { id: "low", label: "Low" },
+    ],
+    effortViaLegacyModel: true,
+    // Grok sends no current_mode_update at session start, so this default is the
+    // only thing the chip can show. It says `build` because a fresh session that
+    // is told set_mode("build") emits no change event, while plan/build swaps do.
+    defaultMode: "build",
     defaultModel: "grok-4.5",
-    // Mode changes are injected as slash commands via session/prompt
-    promptModeCommands: {
-      "ask": "/always-approve off",
-      "auto-approve": "/always-approve on",
-    },
+    // Matches _meta.modelState[].reasoningEfforts[].default for grok-4.5.
+    defaultEffortId: "high",
     modelConfigIds: ["model"],
+    // Grok's most important day-to-day control. Not an ACP mode — Shift+Tab
+    // cycles plan/build; Ctrl+O / this chip toggles always-approve.
+    alwaysApprove: {
+      on: "/always-approve on",
+      off: "/always-approve off",
+      onLabel: "Always approve",
+      offLabel: "Ask permissions",
+    },
   },
   "claude-code": {
     // Wire ids from claude-agent-acp `buildAvailableModes` (name "Manual" still id "default")
@@ -117,26 +155,9 @@ export function mergeAcpCapabilities(
   const modes = base.modes.length > 0 ? base.modes : sup.modes ?? [];
   const models = base.models.length > 0 ? base.models : sup.models ?? [];
 
-  // Grok Build: ACP does not support session/set_config_option for thought level.
-  // Live agents sometimes still advertise ThoughtLevel — offering Low/Medium then
-  // fails with a set_config error. Honest UI: strip effort entirely (launch-time only).
-  if (agentId === "grok-build") {
-    return {
-      ...base,
-      modes,
-      models,
-      thinkingEffort: null,
-      effortOptions: [],
-      supportsCancel: base.supportsCancel || true,
-      currentMode: base.currentMode ?? sup.defaultMode ?? modes[0]?.id ?? null,
-      currentModel: base.currentModel ?? sup.defaultModel ?? models[0]?.id ?? null,
-      currentEffort: null,
-      currentEffortId: null,
-      modeConfigId: base.modeConfigId ?? sup.modeConfigIds?.[0] ?? null,
-      modelConfigId: base.modelConfigId ?? sup.modelConfigIds?.[0] ?? null,
-      effortConfigId: null,
-    };
-  }
+  // Grok Build: ACP does not support session/set_config_option, but its pre-v2
+  // RPCs (session/set_mode, session/set_model) carry mode/effort via `_meta`.
+  // The `legacyEffort` path below handles effort; no early return needed.
 
   // Effort is model-dependent (especially Claude). Never invent an effort control
   // when live negotiation did not advertise one — that produces "Unknown config option".
@@ -144,23 +165,36 @@ export function mergeAcpCapabilities(
     Boolean(base.effortConfigId) ||
     (base.effortOptions?.length ?? 0) > 0 ||
     base.thinkingEffort != null;
-  const effortOptions = liveHasEffort
-    ? (base.effortOptions?.length ?? 0) > 0
-      ? base.effortOptions
-      : sup.effortOptions ?? []
-    : live
-      ? []
-      : sup.effortOptions ?? [];
-  const thinkingEffort = liveHasEffort
-    ? (base.thinkingEffort ?? (effortOptions.length > 0 ? null : sup.thinkingEffort ?? null))
-    : live
-      ? null
-      : (sup.thinkingEffort ?? null);
-  const effortConfigId = liveHasEffort
-    ? (base.effortConfigId ?? sup.effortConfigIds?.[0] ?? null)
-    : live
-      ? null
-      : (base.effortConfigId ?? sup.effortConfigIds?.[0] ?? null);
+  // Exception: agents whose effort rides on session/set_model have no config id
+  // to advertise, so absence proves nothing. Only a supplement that explicitly
+  // opts in gets this — a missing id still means "no control" everywhere else.
+  const legacyEffort =
+    sup.effortViaLegacyModel === true && (sup.effortOptions?.length ?? 0) > 0;
+
+  const effortOptions = legacyEffort
+    ? sup.effortOptions ?? []
+    : liveHasEffort
+      ? (base.effortOptions?.length ?? 0) > 0
+        ? base.effortOptions
+        : sup.effortOptions ?? []
+      : live
+        ? []
+        : sup.effortOptions ?? [];
+  const thinkingEffort = legacyEffort
+    ? null // discrete levels only; no 0–1 slider
+    : liveHasEffort
+      ? (base.thinkingEffort ?? (effortOptions.length > 0 ? null : sup.thinkingEffort ?? null))
+      : live
+        ? null
+        : (sup.thinkingEffort ?? null);
+  // Stays null for the legacy transport: there is no config option to name.
+  const effortConfigId = legacyEffort
+    ? null
+    : liveHasEffort
+      ? (base.effortConfigId ?? sup.effortConfigIds?.[0] ?? null)
+      : live
+        ? null
+        : (base.effortConfigId ?? sup.effortConfigIds?.[0] ?? null);
 
   return {
     ...base,
@@ -174,7 +208,7 @@ export function mergeAcpCapabilities(
     currentEffort:
       base.currentEffort ??
       (thinkingEffort ? thinkingEffort.default : null),
-    currentEffortId: liveHasEffort
+    currentEffortId: liveHasEffort || legacyEffort
       ? (base.currentEffortId ??
         sup.defaultEffortId ??
         effortOptions[0]?.id ??
@@ -227,12 +261,9 @@ export function expandAcpConfigAttempts(
   const sup = getAcpSupplement(agentId);
   const attempts: Record<string, unknown>[] = [];
 
-  // Grok never accepts runtime effort / model via set_config_option.
+  // Grok: model is launch-time only; effort and mode use legacy set_{model,mode}
+  // RPCs routed through Rust. Never try set_config_option for these on Grok.
   if (agentId === "grok-build") {
-    if (patch.effortId != null || patch.thinkingEffort != null) {
-      return [];
-    }
-    // Model is launch-time only; mode uses promptModeCommands (handled earlier).
     if (typeof patch.model === "string") {
       return [];
     }
@@ -257,6 +288,16 @@ export function expandAcpConfigAttempts(
     ].filter(Boolean) as string[];
     for (const id of [...new Set(ids)]) {
       attempts.push({ configId: id, value: patch.mode });
+    }
+  }
+
+  // Grok-style: no config id exists, so hand Rust the logical knob and let
+  // `legacy_set_config` put it on session/set_model.
+  if (sup?.effortViaLegacyModel && !caps?.effortConfigId) {
+    if (typeof patch.effortId === "string") {
+      attempts.push({ effortId: patch.effortId });
+    } else if (typeof patch.thinkingEffort === "number") {
+      attempts.push({ thinkingEffort: patch.thinkingEffort });
     }
   }
 

@@ -12,14 +12,17 @@ import {
   userMessageEvent,
 } from "../lib/acpTranscript";
 import { armPtyBridge, createPtyBridgeState, flushPtyBridge, ingestPtyOutput, type PtyBridgeState } from "../lib/ptyCleanBridge";
-import { addProject, appendDebugLog, cancelAcpSession, checkOutsideProjectPaths, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, generateHandoff, getChangedFiles, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgents, listProjects, listSessions, loadTranscript, preparePtyInput, probeAgentAuth, probeProviderUsage, projectContextPrompt, respondAcpPermission, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, startAcpSession, startAgentLogin, stopAcpSession, stopTerminal, updateSessionAgent, updateSessionLabel, updateSessionPrefs, writeTerminal, writeTranscript, type OutsidePath } from "../lib/api";
+import { addProject, appendDebugLog, cancelAcpSession, checkOutsideProjectPaths, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, generateHandoff, getChangedFiles, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgents, listProjects, listSessions, loadTranscript, preparePtyInput, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, respondAcpPermission, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, startAcpSession, startAgentLogin, stopAcpSession, stopTerminal, updateSessionAgent, updateSessionLabel, updateSessionPrefs, writeTerminal, writeTranscript, type OutsidePath } from "../lib/api";
 import type { AcpEvent, AvailableCommand, CapabilitySnapshot, ChangedFile, HandoffResult, Project, ProjectContext, Session, SessionComposerPrefs, SessionEvent, SessionViewMode, TerminalOutput, UsageSnapshot } from "../lib/types";
 import {
   buildUsageSnapshot,
   emptySessionUsage,
+  mergeGrokBilling,
   mergeProviderProbe,
   mergeUsageFromAcp,
+  mergeUsageFromPromptResult,
   mergeUsageFromText,
+  seedContextSize,
   type SessionUsageState,
 } from "../lib/usage";
 import { mergeAcpCapabilities } from "../lib/acpSupplements";
@@ -394,6 +397,20 @@ export function App() {
         cancelIgnoredRef.current.delete(payload.sessionId);
       }
 
+      // Per-model context ceiling, so `used / size` works for agents that never
+      // send usage_update (Grok). Never overwrites a live usage_update size.
+      if (payload.kind === "system" && payload.method === "session/ready") {
+        const size = (payload.data as { contextSize?: unknown } | null)?.contextSize;
+        setSessionUsageById((current) => {
+          const seeded = seedContextSize(
+            current[payload.sessionId],
+            typeof size === "number" ? size : null
+          );
+          if (!seeded) return current;
+          return { ...current, [payload.sessionId]: seeded };
+        });
+      }
+
       // Live transcript: thinking / tool / assistant stream as events arrive
       if (payload.method === "session/update") {
         // Context window / cost / vendor rate-limit meta
@@ -462,7 +479,27 @@ export function App() {
           });
         }
       }
+      // Grok also puts the full turn usage on `_x.ai/session_notification`
+      // (turn_completed.usage) — same numbers as the prompt result, but this
+      // notification is easier to spot in logs and arrives even if the RPC
+      // response path is filtered.
+      if (payload.method === "_x.ai/session_notification") {
+        setSessionUsageById((current) => {
+          const merged = mergeUsageFromPromptResult(current[payload.sessionId], payload.data);
+          if (!merged) return current;
+          return { ...current, [payload.sessionId]: merged };
+        });
+      }
+
       if (payload.kind === "response" && payload.method === "rpc/response") {
+        // End-of-turn token split. This is the only usage Grok ever reports, and
+        // it carries the in/out/cached breakdown that usage_update omits.
+        setSessionUsageById((current) => {
+          const merged = mergeUsageFromPromptResult(current[payload.sessionId], payload.data);
+          if (!merged) return current;
+          return { ...current, [payload.sessionId]: merged };
+        });
+
         // Compute duration and stamp on the last assistant_message
         const startedAt = turnStartedAtRef.current[payload.sessionId];
         if (startedAt) {
@@ -845,22 +882,64 @@ export function App() {
       return;
     }
 
-    // Codex only surfaces account rate limits via /status text (not ACP usage_update).
+    // Codex (/status) and Claude (/usage) only surface account rate limits as
+    // command text. Both are local slash commands — no model turn, no tokens.
+    // Claude's `_claude/rateLimit` meta is not a substitute: it rides on a
+    // `rate_limit_event`, which never fires while you are comfortably inside
+    // your plan, so the panel would sit empty exactly when nothing is wrong.
+    const limitCommand =
+      agent?.id === "codex" ? "/status" : agent?.id === "claude-code" ? "/usage" : null;
     if (
       agent?.transport === "acp" &&
-      agent.id === "codex" &&
+      limitCommand &&
       active &&
       (active.status === "running" || active.status === "waiting")
     ) {
-      void sendAcpPrompt(sid, "/status").catch((error) => {
+      void sendAcpPrompt(sid, limitCommand).catch((error) => {
         pushDebug({
           sessionId: sid,
           level: "warn",
           source: "usage",
-          summary: "usage refresh /status failed",
+          summary: `usage refresh ${limitCommand} failed`,
           detail: error instanceof Error ? error.message : String(error),
         });
       });
+    }
+
+    // Grok weekly credits: `_x.ai/billing` (same data as TUI /usage). Sending
+    // `/usage` over session/prompt just chats the model — the slash is TUI-only.
+    if (
+      agent?.transport === "acp" &&
+      (agent.id === "grok-build" || agent.id === "grok") &&
+      active &&
+      (active.status === "running" || active.status === "waiting" || active.status === "starting")
+    ) {
+      void (async () => {
+        try {
+          const billing = await probeAcpBilling(sid);
+          if (!billing) return;
+          setSessionUsageById((current) => {
+            const merged = mergeGrokBilling(current[sid], billing);
+            if (!merged) return current;
+            return { ...current, [sid]: merged };
+          });
+          pushDebug({
+            sessionId: sid,
+            level: "info",
+            source: "usage",
+            summary: "grok billing probe ok",
+            detail: JSON.stringify(billing).slice(0, 240),
+          });
+        } catch (error) {
+          pushDebug({
+            sessionId: sid,
+            level: "warn",
+            source: "usage",
+            summary: "grok billing probe failed",
+            detail: error instanceof Error ? error.message : String(error),
+          });
+        }
+      })();
     }
   }, [
     activeModelId,
@@ -895,6 +974,29 @@ export function App() {
     refreshProviderBalance,
     sessionCapabilities?.currentModel,
   ]);
+
+  // Auto-probe Grok weekly credits once the ACP session is live.
+  useEffect(() => {
+    if (!currentSessionId) return;
+    const active = availableSessions.find((s) => s.id === currentSessionId);
+    const agent = availableAgents.find((a) => a.id === active?.agentId);
+    if (!agent || (agent.id !== "grok-build" && agent.id !== "grok")) return;
+    if (!active || (active.status !== "running" && active.status !== "waiting" && active.status !== "starting")) {
+      return;
+    }
+    const key = `${currentSessionId}|grok-billing`;
+    if (lastProviderProbeKey.current === key) return;
+    lastProviderProbeKey.current = key;
+    void (async () => {
+      const billing = await probeAcpBilling(currentSessionId);
+      if (!billing) return;
+      setSessionUsageById((current) => {
+        const merged = mergeGrokBilling(current[currentSessionId], billing);
+        if (!merged) return current;
+        return { ...current, [currentSessionId]: merged };
+      });
+    })();
+  }, [availableAgents, availableSessions, currentSessionId]);
 
   // Manual refresh should re-hit the network even if model unchanged.
   const handleUsageRefreshForce = useCallback(() => {
@@ -1436,6 +1538,7 @@ export function App() {
               preferredMode: null,
               preferredEffort: null,
               preferredEffortId: null,
+              preferredAlwaysApprove: null,
             }
           : s
       )
@@ -2304,6 +2407,7 @@ export function App() {
               preferredMode: displaySession.preferredMode,
               preferredEffort: displaySession.preferredEffort,
               preferredEffortId: displaySession.preferredEffortId,
+              preferredAlwaysApprove: displaySession.preferredAlwaysApprove,
             }}
             onSessionPrefsChange={(patch: SessionComposerPrefs) => {
               const sid = displaySession.id;
@@ -2325,12 +2429,17 @@ export function App() {
                       patch.preferredEffortId !== undefined
                         ? patch.preferredEffortId
                         : s.preferredEffortId,
+                    preferredAlwaysApprove:
+                      patch.preferredAlwaysApprove !== undefined
+                        ? patch.preferredAlwaysApprove
+                        : s.preferredAlwaysApprove,
                   };
                   merged = {
                     preferredModel: next.preferredModel,
                     preferredMode: next.preferredMode,
                     preferredEffort: next.preferredEffort,
                     preferredEffortId: next.preferredEffortId,
+                    preferredAlwaysApprove: next.preferredAlwaysApprove,
                   };
                   return next;
                 })
