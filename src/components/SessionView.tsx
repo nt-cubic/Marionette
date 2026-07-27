@@ -1,7 +1,7 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { listen } from "@tauri-apps/api/event";
-import { Eye, EyeOff, FileText, MessageSquareQuote, Pencil, Plus, Square, TerminalSquare, X } from "lucide-react";
+import { ChevronDown, Eye, EyeOff, FileText, MessageSquareQuote, Pencil, Plus, Square, TerminalSquare, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { extractAcpUpdateText, mergeStreamText, userMessageAnchorId } from "../lib/acpTranscript";
 import {
@@ -64,18 +64,40 @@ export function SessionTabs({
   onTabSelect,
   onTabClose,
   onNewTab,
+  onRenameSession,
 }: {
   openSessions: Session[];
   session: Session;
   onTabSelect: (session: Session) => void;
   onTabClose: (sessionId: string) => void;
   onNewTab: () => void;
+  onRenameSession?: (sessionId: string, label: string) => void;
 }) {
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const renameInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!renamingId) return;
+    renameInputRef.current?.focus();
+    renameInputRef.current?.select();
+  }, [renamingId]);
+
+  const commitRename = () => {
+    if (!renamingId || !onRenameSession) {
+      setRenamingId(null);
+      return;
+    }
+    onRenameSession(renamingId, renameDraft.trim() || "New session");
+    setRenamingId(null);
+  };
+
   return (
     <div className="editor-tabs__tablist" role="tablist" aria-label="Session tabs">
       {openSessions.map((openSession) => {
         const busy =
           openSession.status === "running" || openSession.status === "starting";
+        const isRenaming = renamingId === openSession.id;
         return (
           <div
             className={
@@ -93,9 +115,42 @@ export function SessionTabs({
                 aria-hidden
               />
             )}
-            <button className="editor-tab__select" type="button" title={openSession.cwd} onClick={() => onTabSelect(openSession)}>
-              <span>{openSession.label}</span>
-            </button>
+            {isRenaming ? (
+              <input
+                ref={renameInputRef}
+                className="editor-tab__rename"
+                value={renameDraft}
+                aria-label="Rename tab"
+                onChange={(e) => setRenameDraft(e.target.value)}
+                onBlur={() => commitRename()}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    commitRename();
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    setRenamingId(null);
+                  }
+                }}
+                onClick={(e) => e.stopPropagation()}
+              />
+            ) : (
+              <button
+                className="editor-tab__select"
+                type="button"
+                title={`${openSession.cwd} · double-click to rename`}
+                onClick={() => onTabSelect(openSession)}
+                onDoubleClick={(e) => {
+                  if (!onRenameSession) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setRenamingId(openSession.id);
+                  setRenameDraft(openSession.label);
+                }}
+              >
+                <span>{openSession.label}</span>
+              </button>
+            )}
             <button className="editor-tab__close" type="button" title={`Close ${openSession.label}`} aria-label={`Close ${openSession.label}`} onClick={() => onTabClose(openSession.id)}>
               <X size={12} />
             </button>
@@ -586,6 +641,8 @@ function CleanPlaceholder({
   const listRef = useRef<HTMLDivElement>(null);
   /** When true, new content may stick the viewport to the bottom. */
   const stickToBottomRef = useRef(true);
+  /** State mirror of stickToBottom so the jump-to-bottom chip can re-render. */
+  const [atBottom, setAtBottom] = useState(true);
   const isPty = agent.transport === "pty";
   const isRunning = session.status === "running";
   // Ignore raw_chunk dumps in Clean (legacy / accidental) — they are not You/Thinking/Reply.
@@ -644,6 +701,7 @@ function CleanPlaceholder({
   useEffect(() => {
     if (awaitingFirstChunk && !prevAwaitingRef.current) {
       stickToBottomRef.current = true;
+      setAtBottom(true);
     }
     prevAwaitingRef.current = awaitingFirstChunk;
   }, [awaitingFirstChunk]);
@@ -651,6 +709,7 @@ function CleanPlaceholder({
   // Switching dialog → follow the new session's tail by default.
   useEffect(() => {
     stickToBottomRef.current = true;
+    setAtBottom(true);
   }, [session.id]);
 
   const onListScroll = useCallback(() => {
@@ -658,7 +717,17 @@ function CleanPlaceholder({
     if (!el) return;
     // User scrolled up to read history → stop auto-jumping to bottom.
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-    stickToBottomRef.current = distance < 80;
+    const nearBottom = distance < 80;
+    stickToBottomRef.current = nearBottom;
+    setAtBottom(nearBottom);
+  }, []);
+
+  const jumpToBottom = useCallback(() => {
+    const el = listRef.current;
+    if (!el) return;
+    stickToBottomRef.current = true;
+    setAtBottom(true);
+    el.scrollTop = el.scrollHeight;
   }, []);
 
   // Stick to bottom only while the user is already near the end (chat apps pattern).
@@ -688,6 +757,18 @@ function CleanPlaceholder({
         {detailsVisible ? <Eye size={14} /> : <EyeOff size={14} />}
       </button>
       <div className="clean-surface__body">
+      {!atBottom && visibleEvents.length > 0 && (
+        <button
+          type="button"
+          className="scroll-to-bottom"
+          title="Jump to latest message"
+          aria-label="Jump to latest message"
+          onClick={jumpToBottom}
+        >
+          <ChevronDown size={16} />
+          <span>Latest</span>
+        </button>
+      )}
       <div
         ref={listRef}
         className={detailsVisible ? "event-list" : "event-list is-details-hidden"}

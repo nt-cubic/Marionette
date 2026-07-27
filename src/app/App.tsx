@@ -13,7 +13,7 @@ import {
 } from "../lib/acpTranscript";
 import { armPtyBridge, createPtyBridgeState, flushPtyBridge, ingestPtyOutput, type PtyBridgeState } from "../lib/ptyCleanBridge";
 import { addProject, appendDebugLog, cancelAcpSession, checkOutsideProjectPaths, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, generateHandoff, getChangedFiles, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgents, listProjects, listSessions, loadTranscript, preparePtyInput, probeAgentAuth, probeProviderUsage, projectContextPrompt, respondAcpPermission, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, startAcpSession, startAgentLogin, stopAcpSession, stopTerminal, updateSessionAgent, updateSessionLabel, updateSessionPrefs, writeTerminal, writeTranscript, type OutsidePath } from "../lib/api";
-import type { AcpEvent, CapabilitySnapshot, ChangedFile, HandoffResult, Project, ProjectContext, Session, SessionComposerPrefs, SessionEvent, SessionViewMode, TerminalOutput, UsageSnapshot } from "../lib/types";
+import type { AcpEvent, AvailableCommand, CapabilitySnapshot, ChangedFile, HandoffResult, Project, ProjectContext, Session, SessionComposerPrefs, SessionEvent, SessionViewMode, TerminalOutput, UsageSnapshot } from "../lib/types";
 import {
   buildUsageSnapshot,
   emptySessionUsage,
@@ -23,6 +23,7 @@ import {
   type SessionUsageState,
 } from "../lib/usage";
 import { mergeAcpCapabilities } from "../lib/acpSupplements";
+import { parseAvailableCommandsUpdate } from "../lib/slashCommands";
 import {
   parseTranscriptEvents,
   persistableEventsForSession,
@@ -184,6 +185,8 @@ export function App() {
   const [liveEvents, setLiveEvents] = useState<SessionEvent[]>([]);
   /** Per-session usage from ACP `usage_update` + opportunistic rate-limit text. */
   const [sessionUsageById, setSessionUsageById] = useState<Record<string, SessionUsageState>>({});
+  /** Per-session ACP-advertised slash commands (`available_commands_update`). */
+  const [slashCommandsById, setSlashCommandsById] = useState<Record<string, AvailableCommand[]>>({});
   /** Active model id from Composer (`provider/model` for OpenCode). */
   const [activeModelId, setActiveModelId] = useState<string | null>(null);
   /** Per-session PTY→Clean bridges (first-principles transcript extraction). */
@@ -191,6 +194,8 @@ export function App() {
   const ptyFlushTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const providerProbeInflight = useRef(false);
   const lastProviderProbeKey = useRef("");
+  /** Throttle auto usage refresh after each turn end. */
+  const lastUsageRefreshAt = useRef<Record<string, number>>({});
   /** In-flight ACP bootstrap promises (lazy warm / ensure-on-send). */
   const acpBootstrapRef = useRef<Map<string, Promise<CapabilitySnapshot | null>>>(new Map());
   /** Snapshot of Composer config taken at send time, used to stamp user_message events. */
@@ -413,6 +418,15 @@ export function App() {
           }
         }
 
+        // ACP slash command catalogue for Composer `/` autocomplete.
+        const slashList = parseAvailableCommandsUpdate(payload.data);
+        if (slashList) {
+          setSlashCommandsById((current) => ({
+            ...current,
+            [payload.sessionId]: slashList,
+          }));
+        }
+
         const extracted = extractAcpUpdateText(payload.data);
         if (extracted && (extracted.role === "assistant" || extracted.role === "thought" || extracted.role === "tool")) {
           // Codex `/status` (and similar) embed rate-limit lines in assistant text.
@@ -473,6 +487,8 @@ export function App() {
               : session
           )
         );
+        // Usage panel: refresh once after each completed Reply turn.
+        refreshUsageAfterTurnRef.current(payload.sessionId);
       }
       // Agent process stdout closed (crash / exit) — never leave the UI "Working" forever.
       if (payload.method === "process/ended") {
@@ -650,6 +666,15 @@ export function App() {
       current.map((s) => (s.id === sessionId ? { ...s, label } : s))
     );
     void updateSessionLabel(sessionId, label).catch(() => undefined);
+  }, []);
+
+  /** Manual rename (shelf / tab) — always persists, stops future auto-title. */
+  const handleRenameSession = useCallback((sessionId: string, label: string) => {
+    const next = label.trim() || "New session";
+    setAvailableSessions((current) =>
+      current.map((s) => (s.id === sessionId ? { ...s, label: next } : s))
+    );
+    void updateSessionLabel(sessionId, next).catch(() => undefined);
   }, []);
 
   const loadSessionTranscript = useCallback(async (sessionId: string) => {
@@ -876,6 +901,29 @@ export function App() {
     lastProviderProbeKey.current = "";
     handleUsageRefresh();
   }, [handleUsageRefresh]);
+
+  /**
+   * After an AI turn ends (`rpc/response`), refresh the Usage panel once.
+   * Throttled so multi-chunk finalization / rapid turns don't spam probes.
+   */
+  const refreshUsageAfterTurn = useCallback(
+    (sessionId: string) => {
+      if (!sessionId || sessionId !== currentSessionIdRef.current) return;
+      const now = Date.now();
+      const prev = lastUsageRefreshAt.current[sessionId] ?? 0;
+      if (now - prev < 4000) return;
+      lastUsageRefreshAt.current[sessionId] = now;
+      // Let status settle to waiting before probing.
+      window.setTimeout(() => {
+        if (sessionId !== currentSessionIdRef.current) return;
+        lastProviderProbeKey.current = "";
+        handleUsageRefresh();
+      }, 350);
+    },
+    [handleUsageRefresh],
+  );
+  const refreshUsageAfterTurnRef = useRef(refreshUsageAfterTurn);
+  refreshUsageAfterTurnRef.current = refreshUsageAfterTurn;
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -2185,6 +2233,7 @@ export function App() {
             onSessionSelect={openSession}
             onDeleteSession={deleteSession}
             onDeleteProject={handleDeleteProject}
+            onRenameSession={handleRenameSession}
           />
           {!leftCollapsed && (
             <button
@@ -2208,6 +2257,7 @@ export function App() {
             onTabSelect={openSession}
             onTabClose={closeSessionTab}
             onNewTab={() => createSessionForProject(currentProject?.id ?? "")}
+            onRenameSession={handleRenameSession}
           />
           <div className="workspace-titlebar__spacer" data-tauri-drag-region />
           <WindowControls />
@@ -2311,6 +2361,7 @@ export function App() {
               });
             }}
             onActiveModelChange={setActiveModelId}
+            availableCommands={slashCommandsById[displaySession.id] ?? null}
             onWarmAgent={warmActiveAcp}
             onEnsureAgentReady={async () => {
               if (!currentSessionId) return false;

@@ -117,6 +117,27 @@ export function mergeAcpCapabilities(
   const modes = base.modes.length > 0 ? base.modes : sup.modes ?? [];
   const models = base.models.length > 0 ? base.models : sup.models ?? [];
 
+  // Grok Build: ACP does not support session/set_config_option for thought level.
+  // Live agents sometimes still advertise ThoughtLevel — offering Low/Medium then
+  // fails with a set_config error. Honest UI: strip effort entirely (launch-time only).
+  if (agentId === "grok-build") {
+    return {
+      ...base,
+      modes,
+      models,
+      thinkingEffort: null,
+      effortOptions: [],
+      supportsCancel: base.supportsCancel || true,
+      currentMode: base.currentMode ?? sup.defaultMode ?? modes[0]?.id ?? null,
+      currentModel: base.currentModel ?? sup.defaultModel ?? models[0]?.id ?? null,
+      currentEffort: null,
+      currentEffortId: null,
+      modeConfigId: base.modeConfigId ?? sup.modeConfigIds?.[0] ?? null,
+      modelConfigId: base.modelConfigId ?? sup.modelConfigIds?.[0] ?? null,
+      effortConfigId: null,
+    };
+  }
+
   // Effort is model-dependent (especially Claude). Never invent an effort control
   // when live negotiation did not advertise one — that produces "Unknown config option".
   const liveHasEffort =
@@ -205,6 +226,17 @@ export function expandAcpConfigAttempts(
 ): Record<string, unknown>[] {
   const sup = getAcpSupplement(agentId);
   const attempts: Record<string, unknown>[] = [];
+
+  // Grok never accepts runtime effort / model via set_config_option.
+  if (agentId === "grok-build") {
+    if (patch.effortId != null || patch.thinkingEffort != null) {
+      return [];
+    }
+    // Model is launch-time only; mode uses promptModeCommands (handled earlier).
+    if (typeof patch.model === "string") {
+      return [];
+    }
+  }
 
   if (typeof patch.model === "string") {
     const ids = [

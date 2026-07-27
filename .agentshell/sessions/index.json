@@ -2,22 +2,20 @@
   {
     "id": "session-1784860385219",
     "projectId": "project-65b0525cca463995",
-    "agentId": "opencode",
+    "agentId": "grok-build",
     "label": "帮我直接把本地更变分好类，全部提交到github吧？",
     "cwd": "\\\\?\\D:\\Myself\\AgentsShell",
-    "status": "exited",
+    "status": "running",
     "processId": null,
     "ptyId": null,
-    "startedAt": "1784956393769",
-    "lastActiveAt": "1784957175259",
-    "exitedAt": "1784957175259",
+    "startedAt": "1785121750091",
+    "lastActiveAt": "1785121779602",
+    "exitedAt": null,
     "exitCode": null,
     "rawLogPath": "\\\\?\\D:\\Myself\\AgentsShell\\.agentshell\\sessions\\session-1784860385219.raw.log",
     "transcriptPath": "\\\\?\\D:\\Myself\\AgentsShell\\.agentshell\\transcripts\\session-1784860385219.jsonl",
     "handoffPath": "\\\\?\\D:\\Myself\\AgentsShell\\.agentshell\\handoff.md",
     "viewMode": "raw-terminal",
-    "preferredModel": "deepseek/deepseek-v4-flash",
-    "preferredMode": "build",
-    "preferredEffortId": "max"
+    "preferredMode": "ask"
   }
 ]

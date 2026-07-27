@@ -323,6 +323,16 @@ export type CapabilitySnapshot = {
   effortConfigId: string | null;
 };
 
+/**
+ * ACP `available_commands_update` entry — slash commands sent as normal prompts.
+ * @see https://agentclientprotocol.com/protocol/v1/slash-commands
+ */
+export type AvailableCommand = {
+  name: string;
+  description: string;
+  input?: { hint: string };
+};
+
 export type ProviderInfo = {
   provider: string;
   label: string;
