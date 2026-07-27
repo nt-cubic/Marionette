@@ -637,10 +637,16 @@ export function applyAcpPartToEvents(
   }
 
   if (part.role === "tool") {
-    // Working notes before a tool are usually CoT — fold them as Thinking immediately.
+    // Working notes before a tool are usually CoT — fold them as Thinking.
+    // Never touch a sealed Reply (finished turn / previous agent in this dialog).
     let base = current;
     const last = current[current.length - 1];
-    if (last && last.type === "assistant_message" && last.sessionId === sessionId) {
+    if (
+      last &&
+      last.type === "assistant_message" &&
+      last.sessionId === sessionId &&
+      !isSealedAssistantReply(last)
+    ) {
       base = [
         ...current.slice(0, -1),
         {
@@ -739,9 +745,51 @@ export function coalesceAdjacentThoughts(
 }
 
 /**
+ * A finished Reply must never be demoted to Thinking.
+ *
+ * `durationMs` is stamped when the turn completes. We also seal on agent switch
+ * so the previous harness's last answer survives the next agent's tool/CoT
+ * stream (same dialog, shared transcript).
+ */
+export function isSealedAssistantReply(event: SessionEvent): boolean {
+  return event.type === "assistant_message" && event.durationMs != null;
+}
+
+/**
+ * Mark open assistant bubbles as finished so later streams cannot fold them
+ * into Thinking. Used when the dialog changes agent (or otherwise ends a turn
+ * without an rpc/response).
+ */
+export function sealOpenAssistantReplies(
+  events: SessionEvent[],
+  sessionId: string,
+  endedAtMs: number = Date.now(),
+): SessionEvent[] {
+  let changed = false;
+  const next = events.map((e) => {
+    if (e.sessionId !== sessionId || e.type !== "assistant_message") return e;
+    if (e.durationMs != null) return e;
+    // System notifications (no agentId) are not CoT either — leave type, but
+    // stamp duration so collapse/tool paths treat them as sealed.
+    const started = Date.parse(e.createdAt);
+    const durationMs =
+      Number.isFinite(started) && started > 0
+        ? Math.max(0, endedAtMs - started)
+        : 0;
+    changed = true;
+    return { ...e, durationMs };
+  });
+  return changed ? next : events;
+}
+
+/**
  * OpenCode (and some models) stream chain-of-thought as agent_message_chunk.
- * After a turn ends, collapse every assistant bubble after the last user message
- * except the final one into type "thought" so the UI can fold them by default.
+ * After a turn ends, collapse intermediate assistant bubbles after the last
+ * user message into type "thought" so the UI can fold them by default.
+ *
+ * Sealed Replies (finished turn / previous agent) are never demoted — otherwise
+ * switching agent in the same dialog turns the last answer into Thinking as
+ * soon as the new harness streams tools or a second assistant bubble.
  */
 export function collapseIntermediateAssistantAsThought(
   events: SessionEvent[],
@@ -753,20 +801,23 @@ export function collapseIntermediateAssistantAsThought(
   }
   if (lastUser < 0) return coalesceAdjacentThoughts(events, sessionId);
 
-  const assistantIdx: number[] = [];
+  // Only unsealed assistants in this turn are candidates for CoT folding.
+  const demotableIdx: number[] = [];
   for (let i = lastUser + 1; i < events.length; i += 1) {
     const e = events[i];
     if (e.sessionId !== sessionId) continue;
-    if (e.type === "assistant_message") assistantIdx.push(i);
+    if (e.type !== "assistant_message") continue;
+    if (isSealedAssistantReply(e)) continue;
+    demotableIdx.push(i);
   }
-  if (assistantIdx.length <= 1) {
+  if (demotableIdx.length <= 1) {
     return coalesceAdjacentThoughts(events, sessionId);
   }
 
-  const keep = assistantIdx[assistantIdx.length - 1];
+  const keep = demotableIdx[demotableIdx.length - 1];
+  const demote = new Set(demotableIdx.filter((i) => i !== keep));
   const mapped = events.map((e, i) => {
-    if (i === keep || e.type !== "assistant_message" || e.sessionId !== sessionId) return e;
-    if (!assistantIdx.includes(i)) return e;
+    if (!demote.has(i) || e.type !== "assistant_message") return e;
     return {
       type: "thought" as const,
       sessionId: e.sessionId,

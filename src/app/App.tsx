@@ -9,6 +9,7 @@ import {
   extractAcpUpdateText,
   getSessionUpdate,
   getSessionUpdateKind,
+  sealOpenAssistantReplies,
   userMessageEvent,
 } from "../lib/acpTranscript";
 import { armPtyBridge, createPtyBridgeState, flushPtyBridge, ingestPtyOutput, type PtyBridgeState } from "../lib/ptyCleanBridge";
@@ -1535,9 +1536,17 @@ export function App() {
     const sourceAgentId = currentSession.agentId;
     const oldAgent = availableAgents.find((a) => a.id === sourceAgentId);
 
+    // Seal the previous agent's last Reply so the next harness's tools / CoT
+    // stream cannot demote it to Thinking (same dialog, shared transcript).
+    setLiveEvents((current) => sealOpenAssistantReplies(current, sid));
+    // liveEventsRef may lag one frame behind setState — seal the snapshot we
+    // are about to flush too.
+    const sealedLive = sealOpenAssistantReplies(liveEventsRef.current, sid);
+    liveEventsRef.current = sealedLive;
+
     // Flush transcript so handoff can read the latest Clean history.
     try {
-      const events = persistableEventsForSession(liveEventsRef.current, sid);
+      const events = persistableEventsForSession(sealedLive, sid);
       await writeTranscript(sid, events);
     } catch {
       // still attempt handoff from whatever is on disk
@@ -1556,7 +1565,7 @@ export function App() {
         // Never prefill the composer: the notes ride along with the next message
         // the user actually sends (see pendingHandoffPrompt in handleSend).
         setLiveEvents((current) => [
-          ...current,
+          ...sealOpenAssistantReplies(current, sid),
           {
             type: "handoff_prepared" as const,
             sessionId: sid,
