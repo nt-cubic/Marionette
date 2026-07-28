@@ -679,6 +679,15 @@ body.is-panel-resizing .context-panel {
   background: var(--panel-soft);
 }
 
+.sidebar-footer__button.is-notify-on {
+  color: color-mix(in srgb, var(--accent) 85%, var(--text-muted));
+}
+
+.sidebar-footer__button.is-notify-off {
+  color: var(--text-faint);
+  opacity: 0.75;
+}
+
 .sidebar-footer__button--collapse {
   margin-left: auto;
 }

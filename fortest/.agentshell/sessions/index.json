@@ -1,5 +1,26 @@
 [
   {
+    "id": "session-1785136543948",
+    "projectId": "project-931a1f4afe812e5a",
+    "agentId": "opencode",
+    "label": "C:\\Users\\c_huang\\Pictures\\Screenshots\\スクリーンショッ…",
+    "cwd": "\\\\?\\D:\\Myself\\AgentsShell\\fortest",
+    "status": "running",
+    "processId": null,
+    "ptyId": null,
+    "startedAt": "1785137185270",
+    "lastActiveAt": "1785137203505",
+    "exitedAt": null,
+    "exitCode": null,
+    "rawLogPath": "\\\\?\\D:\\Myself\\AgentsShell\\fortest\\.agentshell\\sessions\\session-1785136543948.raw.log",
+    "transcriptPath": "\\\\?\\D:\\Myself\\AgentsShell\\fortest\\.agentshell\\transcripts\\session-1785136543948.jsonl",
+    "handoffPath": "\\\\?\\D:\\Myself\\AgentsShell\\fortest\\.agentshell\\handoff\\session-1785136543948.md",
+    "viewMode": "clean",
+    "preferredModel": "opencode/deepseek-v4-flash-free",
+    "preferredMode": "plan",
+    "preferredEffortId": "max"
+  },
+  {
     "id": "session-1784959056405",
     "projectId": "project-931a1f4afe812e5a",
     "agentId": "opencode",
