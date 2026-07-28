@@ -58,7 +58,7 @@ impl PtyService {
             return Ok(());
         }
 
-        let log_dir = Path::new(&cwd).join(".agentshell").join("sessions");
+        let log_dir = crate::app_paths::project_dir(Path::new(&cwd)).join("sessions");
         create_dir_all(&log_dir)
             .map_err(|error| format!("Create session log directory failed: {error}"))?;
         let log_name = session_id

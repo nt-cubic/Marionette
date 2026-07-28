@@ -29,7 +29,7 @@ class RootErrorBoundary extends React.Component<
             fontFamily: "ui-sans-serif, system-ui, sans-serif",
           }}
         >
-          <h1 style={{ margin: "0 0 8px", fontSize: 18 }}>AgentShell UI crashed</h1>
+          <h1 style={{ margin: "0 0 8px", fontSize: 18 }}>Marionette UI crashed</h1>
           <p style={{ margin: "0 0 12px", color: "#84909d", fontSize: 13 }}>
             The shell hit a render error. Copy the message, then reload the window.
           </p>

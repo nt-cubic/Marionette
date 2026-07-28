@@ -56,7 +56,7 @@ pub struct AgentDependency {
     pub package: Option<String>,
 }
 
-/// How AgentShell can put this agent's ACP command on the machine.
+/// How Marionette can put this agent's ACP command on the machine.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentInstallSpec {
@@ -159,7 +159,7 @@ impl AgentConfig {
             // Native ACP: `grok --trust agent stdio` (not the interactive TUI).
             // `--trust` is required so project-scoped MCP (Unity under `.grok/` /
             // `mcps/`) actually attaches — otherwise Grok silently loads only
-            // global servers and AgentShell's lend path has nothing to talk to.
+            // global servers and Marionette's lend path has nothing to talk to.
             Self::new(
                 "grok-build",
                 "Grok Build",
@@ -210,7 +210,7 @@ pub struct AgentCommandStatus {
     pub status: String,
     pub path: Option<String>,
     pub message: String,
-    /// AgentShell knows an npm package for whatever is missing here.
+    /// Marionette knows an npm package for whatever is missing here.
     #[serde(default)]
     pub installable: bool,
     /// Labels of the pieces that are not on PATH (bridge and/or its CLIs).

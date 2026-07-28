@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Bell, BellOff, ChevronDown, ChevronRight, Folder, Moon, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings2, Sun, Trash2 } from "lucide-react";
-import type { AgentConfig, Project, Session } from "../lib/types";
+import { Bell, BellOff, ChevronDown, ChevronRight, Folder, Moon, PanelLeftClose, PanelLeftOpen, Pencil, Plus, RefreshCw, Search, Settings2, Sun, Trash2 } from "lucide-react";
+import type { AgentConfig, ExternalConversation, Project, Session } from "../lib/types";
 
 type ThemeMode = "dark" | "light";
 
@@ -58,7 +58,29 @@ type ProjectShelfProps = {
   onDeleteProject: (projectId: string) => void;
   /** Manual rename — always persists (unlike first-message auto-title). */
   onRenameSession?: (sessionId: string, label: string) => void;
+  /** External agent sessions for the current project (memory-only cache). */
+  externalSessions?: ExternalConversation[];
+  externalScanning?: boolean;
+  externalStatus?: string | null;
+  currentExternalId?: string | null;
+  onRefreshExternal?: (projectId: string) => void;
+  onExternalSelect?: (conv: ExternalConversation) => void;
 };
+
+function externalSourceLabel(source: string): string {
+  switch (source) {
+    case "grok":
+      return "Grok";
+    case "claude":
+      return "Claude";
+    case "codex":
+      return "Codex";
+    case "opencode":
+      return "OpenCode";
+    default:
+      return source;
+  }
+}
 
 function sessionIsBusy(status: Session["status"]): boolean {
   return status === "running" || status === "starting";
@@ -86,6 +108,12 @@ export function ProjectShelf({
   onRenameSession,
   searchHitIds = null,
   onSearchQueryChange,
+  externalSessions = [],
+  externalScanning = false,
+  externalStatus = null,
+  currentExternalId = null,
+  onRefreshExternal,
+  onExternalSelect,
 }: ProjectShelfProps) {
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => new Set(projects.map((project) => project.id)));
   const [query, setQuery] = useState("");
@@ -208,18 +236,6 @@ export function ProjectShelf({
     </button>
   ) : null;
 
-  if (collapsed) {
-    return (
-      <div className="collapsed-rail">
-        {themeButton}
-        {notifyButton}
-        <button className="sidebar-footer__button" type="button" title="Show projects and sessions" aria-label="Show projects and sessions" onClick={onExpand}>
-          <PanelLeftOpen size={14} />
-        </button>
-      </div>
-    );
-  }
-
   const allVisibleProjects = filtered.projects;
   const searching = Boolean(query.trim());
   // While searching, always show full match list; otherwise cap at preview count.
@@ -265,7 +281,7 @@ export function ProjectShelf({
         Add project
       </button>
 
-      <div className="project-list" aria-label="Projects with sessions">
+      <div className="project-list custom-scrollbar scrollbar-autohide" aria-label="Projects with sessions">
         {allVisibleProjects.length === 0 && (
           <div className="project-list__empty">
             {searching ? `No threads match “${query.trim()}”` : "No projects yet"}
@@ -339,7 +355,7 @@ export function ProjectShelf({
                     return (
                       <div
                         className={
-                          session.id === currentSessionId
+                          !currentExternalId && session.id === currentSessionId
                             ? `session-row is-active is-${session.status}`
                             : `session-row is-${session.status}`
                         }
@@ -438,6 +454,60 @@ export function ProjectShelf({
                       </div>
                     );
                   })}
+
+                  {project.id === currentProjectId && (externalSessions.length > 0 || onRefreshExternal) && (
+                    <div className="external-sessions">
+                      <div className="external-sessions__header">
+                        <span className="external-sessions__title">
+                          External{externalSessions.length > 0 ? ` (${externalSessions.length})` : ""}
+                        </span>
+                        {onRefreshExternal && (
+                          <button
+                            className="session-row__action"
+                            type="button"
+                            title="Refresh external sessions"
+                            aria-label="Refresh external sessions"
+                            disabled={externalScanning}
+                            onClick={() => onRefreshExternal(project.id)}
+                          >
+                            <RefreshCw size={12} className={externalScanning ? "is-spinning" : undefined} />
+                          </button>
+                        )}
+                      </div>
+                      {externalStatus && (
+                        <div className="external-sessions__status">{externalStatus}</div>
+                      )}
+                      {externalSessions.map((conv) => (
+                        <div
+                          key={conv.id}
+                          className={
+                            conv.id === currentExternalId
+                              ? "session-row session-row--external is-active"
+                              : "session-row session-row--external"
+                          }
+                        >
+                          <button
+                            className="session-row__select"
+                            type="button"
+                            title={`${externalSourceLabel(conv.source)} · read-only · ${conv.cwd}`}
+                            onClick={() => onExternalSelect?.(conv)}
+                          >
+                            <span className="session-row__dot is-external" aria-hidden />
+                            <span className="session-row__content">
+                              <strong>{conv.title}</strong>
+                              <em>[{externalSourceLabel(conv.source)}]</em>
+                            </span>
+                          </button>
+                        </div>
+                      ))}
+                      {externalSessions.length === 0 && !externalScanning && (
+                        <div className="session-row session-row--empty">
+                          {externalStatus ?? "Click ↻ to scan"}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {shouldCollapseSessions && (
                     <div className="shelf-clip shelf-clip--sessions">
                       <div className="shelf-clip__fade" aria-hidden />
@@ -518,8 +588,8 @@ export function ProjectShelf({
       <div className="sidebar-footer">
         {themeButton}
         {notifyButton}
-        <button className="sidebar-footer__button sidebar-footer__button--collapse" type="button" title="Collapse projects and sessions" aria-label="Collapse projects and sessions" onClick={onCollapse}>
-          <PanelLeftClose size={14} />
+        <button className="sidebar-footer__button sidebar-footer__button--collapse" type="button" title={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} aria-label={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} onClick={collapsed ? onExpand : onCollapse}>
+          {collapsed ? <PanelLeftOpen size={14} /> : <PanelLeftClose size={14} />}
         </button>
       </div>
       </div>

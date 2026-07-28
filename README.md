@@ -149,7 +149,7 @@ UI 只跟 ASP 对话——无论底层是哪种 Agent，上层体验一致。
 | 图标 | Lucide React |
 | 终端 | xterm.js |
 | Markdown | react-markdown + GFM |
-| 持久化 | JSON 文件（`~/.agentshell/`） |
+| 持久化 | JSON 文件（`~/.marionette/`） |
 | PTY | portable-pty（Rust） |
 | 协议 | ACP JSON-RPC over stdio |
 
@@ -171,7 +171,7 @@ npm run tauri build
 npm run dev:mock
 ```
 
-调试日志写到 `~/.agentshell/logs/dev.log`，4MB 自动轮转。
+调试日志写到 `~/.marionette/logs/dev.log`，4MB 自动轮转。
 
 ---
 
@@ -195,3 +195,5 @@ npm run dev:mock
 ## License
 
 MIT
+
+

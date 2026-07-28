@@ -1,8 +1,8 @@
-# AgentShell 施工文档
+# Marionette 施工文档
 
 ## 0. 文档目标
 
-本文档用于指导弱模型或初级执行者一步一步实现 AgentShell。
+本文档用于指导弱模型或初级执行者一步一步实现 Marionette。
 
 层级定义：
 
@@ -29,7 +29,7 @@
 2. `cargo test`：2 个后端回归测试通过，覆盖项目添加、重启持久化、项目目录初始化和 PATH 命令探测。
 3. `cargo check`：通过。
 4. `npm run build`：通过。
-5. `npm run tauri -- dev`：已启动，原生窗口 `AgentShell` 正常运行。
+5. `npm run tauri -- dev`：已启动，原生窗口 `Marionette` 正常运行。
 6. M3 核心已实现：Windows PowerShell PTY、xterm.js 输出、键盘输入、resize、停止和退出事件。
 7. M3 尚需在原生窗口手动验收：输入 `dir`、确认输出，再点击停止按钮。
 8. M4 UI 基线已实现：多对话 Tab、Tab 新建/关闭、左侧 session 删除、Agent/模式/模型/强度控件和右侧 Information 面板布局。
@@ -114,7 +114,7 @@
 
 1. 可以启动两个 session。
 2. 切换 session 不杀进程。
-3. `.agentshell/sessions/*.raw.log` 有内容。
+3. `.marionette/sessions/*.raw.log` 有内容。
 
 ### Milestone 5：首批 Agent 可启动
 
@@ -137,7 +137,7 @@
 
 交付：
 
-1. `.agentshell/handoff.md`。
+1. `.marionette/handoff.md`。
 2. user notes。
 3. pinned files。
 4. git changed files。
@@ -236,7 +236,7 @@ Steps：
 验收：
 
 1. 桌面窗口能打开。
-2. 窗口标题显示 `AgentShell`。
+2. 窗口标题显示 `Marionette`。
 3. 没有报错弹窗。
 
 禁止：
@@ -313,9 +313,9 @@ Steps：
 Steps：
 
 1. 在 `src-tauri/src/storage/paths.rs` 创建路径模块。
-2. 实现获取 `%USERPROFILE%\.agentshell`。
+2. 实现获取 `%USERPROFILE%\.marionette`。
 3. 实现创建全局目录。
-4. 实现项目 `.agentshell` 路径。
+4. 实现项目 `.marionette` 路径。
 5. 实现项目 `sessions` 路径。
 6. 实现项目 `transcripts` 路径。
 7. 添加路径创建函数。
@@ -323,8 +323,8 @@ Steps：
 
 验收：
 
-1. 启动 app 后能创建 `%USERPROFILE%\.agentshell`。
-2. 添加项目后能创建项目 `.agentshell`。
+1. 启动 app 后能创建 `%USERPROFILE%\.marionette`。
+2. 添加项目后能创建项目 `.marionette`。
 
 ### Phase 2.2：项目 metadata 存储
 
@@ -335,13 +335,13 @@ Steps：
 Steps：
 
 1. 决定第一版存储方式。
-2. 如果 SQLite 尚未准备好，可以先用 `%USERPROFILE%\.agentshell\projects.json`。
+2. 如果 SQLite 尚未准备好，可以先用 `%USERPROFILE%\.marionette\projects.json`。
 3. 定义 Rust `Project` struct。
 4. 实现 `list_projects`。
 5. 实现 `add_project`。
 6. `add_project` 检查路径是否存在。
 7. `add_project` 检查路径是否目录。
-8. `add_project` 创建项目 `.agentshell`。
+8. `add_project` 创建项目 `.marionette`。
 9. 前端调用 `list_projects`。
 10. 前端添加项目按钮可以先用输入框。
 
@@ -564,7 +564,7 @@ Steps：
 Steps：
 
 1. 创建 `sessions/log_writer.rs`。
-2. session 启动时创建 `.agentshell/sessions`。
+2. session 启动时创建 `.marionette/sessions`。
 3. 生成 raw log 文件名。
 4. OutputTee 每批输出写入 raw log。
 5. 写入失败产生 warning。
@@ -734,7 +734,7 @@ Steps：
 
 目标：
 
-生成 `.agentshell/handoff.md`。
+生成 `.marionette/handoff.md`。
 
 Steps：
 
@@ -747,7 +747,7 @@ Steps：
 7. 包含 Recent Changes。
 8. 包含 User Notes。
 9. 包含 Suggested Next Prompt。
-10. 写入项目 `.agentshell/handoff.md`。
+10. 写入项目 `.marionette/handoff.md`。
 
 验收：
 
@@ -764,7 +764,7 @@ Steps：
 Steps：
 
 1. HandoffPanel 添加 notes textarea。
-2. 保存 notes 到项目 metadata 或 `.agentshell/state.json`。
+2. 保存 notes 到项目 metadata 或 `.marionette/state.json`。
 3. 生成 handoff 时包含 notes。
 4. 重启 app 后 notes 仍在。
 
@@ -1072,7 +1072,7 @@ Steps：
 
 目标：
 
-从 AgentShell 打开项目或文件到 Zed。
+从 Marionette 打开项目或文件到 Zed。
 
 Steps：
 

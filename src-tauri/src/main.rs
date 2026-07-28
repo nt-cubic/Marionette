@@ -2,6 +2,7 @@
 
 mod acp;
 mod agent_update;
+mod app_paths;
 mod commands;
 mod context_inventory;
 mod debug_log;
@@ -9,6 +10,7 @@ mod git_service;
 mod handoff;
 mod models;
 mod open_target;
+mod parsers;
 mod process_util;
 mod provider_usage;
 mod pty;
@@ -144,7 +146,7 @@ fn main() {
         })
         .manage(AppState {
             storage: Mutex::new(
-                StorageService::new().expect("failed to initialize AgentShell storage"),
+                StorageService::new().expect("failed to initialize Marionette storage"),
             ),
             pty: PtyService::new(),
             acp: AcpService::new(),
@@ -189,6 +191,8 @@ fn main() {
             commands::generate_handoff,
             commands::get_changed_files,
             commands::get_file_diff,
+            commands::list_external_sessions,
+            commands::load_external_session,
             commands::respond_acp_permission,
             commands::scan_project_context,
             commands::set_project_context_enabled,
@@ -203,5 +207,5 @@ fn main() {
             open_target::reveal_in_file_manager
         ])
         .run(tauri::generate_context!())
-        .expect("error while running AgentShell");
+        .expect("error while running Marionette");
 }

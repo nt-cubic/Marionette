@@ -21,16 +21,27 @@
   min-height: 0;
 }
 
+/* Collapsed: fully hide sidebar (0px) — no rail */
 .workspace-grid.is-left-collapsed {
-  grid-template-columns: 34px minmax(0, 1fr) var(--right-panel-width, 270px);
+  grid-template-columns: 0px minmax(0, 1fr) var(--right-panel-width, 270px);
 }
 
 .workspace-grid.is-right-collapsed {
-  grid-template-columns: var(--left-panel-width, 224px) minmax(0, 1fr) 34px;
+  grid-template-columns: var(--left-panel-width, 224px) minmax(0, 1fr) 0px;
 }
 
 .workspace-grid.is-left-collapsed.is-right-collapsed {
-  grid-template-columns: 34px minmax(0, 1fr) 34px;
+  grid-template-columns: 0px minmax(0, 1fr) 0px;
+}
+
+/* Smooth transition for the expand/collapse animation */
+.workspace-grid {
+  transition: grid-template-columns 0.15s ease;
+}
+
+/* But not during resize — keep performance */
+body.is-panel-resizing .workspace-grid {
+  transition: none;
 }
 
 /* Shared titlebar across center + right columns (Zed-style). */
@@ -83,6 +94,52 @@
   display: none;
 }
 
+/* Floating trigger buttons — match icon-button--eye style */
+.floating-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--panel);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: opacity 0.18s ease, background 0.15s ease, color 0.15s ease;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.floating-trigger.is-visible {
+  opacity: 0.85;
+  pointer-events: auto;
+}
+
+.floating-trigger:hover {
+  background: var(--panel-soft);
+  color: var(--text);
+  opacity: 1;
+}
+
+/* Anchored inside .center-workspace so they never straddle the rail border. */
+.floating-trigger--center-left,
+.floating-trigger--center-right {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 10;
+}
+
+.floating-trigger--center-left {
+  left: 6px;
+}
+
+.floating-trigger--center-right {
+  right: 6px;
+}
+
 body.is-panel-resizing {
   cursor: col-resize !important;
   user-select: none !important;
@@ -108,6 +165,7 @@ body.is-panel-resizing .context-panel {
 }
 
 .center-workspace {
+  position: relative;
   grid-row: 2;
   display: grid;
   /* Composer row is auto-sized so expand can grow without a fixed 104px trap. */
@@ -315,36 +373,8 @@ body.is-panel-resizing .context-panel {
   gap: 0;
   padding: 0;
   border-left: 1px solid var(--border);
-  /* Content cards scroll, top bar + footer sticky */
   overflow-y: auto;
   overflow-x: hidden;
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--text-muted) 32%, transparent) transparent;
-}
-
-.context-panel::-webkit-scrollbar {
-  width: 5px;
-}
-
-.context-panel::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.context-panel::-webkit-scrollbar-thumb {
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--text-muted) 28%, transparent);
-}
-
-.context-panel::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--text-muted) 48%, transparent);
-}
-
-.context-panel__collapsed-rail {
-  display: flex;
-  align-items: flex-end;
-  justify-content: flex-start;
-  height: 100%;
-  padding: 0 4px 8px;
 }
 
 .context-panel__button {
@@ -359,16 +389,6 @@ body.is-panel-resizing .context-panel {
 .context-panel__button:hover {
   color: var(--text);
   background: var(--panel-soft);
-}
-
-.collapsed-rail {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 6px;
-  height: 100%;
-  padding: 0 4px 8px;
 }
 
 .panel-section {
@@ -497,6 +517,11 @@ body.is-panel-resizing .context-panel {
   background: transparent;
   font-size: 12px;
   text-align: left;
+}
+
+.project-add:hover {
+  color: var(--text);
+  background: var(--panel-soft);
 }
 
 .project-dialog-backdrop {
@@ -703,6 +728,121 @@ body.is-panel-resizing .context-panel {
   display: grid;
   gap: 1px;
   min-width: 0;
+}
+
+.external-sessions {
+  display: grid;
+  gap: 1px;
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px dashed var(--border);
+  min-width: 0;
+}
+
+.external-sessions__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 2px 6px 0;
+  min-height: 22px;
+}
+
+.external-sessions__title {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.external-sessions__status {
+  padding: 0 8px 2px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.session-row--external .session-row__content em {
+  color: var(--text-faint);
+}
+
+.session-row__dot.is-external {
+  background: var(--text-faint);
+  opacity: 0.7;
+}
+
+.is-spinning {
+  animation: marionette-spin 0.8s linear infinite;
+}
+
+@keyframes marionette-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.composer__readonly {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  top: -28px;
+  z-index: 2;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--text-muted);
+  font-size: 11px;
+  pointer-events: none;
+}
+
+.file-diff-card {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.file-diff-card__path {
+  font-size: 11px;
+  color: var(--text-muted);
+  word-break: break-all;
+}
+
+.file-diff-card__muted {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.file-diff-card__body {
+  margin: 0;
+  max-height: 280px;
+  overflow: auto;
+  padding: 6px 0;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre;
+}
+
+.file-diff-card__line {
+  display: block;
+  padding: 0 8px;
+  border-left: 2px solid transparent;
+}
+
+.file-diff-card__line.is-add {
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  border-left-color: var(--text-muted);
+}
+
+.file-diff-card__line.is-del {
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+  border-left-color: var(--text);
+  opacity: 0.85;
+}
+
+.file-diff-card__note {
+  font-size: 10px;
+  color: var(--text-faint);
 }
 
 .project-row,
@@ -1339,6 +1479,62 @@ body.is-panel-resizing .context-panel {
   }
 }
 
+/* ============================================================
+ * Unified custom scrollbar (Zed-style thin)
+ * Auto-fade: thumb is faint when idle, full opacity during scroll.
+ * Activate with .custom-scrollbar.scrollbar-autohide classes.
+ * ============================================================ */
+
+/* Base: thin scrollbar */
+.custom-scrollbar {
+  scrollbar-width: thin;
+}
+
+/* Idle state: faint but visible (never fully transparent — avoids browser quirks) */
+.custom-scrollbar {
+  scrollbar-color: var(--scrollbar-thumb-faint) var(--scrollbar-track);
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: var(--scrollbar-width, 4px);
+  height: var(--scrollbar-width, 4px);
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: var(--scrollbar-track, transparent);
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: var(--scrollbar-thumb-faint);
+}
+
+/* Auto-hide: full thumb during scroll OR on element hover */
+.custom-scrollbar.scrollbar-autohide.is-scrolling,
+.custom-scrollbar.scrollbar-autohide:hover {
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+.custom-scrollbar.scrollbar-autohide.is-scrolling::-webkit-scrollbar-thumb,
+.custom-scrollbar.scrollbar-autohide:hover::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+}
+
+.custom-scrollbar.scrollbar-autohide.is-scrolling::-webkit-scrollbar-thumb:hover,
+.custom-scrollbar.scrollbar-autohide:hover::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* Scrollbar hidden completely — element stays scrollable */
+.scrollbar-hidden {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-hidden::-webkit-scrollbar {
+  display: none;
+}
+
 .activity-dots {
   display: inline-flex;
   gap: 3px;
@@ -1640,7 +1836,7 @@ body.is-panel-resizing .context-panel {
 /* Jump-to-latest when the user has scrolled up in a long thread. */
 .scroll-to-bottom {
   position: absolute;
-  right: 28px;
+  right: 12px;
   bottom: 14px;
   z-index: 14;
   display: inline-flex;
@@ -1670,7 +1866,9 @@ body.is-panel-resizing .context-panel {
   max-width: 100%;
   min-height: 0;
   margin-top: 0;
-  padding-right: 20px; /* room for outline rail */
+  /* Match left/right inset from .clean-surface (12px); outline rail floats over */
+  padding-left: 0;
+  padding-right: 0;
   overflow-x: hidden;
   overflow-y: auto;
 }
@@ -1766,17 +1964,6 @@ body.is-panel-resizing .context-panel {
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--text-muted) 32%, transparent) transparent;
-}
-
-.message-outline__list::-webkit-scrollbar {
-  width: 5px;
-}
-
-.message-outline__list::-webkit-scrollbar-thumb {
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--text-muted) 30%, transparent);
 }
 
 .message-outline__item {
@@ -2000,8 +2187,6 @@ body.is-panel-resizing .context-panel {
   margin-top: 8px;
   overflow-x: hidden;
   overflow-y: auto;
-  scrollbar-width: thin; /* Firefox */
-  scrollbar-color: color-mix(in srgb, var(--text-muted) 35%, transparent) transparent;
   user-select: text;
 }
 
@@ -2428,21 +2613,6 @@ body.is-panel-resizing .context-panel {
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--text-muted) 35%, transparent) transparent;
-}
-
-.clipped-body--hard .clipped-body__content::-webkit-scrollbar {
-  width: 6px;
-}
-
-.clipped-body--hard .clipped-body__content::-webkit-scrollbar-thumb {
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--text-muted) 30%, transparent);
-}
-
-.clipped-body--hard .clipped-body__content::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--text-muted) 50%, transparent);
 }
 
 .clipped-body__fade {
@@ -2772,7 +2942,7 @@ body.is-panel-resizing .context-panel {
   overflow-wrap: anywhere;
   word-break: break-word;
   scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--text-muted) 35%, transparent) transparent;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
 
 .md-body pre code {
@@ -2961,22 +3131,6 @@ body.is-panel-resizing .context-panel {
   white-space: nowrap;
 }
 
-.context-panel__chrome {
-  display: flex;
-  align-items: stretch;
-  justify-content: flex-end;
-  height: 34px;
-  min-height: 34px;
-  padding: 0;
-  border-bottom: 1px solid var(--border);
-  background: var(--editor-toolbar-bg);
-}
-
-.context-panel__chrome--collapsed {
-  justify-content: flex-end;
-  padding: 0;
-}
-
 /* Frameless window chrome — never place under data-tauri-drag-region */
 .window-controls {
   display: inline-flex;
@@ -3030,22 +3184,6 @@ body.is-panel-resizing .context-panel {
   list-style: none;
   max-height: 180px;
   overflow: auto;
-  scrollbar-width: thin; /* Firefox */
-  scrollbar-color: color-mix(in srgb, var(--text-muted) 32%, transparent) transparent;
-}
-
-.changed-files-list::-webkit-scrollbar {
-  width: 5px;
-  height: 0;
-}
-
-.changed-files-list::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.changed-files-list::-webkit-scrollbar-thumb {
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--text-muted) 28%, transparent);
 }
 
 .changed-files-list::-webkit-scrollbar-thumb:hover {
@@ -4108,22 +4246,6 @@ body.is-composer-resizing .composer {
   max-height: 180px;
   overflow-y: auto;
   overflow-x: hidden;
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--text-muted) 32%, transparent) transparent;
-}
-
-.context-lend__list::-webkit-scrollbar {
-  width: 5px;
-  height: 0;
-}
-
-.context-lend__list::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.context-lend__list::-webkit-scrollbar-thumb {
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--text-muted) 28%, transparent);
 }
 
 .context-lend__list::-webkit-scrollbar-thumb:hover {
@@ -4354,12 +4476,6 @@ body.is-composer-resizing .composer {
 .send-button svg {
   width: 14px;
   height: 14px;
-}
-
-@media (max-width: 1120px) {
-  .workspace-grid {
-    grid-template-columns: 220px minmax(0, 1fr) 250px;
-  }
 }
 
 /* ── Provider Config Dialog ────────────────────────────────────────────── */

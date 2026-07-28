@@ -14,7 +14,7 @@ import type { CapabilitySnapshot, SessionComposerPrefs } from "./types";
  * session prefs on disk (see `overlayPrefs`).
  */
 
-const KEY_PREFIX = "agentshell-caps:";
+const KEY_PREFIX = "marionette-caps:";
 /** Bump when CapabilitySnapshot shape changes in a breaking way. */
 const VERSION = 2;
 /** Forget catalogs nobody has refreshed in a month (agent uninstalled / renamed). */

@@ -13,7 +13,7 @@ import {
   stallBannerCopy,
   type ActivityHealth,
 } from "../lib/activityHealth";
-import { isTauriRuntime, readTerminalSnapshot, resizeTerminal, startTerminal, writeTerminal } from "../lib/api";
+import { getFileDiff, isTauriRuntime, readTerminalSnapshot, resizeTerminal, startTerminal, writeTerminal } from "../lib/api";
 import { newQuotePinId, type QuotePin } from "../lib/quoteComment";
 import type { AcpEvent, AgentConfig, CapabilitySnapshot, Session, SessionEvent, SessionStatus, SessionViewMode, TerminalOutput } from "../lib/types";
 import { ClippedBody } from "./ClippedBody";
@@ -55,6 +55,10 @@ type SessionViewProps = {
   onQuotePinsChange?: (pins: QuotePin[]) => void;
   /** Interrupt the live turn (same as Esc×2 / ■). */
   onInterrupt?: () => void | Promise<void>;
+  /** Project id for on-demand file diffs (file_change cards). */
+  projectId?: string;
+  /** External / historical view — no edit, no raw agent. */
+  readOnly?: boolean;
 };
 
 /** Tabs-only for the shared workspace-titlebar (rendered by App.tsx). */
@@ -184,13 +188,15 @@ export function SessionView({
   quotePins = [],
   onQuotePinsChange,
   onInterrupt,
+  projectId,
+  readOnly = false,
 }: SessionViewProps) {
   // Show thinking/tool rows by default (they render collapsed). Eye can hide them entirely.
   const [detailsVisible, setDetailsVisible] = useState(true);
-  const showRaw = viewMode === "raw-terminal";
+  const showRaw = !readOnly && viewMode === "raw-terminal";
   // Only a real turn earns the top bar. Connecting is background work — the
   // composer floats a pill for it so the stage never resizes mid-reconnect.
-  const isLive = session.status === "running";
+  const isLive = !readOnly && session.status === "running";
 
   return (
     <section className="session-view" aria-label="Session view">
@@ -202,7 +208,7 @@ export function SessionView({
       {authBanner && (
         <div className="session-auth-banner" role="status">
           <div className="session-auth-banner__copy">
-            <strong>Sign in required</strong>
+            <strong>{readOnly ? "Read-only" : "Sign in required"}</strong>
             <span>{authBanner}</span>
           </div>
           {onSignIn && (
@@ -230,15 +236,16 @@ export function SessionView({
             events={events}
             detailsVisible={detailsVisible}
             onDetailsToggle={() => setDetailsVisible((visible) => !visible)}
-            onShowRaw={onViewModeToggle}
+            onShowRaw={readOnly ? undefined : onViewModeToggle}
             authBanner={authBanner}
             onSignIn={onSignIn}
             signInBusy={signInBusy}
-            onEditResend={onEditResend}
+            onEditResend={readOnly ? undefined : onEditResend}
             lastActivityAt={lastActivityAt}
             quotePins={quotePins}
             onQuotePinsChange={onQuotePinsChange}
             onInterrupt={onInterrupt}
+            projectId={projectId}
           />
         </div>
         <div className="session-stage__raw" data-active={showRaw ? "true" : "false"} aria-hidden={!showRaw}>
@@ -440,7 +447,7 @@ function AcpTerminalSurface({
     };
   }, [onStatusChange, sessionId]);
 
-  return <div ref={hostRef} className="terminal-surface" aria-label="ACP session output" />;
+  return <div ref={hostRef} className="terminal-surface custom-scrollbar scrollbar-autohide" aria-label="ACP session output" />;
 }
 
 function TerminalSurface({
@@ -532,7 +539,7 @@ function TerminalSurface({
         return;
       }
       if (!isTauriRuntime()) {
-        terminal.write("AgentShell Raw Terminal requires the Tauri desktop runtime.\r\n");
+        terminal.write("Marionette Raw Terminal requires the Tauri desktop runtime.\r\n");
         onStatusChange("error");
         return;
       }
@@ -575,7 +582,7 @@ function TerminalSurface({
         });
       } catch (error) {
         terminal.write(
-          `\r\nAgentShell could not start ${agentLabel}: ${String(error)}\r\n` +
+          `\r\nMarionette could not start ${agentLabel}: ${String(error)}\r\n` +
             `Command: ${[command, ...args].filter(Boolean).join(" ")}\r\n`,
         );
         onStatusChange("error");
@@ -604,7 +611,98 @@ function TerminalSurface({
     return () => cancelAnimationFrame(id);
   }, [visible]);
 
-  return <div ref={hostRef} className="terminal-surface" aria-label="Raw terminal" />;
+  return <div ref={hostRef} className="terminal-surface custom-scrollbar scrollbar-autohide" aria-label="Raw terminal" />;
+}
+
+function FileChangeCard({
+  path,
+  changeType,
+  projectId,
+  createdAt,
+  index,
+}: {
+  path: string;
+  changeType: string;
+  projectId?: string;
+  createdAt: string;
+  index: number;
+}) {
+  const [open, setOpen] = useState(false);
+  const [diff, setDiff] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open || diff !== null || loading) return;
+    if (!projectId || !path) {
+      setError("No project context for diff");
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    void getFileDiff(projectId, path)
+      .then((text) => {
+        if (!cancelled) setDiff(text || "(empty diff)");
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, projectId, path, diff, loading]);
+
+  const fileName = path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+
+  return (
+    <details
+      className="event-card event-card--collapsible event-card--file_change"
+      key={`file_change-${createdAt}-${index}`}
+      open={open}
+      onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
+    >
+      <summary className="event-card__summary" title={`${changeType}: ${path}`}>
+        <span className="event-card__type">File</span>
+        <span className="event-card__preview-wrap">
+          <span className="event-card__preview">
+            {changeType} · {fileName}
+          </span>
+        </span>
+      </summary>
+      <div className="event-card__expand-slot">
+        <div className="file-diff-card">
+          <div className="file-diff-card__path" title={path}>
+            {path}
+          </div>
+          {loading && <div className="file-diff-card__muted">Loading diff…</div>}
+          {error && <div className="file-diff-card__muted">{error}</div>}
+          {diff !== null && (
+            <pre className="file-diff-card__body custom-scrollbar scrollbar-autohide">
+              {diff.split("\n").map((line, i) => {
+                const cls =
+                  line.startsWith("+") && !line.startsWith("+++")
+                    ? "file-diff-card__line is-add"
+                    : line.startsWith("-") && !line.startsWith("---")
+                      ? "file-diff-card__line is-del"
+                      : "file-diff-card__line";
+                return (
+                  <span className={cls} key={i}>
+                    {line || " "}
+                    {"\n"}
+                  </span>
+                );
+              })}
+            </pre>
+          )}
+          <div className="file-diff-card__note">当前工作区 diff，非历史快照</div>
+        </div>
+      </div>
+    </details>
+  );
 }
 
 function CleanPlaceholder({
@@ -622,6 +720,7 @@ function CleanPlaceholder({
   quotePins = [],
   onQuotePinsChange,
   onInterrupt,
+  projectId,
 }: {
   agent: AgentConfig;
   session: Session;
@@ -637,6 +736,7 @@ function CleanPlaceholder({
   quotePins?: QuotePin[];
   onQuotePinsChange?: (pins: QuotePin[]) => void;
   onInterrupt?: () => void | Promise<void>;
+  projectId?: string;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   /** When true, new content may stick the viewport to the bottom. */
@@ -771,7 +871,7 @@ function CleanPlaceholder({
       )}
       <div
         ref={listRef}
-        className={detailsVisible ? "event-list" : "event-list is-details-hidden"}
+        className={`${detailsVisible ? "event-list" : "event-list is-details-hidden"} scrollbar-hidden`}
         onScroll={onListScroll}
       >
         {/* Quote UI is isolated so its setState does not re-render cards (keeps selection). */}
@@ -841,15 +941,26 @@ function CleanPlaceholder({
                       ? "Handoff"
                       : event.type.replace(/_/g, " ");
 
+          if (event.type === "file_change") {
+            return (
+              <FileChangeCard
+                key={`file_change-${event.createdAt}-${index}`}
+                path={event.path}
+                changeType={event.changeType}
+                projectId={projectId}
+                createdAt={event.createdAt}
+                index={index}
+              />
+            );
+          }
+
           // Handoff: a marker, not a wall of text. The notes themselves ride
           // along with the next message the user sends (never shown here or
           // pasted into the composer).
           const body =
             event.type === "handoff_prepared"
               ? `Notes prepared for **${event.targetAgentId}** — they will be attached to your next message.\n\nFull notes: \`${event.handoffPath}\``
-              : event.type === "file_change"
-                ? `${event.changeType}: ${event.path}`
-                : event.text;
+              : event.text;
 
           const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
           const clipTeaser = (s: string, max = 42) => {

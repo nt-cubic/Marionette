@@ -49,7 +49,7 @@ export function ClippedBody({ children, maxHeight = 220, className }: ClippedBod
     >
       <div
         ref={contentRef}
-        className="clipped-body__content"
+        className="clipped-body__content custom-scrollbar scrollbar-autohide"
         style={{ maxHeight }}
       >
         {children}

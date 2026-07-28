@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { X } from "lucide-react";
+import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { agents, projects, sessions } from "../lib/mockData";
 import {
@@ -13,8 +13,8 @@ import {
   userMessageEvent,
 } from "../lib/acpTranscript";
 import { armPtyBridge, createPtyBridgeState, flushPtyBridge, ingestPtyOutput, type PtyBridgeState } from "../lib/ptyCleanBridge";
-import { addProject, appendDebugLog, cancelAcpSession, checkOutsideProjectPaths, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, generateHandoff, getChangedFiles, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgents, listProjects, listSessions, loadTranscript, preparePtyInput, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, respondAcpPermission, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, startAcpSession, startAgentLogin, stopAcpSession, stopTerminal, updateSessionAgent, updateSessionLabel, updateSessionPrefs, writeTerminal, writeTranscript, type OutsidePath } from "../lib/api";
-import type { AcpEvent, AvailableCommand, CapabilitySnapshot, ChangedFile, HandoffResult, Project, ProjectContext, Session, SessionComposerPrefs, SessionEvent, SessionViewMode, TerminalOutput, UsageSnapshot } from "../lib/types";
+import { addProject, appendDebugLog, cancelAcpSession, checkOutsideProjectPaths, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, generateHandoff, getChangedFiles, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgents, listExternalSessions, listProjects, listSessions, loadExternalSession, loadTranscript, preparePtyInput, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, respondAcpPermission, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, startAcpSession, startAgentLogin, stopAcpSession, stopTerminal, updateSessionAgent, updateSessionLabel, updateSessionPrefs, writeTerminal, writeTranscript, type OutsidePath } from "../lib/api";
+import type { AcpEvent, AvailableCommand, CapabilitySnapshot, ChangedFile, ExternalConversation, HandoffResult, Project, ProjectContext, Session, SessionComposerPrefs, SessionEvent, SessionViewMode, TerminalOutput, UsageSnapshot } from "../lib/types";
 import {
   buildUsageSnapshot,
   emptySessionUsage,
@@ -57,6 +57,7 @@ import { PermissionDialog, type PermissionPrompt } from "../components/Permissio
 import { ProjectShelf } from "../components/ProjectShelf";
 import { SessionTabs, SessionView, type UserMessageAnchor } from "../components/SessionView";
 import { WindowControls } from "../components/WindowControls";
+import { initScrollbarAutoHide } from "../lib/scrollbarAutoHide";
 
 type ThemeMode = "dark" | "light";
 
@@ -66,7 +67,7 @@ const LEFT_PANEL_DEFAULT = 224;
 const RIGHT_PANEL_MIN = 220;
 const RIGHT_PANEL_MAX = 480;
 const RIGHT_PANEL_DEFAULT = 270;
-const LAYOUT_STORAGE_KEY = "agentshell-layout";
+const LAYOUT_STORAGE_KEY = "marionette-layout";
 
 function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n));
@@ -74,7 +75,9 @@ function clamp(n: number, min: number, max: number): number {
 
 function readStoredPanelWidth(key: "leftWidth" | "rightWidth", fallback: number, min: number, max: number): number {
   try {
-    const raw = window.localStorage.getItem(LAYOUT_STORAGE_KEY);
+    const raw =
+      window.localStorage.getItem(LAYOUT_STORAGE_KEY) ??
+      window.localStorage.getItem("agentshell-layout");
     if (!raw) return fallback;
     const parsed = JSON.parse(raw) as { leftWidth?: number; rightWidth?: number };
     const value = parsed[key];
@@ -171,6 +174,13 @@ export function App() {
   const [viewMode, setViewMode] = useState<SessionViewMode>("clean");
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
+  /** Whether the mouse is hovering near the collapsed sidebar edge — shows the floating trigger */
+  const [leftEdgeHover, setLeftEdgeHover] = useState(false);
+  const [rightEdgeHover, setRightEdgeHover] = useState(false);
+  const edgeHoverTimers = useRef<{ left?: ReturnType<typeof setTimeout>; right?: ReturnType<typeof setTimeout> }>({});
+  const wasNearLeft = useRef(false);
+  const wasNearRight = useRef(false);
+
   const [leftWidth, setLeftWidth] = useState(() =>
     readStoredPanelWidth("leftWidth", LEFT_PANEL_DEFAULT, LEFT_PANEL_MIN, LEFT_PANEL_MAX)
   );
@@ -189,7 +199,9 @@ export function App() {
   const [projectError, setProjectError] = useState("");
   const [projectAdding, setProjectAdding] = useState(false);
   const [theme, setTheme] = useState<ThemeMode>(() => {
-    const stored = window.localStorage.getItem("agentshell-theme");
+    const stored =
+      window.localStorage.getItem("marionette-theme") ??
+      window.localStorage.getItem("agentshell-theme");
     return stored === "light" ? "light" : "dark";
   });
   /** Taskbar flash + chime when AI replies / may be stuck (off while focused). */
@@ -247,6 +259,14 @@ export function App() {
   const [changedFiles, setChangedFiles] = useState<ChangedFile[]>([]);
   const [changedFilesNote, setChangedFilesNote] = useState<string | null>(null);
   const [diffPreview, setDiffPreview] = useState<{ path: string; text: string } | null>(null);
+  /** External agent sessions (per-project memory cache; not on disk). */
+  const [externalByProject, setExternalByProject] = useState<Record<string, ExternalConversation[]>>({});
+  const [externalScanning, setExternalScanning] = useState(false);
+  const [externalStatus, setExternalStatus] = useState<string | null>(null);
+  const [externalView, setExternalView] = useState<{
+    conversation: ExternalConversation;
+    events: SessionEvent[];
+  } | null>(null);
   const [permissionPrompt, setPermissionPrompt] = useState<PermissionPrompt | null>(null);
   const [permissionBusy, setPermissionBusy] = useState(false);
   /** MCP servers + skills found for the active project (needs 5). */
@@ -1052,8 +1072,11 @@ export function App() {
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     document.documentElement.style.colorScheme = theme;
-    window.localStorage.setItem("agentshell-theme", theme);
+    window.localStorage.setItem("marionette-theme", theme);
   }, [theme]);
+
+  // Global scrollbar auto-hide: `.is-scrolling` class on scroll + idle timeout.
+  useEffect(() => initScrollbarAutoHide(), []);
 
   // Clear taskbar flash / yellow bar when the user comes back to the window.
   useEffect(() => bindDesktopNotifyFocusHandlers(), []);
@@ -1174,35 +1197,65 @@ export function App() {
     [currentSessionId, projectSessions]
   );
 
-  const displaySession = useMemo(
-    () => currentSession ?? {
-      id: `session-empty-${currentProject?.id ?? "none"}`,
-      projectId: currentProject?.id ?? "",
-      agentId: availableAgents[0]?.id ?? agents[0].id,
-      label: "New session",
-      cwd: currentProject?.rootPath ?? "",
-      status: "exited" as const,
-      processId: null,
-      ptyId: null,
-      startedAt: "",
-      lastActiveAt: "",
-      rawLogPath: "",
-      transcriptPath: "",
-      handoffPath: "",
-      viewMode: "clean" as const
-    },
-    [availableAgents, currentProject, currentSession]
-  );
+  const displaySession = useMemo((): Session => {
+    if (externalView) {
+      const c = externalView.conversation;
+      const agentGuess =
+        c.source === "grok"
+          ? "grok"
+          : c.source === "claude"
+            ? "claude-code"
+            : c.source === "codex"
+              ? "codex"
+              : c.source === "opencode"
+                ? "opencode"
+                : availableAgents[0]?.id ?? agents[0].id;
+      return {
+        id: c.id,
+        projectId: currentProject?.id ?? "",
+        agentId: agentGuess,
+        label: `[${c.source}] ${c.title}`,
+        cwd: c.cwd || currentProject?.rootPath || "",
+        status: "exited",
+        processId: null,
+        ptyId: null,
+        startedAt: c.startedAt ?? "",
+        lastActiveAt: c.lastActiveAt ?? "",
+        rawLogPath: "",
+        transcriptPath: "",
+        handoffPath: "",
+        viewMode: "clean",
+      };
+    }
+    return (
+      currentSession ?? {
+        id: `session-empty-${currentProject?.id ?? "none"}`,
+        projectId: currentProject?.id ?? "",
+        agentId: availableAgents[0]?.id ?? agents[0].id,
+        label: "New session",
+        cwd: currentProject?.rootPath ?? "",
+        status: "exited" as const,
+        processId: null,
+        ptyId: null,
+        startedAt: "",
+        lastActiveAt: "",
+        rawLogPath: "",
+        transcriptPath: "",
+        handoffPath: "",
+        viewMode: "clean" as const,
+      }
+    );
+  }, [availableAgents, currentProject, currentSession, externalView]);
 
   const currentAgent = useMemo(
     () => availableAgents.find((agent) => agent.id === displaySession.agentId) ?? availableAgents[0] ?? agents[0],
     [availableAgents, displaySession]
   );
 
-  const currentEvents = useMemo(
-    () => liveEvents.filter((event) => event.sessionId === displaySession.id),
-    [liveEvents, displaySession.id]
-  );
+  const currentEvents = useMemo(() => {
+    if (externalView) return externalView.events;
+    return liveEvents.filter((event) => event.sessionId === displaySession.id);
+  }, [liveEvents, displaySession.id, externalView]);
 
   const openSessions = useMemo(
     () => openSessionIds
@@ -1305,6 +1358,7 @@ export function App() {
   };
 
   const openSession = (nextSession: Session) => {
+    setExternalView(null);
     setOpenSessionIds((current) => current.includes(nextSession.id) ? current : [...current, nextSession.id]);
     setCurrentProjectId(nextSession.projectId);
     setCurrentSessionId(nextSession.id);
@@ -1316,6 +1370,58 @@ export function App() {
     lastProviderProbeKey.current = "";
     void loadSessionTranscript(nextSession.id);
   };
+
+  const handleRefreshExternal = useCallback(
+    async (projectId: string) => {
+      if (!projectId || externalScanning) return;
+      setExternalScanning(true);
+      setExternalStatus("Scanning…");
+      try {
+        const rows = await listExternalSessions(projectId);
+        setExternalByProject((prev) => ({ ...prev, [projectId]: rows }));
+        setExternalStatus(
+          rows.length === 0 ? "No external sessions for this project" : `Found ${rows.length} external session${rows.length === 1 ? "" : "s"}`
+        );
+      } catch (error) {
+        setExternalStatus(error instanceof Error ? error.message : String(error));
+      } finally {
+        setExternalScanning(false);
+      }
+    },
+    [externalScanning]
+  );
+
+  const handleOpenExternal = useCallback(
+    async (conv: ExternalConversation) => {
+      try {
+        const raw = await loadExternalSession(conv.source, conv.locator);
+        const events = parseTranscriptEvents(raw).map((e) =>
+          // Ensure sessionId matches synthetic external id for any filters.
+          e.sessionId === conv.id || e.sessionId === conv.nativeId
+            ? { ...e, sessionId: conv.id }
+            : { ...e, sessionId: conv.id }
+        );
+        setExternalView({ conversation: conv, events });
+        setViewMode("clean");
+        setSessionCapabilities(null);
+        pushDebug({
+          level: "info",
+          source: "external",
+          summary: `opened ${conv.source} session`,
+          detail: conv.title,
+        });
+      } catch (error) {
+        pushDebug({
+          level: "error",
+          source: "external",
+          summary: "load external session failed",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+        setExternalStatus(error instanceof Error ? error.message : String(error));
+      }
+    },
+    [pushDebug]
+  );
 
   const setSessionStatusById = useCallback((sessionId: string, status: Session["status"]) => {
     setAvailableSessions((current) =>
@@ -1736,7 +1842,7 @@ export function App() {
    * Re-negotiate the agent connection so newly-reachable MCP servers attach.
    *
    * MCP servers are handed to the agent exactly once, in `session/new`. One that
-   * was not listening at that moment — Unity or UE started after AgentShell — is
+   * was not listening at that moment — Unity or UE started after Marionette — is
    * recorded as unavailable for the life of that session and never retried, so
    * rescanning the inventory changes nothing on its own: it takes a fresh
    * `session/new`. Conversation context survives, because the replacement
@@ -1892,7 +1998,7 @@ export function App() {
           type: "assistant_message" as const,
           sessionId: sid,
           text:
-            "**The agent did not answer the cancel.**\n\nIt has stayed silent since the interrupt, so the turn is stuck inside the agent process — a hung tool or model call, which nothing on this side can reach.\n\nSend your next message as usual: AgentShell will replace the agent process first and replay this conversation to the new one.",
+            "**The agent did not answer the cancel.**\n\nIt has stayed silent since the interrupt, so the turn is stuck inside the agent process — a hung tool or model call, which nothing on this side can reach.\n\nSend your next message as usual: Marionette will replace the agent process first and replay this conversation to the new one.",
           createdAt: new Date().toISOString(),
         },
       ]);
@@ -2476,6 +2582,42 @@ export function App() {
     }
   };
 
+  // ── Center-workspace edge hover — detects mouse near chat area edges ──
+  const handleCenterMove = useCallback((e: React.MouseEvent) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const distLeft = e.clientX - rect.left;
+    const distRight = rect.right - e.clientX;
+    const nearLeft = distLeft < 32;
+    const nearRight = distRight < 32;
+
+    if (nearLeft) {
+      if (edgeHoverTimers.current.left) clearTimeout(edgeHoverTimers.current.left);
+      setLeftEdgeHover(true);
+      wasNearLeft.current = true;
+    } else if (wasNearLeft.current) {
+      wasNearLeft.current = false;
+      edgeHoverTimers.current.left = setTimeout(() => setLeftEdgeHover(false), 600);
+    }
+
+    if (nearRight) {
+      if (edgeHoverTimers.current.right) clearTimeout(edgeHoverTimers.current.right);
+      setRightEdgeHover(true);
+      wasNearRight.current = true;
+    } else if (wasNearRight.current) {
+      wasNearRight.current = false;
+      edgeHoverTimers.current.right = setTimeout(() => setRightEdgeHover(false), 600);
+    }
+  }, []);
+
+  const handleCenterLeave = useCallback(() => {
+    wasNearLeft.current = false;
+    wasNearRight.current = false;
+    if (edgeHoverTimers.current.left) clearTimeout(edgeHoverTimers.current.left);
+    if (edgeHoverTimers.current.right) clearTimeout(edgeHoverTimers.current.right);
+    edgeHoverTimers.current.left = setTimeout(() => setLeftEdgeHover(false), 600);
+    edgeHoverTimers.current.right = setTimeout(() => setRightEdgeHover(false), 600);
+  }, []);
+
   return (
     <main className="app-shell">
       <div
@@ -2531,6 +2673,12 @@ export function App() {
             onDeleteSession={deleteSession}
             onDeleteProject={handleDeleteProject}
             onRenameSession={handleRenameSession}
+            externalSessions={externalByProject[currentProjectId] ?? []}
+            externalScanning={externalScanning}
+            externalStatus={externalStatus}
+            currentExternalId={externalView?.conversation.id ?? null}
+            onRefreshExternal={(projectId) => void handleRefreshExternal(projectId)}
+            onExternalSelect={(conv) => void handleOpenExternal(conv)}
           />
           {!leftCollapsed && (
             <button
@@ -2560,28 +2708,67 @@ export function App() {
           <WindowControls />
         </div>
 
-        {/* Center workspace */}
-        <section className="center-workspace" aria-label="Active workspace">
+        {/* Center workspace — hover edges to reveal sidebar toggle buttons */}
+        <section
+          className="center-workspace"
+          aria-label="Active workspace"
+          onMouseMove={handleCenterMove}
+          onMouseLeave={handleCenterLeave}
+        >
+          {/* Absolute inside center: always inset from the seam, never overlaps the rail border */}
+          {(leftCollapsed || leftEdgeHover) && (
+            <button
+              type="button"
+              className={`floating-trigger floating-trigger--center-left${leftEdgeHover ? " is-visible" : ""}`}
+              onClick={() => setLeftCollapsed(!leftCollapsed)}
+              aria-label={leftCollapsed ? "Show projects and sessions" : "Hide projects and sessions"}
+              title={leftCollapsed ? "Show projects and sessions" : "Hide projects and sessions"}
+            >
+              {leftCollapsed ? <ChevronRight size={12} /> : <ChevronLeft size={12} />}
+            </button>
+          )}
+          {(rightCollapsed || rightEdgeHover) && (
+            <button
+              type="button"
+              className={`floating-trigger floating-trigger--center-right${rightEdgeHover ? " is-visible" : ""}`}
+              onClick={() => setRightCollapsed(!rightCollapsed)}
+              aria-label={rightCollapsed ? "Show information panel" : "Hide information panel"}
+              title={rightCollapsed ? "Show information panel" : "Hide information panel"}
+            >
+              {rightCollapsed ? <ChevronLeft size={12} /> : <ChevronRight size={12} />}
+            </button>
+          )}
           <SessionView
             agent={currentAgent}
             events={currentEvents}
             session={displaySession}
-            viewMode={viewMode}
+            viewMode={externalView ? "clean" : viewMode}
             openSessions={openSessions}
             lastActivityAt={lastActivityById[displaySession.id] ?? null}
-            authBanner={currentAgent.id === "claude-code" ? claudeAuthHint : null}
-            onSignIn={currentAgent.id === "claude-code" ? handleClaudeSignIn : undefined}
+            authBanner={
+              externalView
+                ? `Read-only · ${externalView.conversation.source} external session (not a live Marionette dialog)`
+                : currentAgent.id === "claude-code"
+                  ? claudeAuthHint
+                  : null
+            }
+            onSignIn={externalView ? undefined : currentAgent.id === "claude-code" ? handleClaudeSignIn : undefined}
             signInBusy={signInBusy}
             onTabSelect={openSession}
             onTabClose={closeSessionTab}
             onNewTab={() => createSessionForProject(currentProject?.id ?? "")}
             onSessionStatusChange={handleSessionStatusChange}
             onCapabilities={setSessionCapabilities}
-            onViewModeToggle={() => setViewMode(viewMode === "raw-terminal" ? "clean" : "raw-terminal")}
-            onEditResend={(anchor, text) => void handleEditResend(anchor, text)}
-            quotePins={quotePins}
-            onQuotePinsChange={setQuotePins}
-            onInterrupt={() => void handleInterrupt()}
+            onViewModeToggle={() => {
+              if (externalView) return;
+              setViewMode(viewMode === "raw-terminal" ? "clean" : "raw-terminal");
+            }}
+            onEditResend={externalView ? undefined : (anchor, text) => void handleEditResend(anchor, text)}
+            quotePins={externalView ? [] : quotePins}
+            onQuotePinsChange={externalView ? undefined : setQuotePins}
+            onInterrupt={externalView ? undefined : () => void handleInterrupt()}
+            projectId={currentProjectId || displaySession.projectId}
+            readOnly={Boolean(externalView)}
           />
           <Composer
             // Remount when dialog identity changes so model/mode state cannot leak.
@@ -2591,6 +2778,11 @@ export function App() {
             currentAgentId={displaySession.agentId}
             sessionId={displaySession.id}
             sessionStatus={displaySession.status}
+            readOnlyReason={
+              externalView
+                ? "Read-only external session — switch to a Marionette dialog to chat"
+                : null
+            }
             lastActivityAt={lastActivityById[displaySession.id] ?? null}
             onProviderKeysChanged={handleProviderKeysChanged}
             onAgentBinaryUpdated={handleAgentBinaryUpdated}
@@ -2730,7 +2922,7 @@ export function App() {
             </ul>
             <p className="path-grant__hint">
               Scope is fixed when the agent session starts, and a
-              <strong> subagent’s permission prompt never reaches AgentShell</strong> — it would just
+              <strong> subagent’s permission prompt never reaches Marionette</strong> — it would just
               hang there. Granting saves the folder for this project and reconnects the agent so it
               starts already allowed.
             </p>

@@ -13,7 +13,7 @@ export type AgentDependency = {
   package: string | null;
 };
 
-/** How AgentShell can put an agent's ACP command on the machine. */
+/** How Marionette can put an agent's ACP command on the machine. */
 export type AgentInstallSpec = {
   manager: "npm" | "manual";
   package: string | null;
@@ -53,7 +53,7 @@ export type AgentCommandStatus = {
   status: "installed" | "incomplete" | "missing" | "failed";
   path: string | null;
   message: string;
-  /** AgentShell knows an npm package for whatever is missing. */
+  /** Marionette knows an npm package for whatever is missing. */
   installable?: boolean;
   /** Human labels of the missing pieces. */
   missing?: string[];
@@ -114,6 +114,18 @@ export type Session = {
    * plan/build mode — restored by replaying the slash command on warm-up.
    */
   preferredAlwaysApprove?: boolean | null;
+};
+
+/** External agent conversation (read-only scan result). */
+export type ExternalConversation = {
+  id: string;
+  source: "grok" | "claude" | "codex" | "opencode" | string;
+  title: string;
+  cwd: string;
+  startedAt?: string;
+  lastActiveAt?: string;
+  nativeId: string;
+  locator: string;
 };
 
 /** Snapshot of Composer model/mode/effort bound to a dialog. */

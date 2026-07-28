@@ -11,12 +11,12 @@
 
 这三件事**共用同一根管道**：ACP 的 `session/new.mcpServers`。
 
-AgentShell 已经是每个 Agent 进程的父进程和唯一入口，只要在建会话时往里注入 MCP server，就同时解决了：
+Marionette 已经是每个 Agent 进程的父进程和唯一入口，只要在建会话时往里注入 MCP server，就同时解决了：
 
 | 需求 | 靠什么实现 |
 |----|----|
 | 5 · skill/mcp 兜底 | 注入「项目 MCP 集合」+ 内置 `agentshell-skills` MCP server |
-| 6 · 子代理分屏 | 事件加 `laneId`；真正能分屏的是 AgentShell 自己派生的子会话 |
+| 6 · 子代理分屏 | 事件加 `laneId`；真正能分屏的是 Marionette 自己派生的子会话 |
 | 7 · 多 Agent 互调 | 内置 `agentshell-bridge` MCP server，把「换个 Agent 干活」变成一个工具 |
 
 建议顺序：**5 → 6(一半) → 7 → 6(另一半)**。
@@ -32,7 +32,7 @@ AgentShell 已经是每个 Agent 进程的父进程和唯一入口，只要在�
 ```json
 {"sessionUpdate":"tool_call_update","toolCallId":"call_00_5dPf…","status":"completed",
  "title":"README.md","locations":[{"path":"D:\\Myself\\AgentsShell\\README.md"}],
- "content":[{"type":"content","content":{"type":"text","text":"# AgentShell\n…整篇文件…"}}]}
+ "content":[{"type":"content","content":{"type":"text","text":"# Marionette\n…整篇文件…"}}]}
 ```
 
 而 `acpTranscript.ts` 当时只渲染 `title · status` + `rawInput` 前 200 字，`content[]` / `locations` / `rawOutput` 全丢。
@@ -58,7 +58,7 @@ AgentShell 已经是每个 Agent 进程的父进程和唯一入口，只要在�
 | 事实 | 位置 |
 |----|----|
 | `session/new` 已经在发 `mcpServers`，但恒为 `[]` | `src-tauri/src/acp.rs:360` |
-| ACP 进程由 AgentShell 独占 spawn / 持有 stdin | `acp.rs` `AcpService.start/send_prompt/stop` |
+| ACP 进程由 Marionette 独占 spawn / 持有 stdin | `acp.rs` `AcpService.start/send_prompt/stop` |
 | 已有「首条 prompt 注入本地历史」的机制（可复用为 skill 提示注入） | `src/lib/sessionHistory.ts` |
 | 已有权限弹窗链路（`session/request_permission`） | `acp.rs` + `src/components/PermissionDialog.tsx` |
 | 每个会话独立 transcript JSONL + session 记录 | `src-tauri/src/storage.rs` |
@@ -76,7 +76,7 @@ AgentShell 已经是每个 Agent 进程的父进程和唯一入口，只要在�
 - `SessionUpdate` 只有这些：`UserMessageChunk / AgentMessageChunk / AgentThoughtChunk / ToolCall / ToolCallUpdate / Plan / PlanUpdate / PlanRemoved / AvailableCommandsUpdate / CurrentModeUpdate / ConfigOptionUpdate / SessionInfoUpdate / UsageUpdate`。
 - `ToolKind` 只有：`read / edit / delete / move / search / execute / think / fetch / switch_mode / other`。
 
-**关键否定结论**：ACP v1 **没有子代理 / 子会话概念**。Agent 内部起的 subagent（Claude 的 Task、OpenCode 的 task 工具）在协议上只是一条 `ToolCall`，我们能拿到的只有它自己愿意塞进 `content` 的东西。想要「完整的第二条对话流」，只能是 **AgentShell 自己去开第二个会话**。
+**关键否定结论**：ACP v1 **没有子代理 / 子会话概念**。Agent 内部起的 subagent（Claude 的 Task、OpenCode 的 task 工具）在协议上只是一条 `ToolCall`，我们能拿到的只有它自己愿意塞进 `content` 的东西。想要「完整的第二条对话流」，只能是 **Marionette 自己去开第二个会话**。
 
 ### 1.3 本机各 Agent 的真实家底（2026-07-25 扫描）
 
@@ -111,7 +111,7 @@ AgentShell 已经是每个 Agent 进程的父进程和唯一入口，只要在�
 
 **去重**：目标 agent 自己配置里已有的，永远不注入（`blender` 在 opencode+codex 都有 → 只借给 claude / grok）。
 
-**密钥**：`.agentshell/context.json` 只存 `{id: true/false}`；env 的**键名**进 UI，**值**只在 `session/new` 那一刻从原配置里读，不落盘、不进日志。
+**密钥**：`.marionette/context.json` 只存 `{id: true/false}`；env 的**键名**进 UI，**值**只在 `session/new` 那一刻从原配置里读，不落盘、不进日志。
 
 实测本机扫描结果：
 
@@ -124,7 +124,7 @@ skills(17): opencode 8 · grok-build 8 · claude-code 4（docx/pptx/xlsx 在两�
 
 ```
 ┌─ 采集（只读） ─────────────┐   ┌─ 项目清单（SSOT，我们own） ──┐   ┌─ 注入 ────────────┐
-│ opencode.jsonc  → mcp[]   │   │ .agentshell/context.json     │   │ session/new       │
+│ opencode.jsonc  → mcp[]   │   │ .marionette/context.json     │   │ session/new       │
 │ ~/.codex/config.toml      │──▶│  mcpServers: [...启用项]     │──▶│  mcpServers: [...] │
 │ ~/.claude.json/.mcp.json  │   │  skills:     [...启用项]     │   │ +首条prompt前缀   │
 │ 各 skills/ 目录 + 项目内   │   │  perAgent:   覆盖/排除       │   │ +skills MCP server│
@@ -134,14 +134,14 @@ skills(17): opencode 8 · grok-build 8 · claude-code 4（docx/pptx/xlsx 在两�
 1. **采集层（Rust，只读）**：每个 Agent 一个 adapter，把它的配置解析成统一结构
    `McpServerSpec { name, transport: stdio|http|sse, command/args/env | url/headers }`、
    `SkillSpec { id, name, description, dir, source }`。
-   项目级也要扫：`.mcp.json`、`.claude/skills/`、`AGENTS.md`、`.agentshell/skills/`。
-2. **项目清单**：`.agentshell/context.json` 由 AgentShell 拥有（不写别人的配置文件），用户勾选哪些 MCP / skill 属于本项目。
+   项目级也要扫：`.mcp.json`、`.claude/skills/`、`AGENTS.md`、`.marionette/skills/`。
+2. **项目清单**：`.marionette/context.json` 由 Marionette 拥有（不写别人的配置文件），用户勾选哪些 MCP / skill 属于本项目。
 3. **注入**：`start_acp_session` 时把清单转成 `mcpServers` 数组下发。
    - **去重是硬要求**：目标 Agent 自己配置里已有的（按 name + command 判断）不要再注入，否则 codex 会出现两个 `blender` 工具命名空间。
    - http/sse 只在对方 `mcpCapabilities` 声明时使用，否则跳过并在 UI 说明原因。
 4. **skill 兜底两级**：
    - **L1 提示注入**（便宜、100% 兼容）：会话首条 prompt 前面挂一段清单——每个 skill 的名字 / 什么时候用 / `SKILL.md` 绝对路径。有文件读权限的 Agent 会自己去读。复用 `sessionHistory.ts` 那套 `withXxxInjection` 机制，成本几百 token。
-   - **L2 内置 MCP server**（正解）：AgentShell 自己起 `agentshell.exe --mcp skills --project <root>`（stdio），暴露 `list_skills()` / `get_skill(id)` / `read_skill_file(id, path)`。这样 grok build 也能像原生一样发现 unity skill。
+   - **L2 内置 MCP server**（正解）：Marionette 自己起 `agentshell.exe --mcp skills --project <root>`（stdio），暴露 `list_skills()` / `get_skill(id)` / `read_skill_file(id, path)`。这样 grok build 也能像原生一样发现 unity skill。
    - 顺序：**原生已有 → 什么都不做**；否则 L2；L2 不可用（对方连 stdio MCP 都拒）再退 L1。
 
 ### 2.2 工作量与风险
@@ -149,12 +149,12 @@ skills(17): opencode 8 · grok-build 8 · claude-code 4（docx/pptx/xlsx 在两�
 | 项 | 估计 |
 |----|----|
 | 采集 adapter ×4 + 统一模型 | 中（每家格式不同，jsonc 要容注释） |
-| `.agentshell/context.json` + 右侧面板勾选 UI | 中 |
+| `.marionette/context.json` + 右侧面板勾选 UI | 中 |
 | session/new 注入 + 去重 | 小 |
 | 内置 skills MCP server（复用同一个 exe，加一个 `--mcp` 子命令） | 中 |
 
 风险：
-- **密钥**：别人 MCP 配置里的 `env` 往往含 token — 采集后不得进 dev.log，不得写进 `.agentshell/context.json`（只存引用，运行时再读原配置）。
+- **密钥**：别人 MCP 配置里的 `env` 往往含 token — 采集后不得进 dev.log，不得写进 `.marionette/context.json`（只存引用，运行时再读原配置）。
 - **工具名冲突**：同名 server 注入两次会让 Agent 侧行为不可预测 → 去重优先，冲突时以 Agent 自己的为准。
 - **MCP 列表是 session 级的**：改了清单必须重连会话才生效（正好符合「连接只是一次刷新」的模型）。
 
@@ -181,7 +181,7 @@ skills(17): opencode 8 · grok-build 8 · claude-code 4（docx/pptx/xlsx 在两�
 
 opencode 的真实闸门在 `Tool.assertExternalDirectory`：路径不在 cwd 内就以
 `permission: "external_directory"`、`patterns: ["<dir>/*"]` 发起询问；而 `config.permission`
-会被 `OPENCODE_PERMISSION` 这个环境变量 merge 覆盖。**AgentShell 本来就是 spawn agent 进程的人**，
+会被 `OPENCODE_PERMISSION` 这个环境变量 merge 覆盖。**Marionette 本来就是 spawn agent 进程的人**，
 所以可以按会话注入，不碰用户任何配置文件：
 
 ```
@@ -189,7 +189,7 @@ OPENCODE_PERMISSION={"external_directory":{"C:/Users/.../Screenshots/*":"allow"}
 ```
 
 **实现**：发送前扫描草稿里的路径 → 项目外且未授权的弹一次确认 → 授权写进
-`.agentshell/context.json` 的 `workspaceRoots` → 重连 agent（scope 只能在 `session/new` 时定）→
+`.marionette/context.json` 的 `workspaceRoots` → 重连 agent（scope 只能在 `session/new` 时定）→
 opencode 会话带着 `OPENCODE_PERMISSION` 启动。用户已有的 `OPENCODE_PERMISSION` 会被合并而不是覆盖。
 
 `additionalDirectories` 仍然照发——它是协议里正确的表达方式，别的 agent 可能认；只是对 opencode
@@ -201,7 +201,7 @@ opencode 会话带着 `OPENCODE_PERMISSION` 启动。用户已有的 `OPENCODE_P
 
 ### 3.1 必须先接受的事实
 
-- **AgentShell 自己派生的子会话**：有完整事件流 → 能做真正的分屏（左主对话、右子对话，各自 You/Thinking/Tool/Reply）。
+- **Marionette 自己派生的子会话**：有完整事件流 → 能做真正的分屏（左主对话、右子对话，各自 You/Thinking/Tool/Reply）。
 - **Agent 内部的 subagent（Claude Task / OpenCode task）**：协议上只是一条 `ToolCall`，只能拿到它塞进 `content` 的摘要 → 只能做「一条泳道 + 折叠详情」，做不出真正的第二条对话流。UI 上必须诚实标注这是工具视图，不能假装是一个独立 Agent 在说话。
 
 ### 3.2 设计
@@ -213,7 +213,7 @@ opencode 会话带着 `OPENCODE_PERMISSION` 启动。用户已有的 `OPENCODE_P
    - 开：出现新 lane 时自动分屏（最多 2~3 栏，超出走 Tab）。
    - 关：lane 结束后 **延迟折叠**（比如 3s）并留一个「已完成 · 展开」的小卡，而不是当场消失——当场消失等于把证据吞了。
    - 用户可 pin 住某条 lane 不自动关。
-3. **顺序**：Phase 1 只做「AgentShell 派生的子会话」（等需求 7 落地）；Phase 2 再加内部 subagent 的启发式泳道（按 `ToolCall.title` / tool name 匹配 `task`、`Task(...)`、`subagent`）。
+3. **顺序**：Phase 1 只做「Marionette 派生的子会话」（等需求 7 落地）；Phase 2 再加内部 subagent 的启发式泳道（按 `ToolCall.title` / tool name 匹配 `task`、`Task(...)`、`subagent`）。
 
 ---
 
@@ -227,9 +227,9 @@ opencode 会话带着 `OPENCODE_PERMISSION` 启动。用户已有的 `OPENCODE_P
 - `cursor-delegate-mcp` — Claude Code / Codex / Copilot 把实现交给 Cursor CLI，自己负责计划与验收（正是用户说的「GPT 派活、别人干、GPT 验收」）。
 - Codex CLI 自带 MCP server 模式，直接被别的 Agent 调。
 
-### 4.2 AgentShell 应该怎么做（比上面更顺）
+### 4.2 Marionette 应该怎么做（比上面更顺）
 
-上面那些方案要每个 Agent 各自配一遍、各自 spawn 一遍子进程。**AgentShell 本来就是所有 Agent 的父进程**，所以应该当 broker：
+上面那些方案要每个 Agent 各自配一遍、各自 spawn 一遍子进程。**Marionette 本来就是所有 Agent 的父进程**，所以应该当 broker：
 
 内置 `agentshell-bridge`（stdio MCP，按项目/会话开关注入）：
 
@@ -278,7 +278,7 @@ opencode 会话带着 `OPENCODE_PERMISSION` 启动。用户已有的 `OPENCODE_P
 
 ## 6. 待定问题
 
-- `.agentshell/context.json` 要不要进 git？（建议：进，但密钥只存引用）
+- `.marionette/context.json` 要不要进 git？（建议：进，但密钥只存引用）
 - 注入的 MCP 出错时（对方连不上 blender-mcp），是静默降级还是在 Clean 里报一条？（建议：Clean 里一条可折叠的系统卡）
 - skill 命中率：L1 提示注入到底有多大概率让 Agent 真的去读 `SKILL.md`？需要在 grok build 上做一次真实测量再决定要不要直接上 L2。
-- 子会话的 transcript 要不要单独存盘？（建议：存，路径 `.agentshell/transcripts/<childId>.jsonl`，父会话记录一条 `delegate` 事件指过去）
+- 子会话的 transcript 要不要单独存盘？（建议：存，路径 `.marionette/transcripts/<childId>.jsonl`，父会话记录一条 `delegate` 事件指过去）

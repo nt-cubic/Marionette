@@ -13,7 +13,7 @@ function clip(text: string, max = MAX_MSG_CHARS): string {
 /**
  * Build a prompt prefix that rehydrates agent context from local Clean transcript.
  *
- * Why: AgentShell persists UI history in JSONL, but ACP always does session/new
+ * Why: Marionette persists UI history in JSONL, but ACP always does session/new
  * after restart — the agent process has empty memory. Until session/load is
  * reliable across OpenCode/Claude/etc., we inject prior turns on the first
  * prompt of each fresh ACP connection.
@@ -54,7 +54,7 @@ export function buildHistoryInjection(
   }
 
   return [
-    "[AgentShell — prior conversation in this dialog]",
+    "[Marionette — prior conversation in this dialog]",
     "The UI has history from earlier in this thread. Your ACP session was freshly started",
     "(e.g. app restart), so you do NOT have this context yet. Treat the following as",
     "what already happened. Continue naturally; do not claim the history is empty.",
@@ -125,13 +125,13 @@ export function withHandoffAttachment(
   if (!handoff) return userText;
   if (opts?.compact) {
     return [
-      `[AgentShell — you are taking over this dialog from another agent. Full handoff notes: \`${handoff.handoffPath}\`]`,
+      `[Marionette — you are taking over this dialog from another agent. Full handoff notes: \`${handoff.handoffPath}\`]`,
       "",
       userText,
     ].join("\n");
   }
   return [
-    "[AgentShell — handoff from the previous agent in this dialog]",
+    "[Marionette — handoff from the previous agent in this dialog]",
     handoff.prompt,
     "[End of handoff. The user's new message follows.]",
     "",

@@ -1,4 +1,4 @@
-# AgentShell 推进路线（2026-07-24 续）
+# Marionette 推进路线（2026-07-24 续）
 
 > 状态：进行中  
 > 依据：`docs/01–04`、`docs/superpowers/specs/*`、以及近期实现与讨论  
@@ -50,7 +50,7 @@
 
 | 项 | 状态 |
 |----|------|
-| Handoff（`.agentshell/handoff.md` + 换 Agent prefill） | ✅ P1 |
+| Handoff（`.marionette/handoff.md` + 换 Agent prefill） | ✅ P1 |
 | Git / Changed Files / Diff View | ✅ 列表 + 只读 diff |
 | 权限请求 UI（ACP 现自动 allow） | ✅ 用户确认 + 120s timeout |
 | 完整错误分类体系 | ✅ auth/command/timeout/model/network |
@@ -83,13 +83,13 @@
 1. [x] Windows：`decorations: false`  
 2. [x] 左侧顶栏 = **真搜索** + 拖拽区（`data-tauri-drag-region`）  
 3. [x] 右上自绘 min / max / close  
-4. [x] **不再**保留一条“AgentShell”固定大标题栏  
+4. [x] **不再**保留一条“Marionette”固定大标题栏  
 
 验收：全屏后像编辑器壳，左上可搜可拖，无多余顶栏。
 
 #### Step B：Handoff（文档 MVP 硬要求） — ✅
 
-1. [x] 从当前 Clean transcript 生成 `.agentshell/handoff.md`  
+1. [x] 从当前 Clean transcript 生成 `.marionette/handoff.md`  
 2. [x] 切换 Agent 时 **prefill Composer**，**不自动发送**  
 3. [x] 右侧 Information 露出 Handoff 摘要入口  
 
@@ -163,7 +163,7 @@
 
 ### 产品备忘：Clean vs 终端（2026-07-24）
 
-- 下载 AgentShell 的核心动机是 **Clean 多 Agent 壳**，不是再包一层 PowerShell。  
+- 下载 Marionette 的核心动机是 **Clean 多 Agent 壳**，不是再包一层 PowerShell。  
 - 内嵌「ACP wire dump」式 Raw 价值低；**双入口（本 session 锁终端 / 锁 Clean）** 与产品目标矛盾。  
 - 若未来做终端：优先 **Open in 原厂 CLI + handoff 分叉**，不与 ACP Clean 假装同一会话。  
 - 当前：可保留弱 Raw 作排障，但不作为主卖点。  
@@ -178,7 +178,7 @@
 **现状与后续：**
 
 - Changed Files：保持 `get_changed_files(projectId)` + 项目 cwd。文案可强调 *Project · git*。  
-- Handoff：**已 per-session** — `.agentshell/handoff/{sessionId}.md`，并同步一份最新快捷副本 `.agentshell/handoff.md`。
+- Handoff：**已 per-session** — `.marionette/handoff/{sessionId}.md`，并同步一份最新快捷副本 `.marionette/handoff.md`。
 
 - **不做**：把 git Changed Files 拆成「每对话框一份」（假 git）。  
 - **可选另做**：「This session」改动（从 tool_call / 文件事件推），与 git 列表分开展示、不同名。  
@@ -212,11 +212,11 @@
 | 真相 | 字段 / 存储 |
 |------|-------------|
 | 这个对话框是谁 | `session.agentId`（磁盘 + UI） |
-| Clean 历史 | `.agentshell/transcripts/{id}.jsonl` |
+| Clean 历史 | `.marionette/transcripts/{id}.jsonl` |
 | 标题 | `session.label` |
 | 模型列表 | **仅**当前 session 的 ACP caps，禁止跨 session 泄漏 |
 | Git 变更 | **项目**工作区（非 session） |
-| Handoff（目标） | `.agentshell/handoff/{sessionId}.md`（当前仍为项目级单文件，待迁） |
+| Handoff（目标） | `.marionette/handoff/{sessionId}.md`（当前仍为项目级单文件，待迁） |
 | Model / Mode / Effort | session 清单 `preferredModel/Mode/Effort/EffortId`；caps 仍有则恢复 `set_config`；换 Agent 清空 |
 | Agent 对话记忆 | UI=transcript JSONL；ACP 每次 `session/new` 无记忆 → **冷启动首次 prompt 注入本地历史**（非真正 session/load） |
 
@@ -246,7 +246,7 @@
 
 **P1 + P2-UX 已完成。** 当你说「继续」时，可按需插队：
 
-1. **Handoff per-session**（`.agentshell/handoff/{sessionId}.md`，避免多 Tab 覆盖）  
+1. **Handoff per-session**（`.marionette/handoff/{sessionId}.md`，避免多 Tab 覆盖）  
 2. Usage 诚实态 / Diff 面板 / Open in editor / 虚拟列表…  
 3. （可选）This session 改动列表 — **不要**拆 git 为 per-dialog  
 

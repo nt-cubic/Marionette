@@ -1,6 +1,6 @@
 //! Installed vs published version for the agent CLIs.
 //!
-//! AgentShell launches whatever `opencode` / `codex-acp` / … happens to be on
+//! Marionette launches whatever `opencode` / `codex-acp` / … happens to be on
 //! PATH, so without this the user has no way to tell which build they are
 //! talking to, and an install from three weeks ago looks identical to a fresh
 //! one. Everything here runs off the main thread: `--version` shells out and
@@ -21,7 +21,7 @@ const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
 #[serde(rename_all = "camelCase")]
 pub struct AgentVersionInfo {
     pub id: String,
-    /// npm package name, when AgentShell knows how to install this agent.
+    /// npm package name, when Marionette knows how to install this agent.
     pub package: Option<String>,
     pub installed: Option<String>,
     pub latest: Option<String>,
@@ -116,7 +116,7 @@ fn latest_version(package: &str) -> Option<String> {
     let url = format!("https://registry.npmjs.org/{package}/latest");
     let resp = ureq::get(&url)
         .set("Accept", "application/json")
-        .set("User-Agent", "AgentShell/0.1 (agent-update)")
+        .set("User-Agent", "Marionette/0.1 (agent-update)")
         .timeout(REGISTRY_TIMEOUT)
         .call()
         .ok()?;
