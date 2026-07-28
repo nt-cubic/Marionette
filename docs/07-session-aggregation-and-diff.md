@@ -1,9 +1,8 @@
 # 会话聚合 + 刷新按钮 + Diff 折叠卡片
 
-> 状态：**已实现**（Grok / Claude / Codex / OpenCode + Diff 卡片 + Marionette 全量改名）
+> 状态：**会话聚合已移除**（2026-07-28 经设计评审砍掉 — 只读外部会话浏览价值低，维护成本高；保留 Diff 折叠卡片）
 > 产品名：Marionette（包名/二进制/数据目录 `.marionette`；启动时从 `.agentshell` 一次性迁移）
 > 来源：与 Codeg-main 的对比研究 + 用户需求讨论 + 本机 Agent 存储实测
-> 底线：不做启动自动扫描、不做导入/导出流程、不改变现有 UI 风格
 
 ---
 

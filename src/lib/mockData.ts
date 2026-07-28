@@ -143,10 +143,8 @@ export const sessions: Session[] = [
     cwd: "D:\\Project\\Marionette",
     status: "running",
     processId: 18424,
-    ptyId: "pty-codex-1",
     startedAt: "2026-07-09T09:09:00.000Z",
     lastActiveAt: "2026-07-09T09:18:00.000Z",
-    rawLogPath: "D:\\Project\\Marionette\\.marionette\\sessions\\codex-20260709.raw.log",
     transcriptPath: "D:\\Project\\Marionette\\.marionette\\transcripts\\codex-20260709.jsonl",
     handoffPath: "D:\\Project\\Marionette\\.marionette\\handoff.md",
     viewMode: "clean"
@@ -159,10 +157,8 @@ export const sessions: Session[] = [
     cwd: "D:\\Project\\Marionette",
     status: "waiting",
     processId: 12964,
-    ptyId: "pty-claude-1",
     startedAt: "2026-07-09T08:44:00.000Z",
     lastActiveAt: "2026-07-09T09:02:00.000Z",
-    rawLogPath: "D:\\Project\\Marionette\\.marionette\\sessions\\claude-20260709.raw.log",
     transcriptPath: "D:\\Project\\Marionette\\.marionette\\transcripts\\claude-20260709.jsonl",
     handoffPath: "D:\\Project\\Marionette\\.marionette\\handoff.md",
     viewMode: "clean"
@@ -175,12 +171,10 @@ export const sessions: Session[] = [
     cwd: "D:\\Project\\Marionette",
     status: "exited",
     processId: null,
-    ptyId: null,
     startedAt: "2026-07-08T21:12:00.000Z",
     lastActiveAt: "2026-07-08T21:28:00.000Z",
     exitedAt: "2026-07-08T21:28:00.000Z",
     exitCode: 0,
-    rawLogPath: "D:\\Project\\Marionette\\.marionette\\sessions\\opencode-20260708.raw.log",
     transcriptPath: "D:\\Project\\Marionette\\.marionette\\transcripts\\opencode-20260708.jsonl",
     handoffPath: "D:\\Project\\Marionette\\.marionette\\handoff.md",
     viewMode: "clean"
@@ -199,12 +193,6 @@ export const sessionEvents: SessionEvent[] = [
     sessionId: "session-codex-1",
     text: "Start Milestone 1 and keep it to a desktop shell only.",
     createdAt: "2026-07-09T09:10:00.000Z"
-  },
-  {
-    type: "raw_chunk",
-    sessionId: "session-codex-1",
-    text: "Scaffold detected. Preparing React components and static workspace layout.",
-    createdAt: "2026-07-09T09:11:00.000Z"
   },
   {
     type: "handoff_prepared",

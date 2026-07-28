@@ -124,13 +124,11 @@ export async function createSession(projectId: string, agentId: string, label = 
     cwd: project.rootPath,
     status: "exited",
     processId: null,
-    ptyId: null,
     startedAt: "",
     lastActiveAt: now,
-    rawLogPath: `${project.rootPath}\\.marionette\\sessions\\${id}.raw.log`,
     transcriptPath: `${project.rootPath}\\.marionette\\transcripts\\${id}.jsonl`,
     handoffPath: `${project.rootPath}\\.marionette\\handoff.md`,
-    viewMode: "raw-terminal"
+    viewMode: "clean"
   };
 }
 
@@ -179,27 +177,6 @@ export async function loadTranscript(sessionId: string): Promise<unknown[]> {
   }
 }
 
-export async function listExternalSessions(
-  projectId: string
-): Promise<import("./types").ExternalConversation[]> {
-  if (!isTauriRuntime()) return [];
-  try {
-    return await invoke<import("./types").ExternalConversation[]>("list_external_sessions", {
-      projectId,
-    });
-  } catch {
-    return [];
-  }
-}
-
-export async function loadExternalSession(
-  source: string,
-  locator: string
-): Promise<unknown[]> {
-  if (!isTauriRuntime()) return [];
-  return invoke<unknown[]>("load_external_session", { source, locator });
-}
-
 export async function searchSessions(query: string): Promise<string[]> {
   if (!isTauriRuntime()) return [];
   try {
@@ -239,33 +216,6 @@ export async function startAgentLogin(agentId: string): Promise<{ started: boole
   }
 }
 
-export async function startTerminal(
-  sessionId: string,
-  cwd: string,
-  command: string,
-  args: string[] = []
-): Promise<void> {
-  if (!isTauriRuntime()) return;
-  await invoke("start_terminal", { sessionId, cwd, command, args });
-}
-
-/** Prepare Composer text for PTY stdin (bracketed paste when configured). */
-export function preparePtyInput(
-  text: string,
-  strategy: "stdin" | "bracketed-paste" | "http" = "bracketed-paste"
-): string {
-  if (strategy === "bracketed-paste") {
-    return `\x1b[200~${text}\x1b[201~\r`;
-  }
-  if (text.endsWith("\r") || text.endsWith("\n")) return text;
-  return `${text}\r`;
-}
-
-export async function readTerminalSnapshot(sessionId: string, cwd: string): Promise<string> {
-  if (!isTauriRuntime()) return "";
-  return invoke<string>("read_terminal_snapshot", { sessionId, cwd });
-}
-
 export async function startAcpSession(
   sessionId: string,
   command: string,
@@ -289,21 +239,6 @@ export async function cancelAcpSession(sessionId: string): Promise<void> {
 export async function stopAcpSession(sessionId: string): Promise<void> {
   if (!isTauriRuntime()) return;
   await invoke("stop_acp_session", { sessionId });
-}
-
-export async function writeTerminal(sessionId: string, data: string): Promise<void> {
-  if (!isTauriRuntime()) return;
-  await invoke("write_terminal", { sessionId, data });
-}
-
-export async function resizeTerminal(sessionId: string, cols: number, rows: number): Promise<void> {
-  if (!isTauriRuntime()) return;
-  await invoke("resize_terminal", { sessionId, cols, rows });
-}
-
-export async function stopTerminal(sessionId: string): Promise<void> {
-  if (!isTauriRuntime()) return;
-  await invoke("stop_terminal", { sessionId });
 }
 
 // ─── ACP Capability API ─────────────────────────────────────────────────────

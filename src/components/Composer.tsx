@@ -28,7 +28,6 @@ import {
   invalidateCapsIfAgentUpdated,
 } from "../lib/capabilityCache";
 import { detectCapabilityDrift } from "../lib/capabilityDrift";
-import { ptyCommandsForPatch, ptyProfileToCapabilities } from "../lib/ptyProfiles";
 import {
   applySlashCommand,
   filterSlashCommands,
@@ -74,8 +73,6 @@ type ComposerProps = {
    * as `…\Screen`, failed the exists() check, and silently skipped the prompt.
    */
   onSend: (text: string, droppedPaths?: string[]) => void;
-  /** PTY: inject slash commands into the live terminal. */
-  onPtyCommand?: (commandLine: string) => void | Promise<void>;
   /** Notify parent when the active model id changes (for provider balance probes). */
   onActiveModelChange?: (modelId: string | null) => void;
   /** Lazy ACP: warm the agent process without blocking the composer. */
@@ -103,8 +100,6 @@ type ComposerProps = {
    * when null/empty (see `resolveSlashCommands`).
    */
   availableCommands?: AvailableCommand[] | null;
-  /** When set, composer is disabled (external read-only session). */
-  readOnlyReason?: string | null;
 };
 
 /**
@@ -375,13 +370,11 @@ export function Composer({
   onAgentChange,
   onInterrupt,
   onSend,
-  onPtyCommand,
   onActiveModelChange,
   onWarmAgent,
   onEnsureAgentReady,
   lastActivityAt = null,
   onProviderKeysChanged,
-  readOnlyReason = null,
   onAgentBinaryUpdated,
   availableCommands = null,
 }: ComposerProps) {
@@ -392,7 +385,7 @@ export function Composer({
    * screen in the first paint instead of appearing after a handshake.
    */
   const initialCaps = useMemo(
-    () => (agent.transport === "acp" ? cachedCapabilitiesFor(agent.id, sessionPrefs) : null),
+    () => cachedCapabilitiesFor(agent.id, sessionPrefs),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
@@ -494,13 +487,12 @@ export function Composer({
    * right now and what we remembered from last time:
    *  - `acp`      live negotiation → refresh the offline cache
    *  - `handshake` live session/new → also refresh the remembered defaults
-   *  - `profile`  static PTY profile (nothing to cache)
    *  - `cache`    replay of the offline snapshot (must not count as live)
    */
   const applyCaps = useCallback(
     (
       result: CapabilitySnapshot | null | undefined,
-      source: "acp" | "handshake" | "profile" | "cache" = "acp",
+      source: "acp" | "handshake" | "cache" = "acp",
     ) => {
       applyCapabilities(result, capSetters);
       if (!result) return;
@@ -511,7 +503,6 @@ export function Composer({
       applyPinnedDisplay(pinsRef.current, capSetters);
       if (source === "cache") return;
       setCapsLive(true);
-      if (source === "profile") return;
       cacheAgentCapabilities(agent.id, result, { handshake: source === "handshake" });
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -577,25 +568,6 @@ export function Composer({
     };
   }, [resizingComposer]);
 
-  const isAcp = agent.transport === "acp";
-  const isPty = agent.transport === "pty";
-
-  // PTY fallback only (custom CLIs without protocol).
-  useEffect(() => {
-    if (!isPty) return;
-    const profileCaps = ptyProfileToCapabilities(agent.id);
-    loadSeq.current += 1;
-    if (profileCaps) {
-      applyCaps(profileCaps, "profile");
-    } else {
-      setCaps(null);
-      setCurrentMode(null);
-      setCurrentModel(null);
-      setCurrentEffort(null);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPty, agent.id, applyCaps]);
-
   // HARD RULE: capability state is rebound whenever dialog identity changes.
   // Prevents "OpenCode selected but Claude models still listed". Re-seeding from
   // the cache of *this* agent keeps that rule while avoiding an empty toolbar.
@@ -607,14 +579,10 @@ export function Composer({
     // Keep draft/prefill + remembered height when switching dialog/agent.
     prefsRestoredKey.current = "";
     setCapsLive(false);
-    // Rebind from this agent's own source: static profile for PTY, last known
-    // catalog for ACP. (Runs after the profile effect, so it must re-apply the
-    // profile rather than blank it.)
-    const rebound = isPty
-      ? ptyProfileToCapabilities(agent.id)
-      : cachedCapabilitiesFor(agent.id, sessionPrefsRef.current);
+    // Rebind from this agent's own last known catalog.
+    const rebound = cachedCapabilitiesFor(agent.id, sessionPrefsRef.current);
     if (rebound) {
-      applyCaps(rebound, isPty ? "profile" : "cache");
+      applyCaps(rebound, "cache");
       return;
     }
     setCaps(null);
@@ -627,7 +595,6 @@ export function Composer({
 
   // Parent-pushed caps from startAcpSession + supplements for missing mode/effort.
   useEffect(() => {
-    if (!isAcp) return;
     if (capabilitiesProp) {
       loadSeq.current += 1;
       const merged = mergeAcpCapabilities(agent.id, capabilitiesProp);
@@ -640,12 +607,11 @@ export function Composer({
       prefsRestoredKey.current = "";
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAcp, agent.id, capabilitiesProp, applyCaps]);
+  }, [agent.id, capabilitiesProp, applyCaps]);
 
-  // ── Fetch capabilities when session is ready (ACP only) ────────────────────
+  // ── Fetch capabilities when session is ready ────────────────────────────────
   useEffect(() => {
-    if (isPty) return; // handled by static profile effect
-    if (!isAcp || !sessionId || sessionId.startsWith("session-empty-")) {
+    if (!sessionId || sessionId.startsWith("session-empty-")) {
       return;
     }
     // Do not fetch on "starting": handshake not done yet, null would race-wipe UI.
@@ -653,11 +619,11 @@ export function Composer({
     if (sessionStatus === "waiting" || sessionStatus === "running") {
       loadCapabilities(sessionId);
     }
-  }, [isAcp, isPty, sessionId, sessionStatus, loadCapabilities]);
+  }, [sessionId, sessionStatus, loadCapabilities]);
 
   // ── Apply caps from session/ready (primary path, avoids race with invoke) ──
   useEffect(() => {
-    if (!isAcp || !sessionId || sessionId.startsWith("session-empty-") || !isTauriRuntime()) return;
+    if (!sessionId || sessionId.startsWith("session-empty-") || !isTauriRuntime()) return;
 
     let unlisten: (() => void) | undefined;
     listen<AcpEvent>("acp-event", (event) => {
@@ -678,7 +644,7 @@ export function Composer({
     });
     return () => unlisten?.();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAcp, sessionId, loadCapabilities]);
+  }, [sessionId, loadCapabilities]);
 
   // ── Update helpers ─────────────────────────────────────────────────────────
   const flash = useCallback((msg: string) => {
@@ -701,87 +667,69 @@ export function Composer({
       if (updating.current || !sessionId) return;
       updating.current = true;
       try {
-        if (isPty) {
-          const lines = ptyCommandsForPatch(agent.id, patch);
-          if (lines.length === 0) {
-            flash("This control has no TUI command for this agent");
-            revert();
+        // Lazy ACP: mode/model/effort require a live session.
+        if (onEnsureAgentReady) {
+          const ready = await onEnsureAgentReady();
+          if (!ready) {
+            throw new Error("Agent is not connected yet — type or wait for ACP warm-up");
+          }
+        }
+        // Agents without session/set_config_option (Grok) are handled in Rust,
+        // which retries the pre-v2 per-knob RPCs on -32601.
+        // alwaysApprove is a slash command, not set_config — handled separately.
+        if (typeof patch.alwaysApprove === "boolean") {
+          const aa = getAcpSupplement(agent.id)?.alwaysApprove;
+          if (!aa) throw new Error("This agent has no always-approve control");
+          const cmd = patch.alwaysApprove ? aa.on : aa.off;
+          await sendAcpPrompt(sessionId, cmd);
+          persistPrefs({ preferredAlwaysApprove: patch.alwaysApprove });
+          return;
+        }
+        const attempts = expandAcpConfigAttempts(agent.id, patch, caps);
+        if (attempts.length === 0) {
+          // Launch-time-only options (Grok model): keep the local chip
+          // + disk prefs, but do not pretend set_config succeeded on the wire.
+          // Effort is NOT launch-time — it routes through legacy_set_config
+          // (see effortViaLegacyModel in acpSupplements.ts), so it will have
+          // produced an attempt above and this block won't be reached.
+          if (agent.id === "grok-build" && typeof patch.model === "string") {
+            persistPrefs({ preferredModel: patch.model });
             return;
           }
-          if (!onPtyCommand) {
-            flash("Terminal not ready — open Raw Terminal first");
-            revert();
-            return;
+          if (patch.effortId != null || patch.thinkingEffort != null) {
+            throw new Error(
+              "This model does not expose an Effort control (not a login issue)",
+            );
           }
-          for (const line of lines) {
-            await onPtyCommand(line);
+          throw new Error("No config mapping for this control");
+        }
+        let lastError: unknown = null;
+        let ok = false;
+        for (const attempt of attempts) {
+          try {
+            await updateAcpSession(sessionId, attempt);
+            ok = true;
+            break;
+          } catch (error) {
+            lastError = error;
           }
-          flash(`Sent to TUI: ${lines.join(" · ")}`);
+        }
+        if (!ok) {
+          const msg =
+            lastError instanceof Error
+              ? lastError.message
+              : typeof lastError === "string"
+                ? lastError
+                : "Agent rejected the config change";
+          throw new Error(msg);
+        }
+        // Mode-only: skip immediate caps reload — agent often still echoes the
+        // previous currentMode for a beat, which made the chip flicker.
+        if (typeof patch.mode !== "string") {
+          loadCapabilities(sessionId);
         } else {
-          // Lazy ACP: mode/model/effort require a live session.
-          if (onEnsureAgentReady) {
-            const ready = await onEnsureAgentReady();
-            if (!ready) {
-              throw new Error("Agent is not connected yet — type or wait for ACP warm-up");
-            }
-          }
-          // Agents without session/set_config_option (Grok) are handled in Rust,
-          // which retries the pre-v2 per-knob RPCs on -32601.
-          // alwaysApprove is a slash command, not set_config — handled separately.
-          if (typeof patch.alwaysApprove === "boolean") {
-            const aa = getAcpSupplement(agent.id)?.alwaysApprove;
-            if (!aa) throw new Error("This agent has no always-approve control");
-            const cmd = patch.alwaysApprove ? aa.on : aa.off;
-            await sendAcpPrompt(sessionId, cmd);
-            persistPrefs({ preferredAlwaysApprove: patch.alwaysApprove });
-            return;
-          }
-          const attempts = expandAcpConfigAttempts(agent.id, patch, caps);
-          if (attempts.length === 0) {
-            // Launch-time-only options (Grok model): keep the local chip
-            // + disk prefs, but do not pretend set_config succeeded on the wire.
-            // Effort is NOT launch-time — it routes through legacy_set_config
-            // (see effortViaLegacyModel in acpSupplements.ts), so it will have
-            // produced an attempt above and this block won't be reached.
-            if (agent.id === "grok-build" && typeof patch.model === "string") {
-              persistPrefs({ preferredModel: patch.model });
-              return;
-            }
-            if (patch.effortId != null || patch.thinkingEffort != null) {
-              throw new Error(
-                "This model does not expose an Effort control (not a login issue)",
-              );
-            }
-            throw new Error("No config mapping for this control");
-          }
-          let lastError: unknown = null;
-          let ok = false;
-          for (const attempt of attempts) {
-            try {
-              await updateAcpSession(sessionId, attempt);
-              ok = true;
-              break;
-            } catch (error) {
-              lastError = error;
-            }
-          }
-          if (!ok) {
-            const msg =
-              lastError instanceof Error
-                ? lastError.message
-                : typeof lastError === "string"
-                  ? lastError
-                  : "Agent rejected the config change";
-            throw new Error(msg);
-          }
-          // Mode-only: skip immediate caps reload — agent often still echoes the
-          // previous currentMode for a beat, which made the chip flicker.
-          if (typeof patch.mode !== "string") {
-            loadCapabilities(sessionId);
-          } else {
-            // Soft refresh later after the agent has settled.
-            window.setTimeout(() => loadCapabilities(sessionId), 1200);
-          }
+          // Soft refresh later after the agent has settled.
+          window.setTimeout(() => loadCapabilities(sessionId), 1200);
         }
         // Disk SSOT: only fields that changed (parent merges; never wipe siblings).
         const prefsPatch: SessionComposerPrefs = {};
@@ -809,7 +757,7 @@ export function Composer({
         updating.current = false;
       }
     },
-    [sessionId, flash, loadCapabilities, isPty, agent.id, onPtyCommand, caps, onEnsureAgentReady, persistPrefs],
+    [sessionId, flash, loadCapabilities, agent.id, caps, onEnsureAgentReady, persistPrefs],
   );
 
   // Restore preferred model/mode/effort once caps are available for this dialog.
@@ -1021,25 +969,22 @@ export function Composer({
 
   // Drop offline catalog when the installed CLI version advanced (post-update).
   useEffect(() => {
-    if (!isTauriRuntime() || agent.transport !== "acp") return;
+    if (!isTauriRuntime()) return;
     const info = agentVersionInfo[agent.id];
     if (info?.installed) {
       invalidateCapsIfAgentUpdated(agent.id, info.installed);
     }
-  }, [agent.id, agent.transport, agentVersionInfo]);
+  }, [agent.id, agentVersionInfo]);
 
   // ── Send / Interrupt ───────────────────────────────────────────────────────
   // Only a live turn (`running`) blocks send. `starting` must NOT freeze the
   // composer — warm happens in the background; send will wait for ready.
-  const isBusy =
-    (isAcp && sessionStatus === "running") ||
-    (isPty && sessionStatus === "running");
-  const isWarming = isAcp && sessionStatus === "starting";
+  const isBusy = sessionStatus === "running";
+  const isWarming = sessionStatus === "starting";
   // Prefer advertised cancel; still offer interrupt while running (Esc×2 / button).
-  const canCancel = isBusy && (isPty || (caps?.supportsCancel ?? true));
+  const canCancel = isBusy && (caps?.supportsCancel ?? true);
   const submit = () => {
     // Empty draft is OK when parent has quote-pins (App merges on send).
-    if (readOnlyReason) return;
     if (isBusy) return;
     if (!sessionId || sessionId.startsWith("session-empty-")) return;
     onWarmAgent?.();
@@ -1245,7 +1190,6 @@ export function Composer({
 
   const warmIfNeeded = useCallback(
     (opts?: { force?: boolean }) => {
-      if (!isAcp) return;
       // Never start ACP mid-IME — parent status updates re-render and freeze composition.
       if (composingRef.current && !opts?.force) return;
       if (!opts?.force && warmedThisFocusRef.current) return;
@@ -1256,31 +1200,28 @@ export function Composer({
         onWarmAgent?.();
       }, 0);
     },
-    [isAcp, onWarmAgent],
+    [onWarmAgent],
   );
 
   // ── Derived state ──────────────────────────────────────────────────────────
-  // ACP: negotiated caps. PTY: static profile so model/mode/effort always show when defined.
   const hasModes = caps != null && caps.modes.length > 1;
   const hasModels = caps != null && caps.models.length > 0;
   const effortOptions = caps?.effortOptions ?? [];
   const agentSupplement = getAcpSupplement(agent.id);
   const alwaysApproveSpec = agentSupplement?.alwaysApprove ?? null;
-  // ACP: only show effort when the live agent registered the option.
-  // Claude omits `effort` entirely for models without supportsEffort
-  // (e.g. Haiku after model switch) — inventing it yields:
+  // Only show effort when the live agent registered the option. Claude omits
+  // `effort` entirely for models without supportsEffort (e.g. Haiku after
+  // model switch) — inventing it yields:
   //   Unknown config option: effort
   // and a stale Effort menu would crash on thinkingEffort!.default.
   // Exception: Grok carries effort on session/set_model `_meta` (no config id).
   const hasStringEffort =
     effortOptions.length > 0 &&
-    (isPty ||
-      Boolean(caps?.effortConfigId) ||
-      agentSupplement?.effortViaLegacyModel === true);
+    (Boolean(caps?.effortConfigId) || agentSupplement?.effortViaLegacyModel === true);
   const hasNumericEffort =
     caps != null &&
     caps.thinkingEffort != null &&
-    (isPty || Boolean(caps.effortConfigId));
+    Boolean(caps.effortConfigId);
   const hasEffort = hasStringEffort || hasNumericEffort;
   // The key dialog writes OpenCode's auth.json, so only offer it for the agent
   // that reads that file. Codex / Claude Code / Grok each own their credentials;
@@ -1504,15 +1445,10 @@ export function Composer({
       {/* Left rail — always-on mode cue, colored by tone. */}
       {hasModes && <div className="composer__mode-rail" aria-hidden />}
       {flashError && <div className="composer__error-toast">{flashError}</div>}
-      {readOnlyReason && (
-        <div className="composer__readonly" role="status">
-          {readOnlyReason}
-        </div>
-      )}
       {/* Connect/warm phase. Floats above the composer like the error toast:
           reconnecting is background work and must never resize the transcript
           or the composer under the user's cursor. */}
-      {isWarming && !readOnlyReason && (
+      {isWarming && (
         <div className="composer__warming" role="status" aria-live="polite">
           <span className="composer__warming-pulse" aria-hidden />
           <span>Agent connecting in background…</span>
@@ -1578,11 +1514,9 @@ export function Composer({
           ref={textareaRef}
           aria-label="Prompt composer"
           placeholder={
-            isAcp
-              ? isWarming && !composingRef.current
-                ? "Agent connecting in background… keep typing"
-                : "Message the Agent (Ctrl+Enter to send) · / commands · Tab cycles mode"
-              : "Message the TUI (Ctrl+Enter) · / commands · drop files for paths"
+            isWarming && !composingRef.current
+              ? "Agent connecting in background… keep typing"
+              : "Message the Agent (Ctrl+Enter to send) · / commands · Tab cycles mode"
           }
           rows={isTall ? 10 : 2}
           value={draft}
@@ -1737,7 +1671,7 @@ export function Composer({
               </div>
             )}
             {/* Grok always-approve: the important permission axis (not plan/build). */}
-            {alwaysApproveSpec && !isPty && (
+            {alwaysApproveSpec && (
               <button
                 className={
                   alwaysApprove
@@ -2172,9 +2106,8 @@ export function Composer({
                     ? "Agent is busy"
                     : "Send"
               }
-              disabled={Boolean(readOnlyReason) || (isBusy && !canCancel)}
+              disabled={isBusy && !canCancel}
               onClick={() => {
-                if (readOnlyReason) return;
                 if (isBusy && canCancel) onInterrupt();
                 else if (!isBusy) submit();
               }}

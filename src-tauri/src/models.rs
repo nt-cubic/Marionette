@@ -116,7 +116,6 @@ impl AgentConfig {
     pub fn defaults() -> Vec<Self> {
         vec![
             // Clean View product path = ACP for every first-class agent.
-            // PTY remains a fallback for custom CLIs without a protocol.
             Self::new(
                 "opencode",
                 "OpenCode",

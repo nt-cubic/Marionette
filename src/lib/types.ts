@@ -31,7 +31,7 @@ export type AgentConfig = {
   launchMode: "pty" | "server" | "hybrid";
   sendStrategy: "stdin" | "bracketed-paste" | "http";
   parser: "ansi-raw" | "opencode-sse" | "none";
-  transport: "pty" | "acp";
+  transport: "acp";
   enabled: boolean;
   install: AgentInstallSpec;
 };
@@ -82,7 +82,7 @@ export type AcpEvent = {
 
 export type SessionStatus = "starting" | "running" | "waiting" | "exited" | "error";
 
-export type SessionViewMode = "clean" | "raw-terminal" | "diff" | "logs";
+export type SessionViewMode = "clean" | "diff" | "logs";
 
 export type Session = {
   id: string;
@@ -92,12 +92,10 @@ export type Session = {
   cwd: string;
   status: SessionStatus;
   processId: number | null;
-  ptyId: string | null;
   startedAt: string;
   lastActiveAt: string;
   exitedAt?: string;
   exitCode?: number;
-  rawLogPath: string;
   transcriptPath: string;
   handoffPath: string;
   viewMode: SessionViewMode;
@@ -114,18 +112,6 @@ export type Session = {
    * plan/build mode — restored by replaying the slash command on warm-up.
    */
   preferredAlwaysApprove?: boolean | null;
-};
-
-/** External agent conversation (read-only scan result). */
-export type ExternalConversation = {
-  id: string;
-  source: "grok" | "claude" | "codex" | "opencode" | string;
-  title: string;
-  cwd: string;
-  startedAt?: string;
-  lastActiveAt?: string;
-  nativeId: string;
-  locator: string;
 };
 
 /** Snapshot of Composer model/mode/effort bound to a dialog. */
@@ -196,12 +182,6 @@ export type SessionEvent =
       detail?: string;
       /** Clipped `rawInput`, shown only until real output arrives. */
       input?: string;
-      createdAt: string;
-    }
-  | {
-      type: "raw_chunk";
-      sessionId: string;
-      text: string;
       createdAt: string;
     }
   | {

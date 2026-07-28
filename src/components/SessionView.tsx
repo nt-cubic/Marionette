@@ -1,7 +1,4 @@
-import { FitAddon } from "@xterm/addon-fit";
-import { Terminal } from "@xterm/xterm";
-import { listen } from "@tauri-apps/api/event";
-import { ChevronDown, Eye, EyeOff, FileText, MessageSquareQuote, Pencil, Plus, Square, TerminalSquare, X } from "lucide-react";
+import { ChevronDown, Eye, EyeOff, FileText, MessageSquareQuote, Pencil, Plus, Square, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { extractAcpUpdateText, mergeStreamText, userMessageAnchorId } from "../lib/acpTranscript";
 import {
@@ -13,9 +10,9 @@ import {
   stallBannerCopy,
   type ActivityHealth,
 } from "../lib/activityHealth";
-import { getFileDiff, isTauriRuntime, readTerminalSnapshot, resizeTerminal, startTerminal, writeTerminal } from "../lib/api";
+import { getFileDiff } from "../lib/api";
 import { newQuotePinId, type QuotePin } from "../lib/quoteComment";
-import type { AcpEvent, AgentConfig, CapabilitySnapshot, Session, SessionEvent, SessionStatus, SessionViewMode, TerminalOutput } from "../lib/types";
+import type { AgentConfig, Session, SessionEvent, SessionStatus, SessionViewMode } from "../lib/types";
 import { ClippedBody } from "./ClippedBody";
 import { LinkCwdContext, LinkedText } from "./LinkedText";
 import { MarkdownBody } from "./MarkdownBody";
@@ -45,10 +42,9 @@ type SessionViewProps = {
   onNewTab: () => void;
   onSessionStatusChange?: (status: SessionStatus) => void;
   onCapabilities?: (caps: import("../lib/types").CapabilitySnapshot | null) => void;
-  onViewModeToggle: () => void;
   /** P2-UX-4: edit You → truncate following + resend. */
   onEditResend?: (anchor: UserMessageAnchor, newText: string) => void | Promise<void>;
-  /** Last ACP/PTY activity ms for this session (heartbeat / stale). */
+  /** Last ACP activity ms for this session (heartbeat / stale). */
   lastActivityAt?: number | null;
   /** Pending inline quote-comments for this dialog (sent with Composer text). */
   quotePins?: QuotePin[];
@@ -57,8 +53,6 @@ type SessionViewProps = {
   onInterrupt?: () => void | Promise<void>;
   /** Project id for on-demand file diffs (file_change cards). */
   projectId?: string;
-  /** External / historical view — no edit, no raw agent. */
-  readOnly?: boolean;
 };
 
 /** Tabs-only for the shared workspace-titlebar (rendered by App.tsx). */
@@ -182,21 +176,18 @@ export function SessionView({
   onNewTab,
   onSessionStatusChange,
   onCapabilities,
-  onViewModeToggle,
   onEditResend,
   lastActivityAt = null,
   quotePins = [],
   onQuotePinsChange,
   onInterrupt,
   projectId,
-  readOnly = false,
 }: SessionViewProps) {
   // Show thinking/tool rows by default (they render collapsed). Eye can hide them entirely.
   const [detailsVisible, setDetailsVisible] = useState(true);
-  const showRaw = !readOnly && viewMode === "raw-terminal";
   // Only a real turn earns the top bar. Connecting is background work — the
   // composer floats a pill for it so the stage never resizes mid-reconnect.
-  const isLive = !readOnly && session.status === "running";
+  const isLive = session.status === "running";
 
   return (
     <section className="session-view" aria-label="Session view">
@@ -208,7 +199,7 @@ export function SessionView({
       {authBanner && (
         <div className="session-auth-banner" role="status">
           <div className="session-auth-banner__copy">
-            <strong>{readOnly ? "Read-only" : "Sign in required"}</strong>
+            <strong>Sign in required</strong>
             <span>{authBanner}</span>
           </div>
           {onSignIn && (
@@ -224,23 +215,18 @@ export function SessionView({
         </div>
       )}
 
-      {/*
-        First principles: transport is always running. Clean/Raw are only presentation.
-        Hiding (not unmounting) keeps PTY/ACP alive while Clean is primary.
-      */}
-      <div className={showRaw ? "session-stage is-raw" : "session-stage is-clean"}>
-        <div className="session-stage__clean" hidden={showRaw} aria-hidden={showRaw}>
+      <div className="session-stage">
+        <div className="session-stage__clean">
           <CleanPlaceholder
             agent={agent}
             session={session}
             events={events}
             detailsVisible={detailsVisible}
             onDetailsToggle={() => setDetailsVisible((visible) => !visible)}
-            onShowRaw={readOnly ? undefined : onViewModeToggle}
             authBanner={authBanner}
             onSignIn={onSignIn}
             signInBusy={signInBusy}
-            onEditResend={readOnly ? undefined : onEditResend}
+            onEditResend={onEditResend}
             lastActivityAt={lastActivityAt}
             quotePins={quotePins}
             onQuotePinsChange={onQuotePinsChange}
@@ -248,370 +234,9 @@ export function SessionView({
             projectId={projectId}
           />
         </div>
-        <div className="session-stage__raw" data-active={showRaw ? "true" : "false"} aria-hidden={!showRaw}>
-          <RawTerminal
-            agent={agent}
-            session={session}
-            visible={showRaw}
-            onSessionStatusChange={onSessionStatusChange}
-            onCapabilities={onCapabilities}
-          />
-        </div>
       </div>
     </section>
   );
-}
-
-function RawTerminal({
-  agent,
-  session,
-  visible,
-  onSessionStatusChange,
-  onCapabilities,
-}: {
-  agent: AgentConfig;
-  session: Session;
-  visible: boolean;
-  onSessionStatusChange?: (status: SessionStatus) => void;
-  onCapabilities?: (caps: CapabilitySnapshot | null) => void;
-}) {
-  const reportStatus = useCallback((nextStatus: SessionStatus) => {
-    onSessionStatusChange?.(nextStatus);
-  }, [onSessionStatusChange]);
-
-  return (
-    <div className="terminal-frame">
-      <div className="terminal-toolbar">
-        <span>
-          <TerminalSquare size={15} />
-          {agent.label}
-          {!visible && <em className="terminal-toolbar__bg"> · running in background</em>}
-        </span>
-      </div>
-      {agent.transport === "acp" ? (
-        <AcpTerminalSurface
-          sessionId={session.id}
-          cwd={session.cwd}
-          command={agent.command}
-          args={agent.args}
-          onStatusChange={reportStatus}
-          onCapabilities={onCapabilities}
-        />
-      ) : (
-        <TerminalSurface
-          sessionId={session.id}
-          cwd={session.cwd}
-          command={agent.command}
-          args={agent.args}
-          agentLabel={agent.label}
-          visible={visible}
-          onStatusChange={reportStatus}
-        />
-      )}
-    </div>
-  );
-}
-
-function AcpTerminalSurface({
-  sessionId,
-  cwd,
-  command,
-  args,
-  onStatusChange,
-  onCapabilities,
-}: {
-  sessionId: string;
-  cwd: string;
-  command: string;
-  args: string[];
-  onStatusChange: (status: SessionStatus) => void;
-  onCapabilities?: (caps: CapabilitySnapshot | null) => void;
-}) {
-  const hostRef = useRef<HTMLDivElement>(null);
-  // Keep signature stable for call sites; lifecycle is owned by App (lazy warm).
-  void cwd;
-  void command;
-  void args;
-  void onCapabilities;
-
-  useEffect(() => {
-    const host = hostRef.current;
-    if (!host) return;
-    const style = getComputedStyle(document.documentElement);
-    const terminal = new Terminal({
-      convertEol: true,
-      cursorBlink: false,
-      fontFamily: '"Cascadia Mono", Consolas, monospace',
-      fontSize: 13,
-      theme: {
-        background: style.getPropertyValue("--terminal-bg").trim(),
-        foreground: style.getPropertyValue("--text").trim(),
-        cursor: style.getPropertyValue("--accent").trim()
-      }
-    });
-    const fitAddon = new FitAddon();
-    terminal.loadAddon(fitAddon);
-    terminal.open(host);
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    // Per-session stream buffer so we only write *new* characters to xterm
-    let assistantBuffer = "";
-    const fit = () => fitAddon.fit();
-    const resizeObserver = new ResizeObserver(fit);
-    resizeObserver.observe(host);
-
-    // Passive only — App owns lazy ACP start (warm on type / ensure on send).
-    // Auto-starting here freezes the shell on every tab open.
-    terminal.write(
-      "ACP idle · type in the composer to warm the agent in the background.\r\n"
-    );
-
-    const setup = async () => {
-      if (!isTauriRuntime()) {
-        terminal.write("ACP requires the Tauri desktop runtime.\r\n");
-        return;
-      }
-      try {
-        const dispose = await listen<AcpEvent>("acp-event", (event) => {
-          const payload = event.payload;
-          if (payload.sessionId !== sessionId || disposed) return;
-
-          if (payload.method === "session/starting") {
-            const data = payload.data as { hint?: string; command?: string; args?: string[] } | null;
-            const line = data?.command
-              ? [data.command, ...(data.args ?? [])].join(" ")
-              : data?.hint ?? "starting…";
-            terminal.write(`[starting] ${line}\r\n`);
-            return;
-          }
-
-          if (payload.method === "session/update") {
-            const extracted = extractAcpUpdateText(payload.data);
-            if (extracted?.role === "assistant" && extracted.text) {
-              const next = mergeStreamText(assistantBuffer, extracted.text, extracted.isDelta);
-              if (next.length > assistantBuffer.length && next.startsWith(assistantBuffer)) {
-                terminal.write(next.slice(assistantBuffer.length));
-                assistantBuffer = next;
-              } else if (next !== assistantBuffer && assistantBuffer.length === 0) {
-                terminal.write(next);
-                assistantBuffer = next;
-              } else if (next.startsWith(assistantBuffer) && next.length > assistantBuffer.length) {
-                terminal.write(next.slice(assistantBuffer.length));
-                assistantBuffer = next;
-              }
-              return;
-            }
-            if (extracted?.role === "thought" && extracted.text) {
-              terminal.write(extracted.isDelta ? extracted.text : `\r\n[think] ${extracted.text}`);
-              return;
-            }
-            if (extracted?.role === "tool") {
-              const title = extracted.toolTitle ?? "tool";
-              const status = extracted.toolStatus ?? "";
-              terminal.write(`\r\n[tool] ${title}${status ? ` (${status})` : ""}\r\n`);
-              return;
-            }
-          }
-
-          if (payload.kind === "system" && payload.method === "session/ready") {
-            terminal.write("[ready] ACP session ready\r\n");
-            onStatusChange("waiting");
-            return;
-          }
-          if (payload.method === "rpc/response") {
-            terminal.write("\r\n[turn complete]\r\n");
-            assistantBuffer = "";
-            if (payload.kind === "error") onStatusChange("error");
-            else onStatusChange("waiting");
-            return;
-          }
-        });
-        if (disposed) {
-          dispose();
-          return;
-        }
-        unlisten = dispose;
-        requestAnimationFrame(fit);
-      } catch (error) {
-        terminal.write(`ACP listener error: ${String(error)}\r\n`);
-      }
-    };
-    void setup();
-    requestAnimationFrame(fit);
-    return () => {
-      disposed = true;
-      unlisten?.();
-      resizeObserver.disconnect();
-      terminal.dispose();
-      // Do NOT stopAcpSession here: Clean↔Raw toggle must keep the agent alive.
-    };
-  }, [onStatusChange, sessionId]);
-
-  return <div ref={hostRef} className="terminal-surface custom-scrollbar scrollbar-autohide" aria-label="ACP session output" />;
-}
-
-function TerminalSurface({
-  sessionId,
-  cwd,
-  command,
-  args,
-  agentLabel,
-  visible,
-  onStatusChange
-}: {
-  sessionId: string;
-  cwd: string;
-  command: string;
-  args: string[];
-  agentLabel: string;
-  visible: boolean;
-  onStatusChange: (status: SessionStatus) => void;
-}) {
-  const hostRef = useRef<HTMLDivElement>(null);
-  const argsKey = args.join("\0");
-  const visibleRef = useRef(visible);
-  visibleRef.current = visible;
-
-  useEffect(() => {
-    const host = hostRef.current;
-    if (!host) return;
-
-    const style = getComputedStyle(document.documentElement);
-    // Full-screen TUI agents need real VT handling. convertEol:true breaks them.
-    const isWindows = navigator.userAgent.includes("Windows");
-    const terminal = new Terminal({
-      convertEol: false,
-      cursorBlink: true,
-      fontFamily: '"Cascadia Mono", Consolas, "Courier New", monospace',
-      fontSize: 13,
-      lineHeight: 1.2,
-      scrollback: 5000,
-      allowTransparency: false,
-      cols: 120,
-      rows: 40,
-      ...(isWindows
-        ? {
-            windowsPty: {
-              backend: "conpty" as const,
-              buildNumber: 22621,
-            },
-          }
-        : {}),
-      theme: {
-        background: style.getPropertyValue("--terminal-bg").trim() || "#0f1115",
-        foreground: style.getPropertyValue("--text").trim() || "#e6e6e6",
-        cursor: style.getPropertyValue("--accent").trim() || "#6cb6ff",
-      },
-    });
-    const fitAddon = new FitAddon();
-    terminal.loadAddon(fitAddon);
-    terminal.open(host);
-
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    const fitAndResize = () => {
-      // When Clean is primary, host may be 1×1 — keep a usable PTY geometry for the agent.
-      if (visibleRef.current) {
-        try {
-          fitAddon.fit();
-        } catch {
-          /* ignore */
-        }
-      }
-      const cols = visibleRef.current && terminal.cols >= 40 ? terminal.cols : Math.max(terminal.cols, 120);
-      const rows = visibleRef.current && terminal.rows >= 12 ? terminal.rows : Math.max(terminal.rows, 40);
-      if (isTauriRuntime()) {
-        void resizeTerminal(sessionId, cols, rows).catch(() => undefined);
-      }
-    };
-    const resizeObserver = new ResizeObserver(() => {
-      requestAnimationFrame(fitAndResize);
-    });
-    resizeObserver.observe(host);
-    const input = terminal.onData((data) => {
-      void writeTerminal(sessionId, data).catch(() => undefined);
-    });
-
-    const setup = async () => {
-      if (sessionId.startsWith("session-empty-")) {
-        terminal.write("Create a session from the project list to start a terminal.\r\n");
-        onStatusChange("exited");
-        return;
-      }
-      if (!isTauriRuntime()) {
-        terminal.write("Marionette Raw Terminal requires the Tauri desktop runtime.\r\n");
-        onStatusChange("error");
-        return;
-      }
-
-      try {
-        const dispose = await listen<TerminalOutput>("session-output", (event) => {
-          const output = event.payload;
-          if (output.sessionId !== sessionId || disposed) return;
-          if (output.data) terminal.write(output.data);
-          if (output.error) {
-            terminal.write(`\r\n[terminal error] ${output.error}\r\n`);
-            onStatusChange("error");
-          }
-          if (output.exited) onStatusChange("exited");
-        });
-        if (disposed) {
-          dispose();
-          return;
-        }
-        unlisten = dispose;
-
-        fitAndResize();
-
-        const snapshot = await readTerminalSnapshot(sessionId, cwd);
-        const reattaching = Boolean(snapshot && snapshot.length > 0);
-
-        onStatusChange("starting");
-        await startTerminal(sessionId, cwd, command, args);
-        if (disposed) return;
-
-        if (reattaching) {
-          terminal.reset();
-          terminal.write(snapshot);
-        }
-
-        onStatusChange("running");
-        requestAnimationFrame(() => {
-          fitAndResize();
-          requestAnimationFrame(fitAndResize);
-        });
-      } catch (error) {
-        terminal.write(
-          `\r\nMarionette could not start ${agentLabel}: ${String(error)}\r\n` +
-            `Command: ${[command, ...args].filter(Boolean).join(" ")}\r\n`,
-        );
-        onStatusChange("error");
-      }
-    };
-    void setup();
-
-    return () => {
-      disposed = true;
-      unlisten?.();
-      input.dispose();
-      resizeObserver.disconnect();
-      terminal.dispose();
-    };
-  }, [agentLabel, argsKey, command, cwd, onStatusChange, sessionId]);
-
-  // When becoming visible, re-fit to the real panel size
-  useEffect(() => {
-    if (!visible) return;
-    const id = requestAnimationFrame(() => {
-      const host = hostRef.current;
-      if (!host) return;
-      // Trigger resize observer path by dispatching a fake size check via window event
-      window.dispatchEvent(new Event("resize"));
-    });
-    return () => cancelAnimationFrame(id);
-  }, [visible]);
-
-  return <div ref={hostRef} className="terminal-surface custom-scrollbar scrollbar-autohide" aria-label="Raw terminal" />;
 }
 
 function FileChangeCard({
@@ -711,7 +336,6 @@ function CleanPlaceholder({
   events,
   detailsVisible,
   onDetailsToggle,
-  onShowRaw,
   authBanner = null,
   onSignIn,
   signInBusy = false,
@@ -727,7 +351,6 @@ function CleanPlaceholder({
   events: SessionEvent[];
   detailsVisible: boolean;
   onDetailsToggle: () => void;
-  onShowRaw?: () => void;
   authBanner?: string | null;
   onSignIn?: () => void | Promise<void>;
   signInBusy?: boolean;
@@ -743,13 +366,8 @@ function CleanPlaceholder({
   const stickToBottomRef = useRef(true);
   /** State mirror of stickToBottom so the jump-to-bottom chip can re-render. */
   const [atBottom, setAtBottom] = useState(true);
-  const isPty = agent.transport === "pty";
   const isRunning = session.status === "running";
-  // Ignore raw_chunk dumps in Clean (legacy / accidental) — they are not You/Thinking/Reply.
-  const visibleEvents = useMemo(
-    () => events.filter((e) => e.type !== "raw_chunk"),
-    [events]
-  );
+  const visibleEvents = events;
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
   const [editBusy, setEditBusy] = useState(false);
@@ -847,9 +465,7 @@ function CleanPlaceholder({
         className="icon-button icon-button--eye"
         type="button"
         title={
-          (isPty
-            ? "Clean View · You / Thinking / Tool / Reply (from terminal stream)"
-            : "Clean View · live stream · thinking/tools collapsed by default")
+          "Clean View · live stream · thinking/tools collapsed by default"
           + " — " + (detailsVisible ? "hide" : "show") + " details"
         }
         onClick={onDetailsToggle}
@@ -892,10 +508,7 @@ function CleanPlaceholder({
             <p className="clean-empty__hint">
               {authBanner
                 ? "Use the Sign in button above — it opens Claude’s browser login. Come back here when done."
-                : isPty
-                  ? "Send from the composer. Thinking / tools / replies show up as cards here."
-                  : "Type below to warm the agent in the background, then send when ready."}
-              {isPty && onShowRaw ? viewModeToggleHint(onShowRaw) : null}
+                : "Type below to warm the agent in the background, then send when ready."}
             </p>
             {authBanner && onSignIn && (
               <button
@@ -992,7 +605,6 @@ function CleanPlaceholder({
             event.type === "user_message" ||
             event.type === "thought" ||
             event.type === "handoff_prepared";
-          // raw_chunk is ANSI-stripped TUI text — keep plain, not markdown
 
           // Thinking / tool_call: collapsed by default; auto-expand when a tool looks stuck.
           // User message / assistant: always fully visible.
@@ -1580,15 +1192,4 @@ function modeTone(modeId: string | null | undefined): string {
     return "build";
   }
   return "default";
-}
-
-function viewModeToggleHint(onShowRaw: () => void) {
-  return (
-    <>
-      {" "}
-      <button type="button" className="link-button" onClick={onShowRaw}>
-        Switch to Raw Terminal
-      </button>
-    </>
-  );
 }
