@@ -28,7 +28,7 @@ export async function addProject(path: string): Promise<Project> {
   };
 }
 
-/** Remove project from AgentShell list (does not delete workspace files). */
+/** Remove project from Marionette list (does not delete workspace files). */
 export async function deleteProject(projectId: string): Promise<void> {
   if (isTauriRuntime()) {
     await invoke("delete_project", { projectId });
@@ -127,9 +127,9 @@ export async function createSession(projectId: string, agentId: string, label = 
     ptyId: null,
     startedAt: "",
     lastActiveAt: now,
-    rawLogPath: `${project.rootPath}\\.agentshell\\sessions\\${id}.raw.log`,
-    transcriptPath: `${project.rootPath}\\.agentshell\\transcripts\\${id}.jsonl`,
-    handoffPath: `${project.rootPath}\\.agentshell\\handoff.md`,
+    rawLogPath: `${project.rootPath}\\.marionette\\sessions\\${id}.raw.log`,
+    transcriptPath: `${project.rootPath}\\.marionette\\transcripts\\${id}.jsonl`,
+    handoffPath: `${project.rootPath}\\.marionette\\handoff.md`,
     viewMode: "raw-terminal"
   };
 }
@@ -177,6 +177,27 @@ export async function loadTranscript(sessionId: string): Promise<unknown[]> {
   } catch {
     return [];
   }
+}
+
+export async function listExternalSessions(
+  projectId: string
+): Promise<import("./types").ExternalConversation[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    return await invoke<import("./types").ExternalConversation[]>("list_external_sessions", {
+      projectId,
+    });
+  } catch {
+    return [];
+  }
+}
+
+export async function loadExternalSession(
+  source: string,
+  locator: string
+): Promise<unknown[]> {
+  if (!isTauriRuntime()) return [];
+  return invoke<unknown[]>("load_external_session", { source, locator });
 }
 
 export async function searchSessions(query: string): Promise<string[]> {
@@ -324,7 +345,7 @@ export async function probeAcpBilling(sessionId: string): Promise<unknown | null
   }
 }
 
-/** Write a line to the local developer diary (`%USERPROFILE%\\.agentshell\\logs\\dev.log`). Not a UI surface. */
+/** Write a line to the local developer diary (`%USERPROFILE%\\.marionette\\logs\\dev.log`). Not a UI surface. */
 export async function appendDebugLog(entry: {
   source: string;
   level?: "info" | "warn" | "error";
@@ -365,7 +386,7 @@ export async function generateHandoff(params: {
     return {
       projectId: params.projectId,
       targetAgentId: params.targetAgentId,
-      handoffPath: ".agentshell/handoff.md",
+      handoffPath: ".marionette/handoff.md",
       prompt: `Continue from handoff (browser mock) → ${params.targetAgentId}`,
       createdAt: new Date().toISOString(),
     };

@@ -1,4 +1,4 @@
-const STORAGE_KEY = "agentshell-recent-models";
+const STORAGE_KEY = "marionette-recent-models";
 const MAX_ENTRIES = 5;
 
 type RecentModelEntry = {
@@ -9,7 +9,8 @@ type RecentModelEntry = {
 /** Record a model usage (push to front, deduplicate, trim to MAX_ENTRIES). */
 export function recordModelUsage(modelId: string): void {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw =
+      localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem("agentshell-recent-models");
     const parsed: unknown = raw ? JSON.parse(raw) : [];
     // Start fresh on a corrupt value instead of throwing into the catch below,
     // which would leave the bad entry in place and stop recording for good.
@@ -33,7 +34,8 @@ export function getRecentModels(
   validModelIds: ReadonlySet<string>,
 ): RecentModelEntry[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw =
+      localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem("agentshell-recent-models");
     if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];

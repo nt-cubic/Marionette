@@ -15,8 +15,8 @@ import {
 } from "@tauri-apps/api/window";
 import { isTauriRuntime } from "./api";
 
-const STORAGE_KEY = "agentshell-desktop-notify";
-const BASE_TITLE = "AgentShell";
+const STORAGE_KEY = "marionette-desktop-notify";
+const BASE_TITLE = "Marionette";
 
 export type NotifyKind = "reply" | "stuck";
 
@@ -40,7 +40,9 @@ const DEDUPE_MS = 2500;
 
 function readEnabled(): boolean {
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const raw =
+      window.localStorage.getItem(STORAGE_KEY) ??
+      window.localStorage.getItem("agentshell-desktop-notify");
     if (raw === null) return true; // default on — useful out of the box
     return raw === "1" || raw === "true";
   } catch {

@@ -1,11 +1,11 @@
 @echo off
 setlocal EnableExtensions
-title AgentShell
+title Marionette
 
 cd /d "%~dp0"
 
 echo.
-echo  === AgentShell ===
+echo  === Marionette ===
 echo  Project: %CD%
 echo.
 
@@ -70,10 +70,10 @@ set "EXITCODE=%ERRORLEVEL%"
 
 echo.
 if not "%EXITCODE%"=="0" (
-  echo  AgentShell exited with code %EXITCODE%.
+  echo  Marionette exited with code %EXITCODE%.
   goto fail
 )
-echo  AgentShell stopped.
+echo  Marionette stopped.
 pause
 exit /b 0
 

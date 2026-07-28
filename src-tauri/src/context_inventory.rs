@@ -1,12 +1,12 @@
-//! What each agent already brings (MCP servers + skills), and what AgentShell
+//! What each agent already brings (MCP servers + skills), and what Marionette
 //! lends to the agents that are missing it.
 //!
 //! Two layers, deliberately:
 //!   * **global** — where users actually keep this stuff (`~/.config/opencode`,
 //!     `~/.codex/config.toml`, `~/.claude`, `~/.grok/skills`)
-//!   * **project** — `.mcp.json`, `.claude/skills`, `.agentshell/skills`
+//!   * **project** — `.mcp.json`, `.claude/skills`, `.marionette/skills`
 //!
-//! The decision of what to lend is per project (`.agentshell/context.json`) and
+//! The decision of what to lend is per project (`.marionette/context.json`) and
 //! stores **references only**. Secrets stay in the agent's own config file and
 //! are read at injection time, never copied, never logged.
 
@@ -581,7 +581,12 @@ pub fn scan(project_root: &Path) -> ContextInventory {
     scan_opencode_config(&project_root.join("opencode.json"), "project", None, &mut out);
     scan_skills_dir(&project_root.join(".claude/skills"), "project", Some("claude-code"), &mut out);
     scan_skills_dir(&project_root.join(".agents/skills"), "project", None, &mut out);
-    scan_skills_dir(&project_root.join(".agentshell/skills"), "project", None, &mut out);
+    scan_skills_dir(
+        &crate::app_paths::project_dir(project_root).join("skills"),
+        "project",
+        None,
+        &mut out,
+    );
 
     out.servers.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     out.skills.sort_by(|a, b| a.id.cmp(&b.id));
@@ -597,7 +602,7 @@ pub fn scan(project_root: &Path) -> ContextInventory {
 // ─── Per-project selection ──────────────────────────────────────────────────
 
 fn selection_path(project_root: &Path) -> PathBuf {
-    project_root.join(".agentshell").join("context.json")
+    crate::app_paths::project_dir(project_root).join("context.json")
 }
 
 pub fn load_selection(project_root: &Path) -> ContextSelection {
@@ -618,7 +623,7 @@ pub fn save_selection(project_root: &Path, selection: &ContextSelection) -> Resu
     let path = selection_path(project_root);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
-            .map_err(|error| format!("Create .agentshell failed: {error}"))?;
+            .map_err(|error| format!("Create .marionette failed: {error}"))?;
     }
     let body = serde_json::to_string_pretty(selection)
         .map_err(|error| format!("Serialize context selection failed: {error}"))?;
@@ -729,7 +734,7 @@ fn strip_extended(path: &str) -> String {
 /// its permission scope (measured: same prompt asked with and without it). Its
 /// real gate is `Tool.assertExternalDirectory`, which asks under the
 /// `external_directory` permission with a `<dir>/*` pattern — and that config is
-/// merged from this env var. Since AgentShell spawns the process, we can set the
+/// merged from this env var. Since Marionette spawns the process, we can set the
 /// grant per session without touching any of the user's config files.
 ///
 /// Existing values are merged, not replaced: the user may already run with their
@@ -800,7 +805,7 @@ pub fn outside_project_paths(project_root: &Path, paths: &[String]) -> Vec<Value
 /// Record `project_root` as trusted in `~/.grok/trusted_folders.toml`.
 ///
 /// Grok refuses to start **project-scoped** MCP (`.grok/config.toml`, `mcps/`)
-/// until the folder is trusted. AgentShell is opening the project on the user's
+/// until the folder is trusted. Marionette is opening the project on the user's
 /// behalf, so we grant trust the same way `/hooks-trust` / `grok --trust` do.
 /// Idempotent: already-trusted paths are left alone.
 pub fn ensure_grok_folder_trust(project_root: &Path) {
@@ -1102,7 +1107,7 @@ pub fn skills_prompt_for_agent(project_root: &Path, agent_id: &str) -> Option<St
     }
 
     let mut out = String::from(
-        "[AgentShell — skills available in this project]\nThese are instruction files on this machine. \
+        "[Marionette — skills available in this project]\nThese are instruction files on this machine. \
          If one matches the task, read its SKILL.md first and follow it. Ignore the rest.\n\n",
     );
     for skill in lent {
@@ -1135,7 +1140,7 @@ mod tests {
 
     #[test]
     fn reads_opencode_and_codex_shapes() {
-        let root = std::env::temp_dir().join(format!("agentshell-ctx-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("Marionette-ctx-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
 
         let oc = root.join("opencode.jsonc");
@@ -1206,7 +1211,7 @@ mod tests {
     /// Unity MCP rejects unauthenticated HTTP; inject must carry Authorization.
     #[test]
     fn http_mcp_payload_includes_authorization_header() {
-        let root = std::env::temp_dir().join(format!("agentshell-hdr-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("Marionette-hdr-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         let oc = root.join("opencode.json");
         fs::write(
@@ -1224,9 +1229,9 @@ mod tests {
         )
         .unwrap();
         // Enable lending for this project.
-        fs::create_dir_all(root.join(".agentshell")).unwrap();
+        fs::create_dir_all(root.join(".marionette")).unwrap();
         fs::write(
-            root.join(".agentshell/context.json"),
+            root.join(".marionette/context.json"),
             r#"{"version":1,"mcpServers":{"ai-game-developer":true},"skills":{}}"#,
         )
         .unwrap();
@@ -1305,8 +1310,8 @@ mod tests {
 
     #[test]
     fn ensure_grok_folder_trust_writes_trusted_entry() {
-        let home = std::env::temp_dir().join(format!("agentshell-trust-home-{}", std::process::id()));
-        let project = std::env::temp_dir().join(format!("agentshell-trust-proj-{}", std::process::id()));
+        let home = std::env::temp_dir().join(format!("Marionette-trust-home-{}", std::process::id()));
+        let project = std::env::temp_dir().join(format!("Marionette-trust-proj-{}", std::process::id()));
         let _ = fs::remove_dir_all(&home);
         let _ = fs::remove_dir_all(&project);
         fs::create_dir_all(&home).unwrap();
@@ -1345,7 +1350,7 @@ mod tests {
         let leaf = project
             .file_name()
             .and_then(|s| s.to_str())
-            .unwrap_or("agentshell-trust-proj");
+            .unwrap_or("Marionette-trust-proj");
         assert!(
             raw.contains(leaf),
             "expected path leaf {leaf} in:\n{raw}"
@@ -1356,7 +1361,7 @@ mod tests {
 
     #[test]
     fn selection_round_trips_and_keeps_defaults_for_untouched_items() {
-        let root = std::env::temp_dir().join(format!("agentshell-sel-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("Marionette-sel-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
 
         set_enabled(&root, "mcp", "blender", true).unwrap();
@@ -1370,7 +1375,7 @@ mod tests {
         assert!(reloaded.is_enabled("skill", "unity-tools"));
 
         // Reference only — a selection file must never carry credentials.
-        let raw = fs::read_to_string(root.join(".agentshell/context.json")).unwrap();
+        let raw = fs::read_to_string(root.join(".marionette/context.json")).unwrap();
         assert!(raw.contains("blender"));
         assert!(!raw.to_lowercase().contains("token"));
 
@@ -1383,7 +1388,7 @@ mod tests {
     /// This pins the half of that contract that lives here.
     #[test]
     fn a_dropped_image_in_a_folder_with_spaces_still_needs_a_grant() {
-        let root = std::env::temp_dir().join(format!("agentshell-spaces-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("Marionette-spaces-{}", std::process::id()));
         let project = root.join("project");
         let outside = root.join("My Pictures").join("角色 立绘");
         fs::create_dir_all(&project).unwrap();
@@ -1409,7 +1414,7 @@ mod tests {
 
     #[test]
     fn workspace_roots_grant_dedupe_and_detect_outside_paths() {
-        let root = std::env::temp_dir().join(format!("agentshell-roots-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("Marionette-roots-{}", std::process::id()));
         let project = root.join("project");
         let outside = root.join("pictures").join("screenshots");
         fs::create_dir_all(project.join("src")).unwrap();
@@ -1452,7 +1457,7 @@ mod tests {
 
     #[test]
     fn opencode_permission_env_merges_and_uses_measured_pattern() {
-        let root = std::env::temp_dir().join(format!("agentshell-perm-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("Marionette-perm-{}", std::process::id()));
         let project = root.join("project");
         let granted = root.join("shots");
         fs::create_dir_all(&project).unwrap();
@@ -1492,8 +1497,8 @@ mod tests {
 
     #[test]
     fn skills_prompt_skips_agents_that_already_have_them() {
-        let root = std::env::temp_dir().join(format!("agentshell-skills-{}", std::process::id()));
-        let dir = root.join(".agentshell/skills/unity-tools");
+        let root = std::env::temp_dir().join(format!("Marionette-skills-{}", std::process::id()));
+        let dir = root.join(".marionette/skills/unity-tools");
         fs::create_dir_all(&dir).unwrap();
         fs::write(
             dir.join("SKILL.md"),
@@ -1508,7 +1513,7 @@ mod tests {
         // Same skill, but sourced from the agent's own directory → not lent back.
         let mut out = Collector { servers: vec![], skills: vec![], notes: vec![] };
         scan_skills_dir(
-            &root.join(".agentshell/skills"),
+            &root.join(".marionette/skills"),
             "project",
             Some("grok-build"),
             &mut out,

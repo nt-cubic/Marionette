@@ -1,12 +1,12 @@
 [package]
-name = "agentshell"
+name = "marionette"
 version = "0.1.0"
-description = "A lightweight local shell for multiple agent CLIs."
-authors = ["AgentShell"]
+description = "Marionette — agent harness, all in one. Lightweight local shell for multiple agent CLIs."
+authors = ["Marionette"]
 edition = "2021"
 license = "MIT"
 repository = ""
-default-run = "agentshell"
+default-run = "marionette"
 build = "build.rs"
 
 [build-dependencies]
@@ -21,3 +21,5 @@ agent-client-protocol-schema = "1.4.0"
 ureq = { version = "2", features = ["json"] }
 # Codex keeps its MCP servers in config.toml
 toml = "0.8"
+# OpenCode external sessions (read-only)
+rusqlite = { version = "0.32", features = ["bundled"] }

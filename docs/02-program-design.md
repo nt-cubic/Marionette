@@ -1,8 +1,8 @@
-# AgentShell 程序设计文档
+# Marionette 程序设计文档
 
 ## 0. 文档目标
 
-本文档描述 AgentShell 的程序架构、模块边界、数据结构、接口、线程模型和关键实现策略。
+本文档描述 Marionette 的程序架构、模块边界、数据结构、接口、线程模型和关键实现策略。
 
 目标读者是可以执行具体实现任务的模型或开发者。本文档要求实现者尽量按模块、接口和验收标准执行，不自行扩大范围。
 
@@ -41,7 +41,7 @@ PTY：
 1. 不采用 Electron 作为第一选择。
 2. 不 fork Zed 做基座。
 3. 不 fork Codeg 做基座。
-4. 不把 AgentShell 做成 web server 平台。
+4. 不把 Marionette 做成 web server 平台。
 
 ## 2. 总体架构
 
@@ -71,10 +71,10 @@ Rust Backend
   └── LogWriter
 
 Local Files
-  ├── .agentshell/handoff.md
-  ├── .agentshell/sessions/*.raw.log
-  ├── .agentshell/transcripts/*.jsonl
-  └── ~/.agentshell/app.db
+  ├── .marionette/handoff.md
+  ├── .marionette/sessions/*.raw.log
+  ├── .marionette/transcripts/*.jsonl
+  └── ~/.marionette/app.db
 ```
 
 ### 2.2 Source of Truth
@@ -241,7 +241,7 @@ type SessionEvent =
 每个项目根目录下创建：
 
 ```text
-.agentshell/
+.marionette/
   handoff.md
   state.json
   sessions/
@@ -252,7 +252,7 @@ type SessionEvent =
 
 要求：
 
-1. 如果 `.agentshell/` 不存在，创建。
+1. 如果 `.marionette/` 不存在，创建。
 2. 不覆盖已有 raw log。
 3. raw log 文件只 append。
 4. transcript jsonl 每行一个 `SessionEvent`。
@@ -262,7 +262,7 @@ type SessionEvent =
 全局目录：
 
 ```text
-%USERPROFILE%\.agentshell\
+%USERPROFILE%\.marionette\
   config.json
   agents.yaml
   app.db
@@ -321,9 +321,9 @@ struct AppState {
 
 M2 先实现最小存储闭环：
 
-1. 全局目录为 `%USERPROFILE%\\.agentshell`。
-2. 项目索引为 `%USERPROFILE%\\.agentshell\\projects.json`。
-3. 每个项目初始化 `.agentshell/sessions` 和 `.agentshell/transcripts`。
+1. 全局目录为 `%USERPROFILE%\\.marionette`。
+2. 项目索引为 `%USERPROFILE%\\.marionette\\projects.json`。
+3. 每个项目初始化 `.marionette/sessions` 和 `.marionette/transcripts`。
 4. Agent 默认配置由后端提供，前端不复制第二份业务配置。
 5. command 探测只返回 `installed`、`missing` 或 `failed`，不启动交互式 Agent。
 
@@ -512,7 +512,7 @@ Bracketed paste 格式：
 
 职责：
 
-1. 创建或更新 `.agentshell/handoff.md`。
+1. 创建或更新 `.marionette/handoff.md`。
 2. 生成 prefill prompt。
 3. 管理 pinned files。
 4. 管理 user notes。
@@ -1132,7 +1132,7 @@ Clean View unavailable. Raw Terminal is still running.
 
 ### 14.2 不管理密钥
 
-AgentShell 不收集、不保存、不展示 API key。
+Marionette 不收集、不保存、不展示 API key。
 
 ### 14.3 不自动读取敏感文件
 
@@ -1153,7 +1153,7 @@ Handoff 不自动读取：
 ## 15. 推荐目录结构
 
 ```text
-agentshell/
+marionette/
   src-tauri/
     src/
       main.rs

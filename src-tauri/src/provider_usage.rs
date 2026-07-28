@@ -157,7 +157,7 @@ fn http_get_json(url: &str, bearer: &str) -> Result<Value, String> {
     let resp = ureq::get(url)
         .set("Authorization", &format!("Bearer {bearer}"))
         .set("Accept", "application/json")
-        .set("User-Agent", "AgentShell/0.1 (provider-usage)")
+        .set("User-Agent", "Marionette/0.1 (provider-usage)")
         .timeout(std::time::Duration::from_secs(15))
         .call()
         .map_err(|e| format!("HTTP {url}: {e}"))?;
@@ -741,7 +741,7 @@ mod tests {
     #[test]
     fn write_and_read_provider_key() {
         let dir = std::env::temp_dir().join(format!(
-            "agentshell_test_auth_{}",
+            "marionette_test_auth_{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
@@ -767,7 +767,7 @@ mod tests {
     #[test]
     fn write_overwrites_existing_key() {
         let dir = std::env::temp_dir().join(format!(
-            "agentshell_test_auth_overwrite_{}",
+            "marionette_test_auth_overwrite_{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
@@ -787,7 +787,7 @@ mod tests {
     #[test]
     fn delete_removes_provider_key() {
         let dir = std::env::temp_dir().join(format!(
-            "agentshell_test_delete_{}",
+            "marionette_test_delete_{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
@@ -821,7 +821,7 @@ mod tests {
     #[test]
     fn oauth_entries_are_protected_unless_forced() {
         let dir = std::env::temp_dir().join(format!(
-            "agentshell_test_oauth_{}",
+            "marionette_test_oauth_{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
@@ -859,7 +859,7 @@ mod tests {
     #[test]
     fn corrupt_auth_json_aborts_instead_of_wiping() {
         let dir = std::env::temp_dir().join(format!(
-            "agentshell_test_corrupt_{}",
+            "marionette_test_corrupt_{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
@@ -897,7 +897,7 @@ mod tests {
     #[test]
     fn list_providers_from_written_keys() {
         let dir = std::env::temp_dir().join(format!(
-            "agentshell_test_list_{}",
+            "marionette_test_list_{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);

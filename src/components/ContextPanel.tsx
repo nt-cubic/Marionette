@@ -93,24 +93,8 @@ export function ContextPanel({
   resizeDragging = false,
   onResizeStart,
 }: ContextPanelProps) {
-  if (collapsed) {
-    return (
-      <aside className="context-panel is-collapsed" aria-label="Context panel">
-        {/* Drag strip only — WindowControls moved to SessionView center titlebar */}
-        <div className="context-panel__chrome context-panel__chrome--collapsed">
-          <div className="titlebar-drag-fill" data-tauri-drag-region />
-        </div>
-        <div className="context-panel__collapsed-rail">
-          <button className="icon-button icon-button--small context-panel__button" type="button" title="Show information panel" aria-label="Show information panel" onClick={onExpand}>
-            <PanelRightOpen size={14} />
-          </button>
-        </div>
-      </aside>
-    );
-  }
-
   return (
-    <aside className="context-panel" aria-label="Context panel">
+    <aside className={`context-panel custom-scrollbar scrollbar-autohide${collapsed ? " is-collapsed" : ""}`} aria-label="Context panel">
       {onResizeStart && (
         <button
           type="button"
@@ -170,7 +154,7 @@ export function ContextPanel({
             {changedFilesNote ?? "No local changes (or not a git repo)."}
           </p>
         ) : (
-          <ul className="changed-files-list">
+          <ul className="changed-files-list custom-scrollbar scrollbar-autohide">
             {changedFiles.map((file) => (
               <li key={`${file.changeType}:${file.path}`}>
                 <button
@@ -239,7 +223,7 @@ export function ContextPanel({
             {projectContext.inventory.mcpServers.length === 0 ? (
               <p className="context-card__empty">None found in agent configs.</p>
             ) : (
-              <ul className="context-lend__list">
+              <ul className="context-lend__list custom-scrollbar scrollbar-autohide">
                 {projectContext.inventory.mcpServers.map((server) => {
                   const enabled = projectContext.selection.mcpServers[server.id] ?? false;
                   const native = activeAgentId ? server.agents.includes(activeAgentId) : false;
@@ -272,7 +256,7 @@ export function ContextPanel({
             {projectContext.inventory.skills.length === 0 ? (
               <p className="context-card__empty">No SKILL.md folders found.</p>
             ) : (
-              <ul className="context-lend__list">
+              <ul className="context-lend__list custom-scrollbar scrollbar-autohide">
                 {projectContext.inventory.skills.map((skill) => {
                   const enabled = projectContext.selection.skills[skill.id] ?? true;
                   const native = activeAgentId ? skill.agents.includes(activeAgentId) : false;
@@ -319,19 +303,19 @@ export function ContextPanel({
             <small>Target: {handoff.targetAgentId}</small>
             <small title={handoff.handoffPath}>{handoff.handoffPath}</small>
             <p className="handoff-block__hint">
-              Per-dialog file under `.agentshell/handoff/` · prefill in Composer (not auto-sent).
+              Per-dialog file under `.marionette/handoff/` · prefill in Composer (not auto-sent).
             </p>
           </div>
         ) : (
           <p className="context-card__empty">
-            Switch agent to write `.agentshell/handoff/&lt;session&gt;.md` and prefill Composer.
+            Switch agent to write `.marionette/handoff/&lt;session&gt;.md` and prefill Composer.
           </p>
         )}
       </section>
 
       <div className="context-panel__footer">
-        <button className="icon-button icon-button--small context-panel__button" type="button" title="Collapse information panel" aria-label="Collapse information panel" onClick={onCollapse}>
-          <PanelRightClose size={14} />
+        <button className="icon-button icon-button--small context-panel__button" type="button" title={collapsed ? "Pin information panel open" : "Collapse information panel"} aria-label={collapsed ? "Pin information panel open" : "Collapse information panel"} onClick={collapsed ? onExpand : onCollapse}>
+          {collapsed ? <PanelRightOpen size={14} /> : <PanelRightClose size={14} />}
         </button>
       </div>
     </aside>

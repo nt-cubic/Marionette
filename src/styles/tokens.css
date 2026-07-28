@@ -38,6 +38,12 @@
   --editor-toolbar-bg: #121416;
   --terminal-bg: #0f1113;
   --composer-bg: #0f1112;
+
+  --scrollbar-width: 4px;
+  --scrollbar-track: transparent;
+  --scrollbar-thumb: color-mix(in srgb, var(--text-muted) 38%, transparent);
+  --scrollbar-thumb-hover: color-mix(in srgb, var(--text-muted) 58%, transparent);
+  --scrollbar-thumb-faint: color-mix(in srgb, var(--text-muted) 10%, transparent);
 }
 
 :root[data-theme="light"] {

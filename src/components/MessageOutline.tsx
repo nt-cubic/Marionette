@@ -105,7 +105,7 @@ export function MessageOutline({ events, sessionId }: MessageOutlineProps) {
         </div>
         <div
           ref={listRef}
-          className="message-outline__list"
+          className="message-outline__list custom-scrollbar scrollbar-autohide"
           // ~6 rows visible; wheel scrolls the rest
           style={{ maxHeight: `calc(${VISIBLE_ROWS} * 34px + 8px)` }}
         >

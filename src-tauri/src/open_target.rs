@@ -141,7 +141,7 @@ pub fn open_external(
             "opened": false,
             "reason": "risky",
             "target": path.to_string_lossy(),
-            "message": "This file type is executable — AgentShell will not launch it from agent output without confirmation.",
+            "message": "This file type is executable — Marionette will not launch it from agent output without confirmation.",
         }));
     }
 
@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn resolves_relative_paths_and_line_suffixes() {
-        let root = std::env::temp_dir().join(format!("agentshell-open-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("marionette-open-{}", std::process::id()));
         let nested = root.join("src");
         fs::create_dir_all(&nested).unwrap();
         let file = nested.join("App.tsx");

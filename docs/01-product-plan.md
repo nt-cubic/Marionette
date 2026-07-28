@@ -1,10 +1,10 @@
-# AgentShell 产品策划案
+# Marionette 产品策划案
 
 ## 0. 一句话定义
 
-AgentShell 是一个运行在 Windows 本地的轻量多 Agent CLI/TUI 图形壳。它负责启动、展示、切换、记录和 handoff 多个原厂 Agent 工具，例如 OpenCode、Codex CLI、Claude Code、Grok Build。
+Marionette 是一个运行在 Windows 本地的轻量多 Agent CLI/TUI 图形壳。它负责启动、展示、切换、记录和 handoff 多个原厂 Agent 工具，例如 OpenCode、Codex CLI、Claude Code、Grok Build。
 
-AgentShell 不替代这些 Agent，也不实现自己的 Agent runtime。它只让这些原厂 CLI/TUI 更容易同时使用。
+Marionette 不替代这些 Agent，也不实现自己的 Agent runtime。它只让这些原厂 CLI/TUI 更容易同时使用。
 
 ## 1. 产品目标
 
@@ -69,7 +69,7 @@ AgentShell 不替代这些 Agent，也不实现自己的 Agent runtime。它只�
 
 ### 3.1 不做 Agent 平台
 
-AgentShell 绝对不做以下功能：
+Marionette 绝对不做以下功能：
 
 1. 不管理 API key。
 2. 不管理模型供应商。
@@ -102,7 +102,7 @@ Clean View 只是 Raw Terminal 输出的漂亮投影。Clean View 可以失败�
 
 ### 3.3 性能优先于复杂功能
 
-AgentShell 必须保持：
+Marionette 必须保持：
 
 1. 启动快。
 2. 空闲占用低。
@@ -219,7 +219,7 @@ Composer 支持：
 10. restart session。
 11. Clean/Raw toggle。
 12. Clean View placeholder。
-13. `.agentshell/handoff.md` 生成。
+13. `.marionette/handoff.md` 生成。
 14. 切换 Agent 时 prefill handoff prompt。
 15. Changed Files 面板。
 16. Open in Zed。
@@ -353,8 +353,8 @@ Handoff 只解决“把当前项目状态交给另一个 Agent 继续做”的�
 流程：
 
 1. 用户从 Agent A 切换到 Agent B。
-2. AgentShell 更新 `.agentshell/handoff.md`。
-3. AgentShell 在 composer 预填 handoff prompt。
+2. Marionette 更新 `.marionette/handoff.md`。
+3. Marionette 在 composer 预填 handoff prompt。
 4. 用户检查。
 5. 用户手动发送。
 
@@ -497,7 +497,7 @@ Handoff 只解决“把当前项目状态交给另一个 Agent 继续做”的�
 
 目标：
 
-1. 生成 `.agentshell/handoff.md`。
+1. 生成 `.marionette/handoff.md`。
 2. 切换 Agent 时预填 prompt。
 3. 用户可以编辑后手动发送。
 
@@ -569,7 +569,7 @@ Handoff 只解决“把当前项目状态交给另一个 Agent 继续做”的�
 
 第一版成功标准：
 
-1. 用户愿意把多个终端窗口换成 AgentShell。
+1. 用户愿意把多个终端窗口换成 Marionette。
 2. 用户觉得界面足够漂亮。
 3. 用户觉得切换 Agent 比原来快。
 4. 用户觉得 Raw Terminal 可靠。

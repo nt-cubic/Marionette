@@ -125,7 +125,7 @@ struct AcpProcess {
     next_id: AtomicU64,
     pending: Arc<Mutex<HashMap<u64, Sender<Result<Value, String>>>>>,
     agent_session_id: Mutex<Option<String>>,
-    /// Set when AgentShell intentionally stops the process (agent switch / delete).
+    /// Set when Marionette intentionally stops the process (agent switch / delete).
     /// Suppresses false "process/ended" crash UX on the UI.
     intentional_stop: AtomicBool,
     /// Request ids whose *failure* is an expected answer, not a fault.
@@ -199,7 +199,7 @@ impl AcpService {
         // Prefer global ACP bins over `npx -y …` (npx cold start can hang UI for minutes).
         let (command, mut args) =
             crate::process_util::prefer_fast_acp_launch(&command, &args);
-        // Grok: project-scoped MCP is gated by folder trust. AgentShell opens
+        // Grok: project-scoped MCP is gated by folder trust. Marionette opens
         // the project on the user's behalf — grant trust for this cwd and make
         // sure `--trust` is on the argv even if an older agent row lacked it.
         if command_looks_like_grok(&command) {
@@ -244,7 +244,7 @@ impl AcpService {
             format!(
                 "Start ACP agent failed: {error}. \
                  Tip: install the adapter globally once: npm i -g @agentclientprotocol/codex-acp \
-                 (or @agentclientprotocol/claude-agent-acp) so AgentShell can skip slow npx."
+                 (or @agentclientprotocol/claude-agent-acp) so Marionette can skip slow npx."
             )
         })?;
         let mut child_command = Command::new(&resolved.program);
@@ -417,7 +417,7 @@ impl AcpService {
                         }
                     }
                 },
-                "clientInfo": { "name": "AgentShell", "version": "0.1.0" }
+                "clientInfo": { "name": "Marionette", "version": "0.1.0" }
             }),
         );
         let initialized = match initialized {
@@ -1984,7 +1984,7 @@ fn read_stdout(
             "system",
             Some("process/stopped"),
             json!({
-                "message": "Agent process stopped by AgentShell.",
+                "message": "Agent process stopped by Marionette.",
                 "sessionId": session_id,
             }),
         );
@@ -2103,7 +2103,7 @@ fn handle_agent_request(
                 process,
                 id,
                 -32601,
-                &format!("Method not implemented by AgentShell: {other}"),
+                &format!("Method not implemented by Marionette: {other}"),
             );
             emit_event(
                 app,
@@ -2737,16 +2737,16 @@ pub fn spawn_pipeline_watchdog() {
     });
 }
 
-/// `AGENTSHELL_RAW_LOG=1` mirrors every stdout line the reader yields to
-/// `~/.agentshell/logs/raw-<session>.log`, unabridged. dev.log clips detail to
+/// `Marionette_RAW_LOG=1` mirrors every stdout line the reader yields to
+/// `~/.marionette/logs/raw-<session>.log`, unabridged. dev.log clips detail to
 /// 4000 chars, which is smaller than a `read` tool result — so it cannot answer
 /// "did we receive this line" on its own.
 fn raw_stdout_tap(session_id: &str) -> Option<Sender<String>> {
-    if std::env::var("AGENTSHELL_RAW_LOG").ok().as_deref() != Some("1") {
+    if std::env::var("Marionette_RAW_LOG").ok().as_deref() != Some("1") {
         return None;
     }
     let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
-    let dir = PathBuf::from(home).join(".agentshell").join("logs");
+    let dir = PathBuf::from(home).join(".marionette").join("logs");
     fs::create_dir_all(&dir).ok()?;
     let path = dir.join(format!("raw-{session_id}.log"));
 

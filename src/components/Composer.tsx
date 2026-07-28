@@ -103,6 +103,8 @@ type ComposerProps = {
    * when null/empty (see `resolveSlashCommands`).
    */
   availableCommands?: AvailableCommand[] | null;
+  /** When set, composer is disabled (external read-only session). */
+  readOnlyReason?: string | null;
 };
 
 /**
@@ -231,11 +233,13 @@ function modeTone(modeId: string | null | undefined): string {
 const COMPOSER_HEIGHT_MIN = 100;
 const COMPOSER_HEIGHT_MAX = 480;
 const COMPOSER_HEIGHT_DEFAULT = 112;
-const COMPOSER_HEIGHT_KEY = "agentshell-composer-height";
+const COMPOSER_HEIGHT_KEY = "marionette-composer-height";
 
 function readComposerHeight(): number {
   try {
-    const raw = window.localStorage.getItem(COMPOSER_HEIGHT_KEY);
+    const raw =
+      window.localStorage.getItem(COMPOSER_HEIGHT_KEY) ??
+      window.localStorage.getItem("agentshell-composer-height");
     const n = raw ? Number(raw) : NaN;
     if (Number.isFinite(n)) {
       return Math.min(COMPOSER_HEIGHT_MAX, Math.max(COMPOSER_HEIGHT_MIN, n));
@@ -377,6 +381,7 @@ export function Composer({
   onEnsureAgentReady,
   lastActivityAt = null,
   onProviderKeysChanged,
+  readOnlyReason = null,
   onAgentBinaryUpdated,
   availableCommands = null,
 }: ComposerProps) {
@@ -432,6 +437,7 @@ export function Composer({
   const updating = useRef(false);
   const modelSearchRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLElement>(null);
   const dropDepth = useRef(0);
   /** IME composition must not re-render placeholder / warm ACP mid-input. */
@@ -1033,6 +1039,7 @@ export function Composer({
   const canCancel = isBusy && (isPty || (caps?.supportsCancel ?? true));
   const submit = () => {
     // Empty draft is OK when parent has quote-pins (App merges on send).
+    if (readOnlyReason) return;
     if (isBusy) return;
     if (!sessionId || sessionId.startsWith("session-empty-")) return;
     onWarmAgent?.();
@@ -1497,10 +1504,15 @@ export function Composer({
       {/* Left rail — always-on mode cue, colored by tone. */}
       {hasModes && <div className="composer__mode-rail" aria-hidden />}
       {flashError && <div className="composer__error-toast">{flashError}</div>}
+      {readOnlyReason && (
+        <div className="composer__readonly" role="status">
+          {readOnlyReason}
+        </div>
+      )}
       {/* Connect/warm phase. Floats above the composer like the error toast:
           reconnecting is background work and must never resize the transcript
           or the composer under the user's cursor. */}
-      {isWarming && (
+      {isWarming && !readOnlyReason && (
         <div className="composer__warming" role="status" aria-live="polite">
           <span className="composer__warming-pulse" aria-hidden />
           <span>Agent connecting in background…</span>
@@ -1663,7 +1675,25 @@ export function Composer({
         />
         <div className="composer__toolbar">
           <div className="composer__controls">
-            <button className="composer-tool" type="button" title="Add files or context">
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              style={{ display: "none" }}
+              onChange={(e) => {
+                const files = e.target.files;
+                if (!files || files.length === 0) return;
+                const paths: string[] = [];
+                for (const file of Array.from(files)) {
+                  const path = (file as File & { path?: string }).path;
+                  paths.push(path && path.trim() ? path : file.name);
+                }
+                insertDroppedPaths(paths);
+                // Reset so the same file can be picked again
+                e.target.value = "";
+              }}
+            />
+            <button className="composer-tool" type="button" title="Add files or context" onClick={() => fileInputRef.current?.click()}>
               <Plus size={14} />
             </button>
             {/* Execution mode — flat control beside the tools, matching model/agent. */}
@@ -2142,8 +2172,9 @@ export function Composer({
                     ? "Agent is busy"
                     : "Send"
               }
-              disabled={isBusy && !canCancel}
+              disabled={Boolean(readOnlyReason) || (isBusy && !canCancel)}
               onClick={() => {
+                if (readOnlyReason) return;
                 if (isBusy && canCancel) onInterrupt();
                 else if (!isBusy) submit();
               }}

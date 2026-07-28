@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "description": "Default capabilities for AgentShell",
+  "description": "Default capabilities for Marionette",
   "windows": ["*"],
   "permissions": [
     "core:default",

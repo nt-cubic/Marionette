@@ -1,5 +1,5 @@
 //! Local developer diary — not shown in the product UI.
-//! Path: `%USERPROFILE%\.agentshell\logs\dev.log`
+//! Path: `%USERPROFILE%\.marionette\logs\dev.log`
 
 use std::collections::HashMap;
 use std::fs::{create_dir_all, OpenOptions};
@@ -12,10 +12,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 static LOG_LOCK: Mutex<()> = Mutex::new(());
 
 fn log_path() -> Result<PathBuf, String> {
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .ok_or_else(|| "Unable to determine home for debug log".to_string())?;
-    let dir = PathBuf::from(home).join(".agentshell").join("logs");
+    let dir = crate::app_paths::global_dir()?.join("logs");
     create_dir_all(&dir).map_err(|error| format!("Create log dir failed: {error}"))?;
     Ok(dir.join("dev.log"))
 }
@@ -243,5 +240,5 @@ mod tests {
 pub fn log_path_display() -> String {
     log_path()
         .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "%USERPROFILE%\\.agentshell\\logs\\dev.log".to_string())
+        .unwrap_or_else(|_| "%USERPROFILE%\\.marionette\\logs\\dev.log".to_string())
 }

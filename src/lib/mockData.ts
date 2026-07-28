@@ -2,9 +2,9 @@ import type { AgentConfig, ChangedFile, Project, Session, SessionEvent } from ".
 
 export const projects: Project[] = [
   {
-    id: "project-agentshell",
-    name: "AgentShell",
-    rootPath: "D:\\Project\\AgentsShell",
+    id: "project-marionette",
+    name: "Marionette",
+    rootPath: "D:\\Project\\Marionette",
     createdAt: "2026-07-09T00:00:00.000Z",
     lastOpenedAt: "2026-07-09T09:15:00.000Z"
   },
@@ -80,7 +80,7 @@ export const agents: AgentConfig[] = [
 
 /** Browser mock for the Project context card (desktop scans the real machine). */
 export const projectContext: import("./types").ProjectContext = {
-  projectId: "project-agentshell",
+  projectId: "project-marionette",
   inventory: {
     mcpServers: [
       {
@@ -113,8 +113,8 @@ export const projectContext: import("./types").ProjectContext = {
         id: "unity-tools",
         name: "unity-tools",
         description: "Unity project helpers",
-        dir: ".agentshell/skills/unity-tools",
-        file: ".agentshell/skills/unity-tools/SKILL.md",
+        dir: ".marionette/skills/unity-tools",
+        file: ".marionette/skills/unity-tools/SKILL.md",
         sources: ["project"],
         agents: []
       },
@@ -137,42 +137,42 @@ export const projectContext: import("./types").ProjectContext = {
 export const sessions: Session[] = [
   {
     id: "session-codex-1",
-    projectId: "project-agentshell",
+    projectId: "project-marionette",
     agentId: "codex",
     label: "Codex CLI / layout pass",
-    cwd: "D:\\Project\\AgentsShell",
+    cwd: "D:\\Project\\Marionette",
     status: "running",
     processId: 18424,
     ptyId: "pty-codex-1",
     startedAt: "2026-07-09T09:09:00.000Z",
     lastActiveAt: "2026-07-09T09:18:00.000Z",
-    rawLogPath: "D:\\Project\\AgentsShell\\.agentshell\\sessions\\codex-20260709.raw.log",
-    transcriptPath: "D:\\Project\\AgentsShell\\.agentshell\\transcripts\\codex-20260709.jsonl",
-    handoffPath: "D:\\Project\\AgentsShell\\.agentshell\\handoff.md",
+    rawLogPath: "D:\\Project\\Marionette\\.marionette\\sessions\\codex-20260709.raw.log",
+    transcriptPath: "D:\\Project\\Marionette\\.marionette\\transcripts\\codex-20260709.jsonl",
+    handoffPath: "D:\\Project\\Marionette\\.marionette\\handoff.md",
     viewMode: "clean"
   },
   {
     id: "session-claude-1",
-    projectId: "project-agentshell",
+    projectId: "project-marionette",
     agentId: "claude-code",
     label: "Claude Code / review notes",
-    cwd: "D:\\Project\\AgentsShell",
+    cwd: "D:\\Project\\Marionette",
     status: "waiting",
     processId: 12964,
     ptyId: "pty-claude-1",
     startedAt: "2026-07-09T08:44:00.000Z",
     lastActiveAt: "2026-07-09T09:02:00.000Z",
-    rawLogPath: "D:\\Project\\AgentsShell\\.agentshell\\sessions\\claude-20260709.raw.log",
-    transcriptPath: "D:\\Project\\AgentsShell\\.agentshell\\transcripts\\claude-20260709.jsonl",
-    handoffPath: "D:\\Project\\AgentsShell\\.agentshell\\handoff.md",
+    rawLogPath: "D:\\Project\\Marionette\\.marionette\\sessions\\claude-20260709.raw.log",
+    transcriptPath: "D:\\Project\\Marionette\\.marionette\\transcripts\\claude-20260709.jsonl",
+    handoffPath: "D:\\Project\\Marionette\\.marionette\\handoff.md",
     viewMode: "clean"
   },
   {
     id: "session-opencode-1",
-    projectId: "project-agentshell",
+    projectId: "project-marionette",
     agentId: "opencode",
     label: "OpenCode / idle",
-    cwd: "D:\\Project\\AgentsShell",
+    cwd: "D:\\Project\\Marionette",
     status: "exited",
     processId: null,
     ptyId: null,
@@ -180,9 +180,9 @@ export const sessions: Session[] = [
     lastActiveAt: "2026-07-08T21:28:00.000Z",
     exitedAt: "2026-07-08T21:28:00.000Z",
     exitCode: 0,
-    rawLogPath: "D:\\Project\\AgentsShell\\.agentshell\\sessions\\opencode-20260708.raw.log",
-    transcriptPath: "D:\\Project\\AgentsShell\\.agentshell\\transcripts\\opencode-20260708.jsonl",
-    handoffPath: "D:\\Project\\AgentsShell\\.agentshell\\handoff.md",
+    rawLogPath: "D:\\Project\\Marionette\\.marionette\\sessions\\opencode-20260708.raw.log",
+    transcriptPath: "D:\\Project\\Marionette\\.marionette\\transcripts\\opencode-20260708.jsonl",
+    handoffPath: "D:\\Project\\Marionette\\.marionette\\handoff.md",
     viewMode: "clean"
   }
 ];
@@ -210,8 +210,9 @@ export const sessionEvents: SessionEvent[] = [
     type: "handoff_prepared",
     sessionId: "session-codex-1",
     targetAgentId: "claude-code",
-    handoffPath: "D:\\Project\\AgentsShell\\.agentshell\\handoff.md",
+    handoffPath: "D:\\Project\\Marionette\\.marionette\\handoff.md",
     prompt: "Continue from the static shell and inspect M2 scope before adding backend commands.",
     createdAt: "2026-07-09T09:14:00.000Z"
   }
 ];
+

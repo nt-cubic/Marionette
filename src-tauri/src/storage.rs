@@ -12,10 +12,7 @@ pub struct StorageService {
 
 impl StorageService {
     pub fn new() -> Result<Self, String> {
-        let home = std::env::var_os("USERPROFILE")
-            .or_else(|| std::env::var_os("HOME"))
-            .ok_or_else(|| "Unable to determine the user home directory".to_string())?;
-        Self::from_global_dir(PathBuf::from(home).join(".agentshell"))
+        Self::from_global_dir(crate::app_paths::global_dir()?)
     }
 
     fn from_global_dir(global_dir: PathBuf) -> Result<Self, String> {
@@ -172,13 +169,13 @@ impl StorageService {
             exited_at: None,
             exit_code: None,
             raw_log_path: raw_log_path.to_string_lossy().to_string(),
-            transcript_path: project_path
-                .join(".agentshell/transcripts")
+            transcript_path: crate::app_paths::project_dir(project_path)
+                .join("transcripts")
                 .join(format!("{id}.jsonl"))
                 .to_string_lossy()
                 .to_string(),
-            handoff_path: project_path
-                .join(".agentshell/handoff")
+            handoff_path: crate::app_paths::project_dir(project_path)
+                .join("handoff")
                 .join(format!("{id}.md"))
                 .to_string_lossy()
                 .to_string(),
@@ -418,10 +415,7 @@ impl StorageService {
     }
 
     fn ensure_project_dirs(&self, project_path: &Path) -> Result<(), String> {
-        let project_dir = project_path.join(".agentshell");
-        fs::create_dir_all(project_dir.join("sessions"))
-            .and_then(|_| fs::create_dir_all(project_dir.join("transcripts")))
-            .map_err(|error| format!("Create project storage failed: {error}"))
+        crate::app_paths::ensure_project_layout(project_path).map(|_| ())
     }
 
     #[allow(dead_code)]
@@ -431,8 +425,7 @@ impl StorageService {
 }
 
 fn sessions_file(project_path: &Path) -> PathBuf {
-    project_path
-        .join(".agentshell")
+    crate::app_paths::project_dir(project_path)
         .join("sessions")
         .join("index.json")
 }
@@ -448,8 +441,7 @@ fn session_log_path(project_path: &Path, session_id: &str) -> PathBuf {
             }
         })
         .collect::<String>();
-    project_path
-        .join(".agentshell")
+    crate::app_paths::project_dir(project_path)
         .join("sessions")
         .join(format!("{safe_id}.raw.log"))
 }
@@ -479,7 +471,7 @@ mod tests {
     fn test_root() -> std::path::PathBuf {
         static NEXT_ID: AtomicU64 = AtomicU64::new(0);
         std::env::temp_dir().join(format!(
-            "agentshell-storage-test-{}-{}-{}",
+            "marionette-storage-test-{}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -502,8 +494,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(service.list_projects().unwrap().len(), 1);
-        assert!(project_dir.join(".agentshell/sessions").is_dir());
-        assert!(project_dir.join(".agentshell/transcripts").is_dir());
+        assert!(project_dir.join(".marionette/sessions").is_dir());
+        assert!(project_dir.join(".marionette/transcripts").is_dir());
 
         let restarted = StorageService::from_global_dir(global_dir).unwrap();
         let restored = restarted.list_projects().unwrap();
@@ -591,9 +583,9 @@ mod tests {
 
         service.delete_project(&project.id).unwrap();
         assert!(service.list_projects().unwrap().is_empty());
-        // Workspace folder and .agentshell data stay on disk.
+        // Workspace folder and .marionette data stay on disk.
         assert!(project_dir.is_dir());
-        assert!(project_dir.join(".agentshell").is_dir());
+        assert!(project_dir.join(".marionette").is_dir());
 
         fs::remove_dir_all(root).unwrap();
     }

@@ -6,8 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Build per-dialog handoff + composer prefill from recent transcript.
 /// Writes:
-///   `.agentshell/handoff/{sessionId}.md`  (SSOT for this dialog)
-///   `.agentshell/handoff.md`              (latest shortcut for CLI / humans)
+///   `.marionette/handoff/{sessionId}.md`  (SSOT for this dialog)
+///   `.marionette/handoff.md`              (latest shortcut for CLI / humans)
 /// Does not auto-send; does not read arbitrary repo files.
 pub fn generate_handoff(
     project_id: &str,
@@ -28,11 +28,11 @@ pub fn generate_handoff(
 
     let created_at = iso_now();
     let safe_id = sanitize_session_id(session_id);
-    let handoff_dir = project_root.join(".agentshell").join("handoff");
+    let handoff_dir = crate::app_paths::project_dir(project_root).join("handoff");
     fs::create_dir_all(&handoff_dir).map_err(|e| format!("Create handoff dir failed: {e}"))?;
 
     let handoff_path = handoff_dir.join(format!("{safe_id}.md"));
-    let latest_path = project_root.join(".agentshell").join("handoff.md");
+    let latest_path = crate::app_paths::project_dir(project_root).join("handoff.md");
 
     let body = render_markdown(
         &created_at,
@@ -92,7 +92,7 @@ fn sanitize_session_id(session_id: &str) -> String {
 }
 
 pub fn read_handoff_summary(project_root: &Path) -> Option<String> {
-    let path = project_root.join(".agentshell").join("handoff.md");
+    let path = crate::app_paths::project_dir(project_root).join("handoff.md");
     let text = fs::read_to_string(path).ok()?;
     let mut lines = text.lines().filter(|l| !l.trim().is_empty());
     // Skip title lines; return a short preview.
@@ -182,7 +182,7 @@ fn render_markdown(
     tool_titles: &[String],
 ) -> String {
     let mut out = String::new();
-    out.push_str("# AgentShell Handoff\n\n");
+    out.push_str("# Marionette Handoff\n\n");
     out.push_str(&format!("- Generated: `{created_at}`\n"));
     out.push_str(&format!("- Project: **{project_name}** (`{}`)\n", project_root.display()));
     out.push_str(&format!("- Session: **{session_label}** (`{session_id}`)\n"));
@@ -234,7 +234,7 @@ fn render_prefill(
 ) -> String {
     let mut out = String::new();
     out.push_str(&format!(
-        "Continue from an AgentShell handoff (previous agent: {source_agent_label} → you: {target_agent_label}).\n\n"
+        "Continue from a Marionette handoff (previous agent: {source_agent_label} → you: {target_agent_label}).\n\n"
     ));
     out.push_str(&format!("Project: {project_name} ({})\n", project_root.display()));
     out.push_str(&format!("Session: {session_label}\n"));
@@ -243,7 +243,7 @@ fn render_prefill(
         .strip_prefix(project_root)
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| handoff_path.display().to_string());
-    out.push_str(&format!("Full notes: `{rel}` (also `.agentshell/handoff.md` latest)\n\n"));
+    out.push_str(&format!("Full notes: `{rel}` (also `.marionette/handoff.md` latest)\n\n"));
     if !user_msgs.is_empty() {
         out.push_str("Recent user asks:\n");
         let start = user_msgs.len().saturating_sub(3);
@@ -292,5 +292,5 @@ fn iso_now() -> String {
 
 #[allow(dead_code)]
 pub fn handoff_path_for(project_root: &Path) -> PathBuf {
-    project_root.join(".agentshell").join("handoff.md")
+    crate::app_paths::project_dir(project_root).join("handoff.md")
 }

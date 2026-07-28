@@ -588,7 +588,7 @@ pub fn read_terminal_snapshot(session_id: String, cwd: String) -> Result<String,
         })
         .collect::<String>();
     let path = Path::new(&cwd)
-        .join(".agentshell")
+        .join(".marionette")
         .join("sessions")
         .join(format!("{safe_id}.raw.log"));
     if !path.exists() {
@@ -845,7 +845,7 @@ pub fn probe_acp_billing(
     state.acp.probe_billing(&session_id)
 }
 
-/// Generate `.agentshell/handoff.md` and a composer prefill prompt. Does not send.
+/// Generate `.marionette/handoff.md` and a composer prefill prompt. Does not send.
 /// Pass `source_agent_id` when the session may already be rebound to the target.
 #[tauri::command(async)]
 pub fn generate_handoff(
@@ -930,6 +930,39 @@ pub fn get_file_diff(
         .find(|p| p.id == project_id)
         .ok_or_else(|| format!("Unknown project: {project_id}"))?;
     crate::git_service::get_file_diff(Path::new(&project.root_path), &path)
+}
+
+/// Scan external agent stores (Grok / Claude / Codex / OpenCode) for this project.
+/// Read-only; results are not persisted. Single-source failures are skipped.
+#[tauri::command(async)]
+pub fn list_external_sessions(
+    project_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::parsers::ExternalConversation>, String> {
+    let _trace = crate::debug_log::CmdTrace::new("list_external_sessions");
+    let root_path = {
+        let storage = state
+            .storage
+            .lock()
+            .map_err(|_| "Storage lock poisoned".to_string())?;
+        storage
+            .list_projects()?
+            .into_iter()
+            .find(|p| p.id == project_id)
+            .ok_or_else(|| format!("Unknown project: {project_id}"))?
+            .root_path
+    };
+    Ok(crate::parsers::list_all(&root_path))
+}
+
+/// Load an external conversation as SessionEvent-shaped JSON (same as load_transcript).
+#[tauri::command(async)]
+pub fn load_external_session(
+    source: String,
+    locator: String,
+) -> Result<Vec<serde_json::Value>, String> {
+    let _trace = crate::debug_log::CmdTrace::new("load_external_session");
+    crate::parsers::load_one(&source, &locator)
 }
 
 /// Answer a pending ACP `session/request_permission` prompt.
