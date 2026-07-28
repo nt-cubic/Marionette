@@ -12,9 +12,8 @@ import {
   sealOpenAssistantReplies,
   userMessageEvent,
 } from "../lib/acpTranscript";
-import { armPtyBridge, createPtyBridgeState, flushPtyBridge, ingestPtyOutput, type PtyBridgeState } from "../lib/ptyCleanBridge";
-import { addProject, appendDebugLog, cancelAcpSession, checkOutsideProjectPaths, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, generateHandoff, getChangedFiles, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgents, listExternalSessions, listProjects, listSessions, loadExternalSession, loadTranscript, preparePtyInput, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, respondAcpPermission, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, startAcpSession, startAgentLogin, stopAcpSession, stopTerminal, updateSessionAgent, updateSessionLabel, updateSessionPrefs, writeTerminal, writeTranscript, type OutsidePath } from "../lib/api";
-import type { AcpEvent, AvailableCommand, CapabilitySnapshot, ChangedFile, ExternalConversation, HandoffResult, Project, ProjectContext, Session, SessionComposerPrefs, SessionEvent, SessionViewMode, TerminalOutput, UsageSnapshot } from "../lib/types";
+import { addProject, appendDebugLog, cancelAcpSession, checkOutsideProjectPaths, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, generateHandoff, getChangedFiles, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgents, listProjects, listSessions, loadTranscript, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, respondAcpPermission, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, startAcpSession, startAgentLogin, stopAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, writeTranscript, type OutsidePath } from "../lib/api";
+import type { AcpEvent, AvailableCommand, CapabilitySnapshot, ChangedFile, HandoffResult, Project, ProjectContext, Session, SessionComposerPrefs, SessionEvent, SessionViewMode, UsageSnapshot } from "../lib/types";
 import {
   buildUsageSnapshot,
   emptySessionUsage,
@@ -127,7 +126,7 @@ function asIdleOnLoad(session: Session): Session {
   if (session.status !== "starting" && session.status !== "running" && session.status !== "waiting") {
     return session;
   }
-  return { ...session, status: "exited", processId: null, ptyId: null };
+  return { ...session, status: "exited", processId: null };
 }
 
 /**
@@ -214,9 +213,6 @@ export function App() {
   const [slashCommandsById, setSlashCommandsById] = useState<Record<string, AvailableCommand[]>>({});
   /** Active model id from Composer (`provider/model` for OpenCode). */
   const [activeModelId, setActiveModelId] = useState<string | null>(null);
-  /** Per-session PTY→Clean bridges (first-principles transcript extraction). */
-  const ptyBridgesRef = useRef<Map<string, PtyBridgeState>>(new Map());
-  const ptyFlushTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const providerProbeInflight = useRef(false);
   const lastProviderProbeKey = useRef("");
   /** Throttle auto usage refresh after each turn end. */
@@ -259,14 +255,6 @@ export function App() {
   const [changedFiles, setChangedFiles] = useState<ChangedFile[]>([]);
   const [changedFilesNote, setChangedFilesNote] = useState<string | null>(null);
   const [diffPreview, setDiffPreview] = useState<{ path: string; text: string } | null>(null);
-  /** External agent sessions (per-project memory cache; not on disk). */
-  const [externalByProject, setExternalByProject] = useState<Record<string, ExternalConversation[]>>({});
-  const [externalScanning, setExternalScanning] = useState(false);
-  const [externalStatus, setExternalStatus] = useState<string | null>(null);
-  const [externalView, setExternalView] = useState<{
-    conversation: ExternalConversation;
-    events: SessionEvent[];
-  } | null>(null);
   const [permissionPrompt, setPermissionPrompt] = useState<PermissionPrompt | null>(null);
   const [permissionBusy, setPermissionBusy] = useState(false);
   /** MCP servers + skills found for the active project (needs 5). */
@@ -282,7 +270,7 @@ export function App() {
   } | null>(null);
   const [pathGrantBusy, setPathGrantBusy] = useState(false);
   const lastEscAtRef = useRef(0);
-  /** Last ACP/PTY activity timestamp per session — for heartbeat / stale-working UI. */
+  /** Last ACP activity timestamp per session — for heartbeat / stale-working UI. */
   const [lastActivityById, setLastActivityById] = useState<Record<string, number>>({});
   const lastActivityByIdRef = useRef(lastActivityById);
   lastActivityByIdRef.current = lastActivityById;
@@ -319,20 +307,6 @@ export function App() {
     });
   }, []);
 
-  const schedulePtyFlush = useCallback((sessionId: string) => {
-    const prev = ptyFlushTimersRef.current.get(sessionId);
-    if (prev) clearTimeout(prev);
-    const timer = setTimeout(() => {
-      ptyFlushTimersRef.current.delete(sessionId);
-      const bridge = ptyBridgesRef.current.get(sessionId);
-      if (!bridge?.armed) return;
-      const next = flushPtyBridge(bridge, sessionId, (fn) => {
-        setLiveEvents((events) => fn(events));
-      });
-      ptyBridgesRef.current.set(sessionId, next);
-    }, 120);
-    ptyFlushTimersRef.current.set(sessionId, timer);
-  }, []);
   const usage = useMemo<UsageSnapshot>(() => {
     const activeSession = availableSessions.find((session) => session.id === currentSessionId);
     const agent =
@@ -384,37 +358,7 @@ export function App() {
   useEffect(() => {
     if (!isTauriRuntime()) return;
     let disposed = false;
-    let unlistenOut: (() => void) | undefined;
     let unlistenAcp: (() => void) | undefined;
-
-    void listen<TerminalOutput>("session-output", (event) => {
-      if (disposed) return;
-      const output = event.payload;
-      if (output.data) {
-        touchActivity(output.sessionId);
-        // Product surface is Clean View for every agent — derive cards from PTY text.
-        const prev = ptyBridgesRef.current.get(output.sessionId) ?? createPtyBridgeState();
-        const next = ingestPtyOutput(prev, output.sessionId, output.data, (fn) => {
-          setLiveEvents((events) => fn(events));
-        });
-        ptyBridgesRef.current.set(output.sessionId, next);
-        // Flush trailing partial lines soon so cards don't wait for a "refresh".
-        schedulePtyFlush(output.sessionId);
-      }
-      if (output.exited) {
-        setAvailableSessions((current) => current.map((session) => session.id === output.sessionId ? { ...session, status: "exited" } : session));
-        pushDebug({ sessionId: output.sessionId, level: "info", source: "pty", summary: "process exited" });
-      } else if (output.error) {
-        setAvailableSessions((current) => current.map((session) => session.id === output.sessionId ? { ...session, status: "error" } : session));
-        pushDebug({ sessionId: output.sessionId, level: "error", source: "pty", summary: output.error, detail: output.error });
-      }
-    }).then((dispose) => {
-      if (disposed) {
-        dispose();
-        return;
-      }
-      unlistenOut = dispose;
-    });
 
     void listen<AcpEvent>("acp-event", (event) => {
       if (disposed) return;
@@ -703,14 +647,11 @@ export function App() {
 
     return () => {
       disposed = true;
-      unlistenOut?.();
       unlistenAcp?.();
-      for (const t of ptyFlushTimersRef.current.values()) clearTimeout(t);
-      ptyFlushTimersRef.current.clear();
       for (const t of cancelWatchdogsRef.current.values()) clearTimeout(t);
       cancelWatchdogsRef.current.clear();
     };
-  }, [pushDebug, schedulePtyFlush, touchActivity]);
+  }, [pushDebug, touchActivity]);
   // note: pushDebug is stable via useCallback
 
   /** Debounced rewrite of Clean transcript JSONL per session. */
@@ -1198,35 +1139,6 @@ export function App() {
   );
 
   const displaySession = useMemo((): Session => {
-    if (externalView) {
-      const c = externalView.conversation;
-      const agentGuess =
-        c.source === "grok"
-          ? "grok"
-          : c.source === "claude"
-            ? "claude-code"
-            : c.source === "codex"
-              ? "codex"
-              : c.source === "opencode"
-                ? "opencode"
-                : availableAgents[0]?.id ?? agents[0].id;
-      return {
-        id: c.id,
-        projectId: currentProject?.id ?? "",
-        agentId: agentGuess,
-        label: `[${c.source}] ${c.title}`,
-        cwd: c.cwd || currentProject?.rootPath || "",
-        status: "exited",
-        processId: null,
-        ptyId: null,
-        startedAt: c.startedAt ?? "",
-        lastActiveAt: c.lastActiveAt ?? "",
-        rawLogPath: "",
-        transcriptPath: "",
-        handoffPath: "",
-        viewMode: "clean",
-      };
-    }
     return (
       currentSession ?? {
         id: `session-empty-${currentProject?.id ?? "none"}`,
@@ -1236,16 +1148,14 @@ export function App() {
         cwd: currentProject?.rootPath ?? "",
         status: "exited" as const,
         processId: null,
-        ptyId: null,
         startedAt: "",
         lastActiveAt: "",
-        rawLogPath: "",
         transcriptPath: "",
         handoffPath: "",
         viewMode: "clean" as const,
       }
     );
-  }, [availableAgents, currentProject, currentSession, externalView]);
+  }, [availableAgents, currentProject, currentSession]);
 
   const currentAgent = useMemo(
     () => availableAgents.find((agent) => agent.id === displaySession.agentId) ?? availableAgents[0] ?? agents[0],
@@ -1253,9 +1163,8 @@ export function App() {
   );
 
   const currentEvents = useMemo(() => {
-    if (externalView) return externalView.events;
     return liveEvents.filter((event) => event.sessionId === displaySession.id);
-  }, [liveEvents, displaySession.id, externalView]);
+  }, [liveEvents, displaySession.id]);
 
   const openSessions = useMemo(
     () => openSessionIds
@@ -1354,11 +1263,9 @@ export function App() {
     setViewMode("clean");
     setSessionCapabilities(null);
     setActiveModelId(null);
-    ptyBridgesRef.current.set(sessionWithPrefs.id, createPtyBridgeState());
   };
 
   const openSession = (nextSession: Session) => {
-    setExternalView(null);
     setOpenSessionIds((current) => current.includes(nextSession.id) ? current : [...current, nextSession.id]);
     setCurrentProjectId(nextSession.projectId);
     setCurrentSessionId(nextSession.id);
@@ -1370,58 +1277,6 @@ export function App() {
     lastProviderProbeKey.current = "";
     void loadSessionTranscript(nextSession.id);
   };
-
-  const handleRefreshExternal = useCallback(
-    async (projectId: string) => {
-      if (!projectId || externalScanning) return;
-      setExternalScanning(true);
-      setExternalStatus("Scanning…");
-      try {
-        const rows = await listExternalSessions(projectId);
-        setExternalByProject((prev) => ({ ...prev, [projectId]: rows }));
-        setExternalStatus(
-          rows.length === 0 ? "No external sessions for this project" : `Found ${rows.length} external session${rows.length === 1 ? "" : "s"}`
-        );
-      } catch (error) {
-        setExternalStatus(error instanceof Error ? error.message : String(error));
-      } finally {
-        setExternalScanning(false);
-      }
-    },
-    [externalScanning]
-  );
-
-  const handleOpenExternal = useCallback(
-    async (conv: ExternalConversation) => {
-      try {
-        const raw = await loadExternalSession(conv.source, conv.locator);
-        const events = parseTranscriptEvents(raw).map((e) =>
-          // Ensure sessionId matches synthetic external id for any filters.
-          e.sessionId === conv.id || e.sessionId === conv.nativeId
-            ? { ...e, sessionId: conv.id }
-            : { ...e, sessionId: conv.id }
-        );
-        setExternalView({ conversation: conv, events });
-        setViewMode("clean");
-        setSessionCapabilities(null);
-        pushDebug({
-          level: "info",
-          source: "external",
-          summary: `opened ${conv.source} session`,
-          detail: conv.title,
-        });
-      } catch (error) {
-        pushDebug({
-          level: "error",
-          source: "external",
-          summary: "load external session failed",
-          detail: error instanceof Error ? error.message : String(error),
-        });
-        setExternalStatus(error instanceof Error ? error.message : String(error));
-      }
-    },
-    [pushDebug]
-  );
 
   const setSessionStatusById = useCallback((sessionId: string, status: Session["status"]) => {
     setAvailableSessions((current) =>
@@ -1545,8 +1400,7 @@ export function App() {
   const deleteSession = (sessionId: string) => {
     const deletedSession = availableSessions.find((session) => session.id === sessionId);
     if (deletedSession && (deletedSession.status === "starting" || deletedSession.status === "running" || deletedSession.status === "waiting")) {
-      const deletedAgent = availableAgents.find((agent) => agent.id === deletedSession.agentId);
-      void (deletedAgent?.transport === "acp" ? stopAcpSession(sessionId) : stopTerminal(sessionId)).catch(() => undefined);
+      void stopAcpSession(sessionId).catch(() => undefined);
     }
     if (deletedSession) void deleteSessionApi(deletedSession.projectId, sessionId).catch(() => undefined);
     setAvailableSessions((current) => current.filter((session) => session.id !== sessionId));
@@ -1767,7 +1621,6 @@ export function App() {
     lastProviderProbeKey.current = "";
     // Keep Clean history for this dialog; only the agent process is replaced.
     setSessionUsageById((current) => ({ ...current, [sid]: emptySessionUsage() }));
-    ptyBridgesRef.current.set(sid, createPtyBridgeState());
     acpBootstrapRef.current.delete(sid);
     setViewMode("clean");
     setAvailableSessions((current) =>
@@ -1778,7 +1631,6 @@ export function App() {
               agentId,
               status: "exited" as const,
               processId: null,
-              ptyId: null,
               preferredModel: null,
               preferredMode: null,
               preferredEffort: null,
@@ -1799,10 +1651,8 @@ export function App() {
     });
 
     // Tear down previous transport in the background.
-    if (oldAgent?.transport === "acp") {
+    if (oldAgent) {
       void stopAcpSession(sid).catch(() => undefined);
-    } else if (oldAgent) {
-      void stopTerminal(sid).catch(() => undefined);
     }
   };
 
@@ -2017,74 +1867,47 @@ export function App() {
     const sid = currentSessionId;
     let cancelNote = "";
 
-    if (agent.transport === "acp") {
-      // Esc×2 fires regardless of state, and an idle agent has nothing to say —
-      // silence only means "ignored the cancel" when a turn was actually live.
-      const midTurn = session?.status === "running";
-      // True turn cancel — do not kill the session process.
-      const cancelAt = Date.now();
-      try {
-        await cancelAcpSession(sid);
-        cancelNote = "Cancel request sent to the agent.";
-        if (midTurn) armCancelWatchdog(sid, cancelAt);
-      } catch (error) {
-        // The pipe or the process is already gone — only a restart recovers.
-        if (midTurn) cancelIgnoredRef.current.add(sid);
-        cancelNote = `Cancel request failed (${error instanceof Error ? error.message : String(error)}).${
-          midTurn ? " The agent will be restarted on your next message." : ""
-        }`;
-        pushDebug({
-          sessionId: sid,
-          level: "warn",
-          source: "interrupt",
-          summary: "cancel failed",
-          detail: error instanceof Error ? error.message : String(error),
-        });
-      }
-      // Always free the composer — even if the agent ignored cancel.
-      setSessionStatusById(sid, "waiting");
-      touchActivity(sid);
-      setLiveEvents((current) => [
-        ...markOpenTools(current, sid, "cancelled"),
-        {
-          type: "assistant_message" as const,
-          sessionId: sid,
-          text: `**Interrupted.**\n\n${cancelNote}\n\nYou can send a new message now.`,
-          createdAt: new Date().toISOString(),
-        },
-      ]);
-      pushDebug({
-        sessionId: sid,
-        level: "info",
-        source: "interrupt",
-        summary: "ACP cancel (interrupt)",
-      });
-      return;
-    }
-
-    // PTY: best-effort Ctrl+C — does not stop the whole session.
+    // Esc×2 fires regardless of state, and an idle agent has nothing to say —
+    // silence only means "ignored the cancel" when a turn was actually live.
+    const midTurn = session?.status === "running";
+    // True turn cancel — do not kill the session process.
+    const cancelAt = Date.now();
     try {
-      await writeTerminal(sid, "\x03");
-      setSessionStatusById(sid, "waiting");
-      touchActivity(sid);
-      setLiveEvents((current) => [
-        ...markOpenTools(current, sid, "cancelled"),
-        {
-          type: "assistant_message" as const,
-          sessionId: sid,
-          text: "**Interrupted** (Ctrl+C sent to terminal).\n\nYou can send a new message. If the TUI is still busy, interrupt again or switch to Raw Terminal.",
-          createdAt: new Date().toISOString(),
-        },
-      ]);
+      await cancelAcpSession(sid);
+      cancelNote = "Cancel request sent to the agent.";
+      if (midTurn) armCancelWatchdog(sid, cancelAt);
+    } catch (error) {
+      // The pipe or the process is already gone — only a restart recovers.
+      if (midTurn) cancelIgnoredRef.current.add(sid);
+      cancelNote = `Cancel request failed (${error instanceof Error ? error.message : String(error)}).${
+        midTurn ? " The agent will be restarted on your next message." : ""
+      }`;
       pushDebug({
         sessionId: sid,
-        level: "info",
+        level: "warn",
         source: "interrupt",
-        summary: "PTY Ctrl+C",
+        summary: "cancel failed",
+        detail: error instanceof Error ? error.message : String(error),
       });
-    } catch {
-      // ignore
     }
+    // Always free the composer — even if the agent ignored cancel.
+    setSessionStatusById(sid, "waiting");
+    touchActivity(sid);
+    setLiveEvents((current) => [
+      ...markOpenTools(current, sid, "cancelled"),
+      {
+        type: "assistant_message" as const,
+        sessionId: sid,
+        text: `**Interrupted.**\n\n${cancelNote}\n\nYou can send a new message now.`,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    pushDebug({
+      sessionId: sid,
+      level: "info",
+      source: "interrupt",
+      summary: "ACP cancel (interrupt)",
+    });
   }, [armCancelWatchdog, currentSessionId, pushDebug, setSessionStatusById, touchActivity]);
 
   // P2-UX-3: double Esc → interrupt (after closing overlays).
@@ -2150,18 +1973,10 @@ export function App() {
 
       // Cancel in-flight turn first.
       if (session.status === "running") {
-        if (agent.transport === "acp") {
-          try {
-            await cancelAcpSession(sid);
-          } catch {
-            // continue with local truncate
-          }
-        } else {
-          try {
-            await writeTerminal(sid, "\x03");
-          } catch {
-            // ignore
-          }
+        try {
+          await cancelAcpSession(sid);
+        } catch {
+          // continue with local truncate
         }
       }
 
@@ -2225,27 +2040,20 @@ export function App() {
       });
 
       try {
-        if (agent.transport === "acp") {
-          disarmCancelWatchdog(sid);
-          if (cancelIgnoredRef.current.has(sid)) {
-            await restartAcpProcess(sid);
-          }
-          await ensureAcpReady(sid);
-          let promptText = newText.trim();
-          if (acpNeedsHistoryRef.current.has(sid)) {
-            acpNeedsHistoryRef.current.delete(sid);
-            // History is everything kept before the resend user message.
-            const prefix = buildHistoryInjection(kept, sid);
-            promptText = withHistoryInjection(prefix, promptText);
-          }
-          setSessionStatusById(sid, "running");
-          await sendAcpPrompt(sid, promptText);
-        } else {
-          const bridge = ptyBridgesRef.current.get(sid) ?? createPtyBridgeState();
-          ptyBridgesRef.current.set(sid, armPtyBridge(bridge, newText.trim()));
-          setSessionStatusById(sid, "running");
-          await writeTerminal(sid, preparePtyInput(newText.trim(), agent.sendStrategy));
+        disarmCancelWatchdog(sid);
+        if (cancelIgnoredRef.current.has(sid)) {
+          await restartAcpProcess(sid);
         }
+        await ensureAcpReady(sid);
+        let promptText = newText.trim();
+        if (acpNeedsHistoryRef.current.has(sid)) {
+          acpNeedsHistoryRef.current.delete(sid);
+          // History is everything kept before the resend user message.
+          const prefix = buildHistoryInjection(kept, sid);
+          promptText = withHistoryInjection(prefix, promptText);
+        }
+        setSessionStatusById(sid, "running");
+        await sendAcpPrompt(sid, promptText);
       } catch (error) {
         setSessionStatusById(sid, "error");
         const classified = classifyAgentError(error);
@@ -2328,106 +2136,85 @@ export function App() {
       };
       delete turnStartedAtRef.current[sid];
 
-      if (currentAgent.transport === "acp") {
-        // Show the user message immediately; wait for ACP only after that.
-        // History injection uses events *before* this message.
-        const priorForInject = liveEventsRef.current.filter((e) => e.sessionId === sid);
-        setLiveEvents((current) => [...current, userMessageEvent(sid, composed, sendMetaRef.current ?? undefined)]);
-        renameSessionFromText(sid, composed);
-        touchActivity(sid);
+      // Show the user message immediately; wait for ACP only after that.
+      // History injection uses events *before* this message.
+      const priorForInject = liveEventsRef.current.filter((e) => e.sessionId === sid);
+      setLiveEvents((current) => [...current, userMessageEvent(sid, composed, sendMetaRef.current ?? undefined)]);
+      renameSessionFromText(sid, composed);
+      touchActivity(sid);
+      pushDebug({
+        sessionId: sid,
+        level: "info",
+        source: "composer",
+        summary: `send: ${composed.length > 80 ? `${composed.slice(0, 80)}…` : composed}`,
+      });
+      // Sending supersedes any pending verdict on the last interrupt — do not
+      // let a stale watchdog fire mid-turn and mark this session for restart.
+      disarmCancelWatchdog(sid);
+      // A cancel the agent never acknowledged leaves the process wedged;
+      // prompting it again would just hang. Replace it before sending.
+      if (cancelIgnoredRef.current.has(sid)) {
+        await restartAcpProcess(sid);
+      }
+      // Ensure agent is up (may already be warming from keystrokes).
+      await ensureAcpReady(sid);
+
+      // The reconnect send already carries the whole transcript — then the
+      // handoff shrinks to a pointer instead of repeating the same context.
+      const willInjectHistory = acpNeedsHistoryRef.current.has(sid);
+      let promptText = withHandoffAttachment(handoff, composed, {
+        compact: willInjectHistory,
+      });
+      if (handoff) {
         pushDebug({
           sessionId: sid,
           level: "info",
-          source: "composer",
-          summary: `send: ${composed.length > 80 ? `${composed.slice(0, 80)}…` : composed}`,
+          source: "handoff",
+          summary: `attached pending handoff to this send${willInjectHistory ? " (compact)" : ""}`,
+          detail: handoff.handoffPath,
         });
-        // Sending supersedes any pending verdict on the last interrupt — do not
-        // let a stale watchdog fire mid-turn and mark this session for restart.
-        disarmCancelWatchdog(sid);
-        // A cancel the agent never acknowledged leaves the process wedged;
-        // prompting it again would just hang. Replace it before sending.
-        if (cancelIgnoredRef.current.has(sid)) {
-          await restartAcpProcess(sid);
-        }
-        // Ensure agent is up (may already be warming from keystrokes).
-        await ensureAcpReady(sid);
-
-        // The reconnect send already carries the whole transcript — then the
-        // handoff shrinks to a pointer instead of repeating the same context.
-        const willInjectHistory = acpNeedsHistoryRef.current.has(sid);
-        let promptText = withHandoffAttachment(handoff, composed, {
-          compact: willInjectHistory,
-        });
-        if (handoff) {
+      }
+      if (acpNeedsHistoryRef.current.has(sid)) {
+        acpNeedsHistoryRef.current.delete(sid);
+        // Skills this agent does not ship with — a pointer list, once per
+        // connection, so it can read the SKILL.md itself when relevant.
+        const skillsPrefix = await projectContextPrompt(
+          displaySession.projectId || currentProjectId,
+          currentAgent.id
+        ).catch(() => null);
+        if (skillsPrefix) {
+          promptText = `${skillsPrefix}${promptText}`;
           pushDebug({
             sessionId: sid,
             level: "info",
-            source: "handoff",
-            summary: `attached pending handoff to this send${willInjectHistory ? " (compact)" : ""}`,
-            detail: handoff.handoffPath,
+            source: "context",
+            summary: "injected project skills list",
+            detail: `chars=${skillsPrefix.length}`,
           });
         }
-        if (acpNeedsHistoryRef.current.has(sid)) {
-          acpNeedsHistoryRef.current.delete(sid);
-          // Skills this agent does not ship with — a pointer list, once per
-          // connection, so it can read the SKILL.md itself when relevant.
-          const skillsPrefix = await projectContextPrompt(
-            displaySession.projectId || currentProjectId,
-            currentAgent.id
-          ).catch(() => null);
-          if (skillsPrefix) {
-            promptText = `${skillsPrefix}${promptText}`;
-            pushDebug({
-              sessionId: sid,
-              level: "info",
-              source: "context",
-              summary: "injected project skills list",
-              detail: `chars=${skillsPrefix.length}`,
-            });
-          }
-          const prefix = buildHistoryInjection(priorForInject, sid);
-          promptText = withHistoryInjection(prefix, promptText);
-          if (prefix) {
-            pushDebug({
-              sessionId: sid,
-              level: "info",
-              source: "acp",
-              summary: "injected local transcript into first prompt after reconnect",
-              detail: `prefixChars=${prefix.length}`,
-            });
-          }
+        const prefix = buildHistoryInjection(priorForInject, sid);
+        promptText = withHistoryInjection(prefix, promptText);
+        if (prefix) {
+          pushDebug({
+            sessionId: sid,
+            level: "info",
+            source: "acp",
+            summary: "injected local transcript into first prompt after reconnect",
+            detail: `prefixChars=${prefix.length}`,
+          });
         }
-
-        setSessionStatusById(sid, "running");
-        touchActivity(sid);
-        await sendAcpPrompt(sid, promptText);
-        touchActivity(sid);
-        pushDebug({
-          sessionId: sid,
-          level: "info",
-          source: "composer",
-          summary: "session/prompt accepted (streaming…)",
-        });
-      } else {
-        // PTY: Composer is source of truth for "You"; bridge extracts Thinking/Tool/Reply.
-        setLiveEvents((current) => [...current, userMessageEvent(sid, composed, sendMetaRef.current ?? undefined)]);
-        renameSessionFromText(sid, composed);
-        touchActivity(sid);
-        const bridge = ptyBridgesRef.current.get(sid) ?? createPtyBridgeState();
-        ptyBridgesRef.current.set(sid, armPtyBridge(bridge, composed));
-        pushDebug({
-          sessionId: sid,
-          level: "info",
-          source: "composer",
-          summary: `pty send (${currentAgent.sendStrategy})`,
-        });
-        setSessionStatusById(sid, "running");
-        await writeTerminal(
-          sid,
-          preparePtyInput(withHandoffAttachment(handoff, composed), currentAgent.sendStrategy)
-        );
-        touchActivity(sid);
       }
+
+      setSessionStatusById(sid, "running");
+      touchActivity(sid);
+      await sendAcpPrompt(sid, promptText);
+      touchActivity(sid);
+      pushDebug({
+        sessionId: sid,
+        level: "info",
+        source: "composer",
+        summary: "session/prompt accepted (streaming…)",
+      });
     } catch (error) {
       setSessionStatusById(sid, "error");
       const classified = classifyAgentError(error);
@@ -2534,8 +2321,7 @@ export function App() {
     const projectSessions = availableSessions.filter((session) => session.projectId === projectId);
     for (const session of projectSessions) {
       if (session.status === "starting" || session.status === "running" || session.status === "waiting") {
-        const agent = availableAgents.find((item) => item.id === session.agentId);
-        void (agent?.transport === "acp" ? stopAcpSession(session.id) : stopTerminal(session.id)).catch(() => undefined);
+        void stopAcpSession(session.id).catch(() => undefined);
       }
       void deleteSessionApi(projectId, session.id).catch(() => undefined);
     }
@@ -2673,12 +2459,6 @@ export function App() {
             onDeleteSession={deleteSession}
             onDeleteProject={handleDeleteProject}
             onRenameSession={handleRenameSession}
-            externalSessions={externalByProject[currentProjectId] ?? []}
-            externalScanning={externalScanning}
-            externalStatus={externalStatus}
-            currentExternalId={externalView?.conversation.id ?? null}
-            onRefreshExternal={(projectId) => void handleRefreshExternal(projectId)}
-            onExternalSelect={(conv) => void handleOpenExternal(conv)}
           />
           {!leftCollapsed && (
             <button
@@ -2742,33 +2522,26 @@ export function App() {
             agent={currentAgent}
             events={currentEvents}
             session={displaySession}
-            viewMode={externalView ? "clean" : viewMode}
+            viewMode={viewMode}
             openSessions={openSessions}
             lastActivityAt={lastActivityById[displaySession.id] ?? null}
             authBanner={
-              externalView
-                ? `Read-only · ${externalView.conversation.source} external session (not a live Marionette dialog)`
-                : currentAgent.id === "claude-code"
-                  ? claudeAuthHint
-                  : null
+              currentAgent.id === "claude-code"
+                ? claudeAuthHint
+                : null
             }
-            onSignIn={externalView ? undefined : currentAgent.id === "claude-code" ? handleClaudeSignIn : undefined}
+            onSignIn={currentAgent.id === "claude-code" ? handleClaudeSignIn : undefined}
             signInBusy={signInBusy}
             onTabSelect={openSession}
             onTabClose={closeSessionTab}
             onNewTab={() => createSessionForProject(currentProject?.id ?? "")}
             onSessionStatusChange={handleSessionStatusChange}
             onCapabilities={setSessionCapabilities}
-            onViewModeToggle={() => {
-              if (externalView) return;
-              setViewMode(viewMode === "raw-terminal" ? "clean" : "raw-terminal");
-            }}
-            onEditResend={externalView ? undefined : (anchor, text) => void handleEditResend(anchor, text)}
-            quotePins={externalView ? [] : quotePins}
-            onQuotePinsChange={externalView ? undefined : setQuotePins}
-            onInterrupt={externalView ? undefined : () => void handleInterrupt()}
+            onEditResend={(anchor, text) => void handleEditResend(anchor, text)}
+            quotePins={quotePins}
+            onQuotePinsChange={setQuotePins}
+            onInterrupt={() => void handleInterrupt()}
             projectId={currentProjectId || displaySession.projectId}
-            readOnly={Boolean(externalView)}
           />
           <Composer
             // Remount when dialog identity changes so model/mode state cannot leak.
@@ -2778,11 +2551,6 @@ export function App() {
             currentAgentId={displaySession.agentId}
             sessionId={displaySession.id}
             sessionStatus={displaySession.status}
-            readOnlyReason={
-              externalView
-                ? "Read-only external session — switch to a Marionette dialog to chat"
-                : null
-            }
             lastActivityAt={lastActivityById[displaySession.id] ?? null}
             onProviderKeysChanged={handleProviderKeysChanged}
             onAgentBinaryUpdated={handleAgentBinaryUpdated}
@@ -2845,17 +2613,6 @@ export function App() {
             onAgentChange={(id) => void handleAgentChange(id)}
             onInterrupt={() => void handleInterrupt()}
             onSend={(text, droppedPaths) => void handleSend(text, droppedPaths)}
-            onPtyCommand={async (commandLine) => {
-              if (!currentSessionId) return;
-              // Slash commands: plain line + CR (not bracketed paste).
-              await writeTerminal(currentSessionId, `${commandLine}\r`);
-              pushDebug({
-                sessionId: currentSessionId,
-                level: "info",
-                source: "composer",
-                summary: `pty control: ${commandLine}`,
-              });
-            }}
             onActiveModelChange={setActiveModelId}
             availableCommands={slashCommandsById[displaySession.id] ?? null}
             onWarmAgent={warmActiveAcp}

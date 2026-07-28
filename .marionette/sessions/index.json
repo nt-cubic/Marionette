@@ -1,0 +1,20 @@
+[
+  {
+    "id": "session-1785253734013",
+    "projectId": "project-bd875992e446922a",
+    "agentId": "opencode",
+    "label": "帮我提交本地的所有更变到github吧",
+    "cwd": "\\\\?\\D:\\Project\\Marionette",
+    "status": "running",
+    "processId": null,
+    "ptyId": null,
+    "startedAt": "1785253748988",
+    "lastActiveAt": "1785253749036",
+    "exitedAt": null,
+    "exitCode": null,
+    "rawLogPath": "\\\\?\\D:\\Project\\Marionette\\.marionette\\sessions\\session-1785253734013.raw.log",
+    "transcriptPath": "\\\\?\\D:\\Project\\Marionette\\.marionette\\transcripts\\session-1785253734013.jsonl",
+    "handoffPath": "\\\\?\\D:\\Project\\Marionette\\.marionette\\handoff\\session-1785253734013.md",
+    "viewMode": "clean"
+  }
+]

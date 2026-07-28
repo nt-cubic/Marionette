@@ -15,11 +15,15 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2", features = [] }
-portable-pty = "0.9"
+tauri = { version = "2", default-features = false, features = ["wry", "devtools"] }
 agent-client-protocol-schema = "1.4.0"
 ureq = { version = "2", features = ["json"] }
 # Codex keeps its MCP servers in config.toml
 toml = "0.8"
-# OpenCode external sessions (read-only)
-rusqlite = { version = "0.32", features = ["bundled"] }
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+opt-level = "z"
+

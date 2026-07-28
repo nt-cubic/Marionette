@@ -10,22 +10,18 @@ mod git_service;
 mod handoff;
 mod models;
 mod open_target;
-mod parsers;
 mod process_util;
 mod provider_usage;
-mod pty;
 mod session_manager;
 mod storage;
 
 use acp::AcpService;
-use pty::PtyService;
 use session_manager::SessionManager;
 use std::sync::Mutex;
 use storage::StorageService;
 
 pub struct AppState {
     pub storage: Mutex<StorageService>,
-    pub pty: PtyService,
     pub acp: AcpService,
     pub sessions: SessionManager,
 }
@@ -45,12 +41,11 @@ fn shutdown_and_exit(app: &tauri::AppHandle) -> ! {
 
     if let Some(state) = app.try_state::<AppState>() {
         let acp = state.acp.stop_all();
-        let pty = state.pty.stop_all();
         debug_log::append(
             "shutdown",
             "info",
             "",
-            &format!("stopped {acp} acp · {pty} pty"),
+            &format!("stopped {acp} acp"),
             Some("exiting before tao window teardown (tao#1180)"),
         );
     }
@@ -148,7 +143,6 @@ fn main() {
             storage: Mutex::new(
                 StorageService::new().expect("failed to initialize Marionette storage"),
             ),
-            pty: PtyService::new(),
             acp: AcpService::new(),
             sessions: SessionManager::new(),
         })
@@ -173,17 +167,12 @@ fn main() {
             commands::search_sessions,
             commands::probe_agent_auth,
             commands::start_agent_login,
-            commands::read_terminal_snapshot,
             commands::start_acp_session,
             commands::send_acp_prompt,
             commands::cancel_acp_session,
             commands::stop_acp_session,
             commands::get_session_capabilities,
             commands::update_acp_session,
-            commands::start_terminal,
-            commands::write_terminal,
-            commands::resize_terminal,
-            commands::stop_terminal,
             commands::append_debug_log,
             commands::debug_log_path,
             commands::probe_provider_usage,
@@ -191,8 +180,6 @@ fn main() {
             commands::generate_handoff,
             commands::get_changed_files,
             commands::get_file_diff,
-            commands::list_external_sessions,
-            commands::load_external_session,
             commands::respond_acp_permission,
             commands::scan_project_context,
             commands::set_project_context_enabled,

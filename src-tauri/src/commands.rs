@@ -1,7 +1,6 @@
 use crate::models::{AgentCommandStatus, AgentConfig, Project, Session};
 use crate::AppState;
 use serde_json::Value;
-use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, State};
 
@@ -572,34 +571,6 @@ fn start_claude_login() -> Result<serde_json::Value, String> {
     }))
 }
 
-#[tauri::command(async)]
-pub fn read_terminal_snapshot(session_id: String, cwd: String) -> Result<String, String> {
-    if !Path::new(&cwd).is_dir() {
-        return Err(format!("Terminal cwd is not a directory: {cwd}"));
-    }
-    let safe_id = session_id
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    let path = Path::new(&cwd)
-        .join(".marionette")
-        .join("sessions")
-        .join(format!("{safe_id}.raw.log"));
-    if !path.exists() {
-        return Ok(String::new());
-    }
-    let bytes =
-        fs::read(path).map_err(|error| format!("Read terminal snapshot failed: {error}"))?;
-    let start = bytes.len().saturating_sub(1024 * 1024);
-    Ok(String::from_utf8_lossy(&bytes[start..]).into_owned())
-}
-
 /// Async so the handshake runs on a blocking pool and does not stall the webview
 /// (IME / typing) while OpenCode/Claude spawn + initialize.
 #[tauri::command]
@@ -724,77 +695,6 @@ pub async fn stop_acp_session(session_id: String, state: State<'_, AppState>) ->
     tauri::async_runtime::spawn_blocking(move || acp.stop(&sid))
         .await
         .map_err(|error| format!("ACP stop task failed: {error}"))??;
-    let storage = state
-        .storage
-        .lock()
-        .map_err(|_| "Storage lock poisoned".to_string())?;
-    storage.update_session_status(&session_id, "exited")
-}
-
-// Same main-thread rule as the ACP commands above: these drive a live child
-// process (spawn / blocking pty write / kill+wait), and `write_terminal` is the
-// PTY interrupt path — a wedged TUI must not be able to freeze the window.
-#[tauri::command(async)]
-pub fn start_terminal(
-    app: AppHandle,
-    session_id: String,
-    cwd: String,
-    command: String,
-    args: Vec<String>,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
-    crate::debug_log::append(
-        "pty",
-        "info",
-        &session_id,
-        &format!("start {command} {}", args.join(" ")),
-        Some(&cwd),
-    );
-    match state.pty.start(
-        app,
-        session_id.clone(),
-        cwd,
-        command,
-        args,
-        state.sessions.clone(),
-    ) {
-        Ok(()) => {
-            let storage = state
-                .storage
-                .lock()
-                .map_err(|_| "Storage lock poisoned".to_string())?;
-            storage.update_session_status(&session_id, "running")
-        }
-        Err(error) => {
-            crate::debug_log::append("pty", "error", &session_id, "start failed", Some(&error));
-            Err(error)
-        }
-    }
-}
-
-#[tauri::command(async)]
-pub fn write_terminal(
-    session_id: String,
-    data: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
-    state.pty.write(&session_id, &data)
-}
-
-#[tauri::command(async)]
-pub fn resize_terminal(
-    session_id: String,
-    cols: u16,
-    rows: u16,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
-    state.pty.resize(&session_id, cols, rows)
-}
-
-#[tauri::command(async)]
-pub fn stop_terminal(session_id: String, state: State<'_, AppState>) -> Result<(), String> {
-    state.pty.stop(&session_id)?;
-    state.sessions.mark_exited(&session_id)?;
     let storage = state
         .storage
         .lock()
@@ -930,39 +830,6 @@ pub fn get_file_diff(
         .find(|p| p.id == project_id)
         .ok_or_else(|| format!("Unknown project: {project_id}"))?;
     crate::git_service::get_file_diff(Path::new(&project.root_path), &path)
-}
-
-/// Scan external agent stores (Grok / Claude / Codex / OpenCode) for this project.
-/// Read-only; results are not persisted. Single-source failures are skipped.
-#[tauri::command(async)]
-pub fn list_external_sessions(
-    project_id: String,
-    state: State<'_, AppState>,
-) -> Result<Vec<crate::parsers::ExternalConversation>, String> {
-    let _trace = crate::debug_log::CmdTrace::new("list_external_sessions");
-    let root_path = {
-        let storage = state
-            .storage
-            .lock()
-            .map_err(|_| "Storage lock poisoned".to_string())?;
-        storage
-            .list_projects()?
-            .into_iter()
-            .find(|p| p.id == project_id)
-            .ok_or_else(|| format!("Unknown project: {project_id}"))?
-            .root_path
-    };
-    Ok(crate::parsers::list_all(&root_path))
-}
-
-/// Load an external conversation as SessionEvent-shaped JSON (same as load_transcript).
-#[tauri::command(async)]
-pub fn load_external_session(
-    source: String,
-    locator: String,
-) -> Result<Vec<serde_json::Value>, String> {
-    let _trace = crate::debug_log::CmdTrace::new("load_external_session");
-    crate::parsers::load_one(&source, &locator)
 }
 
 /// Answer a pending ACP `session/request_permission` prompt.
