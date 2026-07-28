@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, Folder, Moon, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings2, Sun, Trash2 } from "lucide-react";
+import { Bell, BellOff, ChevronDown, ChevronRight, Folder, Moon, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings2, Sun, Trash2 } from "lucide-react";
 import type { AgentConfig, Project, Session } from "../lib/types";
 
 type ThemeMode = "dark" | "light";
@@ -47,6 +47,9 @@ type ProjectShelfProps = {
   onCollapse: () => void;
   onExpand: () => void;
   onToggleTheme: () => void;
+  /** Desktop attention (taskbar flash + sound) when AI replies / stalls. */
+  desktopNotifyEnabled?: boolean;
+  onToggleDesktopNotify?: () => void;
   onAddProject: () => void;
   onNewSession: (projectId: string) => void;
   onProjectSelect: (projectId: string) => void;
@@ -76,6 +79,8 @@ export function ProjectShelf({
   onNewSession,
   theme,
   onToggleTheme,
+  desktopNotifyEnabled = true,
+  onToggleDesktopNotify,
   onDeleteSession,
   onDeleteProject,
   onRenameSession,
@@ -182,10 +187,32 @@ export function ProjectShelf({
     </button>
   );
 
+  const notifyButton = onToggleDesktopNotify ? (
+    <button
+      className={
+        desktopNotifyEnabled
+          ? "sidebar-footer__button is-notify-on"
+          : "sidebar-footer__button is-notify-off"
+      }
+      type="button"
+      title={
+        desktopNotifyEnabled
+          ? "Desktop notify on · taskbar flash + sound when AI replies or may be stuck"
+          : "Desktop notify off · click to enable"
+      }
+      aria-label={desktopNotifyEnabled ? "Disable desktop notifications" : "Enable desktop notifications"}
+      aria-pressed={desktopNotifyEnabled}
+      onClick={onToggleDesktopNotify}
+    >
+      {desktopNotifyEnabled ? <Bell size={14} /> : <BellOff size={14} />}
+    </button>
+  ) : null;
+
   if (collapsed) {
     return (
       <div className="collapsed-rail">
         {themeButton}
+        {notifyButton}
         <button className="sidebar-footer__button" type="button" title="Show projects and sessions" aria-label="Show projects and sessions" onClick={onExpand}>
           <PanelLeftOpen size={14} />
         </button>
@@ -490,6 +517,7 @@ export function ProjectShelf({
 
       <div className="sidebar-footer">
         {themeButton}
+        {notifyButton}
         <button className="sidebar-footer__button sidebar-footer__button--collapse" type="button" title="Collapse projects and sessions" aria-label="Collapse projects and sessions" onClick={onCollapse}>
           <PanelLeftClose size={14} />
         </button>

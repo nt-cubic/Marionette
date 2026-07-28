@@ -27,6 +27,12 @@ import {
   type SessionUsageState,
 } from "../lib/usage";
 import { mergeAcpCapabilities } from "../lib/acpSupplements";
+import {
+  bindDesktopNotifyFocusHandlers,
+  isDesktopNotifyEnabled,
+  raiseDesktopNotify,
+  setDesktopNotifyEnabled,
+} from "../lib/desktopNotify";
 import { parseAvailableCommandsUpdate } from "../lib/slashCommands";
 import {
   parseTranscriptEvents,
@@ -34,6 +40,7 @@ import {
   shouldAutoRenameLabel,
   titleFromUserText,
 } from "../lib/transcript";
+import { activityHealth } from "../lib/activityHealth";
 import {
   buildHistoryInjection,
   pendingHandoff,
@@ -185,6 +192,8 @@ export function App() {
     const stored = window.localStorage.getItem("agentshell-theme");
     return stored === "light" ? "light" : "dark";
   });
+  /** Taskbar flash + chime when AI replies / may be stuck (off while focused). */
+  const [desktopNotifyOn, setDesktopNotifyOn] = useState(() => isDesktopNotifyEnabled());
   const [sessionCapabilities, setSessionCapabilities] = useState<CapabilitySnapshot | null>(null);
   const [liveEvents, setLiveEvents] = useState<SessionEvent[]>([]);
   /** Per-session usage from ACP `usage_update` + opportunistic rate-limit text. */
@@ -255,6 +264,8 @@ export function App() {
   const lastEscAtRef = useRef(0);
   /** Last ACP/PTY activity timestamp per session — for heartbeat / stale-working UI. */
   const [lastActivityById, setLastActivityById] = useState<Record<string, number>>({});
+  const lastActivityByIdRef = useRef(lastActivityById);
+  lastActivityByIdRef.current = lastActivityById;
   const sessionsRef = useRef(availableSessions);
   const agentsRef = useRef(availableAgents);
   const currentSessionIdRef = useRef(currentSessionId);
@@ -266,7 +277,9 @@ export function App() {
 
   const touchActivity = useCallback((sessionId: string) => {
     if (!sessionId) return;
-    setLastActivityById((current) => ({ ...current, [sessionId]: Date.now() }));
+    const now = Date.now();
+    lastActivityByIdRef.current = { ...lastActivityByIdRef.current, [sessionId]: now };
+    setLastActivityById((current) => ({ ...current, [sessionId]: now }));
   }, []);
 
   /** Dev diary on disk only — never surface in product UI. */
@@ -527,6 +540,14 @@ export function App() {
         );
         // Usage panel: refresh once after each completed Reply turn.
         refreshUsageAfterTurnRef.current(payload.sessionId);
+        // Desktop notify only for a real turn end (was running), not set_config echoes.
+        {
+          const sess = sessionsRef.current.find((s) => s.id === payload.sessionId);
+          if (sess?.status === "running") {
+            const label = sess.label?.trim() || "Session";
+            void raiseDesktopNotify("reply", label);
+          }
+        }
       }
       // Agent process stdout closed (crash / exit) — never leave the UI "Working" forever.
       if (payload.method === "process/ended") {
@@ -1033,6 +1054,48 @@ export function App() {
     document.documentElement.style.colorScheme = theme;
     window.localStorage.setItem("agentshell-theme", theme);
   }, [theme]);
+
+  // Clear taskbar flash / yellow bar when the user comes back to the window.
+  useEffect(() => bindDesktopNotifyFocusHandlers(), []);
+
+  /**
+   * Stuck / stalled turns: if a session stays `running` with no stream for
+   * long enough, ping once so the user can interrupt without staring at the UI.
+   */
+  useEffect(() => {
+    if (!desktopNotifyOn) return;
+    /** sessionId → last health we already notified for */
+    const notified = new Map<string, "stalled" | "stuck">();
+    const tick = () => {
+      const now = Date.now();
+      for (const session of sessionsRef.current) {
+        if (session.status !== "running" && session.status !== "starting") {
+          notified.delete(session.id);
+          continue;
+        }
+        const last = lastActivityByIdRef.current[session.id] ?? null;
+        const health = activityHealth(session.status, last, now);
+        if (health !== "stalled" && health !== "stuck") {
+          // Reset so a later stall can notify again after recovery.
+          if (health === "live" || health === "quiet") notified.delete(session.id);
+          continue;
+        }
+        const prev = notified.get(session.id);
+        // Notify on first stalled, and upgrade once to stuck.
+        if (prev === health) continue;
+        if (prev === "stuck") continue;
+        if (prev === "stalled" && health === "stalled") continue;
+        notified.set(session.id, health);
+        const label = session.label?.trim() || "Session";
+        void raiseDesktopNotify(
+          "stuck",
+          health === "stuck" ? `${label} · appears stuck` : `${label} · no updates`,
+        );
+      }
+    };
+    const id = window.setInterval(tick, 4000);
+    return () => clearInterval(id);
+  }, [desktopNotifyOn]);
 
   // Drag-resize: mutate CSS vars on the grid during move (no React re-render).
   // Commit width to state + localStorage only on mouseup.
@@ -2435,6 +2498,14 @@ export function App() {
             currentSessionId={displaySession.id}
             collapsed={leftCollapsed}
             theme={theme}
+            desktopNotifyEnabled={desktopNotifyOn}
+            onToggleDesktopNotify={() => {
+              setDesktopNotifyOn((current) => {
+                const next = !current;
+                setDesktopNotifyEnabled(next);
+                return next;
+              });
+            }}
             searchHitIds={searchHitIds}
             onSearchQueryChange={(q) => {
               void handleShelfSearch(q);
