@@ -20,6 +20,9 @@ agent-client-protocol-schema = "1.4.0"
 ureq = { version = "2", features = ["json"] }
 # Codex keeps its MCP servers in config.toml
 toml = "0.8"
+# Native folder picker for "Add project" (no tauri dialog plugin).
+rfd = "0.15"
+base64 = "0.22"
 
 [profile.release]
 strip = true

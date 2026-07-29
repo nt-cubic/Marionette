@@ -12,6 +12,7 @@ import {
   installAgent,
   isTauriRuntime,
   listAgentCommands,
+  pickFiles,
   sendAcpPrompt,
   updateAcpSession,
 } from "../lib/api";
@@ -34,8 +35,27 @@ import {
   resolveSlashCommands,
   slashQueryAtCursor,
 } from "../lib/slashCommands";
+import {
+  suggestFor,
+  suggestionRoundKey,
+  suggestionsEnabled,
+  type Suggestion,
+} from "../lib/suggestions";
+import {
+  applyDelegateCandidate,
+  delegateQueryAtCursor,
+  filterDelegateCandidates,
+  type DelegateCandidate,
+} from "../lib/delegate";
 import { ProviderConfigDialog } from "./ProviderConfigDialog";
+import { ImageAnnotator } from "./ImageAnnotator";
 import { recordModelUsage, getRecentModels } from "../lib/recentModels";
+import {
+  attachmentFromPath,
+  isImagePath,
+  type ImageAttachment,
+  type ImageMark,
+} from "../lib/imageAttachments";
 import type {
   AcpEvent,
   AgentCommandStatus,
@@ -45,6 +65,7 @@ import type {
   CapabilitySnapshot,
   ModelDef,
   SessionComposerPrefs,
+  SessionEvent,
   SessionStatus,
 } from "../lib/types";
 
@@ -56,6 +77,8 @@ type ComposerProps = {
   sessionStatus: SessionStatus;
   /** Caps pushed from ACP start (avoids invoke race). */
   capabilities?: CapabilitySnapshot | null;
+  /** Current session transcript (for suggestion chips). */
+  sessionEvents?: SessionEvent[];
   /** Prefill draft (handoff). Applied once per token; does not auto-send. */
   prefillText?: string | null;
   prefillToken?: number;
@@ -72,7 +95,11 @@ type ComposerProps = {
    * regex deliberately stops at whitespace — so `…\Screen Shot.png` came back
    * as `…\Screen`, failed the exists() check, and silently skipped the prompt.
    */
-  onSend: (text: string, droppedPaths?: string[]) => void;
+  onSend: (
+    text: string,
+    droppedPaths?: string[],
+    imageAttachments?: import("../lib/imageAttachments").ImageAttachment[],
+  ) => void;
   /** Notify parent when the active model id changes (for provider balance probes). */
   onActiveModelChange?: (modelId: string | null) => void;
   /** Lazy ACP: warm the agent process without blocking the composer. */
@@ -363,6 +390,7 @@ export function Composer({
   sessionId,
   sessionStatus,
   capabilities: capabilitiesProp,
+  sessionEvents = [],
   prefillText = null,
   prefillToken = 0,
   sessionPrefs = null,
@@ -405,6 +433,17 @@ export function Composer({
   const [menu, setMenu] = useState<"mode" | "model" | "effort" | "agent" | null>(null);
   const [modelQuery, setModelQuery] = useState("");
   const [draft, setDraft] = useState("");
+  /** Image attachments as Codex-style pills (not raw paths in the textarea). */
+  const [imageAttachments, setImageAttachments] = useState<ImageAttachment[]>([]);
+  const [annotatingId, setAnnotatingId] = useState<string | null>(null);
+  /** Draft snapshot right after a file drop — treats path-only draft as "empty" for chips. */
+  const [draftAfterDrop, setDraftAfterDrop] = useState<string | null>(null);
+  /** Paths from the most recent drop (feeds drop-source chips). */
+  const [suggestDroppedPaths, setSuggestDroppedPaths] = useState<string[]>([]);
+  /** Round key the user dismissed by typing (show once per event tail). */
+  const [dismissedSuggestKey, setDismissedSuggestKey] = useState<string | null>(null);
+  /** Mirror of composingRef so chip visibility re-renders on IME start/end. */
+  const [isComposing, setIsComposing] = useState(false);
   const [composerHeight, setComposerHeight] = useState(readComposerHeight);
   const [resizingComposer, setResizingComposer] = useState(false);
   const [showProviderDialog, setShowProviderDialog] = useState(false);
@@ -983,32 +1022,117 @@ export function Composer({
   const isWarming = sessionStatus === "starting";
   // Prefer advertised cancel; still offer interrupt while running (Esc×2 / button).
   const canCancel = isBusy && (caps?.supportsCancel ?? true);
+
+  const clearDropSuggest = useCallback(() => {
+    setDraftAfterDrop(null);
+    setSuggestDroppedPaths([]);
+  }, []);
+
+  const submitText = useCallback(
+    (text: string) => {
+      if (isBusy) return;
+      if (!sessionId || sessionId.startsWith("session-empty-")) return;
+      // Allow send with only images / empty text when attachments exist.
+      if (!text.trim() && imageAttachments.length === 0) return;
+      onWarmAgent?.();
+      const dropped = [
+        ...droppedPathsRef.current,
+        ...imageAttachments.map((a) => a.path),
+      ].filter((p, i, arr) => arr.indexOf(p) === i);
+      const droppedInText = dropped.filter((p) => text.includes(p) || imageAttachments.some((a) => a.path === p));
+      const sentWith = currentModel ?? (caps && caps.models.length > 0 ? caps.models[0].id : null);
+      if (sentWith) recordModelUsage(sentWith);
+      onSend(text, droppedInText, imageAttachments.length > 0 ? imageAttachments : undefined);
+      droppedPathsRef.current.clear();
+      setDraft("");
+      setImageAttachments([]);
+      setAnnotatingId(null);
+      clearDropSuggest();
+    },
+    [
+      isBusy,
+      sessionId,
+      onWarmAgent,
+      currentModel,
+      caps,
+      onSend,
+      clearDropSuggest,
+      imageAttachments,
+    ],
+  );
+
   const submit = () => {
     // Empty draft is OK when parent has quote-pins (App merges on send).
-    if (isBusy) return;
-    if (!sessionId || sessionId.startsWith("session-empty-")) return;
-    onWarmAgent?.();
-    // Only paths the user actually left in the draft — deleting the text should
-    // not still trigger a grant prompt for it.
-    const dropped = [...droppedPathsRef.current].filter((p) => draft.includes(p));
-    // Record on send, not only on switch: a user who never opens the model menu
-    // would otherwise never build up a "recent" list at all.
-    const sentWith = currentModel ?? (caps && caps.models.length > 0 ? caps.models[0].id : null);
-    if (sentWith) recordModelUsage(sentWith);
-    onSend(draft, dropped);
-    droppedPathsRef.current.clear();
-    setDraft("");
+    submitText(draft);
   };
 
-  /** Insert dropped file paths into the draft (Tauri exposes absolute `path` on File). */
+  const suggestRound = suggestionRoundKey(sessionId, sessionEvents);
+  const suggestions: Suggestion[] = useMemo(() => {
+    if (!suggestionsEnabled()) return [];
+    if (isComposing) return [];
+    if (dismissedSuggestKey === suggestRound) return [];
+    return suggestFor({
+      events: sessionEvents,
+      sessionStatus,
+      droppedPaths: suggestDroppedPaths,
+      draft,
+      draftAfterDrop,
+    });
+  }, [
+    sessionEvents,
+    sessionStatus,
+    suggestDroppedPaths,
+    draft,
+    draftAfterDrop,
+    isComposing,
+    dismissedSuggestKey,
+    suggestRound,
+  ]);
+
+  const sendSuggestion = (chip: Suggestion) => {
+    // Paths from drop stay in the draft; append chip intent when draft is path-only.
+    let text = chip.text;
+    if (draftAfterDrop != null && draft === draftAfterDrop && draft.trim()) {
+      text = `${draft.trim()}\n${chip.text}`;
+    }
+    submitText(text);
+  };
+
+  /** Insert dropped paths: images → pills; other files → draft text. */
   const insertDroppedPaths = useCallback((paths: string[]) => {
     const unique = [...new Set(paths.map((p) => p.trim()).filter(Boolean))];
     if (unique.length === 0) return;
-    for (const path of unique) droppedPathsRef.current.add(path);
-    const chunk = unique.join("\n");
+    const images = unique.filter(isImagePath);
+    const others = unique.filter((p) => !isImagePath(p));
+
+    if (images.length > 0) {
+      setImageAttachments((current) => {
+        const existing = new Set(current.map((a) => a.path.toLowerCase()));
+        const added = images
+          .filter((p) => !existing.has(p.toLowerCase()))
+          .map(attachmentFromPath);
+        // Auto-open annotator for the first new image.
+        if (added[0]) {
+          requestAnimationFrame(() => setAnnotatingId(added[0].id));
+        }
+        return [...current, ...added];
+      });
+      setSuggestDroppedPaths(images);
+      // Path-only draft after image drop still counts as "empty" for chips.
+      setDraftAfterDrop((d) => d ?? draft);
+    }
+
+    if (others.length === 0) return;
+    for (const path of others) droppedPathsRef.current.add(path);
+    const chunk = others.join("\n");
     const el = textareaRef.current;
     if (!el) {
-      setDraft((current) => (current ? `${current}\n${chunk}` : chunk));
+      setDraft((current) => {
+        const next = current ? `${current}\n${chunk}` : chunk;
+        setDraftAfterDrop(next);
+        setSuggestDroppedPaths((prev) => [...new Set([...prev, ...others])]);
+        return next;
+      });
       return;
     }
     const start = el.selectionStart ?? el.value.length;
@@ -1020,12 +1144,14 @@ export function Composer({
     const inserted = `${needsLead ? "\n" : ""}${chunk}${needsTrail ? "\n" : ""}`;
     const next = `${before}${inserted}${after}`;
     setDraft(next);
+    setDraftAfterDrop(next);
+    setSuggestDroppedPaths((prev) => [...new Set([...prev, ...others])]);
     requestAnimationFrame(() => {
       const caret = before.length + inserted.length;
       el.focus();
       el.setSelectionRange(caret, caret);
     });
-  }, []);
+  }, [draft]);
 
   const pathsFromDataTransfer = (dt: DataTransfer | null): string[] => {
     if (!dt) return [];
@@ -1386,6 +1512,70 @@ export function Composer({
   }, [slashCatalog, slashToken]);
   const showSlashMenu = slashMatches.length > 0 && slashToken != null;
 
+  // ── @ delegate autocomplete (line-start only; only when agent prefix matches) ──
+  const [delegateIndex, setDelegateIndex] = useState(0);
+  const [installedAgentIds, setInstalledAgentIds] = useState<Set<string>>(() => new Set());
+  const delegateToken = useMemo(
+    () => delegateQueryAtCursor(draft, caret),
+    [draft, caret],
+  );
+  const recentModelIds = useMemo(() => {
+    // Best-effort: recent models across agents for ranking under a resolved agent.
+    try {
+      const raw = localStorage.getItem("marionette-recent-models");
+      if (!raw) return [] as string[];
+      const parsed = JSON.parse(raw) as Array<{ modelId?: string }>;
+      if (!Array.isArray(parsed)) return [];
+      return parsed.map((e) => e.modelId).filter((id): id is string => typeof id === "string");
+    } catch {
+      return [];
+    }
+  }, [draft]);
+  const delegateMatches = useMemo(() => {
+    if (!delegateToken) return [] as DelegateCandidate[];
+    return filterDelegateCandidates(agents, installedAgentIds, delegateToken, recentModelIds);
+  }, [agents, installedAgentIds, delegateToken, recentModelIds]);
+  const showDelegateMenu = delegateMatches.length > 0 && delegateToken != null && !showSlashMenu;
+
+  useEffect(() => {
+    if (!showDelegateMenu && menu !== "agent") return;
+    void listAgentCommands().then((list) => {
+      setInstalledAgentIds(
+        new Set(list.filter((s) => s.status === "installed").map((s) => s.id)),
+      );
+    });
+  }, [showDelegateMenu, menu]);
+
+  useEffect(() => {
+    setDelegateIndex(0);
+  }, [delegateToken?.raw, showDelegateMenu]);
+
+  const pickDelegate = useCallback(
+    (candidate: DelegateCandidate) => {
+      if (!delegateToken) return;
+      const next = applyDelegateCandidate(
+        draft,
+        delegateToken.start,
+        delegateToken.end,
+        candidate,
+      );
+      setDraft(next);
+      requestAnimationFrame(() => {
+        const el = textareaRef.current;
+        if (!el) return;
+        const pos = delegateToken.start + (candidate.modelId
+          ? `@${candidate.agentId}/${candidate.modelId} `.length
+          : cachedCapabilitiesFor(candidate.agentId)?.models.length
+            ? `@${candidate.agentId}/`.length
+            : `@${candidate.agentId} `.length);
+        el.focus();
+        el.setSelectionRange(pos, pos);
+        setCaret(pos);
+      });
+    },
+    [delegateToken, draft],
+  );
+
   useEffect(() => {
     setSlashIndex(0);
   }, [slashToken?.query, showSlashMenu]);
@@ -1454,8 +1644,36 @@ export function Composer({
           <span>Agent connecting in background…</span>
         </div>
       )}
+      {/* Fixed-height chip tray — opacity only, never resizes the composer. */}
       <div
-        className={dropActive ? "composer__field is-drop-target" : "composer__field"}
+        className={
+          suggestions.length > 0
+            ? "composer__suggestions is-visible"
+            : "composer__suggestions"
+        }
+        aria-hidden={suggestions.length === 0}
+      >
+        {suggestions.map((chip) => (
+          <button
+            key={chip.id}
+            type="button"
+            className="composer__suggestion-chip"
+            title={chip.text}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => sendSuggestion(chip)}
+          >
+            {chip.label}
+          </button>
+        ))}
+      </div>
+      <div
+        className={
+          dropActive
+            ? "composer__field is-drop-target"
+            : imageAttachments.length > 0
+              ? "composer__field has-attachments"
+              : "composer__field"
+        }
         onDragEnter={onComposerDragEnter}
         onDragOver={onComposerDragOver}
         onDragLeave={onComposerDragLeave}
@@ -1485,6 +1703,38 @@ export function Composer({
           {isTall ? <Shrink size={13} /> : <Expand size={13} />}
         </button>
         {dropActive && <div className="composer__drop-hint">Drop to insert file path</div>}
+        {/* Pills live inside the field (Codex-style), not above it next to suggestions. */}
+        {imageAttachments.length > 0 && (
+          <div className="composer__attachments" aria-label="Image attachments">
+            {imageAttachments.map((att) => (
+              <span key={att.id} className="composer__attachment-pill">
+                <button
+                  type="button"
+                  className="composer__attachment-main"
+                  title={`${att.path}${att.marks.length ? ` · ${att.marks.length} 条批注` : " · 点击标注"}`}
+                  onClick={() => setAnnotatingId(att.id)}
+                >
+                  <span className="composer__attachment-name">{att.name}</span>
+                  {att.marks.length > 0 && (
+                    <span className="composer__attachment-badge">{att.marks.length}</span>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  className="composer__attachment-x"
+                  title="移除"
+                  aria-label={`移除 ${att.name}`}
+                  onClick={() => {
+                    setImageAttachments((cur) => cur.filter((a) => a.id !== att.id));
+                    if (annotatingId === att.id) setAnnotatingId(null);
+                  }}
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         {showSlashMenu && (
           <div className="composer-slash" role="listbox" aria-label="Slash commands">
             <div className="composer-slash__hint">Commands</div>
@@ -1510,6 +1760,32 @@ export function Composer({
             ))}
           </div>
         )}
+        {showDelegateMenu && (
+          <div className="composer-slash" role="listbox" aria-label="Delegate to agent">
+            <div className="composer-slash__hint">派给 Agent · 行首 @</div>
+            {delegateMatches.map((c, i) => (
+              <button
+                key={`${c.agentId}:${c.modelId ?? "_"}`}
+                type="button"
+                role="option"
+                aria-selected={i === delegateIndex}
+                className={i === delegateIndex ? "composer-slash__item is-active" : "composer-slash__item"}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => pickDelegate(c)}
+              >
+                <span className="composer-slash__name">
+                  @{c.agentId}
+                  {c.modelId ? `/${c.modelId}` : ""}
+                </span>
+                <span className="composer-slash__desc">
+                  {c.modelLabel || c.agentLabel}
+                  {c.recent ? " · 上次用过" : ""}
+                  {c.installed ? " · ✓ 已安装" : " · ⚠ 未安装"}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
         <textarea
           ref={textareaRef}
           aria-label="Prompt composer"
@@ -1530,22 +1806,64 @@ export function Composer({
           }}
           onCompositionStart={() => {
             composingRef.current = true;
+            setIsComposing(true);
           }}
           onCompositionEnd={(event) => {
             composingRef.current = false;
+            setIsComposing(false);
             // Ensure final composed text is stored (some IMEs need this).
             setDraft(event.currentTarget.value);
             warmIfNeeded();
           }}
           onChange={(event) => {
-            setDraft(event.target.value);
-            setCaret(event.target.selectionStart ?? event.target.value.length);
+            const next = event.target.value;
+            setDraft(next);
+            setCaret(event.target.selectionStart ?? next.length);
+            // Typing dismisses chips for this event-tail round (drop path-only is not typing).
+            if (
+              draftAfterDrop == null ||
+              next !== draftAfterDrop
+            ) {
+              if (next.trim()) {
+                setDismissedSuggestKey(suggestRound);
+                if (draftAfterDrop != null && next !== draftAfterDrop) {
+                  clearDropSuggest();
+                }
+              }
+            }
             // Do not warm on every keypress — freezes IME while ACP handshake runs.
           }}
           onSelect={(event) => {
             setCaret(event.currentTarget.selectionStart ?? 0);
           }}
           onKeyDown={(event) => {
+            if (showDelegateMenu && !composingRef.current) {
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                setDelegateIndex((i) => Math.min(delegateMatches.length - 1, i + 1));
+                return;
+              }
+              if (event.key === "ArrowUp") {
+                event.preventDefault();
+                setDelegateIndex((i) => Math.max(0, i - 1));
+                return;
+              }
+              // Spec: Tab/Enter only consume when selecting a candidate — but plain Enter
+              // with the menu open still **sends** (unlike slash). Tab always picks.
+              if (event.key === "Tab" && !event.altKey && !event.metaKey && !event.ctrlKey) {
+                event.preventDefault();
+                const c = delegateMatches[delegateIndex];
+                if (c) pickDelegate(c);
+                return;
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                event.stopPropagation();
+                setCaret(-1);
+                return;
+              }
+              // Enter: fall through to normal send handling below.
+            }
             if (showSlashMenu && !composingRef.current) {
               if (event.key === "ArrowDown") {
                 event.preventDefault();
@@ -1609,6 +1927,7 @@ export function Composer({
         />
         <div className="composer__toolbar">
           <div className="composer__controls">
+            {/* Browser fallback only — desktop uses native pick_files (absolute paths). */}
             <input
               ref={fileInputRef}
               type="file"
@@ -1623,11 +1942,23 @@ export function Composer({
                   paths.push(path && path.trim() ? path : file.name);
                 }
                 insertDroppedPaths(paths);
-                // Reset so the same file can be picked again
                 e.target.value = "";
               }}
             />
-            <button className="composer-tool" type="button" title="Add files or context" onClick={() => fileInputRef.current?.click()}>
+            <button
+              className="composer-tool"
+              type="button"
+              title="Add files or context"
+              onClick={() => {
+                if (isTauriRuntime()) {
+                  void pickFiles().then((paths) => {
+                    if (paths.length > 0) insertDroppedPaths(paths);
+                  });
+                  return;
+                }
+                fileInputRef.current?.click();
+              }}
+            >
               <Plus size={14} />
             </button>
             {/* Execution mode — flat control beside the tools, matching model/agent. */}
@@ -2121,6 +2452,22 @@ export function Composer({
           </div>
         </div>
       </div>
+      {annotatingId &&
+        (() => {
+          const att = imageAttachments.find((a) => a.id === annotatingId);
+          if (!att) return null;
+          return (
+            <ImageAnnotator
+              attachment={att}
+              onClose={() => setAnnotatingId(null)}
+              onSave={(marks: ImageMark[]) => {
+                setImageAttachments((cur) =>
+                  cur.map((a) => (a.id === att.id ? { ...a, marks } : a)),
+                );
+              }}
+            />
+          );
+        })()}
       {showProviderDialog && (
         <ProviderConfigDialog
           restartPending={providerKeysDirty}

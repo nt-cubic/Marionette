@@ -1,4 +1,7 @@
-import { FileDiff, PanelRightClose, PanelRightOpen, RefreshCw } from "lucide-react";
+import { FileDiff, PanelRightClose, PanelRightOpen, Plus, RefreshCw, X } from "lucide-react";
+import { useState } from "react";
+import type { PlanEntry } from "../lib/acpPlan";
+import type { TodoItem, TodoMergePreview, TodoStatus } from "../lib/todos";
 import type {
   ChangedFile,
   HandoffResult,
@@ -29,10 +32,45 @@ type ContextPanelProps = {
   onToggleProjectContext?: (kind: "mcp" | "skill", id: string, enabled: boolean) => void;
   /** Agent of the active dialog — decides what is already native. */
   activeAgentId?: string;
+  /** Display label for the active agent (Plan card subtitle). */
+  activeAgentLabel?: string;
+  /** ACP plan for the active session (full-replace, session-scoped). */
+  planEntries?: PlanEntry[];
+  /** Project-level todos. */
+  todoItems?: TodoItem[];
+  onTodosChange?: (items: TodoItem[]) => void;
+  onAbsorbPlan?: () => void;
+  onSendTodosToAi?: () => void;
+  onRequestAiTodoUpdate?: () => void;
+  /** Build a merge preview from latest plan / fenced reply; null if nothing to apply. */
+  onPrepareAiTodoMerge?: () => TodoMergePreview | { error: string } | null;
   /** Parent-driven panel width drag. */
   resizeDragging?: boolean;
   onResizeStart?: () => void;
 };
+
+function planStatusGlyph(status: PlanEntry["status"]): string {
+  switch (status) {
+    case "completed":
+      return "●";
+    case "in_progress":
+      return "◐";
+    default:
+      return "○";
+  }
+}
+
+function todoStatusMark(status: TodoStatus): string {
+  if (status === "done") return "☑";
+  if (status === "doing") return "◐";
+  return "☐";
+}
+
+function cycleTodoStatus(status: TodoStatus): TodoStatus {
+  if (status === "todo") return "doing";
+  if (status === "doing") return "done";
+  return "todo";
+}
 
 function meterTone(window: UsageWindow): "ok" | "warn" | "hot" | "none" {
   if (window.percentage == null) return "none";
@@ -90,9 +128,86 @@ export function ContextPanel({
   reconnecting = false,
   onToggleProjectContext,
   activeAgentId,
+  activeAgentLabel,
+  planEntries,
+  todoItems = [],
+  onTodosChange,
+  onAbsorbPlan,
+  onSendTodosToAi,
+  onRequestAiTodoUpdate,
+  onPrepareAiTodoMerge,
   resizeDragging = false,
   onResizeStart,
 }: ContextPanelProps) {
+  const planList = planEntries && planEntries.length > 0 ? planEntries : null;
+  const [draftTodo, setDraftTodo] = useState("");
+  const [mergePreview, setMergePreview] = useState<TodoMergePreview | null>(null);
+  const [mergeError, setMergeError] = useState<string | null>(null);
+
+  const toggleTodo = (id: string) => {
+    if (!onTodosChange) return;
+    const now = new Date().toISOString();
+    onTodosChange(
+      todoItems.map((it) => {
+        if (it.id !== id) return it;
+        const status = cycleTodoStatus(it.status);
+        return {
+          ...it,
+          status,
+          updatedAt: now,
+          doneAt: status === "done" ? now : undefined,
+        };
+      }),
+    );
+  };
+
+  const removeTodo = (id: string) => {
+    if (!onTodosChange) return;
+    onTodosChange(todoItems.filter((it) => it.id !== id));
+  };
+
+  const addTodo = () => {
+    if (!onTodosChange) return;
+    const text = draftTodo.trim();
+    if (!text) return;
+    const now = new Date().toISOString();
+    onTodosChange([
+      ...todoItems,
+      {
+        id: `todo-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        text,
+        status: "todo",
+        source: "user",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+    setDraftTodo("");
+  };
+
+  const runPrepareMerge = () => {
+    setMergeError(null);
+    const result = onPrepareAiTodoMerge?.() ?? null;
+    if (!result) {
+      setMergeError("没有可用的 AI 清单（等 plan 更新或 ```marionette-todo 代码块）");
+      setMergePreview(null);
+      return;
+    }
+    if ("error" in result) {
+      setMergeError(result.error);
+      setMergePreview(null);
+      return;
+    }
+    setMergePreview(result);
+  };
+
+  const applyMerge = () => {
+    if (!mergePreview || !onTodosChange) return;
+    onTodosChange(mergePreview.nextItems);
+    setMergePreview(null);
+    setMergeError(null);
+  };
+
   return (
     <aside className={`context-panel custom-scrollbar scrollbar-autohide${collapsed ? " is-collapsed" : ""}`} aria-label="Context panel">
       {onResizeStart && (
@@ -107,6 +222,149 @@ export function ContextPanel({
           }}
         />
       )}
+      <section className="context-card" aria-label="Tasks">
+        <div className="context-card__heading">
+          <span>Tasks</span>
+        </div>
+
+        {planList && (
+          <div className="plan-block">
+            <div className="plan-block__meta">
+              Plan · {activeAgentLabel || activeAgentId || "agent"} · this session
+            </div>
+            <ul className="plan-list custom-scrollbar scrollbar-autohide">
+              {planList.map((entry, index) => (
+                <li
+                  key={`${index}:${entry.content.slice(0, 40)}`}
+                  className={`plan-item plan-item--${entry.status}`}
+                  title={entry.priority ? `priority: ${entry.priority}` : undefined}
+                >
+                  <span className="plan-item__glyph" aria-hidden>
+                    {planStatusGlyph(entry.status)}
+                  </span>
+                  <span className="plan-item__text">{entry.content}</span>
+                </li>
+              ))}
+            </ul>
+            {onAbsorbPlan && (
+              <button type="button" className="tasks-action" onClick={onAbsorbPlan}>
+                ↓ 吸收进 Todo
+              </button>
+            )}
+          </div>
+        )}
+
+        <div className="todo-block">
+          <div className="plan-block__meta">Todo · project</div>
+          {todoItems.length === 0 ? (
+            <p className="context-card__empty">No project todos yet.</p>
+          ) : (
+            <ul className="todo-list custom-scrollbar scrollbar-autohide">
+              {todoItems.map((item) => (
+                <li key={item.id} className={`todo-item todo-item--${item.status}`}>
+                  <button
+                    type="button"
+                    className="todo-item__toggle"
+                    title="Cycle status"
+                    onClick={() => toggleTodo(item.id)}
+                  >
+                    {todoStatusMark(item.status)}
+                  </button>
+                  <span className="todo-item__text" title={item.source === "plan" ? "from plan" : item.source}>
+                    {item.text}
+                  </span>
+                  <button
+                    type="button"
+                    className="todo-item__remove"
+                    title="Remove"
+                    aria-label="Remove todo"
+                    onClick={() => removeTodo(item.id)}
+                  >
+                    <X size={11} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {onTodosChange && (
+            <div className="todo-add">
+              <input
+                type="text"
+                className="todo-add__input"
+                placeholder="Add a task…"
+                value={draftTodo}
+                onChange={(e) => setDraftTodo(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addTodo();
+                  }
+                }}
+              />
+              <button type="button" className="todo-add__btn" title="Add task" onClick={addTodo}>
+                <Plus size={12} />
+              </button>
+            </div>
+          )}
+          <div className="tasks-actions">
+            {onSendTodosToAi && (
+              <button type="button" className="tasks-action" onClick={onSendTodosToAi} disabled={todoItems.length === 0}>
+                发给 AI
+              </button>
+            )}
+            {onRequestAiTodoUpdate && (
+              <button type="button" className="tasks-action" onClick={onRequestAiTodoUpdate}>
+                让 AI 更新…
+              </button>
+            )}
+            {onPrepareAiTodoMerge && (
+              <button type="button" className="tasks-action" onClick={runPrepareMerge}>
+                预览 AI 变更
+              </button>
+            )}
+          </div>
+          {mergeError && <p className="context-card__empty">{mergeError}</p>}
+          {mergePreview && (
+            <div className="todo-merge-preview">
+              <div className="plan-block__meta">AI 建议的变更</div>
+              <ul className="todo-merge-preview__list">
+                {mergePreview.added.length > 0 && (
+                  <li>+ 新增 {mergePreview.added.length} 条</li>
+                )}
+                {mergePreview.completed.length > 0 && (
+                  <li>✓ 标记完成 {mergePreview.completed.length} 条</li>
+                )}
+                {mergePreview.statusChanged.length > 0 && (
+                  <li>~ 状态变更 {mergePreview.statusChanged.length} 条</li>
+                )}
+                {mergePreview.untouched.length > 0 && (
+                  <li>? AI 未提及 {mergePreview.untouched.length} 条（保留）</li>
+                )}
+                {mergePreview.added.length === 0 &&
+                  mergePreview.completed.length === 0 &&
+                  mergePreview.statusChanged.length === 0 && (
+                    <li>无实质变更</li>
+                  )}
+              </ul>
+              <div className="tasks-actions">
+                <button type="button" className="tasks-action tasks-action--primary" onClick={applyMerge}>
+                  应用
+                </button>
+                <button
+                  type="button"
+                  className="tasks-action"
+                  onClick={() => {
+                    setMergePreview(null);
+                    setMergeError(null);
+                  }}
+                >
+                  取消
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </section>
       <section className="context-card">
         <div className="context-card__heading">
           <span>Usage</span>

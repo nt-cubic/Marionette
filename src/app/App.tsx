@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { ChevronLeft, ChevronRight, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, FolderOpen, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { agents, projects, sessions } from "../lib/mockData";
 import {
@@ -12,7 +12,7 @@ import {
   sealOpenAssistantReplies,
   userMessageEvent,
 } from "../lib/acpTranscript";
-import { addProject, appendDebugLog, cancelAcpSession, checkOutsideProjectPaths, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, generateHandoff, getChangedFiles, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgents, listProjects, listSessions, loadTranscript, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, respondAcpPermission, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, startAcpSession, startAgentLogin, stopAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, writeTranscript, type OutsidePath } from "../lib/api";
+import { addProject, appendDebugLog, cancelAcpSession, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, generateHandoff, getChangedFiles, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, respondAcpPermission, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, startAcpSession, startAgentLogin, stopAcpSession, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, writeTranscript, type OutsidePath } from "../lib/api";
 import type { AcpEvent, AvailableCommand, CapabilitySnapshot, ChangedFile, HandoffResult, Project, ProjectContext, Session, SessionComposerPrefs, SessionEvent, SessionViewMode, UsageSnapshot } from "../lib/types";
 import {
   buildUsageSnapshot,
@@ -33,6 +33,23 @@ import {
   setDesktopNotifyEnabled,
 } from "../lib/desktopNotify";
 import { parseAvailableCommandsUpdate } from "../lib/slashCommands";
+import type { PlanEntry } from "../lib/acpPlan";
+import { parseAcpPlanUpdate } from "../lib/acpPlan";
+import {
+  absorbPlanIntoTodos,
+  formatAiUpdatePrompt,
+  formatTodosForPrompt,
+  parseMarionetteTodoFence,
+  planToProposed,
+  previewMergeFromAi,
+  type TodoItem,
+} from "../lib/todos";
+import { parseDelegateLine } from "../lib/delegate";
+import { expandAcpConfigAttempts } from "../lib/acpSupplements";
+import {
+  formatImageMarksForSend,
+  type ImageAttachment,
+} from "../lib/imageAttachments";
 import {
   parseTranscriptEvents,
   persistableEventsForSession,
@@ -211,6 +228,13 @@ export function App() {
   const [sessionUsageById, setSessionUsageById] = useState<Record<string, SessionUsageState>>({});
   /** Per-session ACP-advertised slash commands (`available_commands_update`). */
   const [slashCommandsById, setSlashCommandsById] = useState<Record<string, AvailableCommand[]>>({});
+  /**
+   * Per-session ACP `plan` update (full-replace). Session-scoped only —
+   * not persisted; restart clears it (honest: live turn state).
+   */
+  const [planBySessionId, setPlanBySessionId] = useState<Record<string, PlanEntry[]>>({});
+  /** Project-level todos (`.marionette/todos.json`). */
+  const [todoItems, setTodoItems] = useState<TodoItem[]>([]);
   /** Active model id from Composer (`provider/model` for OpenCode). */
   const [activeModelId, setActiveModelId] = useState<string | null>(null);
   const providerProbeInflight = useRef(false);
@@ -244,6 +268,44 @@ export function App() {
   const cancelWatchdogsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const transcriptSaveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const transcriptLoadedRef = useRef<Set<string>>(new Set());
+  /**
+   * @-delegate children: childSessionId → meta.
+   * Not in availableSessions (shelf filters them); ACP is started directly.
+   */
+  const delegateMetaRef = useRef<
+    Map<
+      string,
+      {
+        parentId: string;
+        agentId: string;
+        agentLabel: string;
+        modelId?: string;
+        prompt: string;
+        startedAt: number;
+        finished: boolean;
+        idleTimer?: ReturnType<typeof setTimeout>;
+      }
+    >
+  >(new Map());
+  /** Parent id → queued delegate jobs waiting for a free concurrency slot. */
+  const delegateQueueRef = useRef<
+    Map<
+      string,
+      Array<{
+        agentId: string;
+        agentLabel: string;
+        modelId?: string;
+        prompt: string;
+        projectId: string;
+      }>
+    >
+  >(new Map());
+  const MAX_DELEGATE_CONCURRENT = 2;
+  const DELEGATE_IDLE_TIMEOUT_MS = 600_000;
+  /** Stable ref so the ACP listener can finalize children without rebinding. */
+  const finalizeDelegateChildRef = useRef<
+    (childId: string, status: "done" | "failed" | "cancelled" | "timeout", error?: string) => void
+  >(() => undefined);
   const [searchHitIds, setSearchHitIds] = useState<string[] | null>(null);
   const [claudeAuthHint, setClaudeAuthHint] = useState<string | null>(null);
   const [signInBusy, setSignInBusy] = useState(false);
@@ -267,6 +329,7 @@ export function App() {
     paths: OutsidePath[];
     text: string;
     sessionId: string;
+    imageAttachments?: ImageAttachment[];
   } | null>(null);
   const [pathGrantBusy, setPathGrantBusy] = useState(false);
   const lastEscAtRef = useRef(0);
@@ -366,6 +429,17 @@ export function App() {
       // ACP wire already logged in Rust emit_event → dev.log
       if (payload.sessionId) touchActivity(payload.sessionId);
 
+      // @-delegate children: any event re-arms the 600s idle timeout.
+      if (payload.sessionId && delegateMetaRef.current.has(payload.sessionId)) {
+        const meta = delegateMetaRef.current.get(payload.sessionId);
+        if (meta && !meta.finished) {
+          if (meta.idleTimer) clearTimeout(meta.idleTimer);
+          meta.idleTimer = setTimeout(() => {
+            finalizeDelegateChildRef.current(payload.sessionId, "timeout", "600s 无事件");
+          }, DELEGATE_IDLE_TIMEOUT_MS);
+        }
+      }
+
       // Did the *turn* end? That — not mere output — is what proves a cancel
       // landed. An agent can keep streaming tokens while its stdin reader is
       // wedged, which is exactly the runaway case people hit pause for, so
@@ -373,6 +447,24 @@ export function App() {
       if (payload.sessionId && (payload.method === "rpc/response" || payload.method === "process/ended")) {
         turnEndedAtRef.current[payload.sessionId] = Date.now();
         cancelIgnoredRef.current.delete(payload.sessionId);
+        // Finalize @-delegate child when its turn ends.
+        if (delegateMetaRef.current.has(payload.sessionId)) {
+          if (payload.method === "process/ended") {
+            finalizeDelegateChildRef.current(
+              payload.sessionId,
+              "cancelled",
+              "应用关闭时中断或进程退出",
+            );
+          } else if (payload.kind === "error") {
+            finalizeDelegateChildRef.current(
+              payload.sessionId,
+              "failed",
+              formatAcpRpcError(payload.data) || "rpc error",
+            );
+          } else {
+            finalizeDelegateChildRef.current(payload.sessionId, "done");
+          }
+        }
       }
 
       // Per-model context ceiling, so `used / size` works for agents that never
@@ -419,6 +511,15 @@ export function App() {
           setSlashCommandsById((current) => ({
             ...current,
             [payload.sessionId]: slashList,
+          }));
+        }
+
+        // ACP plan (TodoWrite / plan tool) — full replace per update.
+        const planEntries = parseAcpPlanUpdate(payload.data);
+        if (planEntries) {
+          setPlanBySessionId((current) => ({
+            ...current,
+            [payload.sessionId]: planEntries,
           }));
         }
 
@@ -1477,6 +1578,67 @@ export function App() {
     void refreshProjectContext(currentProjectId);
   }, [currentProjectId, rightCollapsed, refreshProjectContext]);
 
+  // Project todos — load when project changes.
+  useEffect(() => {
+    if (!currentProjectId) {
+      setTodoItems([]);
+      return;
+    }
+    let cancelled = false;
+    void listTodos(currentProjectId).then((items) => {
+      if (!cancelled) setTodoItems(items);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentProjectId]);
+
+  const handleTodosChange = useCallback(
+    (items: TodoItem[]) => {
+      setTodoItems(items);
+      if (!currentProjectId) return;
+      void saveTodos(currentProjectId, items).catch((error) => {
+        pushDebug({
+          sessionId: currentSessionIdRef.current || "",
+          level: "warn",
+          source: "todos",
+          summary: "save todos failed",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      });
+    },
+    [currentProjectId, pushDebug],
+  );
+
+  const prefillComposer = useCallback((text: string) => {
+    setComposerPrefill({ text, token: Date.now() });
+  }, []);
+
+  const handleAbsorbPlan = useCallback(() => {
+    const sid = currentSessionIdRef.current;
+    const plan = sid ? planBySessionId[sid] : undefined;
+    if (!plan?.length) return;
+    handleTodosChange(absorbPlanIntoTodos(todoItems, plan, sid));
+  }, [planBySessionId, todoItems, handleTodosChange]);
+
+  const handlePrepareAiTodoMerge = useCallback(() => {
+    const sid = currentSessionIdRef.current;
+    const plan = sid ? planBySessionId[sid] : undefined;
+    if (plan && plan.length > 0) {
+      return previewMergeFromAi(todoItems, planToProposed(plan));
+    }
+    // Prefer fenced block from last assistant message in this session.
+    const events = liveEventsRef.current.filter((e) => e.sessionId === sid);
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i];
+      if (e.type !== "assistant_message") continue;
+      const proposed = parseMarionetteTodoFence(e.text);
+      if (proposed) return previewMergeFromAi(todoItems, proposed);
+      break;
+    }
+    return null;
+  }, [planBySessionId, todoItems]);
+
   const handleToggleProjectContext = useCallback(
     async (kind: "mcp" | "skill", id: string, enabled: boolean) => {
       if (!currentProjectId) return;
@@ -2071,6 +2233,296 @@ export function App() {
     [ensureAcpReady, pushDebug, renameSessionFromText, setSessionStatusById]
   );
 
+  const countRunningDelegates = useCallback((parentId: string) => {
+    let n = 0;
+    for (const meta of delegateMetaRef.current.values()) {
+      if (meta.parentId === parentId && !meta.finished) n += 1;
+    }
+    return n;
+  }, []);
+
+  const drainDelegateQueueRef = useRef<(parentId: string) => void>(() => undefined);
+
+  const finalizeDelegateChild = useCallback(
+    (
+      childId: string,
+      status: "done" | "failed" | "cancelled" | "timeout",
+      error?: string,
+    ) => {
+      const meta = delegateMetaRef.current.get(childId);
+      if (!meta || meta.finished) return;
+      meta.finished = true;
+      if (meta.idleTimer) clearTimeout(meta.idleTimer);
+
+      const events = liveEventsRef.current.filter((e) => e.sessionId === childId);
+      let summary = "";
+      for (let i = events.length - 1; i >= 0; i--) {
+        const e = events[i];
+        if (e.type === "assistant_message" && e.text.trim()) {
+          summary = e.text.trim();
+          break;
+        }
+      }
+      if (summary.length > 2000) summary = `${summary.slice(0, 2000)}…`;
+      if (!summary && status === "done") summary = "(no assistant reply)";
+      if (!summary && error) summary = error;
+
+      const durationMs = Date.now() - meta.startedAt;
+      const result: SessionEvent = {
+        type: "subtask_result",
+        sessionId: meta.parentId,
+        childSessionId: childId,
+        agentId: meta.agentId,
+        status,
+        summary,
+        durationMs,
+        error,
+        createdAt: new Date().toISOString(),
+      };
+      setLiveEvents((current) => {
+        const next = [...current, result];
+        liveEventsRef.current = next;
+        return next;
+      });
+
+      void stopAcpSession(childId).catch(() => undefined);
+
+      // Drain queue for this parent.
+      const parentId = meta.parentId;
+      window.setTimeout(() => {
+        drainDelegateQueueRef.current(parentId);
+      }, 0);
+    },
+    [],
+  );
+
+  const armDelegateIdleTimer = useCallback(
+    (childId: string) => {
+      const meta = delegateMetaRef.current.get(childId);
+      if (!meta || meta.finished) return;
+      if (meta.idleTimer) clearTimeout(meta.idleTimer);
+      meta.idleTimer = setTimeout(() => {
+        finalizeDelegateChild(childId, "timeout", "600s 无事件");
+      }, DELEGATE_IDLE_TIMEOUT_MS);
+    },
+    [finalizeDelegateChild],
+  );
+
+  const startDelegateChild = useCallback(
+    async (job: {
+      parentId: string;
+      projectId: string;
+      agentId: string;
+      agentLabel: string;
+      modelId?: string;
+      prompt: string;
+      queuedCard?: boolean;
+    }) => {
+      const { parentId, projectId, agentId, agentLabel, modelId, prompt } = job;
+      const agent =
+        availableAgents.find((a) => a.id === agentId) ??
+        agents.find((a) => a.id === agentId);
+      if (!agent || agent.transport !== "acp") {
+        setLiveEvents((current) => [
+          ...current,
+          {
+            type: "subtask_result" as const,
+            sessionId: parentId,
+            childSessionId: `failed-${Date.now()}`,
+            agentId,
+            status: "failed" as const,
+            summary: "",
+            error: `Agent ${agentId} 不可用或非 ACP`,
+            createdAt: new Date().toISOString(),
+          },
+        ]);
+        return;
+      }
+
+      // Install check
+      try {
+        const statuses = await listAgentCommands();
+        const st = statuses.find((s) => s.id === agentId);
+        if (st && st.status !== "installed") {
+          setLiveEvents((current) => [
+            ...current,
+            {
+              type: "subtask_started" as const,
+              sessionId: parentId,
+              childSessionId: `fail-${Date.now()}`,
+              agentId,
+              agentLabel,
+              modelId,
+              prompt,
+              createdAt: new Date().toISOString(),
+            },
+            {
+              type: "subtask_result" as const,
+              sessionId: parentId,
+              childSessionId: `fail-${Date.now()}`,
+              agentId,
+              status: "failed" as const,
+              summary: "",
+              error: "agent 未安装",
+              createdAt: new Date().toISOString(),
+            },
+          ]);
+          return;
+        }
+      } catch {
+        /* proceed; start will fail loudly */
+      }
+
+      const label = `→ ${agentLabel}${modelId ? `/${modelId}` : ""}: ${prompt.slice(0, 32)}`;
+      let child: Session | null = null;
+      try {
+        child = await createChildSession(projectId, parentId, agentId, label);
+      } catch (error) {
+        setLiveEvents((current) => [
+          ...current,
+          {
+            type: "subtask_result" as const,
+            sessionId: parentId,
+            childSessionId: `fail-${Date.now()}`,
+            agentId,
+            status: "failed" as const,
+            summary: "",
+            error: error instanceof Error ? error.message : String(error),
+            createdAt: new Date().toISOString(),
+          },
+        ]);
+        return;
+      }
+      if (!child) return;
+
+      const startedAt = Date.now();
+      delegateMetaRef.current.set(child.id, {
+        parentId,
+        agentId,
+        agentLabel,
+        modelId,
+        prompt,
+        startedAt,
+        finished: false,
+      });
+
+      const started: SessionEvent = {
+        type: "subtask_started",
+        sessionId: parentId,
+        childSessionId: child.id,
+        agentId,
+        agentLabel,
+        modelId,
+        prompt,
+        createdAt: new Date().toISOString(),
+      };
+      setLiveEvents((current) => {
+        const next = [...current, started];
+        liveEventsRef.current = next;
+        return next;
+      });
+
+      armDelegateIdleTimer(child.id);
+
+      try {
+        const caps = await startAcpSession(child.id, agent.command, agent.args, child.cwd);
+        if (modelId && caps) {
+          const attempts = expandAcpConfigAttempts(agentId, { model: modelId }, caps);
+          for (const attempt of attempts) {
+            try {
+              await updateAcpSession(child.id, attempt);
+              break;
+            } catch {
+              /* try next shape */
+            }
+          }
+        }
+        // Child has no parent history by design.
+        await sendAcpPrompt(child.id, prompt);
+      } catch (error) {
+        finalizeDelegateChild(
+          child.id,
+          "failed",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    },
+    [availableAgents, armDelegateIdleTimer, finalizeDelegateChild],
+  );
+
+  const drainDelegateQueue = useCallback(
+    async (parentId: string) => {
+      while (countRunningDelegates(parentId) < MAX_DELEGATE_CONCURRENT) {
+        const q = delegateQueueRef.current.get(parentId);
+        if (!q?.length) break;
+        const job = q.shift()!;
+        await startDelegateChild({
+          parentId,
+          projectId: job.projectId,
+          agentId: job.agentId,
+          agentLabel: job.agentLabel,
+          modelId: job.modelId,
+          prompt: job.prompt,
+        });
+      }
+    },
+    [countRunningDelegates, startDelegateChild],
+  );
+  drainDelegateQueueRef.current = (parentId: string) => {
+    void drainDelegateQueue(parentId);
+  };
+  finalizeDelegateChildRef.current = finalizeDelegateChild;
+
+  const handleDelegate = useCallback(
+    async (
+      parentId: string,
+      projectId: string,
+      parsed: { agentId: string; modelId?: string; prompt: string },
+    ) => {
+      const agent =
+        availableAgents.find((a) => a.id === parsed.agentId) ??
+        agents.find((a) => a.id === parsed.agentId);
+      const agentLabel = agent?.label ?? parsed.agentId;
+
+      if (countRunningDelegates(parentId) >= MAX_DELEGATE_CONCURRENT) {
+        const q = delegateQueueRef.current.get(parentId) ?? [];
+        q.push({
+          agentId: parsed.agentId,
+          agentLabel,
+          modelId: parsed.modelId,
+          prompt: parsed.prompt,
+          projectId,
+        });
+        delegateQueueRef.current.set(parentId, q);
+        // Placeholder card so the user sees "排队中"
+        setLiveEvents((current) => [
+          ...current,
+          {
+            type: "subtask_started" as const,
+            sessionId: parentId,
+            childSessionId: `queued-${Date.now()}-${q.length}`,
+            agentId: parsed.agentId,
+            agentLabel,
+            modelId: parsed.modelId,
+            prompt: `（排队中）${parsed.prompt}`,
+            createdAt: new Date().toISOString(),
+          },
+        ]);
+        return;
+      }
+
+      await startDelegateChild({
+        parentId,
+        projectId,
+        agentId: parsed.agentId,
+        agentLabel,
+        modelId: parsed.modelId,
+        prompt: parsed.prompt,
+      });
+    },
+    [availableAgents, countRunningDelegates, startDelegateChild],
+  );
+
   /**
    * Ask about paths outside the project *before* sending.
    *
@@ -2079,21 +2531,41 @@ export function App() {
    * forever. The only moment we can widen the scope is `session/new`, which
    * means the answer has to be collected before the turn starts.
    */
-  const handleSend = async (text: string, droppedPaths: string[] = []) => {
+  const handleSend = async (
+    text: string,
+    droppedPaths: string[] = [],
+    imageAttachments: ImageAttachment[] = [],
+  ) => {
     if (!currentSessionId) return;
     const sid = currentSessionId;
-    // Merge numbered quote-comments + free Composer text (pins first, free text last).
+
+    // @-delegate: line-start @agent task — does not block the parent dialog.
+    // Images on a delegate line are ignored for now (depth=1, simple task text).
+    const knownIds = availableAgents.map((a) => a.id);
+    const delegated = parseDelegateLine(text, knownIds);
+    if (delegated) {
+      const projectId = displaySession.projectId || currentProjectId;
+      setQuotePins([]);
+      await handleDelegate(sid, projectId, delegated);
+      return;
+    }
+
+    // Merge quote pins + image mark text + free Composer text.
     const pins = quotePins;
-    const composed = pins.length > 0 ? formatPinsForSend(pins, text) : text;
-    if (!composed.trim()) return;
+    let composed = pins.length > 0 ? formatPinsForSend(pins, text) : text;
+    const markBlock = formatImageMarksForSend(imageAttachments);
+    if (markBlock) {
+      composed = composed.trim()
+        ? `${markBlock}\n\n${composed.trim()}`
+        : markBlock;
+    }
+    if (!composed.trim() && imageAttachments.length === 0) return;
 
     const projectId = displaySession.projectId || currentProjectId;
-    // Dropped paths come straight from the OS, so they are exact. Parsing the
-    // text only finds the rest — and it cannot find a path containing a space,
-    // which is most screenshots and most image folders.
     const candidates = [
       ...new Set([
         ...droppedPaths,
+        ...imageAttachments.map((a) => a.path),
         ...findLinkTargets(composed)
           .filter((target) => target.kind === "path")
           .map((target) => target.raw),
@@ -2101,16 +2573,24 @@ export function App() {
     ];
     const outside = await checkOutsideProjectPaths(projectId, candidates).catch(() => []);
     if (outside.length > 0) {
-      // Hold the draft (and its pins) until the user decides.
-      setPathGrantPrompt({ paths: outside, text: composed, sessionId: sid });
+      setPathGrantPrompt({
+        paths: outside,
+        text: composed,
+        sessionId: sid,
+        imageAttachments,
+      });
       return;
     }
 
     setQuotePins([]);
-    await performSend(sid, composed);
+    await performSend(sid, composed, imageAttachments);
   };
 
-  const performSend = async (sid: string, composed: string) => {
+  const performSend = async (
+    sid: string,
+    composed: string,
+    imageAttachments: ImageAttachment[] = [],
+  ) => {
     try {
       // An agent switch leaves handoff notes waiting — attach them to this send
       // (the composer stays clean; only the wire payload carries them).
@@ -2139,8 +2619,15 @@ export function App() {
       // Show the user message immediately; wait for ACP only after that.
       // History injection uses events *before* this message.
       const priorForInject = liveEventsRef.current.filter((e) => e.sessionId === sid);
-      setLiveEvents((current) => [...current, userMessageEvent(sid, composed, sendMetaRef.current ?? undefined)]);
-      renameSessionFromText(sid, composed);
+      setLiveEvents((current) => [
+        ...current,
+        userMessageEvent(sid, composed, {
+          ...(sendMetaRef.current ?? {}),
+          attachments:
+            imageAttachments.length > 0 ? imageAttachments : undefined,
+        }),
+      ]);
+      renameSessionFromText(sid, composed || imageAttachments[0]?.name || "Image");
       touchActivity(sid);
       pushDebug({
         sessionId: sid,
@@ -2207,13 +2694,14 @@ export function App() {
 
       setSessionStatusById(sid, "running");
       touchActivity(sid);
-      await sendAcpPrompt(sid, promptText);
+      const imagePaths = imageAttachments.map((a) => a.path);
+      await sendAcpPrompt(sid, promptText, imagePaths);
       touchActivity(sid);
       pushDebug({
         sessionId: sid,
         level: "info",
         source: "composer",
-        summary: "session/prompt accepted (streaming…)",
+        summary: `session/prompt accepted (streaming…)${imagePaths.length ? ` images=${imagePaths.length}` : ""}`,
       });
     } catch (error) {
       setSessionStatusById(sid, "error");
@@ -2237,49 +2725,60 @@ export function App() {
     }
   };
 
+  /** Dismiss outside-project prompt without sending; restore draft to Composer. */
+  const cancelPathGrant = useCallback(() => {
+    const prompt = pathGrantPrompt;
+    if (!prompt || pathGrantBusy) return;
+    setPathGrantPrompt(null);
+    // Composer already cleared the draft on submit — put the held text back.
+    setComposerPrefill({ text: prompt.text, token: Date.now() });
+  }, [pathGrantPrompt, pathGrantBusy]);
+
   /** Grant the folders, restart the agent if it is live, then send the held draft. */
   const resolvePathGrant = useCallback(
-    async (grant: boolean) => {
+    async () => {
       const prompt = pathGrantPrompt;
       if (!prompt || pathGrantBusy) return;
       setPathGrantBusy(true);
       try {
         let mustRestart = false;
-        if (grant) {
-          const projectId = displaySession.projectId || currentProjectId;
-          for (const item of prompt.paths) {
-            try {
-              const result = await grantWorkspaceRoot(projectId, item.dir, prompt.sessionId);
-              mustRestart = mustRestart || result.restartNeeded;
-            } catch (error) {
-              pushDebug({
-                sessionId: prompt.sessionId,
-                level: "warn",
-                source: "context",
-                summary: "grant workspace root failed",
-                detail: error instanceof Error ? error.message : String(error),
-              });
-            }
-          }
-          if (mustRestart) {
-            // Scope is fixed at session/new — the live process cannot learn it.
-            await stopAcpSession(prompt.sessionId).catch(() => undefined);
-            acpBootstrapRef.current.delete(prompt.sessionId);
-            setSessionCapabilities(null);
-            setSessionStatusById(prompt.sessionId, "exited");
-            acpNeedsHistoryRef.current.add(prompt.sessionId);
+        const projectId = displaySession.projectId || currentProjectId;
+        for (const item of prompt.paths) {
+          try {
+            const result = await grantWorkspaceRoot(projectId, item.dir, prompt.sessionId);
+            mustRestart = mustRestart || result.restartNeeded;
+          } catch (error) {
             pushDebug({
               sessionId: prompt.sessionId,
-              level: "info",
+              level: "warn",
               source: "context",
-              summary: "reconnecting to apply new workspace roots",
+              summary: "grant workspace root failed",
+              detail: error instanceof Error ? error.message : String(error),
             });
           }
-          void refreshProjectContext(projectId);
         }
+        if (mustRestart) {
+          // Scope is fixed at session/new — the live process cannot learn it.
+          await stopAcpSession(prompt.sessionId).catch(() => undefined);
+          acpBootstrapRef.current.delete(prompt.sessionId);
+          setSessionCapabilities(null);
+          setSessionStatusById(prompt.sessionId, "exited");
+          acpNeedsHistoryRef.current.add(prompt.sessionId);
+          pushDebug({
+            sessionId: prompt.sessionId,
+            level: "info",
+            source: "context",
+            summary: "reconnecting to apply new workspace roots",
+          });
+        }
+        void refreshProjectContext(projectId);
         setQuotePins([]);
         setPathGrantPrompt(null);
-        await performSend(prompt.sessionId, prompt.text);
+        await performSend(
+          prompt.sessionId,
+          prompt.text,
+          prompt.imageAttachments ?? [],
+        );
       } finally {
         setPathGrantBusy(false);
       }
@@ -2542,6 +3041,32 @@ export function App() {
             onQuotePinsChange={setQuotePins}
             onInterrupt={() => void handleInterrupt()}
             projectId={currentProjectId || displaySession.projectId}
+            allEvents={liveEvents}
+            onSubtaskStop={(childId) => {
+              void cancelAcpSession(childId).catch(() => undefined);
+              finalizeDelegateChildRef.current(childId, "cancelled", "用户停止");
+            }}
+            onSubtaskQuote={(summary) => {
+              const block = `> ${summary.replace(/\n/g, "\n> ").slice(0, 2000)}\n\n`;
+              setComposerPrefill({ text: block, token: Date.now() });
+            }}
+            onSubtaskRetry={(childId) => {
+              const meta = delegateMetaRef.current.get(childId);
+              const startEv = liveEventsRef.current.find(
+                (e) =>
+                  e.type === "subtask_started" &&
+                  e.childSessionId === childId &&
+                  e.sessionId === displaySession.id,
+              );
+              if (!startEv || startEv.type !== "subtask_started") return;
+              const projectId = displaySession.projectId || currentProjectId;
+              void handleDelegate(displaySession.id, projectId, {
+                agentId: startEv.agentId,
+                modelId: startEv.modelId,
+                prompt: startEv.prompt.replace(/^（排队中）/, ""),
+              });
+              void meta;
+            }}
           />
           <Composer
             // Remount when dialog identity changes so model/mode state cannot leak.
@@ -2614,6 +3139,7 @@ export function App() {
             onInterrupt={() => void handleInterrupt()}
             onSend={(text, droppedPaths) => void handleSend(text, droppedPaths)}
             onActiveModelChange={setActiveModelId}
+            sessionEvents={currentEvents}
             availableCommands={slashCommandsById[displaySession.id] ?? null}
             onWarmAgent={warmActiveAcp}
             onEnsureAgentReady={async () => {
@@ -2649,6 +3175,14 @@ export function App() {
             void handleToggleProjectContext(kind, id, enabled)
           }
           activeAgentId={currentAgent.id}
+          activeAgentLabel={currentAgent.label}
+          planEntries={currentSessionId ? planBySessionId[currentSessionId] : undefined}
+          todoItems={todoItems}
+          onTodosChange={handleTodosChange}
+          onAbsorbPlan={handleAbsorbPlan}
+          onSendTodosToAi={() => prefillComposer(formatTodosForPrompt(todoItems))}
+          onRequestAiTodoUpdate={() => prefillComposer(formatAiUpdatePrompt(todoItems))}
+          onPrepareAiTodoMerge={handlePrepareAiTodoMerge}
           resizeDragging={resizingSide === "right"}
           onResizeStart={() => setResizingSide("right")}
         />
@@ -2665,8 +3199,8 @@ export function App() {
           <div className="project-dialog" role="dialog" aria-modal="true" aria-labelledby="path-grant-title">
             <div className="project-dialog__header">
               <div>
-                <strong id="path-grant-title">Outside this project</strong>
-                <span>Grant access before sending?</span>
+                <strong id="path-grant-title">项目外路径</strong>
+                <span>需要先授权，agent 才能访问这些文件夹</span>
               </div>
             </div>
             <ul className="path-grant__list">
@@ -2678,27 +3212,26 @@ export function App() {
               ))}
             </ul>
             <p className="path-grant__hint">
-              Scope is fixed when the agent session starts, and a
-              <strong> subagent’s permission prompt never reaches Marionette</strong> — it would just
-              hang there. Granting saves the folder for this project and reconnects the agent so it
-              starts already allowed.
+              访问范围在会话启动时就定死了；子 agent 的系统权限弹窗
+              <strong>不会传回 Marionette</strong>，不授权直接发只会卡住。
+              点「授权并发送」会把文件夹记入本项目，并在需要时重连 agent。
             </p>
             <div className="project-dialog__actions">
               <button
                 type="button"
                 className="project-dialog__cancel"
                 disabled={pathGrantBusy}
-                onClick={() => void resolvePathGrant(false)}
+                onClick={cancelPathGrant}
               >
-                Send without access
+                取消发送
               </button>
               <button
                 type="button"
                 className="project-dialog__submit"
                 disabled={pathGrantBusy}
-                onClick={() => void resolvePathGrant(true)}
+                onClick={() => void resolvePathGrant()}
               >
-                {pathGrantBusy ? "Granting…" : "Grant and send"}
+                {pathGrantBusy ? "授权中…" : "授权并发送"}
               </button>
             </div>
           </div>
@@ -2738,7 +3271,34 @@ export function App() {
             </div>
             <label className="project-dialog__field">
               <span>Folder path</span>
-              <input autoFocus value={projectPath} onChange={(event) => setProjectPath(event.target.value)} placeholder="D:\\Work\\MyProject" spellCheck={false} />
+              <div className="project-dialog__path-row">
+                <input
+                  autoFocus
+                  value={projectPath}
+                  onChange={(event) => setProjectPath(event.target.value)}
+                  placeholder="D:\\Work\\MyProject"
+                  spellCheck={false}
+                />
+                <button
+                  type="button"
+                  className="project-dialog__browse"
+                  title="Browse…"
+                  aria-label="Browse for folder"
+                  disabled={projectAdding}
+                  onClick={() => {
+                    void (async () => {
+                      const picked = await pickFolder();
+                      if (picked) {
+                        setProjectPath(picked);
+                        setProjectError("");
+                      }
+                    })();
+                  }}
+                >
+                  <FolderOpen size={14} />
+                  <span>Browse</span>
+                </button>
+              </div>
             </label>
             {projectError && <p className="project-dialog__error">{projectError}</p>}
             <div className="project-dialog__actions">

@@ -1,3 +1,8 @@
+import {
+  formatAnnotationsForSend,
+  quotePinToAnnotation,
+} from "./annotations";
+
 /** A pinned inline comment on selected Clean text (not yet sent). */
 export type QuotePin = {
   id: string;
@@ -11,25 +16,11 @@ export type QuotePin = {
 /**
  * Build the outbound prompt from pins + optional free Composer text.
  *
- * 1.
- * > quoted
- * 评论：…
- *
- * 2.
- * …
- *
- * (composer free text last, if any)
+ * Delegates to `formatAnnotationsForSend` (quote kind) so Annotation and
+ * QuotePin stay one formatting path.
  */
 export function formatPinsForSend(pins: QuotePin[], freeText: string): string {
-  const blocks = pins.map((pin, index) => {
-    const quoted = pin.quoted.replace(/\r\n/g, "\n").trim();
-    const lines = quoted.split("\n").map((line) => `> ${line}`);
-    const comment = pin.comment.replace(/\r\n/g, "\n").trim();
-    return `${index + 1}.\n${lines.join("\n")}\n评论：${comment}`;
-  });
-  const free = freeText.replace(/\r\n/g, "\n").trim();
-  if (free) blocks.push(free);
-  return blocks.join("\n\n");
+  return formatAnnotationsForSend(pins.map(quotePinToAnnotation), freeText);
 }
 
 export function newQuotePinId(): string {

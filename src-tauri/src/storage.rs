@@ -100,6 +100,27 @@ impl StorageService {
         if content.trim().is_empty() {
             return Ok(Vec::new());
         }
+        let all: Vec<Session> =
+            serde_json::from_str(&content).map_err(|error| format!("Parse sessions failed: {error}"))?;
+        // Top-level shelf: hide @-delegate children (they live under the parent card).
+        Ok(all
+            .into_iter()
+            .filter(|s| s.parent_session_id.as_ref().map(|p| p.is_empty()).unwrap_or(true))
+            .collect())
+    }
+
+    /// All sessions including delegate children (for cascade delete / child listing).
+    pub fn list_sessions_all(&self, project_id: &str) -> Result<Vec<Session>, String> {
+        let project = self.project_by_id(project_id)?;
+        let file = sessions_file(Path::new(&project.root_path));
+        if !file.exists() {
+            return Ok(Vec::new());
+        }
+        let content =
+            fs::read_to_string(file).map_err(|error| format!("Read sessions failed: {error}"))?;
+        if content.trim().is_empty() {
+            return Ok(Vec::new());
+        }
         serde_json::from_str(&content).map_err(|error| format!("Parse sessions failed: {error}"))
     }
 
@@ -117,7 +138,8 @@ impl StorageService {
     where
         F: Fn(&str) -> bool,
     {
-        let mut sessions = self.list_sessions(project_id)?;
+        // Heal against the full file (including children), then return top-level only.
+        let mut sessions = self.list_sessions_all(project_id)?;
         let mut healed = false;
         for session in sessions.iter_mut() {
             let claims_live = matches!(session.status.as_str(), "starting" | "running" | "waiting");
@@ -136,7 +158,10 @@ impl StorageService {
             let project = self.project_by_id(project_id)?;
             self.write_sessions(Path::new(&project.root_path), &sessions)?;
         }
-        Ok(sessions)
+        Ok(sessions
+            .into_iter()
+            .filter(|s| s.parent_session_id.as_ref().map(|p| p.is_empty()).unwrap_or(true))
+            .collect())
     }
 
     pub fn create_session(
@@ -186,19 +211,111 @@ impl StorageService {
             preferred_effort: None,
             preferred_effort_id: None,
             preferred_always_approve: None,
+            parent_session_id: None,
+            origin: Some("user".to_string()),
         };
         // Prepend so newest dialogs appear at the top of the project shelf.
-        let mut sessions = self.list_sessions(project_id)?;
+        let mut sessions = self.list_sessions_all(project_id)?;
         sessions.retain(|s| s.id != session.id);
         sessions.insert(0, session.clone());
         self.write_sessions(project_path, &sessions)?;
         Ok(session)
     }
 
+    /// Create a child session for `@` delegate (hidden from list_sessions).
+    pub fn create_child_session(
+        &self,
+        project_id: &str,
+        parent_session_id: &str,
+        agent_id: String,
+        label: String,
+    ) -> Result<Session, String> {
+        let project = self.project_by_id(project_id)?;
+        let project_path = Path::new(&project.root_path);
+        self.ensure_project_dirs(project_path)?;
+        // Parent must exist (as top-level or anywhere).
+        let all = self.list_sessions_all(project_id)?;
+        if !all.iter().any(|s| s.id == parent_session_id) {
+            return Err(format!("Unknown parent session: {parent_session_id}"));
+        }
+        let id = format!("session-{}", now_string());
+        let now = now_string();
+        let raw_log_path = session_log_path(project_path, &id);
+        let session = Session {
+            id: id.clone(),
+            project_id: project.id,
+            agent_id,
+            label: if label.trim().is_empty() {
+                "Delegate".to_string()
+            } else {
+                label
+            },
+            cwd: project.root_path.clone(),
+            status: "exited".to_string(),
+            process_id: None,
+            pty_id: None,
+            started_at: String::new(),
+            last_active_at: now,
+            exited_at: None,
+            exit_code: None,
+            raw_log_path: raw_log_path.to_string_lossy().to_string(),
+            transcript_path: crate::app_paths::project_dir(project_path)
+                .join("transcripts")
+                .join(format!("{id}.jsonl"))
+                .to_string_lossy()
+                .to_string(),
+            handoff_path: crate::app_paths::project_dir(project_path)
+                .join("handoff")
+                .join(format!("{id}.md"))
+                .to_string_lossy()
+                .to_string(),
+            view_mode: "clean".to_string(),
+            preferred_model: None,
+            preferred_mode: None,
+            preferred_effort: None,
+            preferred_effort_id: None,
+            preferred_always_approve: None,
+            parent_session_id: Some(parent_session_id.to_string()),
+            origin: Some("delegate".to_string()),
+        };
+        let mut sessions = all;
+        sessions.retain(|s| s.id != session.id);
+        sessions.insert(0, session.clone());
+        self.write_sessions(project_path, &sessions)?;
+        Ok(session)
+    }
+
+    pub fn list_child_sessions(&self, parent_session_id: &str) -> Result<Vec<Session>, String> {
+        // Scan all projects — parent id is unique.
+        let mut children = Vec::new();
+        for project in self.list_projects()? {
+            for session in self.list_sessions_all(&project.id)? {
+                if session.parent_session_id.as_deref() == Some(parent_session_id) {
+                    children.push(session);
+                }
+            }
+        }
+        Ok(children)
+    }
+
     pub fn delete_session(&self, project_id: &str, session_id: &str) -> Result<(), String> {
         let project = self.project_by_id(project_id)?;
-        let mut sessions = self.list_sessions(project_id)?;
-        sessions.retain(|session| session.id != session_id);
+        let mut sessions = self.list_sessions_all(project_id)?;
+        // Cascade: remove children of this session too (and their transcripts).
+        let child_ids: Vec<String> = sessions
+            .iter()
+            .filter(|s| s.parent_session_id.as_deref() == Some(session_id))
+            .map(|s| s.id.clone())
+            .collect();
+        let drop_ids: std::collections::HashSet<String> = child_ids
+            .iter()
+            .cloned()
+            .chain(std::iter::once(session_id.to_string()))
+            .collect();
+        for s in sessions.iter().filter(|s| drop_ids.contains(&s.id)) {
+            let _ = fs::remove_file(&s.transcript_path);
+        }
+        sessions.retain(|session| !drop_ids.contains(&session.id));
         self.write_sessions(Path::new(&project.root_path), &sessions)
     }
 
@@ -206,7 +323,7 @@ impl StorageService {
         let project = self.project_by_id(&session.project_id)?;
         let project_path = Path::new(&project.root_path);
         self.ensure_project_dirs(project_path)?;
-        let mut sessions = self.list_sessions(&session.project_id)?;
+        let mut sessions = self.list_sessions_all(&session.project_id)?;
         if let Some(existing) = sessions.iter_mut().find(|current| current.id == session.id) {
             *existing = session.clone();
         } else {
@@ -218,7 +335,7 @@ impl StorageService {
     pub fn find_session(&self, session_id: &str) -> Result<Option<Session>, String> {
         for project in self.list_projects()? {
             if let Some(session) = self
-                .list_sessions(&project.id)?
+                .list_sessions_all(&project.id)?
                 .into_iter()
                 .find(|session| session.id == session_id)
             {
@@ -372,7 +489,16 @@ impl StorageService {
         }
         let mut hits = Vec::new();
         for project in self.list_projects()? {
-            for session in self.list_sessions(&project.id)? {
+            for session in self.list_sessions_all(&project.id)? {
+                // Skip @-delegate children — no independent entry in search.
+                if session
+                    .parent_session_id
+                    .as_ref()
+                    .map(|p| !p.is_empty())
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
                 let mut matched = session.label.to_ascii_lowercase().contains(&q)
                     || session.agent_id.to_ascii_lowercase().contains(&q)
                     || project.name.to_ascii_lowercase().contains(&q);

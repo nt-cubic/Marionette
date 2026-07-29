@@ -44,6 +44,12 @@ pub struct Session {
     /// Grok `/always-approve` (permission auto-approve). Not a session mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_always_approve: Option<bool>,
+    /// Parent dialog when this session was created via `@` delegate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
+    /// `"user"` | `"delegate"` — optional for legacy rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 /// A CLI the ACP bridge shells out to (installed separately from the bridge).
