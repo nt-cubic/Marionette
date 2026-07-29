@@ -18,7 +18,7 @@ serde_json = "1"
 # devtools only in debug — keeps the portable release exe smaller
 tauri = { version = "2", default-features = false, features = ["wry"] }
 agent-client-protocol-schema = "1.4.0"
-ureq = { version = "2", features = ["json"] }
+ureq = { version = "2", features = ["json", "native-tls"], default-features = false }
 # Codex keeps its MCP servers in config.toml
 toml = "0.8"
 # Native folder picker for "Add project" (no tauri dialog plugin).

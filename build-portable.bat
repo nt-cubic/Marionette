@@ -93,7 +93,7 @@ echo  File:  %OUT%
 echo  Size:  %KB% KB  ^(~%MB_WHOLE%.%MB_FRAC% MB^)
 echo.
 if %BYTES% GEQ 10485760 (
-  echo  [warn] Over 10 MB â€” product claim is "under 10MB". Investigate deps / features.
+  echo  [warn] Over 10 MB a€? product claim is "under 10MB". Investigate deps / features.
 ) else (
   echo  [ok] Under 10 MB.
 )

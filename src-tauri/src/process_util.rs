@@ -42,7 +42,13 @@ pub fn resolve_spawn_command(command: &str) -> Result<ResolvedCommand, String> {
 
     #[cfg(target_os = "windows")]
     {
-        if let Ok(output) = Command::new("where.exe").arg(command).output() {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        if let Ok(output) = Command::new("where.exe")
+            .arg(command)
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+        {
             if output.status.success() {
                 for line in String::from_utf8_lossy(&output.stdout).lines() {
                     let line = line.trim();
