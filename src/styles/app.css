@@ -2374,6 +2374,22 @@ button.file-diff-card__code:hover {
   background: color-mix(in srgb, var(--panel-soft) 88%, transparent);
 }
 
+.event-card--thought.is-thought-live {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+}
+
+.event-card--thought.is-thought-live .event-card__type {
+  color: var(--accent);
+}
+
+.event-card__web-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  color: var(--accent);
+  opacity: 0.9;
+}
+
 .event-card__summary {
   display: flex;
   align-items: center;
@@ -2415,7 +2431,10 @@ button.file-diff-card__code:hover {
 }
 
 .event-card__type {
+  display: inline-flex;
   flex: 0 0 auto;
+  gap: 5px;
+  align-items: center;
   color: var(--text-muted);
   font-size: 12px;
   font-weight: 700;
@@ -3788,11 +3807,8 @@ button.file-diff-card__code:hover {
   margin: 0;
   padding: 0 12px 4px;
   overflow: hidden;
-  background: linear-gradient(
-    to top,
-    var(--composer-bg) 55%,
-    color-mix(in srgb, var(--composer-bg) 70%, transparent)
-  );
+  /* No solid/gradient wash — chips float over transcript without a white slab */
+  background: transparent;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.14s ease;
@@ -3809,21 +3825,21 @@ button.file-diff-card__code:hover {
   min-height: 22px;
   padding: 2px 10px;
   overflow: hidden;
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--border) 90%, var(--text-muted));
   border-radius: 999px;
-  color: var(--text);
-  background: var(--panel-raised, var(--panel-soft));
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
   font-size: 11px;
   line-height: 1.3;
   white-space: nowrap;
   text-overflow: ellipsis;
   cursor: pointer;
-  box-shadow: 0 1px 2px color-mix(in srgb, #000 12%, transparent);
+  backdrop-filter: blur(6px);
 }
 
 .composer__suggestion-chip:hover {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-  background: color-mix(in srgb, var(--accent-soft) 55%, var(--panel-soft));
+  background: color-mix(in srgb, var(--accent-soft) 40%, var(--panel));
   color: var(--text);
 }
 
@@ -4052,6 +4068,28 @@ body.is-composer-resizing .composer {
   cursor: pointer;
   text-transform: capitalize;
   transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+/* Force-web-search toggle (prompt prefix). Neutral when off, accent when on. */
+.composer-mode-chip--web-off {
+  --tone: var(--text-muted);
+  text-transform: none;
+}
+
+.composer-mode-chip--web-on {
+  --tone: var(--accent);
+  text-transform: none;
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.composer-mode-chip--icon-only {
+  width: 22px;
+  min-width: 22px;
+  padding: 0;
+  justify-content: center;
 }
 
 .composer-mode-chip__label {

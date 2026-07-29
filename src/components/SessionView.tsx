@@ -1,4 +1,4 @@
-import { ChevronDown, Eye, EyeOff, FileText, MessageSquareQuote, Pencil, Plus, Square, X } from "lucide-react";
+import { ChevronDown, Eye, EyeOff, FileText, Globe, MessageSquareQuote, Pencil, Plus, Square, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { extractAcpUpdateText, mergeStreamText, userMessageAnchorId } from "../lib/acpTranscript";
 import {
@@ -12,6 +12,7 @@ import {
 } from "../lib/activityHealth";
 import { parseUnifiedDiff } from "../lib/annotations";
 import { getFileDiff } from "../lib/api";
+import { detectForceWebSearchInText, stripForceWebSearchPrefix } from "../lib/forceWebSearch";
 import { newQuotePinId, type QuotePin } from "../lib/quoteComment";
 import type { AgentConfig, Session, SessionEvent, SessionStatus, SessionViewMode } from "../lib/types";
 import { ClippedBody } from "./ClippedBody";
@@ -871,6 +872,35 @@ function CleanPlaceholder({
           const toolStalled =
             toolRunning && (health === "stalled" || health === "stuck" || health === "quiet");
 
+          // Thought is "live" only while the session is running and nothing
+          // (tool / reply / newer thought) has followed it in this turn.
+          let thoughtLive = false;
+          let thoughtDurationSec: number | undefined;
+          if (event.type === "thought") {
+            const startMs = Date.parse(event.createdAt);
+            let endMs = healthNow;
+            let followed = false;
+            for (let j = index + 1; j < visibleEvents.length; j++) {
+              const n = visibleEvents[j];
+              if (n.sessionId !== session.id) continue;
+              if (
+                n.type === "thought" ||
+                n.type === "assistant_message" ||
+                n.type === "tool_call" ||
+                n.type === "user_message"
+              ) {
+                followed = true;
+                const t = Date.parse(n.createdAt);
+                if (Number.isFinite(t)) endMs = t;
+                break;
+              }
+            }
+            thoughtLive = isRunning && !followed;
+            if (Number.isFinite(startMs) && startMs > 0) {
+              thoughtDurationSec = Math.max(0, Math.round((endMs - startMs) / 1000));
+            }
+          }
+
           const toolStatusLabel = toolStalled
             ? health === "stuck"
               ? "no updates · appears stuck"
@@ -885,7 +915,11 @@ function CleanPlaceholder({
           // Full body only lives in the expanded clip box (never in the summary).
           const label =
             event.type === "thought"
-              ? "Thinking"
+              ? thoughtLive
+                ? "Thinking…"
+                : thoughtDurationSec != null && thoughtDurationSec > 0
+                  ? `Thought · ${thoughtDurationSec}s`
+                  : "Thought"
               : event.type === "tool_call"
                 ? "Tool"
                 : event.type === "user_message"
@@ -963,23 +997,33 @@ function CleanPlaceholder({
             event.type === "thought" ||
             event.type === "handoff_prepared";
 
-          // Thinking / tool_call: collapsed by default; auto-expand when a tool looks stuck.
-          // User message / assistant: always fully visible.
+          // Thought: open while streaming; collapsed when done (user can expand).
+          // Tool: collapsed by default; auto-expand when stalled.
+          // User / assistant: always fully visible.
           if (isCollapsible) {
+            const forceOpen =
+              thoughtLive ||
+              (toolStalled && (health === "stalled" || health === "stuck"));
             return (
               <details
-                className={`event-card event-card--collapsible event-card--${event.type}${toolRunning ? " is-tool-running" : ""}${toolStalled ? " is-tool-stalled" : ""}${toolStalled && health === "stuck" ? " is-tool-stuck" : ""}`}
-                key={`${event.type}-${event.createdAt}-${index}`}
-                open={toolStalled && (health === "stalled" || health === "stuck") ? true : undefined}
+                className={`event-card event-card--collapsible event-card--${event.type}${toolRunning ? " is-tool-running" : ""}${toolStalled ? " is-tool-stalled" : ""}${toolStalled && health === "stuck" ? " is-tool-stuck" : ""}${thoughtLive ? " is-thought-live" : ""}`}
+                // Remount when thought stops streaming so it starts collapsed (uncontrolled).
+                key={`${event.type}-${event.createdAt}-${index}${event.type === "thought" ? (thoughtLive ? "-live" : "-done") : ""}`}
+                open={forceOpen ? true : undefined}
               >
                 <summary className="event-card__summary" title={previewFull || label}>
                   <span className="event-card__type">
                     {label}
+                    {thoughtLive && <span className="event-card__live-dot" aria-hidden />}
                     {toolRunning && !toolStalled && <span className="event-card__live-dot" aria-hidden />}
                     {toolStalled && <span className="event-card__stall-dot" aria-hidden />}
                   </span>
                   <span className="event-card__preview-wrap">
-                    <span className="event-card__preview">{preview}</span>
+                    <span className="event-card__preview">
+                      {event.type === "thought" && thoughtLive
+                        ? "…"
+                        : preview}
+                    </span>
                   </span>
                 </summary>
                 <div className="event-card__expand-slot">
@@ -1028,7 +1072,20 @@ function CleanPlaceholder({
               )}
               <div className="event-card__main">
                 <div className="event-card__type-row">
-                  <span className="event-card__type">{label}</span>
+                  <span className="event-card__type">
+                    {label}
+                    {isUser &&
+                      (("forceWebSearch" in event && event.forceWebSearch) ||
+                        detectForceWebSearchInText(event.text)) && (
+                        <span
+                          className="event-card__web-badge"
+                          title="发送时已要求模型先联网检索"
+                          aria-label="本条要求联网检索"
+                        >
+                          <Globe size={12} aria-hidden />
+                        </span>
+                      )}
+                  </span>
                   <span className="event-card__type-row__right">
                     <span className="event-card__time-edit">
                       <MessageTimestamp createdAt={event.createdAt} />
@@ -1040,7 +1097,7 @@ function CleanPlaceholder({
                           aria-label="Edit and resend this message"
                           onClick={() => {
                             setEditingKey(userKey);
-                            setEditDraft(event.text);
+                            setEditDraft(stripForceWebSearchPrefix(event.text));
                           }}
                         >
                           <Pencil size={12} />
@@ -1132,13 +1189,23 @@ function CleanPlaceholder({
                       event.attachments.length > 0 && (
                         <UserImageCard attachments={event.attachments} />
                       )}
-                    {useMarkdown && typeof body === "string" && body.trim() ? (
-                      <MarkdownBody text={body} />
-                    ) : typeof body === "string" && body.trim() ? (
-                      <pre className="event-card__plain">
-                        <LinkedText text={body} />
-                      </pre>
-                    ) : null}
+                    {(() => {
+                      const displayBody =
+                        isUser && typeof body === "string"
+                          ? stripForceWebSearchPrefix(body)
+                          : body;
+                      if (useMarkdown && typeof displayBody === "string" && displayBody.trim()) {
+                        return <MarkdownBody text={displayBody} />;
+                      }
+                      if (typeof displayBody === "string" && displayBody.trim()) {
+                        return (
+                          <pre className="event-card__plain">
+                            <LinkedText text={displayBody} />
+                          </pre>
+                        );
+                      }
+                      return null;
+                    })()}
                   </>
                 )}
                 {/* Reply metadata: mode · agent · model · effort · duration (only for real replies with metadata) */}

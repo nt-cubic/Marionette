@@ -392,9 +392,9 @@ export function ContextPanel({
             );
           })}
         </div>
-        <small className="usage-updated">
-          Updated {usage.refreshedAt}
-          {usage.note ? `. ${usage.note}` : "."}
+        <small className="usage-updated" title={usage.note ?? undefined}>
+          {usage.note ? `${usage.note} · ` : ""}
+          {usage.refreshedAt}
         </small>
       </section>
 

@@ -50,6 +50,7 @@ import {
   formatImageMarksForSend,
   type ImageAttachment,
 } from "../lib/imageAttachments";
+import { withForceWebSearch } from "../lib/forceWebSearch";
 import {
   parseTranscriptEvents,
   persistableEventsForSession,
@@ -330,6 +331,7 @@ export function App() {
     text: string;
     sessionId: string;
     imageAttachments?: ImageAttachment[];
+    forceWebSearch?: boolean;
   } | null>(null);
   const [pathGrantBusy, setPathGrantBusy] = useState(false);
   const lastEscAtRef = useRef(0);
@@ -2535,9 +2537,11 @@ export function App() {
     text: string,
     droppedPaths: string[] = [],
     imageAttachments: ImageAttachment[] = [],
+    opts?: { forceWebSearch?: boolean },
   ) => {
     if (!currentSessionId) return;
     const sid = currentSessionId;
+    const forceWebSearch = opts?.forceWebSearch === true;
 
     // @-delegate: line-start @agent task — does not block the parent dialog.
     // Images on a delegate line are ignored for now (depth=1, simple task text).
@@ -2550,7 +2554,7 @@ export function App() {
       return;
     }
 
-    // Merge quote pins + image mark text + free Composer text.
+    // Merge quote pins + image mark text + free Composer text (no force-search prefix here).
     const pins = quotePins;
     let composed = pins.length > 0 ? formatPinsForSend(pins, text) : text;
     const markBlock = formatImageMarksForSend(imageAttachments);
@@ -2578,18 +2582,20 @@ export function App() {
         text: composed,
         sessionId: sid,
         imageAttachments,
+        forceWebSearch,
       });
       return;
     }
 
     setQuotePins([]);
-    await performSend(sid, composed, imageAttachments);
+    await performSend(sid, composed, imageAttachments, forceWebSearch);
   };
 
   const performSend = async (
     sid: string,
     composed: string,
     imageAttachments: ImageAttachment[] = [],
+    forceWebSearch = false,
   ) => {
     try {
       // An agent switch leaves handoff notes waiting — attach them to this send
@@ -2625,6 +2631,7 @@ export function App() {
           ...(sendMetaRef.current ?? {}),
           attachments:
             imageAttachments.length > 0 ? imageAttachments : undefined,
+          forceWebSearch: forceWebSearch || undefined,
         }),
       ]);
       renameSessionFromText(sid, composed || imageAttachments[0]?.name || "Image");
@@ -2695,7 +2702,9 @@ export function App() {
       setSessionStatusById(sid, "running");
       touchActivity(sid);
       const imagePaths = imageAttachments.map((a) => a.path);
-      await sendAcpPrompt(sid, promptText, imagePaths);
+      // Wire only: inject force-search prefix; You card keeps clean `composed`.
+      const wireText = withForceWebSearch(promptText, forceWebSearch);
+      await sendAcpPrompt(sid, wireText, imagePaths);
       touchActivity(sid);
       pushDebug({
         sessionId: sid,
@@ -2778,6 +2787,7 @@ export function App() {
           prompt.sessionId,
           prompt.text,
           prompt.imageAttachments ?? [],
+          prompt.forceWebSearch === true,
         );
       } finally {
         setPathGrantBusy(false);

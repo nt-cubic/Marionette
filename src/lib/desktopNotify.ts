@@ -225,35 +225,69 @@ export async function raiseDesktopNotify(
   }
 }
 
-/** Clear flash / yellow bar / title when the user comes back. */
+/**
+ * Clear flash / yellow bar / title when the user comes back.
+ *
+ * IMPORTANT: never call Tauri window APIs *synchronously* from a focus /
+ * paint path. On Windows, tao 0.35.3 can re-enter the message pump while a
+ * redraw is already in flight and trip
+ * `assert!(flush_paint_messages(..))` (tao#1180) — the process then dies.
+ * Defer native calls one tick so the focus paint finishes first.
+ */
+let clearInflight = false;
+let clearTimer: ReturnType<typeof setTimeout> | null = null;
+
 export async function clearDesktopNotify(opts?: { silent?: boolean }): Promise<void> {
-  if (pending == null && opts?.silent) {
-    // still reset title/progress defensively when turning the feature off
-  }
+  // JS-side state can update immediately (cheap, no Win32 re-entry).
+  const hadPending = pending != null;
   pending = null;
   lastDetail = null;
-  if (!opts?.silent) emit();
-  else emit();
-
+  emit();
   document.title = BASE_TITLE;
 
-  const w = await win();
-  if (!w) return;
+  if (clearTimer != null) {
+    clearTimeout(clearTimer);
+    clearTimer = null;
+  }
+
+  // Nothing left to do on the native side.
+  if (!hadPending && opts?.silent) {
+    // Still schedule a defensive native reset when turning the feature off.
+  }
+
+  if (clearInflight) return;
+  clearInflight = true;
+
+  await new Promise<void>((resolve) => {
+    clearTimer = setTimeout(() => {
+      clearTimer = null;
+      resolve();
+    }, 50);
+  });
 
   try {
-    await w.setTitle(BASE_TITLE);
-  } catch {
-    // ignore
-  }
-  try {
-    await w.requestUserAttention(null);
-  } catch {
-    // ignore
-  }
-  try {
-    await w.setProgressBar({ status: ProgressBarStatus.None });
-  } catch {
-    // ignore
+    const w = await win();
+    if (!w) return;
+
+    try {
+      await w.setTitle(BASE_TITLE);
+    } catch {
+      // ignore
+    }
+    // Prefer progress-bar clear; requestUserAttention(null) has been seen to
+    // re-enter the Win32 message loop during focus and panic tao's paint path.
+    try {
+      await w.setProgressBar({ status: ProgressBarStatus.None });
+    } catch {
+      // ignore
+    }
+    try {
+      await w.requestUserAttention(null);
+    } catch {
+      // ignore
+    }
+  } finally {
+    clearInflight = false;
   }
 }
 
@@ -263,13 +297,28 @@ export async function clearDesktopNotify(opts?: { silent?: boolean }): Promise<v
 export function bindDesktopNotifyFocusHandlers(): () => void {
   let unlistenFocus: (() => void) | undefined;
   let disposed = false;
+  /** Coalesce focus + visibility + onFocusChanged into one clear. */
+  let scheduled = false;
+
+  const scheduleClear = () => {
+    if (disposed || scheduled) return;
+    scheduled = true;
+    // Double rAF: wait until after the OS focus paint has been processed.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        scheduled = false;
+        if (disposed) return;
+        void clearDesktopNotify();
+      });
+    });
+  };
 
   void (async () => {
     const w = await win();
     if (!w || disposed) return;
     try {
       unlistenFocus = await w.onFocusChanged(({ payload: focused }) => {
-        if (focused) void clearDesktopNotify();
+        if (focused) scheduleClear();
       });
     } catch {
       // fall through to document events
@@ -278,11 +327,11 @@ export function bindDesktopNotifyFocusHandlers(): () => void {
 
   const onVis = () => {
     if (document.visibilityState === "visible" && document.hasFocus()) {
-      void clearDesktopNotify();
+      scheduleClear();
     }
   };
   const onFocus = () => {
-    void clearDesktopNotify();
+    scheduleClear();
   };
   window.addEventListener("focus", onFocus);
   document.addEventListener("visibilitychange", onVis);
@@ -292,5 +341,9 @@ export function bindDesktopNotifyFocusHandlers(): () => void {
     unlistenFocus?.();
     window.removeEventListener("focus", onFocus);
     document.removeEventListener("visibilitychange", onVis);
+    if (clearTimer != null) {
+      clearTimeout(clearTimer);
+      clearTimer = null;
+    }
   };
 }

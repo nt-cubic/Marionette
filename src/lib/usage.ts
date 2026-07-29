@@ -82,15 +82,20 @@ export function mergeProviderProbe(
       kind: w.kind === "rate_limit" ? "rate_limit" : "provider",
     };
   }
-  const sourceBits = [base.source, probe.source].filter(Boolean);
   return {
     ...base,
     providerWindows,
     providerLabel: probe.providerLabel,
     providerModel: probe.modelLabel ?? probe.model,
     refreshedAt: now.toISOString(),
-    source: sourceBits.length > 0 ? sourceBits.join(" + ") : probe.source,
+    // Last writer only — never concatenate (was "opencode zen models + …" spam).
+    source: probe.source || base.source,
   };
+}
+
+/** Keep source a short label; never grow into a debug audit trail. */
+function setSource(prev: string | null | undefined, next: string): string {
+  return next || prev || next;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -510,11 +515,7 @@ export function mergeUsageFromAcp(
     costCurrency: extracted.costCurrency ?? base.costCurrency,
     windows,
     refreshedAt: now.toISOString(),
-    source: base.source?.includes("usage_update")
-      ? base.source
-      : base.source
-        ? `${base.source} + acp usage_update`
-        : "acp usage_update",
+    source: setSource(base.source, "acp usage_update"),
   };
 }
 
@@ -617,11 +618,7 @@ export function mergeUsageFromPromptResult(
     turnTokens: tokens,
     contextUsed: base.contextUsed ?? tokens.total ?? tokens.input,
     refreshedAt: now.toISOString(),
-    source: base.source?.includes(label)
-      ? base.source
-      : base.source
-        ? `${base.source} + ${label}`
-        : label,
+    source: setSource(base.source, label),
   };
 }
 
@@ -661,11 +658,7 @@ export function mergeUsageFromText(
     ...base,
     windows,
     refreshedAt: now.toISOString(),
-    source: base.source?.includes("status") || base.source?.includes("cost")
-      ? base.source
-      : base.source
-        ? `${base.source} + agent text`
-        : "agent text",
+    source: setSource(base.source, "agent text"),
   };
 }
 
@@ -803,17 +796,12 @@ export function mergeGrokBilling(
   const base = prev ?? emptySessionUsage();
   const windows = { ...base.windows };
   for (const w of parsed.windows) windows[w.id] = w;
-  const label = "grok _x.ai/billing";
-  const tierBit = parsed.tier ? ` · ${parsed.tier}` : "";
+  const label = parsed.tier ? `grok billing · ${parsed.tier}` : "grok billing";
   return {
     ...base,
     windows,
     refreshedAt: now.toISOString(),
-    source: base.source?.includes(label)
-      ? base.source
-      : base.source
-        ? `${base.source} + ${label}${tierBit}`
-        : `${label}${tierBit}`,
+    source: setSource(base.source, label),
   };
 }
 
@@ -871,18 +859,8 @@ export function buildUsageSnapshot(args: {
     });
   }
 
-  // Last turn's token split (session/prompt response — every agent fills this in).
-  const turnDetail = formatTurnTokens(state?.turnTokens ?? null);
-  if (turnDetail) {
-    windows.push({
-      id: "turn",
-      label: "Last turn",
-      percentage: null,
-      detail: turnDetail,
-      // `cost` kind renders detail as the primary value — no meter, no "N/A".
-      kind: "cost",
-    });
-  }
+  // Last-turn token split is useful for debugging but noisy in the panel —
+  // keep it off the UI (data still lives on state.turnTokens if needed later).
 
   // Provider balance (OpenCode: based on selected provider/model)
   const providerRows = Object.values(state?.providerWindows ?? {});
@@ -977,49 +955,20 @@ export function buildUsageSnapshot(args: {
       Object.keys(state.windows).length > 0 ||
       Object.keys(state.providerWindows).length > 0);
 
+  // Footer: one short line. Never dump source chains or multi-sentence help.
   let note: string | null = null;
-  if (state?.providerLabel) {
-    const modelBit = state.providerModel ? ` · ${state.providerModel}` : "";
-    note = `${state.providerLabel}${modelBit}`;
-    if (state.source) note += ` · ${state.source}`;
-    // Clarify partial data sources
-    if (providerRows.some((r) => r.percentage == null)) {
-      note += " · some rows are plan info only (not live remaining)";
-    }
+  if (state?.providerModel) {
+    note = state.providerModel;
   } else if (!connected) {
-    note = isOpenCode
-      ? "Open an OpenCode session and pick a model (provider/model) to probe balance."
-      : "Start an ACP session to receive live usage.";
+    note = "Not connected";
   } else if (!hasUsageData) {
-    note = isGrok
-      ? "Context fills in after the first turn. Click refresh for weekly credit usage (_x.ai/billing)."
-      : wantsPlanLimits
-        ? "Context fills in after the first turn. Click refresh for plan limits."
-        : isOpenCode
-          ? "Click refresh to query the provider for the selected model."
-          : "Context fills in after the first turn.";
-  } else if (state?.source) {
-    note = `Source: ${state.source}`;
-  }
-
-  // The limit rows are gone unless real, so say why — otherwise their absence
-  // just looks like a missing feature.
-  const hasRateRows = windows.some((w) => w.kind === "rate_limit");
-  if (!hasRateRows && wantsPlanLimits && connected) {
-    const how =
-      agentId === "codex"
-        ? "click refresh (runs /status)"
-        : isGrok
-          ? "click refresh (Grok _x.ai/billing)"
-          : "click refresh (runs /usage)";
-    note = `${note ? `${note} · ` : ""}Plan limits: ${how}.`;
+    note = "Send a message to fill in context";
   }
 
   return {
     agentId,
-    agentLabel: state?.providerLabel
-      ? `${agentLabel} · ${state.providerLabel}`
-      : agentLabel,
+    // Keep header short: agent name only (provider was duplicating the footer).
+    agentLabel,
     windows,
     refreshedAt: formatClock(state?.refreshedAt ?? null),
     note,

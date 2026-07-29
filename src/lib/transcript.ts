@@ -53,6 +53,9 @@ export function parseTranscriptEvents(raw: unknown[]): SessionEvent[] {
         ...(type === "user_message" && Array.isArray(e.attachments)
           ? { attachments: e.attachments as import("./imageAttachments").ImageAttachment[] }
           : {}),
+        ...(type === "user_message" && e.forceWebSearch === true
+          ? { forceWebSearch: true }
+          : {}),
       } as SessionEvent);
       continue;
     }

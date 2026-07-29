@@ -1894,6 +1894,7 @@ dependencies = [
  "tauri-build",
  "toml 0.8.2",
  "ureq",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

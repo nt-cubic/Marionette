@@ -15,3 +15,7 @@ _research/repos/
 
 # IDE / AI config
 .claude/
+
+# Portable release output (upload via GitHub Releases)
+dist-portable/
+

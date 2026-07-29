@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { Expand, Plus, Search, SendHorizontal, Shrink, Square } from "lucide-react";
+import { Expand, Globe, Plus, Search, SendHorizontal, Shrink, Square } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from "react";
 import {
   expandAcpConfigAttempts,
@@ -56,6 +56,7 @@ import {
   type ImageAttachment,
   type ImageMark,
 } from "../lib/imageAttachments";
+
 import type {
   AcpEvent,
   AgentCommandStatus,
@@ -99,6 +100,7 @@ type ComposerProps = {
     text: string,
     droppedPaths?: string[],
     imageAttachments?: import("../lib/imageAttachments").ImageAttachment[],
+    opts?: { forceWebSearch?: boolean },
   ) => void;
   /** Notify parent when the active model id changes (for provider balance probes). */
   onActiveModelChange?: (modelId: string | null) => void;
@@ -436,6 +438,11 @@ export function Composer({
   /** Image attachments as Codex-style pills (not raw paths in the textarea). */
   const [imageAttachments, setImageAttachments] = useState<ImageAttachment[]>([]);
   const [annotatingId, setAnnotatingId] = useState<string | null>(null);
+  /**
+   * Force web-search instruction on send (prompt prefix only — not a network firewall).
+   * Remounted per dialog (`key` on Composer), so it is session-scoped for free.
+   */
+  const [forceWebSearch, setForceWebSearch] = useState(false);
   /** Draft snapshot right after a file drop — treats path-only draft as "empty" for chips. */
   const [draftAfterDrop, setDraftAfterDrop] = useState<string | null>(null);
   /** Paths from the most recent drop (feeds drop-source chips). */
@@ -1042,7 +1049,13 @@ export function Composer({
       const droppedInText = dropped.filter((p) => text.includes(p) || imageAttachments.some((a) => a.path === p));
       const sentWith = currentModel ?? (caps && caps.models.length > 0 ? caps.models[0].id : null);
       if (sentWith) recordModelUsage(sentWith);
-      onSend(text, droppedInText, imageAttachments.length > 0 ? imageAttachments : undefined);
+      // Keep draft text clean for the You card; App injects the wire prefix.
+      onSend(
+        text,
+        droppedInText,
+        imageAttachments.length > 0 ? imageAttachments : undefined,
+        forceWebSearch ? { forceWebSearch: true } : undefined,
+      );
       droppedPathsRef.current.clear();
       setDraft("");
       setImageAttachments([]);
@@ -1058,8 +1071,9 @@ export function Composer({
       onSend,
       clearDropSuggest,
       imageAttachments,
+      forceWebSearch,
     ],
-  );
+  ); // forceWebSearch passed as flag, not baked into text
 
   const submit = () => {
     // Empty draft is OK when parent has quote-pins (App merges on send).
@@ -2032,6 +2046,25 @@ export function Composer({
                 </span>
               </button>
             )}
+            {/* Force web search via prompt prefix — not a network firewall. */}
+            <button
+              className={
+                forceWebSearch
+                  ? "composer-mode-chip composer-mode-chip--web-on composer-mode-chip--icon-only"
+                  : "composer-mode-chip composer-mode-chip--web-off composer-mode-chip--icon-only"
+              }
+              type="button"
+              title={
+                forceWebSearch
+                  ? "已开启：发送时会要求模型先联网检索再回答（需 agent 有搜索/抓取工具）"
+                  : "点击开启：在提示词中强制先联网检索官方文档再回答（不是断网开关）"
+              }
+              aria-pressed={forceWebSearch}
+              aria-label={forceWebSearch ? "关闭强制联网检索" : "开启强制联网检索"}
+              onClick={() => setForceWebSearch((v) => !v)}
+            >
+              <Globe size={13} aria-hidden />
+            </button>
           </div>
           <div className="composer__actions">
             {/* ── Model + Effort selector ─────────────────────────────── */}

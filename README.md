@@ -73,6 +73,18 @@ npm install && npm run tauri dev
 
 添加项目 → 选择 Agent → 开始对话。
 
+### 便携版（单 exe，无安装包）
+
+在本机双击 `build-portable.bat`（或 `npm run build:portable`），产物：
+
+```
+dist-portable/Marionette.exe
+```
+
+拷到任意 Windows 电脑双击即可。需要系统已安装 [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)（Win11 / 较新 Win10 一般自带）。若缺失，启动时会弹窗并给出微软官方下载链接——**不会**静默安装或写开始菜单/卸载项。
+
+目标体积：不到 10MB。
+
 ---
 
 ## 设计哲学
