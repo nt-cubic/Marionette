@@ -15,6 +15,7 @@ _research/repos/
 
 # IDE / AI config
 .claude/
+.marionette/
 
 # Portable release output (upload via GitHub Releases)
 dist-portable/
