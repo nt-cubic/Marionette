@@ -192,6 +192,7 @@ fn main() {
             commands::start_acp_session,
             commands::send_acp_prompt,
             commands::read_image_data_url,
+            commands::save_pasted_image,
             commands::cancel_acp_session,
             commands::stop_acp_session,
             commands::get_session_capabilities,
