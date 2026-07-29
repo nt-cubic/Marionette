@@ -112,8 +112,43 @@ pub fn parse_version(text: &str) -> Option<String> {
     None
 }
 
+/// npm registry wants the bare package name — strip accidental `name@1.2.3`
+/// so auto-update still tracks **latest** even if a pin sneaks into install.package.
+pub fn npm_registry_name(package: &str) -> &str {
+    let p = package.trim();
+    if let Some(rest) = p.strip_prefix('@') {
+        // scoped: @scope/name[@ver] — only the second @ is a version separator
+        if let Some(slash) = rest.find('/') {
+            let after_name = &rest[slash + 1..];
+            if let Some(at) = after_name.find('@') {
+                let ver = &after_name[at + 1..];
+                if looks_like_npm_version(ver) {
+                    // "@" + scope/name  (exclude @ver)
+                    return &p[..1 + slash + 1 + at];
+                }
+            }
+        }
+        return p;
+    }
+    // unscoped: name@1.2.3
+    if let Some((name, ver)) = p.rsplit_once('@') {
+        if looks_like_npm_version(ver) {
+            return name;
+        }
+    }
+    p
+}
+
+fn looks_like_npm_version(s: &str) -> bool {
+    let s = s.trim();
+    !s.is_empty() && s.chars().next().is_some_and(|c| c.is_ascii_digit())
+}
+
 fn latest_version(package: &str) -> Option<String> {
-    let url = format!("https://registry.npmjs.org/{package}/latest");
+    let name = npm_registry_name(package);
+    // Scoped packages need the slash encoded for the registry URL path.
+    let encoded = name.replace('/', "%2F");
+    let url = format!("https://registry.npmjs.org/{encoded}/latest");
     let resp = ureq::get(&url)
         .set("Accept", "application/json")
         .set("User-Agent", "Marionette/0.1 (agent-update)")
@@ -151,7 +186,12 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
 
 pub fn version_info(agent: &AgentConfig, check_registry: bool) -> AgentVersionInfo {
     let installed = installed_version(&agent.command);
-    let package = agent.install.package.clone();
+    // Always surface bare package name so install/auto-update track **latest**.
+    let package = agent
+        .install
+        .package
+        .as_deref()
+        .map(|p| npm_registry_name(p).to_string());
 
     let latest = match (&package, check_registry) {
         (Some(pkg), true) => latest_version(pkg),
@@ -184,7 +224,7 @@ pub fn version_info(agent: &AgentConfig, check_registry: bool) -> AgentVersionIn
 }
 
 pub fn all_version_info(check_registry: bool) -> Vec<AgentVersionInfo> {
-    AgentConfig::defaults()
+    crate::custom_agents::all_agents_merged()
         .iter()
         .map(|agent| version_info(agent, check_registry))
         .collect()
@@ -193,6 +233,20 @@ pub fn all_version_info(check_registry: bool) -> Vec<AgentVersionInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strips_pin_for_registry_name() {
+        assert_eq!(npm_registry_name("cline@3.0.38"), "cline");
+        assert_eq!(
+            npm_registry_name("@agentclientprotocol/codex-acp@1.1.0"),
+            "@agentclientprotocol/codex-acp"
+        );
+        assert_eq!(
+            npm_registry_name("@agentclientprotocol/codex-acp"),
+            "@agentclientprotocol/codex-acp"
+        );
+        assert_eq!(npm_registry_name("openclaw"), "openclaw");
+    }
 
     #[test]
     fn parses_version_out_of_noisy_cli_output() {

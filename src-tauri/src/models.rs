@@ -53,7 +53,7 @@ pub struct Session {
 }
 
 /// A CLI the ACP bridge shells out to (installed separately from the bridge).
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentDependency {
     pub command: String,
@@ -63,7 +63,7 @@ pub struct AgentDependency {
 }
 
 /// How Marionette can put this agent's ACP command on the machine.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentInstallSpec {
     /// `npm` → one-click install; `manual` → vendor installer only.
@@ -122,6 +122,9 @@ impl AgentConfig {
     pub fn defaults() -> Vec<Self> {
         vec![
             // Clean View product path = ACP for every first-class agent.
+            // npm packages are **unpinned names** so `agent_update` / auto-update
+            // can always pull registry **latest**. Codeg pin table lives in
+            // `agent_registry` for docs/preflight only — do not bake @ver here.
             Self::new(
                 "opencode",
                 "OpenCode",
@@ -178,6 +181,90 @@ impl AgentConfig {
                 "stdin",
                 AgentInstallSpec::manual(
                     "Grok ships its own installer (no npm package) — install the Grok CLI, then make sure `grok` is on PATH.",
+                ),
+            ),
+            // ── Expanded harness (PATH cold start + npm install/auto-update) ──
+            Self::new(
+                "cline",
+                "Cline",
+                "cline",
+                vec!["--acp".to_string()],
+                "acp",
+                "stdin",
+                AgentInstallSpec::npm("cline", Vec::new()),
+            ),
+            Self::new(
+                "gemini",
+                "Gemini CLI",
+                "gemini",
+                vec!["--acp".to_string(), "--skip-trust".to_string()],
+                "acp",
+                "stdin",
+                AgentInstallSpec::npm("@google/gemini-cli", Vec::new()),
+            ),
+            Self::new(
+                "kimi-code",
+                "Kimi Code",
+                "kimi",
+                vec!["acp".to_string()],
+                "acp",
+                "stdin",
+                AgentInstallSpec::npm("@moonshot-ai/kimi-code", Vec::new()),
+            ),
+            Self::new(
+                "codebuddy",
+                "CodeBuddy",
+                "codebuddy",
+                vec!["--acp".to_string()],
+                "acp",
+                "stdin",
+                AgentInstallSpec::npm("@tencent-ai/codebuddy-code", Vec::new()),
+            ),
+            Self::new(
+                "pi",
+                "Pi",
+                "pi-acp",
+                vec![],
+                "acp",
+                "stdin",
+                AgentInstallSpec::npm(
+                    "pi-acp",
+                    vec![dependency(
+                        "pi",
+                        "Pi coding agent",
+                        Some("@earendil-works/pi-coding-agent"),
+                    )],
+                ),
+            ),
+            Self::new(
+                "hermes",
+                "Hermes Agent",
+                "hermes",
+                vec!["acp".to_string()],
+                "acp",
+                "stdin",
+                AgentInstallSpec::manual(
+                    "Install via uv: uvx --python 3.13 --from 'hermes-agent[acp,mcp]' hermes-acp  (or official Hermes installer). Put `hermes` on PATH. Requires uv ≥0.5.",
+                ),
+            ),
+            Self::new(
+                "openclaw",
+                "OpenClaw",
+                "openclaw",
+                vec!["acp".to_string()],
+                "acp",
+                "stdin",
+                AgentInstallSpec::npm("openclaw", Vec::new()),
+            ),
+            Self::new(
+                "cursor",
+                "Cursor",
+                "cursor-agent",
+                vec!["acp".to_string()],
+                "acp",
+                "stdin",
+                AgentInstallSpec::manual(
+                    "Install Cursor agent CLI as `cursor-agent` only (do not install a global `agent` binary — collides with Grok). Put `cursor-agent` on PATH.",
                 ),
             ),
         ]

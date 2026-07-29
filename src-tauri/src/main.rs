@@ -1,19 +1,25 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod acp;
+mod agent_registry;
 mod agent_update;
 mod app_paths;
+mod elicitation;
+mod app_update;
 mod commands;
 mod context_inventory;
+mod custom_agents;
 mod debug_log;
 mod git_service;
 mod handoff;
 mod models;
 mod open_target;
+mod preflight;
 mod process_util;
 mod provider_usage;
 mod session_manager;
 mod storage;
+mod terminal_runtime;
 mod webview2_gate;
 
 use acp::AcpService;
@@ -172,8 +178,13 @@ fn main() {
             commands::pick_files,
             commands::delete_project,
             commands::list_agents,
+            commands::list_custom_agents,
+            commands::add_custom_agent,
+            commands::remove_custom_agent,
             commands::test_agent_command,
             commands::list_agent_commands,
+            commands::agent_preflight,
+            commands::list_agent_preflights,
             commands::install_agent,
             commands::agent_versions,
             commands::list_sessions,
@@ -205,6 +216,11 @@ fn main() {
             commands::get_changed_files,
             commands::get_file_diff,
             commands::respond_acp_permission,
+            commands::respond_acp_question,
+            commands::respond_acp_plan_approval,
+            commands::check_app_update,
+            commands::download_app_update,
+            commands::apply_app_update_and_relaunch,
             commands::scan_project_context,
             commands::set_project_context_enabled,
             commands::project_context_prompt,

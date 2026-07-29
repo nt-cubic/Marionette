@@ -66,7 +66,7 @@ MCP、Skills、上下文——不需要配置四遍。
 ## 快速上手
 
 ```bash
-git clone https://github.com/your/marionette
+git clone https://github.com/nt-cubic/Marionette
 cd marionette
 npm install && npm run tauri dev
 ```

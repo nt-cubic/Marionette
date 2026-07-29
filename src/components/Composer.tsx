@@ -16,14 +16,18 @@ import {
   mergeAcpCapabilities,
 } from "../lib/acpSupplements";
 import {
+  addCustomAgent,
+  agentPreflight,
   getSessionCapabilities,
   installAgent,
   isTauriRuntime,
   listAgentCommands,
   pickFiles,
+  removeCustomAgent,
   savePastedImage,
   sendAcpPrompt,
   updateAcpSession,
+  type PreflightResult,
 } from "../lib/api";
 import {
   getCachedAgentVersions,
@@ -38,6 +42,11 @@ import {
   invalidateCapsIfAgentUpdated,
 } from "../lib/capabilityCache";
 import { detectCapabilityDrift } from "../lib/capabilityDrift";
+import {
+  modelTooltip,
+  prettyModelLabel,
+  prettyModelTrigger,
+} from "../lib/modelLabel";
 import {
   applySlashCommand,
   filterSlashCommands,
@@ -145,6 +154,8 @@ type ComposerProps = {
     agentId: string,
     phase: "stop" | "restart",
   ) => void | Promise<void>;
+  /** Reload agent list after custom agent add/remove. */
+  onAgentsReload?: () => void | Promise<void>;
   /**
    * Live ACP-advertised slash commands for this dialog. Static fallbacks apply
    * when null/empty (see `resolveSlashCommands`).
@@ -218,21 +229,11 @@ function providerOf(model: ModelDef): string {
 }
 
 function shortModelName(model: ModelDef): string {
-  // Prefer ACP-enriched label (includes generation from description).
-  const label = model.label.includes("/")
-    ? model.label.slice(model.label.indexOf("/") + 1).trim()
-    : model.label;
-  const idTail = model.id.includes("/")
-    ? model.id.slice(model.id.indexOf("/") + 1)
-    : model.id;
-  const name = label || idTail || model.id;
-  return name.length > 48 ? `${name.slice(0, 46)}…` : name;
+  return prettyModelLabel(model, { maxLen: 40 });
 }
 
 function shortTriggerLabel(label: string | null, id: string | null): string {
-  const raw = label || id || "model";
-  const name = raw.includes("/") ? raw.slice(raw.lastIndexOf("/") + 1).trim() : raw;
-  return name.length > 22 ? `${name.slice(0, 20)}…` : name;
+  return prettyModelTrigger(label, id);
 }
 
 function groupModels(models: ModelDef[]): { provider: string; models: ModelDef[] }[] {
@@ -427,6 +428,7 @@ export function Composer({
   lastActivityAt = null,
   onProviderKeysChanged,
   onAgentBinaryUpdated,
+  onAgentsReload,
   availableCommands = null,
 }: ComposerProps) {
   /**
@@ -487,6 +489,7 @@ export function Composer({
   );
   const [installingAgentId, setInstallingAgentId] = useState<string | null>(null);
   const [installNote, setInstallNote] = useState("");
+  const [preflightById, setPreflightById] = useState<Record<string, PreflightResult>>({});
   /** Highlighted row in the `/` autocomplete list. */
   const [slashIndex, setSlashIndex] = useState(0);
   /** Caret position — drives `/` token detection without remounting the textarea. */
@@ -1591,7 +1594,47 @@ export function Composer({
     // Versions are already cached; a quiet refresh picks up anything that
     // changed since the last background pass without blanking the UI.
     void refreshAgentVersions();
-  }, [menu, refreshAgentStatuses]);
+    // Light preflight for visible agents (PATH / Node / uv).
+    void (async () => {
+      const enabled = agents.filter((a) => a.enabled);
+      const results = await Promise.all(
+        enabled.map(async (a) => {
+          const r = await agentPreflight(a.id);
+          return r ? ([a.id, r] as const) : null;
+        }),
+      );
+      const map: Record<string, PreflightResult> = {};
+      for (const row of results) {
+        if (row) map[row[0]] = row[1];
+      }
+      setPreflightById(map);
+    })();
+  }, [menu, refreshAgentStatuses, agents]);
+
+  const runAddCustomAgent = useCallback(async () => {
+    const id = window.prompt("自定义 agent id（字母数字-_，建议 custom-xxx）", "custom-");
+    if (!id?.trim()) return;
+    const label = window.prompt("显示名称", id.trim());
+    if (!label?.trim()) return;
+    const command = window.prompt("可执行命令（须在 PATH 上，或配合 npm 包名）", "");
+    if (!command?.trim()) return;
+    const npmPackage = window.prompt("可选：npm 包名（有则支持 Install 按钮）", "") ?? "";
+    try {
+      await addCustomAgent({
+        id: id.trim(),
+        label: label.trim(),
+        command: command.trim(),
+        args: [],
+        npmPackage: npmPackage.trim() || null,
+        note: null,
+      });
+      setInstallNote(`已添加自定义 agent「${label.trim()}」。`);
+      await onAgentsReload?.();
+      void refreshAgentStatuses();
+    } catch (e) {
+      setInstallNote(e instanceof Error ? e.message : String(e));
+    }
+  }, [onAgentsReload, refreshAgentStatuses]);
 
   const runInstall = useCallback(
     async (agentId: string, options?: { upgrade?: boolean }) => {
@@ -2319,7 +2362,7 @@ export function Composer({
                                       type="button"
                                       role="option"
                                       aria-selected={displayModel === m.id}
-                                      title={[m.label || m.id, m.description, m.id].filter(Boolean).join("\n")}
+                                      title={modelTooltip(m)}
                                       onClick={() => {
                                         const prev = displayModel;
                                         pinOptions({ model: m.id });
@@ -2334,7 +2377,6 @@ export function Composer({
                                       }}
                                     >
                                       <span className="composer-menu__model-name">{shortModelName(m)}</span>
-                                      <span className="composer-menu__model-id">{m.id}</span>
                                     </button>
                                   ))}
                                 </div>
@@ -2510,6 +2552,16 @@ export function Composer({
                       const busyInstall = installingAgentId === candidate.id;
                       const canInstall =
                         !ready && (status?.installable ?? false) && !busyInstall;
+                      // Grok / Hermes / Cursor: no in-app installer — show setup help instead of a blank gap.
+                      const needsManualSetup =
+                        !ready &&
+                        !canInstall &&
+                        !busyInstall &&
+                        candidate.install.manager === "manual";
+                      const manualHint =
+                        candidate.install.note?.trim() ||
+                        status?.message?.trim() ||
+                        `Install \`${candidate.command}\` and put it on PATH, then restart Marionette.`;
                       const version = agentVersionInfo[candidate.id];
                       // Offer the upgrade from cached registry state — no need
                       // to re-open the menu to re-test.
@@ -2522,7 +2574,11 @@ export function Composer({
                             type="button"
                             role="option"
                             aria-selected={agent.id === candidate.id}
-                            title={status?.message ?? candidate.command}
+                            title={
+                              needsManualSetup
+                                ? manualHint
+                                : (status?.message ?? candidate.command)
+                            }
                             onClick={() => {
                               setMenu(null);
                               // Always mirror session.agentId (via agent prop), never a floating selection.
@@ -2555,7 +2611,9 @@ export function Composer({
                                   ? "installing…"
                                   : status?.status === "incomplete"
                                     ? "needs CLI"
-                                    : "not installed"}
+                                    : needsManualSetup
+                                      ? "需本机安装"
+                                      : "not installed"}
                               </span>
                             )}
                           </button>
@@ -2585,9 +2643,85 @@ export function Composer({
                               Install
                             </button>
                           )}
+                          {needsManualSetup && (
+                            <button
+                              className="composer-agent-row__install composer-agent-row__install--manual"
+                              type="button"
+                              title={manualHint}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                const pf = preflightById[candidate.id];
+                                const pfLines = pf
+                                  ? pf.checks
+                                      .map((c) => `${c.status === "pass" ? "✓" : c.status === "warn" ? "!" : "✗"} ${c.label}: ${c.message}`)
+                                      .join("\n")
+                                  : "";
+                                setInstallNote(
+                                  `${candidate.label} 无法在应用内一键安装。\n\n${manualHint}${
+                                    pfLines ? `\n\n环境检查：\n${pfLines}` : ""
+                                  }\n\n装好后请重启 Marionette，再选该 agent。`,
+                                );
+                                void navigator.clipboard?.writeText(manualHint).catch(() => undefined);
+                              }}
+                            >
+                              如何安装
+                            </button>
+                          )}
+                          {!ready && !needsManualSetup && preflightById[candidate.id] && !preflightById[candidate.id].passed && (
+                            <button
+                              className="composer-agent-row__install composer-agent-row__install--manual"
+                              type="button"
+                              title="环境检查未通过"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                const pf = preflightById[candidate.id];
+                                if (!pf) return;
+                                setInstallNote(
+                                  `${pf.agentName} 环境检查：\n` +
+                                    pf.checks
+                                      .map(
+                                        (c) =>
+                                          `${c.status === "pass" ? "✓" : c.status === "warn" ? "!" : "✗"} ${c.label}: ${c.message}`,
+                                      )
+                                      .join("\n"),
+                                );
+                              }}
+                            >
+                              检查
+                            </button>
+                          )}
+                          {candidate.id.startsWith("custom-") || candidate.install.note?.includes("Custom agent") ? (
+                            <button
+                              className="composer-agent-row__install composer-agent-row__install--manual"
+                              type="button"
+                              title="删除自定义 agent"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                if (!window.confirm(`删除自定义 agent「${candidate.label}」？`)) return;
+                                void removeCustomAgent(candidate.id)
+                                  .then(async () => {
+                                    setInstallNote(`已删除 ${candidate.label}`);
+                                    await onAgentsReload?.();
+                                    void refreshAgentStatuses();
+                                  })
+                                  .catch((e) =>
+                                    setInstallNote(e instanceof Error ? e.message : String(e)),
+                                  );
+                              }}
+                            >
+                              删除
+                            </button>
+                          ) : null}
                         </div>
                       );
                     })}
+                  <button
+                    type="button"
+                    className="composer-menu__add-custom"
+                    onClick={() => void runAddCustomAgent()}
+                  >
+                    + 添加自定义 agent
+                  </button>
                   {installNote && <div className="composer-menu__note">{installNote}</div>}
                 </div>
               )}

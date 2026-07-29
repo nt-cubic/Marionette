@@ -1,7 +1,14 @@
 import type { SessionEvent } from "./types";
+import {
+  claudeParentToolUseId,
+  extractAgentTranscript,
+  parseCodexGoalUpdate,
+  parseCodexRetryUpdate,
+} from "./acpMeta";
+import { inferToolNameFromMeta } from "./toolCallNormalize";
 
 export type AcpTextPart = {
-  role: "assistant" | "thought" | "tool" | "other";
+  role: "assistant" | "thought" | "tool" | "other" | "system";
   text: string;
   /** True when this looks like a streaming delta (append). False ≈ full snapshot (replace). */
   isDelta: boolean;
@@ -10,12 +17,21 @@ export type AcpTextPart = {
   toolCallId?: string;
   toolStatus?: string;
   toolTitle?: string;
+  /** Normalized tool name (aliases / x.ai kind). */
+  toolName?: string;
   /** First `locations[]` entry — what file the tool is working on. */
   toolPath?: string;
   /** Rendered `content[]` / `rawOutput` — what the tool actually produced. */
   toolDetail?: string;
   /** Clipped `rawInput` — only useful until real output arrives. */
   toolInput?: string;
+  /**
+   * Claude subagent-transcript: stream this chunk into the parent Agent tool card
+   * instead of the main assistant/thought rail (Codeg parentToolUseId).
+   */
+  parentToolCallId?: string;
+  /** Append toolDetail instead of replace (subagent stream). */
+  toolDetailAppend?: boolean;
 };
 
 type UpdateObj = Record<string, unknown>;
@@ -199,6 +215,45 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
         ? update.message_id
         : undefined;
 
+  // ── Codex session_info_update: goal / retry (Codeg codex_goal + retry) ──
+  if (
+    sessionUpdate === "session_info_update" ||
+    sessionUpdate === "sessioninfoupdate" ||
+    sessionUpdate.includes("session_info")
+  ) {
+    const goal = parseCodexGoalUpdate(update);
+    if (goal) {
+      return {
+        role: "tool",
+        text: renderToolText({
+          title: goal.title,
+          status: goal.status === "active" ? "in_progress" : "completed",
+          detail: goal.objective,
+        }),
+        isDelta: false,
+        sessionUpdate,
+        messageId,
+        toolCallId: goal.toolCallId,
+        toolStatus: goal.status === "active" ? "in_progress" : "completed",
+        toolTitle: goal.title,
+        toolName: goal.toolName,
+        toolDetail: goal.objective,
+      };
+    }
+    const retry = parseCodexRetryUpdate(update);
+    if (retry) {
+      const statusBit = retry.httpStatus != null ? ` (HTTP ${retry.httpStatus})` : "";
+      return {
+        role: "system",
+        text: `**Retrying…**${statusBit}\n\n${retry.message}`,
+        isDelta: false,
+        sessionUpdate,
+        messageId,
+      };
+    }
+    return null;
+  }
+
   // ── tool_call / tool_call_update ──────────────────────────────────────────
   if (sessionUpdate === "tool_call" || sessionUpdate === "tool_call_update" || sessionUpdate.includes("tool_call")) {
     const toolCallId = typeof update.toolCallId === "string"
@@ -209,11 +264,15 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
     // Only report what this update actually carried: ACP updates are partial,
     // and a fabricated fallback here would rename a finished tool back to
     // "tool" (or flip "completed" to "updated") on a bare status ping.
-    const title =
+    const rawTitle =
       (typeof update.title === "string" && update.title) ||
       (typeof update.name === "string" && update.name) ||
       (typeof update.kind === "string" && update.kind !== "other" && update.kind) ||
       undefined;
+    // Prefer meta identity (Grok x.ai/tool.kind) over mutating titles.
+    const meta = update._meta ?? update.meta;
+    const normalized = inferToolNameFromMeta(rawTitle, meta);
+    const title = rawTitle || (normalized ? normalized : undefined);
     const status =
       (typeof update.status === "string" && update.status) ||
       (sessionUpdate === "tool_call" ? "pending" : undefined);
@@ -230,8 +289,11 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
     // What the tool is actually doing / produced — agents stream this and the
     // card used to throw it away, which is why long tools looked frozen.
     const toolPath = firstToolLocation(update);
+    const agentTx = extractAgentTranscript(update);
     const toolDetail =
-      renderToolContent(update.content) || renderToolRawOutput(update.rawOutput ?? update.raw_output);
+      agentTx ||
+      renderToolContent(update.content) ||
+      renderToolRawOutput(update.rawOutput ?? update.raw_output);
     // `{"filePath":"…"}` under a line that already shows that path is noise.
     const toolInput = inputIsOnlyPath(rawInput, toolPath) ? "" : clippedInput;
 
@@ -244,6 +306,8 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
       toolCallId,
       toolStatus: status,
       toolTitle: title,
+      // Stable classification key (aliases applied) for UI/side panels.
+      toolName: normalized || title,
       toolPath,
       toolDetail,
       toolInput,
@@ -275,6 +339,23 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
   }
 
   if (!textFromContent) return null;
+
+  // Claude subagent-transcript: parented chunks → Agent tool card stream (not main rail).
+  const parentToolCallId = claudeParentToolUseId(update);
+  if (parentToolCallId) {
+    return {
+      role: "tool",
+      text: textFromContent,
+      isDelta: true,
+      sessionUpdate,
+      messageId,
+      toolCallId: parentToolCallId,
+      toolDetail: textFromContent,
+      toolDetailAppend: true,
+      toolTitle: "Agent",
+      toolName: "agent",
+    };
+  }
 
   // Protocol-level thinking ONLY — never soft-detect from body text (§ etc.).
   // Heuristic mis-tags swallow Reply into Thinking (see codeg-lessons-text-pipeline).
@@ -503,7 +584,7 @@ export function toolCallEvent(
   toolCallId?: string,
   status?: string,
   title?: string,
-  extra?: { path?: string; detail?: string; input?: string },
+  extra?: { path?: string; detail?: string; input?: string; toolName?: string },
 ): SessionEvent {
   return {
     type: "tool_call",
@@ -512,8 +593,8 @@ export function toolCallEvent(
     toolCallId,
     status,
     title,
-    // First title is the tool name; later updates replace it with a summary.
-    toolName: title,
+    // Prefer normalized name; fall back to first title.
+    toolName: extra?.toolName ?? title,
     path: extra?.path,
     detail: extra?.detail,
     input: extra?.input,
@@ -637,6 +718,30 @@ export function applyAcpPartToEvents(
     return [...current, thoughtEvent(sessionId, part.text, part.messageId)];
   }
 
+  if (part.role === "system") {
+    // Transient banners (Codex retry) — surface as assistant system note, not thought.
+    const last = current[current.length - 1];
+    if (
+      last &&
+      last.type === "assistant_message" &&
+      last.sessionId === sessionId &&
+      last.text.startsWith("**Retrying")
+    ) {
+      const next = [...current];
+      next[next.length - 1] = { ...last, text: part.text };
+      return next;
+    }
+    return [
+      ...current,
+      {
+        type: "assistant_message",
+        sessionId,
+        text: part.text,
+        createdAt: new Date().toISOString(),
+      },
+    ];
+  }
+
   if (part.role === "tool") {
     // Do NOT demote a preceding assistant_message into thought when a tool
     // starts — that rewrite is a common "swallowed reply" failure mode.
@@ -650,13 +755,22 @@ export function applyAcpPartToEvents(
       if (idx >= 0) {
         const prev = base[idx];
         if (prev.type !== "tool_call") return base;
-        // Updates carry only the fields that changed: a bare status update must
-        // not wipe the output the tool already produced.
+        // Subagent stream: append; normal updates: replace empty/keep prior.
+        let detail = prev.detail;
+        if (part.toolDetail) {
+          if (part.toolDetailAppend && prev.detail) {
+            detail = `${prev.detail}\n${part.toolDetail}`;
+            // Cap nested stream so a long subagent cannot blow the transcript.
+            if (detail.length > 8000) detail = `…${detail.slice(-8000)}`;
+          } else {
+            detail = part.toolDetail;
+          }
+        }
         const merged = {
           title: part.toolTitle ?? prev.title,
           status: part.toolStatus ?? prev.status,
           path: part.toolPath ?? prev.path,
-          detail: part.toolDetail || prev.detail,
+          detail: detail || prev.detail,
           input: part.toolInput || prev.input,
         };
         const next = [...base];
@@ -664,10 +778,27 @@ export function applyAcpPartToEvents(
           ...prev,
           ...merged,
           // Never overwritten: `title` becomes a summary, the name must not.
-          toolName: prev.toolName ?? part.toolTitle,
+          toolName: prev.toolName ?? part.toolName ?? part.toolTitle,
           text: renderToolText(merged),
         };
         return next;
+      }
+      // Parented subagent chunk arrived before parent tool card — open a shell card.
+      if (part.toolDetailAppend) {
+        return [
+          ...base,
+          toolCallEvent(
+            sessionId,
+            part.text,
+            part.toolCallId,
+            part.toolStatus ?? "in_progress",
+            part.toolTitle ?? "Agent",
+            {
+              detail: part.toolDetail,
+              toolName: part.toolName ?? "agent",
+            },
+          ),
+        ];
       }
     }
     return [
@@ -678,7 +809,12 @@ export function applyAcpPartToEvents(
         part.toolCallId,
         part.toolStatus ?? "pending",
         part.toolTitle ?? "tool",
-        { path: part.toolPath, detail: part.toolDetail, input: part.toolInput },
+        {
+          path: part.toolPath,
+          detail: part.toolDetail,
+          input: part.toolInput,
+          toolName: part.toolName ?? part.toolTitle,
+        },
       ),
     ];
   }

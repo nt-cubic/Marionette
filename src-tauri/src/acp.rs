@@ -15,6 +15,14 @@ use tauri::{AppHandle, Emitter};
 
 const ACP_EVENT: &str = "acp-event";
 
+// ── Pending UI timeouts (Codeg-aligned: cancel/decline, never auto-approve) ──
+/// Permission card: auto-deny if user never answers.
+const TIMEOUT_PERMISSION_SECS: u64 = 120;
+/// Ask / elicitation questions.
+const TIMEOUT_QUESTION_SECS: u64 = 300;
+/// Plan approval (human-paced review).
+const TIMEOUT_PLAN_APPROVAL_SECS: u64 = 600;
+
 // ─── Capability Types ──────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -38,29 +46,46 @@ pub struct ModelDef {
 /// Claude surfaces family aliases (`opus`, `sonnet`) with the concrete generation
 /// in the description — prefer that so the UI is not just bare "Opus".
 fn model_display_label(name: &str, description: Option<&str>) -> String {
-    let Some(desc) = description.map(str::trim).filter(|s| !s.is_empty()) else {
-        return name.to_string();
-    };
-    // First clause before bullet / middot / price fragment
-    let head = desc
-        .split(['·', '•', '●', '|'])
-        .next()
-        .unwrap_or(desc)
-        .split(" $")
-        .next()
-        .unwrap_or(desc)
-        .trim();
-    if head.is_empty() {
-        return name.to_string();
+    fn strip_noise(s: &str) -> String {
+        let head = s
+            .split(['·', '•', '●', '|'])
+            .next()
+            .unwrap_or(s)
+            .split(" $")
+            .next()
+            .unwrap_or(s)
+            .trim();
+        // Drop trailing context / price marketing so Codex/Grok names stay short.
+        let mut out = head.to_string();
+        for pat in [
+            " with ", // "with 1M context"
+        ] {
+            if let Some(i) = out.to_ascii_lowercase().find(pat) {
+                // Only cut when it looks like a context/spec tail
+                let tail = out[i..].to_ascii_lowercase();
+                if tail.contains("context") || tail.contains("token") {
+                    out.truncate(i);
+                    break;
+                }
+            }
+        }
+        out.trim().to_string()
     }
-    let name_l = name.to_ascii_lowercase();
+
+    let name_clean = strip_noise(name);
+    let Some(desc) = description.map(str::trim).filter(|s| !s.is_empty()) else {
+        return name_clean;
+    };
+    let head = strip_noise(desc);
+    if head.is_empty() {
+        return name_clean;
+    }
+    let name_l = name_clean.to_ascii_lowercase();
     let head_l = head.to_ascii_lowercase();
     if head_l == name_l || head_l.starts_with(&format!("{name_l} ")) {
-        // "Opus 4.8 with 1M context" or exact match
-        return head.to_string();
+        return head;
     }
     if name_l.contains("default") || name_l.contains("recommend") {
-        // "Use the default model (currently Opus 4.8 (1M context))"
         if let Some(inner) = head
             .find("currently ")
             .map(|i| &head[i + "currently ".len()..])
@@ -70,13 +95,13 @@ fn model_display_label(name: &str, description: Option<&str>) -> String {
                 return format!("Default · {ver}");
             }
         }
-        return format!("{name} · {head}");
+        return format!("{name_clean} · {head}");
     }
-    // Short family name + richer head
-    if name.len() <= 16 && head.len() > name.len() {
-        return format!("{name} · {head}");
+    // Short family name + richer head (Claude opus/sonnet)
+    if name_clean.len() <= 16 && head.len() > name_clean.len() {
+        return format!("{name_clean} · {head}");
     }
-    name.to_string()
+    name_clean
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -148,6 +173,30 @@ struct PendingPermission {
     options: Value,
 }
 
+/// Grok (`_x.ai/ask_user_question`) / future multi-choice prompts parked for UI.
+struct PendingQuestion {
+    process: Arc<AcpProcess>,
+    rpc_id: Value,
+}
+
+/// Codex `elicitation/create` parked for UI (approval → permission card, questions → ask card).
+struct PendingElicitation {
+    process: Arc<AcpProcess>,
+    rpc_id: Value,
+    /// `"approval"` | `"questions"`
+    kind: String,
+    /// Serialized plan for response rebuild (`approval_to_stored` / `questions_to_stored`).
+    stored: Value,
+}
+
+/// Grok `_x.ai/exit_plan_mode` approval parked until the user picks an action.
+/// Wire format confirmed in Codeg against Grok 0.2.111 — see
+/// `build_exit_plan_mode_response`.
+struct PendingPlanApproval {
+    process: Arc<AcpProcess>,
+    rpc_id: Value,
+}
+
 #[derive(Clone, Default)]
 pub struct AcpService {
     sessions: Arc<Mutex<HashMap<String, Arc<AcpProcess>>>>,
@@ -155,6 +204,17 @@ pub struct AcpService {
     /// UI-gated `session/request_permission` waiters, keyed by request_id.
     permissions: Arc<Mutex<HashMap<String, PendingPermission>>>,
     permission_seq: Arc<AtomicU64>,
+    /// UI-gated ask-user-question waiters, keyed by request_id.
+    questions: Arc<Mutex<HashMap<String, PendingQuestion>>>,
+    question_seq: Arc<AtomicU64>,
+    /// UI-gated Grok exit-plan-mode approvals, keyed by request_id.
+    plan_approvals: Arc<Mutex<HashMap<String, PendingPlanApproval>>>,
+    plan_approval_seq: Arc<AtomicU64>,
+    /// Codex form elicitation waiters, keyed by request_id (shared UI cards).
+    elicitations: Arc<Mutex<HashMap<String, PendingElicitation>>>,
+    elicitation_seq: Arc<AtomicU64>,
+    /// ACP client `terminal/*` host (shared across sessions).
+    terminals: Arc<crate::terminal_runtime::TerminalRuntime>,
 }
 
 impl AcpService {
@@ -198,6 +258,10 @@ impl AcpService {
         }
         // Dead process, missing caps, or partial warm — kill and restart
         let _ = self.stop(&session_id);
+
+        // Fallback cwd when agent omits `cwd` on `terminal/create`.
+        self.terminals
+            .set_session_cwd(&session_id, PathBuf::from(&cwd));
 
         // Prefer global ACP bins over `npx -y …` (npx cold start can hang UI for minutes).
         let (command, mut args) =
@@ -297,6 +361,12 @@ impl AcpService {
                 child_command.env("OPENCODE_PERMISSION", value);
             }
         }
+        // Registry launch_env (e.g. Pi embedded context) — does not override OpenCode/Grok specials.
+        if let Some(id) = agent_id.as_deref() {
+            for (k, v) in crate::agent_registry::launch_env_for(id) {
+                child_command.env(*k, *v);
+            }
+        }
 
         #[cfg(target_os = "windows")]
         {
@@ -374,6 +444,13 @@ impl AcpService {
         let reader_process = Arc::clone(&process);
         let permissions = Arc::clone(&self.permissions);
         let permission_seq = Arc::clone(&self.permission_seq);
+        let questions = Arc::clone(&self.questions);
+        let question_seq = Arc::clone(&self.question_seq);
+        let plan_approvals = Arc::clone(&self.plan_approvals);
+        let plan_approval_seq = Arc::clone(&self.plan_approval_seq);
+        let elicitations = Arc::clone(&self.elicitations);
+        let elicitation_seq = Arc::clone(&self.elicitation_seq);
+        let terminals = Arc::clone(&self.terminals);
         thread::spawn(move || {
             read_stdout(
                 reader_app,
@@ -383,6 +460,13 @@ impl AcpService {
                 pending,
                 permissions,
                 permission_seq,
+                questions,
+                question_seq,
+                plan_approvals,
+                plan_approval_seq,
+                elicitations,
+                elicitation_seq,
+                terminals,
             )
         });
         let stderr_app = app.clone();
@@ -402,24 +486,15 @@ impl AcpService {
             },
         );
 
-        // ── Phase 1: initialize (advertise client capabilities like Zed) ──
+        // ── Phase 1: initialize (per-agent capabilities — Codeg gates) ──
+        let client_capabilities =
+            crate::agent_registry::build_client_capabilities_json(agent_id.as_deref());
         let initialized = request(
             &process,
             "initialize",
             json!({
                 "protocolVersion": 1,
-                "clientCapabilities": {
-                    "fs": {
-                        "readTextFile": true,
-                        "writeTextFile": true
-                    },
-                    "terminal": true,
-                    "session": {
-                        "configOptions": {
-                            "boolean": {}
-                        }
-                    }
-                },
+                "clientCapabilities": client_capabilities,
                 "clientInfo": { "name": "Marionette", "version": "0.1.0" }
             }),
         );
@@ -444,15 +519,29 @@ impl AcpService {
             .and_then(|caps| caps.get("sse"))
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let (mcp_servers, mcp_skipped) = match agent_id.as_deref() {
-            Some(agent) => crate::context_inventory::mcp_payload_for_agent(
-                std::path::Path::new(&cwd),
-                agent,
-                supports_http,
-                supports_sse,
-            ),
-            None => (Vec::new(), Vec::new()),
-        };
+        // Project-level Skill/MCP lend (P0). Policy may skip inject (OpenClaw/Pi)
+        // without clearing the shared selection UI.
+        let (mcp_servers, mcp_skipped) =
+            if crate::agent_registry::should_inject_mcp(agent_id.as_deref()) {
+                match agent_id.as_deref() {
+                    Some(agent) => crate::context_inventory::mcp_payload_for_agent(
+                        std::path::Path::new(&cwd),
+                        agent,
+                        supports_http,
+                        supports_sse,
+                    ),
+                    None => (Vec::new(), Vec::new()),
+                }
+            } else {
+                let reason = agent_id
+                    .as_deref()
+                    .unwrap_or("(none)")
+                    .to_string();
+                (
+                    Vec::new(),
+                    vec![format!("{reason} (mcp wire policy: skip/never)")],
+                )
+            };
         if !mcp_servers.is_empty() || !mcp_skipped.is_empty() {
             // Names + header *counts* only — values are secrets (Bearer tokens).
             let injected: Vec<String> = mcp_servers
@@ -785,29 +874,147 @@ impl AcpService {
         }
     }
 
-    /// Resolve a UI-gated `session/request_permission` with the chosen optionId.
+    /// Resolve a UI-gated `session/request_permission` **or** elicitation approval.
     pub fn respond_permission(
         &self,
         request_id: &str,
         option_id: &str,
     ) -> Result<(), String> {
-        let pending = {
+        // Prefer classic ACP permission waiters.
+        let classic = {
             let mut map = self
                 .permissions
                 .lock()
                 .map_err(|_| "Permission lock poisoned".to_string())?;
             map.remove(request_id)
-                .ok_or_else(|| format!("Unknown or expired permission request: {request_id}"))?
+        };
+        if let Some(pending) = classic {
+            write_response(
+                &pending.process,
+                pending.rpc_id,
+                json!({
+                    "outcome": {
+                        "outcome": "selected",
+                        "optionId": option_id
+                    }
+                }),
+            );
+            return Ok(());
+        }
+
+        // Codex elicitation approval-style (same permission card UI).
+        let elic = {
+            let mut map = self
+                .elicitations
+                .lock()
+                .map_err(|_| "Elicitation lock poisoned".to_string())?;
+            map.remove(request_id)
+        };
+        let Some(pending) = elic else {
+            return Err(format!(
+                "Unknown or expired permission request: {request_id}"
+            ));
+        };
+        if pending.kind != "approval" {
+            // Put back if user hit wrong responder — re-insert
+            if let Ok(mut map) = self.elicitations.lock() {
+                map.insert(request_id.to_string(), pending);
+            }
+            return Err(format!(
+                "Elicitation {request_id} is not approval-style; use respond_question"
+            ));
+        }
+        let approval = crate::elicitation::approval_from_stored(&pending.stored)
+            .ok_or_else(|| "Corrupt elicitation approval state".to_string())?;
+        write_response(
+            &pending.process,
+            pending.rpc_id,
+            crate::elicitation::build_approval_response(&approval, option_id),
+        );
+        Ok(())
+    }
+
+    /// Resolve `_x.ai/ask_user_question` **or** elicitation questions form.
+    ///
+    /// Grok: internally-tagged `outcome`. Elicitation: `{ action, content }`.
+    /// UI sends `answers` as `[{ question, selected: string[] }]`.
+    pub fn respond_question(
+        &self,
+        request_id: &str,
+        answers: Value,
+        declined: bool,
+    ) -> Result<(), String> {
+        let classic = {
+            let mut map = self
+                .questions
+                .lock()
+                .map_err(|_| "Question lock poisoned".to_string())?;
+            map.remove(request_id)
+        };
+        if let Some(pending) = classic {
+            write_response(
+                &pending.process,
+                pending.rpc_id,
+                build_ask_user_question_result(answers, declined),
+            );
+            return Ok(());
+        }
+
+        let elic = {
+            let mut map = self
+                .elicitations
+                .lock()
+                .map_err(|_| "Elicitation lock poisoned".to_string())?;
+            map.remove(request_id)
+        };
+        let Some(pending) = elic else {
+            return Err(format!(
+                "Unknown or expired question request: {request_id}"
+            ));
+        };
+        if pending.kind != "questions" {
+            if let Ok(mut map) = self.elicitations.lock() {
+                map.insert(request_id.to_string(), pending);
+            }
+            return Err(format!(
+                "Elicitation {request_id} is not questions-style; use respond_permission"
+            ));
+        }
+        let questions = crate::elicitation::questions_from_stored(&pending.stored)
+            .ok_or_else(|| "Corrupt elicitation questions state".to_string())?;
+        write_response(
+            &pending.process,
+            pending.rpc_id,
+            crate::elicitation::build_questions_response(&questions, &answers, declined),
+        );
+        Ok(())
+    }
+
+    /// Resolve Grok `_x.ai/exit_plan_mode` (plan approval card).
+    ///
+    /// `decision`: `"approve"` | `"request_changes"` | `"abandon"`.
+    /// Response wire (Codeg / Grok 0.2.111):
+    /// `{ "outcome": "approved"|"keep_planning"|"abandoned", "feedback": "…" }`.
+    /// Field is `outcome` (NOT `decision`). Unknown outcomes keep plan mode.
+    pub fn respond_plan_approval(
+        &self,
+        request_id: &str,
+        decision: &str,
+        feedback: Option<String>,
+    ) -> Result<(), String> {
+        let pending = {
+            let mut map = self
+                .plan_approvals
+                .lock()
+                .map_err(|_| "Plan approval lock poisoned".to_string())?;
+            map.remove(request_id).ok_or_else(|| {
+                format!("Unknown or expired plan approval request: {request_id}")
+            })?
         };
         write_response(
             &pending.process,
             pending.rpc_id,
-            json!({
-                "outcome": {
-                    "outcome": "selected",
-                    "optionId": option_id
-                }
-            }),
+            build_exit_plan_mode_response(decision, feedback.as_deref()),
         );
         Ok(())
     }
@@ -932,6 +1139,11 @@ impl AcpService {
     }
 
     pub fn stop(&self, session_id: &str) -> Result<(), String> {
+        // Unpark exit_plan_mode / questions / permissions BEFORE killing the
+        // process so keep_planning can still flush on stdin (Codeg: disconnect
+        // mid-approval must not look like approve).
+        self.drop_pending_for_session(session_id);
+
         let process = self
             .sessions
             .lock()
@@ -943,6 +1155,12 @@ impl AcpService {
             .map(|mut map| map.remove(session_id));
         if let Some(process) = process {
             process.intentional_stop.store(true, Ordering::SeqCst);
+            // Kill any agent-owned shells before the agent process itself.
+            if let Ok(guard) = process.agent_session_id.lock() {
+                if let Some(agent_sid) = guard.as_deref() {
+                    self.terminals.release_all_for_agent(agent_sid);
+                }
+            }
             let mut child = process
                 .child
                 .lock()
@@ -950,11 +1168,23 @@ impl AcpService {
             let _ = child.kill();
             let _ = child.wait();
         }
+        self.terminals.clear_session(session_id);
         // Dropping the sender lets the dispatch thread flush its backlog and
         // exit. Done here rather than in the reader's teardown so a restart
         // cannot race and unregister the *new* session's queue.
         unregister_emitter(session_id);
         Ok(())
+    }
+
+    /// Drop UI-gated waiters for this session (see `drop_ui_pending_for_session`).
+    fn drop_pending_for_session(&self, session_id: &str) {
+        drop_ui_pending_for_session(
+            session_id,
+            &self.plan_approvals,
+            &self.questions,
+            &self.permissions,
+            &self.elicitations,
+        );
     }
 
     fn process(&self, session_id: &str) -> Result<Arc<AcpProcess>, String> {
@@ -1951,6 +2181,13 @@ fn read_stdout(
     pending: Arc<Mutex<HashMap<u64, Sender<Result<Value, String>>>>>,
     permissions: Arc<Mutex<HashMap<String, PendingPermission>>>,
     permission_seq: Arc<AtomicU64>,
+    questions: Arc<Mutex<HashMap<String, PendingQuestion>>>,
+    question_seq: Arc<AtomicU64>,
+    plan_approvals: Arc<Mutex<HashMap<String, PendingPlanApproval>>>,
+    plan_approval_seq: Arc<AtomicU64>,
+    elicitations: Arc<Mutex<HashMap<String, PendingElicitation>>>,
+    elicitation_seq: Arc<AtomicU64>,
+    terminals: Arc<crate::terminal_runtime::TerminalRuntime>,
 ) {
     // Ground truth for "did the bytes arrive at all". Everything downstream of
     // here is our own processing, so a line present in this file but missing
@@ -2057,6 +2294,13 @@ fn read_stdout(
                     params,
                     &permissions,
                     &permission_seq,
+                    &questions,
+                    &question_seq,
+                    &plan_approvals,
+                    &plan_approval_seq,
+                    &elicitations,
+                    &elicitation_seq,
+                    &terminals,
                 );
                 continue;
             }
@@ -2085,6 +2329,15 @@ fn read_stdout(
             ));
         }
     }
+    // Also drop Ask / Plan / Permission waiters so the UI is not stuck on a
+    // dead process (write_response is best-effort if the pipe is already gone).
+    drop_ui_pending_for_session(
+        &session_id,
+        &plan_approvals,
+        &questions,
+        &permissions,
+        &elicitations,
+    );
     let _ = process.child.lock().map(|mut child| {
         let _ = child.try_wait();
     });
@@ -2113,7 +2366,90 @@ fn read_stdout(
     );
 }
 
-/// Client methods the agent may call. Permission is gated by the UI (no silent allow).
+/// Clear UI-gated waiters for one session (shared by `stop` and stdout EOF).
+fn drop_ui_pending_for_session(
+    session_id: &str,
+    plan_approvals: &Mutex<HashMap<String, PendingPlanApproval>>,
+    questions: &Mutex<HashMap<String, PendingQuestion>>,
+    permissions: &Mutex<HashMap<String, PendingPermission>>,
+    elicitations: &Mutex<HashMap<String, PendingElicitation>>,
+) {
+    let prefix = format!("{session_id}:");
+    if let Ok(mut map) = plan_approvals.lock() {
+        let keys: Vec<String> = map
+            .keys()
+            .filter(|k| k.starts_with(&prefix))
+            .cloned()
+            .collect();
+        for key in keys {
+            if let Some(pending) = map.remove(&key) {
+                write_response(
+                    &pending.process,
+                    pending.rpc_id,
+                    exit_plan_mode_disconnect_response(),
+                );
+            }
+        }
+    }
+    if let Ok(mut map) = questions.lock() {
+        let keys: Vec<String> = map
+            .keys()
+            .filter(|k| k.starts_with(&prefix))
+            .cloned()
+            .collect();
+        for key in keys {
+            if let Some(pending) = map.remove(&key) {
+                write_response(
+                    &pending.process,
+                    pending.rpc_id,
+                    json!({ "outcome": "cancelled" }),
+                );
+            }
+        }
+    }
+    if let Ok(mut map) = permissions.lock() {
+        let keys: Vec<String> = map
+            .keys()
+            .filter(|k| k.starts_with(&prefix))
+            .cloned()
+            .collect();
+        for key in keys {
+            if let Some(pending) = map.remove(&key) {
+                let option_id =
+                    pick_reject_option(&pending.options).unwrap_or_else(|| "cancel".to_string());
+                write_response(
+                    &pending.process,
+                    pending.rpc_id,
+                    json!({
+                        "outcome": {
+                            "outcome": "selected",
+                            "optionId": option_id,
+                        }
+                    }),
+                );
+            }
+        }
+    }
+    if let Ok(mut map) = elicitations.lock() {
+        let keys: Vec<String> = map
+            .keys()
+            .filter(|k| k.starts_with(&prefix))
+            .cloned()
+            .collect();
+        for key in keys {
+            if let Some(pending) = map.remove(&key) {
+                write_response(
+                    &pending.process,
+                    pending.rpc_id,
+                    crate::elicitation::elicitation_cancel(),
+                );
+            }
+        }
+    }
+}
+
+/// Client methods the agent may call. Permission / questions / plan exit are
+/// gated by the UI; terminal + fs run off-thread.
 fn handle_agent_request(
     process: &Arc<AcpProcess>,
     app: &AppHandle,
@@ -2123,6 +2459,13 @@ fn handle_agent_request(
     params: Value,
     permissions: &Arc<Mutex<HashMap<String, PendingPermission>>>,
     permission_seq: &Arc<AtomicU64>,
+    questions: &Arc<Mutex<HashMap<String, PendingQuestion>>>,
+    question_seq: &Arc<AtomicU64>,
+    plan_approvals: &Arc<Mutex<HashMap<String, PendingPlanApproval>>>,
+    plan_approval_seq: &Arc<AtomicU64>,
+    elicitations: &Arc<Mutex<HashMap<String, PendingElicitation>>>,
+    elicitation_seq: &Arc<AtomicU64>,
+    terminals: &Arc<crate::terminal_runtime::TerminalRuntime>,
 ) {
     match method {
         "session/request_permission" => {
@@ -2160,7 +2503,7 @@ fn handle_agent_request(
             let timeout_req = request_id;
             let timeout_perms = Arc::clone(permissions);
             thread::spawn(move || {
-                thread::sleep(Duration::from_secs(120));
+                thread::sleep(Duration::from_secs(TIMEOUT_PERMISSION_SECS));
                 let pending = {
                     let Ok(mut map) = timeout_perms.lock() else {
                         return;
@@ -2190,6 +2533,281 @@ fn handle_agent_request(
                 }
             });
         }
+        // Grok Build mid-turn multi-choice (also used heavily in Plan mode).
+        // Wire shape: method `x.ai/ask_user_question` (also `_x.ai/` prefix),
+        // params.questions[] with { question, options[{label,description}], multiSelect }.
+        // Response must be an internally-tagged enum on `outcome` (see
+        // `build_ask_user_question_result`) — bare `{}` fails with
+        // "missing field `outcome`".
+        "x.ai/ask_user_question" | "_x.ai/ask_user_question" | "ask_user_question" => {
+            let seq = question_seq.fetch_add(1, Ordering::Relaxed) + 1;
+            let request_id = format!("{session_id}:ask:{seq}");
+            let tool_call_id = params
+                .get("toolCallId")
+                .or_else(|| params.get("tool_call_id"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let mode = params
+                .get("mode")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let qs = params
+                .get("questions")
+                .cloned()
+                .unwrap_or_else(|| Value::Array(vec![]));
+            if let Ok(mut map) = questions.lock() {
+                map.insert(
+                    request_id.clone(),
+                    PendingQuestion {
+                        process: Arc::clone(process),
+                        rpc_id: id.clone(),
+                    },
+                );
+            }
+            emit_event(
+                app,
+                session_id,
+                "request",
+                Some("question/prompt"),
+                json!({
+                    "requestId": request_id.clone(),
+                    "sessionId": session_id,
+                    "toolCallId": tool_call_id,
+                    "mode": mode,
+                    "questions": qs,
+                }),
+            );
+            // Auto-decline if the user never answers (agent must not hang forever).
+            let timeout_app = app.clone();
+            let timeout_session = session_id.to_string();
+            let timeout_req = request_id;
+            let timeout_qs = Arc::clone(questions);
+            thread::spawn(move || {
+                thread::sleep(Duration::from_secs(TIMEOUT_QUESTION_SECS));
+                let pending = {
+                    let Ok(mut map) = timeout_qs.lock() else {
+                        return;
+                    };
+                    map.remove(&timeout_req)
+                };
+                if let Some(pending) = pending {
+                    // Same shape as user Skip — Grok requires `outcome`.
+                    write_response(
+                        &pending.process,
+                        pending.rpc_id,
+                        json!({ "outcome": "cancelled" }),
+                    );
+                    emit_event(
+                        &timeout_app,
+                        &timeout_session,
+                        "system",
+                        Some("question/timeout"),
+                        json!({ "requestId": timeout_req }),
+                    );
+                }
+            });
+        }
+        // Codex form elicitation (Plan request_user_input, MCP approvals, …).
+        // Only advertised for Codex via clientCapabilities.elicitation.form.
+        // Approval-style → permission/prompt; questions → question/prompt.
+        "elicitation/create" => {
+            let plan = match crate::elicitation::classify_elicitation(&params) {
+                Ok(p) => p,
+                Err(e) => {
+                    write_response(
+                        process,
+                        id,
+                        crate::elicitation::elicitation_decline(),
+                    );
+                    emit_event(
+                        app,
+                        session_id,
+                        "system",
+                        Some("elicitation/declined"),
+                        json!({ "reason": e }),
+                    );
+                    return;
+                }
+            };
+            let seq = elicitation_seq.fetch_add(1, Ordering::Relaxed) + 1;
+            let request_id = format!("{session_id}:elic:{seq}");
+            match plan {
+                crate::elicitation::ElicitationPlan::Approval(approval) => {
+                    let options = crate::elicitation::approval_options_for_ui(&approval);
+                    if let Ok(mut map) = elicitations.lock() {
+                        map.insert(
+                            request_id.clone(),
+                            PendingElicitation {
+                                process: Arc::clone(process),
+                                rpc_id: id.clone(),
+                                kind: "approval".into(),
+                                stored: crate::elicitation::approval_to_stored(&approval),
+                            },
+                        );
+                    }
+                    emit_event(
+                        app,
+                        session_id,
+                        "request",
+                        Some("permission/prompt"),
+                        json!({
+                            "requestId": request_id.clone(),
+                            "sessionId": session_id,
+                            "title": if approval.message.is_empty() {
+                                "Approval required".to_string()
+                            } else {
+                                approval.message.clone()
+                            },
+                            "detail": approval.tool_call_id.clone(),
+                            "options": options,
+                            "source": "elicitation",
+                        }),
+                    );
+                    let timeout_app = app.clone();
+                    let timeout_session = session_id.to_string();
+                    let timeout_req = request_id;
+                    let timeout_el = Arc::clone(elicitations);
+                    thread::spawn(move || {
+                        thread::sleep(Duration::from_secs(TIMEOUT_QUESTION_SECS));
+                        let pending = {
+                            let Ok(mut map) = timeout_el.lock() else {
+                                return;
+                            };
+                            map.remove(&timeout_req)
+                        };
+                        if let Some(pending) = pending {
+                            write_response(
+                                &pending.process,
+                                pending.rpc_id,
+                                crate::elicitation::elicitation_decline(),
+                            );
+                            emit_event(
+                                &timeout_app,
+                                &timeout_session,
+                                "system",
+                                Some("permission/timeout"),
+                                json!({ "requestId": timeout_req }),
+                            );
+                        }
+                    });
+                }
+                crate::elicitation::ElicitationPlan::Questions(questions) => {
+                    let qs = crate::elicitation::questions_for_ui(&questions);
+                    if let Ok(mut map) = elicitations.lock() {
+                        map.insert(
+                            request_id.clone(),
+                            PendingElicitation {
+                                process: Arc::clone(process),
+                                rpc_id: id.clone(),
+                                kind: "questions".into(),
+                                stored: crate::elicitation::questions_to_stored(&questions),
+                            },
+                        );
+                    }
+                    emit_event(
+                        app,
+                        session_id,
+                        "request",
+                        Some("question/prompt"),
+                        json!({
+                            "requestId": request_id.clone(),
+                            "sessionId": session_id,
+                            "toolCallId": questions.tool_call_id,
+                            "mode": "elicitation",
+                            "questions": qs,
+                        }),
+                    );
+                    let timeout_app = app.clone();
+                    let timeout_session = session_id.to_string();
+                    let timeout_req = request_id;
+                    let timeout_el = Arc::clone(elicitations);
+                    thread::spawn(move || {
+                        thread::sleep(Duration::from_secs(TIMEOUT_QUESTION_SECS));
+                        let pending = {
+                            let Ok(mut map) = timeout_el.lock() else {
+                                return;
+                            };
+                            map.remove(&timeout_req)
+                        };
+                        if let Some(pending) = pending {
+                            write_response(
+                                &pending.process,
+                                pending.rpc_id,
+                                crate::elicitation::elicitation_decline(),
+                            );
+                            emit_event(
+                                &timeout_app,
+                                &timeout_session,
+                                "system",
+                                Some("question/timeout"),
+                                json!({ "requestId": timeout_req }),
+                            );
+                        }
+                    });
+                }
+            }
+        }
+        // Grok plan mode: agent finished planning and BLOCKS on user approval.
+        // Wire (Codeg, confirmed Grok 0.2.111):
+        //   method: `_x.ai/exit_plan_mode` (also `x.ai/` / bare)
+        //   params: { sessionId, toolCallId, planContent }
+        //   reply:  { outcome: "approved"|"keep_planning"|"abandoned", feedback }
+        // `planContent` is often null — Grok reads plan.md itself after approve.
+        "x.ai/exit_plan_mode" | "_x.ai/exit_plan_mode" | "exit_plan_mode" => {
+            let seq = plan_approval_seq.fetch_add(1, Ordering::Relaxed) + 1;
+            let request_id = format!("{session_id}:plan:{seq}");
+            let (plan_markdown, tool_call_id) = parse_exit_plan_mode_request(&params);
+            if let Ok(mut map) = plan_approvals.lock() {
+                map.insert(
+                    request_id.clone(),
+                    PendingPlanApproval {
+                        process: Arc::clone(process),
+                        rpc_id: id.clone(),
+                    },
+                );
+            }
+            emit_event(
+                app,
+                session_id,
+                "request",
+                Some("plan/approval"),
+                json!({
+                    "requestId": request_id.clone(),
+                    "sessionId": session_id,
+                    "toolCallId": tool_call_id,
+                    "planMarkdown": plan_markdown,
+                }),
+            );
+            // Long timeout: planning review is human-paced. Keep plan mode
+            // active (do NOT auto-approve) so reconnect can re-surface.
+            let timeout_app = app.clone();
+            let timeout_session = session_id.to_string();
+            let timeout_req = request_id;
+            let timeout_plans = Arc::clone(plan_approvals);
+            thread::spawn(move || {
+                thread::sleep(Duration::from_secs(TIMEOUT_PLAN_APPROVAL_SECS));
+                let pending = {
+                    let Ok(mut map) = timeout_plans.lock() else {
+                        return;
+                    };
+                    map.remove(&timeout_req)
+                };
+                if let Some(pending) = pending {
+                    write_response(
+                        &pending.process,
+                        pending.rpc_id,
+                        exit_plan_mode_disconnect_response(),
+                    );
+                    emit_event(
+                        &timeout_app,
+                        &timeout_session,
+                        "system",
+                        Some("plan/timeout"),
+                        json!({ "requestId": timeout_req }),
+                    );
+                }
+            });
+        }
         // Off-thread for the same reason dispatch is: this is disk I/O, and the
         // reader it would run on is the only thing draining the agent's stdout.
         // Responses are matched by id, so answering out of order is fine.
@@ -2205,6 +2823,40 @@ fn handle_agent_request(
                 match outcome {
                     Ok(result) => write_response(&process, id, result),
                     Err(error) => write_error_response(&process, id, -32000, &error),
+                }
+            });
+        }
+        // ACP terminal host (create / output / wait / kill / release).
+        // `wait_for_exit` blocks until the child exits — never run on the
+        // stdout reader thread or the agent pipeline stalls.
+        "terminal/create"
+        | "terminal/output"
+        | "terminal/wait_for_exit"
+        | "terminal/kill"
+        | "terminal/release" => {
+            let process = Arc::clone(process);
+            let terminals = Arc::clone(terminals);
+            let marionette_session = session_id.to_string();
+            let method = method.to_string();
+            let agent_sid = process
+                .agent_session_id
+                .lock()
+                .ok()
+                .and_then(|g| g.clone());
+            thread::spawn(move || {
+                match terminals.handle(
+                    &method,
+                    &params,
+                    &marionette_session,
+                    agent_sid.as_deref(),
+                ) {
+                    Ok(result) => write_response(&process, id, result),
+                    Err(err) => write_error_response(
+                        &process,
+                        id,
+                        err.code() as i64,
+                        err.message(),
+                    ),
                 }
             });
         }
@@ -2225,6 +2877,102 @@ fn handle_agent_request(
             );
         }
     }
+}
+
+const MAX_PLAN_MARKDOWN_CHARS: usize = 262_144;
+const MAX_PLAN_FEEDBACK_CHARS: usize = 16_384;
+
+/// Parse Grok `_x.ai/exit_plan_mode` params → (plan_markdown, tool_call_id).
+/// Shape: `{ sessionId, toolCallId, planContent }`. Empty/missing plan is valid.
+fn parse_exit_plan_mode_request(params: &Value) -> (String, Option<String>) {
+    let plan_markdown: String = params
+        .get("planContent")
+        .or_else(|| params.get("plan_content"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .chars()
+        .take(MAX_PLAN_MARKDOWN_CHARS)
+        .collect();
+    let tool_call_id = params
+        .get("toolCallId")
+        .or_else(|| params.get("tool_call_id"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|s| !s.is_empty());
+    (plan_markdown, tool_call_id)
+}
+
+/// Serialize the user's plan decision into Grok's `ExitPlanModeExtResponse`.
+///
+/// Confirmed against Grok 0.2.111 (via Codeg): field is `outcome`, NOT
+/// `decision`. Only `"approved"` and `"abandoned"` leave plan mode; everything
+/// else (we send `"keep_planning"`) keeps plan mode. Grok discards `feedback`
+/// on the keep-planning path — the UI must also send revision notes as a
+/// follow-up prompt.
+fn build_exit_plan_mode_response(decision: &str, feedback: Option<&str>) -> Value {
+    let outcome = match decision.trim().to_ascii_lowercase().as_str() {
+        "approve" | "approved" => "approved",
+        "abandon" | "abandoned" => "abandoned",
+        // request_changes / keep_planning / anything else
+        _ => "keep_planning",
+    };
+    let feedback: String = feedback
+        .unwrap_or("")
+        .trim()
+        .chars()
+        .take(MAX_PLAN_FEEDBACK_CHARS)
+        .collect();
+    json!({
+        "outcome": outcome,
+        "feedback": feedback,
+    })
+}
+
+/// Reply when the client disconnects mid-approval: stay in plan mode.
+fn exit_plan_mode_disconnect_response() -> Value {
+    json!({ "outcome": "keep_planning", "feedback": "" })
+}
+
+/// Build the JSON-RPC result for `_x.ai/ask_user_question`.
+///
+/// Grok deserializes this as an **internally tagged** enum on field `outcome`.
+/// Accepted shape (from grok-build-vscode research / binary strings):
+/// ```json
+/// { "outcome": "accepted", "answers": { "<question>": "<label>" }, "annotations": {} }
+/// { "outcome": "cancelled" }
+/// ```
+/// UI sends `answers` as `[{ "question", "selected": string[] }]`; multi-select
+/// labels are joined with `", "`.
+fn build_ask_user_question_result(answers: Value, declined: bool) -> Value {
+    if declined {
+        return json!({ "outcome": "cancelled" });
+    }
+
+    let mut map = serde_json::Map::new();
+    if let Some(arr) = answers.as_array() {
+        for item in arr {
+            let question = item
+                .get("question")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
+            if question.is_empty() {
+                continue;
+            }
+            let selected: Vec<&str> = item
+                .get("selected")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            map.insert(question.to_string(), Value::String(selected.join(", ")));
+        }
+    }
+
+    json!({
+        "outcome": "accepted",
+        "answers": Value::Object(map),
+        "annotations": {},
+    })
 }
 
 fn extract_permission_options(params: &Value) -> Vec<Value> {
@@ -2512,6 +3260,69 @@ mod tests {
         assert_eq!(caps.models.len(), 1);
         assert_eq!(caps.effort_options.len(), 3);
         assert!(caps.effort_options.iter().any(|o| o.id == "low"));
+    }
+
+    #[test]
+    fn exit_plan_mode_response_maps_each_decision() {
+        let approve = build_exit_plan_mode_response("approve", None);
+        assert_eq!(approve["outcome"], json!("approved"));
+        assert_eq!(approve["feedback"], json!(""));
+        assert!(approve.get("decision").is_none());
+
+        let changes = build_exit_plan_mode_response("request_changes", Some("  use SSE  "));
+        assert_eq!(changes["outcome"], json!("keep_planning"));
+        assert_eq!(changes["feedback"], json!("use SSE"));
+
+        let abandon = build_exit_plan_mode_response("abandon", None);
+        assert_eq!(abandon["outcome"], json!("abandoned"));
+
+        let disconnect = exit_plan_mode_disconnect_response();
+        assert_eq!(disconnect["outcome"], json!("keep_planning"));
+    }
+
+    #[test]
+    fn exit_plan_mode_parse_accepts_empty_plan() {
+        let (plan, tc) = parse_exit_plan_mode_request(&json!({
+            "sessionId": "s",
+            "toolCallId": "call-1",
+            "planContent": "# Plan\n- a"
+        }));
+        assert_eq!(plan, "# Plan\n- a");
+        assert_eq!(tc.as_deref(), Some("call-1"));
+
+        let (plan, tc) = parse_exit_plan_mode_request(&json!({ "sessionId": "s" }));
+        assert!(plan.is_empty());
+        assert!(tc.is_none());
+    }
+
+    /// Grok rejects any result missing the internally-tagged `outcome` field.
+    #[test]
+    fn ask_user_question_result_has_outcome_tag() {
+        let declined = build_ask_user_question_result(json!([]), true);
+        assert_eq!(declined, json!({ "outcome": "cancelled" }));
+
+        let accepted = build_ask_user_question_result(
+            json!([
+                {
+                    "question": "Which approach?",
+                    "selected": ["Plan first", "Also ship"]
+                },
+                {
+                    "question": "Color?",
+                    "selected": ["Blue"]
+                }
+            ]),
+            false,
+        );
+        assert_eq!(accepted["outcome"], json!("accepted"));
+        assert_eq!(
+            accepted["answers"],
+            json!({
+                "Which approach?": "Plan first, Also ship",
+                "Color?": "Blue",
+            })
+        );
+        assert_eq!(accepted["annotations"], json!({}));
     }
 
     /// Stands in for an agent that stopped draining its stdin: every write parks.
