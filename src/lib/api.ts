@@ -312,6 +312,23 @@ export async function readImageDataUrl(
   return invoke("read_image_data_url", { path });
 }
 
+/**
+ * Persist clipboard/paste image bytes under `~/.marionette/clipboard/`.
+ * `base64Data` may be raw base64 or a full `data:image/...;base64,...` URL.
+ */
+export async function savePastedImage(
+  base64Data: string,
+  mimeType?: string | null,
+): Promise<{ path: string; mimeType: string; byteLength: number; name: string }> {
+  if (!isTauriRuntime()) {
+    throw new Error("Paste image requires the desktop app");
+  }
+  return invoke("save_pasted_image", {
+    base64Data,
+    mimeType: mimeType ?? null,
+  });
+}
+
 export async function cancelAcpSession(sessionId: string): Promise<void> {
   if (!isTauriRuntime()) return;
   await invoke("cancel_acp_session", { sessionId });

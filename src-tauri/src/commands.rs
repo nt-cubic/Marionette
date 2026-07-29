@@ -294,19 +294,31 @@ fn install_agent_blocking(
 fn npm_install_global(agent_id: &str, package: &str) -> Result<(), String> {
     use std::process::Command;
 
-    let resolved = crate::process_util::resolve_spawn_command("npm")
-        .map_err(|error| format!("`npm` not found — install Node.js first ({error})"))?;
+    // Prefer `node …/npm-cli.js` over `cmd /C npm.cmd` — the latter breaks on
+    // spaced paths (Program Files) and surfaces locale-garbled "not recognized"
+    // errors when PATH is thinner for GUI apps than for interactive shells.
+    let resolved = crate::process_util::resolve_npm_for_install()?;
     crate::debug_log::append(
         "install",
         "info",
         agent_id,
         &format!("npm install -g {package}"),
-        Some(&resolved.resolved_path),
+        Some(&format!("{} {:?}", resolved.program, resolved.prefix_args)),
     );
 
     let mut command = Command::new(&resolved.program);
     resolved.apply_to(&mut command);
     command.args(["install", "-g", package]);
+    // Ensure npm's child processes can find `node` even when the desktop-launched
+    // app inherited a stale/minimal PATH.
+    command.env(
+        "PATH",
+        crate::process_util::env_path_with_node_bins(&resolved.program),
+    );
+    // Non-interactive; avoid npm prompts hanging a headless spawn forever.
+    command.env("npm_config_yes", "true");
+    command.env("npm_config_fund", "false");
+    command.env("npm_config_audit", "false");
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -317,8 +329,8 @@ fn npm_install_global(agent_id: &str, package: &str) -> Result<(), String> {
     let output = command
         .output()
         .map_err(|error| format!("Run npm install -g {package} failed: {error}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let stdout = crate::process_util::decode_process_bytes(&output.stdout);
+    let stderr = crate::process_util::decode_process_bytes(&output.stderr);
     crate::debug_log::append(
         "install",
         if output.status.success() { "info" } else { "error" },
@@ -329,13 +341,32 @@ fn npm_install_global(agent_id: &str, package: &str) -> Result<(), String> {
     if output.status.success() {
         return Ok(());
     }
-    // npm's last stderr lines carry the actual reason (EACCES, 404, proxy…).
-    let reason = stderr
+    // Prefer the last meaningful stderr lines; include a bit of context when
+    // the final line is a localized OS shell fragment.
+    let reason = install_failure_reason(&stderr, &stdout);
+    Err(format!(
+        "npm install -g {package} failed: {}",
+        crate::process_util::humanize_install_error(&reason)
+    ))
+}
+
+fn install_failure_reason(stderr: &str, stdout: &str) -> String {
+    let combined = if stderr.trim().is_empty() {
+        stdout
+    } else {
+        stderr
+    };
+    let lines: Vec<&str> = combined
         .lines()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("npm install failed");
-    Err(format!("npm install -g {package} failed: {reason}"))
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    if lines.is_empty() {
+        return "npm install failed (no output)".to_string();
+    }
+    // Last 3 non-empty lines usually hold npm's real diagnosis.
+    let start = lines.len().saturating_sub(3);
+    lines[start..].join(" | ")
 }
 
 #[tauri::command]
@@ -596,21 +627,25 @@ fn start_claude_login() -> Result<serde_json::Value, String> {
 
     // Prefer a visible console so the user can complete any CLI prompts if the
     // browser handoff needs confirmation. On Windows this uses CREATE_NEW_CONSOLE.
+    //
+    // IMPORTANT: do NOT combine CREATE_NEW_CONSOLE with DETACHED_PROCESS —
+    // Windows documents them as mutually exclusive; CreateProcess then fails
+    // with ERROR_INVALID_PARAMETER (87 / "パラメーターが間違っています").
     let mut command = Command::new(&resolved.program);
     resolved.apply_to(&mut command);
     command
         .args(["auth", "login"])
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
 
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        // New console is more reliable for interactive OAuth CLIs than NO_WINDOW.
-        command.creation_flags(CREATE_NEW_CONSOLE | DETACHED_PROCESS);
+        // Own console window: OAuth CLI can print the login URL / wait state,
+        // and ShellExecute from that process can open the default browser.
+        command.creation_flags(CREATE_NEW_CONSOLE);
     }
 
     command
@@ -622,7 +657,10 @@ fn start_claude_login() -> Result<serde_json::Value, String> {
         "info",
         "",
         "started claude auth login",
-        Some("browser/CLI login flow"),
+        Some(&format!(
+            "program={} prefix={:?}",
+            resolved.program, resolved.prefix_args
+        )),
     );
 
     Ok(serde_json::json!({
@@ -759,6 +797,84 @@ pub fn read_image_data_url(path: String) -> Result<serde_json::Value, String> {
         "mimeType": mime,
         "dataUrl": format!("data:{mime};base64,{data}"),
         "byteLength": bytes.len(),
+    }))
+}
+
+/// Materialize a clipboard/paste image (base64) under `~/.marionette/clipboard/`.
+/// Returns an absolute path so the rest of the path-based image pipeline can reuse it.
+#[tauri::command(async)]
+pub fn save_pasted_image(
+    base64_data: String,
+    mime_type: Option<String>,
+) -> Result<serde_json::Value, String> {
+    use base64::{engine::general_purpose::STANDARD as B64, Engine};
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let raw = base64_data.trim();
+    // data:image/png;base64,.... from the web layer is accepted too.
+    let b64 = raw
+        .split_once("base64,")
+        .map(|(_, rest)| rest.trim())
+        .unwrap_or(raw);
+    let bytes = B64
+        .decode(b64)
+        .map_err(|e| format!("invalid base64 image data: {e}"))?;
+    if bytes.is_empty() {
+        return Err("empty image data".into());
+    }
+    const MAX_BYTES: usize = 12 * 1024 * 1024;
+    if bytes.len() > MAX_BYTES {
+        return Err(format!(
+            "image too large ({} MB > 12 MB)",
+            bytes.len() / (1024 * 1024)
+        ));
+    }
+
+    let mime_raw = mime_type
+        .as_deref()
+        .unwrap_or("image/png")
+        .trim()
+        .to_ascii_lowercase();
+    // Strip parameters: "image/png; charset=..." → "image/png"
+    let mime = mime_raw
+        .split(';')
+        .next()
+        .unwrap_or("image/png")
+        .trim();
+    let (ext, mime_out) = match mime {
+        "image/jpeg" | "image/jpg" => ("jpg", "image/jpeg"),
+        "image/gif" => ("gif", "image/gif"),
+        "image/webp" => ("webp", "image/webp"),
+        "image/bmp" => ("bmp", "image/bmp"),
+        "image/svg+xml" => ("svg", "image/svg+xml"),
+        "image/png" => ("png", "image/png"),
+        // Screenshots / unknown bitmap → png is the safe default.
+        _ => ("png", "image/png"),
+    };
+
+    let dir = crate::app_paths::global_dir()?.join("clipboard");
+    fs::create_dir_all(&dir).map_err(|e| format!("create clipboard dir failed: {e}"))?;
+
+    let ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    // Cheap unique suffix from first bytes + length (no extra deps).
+    let mut h: u32 = bytes.len() as u32;
+    for b in bytes.iter().take(32) {
+        h = h.wrapping_mul(31).wrapping_add(u32::from(*b));
+    }
+    let name = format!("paste-{ms}-{:04x}.{ext}", h & 0xffff);
+    let path = dir.join(&name);
+    fs::write(&path, &bytes).map_err(|e| format!("write pasted image failed: {e}"))?;
+
+    let path_str = path.to_string_lossy().to_string();
+    Ok(serde_json::json!({
+        "path": path_str,
+        "mimeType": mime_out,
+        "byteLength": bytes.len(),
+        "name": name,
     }))
 }
 

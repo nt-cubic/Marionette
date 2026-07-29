@@ -1,7 +1,15 @@
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { Expand, Globe, Plus, Search, SendHorizontal, Shrink, Square } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ClipboardEvent as ReactClipboardEvent,
+  type DragEvent as ReactDragEvent,
+} from "react";
 import {
   expandAcpConfigAttempts,
   getAcpSupplement,
@@ -13,6 +21,7 @@ import {
   isTauriRuntime,
   listAgentCommands,
   pickFiles,
+  savePastedImage,
   sendAcpPrompt,
   updateAcpSession,
 } from "../lib/api";
@@ -100,7 +109,19 @@ type ComposerProps = {
     text: string,
     droppedPaths?: string[],
     imageAttachments?: import("../lib/imageAttachments").ImageAttachment[],
-    opts?: { forceWebSearch?: boolean },
+    opts?: {
+      forceWebSearch?: boolean;
+      /**
+       * Composer chip snapshot at send time. Parent must not re-derive mode
+       * from stale sessionCapabilities — mode switches skip immediate caps
+       * reload (agent often echoes the previous mode for a beat).
+       */
+      modeId?: string | null;
+      modeLabel?: string | null;
+      modelId?: string | null;
+      modelLabel?: string | null;
+      effortLabel?: string | null;
+    },
   ) => void;
   /** Notify parent when the active model id changes (for provider balance probes). */
   onActiveModelChange?: (modelId: string | null) => void;
@@ -1049,12 +1070,36 @@ export function Composer({
       const droppedInText = dropped.filter((p) => text.includes(p) || imageAttachments.some((a) => a.path === p));
       const sentWith = currentModel ?? (caps && caps.models.length > 0 ? caps.models[0].id : null);
       if (sentWith) recordModelUsage(sentWith);
+
+      // Snapshot chips the user actually sees (optimistic currentMode/currentModel),
+      // not parent sessionCapabilities — mode switch delays caps reload on purpose.
+      const modeId = currentMode ?? (caps && caps.modes.length > 0 ? caps.modes[0].id : null);
+      const modeLabel =
+        (modeId && caps?.modes.find((m) => m.id === modeId)?.label) || modeId || null;
+      const modelId = sentWith;
+      const modelLabel =
+        (modelId && caps?.models.find((m) => m.id === modelId)?.label) || modelId || null;
+      const effortOpts = caps?.effortOptions ?? [];
+      const effortLabelVal =
+        currentEffortId != null
+          ? (effortOpts.find((o) => o.id === currentEffortId)?.label ?? currentEffortId)
+          : currentEffort != null
+            ? effortLabel(currentEffort)
+            : null;
+
       // Keep draft text clean for the You card; App injects the wire prefix.
       onSend(
         text,
         droppedInText,
         imageAttachments.length > 0 ? imageAttachments : undefined,
-        forceWebSearch ? { forceWebSearch: true } : undefined,
+        {
+          ...(forceWebSearch ? { forceWebSearch: true } : {}),
+          modeId,
+          modeLabel,
+          modelId,
+          modelLabel,
+          effortLabel: effortLabelVal,
+        },
       );
       droppedPathsRef.current.clear();
       setDraft("");
@@ -1067,6 +1112,9 @@ export function Composer({
       sessionId,
       onWarmAgent,
       currentModel,
+      currentMode,
+      currentEffort,
+      currentEffortId,
       caps,
       onSend,
       clearDropSuggest,
@@ -1166,6 +1214,100 @@ export function Composer({
       el.setSelectionRange(caret, caret);
     });
   }, [draft]);
+
+  /** Encode a File/Blob as base64 (chunked — large screenshots blow the call stack with spread). */
+  const fileToBase64 = async (file: Blob): Promise<string> => {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const chunk = 0x8000;
+    let binary = "";
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    }
+    return btoa(binary);
+  };
+
+  /**
+   * Clipboard paste: screenshots / "Copy Image" → temp file → image pills.
+   * Plain text (and non-image files without a path we can use) keep the default paste.
+   */
+  const onComposerPaste = useCallback(
+    (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
+      const dt = event.clipboardData;
+      if (!dt) return;
+
+      // Prefer image items (Win+Shift+S, browser "Copy Image").
+      const imageItems = Array.from(dt.items ?? []).filter(
+        (item) => item.kind === "file" && item.type.startsWith("image/"),
+      );
+
+      // Also pick up FileList entries that look like images (Explorer copy + paste).
+      const fileListImages = Array.from(dt.files ?? []).filter(
+        (f) =>
+          (f.type && f.type.startsWith("image/")) ||
+          isImagePath(f.name) ||
+          isImagePath((f as File & { path?: string }).path ?? ""),
+      );
+
+      const hasImagePayload = imageItems.length > 0 || fileListImages.length > 0;
+      if (!hasImagePayload) return; // text paste → default
+
+      event.preventDefault();
+
+      void (async () => {
+        try {
+          if (!isTauriRuntime()) {
+            flash("Paste image requires the desktop app");
+            return;
+          }
+
+          const paths: string[] = [];
+          const seen = new Set<string>();
+
+          const absorbFile = async (file: File | null) => {
+            if (!file) return;
+            const existingPath = (file as File & { path?: string }).path?.trim();
+            if (existingPath && isImagePath(existingPath)) {
+              const key = existingPath.toLowerCase();
+              if (!seen.has(key)) {
+                seen.add(key);
+                paths.push(existingPath);
+              }
+              return;
+            }
+            // Raw clipboard bitmap — no filesystem path; materialize under ~/.marionette/clipboard.
+            const mime = file.type && file.type.startsWith("image/") ? file.type : "image/png";
+            const b64 = await fileToBase64(file);
+            const saved = await savePastedImage(b64, mime);
+            const key = saved.path.toLowerCase();
+            if (!seen.has(key)) {
+              seen.add(key);
+              paths.push(saved.path);
+            }
+          };
+
+          if (imageItems.length > 0) {
+            for (const item of imageItems) {
+              await absorbFile(item.getAsFile());
+            }
+          } else {
+            for (const file of fileListImages) {
+              await absorbFile(file);
+            }
+          }
+
+          if (paths.length === 0) {
+            flash("Could not read pasted image");
+            return;
+          }
+          insertDroppedPaths(paths);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          flash(msg.length > 140 ? `${msg.slice(0, 140)}…` : msg);
+        }
+      })();
+    },
+    [flash, insertDroppedPaths],
+  );
 
   const pathsFromDataTransfer = (dt: DataTransfer | null): string[] => {
     if (!dt) return [];
@@ -1850,6 +1992,7 @@ export function Composer({
           onSelect={(event) => {
             setCaret(event.currentTarget.selectionStart ?? 0);
           }}
+          onPaste={onComposerPaste}
           onKeyDown={(event) => {
             if (showDelegateMenu && !composingRef.current) {
               if (event.key === "ArrowDown") {

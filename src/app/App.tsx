@@ -332,6 +332,14 @@ export function App() {
     sessionId: string;
     imageAttachments?: ImageAttachment[];
     forceWebSearch?: boolean;
+    /** Composer chips at original submit — mode lags on caps, so keep the snapshot. */
+    composerSnap?: {
+      modeId?: string | null;
+      modeLabel?: string | null;
+      modelId?: string | null;
+      modelLabel?: string | null;
+      effortLabel?: string | null;
+    };
   } | null>(null);
   const [pathGrantBusy, setPathGrantBusy] = useState(false);
   const lastEscAtRef = useRef(0);
@@ -2537,7 +2545,14 @@ export function App() {
     text: string,
     droppedPaths: string[] = [],
     imageAttachments: ImageAttachment[] = [],
-    opts?: { forceWebSearch?: boolean },
+    opts?: {
+      forceWebSearch?: boolean;
+      modeId?: string | null;
+      modeLabel?: string | null;
+      modelId?: string | null;
+      modelLabel?: string | null;
+      effortLabel?: string | null;
+    },
   ) => {
     if (!currentSessionId) return;
     const sid = currentSessionId;
@@ -2583,12 +2598,21 @@ export function App() {
         sessionId: sid,
         imageAttachments,
         forceWebSearch,
+        composerSnap: opts
+          ? {
+              modeId: opts.modeId,
+              modeLabel: opts.modeLabel,
+              modelId: opts.modelId,
+              modelLabel: opts.modelLabel,
+              effortLabel: opts.effortLabel,
+            }
+          : undefined,
       });
       return;
     }
 
     setQuotePins([]);
-    await performSend(sid, composed, imageAttachments, forceWebSearch);
+    await performSend(sid, composed, imageAttachments, forceWebSearch, opts);
   };
 
   const performSend = async (
@@ -2596,29 +2620,54 @@ export function App() {
     composed: string,
     imageAttachments: ImageAttachment[] = [],
     forceWebSearch = false,
+    composerSnap?: {
+      modeId?: string | null;
+      modeLabel?: string | null;
+      modelId?: string | null;
+      modelLabel?: string | null;
+      effortLabel?: string | null;
+    },
   ) => {
     try {
       // An agent switch leaves handoff notes waiting — attach them to this send
       // (the composer stays clean; only the wire payload carries them).
       const handoff = pendingHandoff(liveEventsRef.current, sid);
 
-      // Snapshot current Composer config for metadata
+      // Prefer Composer chip snapshot (what the user saw at send). Caps.currentMode
+      // lags on purpose after a mode switch — agent often still echoes the old mode.
       const caps = sessionCapabilities;
-      const modeId = caps?.currentMode;
-      const modeLabel = modeId ? (caps?.modes.find((m) => m.id === modeId)?.label ?? modeId) : undefined;
+      const modeId =
+        composerSnap?.modeId?.trim() ||
+        displaySession.preferredMode?.trim() ||
+        caps?.currentMode ||
+        null;
+      const modeLabel =
+        composerSnap?.modeLabel?.trim() ||
+        (modeId ? caps?.modes.find((m) => m.id === modeId)?.label ?? modeId : undefined);
+      const modelId =
+        composerSnap?.modelId?.trim() ||
+        activeModelId ||
+        displaySession.preferredModel?.trim() ||
+        caps?.currentModel ||
+        null;
+      const modelLabel =
+        composerSnap?.modelLabel?.trim() ||
+        (modelId ? caps?.models.find((m) => m.id === modelId)?.label ?? modelId : undefined);
       const effortId = displaySession.preferredEffortId;
-      const effortLabelVal = effortId
-        ? (caps?.effortOptions?.find((o) => o.id === effortId)?.label ?? effortId)
-        : displaySession.preferredEffort != null
-          ? effortLabel(displaySession.preferredEffort)
-          : undefined;
+      const effortLabelVal =
+        composerSnap?.effortLabel?.trim() ||
+        (effortId
+          ? caps?.effortOptions?.find((o) => o.id === effortId)?.label ?? effortId
+          : displaySession.preferredEffort != null
+            ? effortLabel(displaySession.preferredEffort)
+            : undefined);
       sendMetaRef.current = {
         agentId: currentAgent.id,
         agentLabel: currentAgent.label,
-        modelId: activeModelId ?? undefined,
-        modelLabel: activeModelId ?? undefined,
-        modeLabel,
-        effortLabel: effortLabelVal,
+        modelId: modelId ?? undefined,
+        modelLabel: modelLabel ?? undefined,
+        modeLabel: modeLabel ?? undefined,
+        effortLabel: effortLabelVal || undefined,
       };
       delete turnStartedAtRef.current[sid];
 
@@ -2788,6 +2837,7 @@ export function App() {
           prompt.text,
           prompt.imageAttachments ?? [],
           prompt.forceWebSearch === true,
+          prompt.composerSnap,
         );
       } finally {
         setPathGrantBusy(false);
@@ -3147,7 +3197,9 @@ export function App() {
             }}
             onAgentChange={(id) => void handleAgentChange(id)}
             onInterrupt={() => void handleInterrupt()}
-            onSend={(text, droppedPaths) => void handleSend(text, droppedPaths)}
+            onSend={(text, droppedPaths, imageAttachments, opts) =>
+              void handleSend(text, droppedPaths, imageAttachments, opts)
+            }
             onActiveModelChange={setActiveModelId}
             sessionEvents={currentEvents}
             availableCommands={slashCommandsById[displaySession.id] ?? null}

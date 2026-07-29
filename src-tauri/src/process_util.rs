@@ -1,6 +1,11 @@
 //! Resolve agent CLIs on Windows (npm shims, missing PATH, .cmd wrappers).
+//!
+//! GUI apps often inherit a thinner PATH than an interactive shell. Prefer
+//! absolute paths and `node + script.js` over `cmd /C *.cmd` so install/update
+//! works the same on US, JP, CN, etc. Windows machines.
 
 use std::env;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -91,6 +96,224 @@ pub fn resolve_command_display_path(command: &str) -> Result<Option<String>, Str
         Ok(resolved) => Ok(Some(resolved.resolved_path)),
         Err(_) => Ok(None),
     }
+}
+
+/// Resolve `npm` as `node path\to\npm-cli.js` (never `cmd /C npm.cmd`).
+///
+/// The GUI-update path must not depend on shell quoting or locale-specific
+/// `cmd.exe` errors. Running the CLI entry through Node is stable worldwide.
+pub fn resolve_npm_for_install() -> Result<ResolvedCommand, String> {
+    if let Some(resolved) = resolve_npm_via_node_cli() {
+        return Ok(resolved);
+    }
+    // Fall back to the general resolver (may still land on npm.cmd).
+    resolve_spawn_command("npm").map_err(|error| {
+        format!(
+            "`npm` not found — install Node.js from https://nodejs.org and restart Marionette ({error})"
+        )
+    })
+}
+
+/// Prepend Node's directory (+ npm global bin) so child tools npm spawns can find `node`.
+pub fn env_path_with_node_bins(node_program: &str) -> OsString {
+    let mut prepend: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = Path::new(node_program).parent() {
+        prepend.push(dir.to_path_buf());
+    }
+    if let Some(appdata) = env::var_os("APPDATA") {
+        prepend.push(PathBuf::from(appdata).join("npm"));
+    }
+    if let Some(local) = env::var_os("LOCALAPPDATA") {
+        prepend.push(PathBuf::from(local).join("npm"));
+    }
+
+    let current = env::var_os("PATH").unwrap_or_default();
+    let mut parts: Vec<PathBuf> = prepend;
+    parts.extend(env::split_paths(&current));
+
+    // Dedup while preserving order
+    let mut seen = std::collections::HashSet::new();
+    parts.retain(|p| seen.insert(p.clone()));
+
+    env::join_paths(parts).unwrap_or(current)
+}
+
+/// Decode subprocess stdout/stderr that may be UTF-8 or the Windows ANSI code page.
+///
+/// Japanese/Chinese Windows often emit Shift-JIS (CP932) from `cmd`/`npm` — treating
+/// that as UTF-8 produces the classic mojibake users report as "乱码".
+pub fn decode_process_bytes(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return String::new();
+    }
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return text.to_string();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(text) = decode_windows_ansi(bytes) {
+            return text;
+        }
+    }
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// Turn common localized Windows "command not found" lines into a clear English tip.
+pub fn humanize_install_error(raw: &str) -> String {
+    let lower = raw.to_ascii_lowercase();
+    // EN: "is not recognized as an internal or external command"
+    // JP: "は、内部コマンドまたは外部コマンド、…として認識されていません"
+    // CN: "不是内部或外部命令"
+    let not_recognized = lower.contains("is not recognized as an internal or external command")
+        || raw.contains("認識されていません")
+        || raw.contains("认识")
+        || raw.contains("不是内部或外部命令")
+        || raw.contains("не является внутренней или внешней")
+        || raw.contains("не распознано");
+    if not_recognized {
+        return format!(
+            "{raw}\n\n\
+             Tip: Marionette could not run a Node/npm helper (often a PATH issue when the app is \
+             started from the desktop). Install Node.js LTS, ensure `node` and `npm` work in a new \
+             terminal, then fully quit and reopen Marionette."
+        );
+    }
+    if lower.contains("eperm") || lower.contains("operation not permitted") {
+        return format!(
+            "{raw}\n\n\
+             Tip: a running agent binary is locked. Stop that agent in Marionette (or end \
+             `claude.exe` / the agent process in Task Manager), then update again."
+        );
+    }
+    raw.to_string()
+}
+
+fn resolve_npm_via_node_cli() -> Option<ResolvedCommand> {
+    let node = resolve_node_program()?;
+    let node_dir = Path::new(&node).parent()?;
+    let cli = node_dir
+        .join("node_modules")
+        .join("npm")
+        .join("bin")
+        .join("npm-cli.js");
+    if !cli.is_file() {
+        return None;
+    }
+    let cli_str = strip_extended_prefix(
+        &cli.canonicalize().unwrap_or(cli).to_string_lossy(),
+    );
+    Some(ResolvedCommand {
+        program: node,
+        prefix_args: vec![cli_str.clone()],
+        resolved_path: cli_str,
+    })
+}
+
+fn resolve_node_program() -> Option<String> {
+    if let Ok(resolved) = resolve_spawn_command("node") {
+        // Prefer a real node.exe, not a weird wrapper with prefix args.
+        if resolved.prefix_args.is_empty() {
+            return Some(resolved.program);
+        }
+    }
+    for candidate in node_install_candidates() {
+        if candidate.is_file() {
+            return Some(strip_extended_prefix(
+                &candidate.canonicalize().unwrap_or(candidate).to_string_lossy(),
+            ));
+        }
+    }
+    None
+}
+
+fn node_install_candidates() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut push_node = |dir: PathBuf| {
+        out.push(dir.join("node.exe"));
+        out.push(dir.join("node"));
+    };
+
+    for key in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
+        if let Ok(root) = env::var(key) {
+            push_node(PathBuf::from(&root).join("nodejs"));
+            push_node(PathBuf::from(&root).join("Programs").join("nodejs"));
+            push_node(PathBuf::from(&root).join("Programs").join("node"));
+        }
+    }
+    if let Ok(home) = env::var("USERPROFILE") {
+        let home = PathBuf::from(home);
+        push_node(home.join("scoop").join("apps").join("nodejs").join("current"));
+        push_node(home.join("scoop").join("apps").join("nodejs-lts").join("current"));
+        push_node(home.join("AppData").join("Roaming").join("fnm").join("aliases").join("default"));
+    }
+    if let Ok(volta) = env::var("VOLTA_HOME") {
+        push_node(PathBuf::from(volta).join("bin"));
+    }
+    if let Ok(nvm) = env::var("NVM_SYMLINK") {
+        push_node(PathBuf::from(nvm));
+    }
+    if let Ok(nvm_home) = env::var("NVM_HOME") {
+        // nvm-windows: NVM_HOME holds versions; active one is NVM_SYMLINK — still scan latest.
+        if let Ok(entries) = std::fs::read_dir(nvm_home) {
+            let mut versions: Vec<PathBuf> = entries
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.is_dir())
+                .collect();
+            versions.sort();
+            if let Some(last) = versions.pop() {
+                push_node(last);
+            }
+        }
+    }
+    if let Ok(fnm) = env::var("FNM_MULTISHELL_PATH") {
+        push_node(PathBuf::from(fnm));
+    }
+    out
+}
+
+fn strip_extended_prefix(path: &str) -> String {
+    path.trim_start_matches(r"\\?\").to_string()
+}
+
+#[cfg(target_os = "windows")]
+fn decode_windows_ansi(bytes: &[u8]) -> Option<String> {
+    use windows_sys::Win32::Globalization::{
+        MultiByteToWideChar, CP_ACP, CP_OEMCP, MB_ERR_INVALID_CHARS,
+    };
+
+    for cp in [CP_ACP, CP_OEMCP] {
+        // First pass: measure
+        let needed = unsafe {
+            MultiByteToWideChar(
+                cp,
+                MB_ERR_INVALID_CHARS,
+                bytes.as_ptr(),
+                bytes.len() as i32,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if needed <= 0 {
+            continue;
+        }
+        let mut wide = vec![0u16; needed as usize];
+        let written = unsafe {
+            MultiByteToWideChar(
+                cp,
+                MB_ERR_INVALID_CHARS,
+                bytes.as_ptr(),
+                bytes.len() as i32,
+                wide.as_mut_ptr(),
+                needed,
+            )
+        };
+        if written <= 0 {
+            continue;
+        }
+        wide.truncate(written as usize);
+        return Some(String::from_utf16_lossy(&wide));
+    }
+    None
 }
 
 /// Prefer a globally-installed ACP binary over slow `npx -y …` cold starts.
@@ -263,6 +486,12 @@ fn windows_extra_candidates(command: &str) -> Vec<PathBuf> {
     if let Some(home) = env::var_os("USERPROFILE") {
         dirs.push(PathBuf::from(&home).join("AppData").join("Roaming").join("npm"));
     }
+    // Node install dirs (GUI apps often miss these when User PATH is stale).
+    for candidate in node_install_candidates() {
+        if let Some(dir) = candidate.parent() {
+            dirs.push(dir.to_path_buf());
+        }
+    }
 
     for dir in dirs {
         for name in &file_names {
@@ -284,10 +513,11 @@ fn windows_extra_candidates(command: &str) -> Vec<PathBuf> {
 #[cfg(target_os = "windows")]
 fn unwrap_npm_cmd_to_node(cmd_path: &Path) -> Option<ResolvedCommand> {
     let content = std::fs::read_to_string(cmd_path).ok()?;
-    let dir = cmd_path.parent()?;
 
-    // Typical npm shim:
+    // Typical npm shim after `%`/quote split:
     //   "%_prog%"  "%dp0%\node_modules\@scope\pkg\dist\index.js" %*
+    // becomes tokens like `dp0` + `\node_modules\...\index.js`, or `~dp0\node_modules\...`.
+    let mut js_hits: Vec<PathBuf> = Vec::new();
     for raw in content.split(|c: char| c == '"' || c == '%' || c.is_whitespace()) {
         let token = raw.trim().replace('/', "\\");
         if token.is_empty() {
@@ -297,34 +527,94 @@ fn unwrap_npm_cmd_to_node(cmd_path: &Path) -> Option<ResolvedCommand> {
         if !(lower.contains("node_modules") && lower.ends_with(".js")) {
             continue;
         }
-        // Strip optional leading .\ or absolute-looking dp0 fragments
-        let rel = token
-            .trim_start_matches(".\\")
-            .trim_start_matches("./");
-        let js_path = if Path::new(rel).is_absolute() {
-            PathBuf::from(rel)
-        } else {
-            dir.join(rel)
-        };
-        if !js_path.is_file() {
+        // npm.cmd also references npm-prefix.js — that only prints a path.
+        if lower.ends_with("npm-prefix.js") || lower.ends_with("-prefix.js") {
             continue;
         }
-        let js_str = js_path
-            .canonicalize()
-            .unwrap_or(js_path)
-            .to_string_lossy()
-            .trim_start_matches(r"\\?\")
-            .to_string();
+        if let Some(js_path) = resolve_batch_relative_path(cmd_path, &token) {
+            js_hits.push(js_path);
+        }
+    }
 
-        // Resolve node.exe the same way we resolve other commands
-        let node = resolve_spawn_command("node").ok()?;
-        let mut prefix = node.prefix_args;
-        prefix.push(js_str.clone());
-        return Some(ResolvedCommand {
-            program: node.program,
-            prefix_args: prefix,
-            resolved_path: js_str,
-        });
+    // Prefer the real CLI entry when several .js files appear in the shim.
+    js_hits.sort_by_key(|p| {
+        let name = p
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if name == "npm-cli.js" || name == "cli.js" || name == "index.js" {
+            0
+        } else {
+            10
+        }
+    });
+
+    let js_path = js_hits.into_iter().next()?;
+    let js_str = strip_extended_prefix(
+        &js_path.canonicalize().unwrap_or(js_path).to_string_lossy(),
+    );
+
+    let node = resolve_node_program()?;
+    Some(ResolvedCommand {
+        program: node,
+        prefix_args: vec![js_str.clone()],
+        resolved_path: js_str,
+    })
+}
+
+/// Map a token from a `.cmd` shim to a real file, expanding `%~dp0` / `%dp0%`.
+///
+/// After we split on `%`, those become `~dp0\...`, `dp0` + `\...`, etc.
+#[cfg(target_os = "windows")]
+fn resolve_batch_relative_path(cmd_path: &Path, token: &str) -> Option<PathBuf> {
+    let dir = cmd_path.parent()?;
+    let token = token.trim().replace('/', "\\");
+    if token.is_empty() {
+        return None;
+    }
+
+    // Absolute path that already exists (skip bare `\foo` drive-root false friends).
+    let as_path = PathBuf::from(&token);
+    if as_path.is_file() {
+        return Some(as_path);
+    }
+    // Windows treats `\node_modules\...` as absolute (current-drive root) — those
+    // almost never exist; treat as relative to the shim directory instead.
+    let looks_like_drive_root = token.starts_with('\\') && !token.starts_with("\\\\");
+
+    let mut stripped = token.as_str();
+    for prefix in ["~dp0", "dp0", ".\\", "./"] {
+        if let Some(rest) = stripped
+            .strip_prefix(prefix)
+            .or_else(|| {
+                let lower = stripped.to_ascii_lowercase();
+                if lower.starts_with(&prefix.to_ascii_lowercase()) {
+                    Some(&stripped[prefix.len()..])
+                } else {
+                    None
+                }
+            })
+        {
+            stripped = rest;
+            break;
+        }
+    }
+    stripped = stripped.trim_start_matches('\\');
+
+    let candidates = [
+        dir.join(stripped),
+        dir.join(token.trim_start_matches('\\')),
+        PathBuf::from(token),
+    ];
+    for candidate in candidates {
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        // Prefer shim-dir join over a non-existent drive-root absolute.
+        if looks_like_drive_root {
+            continue;
+        }
     }
     None
 }
@@ -340,14 +630,16 @@ fn unwrap_npm_cmd_to_exe(cmd_path: &Path) -> Option<String> {
     // Typical: "%dp0%\node_modules\opencode-ai\bin\opencode.exe"
     for token in content.split(|c: char| c.is_whitespace() || c == '"' || c == '%') {
         let token = token.trim();
-        if token.to_ascii_lowercase().ends_with(".exe") {
-            let path = if Path::new(token).is_absolute() {
-                PathBuf::from(token)
-            } else {
-                cmd_path.parent()?.join(token.replace('/', "\\"))
-            };
-            if path.is_file() {
-                return Some(path.to_string_lossy().to_string());
+        if !token.to_ascii_lowercase().ends_with(".exe") {
+            continue;
+        }
+        if let Some(path) = resolve_batch_relative_path(cmd_path, token) {
+            return Some(strip_extended_prefix(&path.to_string_lossy()));
+        }
+        // Bare `node.exe` next to the shim / on PATH
+        if token.eq_ignore_ascii_case("node.exe") {
+            if let Some(node) = resolve_node_program() {
+                return Some(node);
             }
         }
     }
@@ -421,5 +713,61 @@ mod tests {
         };
         let resolved = resolve_spawn_command(command).expect("should resolve");
         assert!(!resolved.program.is_empty());
+    }
+
+    #[test]
+    fn humanize_flags_command_not_found_and_eperm() {
+        let en = humanize_install_error(
+            "'node' is not recognized as an internal or external command,\r\noperable program or batch file.",
+        );
+        assert!(en.contains("Tip:"), "expected actionable tip, got {en}");
+
+        let eperm = humanize_install_error("Error: EPERM: operation not permitted, unlink 'claude.exe'");
+        assert!(eperm.to_ascii_lowercase().contains("locked") || eperm.contains("Tip:"));
+    }
+
+    #[test]
+    fn decode_process_bytes_keeps_utf8() {
+        assert_eq!(decode_process_bytes(b"npm ERR! 404"), "npm ERR! 404");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn batch_relative_path_expands_dp0_tokens() {
+        let dir = std::env::temp_dir().join(format!(
+            "marionette-batch-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("node_modules").join("pkg")).unwrap();
+        let js = dir.join("node_modules").join("pkg").join("index.js");
+        std::fs::write(&js, "console.log(1)").unwrap();
+        let cmd = dir.join("tool.cmd");
+        std::fs::write(&cmd, "@echo off\n").unwrap();
+
+        // After `%` split: `~dp0\node_modules\pkg\index.js`
+        let hit = resolve_batch_relative_path(
+            &cmd,
+            r"~dp0\node_modules\pkg\index.js",
+        )
+        .expect("expand ~dp0");
+        assert!(hit.ends_with(Path::new("index.js")));
+
+        // After `%` split of `%dp0%\node_modules\...` → `\node_modules\...`
+        let hit2 = resolve_batch_relative_path(&cmd, r"\node_modules\pkg\index.js")
+            .expect("expand drive-root-looking relative");
+        assert!(hit2.is_file());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_npm_for_install_finds_something_when_node_present() {
+        // CI / dev machines with Node should resolve; pure containers may skip.
+        if resolve_spawn_command("node").is_err() && resolve_node_program().is_none() {
+            return;
+        }
+        let npm = resolve_npm_for_install().expect("npm should resolve via node or PATH");
+        assert!(!npm.program.is_empty());
     }
 }
