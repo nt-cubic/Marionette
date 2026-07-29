@@ -112,6 +112,10 @@ export type Session = {
    * plan/build mode — restored by replaying the slash command on warm-up.
    */
   preferredAlwaysApprove?: boolean | null;
+  /** Present on @-delegate child sessions; omitted from list_sessions. */
+  parentSessionId?: string | null;
+  /** `"user"` | `"delegate"` — optional for legacy rows. */
+  origin?: string | null;
 };
 
 /** Snapshot of Composer model/mode/effort bound to a dialog. */
@@ -138,6 +142,8 @@ export type SessionEvent =
       modelLabel?: string;
       modeLabel?: string;
       effortLabel?: string;
+      /** Image attachments with optional marks (persisted for You-card overlay). */
+      attachments?: import("./imageAttachments").ImageAttachment[];
     }
   | {
       type: "assistant_message";
@@ -197,6 +203,28 @@ export type SessionEvent =
       sessionId: string;
       path: string;
       changeType: "added" | "modified" | "deleted";
+      createdAt: string;
+    }
+  | {
+      type: "subtask_started";
+      sessionId: string;
+      childSessionId: string;
+      agentId: string;
+      agentLabel: string;
+      modelId?: string;
+      prompt: string;
+      createdAt: string;
+    }
+  | {
+      type: "subtask_result";
+      sessionId: string;
+      childSessionId: string;
+      agentId: string;
+      status: "done" | "failed" | "cancelled" | "timeout";
+      /** Last assistant_message from child, clipped to 2000 chars. */
+      summary: string;
+      durationMs?: number;
+      error?: string;
       createdAt: string;
     };
 
@@ -342,4 +370,10 @@ export type ProviderInfo = {
    * this app cannot re-create — overwriting or deleting one needs confirmation.
    */
   authKind: "api" | "oauth" | "unknown";
+  /** auth.json has an entry (or alias) for this provider. */
+  configured?: boolean;
+  /** Where the row came from. */
+  source?: "builtin" | "user" | "auth" | string;
+  /** Balance probe strategy — `none` means UI shows "不支持". */
+  probeStrategy?: "deepseek" | "openrouter" | "opencode-zen" | "none" | string;
 };

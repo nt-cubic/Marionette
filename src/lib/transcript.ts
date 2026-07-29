@@ -7,6 +7,8 @@ const PERSISTABLE = new Set([
   "tool_call",
   "handoff_prepared",
   "file_change",
+  "subtask_started",
+  "subtask_result",
 ]);
 
 export function isPersistableEvent(event: SessionEvent): boolean {
@@ -48,6 +50,9 @@ export function parseTranscriptEvents(raw: unknown[]): SessionEvent[] {
         ...(typeof e.modeLabel === "string" ? { modeLabel: e.modeLabel } : {}),
         ...(typeof e.effortLabel === "string" ? { effortLabel: e.effortLabel } : {}),
         ...(typeof e.durationMs === "number" ? { durationMs: e.durationMs } : {}),
+        ...(type === "user_message" && Array.isArray(e.attachments)
+          ? { attachments: e.attachments as import("./imageAttachments").ImageAttachment[] }
+          : {}),
       } as SessionEvent);
       continue;
     }
@@ -94,6 +99,38 @@ export function parseTranscriptEvents(raw: unknown[]): SessionEvent[] {
           createdAt,
         });
       }
+      continue;
+    }
+    if (type === "subtask_started") {
+      out.push({
+        type: "subtask_started",
+        sessionId,
+        childSessionId: typeof e.childSessionId === "string" ? e.childSessionId : "",
+        agentId: typeof e.agentId === "string" ? e.agentId : "",
+        agentLabel: typeof e.agentLabel === "string" ? e.agentLabel : "",
+        modelId: typeof e.modelId === "string" ? e.modelId : undefined,
+        prompt: typeof e.prompt === "string" ? e.prompt : "",
+        createdAt,
+      });
+      continue;
+    }
+    if (type === "subtask_result") {
+      const st = e.status;
+      const status =
+        st === "done" || st === "failed" || st === "cancelled" || st === "timeout"
+          ? st
+          : "failed";
+      out.push({
+        type: "subtask_result",
+        sessionId,
+        childSessionId: typeof e.childSessionId === "string" ? e.childSessionId : "",
+        agentId: typeof e.agentId === "string" ? e.agentId : "",
+        status,
+        summary: typeof e.summary === "string" ? e.summary : "",
+        durationMs: typeof e.durationMs === "number" ? e.durationMs : undefined,
+        error: typeof e.error === "string" ? e.error : undefined,
+        createdAt,
+      });
     }
   }
   return out;

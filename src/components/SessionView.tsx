@@ -10,6 +10,7 @@ import {
   stallBannerCopy,
   type ActivityHealth,
 } from "../lib/activityHealth";
+import { parseUnifiedDiff } from "../lib/annotations";
 import { getFileDiff } from "../lib/api";
 import { newQuotePinId, type QuotePin } from "../lib/quoteComment";
 import type { AgentConfig, Session, SessionEvent, SessionStatus, SessionViewMode } from "../lib/types";
@@ -18,6 +19,7 @@ import { LinkCwdContext, LinkedText } from "./LinkedText";
 import { MarkdownBody } from "./MarkdownBody";
 import { MessageOutline } from "./MessageOutline";
 import { MessageTimestamp } from "./MessageTimestamp";
+import { UserImageCard } from "./UserImageCard";
 
 
 export type UserMessageAnchor = {
@@ -53,6 +55,11 @@ type SessionViewProps = {
   onInterrupt?: () => void | Promise<void>;
   /** Project id for on-demand file diffs (file_change cards). */
   projectId?: string;
+  /** All live events (for expanding @-delegate child streams). */
+  allEvents?: SessionEvent[];
+  onSubtaskStop?: (childSessionId: string) => void;
+  onSubtaskQuote?: (summary: string) => void;
+  onSubtaskRetry?: (childSessionId: string) => void;
 };
 
 /** Tabs-only for the shared workspace-titlebar (rendered by App.tsx). */
@@ -182,12 +189,28 @@ export function SessionView({
   onQuotePinsChange,
   onInterrupt,
   projectId,
+  allEvents = [],
+  onSubtaskStop,
+  onSubtaskQuote,
+  onSubtaskRetry,
 }: SessionViewProps) {
   // Show thinking/tool rows by default (they render collapsed). Eye can hide them entirely.
   const [detailsVisible, setDetailsVisible] = useState(true);
+  const [expandedChildId, setExpandedChildId] = useState<string | null>(null);
   // Only a real turn earns the top bar. Connecting is background work — the
   // composer floats a pill for it so the stage never resizes mid-reconnect.
   const isLive = session.status === "running";
+
+  /** childSessionId → result event (latest wins). */
+  const subtaskResults = useMemo(() => {
+    const map = new Map<string, Extract<SessionEvent, { type: "subtask_result" }>>();
+    for (const e of events) {
+      if (e.type === "subtask_result" && e.childSessionId) {
+        map.set(e.childSessionId, e);
+      }
+    }
+    return map;
+  }, [events]);
 
   return (
     <section className="session-view" aria-label="Session view">
@@ -232,6 +255,13 @@ export function SessionView({
             onQuotePinsChange={onQuotePinsChange}
             onInterrupt={onInterrupt}
             projectId={projectId}
+            allEvents={allEvents}
+            expandedChildId={expandedChildId}
+            setExpandedChildId={setExpandedChildId}
+            subtaskResults={subtaskResults}
+            onSubtaskStop={onSubtaskStop}
+            onSubtaskQuote={onSubtaskQuote}
+            onSubtaskRetry={onSubtaskRetry}
           />
         </div>
       </div>
@@ -245,17 +275,32 @@ function FileChangeCard({
   projectId,
   createdAt,
   index,
+  onLineComment,
 }: {
   path: string;
   changeType: string;
   projectId?: string;
   createdAt: string;
   index: number;
+  /** Click a line → pin a line annotation for the next send. */
+  onLineComment?: (args: {
+    filePath: string;
+    side: "old" | "new";
+    lineNumber: number;
+    quoted: string;
+    comment: string;
+  }) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [diff, setDiff] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [commenting, setCommenting] = useState<{
+    side: "old" | "new";
+    lineNumber: number;
+    quoted: string;
+  } | null>(null);
+  const [commentDraft, setCommentDraft] = useState("");
 
   useEffect(() => {
     if (!open || diff !== null || loading) return;
@@ -282,6 +327,7 @@ function FileChangeCard({
   }, [open, projectId, path, diff, loading]);
 
   const fileName = path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+  const parsed = useMemo(() => (diff ? parseUnifiedDiff(diff) : []), [diff]);
 
   return (
     <details
@@ -307,23 +353,130 @@ function FileChangeCard({
           {error && <div className="file-diff-card__muted">{error}</div>}
           {diff !== null && (
             <pre className="file-diff-card__body custom-scrollbar scrollbar-autohide">
-              {diff.split("\n").map((line, i) => {
+              {parsed.map((line, i) => {
                 const cls =
-                  line.startsWith("+") && !line.startsWith("+++")
+                  line.type === "add"
                     ? "file-diff-card__line is-add"
-                    : line.startsWith("-") && !line.startsWith("---")
+                    : line.type === "del"
                       ? "file-diff-card__line is-del"
-                      : "file-diff-card__line";
+                      : line.type === "hunk"
+                        ? "file-diff-card__line is-hunk"
+                        : "file-diff-card__line";
+                const side: "old" | "new" | null =
+                  line.type === "add"
+                    ? "new"
+                    : line.type === "del"
+                      ? "old"
+                      : line.type === "ctx"
+                        ? "new"
+                        : null;
+                const lineNo =
+                  side === "new" ? line.newLine : side === "old" ? line.oldLine : null;
+                const canComment =
+                  Boolean(onLineComment) &&
+                  side != null &&
+                  lineNo != null &&
+                  (line.type === "add" || line.type === "del" || line.type === "ctx");
                 return (
                   <span className={cls} key={i}>
-                    {line || " "}
+                    <span className="file-diff-card__gutter" aria-hidden>
+                      <span className="file-diff-card__ln file-diff-card__ln--old">
+                        {line.oldLine ?? ""}
+                      </span>
+                      <span className="file-diff-card__ln file-diff-card__ln--new">
+                        {line.newLine ?? ""}
+                      </span>
+                    </span>
+                    {canComment ? (
+                      <button
+                        type="button"
+                        className="file-diff-card__code"
+                        title="评论此行"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setCommenting({
+                            side: side!,
+                            lineNumber: lineNo!,
+                            quoted: line.raw.replace(/^[-+ ]/, ""),
+                          });
+                          setCommentDraft("");
+                        }}
+                      >
+                        {line.raw || " "}
+                      </button>
+                    ) : (
+                      <span className="file-diff-card__code">{line.raw || " "}</span>
+                    )}
                     {"\n"}
                   </span>
                 );
               })}
             </pre>
           )}
-          <div className="file-diff-card__note">当前工作区 diff，非历史快照</div>
+          {commenting && onLineComment && (
+            <div className="file-diff-card__comment">
+              <div className="file-diff-card__comment-meta">
+                {path}:{commenting.lineNumber}（{commenting.side === "new" ? "新" : "旧"}）
+              </div>
+              <input
+                className="file-diff-card__comment-input"
+                value={commentDraft}
+                placeholder="写评论，回车添加…"
+                autoFocus
+                onChange={(e) => setCommentDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    setCommenting(null);
+                    return;
+                  }
+                  if (e.key === "Enter" && commentDraft.trim()) {
+                    e.preventDefault();
+                    onLineComment({
+                      filePath: path,
+                      side: commenting.side,
+                      lineNumber: commenting.lineNumber,
+                      quoted: commenting.quoted,
+                      comment: commentDraft.trim(),
+                    });
+                    setCommenting(null);
+                    setCommentDraft("");
+                  }
+                }}
+              />
+              <div className="file-diff-card__comment-actions">
+                <button
+                  type="button"
+                  className="subtask-card__btn"
+                  onClick={() => setCommenting(null)}
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  className="subtask-card__btn"
+                  disabled={!commentDraft.trim()}
+                  onClick={() => {
+                    if (!commentDraft.trim()) return;
+                    onLineComment({
+                      filePath: path,
+                      side: commenting.side,
+                      lineNumber: commenting.lineNumber,
+                      quoted: commenting.quoted,
+                      comment: commentDraft.trim(),
+                    });
+                    setCommenting(null);
+                    setCommentDraft("");
+                  }}
+                >
+                  添加
+                </button>
+              </div>
+            </div>
+          )}
+          <div className="file-diff-card__note">
+            当前工作区 diff · 行号与 git 对齐 · 点代码行可加评论
+          </div>
         </div>
       </div>
     </details>
@@ -345,6 +498,13 @@ function CleanPlaceholder({
   onQuotePinsChange,
   onInterrupt,
   projectId,
+  allEvents = [],
+  expandedChildId = null,
+  setExpandedChildId,
+  subtaskResults,
+  onSubtaskStop,
+  onSubtaskQuote,
+  onSubtaskRetry,
 }: {
   agent: AgentConfig;
   session: Session;
@@ -360,6 +520,13 @@ function CleanPlaceholder({
   onQuotePinsChange?: (pins: QuotePin[]) => void;
   onInterrupt?: () => void | Promise<void>;
   projectId?: string;
+  allEvents?: SessionEvent[];
+  expandedChildId?: string | null;
+  setExpandedChildId?: (id: string | null) => void;
+  subtaskResults?: Map<string, Extract<SessionEvent, { type: "subtask_result" }>>;
+  onSubtaskStop?: (childSessionId: string) => void;
+  onSubtaskQuote?: (summary: string) => void;
+  onSubtaskRetry?: (childSessionId: string) => void;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   /** When true, new content may stick the viewport to the bottom. */
@@ -523,6 +690,181 @@ function CleanPlaceholder({
           </div>
         )}
         {visibleEvents.map((event, index) => {
+          // @-delegate cards: skip started if we already have a result for the same child.
+          if (event.type === "subtask_started") {
+            if (subtaskResults?.has(event.childSessionId)) return null;
+            const target = event.modelId
+              ? `@${event.agentId}/${event.modelId}`
+              : `@${event.agentId}`;
+            const childStream = allEvents.filter((e) => e.sessionId === event.childSessionId);
+            const expanded = expandedChildId === event.childSessionId;
+            return (
+              <div
+                className="event-card event-card--subtask is-running"
+                key={`subtask-${event.childSessionId}-run`}
+              >
+                <div className="subtask-card__row">
+                  <span className="subtask-card__glyph" aria-hidden>⟳</span>
+                  <span className="subtask-card__title">
+                    {target} · {event.prompt.slice(0, 48)}
+                    {event.prompt.length > 48 ? "…" : ""}
+                  </span>
+                  <span className="subtask-card__meta">进行中</span>
+                  {onSubtaskStop && (
+                    <button
+                      type="button"
+                      className="subtask-card__btn"
+                      onClick={() => onSubtaskStop(event.childSessionId)}
+                    >
+                      停止
+                    </button>
+                  )}
+                </div>
+                {childStream.length > 0 && (
+                  <button
+                    type="button"
+                    className="subtask-card__btn subtask-card__expand"
+                    onClick={() =>
+                      setExpandedChildId?.(expanded ? null : event.childSessionId)
+                    }
+                  >
+                    {expanded ? "收起" : "展开"}
+                  </button>
+                )}
+                {expanded && (
+                  <div className="subtask-card__stream custom-scrollbar scrollbar-autohide">
+                    {childStream.map((ce, ci) =>
+                      ce.type === "assistant_message" ||
+                      ce.type === "user_message" ||
+                      ce.type === "thought" ||
+                      ce.type === "tool_call" ? (
+                        <div key={`${ce.type}-${ci}`} className="subtask-card__stream-line">
+                          <strong>
+                            {ce.type === "assistant_message"
+                              ? "Reply"
+                              : ce.type === "thought"
+                                ? "Thinking"
+                                : ce.type === "tool_call"
+                                  ? "Tool"
+                                  : "You"}
+                          </strong>
+                          <span>{(ce.text || "").slice(0, 400)}</span>
+                        </div>
+                      ) : null,
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          }
+
+          if (event.type === "subtask_result") {
+            const startEv = events.find(
+              (e) =>
+                e.type === "subtask_started" && e.childSessionId === event.childSessionId,
+            );
+            const prompt =
+              startEv && startEv.type === "subtask_started" ? startEv.prompt : "";
+            const modelId =
+              startEv && startEv.type === "subtask_started" ? startEv.modelId : undefined;
+            const agentLabel =
+              startEv && startEv.type === "subtask_started"
+                ? startEv.agentLabel || startEv.agentId
+                : event.agentId;
+            const target = modelId
+              ? `@${event.agentId}/${modelId}`
+              : `@${event.agentId}`;
+            const ok = event.status === "done";
+            const glyph = ok ? "✓" : "✕";
+            const duration =
+              event.durationMs != null
+                ? event.durationMs < 60_000
+                  ? `${Math.round(event.durationMs / 1000)}秒`
+                  : `${Math.floor(event.durationMs / 60_000)}分${Math.round((event.durationMs % 60_000) / 1000)}秒`
+                : "";
+            const expanded = expandedChildId === event.childSessionId;
+            const childStream = allEvents.filter((e) => e.sessionId === event.childSessionId);
+            return (
+              <div
+                className={`event-card event-card--subtask is-${event.status}`}
+                key={`subtask-${event.childSessionId}-done`}
+              >
+                <div className="subtask-card__row">
+                  <span className="subtask-card__glyph" aria-hidden>
+                    {glyph}
+                  </span>
+                  <span className="subtask-card__title" title={prompt}>
+                    {target} · {(prompt || agentLabel).slice(0, 48)}
+                    {(prompt || agentLabel).length > 48 ? "…" : ""}
+                  </span>
+                  <span className="subtask-card__meta">
+                    {ok
+                      ? duration
+                      : event.error ||
+                        (event.status === "timeout"
+                          ? "超时"
+                          : event.status === "cancelled"
+                            ? "已取消"
+                            : "失败")}
+                  </span>
+                  <button
+                    type="button"
+                    className="subtask-card__btn"
+                    onClick={() =>
+                      setExpandedChildId?.(expanded ? null : event.childSessionId)
+                    }
+                  >
+                    {expanded ? "收起" : "展开"}
+                  </button>
+                  {ok && onSubtaskQuote && event.summary && (
+                    <button
+                      type="button"
+                      className="subtask-card__btn"
+                      onClick={() => onSubtaskQuote(event.summary)}
+                    >
+                      引用
+                    </button>
+                  )}
+                  {!ok && onSubtaskRetry && (
+                    <button
+                      type="button"
+                      className="subtask-card__btn"
+                      onClick={() => onSubtaskRetry(event.childSessionId)}
+                    >
+                      重试
+                    </button>
+                  )}
+                </div>
+                {expanded && (
+                  <div className="subtask-card__stream custom-scrollbar scrollbar-autohide">
+                    {event.summary && (
+                      <div className="subtask-card__stream-line">
+                        <strong>Summary</strong>
+                        <MarkdownBody text={event.summary} className="event-card__body" />
+                      </div>
+                    )}
+                    {childStream.map((ce, ci) =>
+                      ce.type === "assistant_message" ||
+                      ce.type === "thought" ||
+                      ce.type === "tool_call" ? (
+                        <div key={`${ce.type}-${ci}`} className="subtask-card__stream-line">
+                          <strong>
+                            {ce.type === "assistant_message"
+                              ? "Reply"
+                              : ce.type === "thought"
+                                ? "Thinking"
+                                : "Tool"}
+                          </strong>
+                          <span>{(ce.text || "").slice(0, 600)}</span>
+                        </div>
+                      ) : null,
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          }
+
           const isCollapsible = event.type === "thought" || event.type === "tool_call";
           const toolRunning =
             event.type === "tool_call" && isToolInProgress(event.status);
@@ -563,6 +905,21 @@ function CleanPlaceholder({
                 projectId={projectId}
                 createdAt={event.createdAt}
                 index={index}
+                onLineComment={
+                  onQuotePinsChange
+                    ? ({ filePath, side, lineNumber, quoted, comment }) => {
+                        const sideLabel = side === "new" ? "新" : "旧";
+                        const pin: QuotePin = {
+                          id: newQuotePinId(),
+                          quoted: `${filePath}:${lineNumber}（${sideLabel}）\n${quoted}`,
+                          comment,
+                          x: 0,
+                          y: 0,
+                        };
+                        onQuotePinsChange([...(quotePins ?? []), pin]);
+                      }
+                    : undefined
+                }
               />
             );
           }
@@ -767,12 +1124,22 @@ function CleanPlaceholder({
                       </button>
                     </div>
                   </div>
-                ) : useMarkdown && typeof body === "string" ? (
-                  <MarkdownBody text={body} />
                 ) : (
-                  <pre className="event-card__plain">
-                    {typeof body === "string" ? <LinkedText text={body} /> : body}
-                  </pre>
+                  <>
+                    {isUser &&
+                      "attachments" in event &&
+                      Array.isArray(event.attachments) &&
+                      event.attachments.length > 0 && (
+                        <UserImageCard attachments={event.attachments} />
+                      )}
+                    {useMarkdown && typeof body === "string" && body.trim() ? (
+                      <MarkdownBody text={body} />
+                    ) : typeof body === "string" && body.trim() ? (
+                      <pre className="event-card__plain">
+                        <LinkedText text={body} />
+                      </pre>
+                    ) : null}
+                  </>
                 )}
                 {/* Reply metadata: mode · agent · model · effort · duration (only for real replies with metadata) */}
                 {event.type === "assistant_message" && event.agentId && (

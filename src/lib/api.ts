@@ -28,6 +28,26 @@ export async function addProject(path: string): Promise<Project> {
   };
 }
 
+/** Native folder picker. Returns null if the user cancels. */
+export async function pickFolder(): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await invoke<string | null>("pick_folder");
+  } catch {
+    return null;
+  }
+}
+
+/** Native multi-file picker with absolute paths. Empty if cancelled. */
+export async function pickFiles(): Promise<string[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    return (await invoke<string[]>("pick_files")) ?? [];
+  } catch {
+    return [];
+  }
+}
+
 /** Remove project from Marionette list (does not delete workspace files). */
 export async function deleteProject(projectId: string): Promise<void> {
   if (isTauriRuntime()) {
@@ -132,6 +152,52 @@ export async function createSession(projectId: string, agentId: string, label = 
   };
 }
 
+/** Hidden child session for `@agent` delegate. */
+export async function createChildSession(
+  projectId: string,
+  parentSessionId: string,
+  agentId: string,
+  label = "Delegate"
+): Promise<Session | null> {
+  if (isTauriRuntime()) {
+    return invoke<Session>("create_child_session", {
+      projectId,
+      parentSessionId,
+      agentId,
+      label,
+    });
+  }
+  const project = mockProjects.find((candidate) => candidate.id === projectId);
+  if (!project) return null;
+  const now = new Date().toISOString();
+  const id = `session-child-${Date.now()}`;
+  return {
+    id,
+    projectId,
+    agentId,
+    label,
+    cwd: project.rootPath,
+    status: "exited",
+    processId: null,
+    startedAt: "",
+    lastActiveAt: now,
+    transcriptPath: `${project.rootPath}\\.marionette\\transcripts\\${id}.jsonl`,
+    handoffPath: `${project.rootPath}\\.marionette\\handoff\\${id}.md`,
+    viewMode: "clean",
+    parentSessionId,
+    origin: "delegate",
+  };
+}
+
+export async function listChildSessions(parentSessionId: string): Promise<Session[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    return await invoke<Session[]>("list_child_sessions", { parentSessionId });
+  } catch {
+    return [];
+  }
+}
+
 export async function deleteSession(projectId: string, sessionId: string): Promise<void> {
   if (isTauriRuntime()) await invoke("delete_session", { projectId, sessionId });
 }
@@ -226,9 +292,24 @@ export async function startAcpSession(
   return invoke<CapabilitySnapshot>("start_acp_session", { sessionId, command, args, cwd });
 }
 
-export async function sendAcpPrompt(sessionId: string, text: string): Promise<unknown> {
+export async function sendAcpPrompt(
+  sessionId: string,
+  text: string,
+  imagePaths: string[] = [],
+): Promise<unknown> {
   if (!isTauriRuntime()) return null;
-  return invoke("send_acp_prompt", { sessionId, text });
+  return invoke("send_acp_prompt", {
+    sessionId,
+    text,
+    imagePaths: imagePaths.length > 0 ? imagePaths : null,
+  });
+}
+
+/** Load a local image as a data URL for preview / annotator. */
+export async function readImageDataUrl(
+  path: string,
+): Promise<{ path: string; mimeType: string; dataUrl: string; byteLength: number }> {
+  return invoke("read_image_data_url", { path });
 }
 
 export async function cancelAcpSession(sessionId: string): Promise<void> {
@@ -392,6 +473,26 @@ export async function setProjectContextEnabled(
   await invoke("set_project_context_enabled", { projectId, kind, id, enabled });
 }
 
+/** Project-level todos (`.marionette/todos.json`). Frontend owns truth. */
+export async function listTodos(
+  projectId: string
+): Promise<import("./todos").TodoItem[]> {
+  if (!isTauriRuntime() || !projectId) return [];
+  try {
+    return await invoke<import("./todos").TodoItem[]>("list_todos", { projectId });
+  } catch {
+    return [];
+  }
+}
+
+export async function saveTodos(
+  projectId: string,
+  items: import("./todos").TodoItem[]
+): Promise<void> {
+  if (!isTauriRuntime() || !projectId) return;
+  await invoke("save_todos", { projectId, items });
+}
+
 export type OutsidePath = {
   path: string;
   /** Folder to grant (a file grants its parent). */
@@ -508,4 +609,23 @@ export async function listProviders(): Promise<ProviderInfo[]> {
 /** `force` confirms deleting an OAuth login — see {@link saveProviderKey}. */
 export async function deleteProviderKey(provider: string, force = false): Promise<void> {
   await invoke("delete_provider_key", { provider, force });
+}
+
+/** User catalog meta only (`~/.marionette/providers.json`) — does not touch auth.json. */
+export async function upsertProviderMeta(
+  id: string,
+  label: string,
+  keyAliases: string[] = [],
+  probeStrategy = "none",
+): Promise<void> {
+  await invoke("upsert_provider_meta", {
+    id,
+    label,
+    keyAliases,
+    probeStrategy,
+  });
+}
+
+export async function deleteProviderMeta(id: string): Promise<void> {
+  await invoke("delete_provider_meta", { id });
 }

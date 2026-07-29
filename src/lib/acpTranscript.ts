@@ -416,15 +416,18 @@ export function userMessageEvent(
     modelLabel?: string;
     modeLabel?: string;
     effortLabel?: string;
+    attachments?: import("./imageAttachments").ImageAttachment[];
   },
 ): SessionEvent {
+  const { attachments, ...rest } = meta ?? {};
   return {
     type: "user_message",
     sessionId,
     text,
     messageId: `um-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     createdAt: new Date().toISOString(),
-    ...meta,
+    ...rest,
+    ...(attachments && attachments.length > 0 ? { attachments } : {}),
   };
 }
 

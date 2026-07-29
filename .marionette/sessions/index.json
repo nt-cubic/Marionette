@@ -1,5 +1,26 @@
 [
   {
+    "id": "session-1785302681403",
+    "projectId": "project-507a2646a1b238b2",
+    "agentId": "opencode",
+    "label": "帮我提交本地更变到github",
+    "cwd": "\\\\?\\D:\\Myself\\Marionette",
+    "status": "running",
+    "processId": null,
+    "ptyId": null,
+    "startedAt": "1785302687345",
+    "lastActiveAt": "1785302705820",
+    "exitedAt": null,
+    "exitCode": null,
+    "rawLogPath": "\\\\?\\D:\\Myself\\Marionette\\.marionette\\sessions\\session-1785302681403.raw.log",
+    "transcriptPath": "\\\\?\\D:\\Myself\\Marionette\\.marionette\\transcripts\\session-1785302681403.jsonl",
+    "handoffPath": "\\\\?\\D:\\Myself\\Marionette\\.marionette\\handoff\\session-1785302681403.md",
+    "viewMode": "clean",
+    "preferredModel": "opencode/deepseek-v4-flash-free",
+    "preferredEffortId": "max",
+    "origin": "user"
+  },
+  {
     "id": "session-1785253734013",
     "projectId": "project-bd875992e446922a",
     "agentId": "opencode",

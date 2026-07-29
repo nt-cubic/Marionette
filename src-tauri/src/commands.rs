@@ -1,7 +1,9 @@
 use crate::models::{AgentCommandStatus, AgentConfig, Project, Session};
 use crate::AppState;
 use serde_json::Value;
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, State};
 
 #[tauri::command]
@@ -22,6 +24,35 @@ pub fn add_project(path: String, state: State<'_, AppState>) -> Result<Project, 
         .lock()
         .map_err(|_| "Storage lock poisoned".to_string())?;
     storage.add_project(path)
+}
+
+/// Native folder picker for the Add Project dialog. `None` = user cancelled.
+#[tauri::command]
+pub fn pick_folder() -> Result<Option<String>, String> {
+    let _trace = crate::debug_log::CmdTrace::new("pick_folder");
+    let picked = rfd::FileDialog::new()
+        .set_title("Select project folder")
+        .pick_folder()
+        .map(|path| path.to_string_lossy().to_string());
+    Ok(picked)
+}
+
+/// Native multi-file picker for Composer「+」. Empty vec = user cancelled.
+///
+/// HTML `<input type="file">` in the webview often only yields `file.name`
+/// (no absolute path). Native dialog returns real filesystem paths so
+/// outside-project grant + agent open-by-path both work.
+#[tauri::command]
+pub fn pick_files() -> Result<Vec<String>, String> {
+    let _trace = crate::debug_log::CmdTrace::new("pick_files");
+    let picked = rfd::FileDialog::new()
+        .set_title("Add files")
+        .pick_files()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|path| path.to_string_lossy().to_string())
+        .collect();
+    Ok(picked)
 }
 
 #[tauri::command]
@@ -338,6 +369,36 @@ pub fn create_session(
     storage.create_session(&project_id, agent_id, label)
 }
 
+/// Create a hidden child session for `@agent` delegate (not listed in shelf).
+#[tauri::command]
+pub fn create_child_session(
+    project_id: String,
+    parent_session_id: String,
+    agent_id: String,
+    label: String,
+    state: State<'_, AppState>,
+) -> Result<Session, String> {
+    let _trace = crate::debug_log::CmdTrace::new("create_child_session");
+    let storage = state
+        .storage
+        .lock()
+        .map_err(|_| "Storage lock poisoned".to_string())?;
+    storage.create_child_session(&project_id, &parent_session_id, agent_id, label)
+}
+
+#[tauri::command]
+pub fn list_child_sessions(
+    parent_session_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<Session>, String> {
+    let _trace = crate::debug_log::CmdTrace::new("list_child_sessions");
+    let storage = state
+        .storage
+        .lock()
+        .map_err(|_| "Storage lock poisoned".to_string())?;
+    storage.list_child_sessions(&parent_session_id)
+}
+
 #[tauri::command]
 pub fn update_session_agent(
     session_id: String,
@@ -651,9 +712,54 @@ pub async fn start_acp_session(
 pub fn send_acp_prompt(
     session_id: String,
     text: String,
+    image_paths: Option<Vec<String>>,
     state: State<'_, AppState>,
 ) -> Result<Value, String> {
-    state.acp.send_prompt(&session_id, text)
+    state
+        .acp
+        .send_prompt(&session_id, text, image_paths.unwrap_or_default())
+}
+
+/// Read a local image as a `data:` URL for the annotator / You-card preview.
+#[tauri::command(async)]
+pub fn read_image_data_url(path: String) -> Result<serde_json::Value, String> {
+    use base64::{engine::general_purpose::STANDARD as B64, Engine};
+    use std::fs;
+    use std::path::Path;
+
+    let p = Path::new(&path);
+    if !p.is_file() {
+        return Err(format!("not a file: {path}"));
+    }
+    let meta = fs::metadata(p).map_err(|e| format!("stat failed: {e}"))?;
+    const MAX_BYTES: u64 = 12 * 1024 * 1024;
+    if meta.len() > MAX_BYTES {
+        return Err(format!("image too large (max 12 MB)"));
+    }
+    let bytes = fs::read(p).map_err(|e| format!("read failed: {e}"))?;
+    let lower = path.to_ascii_lowercase();
+    let mime = if lower.ends_with(".png") {
+        "image/png"
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if lower.ends_with(".gif") {
+        "image/gif"
+    } else if lower.ends_with(".webp") {
+        "image/webp"
+    } else if lower.ends_with(".bmp") {
+        "image/bmp"
+    } else if lower.ends_with(".svg") {
+        "image/svg+xml"
+    } else {
+        "application/octet-stream"
+    };
+    let data = B64.encode(&bytes);
+    Ok(serde_json::json!({
+        "path": path,
+        "mimeType": mime,
+        "dataUrl": format!("data:{mime};base64,{data}"),
+        "byteLength": bytes.len(),
+    }))
 }
 
 #[tauri::command(async)]
@@ -861,6 +967,92 @@ fn project_root_of(project_id: &str, state: &State<'_, AppState>) -> Result<Path
     Ok(PathBuf::from(project.root_path))
 }
 
+// ─── Project todos (`.marionette/todos.json`) ───────────────────────────────
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TodoItemDto {
+    pub id: String,
+    pub text: String,
+    pub status: String,
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_session_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_at: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TodoFileDto {
+    version: u32,
+    items: Vec<TodoItemDto>,
+    updated_at: String,
+}
+
+fn todos_path(project_root: &Path) -> PathBuf {
+    crate::app_paths::project_dir(project_root).join("todos.json")
+}
+
+fn write_todos_atomic(path: &Path, body: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Create .marionette failed: {e}"))?;
+    }
+    let temp = path.with_extension(format!(
+        "json.{}.tmp",
+        std::process::id()
+    ));
+    fs::write(&temp, body).map_err(|e| format!("Write todos temp failed: {e}"))?;
+    if let Err(error) = fs::rename(&temp, path) {
+        let _ = fs::remove_file(&temp);
+        return Err(format!("Rename todos failed: {error}"));
+    }
+    Ok(())
+}
+
+/// Full project todo list (frontend owns truth; whole-file write on each edit).
+#[tauri::command]
+pub fn list_todos(
+    project_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<TodoItemDto>, String> {
+    let _trace = crate::debug_log::CmdTrace::new("list_todos");
+    let root = project_root_of(&project_id, &state)?;
+    let path = todos_path(&root);
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return Ok(Vec::new());
+    };
+    let file: TodoFileDto = serde_json::from_str(&raw)
+        .map_err(|e| format!("Parse todos.json failed: {e}"))?;
+    Ok(file.items)
+}
+
+#[tauri::command]
+pub fn save_todos(
+    project_id: String,
+    items: Vec<TodoItemDto>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let _trace = crate::debug_log::CmdTrace::new("save_todos");
+    let root = project_root_of(&project_id, &state)?;
+    let path = todos_path(&root);
+    let updated_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis().to_string())
+        .unwrap_or_else(|_| "0".into());
+    let file = TodoFileDto {
+        version: 1,
+        items,
+        updated_at,
+    };
+    let body = serde_json::to_string_pretty(&file)
+        .map_err(|e| format!("Serialize todos failed: {e}"))?;
+    write_todos_atomic(&path, &format!("{body}\n"))
+}
+
 /// Scan this machine + project for MCP servers and skills, with what the user
 /// has already decided to lend. Cheap enough to call whenever the panel opens.
 #[tauri::command(async)]
@@ -975,6 +1167,21 @@ pub fn save_provider_key(provider: String, key: String, force: Option<bool>) -> 
 #[tauri::command(async)]
 pub fn list_providers() -> Result<Vec<crate::provider_usage::ProviderInfo>, String> {
     crate::provider_usage::list_providers()
+}
+
+#[tauri::command]
+pub fn upsert_provider_meta(
+    id: String,
+    label: String,
+    key_aliases: Vec<String>,
+    probe_strategy: String,
+) -> Result<(), String> {
+    crate::provider_usage::upsert_provider_meta(id, label, key_aliases, probe_strategy)
+}
+
+#[tauri::command]
+pub fn delete_provider_meta(id: String) -> Result<(), String> {
+    crate::provider_usage::delete_provider_meta(id)
 }
 
 /// Delete a provider API key from OpenCode's auth.json.

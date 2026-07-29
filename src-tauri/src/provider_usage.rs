@@ -71,32 +71,187 @@ fn load_auth_json() -> Result<Value, String> {
     serde_json::from_str(&text).map_err(|e| format!("Parse auth.json failed: {e}"))
 }
 
+// ─── Provider catalog (builtin ∪ user providers.json ∪ auth.json) ───────────
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProbeStrategy {
+    Deepseek,
+    Openrouter,
+    OpencodeZen,
+    None,
+}
+
+impl ProbeStrategy {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Deepseek => "deepseek",
+            Self::Openrouter => "openrouter",
+            Self::OpencodeZen => "opencode-zen",
+            Self::None => "none",
+        }
+    }
+
+    fn parse(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "deepseek" => Self::Deepseek,
+            "openrouter" => Self::Openrouter,
+            "opencode-zen" | "opencode_zen" | "zen" => Self::OpencodeZen,
+            _ => Self::None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ProviderMeta {
+    id: String,
+    label: String,
+    key_aliases: Vec<String>,
+    probe: ProbeStrategy,
+    source: &'static str, // "builtin" | "user"
+}
+
+/// Built-in catalog — formerly hard-coded match arms in label / alias / display.
+fn builtin_catalog() -> Vec<ProviderMeta> {
+    fn b(id: &str, label: &str, aliases: &[&str], probe: ProbeStrategy) -> ProviderMeta {
+        ProviderMeta {
+            id: id.to_string(),
+            label: label.to_string(),
+            key_aliases: aliases.iter().map(|s| (*s).to_string()).collect(),
+            probe,
+            source: "builtin",
+        }
+    }
+    vec![
+        b("deepseek", "DeepSeek", &["deepseek"], ProbeStrategy::Deepseek),
+        b("openrouter", "OpenRouter", &["openrouter"], ProbeStrategy::Openrouter),
+        b("openai", "OpenAI", &["openai"], ProbeStrategy::None),
+        b("anthropic", "Anthropic", &["anthropic"], ProbeStrategy::None),
+        b("google", "Google", &["google"], ProbeStrategy::None),
+        b("xai", "xAI (Grok)", &["xai", "grok"], ProbeStrategy::None),
+        b(
+            "zai",
+            "Z.AI (GLM)",
+            &["zai", "zhipu", "glm", "z-ai"],
+            ProbeStrategy::None,
+        ),
+        b(
+            "siliconflow",
+            "SiliconFlow",
+            &["siliconflow", "siliconflow-cn"],
+            ProbeStrategy::None,
+        ),
+        b(
+            "opencode-go",
+            "OpenCode Go",
+            &["opencode-go", "opencode", "opencode-zen", "go"],
+            ProbeStrategy::OpencodeZen,
+        ),
+        b(
+            "opencode",
+            "OpenCode Zen",
+            &["opencode", "opencode-go", "opencode-zen", "zen"],
+            ProbeStrategy::OpencodeZen,
+        ),
+        b("nvidia", "NVIDIA NIM", &["nvidia"], ProbeStrategy::None),
+        b(
+            "huggingface",
+            "Hugging Face",
+            &["huggingface", "hf"],
+            ProbeStrategy::None,
+        ),
+    ]
+}
+
+fn providers_json_path() -> Option<PathBuf> {
+    let home = home_dir()?;
+    Some(home.join(".marionette").join("providers.json"))
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UserProvidersFile {
+    version: u32,
+    #[serde(default)]
+    providers: std::collections::BTreeMap<String, UserProviderEntry>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct UserProviderEntry {
+    label: String,
+    #[serde(default)]
+    key_aliases: Vec<String>,
+    #[serde(default = "default_probe_none")]
+    probe_strategy: String,
+}
+
+fn default_probe_none() -> String {
+    "none".into()
+}
+
+fn load_user_catalog() -> Vec<ProviderMeta> {
+    let Some(path) = providers_json_path() else {
+        return Vec::new();
+    };
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    let Ok(file) = serde_json::from_str::<UserProvidersFile>(&raw) else {
+        return Vec::new();
+    };
+    file.providers
+        .into_iter()
+        .map(|(id, e)| ProviderMeta {
+            id,
+            label: e.label,
+            key_aliases: e.key_aliases,
+            probe: ProbeStrategy::parse(&e.probe_strategy),
+            source: "user",
+        })
+        .collect()
+}
+
+/// Builtin first, then user overrides / adds by id.
+fn merged_catalog() -> Vec<ProviderMeta> {
+    let mut by_id: std::collections::BTreeMap<String, ProviderMeta> = std::collections::BTreeMap::new();
+    for p in builtin_catalog() {
+        by_id.insert(p.id.clone(), p);
+    }
+    for p in load_user_catalog() {
+        by_id.insert(p.id.clone(), p);
+    }
+    by_id.into_values().collect()
+}
+
+fn find_meta(provider: &str) -> Option<ProviderMeta> {
+    let key = provider.trim().to_ascii_lowercase();
+    for p in merged_catalog() {
+        if p.id.eq_ignore_ascii_case(&key) {
+            return Some(p);
+        }
+        if p.key_aliases.iter().any(|a| a.eq_ignore_ascii_case(&key)) {
+            return Some(p);
+        }
+    }
+    None
+}
+
 /// Extract API key for a provider id without ever returning the secret.
 fn auth_key_for(auth: &Value, provider: &str) -> Result<String, String> {
-    let aliases: &[&str] = match provider {
-        "opencode-go" | "opencode_go" | "go" => &["opencode-go", "opencode", "opencode-zen"],
-        "opencode" | "opencode-zen" | "zen" => &["opencode", "opencode-go", "opencode-zen"],
-        "deepseek" => &["deepseek"],
-        "openrouter" => &["openrouter"],
-        "zai" | "z-ai" | "zhipu" | "glm" => &["zai", "zhipu", "glm"],
-        "xai" | "grok" => &["xai"],
-        "nvidia" => &["nvidia"],
-        "huggingface" | "hf" => &["huggingface"],
-        "siliconflow" | "siliconflow-cn" => &["siliconflow-cn", "siliconflow"],
-        other => {
-            // Fall through to exact key.
-            let _ = other;
-            &[]
+    let mut keys: Vec<String> = Vec::new();
+    if let Some(meta) = find_meta(provider) {
+        keys.push(meta.id.clone());
+        for a in meta.key_aliases {
+            if !keys.iter().any(|k| k == &a) {
+                keys.push(a);
+            }
         }
-    };
+    }
+    if !keys.iter().any(|k| k.eq_ignore_ascii_case(provider)) {
+        keys.push(provider.to_string());
+    }
 
     let mut tried = Vec::new();
-    let keys: Vec<String> = if aliases.is_empty() {
-        vec![provider.to_string()]
-    } else {
-        aliases.iter().map(|s| (*s).to_string()).collect()
-    };
-
     for k in &keys {
         tried.push(k.clone());
         if let Some(entry) = auth.get(k) {
@@ -139,18 +294,14 @@ pub fn split_model_id(model_id: &str) -> (String, Option<String>) {
 }
 
 fn provider_label(provider: &str) -> String {
-    match provider {
-        "deepseek" => "DeepSeek API".into(),
-        "openrouter" => "OpenRouter".into(),
-        "opencode-go" | "opencode_go" | "go" => "OpenCode Go".into(),
-        "opencode" | "opencode-zen" | "zen" => "OpenCode Zen".into(),
-        "zai" | "zhipu" => "Z.AI / GLM".into(),
-        "xai" => "xAI".into(),
-        "nvidia" => "NVIDIA NIM".into(),
-        "huggingface" => "Hugging Face".into(),
-        "siliconflow" | "siliconflow-cn" => "SiliconFlow".into(),
-        other => other.to_string(),
+    if let Some(meta) = find_meta(provider) {
+        // Usage panel historically used "DeepSeek API" for deepseek.
+        if meta.id == "deepseek" {
+            return "DeepSeek API".into();
+        }
+        return meta.label;
     }
+    provider.to_string()
 }
 
 fn http_get_json(url: &str, bearer: &str) -> Result<Value, String> {
@@ -560,22 +711,17 @@ pub struct ProviderInfo {
     pub has_key: bool,
     /// Lets the UI warn before overwriting or deleting an OAuth login.
     pub auth_kind: AuthKind,
+    /// Whether auth.json has an entry for this provider (or an alias).
+    pub configured: bool,
+    /// Where this row came from.
+    pub source: String,
+    /// Balance probe strategy owned by Rust (`none` = honest "unsupported").
+    pub probe_strategy: String,
 }
 
-/// Provider id → human label.
+/// Provider id → human label (catalog first).
 fn provider_display_name(id: &str) -> String {
-    match id {
-        "deepseek" => "DeepSeek",
-        "openrouter" => "OpenRouter",
-        "openai" => "OpenAI",
-        "anthropic" => "Anthropic",
-        "google" => "Google",
-        "xai" => "xAI (Grok)",
-        "zai" | "zhipu" => "Z.AI (GLM)",
-        "siliconflow" | "siliconflow-cn" => "SiliconFlow",
-        other => other,
-    }
-    .to_string()
+    find_meta(id).map(|m| m.label).unwrap_or_else(|| id.to_string())
 }
 
 /// Read `auth.json` for a mutation.
@@ -666,22 +812,130 @@ pub fn write_provider_key(provider: &str, key: &str, force: bool) -> Result<(), 
     write_provider_key_at(provider, key, None, force)
 }
 
-/// List all configured providers in auth.json (without exposing keys).
+/// Catalog ∪ auth.json keys — for the OpenCode provider Key dialog.
+///
+/// Does not expose secrets. New installs get the builtin catalog even when
+/// `auth.json` / `providers.json` are empty.
 pub fn list_providers() -> Result<Vec<ProviderInfo>, String> {
-    let auth = load_auth_json()?;
-    let mut providers = Vec::new();
-    if let Some(obj) = auth.as_object() {
-        for (key, value) in obj {
-            let auth_kind = classify_entry(value);
-            providers.push(ProviderInfo {
-                provider: key.clone(),
-                label: provider_display_name(key),
-                has_key: auth_kind != AuthKind::Unknown,
-                auth_kind,
-            });
+    let auth = load_auth_json().unwrap_or(Value::Object(Default::default()));
+    let auth_obj = auth.as_object().cloned().unwrap_or_default();
+
+    let mut out: Vec<ProviderInfo> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for meta in merged_catalog() {
+        // Prefer matching an auth entry by canonical id or any alias.
+        let mut auth_key: Option<String> = None;
+        let mut auth_kind = AuthKind::Unknown;
+        let candidates: Vec<String> = std::iter::once(meta.id.clone())
+            .chain(meta.key_aliases.iter().cloned())
+            .collect();
+        for c in &candidates {
+            if let Some(value) = auth_obj.get(c) {
+                auth_key = Some(c.clone());
+                auth_kind = classify_entry(value);
+                break;
+            }
         }
+        let configured = auth_key.is_some();
+        let has_key = configured && auth_kind != AuthKind::Unknown;
+        seen.insert(meta.id.clone());
+        out.push(ProviderInfo {
+            provider: meta.id,
+            label: meta.label,
+            has_key,
+            auth_kind,
+            configured,
+            source: meta.source.to_string(),
+            probe_strategy: meta.probe.as_str().to_string(),
+        });
     }
-    Ok(providers)
+
+    // Auth-only keys (hand-edited foobar) still show up.
+    for (key, value) in &auth_obj {
+        if seen.contains(key) {
+            continue;
+        }
+        // Skip if this key is only an alias of something we already listed.
+        if find_meta(key).is_some_and(|m| seen.contains(&m.id)) {
+            continue;
+        }
+        let auth_kind = classify_entry(value);
+        out.push(ProviderInfo {
+            provider: key.clone(),
+            label: provider_display_name(key),
+            has_key: auth_kind != AuthKind::Unknown,
+            auth_kind,
+            configured: true,
+            source: "auth".into(),
+            probe_strategy: ProbeStrategy::None.as_str().to_string(),
+        });
+    }
+
+    out.sort_by(|a, b| a.label.to_ascii_lowercase().cmp(&b.label.to_ascii_lowercase()));
+    Ok(out)
+}
+
+/// Upsert user catalog entry in `~/.marionette/providers.json` (does not touch auth.json).
+pub fn upsert_provider_meta(
+    id: String,
+    label: String,
+    key_aliases: Vec<String>,
+    probe_strategy: String,
+) -> Result<(), String> {
+    let id = id.trim().to_ascii_lowercase();
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err("Provider id 只能用字母、数字、连字符".into());
+    }
+    let path = providers_json_path().ok_or_else(|| "无法定位用户目录".to_string())?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Create .marionette failed: {e}"))?;
+    }
+    let mut file = if path.is_file() {
+        let raw = fs::read_to_string(&path).map_err(|e| format!("Read providers.json: {e}"))?;
+        serde_json::from_str::<UserProvidersFile>(&raw).unwrap_or(UserProvidersFile {
+            version: 1,
+            providers: Default::default(),
+        })
+    } else {
+        UserProvidersFile {
+            version: 1,
+            providers: Default::default(),
+        }
+    };
+    let probe = ProbeStrategy::parse(&probe_strategy);
+    file.providers.insert(
+        id,
+        UserProviderEntry {
+            label: if label.trim().is_empty() {
+                "Custom".into()
+            } else {
+                label.trim().to_string()
+            },
+            key_aliases,
+            probe_strategy: probe.as_str().to_string(),
+        },
+    );
+    let body = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
+    let temp = path.with_extension("json.tmp");
+    fs::write(&temp, format!("{body}\n")).map_err(|e| format!("Write providers.json: {e}"))?;
+    fs::rename(&temp, &path).map_err(|e| format!("Rename providers.json: {e}"))?;
+    Ok(())
+}
+
+/// Remove user catalog meta only (auth.json key is left alone).
+pub fn delete_provider_meta(id: String) -> Result<(), String> {
+    let id = id.trim().to_ascii_lowercase();
+    let path = providers_json_path().ok_or_else(|| "无法定位用户目录".to_string())?;
+    if !path.is_file() {
+        return Ok(());
+    }
+    let raw = fs::read_to_string(&path).map_err(|e| format!("Read providers.json: {e}"))?;
+    let mut file: UserProvidersFile = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    file.providers.remove(&id);
+    let body = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
+    fs::write(&path, format!("{body}\n")).map_err(|e| format!("Write providers.json: {e}"))?;
+    Ok(())
 }
 
 /// Delete a provider API key from auth.json.

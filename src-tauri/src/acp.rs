@@ -105,6 +105,9 @@ pub struct CapabilitySnapshot {
     pub model_config_id: Option<String>,
     pub mode_config_id: Option<String>,
     pub effort_config_id: Option<String>,
+    /// Agent accepts `ContentBlock::Image` in session/prompt (from initialize).
+    /// Defaults true so vision-capable CLIs work before we re-parse caps.
+    pub prompt_image: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -823,7 +826,17 @@ impl AcpService {
     /// Fire `session/prompt` and return immediately so the UI can stream
     /// `session/update` events (thinking / tool_call / message chunks) live.
     /// Turn completion arrives later as an `rpc/response` acp-event.
-    pub fn send_prompt(&self, session_id: &str, text: String) -> Result<Value, String> {
+    ///
+    /// `image_paths` are absolute filesystem paths; each is read, base64-encoded,
+    /// and sent as an ACP `ContentBlock::Image` before the text block (when the
+    /// agent advertised image prompt capability; otherwise images are skipped
+    /// with a log line and the text still goes through).
+    pub fn send_prompt(
+        &self,
+        session_id: &str,
+        text: String,
+        image_paths: Vec<String>,
+    ) -> Result<Value, String> {
         let process = self.process(session_id)?;
         let agent_session_id = process
             .agent_session_id
@@ -831,6 +844,50 @@ impl AcpService {
             .map_err(|_| "ACP session id lock poisoned".to_string())?
             .clone()
             .ok_or_else(|| "ACP session is not initialized".to_string())?;
+
+        let caps = self.get_capabilities(session_id);
+        let images_ok = caps
+            .as_ref()
+            .map(|c| c.prompt_image)
+            .unwrap_or(false);
+
+        let mut prompt_blocks: Vec<Value> = Vec::new();
+        let mut image_count = 0usize;
+        if !image_paths.is_empty() {
+            if images_ok {
+                for path in &image_paths {
+                    match load_image_content_block(path) {
+                        Ok(block) => {
+                            prompt_blocks.push(block);
+                            image_count += 1;
+                        }
+                        Err(err) => {
+                            crate::debug_log::append(
+                                "acp",
+                                "warn",
+                                session_id,
+                                "skip image in prompt",
+                                Some(&format!("{path}: {err}")),
+                            );
+                        }
+                    }
+                }
+            } else {
+                crate::debug_log::append(
+                    "acp",
+                    "warn",
+                    session_id,
+                    "agent has no image prompt capability — sending text only",
+                    Some(&format!("droppedImages={}", image_paths.len())),
+                );
+            }
+        }
+        if !text.is_empty() {
+            prompt_blocks.push(json!({ "type": "text", "text": text }));
+        }
+        if prompt_blocks.is_empty() {
+            return Err("Empty prompt (no text and no images)".into());
+        }
 
         let id = process.next_id.fetch_add(1, Ordering::Relaxed);
         // No pending waiter: response is still emitted on the event bus in read_stdout.
@@ -842,7 +899,7 @@ impl AcpService {
                 "method": "session/prompt",
                 "params": {
                     "sessionId": agent_session_id,
-                    "prompt": [{ "type": "text", "text": text }]
+                    "prompt": prompt_blocks
                 }
             }),
         )?;
@@ -851,9 +908,12 @@ impl AcpService {
             "info",
             session_id,
             "session/prompt sent (async stream)",
-            Some(&format!("rpcId={id} chars={}", text.len())),
+            Some(&format!(
+                "rpcId={id} chars={} images={image_count}",
+                text.len()
+            )),
         );
-        Ok(json!({ "accepted": true, "id": id }))
+        Ok(json!({ "accepted": true, "id": id, "images": image_count }))
     }
 
     pub fn cancel(&self, session_id: &str) -> Result<(), String> {
@@ -1404,6 +1464,7 @@ fn parse_capabilities_from_typed(response: acp_schema::NewSessionResponse) -> Ca
         model_config_id,
         mode_config_id,
         effort_config_id,
+        prompt_image: true,
     }
 }
 
@@ -1640,6 +1701,56 @@ fn parse_capabilities_fallback(session_response: &Value) -> CapabilitySnapshot {
         model_config_id,
         mode_config_id,
         effort_config_id,
+        prompt_image: true,
+    }
+}
+
+/// Read an image file into an ACP image content block (base64 + mimeType).
+fn load_image_content_block(path: &str) -> Result<Value, String> {
+    use base64::{engine::general_purpose::STANDARD as B64, Engine};
+    use std::fs;
+    use std::path::Path;
+
+    let p = Path::new(path);
+    if !p.is_file() {
+        return Err(format!("not a file: {path}"));
+    }
+    let meta = fs::metadata(p).map_err(|e| format!("stat failed: {e}"))?;
+    // ~12MB raw → ~16MB base64; keep IPC and agent stdin sane.
+    const MAX_BYTES: u64 = 12 * 1024 * 1024;
+    if meta.len() > MAX_BYTES {
+        return Err(format!(
+            "image too large ({} MB > 12 MB): {path}",
+            meta.len() / (1024 * 1024)
+        ));
+    }
+    let bytes = fs::read(p).map_err(|e| format!("read failed: {e}"))?;
+    let mime = mime_for_image_path(path);
+    let data = B64.encode(&bytes);
+    Ok(json!({
+        "type": "image",
+        "data": data,
+        "mimeType": mime,
+        "uri": format!("file://{}", path.replace('\\', "/")),
+    }))
+}
+
+fn mime_for_image_path(path: &str) -> &'static str {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".png") {
+        "image/png"
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if lower.ends_with(".gif") {
+        "image/gif"
+    } else if lower.ends_with(".webp") {
+        "image/webp"
+    } else if lower.ends_with(".bmp") {
+        "image/bmp"
+    } else if lower.ends_with(".svg") {
+        "image/svg+xml"
+    } else {
+        "application/octet-stream"
     }
 }
 
