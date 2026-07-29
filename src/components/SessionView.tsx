@@ -1294,6 +1294,42 @@ function QuoteOverlay({
   pinsRef.current = pins;
   const committingRef = useRef(false);
 
+  /** Clamp a center-anchored overlay so translate(-50%) stays inside the list. */
+  const clampOverlay = useCallback(
+    (
+      centerX: number,
+      anchorY: number,
+      kind: "pop" | "draft",
+    ): { x: number; y: number } => {
+      const list = listRef.current;
+      if (!list) return { x: centerX, y: anchorY };
+      const hostW = list.clientWidth;
+      const hostH = list.clientHeight;
+      const scrollTop = list.scrollTop;
+      const pad = 10;
+      const halfW =
+        kind === "draft"
+          ? Math.min(280, Math.max(120, hostW - 24)) / 2
+          : 48;
+      const boxH = kind === "draft" ? 150 : 36;
+      const x = Math.min(Math.max(halfW + pad, centerX), Math.max(halfW + pad, hostW - halfW - pad));
+      // Prefer above selection for pop; keep draft fully visible in the viewport.
+      let y = anchorY;
+      if (kind === "pop") {
+        if (y - boxH < scrollTop + pad) {
+          y = Math.min(scrollTop + hostH - pad, anchorY + 28);
+        }
+      } else {
+        const maxY = scrollTop + hostH - boxH - pad;
+        const minY = scrollTop + pad;
+        if (y > maxY) y = Math.max(minY, maxY);
+        if (y < minY) y = minY;
+      }
+      return { x, y };
+    },
+    [listRef],
+  );
+
   const readSelection = useCallback(() => {
     const list = listRef.current;
     if (!list) return null;
@@ -1307,12 +1343,15 @@ function QuoteOverlay({
     // Ignore zero-size (can happen after reflow)
     if (rect.width < 1 && rect.height < 1) return null;
     const host = list.getBoundingClientRect();
+    const rawX = rect.left - host.left + rect.width / 2;
+    const rawY = rect.top - host.top + list.scrollTop;
+    const clamped = clampOverlay(rawX, rawY, "pop");
     return {
       quoted: text,
-      x: Math.min(Math.max(16, rect.left - host.left + rect.width / 2), Math.max(40, host.width - 16)),
-      y: Math.max(12, rect.top - host.top + list.scrollTop),
+      x: clamped.x,
+      y: clamped.y,
     };
-  }, [listRef]);
+  }, [listRef, clampOverlay]);
 
   // Attach to the list element so we don't rely on React bubble (and avoid parent setState).
   useEffect(() => {
@@ -1398,10 +1437,11 @@ function QuoteOverlay({
           aria-label={`Comment ${index + 1}`}
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => {
+            const clamped = clampOverlay(pin.x, Math.max(12, pin.y - 36), "draft");
             setDraft({
               quoted: pin.quoted,
-              x: pin.x,
-              y: Math.max(12, pin.y - 36),
+              x: clamped.x,
+              y: clamped.y,
               comment: pin.comment,
             });
             onPinsChange(pins.filter((p) => p.id !== pin.id));
@@ -1426,10 +1466,11 @@ function QuoteOverlay({
               e.preventDefault();
               e.stopPropagation();
               const pos = readSelection() ?? btn;
+              const clamped = clampOverlay(pos.x, pos.y, "draft");
               setDraft({
                 quoted: pos.quoted,
-                x: pos.x,
-                y: pos.y,
+                x: clamped.x,
+                y: clamped.y,
                 comment: "",
               });
               setBtn(null);

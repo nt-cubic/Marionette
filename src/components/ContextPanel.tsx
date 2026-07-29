@@ -1,4 +1,12 @@
-import { FileDiff, PanelRightClose, PanelRightOpen, Plus, RefreshCw, X } from "lucide-react";
+import {
+  ArrowUpCircle,
+  FileDiff,
+  PanelRightClose,
+  PanelRightOpen,
+  Plus,
+  RefreshCw,
+  X,
+} from "lucide-react";
 import { useState } from "react";
 import type { PlanEntry } from "../lib/acpPlan";
 import type { TodoItem, TodoMergePreview, TodoStatus } from "../lib/todos";
@@ -36,6 +44,8 @@ type ContextPanelProps = {
   activeAgentLabel?: string;
   /** ACP plan for the active session (full-replace, session-scoped). */
   planEntries?: PlanEntry[];
+  /** Agent is in plan mode even if no structured plan entries arrived. */
+  planModeActive?: boolean;
   /** Project-level todos. */
   todoItems?: TodoItem[];
   onTodosChange?: (items: TodoItem[]) => void;
@@ -47,6 +57,11 @@ type ContextPanelProps = {
   /** Parent-driven panel width drag. */
   resizeDragging?: boolean;
   onResizeStart?: () => void;
+  /** Check GitHub Releases for a newer portable build. */
+  onCheckAppUpdate?: () => void;
+  checkAppUpdateBusy?: boolean;
+  /** Dot badge when a downloadable update is already known. */
+  appUpdateAvailable?: boolean;
 };
 
 function planStatusGlyph(status: PlanEntry["status"]): string {
@@ -130,6 +145,7 @@ export function ContextPanel({
   activeAgentId,
   activeAgentLabel,
   planEntries,
+  planModeActive = false,
   todoItems = [],
   onTodosChange,
   onAbsorbPlan,
@@ -138,6 +154,9 @@ export function ContextPanel({
   onPrepareAiTodoMerge,
   resizeDragging = false,
   onResizeStart,
+  onCheckAppUpdate,
+  checkAppUpdateBusy = false,
+  appUpdateAvailable = false,
 }: ContextPanelProps) {
   const planList = planEntries && planEntries.length > 0 ? planEntries : null;
   const [draftTodo, setDraftTodo] = useState("");
@@ -251,6 +270,18 @@ export function ContextPanel({
                 ↓ 吸收进 Todo
               </button>
             )}
+          </div>
+        )}
+
+        {!planList && planModeActive && (
+          <div className="plan-block plan-block--empty">
+            <div className="plan-block__meta">
+              Plan 模式 · {activeAgentLabel || activeAgentId || "agent"}
+            </div>
+            <p className="context-card__empty">
+              已切换到 Plan。Grok 等 Agent 多数把方案写在对话里，不会推结构化清单到这里。
+              对话中的选择题会弹卡片；方案写完后切回 Build 再动手。
+            </p>
           </div>
         )}
 
@@ -575,6 +606,18 @@ export function ContextPanel({
         <button className="icon-button icon-button--small context-panel__button" type="button" title={collapsed ? "Pin information panel open" : "Collapse information panel"} aria-label={collapsed ? "Pin information panel open" : "Collapse information panel"} onClick={collapsed ? onExpand : onCollapse}>
           {collapsed ? <PanelRightOpen size={14} /> : <PanelRightClose size={14} />}
         </button>
+        {onCheckAppUpdate && (
+          <button
+            className={`icon-button icon-button--small context-panel__button context-panel__button--update${appUpdateAvailable ? " is-update-ready" : ""}`}
+            type="button"
+            title={appUpdateAvailable ? "有新版本可用 — 点击检查" : "检查更新"}
+            aria-label={appUpdateAvailable ? "有新版本可用 — 点击检查" : "检查更新"}
+            disabled={checkAppUpdateBusy}
+            onClick={onCheckAppUpdate}
+          >
+            <ArrowUpCircle size={14} strokeWidth={2.25} />
+          </button>
+        )}
       </div>
     </aside>
   );

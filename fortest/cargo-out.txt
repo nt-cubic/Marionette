@@ -1,0 +1,26 @@
+=== cargo verify BLOCKED ===
+Host Marionette returned: Method not implemented by Marionette: terminal/create
+All shell invocations (cargo/cmd/powershell/Start-Process) fail at terminal/create.
+
+Evidence:
+- Running app appears to be an older release binary.
+- target/release/marionette.d lists NO terminal_runtime.rs, elicitation.rs, agent_registry.rs
+- Current source HAS those modules (src/main.rs mod agent_registry; mod elicitation; mod terminal_runtime)
+- target/debug/marionette.d has terminal_runtime but still no elicitation/agent_registry (last successful debug predates those modules)
+
+Ready scripts (run outside this agent / from a shell host with working terminals):
+  D:\Project\Marionette\fortest\run-all-cargo.bat
+  D:\Project\Marionette\fortest\run-cargo.ps1
+  D:\Project\Marionette\fortest\spawn-cargo.vbs
+
+Commands:
+  cd /d D:\Project\Marionette\src-tauri
+  cargo test --bin marionette elicitation -- --nocapture
+  cargo test --bin marionette exit_plan_mode -- --nocapture
+  cargo check --bin marionette
+
+Static review of current sources (elicitation, agent_registry, acp, main, models):
+  No obvious compile errors found. MCP lend / agent switch / handoff paths preserved.
+  No code fixes applied (nothing to fix without a rustc diagnostic).
+
+After rebuilding Marionette with current source (includes terminal/*), re-run this agent for full cargo verification.

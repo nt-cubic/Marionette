@@ -121,6 +121,48 @@ export async function installAgent(
   });
 }
 
+export type PreflightCheck = {
+  checkId: string;
+  label: string;
+  status: "pass" | "fail" | "warn";
+  message: string;
+};
+
+export type PreflightResult = {
+  agentId: string;
+  agentName: string;
+  passed: boolean;
+  checks: PreflightCheck[];
+};
+
+export async function agentPreflight(agentId: string): Promise<PreflightResult | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await invoke<PreflightResult>("agent_preflight", { agentId });
+  } catch {
+    return null;
+  }
+}
+
+export type CustomAgentDef = {
+  id: string;
+  label: string;
+  command: string;
+  args: string[];
+  npmPackage?: string | null;
+  note?: string | null;
+};
+
+export async function addCustomAgent(def: CustomAgentDef): Promise<CustomAgentDef> {
+  if (!isTauriRuntime()) throw new Error("Custom agents require the desktop app");
+  return invoke<CustomAgentDef>("add_custom_agent", { def });
+}
+
+export async function removeCustomAgent(id: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("remove_custom_agent", { id });
+}
+
 export async function listSessions(projectId: string): Promise<Session[]> {
   if (!isTauriRuntime()) return mockSessions.filter((session) => session.projectId === projectId);
   try {
@@ -460,6 +502,61 @@ export async function getFileDiff(projectId: string, path: string): Promise<stri
 export async function respondAcpPermission(requestId: string, optionId: string): Promise<void> {
   if (!isTauriRuntime()) return;
   await invoke("respond_acp_permission", { requestId, optionId });
+}
+
+export async function respondAcpQuestion(
+  requestId: string,
+  answers: { question: string; selected: string[] }[],
+  declined = false,
+): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("respond_acp_question", { requestId, answers, declined });
+}
+
+/** Grok exit_plan_mode decision: approve | request_changes | abandon */
+export type PlanApprovalDecision = "approve" | "request_changes" | "abandon";
+
+export async function respondAcpPlanApproval(
+  requestId: string,
+  decision: PlanApprovalDecision,
+  feedback?: string | null,
+): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("respond_acp_plan_approval", {
+    requestId,
+    decision,
+    feedback: feedback ?? null,
+  });
+}
+
+export type AppUpdateInfo = {
+  currentVersion: string;
+  latestVersion: string | null;
+  updateAvailable: boolean;
+  releaseUrl: string | null;
+  assetName: string | null;
+  assetUrl: string | null;
+  notes: string | null;
+  note: string | null;
+};
+
+export async function checkAppUpdate(): Promise<AppUpdateInfo | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await invoke<AppUpdateInfo>("check_app_update");
+  } catch {
+    return null;
+  }
+}
+
+export async function downloadAppUpdate(): Promise<{ path: string; version: string } | null> {
+  if (!isTauriRuntime()) return null;
+  return invoke<{ path: string; version: string }>("download_app_update");
+}
+
+export async function applyAppUpdateAndRelaunch(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("apply_app_update_and_relaunch");
 }
 
 // ─── Project context: MCP servers + skills lent to agents that lack them ────

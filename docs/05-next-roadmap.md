@@ -282,8 +282,10 @@
 | `docs/superpowers/specs/2026-07-24-agentshell-direction-design.md` | ACP/PTY/ASP 方向 |
 | `docs/superpowers/specs/2026-07-24-agentshell-asp-protocol.md` | ASP 草案 |
 | `docs/research/zed-lightweight-clone.md` | Zed 交互标尺 |
+| `docs/06-context-bridge-and-subagents.md` | Skill/MCP / 子会话调查 |
+| **`docs/08-codeg-acp-harness-alignment.md`** | **Codeg 对齐：ACP + harness；同窗切 agent + 共享 MCP/Skill 硬约束** |
 | **`docs/05-next-roadmap.md`（本文）** | **当前推进清单** |
 
 ---
 
-*最后更新：2026-07-24 — P0/P1/P2-UX 完成；拍板：git Changed Files=项目级，Handoff=应对话框（待迁路径）。*
+*最后更新：2026-07-30 — 增加 `docs/08-codeg-acp-harness-alignment.md`（协议/ harness 对齐规格，不抄 UI）。*

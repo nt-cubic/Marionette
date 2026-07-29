@@ -68,12 +68,30 @@ pub fn delete_project(project_id: String, state: State<'_, AppState>) -> Result<
 #[tauri::command]
 pub fn list_agents() -> Vec<AgentConfig> {
     let _trace = crate::debug_log::CmdTrace::new("list_agents");
-    AgentConfig::defaults()
+    crate::custom_agents::all_agents_merged()
+}
+
+/// User-defined ACP agents (JSON under Marionette global dir).
+#[tauri::command]
+pub fn list_custom_agents() -> Result<Vec<crate::custom_agents::CustomAgentDef>, String> {
+    crate::custom_agents::load_all()
+}
+
+#[tauri::command]
+pub fn add_custom_agent(
+    def: crate::custom_agents::CustomAgentDef,
+) -> Result<crate::custom_agents::CustomAgentDef, String> {
+    crate::custom_agents::add(def)
+}
+
+#[tauri::command]
+pub fn remove_custom_agent(id: String) -> Result<(), String> {
+    crate::custom_agents::remove(&id)
 }
 
 #[tauri::command(async)]
 pub fn test_agent_command(agent_id: String) -> Result<AgentCommandStatus, String> {
-    let agent = AgentConfig::defaults()
+    let agent = crate::custom_agents::all_agents_merged()
         .into_iter()
         .find(|agent| agent.id == agent_id)
         .ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
@@ -83,9 +101,28 @@ pub fn test_agent_command(agent_id: String) -> Result<AgentCommandStatus, String
 /// Status for every agent in one round-trip (the agent menu asks on open).
 #[tauri::command(async)]
 pub fn list_agent_commands() -> Vec<AgentCommandStatus> {
-    AgentConfig::defaults()
+    crate::custom_agents::all_agents_merged()
         .iter()
         .map(agent_command_status)
+        .collect()
+}
+
+/// Codeg-style preflight: PATH + Node/uv + required CLIs for one agent.
+#[tauri::command(async)]
+pub fn agent_preflight(agent_id: String) -> crate::preflight::PreflightResult {
+    let cmd = crate::custom_agents::all_agents_merged()
+        .into_iter()
+        .find(|a| a.id == agent_id)
+        .map(|a| a.command);
+    crate::preflight::run_preflight_with_cmd(&agent_id, cmd.as_deref())
+}
+
+/// Preflight every built-in + custom agent (menu / diagnostics).
+#[tauri::command(async)]
+pub fn list_agent_preflights() -> Vec<crate::preflight::PreflightResult> {
+    crate::custom_agents::all_agents_merged()
+        .iter()
+        .map(|a| crate::preflight::run_preflight_with_cmd(&a.id, Some(a.command.as_str())))
         .collect()
 }
 
@@ -234,7 +271,7 @@ fn install_agent_blocking(
     include_dependencies: bool,
     force: bool,
 ) -> Result<serde_json::Value, String> {
-    let agent = AgentConfig::defaults()
+    let agent = crate::custom_agents::all_agents_merged()
         .into_iter()
         .find(|agent| agent.id == agent_id)
         .ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
@@ -251,7 +288,8 @@ fn install_agent_blocking(
     if let Some(package) = &agent.install.package {
         let missing = matches!(resolve_command(&agent.command), Ok(None));
         if force || missing {
-            packages.push(package.clone());
+            // Bare name (no @ver) so install/auto-update always gets registry latest.
+            packages.push(crate::agent_update::npm_registry_name(package).to_string());
         }
     }
     if include_dependencies {
@@ -260,7 +298,7 @@ fn install_agent_blocking(
                 let missing = matches!(resolve_command(&dependency.command), Ok(None));
                 // Force upgrades only the agent package; deps install when absent.
                 if missing {
-                    packages.push(package.clone());
+                    packages.push(crate::agent_update::npm_registry_name(package).to_string());
                 }
             }
         }
@@ -1062,6 +1100,56 @@ pub fn respond_acp_permission(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     state.acp.respond_permission(&request_id, &option_id)
+}
+
+/// Answer a pending `_x.ai/ask_user_question` multi-choice prompt.
+#[tauri::command(async)]
+pub fn respond_acp_question(
+    request_id: String,
+    answers: serde_json::Value,
+    declined: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.acp.respond_question(&request_id, answers, declined)
+}
+
+/// Answer a pending Grok `_x.ai/exit_plan_mode` plan-approval prompt.
+///
+/// `decision`: `"approve"` | `"request_changes"` | `"abandon"`.
+/// `feedback` is freeform revision notes for request_changes (optional).
+#[tauri::command(async)]
+pub fn respond_acp_plan_approval(
+    request_id: String,
+    decision: String,
+    feedback: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state
+        .acp
+        .respond_plan_approval(&request_id, &decision, feedback)
+}
+
+/// Check GitHub Releases for a newer Marionette portable build.
+#[tauri::command(async)]
+pub fn check_app_update() -> Result<crate::app_update::AppUpdateInfo, String> {
+    Ok(crate::app_update::check_for_update())
+}
+
+/// Download the latest release exe into the updates staging folder.
+#[tauri::command(async)]
+pub fn download_app_update() -> Result<serde_json::Value, String> {
+    let (path, version) = crate::app_update::download_latest()?;
+    Ok(serde_json::json!({
+        "path": path.to_string_lossy(),
+        "version": version,
+    }))
+}
+
+/// Replace the running exe with the staged download and relaunch.
+/// Does not return on success (process exits).
+#[tauri::command(async)]
+pub fn apply_app_update_and_relaunch() -> Result<(), String> {
+    crate::app_update::apply_and_relaunch()
 }
 
 fn resolve_command(command: &str) -> Result<Option<String>, String> {

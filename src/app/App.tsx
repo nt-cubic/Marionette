@@ -12,7 +12,7 @@ import {
   sealOpenAssistantReplies,
   userMessageEvent,
 } from "../lib/acpTranscript";
-import { addProject, appendDebugLog, cancelAcpSession, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, generateHandoff, getChangedFiles, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, respondAcpPermission, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, startAcpSession, startAgentLogin, stopAcpSession, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, writeTranscript, type OutsidePath } from "../lib/api";
+import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, generateHandoff, getChangedFiles, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, startAcpSession, startAgentLogin, stopAcpSession, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision } from "../lib/api";
 import type { AcpEvent, AvailableCommand, CapabilitySnapshot, ChangedFile, HandoffResult, Project, ProjectContext, Session, SessionComposerPrefs, SessionEvent, SessionViewMode, UsageSnapshot } from "../lib/types";
 import {
   buildUsageSnapshot,
@@ -68,12 +68,15 @@ import { formatPinsForSend } from "../lib/quoteComment";
 import { findLinkTargets } from "../lib/linkTargets";
 import { isToolInProgress } from "../lib/activityHealth";
 import { classifyAgentError, formatClassifiedError } from "../lib/errors";
+import { AskQuestionCard, type AskQuestionPrompt } from "../components/AskQuestionCard";
 import { Composer } from "../components/Composer";
 import { ContextPanel } from "../components/ContextPanel";
 import { PermissionDialog, type PermissionPrompt } from "../components/PermissionDialog";
+import { PlanApprovalCard, type PlanApprovalPrompt } from "../components/PlanApprovalCard";
 import { ProjectShelf } from "../components/ProjectShelf";
 import { SessionTabs, SessionView, type UserMessageAnchor } from "../components/SessionView";
 import { WindowControls } from "../components/WindowControls";
+import { parseAskQuestionPrompt } from "../lib/askQuestion";
 import { initScrollbarAutoHide } from "../lib/scrollbarAutoHide";
 
 type ThemeMode = "dark" | "light";
@@ -320,6 +323,12 @@ export function App() {
   const [diffPreview, setDiffPreview] = useState<{ path: string; text: string } | null>(null);
   const [permissionPrompt, setPermissionPrompt] = useState<PermissionPrompt | null>(null);
   const [permissionBusy, setPermissionBusy] = useState(false);
+  const [askPrompt, setAskPrompt] = useState<AskQuestionPrompt | null>(null);
+  const [askBusy, setAskBusy] = useState(false);
+  const [planApproval, setPlanApproval] = useState<PlanApprovalPrompt | null>(null);
+  const [planApprovalBusy, setPlanApprovalBusy] = useState(false);
+  const [appUpdate, setAppUpdate] = useState<AppUpdateInfo | null>(null);
+  const [appUpdateBusy, setAppUpdateBusy] = useState(false);
   /** MCP servers + skills found for the active project (needs 5). */
   const [projectContext, setProjectContext] = useState<ProjectContext | null>(null);
   const [projectContextScanning, setProjectContextScanning] = useState(false);
@@ -398,6 +407,84 @@ export function App() {
       connected,
     });
   }, [availableAgents, availableSessions, currentSessionId, sessionUsageById]);
+
+  // Portable app update check — delayed so it never stalls first paint.
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    const t = window.setTimeout(() => {
+      void checkAppUpdate().then((info) => {
+        if (info?.updateAvailable) setAppUpdate(info);
+      });
+    }, 4000);
+    return () => window.clearTimeout(t);
+  }, []);
+
+  const handleCheckAppUpdate = useCallback(() => {
+    if (!isTauriRuntime() || appUpdateBusy) return;
+    setAppUpdateBusy(true);
+    void (async () => {
+      try {
+        const info = await checkAppUpdate();
+        if (!info) {
+          pushDebug({
+            source: "update",
+            level: "warn",
+            summary: "check update returned null",
+          });
+          setAppUpdate({
+            currentVersion: "",
+            latestVersion: null,
+            updateAvailable: false,
+            releaseUrl: null,
+            assetName: null,
+            assetUrl: null,
+            notes: null,
+            note: "无法检查更新（非桌面运行时或请求失败）",
+          });
+          return;
+        }
+        if (info.updateAvailable) {
+          setAppUpdate(info);
+          return;
+        }
+        // Manual check with no update: brief status banner, auto-dismiss.
+        const note =
+          info.note ??
+          `已是最新版本 ${info.currentVersion}${
+            info.latestVersion && info.latestVersion !== info.currentVersion
+              ? `（远端 ${info.latestVersion}）`
+              : ""
+          }`;
+        setAppUpdate({
+          ...info,
+          updateAvailable: false,
+          note,
+        });
+        window.setTimeout(() => {
+          setAppUpdate((cur) => (cur && !cur.updateAvailable ? null : cur));
+        }, 4500);
+      } catch (error) {
+        pushDebug({
+          source: "update",
+          level: "error",
+          summary: "check update failed",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+        setAppUpdate({
+          currentVersion: "",
+          latestVersion: null,
+          updateAvailable: false,
+          releaseUrl: null,
+          assetName: null,
+          assetUrl: null,
+          notes: null,
+          note: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        setAppUpdateBusy(false);
+      }
+    })();
+  }, [appUpdateBusy, pushDebug]);
 
   useEffect(() => {
     void Promise.all([listProjects(), listAgents()]).then(async ([nextProjects, nextAgents]) => {
@@ -534,7 +621,13 @@ export function App() {
         }
 
         const extracted = extractAcpUpdateText(payload.data);
-        if (extracted && (extracted.role === "assistant" || extracted.role === "thought" || extracted.role === "tool")) {
+        if (
+          extracted &&
+          (extracted.role === "assistant" ||
+            extracted.role === "thought" ||
+            extracted.role === "tool" ||
+            extracted.role === "system")
+        ) {
           // Codex `/status` (and similar) embed rate-limit lines in assistant text.
           if (extracted.role === "assistant" && extracted.text) {
             setSessionUsageById((current) => {
@@ -625,35 +718,45 @@ export function App() {
         }
       }
       // Agent process stdout closed (crash / exit) — never leave the UI "Working" forever.
-      if (payload.method === "process/ended") {
+      if (payload.method === "process/ended" || payload.method === "process/stopped") {
+        const endedHard = payload.method === "process/ended";
         const detail =
           payload.data && typeof payload.data === "object"
             ? String((payload.data as { message?: unknown }).message ?? "Agent process ended")
-            : "Agent process ended";
-        setLiveEvents((current) => {
-          const last = current[current.length - 1];
-          if (
-            last?.type === "assistant_message" &&
-            last.sessionId === payload.sessionId &&
-            last.text.includes("Agent process ended")
-          ) {
-            return markOpenTools(current, payload.sessionId, "failed");
-          }
-          return [
-            ...markOpenTools(current, payload.sessionId, "failed"),
-            {
-              type: "assistant_message" as const,
-              sessionId: payload.sessionId,
-              text: `**Agent process ended.**\n\n${detail}\n\nThe turn is no longer live. Warm the agent again (focus composer / send) or start a new session.`,
-              createdAt: new Date().toISOString(),
-            },
-          ];
-        });
-        setAvailableSessions((current) =>
-          current.map((session) =>
-            session.id === payload.sessionId ? { ...session, status: "exited" } : session
-          )
-        );
+            : endedHard
+              ? "Agent process ended"
+              : "Agent process stopped";
+        // Zombie Ask / Plan / Permission cards block the composer — clear for this session.
+        setAskPrompt((cur) => (cur?.sessionId === payload.sessionId ? null : cur));
+        setPlanApproval((cur) => (cur?.sessionId === payload.sessionId ? null : cur));
+        setPlanApprovalBusy(false);
+        setPermissionPrompt((cur) => (cur?.sessionId === payload.sessionId ? null : cur));
+        if (endedHard) {
+          setLiveEvents((current) => {
+            const last = current[current.length - 1];
+            if (
+              last?.type === "assistant_message" &&
+              last.sessionId === payload.sessionId &&
+              last.text.includes("Agent process ended")
+            ) {
+              return markOpenTools(current, payload.sessionId, "failed");
+            }
+            return [
+              ...markOpenTools(current, payload.sessionId, "failed"),
+              {
+                type: "assistant_message" as const,
+                sessionId: payload.sessionId,
+                text: `**Agent process ended.**\n\n${detail}\n\nThe turn is no longer live. Warm the agent again (focus composer / send) or start a new session.`,
+                createdAt: new Date().toISOString(),
+              },
+            ];
+          });
+          setAvailableSessions((current) =>
+            current.map((session) =>
+              session.id === payload.sessionId ? { ...session, status: "exited" } : session
+            )
+          );
+        }
         if (payload.sessionId === currentSessionIdRef.current) {
           setSessionCapabilities(null);
         }
@@ -661,9 +764,9 @@ export function App() {
         void stopAcpSession(payload.sessionId).catch(() => undefined);
         pushDebug({
           sessionId: payload.sessionId,
-          level: "error",
+          level: endedHard ? "error" : "info",
           source: "acp",
-          summary: "process/ended",
+          summary: payload.method,
           detail,
         });
       }
@@ -747,6 +850,72 @@ export function App() {
           if (data?.requestId && data.requestId === current.requestId) return null;
           return current;
         });
+      }
+
+      // Grok `_x.ai/ask_user_question` → interactive choice card
+      if (payload.method === "question/prompt" && payload.data) {
+        const parsed = parseAskQuestionPrompt(payload.sessionId, payload.data);
+        if (parsed) setAskPrompt(parsed);
+      }
+      if (payload.method === "question/timeout") {
+        setAskPrompt((current) => {
+          if (!current) return current;
+          const data = payload.data as { requestId?: string } | null;
+          if (data?.requestId && data.requestId === current.requestId) return null;
+          return current;
+        });
+      }
+
+      // Grok `_x.ai/exit_plan_mode` → plan approval card (Codeg wire format)
+      if (payload.method === "plan/approval" && payload.data && typeof payload.data === "object") {
+        const data = payload.data as Record<string, unknown>;
+        const requestId = typeof data.requestId === "string" ? data.requestId : "";
+        if (requestId) {
+          const planMarkdown =
+            typeof data.planMarkdown === "string"
+              ? data.planMarkdown
+              : typeof data.plan_markdown === "string"
+                ? data.plan_markdown
+                : "";
+          setPlanApproval({
+            requestId,
+            sessionId: payload.sessionId,
+            toolCallId:
+              typeof data.toolCallId === "string"
+                ? data.toolCallId
+                : typeof data.tool_call_id === "string"
+                  ? data.tool_call_id
+                  : null,
+            planMarkdown,
+          });
+        }
+      }
+      if (payload.method === "plan/timeout") {
+        setPlanApproval((current) => {
+          if (!current) return current;
+          const data = payload.data as { requestId?: string } | null;
+          if (data?.requestId && data.requestId === current.requestId) return null;
+          return current;
+        });
+      }
+
+      // Live mode chip: Grok emits current_mode_update after session/set_mode
+      if (payload.method === "session/update" && payload.data) {
+        const update = getSessionUpdate(payload.data);
+        const kind = update
+          ? getSessionUpdateKind(update).toLowerCase().replace(/-/g, "_")
+          : "";
+        if (update && (kind === "current_mode_update" || kind === "currentmodeupdate")) {
+          const modeId =
+            (typeof update.currentModeId === "string" && update.currentModeId) ||
+            (typeof update.current_mode_id === "string" && update.current_mode_id) ||
+            null;
+          if (modeId && payload.sessionId === currentSessionIdRef.current) {
+            setSessionCapabilities((caps) =>
+              caps ? { ...caps, currentMode: modeId } : caps,
+            );
+          }
+        }
       }
     }).then((dispose) => {
       if (disposed) {
@@ -1385,6 +1554,11 @@ export function App() {
     // HARD RULE: caps belong to (sessionId, agentId). Never leak previous dialog's models.
     setSessionCapabilities(null);
     setActiveModelId(null);
+    // Pending cards are process-scoped; never leak into another dialog.
+    setAskPrompt(null);
+    setPlanApproval(null);
+    setPlanApprovalBusy(false);
+    setPermissionPrompt(null);
     lastProviderProbeKey.current = "";
     void loadSessionTranscript(nextSession.id);
   };
@@ -1713,6 +1887,118 @@ export function App() {
     }
   }, [permissionPrompt, pushDebug]);
 
+  const handleAskSubmit = useCallback(
+    async (answers: { question: string; selected: string[] }[]) => {
+      if (!askPrompt) return;
+      setAskBusy(true);
+      try {
+        await respondAcpQuestion(askPrompt.requestId, answers, false);
+        pushDebug({
+          sessionId: askPrompt.sessionId,
+          level: "info",
+          source: "question",
+          summary: `answered ${answers.length} question(s)`,
+        });
+      } catch (error) {
+        pushDebug({
+          sessionId: askPrompt.sessionId,
+          level: "error",
+          source: "question",
+          summary: "respond question failed",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        setAskBusy(false);
+        setAskPrompt(null);
+      }
+    },
+    [askPrompt, pushDebug],
+  );
+
+  const handleAskDecline = useCallback(async () => {
+    if (!askPrompt) return;
+    setAskBusy(true);
+    try {
+      await respondAcpQuestion(askPrompt.requestId, [], true);
+    } catch (error) {
+      pushDebug({
+        sessionId: askPrompt.sessionId,
+        level: "error",
+        source: "question",
+        summary: "decline question failed",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setAskBusy(false);
+      setAskPrompt(null);
+    }
+  }, [askPrompt, pushDebug]);
+
+  /**
+   * Resolve Grok exit_plan_mode. For `request_changes`, Grok keeps plan mode
+   * but discards reply feedback — mirror Codeg/TUI by also sending notes as a
+   * follow-up user prompt so the agent revises the plan.
+   */
+  const handlePlanApproval = useCallback(
+    async (decision: PlanApprovalDecision, feedback?: string) => {
+      if (!planApproval) return;
+      setPlanApprovalBusy(true);
+      try {
+        await respondAcpPlanApproval(
+          planApproval.requestId,
+          decision,
+          feedback ?? null,
+        );
+        pushDebug({
+          sessionId: planApproval.sessionId,
+          level: "info",
+          source: "plan",
+          summary: `plan approval: ${decision}`,
+          detail: feedback?.trim() || undefined,
+        });
+        setPlanApproval(null);
+
+        if (decision === "request_changes" && feedback?.trim()) {
+          const sid = planApproval.sessionId;
+          const notes = feedback.trim();
+          // Small delay so the keep_planning turn can settle before the next prompt.
+          window.setTimeout(() => {
+            void sendAcpPrompt(sid, notes, [])
+              .then(() => {
+                pushDebug({
+                  sessionId: sid,
+                  level: "info",
+                  source: "plan",
+                  summary: "sent plan revision notes as follow-up prompt",
+                });
+              })
+              .catch((error) => {
+                pushDebug({
+                  sessionId: sid,
+                  level: "warn",
+                  source: "plan",
+                  summary: "follow-up revision prompt failed — paste notes manually",
+                  detail: error instanceof Error ? error.message : String(error),
+                });
+              });
+          }, 400);
+        }
+      } catch (error) {
+        pushDebug({
+          sessionId: planApproval.sessionId,
+          level: "error",
+          source: "plan",
+          summary: "respond plan approval failed",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      } finally {
+        setPlanApprovalBusy(false);
+      }
+    },
+    [planApproval, pushDebug],
+  );
+
   const handleAgentChange = async (agentId: string) => {
     if (!currentProject) return;
 
@@ -1791,6 +2077,11 @@ export function App() {
     setSessionCapabilities(null);
     setActiveModelId(null);
     lastProviderProbeKey.current = "";
+    // Pending cards belonged to the old process — do not answer them after switch.
+    setAskPrompt((cur) => (cur?.sessionId === sid ? null : cur));
+    setPlanApproval((cur) => (cur?.sessionId === sid ? null : cur));
+    setPlanApprovalBusy(false);
+    setPermissionPrompt((cur) => (cur?.sessionId === sid ? null : cur));
     // Keep Clean history for this dialog; only the agent process is replaced.
     setSessionUsageById((current) => ({ ...current, [sid]: emptySessionUsage() }));
     acpBootstrapRef.current.delete(sid);
@@ -1822,7 +2113,7 @@ export function App() {
       });
     });
 
-    // Tear down previous transport in the background.
+    // Tear down previous transport (also unparks Ask/Plan/Permission with cancel).
     if (oldAgent) {
       void stopAcpSession(sid).catch(() => undefined);
     }
@@ -2103,6 +2394,17 @@ export function App() {
         lastEscAtRef.current = 0;
         return;
       }
+      // Ask / Plan occupy the composer — Esc = skip / abandon (do not leave zombie cards).
+      if (askPrompt) {
+        void handleAskDecline();
+        lastEscAtRef.current = 0;
+        return;
+      }
+      if (planApproval) {
+        void handlePlanApproval("abandon");
+        lastEscAtRef.current = 0;
+        return;
+      }
       if (diffPreview) {
         setDiffPreview(null);
         lastEscAtRef.current = 0;
@@ -2127,11 +2429,15 @@ export function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
     permissionPrompt,
+    askPrompt,
+    planApproval,
     diffPreview,
     projectDialogOpen,
     projectAdding,
     handleInterrupt,
     handlePermissionChoose,
+    handleAskDecline,
+    handlePlanApproval,
   ]);
 
   /** P2-UX-4: edit You → truncate following events for this session + resend. */
@@ -3128,6 +3434,39 @@ export function App() {
               void meta;
             }}
           />
+          {/* Only the active dialog's pending cards — never leak from another session. */}
+          {askPrompt && askPrompt.sessionId === displaySession.id && (
+            <AskQuestionCard
+              key={askPrompt.requestId}
+              prompt={askPrompt}
+              busy={askBusy}
+              onSubmit={(answers) => void handleAskSubmit(answers)}
+              onDecline={() => void handleAskDecline()}
+            />
+          )}
+          {planApproval &&
+            planApproval.sessionId === displaySession.id &&
+            !(askPrompt && askPrompt.sessionId === displaySession.id) && (
+            <PlanApprovalCard
+              key={planApproval.requestId}
+              prompt={{
+                ...planApproval,
+                // Grok often omits planContent; fall back to live plan entries.
+                planMarkdown:
+                  planApproval.planMarkdown.trim() ||
+                  (planBySessionId[planApproval.sessionId] ?? [])
+                    .map((e, i) => {
+                      const status = e.status ? ` [${e.status}]` : "";
+                      return `${i + 1}. ${e.content}${status}`;
+                    })
+                    .join("\n"),
+              }}
+              busy={planApprovalBusy}
+              onAnswer={(decision, feedback) => handlePlanApproval(decision, feedback)}
+            />
+          )}
+          {/* Ask fully occupies the composer slot so all options can show. */}
+          {!(askPrompt && askPrompt.sessionId === displaySession.id) && (
           <Composer
             // Remount when dialog identity changes so model/mode state cannot leak.
             key={`${displaySession.id}:${displaySession.agentId}`}
@@ -3139,6 +3478,14 @@ export function App() {
             lastActivityAt={lastActivityById[displaySession.id] ?? null}
             onProviderKeysChanged={handleProviderKeysChanged}
             onAgentBinaryUpdated={handleAgentBinaryUpdated}
+            onAgentsReload={async () => {
+              try {
+                const next = await listAgents();
+                if (next.length > 0) setAvailableAgents(next);
+              } catch {
+                /* ignore */
+              }
+            }}
             capabilities={sessionCapabilities}
             prefillText={composerPrefill?.text ?? null}
             prefillToken={composerPrefill?.token ?? 0}
@@ -3215,6 +3562,7 @@ export function App() {
               }
             }}
           />
+          )}
         </section>
 
         <ContextPanel
@@ -3239,22 +3587,84 @@ export function App() {
           activeAgentId={currentAgent.id}
           activeAgentLabel={currentAgent.label}
           planEntries={currentSessionId ? planBySessionId[currentSessionId] : undefined}
+          planModeActive={
+            (sessionCapabilities?.currentMode ?? "").toLowerCase() === "plan"
+          }
           todoItems={todoItems}
           onTodosChange={handleTodosChange}
           onAbsorbPlan={handleAbsorbPlan}
           onSendTodosToAi={() => prefillComposer(formatTodosForPrompt(todoItems))}
           onRequestAiTodoUpdate={() => prefillComposer(formatAiUpdatePrompt(todoItems))}
           onPrepareAiTodoMerge={handlePrepareAiTodoMerge}
+          onCheckAppUpdate={handleCheckAppUpdate}
+          checkAppUpdateBusy={appUpdateBusy}
+          appUpdateAvailable={Boolean(appUpdate?.updateAvailable)}
           resizeDragging={resizingSide === "right"}
           onResizeStart={() => setResizingSide("right")}
         />
       </div>
-      {permissionPrompt && (
+      {permissionPrompt &&
+        currentSessionId &&
+        permissionPrompt.sessionId === currentSessionId && (
         <PermissionDialog
           prompt={permissionPrompt}
           busy={permissionBusy}
           onChoose={(optionId) => void handlePermissionChoose(optionId)}
         />
+      )}
+      {appUpdate && (
+        <div className="update-banner" role="status">
+          <span>
+            {appUpdate.updateAvailable
+              ? `新版本 ${appUpdate.latestVersion}${
+                  appUpdate.currentVersion ? `（当前 ${appUpdate.currentVersion}）` : ""
+                }`
+              : appUpdate.note ||
+                `已是最新版本 ${appUpdate.currentVersion || ""}`.trim()}
+          </span>
+          <div className="update-banner__actions">
+            {appUpdate.updateAvailable && appUpdate.releaseUrl && (
+              <a href={appUpdate.releaseUrl} target="_blank" rel="noreferrer">
+                说明
+              </a>
+            )}
+            {appUpdate.updateAvailable && (
+              <button
+                type="button"
+                className="update-banner__btn"
+                disabled={appUpdateBusy}
+                onClick={() => {
+                  void (async () => {
+                    setAppUpdateBusy(true);
+                    try {
+                      await downloadAppUpdate();
+                      await applyAppUpdateAndRelaunch();
+                    } catch (error) {
+                      pushDebug({
+                        sessionId: currentSessionId ?? "",
+                        level: "error",
+                        source: "update",
+                        summary: "app update failed",
+                        detail: error instanceof Error ? error.message : String(error),
+                      });
+                      setAppUpdateBusy(false);
+                    }
+                  })();
+                }}
+              >
+                {appUpdateBusy ? "下载中…" : "下载并重启"}
+              </button>
+            )}
+            <button
+              type="button"
+              className="update-banner__btn update-banner__btn--ghost"
+              disabled={appUpdateBusy}
+              onClick={() => setAppUpdate(null)}
+            >
+              {appUpdate.updateAvailable ? "稍后" : "关闭"}
+            </button>
+          </div>
+        </div>
       )}
       {pathGrantPrompt && (
         <div className="project-dialog-backdrop" role="presentation">

@@ -3587,6 +3587,548 @@ button.file-diff-card__code:hover {
   cursor: wait;
 }
 
+/* ── Plan approval (Grok exit_plan_mode) — above Composer ─────────────── */
+.plan-approval-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  /* Large enough to read a multi-section plan without feeling cramped. */
+  max-height: min(72vh, 720px);
+  min-height: 0;
+  margin: 0;
+  padding: 14px 16px 12px;
+  border: none;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--panel-raised);
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.12);
+  z-index: 2;
+}
+
+.plan-approval-card__header {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  color: var(--text);
+  flex-shrink: 0;
+}
+
+.plan-approval-card__header > svg {
+  margin-top: 2px;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.plan-approval-card__header > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.plan-approval-card__header strong {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.plan-approval-card__header span {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.plan-approval-card__plan {
+  flex: 1 1 auto;
+  min-height: 160px;
+  max-height: min(58vh, 560px);
+  overflow: auto;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+}
+
+/* Markdown body inside plan card — denser than chat bubbles, same pipeline. */
+.plan-approval-card__plan .md-body,
+.plan-approval-card__md {
+  margin-top: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.plan-approval-card__plan .md-body p,
+.plan-approval-card__plan .md-body__p {
+  margin: 0.4em 0;
+}
+
+.plan-approval-card__plan .md-body h1,
+.plan-approval-card__plan .md-body h2,
+.plan-approval-card__plan .md-body h3,
+.plan-approval-card__plan .md-body h4 {
+  margin: 0.7em 0 0.3em;
+}
+
+.plan-approval-card__empty {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.plan-approval-card__changes {
+  display: grid;
+  gap: 8px;
+}
+
+.plan-approval-card__textarea {
+  width: 100%;
+  min-height: 64px;
+  resize: vertical;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.plan-approval-card__textarea:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+
+.plan-approval-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.plan-approval-card__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.plan-approval-card__btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 40%, transparent);
+}
+
+.plan-approval-card__btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.plan-approval-card__btn--primary {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 60%, transparent);
+}
+
+.plan-approval-card__btn--ghost {
+  color: var(--text-muted);
+}
+
+.plan-approval-card__btn--danger {
+  color: #e07070;
+  border-color: color-mix(in srgb, #e07070 45%, var(--border));
+}
+
+.plan-approval-card__error {
+  margin: 0;
+  color: #e07070;
+  font-size: 11px;
+}
+
+.plan-approval-card .spin {
+  animation: plan-approval-spin 0.8s linear infinite;
+}
+
+@keyframes plan-approval-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── Ask-user-question (replaces Composer while active) ────────────────── */
+/* Compact, todo-list density; all questions + options visible at once. */
+.ask-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  min-height: 0;
+  margin: 0;
+  padding: 10px 12px 8px;
+  border: none;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--panel-raised);
+  box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.1);
+  z-index: 2;
+}
+
+/* Occupies the composer dock: taller, full slot. */
+.ask-card--composer-slot {
+  max-height: min(62vh, 560px);
+  flex: 0 0 auto;
+}
+
+.ask-card__header {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  color: var(--text);
+  flex-shrink: 0;
+}
+
+.ask-card__header > svg {
+  margin-top: 2px;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.ask-card__header > div {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.ask-card__header strong {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ask-card__header span {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.ask-card__body {
+  display: grid;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.ask-card__question {
+  display: grid;
+  gap: 4px;
+  padding: 0 0 8px;
+  border: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 0;
+  background: transparent;
+}
+
+.ask-card__question:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.ask-card__qhead {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px;
+  align-items: start;
+}
+
+.ask-card__qnum {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.ask-card__qtext {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ask-card__chip {
+  justify-self: start;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.ask-card__prompt {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+  font-weight: 600;
+}
+
+.ask-card__hint {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+/* Todo-list density: tight rows, not big cards. */
+.ask-card__options {
+  display: grid;
+  gap: 2px;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ask-card__option {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 6px;
+  align-items: start;
+  width: 100%;
+  min-height: 22px;
+  padding: 3px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.ask-card__option:hover:not(:disabled) {
+  background: var(--panel-soft);
+}
+
+.ask-card__option.is-selected {
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.ask-card__option:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.ask-card__mark {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+  border: 1px solid color-mix(in srgb, var(--text-muted) 55%, var(--border));
+  background: transparent;
+  flex-shrink: 0;
+}
+
+.ask-card__mark--radio {
+  border-radius: 999px;
+}
+
+.ask-card__mark--check {
+  border-radius: 3px;
+}
+
+.ask-card__mark.is-on {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: inset 0 0 0 2px var(--panel-raised);
+}
+
+.ask-card__option-main {
+  display: grid;
+  gap: 0;
+  min-width: 0;
+}
+
+.ask-card__option-label {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: baseline;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.ask-card__rec {
+  padding: 0 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.ask-card__option-desc {
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.ask-card__other {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.ask-card__other input {
+  min-width: 0;
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+}
+
+.ask-card__other input:focus {
+  outline: 1px solid color-mix(in srgb, var(--accent) 50%, var(--border));
+  outline-offset: 0;
+}
+
+.ask-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  padding-top: 2px;
+}
+
+.ask-card__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.ask-card__btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.ask-card__btn--ghost {
+  color: var(--text-muted);
+  background: transparent;
+}
+
+.ask-card__btn--primary {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 20%, var(--panel));
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  font-weight: 600;
+  margin-left: auto;
+}
+
+/* ── App update banner ─────────────────────────────────────────────────── */
+.update-banner {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 35;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  border-radius: var(--radius-sm);
+  background: var(--panel-raised);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.3);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.update-banner__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-left: auto;
+}
+
+.update-banner__actions a {
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.update-banner__btn {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 18%, var(--panel));
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.update-banner__btn--ghost {
+  border-color: var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.update-banner__btn:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.plan-block--empty .context-card__empty {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .permission-dialog__btn--allow {
   border-color: color-mix(in srgb, var(--green) 50%, var(--border));
   background: color-mix(in srgb, var(--green) 18%, var(--panel));
@@ -3630,11 +4172,25 @@ button.file-diff-card__code:hover {
   z-index: 2;
   display: flex;
   align-items: center;
+  justify-content: space-between;
   min-height: 32px;
   margin-top: auto;
   padding: 6px 8px;
   border-top: 1px solid var(--border);
   background: var(--panel);
+}
+
+.context-panel__button--update {
+  margin-left: auto;
+}
+
+.context-panel__button--update.is-update-ready {
+  color: var(--accent, #6ea8fe);
+}
+
+.context-panel__button--update:disabled {
+  opacity: 0.55;
+  cursor: wait;
 }
 
 .context-panel .section-heading {
@@ -4795,11 +5351,45 @@ body.is-composer-resizing .composer {
   border-color: var(--accent);
 }
 
+/* Manual agents (Grok / Hermes / Cursor): setup guide, not npm Install. */
+.composer-agent-row__install--manual {
+  color: var(--text-muted);
+  background: transparent;
+  border-style: dashed;
+}
+
+.composer-agent-row__install--manual:hover {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: var(--panel-soft);
+}
+
+.composer-menu__add-custom {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 6px 8px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.composer-menu__add-custom:hover {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+
 .composer-menu__note {
   padding: 6px 7px 4px;
   color: var(--text-muted);
   font-size: 11px;
   line-height: 1.35;
+  white-space: pre-wrap;
   word-break: break-word;
 }
 
