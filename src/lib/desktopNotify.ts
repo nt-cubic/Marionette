@@ -228,14 +228,21 @@ export async function raiseDesktopNotify(
 /**
  * Clear flash / yellow bar / title when the user comes back.
  *
- * IMPORTANT: never call Tauri window APIs *synchronously* from a focus /
- * paint path. On Windows, tao 0.35.3 can re-enter the message pump while a
- * redraw is already in flight and trip
- * `assert!(flush_paint_messages(..))` (tao#1180) — the process then dies.
- * Defer native calls one tick so the focus paint finishes first.
+ * IMPORTANT — Windows / tao 0.35.3 (tao#1180 / tauri#14088):
+ * Calling Tauri window APIs during focus / paint re-enters the Win32 pump and
+ * trips `assert!(flush_paint_messages(..))` → process exit 101.
+ *
+ * Rules:
+ *  - JS state (title, pending) updates immediately — no native.
+ *  - Native clear only if we actually raised attention (`hadPending`).
+ *  - Never call `requestUserAttention(null)` — worst offender on focus.
+ *  - Defer remaining native work well after the focus paint settles.
  */
 let clearInflight = false;
 let clearTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Delay before any native clear; focus paint must fully finish first. */
+const NATIVE_CLEAR_DELAY_MS = 400;
 
 export async function clearDesktopNotify(opts?: { silent?: boolean }): Promise<void> {
   // JS-side state can update immediately (cheap, no Win32 re-entry).
@@ -250,9 +257,10 @@ export async function clearDesktopNotify(opts?: { silent?: boolean }): Promise<v
     clearTimer = null;
   }
 
-  // Nothing left to do on the native side.
-  if (!hadPending && opts?.silent) {
-    // Still schedule a defensive native reset when turning the feature off.
+  // No native work needed: we never raised attention, and this isn't a
+  // "force reset native chrome" (feature toggle off) call.
+  if (!hadPending && !opts?.silent) {
+    return;
   }
 
   if (clearInflight) return;
@@ -262,27 +270,25 @@ export async function clearDesktopNotify(opts?: { silent?: boolean }): Promise<v
     clearTimer = setTimeout(() => {
       clearTimer = null;
       resolve();
-    }, 50);
+    }, NATIVE_CLEAR_DELAY_MS);
   });
 
   try {
     const w = await win();
     if (!w) return;
 
+    // Title only — cheap compared to attention/progress, still deferred.
     try {
       await w.setTitle(BASE_TITLE);
     } catch {
       // ignore
     }
-    // Prefer progress-bar clear; requestUserAttention(null) has been seen to
-    // re-enter the Win32 message loop during focus and panic tao's paint path.
+    // Progress bar only. Do NOT call requestUserAttention(null): clearing
+    // flash via null attention re-enters the message loop during focus and
+    // panics tao 0.35.3. Flash stops on its own once the window is focused
+    // (Critical attention) or when the process exits.
     try {
       await w.setProgressBar({ status: ProgressBarStatus.None });
-    } catch {
-      // ignore
-    }
-    try {
-      await w.requestUserAttention(null);
     } catch {
       // ignore
     }
@@ -299,18 +305,23 @@ export function bindDesktopNotifyFocusHandlers(): () => void {
   let disposed = false;
   /** Coalesce focus + visibility + onFocusChanged into one clear. */
   let scheduled = false;
+  let scheduleTimer: ReturnType<typeof setTimeout> | null = null;
 
   const scheduleClear = () => {
     if (disposed || scheduled) return;
+    // Skip entirely when there is nothing to clear — avoids native Win32
+    // calls on every alt-tab / click-back (the main crash path).
+    if (pending == null) return;
     scheduled = true;
-    // Double rAF: wait until after the OS focus paint has been processed.
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        scheduled = false;
-        if (disposed) return;
-        void clearDesktopNotify();
-      });
-    });
+    // Defer past focus paint; do not use rAF alone (still inside paint frame).
+    if (scheduleTimer != null) clearTimeout(scheduleTimer);
+    scheduleTimer = setTimeout(() => {
+      scheduleTimer = null;
+      scheduled = false;
+      if (disposed) return;
+      if (pending == null) return;
+      void clearDesktopNotify();
+    }, NATIVE_CLEAR_DELAY_MS);
   };
 
   void (async () => {
@@ -341,6 +352,10 @@ export function bindDesktopNotifyFocusHandlers(): () => void {
     unlistenFocus?.();
     window.removeEventListener("focus", onFocus);
     document.removeEventListener("visibilitychange", onVis);
+    if (scheduleTimer != null) {
+      clearTimeout(scheduleTimer);
+      scheduleTimer = null;
+    }
     if (clearTimer != null) {
       clearTimeout(clearTimer);
       clearTimer = null;
