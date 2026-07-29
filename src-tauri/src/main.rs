@@ -37,9 +37,14 @@ pub struct AppState {
 /// with `panic::resume_unwind` on the message loop, so the process dies with
 /// 101 no matter what the hook prints — and our agent processes get orphaned
 /// with it. So we do the cleanup ourselves and exit before that path runs.
+///
+/// Callers must `api.prevent_close()` first so default WebView teardown never
+/// starts while we are still on the event-handler stack.
 fn shutdown_and_exit(app: &tauri::AppHandle) -> ! {
     use tauri::Manager;
 
+    // Kill agents best-effort, then leave immediately. Do not touch the window
+    // (hide/destroy/emit) — any Win32 re-entry here can hit the tao paint assert.
     if let Some(state) = app.try_state::<AppState>() {
         let acp = state.acp.stop_all();
         debug_log::append(
@@ -139,8 +144,17 @@ fn main() {
         })
         .on_window_event(|window, event| {
             use tauri::Manager;
-            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
-                shutdown_and_exit(window.app_handle());
+            match event {
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    // Stop default destroy → WebView teardown → tao paint re-entry panic.
+                    api.prevent_close();
+                    shutdown_and_exit(window.app_handle());
+                }
+                // Safety net if something destroys the window without CloseRequested.
+                tauri::WindowEvent::Destroyed => {
+                    std::process::exit(0);
+                }
+                _ => {}
             }
         })
         .manage(AppState {
