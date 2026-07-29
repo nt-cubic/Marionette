@@ -144,6 +144,11 @@ export type SessionEvent =
       effortLabel?: string;
       /** Image attachments with optional marks (persisted for You-card overlay). */
       attachments?: import("./imageAttachments").ImageAttachment[];
+      /**
+       * Composer「联网」toggle was on for this send. Wire prompt still gets the
+       * force-search prefix; You card shows only a globe badge (not the full text).
+       */
+      forceWebSearch?: boolean;
     }
   | {
       type: "assistant_message";

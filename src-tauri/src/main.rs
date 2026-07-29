@@ -14,6 +14,7 @@ mod process_util;
 mod provider_usage;
 mod session_manager;
 mod storage;
+mod webview2_gate;
 
 use acp::AcpService;
 use session_manager::SessionManager;
@@ -116,6 +117,9 @@ fn spawn_main_thread_watchdog(app: tauri::AppHandle) {
 }
 
 fn main() {
+    // Before any WebView host is created — native dialog if runtime missing.
+    webview2_gate::ensure_or_exit();
+
     // A panic anywhere else should still leave a trace in the dev diary.
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {

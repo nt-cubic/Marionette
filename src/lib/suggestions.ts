@@ -48,8 +48,6 @@ const CODE_EXT = new Set([
 const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"]);
 const CONFIG_EXT = new Set([".json", ".jsonc", ".yaml", ".yml", ".toml", ".ini", ".csv"]);
 
-const EDIT_TOOL_NAMES = new Set(["edit", "write", "patch", "multiedit", "search_replace"]);
-
 /** Feature flag — default on. */
 export function suggestionsEnabled(): boolean {
   try {
@@ -237,12 +235,8 @@ function buildQuestionChips(sentence: string): Suggestion[] {
     }
   }
 
-  // Hit question but no pattern
-  return [
-    { id: "q-y", label: "是", text: "是", source: "question" },
-    { id: "q-n", label: "不是", text: "不是", source: "question" },
-    { id: "q-think", label: "让我想想", text: "让我想想", source: "question" },
-  ];
+  // Question-ish but no actionable pattern — prefer silence over cheap 是/不是.
+  return [];
 }
 
 /** Numbered / bulleted options immediately after a question. */
@@ -354,26 +348,6 @@ function buildDropChips(paths: string[]): Suggestion[] {
   ];
 }
 
-function turnHadEdits(events: SessionEvent[]): boolean {
-  // Look at events after the last user_message
-  let start = 0;
-  for (let i = events.length - 1; i >= 0; i--) {
-    if (events[i].type === "user_message") {
-      start = i + 1;
-      break;
-    }
-  }
-  const turn = events.slice(start);
-  for (const e of turn) {
-    if (e.type === "file_change") return true;
-    if (e.type === "tool_call") {
-      const name = (e.toolName ?? e.title ?? "").toLowerCase();
-      if (EDIT_TOOL_NAMES.has(name) || /edit|write|patch|replace/i.test(name)) return true;
-    }
-  }
-  return false;
-}
-
 function turnHadError(events: SessionEvent[], sessionStatus: SessionStatus): boolean {
   if (sessionStatus === "error") return true;
   const text = lastAssistantText(events);
@@ -383,8 +357,11 @@ function turnHadError(events: SessionEvent[], sessionStatus: SessionStatus): boo
 
 /**
  * At most 3 chips. Returns empty when chips should not appear.
- * Priority: drop > options > question > error > edited > idle
+ * Priority: drop > options > question > error
  * (first non-empty source wins; sources are not mixed).
+ *
+ * No idle / "继续" fallback — empty is better than generic cheap chips.
+ * Question only fires when we extract an actionable pattern (要不要 X / A 还是 B…).
  */
 export function suggestFor(input: SuggestionInput): Suggestion[] {
   const { events, sessionStatus, droppedPaths, draft, draftAfterDrop } = input;
@@ -397,7 +374,7 @@ export function suggestFor(input: SuggestionInput): Suggestion[] {
 
   if (!draftIsEmpty) return [];
 
-  // drop
+  // drop — real files just inserted
   if (droppedPaths.length > 0 && draftAfterDrop != null && draft === draftAfterDrop) {
     const chips = buildDropChips(droppedPaths);
     if (chips.length) return chips.slice(0, 3);
@@ -410,35 +387,17 @@ export function suggestFor(input: SuggestionInput): Suggestion[] {
 
     const sentence = tailQuestionSentence(assistant);
     if (sentence) {
-      return buildQuestionChips(sentence).slice(0, 3);
+      const q = buildQuestionChips(sentence);
+      if (q.length) return q.slice(0, 3);
     }
   }
 
+  // Real failure only — single useful action, no "换个思路" filler
   if (turnHadError(events, sessionStatus)) {
-    return [
-      { id: "err-retry", label: "重试", text: "重试", source: "error" },
-      { id: "err-other", label: "换个思路", text: "换个思路", source: "error" },
-      { id: "err-log", label: "看看日志", text: "看看日志", source: "error" },
-    ];
+    return [{ id: "err-retry", label: "重试", text: "重试", source: "error" }];
   }
 
-  if (turnHadEdits(events)) {
-    return [
-      { id: "ed-test", label: "跑一下测试", text: "跑一下测试", source: "edited" },
-      { id: "ed-see", label: "看看效果", text: "看看效果", source: "edited" },
-      { id: "ed-cont", label: "继续", text: "继续", source: "edited" },
-    ];
-  }
-
-  // idle only when there is at least some conversation
-  if (events.some((e) => e.type === "assistant_message" || e.type === "user_message")) {
-    return [
-      { id: "idle-cont", label: "继续", text: "继续", source: "idle" },
-      { id: "idle-ok", label: "好", text: "好", source: "idle" },
-      { id: "idle-more", label: "再说说", text: "再说说", source: "idle" },
-    ];
-  }
-
+  // No edited / idle generics — silence when nothing concrete to suggest
   return [];
 }
 

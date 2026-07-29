@@ -276,7 +276,8 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
 
   if (!textFromContent) return null;
 
-  // Protocol-level thinking
+  // Protocol-level thinking ONLY — never soft-detect from body text (§ etc.).
+  // Heuristic mis-tags swallow Reply into Thinking (see codeg-lessons-text-pipeline).
   const isThoughtKind =
     sessionUpdate.includes("thought") ||
     sessionUpdate.includes("reasoning") ||
@@ -287,16 +288,11 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
     blockType === "reasoning" ||
     blockType === "redacted_thinking";
 
-  // Soft-detect thought ONLY for explicit § markers (OpenCode CoT), never for
-  // bare punctuation — "。" / "，" must stay on the assistant stream.
-  const looksLikeThoughtMarker =
-    /^§/.test(textFromContent.trim()) || /^\s*§+\d*§*/.test(textFromContent);
-
-  if (isThoughtKind || looksLikeThoughtMarker) {
+  if (isThoughtKind) {
     return {
       role: "thought",
       text: textFromContent,
-      isDelta: isDelta || looksLikeThoughtMarker || isThoughtNoiseToken(textFromContent),
+      isDelta: isDelta || isThoughtNoiseToken(textFromContent),
       sessionUpdate,
       messageId,
     };
@@ -417,9 +413,10 @@ export function userMessageEvent(
     modeLabel?: string;
     effortLabel?: string;
     attachments?: import("./imageAttachments").ImageAttachment[];
+    forceWebSearch?: boolean;
   },
 ): SessionEvent {
-  const { attachments, ...rest } = meta ?? {};
+  const { attachments, forceWebSearch, ...rest } = meta ?? {};
   return {
     type: "user_message",
     sessionId,
@@ -428,6 +425,7 @@ export function userMessageEvent(
     createdAt: new Date().toISOString(),
     ...rest,
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
+    ...(forceWebSearch ? { forceWebSearch: true } : {}),
   };
 }
 
@@ -640,27 +638,10 @@ export function applyAcpPartToEvents(
   }
 
   if (part.role === "tool") {
-    // Working notes before a tool are usually CoT — fold them as Thinking.
-    // Never touch a sealed Reply (finished turn / previous agent in this dialog).
-    let base = current;
-    const last = current[current.length - 1];
-    if (
-      last &&
-      last.type === "assistant_message" &&
-      last.sessionId === sessionId &&
-      !isSealedAssistantReply(last)
-    ) {
-      base = [
-        ...current.slice(0, -1),
-        {
-          type: "thought" as const,
-          sessionId: last.sessionId,
-          text: last.text,
-          messageId: last.messageId,
-          createdAt: last.createdAt,
-        },
-      ];
-    }
+    // Do NOT demote a preceding assistant_message into thought when a tool
+    // starts — that rewrite is a common "swallowed reply" failure mode.
+    // Thinking must arrive as protocol thought chunks, not as reclassified Reply.
+    const base = current;
 
     if (part.toolCallId) {
       const idx = base.findIndex(
@@ -786,48 +767,17 @@ export function sealOpenAssistantReplies(
 }
 
 /**
- * OpenCode (and some models) stream chain-of-thought as agent_message_chunk.
- * After a turn ends, collapse intermediate assistant bubbles after the last
- * user message into type "thought" so the UI can fold them by default.
+ * @deprecated No longer demotes assistant_message → thought.
+ * Type is fixed at stream time (protocol thought vs reply). Call sites may
+ * still invoke this; it only coalesces adjacent thought cards.
  *
- * Sealed Replies (finished turn / previous agent) are never demoted — otherwise
- * switching agent in the same dialog turns the last answer into Thinking as
- * soon as the new harness streams tools or a second assistant bubble.
+ * Historical note: OpenCode-era folding rewrote intermediate Replies into
+ * Thinking at turn end and swallowed real mid-turn text. Removed per
+ * `docs/superpowers/specs/2026-07-29-codeg-lessons-text-pipeline.md`.
  */
 export function collapseIntermediateAssistantAsThought(
   events: SessionEvent[],
   sessionId: string,
 ): SessionEvent[] {
-  let lastUser = -1;
-  for (let i = 0; i < events.length; i += 1) {
-    if (events[i].sessionId === sessionId && events[i].type === "user_message") lastUser = i;
-  }
-  if (lastUser < 0) return coalesceAdjacentThoughts(events, sessionId);
-
-  // Only unsealed assistants in this turn are candidates for CoT folding.
-  const demotableIdx: number[] = [];
-  for (let i = lastUser + 1; i < events.length; i += 1) {
-    const e = events[i];
-    if (e.sessionId !== sessionId) continue;
-    if (e.type !== "assistant_message") continue;
-    if (isSealedAssistantReply(e)) continue;
-    demotableIdx.push(i);
-  }
-  if (demotableIdx.length <= 1) {
-    return coalesceAdjacentThoughts(events, sessionId);
-  }
-
-  const keep = demotableIdx[demotableIdx.length - 1];
-  const demote = new Set(demotableIdx.filter((i) => i !== keep));
-  const mapped = events.map((e, i) => {
-    if (!demote.has(i) || e.type !== "assistant_message") return e;
-    return {
-      type: "thought" as const,
-      sessionId: e.sessionId,
-      text: e.text,
-      messageId: e.messageId,
-      createdAt: e.createdAt,
-    };
-  });
-  return coalesceAdjacentThoughts(mapped, sessionId);
+  return coalesceAdjacentThoughts(events, sessionId);
 }
