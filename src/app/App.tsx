@@ -73,6 +73,7 @@ import { Composer } from "../components/Composer";
 import { ContextPanel } from "../components/ContextPanel";
 import { PermissionDialog, type PermissionPrompt } from "../components/PermissionDialog";
 import { PlanApprovalCard, type PlanApprovalPrompt } from "../components/PlanApprovalCard";
+import { UnifiedDiffView } from "../components/UnifiedDiffView";
 import { ProjectShelf } from "../components/ProjectShelf";
 import { SessionTabs, SessionView, type UserMessageAnchor } from "../components/SessionView";
 import { WindowControls } from "../components/WindowControls";
@@ -156,6 +157,21 @@ function asIdleOnLoad(session: Session): Session {
  * an agent that honours it reacts within a second or two.
  */
 const CANCEL_ACK_GRACE_MS = 6_000;
+
+/**
+ * True turn boundary (Codeg-aligned). Generic `rpc/response` is used for
+ * set_config / model / mode / probes and must NOT end a turn.
+ */
+function isTurnCompleteMethod(method: string | null | undefined): boolean {
+  return method === "turn/complete";
+}
+
+function turnStopReason(data: unknown): string {
+  if (!data || typeof data !== "object") return "end_turn";
+  const d = data as Record<string, unknown>;
+  const raw = d.stopReason ?? d.stop_reason;
+  return typeof raw === "string" && raw.trim() ? raw.trim() : "end_turn";
+}
 
 /** Close out tools that never received a terminal status (stuck in_progress). */
 function markOpenTools(
@@ -288,7 +304,7 @@ export function App() {
   const turnStartedAtRef = useRef<Record<string, number>>({});
   /** Fresh ACP process needs local transcript injected once (no session/load yet). */
   const acpNeedsHistoryRef = useRef<Set<string>>(new Set());
-  /** When each session's turn last actually finished (`rpc/response` / process end). */
+  /** When each session's turn last actually finished (`turn/complete` / process end). */
   const turnEndedAtRef = useRef<Record<string, number>>({});
   /**
    * Sessions whose `session/cancel` went unanswered. Cancel is a fire-and-forget
@@ -681,27 +697,36 @@ export function App() {
         }
       }
 
-      // Did the *turn* end? That — not mere output — is what proves a cancel
-      // landed. An agent can keep streaming tokens while its stdin reader is
-      // wedged, which is exactly the runaway case people hit pause for, so
-      // "the agent made a sound" would be the wrong signal here.
-      if (payload.sessionId && (payload.method === "rpc/response" || payload.method === "process/ended")) {
+      // Did the *turn* end? That — not mere set_config rpc/response — is what
+      // proves a cancel landed / a prompt finished (Codeg: TurnComplete only).
+      if (
+        payload.sessionId &&
+        (isTurnCompleteMethod(payload.method) ||
+          payload.method === "process/ended" ||
+          payload.method === "process/stopped")
+      ) {
         turnEndedAtRef.current[payload.sessionId] = Date.now();
         cancelIgnoredRef.current.delete(payload.sessionId);
         void syncFileChangesRef.current(payload.sessionId, true);
         // Finalize @-delegate child when its turn ends.
         if (delegateMetaRef.current.has(payload.sessionId)) {
-          if (payload.method === "process/ended") {
+          if (payload.method === "process/ended" || payload.method === "process/stopped") {
             finalizeDelegateChildRef.current(
               payload.sessionId,
               "cancelled",
               "应用关闭时中断或进程退出",
             );
-          } else if (payload.kind === "error") {
+          } else if (payload.kind === "error" || turnStopReason(payload.data) === "error") {
             finalizeDelegateChildRef.current(
               payload.sessionId,
               "failed",
               formatAcpRpcError(payload.data) || "rpc error",
+            );
+          } else if (turnStopReason(payload.data) === "cancelled") {
+            finalizeDelegateChildRef.current(
+              payload.sessionId,
+              "cancelled",
+              "interrupted",
             );
           } else {
             finalizeDelegateChildRef.current(payload.sessionId, "done");
@@ -830,7 +855,14 @@ export function App() {
         });
       }
 
-      if (payload.kind === "response" && payload.method === "rpc/response") {
+      // Codeg-aligned: only `turn/complete` ends a prompt turn. Generic
+      // `rpc/response` (set_config / model / mode / effort) must not unlock
+      // the composer or clear the Working bar while the agent is still busy.
+      if (isTurnCompleteMethod(payload.method)) {
+        const stopReason = turnStopReason(payload.data);
+        const wasRunning =
+          sessionsRef.current.find((s) => s.id === payload.sessionId)?.status === "running";
+
         // End-of-turn token split. This is the only usage Grok ever reports, and
         // it carries the in/out/cached breakdown that usage_update omits.
         setSessionUsageById((current) => {
@@ -839,40 +871,63 @@ export function App() {
           return { ...current, [payload.sessionId]: merged };
         });
 
-        // Compute duration and stamp on the last assistant_message
+        // Compute duration and stamp on the last assistant_message; seal open tools.
         const startedAt = turnStartedAtRef.current[payload.sessionId];
+        const toolClose =
+          stopReason === "cancelled"
+            ? ("cancelled" as const)
+            : stopReason === "error" || payload.kind === "error"
+              ? ("failed" as const)
+              : null;
         if (startedAt) {
           const durationMs = Date.now() - startedAt;
           delete turnStartedAtRef.current[payload.sessionId];
           setLiveEvents((current) => {
-            const last = current[current.length - 1];
+            let next = current;
+            if (toolClose) next = markOpenTools(next, payload.sessionId, toolClose);
+            const last = next[next.length - 1];
             if (last?.type === "assistant_message" && last.sessionId === payload.sessionId && last.durationMs == null) {
-              const next = [...current];
-              next[next.length - 1] = { ...last, durationMs };
-              return collapseIntermediateAssistantAsThought(next, payload.sessionId);
+              const stamped = [...next];
+              stamped[stamped.length - 1] = { ...last, durationMs };
+              return collapseIntermediateAssistantAsThought(stamped, payload.sessionId);
             }
-            return collapseIntermediateAssistantAsThought(current, payload.sessionId);
+            return collapseIntermediateAssistantAsThought(next, payload.sessionId);
           });
         } else {
-          setLiveEvents((current) => collapseIntermediateAssistantAsThought(current, payload.sessionId));
+          setLiveEvents((current) => {
+            const next = toolClose
+              ? markOpenTools(current, payload.sessionId, toolClose)
+              : current;
+            return collapseIntermediateAssistantAsThought(next, payload.sessionId);
+          });
         }
+
+        // Auth / hard turn failures → error; cancel & clean end → waiting.
         setAvailableSessions((current) =>
-          current.map((session) =>
-            session.id === payload.sessionId && session.status === "running"
-              ? { ...session, status: "waiting" }
-              : session
-          )
+          current.map((session) => {
+            if (session.id !== payload.sessionId) return session;
+            if (session.status !== "running" && session.status !== "starting") return session;
+            if (payload.kind === "error" || stopReason === "error" || stopReason === "refusal") {
+              return { ...session, status: "error" };
+            }
+            return { ...session, status: "waiting" };
+          })
         );
+
         // Usage panel: refresh once after each completed Reply turn.
         refreshUsageAfterTurnRef.current(payload.sessionId);
-        // Desktop notify only for a real turn end (was running), not set_config echoes.
-        {
+        // Desktop notify only for a real completed turn (was running, not cancel).
+        if (wasRunning && stopReason !== "cancelled") {
           const sess = sessionsRef.current.find((s) => s.id === payload.sessionId);
-          if (sess?.status === "running") {
-            const label = sess.label?.trim() || "Session";
-            void raiseDesktopNotify("reply", label);
-          }
+          const label = sess?.label?.trim() || "Session";
+          void raiseDesktopNotify("reply", label);
         }
+        pushDebug({
+          sessionId: payload.sessionId,
+          level: payload.kind === "error" ? "error" : "info",
+          source: "acp",
+          summary: `turn/complete stopReason=${stopReason}`,
+        });
       }
       // Agent process stdout closed (crash / exit) — never leave the UI "Working" forever.
       if (payload.method === "process/ended" || payload.method === "process/stopped") {
@@ -908,12 +963,20 @@ export function App() {
               },
             ];
           });
-          setAvailableSessions((current) =>
-            current.map((session) =>
-              session.id === payload.sessionId ? { ...session, status: "exited" } : session
-            )
-          );
         }
+        // Always leave running/starting — intentional stop (agent switch) or crash.
+        // turn/complete usually arrived first; this is the belt for races.
+        setAvailableSessions((current) =>
+          current.map((session) =>
+            session.id === payload.sessionId &&
+            (session.status === "running" ||
+              session.status === "starting" ||
+              session.status === "waiting" ||
+              (endedHard && session.status === "error"))
+              ? { ...session, status: "exited" as const, processId: null }
+              : session
+          )
+        );
         if (payload.sessionId === currentSessionIdRef.current) {
           setSessionCapabilities(null);
         }
@@ -928,7 +991,10 @@ export function App() {
         });
       }
 
-      if (payload.kind === "error" && (payload.method === "rpc/response" || payload.method == null)) {
+      // Turn-level failures only. set_config / probe rpc errors must not flip
+      // the whole session to "error" or spam Clean (that was part of the fragile
+      // "model switch ended the chat" experience).
+      if (payload.kind === "error" && isTurnCompleteMethod(payload.method)) {
         // Surface auth/turn failures in Clean (Claude often returns
         // { error: { message: "Authentication required" } } with no message chunks).
         const errText = formatAcpRpcError(payload.data);
@@ -965,11 +1031,14 @@ export function App() {
             summary: `surface error to Clean: ${classified.kind}: ${errText}`,
           });
         }
-        setAvailableSessions((current) =>
-          current.map((session) =>
-            session.id === payload.sessionId ? { ...session, status: "error" } : session
-          )
-        );
+        // status already set in the turn/complete branch above when kind=error
+      } else if (payload.kind === "error" && payload.method === "rpc/response") {
+        pushDebug({
+          sessionId: payload.sessionId,
+          level: "warn",
+          source: "acp",
+          summary: `non-turn RPC error (ignored for session status): ${formatAcpRpcError(payload.data) || "unknown"}`,
+        });
       }
 
       // ACP permission prompt (P1-D) — not auto-allowed.
@@ -1425,7 +1494,7 @@ export function App() {
   }, [handleUsageRefresh]);
 
   /**
-   * After an AI turn ends (`rpc/response`), refresh the Usage panel once.
+   * After an AI turn ends (`turn/complete`), refresh the Usage panel once.
    * Throttled so multi-chunk finalization / rapid turns don't spam probes.
    */
   const refreshUsageAfterTurn = useCallback(
@@ -2173,6 +2242,19 @@ export function App() {
     const sid = currentSessionId;
     const sourceAgentId = currentSession.agentId;
     const oldAgent = availableAgents.find((a) => a.id === sourceAgentId);
+
+    // Mid-turn switch: cancel the open prompt first so the old process does
+    // not keep running after we tear it down (and so turn/complete frees UI).
+    const midTurn =
+      currentSession.status === "running" || currentSession.status === "starting";
+    if (midTurn) {
+      try {
+        await cancelAcpSession(sid);
+      } catch {
+        // stop below still kills the process
+      }
+      setSessionStatusById(sid, "waiting");
+    }
 
     // Seal the previous agent's last Reply so the next harness's tools / CoT
     // stream cannot demote it to Thinking (same dialog, shared transcript).
@@ -3902,7 +3984,7 @@ export function App() {
                 <X size={14} />
               </button>
             </div>
-            <pre className="diff-dialog__body">{diffPreview.text}</pre>
+            <UnifiedDiffView className="diff-dialog__body" text={diffPreview.text} />
           </div>
         </div>
       )}

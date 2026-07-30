@@ -177,13 +177,13 @@ export function ProjectShelf({
 
   const themeButton = (
     <button
-      className="pill-action pill-action--icon sidebar-footer__button"
+      className="pill-action pill-action--icon pill-action--sm sidebar-footer__button"
       type="button"
       title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
       aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
       onClick={onToggleTheme}
     >
-      {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
+      {theme === "dark" ? <Sun size={13} /> : <Moon size={13} />}
     </button>
   );
 
@@ -191,8 +191,8 @@ export function ProjectShelf({
     <button
       className={
         desktopNotifyEnabled
-          ? "pill-action pill-action--icon sidebar-footer__button is-notify-on"
-          : "pill-action pill-action--icon sidebar-footer__button is-notify-off"
+          ? "pill-action pill-action--icon pill-action--sm sidebar-footer__button is-notify-on"
+          : "pill-action pill-action--icon pill-action--sm sidebar-footer__button is-notify-off"
       }
       type="button"
       title={
@@ -204,7 +204,7 @@ export function ProjectShelf({
       aria-pressed={desktopNotifyEnabled}
       onClick={onToggleDesktopNotify}
     >
-      {desktopNotifyEnabled ? <Bell size={14} /> : <BellOff size={14} />}
+      {desktopNotifyEnabled ? <Bell size={13} /> : <BellOff size={13} />}
     </button>
   ) : null;
 
@@ -507,8 +507,8 @@ export function ProjectShelf({
       <div className="sidebar-footer">
         {themeButton}
         {notifyButton}
-        <button className="pill-action pill-action--icon sidebar-footer__button sidebar-footer__button--collapse" type="button" title={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} aria-label={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} onClick={collapsed ? onExpand : onCollapse}>
-          {collapsed ? <PanelLeftOpen size={14} /> : <PanelLeftClose size={14} />}
+        <button className="pill-action pill-action--icon pill-action--sm sidebar-footer__button sidebar-footer__button--collapse" type="button" title={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} aria-label={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} onClick={collapsed ? onExpand : onCollapse}>
+          {collapsed ? <PanelLeftOpen size={13} /> : <PanelLeftClose size={13} />}
         </button>
       </div>
       </div>

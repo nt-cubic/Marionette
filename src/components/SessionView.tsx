@@ -14,6 +14,7 @@ import { parseUnifiedDiff } from "../lib/annotations";
 import { getFileDiff } from "../lib/api";
 import { detectForceWebSearchInText, stripForceWebSearchPrefix } from "../lib/forceWebSearch";
 import { newQuotePinId, type QuotePin } from "../lib/quoteComment";
+import { buildMessagePresentation } from "../lib/messagePresentation";
 import type { AgentConfig, Session, SessionEvent, SessionStatus, SessionViewMode } from "../lib/types";
 import { ClippedBody } from "./ClippedBody";
 import { LinkCwdContext, LinkedText } from "./LinkedText";
@@ -54,7 +55,7 @@ type SessionViewProps = {
   onQuotePinsChange?: (pins: QuotePin[]) => void;
   /** Interrupt the live turn (same as Esc×2 / ■). */
   onInterrupt?: () => void | Promise<void>;
-  /** Project id for on-demand file diffs (file_change cards). */
+  /** Project id for on-demand workspace diffs in editing-tool cards. */
   projectId?: string;
   /** All live events (for expanding @-delegate child streams). */
   allEvents?: SessionEvent[];
@@ -549,6 +550,91 @@ function CopyReplyButton({ text }: { text: string }) {
   );
 }
 
+type ToolCallEvent = Extract<SessionEvent, { type: "tool_call" }>;
+
+function hasUnifiedDiff(text: string): boolean {
+  return /^@@\s+-\d+/m.test(text) && /^(?:\+\+\+|---|[+-])\s?/m.test(text);
+}
+
+/**
+ * Older transcripts only persisted the one-line diff summary. For those
+ * cards, retrieve the current workspace diff when the tool card is opened.
+ * New ACP events already carry the full diff from acpTranscript.ts.
+ */
+function ToolCallBody({
+  event,
+  body,
+  projectId,
+  open,
+}: {
+  event: ToolCallEvent;
+  body: string;
+  projectId?: string;
+  open: boolean;
+}) {
+  const [workspaceDiff, setWorkspaceDiff] = useState<string | null>(null);
+  const [diffError, setDiffError] = useState<string | null>(null);
+  const [requested, setRequested] = useState(false);
+  const toolLabel = `${event.toolName ?? ""} ${event.title ?? ""}`.toLowerCase();
+  const isFileEditTool = /edit|write|patch|apply|replace|file/.test(toolLabel);
+  const needsWorkspaceDiff = Boolean(
+    projectId &&
+      event.path &&
+      !hasUnifiedDiff(body) &&
+      (isFileEditTool || /\[diff\]/i.test(body)),
+  );
+
+  useEffect(() => {
+    setWorkspaceDiff(null);
+    setDiffError(null);
+    setRequested(false);
+  }, [event.createdAt, event.toolCallId, event.path]);
+
+  useEffect(() => {
+    if (!open || !needsWorkspaceDiff || requested || !projectId || !event.path) return;
+    let cancelled = false;
+    let timeoutId: number | undefined;
+    setRequested(true);
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutId = window.setTimeout(() => reject(new Error("Diff request timed out")), 8000);
+    });
+    void Promise.race([getFileDiff(projectId, event.path), timeout])
+      .then((text) => {
+        if (!cancelled) setWorkspaceDiff(text.trim() || "(empty diff)");
+      })
+      .catch((error) => {
+        if (!cancelled) setDiffError(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        if (timeoutId != null) window.clearTimeout(timeoutId);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [event.path, getFileDiff, needsWorkspaceDiff, open, projectId, requested]);
+
+  const displayBody = hasUnifiedDiff(body)
+    ? body
+    : workspaceDiff
+      ? `${body}\n\n${workspaceDiff}`
+      : diffError
+        ? `${body}\n\n[full diff unavailable] ${diffError}`
+        : body;
+  const isDiff = hasUnifiedDiff(displayBody) || needsWorkspaceDiff;
+
+  return (
+    <ClippedBody
+      className="event-card__clip"
+      maxHeight={isDiff ? 560 : 220}
+    >
+      <pre className={`event-card__body event-card__body--tool${isDiff ? " event-card__body--diff" : ""}`}>
+        <LinkedText text={displayBody} />
+        {open && needsWorkspaceDiff && !workspaceDiff && !diffError && "\n\nLoading full diff…"}
+      </pre>
+    </ClippedBody>
+  );
+}
+
 function CleanPlaceholder({
   agent,
   session,
@@ -600,10 +686,22 @@ function CleanPlaceholder({
   /** State mirror of stickToBottom so the jump-to-bottom chip can re-render. */
   const [atBottom, setAtBottom] = useState(true);
   const isRunning = session.status === "running";
-  const visibleEvents = events;
+  // Workspace file changes already live in the right-side Changed Files panel.
+  // Keep them in the transcript/history data, but do not create an empty
+  // collapsible "File" row after every turn in the conversation rail.
+  const visibleEvents = useMemo(
+    () => events.filter((event) => event.type !== "file_change"),
+    [events],
+  );
+  const presentationItems = useMemo(
+    () => buildMessagePresentation(visibleEvents, session.id),
+    [session.id, visibleEvents],
+  );
+  const isLongTranscript = presentationItems.length >= 80;
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
   const [editBusy, setEditBusy] = useState(false);
+  const [expandedToolKeys, setExpandedToolKeys] = useState<Set<string>>(() => new Set());
   // Local clock for stall UI only — does not drive list scroll keys.
   const [healthNow, setHealthNow] = useState(() => Date.now());
   useEffect(() => {
@@ -723,7 +821,7 @@ function CleanPlaceholder({
       )}
       <div
         ref={listRef}
-        className={`${detailsVisible ? "event-list" : "event-list is-details-hidden"} scrollbar-hidden`}
+        className={`${detailsVisible ? "event-list" : "event-list is-details-hidden"}${isLongTranscript ? " is-long" : ""} scrollbar-hidden`}
         onScroll={onListScroll}
       >
         {/* Quote UI is isolated so its setState does not re-render cards (keeps selection).
@@ -761,7 +859,11 @@ function CleanPlaceholder({
             )}
           </div>
         )}
-        {visibleEvents.map((event, index) => {
+        {(() => {
+          const renderEvent = (
+            event: SessionEvent,
+            index: number,
+          ) => {
           // @-delegate cards: skip started if we already have a result for the same child.
           if (event.type === "subtask_started") {
             if (subtaskResults?.has(event.childSessionId)) return null;
@@ -1045,8 +1147,8 @@ function CleanPlaceholder({
             return t.length > max ? `${t.slice(0, max - 1)}…` : t;
           };
 
-          // Tools: title + status + which file (never the whole payload) — enough
-          // to tell a long tool from a dead one without expanding the card.
+          // Tools: keep the summary compact; the expanded body carries the
+          // complete diff/output when the agent provided it.
           let previewFull = "";
           if (event.type === "tool_call") {
             const fileName = event.path
@@ -1076,12 +1178,29 @@ function CleanPlaceholder({
             const forceOpen =
               thoughtLive ||
               (toolStalled && (health === "stalled" || health === "stuck"));
+            const toolKey =
+              event.type === "tool_call"
+                ? `${event.toolCallId ?? event.createdAt}-${index}`
+                : null;
+            const toolOpen =
+              event.type === "tool_call" &&
+              (forceOpen || (toolKey != null && expandedToolKeys.has(toolKey)));
             return (
               <details
                 className={`event-card event-card--collapsible event-card--${event.type}${toolRunning ? " is-tool-running" : ""}${toolStalled ? " is-tool-stalled" : ""}${toolStalled && health === "stuck" ? " is-tool-stuck" : ""}${thoughtLive ? " is-thought-live" : ""}`}
                 // Remount when thought stops streaming so it starts collapsed (uncontrolled).
                 key={`${event.type}-${event.createdAt}-${index}${event.type === "thought" ? (thoughtLive ? "-live" : "-done") : ""}`}
-                open={forceOpen ? true : undefined}
+                open={event.type === "tool_call" ? toolOpen : forceOpen ? true : undefined}
+                onToggle={(e) => {
+                  if (event.type !== "tool_call" || toolKey == null) return;
+                  const isOpen = (e.currentTarget as HTMLDetailsElement).open;
+                  setExpandedToolKeys((current) => {
+                    const next = new Set(current);
+                    if (isOpen) next.add(toolKey);
+                    else next.delete(toolKey);
+                    return next;
+                  });
+                }}
               >
                 <summary className="event-card__summary" title={previewFull || label}>
                   <span className="event-card__type">
@@ -1099,18 +1218,24 @@ function CleanPlaceholder({
                   </span>
                 </summary>
                 <div className="event-card__expand-slot">
-                  <ClippedBody
-                    className="event-card__clip"
-                    maxHeight={event.type === "tool_call" ? 220 : 260}
-                  >
-                    {useMarkdown && typeof body === "string" ? (
-                      <MarkdownBody text={body} className="event-card__body event-card__body--clipped-md" />
-                    ) : (
-                      <pre className="event-card__body event-card__body--tool">
-                        {typeof body === "string" ? <LinkedText text={body} /> : body}
-                      </pre>
-                    )}
-                  </ClippedBody>
+                  {event.type === "tool_call" ? (
+                    <ToolCallBody
+                      event={event}
+                      body={body}
+                      projectId={projectId}
+                      open={toolOpen}
+                    />
+                  ) : (
+                    <ClippedBody className="event-card__clip" maxHeight={260}>
+                      {useMarkdown && typeof body === "string" ? (
+                        <MarkdownBody text={body} className="event-card__body event-card__body--clipped-md" />
+                      ) : (
+                        <pre className="event-card__body event-card__body--tool">
+                          {typeof body === "string" ? <LinkedText text={body} /> : body}
+                        </pre>
+                      )}
+                    </ClippedBody>
+                  )}
                 </div>
               </details>
             );
@@ -1326,7 +1451,15 @@ function CleanPlaceholder({
               </div>
             </article>
           );
-        })}
+        };
+
+          return presentationItems.flatMap((item) => {
+            if (item.kind === "reply_group") {
+              return item.parts.map((part) => renderEvent(part.event.event, part.event.index));
+            }
+            return renderEvent(item.event, item.index);
+          });
+        })()}
         {showStallBanner && (
           <StallBanner
             health={health}

@@ -61,14 +61,94 @@ function contentBlockType(content: unknown): string {
   return typeof c.type === "string" ? c.type.toLowerCase() : "";
 }
 
-/** Per-card ceiling for tool output — enough to follow along, not a file dump. */
-const MAX_TOOL_DETAIL = 4000;
+/** Keep real edit diffs intact; only cap pathological tool payloads. */
+const MAX_TOOL_DETAIL = 200_000;
 
 function clipToolDetail(text: string): string {
   const trimmed = text.trimEnd();
   if (trimmed.length <= MAX_TOOL_DETAIL) return trimmed;
   const extra = trimmed.length - MAX_TOOL_DETAIL;
   return `${trimmed.slice(0, MAX_TOOL_DETAIL)}\n… (+${extra} more characters)`;
+}
+
+function splitDiffLines(text: string): string[] {
+  if (!text) return [];
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  if (lines[lines.length - 1] === "") lines.pop();
+  return lines;
+}
+
+/** Build a readable unified diff when ACP gives us oldText/newText pairs. */
+function renderTextDiff(path: string, oldText: string, newText: string): string {
+  const oldLines = splitDiffLines(oldText);
+  const newLines = splitDiffLines(newText);
+  let prefix = 0;
+  while (
+    prefix < oldLines.length &&
+    prefix < newLines.length &&
+    oldLines[prefix] === newLines[prefix]
+  ) {
+    prefix += 1;
+  }
+
+  let suffix = 0;
+  while (
+    suffix < oldLines.length - prefix &&
+    suffix < newLines.length - prefix &&
+    oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+
+  const oldMiddle = oldLines.slice(prefix, oldLines.length - suffix);
+  const newMiddle = newLines.slice(prefix, newLines.length - suffix);
+  const operations: string[] = [];
+  const cells = (oldMiddle.length + 1) * (newMiddle.length + 1);
+
+  if (cells <= 300_000) {
+    const table = Array.from(
+      { length: oldMiddle.length + 1 },
+      () => new Uint32Array(newMiddle.length + 1),
+    );
+    for (let i = oldMiddle.length - 1; i >= 0; i -= 1) {
+      for (let j = newMiddle.length - 1; j >= 0; j -= 1) {
+        table[i][j] =
+          oldMiddle[i] === newMiddle[j]
+            ? table[i + 1][j + 1] + 1
+            : Math.max(table[i + 1][j], table[i][j + 1]);
+      }
+    }
+    let i = 0;
+    let j = 0;
+    while (i < oldMiddle.length || j < newMiddle.length) {
+      if (i < oldMiddle.length && j < newMiddle.length && oldMiddle[i] === newMiddle[j]) {
+        operations.push(` ${oldMiddle[i]}`);
+        i += 1;
+        j += 1;
+      } else if (j < newMiddle.length && (i === oldMiddle.length || table[i][j + 1] >= table[i + 1][j])) {
+        operations.push(`+${newMiddle[j]}`);
+        j += 1;
+      } else {
+        operations.push(`-${oldMiddle[i]}`);
+        i += 1;
+      }
+    }
+  } else {
+    // Avoid quadratic memory for very large replacements while still showing
+    // every line that changed.
+    operations.push(...oldMiddle.map((line) => `-${line}`));
+    operations.push(...newMiddle.map((line) => `+${line}`));
+  }
+
+  const lines = [
+    `--- ${path || "(old)"}`,
+    `+++ ${path || "(new)"}`,
+    `@@ -1,${oldLines.length} +1,${newLines.length} @@`,
+    ...oldLines.slice(0, prefix).map((line) => ` ${line}`),
+    ...operations,
+    ...oldLines.slice(oldLines.length - suffix).map((line) => ` ${line}`),
+  ];
+  return lines.join("\n");
 }
 
 /** `locations[0].path` — the file a tool is reading/editing (follow-along cue). */
@@ -122,12 +202,26 @@ function renderToolContent(content: unknown): string {
     const blockType = typeof record.type === "string" ? record.type.toLowerCase() : "";
 
     if (blockType === "diff") {
-      const path = typeof record.path === "string" ? record.path : "";
-      const oldText = typeof record.oldText === "string" ? record.oldText : "";
-      const newText = typeof record.newText === "string" ? record.newText : "";
-      const removed = oldText ? oldText.split("\n").length : 0;
-      const added = newText ? newText.split("\n").length : 0;
-      parts.push(`[diff] ${path || "(file)"} · +${added} / -${removed} lines`);
+      const nested = asRecord(record.content);
+      const source = nested ?? record;
+      const stringField = (...keys: string[]) => {
+        for (const key of keys) {
+          const value = source[key] ?? record[key];
+          if (typeof value === "string") return value;
+        }
+        return undefined;
+      };
+      const path = stringField("path", "filePath", "file_path") ?? "";
+      const rawDiff = stringField("diff", "patch", "unifiedDiff", "unified_diff");
+      const oldText = stringField("oldText", "old_text", "old");
+      const newText = stringField("newText", "new_text", "new");
+      if (rawDiff?.trim()) {
+        parts.push(rawDiff.trim());
+      } else if (oldText !== undefined || newText !== undefined) {
+        parts.push(renderTextDiff(path, oldText ?? "", newText ?? ""));
+      } else {
+        parts.push(`[diff] ${path || "(file)"} · no diff payload`);
+      }
       continue;
     }
     if (blockType === "terminal") {
@@ -878,7 +972,7 @@ export function isSealedAssistantReply(event: SessionEvent): boolean {
 /**
  * Mark open assistant bubbles as finished so later streams cannot fold them
  * into Thinking. Used when the dialog changes agent (or otherwise ends a turn
- * without an rpc/response).
+ * without a turn/complete).
  */
 export function sealOpenAssistantReplies(
   events: SessionEvent[],
