@@ -16,22 +16,8 @@ if exist "%APPDATA%\npm" (
   set "PATH=%APPDATA%\npm;%PATH%"
 )
 
-set "VCVARS="
-if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" (
-  set "VCVARS=%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-)
-if not defined VCVARS if exist "%ProgramFiles%\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" (
-  set "VCVARS=%ProgramFiles%\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
-)
-if not defined VCVARS if exist "%ProgramFiles%\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvars64.bat" (
-  set "VCVARS=%ProgramFiles%\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvars64.bat"
-)
-if defined VCVARS (
-  echo  [env] Loading MSVC vcvars64
-  call "%VCVARS%" >nul 2>&1
-) else (
-  echo  [env] MSVC vcvars not found - ok if binary already built
-)
+call "%~dp0ensure-msvc.bat"
+if errorlevel 1 goto fail
 
 where node >nul 2>&1
 if errorlevel 1 (
@@ -43,6 +29,9 @@ if errorlevel 1 (
   echo  [error] npm not found on PATH.
   goto fail
 )
+
+call "%~dp0ensure-rust.bat"
+if errorlevel 1 goto fail
 
 if not exist "package.json" (
   echo  [error] package.json missing - wrong folder?
