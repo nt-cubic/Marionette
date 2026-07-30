@@ -15,26 +15,8 @@ rem -- PATH: cargo / npm --
 if exist "%USERPROFILE%\.cargo\bin" set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
 if exist "%APPDATA%\npm" set "PATH=%APPDATA%\npm;%PATH%"
 
-rem -- MSVC --
-set "VCVARS="
-if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" (
-  set "VCVARS=%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-)
-if not defined VCVARS if exist "%ProgramFiles%\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" (
-  set "VCVARS=%ProgramFiles%\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
-)
-if not defined VCVARS if exist "%ProgramFiles%\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvars64.bat" (
-  set "VCVARS=%ProgramFiles%\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvars64.bat"
-)
-if not defined VCVARS if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\2019\BuildTools\VC\Auxiliary\Build\vcvars64.bat" (
-  set "VCVARS=%ProgramFiles(x86)%\Microsoft Visual Studio\2019\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-)
-if defined VCVARS (
-  echo  [env] MSVC vcvars64
-  call "%VCVARS%" >nul 2>&1
-) else (
-  echo  [env] MSVC vcvars not found - continuing
-)
+call "%~dp0ensure-msvc.bat"
+if errorlevel 1 goto fail
 
 where node >nul 2>&1
 if errorlevel 1 (
@@ -46,11 +28,8 @@ if errorlevel 1 (
   echo  [error] npm not on PATH
   goto fail
 )
-where cargo >nul 2>&1
-if errorlevel 1 (
-  echo  [error] cargo not on PATH
-  goto fail
-)
+call "%~dp0ensure-rust.bat"
+if errorlevel 1 goto fail
 
 if not exist "package.json" (
   echo  [error] package.json missing

@@ -7,7 +7,11 @@ export default defineConfig({
   server: {
     host: "127.0.0.1",
     port: 5173,
-    strictPort: true
+    strictPort: true,
+    watch: {
+      // Rust compilation creates and locks executables in this directory on Windows.
+      ignored: ["**/src-tauri/target/**"]
+    }
   },
   envPrefix: ["VITE_", "TAURI_"]
 });
