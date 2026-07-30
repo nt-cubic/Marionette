@@ -239,7 +239,15 @@ fn run_version(cmd: &str, args: &[&str]) -> Option<String> {
     let path = process_util::resolve_command_display_path(cmd)
         .ok()
         .flatten()?;
-    let output = Command::new(&path).args(args).output().ok()?;
+    let mut cmd = Command::new(&path);
+    cmd.args(args);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = cmd.output().ok()?;
     if !output.status.success() {
         return None;
     }

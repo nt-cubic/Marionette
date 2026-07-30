@@ -12,6 +12,7 @@ mod custom_agents;
 mod debug_log;
 mod git_service;
 mod handoff;
+mod http_client;
 mod models;
 mod open_target;
 mod preflight;

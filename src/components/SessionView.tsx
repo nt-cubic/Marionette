@@ -1,4 +1,4 @@
-import { ChevronDown, Eye, EyeOff, FileText, Globe, MessageSquareQuote, Pencil, Plus, Square, X } from "lucide-react";
+import { Check, ChevronDown, Copy, Eye, EyeOff, FileText, Globe, MessageSquareQuote, Pencil, Plus, Square, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { extractAcpUpdateText, mergeStreamText, userMessageAnchorId } from "../lib/acpTranscript";
 import {
@@ -157,14 +157,14 @@ export function SessionTabs({
                 <span>{openSession.label}</span>
               </button>
             )}
-            <button className="editor-tab__close" type="button" title={`Close ${openSession.label}`} aria-label={`Close ${openSession.label}`} onClick={() => onTabClose(openSession.id)}>
+            <button className="pill-action pill-action--icon pill-action--sm editor-tab__close" type="button" title={`Close ${openSession.label}`} aria-label={`Close ${openSession.label}`} onClick={() => onTabClose(openSession.id)}>
               <X size={12} />
             </button>
           </div>
         );
       })}
-      <button className="editor-tab__new" type="button" title="New conversation" aria-label="New conversation" onClick={onNewTab}>
-        <Plus size={14} />
+      <button className="pill-action pill-action--icon pill-action--sm editor-tab__new" type="button" title="New conversation" aria-label="New conversation" onClick={onNewTab}>
+        <Plus size={13} />
       </button>
     </div>
   );
@@ -276,6 +276,7 @@ function FileChangeCard({
   projectId,
   createdAt,
   index,
+  revision,
   onLineComment,
 }: {
   path: string;
@@ -283,6 +284,7 @@ function FileChangeCard({
   projectId?: string;
   createdAt: string;
   index: number;
+  revision?: number;
   /** Click a line → pin a line annotation for the next send. */
   onLineComment?: (args: {
     filePath: string;
@@ -302,6 +304,17 @@ function FileChangeCard({
     quoted: string;
   } | null>(null);
   const [commentDraft, setCommentDraft] = useState("");
+
+  // A tool can edit the same file more than once in a turn. Reset the lazy
+  // preview so an already-open card refreshes instead of showing stale lines.
+  useEffect(() => {
+    if (revision == null) return;
+    setDiff(null);
+    setError(null);
+    setLoading(false);
+    setCommenting(null);
+    setCommentDraft("");
+  }, [revision]);
 
   useEffect(() => {
     if (!open || diff !== null || loading) return;
@@ -448,14 +461,14 @@ function FileChangeCard({
               <div className="file-diff-card__comment-actions">
                 <button
                   type="button"
-                  className="subtask-card__btn"
+                  className="pill-action subtask-card__btn"
                   onClick={() => setCommenting(null)}
                 >
                   取消
                 </button>
                 <button
                   type="button"
-                  className="subtask-card__btn"
+                  className="pill-action subtask-card__btn"
                   disabled={!commentDraft.trim()}
                   onClick={() => {
                     if (!commentDraft.trim()) return;
@@ -481,6 +494,58 @@ function FileChangeCard({
         </div>
       </div>
     </details>
+  );
+}
+
+/** One-click copy of a Reply's full source text (markdown, not rendered HTML). */
+function CopyReplyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, []);
+
+  const onCopy = useCallback(() => {
+    const value = text;
+    void (async () => {
+      try {
+        await navigator.clipboard.writeText(value);
+      } catch {
+        // Fallback for blocked clipboard APIs (rare in Tauri WebView2).
+        try {
+          const ta = document.createElement("textarea");
+          ta.value = value;
+          ta.setAttribute("readonly", "");
+          ta.style.position = "fixed";
+          ta.style.left = "-9999px";
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          document.body.removeChild(ta);
+        } catch {
+          return;
+        }
+      }
+      setCopied(true);
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setCopied(false), 1500);
+    })();
+  }, [text]);
+
+  return (
+    <button
+      type="button"
+      className={`pill-action pill-action--icon event-card__copy${copied ? " is-copied" : ""}`}
+      title={copied ? "Copied" : "Copy reply"}
+      aria-label={copied ? "Copied" : "Copy reply"}
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={onCopy}
+    >
+      {copied ? <Check size={13} aria-hidden /> : <Copy size={13} aria-hidden />}
+    </button>
   );
 }
 
@@ -593,9 +658,12 @@ function CleanPlaceholder({
   }, [awaitingFirstChunk]);
 
   // Switching dialog → follow the new session's tail by default.
+  // Also drop any leftover text selection so QuoteOverlay chrome / WebView2
+  // selection ghosts cannot hide the next dialog's transcript until a click.
   useEffect(() => {
     stickToBottomRef.current = true;
     setAtBottom(true);
+    window.getSelection()?.removeAllRanges();
   }, [session.id]);
 
   const onListScroll = useCallback(() => {
@@ -630,7 +698,7 @@ function CleanPlaceholder({
     <LinkCwdContext.Provider value={session.cwd || null}>
     <div className="clean-surface">
       <button
-        className="icon-button icon-button--eye"
+        className="pill-action pill-action--icon icon-button--eye"
         type="button"
         title={
           "Clean View · live stream · thinking/tools collapsed by default"
@@ -658,9 +726,12 @@ function CleanPlaceholder({
         className={`${detailsVisible ? "event-list" : "event-list is-details-hidden"} scrollbar-hidden`}
         onScroll={onListScroll}
       >
-        {/* Quote UI is isolated so its setState does not re-render cards (keeps selection). */}
+        {/* Quote UI is isolated so its setState does not re-render cards (keeps selection).
+            key=session.id remounts overlay state (评论 button / draft) per dialog. */}
         {onQuotePinsChange && (
           <QuoteOverlay
+            key={session.id}
+            sessionId={session.id}
             listRef={listRef}
             pins={quotePins}
             onPinsChange={onQuotePinsChange}
@@ -714,7 +785,7 @@ function CleanPlaceholder({
                   {onSubtaskStop && (
                     <button
                       type="button"
-                      className="subtask-card__btn"
+                      className="pill-action subtask-card__btn"
                       onClick={() => onSubtaskStop(event.childSessionId)}
                     >
                       停止
@@ -724,7 +795,7 @@ function CleanPlaceholder({
                 {childStream.length > 0 && (
                   <button
                     type="button"
-                    className="subtask-card__btn subtask-card__expand"
+                    className="pill-action subtask-card__btn subtask-card__expand"
                     onClick={() =>
                       setExpandedChildId?.(expanded ? null : event.childSessionId)
                     }
@@ -810,7 +881,7 @@ function CleanPlaceholder({
                   </span>
                   <button
                     type="button"
-                    className="subtask-card__btn"
+                    className="pill-action subtask-card__btn"
                     onClick={() =>
                       setExpandedChildId?.(expanded ? null : event.childSessionId)
                     }
@@ -820,7 +891,7 @@ function CleanPlaceholder({
                   {ok && onSubtaskQuote && event.summary && (
                     <button
                       type="button"
-                      className="subtask-card__btn"
+                      className="pill-action subtask-card__btn"
                       onClick={() => onSubtaskQuote(event.summary)}
                     >
                       引用
@@ -829,7 +900,7 @@ function CleanPlaceholder({
                   {!ok && onSubtaskRetry && (
                     <button
                       type="button"
-                      className="subtask-card__btn"
+                      className="pill-action subtask-card__btn"
                       onClick={() => onSubtaskRetry(event.childSessionId)}
                     >
                       重试
@@ -939,6 +1010,7 @@ function CleanPlaceholder({
                 projectId={projectId}
                 createdAt={event.createdAt}
                 index={index}
+                revision={event.revision}
                 onLineComment={
                   onQuotePinsChange
                     ? ({ filePath, side, lineNumber, quoted, comment }) => {
@@ -1092,7 +1164,7 @@ function CleanPlaceholder({
                       {isUser && onEditResend && !isEditing && (
                         <button
                           type="button"
-                          className="event-card__edit"
+                          className="pill-action pill-action--icon event-card__edit"
                           title="Edit & resend (drops later messages)"
                           aria-label="Edit and resend this message"
                           onClick={() => {
@@ -1100,8 +1172,7 @@ function CleanPlaceholder({
                             setEditDraft(stripForceWebSearchPrefix(event.text));
                           }}
                         >
-                          <Pencil size={12} />
-                          Edit
+                          <Pencil size={13} aria-hidden />
                         </button>
                       )}
                     </span>
@@ -1148,7 +1219,7 @@ function CleanPlaceholder({
                     <div className="event-card__edit-actions">
                       <button
                         type="button"
-                        className="event-card__edit-cancel"
+                        className="pill-action event-card__edit-cancel"
                         disabled={editBusy}
                         onClick={() => setEditingKey(null)}
                       >
@@ -1156,7 +1227,7 @@ function CleanPlaceholder({
                       </button>
                       <button
                         type="button"
-                        className="event-card__edit-confirm"
+                        className="pill-action event-card__edit-confirm"
                         disabled={editBusy || !editDraft.trim()}
                         onClick={() => {
                           const next = editDraft.trim();
@@ -1208,38 +1279,47 @@ function CleanPlaceholder({
                     })()}
                   </>
                 )}
-                {/* Reply metadata: mode · agent · model · effort · duration (only for real replies with metadata) */}
-                {event.type === "assistant_message" && event.agentId && (
-                  <div className="event-card__meta">
-                    {event.modeLabel && (
-                      <>
-                        <span
-                          className="meta-tag__symbol"
-                          data-mode-tone={modeTone(event.modeLabel)}
-                        >
-                          ▣
-                        </span>
-                        <span
-                          className="meta-tag meta-tag--mode"
-                          data-mode-tone={modeTone(event.modeLabel)}
-                        >
-                          {event.modeLabel}
-                        </span>
-                      </>
+                {/* Reply footer: meta tags + one-click full-text copy */}
+                {event.type === "assistant_message" && (
+                  <div className="event-card__footer">
+                    {event.agentId ? (
+                      <div className="event-card__meta">
+                        {event.modeLabel && (
+                          <>
+                            <span
+                              className="meta-tag__symbol"
+                              data-mode-tone={modeTone(event.modeLabel)}
+                            >
+                              ▣
+                            </span>
+                            <span
+                              className="meta-tag meta-tag--mode"
+                              data-mode-tone={modeTone(event.modeLabel)}
+                            >
+                              {event.modeLabel}
+                            </span>
+                          </>
+                        )}
+                        {event.agentLabel && (
+                          <span className="meta-tag">{event.agentLabel}</span>
+                        )}
+                        {event.modelLabel && (
+                          <span className="meta-tag">{event.modelLabel}</span>
+                        )}
+                        {event.effortLabel && (
+                          <span className="meta-tag">{event.effortLabel}</span>
+                        )}
+                        {event.durationMs != null && (
+                          <span className="meta-tag meta-tag--duration">
+                            {(event.durationMs / 1000).toFixed(1)}s
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="event-card__footer-spacer" />
                     )}
-                    {event.agentLabel && (
-                      <span className="meta-tag">{event.agentLabel}</span>
-                    )}
-                    {event.modelLabel && (
-                      <span className="meta-tag">{event.modelLabel}</span>
-                    )}
-                    {event.effortLabel && (
-                      <span className="meta-tag">{event.effortLabel}</span>
-                    )}
-                    {event.durationMs != null && (
-                      <span className="meta-tag meta-tag--duration">
-                        {(event.durationMs / 1000).toFixed(1)}s
-                      </span>
+                    {typeof body === "string" && body.trim() && (
+                      <CopyReplyButton text={body} />
                     )}
                   </div>
                 )}
@@ -1271,10 +1351,12 @@ function CleanPlaceholder({
  * so browser text selection highlight stays after mouseup.
  */
 function QuoteOverlay({
+  sessionId,
   listRef,
   pins,
   onPinsChange,
 }: {
+  sessionId: string;
   listRef: React.RefObject<HTMLDivElement | null>;
   pins: QuotePin[];
   onPinsChange: (pins: QuotePin[]) => void;
@@ -1293,6 +1375,14 @@ function QuoteOverlay({
   const pinsRef = useRef(pins);
   pinsRef.current = pins;
   const committingRef = useRef(false);
+
+  // Belt-and-suspenders with key={sessionId}: clear popover if identity changes
+  // without a full remount (or if parent reuses the instance).
+  useEffect(() => {
+    setBtn(null);
+    setDraft(null);
+    window.getSelection()?.removeAllRanges();
+  }, [sessionId]);
 
   /** Clamp a center-anchored overlay so translate(-50%) stays inside the list. */
   const clampOverlay = useCallback(
@@ -1635,7 +1725,7 @@ function StallBanner({
           <div className="event-card__stall-actions">
             <button
               type="button"
-              className="event-card__interrupt"
+              className="pill-action event-card__interrupt"
               onClick={() => void onInterrupt?.()}
             >
               <Square size={11} fill="currentColor" />

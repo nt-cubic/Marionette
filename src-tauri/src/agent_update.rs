@@ -149,7 +149,9 @@ fn latest_version(package: &str) -> Option<String> {
     // Scoped packages need the slash encoded for the registry URL path.
     let encoded = name.replace('/', "%2F");
     let url = format!("https://registry.npmjs.org/{encoded}/latest");
-    let resp = ureq::get(&url)
+    let resp = crate::http_client::agent()
+        .ok()?
+        .get(&url)
         .set("Accept", "application/json")
         .set("User-Agent", "Marionette/0.1 (agent-update)")
         .timeout(REGISTRY_TIMEOUT)

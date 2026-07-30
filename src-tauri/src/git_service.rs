@@ -34,13 +34,28 @@ pub fn get_file_diff(project_root: &Path, path: &str) -> Result<String, String> 
     if path.trim().is_empty() || path.contains("..") {
         return Err("Invalid path".to_string());
     }
-    let output = run_git(project_root, &["diff", "--no-color", "--", path])?;
+    // Compare against HEAD so staged and unstaged edits are both visible.
+    // Repositories without a HEAD fall back to the working-tree diff below.
+    let output = run_git(project_root, &["diff", "--no-color", "HEAD", "--", path])?;
     let mut text = String::from_utf8_lossy(&output.stdout).to_string();
+    if text.trim().is_empty() {
+        let working_tree = run_git(project_root, &["diff", "--no-color", "--", path])?;
+        text = String::from_utf8_lossy(&working_tree.stdout).to_string();
+    }
     if text.trim().is_empty() {
         let untracked = run_git(project_root, &["status", "--porcelain", "--", path])?;
         let st = String::from_utf8_lossy(&untracked.stdout);
         if st.trim().starts_with("??") {
-            return Ok(format!("(untracked) {path}\n"));
+            // `git diff` does not include untracked files. `--no-index` gives
+            // the same unified format for a new file, including its contents.
+            let added = run_git(
+                project_root,
+                &["diff", "--no-color", "--no-index", "--", "/dev/null", path],
+            )?;
+            text = String::from_utf8_lossy(&added.stdout).to_string();
+            if text.trim().is_empty() {
+                return Ok(format!("(untracked) {path}\n"));
+            }
         }
     }
     const MAX: usize = 80_000;

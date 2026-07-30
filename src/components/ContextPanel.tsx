@@ -100,6 +100,12 @@ function formatPrimary(window: UsageWindow): string {
   if (window.percentage === null) {
     // Prefer a short honest label; full sentence stays in detail line.
     if (window.detail) {
+      // Absolute money (provider balances / spend) — not a utilization %.
+      // e.g. "¥71.85 total · topped-up …" → primary "¥71.85"
+      const money = window.detail.match(
+        /^(?:[¥$€£]\s*[\d,]+(?:\.\d+)?|[\d,]+(?:\.\d+)?\s*(?:CNY|USD|RMB|\$))/i
+      );
+      if (money) return money[0].replace(/\s+/g, " ").trim();
       const d = window.detail.toLowerCase();
       if (d.includes("ceiling") || d.includes("plan")) return "Plan only";
       if (d.includes("no public") || d.includes("unavailable") || d.includes("not public")) {
@@ -399,8 +405,8 @@ export function ContextPanel({
       <section className="context-card">
         <div className="context-card__heading">
           <span>Usage</span>
-          <button className="icon-button icon-button--small context-panel__button" type="button" title="Refresh usage" aria-label="Refresh usage" onClick={onUsageRefresh}>
-            <RefreshCw size={13} />
+          <button className="pill-action pill-action--icon pill-action--sm" type="button" title="Refresh usage" aria-label="Refresh usage" onClick={onUsageRefresh}>
+            <RefreshCw size={11} />
           </button>
         </div>
         <div className="usage-agent">{usage.agentLabel}</div>
@@ -433,8 +439,8 @@ export function ContextPanel({
         <div className="context-card__heading">
           <span>Changed Files · project</span>
           {onRefreshChangedFiles && (
-            <button className="icon-button icon-button--small context-panel__button" type="button" title="Refresh git status" aria-label="Refresh git status" onClick={onRefreshChangedFiles}>
-              <RefreshCw size={13} />
+            <button className="pill-action pill-action--icon pill-action--sm" type="button" title="Refresh git status" aria-label="Refresh git status" onClick={onRefreshChangedFiles}>
+              <RefreshCw size={11} />
             </button>
           )}
         </div>
@@ -467,13 +473,13 @@ export function ContextPanel({
           <span>Project context</span>
           {onRescanProjectContext && (
             <button
-              className="icon-button icon-button--small context-panel__button"
+              className="pill-action pill-action--icon pill-action--sm"
               type="button"
               title="Rescan agent configs and skill folders"
               aria-label="Rescan project context"
               onClick={onRescanProjectContext}
             >
-              <RefreshCw size={13} />
+              <RefreshCw size={11} />
             </button>
           )}
         </div>
@@ -495,7 +501,7 @@ export function ContextPanel({
               {onReconnectAgent && (
                 <button
                   type="button"
-                  className="context-lend__reconnect"
+                  className="pill-action context-lend__reconnect"
                   disabled={reconnecting}
                   onClick={onReconnectAgent}
                   title={
@@ -603,19 +609,19 @@ export function ContextPanel({
       </section>
 
       <div className="context-panel__footer">
-        <button className="icon-button icon-button--small context-panel__button" type="button" title={collapsed ? "Pin information panel open" : "Collapse information panel"} aria-label={collapsed ? "Pin information panel open" : "Collapse information panel"} onClick={collapsed ? onExpand : onCollapse}>
-          {collapsed ? <PanelRightOpen size={14} /> : <PanelRightClose size={14} />}
+        <button className="pill-action pill-action--icon pill-action--sm" type="button" title={collapsed ? "Pin information panel open" : "Collapse information panel"} aria-label={collapsed ? "Pin information panel open" : "Collapse information panel"} onClick={collapsed ? onExpand : onCollapse}>
+          {collapsed ? <PanelRightOpen size={13} /> : <PanelRightClose size={13} />}
         </button>
         {onCheckAppUpdate && (
           <button
-            className={`icon-button icon-button--small context-panel__button context-panel__button--update${appUpdateAvailable ? " is-update-ready" : ""}`}
+            className={`pill-action pill-action--icon pill-action--sm context-panel__button--update${appUpdateAvailable ? " is-update-ready" : ""}`}
             type="button"
             title={appUpdateAvailable ? "有新版本可用 — 点击检查" : "检查更新"}
             aria-label={appUpdateAvailable ? "有新版本可用 — 点击检查" : "检查更新"}
             disabled={checkAppUpdateBusy}
             onClick={onCheckAppUpdate}
           >
-            <ArrowUpCircle size={14} strokeWidth={2.25} />
+            <ArrowUpCircle size={13} strokeWidth={2.25} />
           </button>
         )}
       </div>
