@@ -11,8 +11,12 @@ export type SessionUsageState = {
   windows: Record<string, UsageWindow>;
   /** Provider balance rows (OpenCode model → DeepSeek/OpenRouter/Go…). */
   providerWindows: Record<string, UsageWindow>;
+  /** Provider that supplied the current balance rows. */
+  provider: string | null;
   providerLabel: string | null;
   providerModel: string | null;
+  /** Failed probe message; successful provider rows remain visible. */
+  providerError: string | null;
   refreshedAt: string | null;
   source: string | null;
   /** Last turn's token split, from the session/prompt response. */
@@ -39,8 +43,10 @@ export function emptySessionUsage(): SessionUsageState {
     costCurrency: null,
     windows: {},
     providerWindows: {},
+    provider: null,
     providerLabel: null,
     providerModel: null,
+    providerError: null,
     refreshedAt: null,
     source: null,
     turnTokens: null,
@@ -66,12 +72,29 @@ export type ProviderUsageProbe = {
   ok: boolean;
 };
 
+function providerIdentity(provider: string): string {
+  switch (provider) {
+    case "codex":
+    case "chatgpt":
+      return "openai";
+    case "opencode_go":
+    case "go":
+      return "opencode-go";
+    case "opencode-zen":
+    case "zen":
+      return "opencode";
+    default:
+      return provider;
+  }
+}
+
 export function mergeProviderProbe(
   prev: SessionUsageState | undefined,
   probe: ProviderUsageProbe,
   now = new Date()
 ): SessionUsageState {
   const base = prev ?? emptySessionUsage();
+  const provider = providerIdentity(probe.provider);
   const providerWindows: Record<string, UsageWindow> = {};
   for (const w of probe.windows) {
     providerWindows[w.id] = {
@@ -82,11 +105,28 @@ export function mergeProviderProbe(
       kind: w.kind === "rate_limit" ? "rate_limit" : "provider",
     };
   }
+  if (!probe.ok) {
+    const retainsCurrentProviderRows =
+      base.provider === provider && Object.keys(base.providerWindows).length > 0;
+    return {
+      ...base,
+      providerWindows: retainsCurrentProviderRows ? base.providerWindows : providerWindows,
+      provider,
+      providerLabel: probe.providerLabel,
+      providerModel: probe.modelLabel ?? probe.model,
+      providerError: probe.note ?? "Provider refresh failed",
+      // A failed refresh is not a fresh usage snapshot. Keep the success time.
+      refreshedAt: retainsCurrentProviderRows ? base.refreshedAt : now.toISOString(),
+      source: probe.source || base.source,
+    };
+  }
   return {
     ...base,
     providerWindows,
+    provider,
     providerLabel: probe.providerLabel,
     providerModel: probe.modelLabel ?? probe.model,
+    providerError: null,
     refreshedAt: now.toISOString(),
     // Last writer only — never concatenate (was "opencode zen models + …" spam).
     source: probe.source || base.source,
@@ -957,7 +997,9 @@ export function buildUsageSnapshot(args: {
 
   // Footer: one short line. Never dump source chains or multi-sentence help.
   let note: string | null = null;
-  if (state?.providerModel) {
+  if (state?.providerError) {
+    note = `Refresh failed: ${state.providerError}`;
+  } else if (state?.providerModel) {
     note = state.providerModel;
   } else if (!connected) {
     note = "Not connected";

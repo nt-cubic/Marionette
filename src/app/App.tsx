@@ -229,6 +229,11 @@ function isToolCompletionStatus(status?: string): boolean {
     normalized === "canceled";
 }
 
+function isChatgptUsageModel(modelId: string | null | undefined): boolean {
+  const provider = modelId?.trim().split("/", 1)[0]?.toLowerCase();
+  return provider === "openai" || provider === "codex" || provider === "chatgpt";
+}
+
 export function App() {
   const [availableProjects, setAvailableProjects] = useState<Project[]>(projects);
   const [availableAgents, setAvailableAgents] = useState(agents);
@@ -1353,6 +1358,17 @@ export function App() {
     if (!sid) return;
     const active = availableSessions.find((s) => s.id === sid);
     const agent = availableAgents.find((a) => a.id === active?.agentId);
+
+    // OpenCode: probe the selected model’s provider balance API.
+    if (agent?.id === "opencode") {
+      const model =
+        activeModelId ??
+        sessionCapabilities?.currentModel ??
+        null;
+      void refreshProviderBalance(sid, model);
+      return;
+    }
+
     setSessionUsageById((current) => {
       const prev = current[sid] ?? emptySessionUsage();
       return {
@@ -1364,16 +1380,6 @@ export function App() {
         },
       };
     });
-
-    // OpenCode: probe the selected model’s provider balance API.
-    if (agent?.id === "opencode") {
-      const model =
-        activeModelId ??
-        sessionCapabilities?.currentModel ??
-        null;
-      void refreshProviderBalance(sid, model);
-      return;
-    }
 
     // Codex (/status) and Claude (/usage) only surface account rate limits as
     // command text. Both are local slash commands — no model turn, no tokens.
@@ -1500,10 +1506,15 @@ export function App() {
   /**
    * After an AI turn ends (`turn/complete`), refresh the Usage panel once.
    * Throttled so multi-chunk finalization / rapid turns don't spam probes.
+   * ChatGPT subscription usage is intentionally excluded: it is a private
+   * endpoint and refreshes only on model change or explicit user action.
    */
   const refreshUsageAfterTurn = useCallback(
     (sessionId: string) => {
       if (!sessionId || sessionId !== currentSessionIdRef.current) return;
+      const session = sessionsRef.current.find((candidate) => candidate.id === sessionId);
+      const model = activeModelId ?? sessionCapabilities?.currentModel ?? null;
+      if (session?.agentId === "opencode" && isChatgptUsageModel(model)) return;
       const now = Date.now();
       const prev = lastUsageRefreshAt.current[sessionId] ?? 0;
       if (now - prev < 4000) return;
@@ -1515,7 +1526,7 @@ export function App() {
         handleUsageRefresh();
       }, 350);
     },
-    [handleUsageRefresh],
+    [activeModelId, handleUsageRefresh, sessionCapabilities?.currentModel],
   );
   const refreshUsageAfterTurnRef = useRef(refreshUsageAfterTurn);
   refreshUsageAfterTurnRef.current = refreshUsageAfterTurn;
