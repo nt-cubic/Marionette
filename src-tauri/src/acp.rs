@@ -165,6 +165,12 @@ struct AcpProcess {
     /// Latched once an agent answers -32601 to `session/set_config_option`, so
     /// later changes skip the doomed probe entirely.
     config_option_unsupported: AtomicBool,
+    /// JSON-RPC id of the outstanding `session/prompt` (`0` = none).
+    ///
+    /// Turn busy/idle is bound **only** to this id (Codeg-style). Responses to
+    /// `set_config_option` / model / mode / effort / probes must never clear
+    /// the UI "Working" state — that was the false "turn complete" bug.
+    in_flight_prompt_id: Arc<AtomicU64>,
 }
 
 struct PendingPermission {
@@ -393,6 +399,7 @@ impl AcpService {
             .take()
             .ok_or_else(|| "ACP agent stderr is unavailable".to_string())?;
         let pending = Arc::new(Mutex::new(HashMap::new()));
+        let in_flight_prompt_id = Arc::new(AtomicU64::new(0));
         let stdin_tx = {
             // A failed write happens after its caller already got `Ok`, so the
             // only way it reaches anyone is from in here.
@@ -400,11 +407,26 @@ impl AcpService {
             let fail_session = session_id.clone();
             let fail_pending: Arc<Mutex<HashMap<u64, Sender<Result<Value, String>>>>> =
                 Arc::clone(&pending);
+            let fail_inflight = Arc::clone(&in_flight_prompt_id);
             spawn_stdin_writer(stdin, session_id.clone(), move |error| {
                 if let Ok(mut waiters) = fail_pending.lock() {
                     for (_, sender) in waiters.drain() {
                         let _ = sender.send(Err(format!("ACP agent stdin closed: {error}")));
                     }
+                }
+                // Drop any in-flight turn before process/ended so the UI does
+                // not stay "Working" if it only listens for turn/complete.
+                if take_in_flight_prompt_id(&fail_inflight).is_some() {
+                    emit_turn_complete(
+                        &fail_app,
+                        &fail_session,
+                        "error",
+                        "error",
+                        json!({
+                            "message": format!("Agent stopped reading input ({error}). The turn was not delivered."),
+                            "reason": "stdin-closed",
+                        }),
+                    );
                 }
                 // Same event the reader emits on stdout EOF — the UI already
                 // knows how to unstick a session from it. Needed as its own
@@ -431,6 +453,7 @@ impl AcpService {
             intentional_stop: AtomicBool::new(false),
             quiet_ids: Arc::new(Mutex::new(HashSet::new())),
             config_option_unsupported: AtomicBool::new(false),
+            in_flight_prompt_id,
         });
         sessions.insert(session_id.clone(), Arc::clone(&process));
         drop(sessions);
@@ -1032,7 +1055,8 @@ impl AcpService {
 
     /// Fire `session/prompt` and return immediately so the UI can stream
     /// `session/update` events (thinking / tool_call / message chunks) live.
-    /// Turn completion arrives later as an `rpc/response` acp-event.
+    /// Turn completion arrives later as a dedicated `turn/complete` acp-event
+    /// (only for this prompt's JSON-RPC id — never for set_config echoes).
     ///
     /// `image_paths` are absolute filesystem paths; each is read, base64-encoded,
     /// and sent as an ACP `ContentBlock::Image` before the text block (when the
@@ -1051,6 +1075,15 @@ impl AcpService {
             .map_err(|_| "ACP session id lock poisoned".to_string())?
             .clone()
             .ok_or_else(|| "ACP session is not initialized".to_string())?;
+
+        // Codeg concurrency gate: one prompt turn per connection. A second
+        // send while the first is still open would race responses and make
+        // "running" untrustworthy again.
+        if process.in_flight_prompt_id.load(Ordering::SeqCst) != 0 {
+            return Err(
+                "A turn is already in flight on this session — interrupt it first".into(),
+            );
+        }
 
         let caps = self.get_capabilities(session_id);
         let images_ok = caps
@@ -1097,8 +1130,20 @@ impl AcpService {
         }
 
         let id = process.next_id.fetch_add(1, Ordering::Relaxed);
+        // Latch before write so a fast agent response cannot race past an
+        // empty in_flight and be misclassified as a non-turn RPC. CAS so a
+        // concurrent send loses cleanly instead of overwriting.
+        if process
+            .in_flight_prompt_id
+            .compare_exchange(0, id, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err(
+                "A turn is already in flight on this session — interrupt it first".into(),
+            );
+        }
         // No pending waiter: response is still emitted on the event bus in read_stdout.
-        write_message(
+        if let Err(err) = write_message(
             &process,
             json!({
                 "jsonrpc": "2.0",
@@ -1109,7 +1154,39 @@ impl AcpService {
                     "prompt": prompt_blocks
                 }
             }),
-        )?;
+        ) {
+            // Only clear if we still own this turn (cancel may have taken it).
+            let _ = process.in_flight_prompt_id.compare_exchange(
+                id,
+                0,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
+            return Err(err);
+        }
+        // Cancel raced after CAS but before/during write: UI already has
+        // turn/complete(cancelled); re-issue cancel so the agent does not keep
+        // a zombie turn we no longer track.
+        if process.in_flight_prompt_id.load(Ordering::SeqCst) != id {
+            let _ = notify(
+                &process,
+                "session/cancel",
+                json!({ "sessionId": agent_session_id }),
+            );
+            crate::debug_log::append(
+                "acp",
+                "warn",
+                session_id,
+                "session/prompt wrote after cancel — re-issued session/cancel",
+                Some(&format!("rpcId={id}")),
+            );
+            return Ok(json!({
+                "accepted": true,
+                "id": id,
+                "images": image_count,
+                "cancelledDuringSend": true
+            }));
+        }
         crate::debug_log::append(
             "acp",
             "info",
@@ -1131,11 +1208,28 @@ impl AcpService {
             .map_err(|_| "ACP session id lock poisoned".to_string())?
             .clone()
             .ok_or_else(|| "ACP session is not initialized".to_string())?;
+        // Codeg: free the client immediately — do not wait for the agent to
+        // honour session/cancel (it may hang inside a tool). Clear in-flight
+        // so a late prompt response is ignored; emit turn/complete so UI
+        // leaves "Working" without needing a second signal.
+        let had_turn = take_in_flight_prompt_id(&process.in_flight_prompt_id).is_some();
         notify(
             &process,
             "session/cancel",
             json!({ "sessionId": agent_session_id }),
-        )
+        )?;
+        if had_turn {
+            // Best-effort: we need the AppHandle to emit. cancel is invoked
+            // from commands without app in AcpService — use a deferred path
+            // via the registered emitter if present.
+            emit_turn_complete_for_session(
+                session_id,
+                "response",
+                "cancelled",
+                json!({ "source": "session/cancel" }),
+            );
+        }
+        Ok(())
     }
 
     pub fn stop(&self, session_id: &str) -> Result<(), String> {
@@ -1155,6 +1249,15 @@ impl AcpService {
             .map(|mut map| map.remove(session_id));
         if let Some(process) = process {
             process.intentional_stop.store(true, Ordering::SeqCst);
+            // End any open turn before kill so listeners do not wait forever.
+            if take_in_flight_prompt_id(&process.in_flight_prompt_id).is_some() {
+                emit_turn_complete_for_session(
+                    session_id,
+                    "response",
+                    "cancelled",
+                    json!({ "source": "process/stop" }),
+                );
+            }
             // Kill any agent-owned shells before the agent process itself.
             if let Ok(guard) = process.agent_session_id.lock() {
                 if let Some(agent_sid) = guard.as_deref() {
@@ -2245,8 +2348,31 @@ fn read_stdout(
                         .lock()
                         .map(|mut set| set.remove(&id))
                         .unwrap_or(false);
-                if !quiet_failure {
-                    // Also surface on the event bus so the UI/debug log can see turn completion.
+                // Only the outstanding session/prompt response ends a turn.
+                // set_config / set_mode / probes share the same JSON-RPC channel
+                // and must not flip the UI out of "Working" (Codeg: TurnComplete
+                // is prompt-path exclusive).
+                let is_prompt_turn = {
+                    let current = process.in_flight_prompt_id.load(Ordering::SeqCst);
+                    current != 0 && current == id
+                };
+                if is_prompt_turn {
+                    let _ = take_in_flight_prompt_id(&process.in_flight_prompt_id);
+                    let stop_reason = if result.is_ok() {
+                        extract_stop_reason(message.get("result")).unwrap_or("end_turn")
+                    } else {
+                        "error"
+                    };
+                    let kind = if result.is_ok() { "response" } else { "error" };
+                    emit_turn_complete(
+                        &app,
+                        &session_id,
+                        kind,
+                        stop_reason,
+                        message.clone(),
+                    );
+                } else if !quiet_failure {
+                    // Non-turn RPCs (config/model/mode): debug-visible only.
                     emit_event(
                         &app,
                         &session_id,
@@ -2328,6 +2454,28 @@ fn read_stdout(
                 "Agent process ended (stdout closed) before a response arrived".to_string(),
             ));
         }
+    }
+    // Close any open prompt turn before process/* so status cannot stay running.
+    if take_in_flight_prompt_id(&process.in_flight_prompt_id).is_some() {
+        let reason = if process.intentional_stop.load(Ordering::SeqCst) {
+            "cancelled"
+        } else {
+            "error"
+        };
+        emit_turn_complete(
+            &app,
+            &session_id,
+            if reason == "cancelled" {
+                "response"
+            } else {
+                "error"
+            },
+            reason,
+            json!({
+                "message": "Agent process stream ended before the prompt response arrived.",
+                "source": "stdout-eof",
+            }),
+        );
     }
     // Also drop Ask / Plan / Permission waiters so the UI is not stuck on a
     // dead process (write_response is best-effort if the pipe is already gone).
@@ -3490,6 +3638,31 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
     }
+
+    #[test]
+    fn take_in_flight_prompt_id_is_single_shot() {
+        let slot = AtomicU64::new(42);
+        assert_eq!(take_in_flight_prompt_id(&slot), Some(42));
+        assert_eq!(take_in_flight_prompt_id(&slot), None);
+        assert_eq!(slot.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn extract_stop_reason_normalizes_variants() {
+        assert_eq!(
+            extract_stop_reason(Some(&json!({ "stopReason": "end_turn" }))),
+            Some("end_turn")
+        );
+        assert_eq!(
+            extract_stop_reason(Some(&json!({ "stop_reason": "cancelled" }))),
+            Some("cancelled")
+        );
+        assert_eq!(
+            extract_stop_reason(Some(&json!({ "stopReason": "maxTokens" }))),
+            Some("max_tokens")
+        );
+        assert_eq!(extract_stop_reason(Some(&json!({}))), None);
+    }
 }
 
 // ── UI event dispatch ──────────────────────────────────────────────────────
@@ -3559,6 +3732,97 @@ fn emit_event(app: &AppHandle, session_id: &str, kind: &str, method: Option<&str
     if let Err(event) = queue_event(session_id, event) {
         emit_now(app, session_id, event);
     }
+}
+
+/// `0` means idle. Atomically take the in-flight prompt id if any.
+fn take_in_flight_prompt_id(slot: &AtomicU64) -> Option<u64> {
+    let id = slot.swap(0, Ordering::SeqCst);
+    if id == 0 {
+        None
+    } else {
+        Some(id)
+    }
+}
+
+/// Pull ACP `stopReason` from a `session/prompt` result object.
+fn extract_stop_reason(result: Option<&Value>) -> Option<&'static str> {
+    let obj = result?;
+    let raw = obj
+        .get("stopReason")
+        .or_else(|| obj.get("stop_reason"))
+        .and_then(Value::as_str)?;
+    Some(match raw {
+        "end_turn" | "endTurn" => "end_turn",
+        "cancelled" | "canceled" => "cancelled",
+        "refusal" => "refusal",
+        "max_tokens" | "maxTokens" => "max_tokens",
+        "max_turn_requests" | "maxTurnRequests" => "max_turn_requests",
+        "error" => "error",
+        _ => "end_turn",
+    })
+}
+
+/// Dedicated turn-end event. Frontend must only leave `running` on this
+/// (or process death) — never on generic `rpc/response`.
+fn emit_turn_complete(
+    app: &AppHandle,
+    session_id: &str,
+    kind: &str,
+    stop_reason: &str,
+    data: Value,
+) {
+    let payload = match data {
+        Value::Object(mut map) => {
+            map.insert("stopReason".into(), json!(stop_reason));
+            Value::Object(map)
+        }
+        other => json!({
+            "stopReason": stop_reason,
+            "data": other,
+        }),
+    };
+    crate::debug_log::append(
+        "acp",
+        "info",
+        session_id,
+        "turn/complete",
+        Some(&format!("kind={kind} stopReason={stop_reason}")),
+    );
+    emit_event(app, session_id, kind, Some("turn/complete"), payload);
+}
+
+/// Queue `turn/complete` when the caller has no `AppHandle` (cancel/stop).
+/// Relies on the session still having a registered emitter.
+fn emit_turn_complete_for_session(
+    session_id: &str,
+    kind: &str,
+    stop_reason: &str,
+    data: Value,
+) {
+    let payload = match data {
+        Value::Object(mut map) => {
+            map.insert("stopReason".into(), json!(stop_reason));
+            Value::Object(map)
+        }
+        other => json!({
+            "stopReason": stop_reason,
+            "data": other,
+        }),
+    };
+    crate::debug_log::append(
+        "acp",
+        "info",
+        session_id,
+        "turn/complete",
+        Some(&format!("kind={kind} stopReason={stop_reason} (no-app)")),
+    );
+    let event = UiEvent {
+        kind: kind.to_string(),
+        method: Some("turn/complete".to_string()),
+        data: payload,
+    };
+    // Session gone → drop; stop() already tears the process down.
+    let _ = queue_event(session_id, event);
 }
 
 // ── Pipeline liveness ──────────────────────────────────────────────────────

@@ -773,7 +773,7 @@ body.is-panel-resizing .context-panel {
   gap: 2px;
   min-height: 32px;
   margin-top: auto;
-  padding-top: 6px;
+  padding: 6px 8px;
   border-top: 1px solid var(--border);
 }
 
@@ -2146,6 +2146,14 @@ button.file-diff-card__code:hover {
   min-width: 0;
 }
 
+/* Native browser virtualization for long transcripts: off-screen rows keep
+   their DOM identity (so details/input state survives) while the browser can
+   skip layout and paint work outside the viewport. */
+.event-list.is-long > .event-card {
+  content-visibility: auto;
+  contain-intrinsic-size: 0 120px;
+}
+
 .quote-pop {
   position: absolute;
   z-index: 20;
@@ -2523,6 +2531,16 @@ button.file-diff-card__code:hover {
   white-space: pre;
   word-break: normal;
   overflow-wrap: normal;
+}
+
+/* Editing tools can carry a real unified diff. Keep the full text readable
+   inside the card instead of reducing it to a +N / -N summary. */
+.event-card__body--diff {
+  width: 100%;
+  max-width: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* Markdown thought: allow block flow but still clipped by parent. */

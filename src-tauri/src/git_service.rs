@@ -1,5 +1,5 @@
 use crate::models::ChangedFile;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 /// Run `git status --porcelain` in the project root. Empty vec if not a repo.
@@ -31,26 +31,24 @@ pub fn get_changed_files(project_root: &Path) -> Result<Vec<ChangedFile>, String
 
 /// Optional read-only single-file diff (truncated).
 pub fn get_file_diff(project_root: &Path, path: &str) -> Result<String, String> {
-    if path.trim().is_empty() || path.contains("..") {
-        return Err("Invalid path".to_string());
-    }
+    let path = project_relative_path(project_root, path)?;
     // Compare against HEAD so staged and unstaged edits are both visible.
     // Repositories without a HEAD fall back to the working-tree diff below.
-    let output = run_git(project_root, &["diff", "--no-color", "HEAD", "--", path])?;
+    let output = run_git(project_root, &["diff", "--no-color", "HEAD", "--", &path])?;
     let mut text = String::from_utf8_lossy(&output.stdout).to_string();
     if text.trim().is_empty() {
-        let working_tree = run_git(project_root, &["diff", "--no-color", "--", path])?;
+        let working_tree = run_git(project_root, &["diff", "--no-color", "--", &path])?;
         text = String::from_utf8_lossy(&working_tree.stdout).to_string();
     }
     if text.trim().is_empty() {
-        let untracked = run_git(project_root, &["status", "--porcelain", "--", path])?;
+        let untracked = run_git(project_root, &["status", "--porcelain", "--", &path])?;
         let st = String::from_utf8_lossy(&untracked.stdout);
         if st.trim().starts_with("??") {
             // `git diff` does not include untracked files. `--no-index` gives
             // the same unified format for a new file, including its contents.
             let added = run_git(
                 project_root,
-                &["diff", "--no-color", "--no-index", "--", "/dev/null", path],
+                &["diff", "--no-color", "--no-index", "--", "/dev/null", &path],
             )?;
             text = String::from_utf8_lossy(&added.stdout).to_string();
             if text.trim().is_empty() {
@@ -64,6 +62,38 @@ pub fn get_file_diff(project_root: &Path, path: &str) -> Result<String, String> 
         text.push_str("\n… (diff truncated)\n");
     }
     Ok(text)
+}
+
+/// Git pathspecs must be relative to the project. ACP often sends an absolute
+/// Windows path, while the Changed Files panel sends a relative one.
+fn project_relative_path(project_root: &Path, raw: &str) -> Result<String, String> {
+    if raw.trim().is_empty() {
+        return Err("Invalid path".to_string());
+    }
+
+    let requested = Path::new(raw);
+    let relative = if requested.is_absolute() {
+        requested
+            .strip_prefix(project_root)
+            .map_err(|_| "Path is outside the project".to_string())?
+    } else {
+        requested
+    };
+
+    let mut clean = PathBuf::new();
+    for component in relative.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(part) => clean.push(part),
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err("Invalid path".to_string());
+            }
+        }
+    }
+    if clean.as_os_str().is_empty() {
+        return Err("Invalid path".to_string());
+    }
+    Ok(clean.to_string_lossy().replace('\\', "/"))
 }
 
 fn run_git(cwd: &Path, args: &[&str]) -> Result<std::process::Output, String> {
