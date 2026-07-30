@@ -282,11 +282,16 @@ fn auth_key_for(auth: &Value, provider: &str) -> Result<String, String> {
     ))
 }
 
-/// Extract an OAuth access token for ChatGPT usage probes.
+/// Extract an OAuth credential for ChatGPT usage probes.
 ///
 /// Do not fall back to `key`: an OpenAI API key cannot authenticate the
 /// ChatGPT subscription usage endpoint.
-fn oauth_access_for(auth: &Value, provider: &str) -> Result<String, String> {
+struct ChatgptOAuth {
+    access_token: String,
+    account_id: Option<String>,
+}
+
+fn chatgpt_oauth_for(auth: &Value, provider: &str) -> Result<ChatgptOAuth, String> {
     let mut keys: Vec<String> = Vec::new();
     if let Some(meta) = find_meta(provider) {
         keys.push(meta.id.clone());
@@ -309,7 +314,16 @@ fn oauth_access_for(auth: &Value, provider: &str) -> Result<String, String> {
         for field in ["access", "token"] {
             if let Some(access) = entry.get(field).and_then(|value| value.as_str()) {
                 if !access.is_empty() {
-                    return Ok(access.to_string());
+                    let account_id = entry
+                        .get("accountId")
+                        .or_else(|| entry.get("account_id"))
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string);
+                    return Ok(ChatgptOAuth {
+                        access_token: access.to_string(),
+                        account_id,
+                    });
                 }
             }
         }
@@ -352,23 +366,35 @@ fn provider_label(provider: &str) -> String {
     provider.to_string()
 }
 
-fn http_get_json(url: &str, bearer: &str) -> Result<Value, String> {
-    let resp = crate::http_client::agent()?
+fn http_get_json_with_account(
+    url: &str,
+    bearer: &str,
+    account_id: Option<&str>,
+) -> Result<Value, String> {
+    let mut request = crate::http_client::agent()?
         .get(url)
         .set("Authorization", &format!("Bearer {bearer}"))
         .set("Accept", "application/json")
         .set("User-Agent", "Marionette/0.1 (provider-usage)")
-        .timeout(std::time::Duration::from_secs(15))
-        .call()
-        .map_err(|e| format!("HTTP {url}: {e}"))?;
-    let status = resp.status();
+        .timeout(std::time::Duration::from_secs(15));
+    if let Some(account_id) = account_id {
+        request = request.set("ChatGPT-Account-Id", account_id);
+    }
+    let resp = match request.call() {
+        Ok(response) => response,
+        // ureq returns non-2xx responses here rather than from `Response::status`.
+        // Keep only the status: provider bodies can include account diagnostics.
+        Err(ureq::Error::Status(status, _)) => return Err(format!("HTTP {status} from {url}")),
+        Err(error) => return Err(format!("HTTP request to {url}: {error}")),
+    };
     let text = resp
         .into_string()
         .map_err(|e| format!("Read body {url}: {e}"))?;
-    if !(200..300).contains(&status) {
-        return Err(format!("HTTP {status} from {url}"));
-    }
     serde_json::from_str(&text).map_err(|e| format!("JSON from {url}: {e}"))
+}
+
+fn http_get_json(url: &str, bearer: &str) -> Result<Value, String> {
+    http_get_json_with_account(url, bearer, None)
 }
 
 fn money(amount: f64, currency: &str) -> String {
@@ -413,11 +439,29 @@ fn reset_hint(value: Option<&Value>) -> Option<String> {
     Some(format!("resets in {}d", (remaining / 86_400.0).round() as u64))
 }
 
-fn parse_openai_window(
-    window: &Value,
-    id: &str,
-    label: &str,
-) -> Option<ProviderUsageWindow> {
+fn openai_window_identity(window: &Value) -> (String, String) {
+    let seconds = window
+        .get("limit_window_seconds")
+        .and_then(value_f64)
+        .filter(|seconds| *seconds > 0.0)
+        .map(|seconds| seconds.round() as u64);
+    match seconds {
+        Some(18_000) => ("five-hour".into(), "5-hour limit".into()),
+        Some(604_800) => ("weekly".into(), "Weekly limit".into()),
+        Some(seconds) if seconds % 86_400 == 0 => {
+            let days = seconds / 86_400;
+            (format!("window-{seconds}"), format!("{days}-day limit"))
+        }
+        Some(seconds) if seconds % 3_600 == 0 => {
+            let hours = seconds / 3_600;
+            (format!("window-{seconds}"), format!("{hours}-hour limit"))
+        }
+        Some(seconds) => (format!("window-{seconds}"), format!("{seconds}-second limit")),
+        None => ("rate-limit".into(), "Rate limit".into()),
+    }
+}
+
+fn parse_openai_window(window: &Value) -> Option<ProviderUsageWindow> {
     let percentage = window
         .get("used_percent")
         .and_then(value_f64)
@@ -426,9 +470,10 @@ fn parse_openai_window(
     if percentage.is_none() && detail.is_none() {
         return None;
     }
+    let (id, label) = openai_window_identity(window);
     Some(ProviderUsageWindow {
-        id: id.into(),
-        label: label.into(),
+        id,
+        label,
         percentage,
         detail,
         kind: "rate_limit".into(),
@@ -443,12 +488,12 @@ fn parse_openai_usage(json: &Value) -> Vec<ProviderUsageWindow> {
     let rate_limit = json.get("rate_limit").unwrap_or(json);
     let mut windows = Vec::new();
     if let Some(primary) = rate_limit.get("primary_window") {
-        if let Some(window) = parse_openai_window(primary, "five-hour", "5-hour limit") {
+        if let Some(window) = parse_openai_window(primary) {
             windows.push(window);
         }
     }
     if let Some(secondary) = rate_limit.get("secondary_window") {
-        if let Some(window) = parse_openai_window(secondary, "weekly", "Weekly limit") {
+        if let Some(window) = parse_openai_window(secondary) {
             windows.push(window);
         }
     }
@@ -457,12 +502,20 @@ fn parse_openai_usage(json: &Value) -> Vec<ProviderUsageWindow> {
 
 fn probe_openai_chatgpt(
     access_token: &str,
+    account_id: Option<&str>,
     model: Option<&str>,
 ) -> Result<ProviderUsageSnapshot, String> {
-    let json = match http_get_json("https://chatgpt.com/backend-api/wham/usage", access_token) {
+    let json = match http_get_json_with_account(
+        "https://chatgpt.com/backend-api/wham/usage",
+        access_token,
+        account_id,
+    ) {
         Ok(json) => json,
         Err(error) if error.contains("HTTP 401") => {
             return Err("ChatGPT OAuth expired; run `opencode auth login` again".into());
+        }
+        Err(error) if error.contains("HTTP 429") => {
+            return Err("ChatGPT usage is rate limited; try again later".into());
         }
         Err(error) => return Err(error),
     };
@@ -775,8 +828,12 @@ pub fn probe_provider_usage(model_id: Option<String>) -> ProviderUsageSnapshot {
             Ok(key) => probe_deepseek(&key, model_ref),
             Err(e) => Err(e),
         },
-        "openai" | "codex" | "chatgpt" => match oauth_access_for(&auth, &provider) {
-            Ok(access) => probe_openai_chatgpt(&access, model_ref),
+        "openai" | "codex" | "chatgpt" => match chatgpt_oauth_for(&auth, &provider) {
+            Ok(oauth) => probe_openai_chatgpt(
+                &oauth.access_token,
+                oauth.account_id.as_deref(),
+                model_ref,
+            ),
             Err(e) => Err(e),
         },
         "openrouter" => match auth_key_for(&auth, "openrouter") {
@@ -1134,7 +1191,7 @@ pub fn delete_provider_key(provider: &str, force: bool) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{oauth_access_for, parse_openai_usage, split_model_id};
+    use super::{chatgpt_oauth_for, parse_openai_usage, split_model_id};
     use serde_json::json;
 
     #[test]
@@ -1177,6 +1234,22 @@ mod tests {
     }
 
     #[test]
+    fn labels_a_weekly_primary_window_by_its_duration() {
+        let json = json!({
+            "rate_limit": {
+                "primary_window": {
+                    "used_percent": 3,
+                    "limit_window_seconds": 604800
+                }
+            }
+        });
+        let windows = parse_openai_usage(&json);
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].id, "weekly");
+        assert_eq!(windows[0].label, "Weekly limit");
+    }
+
+    #[test]
     fn reads_chatgpt_oauth_access_without_using_api_key() {
         let auth = json!({
             "openai": {
@@ -1186,13 +1259,23 @@ mod tests {
                 "key": "api-key-that-must-not-be-used"
             }
         });
+        let oauth = chatgpt_oauth_for(&auth, "openai").unwrap();
+        assert_eq!(oauth.access_token, "oauth-access");
+        assert_eq!(oauth.account_id, None);
+
+        let with_account = json!({
+            "openai": { "access": "oauth-access", "accountId": "acct-123" }
+        });
         assert_eq!(
-            oauth_access_for(&auth, "openai").unwrap(),
-            "oauth-access"
+            chatgpt_oauth_for(&with_account, "openai")
+                .unwrap()
+                .account_id
+                .as_deref(),
+            Some("acct-123")
         );
 
         let api_only = json!({ "openai": { "key": "api-key" } });
-        assert!(oauth_access_for(&api_only, "openai").is_err());
+        assert!(chatgpt_oauth_for(&api_only, "openai").is_err());
     }
 
     #[test]
