@@ -5,6 +5,7 @@ import {
   parseCodexGoalUpdate,
   parseCodexRetryUpdate,
 } from "./acpMeta";
+import { stripSectionMarkers } from "./markdownText";
 import { inferToolNameFromMeta } from "./toolCallNormalize";
 
 export type AcpTextPart = {
@@ -464,10 +465,12 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
     blockType === "redacted_thinking";
 
   if (isThoughtKind) {
+    const visibleText = stripSectionMarkers(textFromContent);
+    if (!visibleText.trim()) return null;
     return {
       role: "thought",
-      text: textFromContent,
-      isDelta: isDelta || isThoughtNoiseToken(textFromContent),
+      text: visibleText,
+      isDelta: isDelta || isThoughtNoiseToken(visibleText),
       sessionUpdate,
       messageId,
     };
@@ -482,12 +485,14 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
     sessionUpdate === "message" ||
     sessionUpdate.includes("chunk")
   ) {
+    const visibleText = stripSectionMarkers(textFromContent);
+    if (!visibleText.trim()) return null;
     // Always prefer append for short chunks (punctuation, tokens) so we never
     // replace a long reply with a single "。" snapshot mis-flagged as non-delta.
-    const forceDelta = isDelta || textFromContent.length <= 24;
+    const forceDelta = isDelta || visibleText.length <= 24;
     return {
       role: "assistant",
-      text: textFromContent,
+      text: visibleText,
       isDelta: forceDelta,
       sessionUpdate,
       messageId,
@@ -750,9 +755,15 @@ export function applyAcpPartToEvents(
   part: AcpTextPart,
 ): SessionEvent[] {
   if (part.role === "assistant") {
+    // Keep the raw stream while it is being assembled. Runtime metadata can be
+    // split at arbitrary byte/token boundaries; cleaning each delta separately
+    // either misses the footer or removes its prefix before the rest arrives.
+    // The presentation and transcript boundaries clean the complete text.
+    const text = part.text;
+    if (!text.trim()) return current;
     const last = current[current.length - 1];
     if (last && sameStreamTarget(last, sessionId, "assistant_message", part.messageId) && last.type === "assistant_message") {
-      const nextText = mergeStreamText(last.text, part.text, part.isDelta);
+      const nextText = mergeStreamText(last.text, text, part.isDelta);
       if (nextText === last.text && (!part.messageId || last.messageId === part.messageId)) return current;
       const next = [...current];
       next[next.length - 1] = {
@@ -763,15 +774,16 @@ export function applyAcpPartToEvents(
       return next;
     }
     const meta = metaFromLastUser(current, sessionId);
-    return [...current, assistantMessageEvent(sessionId, part.text, part.messageId, meta)];
+    return [...current, assistantMessageEvent(sessionId, text, part.messageId, meta)];
   }
 
   if (part.role === "thought") {
-    const trimmed = part.text.trim();
+    const text = stripSectionMarkers(part.text);
+    const trimmed = text.trim();
     if (!trimmed) return current;
 
-    const noise = isThoughtNoiseToken(part.text);
-    const asDelta = part.isDelta || noise || part.text.length <= 32;
+    const noise = isThoughtNoiseToken(text);
+    const asDelta = part.isDelta || noise || text.length <= 32;
     const last = current[current.length - 1];
 
     // Safety: if we are mid-Reply and a mis-tagged short piece arrives as thought
@@ -780,9 +792,9 @@ export function applyAcpPartToEvents(
       last &&
       last.type === "assistant_message" &&
       last.sessionId === sessionId &&
-      (noise || part.text.length <= 8 || /[。，、．！？；：,.!?;:…—\-]/.test(part.text))
+      (noise || text.length <= 8 || /[。，、．！？；：,.!?;:…—\-]/.test(text))
     ) {
-      const nextText = mergeStreamText(last.text, part.text, true);
+      const nextText = mergeStreamText(last.text, text, true);
       if (nextText === last.text) return current;
       const next = [...current];
       next[next.length - 1] = { ...last, text: nextText };
@@ -791,7 +803,7 @@ export function applyAcpPartToEvents(
 
     // 1) Continuous thought stream — ignore messageId churn.
     if (last && sameStreamTarget(last, sessionId, "thought", part.messageId, true) && last.type === "thought") {
-      const nextText = mergeStreamText(last.text, part.text, asDelta);
+      const nextText = mergeStreamText(last.text, text, asDelta);
       return patchThoughtAt(current, current.length - 1, nextText, part.messageId ?? last.messageId);
     }
 
@@ -801,7 +813,7 @@ export function applyAcpPartToEvents(
       if (thoughtIdx >= 0) {
         const prev = current[thoughtIdx];
         if (prev.type === "thought") {
-          const nextText = mergeStreamText(prev.text, part.text, true);
+          const nextText = mergeStreamText(prev.text, text, true);
           return patchThoughtAt(current, thoughtIdx, nextText, part.messageId ?? prev.messageId);
         }
       }
@@ -809,7 +821,7 @@ export function applyAcpPartToEvents(
     }
 
     // 3) Substantial new thought (e.g. after a tool) — new card is correct.
-    return [...current, thoughtEvent(sessionId, part.text, part.messageId)];
+    return [...current, thoughtEvent(sessionId, text, part.messageId)];
   }
 
   if (part.role === "system") {

@@ -1,3 +1,4 @@
+import { cleanAssistantText, stripSectionMarkers } from "./markdownText";
 import type { SessionEvent } from "./types";
 
 const PERSISTABLE = new Set([
@@ -19,7 +20,17 @@ export function persistableEventsForSession(
   events: SessionEvent[],
   sessionId: string,
 ): SessionEvent[] {
-  return events.filter((e) => e.sessionId === sessionId && isPersistableEvent(e));
+  return events
+    .filter((e) => e.sessionId === sessionId && isPersistableEvent(e))
+    .map((event) => {
+      if (event.type === "assistant_message") {
+        return { ...event, text: cleanAssistantText(event.text) };
+      }
+      if (event.type === "thought") {
+        return { ...event, text: stripSectionMarkers(event.text) };
+      }
+      return event;
+    });
 }
 
 /** Best-effort revive of JSONL rows written by write_transcript. */
@@ -34,7 +45,14 @@ export function parseTranscriptEvents(raw: unknown[]): SessionEvent[] {
     if (!sessionId || !PERSISTABLE.has(type)) continue;
 
     if (type === "user_message" || type === "assistant_message" || type === "thought") {
-      const text = typeof e.text === "string" ? e.text : "";
+      const rawText = typeof e.text === "string" ? e.text : "";
+      const text =
+        type === "user_message"
+          ? rawText
+          : type === "assistant_message"
+            ? cleanAssistantText(rawText)
+            : stripSectionMarkers(rawText);
+      if (type !== "user_message" && !text.trim()) continue;
       const messageId = typeof e.messageId === "string" ? e.messageId : undefined;
       out.push({
         type,

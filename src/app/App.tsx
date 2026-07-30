@@ -51,6 +51,7 @@ import {
   type ImageAttachment,
 } from "../lib/imageAttachments";
 import { withForceWebSearch } from "../lib/forceWebSearch";
+import { isRuntimeMetadataOnly } from "../lib/markdownText";
 import {
   parseTranscriptEvents,
   persistableEventsForSession,
@@ -812,9 +813,12 @@ export function App() {
             void syncFileChangesRef.current(payload.sessionId);
           }
           if (extracted.text) {
-            // Codex session info (Model:/Directory: lines) — extract usage but don't show as conversation
+            // Codex `/status` (plain or **bold** keys) — usage already merged above;
+            // keep the chat rail free of the whole block and of status-only deltas.
             const isCodexSessionInfo =
-              extracted.text.startsWith("Model:") && extracted.text.includes("\nDirectory:");
+              isRuntimeMetadataOnly(extracted.text) ||
+              (/^\s*\*{0,2}Model\*{0,2}:/i.test(extracted.text) &&
+                /\n\s*\*{0,2}Directory\*{0,2}:/i.test(extracted.text));
             if (!isCodexSessionInfo) {
             setLiveEvents((current) => {
             const prevLast = current[current.length - 1];
