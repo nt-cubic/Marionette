@@ -397,7 +397,7 @@ export async function updateAcpSession(sessionId: string, config: Record<string,
   return invoke("update_acp_session", { sessionId, config });
 }
 
-/** Probe provider balance for an OpenCode-style `provider/model` id (uses local OpenCode auth.json). */
+/** Probe provider balance/usage for an OpenCode-style `provider/model` id. */
 export async function probeProviderUsage(modelId?: string | null): Promise<import("./usage").ProviderUsageProbe | null> {
   if (!isTauriRuntime()) return null;
   try {
