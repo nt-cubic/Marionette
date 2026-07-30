@@ -1,6 +1,7 @@
 import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
+import { normalizeMarkdownTables } from "../lib/markdownText";
 import { linkifyChildren } from "./LinkedText";
 import { openExternal } from "../lib/api";
 
@@ -13,6 +14,7 @@ type MarkdownBodyProps = {
  * Normalize model/stream text so Markdown does not glue Chinese paragraphs.
  * - remark-breaks turns single \n into <br>
  * - ensure blank line before headings / numbered sections when models omit them
+ * - repair table delimiter rows whose column count is shorter than the header
  */
 function prepareMarkdown(text: string): string {
   let t = text.replace(/\r\n/g, "\n");
@@ -22,7 +24,7 @@ function prepareMarkdown(text: string): string {
   t = t.replace(/([。！？；])\s*(?=#{1,6}\s)/g, "$1\n\n");
   t = t.replace(/([。！？；])\s*(?=\*\*[^*\n]{1,40}\*\*)/g, "$1\n\n");
   // "一句话概括把" style glue is model-side; we only fix clear section markers.
-  return t;
+  return normalizeMarkdownTables(t);
 }
 
 /**

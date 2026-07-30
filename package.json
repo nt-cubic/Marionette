@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "verify:text": "node --experimental-strip-types scripts/verify-text-pipeline.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
     "build:portable": "tauri build"

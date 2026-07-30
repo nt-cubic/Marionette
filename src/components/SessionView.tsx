@@ -13,6 +13,7 @@ import {
 import { parseUnifiedDiff } from "../lib/annotations";
 import { getFileDiff } from "../lib/api";
 import { detectForceWebSearchInText, stripForceWebSearchPrefix } from "../lib/forceWebSearch";
+import { cleanAssistantText } from "../lib/markdownText";
 import { newQuotePinId, type QuotePin } from "../lib/quoteComment";
 import { buildMessagePresentation } from "../lib/messagePresentation";
 import type { AgentConfig, Session, SessionEvent, SessionStatus, SessionViewMode } from "../lib/types";
@@ -1135,10 +1136,23 @@ function CleanPlaceholder({
           // Handoff: a marker, not a wall of text. The notes themselves ride
           // along with the next message the user sends (never shown here or
           // pasted into the composer).
+          // Assistant/thought only: strip transport footers. Never touch user
+          // messages — their You card must stay intact even if they paste status.
           const body =
             event.type === "handoff_prepared"
               ? `Notes prepared for **${event.targetAgentId}** — they will be attached to your next message.\n\nFull notes: \`${event.handoffPath}\``
-              : event.text;
+              : event.type === "assistant_message" || event.type === "thought"
+                ? cleanAssistantText(event.text)
+                : event.text;
+
+          // Status-only /status chunks clean to empty — do not render a hollow Reply.
+          if (
+            (event.type === "assistant_message" || event.type === "thought") &&
+            typeof body === "string" &&
+            !body.trim()
+          ) {
+            return null;
+          }
 
           const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
           const clipTeaser = (s: string, max = 42) => {
