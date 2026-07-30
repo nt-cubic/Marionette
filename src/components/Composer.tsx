@@ -407,6 +407,24 @@ function applyPinnedDisplay(
   if (pin.pins.effort != null) setters.setCurrentEffort(pin.pins.effort);
 }
 
+/**
+ * Unsent composer text survives dialog switches. Composer remounts on
+ * `sessionId:agentId` (hard rule so caps never leak); this cache is keyed by
+ * session only so draft follows the dialog, not the agent chip.
+ */
+const draftBySessionId = new Map<string, string>();
+
+function readDraftCache(sessionId: string): string {
+  if (!sessionId || sessionId.startsWith("session-empty-")) return "";
+  return draftBySessionId.get(sessionId) ?? "";
+}
+
+function writeDraftCache(sessionId: string, text: string) {
+  if (!sessionId || sessionId.startsWith("session-empty-")) return;
+  if (text) draftBySessionId.set(sessionId, text);
+  else draftBySessionId.delete(sessionId);
+}
+
 export function Composer({
   agent,
   agents,
@@ -457,7 +475,7 @@ export function Composer({
   const [capsLive, setCapsLive] = useState(false);
   const [menu, setMenu] = useState<"mode" | "model" | "effort" | "agent" | null>(null);
   const [modelQuery, setModelQuery] = useState("");
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(() => readDraftCache(sessionId));
   /** Image attachments as Codex-style pills (not raw paths in the textarea). */
   const [imageAttachments, setImageAttachments] = useState<ImageAttachment[]>([]);
   const [annotatingId, setAnnotatingId] = useState<string | null>(null);
@@ -535,6 +553,11 @@ export function Composer({
     delete pins[key];
     pinsRef.current = Object.keys(pins).length > 0 ? { pins, until: current.until } : null;
   }, []);
+
+  // Persist unsent text across dialog switches (Composer remounts on key change).
+  useEffect(() => {
+    writeDraftCache(sessionId, draft);
+  }, [sessionId, draft]);
 
   // Handoff / external prefill — never auto-send.
   useEffect(() => {
@@ -2146,7 +2169,7 @@ export function Composer({
               }}
             />
             <button
-              className="composer-tool"
+              className="pill-action pill-action--icon composer-tool"
               type="button"
               title="Add files or context"
               onClick={() => {

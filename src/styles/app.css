@@ -325,6 +325,77 @@ body.is-panel-resizing .context-panel {
   padding: 0;
 }
 
+/*
+ * Quiet pill actions — secondary chrome (copy / edit / refresh / panel tools).
+ * Soft opacity at rest, border + raised fill on hover. Prefer this over
+ * square icon-button for in-content and panel header controls.
+ */
+.pill-action {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  height: 24px;
+  min-width: 24px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.55;
+  transition:
+    opacity 0.12s ease,
+    color 0.12s ease,
+    background 0.12s ease,
+    border-color 0.12s ease;
+  user-select: none;
+}
+
+.pill-action:hover,
+.pill-action:focus-visible {
+  opacity: 1;
+  color: var(--text);
+  border-color: var(--border);
+  background: var(--panel-soft);
+}
+
+.pill-action:disabled {
+  opacity: 0.35;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* Icon-only: round hit target, no label padding */
+.pill-action--icon {
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  padding: 0;
+}
+
+/* Compact icon pills — panel headers, tabs, dense chrome */
+.pill-action--sm {
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+  padding: 0;
+}
+
+.pill-action.is-active,
+.pill-action.is-copied {
+  opacity: 1;
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
 .text-button,
 .send-button {
   color: var(--text);
@@ -374,20 +445,6 @@ body.is-panel-resizing .context-panel {
   border-left: 1px solid var(--border);
   overflow-y: auto;
   overflow-x: hidden;
-}
-
-.context-panel__button {
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border-color: transparent;
-  color: var(--text-muted);
-  background: transparent;
-}
-
-.context-panel__button:hover {
-  color: var(--text);
-  background: var(--panel-soft);
 }
 
 .panel-section {
@@ -713,36 +770,26 @@ body.is-panel-resizing .context-panel {
 .sidebar-footer {
   display: flex;
   align-items: center;
+  gap: 2px;
   min-height: 32px;
   margin-top: auto;
   padding-top: 6px;
   border-top: 1px solid var(--border);
 }
 
+/* Visual base from .pill-action; keep notify/collapse modifiers here */
 .sidebar-footer__button {
-  display: grid;
-  width: 24px;
-  height: 24px;
-  place-items: center;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  background: transparent;
-  cursor: pointer;
-}
-
-.sidebar-footer__button:hover {
-  color: var(--text);
-  background: var(--panel-soft);
+  opacity: 0.7;
 }
 
 .sidebar-footer__button.is-notify-on {
+  opacity: 1;
   color: color-mix(in srgb, var(--accent) 85%, var(--text-muted));
 }
 
 .sidebar-footer__button.is-notify-off {
   color: var(--text-faint);
-  opacity: 0.75;
+  opacity: 0.55;
 }
 
 .sidebar-footer__button--collapse {
@@ -799,14 +846,15 @@ body.is-panel-resizing .context-panel {
 }
 
 .file-diff-card__line.is-add {
-  background: color-mix(in srgb, var(--text) 6%, transparent);
-  border-left-color: var(--text-muted);
+  background: color-mix(in srgb, var(--green) 13%, transparent);
+  border-left-color: var(--green);
+  color: color-mix(in srgb, var(--green) 78%, var(--text));
 }
 
 .file-diff-card__line.is-del {
-  background: color-mix(in srgb, var(--text) 12%, transparent);
-  border-left-color: var(--text);
-  opacity: 0.85;
+  background: color-mix(in srgb, var(--red) 13%, transparent);
+  border-left-color: var(--red);
+  color: color-mix(in srgb, var(--red) 78%, var(--text));
 }
 
 .file-diff-card__line.is-hunk {
@@ -1368,11 +1416,8 @@ button.file-diff-card__code:hover {
 .editor-tab__close,
 .editor-tab__new,
 .editor-tab__view-toggle {
-  display: grid;
-  width: 22px;
-  height: 22px;
-  place-items: center;
-  border-radius: var(--radius-sm);
+  /* Visual base from .pill-action.pill-action--sm */
+  flex: 0 0 auto;
 }
 
 .editor-tab__close {
@@ -1380,15 +1425,7 @@ button.file-diff-card__code:hover {
 }
 
 .editor-tab__view-toggle {
-  flex: 0 0 auto;
   color: var(--text-muted);
-}
-
-.editor-tab__close:hover,
-.editor-tab__new:hover,
-.editor-tab__view-toggle:hover {
-  color: var(--text);
-  background: var(--panel-soft);
 }
 
 .editor-tab__pulse {
@@ -1623,21 +1660,23 @@ button.file-diff-card__code:hover {
 }
 
 .event-card__interrupt {
-  display: inline-flex;
-  gap: 6px;
-  align-items: center;
-  padding: 4px 10px;
-  border: 1px solid color-mix(in srgb, var(--orange) 45%, var(--border));
-  border-radius: 6px;
+  /* Pill shape from .pill-action; keep stall warning colors */
+  height: 26px;
+  padding: 0 12px;
+  opacity: 1;
+  border-color: color-mix(in srgb, var(--orange) 45%, var(--border));
   background: color-mix(in srgb, var(--orange) 14%, var(--panel));
   color: var(--text);
   font-size: 12px;
   font-weight: 600;
-  cursor: pointer;
 }
 
-.event-card__interrupt:hover {
+.event-card__interrupt:hover,
+.event-card__interrupt:focus-visible {
+  opacity: 1;
+  border-color: color-mix(in srgb, var(--orange) 55%, var(--border));
   background: color-mix(in srgb, var(--orange) 22%, var(--panel));
+  color: var(--text);
 }
 
 .event-card--waiting.is-stuck .event-card__interrupt {
@@ -1984,34 +2023,12 @@ button.file-diff-card__code:hover {
   align-items: center;
 }
 
-.event-card__edit {
-  display: inline-flex;
-  gap: 4px;
-  align-items: center;
-  height: 22px;
-  padding: 0 6px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  color: var(--text-faint);
-  background: transparent;
-  font: inherit;
-  font-size: 11px;
-  cursor: pointer;
-}
-
 /* You card: edit floats over timestamp, time fades on hover */
 .event-card--user_message .event-card__edit {
   position: absolute;
   right: 0;
-  opacity: 0;
-  transition: opacity 0.12s ease;
-  white-space: nowrap;
   z-index: 1;
-  height: auto;
-  padding: 0;
-  border: 0;
-  background: var(--panel-raised);
-  font-size: 10px;
+  opacity: 0;
 }
 
 .event-card--user_message .event-card__timestamp {
@@ -2020,17 +2037,16 @@ button.file-diff-card__code:hover {
 
 .event-card--user_message:hover .event-card__edit,
 .event-card--user_message:focus-within .event-card__edit {
+  opacity: 0.55;
+}
+
+.event-card--user_message .event-card__edit:hover,
+.event-card--user_message .event-card__edit:focus-visible {
   opacity: 1;
 }
 
 .event-card--user_message:hover .event-card__timestamp {
   opacity: 0;
-}
-
-.event-card__edit:hover {
-  color: var(--text);
-  border-color: var(--border);
-  background: var(--panel-soft);
 }
 
 .event-card__edit-form {
@@ -2068,13 +2084,12 @@ button.file-diff-card__code:hover {
 
 .event-card__edit-cancel,
 .event-card__edit-confirm {
-  min-height: 28px;
-  padding: 0 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  font: inherit;
+  /* Visual base from .pill-action; keep height a touch roomier for form actions */
+  height: 26px;
+  min-height: 26px;
+  padding: 0 12px;
   font-size: 12px;
-  cursor: pointer;
+  opacity: 0.85;
 }
 
 .event-card__edit-cancel {
@@ -2099,23 +2114,10 @@ button.file-diff-card__code:hover {
   top: 4px;
   right: 18px;
   z-index: 13;
-  width: 28px;
-  min-width: 28px;
-  height: 28px;
-  padding: 0;
-  border-radius: 50%;
-  border: 1px solid var(--border);
+  /* Slightly more visible at rest than in-content pills */
+  opacity: 0.72;
   background: var(--panel);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-
-.icon-button--eye:hover {
-  color: var(--text);
-  background: var(--panel-soft);
+  border-color: var(--border);
 }
 
 .event-list {
@@ -2695,15 +2697,50 @@ button.file-diff-card__code:hover {
   color: var(--text-muted);
 }
 
+/* Reply footer: meta tags left, Copy right */
+.event-card__footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  margin-top: 7px;
+}
+
+.event-card__footer-spacer {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 /* Meta tags row — bottom of Reply cards */
 .event-card__meta {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0 10px;
-  margin-top: 7px;
+  min-width: 0;
+  flex: 1 1 auto;
   padding-top: 0;
   border-top: none;
+}
+
+.event-card__copy {
+  margin-left: auto;
+}
+
+.event-card--assistant_message .event-card__copy {
+  opacity: 0.4;
+}
+
+.event-card--assistant_message:hover .event-card__copy,
+.event-card--assistant_message:focus-within .event-card__copy {
+  opacity: 0.55;
+}
+
+.event-card--assistant_message .event-card__copy:hover,
+.event-card--assistant_message .event-card__copy:focus-visible,
+.event-card--assistant_message .event-card__copy.is-copied {
+  opacity: 1;
 }
 
 /* Individual tag — plain text style */
@@ -2997,20 +3034,8 @@ button.file-diff-card__code:hover {
 }
 
 .subtask-card__btn {
+  /* visual base from .pill-action; keep flex for card row layout */
   flex: 0 0 auto;
-  min-height: 22px;
-  padding: 1px 8px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  color: var(--text-muted);
-  background: transparent;
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.subtask-card__btn:hover {
-  color: var(--text);
-  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
 }
 
 .subtask-card__expand {
@@ -3053,12 +3078,24 @@ button.file-diff-card__code:hover {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 24px;
+  gap: 6px;
+  min-height: 20px;
   margin-bottom: 8px;
   color: var(--text-muted);
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
+}
+
+/* Pin refresh / actions to the content right edge (match usage-row values). */
+.context-card__heading > span {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.context-card__heading > .pill-action {
+  margin-left: auto;
+  flex: 0 0 auto;
 }
 
 .usage-agent {
@@ -4185,12 +4222,16 @@ button.file-diff-card__code:hover {
 }
 
 .context-panel__button--update.is-update-ready {
+  opacity: 1;
   color: var(--accent, #6ea8fe);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
 .context-panel__button--update:disabled {
   opacity: 0.55;
   cursor: wait;
+  pointer-events: none;
 }
 
 .context-panel .section-heading {
@@ -4787,9 +4828,18 @@ body.is-composer-resizing .composer {
 }
 
 .composer-tool {
+  /* Prefer .pill-action.pill-action--icon when applied in markup */
   min-width: 22px;
   justify-content: center;
   padding: 0 3px;
+}
+
+.composer-tool.pill-action {
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  padding: 0;
+  opacity: 0.7;
 }
 
 .composer-tool svg + svg {
@@ -5103,33 +5153,15 @@ body.is-composer-resizing .composer {
 }
 
 .context-lend__reconnect {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
   /* The panel is drag-resizable — the label truncates, the control does not. */
   flex: 0 0 auto;
   white-space: nowrap;
-  padding: 2px 7px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  background: transparent;
-  color: var(--text-muted);
+  height: 22px;
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.02em;
   cursor: pointer;
   transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
-}
-
-.context-lend__reconnect:hover:not(:disabled) {
-  color: var(--text);
-  border-color: var(--border-strong, var(--border));
-  background: var(--surface-hover, rgba(127, 127, 127, 0.08));
-}
-
-.context-lend__reconnect:disabled {
-  opacity: 0.6;
-  cursor: default;
 }
 
 .context-lend__reconnect .is-spinning {

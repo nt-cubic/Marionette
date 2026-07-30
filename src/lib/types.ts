@@ -207,8 +207,10 @@ export type SessionEvent =
       type: "file_change";
       sessionId: string;
       path: string;
-      changeType: "added" | "modified" | "deleted";
+      changeType: "added" | "modified" | "deleted" | "untracked";
       createdAt: string;
+      /** Increments when the same file is changed again during one turn. */
+      revision?: number;
     }
   | {
       type: "subtask_started";

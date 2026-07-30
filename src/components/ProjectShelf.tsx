@@ -177,7 +177,7 @@ export function ProjectShelf({
 
   const themeButton = (
     <button
-      className="sidebar-footer__button"
+      className="pill-action pill-action--icon sidebar-footer__button"
       type="button"
       title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
       aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
@@ -191,8 +191,8 @@ export function ProjectShelf({
     <button
       className={
         desktopNotifyEnabled
-          ? "sidebar-footer__button is-notify-on"
-          : "sidebar-footer__button is-notify-off"
+          ? "pill-action pill-action--icon sidebar-footer__button is-notify-on"
+          : "pill-action pill-action--icon sidebar-footer__button is-notify-off"
       }
       type="button"
       title={
@@ -507,7 +507,7 @@ export function ProjectShelf({
       <div className="sidebar-footer">
         {themeButton}
         {notifyButton}
-        <button className="sidebar-footer__button sidebar-footer__button--collapse" type="button" title={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} aria-label={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} onClick={collapsed ? onExpand : onCollapse}>
+        <button className="pill-action pill-action--icon sidebar-footer__button sidebar-footer__button--collapse" type="button" title={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} aria-label={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} onClick={collapsed ? onExpand : onCollapse}>
           {collapsed ? <PanelLeftOpen size={14} /> : <PanelLeftClose size={14} />}
         </button>
       </div>

@@ -184,6 +184,34 @@ function effortLabel(value: number): string {
   return value < 0.5 ? "Medium" : "High";
 }
 
+type ProjectFileSnapshot = {
+  projectId: string;
+  changedFiles: ChangedFile[];
+  files: Record<string, { changeType: ChangedFile["changeType"]; fingerprint: string }>;
+};
+
+/** Small deterministic fingerprint so a turn snapshot does not retain full diff text. */
+function fingerprintDiff(text: string): string {
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${text.length}:${hash >>> 0}`;
+}
+
+function isToolCompletionStatus(status?: string): boolean {
+  const normalized = status?.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  return normalized === "completed" ||
+    normalized === "complete" ||
+    normalized === "succeeded" ||
+    normalized === "success" ||
+    normalized === "failed" ||
+    normalized === "error" ||
+    normalized === "cancelled" ||
+    normalized === "canceled";
+}
+
 export function App() {
   const [availableProjects, setAvailableProjects] = useState<Project[]>(projects);
   const [availableAgents, setAvailableAgents] = useState(agents);
@@ -359,11 +387,127 @@ export function App() {
   const sessionsRef = useRef(availableSessions);
   const agentsRef = useRef(availableAgents);
   const currentSessionIdRef = useRef(currentSessionId);
+  const currentProjectIdRef = useRef(currentProjectId);
   const liveEventsRef = useRef(liveEvents);
   sessionsRef.current = availableSessions;
   agentsRef.current = availableAgents;
   currentSessionIdRef.current = currentSessionId;
+  currentProjectIdRef.current = currentProjectId;
   liveEventsRef.current = liveEvents;
+
+  /** One workspace snapshot per prompt; used to turn real edits into timeline cards. */
+  const fileChangeSnapshotsRef = useRef<Record<string, ProjectFileSnapshot>>({});
+  const fileChangeDetectionRef = useRef<Set<string>>(new Set());
+  const fileChangeFinalizeRef = useRef<Set<string>>(new Set());
+  const fileChangePublishedRef = useRef<Record<string, Record<string, {
+    fingerprint: string;
+    changeType: ChangedFile["changeType"];
+    createdAt: string;
+    revision: number;
+  }>>>({});
+
+  const captureProjectFileSnapshot = useCallback(async (projectId: string): Promise<ProjectFileSnapshot | null> => {
+    if (!isTauriRuntime() || !projectId) return null;
+    const changedFiles = await getChangedFiles(projectId);
+    const entries = await Promise.all(
+      changedFiles.map(async (file) => {
+        const diff = await getFileDiff(projectId, file.path);
+        return [file.path, { changeType: file.changeType, fingerprint: fingerprintDiff(diff) }] as const;
+      }),
+    );
+    return {
+      projectId,
+      changedFiles,
+      files: Object.fromEntries(entries),
+    };
+  }, []);
+
+  const syncFileChangesForTurn = useCallback(async (sessionId: string, finalize = false) => {
+    const before = fileChangeSnapshotsRef.current[sessionId];
+    if (!before) return;
+    if (fileChangeDetectionRef.current.has(sessionId)) {
+      if (finalize) fileChangeFinalizeRef.current.add(sessionId);
+      return;
+    }
+    fileChangeDetectionRef.current.add(sessionId);
+    try {
+      // Let the agent's final file write settle before asking Git for its status.
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 120));
+      const after = await captureProjectFileSnapshot(before.projectId);
+      if (!after) return;
+
+      const published = fileChangePublishedRef.current[sessionId] ?? {};
+      fileChangePublishedRef.current[sessionId] = published;
+      const changedDuringTurn = after.changedFiles.flatMap((file) => {
+        const previous = before.files[file.path];
+        const current = after.files[file.path];
+        const changed = current && (!previous ||
+          previous.changeType !== current.changeType ||
+          previous.fingerprint !== current.fingerprint);
+        if (!changed || !current) return [];
+        const priorPublication = published[file.path];
+        if (
+          priorPublication &&
+          priorPublication.changeType === file.changeType &&
+          priorPublication.fingerprint === current.fingerprint
+        ) {
+          return [];
+        }
+        const publication = {
+          fingerprint: current.fingerprint,
+          changeType: file.changeType,
+          createdAt: priorPublication?.createdAt ?? new Date().toISOString(),
+          revision: (priorPublication?.revision ?? 0) + 1,
+        };
+        published[file.path] = publication;
+        return [{ file, publication }];
+      });
+      if (changedDuringTurn.length > 0) {
+        setLiveEvents((current) => {
+          let next = [...current];
+          for (const { file, publication } of changedDuringTurn) {
+            const index = next.findIndex(
+              (event) => event.type === "file_change" &&
+                event.sessionId === sessionId &&
+                event.path === file.path &&
+                event.createdAt === publication.createdAt,
+            );
+            const updated = {
+              type: "file_change" as const,
+              sessionId,
+              path: file.path,
+              changeType: file.changeType,
+              createdAt: publication.createdAt,
+              revision: publication.revision,
+            };
+            if (index >= 0) next[index] = updated;
+            else next = [...next, updated];
+          }
+          return next;
+        });
+      }
+      if (currentProjectIdRef.current === before.projectId) {
+        setChangedFiles(after.changedFiles);
+        setChangedFilesNote(
+          after.changedFiles.length === 0 ? "No local changes (or not a git repo)." : null,
+        );
+      }
+    } finally {
+      const finalizeRequested = fileChangeFinalizeRef.current.delete(sessionId);
+      fileChangeDetectionRef.current.delete(sessionId);
+      if (finalizeRequested && !finalize) {
+        // A final turn signal can race with a tool-completion refresh. Run one
+        // last snapshot after the in-flight refresh before releasing the base.
+        void syncFileChangesForTurn(sessionId, true);
+      } else if (finalize) {
+        delete fileChangeSnapshotsRef.current[sessionId];
+        delete fileChangePublishedRef.current[sessionId];
+      }
+    }
+  }, [captureProjectFileSnapshot]);
+
+  const syncFileChangesRef = useRef(syncFileChangesForTurn);
+  syncFileChangesRef.current = syncFileChangesForTurn;
 
   const touchActivity = useCallback((sessionId: string) => {
     if (!sessionId) return;
@@ -544,6 +688,7 @@ export function App() {
       if (payload.sessionId && (payload.method === "rpc/response" || payload.method === "process/ended")) {
         turnEndedAtRef.current[payload.sessionId] = Date.now();
         cancelIgnoredRef.current.delete(payload.sessionId);
+        void syncFileChangesRef.current(payload.sessionId, true);
         // Finalize @-delegate child when its turn ends.
         if (delegateMetaRef.current.has(payload.sessionId)) {
           if (payload.method === "process/ended") {
@@ -636,7 +781,17 @@ export function App() {
               return { ...current, [payload.sessionId]: merged };
             });
           }
-          setLiveEvents((current) => {
+          if (extracted.role === "tool" && isToolCompletionStatus(extracted.toolStatus)) {
+            // Match codeg-main's live tool-result path: refresh the workspace
+            // as soon as an edit/write/apply_patch-like tool settles.
+            void syncFileChangesRef.current(payload.sessionId);
+          }
+          if (extracted.text) {
+            // Codex session info (Model:/Directory: lines) — extract usage but don't show as conversation
+            const isCodexSessionInfo =
+              extracted.text.startsWith("Model:") && extracted.text.includes("\nDirectory:");
+            if (!isCodexSessionInfo) {
+            setLiveEvents((current) => {
             const prevLast = current[current.length - 1];
             let next = applyAcpPartToEvents(current, payload.sessionId, extracted);
             // Track turn start for duration: first new assistant_message card
@@ -660,6 +815,8 @@ export function App() {
             return next;
           });
         }
+      }
+      }
       }
       // Grok also puts the full turn usage on `_x.ai/session_notification`
       // (turn_completed.usage) — same numbers as the prompt result, but this
@@ -3059,6 +3216,9 @@ export function App() {
       const imagePaths = imageAttachments.map((a) => a.path);
       // Wire only: inject force-search prefix; You card keeps clean `composed`.
       const wireText = withForceWebSearch(promptText, forceWebSearch);
+      const projectId = displaySession.projectId || currentProjectId;
+      const fileSnapshot = await captureProjectFileSnapshot(projectId);
+      if (fileSnapshot) fileChangeSnapshotsRef.current[sid] = fileSnapshot;
       await sendAcpPrompt(sid, wireText, imagePaths);
       touchActivity(sid);
       pushDebug({
@@ -3068,6 +3228,9 @@ export function App() {
         summary: `session/prompt accepted (streaming…)${imagePaths.length ? ` images=${imagePaths.length}` : ""}`,
       });
     } catch (error) {
+      delete fileChangeSnapshotsRef.current[sid];
+      delete fileChangePublishedRef.current[sid];
+      fileChangeFinalizeRef.current.delete(sid);
       setSessionStatusById(sid, "error");
       const classified = classifyAgentError(error);
       setLiveEvents((current) => [
@@ -3235,6 +3398,18 @@ export function App() {
 
   // ── Center-workspace edge hover — detects mouse near chat area edges ──
   const handleCenterMove = useCallback((e: React.MouseEvent) => {
+    // Selecting / dragging: never pop rail toggles under the pointer — that
+    // steals hit-testing and jumps the text selection (esp. right→left drags).
+    if (e.buttons !== 0) {
+      wasNearLeft.current = false;
+      wasNearRight.current = false;
+      if (edgeHoverTimers.current.left) clearTimeout(edgeHoverTimers.current.left);
+      if (edgeHoverTimers.current.right) clearTimeout(edgeHoverTimers.current.right);
+      setLeftEdgeHover(false);
+      setRightEdgeHover(false);
+      return;
+    }
+
     const rect = e.currentTarget.getBoundingClientRect();
     const distLeft = e.clientX - rect.left;
     const distRight = rect.right - e.clientX;

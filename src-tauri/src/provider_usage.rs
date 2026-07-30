@@ -305,7 +305,8 @@ fn provider_label(provider: &str) -> String {
 }
 
 fn http_get_json(url: &str, bearer: &str) -> Result<Value, String> {
-    let resp = ureq::get(url)
+    let resp = crate::http_client::agent()?
+        .get(url)
         .set("Authorization", &format!("Bearer {bearer}"))
         .set("Accept", "application/json")
         .set("User-Agent", "Marionette/0.1 (provider-usage)")
@@ -363,9 +364,11 @@ fn probe_deepseek(key: &str, model: Option<&str>) -> Result<ProviderUsageSnapsho
             windows.push(ProviderUsageWindow {
                 id: format!("balance-{}", currency.to_ascii_lowercase()),
                 label: format!("Balance ({currency})"),
+                // No utilization % for prepaid balance — primary UI reads the
+                // leading amount from `detail` (see formatPrimary).
                 percentage: None,
                 detail: Some(format!(
-                    "{} total · topped-up {} · grant {}",
+                    "{} · topped-up {} · grant {}",
                     money(total, currency),
                     money(topped, currency),
                     money(granted, currency)

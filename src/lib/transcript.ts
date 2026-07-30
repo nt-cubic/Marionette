@@ -92,7 +92,8 @@ export function parseTranscriptEvents(raw: unknown[]): SessionEvent[] {
       if (
         changeType === "added" ||
         changeType === "modified" ||
-        changeType === "deleted"
+        changeType === "deleted" ||
+        changeType === "untracked"
       ) {
         out.push({
           type: "file_change",
@@ -100,6 +101,7 @@ export function parseTranscriptEvents(raw: unknown[]): SessionEvent[] {
           path: typeof e.path === "string" ? e.path : "",
           changeType,
           createdAt,
+          ...(typeof e.revision === "number" ? { revision: e.revision } : {}),
         });
       }
       continue;

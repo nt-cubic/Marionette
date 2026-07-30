@@ -74,7 +74,23 @@ fn pick_asset(assets: &[Value]) -> Option<(&str, &str)> {
 pub fn check_for_update() -> AppUpdateInfo {
     let current = current_version();
     let url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest");
-    let resp = match ureq::get(&url)
+    let agent = match crate::http_client::agent() {
+        Ok(a) => a,
+        Err(e) => {
+            return AppUpdateInfo {
+                current_version: current,
+                latest_version: None,
+                update_available: false,
+                release_url: None,
+                asset_name: None,
+                asset_url: None,
+                notes: None,
+                note: Some(format!("TLS unavailable: {e}")),
+            };
+        }
+    };
+    let resp = match agent
+        .get(&url)
         .set("Accept", "application/vnd.github+json")
         .set("User-Agent", USER_AGENT)
         .timeout(TIMEOUT)
@@ -194,7 +210,8 @@ pub fn download_latest() -> Result<(PathBuf, String), String> {
     let dest = dir.join(format!("Marionette-{version}.exe"));
     let meta_path = dir.join("pending.json");
 
-    let resp = ureq::get(&url)
+    let resp = crate::http_client::agent()?
+        .get(&url)
         .set("User-Agent", USER_AGENT)
         .set("Accept", "application/octet-stream")
         .timeout(Duration::from_secs(120))
