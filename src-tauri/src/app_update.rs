@@ -142,8 +142,14 @@ pub fn check_for_update() -> AppUpdateInfo {
         .and_then(Value::as_str)
         .map(|s| {
             let t = s.trim();
+            // Cap by UTF-8 bytes without splitting a multi-byte character —
+            // release notes often contain CJK/emoji; `&t[..400]` panics mid-codepoint.
             if t.len() > 400 {
-                format!("{}…", &t[..400])
+                let mut end = 400;
+                while end > 0 && !t.is_char_boundary(end) {
+                    end -= 1;
+                }
+                format!("{}…", &t[..end])
             } else {
                 t.to_string()
             }
