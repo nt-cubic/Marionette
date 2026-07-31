@@ -58,10 +58,24 @@ pub fn get_file_diff(project_root: &Path, path: &str) -> Result<String, String> 
     }
     const MAX: usize = 80_000;
     if text.len() > MAX {
-        text.truncate(MAX);
+        // Byte-cap must land on a char boundary — CJK/emoji diffs make a raw
+        // `truncate(80000)` panic mid-codepoint and take the whole app down.
+        text.truncate(floor_char_boundary(&text, MAX));
         text.push_str("\n… (diff truncated)\n");
     }
     Ok(text)
+}
+
+/// Largest `<= max` that is a UTF-8 character boundary (or 0).
+fn floor_char_boundary(text: &str, max: usize) -> usize {
+    if max >= text.len() {
+        return text.len();
+    }
+    let mut end = max;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    end
 }
 
 /// Git pathspecs must be relative to the project. ACP often sends an absolute
@@ -165,5 +179,32 @@ mod tests {
         assert_eq!(files[1].change_type, "added");
         assert_eq!(files[2].change_type, "untracked");
         assert_eq!(files[3].change_type, "deleted");
+    }
+
+    /// Diffs with CJK content are multi-byte; a fixed byte cap often lands
+    /// mid-character. That used to panic the process on send/diff refresh.
+    #[test]
+    fn floor_char_boundary_never_splits_multibyte() {
+        let cjk = "战".repeat(30_000); // 90_000 bytes
+        assert!(cjk.len() > 80_000);
+        assert!(!cjk.is_char_boundary(80_000));
+
+        let end = floor_char_boundary(&cjk, 80_000);
+        assert!(end <= 80_000);
+        assert!(cjk.is_char_boundary(end));
+        assert_eq!(end % 3, 0);
+
+        let mut text = cjk;
+        text.truncate(end);
+        text.push_str("\n… (diff truncated)\n");
+        assert!(text.ends_with("\n… (diff truncated)\n"));
+    }
+
+    #[test]
+    fn floor_char_boundary_short_and_exact() {
+        assert_eq!(floor_char_boundary("abc", 10), 3);
+        assert_eq!(floor_char_boundary("abc", 3), 3);
+        assert_eq!(floor_char_boundary("战", 1), 0);
+        assert_eq!(floor_char_boundary("战", 3), 3);
     }
 }
