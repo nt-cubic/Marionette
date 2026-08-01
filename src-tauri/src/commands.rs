@@ -1069,8 +1069,15 @@ fn probe_openclaw_auth() -> Result<serde_json::Value, String> {
 }
 
 fn probe_opencode_auth() -> Result<serde_json::Value, String> {
+    // OpenCode runs fine without login (local / free models), so absence of
+    // credentials is "unknown", never "logged_out": the banner only appears
+    // when an actual turn fails with an auth error.
     let Some(path) = crate::provider_usage::opencode_auth_path() else {
-        return Ok(auth_result("opencode", "logged_out", "OpenCode is not logged in"));
+        return Ok(auth_result(
+            "opencode",
+            "unknown",
+            "OpenCode has no saved login — auth optional for local/free models",
+        ));
     };
     let text = fs::read_to_string(&path).unwrap_or_default();
     if json_has_credential_markers(&text) {
@@ -1080,7 +1087,11 @@ fn probe_opencode_auth() -> Result<serde_json::Value, String> {
             "OpenCode credentials found (auth.json)",
         ))
     } else {
-        Ok(auth_result("opencode", "logged_out", "OpenCode is not logged in"))
+        Ok(auth_result(
+            "opencode",
+            "unknown",
+            "OpenCode has no saved login — auth optional for local/free models",
+        ))
     }
 }
 
