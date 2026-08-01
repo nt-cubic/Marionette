@@ -13,6 +13,7 @@ import {
   userMessageEvent,
 } from "../lib/acpTranscript";
 import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, generateHandoff, getChangedFiles, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, startAcpSession, startAgentLogin, stopAcpSession, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision } from "../lib/api";
+import { agentAuthSpec } from "../lib/agentAuth";
 import type { AcpEvent, AvailableCommand, CapabilitySnapshot, ChangedFile, HandoffResult, Project, ProjectContext, Session, SessionComposerPrefs, SessionEvent, SessionViewMode, UsageSnapshot } from "../lib/types";
 import {
   buildUsageSnapshot,
@@ -361,9 +362,23 @@ export function App() {
     (childId: string, status: "done" | "failed" | "cancelled" | "timeout", error?: string) => void
   >(() => undefined);
   const [searchHitIds, setSearchHitIds] = useState<string[] | null>(null);
-  const [claudeAuthHint, setClaudeAuthHint] = useState<string | null>(null);
+  /** agentId → banner text (null = no banner). Probe-driven or error-driven. */
+  const [agentAuthHint, setAgentAuthHint] = useState<Record<string, string | null>>({});
   const [signInBusy, setSignInBusy] = useState(false);
   const authPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  /** Stable per-agent setter so the ACP listener can raise/clear banners. */
+  const setAuthHintFor = useCallback((agentId: string, hint: string | null) => {
+    setAgentAuthHint((current) => {
+      if (hint === null) {
+        if (!current[agentId]) return current;
+        const next = { ...current };
+        delete next[agentId];
+        return next;
+      }
+      if (current[agentId] === hint) return current;
+      return { ...current, [agentId]: hint };
+    });
+  }, []);
   const [composerPrefill, setComposerPrefill] = useState<{ text: string; token: number } | null>(null);
   /** Inline Clean quote-comments (numbered pins) for the active dialog. */
   const [quotePins, setQuotePins] = useState<import("../lib/quoteComment").QuotePin[]>([]);
@@ -923,6 +938,12 @@ export function App() {
           })
         );
 
+        // A clean turn proves auth is fine — drop any auth banner for this agent.
+        if (payload.kind !== "error" && stopReason !== "error" && stopReason !== "refusal") {
+          const sessAgentId = sessionsRef.current.find((s) => s.id === payload.sessionId)?.agentId;
+          if (sessAgentId) setAuthHintFor(sessAgentId, null);
+        }
+
         // Usage panel: refresh once after each completed Reply turn.
         refreshUsageAfterTurnRef.current(payload.sessionId);
         // Desktop notify only for a real completed turn (was running, not cancel).
@@ -1011,7 +1032,20 @@ export function App() {
           const classified = classifyAgentError(errText);
           let body = formatClassifiedError(classified);
           if (classified.kind === "auth") {
-            body += "\n\nClaude 未登录时可点 Clean 横幅 **Sign in**，或终端执行 `claude auth login` 后新建会话。";
+            // Per-agent hint + error-driven banner: some agents (CodeBuddy)
+            // keep credentials in the OS keyring, so only the ACP error can
+            // prove a login is missing.
+            const sessAgentId = sessionsRef.current.find((s) => s.id === payload.sessionId)?.agentId;
+            const spec = sessAgentId ? agentAuthSpec(sessAgentId) : undefined;
+            if (spec) {
+              if (spec.login) body += `\n\n${spec.errorHint}`;
+              setAuthHintFor(
+                sessAgentId!,
+                spec.login
+                  ? `Sign in required — click Sign in, or run \`${spec.loginCommand}\` in a terminal.`
+                  : `Sign in required — run \`${spec.loginCommand}\` in a terminal.`
+              );
+            }
           }
           setLiveEvents((current) => {
             // Avoid spamming the same auth error on every retry.
@@ -1166,7 +1200,7 @@ export function App() {
       for (const t of cancelWatchdogsRef.current.values()) clearTimeout(t);
       cancelWatchdogsRef.current.clear();
     };
-  }, [pushDebug, touchActivity]);
+  }, [pushDebug, touchActivity, setAuthHintFor]);
   // note: pushDebug is stable via useCallback
 
   /** Debounced rewrite of Clean transcript JSONL per session. */
@@ -1247,32 +1281,40 @@ export function App() {
     setSearchHitIds(hits);
   }, []);
 
-  const refreshClaudeAuth = useCallback(async () => {
-    const probe = await probeAgentAuth("claude-code");
-    if (!probe) return;
-    if (probe.loggedIn === false || probe.status === "logged_out") {
-      setClaudeAuthHint(probe.message || "Claude is not logged in.");
-    } else {
-      setClaudeAuthHint(null);
-      if (authPollRef.current) {
-        clearInterval(authPollRef.current);
-        authPollRef.current = null;
+  const refreshAgentAuth = useCallback(
+    async (agentId: string) => {
+      const spec = agentAuthSpec(agentId);
+      if (!spec?.probe) return;
+      const probe = await probeAgentAuth(agentId);
+      if (!probe) return;
+      if (probe.status === "logged_in") {
+        setAuthHintFor(agentId, null);
+        if (authPollRef.current) {
+          clearInterval(authPollRef.current);
+          authPollRef.current = null;
+        }
+        setSignInBusy(false);
+      } else if (probe.status === "logged_out") {
+        setAuthHintFor(agentId, probe.message || `${spec.loginCommand} — sign in required.`);
       }
-      setSignInBusy(false);
-    }
-  }, []);
+      // "unknown" (e.g. CodeBuddy OS-keyring) keeps whatever banner is up.
+    },
+    [setAuthHintFor]
+  );
 
-  // Claude auth probe when Claude session is active.
+  // Probe the active agent's login state whenever the session/agent changes.
   useEffect(() => {
-    const agent =
-      availableAgents.find((a) => a.id === (availableSessions.find((s) => s.id === currentSessionId)?.agentId)) ??
-      availableAgents[0];
-    if (agent?.id !== "claude-code") {
-      setClaudeAuthHint(null);
+    const agentId =
+      availableSessions.find((s) => s.id === currentSessionId)?.agentId ??
+      availableAgents[0]?.id ??
+      "";
+    if (!agentId) return;
+    if (!agentAuthSpec(agentId)?.probe) {
+      setAuthHintFor(agentId, null);
       return;
     }
     let cancelled = false;
-    void refreshClaudeAuth().then(() => {
+    void refreshAgentAuth(agentId).then(() => {
       if (cancelled) return;
     });
     return () => {
@@ -1282,43 +1324,46 @@ export function App() {
         authPollRef.current = null;
       }
     };
-  }, [availableAgents, availableSessions, currentSessionId, refreshClaudeAuth]);
+  }, [availableAgents, availableSessions, currentSessionId, refreshAgentAuth, setAuthHintFor]);
 
-  const handleClaudeSignIn = useCallback(async () => {
-    setSignInBusy(true);
-    pushDebug({
-      level: "info",
-      source: "auth",
-      summary: "start Claude login",
-    });
-    const result = await startAgentLogin("claude-code");
-    if (!result?.started) {
-      setSignInBusy(false);
-      setClaudeAuthHint(
-        result?.message ||
-          "Could not start Claude login. Install the Claude CLI and try again."
-      );
-      return;
-    }
-    setClaudeAuthHint(
-      result.message ||
-        "Complete sign-in in the browser window, then return here."
-    );
-    // Poll until logged in or timeout (~2 min).
-    if (authPollRef.current) clearInterval(authPollRef.current);
-    let ticks = 0;
-    authPollRef.current = setInterval(() => {
-      ticks += 1;
-      void refreshClaudeAuth();
-      if (ticks >= 40) {
-        if (authPollRef.current) {
-          clearInterval(authPollRef.current);
-          authPollRef.current = null;
-        }
+  const handleAgentSignIn = useCallback(
+    async (agentId: string) => {
+      const spec = agentAuthSpec(agentId);
+      if (!spec?.login) return;
+      setSignInBusy(true);
+      pushDebug({
+        level: "info",
+        source: "auth",
+        summary: `start ${agentId} login`,
+      });
+      const result = await startAgentLogin(agentId);
+      if (!result?.started) {
         setSignInBusy(false);
+        setAuthHintFor(
+          agentId,
+          result?.message ||
+            `Could not start login. Run \`${spec.loginCommand}\` in a terminal.`
+        );
+        return;
       }
-    }, 3000);
-  }, [pushDebug, refreshClaudeAuth]);
+      setAuthHintFor(agentId, result.message || "Complete sign-in, then return here.");
+      // Poll until logged in or timeout (~2 min).
+      if (authPollRef.current) clearInterval(authPollRef.current);
+      let ticks = 0;
+      authPollRef.current = setInterval(() => {
+        ticks += 1;
+        void refreshAgentAuth(agentId);
+        if (ticks >= 40) {
+          if (authPollRef.current) {
+            clearInterval(authPollRef.current);
+            authPollRef.current = null;
+          }
+          setSignInBusy(false);
+        }
+      }, 3000);
+    },
+    [pushDebug, refreshAgentAuth, setAuthHintFor]
+  );
 
   const refreshProviderBalance = useCallback(
     async (sessionId: string, modelId: string | null | undefined) => {
@@ -3662,12 +3707,12 @@ export function App() {
             viewMode={viewMode}
             openSessions={openSessions}
             lastActivityAt={lastActivityById[displaySession.id] ?? null}
-            authBanner={
-              currentAgent.id === "claude-code"
-                ? claudeAuthHint
-                : null
+            authBanner={agentAuthHint[currentAgent.id] ?? null}
+            onSignIn={
+              agentAuthSpec(currentAgent.id)?.login
+                ? () => void handleAgentSignIn(currentAgent.id)
+                : undefined
             }
-            onSignIn={currentAgent.id === "claude-code" ? handleClaudeSignIn : undefined}
             signInBusy={signInBusy}
             onTabSelect={openSession}
             onTabClose={closeSessionTab}

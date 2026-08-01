@@ -235,7 +235,7 @@ export function SessionView({
               disabled={signInBusy}
               onClick={() => void onSignIn()}
             >
-              {signInBusy ? "Opening login…" : "Sign in with Claude"}
+              {signInBusy ? "Opening login…" : `Sign in with ${agent.label}`}
             </button>
           )}
         </div>
@@ -845,7 +845,7 @@ function CleanPlaceholder({
             </p>
             <p className="clean-empty__hint">
               {authBanner
-                ? "Use the Sign in button above — it opens Claude’s browser login. Come back here when done."
+                ? `Use the Sign in button above — it opens ${agent.label}’s browser login. Come back here when done.`
                 : "Type below to warm the agent in the background, then send when ready."}
             </p>
             {authBanner && onSignIn && (
@@ -855,7 +855,7 @@ function CleanPlaceholder({
                 disabled={signInBusy}
                 onClick={() => void onSignIn()}
               >
-                {signInBusy ? "Opening login…" : "Sign in with Claude"}
+                {signInBusy ? "Opening login…" : `Sign in with ${agent.label}`}
               </button>
             )}
           </div>
