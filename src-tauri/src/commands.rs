@@ -573,26 +573,62 @@ pub fn search_sessions(
     storage.search_sessions(&query)
 }
 
-/// Best-effort local auth probe for agents that expose a CLI status command.
+/// Best-effort local auth probe: CLI status commands where available, credential
+/// files / env vars otherwise. Every built-in agent is probed so the Clean
+/// banner can offer a per-agent Sign in.
 #[tauri::command(async)]
 pub fn probe_agent_auth(agent_id: String) -> Result<serde_json::Value, String> {
     match agent_id.as_str() {
         "claude-code" | "claude" => probe_claude_auth(),
-        _ => Ok(serde_json::json!({
-            "agentId": agent_id,
-            "status": "unknown",
-            "message": "No local auth probe for this agent"
-        })),
+        "codex" | "codex-acp" => probe_codex_auth(),
+        "grok-build" | "grok" => probe_grok_auth(),
+        "kimi-code" | "kimi" => probe_kimi_auth(),
+        "cursor" => probe_cursor_auth(),
+        "openclaw" => probe_openclaw_auth(),
+        "cline" => probe_cline_auth(),
+        "gemini" => probe_gemini_auth(),
+        "pi" => probe_pi_auth(),
+        "hermes" => probe_hermes_auth(),
+        "codebuddy" => probe_codebuddy_auth(),
+        "opencode" => probe_opencode_auth(),
+        _ => Ok(auth_result(
+            &agent_id,
+            "unknown",
+            "No local auth probe for this agent",
+        )),
     }
 }
 
-fn probe_claude_auth() -> Result<serde_json::Value, String> {
+fn auth_result(agent_id: &str, status: &str, message: impl AsRef<str>) -> serde_json::Value {
+    serde_json::json!({
+        "agentId": agent_id,
+        "status": status,
+        "loggedIn": status == "logged_in",
+        "message": message.as_ref(),
+    })
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+}
+
+fn env_var_set(name: &str) -> bool {
+    std::env::var(name)
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+}
+
+/// Run `bin args...` capturing output; returns (success, combined text).
+/// Never shows a console window.
+fn run_cli_status(bin: &str, args: &[&str]) -> Result<(bool, String), String> {
     use std::process::Command;
-    let resolved = crate::process_util::resolve_spawn_command("claude")
-        .map_err(|error| format!("`claude` not found on PATH: {error}"))?;
+    let resolved = crate::process_util::resolve_spawn_command(bin)
+        .map_err(|error| format!("`{bin}` not found on PATH: {error}"))?;
     let mut command = Command::new(&resolved.program);
     resolved.apply_to(&mut command);
-    command.args(["auth", "status"]);
+    command.args(args);
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -601,7 +637,7 @@ fn probe_claude_auth() -> Result<serde_json::Value, String> {
     }
     let output = command
         .output()
-        .map_err(|error| format!("Run `claude auth status` failed: {error}"))?;
+        .map_err(|error| format!("Run `{bin} {args:?}` failed: {error}"))?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let text = if !stdout.trim().is_empty() {
@@ -609,6 +645,11 @@ fn probe_claude_auth() -> Result<serde_json::Value, String> {
     } else {
         stderr
     };
+    Ok((output.status.success(), text))
+}
+
+fn probe_claude_auth() -> Result<serde_json::Value, String> {
+    let (ok, text) = run_cli_status("claude", &["auth", "status"])?;
     // Prefer JSON if the CLI prints it.
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(text.trim()) {
         let logged_in = value
@@ -616,17 +657,15 @@ fn probe_claude_auth() -> Result<serde_json::Value, String> {
             .and_then(|v| v.as_bool())
             .or_else(|| value.get("logged_in").and_then(|v| v.as_bool()))
             .unwrap_or(false);
-        return Ok(serde_json::json!({
-            "agentId": "claude-code",
-            "status": if logged_in { "logged_in" } else { "logged_out" },
-            "loggedIn": logged_in,
-            "raw": value,
-            "message": if logged_in {
+        return Ok(auth_result(
+            "claude-code",
+            if logged_in { "logged_in" } else { "logged_out" },
+            if logged_in {
                 "Claude is logged in"
             } else {
                 "Claude is not logged in"
-            }
-        }));
+            },
+        ));
     }
     let lower = text.to_ascii_lowercase();
     let logged_in = lower.contains("\"loggedin\": true")
@@ -635,76 +674,542 @@ fn probe_claude_auth() -> Result<serde_json::Value, String> {
     let logged_out = lower.contains("\"loggedin\": false")
         || lower.contains("not logged")
         || lower.contains("loggedin\":false");
-    Ok(serde_json::json!({
-        "agentId": "claude-code",
-        "status": if logged_in && !logged_out {
-            "logged_in"
-        } else if logged_out || lower.contains("false") {
-            "logged_out"
-        } else {
-            "unknown"
-        },
-        "loggedIn": logged_in && !logged_out,
-        "message": text.chars().take(240).collect::<String>(),
-    }))
+    let status = if logged_in && !logged_out {
+        "logged_in"
+    } else if logged_out || lower.contains("false") {
+        "logged_out"
+    } else {
+        "unknown"
+    };
+    let message = if status == "logged_in" {
+        "Claude is logged in".to_string()
+    } else if status == "logged_out" {
+        "Claude is not logged in".to_string()
+    } else if ok {
+        text.chars().take(240).collect::<String>()
+    } else {
+        "Claude auth status unknown".to_string()
+    };
+    Ok(auth_result("claude-code", status, message))
 }
 
-/// Kick off agent login (opens browser / CLI flow). Non-blocking spawn.
-#[tauri::command(async)]
-pub fn start_agent_login(agent_id: String) -> Result<serde_json::Value, String> {
-    match agent_id.as_str() {
-        "claude-code" | "claude" => start_claude_login(),
-        _ => Err(format!("No in-app login flow for agent `{agent_id}`")),
+/// `codex login status`: exit 0 = logged in; exit 1 prints "Not logged in".
+fn classify_codex_status(exit_ok: bool, text: &str) -> &'static str {
+    if exit_ok {
+        return "logged_in";
+    }
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("not logged in") {
+        "logged_out"
+    } else {
+        "unknown"
     }
 }
 
-fn start_claude_login() -> Result<serde_json::Value, String> {
-    use std::process::{Command, Stdio};
-    let resolved = crate::process_util::resolve_spawn_command("claude")
-        .map_err(|error| format!("`claude` not found on PATH: {error}"))?;
+fn probe_codex_auth() -> Result<serde_json::Value, String> {
+    match run_cli_status("codex", &["login", "status"]) {
+        Ok((ok, text)) => {
+            let status = classify_codex_status(ok, &text);
+            let message = if status == "logged_in" {
+                "Codex is logged in".to_string()
+            } else if status == "logged_out" {
+                "Codex is not logged in (run `codex login`)".to_string()
+            } else {
+                text.chars().take(240).collect::<String>()
+            };
+            Ok(auth_result("codex", status, message))
+        }
+        Err(_) => {
+            // CLI missing / probe failed — fall back to the credential file.
+            let auth_json = home_dir().map(|h| h.join(".codex").join("auth.json"));
+            if auth_json.map(|p| p.exists()).unwrap_or(false) {
+                Ok(auth_result(
+                    "codex",
+                    "logged_in",
+                    "Codex credentials found (~/.codex/auth.json)",
+                ))
+            } else {
+                Ok(auth_result(
+                    "codex",
+                    "unknown",
+                    "Could not determine Codex login (CLI not on PATH?)",
+                ))
+            }
+        }
+    }
+}
 
-    // Prefer a visible console so the user can complete any CLI prompts if the
-    // browser handoff needs confirmation. On Windows this uses CREATE_NEW_CONSOLE.
-    //
-    // IMPORTANT: do NOT combine CREATE_NEW_CONSOLE with DETACHED_PROCESS —
-    // Windows documents them as mutually exclusive; CreateProcess then fails
-    // with ERROR_INVALID_PARAMETER (87 / "パラメーターが間違っています").
+fn probe_cursor_auth() -> Result<serde_json::Value, String> {
+    match run_cli_status("cursor-agent", &["status"]) {
+        Ok((ok, text)) => {
+            let lower = text.to_ascii_lowercase();
+            let status = if ok && !lower.contains("not signed") && !lower.contains("not logged") {
+                "logged_in"
+            } else if !ok || lower.contains("not signed") || lower.contains("not logged") {
+                "logged_out"
+            } else {
+                "unknown"
+            };
+            let message = if status == "logged_in" {
+                "Cursor is logged in".to_string()
+            } else if status == "logged_out" {
+                "Cursor is not signed in (run `cursor-agent login`)".to_string()
+            } else {
+                text.chars().take(240).collect::<String>()
+            };
+            Ok(auth_result("cursor", status, message))
+        }
+        Err(_) => Ok(auth_result(
+            "cursor",
+            "unknown",
+            "Could not determine Cursor login (CLI not on PATH?)",
+        )),
+    }
+}
+
+fn probe_grok_auth() -> Result<serde_json::Value, String> {
+    let auth_json = home_dir().map(|h| h.join(".grok").join("auth.json"));
+    if auth_json.map(|p| p.exists()).unwrap_or(false) {
+        return Ok(auth_result(
+            "grok-build",
+            "logged_in",
+            "Grok credentials found (~/.grok/auth.json) — tokens expire after ~7 days",
+        ));
+    }
+    if env_var_set("XAI_API_KEY") {
+        return Ok(auth_result(
+            "grok-build",
+            "logged_in",
+            "Grok API key set via XAI_API_KEY",
+        ));
+    }
+    Ok(auth_result(
+        "grok-build",
+        "logged_out",
+        "Grok is not logged in (run `grok login`)",
+    ))
+}
+
+/// A `~/.kimi/config.toml` line that looks like a stored credential.
+fn kimi_config_has_credential(text: &str) -> bool {
+    const CRED_KEYS: [&str; 7] = [
+        "api_key",
+        "apikey",
+        "access_token",
+        "auth_token",
+        "token",
+        "refresh_token",
+        "kimi_token",
+    ];
+    text.lines().any(|line| {
+        let line = line.trim();
+        let Some(eq) = line.find('=') else {
+            return false;
+        };
+        let key = line[..eq].trim().to_ascii_lowercase();
+        let value = line[eq + 1..].trim();
+        CRED_KEYS.contains(&key.as_str())
+            && !value.is_empty()
+            && !value.eq_ignore_ascii_case("null")
+            && value != "\"\""
+            && value != "''"
+    })
+}
+
+fn probe_kimi_auth() -> Result<serde_json::Value, String> {
+    let Some(cfg) = home_dir().map(|h| h.join(".kimi").join("config.toml")) else {
+        return Ok(auth_result(
+            "kimi-code",
+            "logged_out",
+            "Kimi is not logged in (run `kimi login`)",
+        ));
+    };
+    let text = fs::read_to_string(&cfg).unwrap_or_default();
+    if kimi_config_has_credential(&text) {
+        Ok(auth_result(
+            "kimi-code",
+            "logged_in",
+            "Kimi credentials found (~/.kimi/config.toml)",
+        ))
+    } else if cfg.exists() {
+        Ok(auth_result(
+            "kimi-code",
+            "logged_out",
+            "Kimi config found but no credentials — run `kimi login`",
+        ))
+    } else {
+        Ok(auth_result(
+            "kimi-code",
+            "logged_out",
+            "Kimi is not logged in (run `kimi login`)",
+        ))
+    }
+}
+
+/// Substring markers of a credential-bearing JSON store (auth.json, providers.json…).
+fn json_has_credential_markers(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    let no_empty_key = lower.replace("\"key\": \"\"", "").replace("\"key\":\"\"", "");
+    no_empty_key.contains("\"key\"")
+        || lower.contains("\"apikey\"")
+        || lower.contains("\"api_key\"")
+        || lower.contains("\"accesstoken\"")
+        || lower.contains("\"refreshtoken\"")
+        || lower.contains("\"tokens\"")
+        || lower.contains("\"oauth\"")
+}
+
+fn probe_cline_auth() -> Result<serde_json::Value, String> {
+    let Some(providers) = home_dir()
+        .map(|h| h.join(".cline").join("data").join("settings").join("providers.json"))
+    else {
+        return Ok(auth_result(
+            "cline",
+            "logged_out",
+            "Cline is not authenticated (run `cline auth`)",
+        ));
+    };
+    let text = fs::read_to_string(&providers).unwrap_or_default();
+    if json_has_credential_markers(&text) {
+        Ok(auth_result("cline", "logged_in", "Cline provider credentials found"))
+    } else {
+        Ok(auth_result(
+            "cline",
+            "logged_out",
+            "Cline has no provider configured (run `cline auth`)",
+        ))
+    }
+}
+
+fn gcloud_adc_exists() -> bool {
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        if PathBuf::from(appdata)
+            .join("gcloud")
+            .join("application_default_credentials.json")
+            .exists()
+        {
+            return true;
+        }
+    }
+    home_dir()
+        .map(|h| {
+            [".config", ".gcloud"].iter().any(|d| {
+                h.join(d)
+                    .join("application_default_credentials.json")
+                    .exists()
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn probe_gemini_auth() -> Result<serde_json::Value, String> {
+    let creds = home_dir().map(|h| h.join(".gemini").join("oauth_creds.json"));
+    if creds.map(|p| p.exists()).unwrap_or(false)
+        || env_var_set("GEMINI_API_KEY")
+        || env_var_set("GOOGLE_API_KEY")
+        || gcloud_adc_exists()
+    {
+        Ok(auth_result(
+            "gemini",
+            "logged_in",
+            "Gemini credentials found (OAuth / API key / ADC)",
+        ))
+    } else {
+        Ok(auth_result(
+            "gemini",
+            "logged_out",
+            "Gemini is not logged in — run `gemini` and choose «Login with Google»",
+        ))
+    }
+}
+
+fn probe_pi_auth() -> Result<serde_json::Value, String> {
+    let auth_json = home_dir().map(|h| h.join(".pi").join("agent").join("auth.json"));
+    let has_file = auth_json.map(|p| p.exists()).unwrap_or(false);
+    let env_key = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]
+        .iter()
+        .any(|k| env_var_set(k));
+    if has_file || env_key {
+        Ok(auth_result(
+            "pi",
+            "logged_in",
+            "Pi credentials found (~/.pi/agent/auth.json or API key env)",
+        ))
+    } else {
+        Ok(auth_result(
+            "pi",
+            "logged_out",
+            "Pi is not authenticated — run `pi` and use `/login`",
+        ))
+    }
+}
+
+fn probe_hermes_auth() -> Result<serde_json::Value, String> {
+    let Some(hermes) = home_dir().map(|h| h.join(".hermes")) else {
+        return Ok(auth_result(
+            "hermes",
+            "logged_out",
+            "Hermes is not configured (run `hermes acp --setup`)",
+        ));
+    };
+    let has_oauth = hermes.join("auth.json").exists();
+    let env_has_key = fs::read_to_string(hermes.join(".env"))
+        .unwrap_or_default()
+        .lines()
+        .any(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                return false;
+            }
+            let Some(eq) = line.find('=') else {
+                return false;
+            };
+            let key = line[..eq].trim().to_ascii_uppercase();
+            let value = line[eq + 1..].trim();
+            (key.contains("API_KEY") || key.contains("TOKEN"))
+                && !value.is_empty()
+                && !value.starts_with("${")
+        });
+    if has_oauth || env_has_key {
+        Ok(auth_result(
+            "hermes",
+            "logged_in",
+            "Hermes credentials found (~/.hermes)",
+        ))
+    } else {
+        Ok(auth_result(
+            "hermes",
+            "logged_out",
+            "Hermes has no credentials (run `hermes acp --setup`)",
+        ))
+    }
+}
+
+/// CodeBuddy keeps credentials in the OS keyring — only env vars or local
+/// storage can be probed; absence is "unknown", never "logged_out".
+fn probe_codebuddy_auth() -> Result<serde_json::Value, String> {
+    if env_var_set("CODEBUDDY_API_KEY") || env_var_set("CODEBUDDY_AUTH_TOKEN") {
+        return Ok(auth_result(
+            "codebuddy",
+            "logged_in",
+            "CodeBuddy API key / auth token env var is set",
+        ));
+    }
+    let storage = home_dir().map(|h| h.join(".codebuddy").join("local_storage"));
+    let found = storage
+        .map(|dir| {
+            std::fs::read_dir(&dir)
+                .map(|entries| {
+                    entries.flatten().any(|entry| {
+                        if !entry.file_name().to_string_lossy().ends_with(".info") {
+                            return false;
+                        }
+                        let Ok(text) = fs::read_to_string(entry.path()) else {
+                            return false;
+                        };
+                        text.contains("eyJ")
+                            || text.contains("access_token")
+                            || text.contains("refresh_token")
+                    })
+                })
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+    if found {
+        Ok(auth_result(
+            "codebuddy",
+            "logged_in",
+            "CodeBuddy credentials found",
+        ))
+    } else {
+        Ok(auth_result(
+            "codebuddy",
+            "unknown",
+            "CodeBuddy stores credentials in the OS keyring — run `codebuddy` and use /login if sign-in is needed",
+        ))
+    }
+}
+
+fn probe_openclaw_auth() -> Result<serde_json::Value, String> {
+    let agents_dir = home_dir().map(|h| h.join(".openclaw").join("agents"));
+    let has_profile = agents_dir
+        .map(|dir| {
+            std::fs::read_dir(&dir)
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .any(|entry| entry.path().join("agent").join("auth-profiles.json").exists())
+                })
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+    let env_key = [
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "XAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+    ]
+    .iter()
+    .any(|k| env_var_set(k));
+    if has_profile || env_key {
+        Ok(auth_result(
+            "openclaw",
+            "logged_in",
+            "OpenClaw auth profile / API key found",
+        ))
+    } else {
+        Ok(auth_result(
+            "openclaw",
+            "logged_out",
+            "OpenClaw has no credentials (run `openclaw models auth login`)",
+        ))
+    }
+}
+
+fn probe_opencode_auth() -> Result<serde_json::Value, String> {
+    let Some(path) = crate::provider_usage::opencode_auth_path() else {
+        return Ok(auth_result("opencode", "logged_out", "OpenCode is not logged in"));
+    };
+    let text = fs::read_to_string(&path).unwrap_or_default();
+    if json_has_credential_markers(&text) {
+        Ok(auth_result(
+            "opencode",
+            "logged_in",
+            "OpenCode credentials found (auth.json)",
+        ))
+    } else {
+        Ok(auth_result("opencode", "logged_out", "OpenCode is not logged in"))
+    }
+}
+
+/// Kick off an agent's native login (browser / CLI / TUI flow).
+/// Non-blocking spawn; the flow runs in its own console window.
+#[tauri::command(async)]
+pub fn start_agent_login(agent_id: String) -> Result<serde_json::Value, String> {
+    let (bin, args, id, message) = match agent_id.as_str() {
+        "claude-code" | "claude" => (
+            "claude",
+            &["auth", "login"][..],
+            "claude-code",
+            "Opened Claude login — complete sign-in in the browser/terminal window, then return here.",
+        ),
+        "codex" | "codex-acp" => (
+            "codex",
+            &["login"][..],
+            "codex",
+            "Opened Codex login — complete sign-in in the browser window, then return here.",
+        ),
+        "grok-build" | "grok" => (
+            "grok",
+            &["login"][..],
+            "grok-build",
+            "Opened Grok login — complete sign-in in the browser window (tokens last ~7 days), then return here.",
+        ),
+        "kimi-code" | "kimi" => (
+            "kimi",
+            &["login"][..],
+            "kimi-code",
+            "Opened Kimi login — finish the device-code flow in the terminal window, then return here.",
+        ),
+        "cursor" => (
+            "cursor-agent",
+            &["login"][..],
+            "cursor",
+            "Opened Cursor login — complete sign-in in the browser window, then return here.",
+        ),
+        "openclaw" => (
+            "openclaw",
+            &["models", "auth", "login"][..],
+            "openclaw",
+            "Opened OpenClaw login — follow the prompts in the terminal window, then return here.",
+        ),
+        "cline" => (
+            "cline",
+            &["auth"][..],
+            "cline",
+            "Opened Cline auth — choose a provider and sign in in the terminal window, then return here.",
+        ),
+        "gemini" => (
+            "gemini",
+            &[][..],
+            "gemini",
+            "Opened Gemini CLI — select «Login with Google» in the terminal window, then return here.",
+        ),
+        "pi" => (
+            "pi",
+            &[][..],
+            "pi",
+            "Opened Pi — run `/login` in the terminal window, then return here.",
+        ),
+        "hermes" => (
+            "hermes",
+            &["acp", "--setup"][..],
+            "hermes",
+            "Opened Hermes setup — configure provider and sign in in the terminal window, then return here.",
+        ),
+        "codebuddy" => (
+            "codebuddy",
+            &[][..],
+            "codebuddy",
+            "Opened CodeBuddy — run `/login` in the terminal window, then return here.",
+        ),
+        "opencode" => (
+            "opencode",
+            &["auth", "login"][..],
+            "opencode",
+            "Opened OpenCode login — complete sign-in in the terminal window, then return here.",
+        ),
+        _ => return Err(format!("No in-app login flow for agent `{agent_id}`")),
+    };
+    start_cli_login(bin, args, id, message)
+}
+
+/// Spawn the agent's login command in its own console window.
+///
+/// Windows: CREATE_NEW_CONSOLE gives the OAuth / TUI flow a real TTY so it can
+/// print a device-code URL or open a browser. Do NOT combine it with
+/// DETACHED_PROCESS — Windows rejects that pair with ERROR_INVALID_PARAMETER.
+fn start_cli_login(
+    bin: &str,
+    args: &[&str],
+    agent_id: &str,
+    message: &str,
+) -> Result<serde_json::Value, String> {
+    use std::process::{Command, Stdio};
+    let resolved = crate::process_util::resolve_spawn_command(bin)
+        .map_err(|error| format!("`{bin}` not found on PATH: {error}"))?;
     let mut command = Command::new(&resolved.program);
     resolved.apply_to(&mut command);
     command
-        .args(["auth", "login"])
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-        // Own console window: OAuth CLI can print the login URL / wait state,
-        // and ShellExecute from that process can open the default browser.
         command.creation_flags(CREATE_NEW_CONSOLE);
     }
-
     command
         .spawn()
-        .map_err(|error| format!("Start `claude auth login` failed: {error}"))?;
-
+        .map_err(|error| format!("Start `{bin} {args:?}` failed: {error}"))?;
     crate::debug_log::append(
         "auth",
         "info",
         "",
-        "started claude auth login",
+        &format!("started {bin} login"),
         Some(&format!(
-            "program={} prefix={:?}",
+            "agent={agent_id} program={} prefix={:?}",
             resolved.program, resolved.prefix_args
         )),
     );
-
     Ok(serde_json::json!({
-        "agentId": "claude-code",
+        "agentId": agent_id,
         "started": true,
-        "message": "Opened Claude login — complete sign-in in the browser/terminal window, then return here."
+        "message": message,
     }))
 }
 
@@ -1426,5 +1931,37 @@ mod tests {
                 "resolved path should not be empty"
             );
         }
+    }
+
+    #[test]
+    fn classifies_codex_login_status_output() {
+        use super::classify_codex_status;
+        assert_eq!(classify_codex_status(true, "Logged in using ChatGPT"), "logged_in");
+        assert_eq!(classify_codex_status(true, "Logged in using an API key - sk-.."), "logged_in");
+        assert_eq!(classify_codex_status(false, "Not logged in"), "logged_out");
+        assert_eq!(classify_codex_status(false, "Error checking login status: boom"), "unknown");
+    }
+
+    #[test]
+    fn kimi_config_credential_scan() {
+        use super::kimi_config_has_credential;
+        assert!(kimi_config_has_credential("api_key = \"sk-abc\"\n"));
+        assert!(kimi_config_has_credential("access_token = \"eyJ...\"\n"));
+        assert!(kimi_config_has_credential("[provider]\ntoken=\"xyz\""));
+        assert!(!kimi_config_has_credential("[provider]\napi_key = \"\""));
+        assert!(!kimi_config_has_credential("[provider]\napi_key = null"));
+        assert!(!kimi_config_has_credential("model = \"kimi-k2\""));
+    }
+
+    #[test]
+    fn json_credential_marker_scan() {
+        use super::json_has_credential_markers;
+        assert!(json_has_credential_markers(r#"{"openai": {"key": "sk-abc"}}"#));
+        assert!(json_has_credential_markers(
+            r#"{"anthropic": {"type": "oauth", "tokens": {"access": "x"}}}"#
+        ));
+        assert!(json_has_credential_markers(r#"{"cline": {"apiKey": "sk-.."}}"#));
+        assert!(!json_has_credential_markers("{}"));
+        assert!(!json_has_credential_markers(r#"{"openai": {"key": ""}}"#));
     }
 }
