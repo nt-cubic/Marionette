@@ -97,28 +97,6 @@ gh release download --clobber -p Marionette.exe
 
 拿到最新的 `Marionette.exe`，双击即用。
 
-### 便携版（单 exe，无安装包）
-
-在本机双击 `build-portable.bat`（或 `npm run build:portable`），产物：
-
-```
-dist-portable/Marionette.exe
-```
-
-拷到任意 Windows 电脑双击即可。需要系统已安装 [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)（Win11 / 较新 Win10 一般自带）。若缺失，启动时会弹窗并给出微软官方下载链接——**不会**静默安装或写开始菜单/卸载项。
-
-目标体积：不到 10MB。
-
----
-
-## 设计哲学
-
-- **诚实的降级** —— Agent 没有的能力，Composer 不画假按钮
-- **少，但是更好** —— 默认结构化视图，Raw Terminal 一键切换
-- **跨 Agent 上下文靠文件** —— handoff.md 是纯文本，看得见改得了
-- **持久化优先** —— 会话不丢，重开可搜
-- **你是操控者** —— Agent 是木偶，你才是提线师
-
 ---
 
 ## License
