@@ -6,6 +6,73 @@ type RecentModelEntry = {
   lastUsedAt: number;
 };
 
+const DEFAULTS_KEY = "marionette-last-defaults";
+
+/** Per-agent last-used Composer chips — applied as defaults for new sessions. */
+export type LastUsedDefaults = {
+  modelId: string | null;
+  modeId: string | null;
+  effortId: string | null;
+  effort: number | null;
+  lastUsedAt: number;
+};
+
+type DefaultsMap = Record<string, LastUsedDefaults>;
+
+/**
+ * Remember what the user last used for an agent (model / mode / effort). Each
+ * patch only overrides the fields it carries; absent fields keep their old
+ * value so a model switch does not wipe a saved effort.
+ */
+export function recordLastUsedDefaults(
+  agentId: string,
+  patch: {
+    modelId?: string | null;
+    modeId?: string | null;
+    effortId?: string | null;
+    effort?: number | null;
+  },
+): void {
+  try {
+    const raw = localStorage.getItem(DEFAULTS_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : {};
+    const map: DefaultsMap =
+      parsed && typeof parsed === "object" ? (parsed as DefaultsMap) : {};
+    const prev: Partial<LastUsedDefaults> = map[agentId] ?? {};
+    map[agentId] = {
+      modelId: patch.modelId !== undefined ? patch.modelId : prev.modelId ?? null,
+      modeId: patch.modeId !== undefined ? patch.modeId : prev.modeId ?? null,
+      effortId: patch.effortId !== undefined ? patch.effortId : prev.effortId ?? null,
+      effort: patch.effort !== undefined ? patch.effort : prev.effort ?? null,
+      lastUsedAt: Date.now(),
+    };
+    localStorage.setItem(DEFAULTS_KEY, JSON.stringify(map));
+  } catch {
+    // localStorage might be disabled or full
+  }
+}
+
+/** Last-used chips for one agent, or null when nothing was recorded yet. */
+export function getLastUsedDefaults(agentId: string): LastUsedDefaults | null {
+  try {
+    const raw = localStorage.getItem(DEFAULTS_KEY);
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    const rec = (parsed as DefaultsMap)[agentId];
+    if (!rec || typeof rec !== "object") return null;
+    return {
+      modelId: typeof rec.modelId === "string" ? rec.modelId : null,
+      modeId: typeof rec.modeId === "string" ? rec.modeId : null,
+      effortId: typeof rec.effortId === "string" ? rec.effortId : null,
+      effort: typeof rec.effort === "number" ? rec.effort : null,
+      lastUsedAt: typeof rec.lastUsedAt === "number" ? rec.lastUsedAt : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** Record a model usage (push to front, deduplicate, trim to MAX_ENTRIES). */
 export function recordModelUsage(modelId: string): void {
   try {

@@ -70,6 +70,7 @@ import { formatPinsForSend } from "../lib/quoteComment";
 import { findLinkTargets } from "../lib/linkTargets";
 import { isToolInProgress } from "../lib/activityHealth";
 import { classifyAgentError, formatClassifiedError } from "../lib/errors";
+import { getLastUsedDefaults } from "../lib/recentModels";
 import { AskQuestionCard, type AskQuestionPrompt } from "../components/AskQuestionCard";
 import { Composer } from "../components/Composer";
 import { ContextPanel } from "../components/ContextPanel";
@@ -1781,7 +1782,20 @@ export function App() {
               preferredEffortId: source.preferredEffortId ?? null,
               preferredAlwaysApprove: source.preferredAlwaysApprove ?? null,
             }
-          : null;
+          : (() => {
+              // No dialog to inherit from — fall back to the agent's last-used
+              // chips so a fresh session opens with the model/档位 we left on.
+              const last = getLastUsedDefaults(resolvedAgentId);
+              return last
+                ? {
+                    preferredModel: last.modelId,
+                    preferredMode: last.modeId,
+                    preferredEffort: last.effort,
+                    preferredEffortId: last.effortId,
+                    preferredAlwaysApprove: null,
+                  }
+                : null;
+            })();
 
     const newSession = await createSessionApi(projectId, resolvedAgentId);
     if (!newSession) return;
@@ -2385,6 +2399,9 @@ export function App() {
     setSessionUsageById((current) => ({ ...current, [sid]: emptySessionUsage() }));
     acpBootstrapRef.current.delete(sid);
     setViewMode("clean");
+    // New agent, new catalog — but seed it with that agent's last-used chips so
+    // switching agents does not snap back to the harness default.
+    const agentDefaults = getLastUsedDefaults(agentId);
     setAvailableSessions((current) =>
       current.map((s) =>
         s.id === sid
@@ -2393,10 +2410,10 @@ export function App() {
               agentId,
               status: "exited" as const,
               processId: null,
-              preferredModel: null,
-              preferredMode: null,
-              preferredEffort: null,
-              preferredEffortId: null,
+              preferredModel: agentDefaults?.modelId ?? null,
+              preferredMode: agentDefaults?.modeId ?? null,
+              preferredEffort: agentDefaults?.effort ?? null,
+              preferredEffortId: agentDefaults?.effortId ?? null,
               preferredAlwaysApprove: null,
             }
           : s
