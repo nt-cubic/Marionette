@@ -280,6 +280,8 @@ const COMPOSER_HEIGHT_MIN = 100;
 const COMPOSER_HEIGHT_MAX = 480;
 const COMPOSER_HEIGHT_DEFAULT = 112;
 const COMPOSER_HEIGHT_KEY = "marionette-composer-height";
+/** Enter sends immediately (vs default Ctrl+Enter). */
+const SEND_ON_ENTER_KEY = "marionette-send-on-enter";
 
 function readComposerHeight(): number {
   try {
@@ -294,6 +296,14 @@ function readComposerHeight(): number {
     // ignore
   }
   return COMPOSER_HEIGHT_DEFAULT;
+}
+
+function readSendOnEnter(): boolean {
+  try {
+    return window.localStorage.getItem(SEND_ON_ENTER_KEY) === "1";
+  } catch {
+    return false;
+  }
 }
 
 function clampComposerHeight(n: number): number {
@@ -473,7 +483,7 @@ export function Composer({
   );
   /** True once caps came from a live agent — cached caps must not act as live. */
   const [capsLive, setCapsLive] = useState(false);
-  const [menu, setMenu] = useState<"mode" | "model" | "effort" | "agent" | null>(null);
+  const [menu, setMenu] = useState<"mode" | "model" | "effort" | "agent" | "send" | null>(null);
   const [modelQuery, setModelQuery] = useState("");
   const [draft, setDraft] = useState(() => readDraftCache(sessionId));
   /** Image attachments as Codex-style pills (not raw paths in the textarea). */
@@ -494,6 +504,8 @@ export function Composer({
   const [isComposing, setIsComposing] = useState(false);
   const [composerHeight, setComposerHeight] = useState(readComposerHeight);
   const [resizingComposer, setResizingComposer] = useState(false);
+  /** Enter sends immediately instead of Ctrl+Enter. Persisted globally. */
+  const [sendOnEnter, setSendOnEnter] = useState(readSendOnEnter);
   const [showProviderDialog, setShowProviderDialog] = useState(false);
   /** A key was added/removed this visit — the agent must restart to see it. */
   const [providerKeysDirty, setProviderKeysDirty] = useState(false);
@@ -628,6 +640,15 @@ export function Composer({
       // ignore
     }
   }, [composerHeight]);
+
+  // Persist send-on-Enter preference.
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SEND_ON_ENTER_KEY, sendOnEnter ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  }, [sendOnEnter]);
 
   // Drag-resize composer from the top edge (no React thrash mid-drag).
   useEffect(() => {
@@ -2014,7 +2035,9 @@ export function Composer({
           placeholder={
             isWarming && !composingRef.current
               ? "Agent connecting in background… keep typing"
-              : "Message the Agent (Ctrl+Enter to send) · / commands · Tab cycles mode"
+              : sendOnEnter
+                ? "Message the Agent (Enter to send · Shift+Enter newline) · / commands · Tab cycles mode"
+                : "Message the Agent (Ctrl+Enter to send) · / commands · Tab cycles mode"
           }
           rows={isTall ? 10 : 2}
           value={draft}
@@ -2118,9 +2141,26 @@ export function Composer({
                 return;
               }
             }
-            if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-              event.preventDefault();
+            // Send trigger depends on the toggle: Enter (no modifiers) or
+            // Ctrl/Cmd+Enter. Shift+Enter always inserts a newline.
+            // In Ctrl+Enter mode the pre-toggle behaviour is kept verbatim,
+            // including Ctrl+Shift+Enter sending.
+            const enterSends =
+              sendOnEnter &&
+              event.key === "Enter" &&
+              !event.shiftKey &&
+              !event.ctrlKey &&
+              !event.metaKey &&
+              !event.altKey;
+            const ctrlEnterSends =
+              !sendOnEnter &&
+              event.key === "Enter" &&
+              (event.ctrlKey || event.metaKey);
+            if (event.key === "Enter" && (enterSends || ctrlEnterSends)) {
+              // Do not swallow IME confirm keydowns — never preventDefault during
+              // an active composition (the submit guard is right below).
               if (composingRef.current) return;
+              event.preventDefault();
               submit();
               return;
             }
@@ -2750,38 +2790,79 @@ export function Composer({
               )}
             </div>
 
-            {/* ── Send / Interrupt (Esc×2 also interrupts) ── */}
-            <button
-              className={
-                isBusy && canCancel ? "send-button is-interrupting" : "send-button"
-              }
-              type="button"
-              title={
-                isBusy && canCancel
-                  ? "Interrupt (or double-press Esc)"
-                  : isBusy && !canCancel
-                    ? "Agent is busy"
-                    : "Send"
-              }
-              aria-label={
-                isBusy && canCancel
-                  ? "Interrupt conversation"
-                  : isBusy && !canCancel
-                    ? "Agent is busy"
-                    : "Send"
-              }
-              disabled={isBusy && !canCancel}
-              onClick={() => {
-                if (isBusy && canCancel) onInterrupt();
-                else if (!isBusy) submit();
-              }}
-            >
-              {isBusy && canCancel ? (
-                <Square size={12} fill="currentColor" />
-              ) : (
-                <SendHorizontal size={15} />
+            {/* ── Send / Interrupt (Esc×2 also interrupts) ──
+                Right-click toggles the Enter vs Ctrl+Enter send shortcut. */}
+            <div className="composer-menu-anchor composer-menu-anchor--send">
+              <button
+                className={
+                  isBusy && canCancel ? "send-button is-interrupting" : "send-button"
+                }
+                type="button"
+                title={
+                  isBusy && canCancel
+                    ? "Interrupt (or double-press Esc)"
+                    : isBusy && !canCancel
+                      ? "Agent is busy"
+                      : "Send · 右键切换 Enter / Ctrl+Enter 发送"
+                }
+                aria-label={
+                  isBusy && canCancel
+                    ? "Interrupt conversation"
+                    : isBusy && !canCancel
+                      ? "Agent is busy"
+                      : "Send"
+                }
+                aria-haspopup="menu"
+                aria-expanded={menu === "send"}
+                disabled={isBusy && !canCancel}
+                onClick={() => {
+                  setMenu(null);
+                  if (isBusy && canCancel) onInterrupt();
+                  else if (!isBusy) submit();
+                }}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  setMenu(menu === "send" ? null : "send");
+                }}
+              >
+                {isBusy && canCancel ? (
+                  <Square size={12} fill="currentColor" />
+                ) : (
+                  <SendHorizontal size={15} />
+                )}
+              </button>
+              {menu === "send" && (
+                <div
+                  className="composer-menu composer-menu--send"
+                  role="menu"
+                  aria-label="发送快捷键"
+                >
+                  <div className="composer-menu__label">发送快捷键</div>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className={!sendOnEnter ? "is-selected" : ""}
+                    onClick={() => {
+                      setSendOnEnter(false);
+                      setMenu(null);
+                    }}
+                  >
+                    Ctrl+Enter 发送
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className={sendOnEnter ? "is-selected" : ""}
+                    onClick={() => {
+                      setSendOnEnter(true);
+                      setMenu(null);
+                    }}
+                  >
+                    Enter 发送
+                  </button>
+                </div>
               )}
-            </button>
+            </div>
           </div>
         </div>
       </div>
