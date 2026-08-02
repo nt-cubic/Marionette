@@ -67,7 +67,7 @@ import {
 } from "../lib/delegate";
 import { ProviderConfigDialog } from "./ProviderConfigDialog";
 import { ImageAnnotator } from "./ImageAnnotator";
-import { recordModelUsage, getRecentModels } from "../lib/recentModels";
+import { recordModelUsage, getRecentModels, recordLastUsedDefaults } from "../lib/recentModels";
 import {
   attachmentFromPath,
   isImagePath,
@@ -477,6 +477,26 @@ export function Composer({
   const [currentEffortId, setCurrentEffortId] = useState<string | null>(
     initialCaps?.currentEffortId ?? null,
   );
+  /** Fresh chip snapshot for side effects that must not dep-track every setter. */
+  const chipStateRef = useRef<{
+    model: string | null;
+    mode: string | null;
+    effortId: string | null;
+    effort: number | null;
+  }>({
+    model: currentModel,
+    mode: currentMode,
+    effortId: currentEffortId,
+    effort: currentEffort,
+  });
+  useEffect(() => {
+    chipStateRef.current = {
+      model: currentModel,
+      mode: currentMode,
+      effortId: currentEffortId,
+      effort: currentEffort,
+    };
+  }, [currentModel, currentMode, currentEffortId, currentEffort]);
   // Grok always-approve: not an ACP mode. Default false (ask) until prefs/restore say otherwise.
   const [alwaysApprove, setAlwaysApprove] = useState<boolean>(
     sessionPrefs?.preferredAlwaysApprove === true,
@@ -859,6 +879,18 @@ export function Composer({
         if (typeof patch.model === "string") {
           recordModelUsage(patch.model);
         }
+        // Remember the chips the user actually settled on — they become the
+        // default for the agent's next session.
+        recordLastUsedDefaults(agent.id, {
+          modelId: typeof patch.model === "string" ? patch.model : chipStateRef.current.model,
+          modeId: typeof patch.mode === "string" ? patch.mode : chipStateRef.current.mode,
+          effortId:
+            typeof patch.effortId === "string" ? patch.effortId : chipStateRef.current.effortId,
+          effort:
+            typeof patch.thinkingEffort === "number"
+              ? patch.thinkingEffort
+              : chipStateRef.current.effort,
+        });
       } catch (error) {
         revert();
         const msg =
