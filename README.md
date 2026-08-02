@@ -5,8 +5,9 @@
 每个模型，都应该运行在它最擅长的环境里。
 
 Claude 用 Claude Code。  
-GPT 用 OpenCode。  
-Grok 用 Grok Build。
+GPT 用 Codex。  
+Grok 用 Grok Build。  
+其他，交给 OpenCode。
 
 你不需要一个 Agent 做所有事。  
 Marionette 把它们放进同一个工作台。
@@ -19,7 +20,7 @@ Marionette 把它们放进同一个工作台。
 
 AI 世界没有真正统一的 Agent。
 
-每一家都在持续优化自己的工作环境。Claude 最懂 Claude Code，GPT 更适合 OpenCode，Grok 生来就是 Grok Build。
+每一家都在持续优化自己的工作环境。Claude 最懂 Claude Code，GPT 更适合 Codex，Grok 生来就是 Grok Build。
 
 真正的问题，不是谁更强——而是为什么一定要在它们之间做选择？
 
@@ -60,6 +61,10 @@ MCP、Skills、上下文——不需要配置四遍。
 - **每一笔消耗，都摆在桌上** —— 余额、额度、速率限制，右侧栏实时刷新
 - **持久化** —— 所有会话存 JSONL，全文可搜索，重开不丢
 - **Git 感知** —— 项目文件变化自动检测，一眼看到改了什么
+- **@ 委派** —— 消息里 @ 另一个 Agent 转交任务，上下文自动交接
+- **拖进去，就懂了** —— 拖入文件、图片直接进对话，Agent 不用等描述
+- **选中即批注** —— 选中消息文字快速加注，随下一条消息一起发出
+- **智能回复** —— 文件刚拖进来、AI 给了选项、上轮报错……芯片一键接话
 
 ---
 
@@ -72,6 +77,14 @@ npm install && npm run tauri dev
 ```
 
 添加项目 → 选择 Agent → 开始对话。
+
+### 直接下载
+
+```bash
+gh release download --clobber -p Marionette.exe
+```
+
+拿到最新的 `Marionette.exe`，双击即用。
 
 ### 便携版（单 exe，无安装包）
 
