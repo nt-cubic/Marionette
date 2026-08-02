@@ -1,16 +1,18 @@
 # Marionette
 
-**Agent Harness, All in One**
+**你 -> Marionette -> 所有 Agents**
 
-每个模型，都应该运行在它最擅长的环境里。
+鞋子每天在变，但人没有理由削足适履。
 
-Claude 用 Claude Code。  
-GPT 用 Codex。  
-Grok 用 Grok Build。  
-其他，交给 OpenCode。
+使用提线木偶（Marionette），让它帮你操作所有 Agents。
 
-你不需要一个 Agent 做所有事。  
-Marionette 把它们放进同一个工作台。
+Opencode、Claude Code、Grok build、Codex……将他们配置进同一个壳里。
+
+让所有 Agents 坐在一起，共享同样的知识和经验。
+
+你不用适应工具，让工具来适应你不断精进的做事方法。
+
+在即将到来的时代，让 AI 成为你的部下，开始真正的运筹帷幄。
 
 > v0.1.0 —— 核心可用，持续打磨
 
@@ -18,13 +20,11 @@ Marionette 把它们放进同一个工作台。
 
 ## 为什么存在 Marionette
 
-AI 世界没有真正统一的 Agent。
+Agents 更新 + 定价变化 + 用量限制 = 总是需要换用 Agents
 
-每一家都在持续优化自己的工作环境。Claude 最懂 Claude Code，GPT 更适合 Codex，Grok 生来就是 Grok Build。
+Marionette 让你在同一个工具里，轻松操纵所有 Agents。
 
-真正的问题，不是谁更强——而是为什么一定要在它们之间做选择？
-
-Marionette 不替代它们。Marionette 把它们连接起来。
+关注你作为人，使用 AI 的能力，而不是让人来适应持续变化的 Agents。
 
 ---
 
