@@ -5467,6 +5467,14 @@ body.is-composer-resizing .composer {
   height: 14px;
 }
 
+/* Send-shortcut menu (right-click send button): drop up, right-aligned. */
+.composer-menu--send {
+  left: auto;
+  right: 0;
+  bottom: calc(100% + 6px);
+  min-width: 170px;
+}
+
 /* ── Provider Config Dialog ────────────────────────────────────────────── */
 .provider-dialog {
   min-width: 400px;
