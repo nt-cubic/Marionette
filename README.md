@@ -48,7 +48,7 @@ Marionette 自动生成一个普通的 Markdown 文件，让不同的 Agent 可�
 
 ### 一套配置，全线打通
 
-MCP、Skills、上下文——不需要配置四遍。
+MCP、Skills —— 不需要每个 agent 都各自配置。
 
 扫描一次，统一管理，全部共享。
 
