@@ -7,9 +7,11 @@
 使用提线木偶（Marionette），让它帮你操作所有 Agents。
 
 Opencode、Claude Code、Grok build、Codex……将他们配置进同一个壳里。
+
 让所有 Agents 坐在一起，共享同样的知识和经验。
 
 你不用适应工具，让工具来适应你不断精进的做事方法。
+
 在即将到来的时代，让 AI 成为你的部下，开始真正的运筹帷幄。
 
 > v0.1.0 —— 核心可用，持续打磨
@@ -19,7 +21,9 @@ Opencode、Claude Code、Grok build、Codex……将他们配置进同一个壳�
 ## 为什么存在 Marionette
 
 Agents 更新 + 定价变化 + 用量限制 = 总是需要换用 Agents
+
 Marionette 让你在同一个工具里，轻松操纵所有 Agents。
+
 关注你作为人，使用 AI 的能力，而不是让人来适应持续变化的 Agents。
 
 ---
@@ -29,24 +33,31 @@ Marionette 让你在同一个工具里，轻松操纵所有 Agents。
 ### 一个窗口，所有 Agent
 
 Claude Code、OpenCode、Codex CLI、Grok Build。
+
 一个窗口，全部装下。
+
 按需启动——不输入，不运行，不占资源。
 
 ### 换人，不换脑子
 
 切换 Agent，上下文不会断。
+
 Marionette 自动生成一个普通的 Markdown 文件，让不同的 Agent 可以根据此资料进行对话接力。
 
 ### 一套配置，全线打通
 
 MCP、Skills、上下文——不需要配置四遍。
+
 扫描一次，统一管理，全部共享。
+
 同一个工具，OpenCode 能用，Claude Code、Codex、Grok 也能用。
 
 ### 1 兆字节，恰到好处
 
 打开就工作，关闭就消失。
+
 不到 1.5MB 的文件大小，使用内存占用不超过35MB。
+
 腾出更多的空间打开工作与娱乐，让本地模型跑的更轻松。
 
 ---
