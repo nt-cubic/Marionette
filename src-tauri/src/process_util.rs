@@ -1,8 +1,10 @@
-//! Resolve agent CLIs on Windows (npm shims, missing PATH, .cmd wrappers).
+//! Resolve agent CLIs across platforms (npm shims, missing PATH, .cmd wrappers).
 //!
-//! GUI apps often inherit a thinner PATH than an interactive shell. Prefer
-//! absolute paths and `node + script.js` over `cmd /C *.cmd` so install/update
-//! works the same on US, JP, CN, etc. Windows machines.
+//! GUI apps inherit a thinner PATH than an interactive shell — on Windows a
+//! stale user PATH, on macOS/Linux the minimal Finder/desktop-launcher env
+//! that misses nvm, ~/.local/bin, and homebrew. Prefer absolute paths and
+//! `node + script.js` over `cmd /C *.cmd` so install/update works the same on
+//! US, JP, CN, etc. machines; on Unix, also consult the login-shell PATH.
 
 use std::env;
 use std::ffi::OsString;
@@ -63,15 +65,12 @@ pub fn resolve_spawn_command(command: &str) -> Result<ResolvedCommand, String> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        if let Ok(output) = Command::new("which").arg(command).output() {
-            if output.status.success() {
-                if let Some(line) = String::from_utf8_lossy(&output.stdout).lines().next() {
-                    let line = line.trim();
-                    if !line.is_empty() {
-                        candidates.push(PathBuf::from(line));
-                    }
-                }
-            }
+        // Scan our own PATH plus the login-shell PATH and well-known install
+        // dirs — a Finder/desktop-launched app inherits a minimal PATH that
+        // misses nvm, ~/.local/bin, homebrew, etc., so `which` alone fails
+        // for exactly the agents users installed from their terminal.
+        for dir in unix_search_dirs() {
+            candidates.push(dir.join(command));
         }
     }
 
@@ -83,17 +82,34 @@ pub fn resolve_spawn_command(command: &str) -> Result<ResolvedCommand, String> {
     candidates.sort_by_key(|p| rank_candidate(p));
 
     for candidate in candidates {
-        if candidate.is_file() {
+        if candidate.is_file() && is_executable(&candidate) {
             if let Ok(resolved) = finalize_path(candidate) {
                 return Ok(resolved);
             }
         }
     }
 
+    #[cfg(target_os = "windows")]
+    let hint = "on Windows, npm global bin is usually %APPDATA%\\npm";
+    #[cfg(not(target_os = "windows"))]
+    let hint = "checked your PATH, login-shell PATH, and common install dirs \
+                like ~/.local/bin, nvm, and homebrew";
     Err(format!(
-        "Command `{command}` was not found. Install it and ensure it is on PATH \
-         (on Windows, npm global bin is usually %APPDATA%\\npm)."
+        "Command `{command}` was not found. Install it and ensure it is on PATH ({hint})."
     ))
+}
+
+#[cfg(target_os = "windows")]
+fn is_executable(_path: &Path) -> bool {
+    true // PATHEXT semantics; the candidate lists already filter extensions.
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
 }
 
 /// PATH lookup used by the settings "test agent command" UI.
@@ -381,6 +397,16 @@ fn rank_candidate(path: &Path) -> i32 {
 }
 
 fn finalize_path(path: PathBuf) -> Result<ResolvedCommand, String> {
+    // Unix: keep symlinks as-is. An nvm `bin/claude` symlink canonicalizes to
+    // `lib/node_modules/.../cli.js`, losing the bin dir whose sibling `node`
+    // the `#!/usr/bin/env node` shebang needs on the child PATH.
+    #[cfg(not(target_os = "windows"))]
+    let path = if path.is_absolute() {
+        path
+    } else {
+        path.canonicalize().unwrap_or(path)
+    };
+    #[cfg(target_os = "windows")]
     let path = path
         .canonicalize()
         .unwrap_or(path);
@@ -448,6 +474,113 @@ fn finalize_path(path: PathBuf) -> Result<ResolvedCommand, String> {
         prefix_args: Vec::new(),
         resolved_path: path_str,
     })
+}
+
+/// PATH as the user's login shell sees it, resolved once per process.
+///
+/// Finder (macOS) and desktop launchers (Linux) start GUI apps with a minimal
+/// PATH, so agents installed via nvm/npm/homebrew are invisible even though
+/// the terminal finds them. Ask the login shell for its PATH the way editors
+/// do (`-i` because zsh only reads .zshrc — where nvm lives — interactively).
+#[cfg(not(target_os = "windows"))]
+fn login_shell_path() -> Option<String> {
+    use std::io::Read;
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<Option<String>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+            // The marker survives rc files that print their own output.
+            let mut child = Command::new(&shell)
+                .args(["-l", "-i", "-c", "printf '\\n__MARIONETTE_PATH__%s' \"$PATH\""])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .ok()?;
+            // Bounded wait — a hung rc file must not freeze agent startup.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) if std::time::Instant::now() < deadline => {
+                        std::thread::sleep(std::time::Duration::from_millis(25));
+                    }
+                    _ => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return None;
+                    }
+                }
+            }
+            let mut out = String::new();
+            child.stdout.take()?.read_to_string(&mut out).ok()?;
+            const MARKER: &str = "__MARIONETTE_PATH__";
+            let idx = out.rfind(MARKER)?;
+            let path = out[idx + MARKER.len()..].trim().to_string();
+            (path.contains('/')).then_some(path)
+        })
+        .clone()
+}
+
+/// Directories to search for agent binaries on macOS/Linux, best first.
+#[cfg(not(target_os = "windows"))]
+fn unix_search_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(path) = env::var_os("PATH") {
+        dirs.extend(env::split_paths(&path));
+    }
+    if let Some(shell_path) = login_shell_path() {
+        dirs.extend(env::split_paths(&shell_path));
+    }
+    if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
+        for rel in [
+            ".local/bin",              // pipx/uv + Claude Code native installer
+            ".claude/local",           // Claude Code local-install wrapper
+            ".local/share/mise/shims", // mise: stable shim dir for non-shell consumers
+            ".asdf/shims",
+            ".npm-global/bin",
+            ".volta/bin",
+            ".bun/bin",
+            ".deno/bin",
+            ".cargo/bin",
+        ] {
+            dirs.push(home.join(rel));
+        }
+        // nvm: newest installed version first
+        if let Ok(entries) = std::fs::read_dir(home.join(".nvm/versions/node")) {
+            let mut versions: Vec<PathBuf> = entries
+                .filter_map(|e| e.ok().map(|e| e.path().join("bin")))
+                .collect();
+            versions.sort();
+            versions.reverse();
+            dirs.extend(versions);
+        }
+    }
+    for fixed in ["/opt/homebrew/bin", "/usr/local/bin", "/snap/bin"] {
+        dirs.push(PathBuf::from(fixed));
+    }
+    let mut seen = std::collections::HashSet::new();
+    dirs.retain(|d| seen.insert(d.clone()));
+    dirs
+}
+
+/// PATH for spawned agents on macOS/Linux: the resolved program's own dir,
+/// then login-shell + well-known dirs. npm shims start with
+/// `#!/usr/bin/env node` and agents spawn their own subprocesses — both fail
+/// under the thin GUI PATH unless the child env is widened too.
+#[cfg(not(target_os = "windows"))]
+pub fn env_path_for_children(program: &str) -> OsString {
+    let mut parts: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = Path::new(program).parent() {
+        if !dir.as_os_str().is_empty() {
+            parts.push(dir.to_path_buf());
+        }
+    }
+    parts.extend(unix_search_dirs());
+    let mut seen = std::collections::HashSet::new();
+    parts.retain(|p| seen.insert(p.clone()));
+    env::join_paths(parts).unwrap_or_else(|_| env::var_os("PATH").unwrap_or_default())
 }
 
 #[cfg(target_os = "windows")]

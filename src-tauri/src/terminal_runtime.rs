@@ -606,6 +606,12 @@ fn configure_stdio(cmd: &mut Command, cwd: Option<&Path>) {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
+    // Agent-requested terminals need the same widened PATH as the agents
+    // themselves; an explicit PATH in params.env (applied after) still wins.
+    #[cfg(not(target_os = "windows"))]
+    {
+        cmd.env("PATH", crate::process_util::env_path_for_children(""));
+    }
 }
 
 fn spawn_command(
