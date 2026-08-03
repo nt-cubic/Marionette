@@ -14,6 +14,7 @@ import {
   expandAcpConfigAttempts,
   getAcpSupplement,
   mergeAcpCapabilities,
+  normalizeAgentModeId,
 } from "../lib/acpSupplements";
 import {
   addCustomAgent,
@@ -263,6 +264,10 @@ function modeTone(modeId: string | null | undefined): string {
   if (id.includes("plan")) return "plan";
   if (id.includes("ask") || id.includes("chat") || id.includes("talk")) return "ask";
   if (id.includes("debug") || id.includes("review")) return "debug";
+  // Full access / unrestricted: distinct from normal agent (workspace sandbox).
+  if (id.includes("full-access") || id.includes("full_access") || id.includes("bypass") || id.includes("yolo")) {
+    return "build";
+  }
   if (
     id.includes("build") ||
     id.includes("agent") ||
@@ -379,10 +384,16 @@ function applyPreferredDisplay(
     setCurrentEffort: (e: number | null) => void;
     setCurrentEffortId: (e: string | null) => void;
   },
+  agentId?: string | null,
 ) {
   if (!prefs) return;
   const model = prefs.preferredModel?.trim();
-  const mode = prefs.preferredMode?.trim();
+  const modeRaw = prefs.preferredMode?.trim();
+  const mode = modeRaw
+    ? agentId
+      ? normalizeAgentModeId(agentId, modeRaw)
+      : modeRaw
+    : undefined;
   const effortId = prefs.preferredEffortId?.trim();
   const effort = prefs.preferredEffort;
   if (model && (caps.models ?? []).some((m) => m.id === model)) setters.setCurrentModel(model);
@@ -624,7 +635,7 @@ export function Composer({
       // Layered display: snapshot → this dialog's saved choice → the pick the
       // user just made. Without this the chips flash agent-default → saved →
       // picked on every connect and every set_config echo.
-      applyPreferredDisplay(result, sessionPrefsRef.current, capSetters);
+      applyPreferredDisplay(result, sessionPrefsRef.current, capSetters, agent.id);
       applyPinnedDisplay(pinsRef.current, capSetters);
       if (source === "cache") return;
       setCapsLive(true);
@@ -868,7 +879,9 @@ export function Composer({
         // Disk SSOT: only fields that changed (parent merges; never wipe siblings).
         const prefsPatch: SessionComposerPrefs = {};
         if (typeof patch.model === "string") prefsPatch.preferredModel = patch.model;
-        if (typeof patch.mode === "string") prefsPatch.preferredMode = patch.mode;
+        if (typeof patch.mode === "string") {
+          prefsPatch.preferredMode = normalizeAgentModeId(agent.id, patch.mode);
+        }
         if (typeof patch.thinkingEffort === "number") prefsPatch.preferredEffort = patch.thinkingEffort;
         if (typeof patch.effortId === "string") prefsPatch.preferredEffortId = patch.effortId;
         if (typeof patch.alwaysApprove === "boolean") {
@@ -920,7 +933,11 @@ export function Composer({
     if (prefsRestoredKey.current === key) return;
 
     const prefModel = sessionPrefs?.preferredModel?.trim() || null;
-    const prefMode = sessionPrefs?.preferredMode?.trim() || null;
+    // Codex disk prefs may still hold pre-acp labels (full-auto → agent-full-access).
+    const prefModeRaw = sessionPrefs?.preferredMode?.trim() || null;
+    const prefMode = prefModeRaw
+      ? normalizeAgentModeId(agent.id, prefModeRaw)
+      : null;
     const prefEffortId = sessionPrefs?.preferredEffortId?.trim() || null;
     const prefEffort =
       typeof sessionPrefs?.preferredEffort === "number" && Number.isFinite(sessionPrefs.preferredEffort)
@@ -1013,17 +1030,23 @@ export function Composer({
 
       // 3) Drift only after the preferred model is the one we are judging —
       //    otherwise a default-model catalog (no "max") erases a deepseek "max".
+      //    Pass agentId so Codex legacy mode labels remap instead of wipe.
       if (driftCheckedKey.current !== key) {
         driftCheckedKey.current = key;
-        const drift = detectCapabilityDrift(sessionPrefs, live);
+        const drift = detectCapabilityDrift(sessionPrefs, live, agent.id);
         if (drift) {
-          flash(drift.summary.length > 140 ? `${drift.summary.slice(0, 140)}…` : drift.summary);
+          // Silent rewrite (legacy full-auto → agent-full-access) — no toast.
+          if (drift.issues.length > 0) {
+            flash(drift.summary.length > 140 ? `${drift.summary.slice(0, 140)}…` : drift.summary);
+          }
           onSessionPrefsChange?.(drift.clearedPrefs);
         }
       }
 
-      // 4) Mode
-      if (modeOk && prefMode && prefMode !== live.currentMode) {
+      // 4) Mode — Codex always re-push: optimistic currentMode can match the
+      //    chip while the harness is still on default "agent" (workspace sandbox).
+      const codexMode = agent.id === "codex" || agent.id === "codex-acp";
+      if (modeOk && prefMode && (codexMode || prefMode !== live.currentMode)) {
         await commitUpdate({ mode: prefMode }, () => {
           if (!cancelled) setCurrentMode(live.currentMode);
         });

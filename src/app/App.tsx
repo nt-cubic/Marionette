@@ -26,7 +26,6 @@ import {
   seedContextSize,
   type SessionUsageState,
 } from "../lib/usage";
-import { mergeAcpCapabilities } from "../lib/acpSupplements";
 import {
   bindDesktopNotifyFocusHandlers,
   isDesktopNotifyEnabled,
@@ -46,7 +45,11 @@ import {
   type TodoItem,
 } from "../lib/todos";
 import { parseDelegateLine } from "../lib/delegate";
-import { expandAcpConfigAttempts } from "../lib/acpSupplements";
+import {
+  expandAcpConfigAttempts,
+  mergeAcpCapabilities,
+  normalizeAgentModeId,
+} from "../lib/acpSupplements";
 import {
   formatImageMarksForSend,
   type ImageAttachment,
@@ -3258,11 +3261,14 @@ export function App() {
       // Prefer Composer chip snapshot (what the user saw at send). Caps.currentMode
       // lags on purpose after a mode switch — agent often still echoes the old mode.
       const caps = sessionCapabilities;
-      const modeId =
+      const modeIdRaw =
         composerSnap?.modeId?.trim() ||
         displaySession.preferredMode?.trim() ||
         caps?.currentMode ||
         null;
+      const modeId = modeIdRaw
+        ? normalizeAgentModeId(currentAgent.id, modeIdRaw)
+        : null;
       const modeLabel =
         composerSnap?.modeLabel?.trim() ||
         (modeId ? caps?.modes.find((m) => m.id === modeId)?.label ?? modeId : undefined);
@@ -3323,6 +3329,64 @@ export function App() {
       }
       // Ensure agent is up (may already be warming from keystrokes).
       await ensureAcpReady(sid);
+
+      // Codex (and friends) take approval+sandbox from the session mode on
+      // each turn. The chip is optimistic: Composer paints preferredMode /
+      // a menu pick before set_config finishes, and a fresh session/new
+      // always starts at the harness default ("agent" = workspace sandbox).
+      // If we prompt without re-pushing the chip, full access shows in the UI
+      // while Codex still asks for every shell/edit. Same pattern as child
+      // delegates: start → set config → prompt.
+      {
+        const agentId = currentAgent.id;
+        const live = await getSessionCapabilities(sid).catch(() => null);
+        const liveCaps = mergeAcpCapabilities(agentId, live) ?? live;
+        const pushConfig = async (patch: Record<string, unknown>) => {
+          const attempts = expandAcpConfigAttempts(agentId, patch, liveCaps);
+          for (const attempt of attempts) {
+            try {
+              await updateAcpSession(sid, attempt);
+              return true;
+            } catch {
+              /* try next config shape */
+            }
+          }
+          return false;
+        };
+        // Codex: always re-assert mode before the turn. Local currentMode can
+        // claim full access after an optimistic chip paint or a failed restore
+        // while the harness is still on default "agent" (workspace sandbox).
+        const codexMode = agentId === "codex" || agentId === "codex-acp";
+        if (modeId && (codexMode || modeId !== liveCaps?.currentMode)) {
+          const ok = await pushConfig({ mode: modeId });
+          if (codexMode || modeId !== liveCaps?.currentMode) {
+            pushDebug({
+              sessionId: sid,
+              level: ok ? "info" : "warn",
+              source: "composer",
+              summary: ok
+                ? `pre-prompt mode sync: ${modeId}`
+                : `pre-prompt mode sync failed: ${modeId}`,
+            });
+          }
+        }
+        if (modelId && modelId !== liveCaps?.currentModel) {
+          await pushConfig({ model: modelId });
+        }
+        if (
+          effortId &&
+          effortId !== liveCaps?.currentEffortId &&
+          liveCaps?.effortConfigId
+        ) {
+          await pushConfig({ effortId });
+        } else if (
+          typeof displaySession.preferredEffort === "number" &&
+          liveCaps?.effortConfigId &&
+          displaySession.preferredEffort !== liveCaps.currentEffort
+        ) {
+          await pushConfig({ thinkingEffort: displaySession.preferredEffort });
+        }
+      }
 
       // The reconnect send already carries the whole transcript — then the
       // handoff shrinks to a pointer instead of repeating the same context.

@@ -23,7 +23,7 @@ const STATIC_SLASH: Record<string, AvailableCommand[]> = {
     {
       name: "approvals",
       description: "Change approval policy",
-      input: { hint: "suggest | auto-edit | full-auto" },
+      input: { hint: "read-only | agent | agent-full-access" },
     },
   ],
   "claude-code": [
