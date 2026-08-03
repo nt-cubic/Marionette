@@ -1072,6 +1072,8 @@ fn probe_opencode_auth() -> Result<serde_json::Value, String> {
     // OpenCode runs fine without login (local / free models), so absence of
     // credentials is "unknown", never "logged_out": the banner only appears
     // when an actual turn fails with an auth error.
+    // Heal legacy key-only auth.json entries (OpenCode requires type: "api").
+    let _ = crate::provider_usage::repair_opencode_auth_file();
     let Some(path) = crate::provider_usage::opencode_auth_path() else {
         return Ok(auth_result(
             "opencode",
@@ -1880,7 +1882,11 @@ pub fn project_context_prompt(
 /// `force` is the UI's confirmation that overwriting an OAuth login is intended.
 #[tauri::command(async)]
 pub fn save_provider_key(provider: String, key: String, force: Option<bool>) -> Result<(), String> {
-    crate::provider_usage::write_provider_key(&provider, &key, force.unwrap_or(false))
+    crate::provider_usage::write_provider_key(&provider, &key, force.unwrap_or(false))?;
+    // Heal any other legacy key-only entries so a re-save of one provider
+    // also resurrects siblings OpenCode was silently ignoring.
+    let _ = crate::provider_usage::repair_opencode_auth_file();
+    Ok(())
 }
 
 /// List configured providers (without exposing keys).

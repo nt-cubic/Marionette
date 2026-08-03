@@ -512,6 +512,12 @@ export function Composer({
   const [alwaysApprove, setAlwaysApprove] = useState<boolean>(
     sessionPrefs?.preferredAlwaysApprove === true,
   );
+  // Keep chip in sync when parent reloads session prefs (disk / new-tab inherit).
+  useEffect(() => {
+    if (typeof sessionPrefs?.preferredAlwaysApprove === "boolean") {
+      setAlwaysApprove(sessionPrefs.preferredAlwaysApprove);
+    }
+  }, [sessionPrefs?.preferredAlwaysApprove]);
   /** True once caps came from a live agent — cached caps must not act as live. */
   const [capsLive, setCapsLive] = useState(false);
   const [menu, setMenu] = useState<"mode" | "model" | "effort" | "agent" | "send" | null>(null);
@@ -809,7 +815,17 @@ export function Composer({
 
   const commitUpdate = useCallback(
     async (patch: Record<string, unknown>, revert: () => void) => {
-      if (updating.current || !sessionId) return;
+      // Early-exit used to leave optimistic chip paints stuck with no persist.
+      // Throw so the caller's revert runs (Always approve was the worst case).
+      if (!sessionId) {
+        revert();
+        return;
+      }
+      if (updating.current) {
+        revert();
+        flash("Another setting is still applying — try again in a moment");
+        return;
+      }
       updating.current = true;
       try {
         // Lazy ACP: mode/model/effort require a live session.
@@ -828,6 +844,11 @@ export function Composer({
           const cmd = patch.alwaysApprove ? aa.on : aa.off;
           await sendAcpPrompt(sessionId, cmd);
           persistPrefs({ preferredAlwaysApprove: patch.alwaysApprove });
+          // Same localStorage last-used path as model/mode so a *new* Grok
+          // dialog inherits Always approve instead of always opening as Ask.
+          recordLastUsedDefaults(agent.id, {
+            alwaysApprove: patch.alwaysApprove,
+          });
           return;
         }
         const attempts = expandAcpConfigAttempts(agent.id, patch, caps);
@@ -1052,10 +1073,12 @@ export function Composer({
         });
       }
 
-      // 5) Always-approve is session-local; replay the slash after warm.
-      if (aaSpec && prefAlways != null) {
-        await commitUpdate({ alwaysApprove: prefAlways }, () => {
-          if (!cancelled) setAlwaysApprove(!prefAlways);
+      // 5) Always-approve is session-local on Grok; replay the slash after warm.
+      // Only push when the user wants ON — default is ask, so re-sending "off"
+      // just burns a turn. Failures keep the disk pref for the next reconnect.
+      if (aaSpec && prefAlways === true) {
+        await commitUpdate({ alwaysApprove: true }, () => {
+          if (!cancelled) setAlwaysApprove(false);
         });
       }
 

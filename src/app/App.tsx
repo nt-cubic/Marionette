@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { agents, projects, sessions } from "../lib/mockData";
 import {
   applyAcpPartToEvents,
+  coalesceAdjacentAssistantFragments,
   coalesceAdjacentThoughts,
   collapseIntermediateAssistantAsThought,
   extractAcpUpdateText,
@@ -861,9 +862,14 @@ export function App() {
                 sendMetaRef.current = null;
               }
             }
-            // Glue fragment thoughts that landed next to each other mid-stream.
+            // Glue fragment thoughts / token-split Replies mid-stream.
+            // Grok often rotates messageId per agent_message_chunk; without
+            // this pass the rail paints one Reply card per character.
             if (extracted.role === "thought" || extracted.role === "assistant") {
               next = coalesceAdjacentThoughts(next, payload.sessionId);
+              if (extracted.role === "assistant") {
+                next = coalesceAdjacentAssistantFragments(next, payload.sessionId);
+              }
             }
             return next;
           });
@@ -1795,7 +1801,7 @@ export function App() {
                     preferredMode: last.modeId,
                     preferredEffort: last.effort,
                     preferredEffortId: last.effortId,
-                    preferredAlwaysApprove: null,
+                    preferredAlwaysApprove: last.alwaysApprove,
                   }
                 : null;
             })();

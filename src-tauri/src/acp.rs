@@ -352,6 +352,29 @@ impl AcpService {
         // permission prompt never reaches us (ACP `additionalDirectories` is
         // accepted but does not widen the scope; measured both ways).
         if agent_id.as_deref() == Some("opencode") {
+            // OpenCode drops auth entries without `type: "api"`. Heal legacy
+            // Marionette key-only writes before the process reads auth.json.
+            match crate::provider_usage::repair_opencode_auth_file() {
+                Ok(true) => {
+                    crate::debug_log::append(
+                        "acp",
+                        "info",
+                        &session_id,
+                        "repaired OpenCode auth.json (injected type: api)",
+                        None,
+                    );
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    crate::debug_log::append(
+                        "acp",
+                        "warn",
+                        &session_id,
+                        "OpenCode auth.json repair failed",
+                        Some(&err),
+                    );
+                }
+            }
             let existing = std::env::var("OPENCODE_PERMISSION").ok();
             if let Some(value) = crate::context_inventory::opencode_permission_env(
                 std::path::Path::new(&cwd),
