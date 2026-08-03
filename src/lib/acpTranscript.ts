@@ -717,6 +717,19 @@ function sameStreamTarget(
   return true;
 }
 
+/**
+ * Open Reply still being streamed: no duration yet. Grok (and some adapters)
+ * mint a fresh `messageId` per token — if we honor that, each char becomes its
+ * own Reply card with a full Build / model header. Unsealed → always append.
+ */
+function isOpenAssistantStream(last: SessionEvent, sessionId: string): boolean {
+  return (
+    last.type === "assistant_message" &&
+    last.sessionId === sessionId &&
+    last.durationMs == null
+  );
+}
+
 /** Index of the latest thought in this session after the last user message. */
 function findLastThoughtInTurn(events: SessionEvent[], sessionId: string): number {
   let lastUser = -1;
@@ -760,16 +773,35 @@ export function applyAcpPartToEvents(
     // either misses the footer or removes its prefix before the rest arrives.
     // The presentation and transcript boundaries clean the complete text.
     const text = part.text;
-    if (!text.trim()) return current;
+    if (!text) return current;
     const last = current[current.length - 1];
-    if (last && sameStreamTarget(last, sessionId, "assistant_message", part.messageId) && last.type === "assistant_message") {
+    // Only append onto an *open* (unsealed) Reply. Grok rotates messageId per
+    // token; matching ids made every character its own card with a repeated
+    // agent/model header. Sealed bubbles (durationMs set at turn end) start
+    // a new card — never absorb the next turn.
+    const canAppend = Boolean(last && isOpenAssistantStream(last, sessionId));
+    // Whitespace-only tokens (" ", "\n") must still append onto an open Reply.
+    // Dropping them glued "Always" + "approve" → "Alwaysapprove".
+    if (!text.trim()) {
+      if (!canAppend || !last || last.type !== "assistant_message") return current;
+      const nextText = mergeStreamText(last.text, text, true);
+      if (nextText === last.text) return current;
+      const next = [...current];
+      next[next.length - 1] = { ...last, text: nextText };
+      return next;
+    }
+    if (canAppend && last && last.type === "assistant_message") {
       const nextText = mergeStreamText(last.text, text, part.isDelta);
-      if (nextText === last.text && (!part.messageId || last.messageId === part.messageId)) return current;
+      if (nextText === last.text && (!part.messageId || last.messageId === part.messageId)) {
+        return current;
+      }
       const next = [...current];
       next[next.length - 1] = {
         ...last,
         text: nextText,
-        messageId: part.messageId ?? last.messageId,
+        // Keep the first id of the open bubble so later id churn does not
+        // look like a "new message" to any secondary consumer.
+        messageId: last.messageId ?? part.messageId,
       };
       return next;
     }
@@ -971,6 +1003,43 @@ export function coalesceAdjacentThoughts(
 }
 
 /**
+ * Glue adjacent unsealed Reply cards that a messageId-churning stream split
+ * apart. Does not cross user / tool / sealed assistant / thought boundaries.
+ * Safe at turn end and as a mid-stream cleanup.
+ */
+export function coalesceAdjacentAssistantFragments(
+  events: SessionEvent[],
+  sessionId: string,
+): SessionEvent[] {
+  if (events.length < 2) return events;
+  const out: SessionEvent[] = [];
+
+  for (const e of events) {
+    const prev = out[out.length - 1];
+    if (
+      e.sessionId === sessionId &&
+      e.type === "assistant_message" &&
+      e.durationMs == null &&
+      prev &&
+      prev.sessionId === sessionId &&
+      prev.type === "assistant_message" &&
+      prev.durationMs == null
+    ) {
+      const join = mergeStreamText(prev.text, e.text, true);
+      out[out.length - 1] = {
+        ...prev,
+        text: join,
+        // Keep the first card's meta/header (agent / model / mode).
+        messageId: prev.messageId ?? e.messageId,
+      };
+      continue;
+    }
+    out.push(e);
+  }
+  return out;
+}
+
+/**
  * A finished Reply must never be demoted to Thinking.
  *
  * `durationMs` is stamped when the turn completes. We also seal on agent switch
@@ -1021,5 +1090,9 @@ export function collapseIntermediateAssistantAsThought(
   events: SessionEvent[],
   sessionId: string,
 ): SessionEvent[] {
-  return coalesceAdjacentThoughts(events, sessionId);
+  // Thought glue first, then Reply fragments (Grok token-level messageIds).
+  return coalesceAdjacentAssistantFragments(
+    coalesceAdjacentThoughts(events, sessionId),
+    sessionId,
+  );
 }

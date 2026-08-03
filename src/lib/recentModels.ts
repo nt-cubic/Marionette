@@ -14,6 +14,8 @@ export type LastUsedDefaults = {
   modeId: string | null;
   effortId: string | null;
   effort: number | null;
+  /** Grok `/always-approve` (and similar). */
+  alwaysApprove: boolean | null;
   lastUsedAt: number;
 };
 
@@ -31,6 +33,7 @@ export function recordLastUsedDefaults(
     modeId?: string | null;
     effortId?: string | null;
     effort?: number | null;
+    alwaysApprove?: boolean | null;
   },
 ): void {
   try {
@@ -44,6 +47,10 @@ export function recordLastUsedDefaults(
       modeId: patch.modeId !== undefined ? patch.modeId : prev.modeId ?? null,
       effortId: patch.effortId !== undefined ? patch.effortId : prev.effortId ?? null,
       effort: patch.effort !== undefined ? patch.effort : prev.effort ?? null,
+      alwaysApprove:
+        patch.alwaysApprove !== undefined
+          ? patch.alwaysApprove
+          : prev.alwaysApprove ?? null,
       lastUsedAt: Date.now(),
     };
     localStorage.setItem(DEFAULTS_KEY, JSON.stringify(map));
@@ -66,6 +73,7 @@ export function getLastUsedDefaults(agentId: string): LastUsedDefaults | null {
       modeId: typeof rec.modeId === "string" ? rec.modeId : null,
       effortId: typeof rec.effortId === "string" ? rec.effortId : null,
       effort: typeof rec.effort === "number" ? rec.effort : null,
+      alwaysApprove: typeof rec.alwaysApprove === "boolean" ? rec.alwaysApprove : null,
       lastUsedAt: typeof rec.lastUsedAt === "number" ? rec.lastUsedAt : 0,
     };
   } catch {

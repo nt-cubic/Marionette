@@ -993,6 +993,65 @@ fn write_auth_atomic(
     Ok(())
 }
 
+/// OpenCode's Auth schema (ApiAuth) requires `type: "api"` + `key`.
+/// Entries with only `{ "key": "…" }` are **silently dropped** on load
+/// (`Schema.decodeUnknownOption` filters them out) — so DeepSeek and friends
+/// never appear in the TUI or ACP model list even though the file has a key.
+/// See anomalyco/opencode `packages/opencode/src/auth/index.ts`.
+fn api_auth_entry(key: &str) -> Value {
+    serde_json::json!({ "type": "api", "key": key })
+}
+
+/// Upgrade legacy key-only entries so OpenCode accepts them.
+/// Returns true when the map was mutated (caller should rewrite the file).
+fn repair_auth_api_types(auth: &mut serde_json::Map<String, Value>) -> bool {
+    let mut changed = false;
+    for (_id, entry) in auth.iter_mut() {
+        let Some(obj) = entry.as_object_mut() else {
+            continue;
+        };
+        let has_key = obj
+            .get("key")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.is_empty());
+        if !has_key {
+            continue;
+        }
+        // Never rewrite oauth (refresh/access) or already-typed api/wellknown.
+        let type_str = obj.get("type").and_then(|v| v.as_str());
+        let is_oauth = type_str == Some("oauth")
+            || obj
+                .get("refresh")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| !s.is_empty());
+        if is_oauth {
+            continue;
+        }
+        match type_str {
+            Some("api") | Some("wellknown") => {}
+            _ => {
+                obj.insert("type".into(), Value::String("api".into()));
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+/// Load auth.json, inject missing `type: "api"`, and persist if anything changed.
+/// Safe no-op when the file is missing or already valid.
+pub fn repair_opencode_auth_file() -> Result<bool, String> {
+    let Some(path) = opencode_auth_path() else {
+        return Ok(false);
+    };
+    let mut auth = read_auth_for_write(&path)?;
+    if !repair_auth_api_types(&mut auth) {
+        return Ok(false);
+    }
+    write_auth_atomic(&path, &auth)?;
+    Ok(true)
+}
+
 /// Write a provider API key to the given auth file path.
 /// If `path` is `None`, uses the default OpenCode auth.json location.
 ///
@@ -1018,7 +1077,10 @@ pub fn write_provider_key_at(
         }
     }
 
-    auth.insert(provider.to_string(), serde_json::json!({ "key": key }));
+    // OpenCode requires the `type` discriminator — bare `{ key }` is ignored.
+    auth.insert(provider.to_string(), api_auth_entry(key));
+    // Heal any other legacy key-only providers while we have the file open.
+    let _ = repair_auth_api_types(&mut auth);
     write_auth_atomic(&path, &auth)
 }
 
@@ -1032,6 +1094,9 @@ pub fn write_provider_key(provider: &str, key: &str, force: bool) -> Result<(), 
 /// Does not expose secrets. New installs get the builtin catalog even when
 /// `auth.json` / `providers.json` are empty.
 pub fn list_providers() -> Result<Vec<ProviderInfo>, String> {
+    // Opportunistically heal legacy key-only entries so OpenCode and this
+    // dialog agree on what's configured (type: "api" required by OpenCode).
+    let _ = repair_opencode_auth_file();
     let auth = load_auth_json().unwrap_or(Value::Object(Default::default()));
     let auth_obj = auth.as_object().cloned().unwrap_or_default();
 
@@ -1293,13 +1358,17 @@ mod tests {
         let content = std::fs::read_to_string(&auth_path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(parsed["deepseek"]["key"].as_str(), Some("sk-test123"));
+        // OpenCode Auth schema requires the type discriminator.
+        assert_eq!(parsed["deepseek"]["type"].as_str(), Some("api"));
 
         // Write another provider — original should survive.
         super::write_provider_key_at("openrouter", "or-test456", Some(&auth_path), false).unwrap();
         let content = std::fs::read_to_string(&auth_path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(parsed["deepseek"]["key"].as_str(), Some("sk-test123"));
+        assert_eq!(parsed["deepseek"]["type"].as_str(), Some("api"));
         assert_eq!(parsed["openrouter"]["key"].as_str(), Some("or-test456"));
+        assert_eq!(parsed["openrouter"]["type"].as_str(), Some("api"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1387,9 +1456,44 @@ mod tests {
 
         // `force` goes through.
         super::write_provider_key_at("anthropic", "sk-new", Some(&auth_path), true).unwrap();
+        let forced: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&auth_path).unwrap()).unwrap();
+        assert_eq!(forced["anthropic"]["type"].as_str(), Some("api"));
+        assert_eq!(forced["anthropic"]["key"].as_str(), Some("sk-new"));
+    }
+
+    /// Legacy Marionette writes used `{ "key": "…" }` without `type`. OpenCode
+    /// silently drops those on load — repair must inject `type: "api"`.
+    #[test]
+    fn repairs_legacy_key_only_auth_entries() {
+        let dir = std::env::temp_dir().join(format!(
+            "marionette_test_auth_repair_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let auth_path = dir.join("auth.json");
+        std::fs::write(
+            &auth_path,
+            r#"{"deepseek":{"key":"sk-legacy"},"anthropic":{"type":"oauth","refresh":"rt","access":"at"}}"#,
+        )
+        .unwrap();
+
+        let mut auth = super::read_auth_for_write(&auth_path).unwrap();
+        assert!(super::repair_auth_api_types(&mut auth));
+        super::write_auth_atomic(&auth_path, &auth).unwrap();
+
         let parsed: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&auth_path).unwrap()).unwrap();
-        assert_eq!(parsed["anthropic"]["key"].as_str(), Some("sk-new"));
+        assert_eq!(parsed["deepseek"]["type"].as_str(), Some("api"));
+        assert_eq!(parsed["deepseek"]["key"].as_str(), Some("sk-legacy"));
+        // OAuth left untouched.
+        assert_eq!(parsed["anthropic"]["type"].as_str(), Some("oauth"));
+        assert_eq!(parsed["anthropic"]["refresh"].as_str(), Some("rt"));
+
+        // Second pass is a no-op.
+        let mut again = super::read_auth_for_write(&auth_path).unwrap();
+        assert!(!super::repair_auth_api_types(&mut again));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
