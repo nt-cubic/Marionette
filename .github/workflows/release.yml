@@ -36,7 +36,12 @@ jobs:
 
       # bundle.active is false in tauri.conf.json (Windows ships a bare
       # portable exe); override it here so macOS gets a real .app + DMG.
+      # APPLE_SIGNING_IDENTITY="-" = ad-hoc signature: mandatory on Apple
+      # Silicon (unsigned arm64 binaries refuse to launch at all). Without
+      # notarization users still clear quarantine once — see release notes.
       - name: Build macOS app (${{ matrix.arch }})
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
         run: >
           npx tauri build --target ${{ matrix.target }}
           --config '{"bundle":{"active":true,"targets":["app","dmg"]}}'
@@ -137,3 +142,29 @@ jobs:
         with:
           draft: true
           files: artifacts/**
+          body: |
+            ## Downloads
+
+            | Platform | File |
+            | --- | --- |
+            | Windows (portable) | `Marionette.exe` |
+            | macOS Apple Silicon | `Marionette_*_aarch64.dmg` |
+            | macOS Intel | `Marionette_*_x64.dmg` |
+            | Linux | `Marionette_*_amd64.AppImage` |
+
+            ### macOS first launch
+
+            The app is ad-hoc signed (not notarized). After copying
+            Marionette.app out of the DMG, clear the quarantine flag once:
+
+            ```sh
+            xattr -cr /Applications/Marionette.app
+            ```
+
+            or allow it under System Settings → Privacy & Security → "Open Anyway".
+
+            ### Linux
+
+            ```sh
+            chmod +x Marionette_*.AppImage && ./Marionette_*.AppImage
+            ```
