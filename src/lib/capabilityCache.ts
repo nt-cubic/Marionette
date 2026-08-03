@@ -1,3 +1,4 @@
+import { normalizeAgentModeId } from "./acpSupplements";
 import type { CapabilitySnapshot, SessionComposerPrefs } from "./types";
 
 /**
@@ -156,10 +157,16 @@ export function clearAgentCapabilities(agentId: string): void {
 function overlayPrefs(
   snapshot: CapabilitySnapshot,
   prefs: SessionComposerPrefs | null | undefined,
+  agentId?: string | null,
 ): CapabilitySnapshot {
   if (!prefs) return snapshot;
   const model = prefs.preferredModel?.trim() || null;
-  const mode = prefs.preferredMode?.trim() || null;
+  const modeRaw = prefs.preferredMode?.trim() || null;
+  const mode = modeRaw
+    ? agentId
+      ? normalizeAgentModeId(agentId, modeRaw)
+      : modeRaw
+    : null;
   const effortId = prefs.preferredEffortId?.trim() || null;
   const effort =
     typeof prefs.preferredEffort === "number" && Number.isFinite(prefs.preferredEffort)
@@ -194,5 +201,5 @@ export function cachedCapabilitiesFor(
 ): CapabilitySnapshot | null {
   const entry = readEntry(agentId);
   if (!entry) return null;
-  return overlayPrefs(normalize(entry.snapshot), prefs);
+  return overlayPrefs(normalize(entry.snapshot), prefs, agentId);
 }

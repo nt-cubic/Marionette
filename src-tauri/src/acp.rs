@@ -1440,7 +1440,12 @@ fn apply_local_config_change(caps: &mut CapabilitySnapshot, config_id: &str, val
             caps.current_model = Some(text);
         }
     }
-    if Some(config_id) == caps.mode_config_id.as_deref() || config_id == "mode" {
+    // Mode aliases: older clients used approval-policy as the mode knob id.
+    if Some(config_id) == caps.mode_config_id.as_deref()
+        || config_id == "mode"
+        || config_id == "approval-policy"
+        || config_id == "approvalPolicy"
+    {
         if let Some(text) = text.clone() {
             caps.current_mode = Some(text);
         }

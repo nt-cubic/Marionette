@@ -1,3 +1,4 @@
+import { normalizeAgentModeId } from "./acpSupplements";
 import type { CapabilitySnapshot, SessionComposerPrefs } from "./types";
 
 export type CapabilityDriftIssue = {
@@ -8,7 +9,7 @@ export type CapabilityDriftIssue = {
 
 export type CapabilityDrift = {
   issues: CapabilityDriftIssue[];
-  /** Prefs to write so disk no longer points at dead options. */
+  /** Prefs to write so disk no longer points at dead options (or remaps legacy ids). */
   clearedPrefs: SessionComposerPrefs;
   summary: string;
 };
@@ -16,10 +17,14 @@ export type CapabilityDrift = {
 /**
  * Compare saved Composer prefs against live ACP caps after handshake /
  * agent update. Returns null when nothing is wrong (or prefs are empty).
+ *
+ * `agentId` lets us remap Codex legacy mode labels (full-auto → agent-full-access)
+ * instead of wiping the user's full-access preference.
  */
 export function detectCapabilityDrift(
   prefs: SessionComposerPrefs | null | undefined,
   caps: CapabilitySnapshot | null | undefined,
+  agentId?: string | null,
 ): CapabilityDrift | null {
   if (!prefs || !caps) return null;
 
@@ -36,14 +41,22 @@ export function detectCapabilityDrift(
     clearedPrefs.preferredModel = null;
   }
 
-  const mode = prefs.preferredMode?.trim() || null;
-  if (mode && caps.modes.length > 0 && !caps.modes.some((m) => m.id === mode)) {
-    issues.push({
-      field: "mode",
-      preferred: mode,
-      reason: "no longer advertised",
-    });
-    clearedPrefs.preferredMode = null;
+  const modeRaw = prefs.preferredMode?.trim() || null;
+  if (modeRaw && caps.modes.length > 0) {
+    const mode = agentId ? normalizeAgentModeId(agentId, modeRaw) : modeRaw;
+    if (caps.modes.some((m) => m.id === mode)) {
+      // Keep preference; rewrite disk if the stored id was a legacy alias.
+      if (mode !== modeRaw) {
+        clearedPrefs.preferredMode = mode;
+      }
+    } else {
+      issues.push({
+        field: "mode",
+        preferred: modeRaw,
+        reason: "no longer advertised",
+      });
+      clearedPrefs.preferredMode = null;
+    }
   }
 
   const effortId = prefs.preferredEffortId?.trim() || null;
@@ -80,15 +93,18 @@ export function detectCapabilityDrift(
     clearedPrefs.preferredEffort = null;
   }
 
-  if (issues.length === 0) return null;
+  // Prefer rewriting legacy mode ids even when nothing is "broken".
+  if (issues.length === 0 && Object.keys(clearedPrefs).length === 0) return null;
 
   const bits = issues.map((i) => `${i.field} “${i.preferred}” (${i.reason})`);
   return {
     issues,
     clearedPrefs,
     summary:
-      bits.length === 1
-        ? `Saved ${bits[0]} — reset to agent default`
-        : `Saved options no longer valid: ${bits.join("; ")}`,
+      issues.length === 0
+        ? "Updated saved mode to the current agent id"
+        : bits.length === 1
+          ? `Saved ${bits[0]} — reset to agent default`
+          : `Saved options no longer valid: ${bits.join("; ")}`,
   };
 }

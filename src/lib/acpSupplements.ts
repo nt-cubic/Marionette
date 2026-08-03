@@ -105,20 +105,48 @@ const SUPPLEMENTS: Record<string, AcpSupplement> = {
     modelConfigIds: ["model"],
   },
   codex: {
+    // Wire ids from @agentclientprotocol/codex-acp AgentMode (not the old
+    // approval-only labels). Full access = danger-full-access + approval never.
     modes: [
-      { id: "default", label: "Default" },
-      { id: "suggest", label: "Suggest" },
-      { id: "auto-edit", label: "Auto edit" },
-      { id: "full-auto", label: "Full auto" },
+      { id: "read-only", label: "Read-only" },
+      { id: "agent", label: "Agent" },
+      { id: "agent-full-access", label: "Agent (full access)" },
     ],
+    defaultMode: "agent",
     thinkingEffort: { min: 0, max: 1, default: 0.5 },
-    modeConfigIds: ["mode", "approval-policy", "approvalPolicy"],
+    // Only `mode` maps to approval+sandbox preset. Do not send agent-full-access
+    // as approval-policy — that id expects never|on-request|… and will fail.
+    modeConfigIds: ["mode"],
     effortConfigIds: ["reasoning", "reasoning-effort", "effort"],
   },
 };
 
 export function getAcpSupplement(agentId: string): AcpSupplement | null {
   return SUPPLEMENTS[agentId] ?? null;
+}
+
+/**
+ * Map legacy / display mode ids onto the wire ids each harness accepts.
+ * Codex once advertised approval-only labels (suggest/full-auto); live
+ * codex-acp uses read-only | agent | agent-full-access.
+ */
+export function normalizeAgentModeId(agentId: string, modeId: string): string {
+  if (agentId !== "codex" && agentId !== "codex-acp") return modeId;
+  const key = modeId.trim().toLowerCase();
+  const legacy: Record<string, string> = {
+    default: "agent",
+    suggest: "read-only",
+    "auto-edit": "agent",
+    autoedit: "agent",
+    "full-auto": "agent-full-access",
+    fullauto: "agent-full-access",
+    "full-access": "agent-full-access",
+    "full access": "agent-full-access",
+    "agent (full access)": "agent-full-access",
+    "read only": "read-only",
+    readonly: "read-only",
+  };
+  return legacy[key] ?? modeId;
 }
 
 /** Merge live ACP negotiation with static supplements (prefer live non-empty lists). */
@@ -281,13 +309,14 @@ export function expandAcpConfigAttempts(
   }
 
   if (typeof patch.mode === "string") {
+    const modeValue = normalizeAgentModeId(agentId, patch.mode);
     const ids = [
       caps?.modeConfigId,
       ...(sup?.modeConfigIds ?? []),
       "mode",
     ].filter(Boolean) as string[];
     for (const id of [...new Set(ids)]) {
-      attempts.push({ configId: id, value: patch.mode });
+      attempts.push({ configId: id, value: modeValue });
     }
   }
 
