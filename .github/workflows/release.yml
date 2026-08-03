@@ -1,0 +1,139 @@
+name: Release build
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            arch: arm64
+          - target: x86_64-apple-darwin
+            arch: intel
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target }}
+
+      - run: npm ci
+
+      # bundle.active is false in tauri.conf.json (Windows ships a bare
+      # portable exe); override it here so macOS gets a real .app + DMG.
+      - name: Build macOS app (${{ matrix.arch }})
+        run: >
+          npx tauri build --target ${{ matrix.target }}
+          --config '{"bundle":{"active":true,"targets":["app","dmg"]}}'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - name: Build portable exe
+        run: npx tauri build
+
+      - name: Compress with UPX
+        shell: pwsh
+        run: |
+          choco install upx -y --no-progress
+          Copy-Item src-tauri/target/release/marionette.exe Marionette.exe
+          upx --best --lzma Marionette.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-portable
+          path: Marionette.exe
+          if-no-files-found: error
+
+  build-linux:
+    # Oldest supported LTS: AppImages link the build host's glibc, so
+    # building on 22.04 keeps the artifact runnable on older distros.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential curl wget file \
+            libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev librsvg2-dev
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - name: Build AppImage
+        run: >
+          npx tauri build
+          --config '{"bundle":{"active":true,"targets":["appimage"]}}'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimage
+          path: src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [build-macos, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: artifacts/**
