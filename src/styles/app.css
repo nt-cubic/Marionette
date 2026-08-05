@@ -948,10 +948,92 @@ button.file-diff-card__code:hover {
 }
 
 .project-row {
-  grid-template-columns: 22px minmax(0, 1fr) auto;
+  grid-template-columns: 16px 22px minmax(0, 1fr) auto;
   align-items: center;
   min-height: 26px;
   padding: 0;
+}
+
+.project-row__grip {
+  display: grid;
+  width: 16px;
+  height: 100%;
+  min-height: 26px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  color: var(--text-faint);
+  background: transparent;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.project-row__grip:hover {
+  color: var(--text-muted);
+}
+
+.project-row__grip:active,
+.project-row.is-dragging .project-row__grip {
+  cursor: grabbing;
+  color: var(--accent);
+}
+
+.project-row__grip--spacer {
+  pointer-events: none;
+  visibility: hidden;
+}
+
+.project-row.is-dragging {
+  opacity: 0.4;
+}
+
+/* Insertion preview — same language as VS Code / Finder drag reorder. */
+.project-drop-line {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  height: 0;
+  margin: 0 4px;
+  pointer-events: none;
+  position: relative;
+  z-index: 2;
+}
+
+.project-drop-line__dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  margin-left: 2px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  background: var(--panel);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+  transform: translateY(-50%);
+}
+
+.project-drop-line__bar {
+  flex: 1 1 auto;
+  height: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent);
+  transform: translateY(-50%);
+}
+
+body.is-project-reordering {
+  cursor: grabbing !important;
+  user-select: none;
+}
+
+body.is-project-reordering * {
+  cursor: grabbing !important;
+}
+
+body.is-project-reordering .project-list {
+  /* Give drop lines a little breathing room while dragging. */
+  padding-block: 2px;
 }
 
 .project-row__select {
@@ -1362,7 +1444,7 @@ button.file-diff-card__code:hover {
   display: inline-flex;
   align-items: center;
   height: 28px;
-  max-width: 240px;
+  max-width: 280px;
   padding: 0 3px 0 8px;
   overflow: hidden;
   border: 1px solid transparent;
@@ -1391,6 +1473,9 @@ button.file-diff-card__code:hover {
   color: inherit;
   font: inherit;
   text-align: left;
+  touch-action: none;
+  user-select: none;
+  cursor: grab;
 }
 
 .editor-tab__rename {
@@ -1414,14 +1499,88 @@ button.file-diff-card__code:hover {
 }
 
 .editor-tab__close,
+.editor-tab__popout,
 .editor-tab__new,
 .editor-tab__view-toggle {
   /* Visual base from .pill-action.pill-action--sm */
   flex: 0 0 auto;
 }
 
-.editor-tab__close {
+.editor-tab__close,
+.editor-tab__popout {
   color: var(--text-faint);
+}
+
+.editor-tab__popout:hover {
+  color: var(--text);
+}
+
+.editor-tab.is-dragging-out {
+  opacity: 0.55;
+}
+
+.editor-tab.is-tear-source {
+  opacity: 0.28;
+  outline: 1px dashed color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+
+.editor-tab.is-dragging-out .editor-tab__select {
+  cursor: grabbing;
+}
+
+body.is-tab-detaching {
+  cursor: grabbing !important;
+  user-select: none;
+}
+
+body.is-tab-detaching * {
+  cursor: grabbing !important;
+}
+
+/* Ghost chip while tearing off — real WebView is created only on mouse-up. */
+.tab-tear-ghost {
+  position: fixed;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 96px;
+  max-width: 220px;
+  padding: 6px 10px 7px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--panel) 92%, var(--accent));
+  box-shadow:
+    0 8px 28px color-mix(in srgb, #000 35%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--text);
+  pointer-events: none;
+  transform: translate(-2px, -2px) rotate(-1.5deg);
+}
+
+.tab-tear-ghost__label {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-tear-ghost__hint {
+  font-size: 10px;
+  color: var(--text-muted);
+  letter-spacing: 0.01em;
+}
+
+/* Detached dialog window: no project shelf (column already 0 via is-left-collapsed). */
+.workspace-grid.is-detached .left-rail {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.workspace-grid.is-detached .floating-trigger--center-left {
+  display: none;
 }
 
 .editor-tab__view-toggle {

@@ -88,6 +88,31 @@ impl StorageService {
         self.write_projects(&projects)
     }
 
+    /// Persist a new project list order. Unknown ids are ignored; any projects
+    /// missing from `ordered_ids` are appended in their previous relative order.
+    pub fn reorder_projects(&self, ordered_ids: &[String]) -> Result<Vec<Project>, String> {
+        let existing = self.list_projects()?;
+        if existing.is_empty() {
+            return Ok(existing);
+        }
+        let mut by_id: std::collections::HashMap<String, Project> = existing
+            .into_iter()
+            .map(|p| (p.id.clone(), p))
+            .collect();
+        let mut next = Vec::with_capacity(by_id.len());
+        for id in ordered_ids {
+            if let Some(project) = by_id.remove(id) {
+                next.push(project);
+            }
+        }
+        // Keep leftovers (e.g. concurrent add) after the explicit order.
+        let mut rest: Vec<Project> = by_id.into_values().collect();
+        rest.sort_by(|a, b| a.name.cmp(&b.name));
+        next.extend(rest);
+        self.write_projects(&next)?;
+        Ok(next)
+    }
+
     pub fn list_sessions(&self, project_id: &str) -> Result<Vec<Session>, String> {
         let project = self.project_by_id(project_id)?;
         let file = sessions_file(Path::new(&project.root_path));
@@ -628,6 +653,46 @@ mod tests {
         assert_eq!(restored.len(), 1);
         assert_eq!(restored[0].id, project.id);
         assert_eq!(restored[0].root_path, project.root_path);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn projects_can_be_reordered() {
+        let root = test_root();
+        let global_dir = root.join("global");
+        let a_dir = root.join("workspace-a");
+        let b_dir = root.join("workspace-b");
+        let c_dir = root.join("workspace-c");
+        fs::create_dir_all(&a_dir).unwrap();
+        fs::create_dir_all(&b_dir).unwrap();
+        fs::create_dir_all(&c_dir).unwrap();
+
+        let service = StorageService::from_global_dir(global_dir.clone()).unwrap();
+        let a = service
+            .add_project(a_dir.to_string_lossy().to_string())
+            .unwrap();
+        let b = service
+            .add_project(b_dir.to_string_lossy().to_string())
+            .unwrap();
+        let c = service
+            .add_project(c_dir.to_string_lossy().to_string())
+            .unwrap();
+
+        let reordered = service
+            .reorder_projects(&[c.id.clone(), a.id.clone(), b.id.clone()])
+            .unwrap();
+        assert_eq!(
+            reordered.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            vec![c.id.as_str(), a.id.as_str(), b.id.as_str()]
+        );
+
+        let restarted = StorageService::from_global_dir(global_dir).unwrap();
+        let restored = restarted.list_projects().unwrap();
+        assert_eq!(
+            restored.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            vec![c.id.as_str(), a.id.as_str(), b.id.as_str()]
+        );
 
         fs::remove_dir_all(root).unwrap();
     }

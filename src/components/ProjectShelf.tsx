@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Bell, BellOff, ChevronDown, ChevronRight, Folder, Moon, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings2, Sun, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { Bell, BellOff, ChevronDown, ChevronRight, Folder, GripVertical, Moon, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings2, Sun, Trash2 } from "lucide-react";
 import type { AgentConfig, Project, Session } from "../lib/types";
 
 type ThemeMode = "dark" | "light";
@@ -20,17 +20,9 @@ function sessionRecency(session: Session): number {
   return Number.isFinite(idNum) ? idNum : 0;
 }
 
+/** Newest activity first. Selecting a dialog must NOT reorder — only send/create bumps recency. */
 function sortSessionsNewestFirst(list: Session[]): Session[] {
   return [...list].sort((a, b) => sessionRecency(b) - sessionRecency(a));
-}
-
-/** Active session first, then newest — matches “new dialog on top” + keep selection visible. */
-function orderSessionsForShelf(list: Session[], currentSessionId?: string): Session[] {
-  const sorted = sortSessionsNewestFirst(list);
-  if (!currentSessionId) return sorted;
-  const active = sorted.find((s) => s.id === currentSessionId);
-  if (!active) return sorted;
-  return [active, ...sorted.filter((s) => s.id !== currentSessionId)];
 }
 
 type ProjectShelfProps = {
@@ -58,7 +50,18 @@ type ProjectShelfProps = {
   onDeleteProject: (projectId: string) => void;
   /** Manual rename — always persists (like first-message auto-title). */
   onRenameSession?: (sessionId: string, label: string) => void;
+  /**
+   * Drag reorder. `place` is where the dragged row lands relative to the target:
+   * before = insert above the line, after = insert below the line.
+   */
+  onReorderProjects?: (
+    fromProjectId: string,
+    toProjectId: string,
+    place: "before" | "after"
+  ) => void;
 };
+
+type DropHint = { targetId: string; place: "before" | "after" };
 
 function sessionIsBusy(status: Session["status"]): boolean {
   return status === "running" || status === "starting";
@@ -84,6 +87,7 @@ export function ProjectShelf({
   onDeleteSession,
   onDeleteProject,
   onRenameSession,
+  onReorderProjects,
   searchHitIds = null,
   onSearchQueryChange,
 }: ProjectShelfProps) {
@@ -95,6 +99,23 @@ export function ProjectShelf({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const renameInputRef = useRef<HTMLInputElement>(null);
+  /**
+   * Pointer-based reorder (not HTML5 DnD).
+   * WebView2 often won't start a drag from nested <button>s, and React state
+   * set in dragstart is too late for dragover preventDefault — both broke order.
+   */
+  const [draggingProjectId, setDraggingProjectId] = useState<string | null>(null);
+  /** Insertion line: which row edge the drop will land on. */
+  const [dropHint, setDropHint] = useState<DropHint | null>(null);
+  const projectDragRef = useRef<{
+    fromId: string;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    armed: boolean;
+  } | null>(null);
+  const dropHintRef = useRef<DropHint | null>(null);
+  dropHintRef.current = dropHint;
 
   useEffect(() => {
     if (!renamingId) return;
@@ -173,6 +194,98 @@ export function ProjectShelf({
       else next.add(projectId);
       return next;
     });
+  };
+
+  const endProjectDrag = (commit: boolean) => {
+    const drag = projectDragRef.current;
+    projectDragRef.current = null;
+    const fromId = drag?.fromId ?? null;
+    const hint = dropHintRef.current;
+    setDraggingProjectId(null);
+    setDropHint(null);
+    dropHintRef.current = null;
+    document.body.classList.remove("is-project-reordering");
+    if (
+      !commit ||
+      !drag?.armed ||
+      !fromId ||
+      !hint ||
+      !onReorderProjects
+    ) {
+      return;
+    }
+    // No-op if the line sits on an edge that leaves order unchanged.
+    onReorderProjects(fromId, hint.targetId, hint.place);
+  };
+
+  const onProjectGripPointerDown = (projectId: string, event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!onReorderProjects || searching || event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      /* capture optional */
+    }
+    projectDragRef.current = {
+      fromId: projectId,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      armed: false,
+    };
+    setDraggingProjectId(projectId);
+    setDropHint(null);
+    dropHintRef.current = null;
+    document.body.classList.add("is-project-reordering");
+  };
+
+  const onProjectGripPointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const drag = projectDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const dist = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
+    if (!drag.armed && dist < 4) return;
+    drag.armed = true;
+    // elementFromPoint under capture still sees targets below the grip.
+    const el = document.elementFromPoint(event.clientX, event.clientY);
+    const group = el?.closest("[data-project-id]") as HTMLElement | null;
+    const overId = group?.dataset.projectId ?? null;
+    if (!overId || overId === drag.fromId) {
+      // Still over self (or gap): clear line so we don't lie about the drop.
+      if (dropHintRef.current) {
+        dropHintRef.current = null;
+        setDropHint(null);
+      }
+      return;
+    }
+    // Half-row rule: top half → insert before, bottom half → insert after.
+    const rowEl = group?.querySelector(".project-row") as HTMLElement | null;
+    const box = (rowEl ?? group)!.getBoundingClientRect();
+    const place: "before" | "after" =
+      event.clientY < box.top + box.height / 2 ? "before" : "after";
+    const next: DropHint = { targetId: overId, place };
+    const prev = dropHintRef.current;
+    if (!prev || prev.targetId !== next.targetId || prev.place !== next.place) {
+      dropHintRef.current = next;
+      setDropHint(next);
+    }
+  };
+
+  const onProjectGripPointerUp = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const drag = projectDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      /* ignore */
+    }
+    endProjectDrag(true);
+  };
+
+  const onProjectGripPointerCancel = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const drag = projectDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    endProjectDrag(false);
   };
 
   const themeButton = (
@@ -263,11 +376,8 @@ export function ProjectShelf({
           const rawSessions =
             filtered.sessionsByProject?.get(project.id) ??
             sessions.filter((session) => session.projectId === project.id);
-          // Active project: keep current session pinned first. Others: newest first.
-          const projectSessions = orderSessionsForShelf(
-            rawSessions,
-            project.id === currentProjectId ? currentSessionId : undefined
-          );
+          // Recency only — click-to-select must not jump the row to the top.
+          const projectSessions = sortSessionsNewestFirst(rawSessions);
           const sessionsFullyExpanded = searching || sessionsExpandedByProject.has(project.id);
           const shouldCollapseSessions =
             !sessionsFullyExpanded && projectSessions.length > SESSION_LIST_PREVIEW;
@@ -276,13 +386,59 @@ export function ProjectShelf({
             : projectSessions;
           const hiddenSessionCount = Math.max(0, projectSessions.length - visibleSessions.length);
 
+          const showLineBefore =
+            dropHint?.targetId === project.id &&
+            dropHint.place === "before" &&
+            draggingProjectId != null &&
+            draggingProjectId !== project.id;
+          const showLineAfter =
+            dropHint?.targetId === project.id &&
+            dropHint.place === "after" &&
+            draggingProjectId != null &&
+            draggingProjectId !== project.id;
+
+          const rowClass = [
+            "project-row",
+            project.id === currentProjectId ? "is-active" : "",
+            draggingProjectId === project.id ? "is-dragging" : "",
+          ]
+            .filter(Boolean)
+            .join(" ");
+
           return (
-            <div className="project-group" key={project.id}>
-              <div className={project.id === currentProjectId ? "project-row is-active" : "project-row"}>
+            <div className="project-group" key={project.id} data-project-id={project.id}>
+              {showLineBefore && (
+                <div className="project-drop-line" aria-hidden>
+                  <span className="project-drop-line__dot" />
+                  <span className="project-drop-line__bar" />
+                </div>
+              )}
+              <div className={rowClass}>
+                {onReorderProjects && !searching ? (
+                  <button
+                    className="project-row__grip"
+                    type="button"
+                    title="Drag to reorder projects"
+                    aria-label={`Reorder ${project.name}`}
+                    onPointerDown={(e) => onProjectGripPointerDown(project.id, e)}
+                    onPointerMove={onProjectGripPointerMove}
+                    onPointerUp={onProjectGripPointerUp}
+                    onPointerCancel={onProjectGripPointerCancel}
+                  >
+                    <GripVertical size={13} />
+                  </button>
+                ) : (
+                  <span className="project-row__grip project-row__grip--spacer" aria-hidden />
+                )}
                 <button className="project-row__toggle" type="button" title={expandedProjects.has(project.id) ? "Collapse project" : "Expand project"} aria-label={expandedProjects.has(project.id) ? `Collapse ${project.name}` : `Expand ${project.name}`} aria-expanded={expandedProjects.has(project.id)} onClick={() => toggleProject(project.id)}>
                   {expandedProjects.has(project.id) ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                 </button>
-                <button className="project-row__select" type="button" title={project.rootPath} onClick={() => onProjectSelect(project.id)}>
+                <button
+                  className="project-row__select"
+                  type="button"
+                  title={project.rootPath}
+                  onClick={() => onProjectSelect(project.id)}
+                >
                   <Folder size={15} />
                   <span className="project-row__content">
                     <strong>{project.name}</strong>
@@ -310,6 +466,12 @@ export function ProjectShelf({
                   </button>
                 </span>
               </div>
+              {showLineAfter && (
+                <div className="project-drop-line" aria-hidden>
+                  <span className="project-drop-line__dot" />
+                  <span className="project-drop-line__bar" />
+                </div>
+              )}
 
               {expandedProjects.has(project.id) && (
                 <div className="project-sessions">
