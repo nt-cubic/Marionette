@@ -18,6 +18,9 @@ Opencode、Claude Code、Grok build、Codex……将他们配置进同一个壳�
 
 > v0.1.0 —— 核心可用，持续打磨
 
+**现行状态说明：** [docs/CURRENT.md](docs/CURRENT.md)  
+（历史策划/路线图已挪到 [docs/archive/](docs/archive/)）
+
 ---
 
 ## 为什么存在 Marionette
@@ -76,6 +79,8 @@ MCP、Skills —— 不需要每个 agent 都各自配置。
 - **@ 委派** —— 消息里 @ 另一个 Agent 派发任务，上下文自动交接
 - **智能回复** —— 文件刚拖进来、AI 给了选项、上轮报错、让它继续执行……直接智能感知出现回复气泡，一键接话
 - **Tasks 任务清单** —— 项目级 Todo，手写增删、换 Agent 不丢，AI 的 Plan 一键吸收
+- **多窗口** —— 拖出 tab 用幽灵预览，松手再开独立窗；项目可拖排序
+- **资源管理器** —— 侧栏打开项目文件夹
 
 ---
 

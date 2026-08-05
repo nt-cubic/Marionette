@@ -410,28 +410,45 @@ export function ContextPanel({
           </button>
         </div>
         <div className="usage-agent">{usage.agentLabel}</div>
-        <div className="usage-list">
-          {usage.windows.map((window) => {
-            const tone = meterTone(window);
-            return (
-              <div className={`usage-row usage-row--${tone}`} key={window.id}>
-                <span>{window.label}</span>
-                <strong>{formatPrimary(window)}</strong>
-                {window.detail && window.kind !== "cost" && (
-                  <span className="usage-row__detail">{window.detail}</span>
-                )}
-                {window.percentage !== null && (
-                  <div className="usage-meter__track">
-                    <span style={{ width: `${Math.min(100, Math.max(0, window.percentage))}%` }} />
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
+        {usage.windows.length === 0 ? (
+          <p className="context-card__empty">
+            暂无用量数据。先发一条消息或点刷新；OpenCode 会查余额，Claude/Codex 在已连接时会拉 /usage、/status。
+          </p>
+        ) : (
+          <div className="usage-list">
+            {usage.windows.map((window) => {
+              const tone = meterTone(window);
+              const primary = formatPrimary(window);
+              const isEmpty =
+                primary === "N/A" &&
+                !window.detail &&
+                window.percentage == null;
+              return (
+                <div className={`usage-row usage-row--${tone}`} key={window.id}>
+                  <span>{window.label}</span>
+                  <strong className={isEmpty ? "usage-row__muted" : undefined}>
+                    {primary}
+                  </strong>
+                  {window.detail && window.kind !== "cost" && (
+                    <span className="usage-row__detail">{window.detail}</span>
+                  )}
+                  {window.percentage !== null && (
+                    <div className="usage-meter__track">
+                      <span
+                        style={{
+                          width: `${Math.min(100, Math.max(0, window.percentage))}%`,
+                        }}
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
         <small className="usage-updated" title={usage.note ?? undefined}>
           {usage.note ? `${usage.note} · ` : ""}
-          {usage.refreshedAt}
+          {usage.refreshedAt || "尚未刷新"}
         </small>
       </section>
 

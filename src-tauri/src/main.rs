@@ -150,7 +150,7 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            use tauri::Manager;
+            use tauri::{Emitter, Manager};
             match event {
                 tauri::WindowEvent::CloseRequested { api, .. } => {
                     // NEVER let WebView2 tear down through the normal close path
@@ -176,6 +176,8 @@ fn main() {
                         shutdown_and_exit(window.app_handle());
                     } else {
                         let _ = window.hide();
+                        // Frontend reaper blanks excess hidden shells (memory).
+                        let _ = window.app_handle().emit("marionette-detached-hidden", &label);
                         crate::debug_log::append(
                             "window",
                             "info",
@@ -213,6 +215,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::list_projects,
             commands::list_providers,
+            commands::navigate_webview,
             commands::add_project,
             commands::pick_folder,
             commands::pick_files,

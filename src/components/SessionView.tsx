@@ -416,7 +416,7 @@ export function SessionView({
       {authBanner && (
         <div className="session-auth-banner" role="status">
           <div className="session-auth-banner__copy">
-            <strong>Sign in required</strong>
+            <strong>需要登录</strong>
             <span>{authBanner}</span>
           </div>
           {onSignIn && (
@@ -426,7 +426,7 @@ export function SessionView({
               disabled={signInBusy}
               onClick={() => void onSignIn()}
             >
-              {signInBusy ? "Opening login…" : `Sign in with ${agent.label}`}
+              {signInBusy ? "正在打开登录…" : `用 ${agent.label} 登录`}
             </button>
           )}
         </div>
