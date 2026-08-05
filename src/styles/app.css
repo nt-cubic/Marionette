@@ -2298,19 +2298,50 @@ body.is-tab-detaching * {
 
 /* Every transcript row is width-bound by the clean column — never content. */
 .event-list > .event-card,
-.event-list > .event-card--collapsible {
+.event-list > .event-card--collapsible,
+.event-list__virt-item > .event-card,
+.event-list__virt-item > .event-card--collapsible {
   flex: 0 0 auto;
   width: 100%;
   max-width: 100%;
   min-width: 0;
 }
 
-/* Native browser virtualization for long transcripts: off-screen rows keep
-   their DOM identity (so details/input state survives) while the browser can
-   skip layout and paint work outside the viewport. */
-.event-list.is-long > .event-card {
+.event-list__virt-item {
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.event-list__virt-spacer {
+  flex: 0 0 auto;
+  width: 100%;
+  pointer-events: none;
+}
+
+/* Browser paint/layout skip for long chats (in addition to JS windowing). */
+.event-list.is-long > .event-card,
+.event-list.is-long > .event-list__virt-item {
   content-visibility: auto;
-  contain-intrinsic-size: 0 120px;
+  contain-intrinsic-size: auto 128px;
+}
+
+.user-image-card__muted--shell {
+  display: grid;
+  place-items: center;
+  min-height: 72px;
+  padding: 8px;
+  font-size: 11px;
+  text-align: center;
+  word-break: break-all;
+}
+
+.viewport-mount__shell {
+  min-height: 48px;
+  opacity: 0.35;
+  font-size: 12px;
+  color: var(--text-faint);
 }
 
 .quote-pop {

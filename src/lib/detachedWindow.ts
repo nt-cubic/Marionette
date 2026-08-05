@@ -29,8 +29,14 @@ export type DetachWindowOpts = {
 const GRAB_OFFSET_X = 72;
 const GRAB_OFFSET_Y = 14;
 
-/** How many *hidden* detached shells to keep warm for fast re-open. */
-export const MAX_HIDDEN_DETACHED = 3;
+/**
+ * Hidden shells stay fully warm for this long (instant re-open).
+ * After that, only MAX_HIDDEN_DETACHED aged shells keep their SPA loaded;
+ * older excess go to about:blank (host stays — no tao destroy).
+ */
+export const HIDDEN_DETACHED_GRACE_MS = 10 * 60 * 1000;
+/** How many *aged* (past grace) hidden shells may keep a full SPA resident. */
+export const MAX_HIDDEN_DETACHED = 2;
 
 const DETACHED_HIDDEN_EVENT = "marionette-detached-hidden";
 
@@ -103,7 +109,8 @@ async function navigateDetached(win: WebviewWindow, href: string): Promise<void>
 }
 
 /**
- * Drop React trees in excess hidden detached windows (LRU).
+ * Drop React trees only for *aged* hidden detached windows beyond MAX.
+ * Recently closed windows stay fully warm (no blank) so re-tear-off is instant.
  * Does NOT destroy the WebView host (tao paint assert on Windows).
  */
 export async function reapHiddenDetachedWindows(keepLabel?: string): Promise<void> {
@@ -122,15 +129,19 @@ export async function reapHiddenDetachedWindows(keepLabel?: string): Promise<voi
       }
       if (!visible) hidden.push(w);
     }
-    if (hidden.length <= MAX_HIDDEN_DETACHED) return;
+    if (hidden.length === 0) return;
 
-    hidden.sort(
-      (a, b) => (detachedTouch.get(a.label) ?? 0) - (detachedTouch.get(b.label) ?? 0)
-    );
-    const excess = hidden.slice(0, hidden.length - MAX_HIDDEN_DETACHED);
+    const now = Date.now();
+    const aged = hidden
+      .filter((w) => now - (detachedTouch.get(w.label) ?? now) >= HIDDEN_DETACHED_GRACE_MS)
+      .sort(
+        (a, b) => (detachedTouch.get(a.label) ?? 0) - (detachedTouch.get(b.label) ?? 0)
+      );
+    // Keep the newest MAX aged shells loaded; blank only the older excess.
+    if (aged.length <= MAX_HIDDEN_DETACHED) return;
+    const excess = aged.slice(0, aged.length - MAX_HIDDEN_DETACHED);
     for (const w of excess) {
       await navigateDetached(w, "about:blank");
-      // Bump so we don't thrash the same victim every tick without progress.
       touch(w.label);
     }
   } catch {
@@ -141,11 +152,19 @@ export async function reapHiddenDetachedWindows(keepLabel?: string): Promise<voi
 /** Listen for Rust hide events and run the reaper. */
 export async function bindDetachedWindowReaper(): Promise<UnlistenFn> {
   if (!isTauriRuntime()) return () => undefined;
-  return listen<string>(DETACHED_HIDDEN_EVENT, (event) => {
+  const unlisten = await listen<string>(DETACHED_HIDDEN_EVENT, (event) => {
     const label = event.payload;
     if (label) touch(label);
     void reapHiddenDetachedWindows();
   });
+  // Grace period expiry — blank aged shells without waiting for another hide.
+  const interval = window.setInterval(() => {
+    void reapHiddenDetachedWindows();
+  }, 60_000);
+  return () => {
+    unlisten();
+    window.clearInterval(interval);
+  };
 }
 
 /**

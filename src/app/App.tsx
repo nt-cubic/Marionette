@@ -20,6 +20,11 @@ import {
   readDetachedSessionId,
 } from "../lib/detachedWindow";
 import { broadcastSessionPatch, listenSessionPatches } from "../lib/sessionBus";
+import {
+  coldSessionIdsWithEvents,
+  collectHotSessionIds,
+  dropEventsForSessions,
+} from "../lib/memoryHygiene";
 import { agentAuthSpec } from "../lib/agentAuth";
 import type { AcpEvent, AvailableCommand, CapabilitySnapshot, ChangedFile, HandoffResult, Project, ProjectContext, Session, SessionComposerPrefs, SessionEvent, SessionViewMode, UsageSnapshot } from "../lib/types";
 import {
@@ -440,11 +445,13 @@ export function App() {
   const agentsRef = useRef(availableAgents);
   const currentSessionIdRef = useRef(currentSessionId);
   const currentProjectIdRef = useRef(currentProjectId);
+  const openSessionIdsRef = useRef(openSessionIds);
   const liveEventsRef = useRef(liveEvents);
   sessionsRef.current = availableSessions;
   agentsRef.current = availableAgents;
   currentSessionIdRef.current = currentSessionId;
   currentProjectIdRef.current = currentProjectId;
+  openSessionIdsRef.current = openSessionIds;
   liveEventsRef.current = liveEvents;
 
   /** One workspace snapshot per prompt; used to turn real edits into timeline cards. */
@@ -724,7 +731,7 @@ export function App() {
     });
   }, []);
 
-  // Reap excess hidden detached windows (about:blank) after secondary close.
+  // Reap aged hidden detached windows (about:blank) — never blanks recent closes.
   useEffect(() => {
     if (!isTauriRuntime()) return;
     let unlisten: (() => void) | undefined;
@@ -733,6 +740,90 @@ export function App() {
     });
     return () => unlisten?.();
   }, []);
+
+  /**
+   * Drop in-memory transcript for cold sessions (not open, not live ACP).
+   * Disk is source of truth; re-open reloads via loadSessionTranscript.
+   * Never touches open tabs / streaming / delegate children.
+   */
+  const pruneColdSessionMemory = useCallback(async () => {
+    const hot = collectHotSessionIds({
+      currentSessionId: currentSessionIdRef.current,
+      openSessionIds: openSessionIdsRef.current,
+      sessions: sessionsRef.current,
+      delegateMeta: delegateMetaRef.current,
+    });
+    const cold = coldSessionIdsWithEvents(liveEventsRef.current, hot);
+    if (cold.length === 0) return;
+
+    const flushed: string[] = [];
+    for (const sessionId of cold) {
+      // Don't drop while a debounced save is still pending — flush first.
+      const pending = transcriptSaveTimers.current.get(sessionId);
+      if (pending) {
+        clearTimeout(pending);
+        transcriptSaveTimers.current.delete(sessionId);
+      }
+      const events = persistableEventsForSession(liveEventsRef.current, sessionId);
+      try {
+        if (isTauriRuntime() && events.length > 0) {
+          await writeTranscript(sessionId, events);
+        }
+        flushed.push(sessionId);
+      } catch {
+        // Keep memory if disk write failed — never lose the only copy.
+      }
+    }
+    if (flushed.length === 0) return;
+
+    const drop = new Set(flushed);
+    for (const id of drop) {
+      transcriptLoadedRef.current.delete(id);
+    }
+    setLiveEvents((current) => {
+      const next = dropEventsForSessions(current, drop);
+      liveEventsRef.current = next;
+      return next;
+    });
+    setSessionUsageById((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const id of drop) {
+        if (id in next) {
+          delete next[id];
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+    // Activity stamps are tiny; still drop cold ones to avoid unbounded maps.
+    setLastActivityById((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const id of drop) {
+        if (id in next) {
+          delete next[id];
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, []);
+
+  // Periodic cold-session prune (open tabs / live turns are never dropped).
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    const tick = () => {
+      void pruneColdSessionMemory();
+    };
+    // First pass after idle boot; then every 2 minutes.
+    const first = window.setTimeout(tick, 45_000);
+    const interval = window.setInterval(tick, 120_000);
+    return () => {
+      window.clearTimeout(first);
+      window.clearInterval(interval);
+    };
+  }, [pruneColdSessionMemory]);
 
   // Keep shelf/tabs/title in sync across main + detached windows.
   useEffect(() => {
@@ -2075,10 +2166,17 @@ export function App() {
     }
 
     setOpenSessionIds(nextOpenIds);
+    openSessionIdsRef.current = nextOpenIds;
     if (sessionId === currentSessionId) {
       const nextSession = availableSessions.find((session) => session.id === nextOpenIds[nextOpenIds.length - 1]);
-      if (nextSession) openSession(nextSession);
+      if (nextSession) {
+        // Keep refs current so the prune below doesn't treat the new active as cold.
+        currentSessionIdRef.current = nextSession.id;
+        openSession(nextSession);
+      }
     }
+    // Closed tab is no longer hot — free its transcript after flush (disk kept).
+    void pruneColdSessionMemory();
   };
 
   /** Drag project A to a line before/after B — persist array order in projects.json. */
