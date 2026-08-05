@@ -17,6 +17,7 @@ import { detectForceWebSearchInText, stripForceWebSearchPrefix } from "../lib/fo
 import { cleanAssistantText } from "../lib/markdownText";
 import { newQuotePinId, type QuotePin } from "../lib/quoteComment";
 import { buildMessagePresentation } from "../lib/messagePresentation";
+import { useVirtualWindow } from "../lib/useVirtualWindow";
 import type { AgentConfig, Session, SessionEvent, SessionStatus, SessionViewMode } from "../lib/types";
 import { ClippedBody } from "./ClippedBody";
 import { LinkCwdContext, LinkedText } from "./LinkedText";
@@ -889,7 +890,38 @@ function CleanPlaceholder({
     () => buildMessagePresentation(visibleEvents, session.id),
     [session.id, visibleEvents],
   );
-  const isLongTranscript = presentationItems.length >= 80;
+  /** Flat render units (reply parts expanded). Full data kept; mount is windowed. */
+  const renderUnits = useMemo(() => {
+    const units: { key: string; event: SessionEvent; index: number }[] = [];
+    for (const item of presentationItems) {
+      if (item.kind === "reply_group") {
+        for (const part of item.parts) {
+          const ev = part.event.event;
+          const idx = part.event.index;
+          units.push({
+            key: `u-${item.key}-${part.type}-${idx}`,
+            event: ev,
+            index: idx,
+          });
+        }
+      } else {
+        units.push({
+          key: item.key,
+          event: item.event,
+          index: item.index,
+        });
+      }
+    }
+    return units;
+  }, [presentationItems]);
+  // Virtualize only longer chats — short threads keep full mount for zero risk.
+  const useVirtual = renderUnits.length >= 36;
+  const isLongTranscript = renderUnits.length >= 48;
+  const virtual = useVirtualWindow(listRef, useVirtual ? renderUnits.length : 0, {
+    estimate: 132,
+    overscan: 10,
+    resetKey: `${session.id}|${useVirtual ? "v" : "full"}`,
+  });
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
   const [editBusy, setEditBusy] = useState(false);
@@ -980,8 +1012,41 @@ function CleanPlaceholder({
     const el = listRef.current;
     if (!el) return;
     if (!stickToBottomRef.current) return;
-    el.scrollTop = el.scrollHeight;
-  }, [scrollKey]);
+    // With a virtual list, scrollHeight is driven by measured padding; use totalSize when available.
+    const target = useVirtual && virtual.totalSize > 0 ? virtual.totalSize : el.scrollHeight;
+    el.scrollTop = Math.max(el.scrollHeight, target);
+  }, [scrollKey, useVirtual, virtual.totalSize]);
+
+  // Outline jump when the target card is not mounted (virtual window).
+  useEffect(() => {
+    const onJump = (ev: Event) => {
+      const id = (ev as CustomEvent<{ id?: string }>).detail?.id;
+      if (!id || !listRef.current) return;
+      const idx = renderUnits.findIndex(
+        (u) =>
+          u.event.type === "user_message" && userMessageAnchorId(u.event) === id
+      );
+      if (idx < 0) return;
+      stickToBottomRef.current = false;
+      setAtBottom(false);
+      const top = useVirtual ? virtual.offsetOf(idx) - 24 : 0;
+      if (useVirtual) {
+        listRef.current.scrollTop = Math.max(0, top);
+      }
+      // After the window mounts the card, flash it.
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          const el = document.getElementById(id);
+          if (!el) return;
+          el.scrollIntoView({ behavior: "smooth", block: "start" });
+          el.classList.add("is-outline-flash");
+          window.setTimeout(() => el.classList.remove("is-outline-flash"), 900);
+        });
+      });
+    };
+    window.addEventListener("marionette-outline-jump", onJump);
+    return () => window.removeEventListener("marionette-outline-jump", onJump);
+  }, [renderUnits, useVirtual, virtual]);
 
   return (
     // Relative paths in agent text resolve against this dialog's project root.
@@ -1588,7 +1653,10 @@ function CleanPlaceholder({
                       "attachments" in event &&
                       Array.isArray(event.attachments) &&
                       event.attachments.length > 0 && (
-                        <UserImageCard attachments={event.attachments} />
+                        <UserImageCard
+                          attachments={event.attachments}
+                          scrollRootRef={listRef}
+                        />
                       )}
                     {(() => {
                       const displayBody =
@@ -1658,12 +1726,39 @@ function CleanPlaceholder({
           );
         };
 
-          return presentationItems.flatMap((item) => {
-            if (item.kind === "reply_group") {
-              return item.parts.map((part) => renderEvent(part.event.event, part.event.index));
-            }
-            return renderEvent(item.event, item.index);
+          const slice = useVirtual
+            ? renderUnits.slice(virtual.start, virtual.end)
+            : renderUnits;
+          const nodes = slice.map((unit, sliceIndex) => {
+            const absoluteIndex = useVirtual ? virtual.start + sliceIndex : sliceIndex;
+            const node = renderEvent(unit.event, unit.index);
+            if (!node || !useVirtual) return node;
+            return (
+              <div
+                key={unit.key}
+                ref={(el) => virtual.measureRef(absoluteIndex, el)}
+                className="event-list__virt-item"
+              >
+                {node}
+              </div>
+            );
           });
+          if (!useVirtual) return nodes;
+          return (
+            <>
+              <div
+                className="event-list__virt-spacer"
+                style={{ height: virtual.paddingTop }}
+                aria-hidden
+              />
+              {nodes}
+              <div
+                className="event-list__virt-spacer"
+                style={{ height: virtual.paddingBottom }}
+                aria-hidden
+              />
+            </>
+          );
         })()}
         {showStallBanner && (
           <StallBanner

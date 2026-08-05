@@ -18,10 +18,16 @@ function previewText(text: string, max = 72): string {
 
 function jumpTo(id: string) {
   const el = document.getElementById(id);
-  if (!el) return;
-  el.scrollIntoView({ behavior: "smooth", block: "start" });
-  el.classList.add("is-outline-flash");
-  window.setTimeout(() => el.classList.remove("is-outline-flash"), 900);
+  if (el) {
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+    el.classList.add("is-outline-flash");
+    window.setTimeout(() => el.classList.remove("is-outline-flash"), 900);
+    return;
+  }
+  // Virtual list may not have mounted this card yet — ask Clean view to scroll.
+  window.dispatchEvent(
+    new CustomEvent("marionette-outline-jump", { detail: { id } })
+  );
 }
 
 /**
