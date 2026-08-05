@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Bell, BellOff, ChevronDown, ChevronRight, Folder, GripVertical, Moon, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings2, Sun, Trash2 } from "lucide-react";
+import { Bell, BellOff, ChevronDown, ChevronRight, Folder, FolderOpen, GripVertical, Moon, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Sun, Trash2 } from "lucide-react";
 import type { AgentConfig, Project, Session } from "../lib/types";
 
 type ThemeMode = "dark" | "light";
@@ -59,6 +59,8 @@ type ProjectShelfProps = {
     toProjectId: string,
     place: "before" | "after"
   ) => void;
+  /** Reveal project folder in the OS file manager. */
+  onRevealProject?: (project: Project) => void;
 };
 
 type DropHint = { targetId: string; place: "before" | "after" };
@@ -88,6 +90,7 @@ export function ProjectShelf({
   onDeleteProject,
   onRenameSession,
   onReorderProjects,
+  onRevealProject,
   searchHitIds = null,
   onSearchQueryChange,
 }: ProjectShelfProps) {
@@ -461,9 +464,20 @@ export function ProjectShelf({
                   >
                     <Trash2 size={13} />
                   </button>
-                  <button className="project-row__action" type="button" title="Project settings">
-                    <Settings2 size={13} />
-                  </button>
+                  {onRevealProject && (
+                    <button
+                      className="project-row__action"
+                      type="button"
+                      title={`Reveal ${project.name} in file manager`}
+                      aria-label={`Reveal ${project.name} in file manager`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onRevealProject(project);
+                      }}
+                    >
+                      <FolderOpen size={13} />
+                    </button>
+                  )}
                 </span>
               </div>
               {showLineAfter && (

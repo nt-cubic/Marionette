@@ -13,8 +13,13 @@ import {
   sealOpenAssistantReplies,
   userMessageEvent,
 } from "../lib/acpTranscript";
-import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, generateHandoff, getChangedFiles, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, startAcpSession, startAgentLogin, stopAcpSession, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision } from "../lib/api";
-import { openDetachedSessionWindow, readDetachedSessionId } from "../lib/detachedWindow";
+import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, generateHandoff, getChangedFiles, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, startAcpSession, startAgentLogin, stopAcpSession, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision } from "../lib/api";
+import {
+  bindDetachedWindowReaper,
+  openDetachedSessionWindow,
+  readDetachedSessionId,
+} from "../lib/detachedWindow";
+import { broadcastSessionPatch, listenSessionPatches } from "../lib/sessionBus";
 import { agentAuthSpec } from "../lib/agentAuth";
 import type { AcpEvent, AvailableCommand, CapabilitySnapshot, ChangedFile, HandoffResult, Project, ProjectContext, Session, SessionComposerPrefs, SessionEvent, SessionViewMode, UsageSnapshot } from "../lib/types";
 import {
@@ -719,6 +724,48 @@ export function App() {
     });
   }, []);
 
+  // Reap excess hidden detached windows (about:blank) after secondary close.
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let unlisten: (() => void) | undefined;
+    void bindDetachedWindowReaper().then((fn) => {
+      unlisten = fn;
+    });
+    return () => unlisten?.();
+  }, []);
+
+  // Keep shelf/tabs/title in sync across main + detached windows.
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let unlisten: (() => void) | undefined;
+    void listenSessionPatches((patch) => {
+      setAvailableSessions((current) => {
+        let changed = false;
+        const next = current.map((s) => {
+          if (s.id !== patch.sessionId) return s;
+          const label = patch.label ?? s.label;
+          const status = patch.status ?? s.status;
+          if (label === s.label && status === s.status) return s;
+          changed = true;
+          return { ...s, label, status };
+        });
+        return changed ? next : current;
+      });
+      if (
+        IS_DETACHED_WINDOW &&
+        DETACHED_SESSION_ID === patch.sessionId &&
+        patch.label
+      ) {
+        void import("@tauri-apps/api/window")
+          .then(({ getCurrentWindow }) => getCurrentWindow().setTitle(patch.label!))
+          .catch(() => undefined);
+      }
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => unlisten?.();
+  }, []);
+
   useEffect(() => {
     if (!isTauriRuntime()) return;
     let disposed = false;
@@ -1057,21 +1104,24 @@ export function App() {
         // { error: { message: "Authentication required" } } with no message chunks).
         const errText = formatAcpRpcError(payload.data);
         if (errText) {
-          const classified = classifyAgentError(errText);
+          const sessAgentId = sessionsRef.current.find((s) => s.id === payload.sessionId)?.agentId;
+          const sessAgent = sessAgentId
+            ? agentsRef.current.find((a) => a.id === sessAgentId)
+            : undefined;
+          const classified = classifyAgentError(errText, {
+            agentId: sessAgentId,
+            agentLabel: sessAgent?.label,
+          });
           let body = formatClassifiedError(classified);
           if (classified.kind === "auth") {
-            // Per-agent hint + error-driven banner: some agents (CodeBuddy)
-            // keep credentials in the OS keyring, so only the ACP error can
-            // prove a login is missing.
-            const sessAgentId = sessionsRef.current.find((s) => s.id === payload.sessionId)?.agentId;
+            // Per-agent banner: some agents (CodeBuddy) only prove auth via ACP error.
             const spec = sessAgentId ? agentAuthSpec(sessAgentId) : undefined;
             if (spec) {
-              if (spec.login) body += `\n\n${spec.errorHint}`;
               setAuthHintFor(
                 sessAgentId!,
                 spec.login
-                  ? `Sign in required — click Sign in, or run \`${spec.loginCommand}\` in a terminal.`
-                  : `Sign in required — run \`${spec.loginCommand}\` in a terminal.`
+                  ? `需要登录 — 点 Sign in，或终端执行 \`${spec.loginCommand}\``
+                  : `需要登录 — 终端执行 \`${spec.loginCommand}\``
               );
             }
           }
@@ -1263,6 +1313,12 @@ export function App() {
       current.map((s) => (s.id === sessionId ? { ...s, label } : s))
     );
     void updateSessionLabel(sessionId, label).catch(() => undefined);
+    void broadcastSessionPatch({ sessionId, label });
+    if (IS_DETACHED_WINDOW && DETACHED_SESSION_ID === sessionId) {
+      void import("@tauri-apps/api/window")
+        .then(({ getCurrentWindow }) => getCurrentWindow().setTitle(label))
+        .catch(() => undefined);
+    }
   }, []);
 
   /** Manual rename (shelf / tab) — always persists, stops future auto-title. */
@@ -1272,6 +1328,12 @@ export function App() {
       current.map((s) => (s.id === sessionId ? { ...s, label: next } : s))
     );
     void updateSessionLabel(sessionId, next).catch(() => undefined);
+    void broadcastSessionPatch({ sessionId, label: next });
+    if (IS_DETACHED_WINDOW && DETACHED_SESSION_ID === sessionId) {
+      void import("@tauri-apps/api/window")
+        .then(({ getCurrentWindow }) => getCurrentWindow().setTitle(next))
+        .catch(() => undefined);
+    }
   }, []);
 
   const loadSessionTranscript = useCallback(async (sessionId: string) => {
@@ -1323,7 +1385,13 @@ export function App() {
         }
         setSignInBusy(false);
       } else if (probe.status === "logged_out") {
-        setAuthHintFor(agentId, probe.message || `${spec.loginCommand} — sign in required.`);
+        setAuthHintFor(
+          agentId,
+          probe.message ||
+            (spec.login
+              ? `需要登录 — 点 Sign in，或终端执行 \`${spec.loginCommand}\``
+              : `需要登录 — 终端执行 \`${spec.loginCommand}\``)
+        );
       }
       // "unknown" (e.g. CodeBuddy OS-keyring) keeps whatever banner is up.
     },
@@ -1370,11 +1438,14 @@ export function App() {
         setAuthHintFor(
           agentId,
           result?.message ||
-            `Could not start login. Run \`${spec.loginCommand}\` in a terminal.`
+            `无法启动登录。请在终端执行 \`${spec.loginCommand}\`。`
         );
         return;
       }
-      setAuthHintFor(agentId, result.message || "Complete sign-in, then return here.");
+      setAuthHintFor(
+        agentId,
+        result.message || "请在浏览器/终端完成登录，然后回到这里（会自动检测）。"
+      );
       // Poll until logged in or timeout (~2 min).
       if (authPollRef.current) clearInterval(authPollRef.current);
       let ticks = 0;
@@ -1894,6 +1965,7 @@ export function App() {
     setAvailableSessions((current) =>
       current.map((session) => (session.id === sessionId ? { ...session, status } : session))
     );
+    void broadcastSessionPatch({ sessionId, status });
   }, []);
 
   /**
@@ -2928,7 +3000,14 @@ export function App() {
         await sendAcpPrompt(sid, promptText);
       } catch (error) {
         setSessionStatusById(sid, "error");
-        const classified = classifyAgentError(error);
+        const sess = sessionsRef.current.find((s) => s.id === sid);
+        const agent = sess
+          ? agentsRef.current.find((a) => a.id === sess.agentId)
+          : undefined;
+        const classified = classifyAgentError(error, {
+          agentId: sess?.agentId,
+          agentLabel: agent?.label,
+        });
         setLiveEvents((events) => [
           ...events,
           {
@@ -3536,7 +3615,25 @@ export function App() {
       delete fileChangePublishedRef.current[sid];
       fileChangeFinalizeRef.current.delete(sid);
       setSessionStatusById(sid, "error");
-      const classified = classifyAgentError(error);
+      const sess = sessionsRef.current.find((s) => s.id === sid);
+      const agent = sess
+        ? agentsRef.current.find((a) => a.id === sess.agentId)
+        : undefined;
+      const classified = classifyAgentError(error, {
+        agentId: sess?.agentId,
+        agentLabel: agent?.label,
+      });
+      if (classified.kind === "auth" && sess?.agentId) {
+        const spec = agentAuthSpec(sess.agentId);
+        if (spec) {
+          setAuthHintFor(
+            sess.agentId,
+            spec.login
+              ? `需要登录 — 点 Sign in，或终端执行 \`${spec.loginCommand}\``
+              : `需要登录 — 终端执行 \`${spec.loginCommand}\``
+          );
+        }
+      }
       setLiveEvents((current) => [
         ...current,
         {
@@ -3805,6 +3902,9 @@ export function App() {
             onDeleteProject={handleDeleteProject}
             onRenameSession={handleRenameSession}
             onReorderProjects={handleReorderProjects}
+            onRevealProject={(project) => {
+              void revealInFileManager(project.rootPath).catch(() => undefined);
+            }}
           />
           )}
           {!leftCollapsed && !IS_DETACHED_WINDOW && (

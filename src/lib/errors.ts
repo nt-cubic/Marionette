@@ -1,3 +1,5 @@
+import { agentAuthSpec } from "./agentAuth";
+
 export type AgentErrorKind =
   | "auth"
   | "command_missing"
@@ -15,8 +17,17 @@ export type ClassifiedError = {
   actionHint?: string;
 };
 
+export type ClassifyAgentErrorOpts = {
+  /** When set, auth errors use that agent’s Sign in / login-command hint. */
+  agentId?: string | null;
+  agentLabel?: string | null;
+};
+
 /** Map agent / transport errors into a stable product taxonomy. */
-export function classifyAgentError(raw: unknown): ClassifiedError {
+export function classifyAgentError(
+  raw: unknown,
+  opts?: ClassifyAgentErrorOpts
+): ClassifiedError {
   const message =
     typeof raw === "string"
       ? raw
@@ -31,15 +42,24 @@ export function classifyAgentError(raw: unknown): ClassifiedError {
           })();
 
   const lower = message.toLowerCase();
+  const agentLabel = opts?.agentLabel?.trim() || opts?.agentId || "agent";
+  const spec = agentAuthSpec(opts?.agentId);
+  const authHint =
+    spec?.errorHint ??
+    (opts?.agentId
+      ? `点横幅 Sign in 登录 ${agentLabel}，或在终端运行对应登录命令后新建/重连会话。`
+      : "点横幅 Sign in，或在终端运行该 agent 的登录命令。");
 
   if (
-    /auth|login|unauthorized|401|not logged|authentication required|sign.?in/i.test(message)
+    /auth|login|unauthorized|401|not logged|authentication required|sign.?in|oauth|api.?key|missing.?key|credentials/i.test(
+      message
+    )
   ) {
     return {
       kind: "auth",
-      title: "Sign in required",
+      title: "需要登录",
       message,
-      actionHint: "Use Sign in, or run the agent’s login command in a terminal.",
+      actionHint: authHint,
     };
   }
 
@@ -50,19 +70,19 @@ export function classifyAgentError(raw: unknown): ClassifiedError {
   ) {
     return {
       kind: "command_missing",
-      title: "Agent command missing",
+      title: "找不到 Agent 命令",
       message,
       actionHint:
-        "Open the agent menu in the composer — agents with a known package have an Install button.",
+        "打开 Composer 里的 agent 菜单 — 有已知 npm 包的可点 Install。",
     };
   }
 
   if (/timeout|timed out|deadline|etimedout/i.test(message)) {
     return {
       kind: "timeout",
-      title: "Timed out",
+      title: "超时",
       message,
-      actionHint: "Retry, or check that the agent process is responding.",
+      actionHint: "重试一次，或确认 agent 进程仍在响应。",
     };
   }
 
@@ -73,32 +93,33 @@ export function classifyAgentError(raw: unknown): ClassifiedError {
   ) {
     return {
       kind: "model",
-      title: "Model / config not supported",
+      title: "模型 / 配置不支持",
       message,
-      actionHint: "Pick another model or clear effort if this agent does not expose it.",
+      actionHint: "换一个模型，或若该 agent 没有 effort 则清掉 strength。",
     };
   }
 
-  if (/network|econnrefused|enotfound|dns|socket|fetch failed|connection refused/i.test(message)) {
+  if (/network|econnrefused|enotfound|dns|socket|fetch failed|connection refused|rate.?limit|429/i.test(message)) {
     return {
       kind: "network",
-      title: "Network error",
+      title: "网络 / 配额",
       message,
-      actionHint: "Check connectivity and provider status.",
+      actionHint: "检查网络、代理与服务商状态；限流时稍后再试。",
     };
   }
 
   if (/permission|denied|rejected|not allowed/i.test(lower) && !/auth/i.test(lower)) {
     return {
       kind: "permission",
-      title: "Permission denied",
+      title: "权限被拒绝",
       message,
+      actionHint: "在权限弹窗中确认，或检查项目路径是否已授权。",
     };
   }
 
   return {
     kind: "generic",
-    title: "Agent error",
+    title: "Agent 错误",
     message,
   };
 }

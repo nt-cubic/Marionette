@@ -4,7 +4,23 @@ use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
+
+/// Navigate a labeled webview (used to blank / restore detached shells without destroy).
+#[tauri::command]
+pub fn navigate_webview(label: String, url: String, app: AppHandle) -> Result<(), String> {
+    let _trace = crate::debug_log::CmdTrace::new("navigate_webview");
+    let win = app
+        .get_webview_window(&label)
+        .ok_or_else(|| format!("No webview window `{label}`"))?;
+    // Relative asset paths (index.html?…) and about:blank both work via JS replace
+    // after hide; Url::parse is awkward for relative production assets.
+    let js = format!(
+        "try{{window.location.replace({})}}catch(e){{}}",
+        serde_json::to_string(&url).unwrap_or_else(|_| "\"about:blank\"".into())
+    );
+    win.eval(&js).map_err(|e| format!("eval navigate failed: {e}"))
+}
 
 #[tauri::command]
 pub fn list_projects(state: State<'_, AppState>) -> Result<Vec<Project>, String> {

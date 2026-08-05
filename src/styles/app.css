@@ -3358,6 +3358,11 @@ body.is-tab-detaching * {
   font-weight: 500;
 }
 
+.usage-row__muted {
+  color: var(--text-faint);
+  font-weight: 500;
+}
+
 .usage-updated {
   display: block;
   margin-top: 8px;
