@@ -57,6 +57,12 @@ export async function deleteProject(projectId: string): Promise<void> {
   // Browser mock: caller updates local state.
 }
 
+/** Persist project shelf order (`projects.json` array order). */
+export async function reorderProjects(orderedIds: string[]): Promise<Project[]> {
+  if (!isTauriRuntime()) return mockProjects;
+  return invoke<Project[]>("reorder_projects", { orderedIds });
+}
+
 export async function listAgents(): Promise<AgentConfig[]> {
   if (!isTauriRuntime()) return mockAgents;
   try {

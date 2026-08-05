@@ -1,5 +1,6 @@
-import { Check, ChevronDown, Copy, Eye, EyeOff, FileText, Globe, MessageSquareQuote, Pencil, Plus, Square, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Check, ChevronDown, Copy, Eye, EyeOff, FileText, Globe, MessageSquareQuote, Pencil, Plus, Square, SquareArrowOutUpRight, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { createPortal } from "react-dom";
 import { extractAcpUpdateText, mergeStreamText, userMessageAnchorId } from "../lib/acpTranscript";
 import {
   activityBarLabel,
@@ -65,6 +66,38 @@ type SessionViewProps = {
   onSubtaskRetry?: (childSessionId: string) => void;
 };
 
+/** Drag a tab far enough / off the strip → ghost chip; full window on release. */
+const TAB_DETACH_SLOP_PX = 28;
+const TAB_DRAG_ARM_PX = 10;
+/** Ghost chip sits slightly above/left of the cursor (label grab feel). */
+const GHOST_OFFSET_X = 28;
+const GHOST_OFFSET_Y = 14;
+
+type TearGhost = {
+  session: Session;
+  x: number;
+  y: number;
+};
+
+function pointerOutsideTabStrip(
+  clientX: number,
+  clientY: number,
+  strip: DOMRect | undefined
+): boolean {
+  if (!strip) return true;
+  const outsideStrip =
+    clientY < strip.top - TAB_DETACH_SLOP_PX ||
+    clientY > strip.bottom + TAB_DETACH_SLOP_PX ||
+    clientX < strip.left - 40 ||
+    clientX > strip.right + 40;
+  const outsideWindow =
+    clientX < 0 ||
+    clientY < 0 ||
+    clientX > window.innerWidth ||
+    clientY > window.innerHeight;
+  return outsideStrip || outsideWindow;
+}
+
 /** Tabs-only for the shared workspace-titlebar (rendered by App.tsx). */
 export function SessionTabs({
   openSessions,
@@ -73,6 +106,9 @@ export function SessionTabs({
   onTabClose,
   onNewTab,
   onRenameSession,
+  onTabPopOut,
+  /** Detached window: single dialog, no new-tab / pop-out chrome. */
+  detachedMode = false,
 }: {
   openSessions: Session[];
   session: Session;
@@ -80,10 +116,30 @@ export function SessionTabs({
   onTabClose: (sessionId: string) => void;
   onNewTab: () => void;
   onRenameSession?: (sessionId: string, label: string) => void;
+  /**
+   * Open a detached dialog window and drop the tab from the main bar.
+   * - `viaDrag: false` (default): ↗ click.
+   * - `viaDrag: true`: ghost tear-off just finished — open at cursor.
+   */
+  onTabPopOut?: (session: Session, viaDrag?: boolean) => void | Promise<void>;
+  detachedMode?: boolean;
 }) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const renameInputRef = useRef<HTMLInputElement>(null);
+  const tablistRef = useRef<HTMLDivElement>(null);
+  const [draggingTabId, setDraggingTabId] = useState<string | null>(null);
+  /** Lightweight floating chip while tearing off (no WebView yet). */
+  const [ghost, setGhost] = useState<TearGhost | null>(null);
+  const ghostRef = useRef<TearGhost | null>(null);
+  ghostRef.current = ghost;
+  const tabDragRef = useRef<{
+    session: Session;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    armed: boolean;
+  } | null>(null);
 
   useEffect(() => {
     if (!renamingId) return;
@@ -100,18 +156,113 @@ export function SessionTabs({
     setRenamingId(null);
   };
 
+  const clearTabDragUi = () => {
+    setDraggingTabId(null);
+    setGhost(null);
+    ghostRef.current = null;
+    document.body.classList.remove("is-tab-detaching");
+  };
+
+  const placeGhost = (s: Session, clientX: number, clientY: number) => {
+    const next: TearGhost = {
+      session: s,
+      x: clientX - GHOST_OFFSET_X,
+      y: clientY - GHOST_OFFSET_Y,
+    };
+    ghostRef.current = next;
+    setGhost(next);
+  };
+
+  const onTabPointerDown = (openSession: Session, event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (detachedMode || renamingId || event.button !== 0 || !onTabPopOut) return;
+    tabDragRef.current = {
+      session: openSession,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      armed: false,
+    };
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      /* optional */
+    }
+  };
+
+  const onTabPointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const drag = tabDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+
+    const dx = event.clientX - drag.startX;
+    const dy = event.clientY - drag.startY;
+    const dist = Math.hypot(dx, dy);
+    if (!drag.armed) {
+      if (dist < TAB_DRAG_ARM_PX) return;
+      drag.armed = true;
+      setDraggingTabId(drag.session.id);
+      document.body.classList.add("is-tab-detaching");
+    }
+
+    const strip = tablistRef.current?.getBoundingClientRect();
+    const outside = pointerOutsideTabStrip(event.clientX, event.clientY, strip);
+
+    if (outside) {
+      // Ghost only — real WebView waits for mouse-up.
+      placeGhost(drag.session, event.clientX, event.clientY);
+    } else if (ghostRef.current) {
+      // Brought back over the strip → cancel tear-off preview.
+      setGhost(null);
+      ghostRef.current = null;
+    }
+  };
+
+  const onTabPointerUp = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const drag = tabDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      /* ignore */
+    }
+
+    const wasArmed = drag.armed;
+    const target = drag.session;
+    const liveGhost = ghostRef.current;
+    tabDragRef.current = null;
+    clearTabDragUi();
+
+    if (liveGhost) {
+      // Drop: create the real window at the cursor, then drop the tab.
+      void onTabPopOut?.(target, true);
+      return;
+    }
+
+    // Pure click (no drag) → select.
+    if (!wasArmed) onTabSelect(target);
+  };
+
+  const onTabPointerCancel = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const drag = tabDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    tabDragRef.current = null;
+    clearTabDragUi();
+  };
+
   return (
-    <div className="editor-tabs__tablist" role="tablist" aria-label="Session tabs">
+    <>
+    <div className="editor-tabs__tablist" role="tablist" aria-label="Session tabs" ref={tablistRef}>
       {openSessions.map((openSession) => {
         const busy =
           openSession.status === "running" || openSession.status === "starting";
         const isRenaming = renamingId === openSession.id;
+        const isDragging = draggingTabId === openSession.id;
+        const isGhostSource = ghost?.session.id === openSession.id;
         return (
           <div
             className={
               openSession.id === session.id
-                ? `editor-tab is-active is-${openSession.status}`
-                : `editor-tab is-${openSession.status}`
+                ? `editor-tab is-active is-${openSession.status}${isDragging ? " is-dragging-out" : ""}${isGhostSource ? " is-tear-source" : ""}`
+                : `editor-tab is-${openSession.status}${isDragging ? " is-dragging-out" : ""}${isGhostSource ? " is-tear-source" : ""}`
             }
             key={openSession.id}
             role="tab"
@@ -146,12 +297,21 @@ export function SessionTabs({
               <button
                 className="editor-tab__select"
                 type="button"
-                title={`${openSession.cwd} · double-click to rename`}
-                onClick={() => onTabSelect(openSession)}
+                title={
+                  onTabPopOut && !detachedMode
+                    ? `${openSession.label} · drag out to tear off · double-click to rename`
+                    : `${openSession.cwd} · double-click to rename`
+                }
+                onPointerDown={(e) => onTabPointerDown(openSession, e)}
+                onPointerMove={onTabPointerMove}
+                onPointerUp={onTabPointerUp}
+                onPointerCancel={onTabPointerCancel}
                 onDoubleClick={(e) => {
                   if (!onRenameSession) return;
                   e.preventDefault();
                   e.stopPropagation();
+                  tabDragRef.current = null;
+                  clearTabDragUi();
                   setRenamingId(openSession.id);
                   setRenameDraft(openSession.label);
                 }}
@@ -159,16 +319,47 @@ export function SessionTabs({
                 <span>{openSession.label}</span>
               </button>
             )}
-            <button className="pill-action pill-action--icon pill-action--sm editor-tab__close" type="button" title={`Close ${openSession.label}`} aria-label={`Close ${openSession.label}`} onClick={() => onTabClose(openSession.id)}>
-              <X size={12} />
-            </button>
+            {onTabPopOut && !detachedMode && (
+              <button
+                className="pill-action pill-action--icon pill-action--sm editor-tab__popout"
+                type="button"
+                title={`Open ${openSession.label} in new window`}
+                aria-label={`Open ${openSession.label} in new window`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onTabPopOut(openSession, false);
+                }}
+              >
+                <SquareArrowOutUpRight size={11} />
+              </button>
+            )}
+            {!detachedMode && (
+              <button className="pill-action pill-action--icon pill-action--sm editor-tab__close" type="button" title={`Close ${openSession.label}`} aria-label={`Close ${openSession.label}`} onClick={() => onTabClose(openSession.id)}>
+                <X size={12} />
+              </button>
+            )}
           </div>
         );
       })}
-      <button className="pill-action pill-action--icon pill-action--sm editor-tab__new" type="button" title="New conversation" aria-label="New conversation" onClick={onNewTab}>
-        <Plus size={13} />
-      </button>
+      {!detachedMode && (
+        <button className="pill-action pill-action--icon pill-action--sm editor-tab__new" type="button" title="New conversation" aria-label="New conversation" onClick={onNewTab}>
+          <Plus size={13} />
+        </button>
+      )}
     </div>
+    {ghost &&
+      createPortal(
+        <div
+          className="tab-tear-ghost"
+          style={{ left: ghost.x, top: ghost.y }}
+          aria-hidden
+        >
+          <span className="tab-tear-ghost__label">{ghost.session.label}</span>
+          <span className="tab-tear-ghost__hint">松开以打开新窗口</span>
+        </div>,
+        document.body
+      )}
+    </>
   );
 }
 

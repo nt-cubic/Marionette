@@ -65,6 +65,20 @@ pub fn delete_project(project_id: String, state: State<'_, AppState>) -> Result<
     storage.delete_project(&project_id)
 }
 
+/// Reorder the global project list (`projects.json` array order = shelf order).
+#[tauri::command]
+pub fn reorder_projects(
+    ordered_ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<Project>, String> {
+    let _trace = crate::debug_log::CmdTrace::new("reorder_projects");
+    let storage = state
+        .storage
+        .lock()
+        .map_err(|_| "Storage lock poisoned".to_string())?;
+    storage.reorder_projects(&ordered_ids)
+}
+
 #[tauri::command]
 pub fn list_agents() -> Vec<AgentConfig> {
     let _trace = crate::debug_log::CmdTrace::new("list_agents");

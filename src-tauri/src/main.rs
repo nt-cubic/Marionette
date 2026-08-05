@@ -153,13 +153,52 @@ fn main() {
             use tauri::Manager;
             match event {
                 tauri::WindowEvent::CloseRequested { api, .. } => {
-                    // Stop default destroy → WebView teardown → tao paint re-entry panic.
+                    // NEVER let WebView2 tear down through the normal close path
+                    // on Windows — tao 0.35.3 asserts in flush_paint_messages
+                    // (tao#1180 / tauri#14088) and the process dies with 101.
+                    //
+                    // Main / last window → stop agents and process::exit.
+                    // Detached dialog windows → hide only (reuse on next pop-out).
+                    // Destroy is deferred until process exit, which skips orderly
+                    // WebView teardown and avoids the paint assert.
                     api.prevent_close();
-                    shutdown_and_exit(window.app_handle());
+                    let label = window.label().to_string();
+                    let is_main = label == "main";
+                    // Count windows that are still visible — hidden detached
+                    // shells should not keep the app "alive" alone.
+                    let visible = window
+                        .app_handle()
+                        .webview_windows()
+                        .values()
+                        .filter(|w| w.is_visible().unwrap_or(true))
+                        .count();
+                    if is_main || visible <= 1 {
+                        shutdown_and_exit(window.app_handle());
+                    } else {
+                        let _ = window.hide();
+                        crate::debug_log::append(
+                            "window",
+                            "info",
+                            "",
+                            &format!("hid detached window `{label}` (no WebView destroy)"),
+                            Some("avoids tao#1180 paint assert on secondary close"),
+                        );
+                    }
                 }
-                // Safety net if something destroys the window without CloseRequested.
+                // Safety net if something still destroys a window without
+                // CloseRequested. Never try to paint/teardown here — exit.
                 tauri::WindowEvent::Destroyed => {
-                    std::process::exit(0);
+                    let app = window.app_handle();
+                    if window.label() == "main" {
+                        std::process::exit(0);
+                    }
+                    let any_visible = app
+                        .webview_windows()
+                        .values()
+                        .any(|w| w.is_visible().unwrap_or(false));
+                    if !any_visible {
+                        std::process::exit(0);
+                    }
                 }
                 _ => {}
             }
@@ -178,6 +217,7 @@ fn main() {
             commands::pick_folder,
             commands::pick_files,
             commands::delete_project,
+            commands::reorder_projects,
             commands::list_agents,
             commands::list_custom_agents,
             commands::add_custom_agent,

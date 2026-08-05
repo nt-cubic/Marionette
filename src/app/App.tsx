@@ -13,7 +13,8 @@ import {
   sealOpenAssistantReplies,
   userMessageEvent,
 } from "../lib/acpTranscript";
-import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, generateHandoff, getChangedFiles, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, startAcpSession, startAgentLogin, stopAcpSession, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision } from "../lib/api";
+import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, generateHandoff, getChangedFiles, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, startAcpSession, startAgentLogin, stopAcpSession, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision } from "../lib/api";
+import { openDetachedSessionWindow, readDetachedSessionId } from "../lib/detachedWindow";
 import { agentAuthSpec } from "../lib/agentAuth";
 import type { AcpEvent, AvailableCommand, CapabilitySnapshot, ChangedFile, HandoffResult, Project, ProjectContext, Session, SessionComposerPrefs, SessionEvent, SessionViewMode, UsageSnapshot } from "../lib/types";
 import {
@@ -96,6 +97,10 @@ const RIGHT_PANEL_MIN = 220;
 const RIGHT_PANEL_MAX = 480;
 const RIGHT_PANEL_DEFAULT = 270;
 const LAYOUT_STORAGE_KEY = "marionette-layout";
+
+/** Popped-out dialog windows load `?detached=<sessionId>`. */
+const DETACHED_SESSION_ID = readDetachedSessionId();
+const IS_DETACHED_WINDOW = Boolean(DETACHED_SESSION_ID);
 
 function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n));
@@ -248,7 +253,7 @@ export function App() {
   const [currentSessionId, setCurrentSessionId] = useState(sessions[0]?.id ?? "");
   const [openSessionIds, setOpenSessionIds] = useState<string[]>([sessions[0]?.id ?? ""]);
   const [viewMode, setViewMode] = useState<SessionViewMode>("clean");
-  const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const [leftCollapsed, setLeftCollapsed] = useState(IS_DETACHED_WINDOW);
   const [rightCollapsed, setRightCollapsed] = useState(false);
   /** Whether the mouse is hovering near the collapsed sidebar edge — shows the floating trigger */
   const [leftEdgeHover, setLeftEdgeHover] = useState(false);
@@ -688,11 +693,24 @@ export function App() {
         .map(asIdleOnLoad);
       if (loadedSessions.length > 0 || isTauriRuntime()) {
         setAvailableSessions(loadedSessions);
-        if (loadedSessions[0]) {
-          setCurrentProjectId(loadedSessions[0].projectId);
-          setCurrentSessionId(loadedSessions[0].id);
-          setOpenSessionIds([loadedSessions[0].id]);
+        const preferred =
+          (DETACHED_SESSION_ID
+            ? loadedSessions.find((s) => s.id === DETACHED_SESSION_ID)
+            : undefined) ?? loadedSessions[0];
+        if (preferred) {
+          setCurrentProjectId(preferred.projectId);
+          setCurrentSessionId(preferred.id);
+          setOpenSessionIds([preferred.id]);
           setViewMode("clean");
+          if (IS_DETACHED_WINDOW) {
+            setLeftCollapsed(true);
+            try {
+              const { getCurrentWindow } = await import("@tauri-apps/api/window");
+              void getCurrentWindow().setTitle(preferred.label || "Marionette");
+            } catch {
+              /* browser preview */
+            }
+          }
         } else {
           setCurrentSessionId("");
           setOpenSessionIds([]);
@@ -1987,6 +2005,57 @@ export function App() {
     setOpenSessionIds(nextOpenIds);
     if (sessionId === currentSessionId) {
       const nextSession = availableSessions.find((session) => session.id === nextOpenIds[nextOpenIds.length - 1]);
+      if (nextSession) openSession(nextSession);
+    }
+  };
+
+  /** Drag project A to a line before/after B — persist array order in projects.json. */
+  const handleReorderProjects = useCallback(
+    (fromProjectId: string, toProjectId: string, place: "before" | "after") => {
+      setAvailableProjects((current) => {
+        const from = current.findIndex((p) => p.id === fromProjectId);
+        const to = current.findIndex((p) => p.id === toProjectId);
+        if (from < 0 || to < 0) return current;
+        // Desired index in the original list, then shift left if we remove an earlier item.
+        let insertAt = place === "before" ? to : to + 1;
+        if (from < insertAt) insertAt -= 1;
+        if (insertAt === from) return current; // line sits on an edge that keeps order
+        const next = [...current];
+        const [item] = next.splice(from, 1);
+        next.splice(insertAt, 0, item);
+        void reorderProjectsApi(next.map((p) => p.id)).catch(() => {
+          void listProjects().then((projects) => {
+            if (projects.length > 0) setAvailableProjects(projects);
+          });
+        });
+        return next;
+      });
+    },
+    []
+  );
+
+  /**
+   * Detach a dialog into its own OS window.
+   * - Click ↗: create/show + focus, then drop the tab.
+   * - Drag tear-off: ghost chip already followed; create WebView at cursor on drop.
+   */
+  const handleTabPopOut = async (session: Session, viaDrag = false) => {
+    if (!isTauriRuntime() || IS_DETACHED_WINDOW) return;
+    const ok = await openDetachedSessionWindow(session, { atCursor: viaDrag });
+    if (!ok) return;
+    const nextOpenIds = openSessionIds.filter((id) => id !== session.id);
+    if (nextOpenIds.length === 0) {
+      setOpenSessionIds([]);
+      void createSessionForProject(
+        session.projectId || currentProject?.id || availableProjects[0]?.id || ""
+      );
+      return;
+    }
+    setOpenSessionIds(nextOpenIds);
+    if (session.id === currentSessionId) {
+      const nextSession =
+        availableSessions.find((s) => s.id === nextOpenIds[nextOpenIds.length - 1]) ??
+        availableSessions.find((s) => nextOpenIds.includes(s.id));
       if (nextSession) openSession(nextSession);
     }
   };
@@ -3317,6 +3386,12 @@ export function App() {
           forceWebSearch: forceWebSearch || undefined,
         }),
       ]);
+      // Shelf order is recency-only: bump lastActiveAt only when the user sends
+      // (selecting a dialog must not jump it to the top).
+      const activeAt = new Date().toISOString();
+      setAvailableSessions((current) =>
+        current.map((s) => (s.id === sid ? { ...s, lastActiveAt: activeAt } : s))
+      );
       renameSessionFromText(sid, composed || imageAttachments[0]?.name || "Image");
       touchActivity(sid);
       pushDebug({
@@ -3677,7 +3752,7 @@ export function App() {
     <main className="app-shell">
       <div
         ref={workspaceGridRef}
-        className={`workspace-grid${leftCollapsed ? " is-left-collapsed" : ""}${rightCollapsed ? " is-right-collapsed" : ""}`}
+        className={`workspace-grid${leftCollapsed || IS_DETACHED_WINDOW ? " is-left-collapsed" : ""}${rightCollapsed ? " is-right-collapsed" : ""}${IS_DETACHED_WINDOW ? " is-detached" : ""}`}
         style={
           {
             "--left-panel-width": `${leftWidth}px`,
@@ -3686,7 +3761,8 @@ export function App() {
         }
       >
         {/* Left sidebar: full height (spans both rows) */}
-        <aside className={leftCollapsed ? "left-rail is-collapsed" : "left-rail"} aria-label="Projects and sessions">
+        <aside className={leftCollapsed || IS_DETACHED_WINDOW ? "left-rail is-collapsed" : "left-rail"} aria-label="Projects and sessions">
+          {!IS_DETACHED_WINDOW && (
           <ProjectShelf
             agents={availableAgents}
             projects={availableProjects}
@@ -3728,8 +3804,10 @@ export function App() {
             onDeleteSession={deleteSession}
             onDeleteProject={handleDeleteProject}
             onRenameSession={handleRenameSession}
+            onReorderProjects={handleReorderProjects}
           />
-          {!leftCollapsed && (
+          )}
+          {!leftCollapsed && !IS_DETACHED_WINDOW && (
             <button
               type="button"
               className={resizingSide === "left" ? "panel-resizer panel-resizer--left is-dragging" : "panel-resizer panel-resizer--left"}
@@ -3752,6 +3830,12 @@ export function App() {
             onTabClose={closeSessionTab}
             onNewTab={() => createSessionForProject(currentProject?.id ?? "")}
             onRenameSession={handleRenameSession}
+            onTabPopOut={
+              IS_DETACHED_WINDOW
+                ? undefined
+                : (s, viaDrag) => void handleTabPopOut(s, viaDrag)
+            }
+            detachedMode={IS_DETACHED_WINDOW}
           />
           <div className="workspace-titlebar__spacer" data-tauri-drag-region />
           <WindowControls />
