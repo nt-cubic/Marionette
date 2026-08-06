@@ -566,6 +566,30 @@ pub fn update_session_label(
     storage.update_session_label(&session_id, &label)
 }
 
+/// Persist dialog runtime status (`starting` / `running` / `waiting` / …).
+/// Detached windows read this via list_sessions so Interrupt vs Send matches
+/// the live turn — ACP start alone used to leave the file stuck on `running`.
+#[tauri::command]
+pub fn update_session_status(
+    session_id: String,
+    status: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let _trace = crate::debug_log::CmdTrace::new("update_session_status");
+    let allowed = matches!(
+        status.as_str(),
+        "starting" | "running" | "waiting" | "exited" | "error"
+    );
+    if !allowed {
+        return Err(format!("invalid session status: {status}"));
+    }
+    let storage = state
+        .storage
+        .lock()
+        .map_err(|_| "Storage lock poisoned".to_string())?;
+    storage.update_session_status(&session_id, &status)
+}
+
 #[tauri::command(async)]
 pub fn write_transcript(
     session_id: String,

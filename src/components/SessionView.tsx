@@ -914,8 +914,14 @@ function CleanPlaceholder({
     }
     return units;
   }, [presentationItems]);
-  // Virtualize only longer chats — short threads keep full mount for zero risk.
-  const useVirtual = renderUnits.length >= 36;
+  /**
+   * Virtual windowing OFF for now.
+   * The 0cc1c45 path (measureRef → totalSize → stick-to-bottom → remount → remeasure)
+   * thrashed layout under WebView2 and made the whole window flicker.
+   * Cold-session prune in App still frees RAM without touching paint.
+   * Re-enable only after measure is decoupled from scroll pinning.
+   */
+  const useVirtual = false;
   const isLongTranscript = renderUnits.length >= 48;
   const virtual = useVirtualWindow(listRef, useVirtual ? renderUnits.length : 0, {
     estimate: 132,
@@ -959,14 +965,14 @@ function CleanPlaceholder({
     isRunning &&
     (awaitingFirstChunk || health === "quiet" || health === "stalled" || health === "stuck");
 
-  // Content fingerprint — only real transcript changes should pin-scroll (never a clock tick).
+  // Content fingerprint — only real transcript changes should pin-scroll (never a clock tick / health).
   const scrollKey = useMemo(() => {
     const last = visibleEvents[visibleEvents.length - 1];
     const lastSig = last
       ? `${last.type}:${last.createdAt}:${"text" in last ? String(last.text).length : ""}:${"status" in last ? last.status : ""}`
       : "empty";
-    return `${session.id}|${visibleEvents.length}|${lastSig}|wait:${awaitingFirstChunk}|health:${health}`;
-  }, [session.id, visibleEvents, awaitingFirstChunk, health]);
+    return `${session.id}|${visibleEvents.length}|${lastSig}|wait:${awaitingFirstChunk}`;
+  }, [session.id, visibleEvents, awaitingFirstChunk]);
 
   const prevAwaitingRef = useRef(false);
 
@@ -1007,15 +1013,13 @@ function CleanPlaceholder({
   }, []);
 
   // Stick to bottom only while the user is already near the end (chat apps pattern).
-  // Never key this off the 1s activity clock / stale flag — that caused the 5–10s jump bug.
+  // Never key this off the activity clock / health — that caused jump/flicker bugs.
   useEffect(() => {
     const el = listRef.current;
     if (!el) return;
     if (!stickToBottomRef.current) return;
-    // With a virtual list, scrollHeight is driven by measured padding; use totalSize when available.
-    const target = useVirtual && virtual.totalSize > 0 ? virtual.totalSize : el.scrollHeight;
-    el.scrollTop = Math.max(el.scrollHeight, target);
-  }, [scrollKey, useVirtual, virtual.totalSize]);
+    el.scrollTop = el.scrollHeight;
+  }, [scrollKey]);
 
   // Outline jump when the target card is not mounted (virtual window).
   useEffect(() => {
@@ -1046,7 +1050,7 @@ function CleanPlaceholder({
     };
     window.addEventListener("marionette-outline-jump", onJump);
     return () => window.removeEventListener("marionette-outline-jump", onJump);
-  }, [renderUnits, useVirtual, virtual]);
+  }, [renderUnits, useVirtual, virtual.offsetOf]);
 
   return (
     // Relative paths in agent text resolve against this dialog's project root.

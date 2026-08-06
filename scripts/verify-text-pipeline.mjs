@@ -12,7 +12,9 @@ import remarkParse from "remark-parse";
 import {
   cleanAssistantText,
   isRuntimeMetadataOnly,
+  normalizeMarkdownFences,
   normalizeMarkdownTables,
+  prepareMarkdownForRender,
   stripSectionMarkers,
   stripRuntimeMetadata,
 } from "../src/lib/markdownText.ts";
@@ -104,5 +106,38 @@ assert.equal(
   normalizeMarkdownTables("```\n| A | B |\n|---|\n```"),
   "```\n| A | B |\n|---|\n```",
 );
+
+// Glued fences (real model output) must open/close correctly.
+assert.equal(
+  normalizeMarkdownFences('校验要求：```json\n{ "type": "api" }\n```\n修复完成。'),
+  '校验要求：\n```json\n{ "type": "api" }\n```\n修复完成。',
+);
+assert.equal(
+  normalizeMarkdownFences("你看到的：```\nReply · Build\n```\n每张卡。"),
+  "你看到的：\n```\nReply · Build\n```\n每张卡。",
+);
+// Closer stuck to last code line
+assert.equal(
+  normalizeMarkdownFences("```\ncode here```\nafter"),
+  "```\ncode here\n```\nafter",
+);
+// Prose about backticks must not be split into a fence
+assert.equal(
+  normalizeMarkdownFences("请用 ``` 包裹代码，不要用缩进。"),
+  "请用 ``` 包裹代码，不要用缩进。",
+);
+// Chinese section breaks must not rewrite inside fences
+assert.equal(
+  prepareMarkdownForRender("能力。一、技术\n\n```\nfoo。一、bar\n```"),
+  "能力。\n\n一、技术\n\n```\nfoo。一、bar\n```",
+);
+
+const gluedTree = await processor.run(
+  processor.parse(prepareMarkdownForRender('校验要求：```json\n{ "a": 1 }\n```\n修复完成。')),
+);
+assert.equal(gluedTree.children[0]?.type, "paragraph");
+assert.equal(gluedTree.children[1]?.type, "code");
+assert.equal(gluedTree.children[1]?.lang, "json");
+assert.equal(gluedTree.children[2]?.type, "paragraph");
 
 console.log("text pipeline checks passed");

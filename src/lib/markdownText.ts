@@ -119,10 +119,9 @@ function formatTableRow(original: string, cells: string[]): string {
   return `${indent}${leading}${cells.join("|")}${trailing}`;
 }
 
-function updateFenceState(
-  line: string,
-  state: { character: "`" | "~" | null; length: number },
-): void {
+type FenceState = { character: "`" | "~" | null; length: number };
+
+function updateFenceState(line: string, state: FenceState): void {
   const match = line.match(/^\s{0,3}(`{3,}|~{3,})/);
   if (!match) return;
 
@@ -140,6 +139,127 @@ function updateFenceState(
   }
 }
 
+/** Language/info string only — not mid-sentence prose after bare ```. */
+const FENCE_INFO_STRING = /^\s*[\w.+#*/-]*\s*$/;
+
+/**
+ * Fix a common model Markdown mistake: fenced code glued to preceding prose.
+ *
+ * Example (real transcript):
+ *   校验要求：```json
+ *   { "type": "api" }
+ *   ```
+ *
+ * CommonMark requires the opening fence at line start. Without a newline the
+ * ticks render as literal text, the real closer becomes an opener, and the
+ * rest of the Reply is swallowed into an empty code block.
+ *
+ * Also peels a closer that models stick to the last code line
+ * (`…扔了```) onto its own line so the fence actually terminates.
+ *
+ * Leaves prose like `请用 ``` 包裹代码` alone (spaces + non-lang after ticks).
+ */
+export function normalizeMarkdownFences(text: string): string {
+  if (!text || (!text.includes("```") && !text.includes("~~~"))) return text;
+
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  const out: string[] = [];
+  const fence: FenceState = { character: null, length: 0 };
+
+  for (let index = 0; index < lines.length; index += 1) {
+    let line = lines[index];
+
+    if (!fence.character) {
+      // "prose：```json" / "prose```" → split so the fence starts its own line.
+      const gluedOpen = line.match(/^(.*\S)[ \t]*(`{3,}|~{3,})([^\n`~]*)$/);
+      if (gluedOpen && FENCE_INFO_STRING.test(gluedOpen[3])) {
+        out.push(gluedOpen[1]);
+        line = gluedOpen[2] + gluedOpen[3].trimStart();
+      }
+      updateFenceState(line, fence);
+      out.push(line);
+      continue;
+    }
+
+    // Closer stuck to the last code line (ticks at EOL): `…扔了```
+    // Only EOL — mid-line ``` inside samples must stay as code body.
+    const midClose = line.match(/^(.*\S)[ \t]*(`{3,}|~{3,})[ \t]*$/);
+    if (
+      midClose &&
+      midClose[2][0] === fence.character &&
+      midClose[2].length >= fence.length
+    ) {
+      out.push(midClose[1]);
+      out.push(midClose[2]);
+      fence.character = null;
+      fence.length = 0;
+      continue;
+    }
+
+    updateFenceState(line, fence);
+    out.push(line);
+  }
+
+  return out.join("\n");
+}
+
+/**
+ * Run a transform only on prose outside fenced code/tilde blocks so Chinese
+ * section breaks never rewrite code samples.
+ */
+function mapOutsideFences(text: string, mapOutside: (segment: string) => string): string {
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  const fence: FenceState = { character: null, length: 0 };
+  const parts: string[] = [];
+  let outside = "";
+
+  const flushOutside = () => {
+    if (outside.length === 0) return;
+    parts.push(mapOutside(outside));
+    outside = "";
+  };
+
+  for (const line of lines) {
+    const wasInFence = fence.character != null;
+    updateFenceState(line, fence);
+    const nowInFence = fence.character != null;
+
+    if (wasInFence || nowInFence) {
+      flushOutside();
+      parts.push(line);
+    } else {
+      outside = outside.length > 0 ? `${outside}\n${line}` : line;
+    }
+  }
+  flushOutside();
+  return parts.join("\n");
+}
+
+/**
+ * Soft-wrap section headers models stick to the previous Chinese sentence:
+ * "...能力。一、技术" / "...能力。**标题" / "...。## Title"
+ */
+function breakGluedChineseSections(text: string): string {
+  return mapOutsideFences(text, (segment) => {
+    let t = segment;
+    t = t.replace(/([。！？；])\s*(?=[一二三四五六七八九十]+[、．.])/g, "$1\n\n");
+    t = t.replace(/([。！？；])\s*(?=#{1,6}\s)/g, "$1\n\n");
+    t = t.replace(/([。！？；])\s*(?=\*\*[^*\n]{1,40}\*\*)/g, "$1\n\n");
+    return t;
+  });
+}
+
+/**
+ * Normalize stream/model Markdown before ReactMarkdown:
+ * fences, Chinese section breaks (outside code), GFM table delimiters.
+ */
+export function prepareMarkdownForRender(text: string): string {
+  let t = text.replace(/\r\n/g, "\n");
+  t = normalizeMarkdownFences(t);
+  t = breakGluedChineseSections(t);
+  return normalizeMarkdownTables(t);
+}
+
 /**
  * Repair a common model Markdown mistake: a table delimiter row with fewer
  * cells than its header row. GFM treats that as a paragraph, so add/trim
@@ -150,7 +270,7 @@ function updateFenceState(
  */
 export function normalizeMarkdownTables(text: string): string {
   const lines = text.replace(/\r\n?/g, "\n").split("\n");
-  const fence = { character: null as "`" | "~" | null, length: 0 };
+  const fence: FenceState = { character: null, length: 0 };
 
   for (let index = 0; index < lines.length - 1; index += 1) {
     const line = lines[index];

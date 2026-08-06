@@ -1,51 +1,31 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { isTauriRuntime, readImageDataUrl } from "../lib/api";
 import type { ImageAttachment } from "../lib/imageAttachments";
-import { useNearViewport } from "../lib/useNearViewport";
 
 type UserImageCardProps = {
   attachments: ImageAttachment[];
-  /** Scroll root (event-list) for unload-when-far. */
+  /** Kept for API compatibility; unload-when-far was disabled (layout flicker). */
   scrollRootRef?: React.RefObject<Element | null> | null;
 };
 
 /** Renders sent image attachments with mark overlays on a You card. */
-export function UserImageCard({ attachments, scrollRootRef = null }: UserImageCardProps) {
+export function UserImageCard({ attachments }: UserImageCardProps) {
   if (!attachments.length) return null;
   return (
     <div className="user-images">
       {attachments.map((att) => (
-        <UserImageThumb
-          key={att.id}
-          attachment={att}
-          scrollRootRef={scrollRootRef}
-        />
+        <UserImageThumb key={att.id} attachment={att} />
       ))}
     </div>
   );
 }
 
-function UserImageThumb({
-  attachment,
-  scrollRootRef,
-}: {
-  attachment: ImageAttachment;
-  scrollRootRef?: React.RefObject<Element | null> | null;
-}) {
-  const hostRef = useRef<HTMLDivElement>(null);
-  // Large margin so images decode slightly before they enter view.
-  const near = useNearViewport(hostRef, scrollRootRef, "600px 0px");
+function UserImageThumb({ attachment }: { attachment: ImageAttachment }) {
   const [dataUrl, setDataUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
-    if (!near) {
-      // Twitter-style: drop decoded bitmap when far from the camera.
-      setDataUrl(null);
-      setExpanded(false);
-      return;
-    }
     let cancelled = false;
     if (!isTauriRuntime()) {
       setError("preview unavailable");
@@ -61,23 +41,18 @@ function UserImageThumb({
     return () => {
       cancelled = true;
     };
-  }, [near, attachment.path]);
+  }, [attachment.path]);
 
   return (
-    <div className="user-image-card" ref={hostRef}>
+    <div className="user-image-card">
       <button
         type="button"
         className="user-image-card__frame"
-        onClick={() => near && setExpanded((v) => !v)}
+        onClick={() => setExpanded((v) => !v)}
         title={attachment.path}
       >
         {error && <span className="user-image-card__error">{attachment.name}</span>}
-        {!error && !near && (
-          <span className="user-image-card__muted user-image-card__muted--shell">
-            {attachment.name}
-          </span>
-        )}
-        {!error && near && !dataUrl && <span className="user-image-card__muted">…</span>}
+        {!error && !dataUrl && <span className="user-image-card__muted">…</span>}
         {dataUrl && (
           <>
             <img

@@ -13,7 +13,7 @@ import {
   sealOpenAssistantReplies,
   userMessageEvent,
 } from "../lib/acpTranscript";
-import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, generateHandoff, getChangedFiles, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, startAcpSession, startAgentLogin, stopAcpSession, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision } from "../lib/api";
+import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, generateHandoff, getChangedFiles, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, startAcpSession, startAgentLogin, stopAcpSession, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision } from "../lib/api";
 import {
   bindDetachedWindowReaper,
   openDetachedSessionWindow,
@@ -160,13 +160,13 @@ function formatAcpRpcError(data: unknown): string | null {
 }
 
 /**
- * Status is runtime state, not history. A freshly started app owns no agent
- * process, whatever the previous run left on disk — restoring a dialog as
- * "running" would show a Working bar and a locked composer for a turn that
- * ended when the app closed. (Rust heals the file too; this keeps the browser
- * mock and any future read path honest.)
+ * Status is runtime state, not history. On desktop, Rust `list_sessions_healed`
+ * already keeps mid-turn / warm sessions live and demotes dead ones to exited —
+ * so we must not force idle here (detached windows would lose Interrupt).
+ * Browser mock has no process ownership: never restore as running.
  */
 function asIdleOnLoad(session: Session): Session {
+  if (isTauriRuntime()) return session;
   if (session.status !== "starting" && session.status !== "running" && session.status !== "waiting") {
     return session;
   }
@@ -340,6 +340,12 @@ export function App() {
    * replace it rather than write into a pipe nobody drains.
    */
   const cancelIgnoredRef = useRef<Set<string>>(new Set());
+  /**
+   * After the user interrupts, late agent_message / thought chunks must not
+   * append onto the sealed "**Interrupted.**" card (or open a new Thought).
+   * Cleared on turn/complete, process end, or the next send.
+   */
+  const streamSuppressedRef = useRef<Set<string>>(new Set());
   const cancelWatchdogsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const transcriptSaveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const transcriptLoadedRef = useRef<Set<string>>(new Set());
@@ -838,7 +844,9 @@ export function App() {
           const status = patch.status ?? s.status;
           if (label === s.label && status === s.status) return s;
           changed = true;
-          return { ...s, label, status };
+          const processId =
+            status === "exited" || status === "error" ? null : s.processId;
+          return { ...s, label, status, processId };
         });
         return changed ? next : current;
       });
@@ -889,6 +897,7 @@ export function App() {
       ) {
         turnEndedAtRef.current[payload.sessionId] = Date.now();
         cancelIgnoredRef.current.delete(payload.sessionId);
+        streamSuppressedRef.current.delete(payload.sessionId);
         void syncFileChangesRef.current(payload.sessionId, true);
         // Finalize @-delegate child when its turn ends.
         if (delegateMetaRef.current.has(payload.sessionId)) {
@@ -980,59 +989,68 @@ export function App() {
             extracted.role === "tool" ||
             extracted.role === "system")
         ) {
-          // Codex `/status` (and similar) embed rate-limit lines in assistant text.
-          if (extracted.role === "assistant" && extracted.text) {
-            setSessionUsageById((current) => {
-              const merged = mergeUsageFromText(current[payload.sessionId], extracted.text);
-              if (!merged) return current;
-              return { ...current, [payload.sessionId]: merged };
-            });
-          }
-          if (extracted.role === "tool" && isToolCompletionStatus(extracted.toolStatus)) {
-            // Match codeg-main's live tool-result path: refresh the workspace
-            // as soon as an edit/write/apply_patch-like tool settles.
-            void syncFileChangesRef.current(payload.sessionId);
-          }
-          if (extracted.text) {
-            // Codex `/status` (plain or **bold** keys) — usage already merged above;
-            // keep the chat rail free of the whole block and of status-only deltas.
-            const isCodexSessionInfo =
-              isRuntimeMetadataOnly(extracted.text) ||
-              (/^\s*\*{0,2}Model\*{0,2}:/i.test(extracted.text) &&
-                /\n\s*\*{0,2}Directory\*{0,2}:/i.test(extracted.text));
-            if (!isCodexSessionInfo) {
-            setLiveEvents((current) => {
-            const prevLast = current[current.length - 1];
-            let next = applyAcpPartToEvents(current, payload.sessionId, extracted);
-            // Track turn start for duration: first new assistant_message card
-            if (extracted.role === "assistant") {
-              const newLast = next[next.length - 1];
-              if (
-                newLast?.type === "assistant_message" &&
-                newLast.sessionId === payload.sessionId &&
-                (prevLast?.type !== "assistant_message" || prevLast.sessionId !== payload.sessionId) &&
-                !turnStartedAtRef.current[payload.sessionId]
-              ) {
-                turnStartedAtRef.current[payload.sessionId] = Date.now();
-                // Clear sendMetaRef — snapshot consumed by the first assistant chunk
-                sendMetaRef.current = null;
+          // User hit Interrupt: drop late Thinking/Reply so they cannot glue
+          // onto the sealed Interrupted notification. Tool status still lands.
+          const streamSuppressed =
+            streamSuppressedRef.current.has(payload.sessionId) &&
+            (extracted.role === "assistant" || extracted.role === "thought");
+          if (!streamSuppressed) {
+            // Codex `/status` (and similar) embed rate-limit lines in assistant text.
+            if (extracted.role === "assistant" && extracted.text) {
+              setSessionUsageById((current) => {
+                const merged = mergeUsageFromText(current[payload.sessionId], extracted.text);
+                if (!merged) return current;
+                return { ...current, [payload.sessionId]: merged };
+              });
+            }
+            if (extracted.role === "tool" && isToolCompletionStatus(extracted.toolStatus)) {
+              // Match codeg-main's live tool-result path: refresh the workspace
+              // as soon as an edit/write/apply_patch-like tool settles.
+              void syncFileChangesRef.current(payload.sessionId);
+            }
+            if (extracted.text) {
+              // Codex `/status` (plain or **bold** keys) — usage already merged above;
+              // keep the chat rail free of the whole block and of status-only deltas.
+              const isCodexSessionInfo =
+                isRuntimeMetadataOnly(extracted.text) ||
+                (/^\s*\*{0,2}Model\*{0,2}:/i.test(extracted.text) &&
+                  /\n\s*\*{0,2}Directory\*{0,2}:/i.test(extracted.text));
+              if (!isCodexSessionInfo) {
+                setLiveEvents((current) => {
+                  const prevLast = current[current.length - 1];
+                  let next = applyAcpPartToEvents(current, payload.sessionId, extracted);
+                  // Track turn start for duration: first new assistant_message card
+                  if (extracted.role === "assistant") {
+                    const newLast = next[next.length - 1];
+                    if (
+                      newLast?.type === "assistant_message" &&
+                      newLast.sessionId === payload.sessionId &&
+                      (prevLast?.type !== "assistant_message" ||
+                        prevLast.sessionId !== payload.sessionId) &&
+                      !turnStartedAtRef.current[payload.sessionId]
+                    ) {
+                      turnStartedAtRef.current[payload.sessionId] = Date.now();
+                      // Clear sendMetaRef — snapshot consumed by the first assistant chunk
+                      sendMetaRef.current = null;
+                    }
+                  }
+                  // Glue fragment thoughts / token-split Replies mid-stream.
+                  // Grok often rotates messageId per agent_message_chunk; without
+                  // this pass the rail paints one Reply card per character.
+                  if (extracted.role === "thought" || extracted.role === "assistant") {
+                    next = coalesceAdjacentThoughts(next, payload.sessionId);
+                    if (extracted.role === "assistant") {
+                      next = coalesceAdjacentAssistantFragments(next, payload.sessionId);
+                    }
+                  }
+                  return next;
+                });
               }
             }
-            // Glue fragment thoughts / token-split Replies mid-stream.
-            // Grok often rotates messageId per agent_message_chunk; without
-            // this pass the rail paints one Reply card per character.
-            if (extracted.role === "thought" || extracted.role === "assistant") {
-              next = coalesceAdjacentThoughts(next, payload.sessionId);
-              if (extracted.role === "assistant") {
-                next = coalesceAdjacentAssistantFragments(next, payload.sessionId);
-              }
-            }
-            return next;
-          });
+          }
         }
       }
-      }
-      }
+
       // Grok also puts the full turn usage on `_x.ai/session_notification`
       // (turn_completed.usage) — same numbers as the prompt result, but this
       // notification is easier to spot in logs and arrives even if the RPC
@@ -1093,16 +1111,17 @@ export function App() {
         }
 
         // Auth / hard turn failures → error; cancel & clean end → waiting.
-        setAvailableSessions((current) =>
-          current.map((session) => {
-            if (session.id !== payload.sessionId) return session;
-            if (session.status !== "running" && session.status !== "starting") return session;
-            if (payload.kind === "error" || stopReason === "error" || stopReason === "refusal") {
-              return { ...session, status: "error" };
-            }
-            return { ...session, status: "waiting" };
-          })
-        );
+        // Use setSessionStatusById so disk + detached windows leave Interrupt mode.
+        {
+          const prev = sessionsRef.current.find((s) => s.id === payload.sessionId);
+          if (prev && (prev.status === "running" || prev.status === "starting")) {
+            const nextStatus: Session["status"] =
+              payload.kind === "error" || stopReason === "error" || stopReason === "refusal"
+                ? "error"
+                : "waiting";
+            setSessionStatusById(payload.sessionId, nextStatus);
+          }
+        }
 
         // A clean turn proves auth is fine — drop any auth banner for this agent.
         if (payload.kind !== "error" && stopReason !== "error" && stopReason !== "refusal") {
@@ -1162,17 +1181,18 @@ export function App() {
         }
         // Always leave running/starting — intentional stop (agent switch) or crash.
         // turn/complete usually arrived first; this is the belt for races.
-        setAvailableSessions((current) =>
-          current.map((session) =>
-            session.id === payload.sessionId &&
-            (session.status === "running" ||
-              session.status === "starting" ||
-              session.status === "waiting" ||
-              (endedHard && session.status === "error"))
-              ? { ...session, status: "exited" as const, processId: null }
-              : session
-          )
-        );
+        {
+          const prev = sessionsRef.current.find((s) => s.id === payload.sessionId);
+          if (
+            prev &&
+            (prev.status === "running" ||
+              prev.status === "starting" ||
+              prev.status === "waiting" ||
+              (endedHard && prev.status === "error"))
+          ) {
+            setSessionStatusById(payload.sessionId, "exited");
+          }
+        }
         if (payload.sessionId === currentSessionIdRef.current) {
           setSessionCapabilities(null);
         }
@@ -2054,9 +2074,18 @@ export function App() {
 
   const setSessionStatusById = useCallback((sessionId: string, status: Session["status"]) => {
     setAvailableSessions((current) =>
-      current.map((session) => (session.id === sessionId ? { ...session, status } : session))
+      current.map((session) => {
+        if (session.id !== sessionId) return session;
+        if (status === "exited" || status === "error") {
+          return { ...session, status, processId: null };
+        }
+        return { ...session, status };
+      })
     );
+    // Cross-window (detached) + disk SSOT — list_sessions must match the live turn
+    // so a torn-off window shows Interrupt instead of Send mid-reply.
     void broadcastSessionPatch({ sessionId, status });
+    void updateSessionStatus(sessionId, status).catch(() => undefined);
   }, []);
 
   /**
@@ -2213,6 +2242,23 @@ export function App() {
     if (!isTauriRuntime() || IS_DETACHED_WINDOW) return;
     const ok = await openDetachedSessionWindow(session, { atCursor: viaDrag });
     if (!ok) return;
+    // Detached SPA boots async — re-push live status/label so Interrupt matches
+    // the main window even if list_sessions races or the shell was about:blank.
+    const live = sessionsRef.current.find((s) => s.id === session.id) ?? session;
+    void broadcastSessionPatch({
+      sessionId: live.id,
+      status: live.status,
+      label: live.label,
+    });
+    // A second pulse after the secondary window has time to subscribe.
+    window.setTimeout(() => {
+      const again = sessionsRef.current.find((s) => s.id === session.id) ?? live;
+      void broadcastSessionPatch({
+        sessionId: again.id,
+        status: again.status,
+        label: again.label,
+      });
+    }, 400);
     const nextOpenIds = openSessionIds.filter((id) => id !== session.id);
     if (nextOpenIds.length === 0) {
       setOpenSessionIds([]);
@@ -2920,15 +2966,23 @@ export function App() {
     // Always free the composer — even if the agent ignored cancel.
     setSessionStatusById(sid, "waiting");
     touchActivity(sid);
-    setLiveEvents((current) => [
-      ...markOpenTools(current, sid, "cancelled"),
-      {
-        type: "assistant_message" as const,
-        sessionId: sid,
-        text: `**Interrupted.**\n\n${cancelNote}\n\nYou can send a new message now.`,
-        createdAt: new Date().toISOString(),
-      },
-    ]);
+    // Seal open Replies and stamp Interrupted so late stream cannot append
+    // thinking/token chunks onto this card (was: unsealed → absorbed CoT).
+    streamSuppressedRef.current.add(sid);
+    setLiveEvents((current) => {
+      const sealed = sealOpenAssistantReplies(markOpenTools(current, sid, "cancelled"), sid);
+      return [
+        ...sealed,
+        {
+          type: "assistant_message" as const,
+          sessionId: sid,
+          text: `**Interrupted.**\n\n${cancelNote}\n\nYou can send a new message now.`,
+          createdAt: new Date().toISOString(),
+          // durationMs seals the bubble — applyAcpPartToEvents will not merge into it.
+          durationMs: 0,
+        },
+      ];
+    });
     pushDebug({
       sessionId: sid,
       level: "info",
@@ -3580,6 +3634,8 @@ export function App() {
       // Sending supersedes any pending verdict on the last interrupt — do not
       // let a stale watchdog fire mid-turn and mark this session for restart.
       disarmCancelWatchdog(sid);
+      // Allow a new turn's Thinking/Reply stream after a local cancel.
+      streamSuppressedRef.current.delete(sid);
       // A cancel the agent never acknowledged leaves the process wedged;
       // prompting it again would just hang. Replace it before sending.
       if (cancelIgnoredRef.current.has(sid)) {
