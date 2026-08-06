@@ -104,19 +104,27 @@ export function useVirtualWindow(
     return { start, end };
   }, [itemCount, offsets, overscan, scrollTop, viewportH]);
 
-  const measureRef = useCallback(
-    (index: number, node: HTMLElement | null) => {
-      if (!node) return;
-      const h = node.getBoundingClientRect().height;
-      if (!Number.isFinite(h) || h <= 0) return;
-      const prev = sizeMapRef.current.get(index);
-      // Ignore sub-pixel noise
-      if (prev != null && Math.abs(prev - h) < 1) return;
-      sizeMapRef.current.set(index, h);
+  // Batch height writes into one setVersion per frame — unbatched measure
+  // during streaming used to thrash layout / flicker the WebView.
+  const measureRafRef = useRef(0);
+  const measureDirtyRef = useRef(false);
+  const measureRef = useCallback((index: number, node: HTMLElement | null) => {
+    if (!node) return;
+    const h = node.getBoundingClientRect().height;
+    if (!Number.isFinite(h) || h <= 0) return;
+    const prev = sizeMapRef.current.get(index);
+    // Ignore sub-pixel noise
+    if (prev != null && Math.abs(prev - h) < 2) return;
+    sizeMapRef.current.set(index, h);
+    measureDirtyRef.current = true;
+    if (measureRafRef.current) return;
+    measureRafRef.current = requestAnimationFrame(() => {
+      measureRafRef.current = 0;
+      if (!measureDirtyRef.current) return;
+      measureDirtyRef.current = false;
       setVersion((v) => v + 1);
-    },
-    []
-  );
+    });
+  }, []);
 
   const paddingTop = offsets[start] ?? 0;
   const paddingBottom = Math.max(0, totalSize - (offsets[end] ?? totalSize));

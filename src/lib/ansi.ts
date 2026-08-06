@@ -10,6 +10,8 @@ export function stripAnsi(input: string): string {
     .replace(/\u001b[=>]/g, "")
     // remaining ESC + char
     .replace(/\u001b./g, "")
+    // Orphan SGR after ESC was lost (PowerShell / copy-paste leaves `[32;1m`)
+    .replace(/\[(?:\d{1,3};){0,8}\d{1,3}m/g, "")
     // strip other C0 controls except tab/newline
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "");
 }

@@ -277,6 +277,15 @@ export async function updateSessionLabel(sessionId: string, label: string): Prom
   await invoke("update_session_label", { sessionId, label });
 }
 
+/** Persist dialog runtime status so detached windows load the correct Interrupt/Send state. */
+export async function updateSessionStatus(
+  sessionId: string,
+  status: import("./types").SessionStatus,
+): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("update_session_status", { sessionId, status });
+}
+
 export async function writeTranscript(sessionId: string, events: unknown[]): Promise<void> {
   if (!isTauriRuntime()) return;
   await invoke("write_transcript", { sessionId, events });

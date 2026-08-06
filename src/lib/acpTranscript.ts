@@ -5,6 +5,7 @@ import {
   parseCodexGoalUpdate,
   parseCodexRetryUpdate,
 } from "./acpMeta";
+import { ansiToPlainText } from "./ansi";
 import { stripSectionMarkers } from "./markdownText";
 import { inferToolNameFromMeta } from "./toolCallNormalize";
 
@@ -290,10 +291,10 @@ export function renderToolText(fields: {
   const title = fields.title || "tool";
   const status = fields.status || "pending";
   const lines = [`${title} · ${status}`];
-  if (fields.path) lines.push(fields.path);
+  if (fields.path) lines.push(ansiToPlainText(fields.path));
   // Input is a placeholder for "what was asked" — real output replaces it.
-  if (!fields.detail && fields.input) lines.push(fields.input);
-  if (fields.detail) lines.push("", fields.detail);
+  if (!fields.detail && fields.input) lines.push(ansiToPlainText(fields.input));
+  if (fields.detail) lines.push("", ansiToPlainText(fields.detail));
   return lines.join("\n");
 }
 
@@ -746,11 +747,18 @@ function sameStreamTarget(
  * own Reply card with a full Build / model header. Unsealed → always append.
  */
 function isOpenAssistantStream(last: SessionEvent, sessionId: string): boolean {
-  return (
-    last.type === "assistant_message" &&
-    last.sessionId === sessionId &&
-    last.durationMs == null
-  );
+  if (
+    last.type !== "assistant_message" ||
+    last.sessionId !== sessionId ||
+    last.durationMs != null
+  ) {
+    return false;
+  }
+  // Local interrupt/system notes must never absorb late Thinking/Reply tokens.
+  if (/^\*\*Interrupted\.\*\*/i.test(last.text) || /^\*\*Retrying/i.test(last.text)) {
+    return false;
+  }
+  return true;
 }
 
 /** Index of the latest thought in this session after the last user message. */
@@ -927,12 +935,13 @@ export function applyAcpPartToEvents(
         // Subagent stream: append; normal updates: replace empty/keep prior.
         let detail = prev.detail;
         if (part.toolDetail) {
+          const plainDetail = ansiToPlainText(part.toolDetail);
           if (part.toolDetailAppend && prev.detail) {
-            detail = `${prev.detail}\n${part.toolDetail}`;
+            detail = `${prev.detail}\n${plainDetail}`;
             // Cap nested stream so a long subagent cannot blow the transcript.
             if (detail.length > 8000) detail = `…${detail.slice(-8000)}`;
           } else {
-            detail = part.toolDetail;
+            detail = plainDetail;
           }
         }
         const merged = {

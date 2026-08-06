@@ -238,6 +238,7 @@ fn main() {
             commands::update_session_agent,
             commands::update_session_prefs,
             commands::update_session_label,
+            commands::update_session_status,
             commands::delete_session,
             commands::write_transcript,
             commands::load_transcript,

@@ -2320,12 +2320,11 @@ body.is-tab-detaching * {
   pointer-events: none;
 }
 
-/* Browser paint/layout skip for long chats (in addition to JS windowing). */
-.event-list.is-long > .event-card,
-.event-list.is-long > .event-list__virt-item {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 128px;
-}
+/*
+ * content-visibility:auto was removed — under WebView2 it interacted badly with
+ * scroll pinning / height estimates and caused continuous list flicker.
+ * (.is-long may still be set for other long-chat styling later.)
+ */
 
 .user-image-card__muted--shell {
   display: grid;

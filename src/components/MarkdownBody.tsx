@@ -1,7 +1,7 @@
 import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
-import { normalizeMarkdownTables } from "../lib/markdownText";
+import { prepareMarkdownForRender } from "../lib/markdownText";
 import { linkifyChildren } from "./LinkedText";
 import { openExternal } from "../lib/api";
 
@@ -11,25 +11,11 @@ type MarkdownBodyProps = {
 };
 
 /**
- * Normalize model/stream text so Markdown does not glue Chinese paragraphs.
- * - remark-breaks turns single \n into <br>
- * - ensure blank line before headings / numbered sections when models omit them
- * - repair table delimiter rows whose column count is shorter than the header
- */
-function prepareMarkdown(text: string): string {
-  let t = text.replace(/\r\n/g, "\n");
-  // Soft-wrap section headers that models stick to previous sentence:
-  // "...能力。一、技术" / "...能力。**标题" / "...。## Title"
-  t = t.replace(/([。！？；])\s*(?=[一二三四五六七八九十]+[、．.])/g, "$1\n\n");
-  t = t.replace(/([。！？；])\s*(?=#{1,6}\s)/g, "$1\n\n");
-  t = t.replace(/([。！？；])\s*(?=\*\*[^*\n]{1,40}\*\*)/g, "$1\n\n");
-  // "一句话概括把" style glue is model-side; we only fix clear section markers.
-  return normalizeMarkdownTables(t);
-}
-
-/**
  * Renders assistant/user transcript as Markdown (GFM + soft line breaks).
  * Streaming-friendly: incomplete markdown still shows until closed.
+ *
+ * Pre-pass (prepareMarkdownForRender) repairs model quirks: fences glued to
+ * Chinese prose, section headers stuck to prior sentences, short table rows.
  */
 export function MarkdownBody({ text, className }: MarkdownBodyProps) {
   if (!text) return null;
@@ -61,18 +47,26 @@ export function MarkdownBody({ text, className }: MarkdownBodyProps) {
           p: ({ children }) => <p className="md-body__p">{linkifyChildren(children)}</p>,
           li: ({ children }) => <li className="md-body__li">{linkifyChildren(children)}</li>,
           td: ({ children }) => <td>{linkifyChildren(children)}</td>,
-          code: ({ children, className }) => {
-            // Fenced blocks arrive as `pre > code`; inline code is short and
-            // single-line, and is where models usually put a path.
-            const isInline =
-              typeof children === "string" && children.length < 200 && !children.includes("\n");
+          code: ({ children, className: codeClassName }) => {
+            // Fenced blocks are `pre > code` (often `language-*`); inline is
+            // short / single-line — that's where models usually put a path.
+            const textContent = Array.isArray(children)
+              ? children.map(String).join("")
+              : typeof children === "string"
+                ? children
+                : "";
+            const isBlock =
+              Boolean(codeClassName?.includes("language-")) || textContent.includes("\n");
+            const isInline = !isBlock && textContent.length > 0 && textContent.length < 200;
             return (
-              <code className={className}>{isInline ? linkifyChildren(children) : children}</code>
+              <code className={codeClassName}>
+                {isInline ? linkifyChildren(textContent || children) : children}
+              </code>
             );
           },
         }}
       >
-        {prepareMarkdown(text)}
+        {prepareMarkdownForRender(text)}
       </ReactMarkdown>
     </div>
   );
