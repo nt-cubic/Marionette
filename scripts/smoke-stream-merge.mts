@@ -1,12 +1,14 @@
 /**
- * Grok streams one token per agent_message_chunk with a rotating messageId.
- * Without open-stream merge, each token becomes its own Reply card.
+ * Stream-merge smoke tests:
+ * - Grok Reply: one token per agent_message_chunk with rotating messageId
+ * - Codex Thought: whitespace/punctuation tokens must not be dropped
  * Run: npx tsx scripts/smoke-stream-merge.mts
  */
 import assert from "node:assert/strict";
 import {
   applyAcpPartToEvents,
   coalesceAdjacentAssistantFragments,
+  extractAcpUpdateText,
   userMessageEvent,
   type SessionEvent,
 } from "../src/lib/acpTranscript.ts";
@@ -83,5 +85,73 @@ sealed = applyAcpPartToEvents(sealed, "s1", {
   messageId: "other",
 });
 assert.equal(sealed.filter((e) => e.type === "assistant_message").length, 2);
+
+// Codex-style thought stream: spaces + punctuation as their own chunks
+const thoughtTokens = [
+  "Comparing",
+  " ",
+  "duplicate",
+  " ",
+  "engine",
+  " ",
+  "files",
+  " ",
+  "and",
+  " ",
+  "verifying",
+  " ",
+  "candidates",
+  ".",
+  " ",
+  "Verifying",
+  " ",
+  "candidate",
+  " ",
+  "file",
+  " ",
+  "existence",
+  " ",
+  "and",
+  " ",
+  "hashing",
+  " ",
+  "duplicates",
+  ".",
+];
+let thoughtEvents: SessionEvent[] = [userMessageEvent("s2", "check dups")];
+for (let i = 0; i < thoughtTokens.length; i++) {
+  const part = extractAcpUpdateText({
+    params: {
+      update: {
+        sessionUpdate: "agent_thought_chunk",
+        messageId: `th-${i}`,
+        content: { type: "text", text: thoughtTokens[i] },
+      },
+    },
+  });
+  assert.ok(part, `thought token ${i} (${JSON.stringify(thoughtTokens[i])}) must extract`);
+  thoughtEvents = applyAcpPartToEvents(thoughtEvents, "s2", part);
+}
+const thoughts = thoughtEvents.filter((e) => e.type === "thought");
+assert.equal(thoughts.length, 1, `expected 1 Thought card, got ${thoughts.length}`);
+assert.equal(
+  thoughts[0].text,
+  thoughtTokens.join(""),
+  "thought stream must keep spaces and periods",
+);
+
+// Bare space extract must not be null (regression guard for trim-drop)
+const spacePart = extractAcpUpdateText({
+  params: {
+    update: {
+      sessionUpdate: "agent_thought_chunk",
+      messageId: "sp",
+      content: { type: "text", text: " " },
+    },
+  },
+});
+assert.ok(spacePart);
+assert.equal(spacePart!.text, " ");
+assert.equal(spacePart!.role, "thought");
 
 console.log("smoke-stream-merge: ok");

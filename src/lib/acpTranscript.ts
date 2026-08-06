@@ -466,7 +466,20 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
 
   if (isThoughtKind) {
     const visibleText = stripSectionMarkers(textFromContent);
-    if (!visibleText.trim()) return null;
+    // Pure whitespace deltas (" ", "\n") must survive — Codex/Grok token
+    // streams often emit spaces as their own chunk. Dropping them glues
+    // words: "candidates" + " " + "Verifying" → "candidatesVerifying".
+    if (!visibleText) return null;
+    if (!visibleText.trim()) {
+      if (!/^\s+$/.test(visibleText)) return null;
+      return {
+        role: "thought",
+        text: visibleText,
+        isDelta: true,
+        sessionUpdate,
+        messageId,
+      };
+    }
     return {
       role: "thought",
       text: visibleText,
@@ -486,7 +499,17 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
     sessionUpdate.includes("chunk")
   ) {
     const visibleText = stripSectionMarkers(textFromContent);
-    if (!visibleText.trim()) return null;
+    if (!visibleText) return null;
+    if (!visibleText.trim()) {
+      if (!/^\s+$/.test(visibleText)) return null;
+      return {
+        role: "assistant",
+        text: visibleText,
+        isDelta: true,
+        sessionUpdate,
+        messageId,
+      };
+    }
     // Always prefer append for short chunks (punctuation, tokens) so we never
     // replace a long reply with a single "。" snapshot mis-flagged as non-delta.
     const forceDelta = isDelta || visibleText.length <= 24;
@@ -811,12 +834,20 @@ export function applyAcpPartToEvents(
 
   if (part.role === "thought") {
     const text = stripSectionMarkers(part.text);
-    const trimmed = text.trim();
-    if (!trimmed) return current;
+    if (!text) return current;
+
+    const last = current[current.length - 1];
+    // Whitespace-only tokens must still append onto an open Thought card.
+    // Same bug class as Reply "Always" + " " + "approve" → "Alwaysapprove".
+    if (!text.trim()) {
+      if (!last || last.type !== "thought" || last.sessionId !== sessionId) return current;
+      const nextText = mergeStreamText(last.text, text, true);
+      if (nextText === last.text) return current;
+      return patchThoughtAt(current, current.length - 1, nextText, last.messageId);
+    }
 
     const noise = isThoughtNoiseToken(text);
     const asDelta = part.isDelta || noise || text.length <= 32;
-    const last = current[current.length - 1];
 
     // Safety: if we are mid-Reply and a mis-tagged short piece arrives as thought
     // (should be rare after extract fix), keep it on the assistant bubble.
