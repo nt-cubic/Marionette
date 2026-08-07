@@ -80,6 +80,39 @@ assert.equal(
   "Model: this is ordinary prose\n下一行仍是正文",
 );
 
+// Claude Code `/usage` — same policy as Codex `/status`: parse for Usage panel,
+// hide from the chat rail so every refresh does not open a Reply card.
+const claudeUsageOnly = [
+  "You are currently using your subscription to power your Claude Code usage",
+  "",
+  "Current session: 64% used · resets Aug 8, 4:09am (Asia/Tokyo)",
+  "Current week (all models): 17% used · resets Aug 13, 6:59pm (Asia/Tokyo)",
+  "",
+  "What's contributing to your limits usage?",
+  "Approximate, based on local sessions on this machine — does not include other devices or claude.ai. Behaviors are independent characteristics, not a breakdown.",
+  "",
+  "Last 24h · 279 requests · 6 sessions",
+  "65% of your usage was at >150k context",
+  "",
+  "Last 7d · 331 requests · 7 sessions",
+  "58% of your usage was at >150k context",
+].join("\n");
+const claudeUsageFooter = ["已修好权限逻辑。", "", ...claudeUsageOnly.split("\n")].join("\n");
+assert.equal(isRuntimeMetadataOnly(claudeUsageOnly), true);
+assert.equal(stripRuntimeMetadata(claudeUsageOnly), "");
+assert.equal(cleanAssistantText(claudeUsageOnly), "");
+assert.equal(stripRuntimeMetadata(claudeUsageFooter), "已修好权限逻辑。");
+assert.equal(isRuntimeMetadataOnly(claudeUsageFooter), false);
+// Ordinary prose that merely mentions a % must stay visible.
+assert.equal(
+  isRuntimeMetadataOnly("约 65% of your usage was at peak last week, so we should trim context."),
+  false,
+);
+assert.equal(
+  stripRuntimeMetadata("约 65% of your usage was at peak last week, so we should trim context."),
+  "约 65% of your usage was at peak last week, so we should trim context.",
+);
+
 // Mimic transcript policy: user text never cleaned; assistant cleaned; empty assistant dropped.
 const userText = "保留我的 You 卡片\n\n" + statusOnlyMarkdown;
 const assistantWithFooter = "正常回复\n\n" + statusOnlyMarkdown;

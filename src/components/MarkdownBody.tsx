@@ -1,3 +1,4 @@
+import { memo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
@@ -16,8 +17,11 @@ type MarkdownBodyProps = {
  *
  * Pre-pass (prepareMarkdownForRender) repairs model quirks: fences glued to
  * Chinese prose, section headers stuck to prior sentences, short table rows.
+ *
+ * Memoized on text/className: parent stream ticks must not rebuild the markdown
+ * tree for unchanged cards — that remounts text nodes and wipes browser selection.
  */
-export function MarkdownBody({ text, className }: MarkdownBodyProps) {
+export const MarkdownBody = memo(function MarkdownBody({ text, className }: MarkdownBodyProps) {
   if (!text) return null;
 
   return (
@@ -70,4 +74,4 @@ export function MarkdownBody({ text, className }: MarkdownBodyProps) {
       </ReactMarkdown>
     </div>
   );
-}
+});

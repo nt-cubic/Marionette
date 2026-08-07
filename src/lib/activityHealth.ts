@@ -15,16 +15,37 @@ export const ACTIVITY_THRESHOLDS = {
   stalledMs: 60_000,
   /** Almost certainly stuck — recommend interrupt. */
   stuckMs: 120_000,
+  /**
+   * Nested subagents (OpenCode `task`, etc.) usually emit **zero** parent-ACP
+   * events while working. Use a longer fuse so we don't scream "stuck" at 2m
+   * when silence is the only wire signal we ever get.
+   */
+  subagentQuietMs: 90_000,
+  subagentStalledMs: 4 * 60_000,
+  subagentStuckMs: 8 * 60_000,
 } as const;
+
+export type ActivityHealthOpts = {
+  /** An in-progress tool is a nested agent (task/subagent) with no parent stream. */
+  openSubagent?: boolean;
+};
 
 export function activityHealth(
   status: "starting" | "running" | "waiting" | "exited" | "error" | string,
   lastActivityAt: number | null | undefined,
-  now: number = Date.now()
+  now: number = Date.now(),
+  opts?: ActivityHealthOpts
 ): ActivityHealth {
   if (status !== "running" && status !== "starting") return "idle";
   if (lastActivityAt == null) return "live";
   const silentFor = now - lastActivityAt;
+  if (opts?.openSubagent) {
+    // Expected silence while nested agent runs inside the process.
+    if (silentFor >= ACTIVITY_THRESHOLDS.subagentStuckMs) return "stuck";
+    if (silentFor >= ACTIVITY_THRESHOLDS.subagentStalledMs) return "stalled";
+    if (silentFor >= ACTIVITY_THRESHOLDS.subagentQuietMs) return "quiet";
+    return "live";
+  }
   if (silentFor >= ACTIVITY_THRESHOLDS.stuckMs) return "stuck";
   if (silentFor >= ACTIVITY_THRESHOLDS.stalledMs) return "stalled";
   if (silentFor >= ACTIVITY_THRESHOLDS.quietMs) return "quiet";
@@ -54,7 +75,8 @@ export function formatAgo(ms: number, now: number = Date.now()): string {
 
 export function activityBarLabel(
   status: "starting" | "running" | "waiting" | "exited" | "error" | string,
-  health: ActivityHealth
+  health: ActivityHealth,
+  opts?: ActivityHealthOpts
 ): string {
   if (status === "starting") {
     if (health === "stuck" || health === "stalled") return "Connecting failed to progress…";
@@ -62,6 +84,13 @@ export function activityBarLabel(
     return "Connecting…";
   }
   if (status === "running") {
+    // OpenCode/Claude nested agents: parent ACP is often silent on purpose.
+    if (opts?.openSubagent) {
+      if (health === "stuck") return "Subagent silent too long — likely waiting on hidden approval";
+      if (health === "stalled") return "Subagent still silent — may be stuck on permissions";
+      if (health === "quiet") return "Subagent running (no nested stream over ACP)";
+      return "Subagent running (no nested stream over ACP)";
+    }
     if (health === "stuck") return "Appears stuck — no stream updates";
     if (health === "stalled") return "Likely stalled — no updates recently";
     if (health === "quiet") return "Still working… no updates recently";
@@ -80,10 +109,31 @@ export function activityBarLabel(
  * sits `in_progress` forever. Observed: two 6-minute hangs with 2–4 ACP events
  * total and zero `session/request_permission`, while the same read done by the
  * main model asked for permission in 1ms and finished in 19s.
+ *
+ * `title` matters: OpenCode often renames the card to the agent/prompt while
+ * the stable tool name is still `task` (or arrives late).
  */
-export function isSubagentTool(toolName: string | null | undefined): boolean {
-  if (!toolName) return false;
-  return /^(task|agent|subagent|delegate|dispatch_agent|spawn_agent)$/i.test(toolName.trim());
+export function isSubagentTool(
+  toolName: string | null | undefined,
+  title?: string | null,
+): boolean {
+  const name = (toolName ?? "").trim();
+  if (
+    /^(task|agent|subagent|delegate|dispatch_agent|spawn_agent|call_omo_agent)$/i.test(name)
+  ) {
+    return true;
+  }
+  // Normalized aliases / partial names (not todowrite).
+  if (name && /task|subagent|spawn_agent|dispatch_agent/i.test(name) && !/todo/i.test(name)) {
+    return true;
+  }
+  const t = (title ?? "").trim();
+  if (!t) return false;
+  if (/\b(subagent|sub-agent|nested agent|task agent|delegate agent)\b/i.test(t)) return true;
+  // OpenCode task cards often look like: "Task (general)" / "general · explore …"
+  if (/^task\b/i.test(t)) return true;
+  if (/\(general\)|\(explore\)|\(scout\)/i.test(t)) return true;
+  return false;
 }
 
 export function stallBannerCopy(health: ActivityHealth, opts: {
@@ -93,6 +143,7 @@ export function stallBannerCopy(health: ActivityHealth, opts: {
   openToolIsSubagent?: boolean;
   ago?: string;
 }): { title: string; body: string } | null {
+  // Expected subagent silence: no red banner while still "live".
   if (health === "idle" || health === "live") return null;
 
   const ago = opts.ago ? ` (last update ${opts.ago})` : "";
@@ -100,16 +151,28 @@ export function stallBannerCopy(health: ActivityHealth, opts: {
     ? ` Last open tool: ${opts.openToolTitle}.`
     : "";
 
+  // Quiet under a nested agent is normal — explain once, don't alarm.
+  if (opts.openToolIsSubagent && health === "quiet") {
+    return {
+      title: "Subagent running silently",
+      body:
+        `OpenCode/Claude nested agents do not stream their inner turns over ACP${ago}.${toolBit} ` +
+        `You will only see this tool flip to completed when the child finishes. ` +
+        `If it never returns, it may be waiting on a permission dialog inside the agent process ` +
+        `(not forwarded to Marionette) — interrupt with Esc×2 / ■ and run the step here instead.`,
+    };
+  }
+
   // A silent subagent is almost never "thinking" — name the real cause.
   if (opts.openToolIsSubagent && (health === "stalled" || health === "stuck")) {
     return {
-      title: "Subagent has gone silent",
+      title: "Subagent has gone silent too long",
       body:
-        `No stream updates${ago}.${toolBit} Subagents run inside the agent process, and their ` +
-        `permission prompts are not forwarded over ACP — if it touched a file outside the project ` +
-        `(or anything else needing approval), it is waiting on a dialog that can never reach you. ` +
-        `Interrupt with Esc×2 or ■, then either do the step in this dialog directly, or pre-approve ` +
-        `the path in the agent's own config.`,
+        `No parent-ACP updates${ago}.${toolBit} Nested agents run inside the agent process; their ` +
+        `permission prompts are not forwarded over ACP — if it touched a path needing approval, ` +
+        `it is waiting on a dialog that can never reach you. ` +
+        `Interrupt with Esc×2 or ■, then either do the step in this dialog, use Marionette @-delegate ` +
+        `(full child stream), or pre-approve paths in the agent's own config.`,
     };
   }
 
@@ -138,7 +201,19 @@ export function stallBannerCopy(health: ActivityHealth, opts: {
   };
 }
 
-export function composerBusyCopy(health: ActivityHealth): string {
+export function composerBusyCopy(
+  health: ActivityHealth,
+  opts?: ActivityHealthOpts
+): string {
+  if (opts?.openSubagent) {
+    if (health === "stuck") {
+      return "Subagent silent too long — Esc×2 or ■ (may be hidden permission)";
+    }
+    if (health === "stalled") {
+      return "Subagent still silent — Esc×2 or ■ if it feels hung";
+    }
+    return "Subagent running (no nested ACP stream) — Esc×2 or ■ to interrupt";
+  }
   if (health === "stuck") {
     return "Appears stuck — Esc×2 or ■ to interrupt and regain control";
   }
