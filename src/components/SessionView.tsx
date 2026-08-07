@@ -1556,6 +1556,15 @@ function CleanPlaceholder({
                           <Globe size={12} aria-hidden />
                         </span>
                       )}
+                    {isUser && "queued" in event && event.queued && (
+                      <span
+                        className="event-card__queued-badge"
+                        title="Agent 正在工作，当前回合结束后会自动发送"
+                        aria-label="已排队，等待发送"
+                      >
+                        排队中
+                      </span>
+                    )}
                   </span>
                   <span className="event-card__type-row__right">
                     <span className="event-card__time-edit">

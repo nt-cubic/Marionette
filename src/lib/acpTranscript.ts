@@ -618,9 +618,11 @@ export function userMessageEvent(
     effortLabel?: string;
     attachments?: import("./imageAttachments").ImageAttachment[];
     forceWebSearch?: boolean;
+    /** True while waiting for the current turn before this prompt is wired. */
+    queued?: boolean;
   },
 ): SessionEvent {
-  const { attachments, forceWebSearch, ...rest } = meta ?? {};
+  const { attachments, forceWebSearch, queued, ...rest } = meta ?? {};
   return {
     type: "user_message",
     sessionId,
@@ -630,6 +632,7 @@ export function userMessageEvent(
     ...rest,
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
     ...(forceWebSearch ? { forceWebSearch: true } : {}),
+    ...(queued ? { queued: true } : {}),
   };
 }
 

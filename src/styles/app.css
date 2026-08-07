@@ -2581,6 +2581,86 @@ body.is-tab-detaching * {
   color: var(--accent);
 }
 
+.event-card__queued-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  vertical-align: middle;
+}
+
+.git-branch-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+  min-width: 0;
+}
+
+.git-branch-row__label {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.git-branch-row__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  color: var(--text);
+}
+
+.workspace-titlebar__branch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  margin-right: 8px;
+  padding: 0 8px;
+  align-self: center;
+  height: 22px;
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--panel-soft);
+  border: 1px solid var(--border);
+  min-width: 0;
+}
+
+.workspace-titlebar__branch-label {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.workspace-titlebar__branch-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  color: var(--text);
+}
+
 .event-card__web-badge {
   display: inline-flex;
   flex: 0 0 auto;

@@ -505,6 +505,17 @@ export async function getChangedFiles(projectId: string): Promise<import("./type
   }
 }
 
+/** Current git branch for the project, or null if not a repo / unavailable. */
+export async function getCurrentBranch(projectId: string): Promise<string | null> {
+  if (!isTauriRuntime()) return "main";
+  try {
+    const branch = await invoke<string | null>("get_current_branch", { projectId });
+    return branch?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 export async function getFileDiff(projectId: string, path: string): Promise<string> {
   if (!isTauriRuntime()) return "";
   try {

@@ -149,6 +149,11 @@ export type SessionEvent =
        * force-search prefix; You card shows only a globe badge (not the full text).
        */
       forceWebSearch?: boolean;
+      /**
+       * Waiting for the live turn to finish before this prompt is sent over ACP
+       * (one in-flight `session/prompt` at a time). Cleared when the wire send starts.
+       */
+      queued?: boolean;
     }
   | {
       type: "assistant_message";

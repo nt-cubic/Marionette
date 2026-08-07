@@ -13,7 +13,7 @@ import {
   sealOpenAssistantReplies,
   userMessageEvent,
 } from "../lib/acpTranscript";
-import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, generateHandoff, getChangedFiles, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, startAcpSession, startAgentLogin, stopAcpSession, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision } from "../lib/api";
+import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, generateHandoff, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, startAcpSession, startAgentLogin, stopAcpSession, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision } from "../lib/api";
 import {
   bindDetachedWindowReaper,
   openDetachedSessionWindow,
@@ -350,6 +350,32 @@ export function App() {
   const transcriptSaveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const transcriptLoadedRef = useRef<Set<string>>(new Set());
   /**
+   * Follow-up prompts typed while a turn is live. ACP allows only one
+   * `session/prompt` in flight; we show the You card immediately and wire the
+   * prompt when `turn/complete` frees the session.
+   */
+  const pendingSendsRef = useRef<
+    Map<
+      string,
+      Array<{
+        composed: string;
+        imageAttachments: import("../lib/imageAttachments").ImageAttachment[];
+        forceWebSearch: boolean;
+        composerSnap?: {
+          modeId?: string | null;
+          modeLabel?: string | null;
+          modelId?: string | null;
+          modelLabel?: string | null;
+          effortLabel?: string | null;
+        };
+        messageId?: string;
+      }>
+    >
+  >(new Map());
+  const flushingSendRef = useRef<Set<string>>(new Set());
+  /** Set each render so turn/complete can drain the queue without stale closures. */
+  const drainQueuedSendRef = useRef<(sessionId: string) => void>(() => undefined);
+  /**
    * @-delegate children: childSessionId → meta.
    * Not in availableSessions (shelf filters them); ACP is started directly.
    */
@@ -411,6 +437,8 @@ export function App() {
   const [lastHandoff, setLastHandoff] = useState<HandoffResult | null>(null);
   const [changedFiles, setChangedFiles] = useState<ChangedFile[]>([]);
   const [changedFilesNote, setChangedFilesNote] = useState<string | null>(null);
+  /** Current git branch for the active project (null = none / unknown). */
+  const [gitBranch, setGitBranch] = useState<string | null>(null);
   const [diffPreview, setDiffPreview] = useState<{ path: string; text: string } | null>(null);
   const [permissionPrompt, setPermissionPrompt] = useState<PermissionPrompt | null>(null);
   const [permissionBusy, setPermissionBusy] = useState(false);
@@ -1112,6 +1140,7 @@ export function App() {
 
         // Auth / hard turn failures → error; cancel & clean end → waiting.
         // Use setSessionStatusById so disk + detached windows leave Interrupt mode.
+        let turnedIdle = false;
         {
           const prev = sessionsRef.current.find((s) => s.id === payload.sessionId);
           if (prev && (prev.status === "running" || prev.status === "starting")) {
@@ -1120,6 +1149,7 @@ export function App() {
                 ? "error"
                 : "waiting";
             setSessionStatusById(payload.sessionId, nextStatus);
+            turnedIdle = nextStatus === "waiting";
           }
         }
 
@@ -1143,6 +1173,12 @@ export function App() {
           source: "acp",
           summary: `turn/complete stopReason=${stopReason}`,
         });
+        // Drain follow-ups the user typed while this turn was live.
+        // Interrupt may already have set status to waiting before this event —
+        // still try drain; the helper no-ops when empty or still busy.
+        if (turnedIdle || stopReason === "cancelled" || stopReason === "end_turn" || !stopReason) {
+          queueMicrotask(() => drainQueuedSendRef.current(payload.sessionId));
+        }
       }
       // Agent process stdout closed (crash / exit) — never leave the UI "Working" forever.
       if (payload.method === "process/ended" || payload.method === "process/stopped") {
@@ -1153,6 +1189,18 @@ export function App() {
             : endedHard
               ? "Agent process ended"
               : "Agent process stopped";
+        // Drop queued follow-ups — the process cannot receive them anymore.
+        pendingSendsRef.current.delete(payload.sessionId);
+        flushingSendRef.current.delete(payload.sessionId);
+        setLiveEvents((current) =>
+          current.map((event) =>
+            event.type === "user_message" &&
+            event.sessionId === payload.sessionId &&
+            event.queued
+              ? { ...event, queued: undefined }
+              : event
+          )
+        );
         // Zombie Ask / Plan / Permission cards block the composer — clear for this session.
         setAskPrompt((cur) => (cur?.sessionId === payload.sessionId ? null : cur));
         setPlanApproval((cur) => (cur?.sessionId === payload.sessionId ? null : cur));
@@ -2301,15 +2349,21 @@ export function App() {
     if (!currentProjectId) {
       setChangedFiles([]);
       setChangedFilesNote(null);
+      setGitBranch(null);
       return;
     }
     try {
-      const files = await getChangedFiles(currentProjectId);
+      const [files, branch] = await Promise.all([
+        getChangedFiles(currentProjectId),
+        getCurrentBranch(currentProjectId),
+      ]);
       setChangedFiles(files);
       setChangedFilesNote(files.length === 0 ? "No local changes (or not a git repo)." : null);
+      setGitBranch(branch);
     } catch (error) {
       setChangedFiles([]);
       setChangedFilesNote(error instanceof Error ? error.message : String(error));
+      setGitBranch(null);
     }
   }, [currentProjectId]);
 
@@ -2989,6 +3043,8 @@ export function App() {
       source: "interrupt",
       summary: "ACP cancel (interrupt)",
     });
+    // turn/complete may race after we already left "running" — drain here too.
+    queueMicrotask(() => drainQueuedSendRef.current(sid));
   }, [armCancelWatchdog, currentSessionId, pushDebug, setSessionStatusById, touchActivity]);
 
   // P2-UX-3: double Esc → interrupt (after closing overlays).
@@ -3558,6 +3614,11 @@ export function App() {
       modelLabel?: string | null;
       effortLabel?: string | null;
     },
+    options?: {
+      /** You card already in the timeline (queued follow-up being flushed). */
+      alreadyShown?: boolean;
+      messageId?: string;
+    },
   ) => {
     try {
       // An agent switch leaves handoff notes waiting — attach them to this send
@@ -3608,29 +3669,65 @@ export function App() {
       // Show the user message immediately; wait for ACP only after that.
       // History injection uses events *before* this message.
       const priorForInject = liveEventsRef.current.filter((e) => e.sessionId === sid);
-      setLiveEvents((current) => [
-        ...current,
-        userMessageEvent(sid, composed, {
+      const liveStatus = sessionsRef.current.find((s) => s.id === sid)?.status;
+      // One ACP prompt at a time: while a turn is live, queue and flush later.
+      const shouldQueue = !options?.alreadyShown && liveStatus === "running";
+
+      if (!options?.alreadyShown) {
+        const um = userMessageEvent(sid, composed, {
           ...(sendMetaRef.current ?? {}),
           attachments:
             imageAttachments.length > 0 ? imageAttachments : undefined,
           forceWebSearch: forceWebSearch || undefined,
-        }),
-      ]);
-      // Shelf order is recency-only: bump lastActiveAt only when the user sends
-      // (selecting a dialog must not jump it to the top).
-      const activeAt = new Date().toISOString();
-      setAvailableSessions((current) =>
-        current.map((s) => (s.id === sid ? { ...s, lastActiveAt: activeAt } : s))
-      );
-      renameSessionFromText(sid, composed || imageAttachments[0]?.name || "Image");
-      touchActivity(sid);
-      pushDebug({
-        sessionId: sid,
-        level: "info",
-        source: "composer",
-        summary: `send: ${composed.length > 80 ? `${composed.slice(0, 80)}…` : composed}`,
-      });
+          queued: shouldQueue || undefined,
+        });
+        setLiveEvents((current) => [...current, um]);
+        // Shelf order is recency-only: bump lastActiveAt only when the user sends
+        // (selecting a dialog must not jump it to the top).
+        const activeAt = new Date().toISOString();
+        setAvailableSessions((current) =>
+          current.map((s) => (s.id === sid ? { ...s, lastActiveAt: activeAt } : s))
+        );
+        renameSessionFromText(sid, composed || imageAttachments[0]?.name || "Image");
+        touchActivity(sid);
+        pushDebug({
+          sessionId: sid,
+          level: "info",
+          source: "composer",
+          summary: shouldQueue
+            ? `queued (agent busy): ${composed.length > 80 ? `${composed.slice(0, 80)}…` : composed}`
+            : `send: ${composed.length > 80 ? `${composed.slice(0, 80)}…` : composed}`,
+        });
+        if (shouldQueue) {
+          const queue = pendingSendsRef.current.get(sid) ?? [];
+          queue.push({
+            composed,
+            imageAttachments,
+            forceWebSearch,
+            composerSnap,
+            messageId: um.type === "user_message" ? um.messageId : undefined,
+          });
+          pendingSendsRef.current.set(sid, queue);
+          return;
+        }
+      } else if (options.messageId) {
+        // Flushing a queued card: drop the "排队中" badge before the wire send.
+        setLiveEvents((current) =>
+          current.map((event) =>
+            event.type === "user_message" &&
+            event.sessionId === sid &&
+            event.messageId === options.messageId
+              ? { ...event, queued: undefined }
+              : event
+          )
+        );
+        pushDebug({
+          sessionId: sid,
+          level: "info",
+          source: "composer",
+          summary: `flush queued: ${composed.length > 80 ? `${composed.slice(0, 80)}…` : composed}`,
+        });
+      }
       // Sending supersedes any pending verdict on the last interrupt — do not
       // let a stale watchdog fire mid-turn and mark this session for restart.
       disarmCancelWatchdog(sid);
@@ -3765,6 +3862,7 @@ export function App() {
         summary: `session/prompt accepted (streaming…)${imagePaths.length ? ` images=${imagePaths.length}` : ""}`,
       });
     } catch (error) {
+      flushingSendRef.current.delete(sid);
       delete fileChangeSnapshotsRef.current[sid];
       delete fileChangePublishedRef.current[sid];
       fileChangeFinalizeRef.current.delete(sid);
@@ -3805,6 +3903,35 @@ export function App() {
         detail: classified.message,
       });
     }
+  };
+
+  // Drain follow-ups when a turn frees the session (natural end or cancel).
+  drainQueuedSendRef.current = (sessionId: string) => {
+    void (async () => {
+      if (flushingSendRef.current.has(sessionId)) return;
+      const queue = pendingSendsRef.current.get(sessionId);
+      if (!queue?.length) return;
+      const status = sessionsRef.current.find((s) => s.id === sessionId)?.status;
+      // Wait until the live turn slot is free.
+      if (status === "running" || status === "starting") return;
+
+      flushingSendRef.current.add(sessionId);
+      try {
+        const next = queue.shift()!;
+        if (queue.length === 0) pendingSendsRef.current.delete(sessionId);
+        else pendingSendsRef.current.set(sessionId, queue);
+        await performSend(
+          sessionId,
+          next.composed,
+          next.imageAttachments,
+          next.forceWebSearch,
+          next.composerSnap,
+          { alreadyShown: true, messageId: next.messageId },
+        );
+      } finally {
+        flushingSendRef.current.delete(sessionId);
+      }
+    })();
   };
 
   /** Dismiss outside-project prompt without sending; restore draft to Composer. */
@@ -4092,6 +4219,15 @@ export function App() {
             detachedMode={IS_DETACHED_WINDOW}
           />
           <div className="workspace-titlebar__spacer" data-tauri-drag-region />
+          {gitBranch ? (
+            <div
+              className="workspace-titlebar__branch"
+              title={`${currentProject?.name ?? "project"} · ${gitBranch}`}
+            >
+              <span className="workspace-titlebar__branch-label">git</span>
+              <span className="workspace-titlebar__branch-name">{gitBranch}</span>
+            </div>
+          ) : null}
           <WindowControls />
         </div>
 
@@ -4316,6 +4452,7 @@ export function App() {
           changedFiles={changedFiles}
           changedFilesNote={changedFilesNote}
           onRefreshChangedFiles={() => void refreshChangedFiles()}
+          gitBranch={gitBranch}
           onOpenDiff={(path) => void handleOpenDiff(path)}
           handoff={lastHandoff}
           projectContext={projectContext}

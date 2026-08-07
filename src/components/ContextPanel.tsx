@@ -28,6 +28,8 @@ type ContextPanelProps = {
   changedFiles?: ChangedFile[];
   changedFilesNote?: string | null;
   onRefreshChangedFiles?: () => void;
+  /** Current git branch for the active project (null = not a repo / unknown). */
+  gitBranch?: string | null;
   onOpenDiff?: (path: string) => void;
   handoff?: HandoffResult | null;
   /** MCP servers + skills found on this machine / in this project. */
@@ -140,6 +142,7 @@ export function ContextPanel({
   changedFiles = [],
   changedFilesNote = null,
   onRefreshChangedFiles,
+  gitBranch = null,
   onOpenDiff,
   handoff = null,
   projectContext = null,
@@ -461,6 +464,12 @@ export function ContextPanel({
             </button>
           )}
         </div>
+        {gitBranch ? (
+          <div className="git-branch-row" title={`Current branch: ${gitBranch}`}>
+            <span className="git-branch-row__label">branch</span>
+            <code className="git-branch-row__name">{gitBranch}</code>
+          </div>
+        ) : null}
         {changedFiles.length === 0 ? (
           <p className="context-card__empty">
             {changedFilesNote ?? "No local changes (or not a git repo)."}

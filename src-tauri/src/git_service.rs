@@ -2,6 +2,44 @@ use crate::models::ChangedFile;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
+/// Current branch name for the project root.
+/// `None` if not a git repo / no HEAD. Detached HEAD returns `HEAD (abcdef)`.
+pub fn get_current_branch(project_root: &Path) -> Result<Option<String>, String> {
+    if !project_root.is_dir() {
+        return Err(format!("Not a directory: {}", project_root.display()));
+    }
+
+    let output = run_git(project_root, &["branch", "--show-current"])?;
+    let code = output.status.code().unwrap_or(-1);
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    if code == 128 || stderr.to_lowercase().contains("not a git repository") {
+        return Ok(None);
+    }
+    if code != 0 && stdout.is_empty() {
+        if stderr.to_lowercase().contains("not recognized")
+            || stderr.to_lowercase().contains("not found")
+            || stderr.to_lowercase().contains("enoent")
+        {
+            return Err("git is not available on PATH".to_string());
+        }
+        return Ok(None);
+    }
+
+    if !stdout.is_empty() {
+        return Ok(Some(stdout));
+    }
+
+    // Detached HEAD: `branch --show-current` is empty — show a short SHA.
+    let rev = run_git(project_root, &["rev-parse", "--short", "HEAD"])?;
+    let sha = String::from_utf8_lossy(&rev.stdout).trim().to_string();
+    if sha.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(format!("HEAD ({sha})")))
+}
+
 /// Run `git status --porcelain` in the project root. Empty vec if not a repo.
 pub fn get_changed_files(project_root: &Path) -> Result<Vec<ChangedFile>, String> {
     if !project_root.is_dir() {
