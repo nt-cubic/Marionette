@@ -1,5 +1,13 @@
 import { Check, ChevronDown, Copy, Eye, EyeOff, FileText, Globe, MessageSquareQuote, Pencil, Plus, Square, SquareArrowOutUpRight, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { createPortal } from "react-dom";
 import { extractAcpUpdateText, mergeStreamText, userMessageAnchorId } from "../lib/acpTranscript";
 import {
@@ -9,7 +17,6 @@ import {
   isSubagentTool,
   isToolInProgress,
   stallBannerCopy,
-  type ActivityHealth,
 } from "../lib/activityHealth";
 import { parseUnifiedDiff } from "../lib/annotations";
 import { getFileDiff } from "../lib/api";
@@ -407,11 +414,30 @@ export function SessionView({
     return map;
   }, [events]);
 
+  /** OpenCode `task` / nested agent: parent ACP is often silent by design. */
+  const openSubagent = useMemo(() => {
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const e = events[i];
+      if (
+        e.type === "tool_call" &&
+        isToolInProgress(e.status) &&
+        isSubagentTool(e.toolName, e.title)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }, [events]);
+
   return (
     <section className="session-view" aria-label="Session view">
 
       {isLive && (
-        <SessionActivityBar status={session.status} lastActivityAt={lastActivityAt} />
+        <SessionActivityBar
+          status={session.status}
+          lastActivityAt={lastActivityAt}
+          openSubagent={openSubagent}
+        />
       )}
 
       {authBanner && (
@@ -750,6 +776,59 @@ function hasUnifiedDiff(text: string): boolean {
 }
 
 /**
+ * OpenCode-style 3×3 activity grid. Pure CSS — no React state clock, so parent
+ * transcript cards do not re-render every frame (selection-safe).
+ */
+function NineDotSpinner({
+  label,
+  compact = false,
+}: {
+  label?: string;
+  /** Smaller grid for summary rows. */
+  compact?: boolean;
+}) {
+  return (
+    <div
+      className={`nine-dot-spinner${compact ? " is-compact" : ""}${label ? " has-label" : ""}`}
+      role="status"
+      aria-live="polite"
+      aria-label={label ?? "Working"}
+    >
+      <div className="nine-dot-spinner__grid" aria-hidden>
+        {Array.from({ length: 9 }, (_, i) => (
+          <span
+            key={i}
+            className="nine-dot-spinner__dot"
+            style={{ animationDelay: `${(i % 3) * 0.12 + Math.floor(i / 3) * 0.08}s` }}
+          />
+        ))}
+      </div>
+      {label ? <span className="nine-dot-spinner__label">{label}</span> : null}
+    </div>
+  );
+}
+
+/**
+ * Only shell / long process / nested-agent tools get the tall OpenCode-style
+ * working block. Ordinary read/edit/grep stay collapsed — expanding them is noise.
+ */
+function isLongRunningToolKind(event: ToolCallEvent): boolean {
+  if (isSubagentTool(event.toolName, event.title)) return true;
+  const name = (event.toolName ?? "").trim().toLowerCase();
+  // ACP tool names seen in the wild for process execution.
+  if (
+    /^(bash|shell|cmd|powershell|pwsh|terminal|exec|execute|run_terminal|run_command|run_shell|command)$/i.test(
+      name,
+    )
+  ) {
+    return true;
+  }
+  // Some adapters put the verb only in the title ("Run bash", "Shell: …").
+  const title = (event.title ?? "").toLowerCase();
+  return /\b(bash|shell|powershell|pwsh)\b/.test(title) && !/\b(read|edit|write|grep|glob|search)\b/.test(title);
+}
+
+/**
  * Older transcripts only persisted the one-line diff summary. For those
  * cards, retrieve the current workspace diff when the tool card is opened.
  * New ACP events already carry the full diff from acpTranscript.ts.
@@ -759,11 +838,14 @@ function ToolCallBody({
   body,
   projectId,
   open,
+  running = false,
 }: {
   event: ToolCallEvent;
   body: string;
   projectId?: string;
   open: boolean;
+  /** Tool still in_progress — tall panel + 9-dot spinner until it settles. */
+  running?: boolean;
 }) {
   const [workspaceDiff, setWorkspaceDiff] = useState<string | null>(null);
   const [diffError, setDiffError] = useState<string | null>(null);
@@ -776,6 +858,7 @@ function ToolCallBody({
       !hasUnifiedDiff(body) &&
       (isFileEditTool || /\[diff\]/i.test(body)),
   );
+  const isSubagent = isSubagentTool(event.toolName, event.title);
 
   useEffect(() => {
     setWorkspaceDiff(null);
@@ -814,12 +897,45 @@ function ToolCallBody({
         ? `${body}\n\n[full diff unavailable] ${diffError}`
         : body;
   const isDiff = hasUnifiedDiff(displayBody) || needsWorkspaceDiff;
+  const hasBody = Boolean(displayBody?.trim());
+
+  // Running with no output yet: reserve a tall OpenCode-style working block.
+  if (running && !hasBody) {
+    return (
+      <div className="tool-running-panel">
+        <NineDotSpinner
+          label={isSubagent ? "Subagent working…" : "Running…"}
+        />
+        <p className="tool-running-panel__hint">
+          {isSubagent
+            ? "Nested agent is running inside this tool. Output shows up when it reports back over ACP."
+            : "Long command in progress. Live output appears here as the agent streams it."}
+        </p>
+        {(event.title || event.path) && (
+          <p className="tool-running-panel__meta" title={event.title || event.path}>
+            {[event.title, event.path].filter(Boolean).join(" · ")}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  // Running with partial output: keep the tall clip so the block stays large.
+  const maxHeight = running ? 420 : isDiff ? 560 : 220;
 
   return (
     <ClippedBody
-      className="event-card__clip"
-      maxHeight={isDiff ? 560 : 220}
+      className={`event-card__clip${running ? " is-tool-running-tall" : ""}`}
+      maxHeight={maxHeight}
     >
+      {running && (
+        <div className="tool-running-panel__inline">
+          <NineDotSpinner
+            compact
+            label={isSubagent ? "Subagent working…" : "Running…"}
+          />
+        </div>
+      )}
       <pre className={`event-card__body event-card__body--tool${isDiff ? " event-card__body--diff" : ""}`}>
         <LinkedText text={displayBody} />
         {open && needsWorkspaceDiff && !workspaceDiff && !diffError && "\n\nLoading full diff…"}
@@ -879,12 +995,31 @@ function CleanPlaceholder({
   /** State mirror of stickToBottom so the jump-to-bottom chip can re-render. */
   const [atBottom, setAtBottom] = useState(true);
   const isRunning = session.status === "running";
+
+  /**
+   * Selection freeze: while the user is dragging a selection (or keeps one)
+   * inside the transcript, pin a snapshot of events so stream/tool updates
+   * cannot rewrite DOM under the caret and clear the browser highlight.
+   *
+   * Use a ref (not useState) to pin on pointerdown — a freeze setState mid-drag
+   * would itself re-render and wipe the highlight we are trying to protect.
+   * Thaw bumps freezeGen so the list catches up to the live stream.
+   */
+  const eventsRef = useRef(events);
+  eventsRef.current = events;
+  const selectingRef = useRef(false);
+  const frozenEventsRef = useRef<SessionEvent[] | null>(null);
+  const [freezeGen, setFreezeGen] = useState(0);
+  void freezeGen;
+  const displayEvents = frozenEventsRef.current ?? events;
+  const selectionLocked = frozenEventsRef.current != null;
+
   // Workspace file changes already live in the right-side Changed Files panel.
   // Keep them in the transcript/history data, but do not create an empty
   // collapsible "File" row after every turn in the conversation rail.
   const visibleEvents = useMemo(
-    () => events.filter((event) => event.type !== "file_change"),
-    [events],
+    () => displayEvents.filter((event) => event.type !== "file_change"),
+    [displayEvents],
   );
   const presentationItems = useMemo(
     () => buildMessagePresentation(visibleEvents, session.id),
@@ -932,13 +1067,6 @@ function CleanPlaceholder({
   const [editDraft, setEditDraft] = useState("");
   const [editBusy, setEditBusy] = useState(false);
   const [expandedToolKeys, setExpandedToolKeys] = useState<Set<string>>(() => new Set());
-  // Local clock for stall UI only — does not drive list scroll keys.
-  const [healthNow, setHealthNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!isRunning) return;
-    const id = window.setInterval(() => setHealthNow(Date.now()), 2000);
-    return () => window.clearInterval(id);
-  }, [isRunning]);
 
   // After send: last card is still You → show ghost "Waiting for agent…"
   const lastVisible = visibleEvents[visibleEvents.length - 1];
@@ -948,7 +1076,9 @@ function CleanPlaceholder({
       lastVisible.type === "user_message" ||
       lastVisible.type === "handoff_prepared");
 
-  const health = activityHealth(session.status, lastActivityAt, healthNow);
+  // StallBanner owns its own clock so transcript cards are not re-rendered every
+  // 2s (that rebuild wiped browser text selection). Tool stall styling uses
+  // lastActivityAt snapshots when events update, not a parent ticker.
   const openTool = useMemo(() => {
     for (let i = visibleEvents.length - 1; i >= 0; i -= 1) {
       const e = visibleEvents[i];
@@ -958,12 +1088,12 @@ function CleanPlaceholder({
     }
     return null;
   }, [visibleEvents]);
+  const openToolIsSubagent = Boolean(
+    openTool && isSubagentTool(openTool.toolName, openTool.title),
+  );
   const midTurn = isRunning && !awaitingFirstChunk;
-  // Stall copy is about a live turn going quiet. A reconnect is not a stalled
-  // turn — inserting this card while warming up only shoves the transcript.
-  const showStallBanner =
-    isRunning &&
-    (awaitingFirstChunk || health === "quiet" || health === "stalled" || health === "stuck");
+  // Mount banner only while a turn is live; it returns null when healthy mid-turn.
+  const showStallBanner = isRunning;
 
   // Content fingerprint — only real transcript changes should pin-scroll (never a clock tick / health).
   const scrollKey = useMemo(() => {
@@ -991,7 +1121,85 @@ function CleanPlaceholder({
   useEffect(() => {
     stickToBottomRef.current = true;
     setAtBottom(true);
+    selectingRef.current = false;
+    frozenEventsRef.current = null;
+    setFreezeGen((g) => g + 1);
     window.getSelection()?.removeAllRanges();
+  }, [session.id]);
+
+  // Freeze transcript DOM while selecting so stream ticks cannot clear the highlight.
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+
+    const selectionInList = (): boolean => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || !sel.rangeCount) return false;
+      const anchor = sel.anchorNode;
+      const focus = sel.focusNode;
+      return Boolean(
+        (anchor && list.contains(anchor)) || (focus && list.contains(focus)),
+      );
+    };
+
+    /** Pin without setState — safe mid-drag. */
+    const freeze = () => {
+      if (!frozenEventsRef.current) {
+        frozenEventsRef.current = eventsRef.current;
+      }
+    };
+    /** Drop the pin; re-render only if we actually were frozen. */
+    const thaw = () => {
+      selectingRef.current = false;
+      if (!frozenEventsRef.current) return;
+      frozenEventsRef.current = null;
+      setFreezeGen((g) => g + 1);
+    };
+    const sync = () => {
+      if (selectingRef.current || selectionInList()) freeze();
+      else thaw();
+    };
+
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      if (!(e.target instanceof Element) || !list.contains(e.target)) return;
+      // Buttons/inputs/summary chrome — never freeze on chrome clicks.
+      if (
+        e.target.closest(
+          "button, a, input, textarea, select, summary, .quote-pop, .quote-draft, .quote-pin, .event-card__edit-form",
+        )
+      ) {
+        return;
+      }
+      selectingRef.current = true;
+      freeze();
+    };
+    const onPointerUp = () => {
+      if (!selectingRef.current && !frozenEventsRef.current) return;
+      selectingRef.current = false;
+      // Browser finalizes the range after pointerup.
+      window.requestAnimationFrame(sync);
+    };
+    const onSelectionChange = () => {
+      // Mid-drag: keep freeze. Idle: freeze only while a range remains in list.
+      if (selectingRef.current) {
+        freeze();
+        return;
+      }
+      sync();
+    };
+
+    // Capture so we pin before a stream paint lands in the same frame.
+    document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("pointerup", onPointerUp, true);
+    document.addEventListener("pointercancel", onPointerUp, true);
+    document.addEventListener("selectionchange", onSelectionChange);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("pointerup", onPointerUp, true);
+      document.removeEventListener("pointercancel", onPointerUp, true);
+      document.removeEventListener("selectionchange", onSelectionChange);
+    };
   }, [session.id]);
 
   const onListScroll = useCallback(() => {
@@ -1014,12 +1222,14 @@ function CleanPlaceholder({
 
   // Stick to bottom only while the user is already near the end (chat apps pattern).
   // Never key this off the activity clock / health — that caused jump/flicker bugs.
+  // Never while selection is locked — scroll jumps clear the caret/highlight.
   useEffect(() => {
+    if (selectionLocked) return;
     const el = listRef.current;
     if (!el) return;
     if (!stickToBottomRef.current) return;
     el.scrollTop = el.scrollHeight;
-  }, [scrollKey]);
+  }, [scrollKey, selectionLocked]);
 
   // Outline jump when the target card is not mounted (virtual window).
   useEffect(() => {
@@ -1132,14 +1342,13 @@ function CleanPlaceholder({
               ? `@${event.agentId}/${event.modelId}`
               : `@${event.agentId}`;
             const childStream = allEvents.filter((e) => e.sessionId === event.childSessionId);
-            const expanded = expandedChildId === event.childSessionId;
             return (
               <div
-                className="event-card event-card--subtask is-running"
+                className="event-card event-card--subtask is-running is-working-block"
                 key={`subtask-${event.childSessionId}-run`}
               >
                 <div className="subtask-card__row">
-                  <span className="subtask-card__glyph" aria-hidden>⟳</span>
+                  <NineDotSpinner compact />
                   <span className="subtask-card__title">
                     {target} · {event.prompt.slice(0, 48)}
                     {event.prompt.length > 48 ? "…" : ""}
@@ -1155,19 +1364,18 @@ function CleanPlaceholder({
                     </button>
                   )}
                 </div>
-                {childStream.length > 0 && (
-                  <button
-                    type="button"
-                    className="pill-action subtask-card__btn subtask-card__expand"
-                    onClick={() =>
-                      setExpandedChildId?.(expanded ? null : event.childSessionId)
-                    }
-                  >
-                    {expanded ? "收起" : "展开"}
-                  </button>
-                )}
-                {expanded && (
-                  <div className="subtask-card__stream custom-scrollbar scrollbar-autohide">
+                {childStream.length === 0 ? (
+                  <div className="tool-running-panel tool-running-panel--subtask">
+                    <NineDotSpinner label="Subagent working…" />
+                    <p className="tool-running-panel__hint">
+                      Nested session is running. Stream appears here when the child reports.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="subtask-card__stream subtask-card__stream--live custom-scrollbar scrollbar-autohide">
+                    <div className="tool-running-panel__inline">
+                      <NineDotSpinner compact label="Subagent working…" />
+                    </div>
                     {childStream.map((ce, ci) =>
                       ce.type === "assistant_message" ||
                       ce.type === "user_message" ||
@@ -1303,16 +1511,17 @@ function CleanPlaceholder({
           const isCollapsible = event.type === "thought" || event.type === "tool_call";
           const toolRunning =
             event.type === "tool_call" && isToolInProgress(event.status);
-          const toolStalled =
-            toolRunning && (health === "stalled" || health === "stuck" || health === "quiet");
 
           // Thought is "live" only while the session is running and nothing
           // (tool / reply / newer thought) has followed it in this turn.
+          // Duration for finished thoughts is fixed (next-event wall clock).
+          // Live duration ticks inside ThoughtDurationLabel so the list does not re-render.
           let thoughtLive = false;
           let thoughtDurationSec: number | undefined;
+          let thoughtStartMs: number | undefined;
           if (event.type === "thought") {
             const startMs = Date.parse(event.createdAt);
-            let endMs = healthNow;
+            let endMs: number | null = null;
             let followed = false;
             for (let j = index + 1; j < visibleEvents.length; j++) {
               const n = visibleEvents[j];
@@ -1331,38 +1540,52 @@ function CleanPlaceholder({
             }
             thoughtLive = isRunning && !followed;
             if (Number.isFinite(startMs) && startMs > 0) {
-              thoughtDurationSec = Math.max(0, Math.round((endMs - startMs) / 1000));
+              thoughtStartMs = startMs;
+              if (endMs != null) {
+                thoughtDurationSec = Math.max(0, Math.round((endMs - startMs) / 1000));
+              }
             }
           }
 
+          // Stall styling without a 2s list clock: quiet after ~12s without activity.
+          // Re-evaluated when lastActivityAt / stream events update, not on a ticker.
+          const toolQuietMs =
+            toolRunning && lastActivityAt != null ? Date.now() - lastActivityAt : 0;
+          const toolStalled = toolRunning && toolQuietMs >= 12_000;
+          const toolStuck = toolRunning && toolQuietMs >= 45_000;
+
           const toolStatusLabel = toolStalled
-            ? health === "stuck"
+            ? toolStuck
               ? "no updates · appears stuck"
-              : health === "stalled"
-                ? "no updates · may be stuck"
-                : "no updates recently"
+              : "no updates · may be stuck"
             : event.type === "tool_call"
               ? event.status
               : undefined;
 
           // Collapsed summary: fixed short type + SHORT one-line teaser.
           // Full body only lives in the expanded clip box (never in the summary).
+          const labelNode =
+            event.type === "thought" ? (
+              thoughtLive && thoughtStartMs != null ? (
+                <ThoughtDurationLabel startMs={thoughtStartMs} live />
+              ) : thoughtDurationSec != null && thoughtDurationSec > 0 ? (
+                `Thought · ${thoughtDurationSec}s`
+              ) : (
+                "Thought"
+              )
+            ) : event.type === "tool_call" ? (
+              "Tool"
+            ) : event.type === "user_message" ? (
+              "You"
+            ) : event.type === "assistant_message" ? (
+              event.agentId ? "Reply" : "Notification"
+            ) : event.type === "handoff_prepared" ? (
+              "Handoff"
+            ) : (
+              event.type.replace(/_/g, " ")
+            );
           const label =
-            event.type === "thought"
-              ? thoughtLive
-                ? "Thinking…"
-                : thoughtDurationSec != null && thoughtDurationSec > 0
-                  ? `Thought · ${thoughtDurationSec}s`
-                  : "Thought"
-              : event.type === "tool_call"
-                ? "Tool"
-                : event.type === "user_message"
-                  ? "You"
-                  : event.type === "assistant_message"
-                    ? (event.agentId ? "Reply" : "Notification")
-                    : event.type === "handoff_prepared"
-                      ? "Handoff"
-                      : event.type.replace(/_/g, " ");
+            typeof labelNode === "string" ? labelNode : thoughtLive ? "Thinking…" : "Thought";
 
           if (event.type === "file_change") {
             return (
@@ -1446,12 +1669,16 @@ function CleanPlaceholder({
             event.type === "handoff_prepared";
 
           // Thought: open while streaming; collapsed when done (user can expand).
-          // Tool: collapsed by default; auto-expand when stalled.
+          // Tool: collapsed by default. Only shell / subagent tools auto-expand
+          // into a tall "working" block while in_progress; ordinary read/edit stay
+          // one-line. Stall still forces open so the user can see what hung.
           // User / assistant: always fully visible.
           if (isCollapsible) {
+            const longRunningTool =
+              event.type === "tool_call" && isLongRunningToolKind(event);
+            const showWorkingBlock = Boolean(toolRunning && longRunningTool);
             const forceOpen =
-              thoughtLive ||
-              (toolStalled && (health === "stalled" || health === "stuck"));
+              thoughtLive || showWorkingBlock || toolStuck || toolStalled;
             const toolKey =
               event.type === "tool_call"
                 ? `${event.toolCallId ?? event.createdAt}-${index}`
@@ -1461,7 +1688,7 @@ function CleanPlaceholder({
               (forceOpen || (toolKey != null && expandedToolKeys.has(toolKey)));
             return (
               <details
-                className={`event-card event-card--collapsible event-card--${event.type}${toolRunning ? " is-tool-running" : ""}${toolStalled ? " is-tool-stalled" : ""}${toolStalled && health === "stuck" ? " is-tool-stuck" : ""}${thoughtLive ? " is-thought-live" : ""}`}
+                className={`event-card event-card--collapsible event-card--${event.type}${toolRunning ? " is-tool-running" : ""}${showWorkingBlock ? " is-tool-working-block" : ""}${toolStalled ? " is-tool-stalled" : ""}${toolStuck ? " is-tool-stuck" : ""}${thoughtLive ? " is-thought-live" : ""}`}
                 // Remount when thought stops streaming so it starts collapsed (uncontrolled).
                 key={`${event.type}-${event.createdAt}-${index}${event.type === "thought" ? (thoughtLive ? "-live" : "-done") : ""}`}
                 open={event.type === "tool_call" ? toolOpen : forceOpen ? true : undefined}
@@ -1478,9 +1705,14 @@ function CleanPlaceholder({
               >
                 <summary className="event-card__summary" title={previewFull || label}>
                   <span className="event-card__type">
-                    {label}
+                    {labelNode}
                     {thoughtLive && <span className="event-card__live-dot" aria-hidden />}
-                    {toolRunning && !toolStalled && <span className="event-card__live-dot" aria-hidden />}
+                    {showWorkingBlock && !toolStalled && (
+                      <NineDotSpinner compact />
+                    )}
+                    {toolRunning && !showWorkingBlock && !toolStalled && (
+                      <span className="event-card__live-dot" aria-hidden />
+                    )}
                     {toolStalled && <span className="event-card__stall-dot" aria-hidden />}
                   </span>
                   <span className="event-card__preview-wrap">
@@ -1498,6 +1730,7 @@ function CleanPlaceholder({
                       body={body}
                       projectId={projectId}
                       open={toolOpen}
+                      running={showWorkingBlock}
                     />
                   ) : (
                     <ClippedBody className="event-card__clip" maxHeight={260}>
@@ -1775,12 +2008,12 @@ function CleanPlaceholder({
         })()}
         {showStallBanner && (
           <StallBanner
-            health={health}
+            status={session.status}
             midTurn={midTurn}
+            awaitingFirstChunk={awaitingFirstChunk}
             openToolTitle={openTool?.title ?? null}
-            openToolIsSubagent={isSubagentTool(openTool?.toolName)}
+            openToolIsSubagent={openToolIsSubagent}
             lastActivityAt={lastActivityAt}
-            now={healthNow}
             onInterrupt={onInterrupt}
           />
         )}
@@ -2075,31 +2308,48 @@ function QuoteOverlay({
 function SessionActivityBar({
   status,
   lastActivityAt,
+  openSubagent = false,
 }: {
   status: SessionStatus;
   lastActivityAt: number | null;
+  /** Nested task/subagent open — silence is expected on parent ACP. */
+  openSubagent?: boolean;
 }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, []);
-  const health = activityHealth(status, lastActivityAt, now);
-  const barLabel = activityBarLabel(status, health);
+  const healthOpts = openSubagent ? { openSubagent: true } : undefined;
+  const health = activityHealth(status, lastActivityAt, now, healthOpts);
+  const barLabel = activityBarLabel(status, health, healthOpts);
   if (!barLabel) return null;
   const severity =
     health === "stuck" ? "stuck" : health === "stalled" ? "stalled" : health === "quiet" ? "stale" : "";
   return (
     <div
-      className={`session-activity${severity ? ` is-${severity}` : ""} is-${status}`}
+      className={`session-activity${severity ? ` is-${severity}` : ""}${openSubagent ? " is-subagent" : ""} is-${status}`}
       role="status"
       aria-live="polite"
     >
       <span className="session-activity__pulse" aria-hidden />
+      {openSubagent && health === "live" && (
+        <span className="session-activity__nine" aria-hidden>
+          <NineDotSpinner compact />
+        </span>
+      )}
       <span className="session-activity__label">{barLabel}</span>
-      {lastActivityAt != null && (
+      {lastActivityAt != null && !openSubagent && (
         <span className="session-activity__ago">
           last update {formatAgo(lastActivityAt, now)}
+        </span>
+      )}
+      {openSubagent && health === "live" && (
+        <span className="session-activity__ago">nested agent · parent ACP silent by design</span>
+      )}
+      {openSubagent && health !== "live" && lastActivityAt != null && (
+        <span className="session-activity__ago">
+          last parent update {formatAgo(lastActivityAt, now)}
         </span>
       )}
       {status === "running" && (
@@ -2113,24 +2363,65 @@ function SessionActivityBar({
   );
 }
 
+/**
+ * Live "Thought · Ns" label. Own 1s clock so the transcript list does not
+ * re-render every second while thinking (selection-safe).
+ */
+const ThoughtDurationLabel = memo(function ThoughtDurationLabel({
+  startMs,
+  live,
+}: {
+  startMs: number;
+  live?: boolean;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!live) return;
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [live]);
+  if (live) {
+    const sec = Math.max(0, Math.round((now - startMs) / 1000));
+    return <>Thinking…{sec > 0 ? ` · ${sec}s` : ""}</>;
+  }
+  return <>Thought</>;
+});
+
 /** Mid-turn / first-chunk stall card with clear severity + interrupt CTA. */
 function StallBanner({
-  health,
+  status,
   midTurn,
+  awaitingFirstChunk = false,
   openToolTitle,
   openToolIsSubagent = false,
   lastActivityAt,
-  now,
   onInterrupt,
 }: {
-  health: ActivityHealth;
+  status: SessionStatus;
   midTurn: boolean;
+  awaitingFirstChunk?: boolean;
   openToolTitle?: string | null;
   openToolIsSubagent?: boolean;
   lastActivityAt: number | null;
-  now: number;
   onInterrupt?: () => void | Promise<void>;
 }) {
+  // Own clock — never lift a ticker into the event list (selection wipe).
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 2000);
+    return () => window.clearInterval(id);
+  }, []);
+  const healthOpts = openToolIsSubagent ? { openSubagent: true as const } : undefined;
+  const health = activityHealth(status, lastActivityAt, now, healthOpts);
+  // First-chunk waiting always shows; mid-turn only when quiet/stalled/stuck.
+  // Subagent "live" silence is intentional — no banner until quiet+ (90s).
+  const shouldShow =
+    awaitingFirstChunk ||
+    health === "quiet" ||
+    health === "stalled" ||
+    health === "stuck";
+  if (!shouldShow) return null;
+
   const ago = lastActivityAt != null ? formatAgo(lastActivityAt, now) : undefined;
   const copy =
     stallBannerCopy(health, { midTurn, openToolTitle, openToolIsSubagent, ago }) ??

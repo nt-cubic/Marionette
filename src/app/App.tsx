@@ -74,7 +74,11 @@ import {
   shouldAutoRenameLabel,
   titleFromUserText,
 } from "../lib/transcript";
-import { activityHealth } from "../lib/activityHealth";
+import {
+  activityHealth,
+  isSubagentTool,
+  isToolInProgress,
+} from "../lib/activityHealth";
 import {
   buildHistoryInjection,
   pendingHandoff,
@@ -83,7 +87,6 @@ import {
 } from "../lib/sessionHistory";
 import { formatPinsForSend } from "../lib/quoteComment";
 import { findLinkTargets } from "../lib/linkTargets";
-import { isToolInProgress } from "../lib/activityHealth";
 import { classifyAgentError, formatClassifiedError } from "../lib/errors";
 import { getLastUsedDefaults } from "../lib/recentModels";
 import { AskQuestionCard, type AskQuestionPrompt } from "../components/AskQuestionCard";
@@ -1023,7 +1026,7 @@ export function App() {
             streamSuppressedRef.current.has(payload.sessionId) &&
             (extracted.role === "assistant" || extracted.role === "thought");
           if (!streamSuppressed) {
-            // Codex `/status` (and similar) embed rate-limit lines in assistant text.
+            // Codex `/status` / Claude `/usage` embed rate-limit lines in assistant text.
             if (extracted.role === "assistant" && extracted.text) {
               setSessionUsageById((current) => {
                 const merged = mergeUsageFromText(current[payload.sessionId], extracted.text);
@@ -1037,13 +1040,13 @@ export function App() {
               void syncFileChangesRef.current(payload.sessionId);
             }
             if (extracted.text) {
-              // Codex `/status` (plain or **bold** keys) — usage already merged above;
-              // keep the chat rail free of the whole block and of status-only deltas.
-              const isCodexSessionInfo =
+              // Status-only blocks — usage already merged above; keep the chat
+              // rail free of Codex `/status` and Claude `/usage` dumps.
+              const isRuntimeStatusOnly =
                 isRuntimeMetadataOnly(extracted.text) ||
                 (/^\s*\*{0,2}Model\*{0,2}:/i.test(extracted.text) &&
                   /\n\s*\*{0,2}Directory\*{0,2}:/i.test(extracted.text));
-              if (!isCodexSessionInfo) {
+              if (!isRuntimeStatusOnly) {
                 setLiveEvents((current) => {
                   const prevLast = current[current.length - 1];
                   let next = applyAcpPartToEvents(current, payload.sessionId, extracted);
@@ -1862,7 +1865,28 @@ export function App() {
           continue;
         }
         const last = lastActivityByIdRef.current[session.id] ?? null;
-        const health = activityHealth(session.status, last, now);
+        // Nested OpenCode/Claude task tools emit no parent stream — use the
+        // longer subagent fuse so we don't desktop-notify at 1–2m of silence.
+        let openSubagent = false;
+        const evs = liveEventsRef.current;
+        for (let i = evs.length - 1; i >= 0; i -= 1) {
+          const e = evs[i];
+          if (e.sessionId !== session.id) continue;
+          if (
+            e.type === "tool_call" &&
+            isToolInProgress(e.status) &&
+            isSubagentTool(e.toolName, e.title)
+          ) {
+            openSubagent = true;
+            break;
+          }
+        }
+        const health = activityHealth(
+          session.status,
+          last,
+          now,
+          openSubagent ? { openSubagent: true } : undefined,
+        );
         if (health !== "stalled" && health !== "stuck") {
           // Reset so a later stall can notify again after recovery.
           if (health === "live" || health === "quiet") notified.delete(session.id);

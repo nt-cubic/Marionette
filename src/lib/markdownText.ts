@@ -6,6 +6,14 @@ const RUNTIME_METADATA_LINE =
 /** Codex rate-limit rows such as `**5h limit:** 42% left · resets …`. */
 const RUNTIME_RATE_LIMIT_LINE =
   /^\*\*[^*\r\n]*(?:\d+\s*[mhd]|weekly)\s+limit:\*\*\s*\d+(?:\.\d+)?%\s+left\b.*$/iu;
+/**
+ * Claude Code `/usage` rows (local slash command; same role as Codex `/status`).
+ * Live shape (claude-agent-acp): subscription banner + Current session/week %
+ * used + "What's contributing…" breakdown. Parsed into the Usage panel first;
+ * presentation strips the block so it never opens a hollow Reply card.
+ */
+const CLAUDE_USAGE_LINE =
+  /^(?:You are currently using your subscription to power your Claude Code usage\s*|Current\s+(?:session|week)\b[^:\n]*:\s*\d+(?:\.\d+)?\s*%\s*used\b.*|What'?s contributing to your limits usage\??\s*|Approximate,\s*based on local sessions\b.*|Last\s+\d+\s*[hdwmy]?\s*[·•\-]\s*\d+\s+requests?\b.*|\d+(?:\.\d+)?%\s+of your usage was at\b.*)$/iu;
 
 /**
  * Remove section markers that some ACP/OpenCode streams expose as visible
@@ -30,13 +38,17 @@ export function stripSectionMarkers(text: string): string {
 
 function isRuntimeMetadataLine(line: string): boolean {
   const trimmed = line.trim();
-  return RUNTIME_METADATA_LINE.test(trimmed) || RUNTIME_RATE_LIMIT_LINE.test(trimmed);
+  return (
+    RUNTIME_METADATA_LINE.test(trimmed) ||
+    RUNTIME_RATE_LIMIT_LINE.test(trimmed) ||
+    CLAUDE_USAGE_LINE.test(trimmed)
+  );
 }
 
 /**
- * Hide the fixed runtime footer emitted by Codex `/status` and similar local
- * commands. The raw ACP text is still available to the usage parser before it
- * reaches this presentation boundary.
+ * Hide the fixed runtime footer emitted by Codex `/status`, Claude `/usage`,
+ * and similar local commands. The raw ACP text is still available to the usage
+ * parser before it reaches this presentation boundary.
  *
  * A footer is removed only when every non-empty line from its first known key
  * to the end is another known metadata line. The caller should pass the
@@ -61,9 +73,9 @@ export function stripRuntimeMetadata(text: string): string {
 }
 
 /**
- * True when the whole chunk is only Codex/runtime status lines (no user-facing
- * prose left after strip). Used to keep `/status` out of the chat rail while
- * still allowing usage parsers to read the raw text.
+ * True when the whole chunk is only Codex/Claude runtime status lines (no
+ * user-facing prose left after strip). Used to keep `/status` and `/usage` out
+ * of the chat rail while still allowing usage parsers to read the raw text.
  */
 export function isRuntimeMetadataOnly(text: string): boolean {
   if (!text || !text.trim()) return false;

@@ -1878,6 +1878,138 @@ body.is-tab-detaching * {
   animation: activity-pulse 1s ease-in-out infinite;
 }
 
+/* OpenCode-style 3×3 activity grid (shell / subagent only). */
+.nine-dot-spinner {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: center;
+  justify-content: center;
+}
+
+.nine-dot-spinner.is-compact {
+  display: inline-flex;
+  flex-direction: row;
+  gap: 6px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.nine-dot-spinner.is-compact .nine-dot-spinner__grid {
+  width: 14px;
+  height: 14px;
+  gap: 2px;
+}
+
+.nine-dot-spinner.is-compact .nine-dot-spinner__dot {
+  width: 3px;
+  height: 3px;
+}
+
+.nine-dot-spinner.is-compact .nine-dot-spinner__label {
+  font-size: 11px;
+}
+
+.nine-dot-spinner__grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  width: 28px;
+  height: 28px;
+}
+
+.nine-dot-spinner__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.25;
+  animation: nine-dot-pulse 1.05s ease-in-out infinite;
+}
+
+.nine-dot-spinner__label {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+@keyframes nine-dot-pulse {
+  0%,
+  100% {
+    opacity: 0.2;
+    transform: scale(0.85);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+
+/* Tall working panel for shell / subagent tools while in_progress. */
+.tool-running-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: center;
+  justify-content: center;
+  min-height: 160px;
+  margin-top: 6px;
+  padding: 20px 14px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 6%, var(--panel-soft));
+  text-align: center;
+}
+
+.tool-running-panel--subtask {
+  min-height: 140px;
+}
+
+.tool-running-panel__hint {
+  max-width: 34rem;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.tool-running-panel__meta {
+  max-width: 100%;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-running-panel__inline {
+  display: flex;
+  justify-content: flex-start;
+  margin: 4px 0 8px;
+}
+
+.event-card.is-tool-working-block {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: color-mix(in srgb, var(--accent) 4%, var(--panel));
+}
+
+.event-card__clip.is-tool-running-tall {
+  min-height: 160px;
+}
+
+.event-card--subtask.is-working-block {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: color-mix(in srgb, var(--accent) 5%, var(--panel-soft));
+}
+
+.subtask-card__stream--live {
+  max-height: 320px;
+  min-height: 120px;
+}
+
 .event-card__stall-dot {
   display: inline-block;
   width: 6px;
@@ -2294,6 +2426,12 @@ body.is-tab-detaching * {
   overflow-x: hidden;
   overflow-y: auto;
   user-select: text;
+}
+
+/* Stronger selection paint in the transcript (WebView2 default can look faint). */
+.event-list ::selection {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+  color: inherit;
 }
 
 /* Every transcript row is width-bound by the clean column — never content. */
