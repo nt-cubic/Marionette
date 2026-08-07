@@ -1183,7 +1183,8 @@ export function Composer({
 
   const submitText = useCallback(
     (text: string) => {
-      if (isBusy) return;
+      // Busy turns queue in App (ACP allows one session/prompt at a time).
+      // Empty draft while busy still uses the Stop button / Esc×2 for interrupt.
       if (!sessionId || sessionId.startsWith("session-empty-")) return;
       // Allow send with only images / empty text when attachments exist.
       if (!text.trim() && imageAttachments.length === 0) return;
@@ -1233,7 +1234,6 @@ export function Composer({
       clearDropSuggest();
     },
     [
-      isBusy,
       sessionId,
       onWarmAgent,
       currentModel,
@@ -2869,41 +2869,59 @@ export function Composer({
             </div>
 
             {/* ── Send / Interrupt (Esc×2 also interrupts) ──
-                Right-click toggles the Enter vs Ctrl+Enter send shortcut. */}
+                While the agent is running: non-empty draft → queue send;
+                empty draft → interrupt. Right-click toggles Enter shortcut. */}
             <div className="composer-menu-anchor composer-menu-anchor--send">
               <button
                 className={
-                  isBusy && canCancel ? "send-button is-interrupting" : "send-button"
+                  isBusy && canCancel && !draft.trim() && imageAttachments.length === 0
+                    ? "send-button is-interrupting"
+                    : "send-button"
                 }
                 type="button"
                 title={
-                  isBusy && canCancel
-                    ? "Interrupt (or double-press Esc)"
-                    : isBusy && !canCancel
-                      ? "Agent is busy"
-                      : "Send · 右键切换 Enter / Ctrl+Enter 发送"
+                  isBusy && (draft.trim() || imageAttachments.length > 0)
+                    ? "Queue message — sent when the current turn finishes"
+                    : isBusy && canCancel
+                      ? "Interrupt (or double-press Esc)"
+                      : isBusy && !canCancel
+                        ? "Agent is busy"
+                        : "Send · 右键切换 Enter / Ctrl+Enter 发送"
                 }
                 aria-label={
-                  isBusy && canCancel
-                    ? "Interrupt conversation"
-                    : isBusy && !canCancel
-                      ? "Agent is busy"
-                      : "Send"
+                  isBusy && (draft.trim() || imageAttachments.length > 0)
+                    ? "Queue message for agent"
+                    : isBusy && canCancel
+                      ? "Interrupt conversation"
+                      : isBusy && !canCancel
+                        ? "Agent is busy"
+                        : "Send"
                 }
                 aria-haspopup="menu"
                 aria-expanded={menu === "send"}
-                disabled={isBusy && !canCancel}
+                disabled={
+                  isBusy &&
+                  !canCancel &&
+                  !draft.trim() &&
+                  imageAttachments.length === 0
+                }
                 onClick={() => {
                   setMenu(null);
+                  if (draft.trim() || imageAttachments.length > 0) {
+                    submit();
+                    return;
+                  }
                   if (isBusy && canCancel) onInterrupt();
-                  else if (!isBusy) submit();
                 }}
                 onContextMenu={(event) => {
                   event.preventDefault();
                   setMenu(menu === "send" ? null : "send");
                 }}
               >
-                {isBusy && canCancel ? (
+                {isBusy &&
+                canCancel &&
+                !draft.trim() &&
+                imageAttachments.length === 0 ? (
                   <Square size={12} fill="currentColor" />
                 ) : (
                   <SendHorizontal size={15} />

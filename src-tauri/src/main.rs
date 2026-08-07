@@ -259,6 +259,7 @@ fn main() {
             commands::probe_acp_billing,
             commands::generate_handoff,
             commands::get_changed_files,
+            commands::get_current_branch,
             commands::get_file_diff,
             commands::respond_acp_permission,
             commands::respond_acp_question,

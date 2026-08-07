@@ -1647,6 +1647,23 @@ pub fn get_changed_files(
 }
 
 #[tauri::command(async)]
+pub fn get_current_branch(
+    project_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let storage = state
+        .storage
+        .lock()
+        .map_err(|_| "Storage lock poisoned".to_string())?;
+    let project = storage
+        .list_projects()?
+        .into_iter()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("Unknown project: {project_id}"))?;
+    crate::git_service::get_current_branch(Path::new(&project.root_path))
+}
+
+#[tauri::command(async)]
 pub fn get_file_diff(
     project_id: String,
     path: String,
