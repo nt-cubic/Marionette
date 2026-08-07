@@ -236,10 +236,9 @@ fn check_uv(uv_required: Option<&str>) -> Vec<CheckItem> {
 }
 
 fn run_version(cmd: &str, args: &[&str]) -> Option<String> {
-    let path = process_util::resolve_command_display_path(cmd)
-        .ok()
-        .flatten()?;
-    let mut cmd = Command::new(&path);
+    let resolved = process_util::resolve_spawn_command(cmd).ok()?;
+    let mut cmd = Command::new(&resolved.program);
+    resolved.apply_to(&mut cmd);
     cmd.args(args);
     #[cfg(target_os = "windows")]
     {
@@ -332,5 +331,18 @@ mod tests {
     fn preflight_unknown_still_returns() {
         let r = run_preflight("no-such-agent-xyz");
         assert!(!r.checks.is_empty());
+    }
+
+    #[test]
+    fn run_version_runs_shim_wrapped_tools() {
+        // Regression: `npm` resolves to node + npm-cli.js; it must run, not spawn
+        // the .js path directly (that fails on Windows → false "npm not found").
+        if process_util::resolve_spawn_command("node").is_err() {
+            return;
+        }
+        assert!(
+            run_version("npm", &["--version"]).is_some(),
+            "npm should resolve and print a version via node"
+        );
     }
 }
