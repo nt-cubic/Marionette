@@ -19,6 +19,7 @@ mod preflight;
 mod process_util;
 mod provider_usage;
 mod session_manager;
+mod shell_integration;
 mod storage;
 mod terminal_runtime;
 mod webview2_gate;
@@ -132,6 +133,24 @@ fn main() {
     // Before any WebView host is created — native dialog if runtime missing.
     webview2_gate::ensure_or_exit();
 
+    // Explorer "Open Marionette here" / CLI: resolve folder before UI starts.
+    let open_path = shell_integration::parse_open_path_from_args();
+    if let Some(ref p) = open_path {
+        debug_log::append(
+            "shell",
+            "info",
+            "",
+            "launch with --open-path",
+            Some(p),
+        );
+    }
+
+    // Single instance: a second start hands the path to the running UI and exits.
+    if !shell_integration::acquire_single_instance_or_handoff(open_path.as_deref()) {
+        std::process::exit(0);
+    }
+    shell_integration::set_launch_open_path(open_path);
+
     // A panic anywhere else should still leave a trace in the dev diary.
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -144,6 +163,17 @@ fn main() {
         .setup(|app| {
             spawn_main_thread_watchdog(app.handle().clone());
             acp::spawn_pipeline_watchdog();
+            // Keep Explorer menu pointing at this portable exe (moves / rebuilds).
+            if let Err(err) = shell_integration::register_context_menu() {
+                debug_log::append(
+                    "shell",
+                    "warn",
+                    "",
+                    "register Explorer context menu failed",
+                    Some(&err),
+                );
+            }
+            shell_integration::spawn_pending_open_watcher(app.handle().clone());
             // Startup is the only safe moment: no session exists yet, so an
             // upgrade cannot replace a binary an agent is mid-turn on.
             commands::auto_update_agents_in_background();
@@ -217,6 +247,10 @@ fn main() {
             commands::list_providers,
             commands::navigate_webview,
             commands::add_project,
+            commands::take_launch_open_path,
+            commands::register_shell_integration,
+            commands::unregister_shell_integration,
+            commands::shell_integration_registered,
             commands::pick_folder,
             commands::pick_files,
             commands::delete_project,

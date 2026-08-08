@@ -1055,17 +1055,15 @@ function CleanPlaceholder({
     return units;
   }, [presentationItems]);
   /**
-   * Virtual windowing OFF for now.
-   * The 0cc1c45 path (measureRef → totalSize → stick-to-bottom → remount → remeasure)
-   * thrashed layout under WebView2 and made the whole window flicker.
-   * Cold-session prune in App still frees RAM without touching paint.
-   * Re-enable only after measure is decoupled from scroll pinning.
+   * Virtual window for long rails only. Short chats stay fully mounted (simpler
+   * selection / stick-to-bottom). Threshold matches heavy tool-heavy sessions
+   * (hundreds of cards) that otherwise freeze WebView2 on open.
    */
-  const useVirtual = false;
-  const isLongTranscript = renderUnits.length >= 48;
+  const useVirtual = renderUnits.length >= 48;
+  const isLongTranscript = useVirtual;
   const virtual = useVirtualWindow(listRef, useVirtual ? renderUnits.length : 0, {
-    estimate: 132,
-    overscan: 10,
+    estimate: 48,
+    overscan: 12,
     resetKey: `${session.id}|${useVirtual ? "v" : "full"}`,
   });
   const [editingKey, setEditingKey] = useState<string | null>(null);
@@ -1073,6 +1071,8 @@ function CleanPlaceholder({
   const [editBusy, setEditBusy] = useState(false);
   /** User-toggled tool cards only — never store force-open (running) keys here. */
   const [expandedToolKeys, setExpandedToolKeys] = useState<Set<string>>(() => new Set());
+  /** User-expanded thought cards (lazy body mount). */
+  const [expandedThoughtKeys, setExpandedThoughtKeys] = useState<Set<string>>(() => new Set());
   /** toolKey set that was force-open (working/stall) on the previous events pass. */
   const prevForcedToolKeysRef = useRef<Set<string>>(new Set());
 
@@ -1088,6 +1088,8 @@ function CleanPlaceholder({
   // 2s (that rebuild wiped browser text selection). Tool stall styling uses
   // lastActivityAt snapshots when events update, not a parent ticker.
   const openTool = useMemo(() => {
+    // Only meaningful mid-turn; ignore orphan pending tools in saved history.
+    if (!isRunning) return null;
     for (let i = visibleEvents.length - 1; i >= 0; i -= 1) {
       const e = visibleEvents[i];
       if (e.type === "tool_call" && isToolInProgress(e.status)) {
@@ -1095,7 +1097,7 @@ function CleanPlaceholder({
       }
     }
     return null;
-  }, [visibleEvents]);
+  }, [isRunning, visibleEvents]);
   const openToolIsSubagent = Boolean(
     openTool && isSubagentTool(openTool.toolName, openTool.title),
   );
@@ -1161,6 +1163,8 @@ function CleanPlaceholder({
     selectingRef.current = false;
     frozenEventsRef.current = null;
     setFreezeGen((g) => g + 1);
+    setExpandedToolKeys(new Set());
+    setExpandedThoughtKeys(new Set());
     window.getSelection()?.removeAllRanges();
   }, [session.id]);
 
@@ -1546,8 +1550,12 @@ function CleanPlaceholder({
           }
 
           const isCollapsible = event.type === "thought" || event.type === "tool_call";
+          // Orphan "pending" tools in a saved transcript must not look live after
+          // the process died — that forced open shell cards and froze long chats.
           const toolRunning =
-            event.type === "tool_call" && isToolInProgress(event.status);
+            event.type === "tool_call" &&
+            isToolInProgress(event.status) &&
+            isRunning;
 
           // Thought is "live" only while the session is running and nothing
           // (tool / reply / newer thought) has followed it in this turn.
@@ -1709,22 +1717,48 @@ function CleanPlaceholder({
           // Tool: collapsed by default. Only shell / subagent tools auto-expand
           // into a tall "working" block while in_progress; ordinary read/edit stay
           // one-line. Stall still forces open so the user can see what hung.
+          // Bodies are lazy-mounted: closed cards keep only the one-line summary
+          // (critical for tool-heavy Grok sessions with 500+ tools).
           // User / assistant: always fully visible.
           if (isCollapsible) {
             const longRunningTool =
               event.type === "tool_call" && isLongRunningToolKind(event);
-            const showWorkingBlock = Boolean(toolRunning && longRunningTool);
+            // Only the latest in-flight shell/subagent tool gets the tall block —
+            // older pending rows (stale status) stay one-line summaries.
+            const isLatestOpenTool =
+              toolRunning &&
+              openTool != null &&
+              event.type === "tool_call" &&
+              ((event.toolCallId &&
+                openTool.toolCallId &&
+                event.toolCallId === openTool.toolCallId) ||
+                (!event.toolCallId &&
+                  event.createdAt === openTool.createdAt &&
+                  event.text === openTool.text));
+            const showWorkingBlock = Boolean(
+              longRunningTool && isLatestOpenTool,
+            );
             const forceOpen =
-              thoughtLive || showWorkingBlock || toolStuck || toolStalled;
+              thoughtLive || showWorkingBlock || (isLatestOpenTool && (toolStuck || toolStalled));
             const toolKey =
               event.type === "tool_call" ? toolExpandKey(event, index) : null;
-            // forceOpen wins while running; expandedToolKeys is user-only after.
+            const thoughtKey =
+              event.type === "thought"
+                ? `thought-${event.createdAt}-${index}`
+                : null;
+            // forceOpen wins while running; expanded*Keys is user-only after.
             const toolOpen =
               event.type === "tool_call" &&
               (forceOpen || (toolKey != null && expandedToolKeys.has(toolKey)));
+            const thoughtOpen =
+              event.type === "thought" &&
+              (forceOpen ||
+                (thoughtKey != null && expandedThoughtKeys.has(thoughtKey)));
+            const detailOpen =
+              event.type === "tool_call" ? toolOpen : thoughtOpen;
             return (
               <details
-                className={`event-card event-card--collapsible event-card--${event.type}${toolRunning ? " is-tool-running" : ""}${showWorkingBlock ? " is-tool-working-block" : ""}${toolStalled ? " is-tool-stalled" : ""}${toolStuck ? " is-tool-stuck" : ""}${thoughtLive ? " is-thought-live" : ""}`}
+                className={`event-card event-card--collapsible event-card--${event.type}${toolRunning ? " is-tool-running" : ""}${showWorkingBlock ? " is-tool-working-block" : ""}${toolStalled && isLatestOpenTool ? " is-tool-stalled" : ""}${toolStuck && isLatestOpenTool ? " is-tool-stuck" : ""}${thoughtLive ? " is-thought-live" : ""}`}
                 // Remount when thought/tool leaves "live force-open" so the
                 // browser details widget cannot keep a stale open=true.
                 key={`${event.type}-${event.createdAt}-${index}${
@@ -1738,19 +1772,25 @@ function CleanPlaceholder({
                         : "-settled"
                       : ""
                 }`}
-                open={event.type === "tool_call" ? toolOpen : forceOpen ? true : undefined}
+                open={detailOpen}
                 onToggle={(e) => {
-                  if (event.type !== "tool_call" || toolKey == null) return;
-                  // Controlled force-open also fires toggle; ignore those so we
-                  // never sticky-expand after the tool completes.
                   if (forceOpen) return;
                   const isOpen = (e.currentTarget as HTMLDetailsElement).open;
-                  setExpandedToolKeys((current) => {
-                    const next = new Set(current);
-                    if (isOpen) next.add(toolKey);
-                    else next.delete(toolKey);
-                    return next;
-                  });
+                  if (event.type === "tool_call" && toolKey != null) {
+                    setExpandedToolKeys((current) => {
+                      const next = new Set(current);
+                      if (isOpen) next.add(toolKey);
+                      else next.delete(toolKey);
+                      return next;
+                    });
+                  } else if (event.type === "thought" && thoughtKey != null) {
+                    setExpandedThoughtKeys((current) => {
+                      const next = new Set(current);
+                      if (isOpen) next.add(thoughtKey);
+                      else next.delete(thoughtKey);
+                      return next;
+                    });
+                  }
                 }}
               >
                 <summary className="event-card__summary" title={previewFull || label}>
@@ -1763,7 +1803,9 @@ function CleanPlaceholder({
                     {toolRunning && !showWorkingBlock && !toolStalled && (
                       <span className="event-card__live-dot" aria-hidden />
                     )}
-                    {toolStalled && <span className="event-card__stall-dot" aria-hidden />}
+                    {toolStalled && isLatestOpenTool && (
+                      <span className="event-card__stall-dot" aria-hidden />
+                    )}
                   </span>
                   <span className="event-card__preview-wrap">
                     <span className="event-card__preview">
@@ -1773,27 +1815,30 @@ function CleanPlaceholder({
                     </span>
                   </span>
                 </summary>
-                <div className="event-card__expand-slot">
-                  {event.type === "tool_call" ? (
-                    <ToolCallBody
-                      event={event}
-                      body={body}
-                      projectId={projectId}
-                      open={toolOpen}
-                      running={showWorkingBlock}
-                    />
-                  ) : (
-                    <ClippedBody className="event-card__clip" maxHeight={260}>
-                      {useMarkdown && typeof body === "string" ? (
-                        <MarkdownBody text={body} className="event-card__body event-card__body--clipped-md" />
-                      ) : (
-                        <pre className="event-card__body event-card__body--tool">
-                          {typeof body === "string" ? <LinkedText text={body} /> : body}
-                        </pre>
-                      )}
-                    </ClippedBody>
-                  )}
-                </div>
+                {/* Lazy body: closed cards mount summary only — 500+ tool rows stay cheap. */}
+                {detailOpen && (
+                  <div className="event-card__expand-slot">
+                    {event.type === "tool_call" ? (
+                      <ToolCallBody
+                        event={event}
+                        body={body}
+                        projectId={projectId}
+                        open={toolOpen}
+                        running={showWorkingBlock}
+                      />
+                    ) : (
+                      <ClippedBody className="event-card__clip" maxHeight={260}>
+                        {useMarkdown && typeof body === "string" ? (
+                          <MarkdownBody text={body} className="event-card__body event-card__body--clipped-md" />
+                        ) : (
+                          <pre className="event-card__body event-card__body--tool">
+                            {typeof body === "string" ? <LinkedText text={body} /> : body}
+                          </pre>
+                        )}
+                      </ClippedBody>
+                    )}
+                  </div>
+                )}
               </details>
             );
           }

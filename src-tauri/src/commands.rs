@@ -42,6 +42,31 @@ pub fn add_project(path: String, state: State<'_, AppState>) -> Result<Project, 
     storage.add_project(path)
 }
 
+/// Consume the folder path from `--open-path` / Explorer "在此处打开 Marionette" (once).
+#[tauri::command]
+pub fn take_launch_open_path() -> Option<String> {
+    let _trace = crate::debug_log::CmdTrace::new("take_launch_open_path");
+    crate::shell_integration::take_launch_open_path()
+}
+
+/// (Re)install Explorer context menu entries pointing at this exe.
+#[tauri::command]
+pub fn register_shell_integration() -> Result<(), String> {
+    let _trace = crate::debug_log::CmdTrace::new("register_shell_integration");
+    crate::shell_integration::register_context_menu()
+}
+
+#[tauri::command]
+pub fn unregister_shell_integration() -> Result<(), String> {
+    let _trace = crate::debug_log::CmdTrace::new("unregister_shell_integration");
+    crate::shell_integration::unregister_context_menu()
+}
+
+#[tauri::command]
+pub fn shell_integration_registered() -> bool {
+    crate::shell_integration::is_context_menu_registered()
+}
+
 /// Native folder picker for the Add Project dialog. `None` = user cancelled.
 #[tauri::command]
 pub fn pick_folder() -> Result<Option<String>, String> {

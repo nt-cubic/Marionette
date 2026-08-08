@@ -28,6 +28,24 @@ export async function addProject(path: string): Promise<Project> {
   };
 }
 
+/**
+ * Folder from Explorer "在此处打开 Marionette" / `--open-path` (consumed once).
+ * Null when the app was started normally.
+ */
+export async function takeLaunchOpenPath(): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    const path = await invoke<string | null>("take_launch_open_path");
+    const trimmed = path?.trim();
+    return trimmed ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Event name when a second process hands off an open-here path. */
+export const OPEN_PATH_EVENT = "marionette-open-path";
+
 /** Native folder picker. Returns null if the user cancels. */
 export async function pickFolder(): Promise<string | null> {
   if (!isTauriRuntime()) return null;

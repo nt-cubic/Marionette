@@ -13,7 +13,7 @@ import {
   sealOpenAssistantReplies,
   userMessageEvent,
 } from "../lib/acpTranscript";
-import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, generateHandoff, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, startAcpSession, startAgentLogin, stopAcpSession, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision } from "../lib/api";
+import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, generateHandoff, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, OPEN_PATH_EVENT, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, startAcpSession, startAgentLogin, stopAcpSession, takeLaunchOpenPath, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision } from "../lib/api";
 import {
   bindDetachedWindowReaper,
   openDetachedSessionWindow,
@@ -89,6 +89,7 @@ import { formatPinsForSend } from "../lib/quoteComment";
 import { findLinkTargets } from "../lib/linkTargets";
 import { classifyAgentError, formatClassifiedError } from "../lib/errors";
 import { getLastUsedDefaults } from "../lib/recentModels";
+import { pickRestoredSession, saveUiRestore } from "../lib/uiRestore";
 import { AskQuestionCard, type AskQuestionPrompt } from "../components/AskQuestionCard";
 import { Composer } from "../components/Composer";
 import { ContextPanel } from "../components/ContextPanel";
@@ -265,6 +266,8 @@ export function App() {
   const [currentProjectId, setCurrentProjectId] = useState(projects[0]?.id ?? "");
   const [currentSessionId, setCurrentSessionId] = useState(sessions[0]?.id ?? "");
   const [openSessionIds, setOpenSessionIds] = useState<string[]>([sessions[0]?.id ?? ""]);
+  /** Project opened via Explorer "在此处打开" / --open-path — pinned at shelf top. */
+  const [openHereProjectId, setOpenHereProjectId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<SessionViewMode>("clean");
   const [leftCollapsed, setLeftCollapsed] = useState(IS_DETACHED_WINDOW);
   const [rightCollapsed, setRightCollapsed] = useState(false);
@@ -480,12 +483,14 @@ export function App() {
   lastActivityByIdRef.current = lastActivityById;
   const sessionsRef = useRef(availableSessions);
   const agentsRef = useRef(availableAgents);
+  const projectsRef = useRef(availableProjects);
   const currentSessionIdRef = useRef(currentSessionId);
   const currentProjectIdRef = useRef(currentProjectId);
   const openSessionIdsRef = useRef(openSessionIds);
   const liveEventsRef = useRef(liveEvents);
   sessionsRef.current = availableSessions;
   agentsRef.current = availableAgents;
+  projectsRef.current = availableProjects;
   currentSessionIdRef.current = currentSessionId;
   currentProjectIdRef.current = currentProjectId;
   openSessionIdsRef.current = openSessionIds;
@@ -726,30 +731,175 @@ export function App() {
     })();
   }, [appUpdateBusy, pushDebug]);
 
+  /**
+   * Explorer "在此处打开 Marionette" / `--open-path`:
+   * add-or-reopen the folder, pin it to the top of the shelf, select it, new dialog.
+   */
+  const openProjectAtPath = useCallback(async (rawPath: string) => {
+    if (IS_DETACHED_WINDOW) return;
+    const path = rawPath.trim();
+    if (!path) return;
+    try {
+      const project = await addProject(path);
+      const prior = projectsRef.current.filter((p) => p.id !== project.id);
+      let nextProjects = [project, ...prior];
+      try {
+        nextProjects = await reorderProjectsApi([
+          project.id,
+          ...prior.map((p) => p.id),
+        ]);
+      } catch {
+        /* order is best-effort */
+      }
+      setAvailableProjects(nextProjects);
+      setOpenHereProjectId(project.id);
+      setCurrentProjectId(project.id);
+
+      // Merge this project's sessions into the shelf (others already loaded).
+      const projectSessions = (await listSessions(project.id)).map(asIdleOnLoad);
+      setAvailableSessions((current) => {
+        const others = current.filter((s) => s.projectId !== project.id);
+        return [...projectSessions, ...others];
+      });
+
+      const agentId =
+        agentsRef.current[0]?.id ??
+        availableAgents[0]?.id ??
+        agents[0].id;
+      await createSessionForProject(project.id, agentId, project);
+      void refreshProjectContext(project.id);
+      pushDebug({
+        level: "info",
+        source: "shell",
+        summary: "open here",
+        detail: project.rootPath,
+      });
+    } catch (error) {
+      pushDebug({
+        level: "error",
+        source: "shell",
+        summary: "open here failed",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  // createSessionForProject / refreshProjectContext are stable enough via refs+latest render
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availableAgents, pushDebug]);
+
   useEffect(() => {
-    void Promise.all([listProjects(), listAgents()]).then(async ([nextProjects, nextAgents]) => {
-      const resolvedProjects = nextProjects.length > 0 || isTauriRuntime() ? nextProjects : projects;
+    void (async () => {
+      const launchPath =
+        !IS_DETACHED_WINDOW && isTauriRuntime()
+          ? await takeLaunchOpenPath()
+          : null;
+
+      const [nextProjects, nextAgents] = await Promise.all([
+        listProjects(),
+        listAgents(),
+      ]);
+      let resolvedProjects =
+        nextProjects.length > 0 || isTauriRuntime() ? nextProjects : projects;
+      const resolvedAgents = nextAgents.length > 0 ? nextAgents : agents;
+      setAvailableAgents(resolvedAgents);
+
+      // Cold start from Explorer / CLI: pin path project + new dialog (skip UI restore).
+      if (launchPath) {
+        try {
+          const project = await addProject(launchPath);
+          const prior = resolvedProjects.filter((p) => p.id !== project.id);
+          resolvedProjects = [project, ...prior];
+          try {
+            resolvedProjects = await reorderProjectsApi([
+              project.id,
+              ...prior.map((p) => p.id),
+            ]);
+          } catch {
+            /* best-effort pin */
+          }
+          setAvailableProjects(resolvedProjects);
+          setOpenHereProjectId(project.id);
+          setCurrentProjectId(project.id);
+
+          const loadedSessions = (
+            await Promise.all(
+              resolvedProjects.map((p) => listSessions(p.id)),
+            )
+          )
+            .flat()
+            .map(asIdleOnLoad);
+          setAvailableSessions(loadedSessions);
+
+          const agentId = resolvedAgents[0]?.id ?? agents[0].id;
+          const newSession = await createSessionApi(project.id, agentId);
+          if (newSession) {
+            const last = getLastUsedDefaults(agentId);
+            let sessionWithPrefs = newSession;
+            if (last) {
+              sessionWithPrefs = {
+                ...newSession,
+                preferredModel: last.modelId,
+                preferredMode: last.modeId,
+                preferredEffort: last.effort,
+                preferredEffortId: last.effortId,
+                preferredAlwaysApprove: last.alwaysApprove,
+              };
+              void updateSessionPrefs(newSession.id, {
+                preferredModel: sessionWithPrefs.preferredModel,
+                preferredMode: sessionWithPrefs.preferredMode,
+                preferredEffort: sessionWithPrefs.preferredEffort,
+                preferredEffortId: sessionWithPrefs.preferredEffortId,
+                preferredAlwaysApprove: sessionWithPrefs.preferredAlwaysApprove,
+              }).catch(() => undefined);
+            }
+            setAvailableSessions((current) => [
+              sessionWithPrefs,
+              ...current.filter((s) => s.id !== sessionWithPrefs.id),
+            ]);
+            setOpenSessionIds([sessionWithPrefs.id]);
+            setCurrentSessionId(sessionWithPrefs.id);
+            setViewMode("clean");
+          }
+          // Context scan runs via currentProjectId effect after state commits.
+          return;
+        } catch (error) {
+          pushDebug({
+            level: "error",
+            source: "shell",
+            summary: "launch open-path failed",
+            detail: error instanceof Error ? error.message : String(error),
+          });
+          // Fall through to normal restore.
+        }
+      }
+
       setAvailableProjects(resolvedProjects);
       if (resolvedProjects.length > 0) {
-        setCurrentProjectId((current) => resolvedProjects.some((project) => project.id === current) ? current : resolvedProjects[0].id);
+        setCurrentProjectId((current) =>
+          resolvedProjects.some((project) => project.id === current)
+            ? current
+            : resolvedProjects[0].id,
+        );
       } else {
         setCurrentProjectId("");
       }
-      setAvailableAgents(nextAgents.length > 0 ? nextAgents : agents);
 
-      const loadedSessions = (await Promise.all(resolvedProjects.map((project) => listSessions(project.id))))
+      const loadedSessions = (
+        await Promise.all(resolvedProjects.map((project) => listSessions(project.id)))
+      )
         .flat()
         .map(asIdleOnLoad);
       if (loadedSessions.length > 0 || isTauriRuntime()) {
         setAvailableSessions(loadedSessions);
-        const preferred =
-          (DETACHED_SESSION_ID
-            ? loadedSessions.find((s) => s.id === DETACHED_SESSION_ID)
-            : undefined) ?? loadedSessions[0];
-        if (preferred) {
+        // Focus the dialog the user last used (agent/model/mode/effort already
+        // ride on the session row). Detached windows still pin to their URL id.
+        const restored = pickRestoredSession(loadedSessions, {
+          detachedSessionId: DETACHED_SESSION_ID,
+        });
+        if (restored) {
+          const preferred = restored.session;
           setCurrentProjectId(preferred.projectId);
           setCurrentSessionId(preferred.id);
-          setOpenSessionIds([preferred.id]);
+          setOpenSessionIds(restored.openSessionIds);
           setViewMode("clean");
           if (IS_DETACHED_WINDOW) {
             setLeftCollapsed(true);
@@ -765,8 +915,33 @@ export function App() {
           setOpenSessionIds([]);
         }
       }
+    })();
+  }, [pushDebug]);
+
+  // Second Marionette process handed us a folder while this UI is already open.
+  useEffect(() => {
+    if (!isTauriRuntime() || IS_DETACHED_WINDOW) return;
+    let unlisten: (() => void) | undefined;
+    void listen<string>(OPEN_PATH_EVENT, (event) => {
+      const path = typeof event.payload === "string" ? event.payload.trim() : "";
+      if (path) void openProjectAtPath(path);
+    }).then((fn) => {
+      unlisten = fn;
     });
-  }, []);
+    return () => unlisten?.();
+  }, [openProjectAtPath]);
+
+  // Keep "last window" fresh so a crash / quit mid-session still restores.
+  // Detached shells must not overwrite the main window's restore target.
+  useEffect(() => {
+    if (IS_DETACHED_WINDOW) return;
+    if (!currentSessionId || currentSessionId.startsWith("session-empty-")) return;
+    saveUiRestore({
+      sessionId: currentSessionId,
+      projectId: currentProjectId,
+      openSessionIds,
+    });
+  }, [currentSessionId, currentProjectId, openSessionIds]);
 
   // Reap aged hidden detached windows (about:blank) — never blanks recent closes.
   useEffect(() => {
@@ -1503,8 +1678,29 @@ export function App() {
     if (transcriptLoadedRef.current.has(sessionId)) return;
     transcriptLoadedRef.current.add(sessionId);
     const raw = await loadTranscript(sessionId);
-    const parsed = parseTranscriptEvents(raw);
+    let parsed = parseTranscriptEvents(raw);
     if (parsed.length === 0) return;
+    // If the agent process is gone, close orphan pending/in_progress tools so
+    // Clean View does not treat a multi-hundred-tool history as still working
+    // (that path used to force-open shell cards and freeze the WebView).
+    const sess = sessionsRef.current.find((s) => s.id === sessionId);
+    const live =
+      sess != null &&
+      (sess.status === "running" ||
+        sess.status === "starting" ||
+        sess.status === "waiting");
+    if (
+      !live &&
+      parsed.some(
+        (e) => e.type === "tool_call" && isToolInProgress(e.status),
+      )
+    ) {
+      parsed = markOpenTools(parsed, sessionId, "cancelled");
+      void writeTranscript(
+        sessionId,
+        persistableEventsForSession(parsed, sessionId),
+      ).catch(() => undefined);
+    }
     setLiveEvents((current) => {
       const hasLive = current.some((e) => e.sessionId === sessionId);
       if (hasLive) return current;
@@ -4171,6 +4367,7 @@ export function App() {
             sessions={availableSessions}
             currentProjectId={currentProjectId}
             currentSessionId={displaySession.id}
+            pinnedProjectId={openHereProjectId}
             collapsed={leftCollapsed}
             theme={theme}
             desktopNotifyEnabled={desktopNotifyOn}

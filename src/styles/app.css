@@ -1067,7 +1067,36 @@ body.is-project-reordering .project-list {
 }
 
 .project-row__content {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   min-width: 0;
+}
+
+.project-row__content strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Explorer "open here" pin — current path project for this launch. */
+.project-row__here-badge {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 16px;
+}
+
+.project-row.is-open-here {
+  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
 }
 
 .project-row__actions {
