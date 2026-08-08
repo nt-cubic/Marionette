@@ -828,6 +828,11 @@ function isLongRunningToolKind(event: ToolCallEvent): boolean {
   return /\b(bash|shell|powershell|pwsh)\b/.test(title) && !/\b(read|edit|write|grep|glob|search)\b/.test(title);
 }
 
+/** Stable id for tool expand state (prefer toolCallId; fall back to createdAt+index). */
+function toolExpandKey(event: ToolCallEvent, index: number): string {
+  return `${event.toolCallId ?? event.createdAt}-${index}`;
+}
+
 /**
  * Older transcripts only persisted the one-line diff summary. For those
  * cards, retrieve the current workspace diff when the tool card is opened.
@@ -1066,7 +1071,10 @@ function CleanPlaceholder({
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
   const [editBusy, setEditBusy] = useState(false);
+  /** User-toggled tool cards only — never store force-open (running) keys here. */
   const [expandedToolKeys, setExpandedToolKeys] = useState<Set<string>>(() => new Set());
+  /** toolKey set that was force-open (working/stall) on the previous events pass. */
+  const prevForcedToolKeysRef = useRef<Set<string>>(new Set());
 
   // After send: last card is still You → show ghost "Waiting for agent…"
   const lastVisible = visibleEvents[visibleEvents.length - 1];
@@ -1091,6 +1099,35 @@ function CleanPlaceholder({
   const openToolIsSubagent = Boolean(
     openTool && isSubagentTool(openTool.toolName, openTool.title),
   );
+
+  // When a shell/subagent tool leaves force-open (running → done), drop any
+  // sticky expand key. Browsers fire <details onToggle> on controlled open,
+  // which used to leave the card permanently expanded after completion.
+  useEffect(() => {
+    const forcedNow = new Set<string>();
+    for (let i = 0; i < visibleEvents.length; i += 1) {
+      const e = visibleEvents[i];
+      if (e.type !== "tool_call") continue;
+      if (!isToolInProgress(e.status)) continue;
+      if (!isLongRunningToolKind(e)) continue;
+      forcedNow.add(toolExpandKey(e, i));
+    }
+    const prev = prevForcedToolKeysRef.current;
+    const released: string[] = [];
+    for (const k of prev) {
+      if (!forcedNow.has(k)) released.push(k);
+    }
+    prevForcedToolKeysRef.current = forcedNow;
+    if (released.length === 0) return;
+    setExpandedToolKeys((current) => {
+      let changed = false;
+      const next = new Set(current);
+      for (const k of released) {
+        if (next.delete(k)) changed = true;
+      }
+      return changed ? next : current;
+    });
+  }, [visibleEvents]);
   const midTurn = isRunning && !awaitingFirstChunk;
   // Mount banner only while a turn is live; it returns null when healthy mid-turn.
   const showStallBanner = isRunning;
@@ -1680,20 +1717,33 @@ function CleanPlaceholder({
             const forceOpen =
               thoughtLive || showWorkingBlock || toolStuck || toolStalled;
             const toolKey =
-              event.type === "tool_call"
-                ? `${event.toolCallId ?? event.createdAt}-${index}`
-                : null;
+              event.type === "tool_call" ? toolExpandKey(event, index) : null;
+            // forceOpen wins while running; expandedToolKeys is user-only after.
             const toolOpen =
               event.type === "tool_call" &&
               (forceOpen || (toolKey != null && expandedToolKeys.has(toolKey)));
             return (
               <details
                 className={`event-card event-card--collapsible event-card--${event.type}${toolRunning ? " is-tool-running" : ""}${showWorkingBlock ? " is-tool-working-block" : ""}${toolStalled ? " is-tool-stalled" : ""}${toolStuck ? " is-tool-stuck" : ""}${thoughtLive ? " is-thought-live" : ""}`}
-                // Remount when thought stops streaming so it starts collapsed (uncontrolled).
-                key={`${event.type}-${event.createdAt}-${index}${event.type === "thought" ? (thoughtLive ? "-live" : "-done") : ""}`}
+                // Remount when thought/tool leaves "live force-open" so the
+                // browser details widget cannot keep a stale open=true.
+                key={`${event.type}-${event.createdAt}-${index}${
+                  event.type === "thought"
+                    ? thoughtLive
+                      ? "-live"
+                      : "-done"
+                    : event.type === "tool_call"
+                      ? forceOpen
+                        ? "-forced"
+                        : "-settled"
+                      : ""
+                }`}
                 open={event.type === "tool_call" ? toolOpen : forceOpen ? true : undefined}
                 onToggle={(e) => {
                   if (event.type !== "tool_call" || toolKey == null) return;
+                  // Controlled force-open also fires toggle; ignore those so we
+                  // never sticky-expand after the tool completes.
+                  if (forceOpen) return;
                   const isOpen = (e.currentTarget as HTMLDetailsElement).open;
                   setExpandedToolKeys((current) => {
                     const next = new Set(current);
