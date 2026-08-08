@@ -1,6 +1,6 @@
 [package]
 name = "marionette"
-version = "0.1.0"
+version = "0.2.0"
 description = "Marionette — agent harness, all in one. Lightweight local shell for multiple agent CLIs."
 authors = ["Marionette"]
 edition = "2021"
@@ -38,6 +38,7 @@ windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
   "Win32_Globalization",
   "Win32_System_Registry",
+  "Win32_System_Threading",
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }

@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Bell, BellOff, ChevronDown, ChevronRight, Folder, FolderOpen, GripVertical, Moon, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Sun, Trash2 } from "lucide-react";
 import type { AgentConfig, Project, Session } from "../lib/types";
+import { loadCollapsedProjectIds, saveCollapsedProjectIds } from "../lib/uiRestore";
 
 type ThemeMode = "dark" | "light";
 
-/** Visible projects before "…" collapse (Codex-style). */
-const PROJECT_LIST_PREVIEW = 5;
-/** Visible sessions per project before "…" collapse. */
+/** Visible sessions per project before "Show more". Projects always list fully. */
 const SESSION_LIST_PREVIEW = 5;
 
 function sessionRecency(session: Session): number {
@@ -31,6 +30,11 @@ type ProjectShelfProps = {
   sessions: Session[];
   currentProjectId: string;
   currentSessionId?: string;
+  /**
+   * Project opened via Explorer "在此处打开 Marionette" — always listed first
+   * with a small "此处" badge for this app session.
+   */
+  pinnedProjectId?: string | null;
   collapsed: boolean;
   theme: ThemeMode;
   /** Session ids matched by transcript search (null = no active query). */
@@ -75,6 +79,7 @@ export function ProjectShelf({
   sessions,
   currentProjectId,
   currentSessionId,
+  pinnedProjectId = null,
   onProjectSelect,
   onSessionSelect,
   collapsed,
@@ -94,9 +99,9 @@ export function ProjectShelf({
   searchHitIds = null,
   onSearchQueryChange,
 }: ProjectShelfProps) {
-  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => new Set(projects.map((project) => project.id)));
+  /** Collapsed project ids (persisted). Default for unknown ids is expanded. */
+  const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() => loadCollapsedProjectIds());
   const [query, setQuery] = useState("");
-  const [projectsExpanded, setProjectsExpanded] = useState(false);
   /** Project ids whose session list is fully expanded past the preview cap. */
   const [sessionsExpandedByProject, setSessionsExpandedByProject] = useState<Set<string>>(() => new Set());
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -136,12 +141,12 @@ export function ProjectShelf({
     setRenamingId(null);
   };
 
-  useEffect(() => {
-    setExpandedProjects((current) => new Set([...current, ...projects.map((project) => project.id)]));
-  }, [projects]);
-
   const agentLabel = (agentId: string) =>
     agents.find((a) => a.id === agentId)?.label ?? agentId;
+
+  /** Search always reveals matching projects; otherwise respect saved collapse. */
+  const isProjectExpanded = (projectId: string) =>
+    Boolean(query.trim()) || !collapsedProjects.has(projectId);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -184,17 +189,12 @@ export function ProjectShelf({
     };
   }, [agents, projects, query, searchHitIds, sessions]);
 
-  // Auto-expand projects that have matches while searching.
-  useEffect(() => {
-    if (!query.trim()) return;
-    setExpandedProjects(new Set(filtered.projects.map((p) => p.id)));
-  }, [filtered.projects, query]);
-
   const toggleProject = (projectId: string) => {
-    setExpandedProjects((current) => {
+    setCollapsedProjects((current) => {
       const next = new Set(current);
       if (next.has(projectId)) next.delete(projectId);
       else next.add(projectId);
+      saveCollapsedProjectIds(next);
       return next;
     });
   };
@@ -324,22 +324,16 @@ export function ProjectShelf({
     </button>
   ) : null;
 
-  const allVisibleProjects = filtered.projects;
   const searching = Boolean(query.trim());
-  // While searching, always show full match list; otherwise cap at preview count.
-  // Always keep the active project in the preview so selection never "disappears".
-  const shouldCollapseList = !searching && !projectsExpanded && allVisibleProjects.length > PROJECT_LIST_PREVIEW;
-  let visibleProjects = allVisibleProjects;
-  if (shouldCollapseList) {
-    const head = allVisibleProjects.slice(0, PROJECT_LIST_PREVIEW);
-    if (head.some((p) => p.id === currentProjectId)) {
-      visibleProjects = head;
-    } else {
-      const active = allVisibleProjects.find((p) => p.id === currentProjectId);
-      visibleProjects = active ? [...head.slice(0, PROJECT_LIST_PREVIEW - 1), active] : head;
-    }
-  }
-  const hiddenCount = Math.max(0, allVisibleProjects.length - visibleProjects.length);
+  // Pin the Explorer "open here" project to the top of the shelf (still filterable).
+  const allVisibleProjects = useMemo(() => {
+    const list = filtered.projects;
+    if (!pinnedProjectId) return list;
+    const pinned = list.find((p) => p.id === pinnedProjectId);
+    if (!pinned) return list;
+    return [pinned, ...list.filter((p) => p.id !== pinnedProjectId)];
+  }, [filtered.projects, pinnedProjectId]);
+  // Projects always fully listed; only sessions inside a project use Show more/less.
 
   return (
     <section className="project-tree">
@@ -375,12 +369,13 @@ export function ProjectShelf({
             {searching ? `No threads match “${query.trim()}”` : "No projects yet"}
           </div>
         )}
-        {visibleProjects.map((project) => {
+        {allVisibleProjects.map((project) => {
           const rawSessions =
             filtered.sessionsByProject?.get(project.id) ??
             sessions.filter((session) => session.projectId === project.id);
           // Recency only — click-to-select must not jump the row to the top.
           const projectSessions = sortSessionsNewestFirst(rawSessions);
+          const projectExpanded = isProjectExpanded(project.id);
           const sessionsFullyExpanded = searching || sessionsExpandedByProject.has(project.id);
           const shouldCollapseSessions =
             !sessionsFullyExpanded && projectSessions.length > SESSION_LIST_PREVIEW;
@@ -400,10 +395,12 @@ export function ProjectShelf({
             draggingProjectId != null &&
             draggingProjectId !== project.id;
 
+          const isPinnedHere = pinnedProjectId === project.id;
           const rowClass = [
             "project-row",
             project.id === currentProjectId ? "is-active" : "",
             draggingProjectId === project.id ? "is-dragging" : "",
+            isPinnedHere ? "is-open-here" : "",
           ]
             .filter(Boolean)
             .join(" ");
@@ -433,18 +430,27 @@ export function ProjectShelf({
                 ) : (
                   <span className="project-row__grip project-row__grip--spacer" aria-hidden />
                 )}
-                <button className="project-row__toggle" type="button" title={expandedProjects.has(project.id) ? "Collapse project" : "Expand project"} aria-label={expandedProjects.has(project.id) ? `Collapse ${project.name}` : `Expand ${project.name}`} aria-expanded={expandedProjects.has(project.id)} onClick={() => toggleProject(project.id)}>
-                  {expandedProjects.has(project.id) ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                <button className="project-row__toggle" type="button" title={projectExpanded ? "Collapse project" : "Expand project"} aria-label={projectExpanded ? `Collapse ${project.name}` : `Expand ${project.name}`} aria-expanded={projectExpanded} onClick={() => toggleProject(project.id)}>
+                  {projectExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                 </button>
                 <button
                   className="project-row__select"
                   type="button"
-                  title={project.rootPath}
+                  title={
+                    isPinnedHere
+                      ? `${project.rootPath}\n(从资源管理器「在此处打开」)`
+                      : project.rootPath
+                  }
                   onClick={() => onProjectSelect(project.id)}
                 >
                   <Folder size={15} />
                   <span className="project-row__content">
                     <strong>{project.name}</strong>
+                    {isPinnedHere && (
+                      <em className="project-row__here-badge" title="当前从资源管理器打开的路径">
+                        此处
+                      </em>
+                    )}
                   </span>
                 </button>
                 <span className="project-row__actions">
@@ -487,7 +493,7 @@ export function ProjectShelf({
                 </div>
               )}
 
-              {expandedProjects.has(project.id) && (
+              {projectExpanded && (
                 <div className="project-sessions">
                   {projectSessions.length === 0 && (
                     <div className="session-row session-row--empty">No sessions</div>
@@ -650,34 +656,6 @@ export function ProjectShelf({
             </div>
           );
         })}
-        {shouldCollapseList && (
-          <div className="shelf-clip shelf-clip--projects">
-            <div className="shelf-clip__fade" aria-hidden />
-            <button
-              className="shelf-clip__more"
-              type="button"
-              title={`Show ${hiddenCount} more project${hiddenCount === 1 ? "" : "s"}`}
-              aria-label={`Show ${hiddenCount} more projects`}
-              onClick={() => setProjectsExpanded(true)}
-            >
-              Show more
-              <span className="shelf-clip__count">{hiddenCount}</span>
-            </button>
-          </div>
-        )}
-        {!searching && projectsExpanded && allVisibleProjects.length > PROJECT_LIST_PREVIEW && (
-          <div className="shelf-clip shelf-clip--projects shelf-clip--expanded">
-            <button
-              className="shelf-clip__more"
-              type="button"
-              title="Show fewer projects"
-              aria-label="Show fewer projects"
-              onClick={() => setProjectsExpanded(false)}
-            >
-              Show less
-            </button>
-          </div>
-        )}
       </div>
 
       <div className="sidebar-footer">
