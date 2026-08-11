@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { agents as mockAgents, projects as mockProjects, sessions as mockSessions } from "./mockData";
-import type { AgentConfig, AgentCommandStatus, CapabilitySnapshot, Project, ProviderInfo, Session } from "./types";
+import type { AgentConfig, AgentCommandStatus, CapabilitySnapshot, Project, ProviderInfo, ProxyConfig, ProxyTestResult, Session } from "./types";
 
 export function isTauriRuntime() {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -786,4 +786,20 @@ export async function upsertProviderMeta(
 
 export async function deleteProviderMeta(id: string): Promise<void> {
   await invoke("delete_provider_meta", { id });
+}
+
+/** Agent proxy config: single exit address injected into spawned agents. */
+export async function getProxyConfig(): Promise<ProxyConfig> {
+  if (!isTauriRuntime()) return { enabled: false, url: "" };
+  return await invoke<ProxyConfig>("get_proxy_config");
+}
+
+/** Persist the proxy config (App restarts the live agent afterwards). */
+export async function setProxyConfig(config: ProxyConfig): Promise<void> {
+  await invoke("set_proxy_config", { config });
+}
+
+/** Round-trip through `url` to OpenAI's API; reports latency or failure. */
+export async function testProxy(url: string): Promise<ProxyTestResult> {
+  return await invoke<ProxyTestResult>("test_proxy", { url });
 }

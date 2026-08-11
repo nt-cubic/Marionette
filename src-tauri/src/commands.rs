@@ -2012,6 +2012,24 @@ pub fn delete_provider_key(provider: String, force: Option<bool>) -> Result<(), 
     crate::provider_usage::delete_provider_key(&provider, force.unwrap_or(false))
 }
 
+/// Read the agent proxy config (single exit address for spawned agents).
+#[tauri::command]
+pub fn get_proxy_config() -> crate::proxy::ProxyConfig {
+    crate::proxy::load_proxy_config()
+}
+
+/// Persist the agent proxy config. An enabled config must validate as a URL.
+#[tauri::command]
+pub fn set_proxy_config(config: crate::proxy::ProxyConfig) -> Result<(), String> {
+    crate::proxy::save_proxy_config(&config)
+}
+
+/// Round-trip through `url` to OpenAI's API and report latency.
+#[tauri::command]
+pub fn test_proxy(url: String) -> Result<crate::proxy::ProxyTestResult, String> {
+    crate::proxy::test_proxy(&url)
+}
+
 #[cfg(test)]
 mod tests {
     use super::resolve_command;

@@ -13,7 +13,7 @@ import {
   sealOpenAssistantReplies,
   userMessageEvent,
 } from "../lib/acpTranscript";
-import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, generateHandoff, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, OPEN_PATH_EVENT, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, startAcpSession, startAgentLogin, stopAcpSession, takeLaunchOpenPath, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision } from "../lib/api";
+import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, OPEN_PATH_EVENT, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, saveTodos, setProxyConfig, testProxy, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, startAcpSession, startAgentLogin, stopAcpSession, takeLaunchOpenPath, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision } from "../lib/api";
 import {
   bindDetachedWindowReaper,
   openDetachedSessionWindow,
@@ -26,7 +26,7 @@ import {
   dropEventsForSessions,
 } from "../lib/memoryHygiene";
 import { agentAuthSpec } from "../lib/agentAuth";
-import type { AcpEvent, AvailableCommand, CapabilitySnapshot, ChangedFile, HandoffResult, Project, ProjectContext, Session, SessionComposerPrefs, SessionEvent, SessionViewMode, UsageSnapshot } from "../lib/types";
+import type { AcpEvent, AvailableCommand, CapabilitySnapshot, ChangedFile, HandoffResult, Project, ProjectContext, ProxyConfig, ProxyTestResult, Session, SessionComposerPrefs, SessionEvent, SessionViewMode, UsageSnapshot } from "../lib/types";
 import {
   buildUsageSnapshot,
   emptySessionUsage,
@@ -303,6 +303,8 @@ export function App() {
   });
   /** Taskbar flash + chime when AI replies / may be stuck (off while focused). */
   const [desktopNotifyOn, setDesktopNotifyOn] = useState(() => isDesktopNotifyEnabled());
+  /** Agent proxy config (single exit address), loaded on mount. */
+  const [proxyConfig, setProxyConfigState] = useState<ProxyConfig | null>(null);
   const [sessionCapabilities, setSessionCapabilities] = useState<CapabilitySnapshot | null>(null);
   const [liveEvents, setLiveEvents] = useState<SessionEvent[]>([]);
   /** Per-session usage from ACP `usage_update` + opportunistic rate-limit text. */
@@ -793,14 +795,16 @@ export function App() {
           ? await takeLaunchOpenPath()
           : null;
 
-      const [nextProjects, nextAgents] = await Promise.all([
+      const [nextProjects, nextAgents, nextProxy] = await Promise.all([
         listProjects(),
         listAgents(),
+        getProxyConfig(),
       ]);
       let resolvedProjects =
         nextProjects.length > 0 || isTauriRuntime() ? nextProjects : projects;
       const resolvedAgents = nextAgents.length > 0 ? nextAgents : agents;
       setAvailableAgents(resolvedAgents);
+      setProxyConfigState(nextProxy);
 
       // Cold start from Explorer / CLI: pin path project + new dialog (skip UI restore).
       if (launchPath) {
@@ -3124,6 +3128,64 @@ export function App() {
   }, [ensureAcpReady, pushDebug, restartAcpProcess]);
 
   /**
+   * Persist the proxy config, then restart the live agent so the new env vars
+   * (HTTPS_PROXY / NO_PROXY) actually apply to its next spawned processes.
+   */
+  const handleSaveProxy = useCallback(
+    async (config: ProxyConfig) => {
+      // Nothing changed: keep the live agent untouched (no pointless reconnect).
+      const sameAsCurrent =
+        config.enabled === (proxyConfig?.enabled ?? false) &&
+        config.url.trim() === (proxyConfig?.url ?? "").trim();
+      if (sameAsCurrent) return;
+      await setProxyConfig(config);
+      setProxyConfigState(config);
+      const sid = currentSessionIdRef.current;
+      if (!sid || sid.startsWith("session-empty-")) return;
+      const session = sessionsRef.current.find((s) => s.id === sid);
+      const agent = agentsRef.current.find((a) => a.id === session?.agentId);
+      if (agent?.transport !== "acp") return;
+      try {
+        await restartAcpProcess(sid);
+        await ensureAcpReady(sid);
+        pushDebug({
+          sessionId: sid,
+          level: "info",
+          source: "session",
+          summary: config.enabled
+            ? `restarted agent with proxy ${config.url}`
+            : "restarted agent (proxy off)",
+        });
+      } catch (error) {
+        pushDebug({
+          sessionId: sid,
+          level: "warn",
+          source: "session",
+          summary: "restart after proxy change failed",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+    [ensureAcpReady, proxyConfig, pushDebug, restartAcpProcess]
+  );
+
+  /** Verify the proxy path by round-tripping to OpenAI's API. */
+  const handleTestProxy = useCallback(
+    async (url: string): Promise<ProxyTestResult | null> => {
+      try {
+        return await testProxy(url);
+      } catch (error) {
+        return {
+          ok: false,
+          message: error instanceof Error ? error.message : String(error),
+          latencyMs: null,
+        };
+      }
+    },
+    []
+  );
+
+  /**
    * Composer install/upgrade path: stop the live process so the binary can be
    * replaced, then start a fresh ACP session so the dialog uses the new build
    * without quitting the app.
@@ -4371,6 +4433,9 @@ export function App() {
             collapsed={leftCollapsed}
             theme={theme}
             desktopNotifyEnabled={desktopNotifyOn}
+            proxyConfig={proxyConfig}
+            onSaveProxy={handleSaveProxy}
+            onTestProxy={handleTestProxy}
             onToggleDesktopNotify={() => {
               setDesktopNotifyOn((current) => {
                 const next = !current;
