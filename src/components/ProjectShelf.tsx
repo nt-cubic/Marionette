@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Bell, BellOff, ChevronDown, ChevronRight, Folder, FolderOpen, GripVertical, Moon, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Sun, Trash2 } from "lucide-react";
-import type { AgentConfig, Project, Session } from "../lib/types";
+import { Bell, BellOff, ChevronDown, ChevronRight, Folder, FolderOpen, Globe, GripVertical, Moon, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Save, Search, Sun, Trash2, X, Zap } from "lucide-react";
+import type { AgentConfig, Project, ProxyConfig, ProxyTestResult, Session } from "../lib/types";
 import { loadCollapsedProjectIds, saveCollapsedProjectIds } from "../lib/uiRestore";
 
 type ThemeMode = "dark" | "light";
@@ -65,6 +65,12 @@ type ProjectShelfProps = {
   ) => void;
   /** Reveal project folder in the OS file manager. */
   onRevealProject?: (project: Project) => void;
+  /** Agent proxy: single exit address injected into spawned agents. */
+  proxyConfig?: ProxyConfig | null;
+  /** Persist the proxy config (App also restarts the live agent). */
+  onSaveProxy?: (config: ProxyConfig) => Promise<void>;
+  /** Round-trip through `url` to verify the proxy path is alive. */
+  onTestProxy?: (url: string) => Promise<ProxyTestResult | null>;
 };
 
 type DropHint = { targetId: string; place: "before" | "after" };
@@ -96,12 +102,99 @@ export function ProjectShelf({
   onRenameSession,
   onReorderProjects,
   onRevealProject,
+  proxyConfig = null,
+  onSaveProxy,
+  onTestProxy,
   searchHitIds = null,
   onSearchQueryChange,
 }: ProjectShelfProps) {
   /** Collapsed project ids (persisted). Default for unknown ids is expanded. */
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() => loadCollapsedProjectIds());
   const [query, setQuery] = useState("");
+  /** Proxy popover: draft config, anchor + open state. */
+  const [proxyOpen, setProxyOpen] = useState(false);
+  const [proxyDraft, setProxyDraft] = useState<ProxyConfig>(() =>
+    proxyConfig ? { ...proxyConfig } : { enabled: false, url: "" }
+  );
+  const [proxyBusy, setProxyBusy] = useState<"test" | "save" | null>(null);
+  const [proxyTest, setProxyTest] = useState<string | null>(null);
+  const [proxyError, setProxyError] = useState<string | null>(null);
+  const [proxyAnchor, setProxyAnchor] = useState<{ left: number; top: number } | null>(null);
+  const proxyBtnRef = useRef<HTMLButtonElement | null>(null);
+  const proxyPopRef = useRef<HTMLDivElement | null>(null);
+
+  /** Keep the draft in sync when the persisted config changes externally. */
+  useEffect(() => {
+    if (!proxyOpen) {
+      setProxyDraft(proxyConfig ? { ...proxyConfig } : { enabled: false, url: "" });
+    }
+  }, [proxyConfig, proxyOpen]);
+
+  /** Close the popover on outside click / Escape. */
+  useEffect(() => {
+    if (!proxyOpen) return;
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (proxyPopRef.current?.contains(target) || proxyBtnRef.current?.contains(target)) return;
+      setProxyOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setProxyOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [proxyOpen]);
+
+  const openProxyPopover = () => {
+    const rect = proxyBtnRef.current?.getBoundingClientRect();
+    setProxyAnchor(rect ? { left: rect.left, top: rect.top } : null);
+    setProxyTest(null);
+    setProxyError(null);
+    setProxyOpen((open) => !open);
+  };
+
+  const runProxyTest = async () => {
+    if (!onTestProxy) return;
+    const url = proxyDraft.url.trim();
+    if (!url) {
+      setProxyError("请先填写代理地址");
+      return;
+    }
+    setProxyBusy("test");
+    setProxyError(null);
+    setProxyTest(null);
+    try {
+      const result = await onTestProxy(url);
+      setProxyTest(result ? result.message : "无法测试（非桌面环境）");
+    } catch (error) {
+      setProxyError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setProxyBusy(null);
+    }
+  };
+
+  const saveProxy = async () => {
+    if (!onSaveProxy) return;
+    const url = proxyDraft.url.trim();
+    if (proxyDraft.enabled && !url) {
+      setProxyError("请填写代理地址");
+      return;
+    }
+    setProxyBusy("save");
+    setProxyError(null);
+    try {
+      await onSaveProxy({ enabled: proxyDraft.enabled, url });
+      setProxyOpen(false);
+    } catch (error) {
+      setProxyError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setProxyBusy(null);
+    }
+  };
   /** Project ids whose session list is fully expanded past the preview cap. */
   const [sessionsExpandedByProject, setSessionsExpandedByProject] = useState<Set<string>>(() => new Set());
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -323,6 +416,30 @@ export function ProjectShelf({
       {desktopNotifyEnabled ? <Bell size={13} /> : <BellOff size={13} />}
     </button>
   ) : null;
+
+  const proxyButton = (
+    <button
+      ref={proxyBtnRef}
+      type="button"
+      className={
+        proxyConfig?.enabled
+          ? "pill-action pill-action--icon pill-action--sm sidebar-footer__button is-proxy-on"
+          : "pill-action pill-action--icon pill-action--sm sidebar-footer__button is-proxy-off"
+      }
+      title={
+        proxyConfig?.enabled
+          ? `代理已启用 · ${proxyConfig.url} · 点此修改`
+          : "代理未启用 · 点此配置"
+      }
+      aria-label={proxyConfig?.enabled ? "配置代理（已启用）" : "配置代理（未启用）"}
+      aria-pressed={proxyConfig?.enabled}
+      aria-haspopup="dialog"
+      aria-expanded={proxyOpen}
+      onClick={openProxyPopover}
+    >
+      <Globe size={13} />
+    </button>
+  );
 
   const searching = Boolean(query.trim());
   // Pin the Explorer "open here" project to the top of the shelf (still filterable).
@@ -661,10 +778,87 @@ export function ProjectShelf({
       <div className="sidebar-footer">
         {themeButton}
         {notifyButton}
+        {proxyButton}
         <button className="pill-action pill-action--icon pill-action--sm sidebar-footer__button sidebar-footer__button--collapse" type="button" title={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} aria-label={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} onClick={collapsed ? onExpand : onCollapse}>
           {collapsed ? <PanelLeftOpen size={13} /> : <PanelLeftClose size={13} />}
         </button>
       </div>
+      {proxyOpen && proxyAnchor && (
+        <div
+          ref={proxyPopRef}
+          className="proxy-popover"
+          role="dialog"
+          aria-label="代理设置"
+          style={{ left: proxyAnchor.left, bottom: window.innerHeight - proxyAnchor.top + 6 }}
+        >
+          <div className="proxy-popover__header">
+            <span className="proxy-popover__title">代理设置</span>
+            <button
+              type="button"
+              className="pill-action pill-action--icon pill-action--sm"
+              aria-label="关闭"
+              onClick={() => setProxyOpen(false)}
+            >
+              <X size={12} />
+            </button>
+          </div>
+          <div className="proxy-popover__row">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={proxyDraft.enabled}
+              className={proxyDraft.enabled ? "proxy-popover__switch is-on" : "proxy-popover__switch"}
+              onClick={() => setProxyDraft((draft) => ({ ...draft, enabled: !draft.enabled }))}
+            >
+              <span className="proxy-popover__switch-track" />
+              <span className="proxy-popover__switch-thumb" />
+            </button>
+            <span className="proxy-popover__row-label">启用代理</span>
+          </div>
+          <div className="proxy-popover__row">
+            <label className="proxy-popover__field">
+              <span className="proxy-popover__field-label">代理地址</span>
+              <input
+                className="proxy-popover__input"
+                type="text"
+                spellCheck={false}
+                placeholder="http://127.0.0.1:7890"
+                value={proxyDraft.url}
+                disabled={!proxyDraft.enabled}
+                onChange={(event) => setProxyDraft((draft) => ({ ...draft, url: event.target.value }))}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void saveProxy();
+                }}
+              />
+            </label>
+          </div>
+          {proxyTest && <div className="proxy-popover__test is-ok">{proxyTest}</div>}
+          {proxyError && <div className="proxy-popover__test is-err">{proxyError}</div>}
+          <div className="proxy-popover__hint">本地地址自动直连；规则/全局由你的代理客户端决定。</div>
+          <div className="proxy-popover__actions">
+            <button
+              type="button"
+              className="pill-action pill-action--icon pill-action--sm"
+              title="测试连接"
+              aria-label="测试连接"
+              disabled={proxyBusy !== null || !proxyDraft.enabled}
+              onClick={() => void runProxyTest()}
+            >
+              {proxyBusy === "test" ? <span className="proxy-popover__spinner" aria-hidden /> : <Zap size={13} />}
+            </button>
+            <button
+              type="button"
+              className="pill-action pill-action--icon pill-action--sm"
+              title="保存设置"
+              aria-label="保存设置"
+              disabled={proxyBusy !== null}
+              onClick={() => void saveProxy()}
+            >
+              {proxyBusy === "save" ? <span className="proxy-popover__spinner" aria-hidden /> : <Save size={13} />}
+            </button>
+          </div>
+        </div>
+      )}
       </div>
     </section>
   );

@@ -389,3 +389,14 @@ export type ProviderInfo = {
   /** Balance probe strategy — `none` means UI shows "不支持". */
   probeStrategy?: "deepseek" | "openrouter" | "opencode-zen" | "none" | string;
 };
+
+export type ProxyConfig = {
+  enabled: boolean;
+  url: string;
+};
+
+export type ProxyTestResult = {
+  ok: boolean;
+  message: string;
+  latencyMs?: number | null;
+};

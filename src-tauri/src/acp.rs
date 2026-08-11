@@ -396,6 +396,24 @@ impl AcpService {
                 child_command.env(*k, *v);
             }
         }
+        // Route agent traffic through the user-configured proxy when enabled.
+        // The proxy client (Clash, v2ray, ...) decides rule-vs-global routing;
+        // we only hand it the exit address. Loopback stays direct so local MCP
+        // servers spawned by the agent never round-trip through the proxy.
+        if let Some((proxy_url, no_proxy)) = crate::proxy::proxy_env() {
+            child_command
+                .env("HTTPS_PROXY", &proxy_url)
+                .env("HTTP_PROXY", &proxy_url)
+                .env("NO_PROXY", &no_proxy)
+                .env("no_proxy", &no_proxy);
+            crate::debug_log::append(
+                "acp",
+                "info",
+                &session_id,
+                "proxy env injected",
+                Some(&proxy_url),
+            );
+        }
 
         #[cfg(target_os = "windows")]
         {

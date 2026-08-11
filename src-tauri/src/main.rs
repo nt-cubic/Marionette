@@ -18,6 +18,7 @@ mod open_target;
 mod preflight;
 mod process_util;
 mod provider_usage;
+mod proxy;
 mod session_manager;
 mod shell_integration;
 mod storage;
@@ -313,6 +314,9 @@ fn main() {
             commands::delete_provider_key,
             commands::upsert_provider_meta,
             commands::delete_provider_meta,
+            commands::get_proxy_config,
+            commands::set_proxy_config,
+            commands::test_proxy,
             open_target::resolve_link_target,
             open_target::open_external,
             open_target::reveal_in_file_manager
