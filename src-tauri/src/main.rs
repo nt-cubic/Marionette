@@ -130,6 +130,41 @@ fn spawn_main_thread_watchdog(app: tauri::AppHandle) {
     });
 }
 
+/// Recognizes the tao 0.35.x paint-flush assert (tao#1140 / tauri#14088).
+///
+/// Matches the message text recorded in the dev diary for the crash:
+/// "assertion failed: flush_paint_messages(None, &subclass_input.event_loop_runner)"
+/// at `tao-0.35.3/src/platform_impl/windows/event_loop.rs:2344`.
+fn is_tao_paint_assert(panic_message: &str) -> bool {
+    panic_message.contains("flush_paint_messages")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tao_paint_assert_is_recognized() {
+        let real = concat!(
+            "panicked at D:\\Dev\\Cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f\\",
+            "tao-0.35.3\\src\\platform_impl\\windows\\event_loop.rs:2344:11: ",
+            "assertion failed: flush_paint_messages(None, &subclass_input.event_loop_runner)"
+        );
+        assert!(is_tao_paint_assert(real));
+    }
+
+    #[test]
+    fn ordinary_panics_pass_through() {
+        assert!(!is_tao_paint_assert(
+            "panicked at src/main.rs:99: index out of bounds: the len is 1 but the index is 5"
+        ));
+        assert!(!is_tao_paint_assert(
+            "panicked at src/storage.rs:41: failed to initialize storage"
+        ));
+        assert!(!is_tao_paint_assert(""));
+    }
+}
+
 fn main() {
     // Before any WebView host is created — native dialog if runtime missing.
     webview2_gate::ensure_or_exit();
@@ -157,6 +192,32 @@ fn main() {
     std::panic::set_hook(Box::new(move |info| {
         // Non-blocking: the panicking thread may already hold the log lock.
         debug_log::append_from_panic_hook(&info.to_string());
+
+        // tao#1140 / tauri#14088: WebView2 redraw races the thread-event-target
+        // window's WM_PAINT flush and trips
+        // `assert!(flush_paint_messages(..))` in tao 0.35.x
+        // (`platform_impl/windows/event_loop.rs`, "assertion failed:
+        // flush_paint_messages"). The upstream fix landed in tao 0.36.0
+        // (window subclassing removed, #1231) but tauri 2.11.5 still pins
+        // tao 0.35, so this can still fire on release builds — where
+        // `panic = "abort"` would otherwise turn it into a hard crash
+        // (0xc0000409 in the Application event log) instead of an exit.
+        //
+        // If we are at that assert, the WebView2 host is already tearing
+        // down and tao re-raises the payload via `panic::resume_unwind` on
+        // the message loop, after which unwinding crosses the `extern
+        // "system"` callback boundary and aborts the process regardless of
+        // this hook. Exiting here, before that second raise, is the only
+        // chance to go out clean: same visible outcome (window closes),
+        // no crash dialog, no WER bucket, no "stopped responding" report.
+        // Deliberately nothing else in here — no state to flush, no locks
+        // to take: the panicking thread may hold them, and any Win32 or
+        // process work can re-enter the very paint race that just tripped.
+        let message = info.to_string();
+        if is_tao_paint_assert(&message) {
+            std::process::exit(0);
+        }
+
         previous_hook(info);
     }));
 
