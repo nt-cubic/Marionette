@@ -1,7 +1,8 @@
-import { memo, type ReactNode } from "react";
+import { memo, useEffect, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { prepareMarkdownForRender } from "../lib/markdownText";
 import { linkifyChildren, useLinkMenu } from "./LinkedText";
 import type { LinkTarget } from "../lib/linkTargets";
@@ -70,12 +71,20 @@ function MdLink({ href, children }: { href?: string; children?: ReactNode }) {
 }
 
 /**
- * Inline image — a click is a fallback to the link flow: open the original
- * with the OS default handler, right-click for the menu. stopPropagation so a
- * click inside a markdown link (`[![alt](img)](url)`) doesn't fire twice.
+ * Inline image — single click toggles zoom (600px cap ↔ natural size),
+ * right-click opens the menu (Open with system viewer / Show in Explorer /
+ * Copy path). No delay: there is no double-click action to disambiguate.
+ * stopPropagation so a click inside a markdown link (`[![alt](img)](url)`)
+ * doesn't fire twice.
+ *
+ * Display src: http(s) loads natively; local paths can't be loaded by the
+ * webview directly, so they go through the asset protocol (convertFileSrc).
+ * The click/right-click target stays the raw path — Open / Copy / Show in
+ * Explorer must see the real filesystem path, not the asset URL.
  */
 function MdImage({ src, alt }: { src?: string; alt?: string }) {
-  const { openMenu, primaryAction, renderMenu } = useLinkMenu();
+  const { openMenu, renderMenu } = useLinkMenu();
+  const [zoomed, setZoomed] = useState(false);
   const target: LinkTarget | null = src
     ? {
         kind: HTTP_URL_RE.test(src) ? "url" : "path",
@@ -84,19 +93,29 @@ function MdImage({ src, alt }: { src?: string; alt?: string }) {
         end: src.length,
       }
     : null;
+  const displaySrc = (() => {
+    if (!src || HTTP_URL_RE.test(src)) return src;
+    if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+      return convertFileSrc(src.replace(/^file:\/\//i, ""));
+    }
+    return src;
+  })();
+  useEffect(() => {
+    setZoomed(false);
+  }, [src]);
   return (
     <>
       <img
-        src={src}
+        src={displaySrc}
         alt={alt ?? ""}
         loading="lazy"
-        className="md-body__img"
+        className={zoomed ? "md-body__img md-body__img--zoomed" : "md-body__img"}
         title={src}
         onClick={(event) => {
           if (!target) return;
           event.preventDefault();
           event.stopPropagation();
-          void primaryAction(event, target);
+          setZoomed((z) => !z);
         }}
         onContextMenu={(event) => {
           if (!target) return;
