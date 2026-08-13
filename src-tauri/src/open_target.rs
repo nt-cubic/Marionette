@@ -21,12 +21,55 @@ fn is_url(target: &str) -> bool {
     lower.starts_with("http://") || lower.starts_with("https://")
 }
 
+/// `file:///D:/x` / `file://localhost/C:/x` / `file://C:/x` → `D:/x` / `C:/x`.
+///
+/// Only the absolute forms an agent can point at are handled; UNC hosts
+/// (`file://server/share`) stay unsupported — agent text should name local
+/// files. Percent-encoding is deliberately not decoded: agents print raw
+/// paths, not URL-escaped ones.
+fn strip_file_url(target: &str) -> Option<String> {
+    let rest = target.trim().strip_prefix("file://")?;
+    let rest = if rest.len() >= 9 && rest.as_bytes()[0..9].eq_ignore_ascii_case(b"localhost") {
+        &rest[9..]
+    } else {
+        rest
+    };
+    let rest = rest.strip_prefix('/').unwrap_or(rest);
+    if rest.is_empty() {
+        return None;
+    }
+    Some(rest.to_string())
+}
+
+/// Normalize a transcript string into a local target: `file://` URL → bare
+/// path, anything else passes through untouched.
+fn strip_scheme(target: String) -> String {
+    strip_file_url(&target).unwrap_or(target)
+}
+
 /// `\\?\D:\x` → `D:\x`. The extended prefix leaks in from `fs::canonicalize`
 /// and shells refuse to open it.
 fn strip_extended_prefix(path: &str) -> String {
     path.strip_prefix(r"\\?\")
         .map(str::to_string)
         .unwrap_or_else(|| path.to_string())
+}
+
+/// The argument handed to the OS file opener.
+///
+/// On Windows, `explorer.exe` cannot open paths containing forward slashes —
+/// it silently falls back to the Documents folder — so paths are normalized
+/// to backslashes before they reach it. URLs never pass through here; they
+/// keep their own slashes.
+fn to_explorer_arg(path: &Path) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        path.to_string_lossy().replace('/', "\\")
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        path.to_string_lossy().into_owned()
+    }
 }
 
 fn is_risky(path: &Path) -> bool {
@@ -87,13 +130,14 @@ pub fn resolve_link_target(target: String, cwd: Option<String>) -> Value {
     if is_url(&target) {
         return json!({ "kind": "url", "target": target.trim(), "risky": false });
     }
-    match resolve_path(&target, cwd.as_deref()) {
+    let local = strip_scheme(target);
+    match resolve_path(&local, cwd.as_deref()) {
         Some(path) => json!({
             "kind": if path.is_dir() { "directory" } else { "file" },
             "target": path.to_string_lossy(),
             "risky": is_risky(&path),
         }),
-        None => json!({ "kind": "missing", "target": strip_extended_prefix(&target), "risky": false }),
+        None => json!({ "kind": "missing", "target": strip_extended_prefix(&local), "risky": false }),
     }
 }
 
@@ -133,8 +177,9 @@ pub fn open_external(
         return Ok(json!({ "opened": true, "kind": "url", "target": url }));
     }
 
-    let path = resolve_path(&target, cwd.as_deref())
-        .ok_or_else(|| format!("Not found on disk: {}", strip_extended_prefix(&target)))?;
+    let local = strip_scheme(target);
+    let path = resolve_path(&local, cwd.as_deref())
+        .ok_or_else(|| format!("Not found on disk: {}", strip_extended_prefix(&local)))?;
 
     if is_risky(&path) && !force.unwrap_or(false) {
         return Ok(json!({
@@ -146,7 +191,7 @@ pub fn open_external(
     }
 
     let display = path.to_string_lossy().to_string();
-    open_with_os(&display)?;
+    open_with_os(&to_explorer_arg(&path))?;
     crate::debug_log::append("open", "info", "", "open path", Some(&display));
     Ok(json!({
         "opened": true,
@@ -158,17 +203,19 @@ pub fn open_external(
 /// Show the item in the OS file manager (selected, not opened).
 #[tauri::command(async)]
 pub fn reveal_in_file_manager(target: String, cwd: Option<String>) -> Result<Value, String> {
-    let path = resolve_path(&target, cwd.as_deref())
-        .ok_or_else(|| format!("Not found on disk: {}", strip_extended_prefix(&target)))?;
+    let local = strip_scheme(target);
+    let path = resolve_path(&local, cwd.as_deref())
+        .ok_or_else(|| format!("Not found on disk: {}", strip_extended_prefix(&local)))?;
     let display = path.to_string_lossy().to_string();
+    let arg = to_explorer_arg(&path);
 
     #[cfg(target_os = "windows")]
     {
         if path.is_dir() {
-            spawn_detached("explorer.exe", &[&display])?;
+            spawn_detached("explorer.exe", &[&arg])?;
         } else {
             // `/select,<path>` must stay one argument — explorer parses it itself.
-            spawn_detached("explorer.exe", &[&format!("/select,{display}")])?;
+            spawn_detached("explorer.exe", &[&format!("/select,{arg}")])?;
         }
     }
     #[cfg(target_os = "macos")]
@@ -212,14 +259,71 @@ fn open_with_os(target: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_risky, is_url, resolve_path, strip_extended_prefix};
+    use super::{is_risky, is_url, resolve_path, strip_extended_prefix, strip_file_url, strip_scheme, to_explorer_arg};
     use std::fs;
     use std::path::Path;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn explorer_args_are_backslash_normalized() {
+        assert_eq!(
+            to_explorer_arg(Path::new("D:/Apps/Marionette/docs/CURRENT.md")),
+            r"D:\Apps\Marionette\docs\CURRENT.md"
+        );
+        assert_eq!(
+            to_explorer_arg(Path::new("D:/Apps")),
+            r"D:\Apps"
+        );
+        assert_eq!(
+            to_explorer_arg(Path::new(r"D:\Apps\a\b")),
+            r"D:\Apps\a\b"
+        );
+    }
 
     #[test]
     fn strips_windows_extended_prefix() {
         assert_eq!(strip_extended_prefix(r"\\?\D:\a\b"), r"D:\a\b");
         assert_eq!(strip_extended_prefix(r"D:\a\b"), r"D:\a\b");
+    }
+
+    #[test]
+    fn strips_file_urls() {
+        assert_eq!(
+            strip_file_url("file:///D:/Apps/a.png"),
+            Some("D:/Apps/a.png".to_string())
+        );
+        assert_eq!(strip_file_url("file://localhost/D:/a"), Some("D:/a".to_string()));
+        assert_eq!(strip_file_url("file://LOCALHOST/D:/a"), Some("D:/a".to_string()));
+        assert_eq!(strip_file_url("file://D:/a"), Some("D:/a".to_string()));
+        assert_eq!(strip_file_url("file:///C:/x"), Some("C:/x".to_string()));
+        assert_eq!(strip_file_url("  file:///C:/x  "), Some("C:/x".to_string()));
+        assert_eq!(strip_file_url("file://"), None);
+        assert_eq!(strip_file_url("https://example.com"), None);
+        assert_eq!(strip_file_url(r"D:\a\b"), None);
+    }
+
+    #[test]
+    fn strips_schemes_or_passes_through() {
+        assert_eq!(strip_scheme("file:///D:/Apps/a.png".to_string()), "D:/Apps/a.png");
+        assert_eq!(strip_scheme(r"D:\a\b".to_string()), r"D:\a\b");
+        assert_eq!(strip_scheme("".to_string()), "");
+        assert_eq!(strip_scheme("https://example.com".to_string()), "https://example.com");
+    }
+
+    #[test]
+    fn resolves_file_urls_as_paths() {
+        let root = std::env::temp_dir().join(format!("marionette-fileurl-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("App.tsx");
+        fs::write(&file, "x").unwrap();
+        let file_url = format!("file:///{}", file.to_string_lossy().replace('\\', "/"));
+        // Mirrors the command flow: strip the scheme first, then resolve.
+        let stripped = strip_file_url(&file_url).unwrap_or_else(|| file_url.clone());
+        assert_eq!(resolve_path(&stripped, None), Some(file.clone()));
+        // Percent-encoding is a known limitation, not a silent surprise.
+        assert_eq!(resolve_path("D:/not%20here", None), None);
+        assert_eq!(strip_file_url("file:///D:/not%20here"), Some("D:/not%20here".to_string()));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

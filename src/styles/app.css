@@ -3420,6 +3420,7 @@ body.is-tab-detaching * {
   height: auto;
   margin: 0.5em 0;
   border-radius: var(--radius-sm);
+  cursor: pointer;
 }
 
 .event-card__body.md-body {
