@@ -1462,6 +1462,14 @@ body.is-project-reordering .project-list {
   overflow: hidden;
 }
 
+/* Detached tab dragged over the main window → drop target glow. */
+.editor-tabs__tablist.is-merge-target {
+  border-radius: var(--radius-sm);
+  outline: 1px dashed color-mix(in srgb, var(--accent) 65%, var(--border));
+  outline-offset: -2px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
 .editor-tabs__spacer {
   flex: 1;
   min-width: 24px;
@@ -1529,6 +1537,7 @@ body.is-project-reordering .project-list {
 
 .editor-tab__close,
 .editor-tab__popout,
+.editor-tab__mergeback,
 .editor-tab__new,
 .editor-tab__view-toggle {
   /* Visual base from .pill-action.pill-action--sm */
@@ -1536,11 +1545,13 @@ body.is-project-reordering .project-list {
 }
 
 .editor-tab__close,
-.editor-tab__popout {
+.editor-tab__popout,
+.editor-tab__mergeback {
   color: var(--text-faint);
 }
 
-.editor-tab__popout:hover {
+.editor-tab__popout:hover,
+.editor-tab__mergeback:hover {
   color: var(--text);
 }
 
@@ -1600,6 +1611,19 @@ body.is-tab-detaching * {
   font-size: 10px;
   color: var(--text-muted);
   letter-spacing: 0.01em;
+}
+
+/* Detached drag hovering the main window → merge affordance. */
+.tab-tear-ghost.is-merge-target {
+  border-color: var(--accent);
+  box-shadow:
+    0 8px 28px color-mix(in srgb, #000 35%, transparent),
+    0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.tab-tear-ghost.is-merge-target .tab-tear-ghost__hint {
+  color: var(--accent);
+  font-weight: 600;
 }
 
 /* Detached dialog window: no project shelf (column already 0 via is-left-collapsed). */

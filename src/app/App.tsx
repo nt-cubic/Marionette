@@ -16,8 +16,12 @@ import {
 import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, OPEN_PATH_EVENT, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, saveTodos, setProxyConfig, testProxy, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, startAcpSession, startAgentLogin, stopAcpSession, takeLaunchOpenPath, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision } from "../lib/api";
 import {
   bindDetachedWindowReaper,
+  hideDetachedWindowForSession,
+  listenMergeBackRequests,
+  listenMergeHighlights,
   openDetachedSessionWindow,
   readDetachedSessionId,
+  requestMergeBack,
 } from "../lib/detachedWindow";
 import { broadcastSessionPatch, listenSessionPatches } from "../lib/sessionBus";
 import {
@@ -305,6 +309,8 @@ export function App() {
   const [desktopNotifyOn, setDesktopNotifyOn] = useState(() => isDesktopNotifyEnabled());
   /** Agent proxy config (single exit address), loaded on mount. */
   const [proxyConfig, setProxyConfigState] = useState<ProxyConfig | null>(null);
+  /** Main window only: a detached tab drag is hovering the tab strip. */
+  const [mergeTargetActive, setMergeTargetActive] = useState(false);
   const [sessionCapabilities, setSessionCapabilities] = useState<CapabilitySnapshot | null>(null);
   const [liveEvents, setLiveEvents] = useState<SessionEvent[]>([]);
   /** Per-session usage from ACP `usage_update` + opportunistic rate-limit text. */
@@ -493,6 +499,7 @@ export function App() {
   const currentProjectIdRef = useRef(currentProjectId);
   const openSessionIdsRef = useRef(openSessionIds);
   const liveEventsRef = useRef(liveEvents);
+  const openSessionRef = useRef<(s: Session) => void>(() => undefined);
   sessionsRef.current = availableSessions;
   agentsRef.current = availableAgents;
   projectsRef.current = availableProjects;
@@ -958,6 +965,48 @@ export function App() {
       unlisten = fn;
     });
     return () => unlisten?.();
+  }, []);
+
+  // Main window only: detached shells hand their dialog back (merge button /
+  // drag-over-main drop) → re-adopt the tab and hide the shell.
+  useEffect(() => {
+    if (IS_DETACHED_WINDOW) return;
+    let unlistenMerge: (() => void) | undefined;
+    let unlistenGlow: (() => void) | undefined;
+    void listenMergeBackRequests(async (sessionId) => {
+      const session = sessionsRef.current.find((s) => s.id === sessionId);
+      if (session) {
+        setOpenSessionIds((current) =>
+          current.includes(session.id) ? current : [...current, session.id]
+        );
+        openSessionRef.current(session);
+        // Re-push status/label so the restored tab matches the live turn.
+        void broadcastSessionPatch({
+          sessionId: session.id,
+          status: session.status,
+          label: session.label,
+        });
+      }
+      await hideDetachedWindowForSession(sessionId);
+      try {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        const win = getCurrentWindow();
+        await win.show();
+        await win.unminimize();
+        await win.setFocus();
+      } catch {
+        /* optional */
+      }
+    }).then((fn) => {
+      unlistenMerge = fn;
+    });
+    void listenMergeHighlights(setMergeTargetActive).then((fn) => {
+      unlistenGlow = fn;
+    });
+    return () => {
+      unlistenMerge?.();
+      unlistenGlow?.();
+    };
   }, []);
 
   /**
@@ -2338,6 +2387,7 @@ export function App() {
     lastProviderProbeKey.current = "";
     void loadSessionTranscript(nextSession.id);
   };
+  openSessionRef.current = openSession;
 
   const setSessionStatusById = useCallback((sessionId: string, status: Session["status"]) => {
     setAvailableSessions((current) =>
@@ -2541,6 +2591,18 @@ export function App() {
         availableSessions.find((s) => nextOpenIds.includes(s.id));
       if (nextSession) openSession(nextSession);
     }
+  };
+
+  /**
+   * Detached window: hand the dialog back to the main window.
+   * - Click ⇥: ask main to re-adopt the tab.
+   * - Drag over main + drop: same request (viaDrag).
+   * Main re-adds the tab, focuses it, then hides this shell.
+   */
+  const handleMergeBack = async (session: Session, viaDrag = false) => {
+    if (!isTauriRuntime() || !IS_DETACHED_WINDOW) return;
+    void viaDrag;
+    await requestMergeBack(session.id);
   };
 
   const deleteSession = (sessionId: string) => {
@@ -4513,6 +4575,12 @@ export function App() {
                 ? undefined
                 : (s, viaDrag) => void handleTabPopOut(s, viaDrag)
             }
+            onTabMergeBack={
+              IS_DETACHED_WINDOW
+                ? (s, viaDrag) => void handleMergeBack(s, viaDrag)
+                : undefined
+            }
+            mergeDropActive={IS_DETACHED_WINDOW ? false : mergeTargetActive}
             detachedMode={IS_DETACHED_WINDOW}
           />
           <div className="workspace-titlebar__spacer" data-tauri-drag-region />
