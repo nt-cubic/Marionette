@@ -31,11 +31,14 @@ async function copyText(value: string): Promise<void> {
   }
 }
 
-export function LinkedText({ text, className }: { text: string; className?: string }): ReactNode {
+/**
+ * Shared link-click behaviour for markdown anchors and linkified prose:
+ * resolve, open, and on any failure show the menu with the reason instead of
+ * silently doing nothing.
+ */
+export function useLinkMenu() {
   const cwd = useContext(LinkCwdContext);
   const [menu, setMenu] = useState<MenuState | null>(null);
-
-  const segments = splitLinkSegments(text);
 
   const openMenu = useCallback(
     async (event: { clientX: number; clientY: number }, target: LinkTarget, note = "") => {
@@ -53,7 +56,14 @@ export function LinkedText({ text, className }: { text: string; className?: stri
   const primaryAction = useCallback(
     async (event: React.MouseEvent, target: LinkTarget) => {
       if (target.kind === "url") {
-        void openExternal(target.raw, cwd);
+        try {
+          const result = await openExternal(target.raw, cwd);
+          if (!result?.opened) {
+            void openMenu(event, target, result?.message ?? "Could not open this link.");
+          }
+        } catch {
+          void openMenu(event, target, "Could not open this link.");
+        }
         return;
       }
       const resolution = await resolveLinkTarget(target.raw, cwd).catch(() => null);
@@ -73,6 +83,24 @@ export function LinkedText({ text, className }: { text: string; className?: stri
     },
     [cwd, openMenu]
   );
+
+  const renderMenu = () =>
+    menu ? (
+      <LinkMenu
+        state={menu}
+        cwd={cwd}
+        onClose={() => setMenu(null)}
+        onNote={(note) => setMenu((current) => (current ? { ...current, note } : current))}
+      />
+    ) : null;
+
+  return { openMenu, primaryAction, renderMenu };
+}
+
+export function LinkedText({ text, className }: { text: string; className?: string }): ReactNode {
+  const { openMenu, primaryAction, renderMenu } = useLinkMenu();
+
+  const segments = splitLinkSegments(text);
 
   if (segments.length === 1 && segments[0].type === "text") {
     return <>{text}</>;
@@ -105,14 +133,7 @@ export function LinkedText({ text, className }: { text: string; className?: stri
           </button>
         );
       })}
-      {menu && (
-        <LinkMenu
-          state={menu}
-          cwd={cwd}
-          onClose={() => setMenu(null)}
-          onNote={(note) => setMenu((current) => (current ? { ...current, note } : current))}
-        />
-      )}
+      {renderMenu()}
     </>
   );
 }
