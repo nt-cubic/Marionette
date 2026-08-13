@@ -1,4 +1,4 @@
-import { Check, ChevronDown, Copy, Eye, EyeOff, FileText, Globe, MessageSquareQuote, Pencil, Plus, Square, SquareArrowOutUpRight, X } from "lucide-react";
+import { Check, ChevronDown, Copy, Eye, EyeOff, FileText, Globe, Merge, MessageSquareQuote, Pencil, Plus, Square, SquareArrowOutUpRight, X } from "lucide-react";
 import {
   memo,
   useCallback,
@@ -31,6 +31,7 @@ import {
   toolKindVerb,
 } from "../lib/turnActivity";
 import { useVirtualWindow } from "../lib/useVirtualWindow";
+import { isCursorOverWindow, setMergeHighlight } from "../lib/detachedWindow";
 import type { AgentConfig, Session, SessionEvent, SessionStatus, SessionViewMode } from "../lib/types";
 import { ClippedBody } from "./ClippedBody";
 import { LinkCwdContext, LinkedText } from "./LinkedText";
@@ -121,6 +122,8 @@ export function SessionTabs({
   onNewTab,
   onRenameSession,
   onTabPopOut,
+  onTabMergeBack,
+  mergeDropActive = false,
   /** Detached window: single dialog, no new-tab / pop-out chrome. */
   detachedMode = false,
 }: {
@@ -136,6 +139,14 @@ export function SessionTabs({
    * - `viaDrag: true`: ghost tear-off just finished — open at cursor.
    */
   onTabPopOut?: (session: Session, viaDrag?: boolean) => void | Promise<void>;
+  /**
+   * Detached window: hand the dialog back to the main window.
+   * - `viaDrag: false` (default): ⇥ merge button.
+   * - `viaDrag: true`: tab dragged over the main window and released.
+   */
+  onTabMergeBack?: (session: Session, viaDrag?: boolean) => void | Promise<void>;
+  /** Main window: a detached tab drag is hovering the strip (drop glow). */
+  mergeDropActive?: boolean;
   detachedMode?: boolean;
 }) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -147,6 +158,9 @@ export function SessionTabs({
   const [ghost, setGhost] = useState<TearGhost | null>(null);
   const ghostRef = useRef<TearGhost | null>(null);
   ghostRef.current = ghost;
+  /** Detached drag is currently over the main window → merge affordance. */
+  const [mergeHover, setMergeHover] = useState(false);
+  const mergeHoverRef = useRef(false);
   const tabDragRef = useRef<{
     session: Session;
     pointerId: number;
@@ -154,6 +168,11 @@ export function SessionTabs({
     startY: number;
     armed: boolean;
   } | null>(null);
+  const mergePollRef = useRef<{ last: number; inFlight: boolean }>({
+    last: 0,
+    inFlight: false,
+  });
+  const mergeHighlightSentRef = useRef(false);
 
   useEffect(() => {
     if (!renamingId) return;
@@ -174,7 +193,35 @@ export function SessionTabs({
     setDraggingTabId(null);
     setGhost(null);
     ghostRef.current = null;
+    mergeHoverRef.current = false;
+    setMergeHover(false);
+    if (mergeHighlightSentRef.current) {
+      mergeHighlightSentRef.current = false;
+      void setMergeHighlight(false);
+    }
     document.body.classList.remove("is-tab-detaching");
+  };
+
+  /** Throttled check: is the pointer over the main window (merge drop target)? */
+  const pollMergeTarget = () => {
+    const poll = mergePollRef.current;
+    const now = Date.now();
+    if (poll.inFlight || now - poll.last < 100) return;
+    poll.inFlight = true;
+    poll.last = now;
+    void isCursorOverWindow("main")
+      .then((over) => {
+        // Drag may have ended while the poll was in flight — drop stale result.
+        if (!tabDragRef.current) return;
+        if (over === mergeHoverRef.current) return;
+        mergeHoverRef.current = over;
+        setMergeHover(over);
+        mergeHighlightSentRef.current = over;
+        void setMergeHighlight(over);
+      })
+      .finally(() => {
+        poll.inFlight = false;
+      });
   };
 
   const placeGhost = (s: Session, clientX: number, clientY: number) => {
@@ -188,7 +235,8 @@ export function SessionTabs({
   };
 
   const onTabPointerDown = (openSession: Session, event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (detachedMode || renamingId || event.button !== 0 || !onTabPopOut) return;
+    if (renamingId || event.button !== 0) return;
+    if (detachedMode ? !onTabMergeBack : !onTabPopOut) return;
     tabDragRef.current = {
       session: openSession,
       pointerId: event.pointerId,
@@ -221,12 +269,19 @@ export function SessionTabs({
     const outside = pointerOutsideTabStrip(event.clientX, event.clientY, strip);
 
     if (outside) {
-      // Ghost only — real WebView waits for mouse-up.
+      // Ghost only — real WebView (or merge) waits for mouse-up.
       placeGhost(drag.session, event.clientX, event.clientY);
+      if (onTabMergeBack) pollMergeTarget();
     } else if (ghostRef.current) {
       // Brought back over the strip → cancel tear-off preview.
       setGhost(null);
       ghostRef.current = null;
+      mergeHoverRef.current = false;
+      setMergeHover(false);
+      if (mergeHighlightSentRef.current) {
+        mergeHighlightSentRef.current = false;
+        void setMergeHighlight(false);
+      }
     }
   };
 
@@ -242,10 +297,16 @@ export function SessionTabs({
     const wasArmed = drag.armed;
     const target = drag.session;
     const liveGhost = ghostRef.current;
+    const wasOverMain = mergeHoverRef.current;
     tabDragRef.current = null;
     clearTabDragUi();
 
     if (liveGhost) {
+      // Detached: dropping over the main window merges back; anywhere else cancels.
+      if (onTabMergeBack) {
+        if (wasOverMain) void onTabMergeBack(target, true);
+        return;
+      }
       // Drop: create the real window at the cursor, then drop the tab.
       void onTabPopOut?.(target, true);
       return;
@@ -264,7 +325,12 @@ export function SessionTabs({
 
   return (
     <>
-    <div className="editor-tabs__tablist" role="tablist" aria-label="Session tabs" ref={tablistRef}>
+    <div
+      className={`editor-tabs__tablist${mergeDropActive ? " is-merge-target" : ""}`}
+      role="tablist"
+      aria-label="Session tabs"
+      ref={tablistRef}
+    >
       {openSessions.map((openSession) => {
         const busy =
           openSession.status === "running" || openSession.status === "starting";
@@ -314,7 +380,9 @@ export function SessionTabs({
                 title={
                   onTabPopOut && !detachedMode
                     ? `${openSession.label} · drag out to tear off · double-click to rename`
-                    : `${openSession.cwd} · double-click to rename`
+                    : onTabMergeBack
+                      ? `${openSession.label} · drag out to merge back · double-click to rename`
+                      : `${openSession.cwd} · double-click to rename`
                 }
                 onPointerDown={(e) => onTabPointerDown(openSession, e)}
                 onPointerMove={onTabPointerMove}
@@ -331,6 +399,20 @@ export function SessionTabs({
                 }}
               >
                 <span>{openSession.label}</span>
+              </button>
+            )}
+            {onTabMergeBack && (
+              <button
+                className="pill-action pill-action--icon pill-action--sm editor-tab__mergeback"
+                type="button"
+                title="Merge back to main window"
+                aria-label="Merge back to main window"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onTabMergeBack(openSession, false);
+                }}
+              >
+                <Merge size={11} />
               </button>
             )}
             {onTabPopOut && !detachedMode && (
@@ -364,12 +446,18 @@ export function SessionTabs({
     {ghost &&
       createPortal(
         <div
-          className="tab-tear-ghost"
+          className={`tab-tear-ghost${mergeHover ? " is-merge-target" : ""}`}
           style={{ left: ghost.x, top: ghost.y }}
           aria-hidden
         >
           <span className="tab-tear-ghost__label">{ghost.session.label}</span>
-          <span className="tab-tear-ghost__hint">松开以打开新窗口</span>
+          <span className="tab-tear-ghost__hint">
+            {onTabMergeBack
+              ? mergeHover
+                ? "松开以合并回主窗口"
+                : "拖到主窗口上方合并"
+              : "松开以打开新窗口"}
+          </span>
         </div>,
         document.body
       )}

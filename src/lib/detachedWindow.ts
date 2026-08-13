@@ -14,7 +14,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { LogicalPosition } from "@tauri-apps/api/dpi";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { cursorPosition, getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow, getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
 import { isTauriRuntime } from "./api";
@@ -39,6 +39,22 @@ export const HIDDEN_DETACHED_GRACE_MS = 10 * 60 * 1000;
 export const MAX_HIDDEN_DETACHED = 2;
 
 const DETACHED_HIDDEN_EVENT = "marionette-detached-hidden";
+
+/** Detached window asks the main window to re-adopt its dialog tab. */
+export const MERGE_BACK_EVENT = "marionette-merge-back";
+/** Detached drag hovering over main → main lights up its tab strip. */
+export const MERGE_HIGHLIGHT_EVENT = "marionette-merge-highlight";
+
+export type MergeBackPayload = {
+  sessionId: string;
+  /** Origin window label — main ignores echoes from itself. */
+  origin?: string;
+};
+
+export type MergeHighlightPayload = {
+  active: boolean;
+  origin?: string;
+};
 
 /** label → last hidden / last used ms (for LRU reap). */
 const detachedTouch = new Map<string, number>();
@@ -165,6 +181,103 @@ export async function bindDetachedWindowReaper(): Promise<UnlistenFn> {
     unlisten();
     window.clearInterval(interval);
   };
+}
+
+/**
+ * Detached window: ask the main window to re-adopt this dialog's tab.
+ * Main re-adds the tab, focuses it, then hides this shell.
+ */
+export async function requestMergeBack(sessionId: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    const origin = getCurrentWindow().label;
+    await emit(MERGE_BACK_EVENT, { sessionId, origin } satisfies MergeBackPayload);
+  } catch {
+    /* optional */
+  }
+}
+
+/** Main window: handle merge-back requests from detached shells. */
+export async function listenMergeBackRequests(
+  onMerge: (sessionId: string) => void | Promise<void>
+): Promise<UnlistenFn> {
+  if (!isTauriRuntime()) return () => undefined;
+  let origin: string | null = null;
+  try {
+    origin = getCurrentWindow().label;
+  } catch {
+    /* browser preview */
+  }
+  return listen<MergeBackPayload>(MERGE_BACK_EVENT, (event) => {
+    const payload = event.payload;
+    if (!payload?.sessionId) return;
+    if (payload.origin && origin && payload.origin === origin) return;
+    void onMerge(payload.sessionId);
+  });
+}
+
+/** Detached window: tell main whether a drag is hovering over it (drop hint). */
+export async function setMergeHighlight(active: boolean): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    const origin = getCurrentWindow().label;
+    await emit(MERGE_HIGHLIGHT_EVENT, { active, origin } satisfies MergeHighlightPayload);
+  } catch {
+    /* optional */
+  }
+}
+
+/** Main window: tab-strip glow while a detached tab drag hovers it. */
+export async function listenMergeHighlights(
+  onChange: (active: boolean) => void
+): Promise<UnlistenFn> {
+  if (!isTauriRuntime()) return () => undefined;
+  let origin: string | null = null;
+  try {
+    origin = getCurrentWindow().label;
+  } catch {
+    /* browser preview */
+  }
+  return listen<MergeHighlightPayload>(MERGE_HIGHLIGHT_EVENT, (event) => {
+    const payload = event.payload;
+    if (!payload || typeof payload.active !== "boolean") return;
+    if (payload.origin && origin && payload.origin === origin) return;
+    onChange(payload.active);
+  });
+}
+
+/** Physical cursor inside the outer bounds of a labeled window? (drop target check) */
+export async function isCursorOverWindow(label: string): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  try {
+    const mod = await import("@tauri-apps/api/window");
+    const [pos, windows] = await Promise.all([mod.cursorPosition(), mod.getAllWindows()]);
+    const target = windows.find((w) => w.label === label);
+    if (!target) return false;
+    const [winPos, winSize] = await Promise.all([
+      target.outerPosition(),
+      target.outerSize(),
+    ]);
+    return (
+      pos.x >= winPos.x &&
+      pos.x < winPos.x + winSize.width &&
+      pos.y >= winPos.y &&
+      pos.y < winPos.y + winSize.height
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Main window: hide a detached shell after its tab merged back. */
+export async function hideDetachedWindowForSession(sessionId: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    const win = await WebviewWindow.getByLabel(detachedWindowLabel(sessionId));
+    await win?.hide();
+  } catch {
+    /* optional */
+  }
 }
 
 /**
