@@ -359,8 +359,10 @@ export function App() {
   const transcriptLoadedRef = useRef<Set<string>>(new Set());
   /**
    * Follow-up prompts typed while a turn is live. ACP allows only one
-   * `session/prompt` in flight; we show the You card immediately and wire the
-   * prompt when `turn/complete` frees the session.
+   * `session/prompt` in flight; the message waits in this queue (shown in a
+   * strip above the composer, NOT as a timeline card — a card inserted
+   * mid-stream would split the running reply) and is wired when
+   * `turn/complete` frees the session.
    */
   const pendingSendsRef = useRef<
     Map<
@@ -376,10 +378,11 @@ export function App() {
           modelLabel?: string | null;
           effortLabel?: string | null;
         };
-        messageId?: string;
       }>
     >
   >(new Map());
+  /** Bumps to re-render the queued-strip (source of truth is pendingSendsRef). */
+  const [queuedStripTick, setQueuedStripTick] = useState(0);
   const flushingSendRef = useRef<Set<string>>(new Set());
   /** Set each render so turn/complete can drain the queue without stale closures. */
   const drainQueuedSendRef = useRef<(sessionId: string) => void>(() => undefined);
@@ -1374,15 +1377,7 @@ export function App() {
         // Drop queued follow-ups — the process cannot receive them anymore.
         pendingSendsRef.current.delete(payload.sessionId);
         flushingSendRef.current.delete(payload.sessionId);
-        setLiveEvents((current) =>
-          current.map((event) =>
-            event.type === "user_message" &&
-            event.sessionId === payload.sessionId &&
-            event.queued
-              ? { ...event, queued: undefined }
-              : event
-          )
-        );
+        setQueuedStripTick((t) => t + 1);
         // Zombie Ask / Plan / Permission cards block the composer — clear for this session.
         setAskPrompt((cur) => (cur?.sessionId === payload.sessionId ? null : cur));
         setPlanApproval((cur) => (cur?.sessionId === payload.sessionId ? null : cur));
@@ -3897,9 +3892,9 @@ export function App() {
       effortLabel?: string | null;
     },
     options?: {
-      /** You card already in the timeline (queued follow-up being flushed). */
-      alreadyShown?: boolean;
-      messageId?: string;
+      /** Flushing a queued follow-up: no card exists yet — create it now,
+       *  right after the reply that just freed the slot. */
+      flushQueued?: boolean;
     },
   ) => {
     try {
@@ -3953,63 +3948,55 @@ export function App() {
       const priorForInject = liveEventsRef.current.filter((e) => e.sessionId === sid);
       const liveStatus = sessionsRef.current.find((s) => s.id === sid)?.status;
       // One ACP prompt at a time: while a turn is live, queue and flush later.
-      const shouldQueue = !options?.alreadyShown && liveStatus === "running";
+      const shouldQueue = !options?.flushQueued && liveStatus === "running";
 
-      if (!options?.alreadyShown) {
-        const um = userMessageEvent(sid, composed, {
-          ...(sendMetaRef.current ?? {}),
-          attachments:
-            imageAttachments.length > 0 ? imageAttachments : undefined,
-          forceWebSearch: forceWebSearch || undefined,
-          queued: shouldQueue || undefined,
-        });
-        setLiveEvents((current) => [...current, um]);
-        // Shelf order is recency-only: bump lastActiveAt only when the user sends
-        // (selecting a dialog must not jump it to the top).
+      // Queued follow-ups wait in a strip above the composer — a timeline card
+      // here would sit mid-stream and split the running reply into two bubbles.
+      // The card is created when the flush happens, right after the reply.
+      if (shouldQueue) {
+        const queue = pendingSendsRef.current.get(sid) ?? [];
+        queue.push({ composed, imageAttachments, forceWebSearch, composerSnap });
+        pendingSendsRef.current.set(sid, queue);
+        // Shelf order is recency-only: bump lastActiveAt only when the user sends.
         const activeAt = new Date().toISOString();
         setAvailableSessions((current) =>
           current.map((s) => (s.id === sid ? { ...s, lastActiveAt: activeAt } : s))
         );
         renameSessionFromText(sid, composed || imageAttachments[0]?.name || "Image");
         touchActivity(sid);
+        setQueuedStripTick((t) => t + 1);
         pushDebug({
           sessionId: sid,
           level: "info",
           source: "composer",
-          summary: shouldQueue
-            ? `queued (agent busy): ${composed.length > 80 ? `${composed.slice(0, 80)}…` : composed}`
-            : `send: ${composed.length > 80 ? `${composed.slice(0, 80)}…` : composed}`,
+          summary: `queued (agent busy): ${composed.length > 80 ? `${composed.slice(0, 80)}…` : composed}`,
         });
-        if (shouldQueue) {
-          const queue = pendingSendsRef.current.get(sid) ?? [];
-          queue.push({
-            composed,
-            imageAttachments,
-            forceWebSearch,
-            composerSnap,
-            messageId: um.type === "user_message" ? um.messageId : undefined,
-          });
-          pendingSendsRef.current.set(sid, queue);
-          return;
-        }
-      } else if (options.messageId) {
-        // Flushing a queued card: drop the "排队中" badge before the wire send.
-        setLiveEvents((current) =>
-          current.map((event) =>
-            event.type === "user_message" &&
-            event.sessionId === sid &&
-            event.messageId === options.messageId
-              ? { ...event, queued: undefined }
-              : event
-          )
-        );
-        pushDebug({
-          sessionId: sid,
-          level: "info",
-          source: "composer",
-          summary: `flush queued: ${composed.length > 80 ? `${composed.slice(0, 80)}…` : composed}`,
-        });
+        return;
       }
+
+      const um = userMessageEvent(sid, composed, {
+        ...(sendMetaRef.current ?? {}),
+        attachments: imageAttachments.length > 0 ? imageAttachments : undefined,
+        forceWebSearch: forceWebSearch || undefined,
+      });
+      setLiveEvents((current) => [...current, um]);
+      // Shelf order is recency-only: bump lastActiveAt only when the user sends
+      // (selecting a dialog must not jump it to the top).
+      const activeAt = new Date().toISOString();
+      setAvailableSessions((current) =>
+        current.map((s) => (s.id === sid ? { ...s, lastActiveAt: activeAt } : s))
+      );
+      renameSessionFromText(sid, composed || imageAttachments[0]?.name || "Image");
+      touchActivity(sid);
+      setQueuedStripTick((t) => t + 1);
+      pushDebug({
+        sessionId: sid,
+        level: "info",
+        source: "composer",
+        summary: options?.flushQueued
+          ? `flush queued: ${composed.length > 80 ? `${composed.slice(0, 80)}…` : composed}`
+          : `send: ${composed.length > 80 ? `${composed.slice(0, 80)}…` : composed}`,
+      });
       // Sending supersedes any pending verdict on the last interrupt — do not
       // let a stale watchdog fire mid-turn and mark this session for restart.
       disarmCancelWatchdog(sid);
@@ -4208,13 +4195,37 @@ export function App() {
           next.imageAttachments,
           next.forceWebSearch,
           next.composerSnap,
-          { alreadyShown: true, messageId: next.messageId },
+          { flushQueued: true },
         );
       } finally {
         flushingSendRef.current.delete(sessionId);
       }
     })();
   };
+
+  // Drain only after the idle status is committed. Reading sessionsRef from a
+  // microtask right after setSessionStatusById can still see the pre-render
+  // "running" value (React commits async updates on a later macrotask), which
+  // made the drain above early-return and leave the queue stuck forever.
+  // Watching committed transitions is deterministic — it also catches queue
+  // items added while a flush was already in flight.
+  const lastStatusByIdRef = useRef<Record<string, Session["status"]>>({});
+  useEffect(() => {
+    const seen = lastStatusByIdRef.current;
+    for (const session of availableSessions) {
+      const prev = seen[session.id];
+      const now = session.status;
+      if (prev === undefined) {
+        seen[session.id] = now;
+        continue;
+      }
+      if (prev === now) continue;
+      seen[session.id] = now;
+      const freesSlot =
+        (prev === "running" || prev === "starting") && now !== "running" && now !== "starting";
+      if (freesSlot) queueMicrotask(() => drainQueuedSendRef.current(session.id));
+    }
+  }, [availableSessions]);
 
   /** Dismiss outside-project prompt without sending; restore draft to Composer. */
   const cancelPathGrant = useCallback(() => {
@@ -4629,6 +4640,22 @@ export function App() {
               onAnswer={(decision, feedback) => handlePlanApproval(decision, feedback)}
             />
           )}
+          <div className="composer-slot">
+          {/* Queued follow-ups wait here — they flush right after the running
+              reply ends, so no card is ever placed mid-stream. */}
+          {(() => {
+            const queuedSends = pendingSendsRef.current.get(displaySession.id) ?? [];
+            if (queuedSends.length === 0) return null;
+            const preview = queuedSends
+              .map((q) => (q.composed.length > 36 ? `${q.composed.slice(0, 36)}…` : q.composed))
+              .join("、");
+            return (
+              <div className="queued-strip" title="排队中 — 当前回复结束后自动发送">
+                <span className="queued-strip__badge">排队中 ×{queuedSends.length}</span>
+                <span className="queued-strip__text">{preview}</span>
+              </div>
+            );
+          })()}
           {/* Ask fully occupies the composer slot so all options can show. */}
           {!(askPrompt && askPrompt.sessionId === displaySession.id) && (
           <Composer
@@ -4727,6 +4754,7 @@ export function App() {
             }}
           />
           )}
+          </div>
         </section>
 
         <ContextPanel
