@@ -2925,6 +2925,27 @@ body.is-tab-detaching * {
   );
 }
 
+/* Claude-Code-style "+27 −4" diff stat on edit/write rows. */
+.event-card__tool-diff {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: baseline;
+  gap: 5px;
+  margin-left: 2px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.event-card__tool-diff-add {
+  color: var(--green, #73d391);
+}
+
+.event-card__tool-diff-del {
+  color: var(--red, #ef6c73);
+}
+
 .event-card__expand-slot {
   min-width: 0;
   max-width: 100%;

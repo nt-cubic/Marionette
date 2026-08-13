@@ -24,6 +24,12 @@ import { detectForceWebSearchInText, stripForceWebSearchPrefix } from "../lib/fo
 import { cleanAssistantText } from "../lib/markdownText";
 import { newQuotePinId, type QuotePin } from "../lib/quoteComment";
 import { buildMessagePresentation } from "../lib/messagePresentation";
+import {
+  classifyToolCall,
+  extractCommandText,
+  extractDiffStats,
+  toolKindVerb,
+} from "../lib/turnActivity";
 import { useVirtualWindow } from "../lib/useVirtualWindow";
 import type { AgentConfig, Session, SessionEvent, SessionStatus, SessionViewMode } from "../lib/types";
 import { ClippedBody } from "./ClippedBody";
@@ -1030,7 +1036,9 @@ function CleanPlaceholder({
     () => buildMessagePresentation(visibleEvents, session.id),
     [session.id, visibleEvents],
   );
-  /** Flat render units (reply parts expanded). Full data kept; mount is windowed. */
+  /**
+   * Flat render units (reply parts expanded). Full data kept; mount is windowed.
+   */
   const renderUnits = useMemo(() => {
     const units: { key: string; event: SessionEvent; index: number }[] = [];
     for (const item of presentationItems) {
@@ -1279,7 +1287,8 @@ function CleanPlaceholder({
       if (!id || !listRef.current) return;
       const idx = renderUnits.findIndex(
         (u) =>
-          u.event.type === "user_message" && userMessageAnchorId(u.event) === id
+          u.event.type === "user_message" &&
+          userMessageAnchorId(u.event) === id
       );
       if (idx < 0) return;
       stickToBottomRef.current = false;
@@ -1609,6 +1618,8 @@ function CleanPlaceholder({
 
           // Collapsed summary: fixed short type + SHORT one-line teaser.
           // Full body only lives in the expanded clip box (never in the summary).
+          // Tool type is a Claude-Code-style verb (Read / Edited / Ran a command…).
+          const toolKind = event.type === "tool_call" ? classifyToolCall(event) : null;
           const labelNode =
             event.type === "thought" ? (
               thoughtLive && thoughtStartMs != null ? (
@@ -1619,7 +1630,7 @@ function CleanPlaceholder({
                 "Thought"
               )
             ) : event.type === "tool_call" ? (
-              "Tool"
+              toolKindVerb(toolKind ?? "other")
             ) : event.type === "user_message" ? (
               "You"
             ) : event.type === "assistant_message" ? (
@@ -1689,19 +1700,37 @@ function CleanPlaceholder({
             return t.length > max ? `${t.slice(0, max - 1)}…` : t;
           };
 
-          // Tools: keep the summary compact; the expanded body carries the
-          // complete diff/output when the agent provided it.
+          // Tools: keep the summary compact (Claude-Code-style one-liner:
+          // verb + file/command/query); the expanded body carries the complete
+          // diff/output when the agent provided it. "completed" stays quiet.
           let previewFull = "";
+          let toolDiff: { add: number; del: number } | null = null;
           if (event.type === "tool_call") {
             const fileName = event.path
               ? event.path.split(/[\\/]/).filter(Boolean).pop() ?? ""
               : "";
-            const bits = [
-              event.title ? oneLine(String(event.title)) : "",
-              fileName && fileName !== event.title ? fileName : "",
-              toolStatusLabel || (event.status ? String(event.status) : ""),
-            ].filter(Boolean);
-            previewFull = bits.join(" · ");
+            const commandText = extractCommandText(event);
+            const titleText = event.title ? oneLine(String(event.title)) : "";
+            let main = "";
+            if (toolKind === "read" || toolKind === "edit" || toolKind === "write") {
+              main = fileName || commandText || titleText;
+            } else if (toolKind === "command") {
+              main = commandText || titleText || fileName;
+            } else if (toolKind === "search" || toolKind === "web") {
+              main = commandText || titleText || fileName;
+            } else {
+              main = titleText || fileName || commandText;
+            }
+            const statusText = String(event.status ?? "");
+            const statusBit =
+              toolStatusLabel ||
+              (statusText && statusText !== "completed" && statusText !== "pending"
+                ? statusText
+                : "");
+            previewFull = [main, statusBit].filter(Boolean).join(" · ");
+            if (toolKind === "edit" || toolKind === "write") {
+              toolDiff = extractDiffStats(event.detail);
+            }
           } else if (typeof body === "string") {
             previewFull = oneLine(body);
           }
@@ -1814,6 +1843,12 @@ function CleanPlaceholder({
                         : preview}
                     </span>
                   </span>
+                  {toolDiff && (
+                    <span className="event-card__tool-diff">
+                      <span className="event-card__tool-diff-add">+{toolDiff.add}</span>
+                      <span className="event-card__tool-diff-del">−{toolDiff.del}</span>
+                    </span>
+                  )}
                 </summary>
                 {/* Lazy body: closed cards mount summary only — 500+ tool rows stay cheap. */}
                 {detailOpen && (
