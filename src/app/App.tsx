@@ -8,6 +8,7 @@ import {
   coalesceAdjacentThoughts,
   collapseIntermediateAssistantAsThought,
   extractAcpUpdateText,
+  findLastIndexForSession,
   getSessionUpdate,
   getSessionUpdateKind,
   sealOpenAssistantReplies,
@@ -1279,19 +1280,23 @@ export function App() {
                   /\n\s*\*{0,2}Directory\*{0,2}:/i.test(extracted.text));
               if (!isRuntimeStatusOnly) {
                 setLiveEvents((current) => {
-                  const prevLast = current[current.length - 1];
-                  let next = applyAcpPartToEvents(current, payload.sessionId, extracted);
+                  const sid = payload.sessionId;
+                  const prevIdx = findLastIndexForSession(current, sid);
+                  const prevLast = prevIdx >= 0 ? current[prevIdx] : undefined;
+                  let next = applyAcpPartToEvents(current, sid, extracted);
                   // Track turn start for duration: first new assistant_message card
+                  // for *this* session (other sessions may sit at the rail tail).
                   if (extracted.role === "assistant") {
-                    const newLast = next[next.length - 1];
+                    const newIdx = findLastIndexForSession(next, sid);
+                    const newLast = newIdx >= 0 ? next[newIdx] : undefined;
                     if (
                       newLast?.type === "assistant_message" &&
-                      newLast.sessionId === payload.sessionId &&
+                      newLast.sessionId === sid &&
                       (prevLast?.type !== "assistant_message" ||
-                        prevLast.sessionId !== payload.sessionId) &&
-                      !turnStartedAtRef.current[payload.sessionId]
+                        prevLast.sessionId !== sid) &&
+                      !turnStartedAtRef.current[sid]
                     ) {
-                      turnStartedAtRef.current[payload.sessionId] = Date.now();
+                      turnStartedAtRef.current[sid] = Date.now();
                       // Clear sendMetaRef — snapshot consumed by the first assistant chunk
                       sendMetaRef.current = null;
                     }
@@ -1299,10 +1304,11 @@ export function App() {
                   // Glue fragment thoughts / token-split Replies mid-stream.
                   // Grok often rotates messageId per agent_message_chunk; without
                   // this pass the rail paints one Reply card per character.
+                  // Multi-window interleave is handled inside coalesce* (session-scoped).
                   if (extracted.role === "thought" || extracted.role === "assistant") {
-                    next = coalesceAdjacentThoughts(next, payload.sessionId);
+                    next = coalesceAdjacentThoughts(next, sid);
                     if (extracted.role === "assistant") {
-                      next = coalesceAdjacentAssistantFragments(next, payload.sessionId);
+                      next = coalesceAdjacentAssistantFragments(next, sid);
                     }
                   }
                   return next;
@@ -1353,15 +1359,23 @@ export function App() {
           const durationMs = Date.now() - startedAt;
           delete turnStartedAtRef.current[payload.sessionId];
           setLiveEvents((current) => {
+            const sid = payload.sessionId;
             let next = current;
-            if (toolClose) next = markOpenTools(next, payload.sessionId, toolClose);
-            const last = next[next.length - 1];
-            if (last?.type === "assistant_message" && last.sessionId === payload.sessionId && last.durationMs == null) {
+            if (toolClose) next = markOpenTools(next, sid, toolClose);
+            // Stamp this session's open Reply — not the absolute rail tail
+            // (another window's stream may be last in the shared array).
+            const lastIdx = findLastIndexForSession(next, sid);
+            const last = lastIdx >= 0 ? next[lastIdx] : undefined;
+            if (
+              last?.type === "assistant_message" &&
+              last.sessionId === sid &&
+              last.durationMs == null
+            ) {
               const stamped = [...next];
-              stamped[stamped.length - 1] = { ...last, durationMs };
-              return collapseIntermediateAssistantAsThought(stamped, payload.sessionId);
+              stamped[lastIdx] = { ...last, durationMs };
+              return collapseIntermediateAssistantAsThought(stamped, sid);
             }
-            return collapseIntermediateAssistantAsThought(next, payload.sessionId);
+            return collapseIntermediateAssistantAsThought(next, sid);
           });
         } else {
           setLiveEvents((current) => {
@@ -1434,19 +1448,21 @@ export function App() {
         setPermissionPrompt((cur) => (cur?.sessionId === payload.sessionId ? null : cur));
         if (endedHard) {
           setLiveEvents((current) => {
-            const last = current[current.length - 1];
+            const sid = payload.sessionId;
+            const lastIdx = findLastIndexForSession(current, sid);
+            const last = lastIdx >= 0 ? current[lastIdx] : undefined;
             if (
               last?.type === "assistant_message" &&
-              last.sessionId === payload.sessionId &&
+              last.sessionId === sid &&
               last.text.includes("Agent process ended")
             ) {
-              return markOpenTools(current, payload.sessionId, "failed");
+              return markOpenTools(current, sid, "failed");
             }
             return [
-              ...markOpenTools(current, payload.sessionId, "failed"),
+              ...markOpenTools(current, sid, "failed"),
               {
                 type: "assistant_message" as const,
-                sessionId: payload.sessionId,
+                sessionId: sid,
                 text: `**Agent process ended.**\n\n${detail}\n\nThe turn is no longer live. Warm the agent again (focus composer / send) or start a new session.`,
                 createdAt: new Date().toISOString(),
               },
@@ -1512,7 +1528,9 @@ export function App() {
           }
           setLiveEvents((current) => {
             // Avoid spamming the same auth error on every retry.
-            const last = current[current.length - 1];
+            // Session-scoped: another window's event may own the absolute tail.
+            const lastIdx = findLastIndexForSession(current, payload.sessionId);
+            const last = lastIdx >= 0 ? current[lastIdx] : undefined;
             if (
               last?.type === "assistant_message" &&
               last.sessionId === payload.sessionId &&

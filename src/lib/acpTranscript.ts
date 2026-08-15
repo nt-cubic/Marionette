@@ -745,6 +745,21 @@ function sameStreamTarget(
 }
 
 /**
+ * Index of the latest event for this session in the shared liveEvents rail.
+ * Multi-window / multi-tab streams interleave sessions in one array; merge
+ * decisions must ignore other sessions' events sitting at the absolute tail.
+ */
+export function findLastIndexForSession(
+  events: SessionEvent[],
+  sessionId: string,
+): number {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    if (events[i].sessionId === sessionId) return i;
+  }
+  return -1;
+}
+
+/**
  * Open Reply still being streamed: no duration yet. Grok (and some adapters)
  * mint a fresh `messageId` per token — if we honor that, each char becomes its
  * own Reply card with a full Build / model header. Unsealed → always append.
@@ -808,7 +823,11 @@ export function applyAcpPartToEvents(
     // The presentation and transcript boundaries clean the complete text.
     const text = part.text;
     if (!text) return current;
-    const last = current[current.length - 1];
+    // Key: use this session's last event, NOT the absolute rail tail. Concurrent
+    // multi-window streams interleave sessions; absolute-last made every token
+    // after a foreign chunk into its own Reply card (full agent/model header).
+    const lastIdx = findLastIndexForSession(current, sessionId);
+    const last = lastIdx >= 0 ? current[lastIdx] : undefined;
     // Only append onto an *open* (unsealed) Reply. Grok rotates messageId per
     // token; matching ids made every character its own card with a repeated
     // agent/model header. Sealed bubbles (durationMs set at turn end) start
@@ -817,20 +836,22 @@ export function applyAcpPartToEvents(
     // Whitespace-only tokens (" ", "\n") must still append onto an open Reply.
     // Dropping them glued "Always" + "approve" → "Alwaysapprove".
     if (!text.trim()) {
-      if (!canAppend || !last || last.type !== "assistant_message") return current;
+      if (!canAppend || !last || last.type !== "assistant_message" || lastIdx < 0) {
+        return current;
+      }
       const nextText = mergeStreamText(last.text, text, true);
       if (nextText === last.text) return current;
       const next = [...current];
-      next[next.length - 1] = { ...last, text: nextText };
+      next[lastIdx] = { ...last, text: nextText };
       return next;
     }
-    if (canAppend && last && last.type === "assistant_message") {
+    if (canAppend && last && last.type === "assistant_message" && lastIdx >= 0) {
       const nextText = mergeStreamText(last.text, text, part.isDelta);
       if (nextText === last.text && (!part.messageId || last.messageId === part.messageId)) {
         return current;
       }
       const next = [...current];
-      next[next.length - 1] = {
+      next[lastIdx] = {
         ...last,
         text: nextText,
         // Keep the first id of the open bubble so later id churn does not
@@ -847,14 +868,17 @@ export function applyAcpPartToEvents(
     const text = stripSectionMarkers(part.text);
     if (!text) return current;
 
-    const last = current[current.length - 1];
+    const lastIdx = findLastIndexForSession(current, sessionId);
+    const last = lastIdx >= 0 ? current[lastIdx] : undefined;
     // Whitespace-only tokens must still append onto an open Thought card.
     // Same bug class as Reply "Always" + " " + "approve" → "Alwaysapprove".
     if (!text.trim()) {
-      if (!last || last.type !== "thought" || last.sessionId !== sessionId) return current;
+      if (!last || last.type !== "thought" || last.sessionId !== sessionId || lastIdx < 0) {
+        return current;
+      }
       const nextText = mergeStreamText(last.text, text, true);
       if (nextText === last.text) return current;
-      return patchThoughtAt(current, current.length - 1, nextText, last.messageId);
+      return patchThoughtAt(current, lastIdx, nextText, last.messageId);
     }
 
     const noise = isThoughtNoiseToken(text);
@@ -864,6 +888,7 @@ export function applyAcpPartToEvents(
     // (should be rare after extract fix), keep it on the assistant bubble.
     if (
       last &&
+      lastIdx >= 0 &&
       last.type === "assistant_message" &&
       last.sessionId === sessionId &&
       (noise || text.length <= 8 || /[。，、．！？；：,.!?;:…—\-]/.test(text))
@@ -871,14 +896,19 @@ export function applyAcpPartToEvents(
       const nextText = mergeStreamText(last.text, text, true);
       if (nextText === last.text) return current;
       const next = [...current];
-      next[next.length - 1] = { ...last, text: nextText };
+      next[lastIdx] = { ...last, text: nextText };
       return next;
     }
 
     // 1) Continuous thought stream — ignore messageId churn.
-    if (last && sameStreamTarget(last, sessionId, "thought", part.messageId, true) && last.type === "thought") {
+    if (
+      last &&
+      lastIdx >= 0 &&
+      sameStreamTarget(last, sessionId, "thought", part.messageId, true) &&
+      last.type === "thought"
+    ) {
       const nextText = mergeStreamText(last.text, text, asDelta);
-      return patchThoughtAt(current, current.length - 1, nextText, part.messageId ?? last.messageId);
+      return patchThoughtAt(current, lastIdx, nextText, part.messageId ?? last.messageId);
     }
 
     // 2) § / digit noise — glue to last thought or drop (never open a "§" card).
@@ -900,15 +930,17 @@ export function applyAcpPartToEvents(
 
   if (part.role === "system") {
     // Transient banners (Codex retry) — surface as assistant system note, not thought.
-    const last = current[current.length - 1];
+    const lastIdx = findLastIndexForSession(current, sessionId);
+    const last = lastIdx >= 0 ? current[lastIdx] : undefined;
     if (
       last &&
+      lastIdx >= 0 &&
       last.type === "assistant_message" &&
       last.sessionId === sessionId &&
       last.text.startsWith("**Retrying")
     ) {
       const next = [...current];
-      next[next.length - 1] = { ...last, text: part.text };
+      next[lastIdx] = { ...last, text: part.text };
       return next;
     }
     return [
@@ -1004,8 +1036,10 @@ export function applyAcpPartToEvents(
 }
 
 /**
- * Merge adjacent fragment-like thoughts inside a turn (cleanup pass).
- * Does not cross tools or user messages — those stay as separate blocks.
+ * Merge fragment-like thoughts inside a turn (cleanup pass).
+ * Same-session adjacency only — other sessions' events in the shared rail are
+ * skipped so multi-window interleave cannot leave a Thought card per token.
+ * Does not cross tools or user messages for *this* session.
  */
 export function coalesceAdjacentThoughts(
   events: SessionEvent[],
@@ -1015,30 +1049,34 @@ export function coalesceAdjacentThoughts(
   const out: SessionEvent[] = [];
 
   for (const e of events) {
-    const prev = out[out.length - 1];
-    if (
-      e.sessionId === sessionId &&
-      e.type === "thought" &&
-      prev &&
-      prev.sessionId === sessionId &&
-      prev.type === "thought"
-    ) {
-      // Adjacent thoughts with no tool between → usually broken stream; merge.
-      // Keep a blank line when both sides look like real prose.
-      const a = prev.text;
-      const b = e.text;
-      const join =
-        isThoughtFragment(b) || isThoughtFragment(a)
-          ? mergeStreamText(a, b, true)
-          : a.endsWith("\n") || b.startsWith("\n")
-            ? a + b
-            : `${a}\n${b}`;
-      out[out.length - 1] = {
-        ...prev,
-        text: join,
-        messageId: e.messageId ?? prev.messageId,
-      };
-      continue;
+    if (e.sessionId === sessionId && e.type === "thought") {
+      // Last event of *this* session in `out` (ignore foreign sessions between).
+      let prevIdx = -1;
+      for (let i = out.length - 1; i >= 0; i -= 1) {
+        if (out[i].sessionId === sessionId) {
+          prevIdx = i;
+          break;
+        }
+      }
+      const prev = prevIdx >= 0 ? out[prevIdx] : undefined;
+      if (prev && prev.type === "thought") {
+        // Adjacent thoughts with no same-session tool between → broken stream.
+        // Keep a blank line when both sides look like real prose.
+        const a = prev.text;
+        const b = e.text;
+        const join =
+          isThoughtFragment(b) || isThoughtFragment(a)
+            ? mergeStreamText(a, b, true)
+            : a.endsWith("\n") || b.startsWith("\n")
+              ? a + b
+              : `${a}\n${b}`;
+        out[prevIdx] = {
+          ...prev,
+          text: join,
+          messageId: e.messageId ?? prev.messageId,
+        };
+        continue;
+      }
     }
     out.push(e);
   }
@@ -1046,8 +1084,9 @@ export function coalesceAdjacentThoughts(
 }
 
 /**
- * Glue adjacent unsealed Reply cards that a messageId-churning stream split
- * apart. Does not cross user / tool / sealed assistant / thought boundaries.
+ * Glue unsealed Reply cards that a messageId-churning or multi-session-
+ * interleaved stream split apart. Other sessions between fragments are
+ * ignored; same-session user / tool / sealed assistant / thought still block.
  * Safe at turn end and as a mid-stream cleanup.
  */
 export function coalesceAdjacentAssistantFragments(
@@ -1058,24 +1097,33 @@ export function coalesceAdjacentAssistantFragments(
   const out: SessionEvent[] = [];
 
   for (const e of events) {
-    const prev = out[out.length - 1];
     if (
       e.sessionId === sessionId &&
       e.type === "assistant_message" &&
-      e.durationMs == null &&
-      prev &&
-      prev.sessionId === sessionId &&
-      prev.type === "assistant_message" &&
-      prev.durationMs == null
+      e.durationMs == null
     ) {
-      const join = mergeStreamText(prev.text, e.text, true);
-      out[out.length - 1] = {
-        ...prev,
-        text: join,
-        // Keep the first card's meta/header (agent / model / mode).
-        messageId: prev.messageId ?? e.messageId,
-      };
-      continue;
+      let prevIdx = -1;
+      for (let i = out.length - 1; i >= 0; i -= 1) {
+        if (out[i].sessionId === sessionId) {
+          prevIdx = i;
+          break;
+        }
+      }
+      const prev = prevIdx >= 0 ? out[prevIdx] : undefined;
+      if (
+        prev &&
+        prev.type === "assistant_message" &&
+        prev.durationMs == null
+      ) {
+        const join = mergeStreamText(prev.text, e.text, true);
+        out[prevIdx] = {
+          ...prev,
+          text: join,
+          // Keep the first card's meta/header (agent / model / mode).
+          messageId: prev.messageId ?? e.messageId,
+        };
+        continue;
+      }
     }
     out.push(e);
   }
