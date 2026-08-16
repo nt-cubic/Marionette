@@ -2050,6 +2050,8 @@ mod tests {
     fn resolves_opencode_when_installed() {
         // Soft check: only assert structure when opencode is present on the machine
         if let Ok(resolved) = resolve_spawn_command("opencode") {
+            // Windows unwraps .cmd shims to .exe/node; Unix resolves the binary directly.
+            #[cfg(target_os = "windows")]
             assert!(
                 resolved.program.to_ascii_lowercase().ends_with(".exe")
                     || resolved.program.eq_ignore_ascii_case("cmd.exe")
