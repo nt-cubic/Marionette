@@ -39,7 +39,30 @@ pub fn resolve_spawn_command(command: &str) -> Result<ResolvedCommand, String> {
         return finalize_path(as_path);
     }
 
-    // Search PATH + npm-ish locations
+    if let Some(resolved) = resolve_from_candidates(command) {
+        return Ok(resolved);
+    }
+
+    // The login-shell PATH is cached for a short TTL; an agent installed while
+    // the app was running is invisible on the first pass. Re-ask the shell
+    // once before giving up (no-op on Windows — no login shell to consult).
+    invalidate_login_shell_path();
+    if let Some(resolved) = resolve_from_candidates(command) {
+        return Ok(resolved);
+    }
+
+    #[cfg(target_os = "windows")]
+    let hint = "on Windows, npm global bin is usually %APPDATA%\\npm";
+    #[cfg(not(target_os = "windows"))]
+    let hint = "checked your PATH, login-shell PATH, and common install dirs \
+                like ~/.local/bin, nvm, and homebrew";
+    Err(format!(
+        "Command `{command}` was not found. Install it and ensure it is on PATH ({hint})."
+    ))
+}
+
+/// Search PATH + login-shell PATH + well-known install dirs for `command`.
+fn resolve_from_candidates(command: &str) -> Option<ResolvedCommand> {
     let mut candidates: Vec<PathBuf> = Vec::new();
 
     #[cfg(target_os = "windows")]
@@ -67,8 +90,8 @@ pub fn resolve_spawn_command(command: &str) -> Result<ResolvedCommand, String> {
     {
         // Scan our own PATH plus the login-shell PATH and well-known install
         // dirs — a Finder/desktop-launched app inherits a minimal PATH that
-        // misses nvm, ~/.local/bin, homebrew, etc., so `which` alone fails
-        // for exactly the agents users installed from their terminal.
+        // misses nvm, ~/.local/bin, homebrew, mise, etc., so `which` alone
+        // fails for exactly the agents users installed from their terminal.
         for dir in unix_search_dirs() {
             candidates.push(dir.join(command));
         }
@@ -84,19 +107,11 @@ pub fn resolve_spawn_command(command: &str) -> Result<ResolvedCommand, String> {
     for candidate in candidates {
         if candidate.is_file() && is_executable(&candidate) {
             if let Ok(resolved) = finalize_path(candidate) {
-                return Ok(resolved);
+                return Some(resolved);
             }
         }
     }
-
-    #[cfg(target_os = "windows")]
-    let hint = "on Windows, npm global bin is usually %APPDATA%\\npm";
-    #[cfg(not(target_os = "windows"))]
-    let hint = "checked your PATH, login-shell PATH, and common install dirs \
-                like ~/.local/bin, nvm, and homebrew";
-    Err(format!(
-        "Command `{command}` was not found. Install it and ensure it is on PATH ({hint})."
-    ))
+    None
 }
 
 #[cfg(target_os = "windows")]
@@ -476,51 +491,85 @@ fn finalize_path(path: PathBuf) -> Result<ResolvedCommand, String> {
     })
 }
 
-/// PATH as the user's login shell sees it, resolved once per process.
+/// PATH as the user's login shell sees it, cached briefly.
 ///
 /// Finder (macOS) and desktop launchers (Linux) start GUI apps with a minimal
-/// PATH, so agents installed via nvm/npm/homebrew are invisible even though
-/// the terminal finds them. Ask the login shell for its PATH the way editors
-/// do (`-i` because zsh only reads .zshrc — where nvm lives — interactively).
+/// PATH, so agents installed via nvm / npm / homebrew / mise are invisible
+/// even though the terminal finds them. Ask the login shell for its PATH the
+/// way editors do (`-i` because zsh only reads .zshrc — where nvm and mise
+/// live — interactively). The answer is cached for a short TTL, and
+/// `resolve_spawn_command` invalidates it on a miss so an agent installed
+/// mid-session is found without restarting the app.
+#[cfg(not(target_os = "windows"))]
+static LOGIN_SHELL_PATH_CACHE: std::sync::Mutex<Option<(std::time::Instant, Option<String>)>> =
+    std::sync::Mutex::new(None);
+
 #[cfg(not(target_os = "windows"))]
 fn login_shell_path() -> Option<String> {
-    use std::io::Read;
-    use std::sync::OnceLock;
-    static CACHE: OnceLock<Option<String>> = OnceLock::new();
-    CACHE
-        .get_or_init(|| {
-            let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-            // The marker survives rc files that print their own output.
-            let mut child = Command::new(&shell)
-                .args(["-l", "-i", "-c", "printf '\\n__MARIONETTE_PATH__%s' \"$PATH\""])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-                .ok()?;
-            // Bounded wait — a hung rc file must not freeze agent startup.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-            loop {
-                match child.try_wait() {
-                    Ok(Some(_)) => break,
-                    Ok(None) if std::time::Instant::now() < deadline => {
-                        std::thread::sleep(std::time::Duration::from_millis(25));
-                    }
-                    _ => {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        return None;
-                    }
-                }
+    const TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+    let now = std::time::Instant::now();
+    if let Ok(mut cache) = LOGIN_SHELL_PATH_CACHE.lock() {
+        if let Some((at, path)) = cache.as_ref() {
+            if now.duration_since(*at) < TTL {
+                return path.clone();
             }
-            let mut out = String::new();
-            child.stdout.take()?.read_to_string(&mut out).ok()?;
-            const MARKER: &str = "__MARIONETTE_PATH__";
-            let idx = out.rfind(MARKER)?;
-            let path = out[idx + MARKER.len()..].trim().to_string();
-            (path.contains('/')).then_some(path)
-        })
-        .clone()
+        }
+        let fresh = probe_login_shell_path();
+        *cache = Some((now, fresh.clone()));
+        return fresh;
+    }
+    probe_login_shell_path()
+}
+
+/// Drop the cached login-shell PATH so the next resolution re-asks the shell.
+#[cfg(not(target_os = "windows"))]
+pub fn invalidate_login_shell_path() {
+    if let Ok(mut cache) = LOGIN_SHELL_PATH_CACHE.lock() {
+        *cache = None;
+    }
+}
+
+/// Windows has no login shell to consult — nothing to invalidate.
+#[cfg(target_os = "windows")]
+pub fn invalidate_login_shell_path() {}
+
+/// Ask `$SHELL -l -i` for its PATH (bounded: a hung rc file must not freeze
+/// agent startup).
+#[cfg(not(target_os = "windows"))]
+fn probe_login_shell_path() -> Option<String> {
+    use std::io::Read;
+
+    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    // The marker survives rc files that print their own output.
+    let mut child = Command::new(&shell)
+        .args(["-l", "-i", "-c", "printf '\\n__MARIONETTE_PATH__%s' \"$PATH\""])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    // Bounded wait — a hung rc file must not freeze agent startup.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    let mut out = String::new();
+    child.stdout.take()?.read_to_string(&mut out).ok()?;
+    const MARKER: &str = "__MARIONETTE_PATH__";
+    let idx = out.rfind(MARKER)?;
+    let path = out[idx + MARKER.len()..].trim().to_string();
+    (path.contains('/')).then_some(path)
 }
 
 /// Directories to search for agent binaries on macOS/Linux, best first.
