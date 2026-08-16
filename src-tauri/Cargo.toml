@@ -43,6 +43,10 @@ windows-sys = { version = "0.59", features = [
   "Win32_UI_WindowsAndMessaging",
 ] }
 
+[target.'cfg(not(windows))'.dependencies]
+# flock(2) for the single-instance lock (advisory, auto-released on exit/crash).
+libc = "0.2"
+
 [features]
 default = []
 # Enable with: cargo run --features devtools  /  tauri dev still works via debug asserts path if needed
