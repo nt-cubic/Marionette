@@ -1908,6 +1908,7 @@ version = "0.2.2"
 dependencies = [
  "agent-client-protocol-schema",
  "base64 0.22.1",
+ "libc",
  "rfd",
  "serde",
  "serde_json",

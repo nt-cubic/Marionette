@@ -195,16 +195,23 @@ fn try_acquire_instance_lock(path: &Path) -> Option<std::fs::File> {
     }
     #[cfg(not(windows))]
     {
-        // Best-effort lock via create_new; not perfect across crashes but fine for UX.
-        if path.exists() {
-            // Stale lock from a crash — try remove if process is gone is hard; allow multi.
-            let _ = fs::remove_file(path);
-        }
-        OpenOptions::new()
-            .create_new(true)
+        // Advisory flock: exclusive + non-blocking. The kernel releases the
+        // lock when the process exits (or dies), so a crashed instance leaves
+        // no stale lock — and unlike the old remove_file+create_new dance, a
+        // second launch cannot delete the live lock of a running instance.
+        use std::os::unix::io::AsRawFd;
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
             .write(true)
             .open(path)
-            .ok()
+            .ok()?;
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if rc == 0 {
+            Some(file)
+        } else {
+            None
+        }
     }
 }
 
@@ -456,5 +463,26 @@ mod tests {
     fn empty_normalize_is_none() {
         assert!(normalize_open_path("").is_none());
         assert!(normalize_open_path("   ").is_none());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn unix_instance_lock_is_exclusive_and_reusable() {
+        let dir = std::env::temp_dir().join(format!("marionette-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("instance.lock");
+
+        let first = try_acquire_instance_lock(&path);
+        assert!(first.is_some(), "first acquirer must win");
+        let second = try_acquire_instance_lock(&path);
+        assert!(
+            second.is_none(),
+            "a second open must fail while the first holds the flock"
+        );
+        drop(first);
+        let third = try_acquire_instance_lock(&path);
+        assert!(third.is_some(), "the lock must be reacquirable after release");
+        drop(third);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

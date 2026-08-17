@@ -5502,6 +5502,16 @@ body.is-composer-resizing .composer {
   gap: 4px;
 }
 
+/* Agent switcher rows carry name + version badge + install buttons, so the
+   320px base clamp truncates long names. Let the menu grow with content
+   (name rows are nowrap) up to a generous cap that stays on screen. Window
+   min width is 960px, so 560px anchored right cannot clip. */
+.composer-menu--agent {
+  width: max-content;
+  min-width: 220px;
+  max-width: min(560px, 92vw);
+}
+
 .composer-menu__search {
   display: flex;
   align-items: center;
