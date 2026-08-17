@@ -267,6 +267,20 @@ impl AgentConfig {
                     "Install Cursor agent CLI as `cursor-agent` only (do not install a global `agent` binary — collides with Grok). Put `cursor-agent` on PATH.",
                 ),
             ),
+            // `omp acp` — native ACP server (verified 17.x: initialize,
+            // session/new with injected MCP, session/update set_config_option/
+            // set_mode/set_model all work on the generic ACP path).
+            Self::new(
+                "omp",
+                "OMP",
+                "omp",
+                vec!["acp".to_string()],
+                "acp",
+                "stdin",
+                AgentInstallSpec::manual(
+                    "OMP (Oh My Pi) ships its own installer / mise — no npm package. Install the CLI, then make sure `omp` is on PATH.",
+                ),
+            ),
         ]
     }
 
