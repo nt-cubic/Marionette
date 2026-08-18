@@ -5993,11 +5993,28 @@ body.is-composer-resizing .composer {
   border-color: transparent;
   color: var(--text-muted);
   background: var(--panel-soft);
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.send-button:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--panel-raised);
+  border-color: var(--border);
 }
 
 .send-button.is-interrupting {
   color: var(--red);
   background: color-mix(in srgb, var(--red) 12%, var(--panel-soft));
+}
+
+.send-button.is-interrupting:hover:not(:disabled) {
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 22%, var(--panel-raised));
+}
+
+.send-button:disabled {
+  cursor: default;
 }
 
 .send-button svg {
