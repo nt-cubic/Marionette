@@ -33,6 +33,30 @@ export function persistableEventsForSession(
     });
 }
 
+/** Best-effort revive of a persisted turnStats blob; null when unusable. */
+function parseTurnStats(raw: unknown): import("./types").TurnStats | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const e = raw as Record<string, unknown>;
+  const num = (v: unknown): number | null =>
+    typeof v === "number" && Number.isFinite(v) ? v : null;
+  const stats: import("./types").TurnStats = {};
+  for (const key of [
+    "input",
+    "output",
+    "cached",
+    "reasoning",
+    "total",
+    "ttftMs",
+    "durationMs",
+    "outputTps",
+    "ppTps",
+  ] as const) {
+    const n = num(e[key]);
+    if (n != null) stats[key] = n;
+  }
+  return Object.keys(stats).length > 0 ? stats : null;
+}
+
 /** Best-effort revive of JSONL rows written by write_transcript. */
 export function parseTranscriptEvents(raw: unknown[]): SessionEvent[] {
   const out: SessionEvent[] = [];
@@ -68,6 +92,9 @@ export function parseTranscriptEvents(raw: unknown[]): SessionEvent[] {
         ...(typeof e.modeLabel === "string" ? { modeLabel: e.modeLabel } : {}),
         ...(typeof e.effortLabel === "string" ? { effortLabel: e.effortLabel } : {}),
         ...(typeof e.durationMs === "number" ? { durationMs: e.durationMs } : {}),
+        ...(type === "assistant_message"
+          ? { turnStats: parseTurnStats(e.turnStats) }
+          : {}),
         ...(type === "user_message" && Array.isArray(e.attachments)
           ? { attachments: e.attachments as import("./imageAttachments").ImageAttachment[] }
           : {}),

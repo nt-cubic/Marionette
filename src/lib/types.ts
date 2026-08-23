@@ -127,6 +127,27 @@ export type SessionComposerPrefs = {
   preferredAlwaysApprove?: boolean | null;
 };
 
+/**
+ * One completed turn's telemetry. Token counts are reported by the agent in
+ * the `session/prompt` response; the timings are measured locally by
+ * Marionette (send → first chunk → turn end), so speeds are derived here.
+ */
+export type TurnStats = {
+  input?: number | null;
+  output?: number | null;
+  cached?: number | null;
+  reasoning?: number | null;
+  total?: number | null;
+  /** Send → first streamed chunk (perceived TTFT), ms. */
+  ttftMs?: number | null;
+  /** First chunk → turn end, ms. */
+  durationMs?: number | null;
+  /** Output tokens / generation window (tok/s, includes tool-call time). */
+  outputTps?: number | null;
+  /** Input tokens / TTFT — apparent prompt-processing speed (tok/s). */
+  ppTps?: number | null;
+};
+
 export type SessionEvent =
   | {
       type: "user_message";
@@ -170,6 +191,8 @@ export type SessionEvent =
       effortLabel?: string;
       /** Generation duration in ms, computed at turn completion. */
       durationMs?: number;
+      /** End-of-turn token split + locally measured speeds, stamped at turn completion. */
+      turnStats?: TurnStats | null;
     }
   | {
       type: "thought";
@@ -310,7 +333,7 @@ export type UsageWindow = {
   percentage: number | null;
   /** Extra line: token counts, % left, reset hint, formatted cost, etc. */
   detail?: string | null;
-  kind?: "context" | "rate_limit" | "cost" | "provider";
+  kind?: "context" | "rate_limit" | "cost" | "provider" | "tokens";
 };
 
 export type UsageSnapshot = {

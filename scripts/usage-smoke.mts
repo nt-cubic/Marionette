@@ -10,9 +10,12 @@
 import assert from "node:assert/strict";
 import {
   emptySessionUsage,
+  buildTurnStats,
   buildUsageSnapshot,
+  cumulativeFromEvents,
   extractTurnTokens,
   extractUsageFromAcpData,
+  formatTurnStatsTag,
   mergeGrokBilling,
   mergeUsageFromAcp,
   mergeUsageFromPromptResult,
@@ -336,7 +339,7 @@ check("Grok shows a real meter from set-up size + turn result", () => {
   });
   const ctx = snap.windows.find((w) => w.id === "context");
   assert.equal(ctx?.percentage, 2.6, "12759/500000 = 2.6%");
-  const turn = snap.windows.find((w) => w.id === "turn");
+  const turn = snap.windows.find((w) => w.id === "last-turn");
   // formatTokenCount rounds to whole K at/above 10K, keeps a decimal below it.
   assert.equal(turn?.detail, "13K in · 29 out · 2.8K cached");
   // The old dead branch keyed on "grok" and could never fire for this agent.
@@ -344,6 +347,101 @@ check("Grok shows a real meter from set-up size + turn result", () => {
     !snap.windows.some((w) => w.detail === "Waiting for agent usage_update"),
     "no stale placeholder row"
   );
+});
+
+check("buildTurnStats derives TTFT and both speeds from local timings", () => {
+  const tokens = extractTurnTokens({
+    result: { _meta: { totalTokens: 12759, inputTokens: 12729, outputTokens: 29, cachedReadTokens: 2816 } },
+  })!;
+  const sent = 1_000_000;
+  const stats = buildTurnStats(tokens, {
+    sentAt: sent,
+    firstChunkAt: sent + 1200,
+    endedAt: sent + 1200 + 5000,
+  });
+  assert.equal(stats.ttftMs, 1200, "TTFT = first chunk − send");
+  assert.equal(stats.durationMs, 5000, "generation window = end − first chunk");
+  assert.ok(Math.abs(stats.outputTps! - 5.8) < 0.01, `29 out / 5s ≈ 5.8 tok/s, got ${stats.outputTps}`);
+  assert.ok(Math.abs(stats.ppTps! - 10607.5) < 0.01, `12729 in / 1.2s, got ${stats.ppTps}`);
+});
+
+check("buildTurnStats keeps speeds null when timings are missing", () => {
+  const tokens = extractTurnTokens({
+    result: { usage: { inputTokens: 10, outputTokens: 2, totalTokens: 12 } },
+  })!;
+  const stats = buildTurnStats(tokens, { sentAt: null, firstChunkAt: null, endedAt: 0 });
+  assert.equal(stats.ttftMs, undefined);
+  assert.equal(stats.outputTps, undefined);
+  assert.equal(stats.ppTps, undefined);
+  assert.equal(stats.input, 10);
+});
+
+check("cumulativeFromEvents sums per-turn stats per dialog only", () => {
+  const mk = (id: string, stats: unknown) =>
+    ({ type: "assistant_message", sessionId: id, text: "x", createdAt: "2026-01-01T00:00:00Z", turnStats: stats }) as any;
+  const events = [
+    mk("s1", { input: 100, output: 10, cached: 5 }),
+    mk("s2", { input: 999, output: 999 }),
+    mk("s1", { input: 50, output: 5, reasoning: 2 }),
+    mk("s1", null),
+    { type: "user_message", sessionId: "s1", text: "hi", createdAt: "2026-01-01T00:00:00Z" },
+  ];
+  const sum = cumulativeFromEvents(events as any, "s1");
+  assert.deepEqual(sum, { input: 150, output: 15, cached: 5, reasoning: 2, turns: 2 });
+  assert.equal(cumulativeFromEvents(events as any, "s3"), null);
+});
+
+check("session-total row shows dialog totals with turn count", () => {
+  const snap = buildUsageSnapshot({
+    agentId: "grok-build",
+    agentLabel: "Grok Build",
+    state: emptySessionUsage(),
+    connected: true,
+    cumulative: { input: 25_458, output: 58, cached: 5632, reasoning: 0, turns: 2 },
+  });
+  const total = snap.windows.find((w) => w.id === "session-total");
+  assert.equal(total?.detail, "25K in · 58 out · 5.6K cached · 2 turns");
+});
+
+check("last-turn row carries TTFT and speeds once measured", () => {
+  const state: any = {
+    ...emptySessionUsage(),
+    turnTokens: { input: 12729, output: 29, cached: 2816, reasoning: null, total: 12759 },
+    lastTurnStats: {
+      input: 12729,
+      output: 29,
+      cached: 2816,
+      reasoning: null,
+      total: 12759,
+      ttftMs: 1200,
+      durationMs: 5000,
+      outputTps: 5.8,
+      ppTps: 10607.5,
+    },
+  };
+  const snap = buildUsageSnapshot({
+    agentId: "grok-build",
+    agentLabel: "Grok Build",
+    state,
+    connected: true,
+  });
+  const row = snap.windows.find((w) => w.id === "last-turn");
+  assert.match(row!.detail!, /^13K in · 29 out · 2\.8K cached · TTFT 1\.2s · 5\.8 tok\/s out · 10\.6K tok\/s in$/);
+});
+
+check("formatTurnStatsTag renders the reply-footer line, null without stats", () => {
+  assert.equal(formatTurnStatsTag(null), null);
+  assert.equal(formatTurnStatsTag({}), null);
+  const tag = formatTurnStatsTag({
+    input: 12729,
+    output: 29,
+    cached: 2816,
+    reasoning: null,
+    total: 12759,
+    ttftMs: 1200,
+    outputTps: 5.8,
+  });
+  assert.equal(tag, "13K in · 29 out · 2.8K cached · TTFT 1.2s · 5.8 tok/s out");
 });
 
 check("Claude with no rate_limit_event shows no empty limit rows", () => {
@@ -371,7 +469,9 @@ check("Claude with no rate_limit_event shows no empty limit rows", () => {
     snap.windows.some((w) => w.id === "cost" && w.detail?.includes("0.229")),
     "cost row missing"
   );
-  assert.match(snap.note ?? "", /Plan limits/, "absence must be explained in the note");
+  // The plan-limits explainer note was retired with the dead rows; with real
+  // data present the footer stays quiet.
+  assert.equal(snap.note, null);
 });
 
 check("a warmed-but-unused session says what to do, not 'waiting'", () => {
@@ -392,7 +492,7 @@ check("a warmed-but-unused session says what to do, not 'waiting'", () => {
   assert.equal(ctx?.detail, "Send a message to fill this in");
   // A bare "Source: manual refresh" told the user nothing about why it is empty.
   assert.doesNotMatch(snap.note ?? "", /Source: manual refresh/);
-  assert.match(snap.note ?? "", /after the first turn/);
+  assert.match(snap.note ?? "", /Send a message/);
 });
 
 check("real data still wins over the hint", () => {
@@ -406,7 +506,9 @@ check("real data still wins over the hint", () => {
     connected: true,
   });
   assert.equal(snap.windows.find((w) => w.id === "context")?.percentage, 12.4);
-  assert.match(snap.note ?? "", /Source: manual refresh/);
+  // Source chains no longer surface in the footer (it is one short line);
+  // with real data present there is no hint either.
+  assert.equal(snap.note, null);
 });
 
 check("a reported limit still renders", () => {

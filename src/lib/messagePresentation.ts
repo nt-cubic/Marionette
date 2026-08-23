@@ -14,6 +14,8 @@ export type ReplyMetadata = {
   modeLabel?: string;
   effortLabel?: string;
   durationMs?: number;
+  /** End-of-turn tokens + TTFT/speeds, from the turn's stamped event. */
+  turnStats?: import("./types").TurnStats | null;
   startedAt: string;
 };
 
@@ -141,6 +143,9 @@ function buildReplyMetadata(
     modeLabel: lastValue<string>(assistants, "modeLabel"),
     effortLabel: lastValue<string>(assistants, "effortLabel"),
     ...(durationMs > 0 ? { durationMs } : {}),
+    ...(lastValue<import("./types").TurnStats | null>(assistants, "turnStats")
+      ? { turnStats: lastValue<import("./types").TurnStats | null>(assistants, "turnStats")! }
+      : {}),
     startedAt: first?.createdAt ?? fallbackStartedAt,
   };
 }
