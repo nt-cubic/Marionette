@@ -1603,6 +1603,8 @@ pub fn probe_acp_billing(
 }
 
 /// Generate `.marionette/handoff.md` and a composer prefill prompt. Does not send.
+/// Returns `Ok(None)` (writes nothing) when the dialog has no messages yet —
+/// switching agents on a fresh dialog must not create an empty handoff.
 /// Pass `source_agent_id` when the session may already be rebound to the target.
 #[tauri::command(async)]
 pub fn generate_handoff(
@@ -1611,7 +1613,7 @@ pub fn generate_handoff(
     target_agent_id: String,
     source_agent_id: Option<String>,
     state: State<'_, AppState>,
-) -> Result<crate::models::HandoffResult, String> {
+) -> Result<Option<crate::models::HandoffResult>, String> {
     let storage = state
         .storage
         .lock()

@@ -8,6 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Writes:
 ///   `.marionette/handoff/{sessionId}.md`  (SSOT for this dialog)
 ///   `.marionette/handoff.md`              (latest shortcut for CLI / humans)
+/// Returns `Ok(None)` — writing nothing — when the dialog has no messages yet,
+/// so switching agents on a fresh dialog does not create an empty handoff.
 /// Does not auto-send; does not read arbitrary repo files.
 pub fn generate_handoff(
     project_id: &str,
@@ -20,8 +22,11 @@ pub fn generate_handoff(
     target_agent_id: &str,
     target_agent_label: &str,
     transcript_path: &Path,
-) -> Result<HandoffResult, String> {
+) -> Result<Option<HandoffResult>, String> {
     let events = load_transcript_events(transcript_path);
+    if !has_transcript_content(&events) {
+        return Ok(None);
+    }
     let user_msgs = recent_texts(&events, "user_message", 8);
     let assistant_msgs = recent_texts(&events, "assistant_message", 4);
     let tool_titles = recent_tool_titles(&events, 6);
@@ -68,13 +73,31 @@ pub fn generate_handoff(
         &handoff_path,
     );
 
-    Ok(HandoffResult {
+    Ok(Some(HandoffResult {
         project_id: project_id.to_string(),
         target_agent_id: target_agent_id.to_string(),
         handoff_path: handoff_path.to_string_lossy().to_string(),
         prompt,
         created_at,
         summary: first_line_summary(&user_msgs, session_label),
+    }))
+}
+
+/// True when the dialog has anything worth handing off: a user message, an
+/// assistant reply, a thought, or a tool call. A `handoff_prepared` event from
+/// a previous switch does not count — switching agents twice on a fresh dialog
+/// must not start producing notes.
+fn has_transcript_content(events: &[Value]) -> bool {
+    events.iter().any(|e| {
+        match e.get("type").and_then(Value::as_str) {
+            Some("user_message" | "assistant_message" | "thought") => e
+                .get("text")
+                .and_then(Value::as_str)
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false),
+            Some("tool_call") => true,
+            _ => false,
+        }
     })
 }
 
@@ -89,28 +112,6 @@ fn sanitize_session_id(session_id: &str) -> String {
             }
         })
         .collect()
-}
-
-pub fn read_handoff_summary(project_root: &Path) -> Option<String> {
-    let path = crate::app_paths::project_dir(project_root).join("handoff.md");
-    let text = fs::read_to_string(path).ok()?;
-    let mut lines = text.lines().filter(|l| !l.trim().is_empty());
-    // Skip title lines; return a short preview.
-    let mut preview = Vec::new();
-    for line in lines.by_ref() {
-        if line.starts_with('#') {
-            continue;
-        }
-        preview.push(line.trim());
-        if preview.len() >= 3 {
-            break;
-        }
-    }
-    if preview.is_empty() {
-        None
-    } else {
-        Some(preview.join(" · "))
-    }
 }
 
 fn load_transcript_events(path: &Path) -> Vec<Value> {
@@ -293,4 +294,86 @@ fn iso_now() -> String {
 #[allow(dead_code)]
 pub fn handoff_path_for(project_root: &Path) -> PathBuf {
     crate::app_paths::project_dir(project_root).join("handoff.md")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    /// Fresh temp project dir; returns (project_root, transcript_path).
+    fn temp_project(transcript: Option<&str>) -> (PathBuf, PathBuf) {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let tmp = std::env::temp_dir().join(format!(
+            "marionette-handoff-test-{}-{}",
+            std::process::id(),
+            n
+        ));
+        let root = tmp.join("proj");
+        fs::create_dir_all(&root).unwrap();
+        let transcript_path = tmp.join("transcript.jsonl");
+        if let Some(body) = transcript {
+            fs::write(&transcript_path, body).unwrap();
+        }
+        (root, transcript_path)
+    }
+
+    fn cleanup(root: &Path) {
+        let _ = fs::remove_dir_all(root.parent().expect("parent dir"));
+    }
+
+    fn gen(root: &Path, transcript: &Path) -> Result<Option<HandoffResult>, String> {
+        generate_handoff(
+            "p-test",
+            root,
+            "TestProj",
+            "s-test",
+            "New session",
+            "agent-a",
+            "Agent A",
+            "agent-b",
+            "Agent B",
+            transcript,
+        )
+    }
+
+    #[test]
+    fn fresh_dialog_skips_handoff() {
+        let (root, transcript) = temp_project(None);
+        let res = gen(&root, &transcript).expect("generate");
+        assert!(res.is_none(), "empty dialog must not produce a handoff");
+        assert!(!root.join(".marionette").join("handoff.md").exists());
+        assert!(!root.join(".marionette").join("handoff").join("s-test.md").exists());
+        cleanup(&root);
+    }
+
+    #[test]
+    fn dialog_with_only_prior_handoff_still_skips() {
+        let body = r#"{"type":"handoff_prepared","sessionId":"s-test","targetAgentId":"agent-b","handoffPath":"x.md","prompt":"p","createdAt":"2026-01-01T00:00:00.000Z"}"#;
+        let (root, transcript) = temp_project(Some(body));
+        assert!(gen(&root, &transcript).expect("generate").is_none());
+        assert!(!root.join(".marionette").join("handoff.md").exists());
+        cleanup(&root);
+    }
+
+    #[test]
+    fn dialog_with_user_message_generates_handoff() {
+        let body = "{\"type\":\"user_message\",\"sessionId\":\"s-test\",\"text\":\"hello\",\"createdAt\":\"2026-01-01T00:00:00.000Z\"}\n";
+        let (root, transcript) = temp_project(Some(body));
+        let res = gen(&root, &transcript).expect("generate");
+        let handoff = res.expect("dialog with messages must produce a handoff");
+        assert!(!handoff.handoff_path.is_empty());
+        assert!(root.join(".marionette").join("handoff.md").exists());
+        cleanup(&root);
+    }
+
+    #[test]
+    fn whitespace_only_messages_skip_handoff() {
+        let body = "{\"type\":\"user_message\",\"sessionId\":\"s-test\",\"text\":\"   \",\"createdAt\":\"2026-01-01T00:00:00.000Z\"}\n";
+        let (root, transcript) = temp_project(Some(body));
+        assert!(gen(&root, &transcript).expect("generate").is_none());
+        cleanup(&root);
+    }
 }
