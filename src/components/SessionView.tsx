@@ -24,6 +24,7 @@ import { detectForceWebSearchInText, stripForceWebSearchPrefix } from "../lib/fo
 import { cleanAssistantText } from "../lib/markdownText";
 import { newQuotePinId, type QuotePin } from "../lib/quoteComment";
 import { buildMessagePresentation } from "../lib/messagePresentation";
+import { formatTurnStatsTag } from "../lib/usage";
 import {
   classifyToolCall,
   extractCommandText,
@@ -2176,6 +2177,19 @@ function CleanPlaceholder({
                             {(event.durationMs / 1000).toFixed(1)}s
                           </span>
                         )}
+                        {(() => {
+                          const tag = event.turnStats
+                            ? formatTurnStatsTag(event.turnStats)
+                            : null;
+                          return tag ? (
+                            <span
+                              className="meta-tag meta-tag--duration"
+                              title="tokens reported by the agent · TTFT/speeds measured locally"
+                            >
+                              {tag}
+                            </span>
+                          ) : null;
+                        })()}
                       </div>
                     ) : (
                       <span className="event-card__footer-spacer" />

@@ -1,5 +1,5 @@
 import { getSessionUpdate, getSessionUpdateKind } from "./acpTranscript";
-import type { UsageSnapshot, UsageWindow } from "./types";
+import type { SessionEvent, TurnStats, UsageSnapshot, UsageWindow } from "./types";
 
 /** Per-session usage state accumulated from ACP (and opportunistic text). */
 export type SessionUsageState = {
@@ -21,6 +21,22 @@ export type SessionUsageState = {
   source: string | null;
   /** Last turn's token split, from the session/prompt response. */
   turnTokens: TurnTokens | null;
+  /** Last turn's tokens + locally measured timings/speeds. */
+  lastTurnStats: TurnStats | null;
+};
+
+/**
+ * Whole-dialog token totals. Derived from the `turnStats` stamped on each
+ * completed turn's assistant_message (persisted in the transcript), so the
+ * figure survives app restarts and agent switches.
+ */
+export type CumulativeTokens = {
+  input: number;
+  output: number;
+  cached: number;
+  reasoning: number;
+  /** Turns that actually reported tokens. */
+  turns: number;
 };
 
 /**
@@ -50,6 +66,163 @@ export function emptySessionUsage(): SessionUsageState {
     refreshedAt: null,
     source: null,
     turnTokens: null,
+    lastTurnStats: null,
+  };
+}
+
+/**
+ * Sum the `turnStats` stamped on a dialog's completed turns into whole-dialog
+ * totals. Returns null when no turn reported tokens yet.
+ */
+export function cumulativeFromEvents(
+  events: readonly SessionEvent[],
+  sessionId: string
+): CumulativeTokens | null {
+  let input = 0;
+  let output = 0;
+  let cached = 0;
+  let reasoning = 0;
+  let turns = 0;
+  for (const e of events) {
+    if (e.type !== "assistant_message" || e.sessionId !== sessionId) continue;
+    const s = e.turnStats;
+    if (!s) continue;
+    if (
+      (s.input ?? null) == null &&
+      (s.output ?? null) == null &&
+      (s.total ?? null) == null
+    ) {
+      continue;
+    }
+    turns += 1;
+    input += s.input ?? 0;
+    output += s.output ?? 0;
+    cached += s.cached ?? 0;
+    reasoning += s.reasoning ?? 0;
+  }
+  if (turns === 0) return null;
+  return { input, output, cached, reasoning, turns };
+}
+
+/**
+ * Combine the agent-reported token split with locally measured timings into
+ * one display-ready stat set. Speeds are null whenever their inputs are
+ * missing (never invent a number).
+ */
+export function buildTurnStats(
+  tokens: TurnTokens,
+  timing: { sentAt: number | null; firstChunkAt: number | null; endedAt: number }
+): TurnStats {
+  const stats: TurnStats = {
+    input: tokens.input,
+    output: tokens.output,
+    cached: tokens.cached,
+    reasoning: tokens.reasoning,
+    total: tokens.total,
+  };
+  if (timing.firstChunkAt != null) {
+    const durationMs = Math.max(0, timing.endedAt - timing.firstChunkAt);
+    stats.durationMs = durationMs;
+    if (tokens.output != null && durationMs > 0) {
+      stats.outputTps = tokens.output / (durationMs / 1000);
+    }
+  }
+  if (timing.sentAt != null && timing.firstChunkAt != null) {
+    const ttftMs = Math.max(0, timing.firstChunkAt - timing.sentAt);
+    stats.ttftMs = ttftMs;
+    if (tokens.input != null && ttftMs > 0) {
+      stats.ppTps = tokens.input / (ttftMs / 1000);
+    }
+  }
+  return stats;
+}
+
+/** One Grok model call's usage (per `response_completed` notification). */
+export type GrokCallUsage = {
+  /** New (non-cached) input tokens for this call. */
+  input: number;
+  /** Cache-read input tokens for this call. */
+  cacheRead: number;
+  /** Cache-creation input tokens for this call. */
+  cacheCreation: number;
+  /** Output tokens for this call. */
+  output: number;
+  /** Reasoning tokens for this call. */
+  reasoning: number;
+};
+
+/**
+ * Parse Grok `_x.ai/session_notification` `response_completed.usage`.
+ * Live shape (grok stdio, 2026-08): snake_case, one notification per model
+ * call — a turn with a tool loop emits several of these.
+ */
+export function parseGrokCallUsage(data: unknown): GrokCallUsage | null {
+  const root = asRecord(data);
+  if (!root) return null;
+  let update: Record<string, unknown> | null = null;
+  if (typeof root.method === "string") {
+    update = asRecord(asRecord(root.params)?.update);
+  } else {
+    update = asRecord(root.update) ?? root;
+  }
+  if (!update || update.sessionUpdate !== "response_completed") return null;
+  const usage = asRecord(update.usage);
+  if (!usage) return null;
+  const input = asNumber(usage.input_tokens) ?? 0;
+  const cacheRead = asNumber(usage.cache_read_input_tokens) ?? 0;
+  const cacheCreation = asNumber(usage.cache_creation_input_tokens) ?? 0;
+  const output = asNumber(usage.output_tokens) ?? 0;
+  const reasoning = asNumber(usage.reasoning_tokens) ?? 0;
+  if (input + cacheRead + cacheCreation + output + reasoning === 0) return null;
+  return { input, cacheRead, cacheCreation, output, reasoning };
+}
+
+/**
+ * Per-turn accumulation of Grok's per-call usage.
+ *
+ * Grok's prompt RPC response carries no usage at all, so a turn's totals can
+ * only be derived from these notifications. `input`/`cached` track the
+ * *latest* call (later calls see the grown context — the last one is the
+ * turn's input total, and how much of it was cache-hit); `output`/`reasoning`
+ * sum across all calls.
+ */
+export type GrokTurnUsage = {
+  input: number | null;
+  cached: number | null;
+  output: number | null;
+  reasoning: number | null;
+  calls: number;
+};
+
+export function emptyGrokTurnUsage(): GrokTurnUsage {
+  return { input: null, cached: null, output: null, reasoning: null, calls: 0 };
+}
+
+export function mergeGrokCallUsage(
+  prev: GrokTurnUsage | undefined,
+  call: GrokCallUsage
+): GrokTurnUsage {
+  const base = prev ?? emptyGrokTurnUsage();
+  return {
+    input: call.input + call.cacheCreation + call.cacheRead,
+    cached: call.cacheRead,
+    output: (base.output ?? 0) + call.output,
+    reasoning: (base.reasoning ?? 0) + call.reasoning,
+    calls: base.calls + 1,
+  };
+}
+
+/** Turn-level `TurnTokens` from the accumulation; null when no call reported. */
+export function grokTurnUsageToTurnTokens(
+  accum: GrokTurnUsage | null | undefined
+): TurnTokens | null {
+  if (!accum || accum.calls === 0) return null;
+  return {
+    input: accum.input,
+    output: accum.output,
+    cached: accum.cached,
+    reasoning: accum.reasoning,
+    total: null,
   };
 }
 
@@ -166,6 +339,46 @@ function formatTokenCount(n: number): string {
   if (n >= 10_000) return `${Math.round(n / 1000)}K`;
   if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
   return String(Math.round(n));
+}
+
+/** `850ms` below a second, `1.2s` above — one unit, no seconds suffix spam. */
+function formatMs(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "—";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const m = Math.floor(s / 60);
+  return `${m}m${Math.round(s % 60)}s`;
+}
+
+/** `42 tok/s`, `1.2K tok/s` for fast prefill. */
+function formatSpeed(tps: number): string {
+  if (!Number.isFinite(tps) || tps <= 0) return "—";
+  if (tps >= 10_000) return `${(tps / 1000).toFixed(1)}K tok/s`;
+  if (tps >= 100) return `${Math.round(tps)} tok/s`;
+  return `${tps.toFixed(1)} tok/s`;
+}
+
+/**
+ * Compact one-liner for a reply footer: `13K in · 29 out · TTFT 1.2s · 42 tok/s`.
+ * Omits whatever the agent left null; null when there is nothing to show.
+ */
+export function formatTurnStatsTag(
+  stats: TurnStats | null | undefined
+): string | null {
+  if (!stats) return null;
+  const tokenPart = formatTurnTokens({
+    input: stats.input ?? null,
+    output: stats.output ?? null,
+    cached: stats.cached ?? null,
+    reasoning: stats.reasoning ?? null,
+    total: stats.total ?? null,
+  });
+  const parts: string[] = [];
+  if (tokenPart) parts.push(tokenPart);
+  if (stats.ttftMs != null) parts.push(`TTFT ${formatMs(stats.ttftMs)}`);
+  if (stats.outputTps != null) parts.push(`${formatSpeed(stats.outputTps)} out`);
+  return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 /** `13K in · 29 out · 2.8K cached` — omits whatever the agent left null. */
@@ -570,6 +783,9 @@ export function mergeUsageFromAcp(
  * Shapes seen in the wild:
  * - ACP `PromptResponse.usage`: `{ inputTokens, outputTokens, totalTokens, … }`
  * - Grok:  `_meta.{ totalTokens, inputTokens, outputTokens, cachedReadTokens }`
+ * - Grok `response_completed` (per call, via `_x.ai/session_notification`):
+ *   `{ input_tokens, output_tokens, cache_read_input_tokens, reasoning_tokens }`
+ *   — prefer `parseGrokCallUsage` + the per-turn accumulator for this one.
  * - Codex: `_meta.quota.token_count.{ …, cachedInputTokens, reasoningOutputTokens }`
  */
 export function extractTurnTokens(data: unknown): TurnTokens | null {
@@ -622,14 +838,19 @@ export function extractTurnTokens(data: unknown): TurnTokens | null {
     "cachedReadTokens",
     "cached_read_tokens",
     "cachedInputTokens",
-    "cached_input_tokens"
+    "cached_input_tokens",
+    // Grok `_x.ai/session_notification` response_completed (per model call):
+    // { input_tokens, output_tokens, cache_read_input_tokens, reasoning_tokens }
+    "cacheReadInputTokens",
+    "cache_read_input_tokens"
   );
   const reasoning = pick(
     "thoughtTokens",
     "thought_tokens",
     "reasoningOutputTokens",
     "reasoning_output_tokens",
-    "reasoningTokens"
+    "reasoningTokens",
+    "reasoning_tokens"
   );
   const total = pick("totalTokens", "total_tokens");
 
@@ -864,8 +1085,10 @@ export function buildUsageSnapshot(args: {
   agentLabel: string;
   state: SessionUsageState | undefined;
   connected: boolean;
+  /** Whole-dialog totals derived from the dialog's events (live or restored). */
+  cumulative?: CumulativeTokens | null;
 }): UsageSnapshot {
-  const { agentId, agentLabel, state, connected } = args;
+  const { agentId, agentLabel, state, connected, cumulative } = args;
   const windows: UsageWindow[] = [];
   const isOpenCode = agentId === "opencode";
 
@@ -899,8 +1122,44 @@ export function buildUsageSnapshot(args: {
     });
   }
 
-  // Last-turn token split is useful for debugging but noisy in the panel —
-  // keep it off the UI (data still lives on state.turnTokens if needed later).
+  // Whole-dialog token totals (summed from each completed turn's turnStats).
+  if (cumulative) {
+    const parts: string[] = [];
+    if (cumulative.input > 0) parts.push(`${formatTokenCount(cumulative.input)} in`);
+    if (cumulative.output > 0) parts.push(`${formatTokenCount(cumulative.output)} out`);
+    if (cumulative.cached > 0) parts.push(`${formatTokenCount(cumulative.cached)} cached`);
+    if (cumulative.reasoning > 0) parts.push(`${formatTokenCount(cumulative.reasoning)} thinking`);
+    windows.push({
+      id: "session-total",
+      label: "Session total",
+      percentage: null,
+      detail: `${parts.length > 0 ? parts.join(" · ") : "0"} · ${cumulative.turns} turn${cumulative.turns === 1 ? "" : "s"}`,
+      kind: "tokens",
+    });
+  }
+
+  // Last turn: token split + locally measured TTFT / speeds.
+  const lastStats = state?.lastTurnStats;
+  const lastTokens = lastStats ?? (state?.turnTokens ? { ...state.turnTokens } : null);
+  if (lastTokens) {
+    const tokenPart = formatTurnTokens(lastTokens as TurnTokens);
+    const timing: string[] = [];
+    if (lastStats?.ttftMs != null) timing.push(`TTFT ${formatMs(lastStats.ttftMs)}`);
+    if (lastStats?.outputTps != null) timing.push(`${formatSpeed(lastStats.outputTps)} out`);
+    if (lastStats?.ppTps != null) timing.push(`${formatSpeed(lastStats.ppTps)} in`);
+    const detail = [tokenPart, timing.length > 0 ? timing.join(" · ") : null]
+      .filter(Boolean)
+      .join(" · ");
+    if (detail) {
+      windows.push({
+        id: "last-turn",
+        label: "Last turn",
+        percentage: null,
+        detail,
+        kind: "tokens",
+      });
+    }
+  }
 
   // Provider balance (OpenCode: based on selected provider/model)
   const providerRows = Object.values(state?.providerWindows ?? {});

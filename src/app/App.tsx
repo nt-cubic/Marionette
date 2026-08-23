@@ -33,14 +33,22 @@ import {
 import { agentAuthSpec } from "../lib/agentAuth";
 import type { AcpEvent, AvailableCommand, CapabilitySnapshot, ChangedFile, HandoffResult, Project, ProjectContext, ProxyConfig, ProxyTestResult, Session, SessionComposerPrefs, SessionEvent, SessionViewMode, UsageSnapshot } from "../lib/types";
 import {
+  buildTurnStats,
   buildUsageSnapshot,
+  cumulativeFromEvents,
+  emptyGrokTurnUsage,
   emptySessionUsage,
+  extractTurnTokens,
+  grokTurnUsageToTurnTokens,
   mergeGrokBilling,
+  mergeGrokCallUsage,
   mergeProviderProbe,
   mergeUsageFromAcp,
   mergeUsageFromPromptResult,
   mergeUsageFromText,
+  parseGrokCallUsage,
   seedContextSize,
+  type GrokTurnUsage,
   type SessionUsageState,
 } from "../lib/usage";
 import {
@@ -344,6 +352,10 @@ export function App() {
   } | null>(null);
   /** When the current turn's first assistant_message chunk arrived (for duration tracking). */
   const turnStartedAtRef = useRef<Record<string, number>>({});
+  /** When the current turn's prompt was handed to ACP (for TTFT). */
+  const turnSentAtRef = useRef<Record<string, number>>({});
+  /** Per-turn Grok `response_completed` accumulation (one per model call). */
+  const grokTurnUsageRef = useRef<Record<string, GrokTurnUsage>>({});
   /** Fresh ACP process needs local transcript injected once (no session/load yet). */
   const acpNeedsHistoryRef = useRef<Set<string>>(new Set());
   /** When each session's turn last actually finished (`turn/complete` / process end). */
@@ -663,8 +675,19 @@ export function App() {
       agentLabel: agent.label,
       state: activeSession ? sessionUsageById[activeSession.id] : undefined,
       connected,
+      // Derived from events (not state): works for restored dialogs too, where
+      // in-memory usage state starts empty.
+      cumulative: activeSession
+        ? cumulativeFromEvents(liveEvents, activeSession.id)
+        : null,
     });
-  }, [availableAgents, availableSessions, currentSessionId, sessionUsageById]);
+  }, [
+    availableAgents,
+    availableSessions,
+    currentSessionId,
+    sessionUsageById,
+    liveEvents,
+  ]);
 
   // Portable app update check — delayed so it never stalls first paint.
   useEffect(() => {
@@ -1319,11 +1342,38 @@ export function App() {
         }
       }
 
-      // Grok also puts the full turn usage on `_x.ai/session_notification`
-      // (turn_completed.usage) — same numbers as the prompt result, but this
-      // notification is easier to spot in logs and arrives even if the RPC
-      // response path is filtered.
+      // Grok reports usage on `_x.ai/session_notification`.
+      // `response_completed` arrives once per *model call* (a turn with a tool
+      // loop emits several) — accumulate into per-turn totals. Any other
+      // payload (e.g. a turn-level `turn_completed.usage`) merges as before
+      // and overrides the accumulation at turn end.
       if (payload.method === "_x.ai/session_notification") {
+        const call = parseGrokCallUsage(payload.data);
+        if (call) {
+          const sid = payload.sessionId;
+          grokTurnUsageRef.current[sid] = mergeGrokCallUsage(
+            grokTurnUsageRef.current[sid],
+            call
+          );
+          const tokens = grokTurnUsageToTurnTokens(grokTurnUsageRef.current[sid]);
+          if (tokens) {
+            setSessionUsageById((current) => {
+              const base = current[sid];
+              if (!base) return current;
+              return {
+                ...current,
+                [sid]: {
+                  ...base,
+                  turnTokens: tokens,
+                  contextUsed: base.contextUsed ?? tokens.input,
+                  refreshedAt: new Date().toISOString(),
+                  source: "grok per-call usage",
+                },
+              };
+            });
+          }
+          return;
+        }
         setSessionUsageById((current) => {
           const merged = mergeUsageFromPromptResult(current[payload.sessionId], payload.data);
           if (!merged) return current;
@@ -1339,16 +1389,48 @@ export function App() {
         const wasRunning =
           sessionsRef.current.find((s) => s.id === payload.sessionId)?.status === "running";
 
-        // End-of-turn token split. This is the only usage Grok ever reports, and
-        // it carries the in/out/cached breakdown that usage_update omits.
+        // End-of-turn token split. Most agents put it in the prompt RPC
+        // response; Grok puts nothing there — its usage arrives per model call
+        // on `_x.ai/session_notification`, so fall back to that accumulation.
+        let turnTokens = extractTurnTokens(payload.data);
+        if (!turnTokens) {
+          turnTokens = grokTurnUsageToTurnTokens(
+            grokTurnUsageRef.current[payload.sessionId]
+          );
+        }
+        delete grokTurnUsageRef.current[payload.sessionId];
+        const firstChunkAt = turnStartedAtRef.current[payload.sessionId] ?? null;
+        const sentAt = turnSentAtRef.current[payload.sessionId] ?? null;
+        delete turnSentAtRef.current[payload.sessionId];
+        const endedAt = Date.now();
+        // Timings are local and may be missing (e.g. a turn with no streamed
+        // assistant text); build stats whenever tokens exist — buildTurnStats
+        // leaves the absent timings null rather than inventing numbers.
+        const turnStats =
+          turnTokens != null
+            ? buildTurnStats(turnTokens, { sentAt, firstChunkAt, endedAt })
+            : null;
         setSessionUsageById((current) => {
-          const merged = mergeUsageFromPromptResult(current[payload.sessionId], payload.data);
-          if (!merged) return current;
-          return { ...current, [payload.sessionId]: merged };
+          const base = current[payload.sessionId];
+          if (!base) return current;
+          const merged = mergeUsageFromPromptResult(base, payload.data);
+          const state = merged ?? base;
+          // An agent-level turn report (merged) wins; the accumulation only
+          // fills in when the RPC response carried no usage.
+          const tokens = state.turnTokens ?? turnTokens;
+          if (!tokens && !turnStats) return current;
+          return {
+            ...current,
+            [payload.sessionId]: {
+              ...state,
+              turnTokens: tokens,
+              lastTurnStats: turnStats ?? state.lastTurnStats,
+            },
+          };
         });
 
         // Compute duration and stamp on the last assistant_message; seal open tools.
-        const startedAt = turnStartedAtRef.current[payload.sessionId];
+        const startedAt = firstChunkAt;
         const toolClose =
           stopReason === "cancelled"
             ? ("cancelled" as const)
@@ -1372,7 +1454,7 @@ export function App() {
               last.durationMs == null
             ) {
               const stamped = [...next];
-              stamped[lastIdx] = { ...last, durationMs };
+              stamped[lastIdx] = { ...last, durationMs, ...(turnStats ? { turnStats } : {}) };
               return collapseIntermediateAssistantAsThought(stamped, sid);
             }
             return collapseIntermediateAssistantAsThought(next, sid);
@@ -4058,6 +4140,10 @@ export function App() {
         return;
       }
 
+      // TTFT anchor: the moment this prompt is about to go over the wire
+      // (queued sends only reach here at flush time, so the anchor is honest).
+      turnSentAtRef.current[sid] = Date.now();
+      grokTurnUsageRef.current[sid] = emptyGrokTurnUsage();
       const um = userMessageEvent(sid, composed, {
         ...(sendMetaRef.current ?? {}),
         attachments: imageAttachments.length > 0 ? imageAttachments : undefined,
