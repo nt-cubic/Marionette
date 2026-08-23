@@ -98,7 +98,10 @@ function meterTone(window: UsageWindow): "ok" | "warn" | "hot" | "none" {
 }
 
 function formatPrimary(window: UsageWindow): string {
-  if (window.kind === "cost" && window.detail) return window.detail;
+  // cost and tokens rows carry their whole message in `detail` (no % to show).
+  if ((window.kind === "cost" || window.kind === "tokens") && window.detail) {
+    return window.detail;
+  }
   if (window.percentage === null) {
     // Prefer a short honest label; full sentence stays in detail line.
     if (window.detail) {
@@ -422,18 +425,29 @@ export function ContextPanel({
             {usage.windows.map((window) => {
               const tone = meterTone(window);
               const primary = formatPrimary(window);
+              // tokens rows (Last turn / Session total) carry their whole
+              // message as the value; inline it overflows the row, so the
+              // value drops to a small line under the label instead.
+              const stacked = window.kind === "tokens" && window.detail != null;
               const isEmpty =
                 primary === "N/A" &&
                 !window.detail &&
                 window.percentage == null;
+              const detailLine = stacked
+                ? primary
+                : window.detail && window.kind !== "cost" && window.kind !== "tokens"
+                  ? window.detail
+                  : null;
               return (
                 <div className={`usage-row usage-row--${tone}`} key={window.id}>
                   <span>{window.label}</span>
-                  <strong className={isEmpty ? "usage-row__muted" : undefined}>
-                    {primary}
-                  </strong>
-                  {window.detail && window.kind !== "cost" && (
-                    <span className="usage-row__detail">{window.detail}</span>
+                  {!stacked && (
+                    <strong className={isEmpty ? "usage-row__muted" : undefined}>
+                      {primary}
+                    </strong>
+                  )}
+                  {detailLine != null && (
+                    <span className="usage-row__detail">{detailLine}</span>
                   )}
                   {window.percentage !== null && (
                     <div className="usage-meter__track">
