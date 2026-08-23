@@ -7,7 +7,7 @@
 //! `Method not implemented by Marionette: terminal/create`.
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -76,7 +76,14 @@ impl TerminalInstance {
         snap.output.push_str(text);
         if snap.output.len() > self.output_limit {
             let overflow = snap.output.len() - self.output_limit;
-            snap.output.drain(..overflow);
+            // `drain` asserts the cut lands on a UTF-8 char boundary; bytes
+            // streamed from the PTY can cut mid-codepoint (CJK, emoji), which
+            // used to panic-abort the whole process (`panic = "abort"`).
+            let mut end = overflow;
+            while end > 0 && !snap.output.is_char_boundary(end) {
+                end -= 1;
+            }
+            snap.output.drain(..end);
             snap.truncated = true;
         }
     }
