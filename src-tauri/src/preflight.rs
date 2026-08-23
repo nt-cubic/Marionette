@@ -36,10 +36,6 @@ pub struct PreflightResult {
 /// Run preflight for one agent id (PATH + runtime tools + deps from registry).
 ///
 /// `command_override`: for custom agents whose CLI name is not in the pin table.
-pub fn run_preflight(agent_id: &str) -> PreflightResult {
-    run_preflight_with_cmd(agent_id, None)
-}
-
 pub fn run_preflight_with_cmd(agent_id: &str, command_override: Option<&str>) -> PreflightResult {
     let meta = agent_registry::harness_meta(agent_id);
     let cmd = command_override.unwrap_or(meta.cmd);
@@ -329,7 +325,7 @@ mod tests {
 
     #[test]
     fn preflight_unknown_still_returns() {
-        let r = run_preflight("no-such-agent-xyz");
+        let r = run_preflight_with_cmd("no-such-agent-xyz", None);
         assert!(!r.checks.is_empty());
     }
 
