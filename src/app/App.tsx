@@ -3023,6 +3023,10 @@ export function App() {
           summary: `handoff → ${agentId}`,
           detail: handoff.handoffPath,
         });
+      } else {
+        // Fresh dialog (no messages yet) or generation failed: nothing to
+        // attach — drop the previous dialog's handoff card.
+        setLastHandoff(null);
       }
     } catch (error) {
       pushDebug({
