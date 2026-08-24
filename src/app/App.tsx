@@ -31,7 +31,7 @@ import {
   dropEventsForSessions,
 } from "../lib/memoryHygiene";
 import { agentAuthSpec } from "../lib/agentAuth";
-import type { AcpEvent, AvailableCommand, CapabilitySnapshot, ChangedFile, HandoffResult, Project, ProjectContext, ProxyConfig, ProxyTestResult, Session, SessionComposerPrefs, SessionEvent, SessionViewMode, UsageSnapshot } from "../lib/types";
+import type { AcpEvent, AvailableCommand, CapabilitySnapshot, ChangedFile, HandoffResult, Project, ProjectContext, ProxyConfig, ProxyTestResult, Session, SessionComposerPrefs, SessionEvent, SessionViewMode, TurnStats, UsageSnapshot } from "../lib/types";
 import {
   buildTurnStats,
   buildUsageSnapshot,
@@ -675,19 +675,16 @@ export function App() {
       agentLabel: agent.label,
       state: activeSession ? sessionUsageById[activeSession.id] : undefined,
       connected,
-      // Derived from events (not state): works for restored dialogs too, where
-      // in-memory usage state starts empty.
+      // Read events via ref — do NOT depend on liveEvents. Grok streams
+      // thousands of thought/message chunks; scanning the full transcript on
+      // every chunk froze the main thread (MAIN THREAD STALLED). Cumulative
+      // only changes when a turn stamps turnStats (sessionUsageById update)
+      // or when a restored transcript seeds usage state below.
       cumulative: activeSession
-        ? cumulativeFromEvents(liveEvents, activeSession.id)
+        ? cumulativeFromEvents(liveEventsRef.current, activeSession.id)
         : null,
     });
-  }, [
-    availableAgents,
-    availableSessions,
-    currentSessionId,
-    sessionUsageById,
-    liveEvents,
-  ]);
+  }, [availableAgents, availableSessions, currentSessionId, sessionUsageById]);
 
   // Portable app update check — delayed so it never stalls first paint.
   useEffect(() => {
@@ -1306,6 +1303,7 @@ export function App() {
                   const sid = payload.sessionId;
                   const prevIdx = findLastIndexForSession(current, sid);
                   const prevLast = prevIdx >= 0 ? current[prevIdx] : undefined;
+                  const prevLen = current.length;
                   let next = applyAcpPartToEvents(current, sid, extracted);
                   // Track turn start for duration: first new assistant_message card
                   // for *this* session (other sessions may sit at the rail tail).
@@ -1324,11 +1322,15 @@ export function App() {
                       sendMetaRef.current = null;
                     }
                   }
-                  // Glue fragment thoughts / token-split Replies mid-stream.
-                  // Grok often rotates messageId per agent_message_chunk; without
-                  // this pass the rail paints one Reply card per character.
-                  // Multi-window interleave is handled inside coalesce* (session-scoped).
-                  if (extracted.role === "thought" || extracted.role === "assistant") {
+                  // Glue fragment thoughts / token-split Replies only when a new
+                  // card appeared. applyAcpPartToEvents already appends onto an
+                  // open Thought/Reply (including Grok messageId churn); running
+                  // full-rail coalesce on every token was O(n) per chunk and
+                  // helped freeze the window during long Grok streams.
+                  if (
+                    next.length > prevLen &&
+                    (extracted.role === "thought" || extracted.role === "assistant")
+                  ) {
                     next = coalesceAdjacentThoughts(next, sid);
                     if (extracted.role === "assistant") {
                       next = coalesceAdjacentAssistantFragments(next, sid);
@@ -1410,26 +1412,9 @@ export function App() {
           turnTokens != null
             ? buildTurnStats(turnTokens, { sentAt, firstChunkAt, endedAt })
             : null;
-        setSessionUsageById((current) => {
-          const base = current[payload.sessionId];
-          if (!base) return current;
-          const merged = mergeUsageFromPromptResult(base, payload.data);
-          const state = merged ?? base;
-          // An agent-level turn report (merged) wins; the accumulation only
-          // fills in when the RPC response carried no usage.
-          const tokens = state.turnTokens ?? turnTokens;
-          if (!tokens && !turnStats) return current;
-          return {
-            ...current,
-            [payload.sessionId]: {
-              ...state,
-              turnTokens: tokens,
-              lastTurnStats: turnStats ?? state.lastTurnStats,
-            },
-          };
-        });
 
-        // Compute duration and stamp on the last assistant_message; seal open tools.
+        // Stamp events first (and sync the ref) so the usage memo below can
+        // include this turn in Session total when sessionUsageById updates.
         const startedAt = firstChunkAt;
         const toolClose =
           stopReason === "cancelled"
@@ -1455,18 +1440,44 @@ export function App() {
             ) {
               const stamped = [...next];
               stamped[lastIdx] = { ...last, durationMs, ...(turnStats ? { turnStats } : {}) };
-              return collapseIntermediateAssistantAsThought(stamped, sid);
+              next = collapseIntermediateAssistantAsThought(stamped, sid);
+            } else {
+              next = collapseIntermediateAssistantAsThought(next, sid);
             }
-            return collapseIntermediateAssistantAsThought(next, sid);
+            liveEventsRef.current = next;
+            return next;
           });
         } else {
           setLiveEvents((current) => {
-            const next = toolClose
-              ? markOpenTools(current, payload.sessionId, toolClose)
-              : current;
-            return collapseIntermediateAssistantAsThought(next, payload.sessionId);
+            const next = collapseIntermediateAssistantAsThought(
+              toolClose
+                ? markOpenTools(current, payload.sessionId, toolClose)
+                : current,
+              payload.sessionId,
+            );
+            liveEventsRef.current = next;
+            return next;
           });
         }
+
+        setSessionUsageById((current) => {
+          const base = current[payload.sessionId];
+          if (!base) return current;
+          const merged = mergeUsageFromPromptResult(base, payload.data);
+          const state = merged ?? base;
+          // An agent-level turn report (merged) wins; the accumulation only
+          // fills in when the RPC response carried no usage.
+          const tokens = state.turnTokens ?? turnTokens;
+          if (!tokens && !turnStats) return current;
+          return {
+            ...current,
+            [payload.sessionId]: {
+              ...state,
+              turnTokens: tokens,
+              lastTurnStats: turnStats ?? state.lastTurnStats,
+            },
+          };
+        });
 
         // Auth / hard turn failures → error; cancel & clean end → waiting.
         // Use setSessionStatusById so disk + detached windows leave Interrupt mode.
@@ -1852,8 +1863,49 @@ export function App() {
     setLiveEvents((current) => {
       const hasLive = current.some((e) => e.sessionId === sessionId);
       if (hasLive) return current;
-      return [...current.filter((e) => e.sessionId !== sessionId), ...parsed];
+      const next = [...current.filter((e) => e.sessionId !== sessionId), ...parsed];
+      liveEventsRef.current = next;
+      return next;
     });
+    // Seed Last turn / Session total from persisted turnStats so the usage
+    // panel (which no longer re-scans on every liveEvents tick) still fills
+    // in for restored dialogs.
+    let lastStats: TurnStats | null = null;
+    for (let i = parsed.length - 1; i >= 0; i -= 1) {
+      const e = parsed[i];
+      if (e.type === "assistant_message" && e.sessionId === sessionId && e.turnStats) {
+        lastStats = e.turnStats;
+        break;
+      }
+    }
+    if (lastStats || cumulativeFromEvents(parsed, sessionId)) {
+      setSessionUsageById((current) => {
+        const base = current[sessionId] ?? emptySessionUsage();
+        // Live session already has fresher in-memory usage — don't clobber.
+        if (current[sessionId]?.lastTurnStats && current[sessionId]?.turnTokens) {
+          return current;
+        }
+        return {
+          ...current,
+          [sessionId]: {
+            ...base,
+            lastTurnStats: base.lastTurnStats ?? lastStats,
+            turnTokens:
+              base.turnTokens ??
+              (lastStats
+                ? {
+                    input: lastStats.input ?? null,
+                    output: lastStats.output ?? null,
+                    cached: lastStats.cached ?? null,
+                    reasoning: lastStats.reasoning ?? null,
+                    total: lastStats.total ?? null,
+                  }
+                : null),
+            source: base.source ?? "transcript turnStats",
+          },
+        };
+      });
+    }
   }, []);
 
   // Restore Clean history whenever the active dialog changes.
@@ -4045,6 +4097,25 @@ export function App() {
     await performSend(sid, composed, imageAttachments, forceWebSearch, opts);
   };
 
+  /** One-click: ask the active agent to commit local changes and push. */
+  const handleCommitAndPush = () => {
+    if (changedFiles.length === 0) return;
+    const badge = (t: ChangedFile["changeType"]) =>
+      t === "added" ? "A" : t === "deleted" ? "D" : t === "untracked" ? "U" : "M";
+    const list = changedFiles
+      .map((f) => `- ${badge(f.changeType)} ${f.path}`)
+      .join("\n");
+    const parts = [
+      "请整理当前工作区并推送到远端：只提交与本项目相关的改动。",
+      "先审一遍改动列表：构建产物、缓存、密钥、本地配置、日志、依赖目录、临时文件等与项目无关或不该进仓库的内容，写入或更新 `.gitignore`，不要把它们 commit 进去。",
+      "只 stage 真正属于本项目的源码/配置/文档等改动；写清晰的 commit message，完成 commit，再 push。",
+      "不要改业务逻辑代码；若 push 需要设置 upstream，使用合理的 `-u`。拿不准是否该忽略时先问我，不要瞎加。",
+    ];
+    if (gitBranch) parts.push(`当前分支：\`${gitBranch}\``);
+    parts.push("", "当前改动文件：", list);
+    void handleSend(parts.join("\n"));
+  };
+
   const performSend = async (
     sid: string,
     composed: string,
@@ -4692,15 +4763,6 @@ export function App() {
             detachedMode={IS_DETACHED_WINDOW}
           />
           <div className="workspace-titlebar__spacer" data-tauri-drag-region />
-          {gitBranch ? (
-            <div
-              className="workspace-titlebar__branch"
-              title={`${currentProject?.name ?? "project"} · ${gitBranch}`}
-            >
-              <span className="workspace-titlebar__branch-label">git</span>
-              <span className="workspace-titlebar__branch-name">{gitBranch}</span>
-            </div>
-          ) : null}
           <WindowControls />
         </div>
 
@@ -4943,6 +5005,7 @@ export function App() {
           changedFilesNote={changedFilesNote}
           onRefreshChangedFiles={() => void refreshChangedFiles()}
           gitBranch={gitBranch}
+          onCommitAndPush={handleCommitAndPush}
           onOpenDiff={(path) => void handleOpenDiff(path)}
           handoff={lastHandoff}
           projectContext={projectContext}

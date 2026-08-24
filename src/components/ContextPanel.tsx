@@ -5,6 +5,7 @@ import {
   PanelRightOpen,
   Plus,
   RefreshCw,
+  Upload,
   X,
 } from "lucide-react";
 import { useState } from "react";
@@ -30,6 +31,8 @@ type ContextPanelProps = {
   onRefreshChangedFiles?: () => void;
   /** Current git branch for the active project (null = not a repo / unknown). */
   gitBranch?: string | null;
+  /** Ask the active agent to commit local changes and push. */
+  onCommitAndPush?: () => void;
   onOpenDiff?: (path: string) => void;
   handoff?: HandoffResult | null;
   /** MCP servers + skills found on this machine / in this project. */
@@ -146,6 +149,7 @@ export function ContextPanel({
   changedFilesNote = null,
   onRefreshChangedFiles,
   gitBranch = null,
+  onCommitAndPush,
   onOpenDiff,
   handoff = null,
   projectContext = null,
@@ -472,11 +476,24 @@ export function ContextPanel({
       <section className="context-card">
         <div className="context-card__heading">
           <span>Changed Files · project</span>
-          {onRefreshChangedFiles && (
-            <button className="pill-action pill-action--icon pill-action--sm" type="button" title="Refresh git status" aria-label="Refresh git status" onClick={onRefreshChangedFiles}>
-              <RefreshCw size={11} />
-            </button>
-          )}
+          <div className="context-card__heading-actions">
+            {onCommitAndPush && changedFiles.length > 0 && (
+              <button
+                className="pill-action pill-action--icon pill-action--sm"
+                type="button"
+                title="让 AI 写 commit 并推送到远端"
+                aria-label="Commit and push via AI"
+                onClick={onCommitAndPush}
+              >
+                <Upload size={11} />
+              </button>
+            )}
+            {onRefreshChangedFiles && (
+              <button className="pill-action pill-action--icon pill-action--sm" type="button" title="Refresh git status" aria-label="Refresh git status" onClick={onRefreshChangedFiles}>
+                <RefreshCw size={11} />
+              </button>
+            )}
+          </div>
         </div>
         {gitBranch ? (
           <div className="git-branch-row" title={`Current branch: ${gitBranch}`}>
