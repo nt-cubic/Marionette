@@ -12,6 +12,8 @@ export const DELEGATE_ALIASES: Record<string, string> = {
   "grok-build": "grok-build",
   gpt: "codex",
   codex: "codex",
+  omp: "omp",
+  "oh-my-pi": "omp",
 };
 
 export type DelegateCandidate = {
