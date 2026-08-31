@@ -331,6 +331,31 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
             requires_commands: &[],
             launch_env: &[],
         },
+        // `omp acp` — native ACP server. MCP Forward verified live: omp expects
+        // `session/new.mcpServers` as an array of {name, command, args, env}
+        // entries (env/headers as {name, value} arrays) — exactly what
+        // `mcp_payload_for_agent` emits, and acp.rs always sends the key.
+        // Form elicitation on: omp routes generic approval prompts through
+        // `elicitation.form` when the client advertises it (Codex path).
+        "omp" => AgentHarnessMeta {
+            id: "omp",
+            label: "OMP",
+            elicitation_form: true,
+            subagent_transcript: false,
+            mcp_wire: McpWirePolicy::Forward,
+            mcp_wire_label: mcp_label(McpWirePolicy::Forward),
+            distribution: DistributionKind::Manual,
+            distribution_label: dist_label(DistributionKind::Manual),
+            pin_version: None,
+            pin_package: None,
+            cmd: "omp",
+            args: &["acp"],
+            node_required: None,
+            uv_required: None,
+            python_pin: None,
+            requires_commands: &[],
+            launch_env: &[],
+        },
         _ => AgentHarnessMeta {
             id: "unknown",
             label: "Agent",
@@ -431,5 +456,16 @@ mod tests {
     #[test]
     fn cursor_does_not_claim_agent_binary() {
         assert_eq!(harness_meta("cursor").cmd, "cursor-agent");
+    }
+
+    #[test]
+    fn omp_uses_acp_launch_with_form_elicitation_and_mcp() {
+        let meta = harness_meta("omp");
+        assert!(meta.elicitation_form);
+        assert_eq!(meta.mcp_wire, McpWirePolicy::Forward);
+        assert!(should_inject_mcp(Some("omp")));
+        assert_eq!(meta.cmd, "omp");
+        assert_eq!(meta.args, &["acp"]);
+        assert_eq!(meta.distribution, DistributionKind::Manual);
     }
 }
