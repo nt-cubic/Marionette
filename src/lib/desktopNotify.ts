@@ -1,10 +1,12 @@
 /**
- * Desktop attention when the user is looking away:
- *  - AI finished a reply
- *  - turn went quiet long enough to look stuck
+ * Desktop attention when the user is looking away.
+ *
+ * OpenCode's notifier uses short bundled WAV cues. Keep the same cues in the
+ * frontend so Marionette does not depend on the user's OpenCode installation:
+ * action-needed events are immediate, clean turn completion settles briefly,
+ * and failures/stalls raise the error cue at once.
  *
  * Windows: taskbar flash + yellow/red progress overlay (QQ/WeChat-ish).
- * Sound: short WebAudio chime (no asset file).
  * Cleared when the window is focused again.
  */
 
@@ -14,11 +16,43 @@ import {
   UserAttentionType,
 } from "@tauri-apps/api/window";
 import { isTauriRuntime } from "./api";
+import completeSoundUrl from "../assets/notifications/complete.wav";
+import errorSoundUrl from "../assets/notifications/error.wav";
+import permissionSoundUrl from "../assets/notifications/permission.wav";
+import questionSoundUrl from "../assets/notifications/question.wav";
+import subagentCompleteSoundUrl from "../assets/notifications/subagent_complete.wav";
 
 const STORAGE_KEY = "marionette-desktop-notify";
 const BASE_TITLE = "Marionette";
+/** Same event debounce as OpenCode notifier's sound/notification paths. */
+const DEDUPE_MS = 1000;
+/** Match OpenCode notifier's session.idle settling window. */
+export const DESKTOP_NOTIFY_SETTLE_MS = 350;
 
-export type NotifyKind = "reply" | "stuck";
+const SOUND_URLS: Partial<Record<NotifyKind, string>> = {
+  reply: completeSoundUrl,
+  permission: permissionSoundUrl,
+  question: questionSoundUrl,
+  // OpenCode 0.2.8 does not ship a separate plan cue; use its positive chime.
+  plan: completeSoundUrl,
+  error: errorSoundUrl,
+  stuck: errorSoundUrl,
+  process: errorSoundUrl,
+  subagent_complete: subagentCompleteSoundUrl,
+};
+
+const ERROR_KINDS = new Set<NotifyKind>(["error", "process", "stuck"]);
+const ACTION_KINDS = new Set<NotifyKind>(["permission", "question", "plan"]);
+
+export type NotifyKind =
+  | "reply"
+  | "stuck"
+  | "permission"
+  | "question"
+  | "plan"
+  | "error"
+  | "process"
+  | "subagent_complete";
 
 export type DesktopNotifyState = {
   enabled: boolean;
@@ -36,7 +70,8 @@ const listeners = new Set<Listener>();
 
 /** Dedupe: don't re-chime the same kind within a short window. */
 const lastRaisedAt: Partial<Record<NotifyKind, number>> = {};
-const DEDUPE_MS = 2500;
+const scheduledRaises = new Map<string, ReturnType<typeof setTimeout>>();
+const activeAudio = new Set<HTMLAudioElement>();
 
 function readEnabled(): boolean {
   try {
@@ -85,6 +120,16 @@ export function setDesktopNotifyEnabled(value: boolean): void {
   enabled = value;
   writeEnabled(value);
   if (!value) {
+    cancelAllScheduledDesktopNotifies();
+    for (const audio of activeAudio) {
+      try {
+        audio.pause();
+        audio.currentTime = 0;
+      } catch {
+        // ignore
+      }
+    }
+    activeAudio.clear();
     void clearDesktopNotify({ silent: true });
   }
   emit();
@@ -97,47 +142,55 @@ export function subscribeDesktopNotify(fn: Listener): () => void {
   };
 }
 
-/** Soft two-tone (reply) or lower warning (stuck). */
+/** Play the exact short WAV cue shipped by OpenCode's notifier. */
 export function playNotifySound(kind: NotifyKind): void {
+  const soundUrl = SOUND_URLS[kind];
+  if (!soundUrl) return;
+
   try {
-    const AudioCtx =
-      window.AudioContext ||
-      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AudioCtx) return;
-    const ctx = new AudioCtx();
-    const now = ctx.currentTime;
-    const gain = ctx.createGain();
-    gain.connect(ctx.destination);
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.14, now + 0.02);
-
-    const beep = (freq: number, start: number, dur: number) => {
-      const osc = ctx.createOscillator();
-      osc.type = "sine";
-      osc.frequency.setValueAtTime(freq, start);
-      osc.connect(gain);
-      osc.start(start);
-      osc.stop(start + dur);
+    const audio = new Audio(soundUrl);
+    audio.preload = "auto";
+    activeAudio.add(audio);
+    const cleanup = () => {
+      activeAudio.delete(audio);
+      audio.removeEventListener("ended", cleanup);
     };
-
-    if (kind === "reply") {
-      // Short "done" chime
-      beep(880, now, 0.1);
-      beep(1174.66, now + 0.1, 0.16);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.32);
-    } else {
-      // Lower warning
-      beep(392, now, 0.14);
-      beep(311.13, now + 0.16, 0.22);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.45);
-    }
-
-    window.setTimeout(() => {
-      void ctx.close().catch(() => undefined);
-    }, 600);
+    audio.addEventListener("ended", cleanup, { once: true });
+    // Keep an audio object alive for the duration of the cue, but do not let a
+    // failed/blocked WebView playback accumulate objects forever.
+    window.setTimeout(cleanup, 3000);
+    void audio.play().catch(cleanup);
   } catch {
-    // Autoplay / missing API — ignore
+    // Autoplay policy / missing API / malformed asset — ignore.
   }
+}
+
+/** Schedule a completion-style alert after the stream has settled. */
+export function scheduleDesktopNotify(
+  key: string,
+  kind: NotifyKind,
+  detail?: string | null,
+  delayMs = DESKTOP_NOTIFY_SETTLE_MS,
+): void {
+  cancelScheduledDesktopNotify(key);
+  const timer = setTimeout(() => {
+    scheduledRaises.delete(key);
+    void raiseDesktopNotify(kind, detail);
+  }, Math.max(0, delayMs));
+  scheduledRaises.set(key, timer);
+}
+
+/** Cancel a delayed completion when the session starts another turn. */
+export function cancelScheduledDesktopNotify(key: string): void {
+  const timer = scheduledRaises.get(key);
+  if (!timer) return;
+  clearTimeout(timer);
+  scheduledRaises.delete(key);
+}
+
+function cancelAllScheduledDesktopNotifies(): void {
+  for (const timer of scheduledRaises.values()) clearTimeout(timer);
+  scheduledRaises.clear();
 }
 
 async function win() {
@@ -176,9 +229,9 @@ export async function raiseDesktopNotify(
 
   const now = Date.now();
   const prev = lastRaisedAt[kind] ?? 0;
-  // Allow stuck → reply upgrade; throttle same-kind spam.
+  // Allow a higher-priority event to replace a previous one; throttle
+  // same-kind spam (the OpenCode plugin uses a 1s event debounce).
   if (kind === pending && now - prev < DEDUPE_MS) return;
-  if (now - prev < DEDUPE_MS && pending === kind) return;
   lastRaisedAt[kind] = now;
 
   pending = kind;
@@ -188,12 +241,26 @@ export async function raiseDesktopNotify(
   playNotifySound(kind);
 
   // Title badge (visible on taskbar hover / alt-tab)
-  const prefix = kind === "stuck" ? "⚠ " : "● ";
+  const prefix = ERROR_KINDS.has(kind) ? "⚠ " : ACTION_KINDS.has(kind) ? "! " : "● ";
+  const fallback =
+    kind === "stuck"
+      ? "Agent may be stuck"
+      : kind === "reply"
+        ? "Reply ready"
+        : kind === "subagent_complete"
+          ? "Subagent finished"
+          : kind === "permission"
+            ? "Permission required"
+            : kind === "question"
+              ? "Agent has a question"
+              : kind === "plan"
+                ? "Plan ready for review"
+                : kind === "process"
+                  ? "Agent process ended"
+                  : "Agent error";
   const title = lastDetail
     ? `${prefix}${lastDetail} · ${BASE_TITLE}`
-    : kind === "stuck"
-      ? `${prefix}Agent may be stuck · ${BASE_TITLE}`
-      : `${prefix}Reply ready · ${BASE_TITLE}`;
+    : `${prefix}${fallback} · ${BASE_TITLE}`;
   document.title = title;
 
   const w = await win();
@@ -213,11 +280,11 @@ export async function raiseDesktopNotify(
   }
 
   // Windows taskbar progress overlay:
-  //  - Paused  → yellow (reply)
-  //  - Error   → red (stuck)
+  //  - Paused  → yellow (reply / action needed)
+  //  - Error   → red (failure / stuck)
   try {
     await w.setProgressBar({
-      status: kind === "stuck" ? ProgressBarStatus.Error : ProgressBarStatus.Paused,
+      status: ERROR_KINDS.has(kind) ? ProgressBarStatus.Error : ProgressBarStatus.Paused,
       progress: 100,
     });
   } catch {

@@ -1,0 +1,5 @@
+The WAV notification cues in this directory were copied from
+@mohak34/opencode-notifier 0.2.8.
+
+Source: https://github.com/mohak34/opencode-notifier
+License: MIT (Copyright (c) 2025 Mohak S)

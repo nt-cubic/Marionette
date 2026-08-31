@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { Expand, Globe, Plus, Search, SendHorizontal, Shrink, Square } from "lucide-react";
+import { Expand, Plus, Search, SendHorizontal, Shrink, Square } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -2390,7 +2390,7 @@ export function Composer({
               aria-label={forceWebSearch ? "关闭强制联网检索" : "开启强制联网检索"}
               onClick={() => setForceWebSearch((v) => !v)}
             >
-              <Globe size={13} aria-hidden />
+              <Search size={13} aria-hidden />
             </button>
           </div>
           <div className="composer__actions">
