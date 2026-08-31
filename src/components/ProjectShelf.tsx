@@ -693,7 +693,6 @@ export function ProjectShelf({
                             )}
                             <span className="session-row__content">
                               <strong>{session.label}</strong>
-                              <em>{agentLabel(session.agentId)}</em>
                             </span>
                           </button>
                         )}

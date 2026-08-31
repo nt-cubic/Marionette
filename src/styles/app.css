@@ -1255,7 +1255,6 @@ body.is-project-reordering .project-list {
 .project-row small,
 .session-row strong,
 .session-row small,
-.session-row__time,
 .changed-row span:nth-child(2),
 .metadata-list dd {
   display: block;
@@ -1266,7 +1265,6 @@ body.is-project-reordering .project-list {
 
 .project-row small,
 .session-row small,
-.session-row__time,
 .metadata-list dt,
 .handoff-block small {
   color: var(--text-muted);
@@ -1405,6 +1403,156 @@ body.is-project-reordering .project-list {
 .session-row__rename-input:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+/* ── Project shelf density ────────────────────────────────────────────────
+ * Keep the hierarchy visible while giving each session a useful single-line
+ * row.  The selectors stay scoped to the shelf so the center and right panels
+ * keep their existing spacing.
+ */
+.project-tree .project-list {
+  gap: 8px;
+}
+
+.project-tree .project-group {
+  gap: 3px;
+}
+
+.project-tree .project-sessions {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.project-tree .project-row {
+  position: relative;
+  grid-template-columns: 16px 22px minmax(0, 1fr);
+  min-height: 32px;
+  border-radius: 6px;
+}
+
+.project-tree .project-row__grip {
+  min-height: 32px;
+}
+
+.project-tree .project-row__select,
+.project-tree .project-row__toggle {
+  min-height: 32px;
+}
+
+.project-tree .project-row__content strong {
+  color: var(--text-strong);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.project-tree .project-row.is-active {
+  border-color: transparent;
+  border-left-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+}
+
+/* Do not reserve space for project actions while they are hidden. */
+.project-tree .project-row__actions {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  z-index: 2;
+  padding-left: 3px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--panel-raised) 96%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition: opacity 120ms ease;
+}
+
+.project-tree .project-row.is-active .project-row__actions {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.project-tree .project-row:hover .project-row__actions,
+.project-tree .project-row:focus-within .project-row__actions,
+.project-tree .project-row.is-active:hover .project-row__actions,
+.project-tree .project-row.is-active:focus-within .project-row__actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.project-tree .session-row {
+  position: relative;
+  grid-template-columns: minmax(0, 1fr) auto;
+  width: 100%;
+  min-height: 30px;
+  margin-left: 0;
+  padding: 0 3px 0 20px;
+  border-radius: 6px;
+}
+
+.project-tree .session-row__select {
+  min-height: 30px;
+  padding: 4px 6px;
+}
+
+.project-tree .session-row__content {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.project-tree .session-row__content strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.project-tree .session-row__dot,
+.project-tree .session-row__pulse {
+  width: 6px;
+  height: 6px;
+}
+
+.project-tree .session-row:not(.is-active):hover {
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+
+.project-tree .session-row.is-active {
+  border-color: transparent;
+  border-left-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+}
+
+/* Actions float over the metadata only when the row is being inspected. */
+.project-tree .session-row__actions {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  z-index: 2;
+  padding-left: 3px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--panel-raised) 96%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition: opacity 120ms ease;
+}
+
+.project-tree .session-row:hover .session-row__actions,
+.project-tree .session-row:focus-within .session-row__actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.project-tree .session-row.is-active .session-row__actions {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.project-tree .session-row.is-active:hover .session-row__actions,
+.project-tree .session-row.is-active:focus-within .session-row__actions {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .session-view {
@@ -1785,6 +1933,37 @@ body.is-tab-detaching * {
 
 .custom-scrollbar.scrollbar-autohide.is-scrolling::-webkit-scrollbar-thumb:hover,
 .custom-scrollbar.scrollbar-autohide:hover::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* Sidebars: keep the scrollbar invisible until the whole panel is hovered. */
+.left-rail .custom-scrollbar.scrollbar-autohide,
+.context-panel.custom-scrollbar.scrollbar-autohide,
+.context-panel .custom-scrollbar.scrollbar-autohide {
+  scrollbar-color: transparent transparent;
+}
+
+.left-rail .custom-scrollbar.scrollbar-autohide::-webkit-scrollbar-thumb,
+.context-panel.custom-scrollbar.scrollbar-autohide::-webkit-scrollbar-thumb,
+.context-panel .custom-scrollbar.scrollbar-autohide::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+
+.left-rail:hover .custom-scrollbar.scrollbar-autohide,
+.context-panel:hover.custom-scrollbar.scrollbar-autohide,
+.context-panel:hover .custom-scrollbar.scrollbar-autohide {
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+.left-rail:hover .custom-scrollbar.scrollbar-autohide::-webkit-scrollbar-thumb,
+.context-panel:hover.custom-scrollbar.scrollbar-autohide::-webkit-scrollbar-thumb,
+.context-panel:hover .custom-scrollbar.scrollbar-autohide::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+}
+
+.left-rail:hover .custom-scrollbar.scrollbar-autohide::-webkit-scrollbar-thumb:hover,
+.context-panel:hover.custom-scrollbar.scrollbar-autohide::-webkit-scrollbar-thumb:hover,
+.context-panel:hover .custom-scrollbar.scrollbar-autohide::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-thumb-hover);
 }
 
