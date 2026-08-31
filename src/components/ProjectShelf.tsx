@@ -43,7 +43,7 @@ type ProjectShelfProps = {
   onCollapse: () => void;
   onExpand: () => void;
   onToggleTheme: () => void;
-  /** Desktop attention (taskbar flash + sound) when AI replies / stalls. */
+  /** Desktop attention (taskbar flash + sound) for agent events and stalls. */
   desktopNotifyEnabled?: boolean;
   onToggleDesktopNotify?: () => void;
   onAddProject: () => void;
@@ -406,7 +406,7 @@ export function ProjectShelf({
       type="button"
       title={
         desktopNotifyEnabled
-          ? "Desktop notify on · taskbar flash + sound when AI replies or may be stuck"
+          ? "Desktop notify on · taskbar flash + sound for replies, questions, permissions, errors, and stalls"
           : "Desktop notify off · click to enable"
       }
       aria-label={desktopNotifyEnabled ? "Disable desktop notifications" : "Enable desktop notifications"}

@@ -14,7 +14,7 @@ import {
   sealOpenAssistantReplies,
   userMessageEvent,
 } from "../lib/acpTranscript";
-import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, OPEN_PATH_EVENT, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, saveTodos, setProxyConfig, testProxy, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, startAcpSession, startAgentLogin, stopAcpSession, takeLaunchOpenPath, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision } from "../lib/api";
+import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, OPEN_PATH_EVENT, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, setProxyConfig, testProxy, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, startAcpSession, startAgentLogin, stopAcpSession, takeLaunchOpenPath, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision } from "../lib/api";
 import {
   bindDetachedWindowReaper,
   hideDetachedWindowForSession,
@@ -53,8 +53,10 @@ import {
 } from "../lib/usage";
 import {
   bindDesktopNotifyFocusHandlers,
+  cancelScheduledDesktopNotify,
   isDesktopNotifyEnabled,
   raiseDesktopNotify,
+  scheduleDesktopNotify,
   setDesktopNotifyEnabled,
 } from "../lib/desktopNotify";
 import { parseAvailableCommandsUpdate } from "../lib/slashCommands";
@@ -174,6 +176,12 @@ function formatAcpRpcError(data: unknown): string | null {
   } catch {
     return "Unknown agent error";
   }
+}
+
+/** Keep native title/taskbar details readable when an agent returns JSON. */
+function compactNotifyDetail(value: string | null | undefined, max = 160): string {
+  const compact = value?.replace(/\s+/g, " ").trim() ?? "";
+  return compact.length > max ? `${compact.slice(0, max - 1)}…` : compact;
 }
 
 /**
@@ -1503,10 +1511,27 @@ export function App() {
         // Usage panel: refresh once after each completed Reply turn.
         refreshUsageAfterTurnRef.current(payload.sessionId);
         // Desktop notify only for a real completed turn (was running, not cancel).
+        // Clean completion follows OpenCode's 350ms idle-settle window so a
+        // queued follow-up can cancel the intermediate completion alert.
         if (wasRunning && stopReason !== "cancelled") {
           const sess = sessionsRef.current.find((s) => s.id === payload.sessionId);
           const label = sess?.label?.trim() || "Session";
-          void raiseDesktopNotify("reply", label);
+          const isDelegateChild = delegateMetaRef.current.has(payload.sessionId);
+          const turnFailed =
+            payload.kind === "error" ||
+            stopReason === "error" ||
+            stopReason === "refusal";
+          if (!isDelegateChild) {
+            if (turnFailed) {
+              const errorDetail = compactNotifyDetail(formatAcpRpcError(payload.data));
+              void raiseDesktopNotify(
+                "error",
+                errorDetail ? `${label} · ${errorDetail}` : `${label} · Agent error`,
+              );
+            } else {
+              scheduleDesktopNotify(payload.sessionId, "reply", label);
+            }
+          }
         }
         pushDebug({
           sessionId: payload.sessionId,
@@ -1578,6 +1603,21 @@ export function App() {
         }
         if (payload.sessionId === currentSessionIdRef.current) {
           setSessionCapabilities(null);
+        }
+        if (endedHard) {
+          // A hard process exit is an error even when it raced the turn-end
+          // event. Reuse the error channel so the 1s debounce coalesces the
+          // two signals instead of chiming twice for one crash.
+          cancelScheduledDesktopNotify(payload.sessionId);
+          const sess = sessionsRef.current.find((s) => s.id === payload.sessionId);
+          const label = sess?.label?.trim() || "Session";
+          const processDetail = compactNotifyDetail(detail);
+          void raiseDesktopNotify(
+            "error",
+            processDetail
+              ? `${label} · Agent process ended: ${processDetail}`
+              : `${label} · Agent process ended`,
+          );
         }
         // Drop dead process bookkeeping so the next warm can respawn cleanly.
         void stopAcpSession(payload.sessionId).catch(() => undefined);
@@ -1677,13 +1717,20 @@ export function App() {
               };
             })
             .filter((o): o is NonNullable<typeof o> => o != null);
+          const title = typeof data.title === "string" ? data.title : "Permission required";
+          const detail = typeof data.detail === "string" ? data.detail : null;
           setPermissionPrompt({
             requestId,
             sessionId: payload.sessionId,
-            title: typeof data.title === "string" ? data.title : "Permission required",
-            detail: typeof data.detail === "string" ? data.detail : null,
+            title,
+            detail,
             options,
           });
+          cancelScheduledDesktopNotify(payload.sessionId);
+          void raiseDesktopNotify(
+            "permission",
+            compactNotifyDetail(detail ? `${title}: ${detail}` : title),
+          );
         }
       }
       if (payload.method === "permission/timeout") {
@@ -1698,7 +1745,15 @@ export function App() {
       // Grok `_x.ai/ask_user_question` → interactive choice card
       if (payload.method === "question/prompt" && payload.data) {
         const parsed = parseAskQuestionPrompt(payload.sessionId, payload.data);
-        if (parsed) setAskPrompt(parsed);
+        if (parsed) {
+          setAskPrompt(parsed);
+          cancelScheduledDesktopNotify(payload.sessionId);
+          const question = compactNotifyDetail(parsed.questions[0]?.question);
+          void raiseDesktopNotify(
+            "question",
+            question ? `Agent question: ${question}` : "Agent has a question",
+          );
+        }
       }
       if (payload.method === "question/timeout") {
         setAskPrompt((current) => {
@@ -1731,6 +1786,8 @@ export function App() {
                   : null,
             planMarkdown,
           });
+          cancelScheduledDesktopNotify(payload.sessionId);
+          void raiseDesktopNotify("plan", "Plan ready for review");
         }
       }
       if (payload.method === "plan/timeout") {
@@ -3777,6 +3834,19 @@ export function App() {
         return next;
       });
 
+      const subagentLabel = `${meta.agentLabel || "Subagent"} subagent`;
+      if (status === "done") {
+        scheduleDesktopNotify(childId, "subagent_complete", subagentLabel);
+      } else if (status === "failed" || status === "timeout") {
+        const failureDetail = compactNotifyDetail(error);
+        void raiseDesktopNotify(
+          "error",
+          failureDetail
+            ? `${subagentLabel} · ${failureDetail}`
+            : `${subagentLabel} · ${status}`,
+        );
+      }
+
       void stopAcpSession(childId).catch(() => undefined);
 
       // Drain queue for this parent.
@@ -4215,6 +4285,10 @@ export function App() {
       // (queued sends only reach here at flush time, so the anchor is honest).
       turnSentAtRef.current[sid] = Date.now();
       grokTurnUsageRef.current[sid] = emptyGrokTurnUsage();
+
+      // Starting a new turn supersedes a delayed completion cue for the
+      // previous turn (the same reset OpenCode performs when it sees busy).
+      cancelScheduledDesktopNotify(sid);
       const um = userMessageEvent(sid, composed, {
         ...(sendMetaRef.current ?? {}),
         attachments: imageAttachments.length > 0 ? imageAttachments : undefined,
@@ -4385,6 +4459,12 @@ export function App() {
         agentId: sess?.agentId,
         agentLabel: agent?.label,
       });
+      const label = sess?.label?.trim() || "Session";
+      const sendError = compactNotifyDetail(classified.message);
+      void raiseDesktopNotify(
+        "error",
+        sendError ? `${label} · ${sendError}` : `${label} · Send failed`,
+      );
       if (classified.kind === "auth" && sess?.agentId) {
         const spec = agentAuthSpec(sess.agentId);
         if (spec) {
@@ -5056,7 +5136,15 @@ export function App() {
           </span>
           <div className="update-banner__actions">
             {appUpdate.updateAvailable && appUpdate.releaseUrl && (
-              <a href={appUpdate.releaseUrl} target="_blank" rel="noreferrer">
+              <a
+                href={appUpdate.releaseUrl}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(event) => {
+                  event.preventDefault();
+                  void openExternal(appUpdate.releaseUrl!);
+                }}
+              >
                 说明
               </a>
             )}
