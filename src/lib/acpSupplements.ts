@@ -289,11 +289,11 @@ export function expandAcpConfigAttempts(
   const sup = getAcpSupplement(agentId);
   const attempts: Record<string, unknown>[] = [];
 
-  // Grok: model is launch-time only; effort and mode use legacy set_{model,mode}
-  // RPCs routed through Rust. Never try set_config_option for these on Grok.
+  // Grok: there is no config id for model; hand Rust the logical knob and let
+  // `update_session` fall back from set_config_option to session/set_model.
   if (agentId === "grok-build") {
     if (typeof patch.model === "string") {
-      return [];
+      return [{ configId: "model", value: patch.model }];
     }
   }
 
