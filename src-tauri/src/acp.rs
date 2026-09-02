@@ -346,6 +346,15 @@ impl AcpService {
                 }
             }
         }
+        // GUI-launched apps on macOS/Linux inherit a minimal PATH; widen it so
+        // npm shims (`#!/usr/bin/env node`) and the agent's own tools resolve.
+        #[cfg(not(target_os = "windows"))]
+        {
+            child_command.env(
+                "PATH",
+                crate::process_util::env_path_for_children(&resolved.program),
+            );
+        }
         // Folders the user granted outside the project. opencode gates these
         // behind its `external_directory` permission and reads the grant from
         // this env var — the only lever that works for a *subagent*, whose
