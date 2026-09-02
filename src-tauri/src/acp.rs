@@ -704,6 +704,16 @@ impl AcpService {
             Some(agent_session_id.clone());
 
         let caps = parse_session_capabilities(&new_session);
+        // ACP does not currently require a title in `session/new`, but a few
+        // agents return one (or expose it under their response metadata). Pass
+        // it through the ready event so the UI can use it when available.
+        let initial_title = new_session
+            .get("title")
+            .cloned()
+            .or_else(|| new_session.get("sessionTitle").cloned())
+            .or_else(|| new_session.pointer("/sessionInfo/title").cloned())
+            .or_else(|| new_session.pointer("/_meta/title").cloned())
+            .unwrap_or(Value::Null);
         if let Ok(mut caps_map) = self.capabilities.lock() {
             caps_map.insert(session_id.clone(), caps.clone());
         }
@@ -719,6 +729,7 @@ impl AcpService {
                     "configOptions": new_session.get("configOptions").cloned().unwrap_or(Value::Null),
                     "modes": new_session.get("modes").cloned().unwrap_or(Value::Null),
                     "capabilities": caps,
+                    "title": initial_title,
                     // Seeds the Usage panel before the first usage_update lands
                     // (and is the only size Grok ever reports).
                     "contextSize": advertised_context_size(&new_session),

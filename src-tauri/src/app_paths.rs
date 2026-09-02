@@ -3,11 +3,15 @@
 //! Preferred: `.marionette` (project) and `~/.marionette` (global).
 //! Legacy AgentShell paths (`.agentshell`) are migrated once via rename when safe.
 
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 pub const DIR_NAME: &str = ".marionette";
 pub const LEGACY_DIR_NAME: &str = ".agentshell";
+
+/// Virtual project ID for chat sessions — not shown in the project list.
+pub const CHAT_PROJECT_ID: &str = "project-chat";
 
 /// Global app dir under the user profile (`%USERPROFILE%\.marionette`).
 pub fn global_dir() -> Result<PathBuf, String> {
@@ -43,4 +47,15 @@ pub fn ensure_project_layout(project_root: &Path) -> Result<PathBuf, String> {
             .map_err(|e| format!("Create {DIR_NAME}/{sub} failed: {e}"))?;
     }
     Ok(root)
+}
+
+/// Returns the current working directory of the process.
+pub fn current_dir() -> Result<String, String> {
+    env::current_dir()
+        .map_err(|e| format!("Failed to get current directory: {e}"))
+        .and_then(|p| {
+            p.to_str()
+                .map(|s| s.to_string())
+                .ok_or_else(|| "Current directory path is not valid UTF-8".to_string())
+        })
 }

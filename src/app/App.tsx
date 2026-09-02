@@ -7,6 +7,7 @@ import {
   coalesceAdjacentAssistantFragments,
   coalesceAdjacentThoughts,
   collapseIntermediateAssistantAsThought,
+  extractAcpSessionTitle,
   extractAcpUpdateText,
   findLastIndexForSession,
   getSessionUpdate,
@@ -14,7 +15,7 @@ import {
   sealOpenAssistantReplies,
   userMessageEvent,
 } from "../lib/acpTranscript";
-import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, OPEN_PATH_EVENT, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, setProxyConfig, testProxy, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, startAcpSession, startAgentLogin, stopAcpSession, takeLaunchOpenPath, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision } from "../lib/api";
+import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, startAcpSession, startAgentLogin, stopAcpSession, takeLaunchOpenPath, testProxy, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, CHAT_PROJECT_ID } from "../lib/api";
 import {
   bindDetachedWindowReaper,
   hideDetachedWindowForSession,
@@ -289,6 +290,14 @@ export function App() {
   const [openSessionIds, setOpenSessionIds] = useState<string[]>([sessions[0]?.id ?? ""]);
   /** Project opened via Explorer "在此处打开" / --open-path — pinned at shelf top. */
   const [openHereProjectId, setOpenHereProjectId] = useState<string | null>(null);
+  /** Default folder for the Chat section (from --open-path or CWD). */
+  const [defaultFolderPath, setDefaultFolderPath] = useState<string>("");
+  /** Chat rows created before the initial async storage restore completed. */
+  const startupCreatedChatsRef = useRef<Session[]>([]);
+  /** Manual rename wins over any later title emitted by an agent. */
+  const manuallyRenamedSessionIdsRef = useRef<Set<string>>(new Set());
+  /** Ignore stale filesystem-search responses when the user keeps typing. */
+  const searchRequestRef = useRef(0);
   const [viewMode, setViewMode] = useState<SessionViewMode>("clean");
   const [leftCollapsed, setLeftCollapsed] = useState(IS_DETACHED_WINDOW);
   const [rightCollapsed, setRightCollapsed] = useState(false);
@@ -541,7 +550,7 @@ export function App() {
   }>>>({});
 
   const captureProjectFileSnapshot = useCallback(async (projectId: string): Promise<ProjectFileSnapshot | null> => {
-    if (!isTauriRuntime() || !projectId) return null;
+    if (!isTauriRuntime() || !projectId || projectId === CHAT_PROJECT_ID) return null;
     const changedFiles = await getChangedFiles(projectId);
     const entries = await Promise.all(
       changedFiles.map(async (file) => {
@@ -667,6 +676,32 @@ export function App() {
     });
   }, []);
 
+  /** Apply an ACP-provided conversation title without overriding a manual rename. */
+  const applyAgentSessionTitle = useCallback((sessionId: string, rawTitle: string) => {
+    const title = titleFromUserText(rawTitle);
+    if (!title || manuallyRenamedSessionIdsRef.current.has(sessionId)) return;
+    const known = sessionsRef.current.find((session) => session.id === sessionId);
+    if (!known || known.labelSource === "manual") return;
+
+    setAvailableSessions((current) => {
+      let changed = false;
+      const next = current.map((session) => {
+        if (session.id !== sessionId || session.labelSource === "manual") return session;
+        if (session.label === title && session.labelSource === "agent") return session;
+        changed = true;
+        return { ...session, label: title, labelSource: "agent" as const };
+      });
+      return changed ? next : current;
+    });
+    void updateSessionLabel(sessionId, title, "agent").catch(() => undefined);
+    void broadcastSessionPatch({ sessionId, label: title, labelSource: "agent" });
+    if (IS_DETACHED_WINDOW && DETACHED_SESSION_ID === sessionId) {
+      void import("@tauri-apps/api/window")
+        .then(({ getCurrentWindow }) => getCurrentWindow().setTitle(title))
+        .catch(() => undefined);
+    }
+  }, []);
+
   const usage = useMemo<UsageSnapshot>(() => {
     const activeSession = availableSessions.find((session) => session.id === currentSessionId);
     const agent =
@@ -774,47 +809,77 @@ export function App() {
 
   /**
    * Explorer "在此处打开 Marionette" / `--open-path`:
-   * add-or-reopen the folder, pin it to the top of the shelf, select it, new dialog.
+   * if folder has .marionette → project; otherwise → chat session.
    */
   const openProjectAtPath = useCallback(async (rawPath: string) => {
     if (IS_DETACHED_WINDOW) return;
     const path = rawPath.trim();
     if (!path) return;
     try {
-      const project = await addProject(path);
-      const prior = projectsRef.current.filter((p) => p.id !== project.id);
-      let nextProjects = [project, ...prior];
-      try {
-        nextProjects = await reorderProjectsApi([
-          project.id,
-          ...prior.map((p) => p.id),
-        ]);
-      } catch {
-        /* order is best-effort */
-      }
-      setAvailableProjects(nextProjects);
-      setOpenHereProjectId(project.id);
-      setCurrentProjectId(project.id);
-
-      // Merge this project's sessions into the shelf (others already loaded).
-      const projectSessions = (await listSessions(project.id)).map(asIdleOnLoad);
-      setAvailableSessions((current) => {
-        const others = current.filter((s) => s.projectId !== project.id);
-        return [...projectSessions, ...others];
-      });
-
       const agentId =
         agentsRef.current[0]?.id ??
         availableAgents[0]?.id ??
         agents[0].id;
-      await createSessionForProject(project.id, agentId, project);
-      void refreshProjectContext(project.id);
-      pushDebug({
-        level: "info",
-        source: "shell",
-        summary: "open here",
-        detail: project.rootPath,
-      });
+      const result = await openHere(path, agentId);
+      if (result.kind === "project") {
+        const project = result.project;
+        const prior = projectsRef.current.filter((p) => p.id !== project.id);
+        let nextProjects = [project, ...prior];
+        try {
+          nextProjects = await reorderProjectsApi([
+            project.id,
+            ...prior.map((p) => p.id),
+          ]);
+        } catch {
+          /* order is best-effort */
+        }
+        setAvailableProjects(nextProjects);
+        setOpenHereProjectId(project.id);
+        setCurrentProjectId(project.id);
+        const projectSessions = (await listSessions(project.id)).map(asIdleOnLoad);
+        setAvailableSessions((current) => {
+          const others = current.filter(
+            (s) => s.projectId !== project.id && s.projectId !== CHAT_PROJECT_ID,
+          );
+          return [...projectSessions, ...current.filter((s) => s.projectId === CHAT_PROJECT_ID), ...others];
+        });
+        await createSessionForProject(project.id, agentId, project);
+        void refreshProjectContext(project.id);
+        pushDebug({
+          level: "info",
+          source: "shell",
+          summary: "open here",
+          detail: project.rootPath,
+        });
+      } else if (result.kind === "chat") {
+        const session = asIdleOnLoad(result.session);
+        startupCreatedChatsRef.current = [
+          session,
+          ...startupCreatedChatsRef.current.filter((item) => item.id !== session.id),
+        ];
+        setDefaultFolderPath(session.cwd || path);
+        setAvailableSessions((current) => [
+          session,
+          ...current.filter((s) => s.id !== session.id),
+        ]);
+        setOpenHereProjectId(null);
+        setCurrentProjectId(CHAT_PROJECT_ID);
+        setCurrentSessionId(session.id);
+        setOpenSessionIds((current) => [
+          session.id,
+          ...current.filter((id) => id !== session.id),
+        ]);
+        setViewMode("clean");
+        // The ref is populated by the current render; this also loads an
+        // already-persisted transcript when the event arrives mid-session.
+        openSessionRef.current(session);
+        pushDebug({
+          level: "info",
+          source: "shell",
+          summary: "open here → chat",
+          detail: path,
+        });
+      }
     } catch (error) {
       pushDebug({
         level: "error",
@@ -833,6 +898,8 @@ export function App() {
         !IS_DETACHED_WINDOW && isTauriRuntime()
           ? await takeLaunchOpenPath()
           : null;
+      const defaultFolder = launchPath ?? (await getDefaultFolder());
+      if (defaultFolder) setDefaultFolderPath(defaultFolder);
 
       const [nextProjects, nextAgents, nextProxy] = await Promise.all([
         listProjects(),
@@ -845,61 +912,102 @@ export function App() {
       setAvailableAgents(resolvedAgents);
       setProxyConfigState(nextProxy);
 
-      // Cold start from Explorer / CLI: pin path project + new dialog (skip UI restore).
+      const loadAllSessions = async (projectList: Project[]) => {
+        const [projectSessionGroups, chats] = await Promise.all([
+          Promise.all(projectList.map((project) => listSessions(project.id))),
+          listChatSessions(),
+        ]);
+        return [
+          ...projectSessionGroups.flat(),
+          ...chats,
+        ].map(asIdleOnLoad);
+      };
+      // A user can click “新建对话” while the initial storage reads are still
+      // in flight. Keep any such Chat rows that were not present in the read
+      // result; otherwise the later restore pass would erase the new dialog.
+      const setLoadedSessions = (loaded: Session[]): Session[] => {
+        const loadedById = new Map(loaded.map((session) => [session.id, session]));
+        // Prefer the in-memory row for a Chat created during startup: the
+        // backend read may have raced the create, and the async prefs write
+        // may not have landed yet.
+        for (const session of startupCreatedChatsRef.current) {
+          loadedById.set(session.id, session);
+        }
+        const loadedIds = new Set(loaded.map((session) => session.id));
+        const pendingChats = startupCreatedChatsRef.current.filter(
+          (session) => !loadedIds.has(session.id),
+        );
+        const merged = [...pendingChats, ...loadedById.values()];
+        setAvailableSessions(merged);
+        return merged;
+      };
+
+      // Cold start from Explorer / CLI. A folder that already owns
+      // `.marionette` is a project; a plain folder becomes one Chat session.
       if (launchPath) {
         try {
-          const project = await addProject(launchPath);
-          const prior = resolvedProjects.filter((p) => p.id !== project.id);
-          resolvedProjects = [project, ...prior];
-          try {
-            resolvedProjects = await reorderProjectsApi([
-              project.id,
-              ...prior.map((p) => p.id),
-            ]);
-          } catch {
-            /* best-effort pin */
-          }
-          setAvailableProjects(resolvedProjects);
-          setOpenHereProjectId(project.id);
-          setCurrentProjectId(project.id);
-
-          const loadedSessions = (
-            await Promise.all(
-              resolvedProjects.map((p) => listSessions(p.id)),
-            )
-          )
-            .flat()
-            .map(asIdleOnLoad);
-          setAvailableSessions(loadedSessions);
-
           const agentId = resolvedAgents[0]?.id ?? agents[0].id;
-          const newSession = await createSessionApi(project.id, agentId);
-          if (newSession) {
-            const last = getLastUsedDefaults(agentId);
-            let sessionWithPrefs = newSession;
-            if (last) {
-              sessionWithPrefs = {
-                ...newSession,
-                preferredModel: last.modelId,
-                preferredMode: last.modeId,
-                preferredEffort: last.effort,
-                preferredEffortId: last.effortId,
-                preferredAlwaysApprove: last.alwaysApprove,
-              };
-              void updateSessionPrefs(newSession.id, {
-                preferredModel: sessionWithPrefs.preferredModel,
-                preferredMode: sessionWithPrefs.preferredMode,
-                preferredEffort: sessionWithPrefs.preferredEffort,
-                preferredEffortId: sessionWithPrefs.preferredEffortId,
-                preferredAlwaysApprove: sessionWithPrefs.preferredAlwaysApprove,
-              }).catch(() => undefined);
+          const result = await openHere(launchPath, agentId);
+          if (result.kind === "project") {
+            const project = result.project;
+            const prior = resolvedProjects.filter((p) => p.id !== project.id);
+            resolvedProjects = [project, ...prior];
+            try {
+              resolvedProjects = await reorderProjectsApi([
+                project.id,
+                ...prior.map((p) => p.id),
+              ]);
+            } catch {
+              /* best-effort pin */
             }
-            setAvailableSessions((current) => [
-              sessionWithPrefs,
-              ...current.filter((s) => s.id !== sessionWithPrefs.id),
+            setAvailableProjects(resolvedProjects);
+            setOpenHereProjectId(project.id);
+            setCurrentProjectId(project.id);
+
+            const loadedSessions = await loadAllSessions(resolvedProjects);
+            setLoadedSessions(loadedSessions);
+
+            const newSession = await createSessionApi(project.id, agentId);
+            if (newSession) {
+              const last = getLastUsedDefaults(agentId);
+              let sessionWithPrefs = newSession;
+              if (last) {
+                sessionWithPrefs = {
+                  ...newSession,
+                  preferredModel: last.modelId,
+                  preferredMode: last.modeId,
+                  preferredEffort: last.effort,
+                  preferredEffortId: last.effortId,
+                  preferredAlwaysApprove: last.alwaysApprove,
+                };
+                void updateSessionPrefs(newSession.id, {
+                  preferredModel: sessionWithPrefs.preferredModel,
+                  preferredMode: sessionWithPrefs.preferredMode,
+                  preferredEffort: sessionWithPrefs.preferredEffort,
+                  preferredEffortId: sessionWithPrefs.preferredEffortId,
+                  preferredAlwaysApprove: sessionWithPrefs.preferredAlwaysApprove,
+                }).catch(() => undefined);
+              }
+              setAvailableSessions((current) => [
+                sessionWithPrefs,
+                ...current.filter((s) => s.id !== sessionWithPrefs.id),
+              ]);
+              setOpenSessionIds([sessionWithPrefs.id]);
+              setCurrentSessionId(sessionWithPrefs.id);
+              setViewMode("clean");
+            }
+          } else {
+            const session = asIdleOnLoad(result.session);
+            const loadedSessions = await loadAllSessions(resolvedProjects);
+            setAvailableProjects(resolvedProjects);
+            setLoadedSessions([
+              session,
+              ...loadedSessions.filter((item) => item.id !== session.id),
             ]);
-            setOpenSessionIds([sessionWithPrefs.id]);
-            setCurrentSessionId(sessionWithPrefs.id);
+            setOpenHereProjectId(null);
+            setCurrentProjectId(CHAT_PROJECT_ID);
+            setCurrentSessionId(session.id);
+            setOpenSessionIds([session.id]);
             setViewMode("clean");
           }
           // Context scan runs via currentProjectId effect after state commits.
@@ -926,18 +1034,19 @@ export function App() {
         setCurrentProjectId("");
       }
 
-      const loadedSessions = (
-        await Promise.all(resolvedProjects.map((project) => listSessions(project.id)))
-      )
-        .flat()
-        .map(asIdleOnLoad);
-      if (loadedSessions.length > 0 || isTauriRuntime()) {
-        setAvailableSessions(loadedSessions);
+      const loadedSessions = await loadAllSessions(resolvedProjects);
+      const effectiveSessions = setLoadedSessions(loadedSessions);
+      if (effectiveSessions.length > 0 || isTauriRuntime()) {
         // Focus the dialog the user last used (agent/model/mode/effort already
         // ride on the session row). Detached windows still pin to their URL id.
-        const restored = pickRestoredSession(loadedSessions, {
-          detachedSessionId: DETACHED_SESSION_ID,
-        });
+        const startupChat = startupCreatedChatsRef.current.find((session) =>
+          effectiveSessions.some((candidate) => candidate.id === session.id),
+        );
+        const restored = startupChat
+          ? { session: startupChat, openSessionIds: [startupChat.id] }
+          : pickRestoredSession(effectiveSessions, {
+              detachedSessionId: DETACHED_SESSION_ID,
+            });
         if (restored) {
           const preferred = restored.session;
           setCurrentProjectId(preferred.projectId);
@@ -958,6 +1067,7 @@ export function App() {
           setOpenSessionIds([]);
         }
       }
+
     })();
   }, [pushDebug]);
 
@@ -1132,12 +1242,17 @@ export function App() {
         const next = current.map((s) => {
           if (s.id !== patch.sessionId) return s;
           const label = patch.label ?? s.label;
+          const labelSource = patch.labelSource ?? s.labelSource;
           const status = patch.status ?? s.status;
-          if (label === s.label && status === s.status) return s;
+          if (
+            label === s.label &&
+            labelSource === s.labelSource &&
+            status === s.status
+          ) return s;
           changed = true;
           const processId =
             status === "exited" || status === "error" ? null : s.processId;
-          return { ...s, label, status, processId };
+          return { ...s, label, labelSource, status, processId };
         });
         return changed ? next : current;
       });
@@ -1228,6 +1343,8 @@ export function App() {
           if (!seeded) return current;
           return { ...current, [payload.sessionId]: seeded };
         });
+        const title = extractAcpSessionTitle(payload.data);
+        if (title) applyAgentSessionTitle(payload.sessionId, title);
       }
 
       // Live transcript: thinking / tool / assistant stream as events arrive
@@ -1240,19 +1357,8 @@ export function App() {
         });
 
         const update = getSessionUpdate(payload.data);
-        if (update && getSessionUpdateKind(update) === "session_info_update") {
-          const title = typeof update.title === "string" ? update.title.trim() : "";
-          if (title) {
-            setAvailableSessions((current) =>
-              current.map((s) =>
-                s.id === payload.sessionId && shouldAutoRenameLabel(s.label)
-                  ? { ...s, label: titleFromUserText(title) }
-                  : s
-              )
-            );
-            void updateSessionLabel(payload.sessionId, titleFromUserText(title)).catch(() => undefined);
-          }
-        }
+        const title = extractAcpSessionTitle(payload.data);
+        if (title) applyAgentSessionTitle(payload.sessionId, title);
 
         // ACP slash command catalogue for Composer `/` autocomplete.
         const slashList = parseAvailableCommandsUpdate(payload.data);
@@ -1831,7 +1937,7 @@ export function App() {
       for (const t of cancelWatchdogsRef.current.values()) clearTimeout(t);
       cancelWatchdogsRef.current.clear();
     };
-  }, [pushDebug, touchActivity, setAuthHintFor]);
+  }, [applyAgentSessionTitle, pushDebug, touchActivity, setAuthHintFor]);
   // note: pushDebug is stable via useCallback
 
   /** Debounced rewrite of Clean transcript JSONL per session. */
@@ -1860,13 +1966,17 @@ export function App() {
 
   const renameSessionFromText = useCallback((sessionId: string, text: string) => {
     const session = sessionsRef.current.find((s) => s.id === sessionId);
-    if (!session || !shouldAutoRenameLabel(session.label)) return;
+    if (!session || session.labelSource === "manual" || session.labelSource === "user" || session.labelSource === "agent") return;
+    // New rows carry an explicit default source. Legacy rows still use the
+    // old placeholder-label heuristic so an existing manual title is not
+    // unexpectedly replaced after upgrading.
+    if (session.labelSource !== "default" && !shouldAutoRenameLabel(session.label)) return;
     const label = titleFromUserText(text);
     setAvailableSessions((current) =>
-      current.map((s) => (s.id === sessionId ? { ...s, label } : s))
+      current.map((s) => (s.id === sessionId ? { ...s, label, labelSource: "user" } : s))
     );
-    void updateSessionLabel(sessionId, label).catch(() => undefined);
-    void broadcastSessionPatch({ sessionId, label });
+    void updateSessionLabel(sessionId, label, "user").catch(() => undefined);
+    void broadcastSessionPatch({ sessionId, label, labelSource: "user" });
     if (IS_DETACHED_WINDOW && DETACHED_SESSION_ID === sessionId) {
       void import("@tauri-apps/api/window")
         .then(({ getCurrentWindow }) => getCurrentWindow().setTitle(label))
@@ -1877,11 +1987,12 @@ export function App() {
   /** Manual rename (shelf / tab) — always persists, stops future auto-title. */
   const handleRenameSession = useCallback((sessionId: string, label: string) => {
     const next = label.trim() || "New session";
+    manuallyRenamedSessionIdsRef.current.add(sessionId);
     setAvailableSessions((current) =>
-      current.map((s) => (s.id === sessionId ? { ...s, label: next } : s))
+      current.map((s) => (s.id === sessionId ? { ...s, label: next, labelSource: "manual" } : s))
     );
-    void updateSessionLabel(sessionId, next).catch(() => undefined);
-    void broadcastSessionPatch({ sessionId, label: next });
+    void updateSessionLabel(sessionId, next, "manual").catch(() => undefined);
+    void broadcastSessionPatch({ sessionId, label: next, labelSource: "manual" });
     if (IS_DETACHED_WINDOW && DETACHED_SESSION_ID === sessionId) {
       void import("@tauri-apps/api/window")
         .then(({ getCurrentWindow }) => getCurrentWindow().setTitle(next))
@@ -1978,12 +2089,48 @@ export function App() {
 
   const handleShelfSearch = useCallback(async (query: string) => {
     const q = query.trim();
+    const requestId = ++searchRequestRef.current;
     if (!q) {
       setSearchHitIds(null);
       return;
     }
+    // Metadata filtering is immediate in ProjectShelf. Clear the previous
+    // transcript result while this query is being read from disk.
+    setSearchHitIds(null);
     const hits = await searchSessions(q);
-    setSearchHitIds(hits);
+    if (requestId !== searchRequestRef.current) return;
+
+    // The transcript writer is debounced, so include the current in-memory
+    // turn as well. This makes a just-sent phrase searchable immediately.
+    const needle = q.toLowerCase();
+    const liveHits = new Set<string>();
+    for (const event of liveEventsRef.current) {
+      let searchable = "";
+      switch (event.type) {
+        case "user_message":
+        case "assistant_message":
+        case "thought":
+        case "tool_call":
+          searchable = event.text;
+          break;
+        case "file_change":
+          searchable = event.path;
+          break;
+        case "handoff_prepared":
+          searchable = `${event.prompt} ${event.targetAgentId}`;
+          break;
+        case "subtask_started":
+          searchable = `${event.prompt} ${event.agentLabel}`;
+          break;
+        case "subtask_result":
+          searchable = `${event.summary} ${event.error ?? ""}`;
+          break;
+        default:
+          break;
+      }
+      if (searchable.toLowerCase().includes(needle)) liveHits.add(event.sessionId);
+    }
+    setSearchHitIds([...new Set([...hits, ...liveHits])]);
   }, []);
 
   const refreshAgentAuth = useCallback(
@@ -2423,7 +2570,11 @@ export function App() {
   }, [resizingSide]);
 
   const currentProject = useMemo(
-    () => availableProjects.find((project) => project.id === currentProjectId) ?? availableProjects[0] ?? (isTauriRuntime() ? undefined : projects[0]),
+    () => {
+      const selected = availableProjects.find((project) => project.id === currentProjectId);
+      if (selected || currentProjectId === CHAT_PROJECT_ID) return selected;
+      return availableProjects[0] ?? (isTauriRuntime() ? undefined : projects[0]);
+    },
     [availableProjects, currentProjectId]
   );
 
@@ -2432,21 +2583,26 @@ export function App() {
     [availableSessions, currentProject]
   );
 
+  const chatSessions = useMemo(
+    () => availableSessions.filter((session) => session.projectId === CHAT_PROJECT_ID),
+    [availableSessions]
+  );
+
   const currentSession = useMemo(
     () =>
-      projectSessions.find((session) => session.id === currentSessionId) ??
+      availableSessions.find((session) => session.id === currentSessionId) ??
       projectSessions[0],
-    [currentSessionId, projectSessions]
+    [availableSessions, currentSessionId, projectSessions]
   );
 
   const displaySession = useMemo((): Session => {
     return (
       currentSession ?? {
-        id: `session-empty-${currentProject?.id ?? "none"}`,
-        projectId: currentProject?.id ?? "",
+        id: `session-empty-${currentProjectId || currentProject?.id || "none"}`,
+        projectId: currentProject?.id ?? currentProjectId,
         agentId: availableAgents[0]?.id ?? agents[0].id,
         label: "New session",
-        cwd: currentProject?.rootPath ?? "",
+        cwd: currentProject?.rootPath ?? (currentProjectId === CHAT_PROJECT_ID ? defaultFolderPath : ""),
         status: "exited" as const,
         processId: null,
         startedAt: "",
@@ -2456,7 +2612,7 @@ export function App() {
         viewMode: "clean" as const,
       }
     );
-  }, [availableAgents, currentProject, currentSession]);
+  }, [availableAgents, currentProject, currentProjectId, currentSession, defaultFolderPath]);
 
   const currentAgent = useMemo(
     () => availableAgents.find((agent) => agent.id === displaySession.agentId) ?? availableAgents[0] ?? agents[0],
@@ -2598,6 +2754,59 @@ export function App() {
   };
   openSessionRef.current = openSession;
 
+  /** Open a chat session from the Chat section. */
+  const openChatSession = useCallback((session: Session) => {
+    openSessionRef.current(session);
+  }, []);
+
+  /** Create a new Chat session in the current/default working folder. */
+  const handleCreateChatSession = useCallback(async () => {
+    try {
+      const agentId = availableAgents[0]?.id ?? agents[0].id;
+      const cwd = defaultFolderPath || (await getDefaultFolder());
+      const session = await createChatSession(agentId, "新对话", cwd || null);
+      if (!session) return;
+      if (!defaultFolderPath && session.cwd) {
+        setDefaultFolderPath(session.cwd);
+      }
+      const last = getLastUsedDefaults(agentId);
+      let sessionWithPrefs = session;
+      if (last) {
+        sessionWithPrefs = {
+          ...session,
+          preferredModel: last.modelId,
+          preferredMode: last.modeId,
+          preferredEffort: last.effort,
+          preferredEffortId: last.effortId,
+          preferredAlwaysApprove: last.alwaysApprove,
+        };
+        void updateSessionPrefs(session.id, {
+          preferredModel: sessionWithPrefs.preferredModel,
+          preferredMode: sessionWithPrefs.preferredMode,
+          preferredEffort: sessionWithPrefs.preferredEffort,
+          preferredEffortId: sessionWithPrefs.preferredEffortId,
+          preferredAlwaysApprove: sessionWithPrefs.preferredAlwaysApprove,
+        }).catch(() => undefined);
+      }
+      startupCreatedChatsRef.current = [
+        sessionWithPrefs,
+        ...startupCreatedChatsRef.current.filter((item) => item.id !== sessionWithPrefs.id),
+      ];
+      setAvailableSessions((current) => [
+        sessionWithPrefs,
+        ...current.filter((item) => item.id !== sessionWithPrefs.id),
+      ]);
+      openSessionRef.current(sessionWithPrefs);
+    } catch (error) {
+      pushDebug({
+        level: "error",
+        source: "chat",
+        summary: "create chat failed",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, [availableAgents, defaultFolderPath, pushDebug]);
+
   const setSessionStatusById = useCallback((sessionId: string, status: Session["status"]) => {
     setAvailableSessions((current) =>
       current.map((session) => {
@@ -2716,7 +2925,12 @@ export function App() {
   const closeSessionTab = (sessionId: string) => {
     const nextOpenIds = openSessionIds.filter((id) => id !== sessionId);
     if (nextOpenIds.length === 0) {
-      void createSessionForProject(currentProject?.id ?? availableProjects[0]?.id ?? "");
+      const closing = availableSessions.find((session) => session.id === sessionId);
+      if (closing?.projectId === CHAT_PROJECT_ID || currentProjectId === CHAT_PROJECT_ID) {
+        void handleCreateChatSession();
+      } else {
+        void createSessionForProject(currentProject?.id ?? availableProjects[0]?.id ?? "");
+      }
       return;
     }
 
@@ -2788,9 +3002,13 @@ export function App() {
     const nextOpenIds = openSessionIds.filter((id) => id !== session.id);
     if (nextOpenIds.length === 0) {
       setOpenSessionIds([]);
-      void createSessionForProject(
-        session.projectId || currentProject?.id || availableProjects[0]?.id || ""
-      );
+      if (session.projectId === CHAT_PROJECT_ID) {
+        void handleCreateChatSession();
+      } else {
+        void createSessionForProject(
+          session.projectId || currentProject?.id || availableProjects[0]?.id || ""
+        );
+      }
       return;
     }
     setOpenSessionIds(nextOpenIds);
@@ -2816,12 +3034,36 @@ export function App() {
 
   const deleteSession = (sessionId: string) => {
     const deletedSession = availableSessions.find((session) => session.id === sessionId);
+    if (!deletedSession) return;
     if (deletedSession && (deletedSession.status === "starting" || deletedSession.status === "running" || deletedSession.status === "waiting")) {
       void stopAcpSession(sessionId).catch(() => undefined);
     }
-    if (deletedSession) void deleteSessionApi(deletedSession.projectId, sessionId).catch(() => undefined);
-    setAvailableSessions((current) => current.filter((session) => session.id !== sessionId));
+    void deleteSessionApi(deletedSession.projectId, sessionId).catch((error) => {
+      pushDebug({
+        sessionId,
+        level: "warn",
+        source: "session",
+        summary: "delete session failed",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    });
+    startupCreatedChatsRef.current = startupCreatedChatsRef.current.filter(
+      (session) => session.id !== sessionId,
+    );
+    manuallyRenamedSessionIdsRef.current.delete(sessionId);
+    const remainingSessions = availableSessions.filter((session) => session.id !== sessionId);
+    setAvailableSessions(remainingSessions);
     setOpenSessionIds((current) => current.filter((id) => id !== sessionId));
+    setLiveEvents((current) => dropEventsForSessions(current, new Set([sessionId])));
+    transcriptLoadedRef.current.delete(sessionId);
+    acpNeedsHistoryRef.current.delete(sessionId);
+    pendingSendsRef.current.delete(sessionId);
+    flushingSendRef.current.delete(sessionId);
+    const saveTimer = transcriptSaveTimers.current.get(sessionId);
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      transcriptSaveTimers.current.delete(sessionId);
+    }
     setSessionUsageById((current) => {
       if (!(sessionId in current)) return current;
       const next = { ...current };
@@ -2829,14 +3071,27 @@ export function App() {
       return next;
     });
     if (sessionId === currentSessionId) {
-      const nextSession = availableSessions.find((session) => session.id !== sessionId && session.projectId === currentProject?.id);
+      const targetProjectId = deletedSession.projectId || currentProject?.id || "";
+      const nextSession = remainingSessions.find(
+        (session) => session.id !== sessionId && session.projectId === targetProjectId,
+      );
       if (nextSession) openSession(nextSession);
+      else if (targetProjectId === CHAT_PROJECT_ID) {
+        // Deleting the last Chat should leave Chat empty; recreating a row here
+        // made the delete action appear to do nothing. The + button creates the
+        // next conversation explicitly.
+        setCurrentProjectId(CHAT_PROJECT_ID);
+        setCurrentSessionId("");
+        setOpenSessionIds([]);
+        setViewMode("clean");
+        setSessionCapabilities(null);
+      }
       else void createSessionForProject(currentProject?.id ?? availableProjects[0]?.id ?? "");
     }
   };
 
   const refreshChangedFiles = useCallback(async () => {
-    if (!currentProjectId) {
+    if (!currentProjectId || currentProjectId === CHAT_PROJECT_ID) {
       setChangedFiles([]);
       setChangedFilesNote(null);
       setGitBranch(null);
@@ -2877,6 +3132,11 @@ export function App() {
         setProjectContext(null);
         return;
       }
+      if (projectId === CHAT_PROJECT_ID) {
+        setProjectContext(null);
+        setProjectContextScanning(false);
+        return;
+      }
       setProjectContextScanning(true);
       try {
         const scanned = await scanProjectContext(projectId);
@@ -2902,7 +3162,7 @@ export function App() {
 
   // Project todos — load when project changes.
   useEffect(() => {
-    if (!currentProjectId) {
+    if (!currentProjectId || currentProjectId === CHAT_PROJECT_ID) {
       setTodoItems([]);
       return;
     }
@@ -2918,7 +3178,7 @@ export function App() {
   const handleTodosChange = useCallback(
     (items: TodoItem[]) => {
       setTodoItems(items);
-      if (!currentProjectId) return;
+      if (!currentProjectId || currentProjectId === CHAT_PROJECT_ID) return;
       void saveTodos(currentProjectId, items).catch((error) => {
         pushDebug({
           sessionId: currentSessionIdRef.current || "",
@@ -2963,7 +3223,7 @@ export function App() {
 
   const handleToggleProjectContext = useCallback(
     async (kind: "mcp" | "skill", id: string, enabled: boolean) => {
-      if (!currentProjectId) return;
+      if (!currentProjectId || currentProjectId === CHAT_PROJECT_ID) return;
       // Optimistic: the checkbox must not lag behind a disk write.
       setProjectContext((current) => {
         if (!current) return current;
@@ -2992,7 +3252,7 @@ export function App() {
 
   const handleOpenDiff = useCallback(
     async (path: string) => {
-      if (!currentProjectId) return;
+      if (!currentProjectId || currentProjectId === CHAT_PROJECT_ID) return;
       const text = await getFileDiff(currentProjectId, path);
       setDiffPreview({ path, text: text || "(empty diff)" });
     },
@@ -3138,11 +3398,15 @@ export function App() {
   );
 
   const handleAgentChange = async (agentId: string) => {
-    if (!currentProject) return;
+    if (!currentProject && !currentSession) return;
 
     // If no current session, create one bound to this agent
     if (!currentSession || !currentSessionId) {
-      void createSessionForProject(currentProject.id, agentId);
+      if (currentProject) {
+        void createSessionForProject(currentProject.id, agentId);
+      } else {
+        void handleCreateChatSession();
+      }
       return;
     }
 
@@ -3187,7 +3451,7 @@ export function App() {
     // P1-B: handoff.md + composer prefill (never auto-send).
     try {
       const handoff = await generateHandoff({
-        projectId: currentProject.id,
+        projectId: currentSession.projectId,
         sessionId: sid,
         targetAgentId: agentId,
         sourceAgentId,
@@ -4142,7 +4406,11 @@ export function App() {
           .map((target) => target.raw),
       ]),
     ];
-    const outside = await checkOutsideProjectPaths(projectId, candidates).catch(() => []);
+    // Chat has a real cwd but no project-level `.marionette` scope. Its agent
+    // is already started in that cwd, so do not ask to persist a project grant.
+    const outside = displaySession.projectId === CHAT_PROJECT_ID
+      ? []
+      : await checkOutsideProjectPaths(projectId, candidates).catch(() => []);
     if (outside.length > 0) {
       setPathGrantPrompt({
         paths: outside,
@@ -4402,10 +4670,12 @@ export function App() {
         acpNeedsHistoryRef.current.delete(sid);
         // Skills this agent does not ship with — a pointer list, once per
         // connection, so it can read the SKILL.md itself when relevant.
-        const skillsPrefix = await projectContextPrompt(
-          displaySession.projectId || currentProjectId,
-          currentAgent.id
-        ).catch(() => null);
+        const skillsPrefix = displaySession.projectId === CHAT_PROJECT_ID
+          ? null
+          : await projectContextPrompt(
+              displaySession.projectId || currentProjectId,
+              currentAgent.id,
+            ).catch(() => null);
         if (skillsPrefix) {
           promptText = `${skillsPrefix}${promptText}`;
           pushDebug({
@@ -4435,7 +4705,9 @@ export function App() {
       // Wire only: inject force-search prefix; You card keeps clean `composed`.
       const wireText = withForceWebSearch(promptText, forceWebSearch);
       const projectId = displaySession.projectId || currentProjectId;
-      const fileSnapshot = await captureProjectFileSnapshot(projectId);
+      const fileSnapshot = displaySession.projectId === CHAT_PROJECT_ID
+        ? null
+        : await captureProjectFileSnapshot(projectId);
       if (fileSnapshot) fileChangeSnapshotsRef.current[sid] = fileSnapshot;
       await sendAcpPrompt(sid, wireText, imagePaths);
       touchActivity(sid);
@@ -4757,7 +5029,7 @@ export function App() {
           {!IS_DETACHED_WINDOW && (
           <ProjectShelf
             agents={availableAgents}
-            projects={availableProjects}
+            projects={availableProjects.filter((p) => p.id !== CHAT_PROJECT_ID)}
             sessions={availableSessions}
             currentProjectId={currentProjectId}
             currentSessionId={displaySession.id}
@@ -4804,6 +5076,10 @@ export function App() {
             onRevealProject={(project) => {
               void revealInFileManager(project.rootPath).catch(() => undefined);
             }}
+            defaultFolderPath={defaultFolderPath}
+            chatSessions={chatSessions}
+            onChatSessionSelect={openChatSession}
+            onNewChat={handleCreateChatSession}
           />
           )}
           {!leftCollapsed && !IS_DETACHED_WINDOW && (
@@ -4827,7 +5103,13 @@ export function App() {
             session={displaySession}
             onTabSelect={openSession}
             onTabClose={closeSessionTab}
-            onNewTab={() => createSessionForProject(currentProject?.id ?? "")}
+            onNewTab={() => {
+              if (displaySession.projectId === CHAT_PROJECT_ID) {
+                void handleCreateChatSession();
+              } else {
+                void createSessionForProject(currentProject?.id ?? "");
+              }
+            }}
             onRenameSession={handleRenameSession}
             onTabPopOut={
               IS_DETACHED_WINDOW
@@ -4892,7 +5174,13 @@ export function App() {
             signInBusy={signInBusy}
             onTabSelect={openSession}
             onTabClose={closeSessionTab}
-            onNewTab={() => createSessionForProject(currentProject?.id ?? "")}
+            onNewTab={() => {
+              if (displaySession.projectId === CHAT_PROJECT_ID) {
+                void handleCreateChatSession();
+              } else {
+                void createSessionForProject(currentProject?.id ?? "");
+              }
+            }}
             onSessionStatusChange={handleSessionStatusChange}
             onCapabilities={setSessionCapabilities}
             onEditResend={(anchor, text) => void handleEditResend(anchor, text)}

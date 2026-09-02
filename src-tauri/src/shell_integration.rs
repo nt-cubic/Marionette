@@ -66,7 +66,7 @@ pub fn parse_open_path_from_args() -> Option<String> {
     None
 }
 
-/// Resolve to a real directory path string suitable for `add_project`.
+/// Resolve to a real directory path string suitable for the open-here flow.
 pub fn normalize_open_path(raw: &str) -> Option<String> {
     let trimmed = raw.trim().trim_matches('"').trim();
     if trimmed.is_empty() {
@@ -105,6 +105,11 @@ pub fn set_launch_open_path(path: Option<String>) {
 /// Take the path once (startup). Further requests return `None`.
 pub fn take_launch_open_path() -> Option<String> {
     LAUNCH_OPEN_PATH.lock().ok().and_then(|mut g| g.take())
+}
+
+/// Peek the launch open path without consuming it (for chat section).
+pub fn peek_launch_open_path() -> Option<String> {
+    LAUNCH_OPEN_PATH.lock().ok().and_then(|g| g.clone())
 }
 
 fn pending_path_file() -> Option<PathBuf> {

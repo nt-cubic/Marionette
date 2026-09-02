@@ -8,13 +8,14 @@
 
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { isTauriRuntime } from "./api";
-import type { SessionStatus } from "./types";
+import type { SessionLabelSource, SessionStatus } from "./types";
 
 export const SESSION_PATCH_EVENT = "marionette-session-patch";
 
 export type SessionPatch = {
   sessionId: string;
   label?: string;
+  labelSource?: SessionLabelSource | string | null;
   status?: SessionStatus;
   /** Opaque origin window label — ignore echoes from ourselves. */
   origin?: string;

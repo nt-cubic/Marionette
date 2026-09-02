@@ -17,6 +17,9 @@ pub struct Session {
     pub project_id: String,
     pub agent_id: String,
     pub label: String,
+    /// `default` / `user` / `agent` / `manual`; optional for old rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label_source: Option<String>,
     pub cwd: String,
     pub status: String,
     pub process_id: Option<u32>,

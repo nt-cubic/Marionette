@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Build per-dialog handoff + composer prefill from recent transcript.
-/// Writes:
-///   `.marionette/handoff/{sessionId}.md`  (SSOT for this dialog)
-///   `.marionette/handoff.md`              (latest shortcut for CLI / humans)
+/// Writes the per-dialog handoff and the latest shortcut under the supplied
+/// metadata directory. Projects pass their `.marionette` directory; Chat
+/// passes the global Chat directory.
 /// Returns `Ok(None)` — writing nothing — when the dialog has no messages yet,
 /// so switching agents on a fresh dialog does not create an empty handoff.
 /// Does not auto-send; does not read arbitrary repo files.
@@ -23,6 +23,37 @@ pub fn generate_handoff(
     target_agent_label: &str,
     transcript_path: &Path,
 ) -> Result<Option<HandoffResult>, String> {
+    generate_handoff_with_storage(
+        project_id,
+        project_root,
+        project_name,
+        session_id,
+        session_label,
+        source_agent_id,
+        source_agent_label,
+        target_agent_id,
+        target_agent_label,
+        transcript_path,
+        &crate::app_paths::project_dir(project_root),
+    )
+}
+
+/// Same handoff generation with an explicit metadata directory. Chat sessions
+/// use this to keep handoff files global instead of creating `.marionette` in
+/// the Chat session's working folder.
+pub fn generate_handoff_with_storage(
+    project_id: &str,
+    project_root: &Path,
+    project_name: &str,
+    session_id: &str,
+    session_label: &str,
+    source_agent_id: &str,
+    source_agent_label: &str,
+    target_agent_id: &str,
+    target_agent_label: &str,
+    transcript_path: &Path,
+    storage_root: &Path,
+) -> Result<Option<HandoffResult>, String> {
     let events = load_transcript_events(transcript_path);
     if !has_transcript_content(&events) {
         return Ok(None);
@@ -33,11 +64,11 @@ pub fn generate_handoff(
 
     let created_at = iso_now();
     let safe_id = sanitize_session_id(session_id);
-    let handoff_dir = crate::app_paths::project_dir(project_root).join("handoff");
+    let handoff_dir = storage_root.join("handoff");
     fs::create_dir_all(&handoff_dir).map_err(|e| format!("Create handoff dir failed: {e}"))?;
 
     let handoff_path = handoff_dir.join(format!("{safe_id}.md"));
-    let latest_path = crate::app_paths::project_dir(project_root).join("handoff.md");
+    let latest_path = storage_root.join("handoff.md");
 
     let body = render_markdown(
         &created_at,
@@ -71,6 +102,7 @@ pub fn generate_handoff(
         &user_msgs,
         &assistant_msgs,
         &handoff_path,
+        &latest_path,
     );
 
     Ok(Some(HandoffResult {
@@ -232,6 +264,7 @@ fn render_prefill(
     user_msgs: &[String],
     assistant_msgs: &[String],
     handoff_path: &Path,
+    latest_path: &Path,
 ) -> String {
     let mut out = String::new();
     out.push_str(&format!(
@@ -244,7 +277,11 @@ fn render_prefill(
         .strip_prefix(project_root)
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| handoff_path.display().to_string());
-    out.push_str(&format!("Full notes: `{rel}` (also `.marionette/handoff.md` latest)\n\n"));
+    let latest = latest_path
+        .strip_prefix(project_root)
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| latest_path.display().to_string());
+    out.push_str(&format!("Full notes: `{rel}` (latest shortcut: `{latest}`)\n\n"));
     if !user_msgs.is_empty() {
         out.push_str("Recent user asks:\n");
         let start = user_msgs.len().saturating_sub(3);
@@ -366,6 +403,32 @@ mod tests {
         let handoff = res.expect("dialog with messages must produce a handoff");
         assert!(!handoff.handoff_path.is_empty());
         assert!(root.join(".marionette").join("handoff.md").exists());
+        cleanup(&root);
+    }
+
+    #[test]
+    fn explicit_storage_root_keeps_chat_handoff_out_of_workspace() {
+        let body = "{\"type\":\"user_message\",\"sessionId\":\"s-chat\",\"text\":\"hello\",\"createdAt\":\"2026-01-01T00:00:00.000Z\"}\n";
+        let (root, transcript) = temp_project(Some(body));
+        let storage_root = root.parent().unwrap().join("chat-data");
+        let result = generate_handoff_with_storage(
+            "project-chat",
+            &root,
+            "聊天",
+            "s-chat",
+            "New chat",
+            "agent-a",
+            "Agent A",
+            "agent-b",
+            "Agent B",
+            &transcript,
+            &storage_root,
+        )
+        .expect("generate")
+        .expect("message produces handoff");
+        assert!(Path::new(&result.handoff_path).starts_with(&storage_root));
+        assert!(storage_root.join("handoff.md").is_file());
+        assert!(!root.join(".marionette").exists());
         cleanup(&root);
     }
 

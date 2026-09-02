@@ -777,6 +777,222 @@ body.is-panel-resizing .context-panel {
   border-top: 1px solid var(--border);
 }
 
+/* ── Chat section ── */
+
+.chat-section {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+}
+
+.chat-section__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.chat-section__title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-strong);
+  letter-spacing: 0.02em;
+}
+
+.chat-section__title svg {
+  color: var(--accent);
+}
+
+.chat-section__new {
+  opacity: 0.6;
+}
+
+.chat-section__new:hover {
+  opacity: 1;
+}
+
+.chat-list {
+  min-height: 0;
+  max-height: 200px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.chat-list__empty {
+  padding: 8px;
+  font-size: 12px;
+  color: var(--text-faint);
+  text-align: center;
+}
+
+.chat-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  min-height: 25px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text);
+  text-align: left;
+  font-size: 12px;
+}
+
+.chat-row:hover {
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+
+.chat-row.is-active {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-left: 2px solid var(--accent);
+}
+
+.chat-row.is-active strong {
+  color: var(--accent);
+}
+
+.chat-row__dot {
+  flex: 0 0 auto;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  opacity: 0.45;
+}
+
+.chat-row__dot.is-running {
+  background: var(--yellow);
+  opacity: 0.7;
+}
+
+.chat-row__dot.is-waiting {
+  background: var(--yellow);
+  opacity: 0.7;
+}
+
+.chat-row__dot.is-error {
+  background: var(--red);
+  opacity: 0.85;
+}
+
+.chat-row__content {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-row__content strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.chat-row__select {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 25px;
+  padding: 4px 8px;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+.chat-row__select:hover {
+  background: transparent;
+}
+
+.chat-row__actions {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  z-index: 1;
+  display: flex;
+  gap: 1px;
+  align-items: center;
+  padding-left: 3px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--panel-raised) 96%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition: opacity 120ms ease;
+}
+
+.chat-row:hover .chat-row__actions,
+.chat-row:focus-within .chat-row__actions,
+.chat-row.is-active:hover .chat-row__actions,
+.chat-row.is-active:focus-within .chat-row__actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.chat-row__action {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  background: transparent;
+  cursor: pointer;
+}
+
+.chat-row__action:hover {
+  color: var(--text);
+  background: var(--panel-soft);
+}
+
+.chat-row__action--danger:hover {
+  color: var(--red);
+  background: var(--panel-soft);
+}
+
+.chat-row__rename {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 2px 4px 2px 8px;
+}
+
+.chat-row__rename-input {
+  width: 100%;
+  min-width: 0;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  background: var(--panel);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  outline: none;
+}
+
+.chat-row__rename-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
 /* Visual base from .pill-action; keep notify/collapse modifiers here */
 .sidebar-footer__button {
   opacity: 0.7;

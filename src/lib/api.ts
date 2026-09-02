@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { agents as mockAgents, projects as mockProjects, sessions as mockSessions } from "./mockData";
-import type { AgentConfig, AgentCommandStatus, CapabilitySnapshot, Project, ProviderInfo, ProxyConfig, ProxyTestResult, Session } from "./types";
+import type { AgentConfig, AgentCommandStatus, CapabilitySnapshot, Project, ProviderInfo, ProxyConfig, ProxyTestResult, Session, SessionLabelSource } from "./types";
 
 export function isTauriRuntime() {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -45,6 +45,59 @@ export async function takeLaunchOpenPath(): Promise<string | null> {
 
 /** Event name when a second process hands off an open-here path. */
 export const OPEN_PATH_EVENT = "marionette-open-path";
+
+/** Virtual project ID for chat sessions. */
+export const CHAT_PROJECT_ID = "project-chat";
+
+export type OpenHereResult =
+  | { kind: "project"; project: Project }
+  | { kind: "chat"; session: Session };
+
+/** Get the default folder for chat — `--open-path` if set, otherwise current working directory. */
+export async function getDefaultFolder(): Promise<string> {
+  if (!isTauriRuntime()) return "";
+  try {
+    return (await invoke<string>("get_default_folder")) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/** Open a folder — as a project if it has `.marionette`, otherwise as a chat session. */
+export async function openHere(path: string, agentId: string): Promise<OpenHereResult> {
+  if (isTauriRuntime()) {
+    return invoke<OpenHereResult>("open_here", { path, agentId });
+  }
+  const now = new Date().toISOString();
+  const id = `session-chat-${Date.now()}`;
+  return {
+    kind: "chat",
+    session: {
+      id,
+      projectId: CHAT_PROJECT_ID,
+      agentId,
+      label: `Chat · ${path.split(/[\\/]/).filter(Boolean).pop() ?? "Folder"}`,
+      cwd: path,
+      status: "exited",
+      processId: null,
+      startedAt: "",
+      lastActiveAt: now,
+      transcriptPath: "",
+      handoffPath: "",
+      viewMode: "clean",
+    },
+  };
+}
+
+/** List chat sessions (sessions under the virtual chat project). */
+export async function listChatSessions(): Promise<Session[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    return await invoke<Session[]>("list_sessions", { projectId: CHAT_PROJECT_ID });
+  } catch {
+    return [];
+  }
+}
 
 /** Native folder picker. Returns null if the user cancels. */
 export async function pickFolder(): Promise<string | null> {
@@ -218,6 +271,37 @@ export async function createSession(projectId: string, agentId: string, label = 
   };
 }
 
+/** Create a Chat session in the global Chat store. */
+export async function createChatSession(
+  agentId: string,
+  label = "新对话",
+  cwd?: string | null,
+): Promise<Session | null> {
+  if (!isTauriRuntime()) {
+    const now = new Date().toISOString();
+    const id = `session-chat-${Date.now()}`;
+    return {
+      id,
+      projectId: CHAT_PROJECT_ID,
+      agentId,
+      label,
+      cwd: cwd ?? "",
+      status: "exited",
+      processId: null,
+      startedAt: "",
+      lastActiveAt: now,
+      transcriptPath: ``,
+      handoffPath: ``,
+      viewMode: "clean",
+    };
+  }
+  return invoke<Session>("create_chat_session", {
+    agentId,
+    label,
+    cwd: cwd ?? null,
+  });
+}
+
 /** Hidden child session for `@agent` delegate. */
 export async function createChildSession(
   projectId: string,
@@ -290,9 +374,13 @@ export async function updateSessionPrefs(
   });
 }
 
-export async function updateSessionLabel(sessionId: string, label: string): Promise<void> {
+export async function updateSessionLabel(
+  sessionId: string,
+  label: string,
+  labelSource: SessionLabelSource = "manual",
+): Promise<void> {
   if (!isTauriRuntime()) return;
-  await invoke("update_session_label", { sessionId, label });
+  await invoke("update_session_label", { sessionId, label, labelSource });
 }
 
 /** Persist dialog runtime status so detached windows load the correct Interrupt/Send state. */

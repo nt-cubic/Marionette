@@ -84,11 +84,17 @@ export type SessionStatus = "starting" | "running" | "waiting" | "exited" | "err
 
 export type SessionViewMode = "clean" | "diff" | "logs";
 
+/** Where the current conversation label came from. */
+export type SessionLabelSource = "default" | "user" | "agent" | "manual";
+
 export type Session = {
   id: string;
   projectId: string;
   agentId: string;
   label: string;
+  /** Persisted so an ACP title can replace an automatic first-prompt title,
+   * while a manual rename remains authoritative across restarts. */
+  labelSource?: SessionLabelSource | string | null;
   cwd: string;
   status: SessionStatus;
   processId: number | null;
