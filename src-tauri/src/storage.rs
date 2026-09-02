@@ -19,10 +19,14 @@ impl StorageService {
         let projects_file = global_dir.join("projects.json");
         fs::create_dir_all(&global_dir)
             .map_err(|error| format!("Create storage directory failed: {error}"))?;
-        Ok(Self {
+        let service = Self {
             global_dir,
             projects_file,
-        })
+        };
+        // Older builds incorrectly persisted Chat as a normal project. Move
+        // those rows to the global chat store before the project index is read.
+        service.migrate_legacy_chat_project()?;
+        Ok(service)
     }
 
     pub fn list_projects(&self) -> Result<Vec<Project>, String> {
@@ -37,7 +41,14 @@ impl StorageService {
             return Ok(Vec::new());
         }
 
-        serde_json::from_str(&content).map_err(|error| format!("Parse projects failed: {error}"))
+        let projects: Vec<Project> = serde_json::from_str(&content)
+            .map_err(|error| format!("Parse projects failed: {error}"))?;
+        // `project-chat` was used by an interrupted implementation. Keep the
+        // index clean even if it was written while the app was already running.
+        Ok(projects
+            .into_iter()
+            .filter(|project| project.id != crate::app_paths::CHAT_PROJECT_ID)
+            .collect())
     }
 
     pub fn add_project(&self, raw_path: String) -> Result<Project, String> {
@@ -77,6 +88,89 @@ impl StorageService {
         Ok(project)
     }
 
+    /// Create a Chat session in the global Chat store.
+    ///
+    /// Chat is a logical session group only. It must not create a `.marionette`
+    /// directory in the user's working folder and must not appear in
+    /// `projects.json`.
+    pub fn create_chat_session(
+        &self,
+        agent_id: String,
+        label: String,
+        cwd: &str,
+    ) -> Result<Session, String> {
+        let cwd_path = fs::canonicalize(Path::new(cwd.trim()))
+            .map_err(|error| format!("Chat folder is not accessible: {error}"))?;
+        if !cwd_path.is_dir() {
+            return Err("Chat folder must be a directory".to_string());
+        }
+
+        self.ensure_chat_dirs()?;
+        let id = format!("session-{}", now_string());
+        let now = now_string();
+        let session = Session {
+            id: id.clone(),
+            project_id: crate::app_paths::CHAT_PROJECT_ID.to_string(),
+            agent_id,
+            label: if label.trim().is_empty() {
+                "New session".to_string()
+            } else {
+                label
+            },
+            label_source: Some("default".to_string()),
+            cwd: cwd_path.to_string_lossy().to_string(),
+            status: "exited".to_string(),
+            process_id: None,
+            pty_id: None,
+            started_at: String::new(),
+            last_active_at: now,
+            exited_at: None,
+            exit_code: None,
+            raw_log_path: self.chat_session_log_path(&id).to_string_lossy().to_string(),
+            transcript_path: self
+                .chat_dir()
+                .join("transcripts")
+                .join(format!("{id}.jsonl"))
+                .to_string_lossy()
+                .to_string(),
+            handoff_path: self
+                .chat_dir()
+                .join("handoff")
+                .join(format!("{id}.md"))
+                .to_string_lossy()
+                .to_string(),
+            view_mode: "clean".to_string(),
+            preferred_model: None,
+            preferred_mode: None,
+            preferred_effort: None,
+            preferred_effort_id: None,
+            preferred_always_approve: None,
+            parent_session_id: None,
+            origin: Some("user".to_string()),
+        };
+        let mut sessions = self.read_chat_sessions_all()?;
+        sessions.retain(|current| current.id != session.id);
+        sessions.insert(0, session.clone());
+        self.write_chat_sessions(&sessions)?;
+        Ok(session)
+    }
+
+    /// List top-level Chat sessions from the global Chat store.
+    pub fn list_chat_sessions(&self) -> Result<Vec<Session>, String> {
+        Ok(self
+            .read_chat_sessions_all()?
+            .into_iter()
+            .filter(|s| s.parent_session_id.as_ref().map(|p| p.is_empty()).unwrap_or(true))
+            .collect())
+    }
+
+    /// Check if a directory contains a real project data directory.
+    pub fn has_marionette_dir(path: &str) -> bool {
+        fs::canonicalize(Path::new(path))
+            .map(|dir| dir.join(crate::app_paths::DIR_NAME).is_dir())
+            .unwrap_or(false)
+    }
+
     /// Remove a project from the global list only — never deletes workspace files.
     pub fn delete_project(&self, project_id: &str) -> Result<(), String> {
         let mut projects = self.list_projects()?;
@@ -114,6 +208,9 @@ impl StorageService {
     }
 
     pub fn list_sessions(&self, project_id: &str) -> Result<Vec<Session>, String> {
+        if project_id == crate::app_paths::CHAT_PROJECT_ID {
+            return self.list_chat_sessions();
+        }
         let project = self.project_by_id(project_id)?;
         let file = sessions_file(Path::new(&project.root_path));
         if !file.exists() {
@@ -136,6 +233,9 @@ impl StorageService {
 
     /// All sessions including delegate children (for cascade delete / child listing).
     pub fn list_sessions_all(&self, project_id: &str) -> Result<Vec<Session>, String> {
+        if project_id == crate::app_paths::CHAT_PROJECT_ID {
+            return self.read_chat_sessions_all();
+        }
         let project = self.project_by_id(project_id)?;
         let file = sessions_file(Path::new(&project.root_path));
         if !file.exists() {
@@ -163,6 +263,32 @@ impl StorageService {
     where
         F: Fn(&str) -> bool,
     {
+        if project_id == crate::app_paths::CHAT_PROJECT_ID {
+            let mut sessions = self.read_chat_sessions_all()?;
+            let mut healed = false;
+            for session in sessions.iter_mut() {
+                let claims_live =
+                    matches!(session.status.as_str(), "starting" | "running" | "waiting");
+                if !claims_live || is_live(&session.id) {
+                    continue;
+                }
+                session.status = "exited".to_string();
+                session.process_id = None;
+                session.pty_id = None;
+                if session.exited_at.is_none() {
+                    session.exited_at = Some(session.last_active_at.clone());
+                }
+                healed = true;
+            }
+            if healed {
+                self.write_chat_sessions(&sessions)?;
+            }
+            return Ok(sessions
+                .into_iter()
+                .filter(|s| s.parent_session_id.as_ref().map(|p| p.is_empty()).unwrap_or(true))
+                .collect());
+        }
+
         // Heal against the full file (including children), then return top-level only.
         let mut sessions = self.list_sessions_all(project_id)?;
         let mut healed = false;
@@ -195,6 +321,10 @@ impl StorageService {
         agent_id: String,
         label: String,
     ) -> Result<Session, String> {
+        if project_id == crate::app_paths::CHAT_PROJECT_ID {
+            let cwd = crate::app_paths::current_dir()?;
+            return self.create_chat_session(agent_id, label, &cwd);
+        }
         let project = self.project_by_id(project_id)?;
         let project_path = Path::new(&project.root_path);
         self.ensure_project_dirs(project_path)?;
@@ -210,6 +340,7 @@ impl StorageService {
             } else {
                 label
             },
+            label_source: Some("default".to_string()),
             cwd: project.root_path.clone(),
             status: "exited".to_string(),
             process_id: None,
@@ -255,6 +386,59 @@ impl StorageService {
         agent_id: String,
         label: String,
     ) -> Result<Session, String> {
+        if project_id == crate::app_paths::CHAT_PROJECT_ID {
+            let mut sessions = self.read_chat_sessions_all()?;
+            let parent = sessions
+                .iter()
+                .find(|session| session.id == parent_session_id)
+                .ok_or_else(|| format!("Unknown parent session: {parent_session_id}"))?;
+            let id = format!("session-{}", now_string());
+            let now = now_string();
+            let session = Session {
+                id: id.clone(),
+                project_id: crate::app_paths::CHAT_PROJECT_ID.to_string(),
+                agent_id,
+                label: if label.trim().is_empty() {
+                    "Delegate".to_string()
+                } else {
+                    label
+                },
+                label_source: Some("default".to_string()),
+                cwd: parent.cwd.clone(),
+                status: "exited".to_string(),
+                process_id: None,
+                pty_id: None,
+                started_at: String::new(),
+                last_active_at: now,
+                exited_at: None,
+                exit_code: None,
+                raw_log_path: self.chat_session_log_path(&id).to_string_lossy().to_string(),
+                transcript_path: self
+                    .chat_dir()
+                    .join("transcripts")
+                    .join(format!("{id}.jsonl"))
+                    .to_string_lossy()
+                    .to_string(),
+                handoff_path: self
+                    .chat_dir()
+                    .join("handoff")
+                    .join(format!("{id}.md"))
+                    .to_string_lossy()
+                    .to_string(),
+                view_mode: "clean".to_string(),
+                preferred_model: None,
+                preferred_mode: None,
+                preferred_effort: None,
+                preferred_effort_id: None,
+                preferred_always_approve: None,
+                parent_session_id: Some(parent_session_id.to_string()),
+                origin: Some("delegate".to_string()),
+            };
+            sessions.retain(|current| current.id != session.id);
+            sessions.insert(0, session.clone());
+            self.write_chat_sessions(&sessions)?;
+            return Ok(session);
+        }
         let project = self.project_by_id(project_id)?;
         let project_path = Path::new(&project.root_path);
         self.ensure_project_dirs(project_path)?;
@@ -275,6 +459,7 @@ impl StorageService {
             } else {
                 label
             },
+            label_source: Some("default".to_string()),
             cwd: project.root_path.clone(),
             status: "exited".to_string(),
             process_id: None,
@@ -311,8 +496,13 @@ impl StorageService {
     }
 
     pub fn list_child_sessions(&self, parent_session_id: &str) -> Result<Vec<Session>, String> {
-        // Scan all projects — parent id is unique.
+        // Scan Chat and all projects — parent id is unique.
         let mut children = Vec::new();
+        for session in self.read_chat_sessions_all()? {
+            if session.parent_session_id.as_deref() == Some(parent_session_id) {
+                children.push(session);
+            }
+        }
         for project in self.list_projects()? {
             for session in self.list_sessions_all(&project.id)? {
                 if session.parent_session_id.as_deref() == Some(parent_session_id) {
@@ -324,6 +514,26 @@ impl StorageService {
     }
 
     pub fn delete_session(&self, project_id: &str, session_id: &str) -> Result<(), String> {
+        if project_id == crate::app_paths::CHAT_PROJECT_ID {
+            let mut sessions = self.read_chat_sessions_all()?;
+            let child_ids: Vec<String> = sessions
+                .iter()
+                .filter(|s| s.parent_session_id.as_deref() == Some(session_id))
+                .map(|s| s.id.clone())
+                .collect();
+            let drop_ids: std::collections::HashSet<String> = child_ids
+                .iter()
+                .cloned()
+                .chain(std::iter::once(session_id.to_string()))
+                .collect();
+            for session in sessions.iter().filter(|s| drop_ids.contains(&s.id)) {
+                let _ = fs::remove_file(&session.transcript_path);
+                let _ = fs::remove_file(&session.raw_log_path);
+                let _ = fs::remove_file(&session.handoff_path);
+            }
+            sessions.retain(|session| !drop_ids.contains(&session.id));
+            return self.write_chat_sessions(&sessions);
+        }
         let project = self.project_by_id(project_id)?;
         let mut sessions = self.list_sessions_all(project_id)?;
         // Cascade: remove children of this session too (and their transcripts).
@@ -345,6 +555,15 @@ impl StorageService {
     }
 
     pub fn save_session(&self, session: &Session) -> Result<(), String> {
+        if session.project_id == crate::app_paths::CHAT_PROJECT_ID {
+            let mut sessions = self.read_chat_sessions_all()?;
+            if let Some(existing) = sessions.iter_mut().find(|current| current.id == session.id) {
+                *existing = session.clone();
+            } else {
+                sessions.push(session.clone());
+            }
+            return self.write_chat_sessions(&sessions);
+        }
         let project = self.project_by_id(&session.project_id)?;
         let project_path = Path::new(&project.root_path);
         self.ensure_project_dirs(project_path)?;
@@ -358,6 +577,13 @@ impl StorageService {
     }
 
     pub fn find_session(&self, session_id: &str) -> Result<Option<Session>, String> {
+        if let Some(session) = self
+            .read_chat_sessions_all()?
+            .into_iter()
+            .find(|session| session.id == session_id)
+        {
+            return Ok(Some(session));
+        }
         for project in self.list_projects()? {
             if let Some(session) = self
                 .list_sessions_all(&project.id)?
@@ -434,7 +660,12 @@ impl StorageService {
         self.save_session(&session)
     }
 
-    pub fn update_session_label(&self, session_id: &str, label: &str) -> Result<(), String> {
+    pub fn update_session_label(
+        &self,
+        session_id: &str,
+        label: &str,
+        label_source: Option<&str>,
+    ) -> Result<(), String> {
         let Some(mut session) = self.find_session(session_id)? else {
             return Err(format!("Session not found: {session_id}"));
         };
@@ -450,6 +681,13 @@ impl StorageService {
             trimmed.to_string()
         };
         session.label = next;
+        let source = match label_source {
+            Some("default") | Some("user") | Some("agent") | Some("manual") => {
+                label_source.unwrap_or("manual")
+            }
+            _ => "manual",
+        };
+        session.label_source = Some(source.to_string());
         session.last_active_at = now_string();
         self.save_session(&session)
     }
@@ -540,7 +778,176 @@ impl StorageService {
                 }
             }
         }
+        for session in self.read_chat_sessions_all()? {
+            if session
+                .parent_session_id
+                .as_ref()
+                .map(|p| !p.is_empty())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let mut matched = session.label.to_ascii_lowercase().contains(&q)
+                || session.agent_id.to_ascii_lowercase().contains(&q)
+                || session.cwd.to_ascii_lowercase().contains(&q)
+                || "聊天".contains(&q);
+            if !matched {
+                let path = PathBuf::from(&session.transcript_path);
+                if path.exists() {
+                    if let Ok(text) = fs::read_to_string(&path) {
+                        matched = text.to_ascii_lowercase().contains(&q);
+                    }
+                }
+            }
+            if matched {
+                hits.push(session.id);
+            }
+        }
         Ok(hits)
+    }
+
+    /// Root directory used for Chat metadata and transcripts. This lives under
+    /// the global app directory, never under a user's workspace.
+    pub fn chat_data_dir(&self) -> PathBuf {
+        self.global_dir.join("chats")
+    }
+
+    fn chat_dir(&self) -> PathBuf {
+        self.chat_data_dir()
+    }
+
+    fn ensure_chat_dirs(&self) -> Result<(), String> {
+        for sub in ["sessions", "transcripts", "handoff"] {
+            fs::create_dir_all(self.chat_dir().join(sub))
+                .map_err(|error| format!("Create global chats/{sub} failed: {error}"))?;
+        }
+        Ok(())
+    }
+
+    fn read_chat_sessions_all(&self) -> Result<Vec<Session>, String> {
+        let file = self.chat_dir().join("sessions").join("index.json");
+        if !file.exists() {
+            return Ok(Vec::new());
+        }
+        let content = fs::read_to_string(&file)
+            .map_err(|error| format!("Read chat sessions failed: {error}"))?;
+        if content.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        serde_json::from_str(&content)
+            .map_err(|error| format!("Parse chat sessions failed: {error}"))
+    }
+
+    fn write_chat_sessions(&self, sessions: &[Session]) -> Result<(), String> {
+        self.ensure_chat_dirs()?;
+        let content = serde_json::to_string_pretty(sessions)
+            .map_err(|error| format!("Serialize chat sessions failed: {error}"))?;
+        fs::write(
+            self.chat_dir().join("sessions").join("index.json"),
+            format!("{content}\n"),
+        )
+        .map_err(|error| format!("Write chat sessions failed: {error}"))
+    }
+
+    fn chat_session_log_path(&self, session_id: &str) -> PathBuf {
+        self.chat_dir()
+            .join("sessions")
+            .join(format!("{}.raw.log", safe_session_id(session_id)))
+    }
+
+    /// Migrate the previous implementation's fake `project-chat` row. That
+    /// implementation stored Chat under `<cwd>/.marionette`; preserve its
+    /// transcripts and then remove only that generated marker when it contains
+    /// Chat data exclusively.
+    fn migrate_legacy_chat_project(&self) -> Result<(), String> {
+        if !self.projects_file.exists() {
+            return Ok(());
+        }
+        let content = fs::read_to_string(&self.projects_file)
+            .map_err(|error| format!("Read projects failed: {error}"))?;
+        if content.trim().is_empty() {
+            return Ok(());
+        }
+        let mut projects: Vec<Project> = serde_json::from_str(&content)
+            .map_err(|error| format!("Parse projects failed: {error}"))?;
+        let Some(legacy) = projects
+            .iter()
+            .find(|project| project.id == crate::app_paths::CHAT_PROJECT_ID)
+            .cloned()
+        else {
+            return Ok(());
+        };
+
+        let legacy_root = PathBuf::from(&legacy.root_path);
+        let legacy_index = sessions_file(&legacy_root);
+        let legacy_sessions = if legacy_index.exists() {
+            let raw = fs::read_to_string(&legacy_index)
+                .map_err(|error| format!("Read legacy chat sessions failed: {error}"))?;
+            if raw.trim().is_empty() {
+                Vec::new()
+            } else {
+                serde_json::from_str::<Vec<Session>>(&raw)
+                    .map_err(|error| format!("Parse legacy chat sessions failed: {error}"))?
+            }
+        } else {
+            Vec::new()
+        };
+
+        if !legacy_sessions.is_empty() {
+            self.ensure_chat_dirs()?;
+            let legacy_latest_handoff = legacy_root
+                .join(crate::app_paths::DIR_NAME)
+                .join("handoff.md");
+            let target_latest_handoff = self.chat_dir().join("handoff.md");
+            if !copy_if_present(
+                &legacy_latest_handoff.to_string_lossy(),
+                &target_latest_handoff,
+            ) {
+                // Keep the legacy row/marker so a later launch can retry.
+                return Ok(());
+            }
+            let mut chats = self.read_chat_sessions_all()?;
+            for mut session in legacy_sessions.iter().cloned() {
+                let id = session.id.clone();
+                let safe_id = safe_session_id(&id);
+                let target_raw = self.chat_session_log_path(&id);
+                let target_transcript = self
+                    .chat_dir()
+                    .join("transcripts")
+                    .join(format!("{safe_id}.jsonl"));
+                let target_handoff = self
+                    .chat_dir()
+                    .join("handoff")
+                    .join(format!("{safe_id}.md"));
+                // A failed copy must leave the legacy project and marker in
+                // place so the next launch can retry without losing history.
+                if !copy_if_present(&session.raw_log_path, &target_raw)
+                    || !copy_if_present(&session.transcript_path, &target_transcript)
+                    || !copy_if_present(&session.handoff_path, &target_handoff)
+                {
+                    return Ok(());
+                }
+                session.project_id = crate::app_paths::CHAT_PROJECT_ID.to_string();
+                if session.cwd.trim().is_empty() {
+                    session.cwd = legacy.root_path.clone();
+                }
+                session.raw_log_path = target_raw.to_string_lossy().to_string();
+                session.transcript_path = target_transcript.to_string_lossy().to_string();
+                session.handoff_path = target_handoff.to_string_lossy().to_string();
+                chats.retain(|current| current.id != id);
+                chats.push(session);
+            }
+            // Preserve the old index's newest-first order after merging.
+            chats.sort_by(|a, b| session_recency_key(b).cmp(&session_recency_key(a)));
+            self.write_chat_sessions(&chats)?;
+        }
+
+        projects.retain(|project| project.id != crate::app_paths::CHAT_PROJECT_ID);
+        self.write_projects(&projects)?;
+        if legacy_index.exists() {
+            remove_legacy_chat_layout(&legacy_root, &legacy_sessions);
+        }
+        Ok(())
     }
 
     fn project_by_id(&self, project_id: &str) -> Result<Project, String> {
@@ -582,7 +989,14 @@ fn sessions_file(project_path: &Path) -> PathBuf {
 }
 
 fn session_log_path(project_path: &Path, session_id: &str) -> PathBuf {
-    let safe_id = session_id
+    let safe_id = safe_session_id(session_id);
+    crate::app_paths::project_dir(project_path)
+        .join("sessions")
+        .join(format!("{safe_id}.raw.log"))
+}
+
+fn safe_session_id(session_id: &str) -> String {
+    session_id
         .chars()
         .map(|character| {
             if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
@@ -591,10 +1005,99 @@ fn session_log_path(project_path: &Path, session_id: &str) -> PathBuf {
                 '_'
             }
         })
-        .collect::<String>();
-    crate::app_paths::project_dir(project_path)
-        .join("sessions")
-        .join(format!("{safe_id}.raw.log"))
+        .collect::<String>()
+}
+
+fn copy_if_present(source: &str, target: &Path) -> bool {
+    let source = Path::new(source);
+    if !source.is_file() {
+        return true;
+    }
+    if let Some(parent) = target.parent() {
+        if fs::create_dir_all(parent).is_err() {
+            return false;
+        }
+    }
+    fs::copy(source, target).is_ok()
+}
+
+fn session_recency_key(session: &Session) -> u128 {
+    session
+        .last_active_at
+        .parse::<u128>()
+        .unwrap_or_default()
+}
+
+fn remove_legacy_chat_layout(root: &Path, sessions: &[Session]) {
+    let marker = root.join(crate::app_paths::DIR_NAME);
+    let index = marker.join("sessions").join("index.json");
+    if !index.is_file() || sessions.is_empty() {
+        return;
+    }
+    if !sessions
+        .iter()
+        .all(|session| session.project_id == crate::app_paths::CHAT_PROJECT_ID)
+    {
+        return;
+    }
+
+    // Only remove a marker that contains exactly the files the interrupted
+    // Chat implementation could have created. A real project may share the
+    // same folder and must never lose its metadata during migration.
+    let expected_ids: std::collections::HashSet<String> = sessions
+        .iter()
+        .map(|session| safe_session_id(&session.id))
+        .collect();
+    let has_only_files = |dir: &Path, allowed: &dyn Fn(&str) -> bool| {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return false;
+        };
+        entries.filter_map(Result::ok).all(|entry| {
+            let Ok(file_type) = entry.file_type() else {
+                return false;
+            };
+            file_type.is_file()
+                && allowed(entry.file_name().to_string_lossy().as_ref())
+        })
+    };
+    if !has_only_files(&marker.join("sessions"), &|name| {
+        name == "index.json"
+            || name
+                .strip_suffix(".raw.log")
+                .map(|id| expected_ids.contains(id))
+                .unwrap_or(false)
+    }) {
+        return;
+    }
+    if !has_only_files(&marker.join("transcripts"), &|name| {
+        name.strip_suffix(".jsonl")
+            .map(|id| expected_ids.contains(id))
+            .unwrap_or(false)
+    }) {
+        return;
+    }
+    if !has_only_files(&marker.join("handoff"), &|name| {
+        name.strip_suffix(".md")
+            .map(|id| expected_ids.contains(id))
+            .unwrap_or(false)
+    }) {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(&marker) else {
+        return;
+    };
+    let top_level_is_safe = entries.filter_map(Result::ok).all(|entry| {
+        let name = entry.file_name();
+        let allowed_dir = matches!(
+            name.to_string_lossy().as_ref(),
+            "sessions" | "transcripts" | "handoff"
+        );
+        let allowed_file = name == "handoff.md";
+        allowed_dir || allowed_file
+    });
+    if top_level_is_safe {
+        let _ = fs::remove_dir_all(marker);
+    }
 }
 
 fn project_id(path: &str) -> String {
@@ -613,7 +1116,8 @@ fn now_string() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::StorageService;
+    use super::{now_string, StorageService};
+    use crate::models::Project;
     use std::fs;
     use std::path::Path;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -720,6 +1224,86 @@ mod tests {
             .parent()
             .unwrap()
             .is_dir());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn chat_sessions_are_global_and_do_not_mark_the_working_folder() {
+        let root = test_root();
+        let global_dir = root.join("global");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+
+        let service = StorageService::from_global_dir(global_dir.clone()).unwrap();
+        let session = service
+            .create_chat_session("opencode".to_string(), "Chat".to_string(), &workspace.to_string_lossy())
+            .unwrap();
+
+        assert!(service.list_projects().unwrap().is_empty());
+        assert_eq!(service.list_chat_sessions().unwrap()[0].id, session.id);
+        assert_eq!(Path::new(&session.cwd), workspace.canonicalize().unwrap());
+        assert!(!workspace.join(".marionette").exists());
+        assert!(global_dir.join("chats/sessions/index.json").is_file());
+
+        let restarted = StorageService::from_global_dir(global_dir).unwrap();
+        assert_eq!(restarted.list_chat_sessions().unwrap().len(), 1);
+        assert!(!workspace.join(".marionette").exists());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_fake_chat_project_is_migrated_without_losing_transcript() {
+        let root = test_root();
+        let global_dir = root.join("global");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+
+        let service = StorageService::from_global_dir(global_dir.clone()).unwrap();
+        let old_project = service
+            .add_project(workspace.to_string_lossy().to_string())
+            .unwrap();
+        let mut legacy_session = service
+            .create_session(&old_project.id, "opencode".to_string(), "Legacy chat".to_string())
+            .unwrap();
+        legacy_session.project_id = crate::app_paths::CHAT_PROJECT_ID.to_string();
+        fs::write(
+            &legacy_session.transcript_path,
+            "{\"type\":\"user_message\",\"text\":\"kept\"}\n",
+        )
+        .unwrap();
+        let legacy_index = workspace.join(".marionette/sessions/index.json");
+        fs::write(
+            &legacy_index,
+            serde_json::to_string_pretty(&vec![legacy_session.clone()]).unwrap(),
+        )
+        .unwrap();
+        fs::write(workspace.join(".marionette/handoff.md"), "latest").unwrap();
+        let fake_project = Project {
+            id: crate::app_paths::CHAT_PROJECT_ID.to_string(),
+            name: "聊天".to_string(),
+            root_path: workspace.to_string_lossy().to_string(),
+            created_at: now_string(),
+            last_opened_at: now_string(),
+        };
+        fs::write(
+            global_dir.join("projects.json"),
+            serde_json::to_string_pretty(&vec![fake_project]).unwrap(),
+        )
+        .unwrap();
+
+        let restarted = StorageService::from_global_dir(global_dir.clone()).unwrap();
+        let chats = restarted.list_chat_sessions().unwrap();
+        assert_eq!(chats.len(), 1);
+        assert_eq!(chats[0].label, "Legacy chat");
+        assert_eq!(restarted.list_projects().unwrap().len(), 0);
+        assert!(global_dir.join("chats/transcripts").join(format!("{}.jsonl", chats[0].id)).is_file());
+        assert_eq!(
+            fs::read_to_string(global_dir.join("chats/handoff.md")).unwrap(),
+            "latest"
+        );
+        assert!(!workspace.join(".marionette").exists());
 
         fs::remove_dir_all(root).unwrap();
     }

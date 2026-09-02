@@ -57,6 +57,64 @@ export function getSessionUpdateKind(update: UpdateObj): string {
   return String(update.sessionUpdate ?? update.type ?? update.kind ?? "");
 }
 
+/**
+ * Read an agent-provided conversation title from ACP metadata.
+ *
+ * `session_info_update.title` is the standard live surface. The ready-shape
+ * fallbacks cover agents that put a title in `session/new` (or its metadata)
+ * and are deliberately limited to the ready payload so a tool title cannot be
+ * mistaken for a conversation title.
+ */
+export function extractAcpSessionTitle(data: unknown): string | null {
+  const root = asRecord(data);
+  if (!root) return null;
+
+  const params = asRecord(root.params) ?? root;
+  const update = asRecord(params.update) ?? params;
+  const normalizedKind = getSessionUpdateKind(update)
+    .toLowerCase()
+    .replace(/[\s_-]/g, "");
+  const firstString = (...values: unknown[]): string | null => {
+    for (const value of values) {
+      if (typeof value !== "string") continue;
+      const title = value.replace(/\s+/g, " ").trim();
+      if (title) return title;
+    }
+    return null;
+  };
+
+  if (normalizedKind === "sessioninfoupdate") {
+    const info = asRecord(update.sessionInfo) ?? asRecord(update.session_info);
+    return firstString(
+      update.title,
+      update.sessionTitle,
+      update.session_title,
+      info?.title,
+    );
+  }
+
+  // `session/ready` is Marionette's local event around the `session/new`
+  // response. Only inspect fields that identify that response shape.
+  if (
+    "contextSize" in root ||
+    "capabilities" in root ||
+    "configOptions" in root ||
+    "modes" in root
+  ) {
+    const info = asRecord(root.sessionInfo) ?? asRecord(root.session_info);
+    const meta = asRecord(root._meta) ?? asRecord(root.meta);
+    return firstString(
+      root.title,
+      root.sessionTitle,
+      root.session_title,
+      info?.title,
+      meta?.title,
+    );
+  }
+
+  return null;
+}
+
 function contentBlockType(content: unknown): string {
   const c = asRecord(content);
   if (!c) return "";

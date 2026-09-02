@@ -49,6 +49,75 @@ pub fn take_launch_open_path() -> Option<String> {
     crate::shell_integration::take_launch_open_path()
 }
 
+/// Get the default folder for Chat — the launch path when it is still pending,
+/// otherwise the Marionette process working directory.
+#[tauri::command]
+pub fn get_default_folder() -> Result<String, String> {
+    let _trace = crate::debug_log::CmdTrace::new("get_default_folder");
+    crate::shell_integration::peek_launch_open_path()
+        .or_else(|| crate::app_paths::current_dir().ok())
+        .ok_or_else(|| "Unable to determine default folder".to_string())
+}
+
+/// Open a folder — as a project if it has `.marionette`, otherwise as a chat session.
+#[tauri::command]
+pub fn open_here(
+    path: String,
+    agent_id: String,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let _trace = crate::debug_log::CmdTrace::new("open_here");
+    if crate::storage::StorageService::has_marionette_dir(&path) {
+        let storage = state.storage.lock().map_err(|_| "Storage lock poisoned".to_string())?;
+        let project = storage.add_project(path)?;
+        return Ok(serde_json::json!({
+            "kind": "project",
+            "project": project,
+        }));
+    }
+    let storage = state.storage.lock().map_err(|_| "Storage lock poisoned".to_string())?;
+    let resolved_agent = if agent_id.trim().is_empty() {
+        "opencode".to_string()
+    } else {
+        agent_id
+    };
+    let session = storage.create_chat_session(
+        resolved_agent,
+        format!("Chat · {}", folder_name(&path)),
+        &path,
+    )?;
+    Ok(serde_json::json!({
+        "kind": "chat",
+        "session": session,
+    }))
+}
+
+fn folder_name(path: &str) -> String {
+    path.trim_end_matches(['\\', '/'])
+        .rsplit(['\\', '/'])
+        .find(|name| !name.is_empty())
+        .unwrap_or("Folder")
+        .to_string()
+}
+
+/// Create a Chat session in the global Chat store.
+#[tauri::command]
+pub fn create_chat_session(
+    agent_id: String,
+    label: String,
+    cwd: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Session, String> {
+    let _trace = crate::debug_log::CmdTrace::new("create_chat_session");
+    let default_folder = cwd
+        .filter(|path| !path.trim().is_empty())
+        .or_else(crate::shell_integration::peek_launch_open_path)
+        .or_else(|| crate::app_paths::current_dir().ok())
+        .ok_or_else(|| "Unable to determine Chat folder".to_string())?;
+    let storage = state.storage.lock().map_err(|_| "Storage lock poisoned".to_string())?;
+    storage.create_chat_session(agent_id, label, &default_folder)
+}
+
 /// (Re)install Explorer context menu entries pointing at this exe.
 #[tauri::command]
 pub fn register_shell_integration() -> Result<(), String> {
@@ -581,6 +650,7 @@ pub fn delete_session(
 pub fn update_session_label(
     session_id: String,
     label: String,
+    label_source: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let _trace = crate::debug_log::CmdTrace::new("update_session_label");
@@ -588,7 +658,7 @@ pub fn update_session_label(
         .storage
         .lock()
         .map_err(|_| "Storage lock poisoned".to_string())?;
-    storage.update_session_label(&session_id, &label)
+    storage.update_session_label(&session_id, &label, label_source.as_deref())
 }
 
 /// Persist dialog runtime status (`starting` / `running` / `waiting` / …).
@@ -1602,7 +1672,9 @@ pub fn probe_acp_billing(
     state.acp.probe_billing(&session_id)
 }
 
-/// Generate `.marionette/handoff.md` and a composer prefill prompt. Does not send.
+/// Generate handoff metadata and a composer prefill prompt. Project handoffs
+/// live under `.marionette`; Chat handoffs live under the global Chat store.
+/// Does not send.
 /// Returns `Ok(None)` (writes nothing) when the dialog has no messages yet —
 /// switching agents on a fresh dialog must not create an empty handoff.
 /// Pass `source_agent_id` when the session may already be rebound to the target.
@@ -1618,11 +1690,6 @@ pub fn generate_handoff(
         .storage
         .lock()
         .map_err(|_| "Storage lock poisoned".to_string())?;
-    let project = storage
-        .list_projects()?
-        .into_iter()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| format!("Unknown project: {project_id}"))?;
     let session = storage
         .find_session(&session_id)?
         .ok_or_else(|| format!("Unknown session: {session_id}"))?;
@@ -1641,6 +1708,29 @@ pub fn generate_handoff(
         .unwrap_or_else(|| session.agent_id.clone());
     let source_label = agent_label(&source_id);
     let target_label = agent_label(&target_agent_id);
+
+    if project_id == crate::app_paths::CHAT_PROJECT_ID {
+        let chat_root = storage.chat_data_dir();
+        return crate::handoff::generate_handoff_with_storage(
+            &project_id,
+            Path::new(&session.cwd),
+            "聊天",
+            &session.id,
+            &session.label,
+            &source_id,
+            &source_label,
+            &target_agent_id,
+            &target_label,
+            Path::new(&session.transcript_path),
+            &chat_root,
+        );
+    }
+
+    let project = storage
+        .list_projects()?
+        .into_iter()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("Unknown project: {project_id}"))?;
 
     crate::handoff::generate_handoff(
         &project.id,

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Bell, BellOff, ChevronDown, ChevronRight, Folder, FolderOpen, Globe, GripVertical, Moon, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Save, Search, Sun, Trash2, X, Zap } from "lucide-react";
+import { Bell, BellOff, ChevronDown, ChevronRight, Folder, FolderOpen, Globe, GripVertical, Moon, MessageSquare, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Save, Search, Sun, Trash2, X, Zap } from "lucide-react";
 import type { AgentConfig, Project, ProxyConfig, ProxyTestResult, Session } from "../lib/types";
 import { loadCollapsedProjectIds, saveCollapsedProjectIds } from "../lib/uiRestore";
 
@@ -71,6 +71,14 @@ type ProjectShelfProps = {
   onSaveProxy?: (config: ProxyConfig) => Promise<void>;
   /** Round-trip through `url` to verify the proxy path is alive. */
   onTestProxy?: (url: string) => Promise<ProxyTestResult | null>;
+  /** Default folder path for the Chat section. */
+  defaultFolderPath?: string;
+  /** Chat sessions to display in the Chat section. */
+  chatSessions?: Session[];
+  /** Open a chat session from the Chat section. */
+  onChatSessionSelect?: (session: Session) => void;
+  /** Create a new chat session. */
+  onNewChat?: () => void;
 };
 
 type DropHint = { targetId: string; place: "before" | "after" };
@@ -107,6 +115,10 @@ export function ProjectShelf({
   onTestProxy,
   searchHitIds = null,
   onSearchQueryChange,
+  defaultFolderPath = "",
+  chatSessions = [],
+  onChatSessionSelect,
+  onNewChat,
 }: ProjectShelfProps) {
   /** Collapsed project ids (persisted). Default for unknown ids is expanded. */
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() => loadCollapsedProjectIds());
@@ -442,6 +454,17 @@ export function ProjectShelf({
   );
 
   const searching = Boolean(query.trim());
+  const visibleChatSessions = useMemo(() => {
+    if (!searching) return chatSessions;
+    const q = query.trim().toLowerCase();
+    const hitSet = searchHitIds ? new Set(searchHitIds) : null;
+    return chatSessions.filter((session) =>
+      hitSet?.has(session.id) ||
+      session.label.toLowerCase().includes(q) ||
+      session.agentId.toLowerCase().includes(q) ||
+      session.cwd.toLowerCase().includes(q),
+    );
+  }, [chatSessions, query, searchHitIds, searching]);
   // Pin the Explorer "open here" project to the top of the shelf (still filterable).
   const allVisibleProjects = useMemo(() => {
     const list = filtered.projects;
@@ -716,7 +739,11 @@ export function ProjectShelf({
                             type="button"
                             title={`Delete ${session.label}`}
                             aria-label={`Delete ${session.label}`}
-                            onClick={() => onDeleteSession(session.id)}
+                            onClick={() => {
+                              if (window.confirm(`Delete session “${session.label}”?\n\nThis removes its local transcript and cannot be undone.`)) {
+                                onDeleteSession(session.id);
+                              }
+                            }}
                           >
                             <Trash2 size={12} />
                           </button>
@@ -773,6 +800,132 @@ export function ProjectShelf({
           );
         })}
       </div>
+
+      {/* ── Chat section ── */}
+      {onChatSessionSelect && (
+        <section className="chat-section">
+          <div
+            className="chat-section__header"
+            title={defaultFolderPath ? `工作目录：${defaultFolderPath}` : "Chat 工作目录"}
+          >
+            <span className="chat-section__title">
+              <MessageSquare size={13} aria-hidden />
+              聊天
+            </span>
+            {onNewChat && (
+              <button
+                className="pill-action pill-action--icon pill-action--sm chat-section__new"
+                type="button"
+                title="新建对话"
+                aria-label="New chat"
+                onClick={onNewChat}
+              >
+                <Plus size={13} />
+              </button>
+            )}
+          </div>
+          <div className="chat-list custom-scrollbar scrollbar-autohide" aria-label="Chat conversations">
+            {visibleChatSessions.length === 0 && (
+              <div className="chat-list__empty">
+                {searching ? `没有匹配的对话 “${query.trim()}”` : "暂无对话"}
+              </div>
+            )}
+            {sortSessionsNewestFirst(visibleChatSessions).map((session) => {
+              const busy = sessionIsBusy(session.status);
+              const isActive = session.id === currentSessionId;
+              const isRenaming = renamingId === session.id;
+              const beginRename = () => {
+                if (!onRenameSession) return;
+                setRenamingId(session.id);
+                setRenameDraft(session.label);
+              };
+              return (
+                <div
+                  className={[
+                    "chat-row",
+                    isActive ? "is-active" : "",
+                    busy ? "is-running" : "",
+                  ].filter(Boolean).join(" ")}
+                  key={session.id}
+                >
+                  {isRenaming ? (
+                    <form
+                      className="chat-row__rename"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        commitRename();
+                      }}
+                    >
+                      <span className={`chat-row__dot ${busy ? `is-${session.status}` : ""}`} aria-hidden />
+                      <input
+                        ref={renameInputRef}
+                        className="chat-row__rename-input"
+                        value={renameDraft}
+                        aria-label="Rename chat"
+                        onChange={(event) => setRenameDraft(event.target.value)}
+                        onBlur={() => commitRename()}
+                        onKeyDown={(event) => {
+                          if (event.key === "Escape") {
+                            event.preventDefault();
+                            setRenamingId(null);
+                          }
+                        }}
+                      />
+                    </form>
+                  ) : (
+                    <button
+                      className="chat-row__select"
+                      type="button"
+                      title={`${session.label} · ${session.agentId} · double-click or pencil to rename`}
+                      onClick={() => onChatSessionSelect(session)}
+                      onDoubleClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        beginRename();
+                      }}
+                    >
+                      <span className={`chat-row__dot ${busy ? `is-${session.status}` : ""}`} aria-hidden />
+                      <span className="chat-row__content">
+                        <strong>{session.label}</strong>
+                      </span>
+                    </button>
+                  )}
+                  <span className="chat-row__actions">
+                    {onRenameSession && !isRenaming && (
+                      <button
+                        className="chat-row__action"
+                        type="button"
+                        title={`Rename ${session.label}`}
+                        aria-label={`Rename ${session.label}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          beginRename();
+                        }}
+                      >
+                        <Pencil size={12} />
+                      </button>
+                    )}
+                    <button
+                      className="chat-row__action chat-row__action--danger"
+                      type="button"
+                      title={`Delete ${session.label}`}
+                      aria-label={`Delete ${session.label}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (window.confirm(`删除对话“${session.label}”？\n\n这会删除本地对话记录，且无法撤销。`)) {
+                          onDeleteSession(session.id);
+                        }
+                      }}
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       <div className="sidebar-footer">
         {themeButton}

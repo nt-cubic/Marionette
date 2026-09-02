@@ -199,6 +199,10 @@ export function shouldAutoRenameLabel(label: string): boolean {
     t === "" ||
     t === "New session" ||
     t === "New conversation" ||
+    t === "新对话" ||
+    t === "新会话" ||
+    t === "Chat" ||
+    t.startsWith("Chat · ") ||
     /^session-\d+$/i.test(t)
   );
 }
