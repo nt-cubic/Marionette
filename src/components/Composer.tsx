@@ -67,6 +67,7 @@ import {
   type DelegateCandidate,
 } from "../lib/delegate";
 import { ProviderConfigDialog } from "./ProviderConfigDialog";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { ImageAnnotator } from "./ImageAnnotator";
 import { recordModelUsage, getRecentModels, recordLastUsedDefaults } from "../lib/recentModels";
 import {
@@ -556,6 +557,7 @@ export function Composer({
   );
   const [installingAgentId, setInstallingAgentId] = useState<string | null>(null);
   const [installNote, setInstallNote] = useState("");
+  const [pendingDeleteAgent, setPendingDeleteAgent] = useState<{ id: string; label: string } | null>(null);
   const [preflightById, setPreflightById] = useState<Record<string, PreflightResult>>({});
   /** Highlighted row in the `/` autocomplete list. */
   const [slashIndex, setSlashIndex] = useState(0);
@@ -2838,16 +2840,7 @@ export function Composer({
                               title="删除自定义 agent"
                               onClick={(event) => {
                                 event.stopPropagation();
-                                if (!window.confirm(`删除自定义 agent「${candidate.label}」？`)) return;
-                                void removeCustomAgent(candidate.id)
-                                  .then(async () => {
-                                    setInstallNote(`已删除 ${candidate.label}`);
-                                    await onAgentsReload?.();
-                                    void refreshAgentStatuses();
-                                  })
-                                  .catch((e) =>
-                                    setInstallNote(e instanceof Error ? e.message : String(e)),
-                                  );
+                                setPendingDeleteAgent({ id: candidate.id, label: candidate.label });
                               }}
                             >
                               删除
@@ -2978,6 +2971,27 @@ export function Composer({
             />
           );
         })()}
+      {pendingDeleteAgent && (
+        <ConfirmDialog
+          title="删除自定义 agent"
+          itemName={pendingDeleteAgent.label}
+          description="将从本地 agent 列表中移除，可重新添加。"
+          onCancel={() => setPendingDeleteAgent(null)}
+          onConfirm={() => {
+            const target = pendingDeleteAgent;
+            setPendingDeleteAgent(null);
+            void removeCustomAgent(target.id)
+              .then(async () => {
+                setInstallNote(`已删除 ${target.label}`);
+                await onAgentsReload?.();
+                void refreshAgentStatuses();
+              })
+              .catch((e) =>
+                setInstallNote(e instanceof Error ? e.message : String(e)),
+              );
+          }}
+        />
+      )}
       {showProviderDialog && (
         <ProviderConfigDialog
           restartPending={providerKeysDirty}
