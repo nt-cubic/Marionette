@@ -733,6 +733,55 @@ body.is-panel-resizing .context-panel {
   font-weight: 600;
 }
 
+.project-dialog__submit--danger {
+  border-color: var(--red);
+  background: var(--red);
+  color: #fff;
+}
+
+.confirm-dialog-backdrop {
+  z-index: 60;
+}
+
+.confirm-dialog {
+  width: min(360px, 100%);
+  gap: 14px;
+}
+
+.confirm-dialog__header {
+  justify-content: flex-start;
+  gap: 10px;
+}
+
+.confirm-dialog__icon {
+  display: grid;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+}
+
+.confirm-dialog__item {
+  display: block;
+  max-width: 260px;
+  overflow: hidden;
+  color: var(--text) !important;
+  font-size: 13px !important;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.confirm-dialog__desc {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .panel-section--fill {
   flex: 1;
   overflow: hidden;
@@ -2554,6 +2603,72 @@ body.is-tab-detaching * {
   max-width: 100%;
   min-height: 0;
   overflow: hidden;
+}
+
+/* Clean View 运行时状态 pill —— Claude 风格 Reading/Thinking/Writing */
+.clean-live-status {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 12;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: min(420px, calc(100% - 160px));
+  height: 26px;
+  padding: 0 12px;
+  box-sizing: border-box;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel-raised) 92%, transparent);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.clean-live-status__dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: clean-live-pulse 1.3s ease-in-out infinite;
+}
+
+.clean-live-status.is-thinking .clean-live-status__dot {
+  background: var(--warn, #d9a441);
+}
+
+.clean-live-status.is-starting .clean-live-status__dot {
+  background: var(--text-faint);
+}
+
+.clean-live-status__label {
+  flex-shrink: 0;
+}
+
+.clean-live-status__detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-faint);
+  font-weight: 500;
+}
+
+@keyframes clean-live-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 /* Jump-to-latest when the user has scrolled up in a long thread. */
