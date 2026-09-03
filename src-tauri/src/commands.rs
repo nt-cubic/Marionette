@@ -639,6 +639,14 @@ pub fn delete_session(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let _trace = crate::debug_log::CmdTrace::new("delete_session");
+    // Belt-and-suspenders: deleting a session must never leave an orphan ACP
+    // process behind. The frontend already stops running sessions before this
+    // command, but its decision relies on a status snapshot (exited-but-alive
+    // sessions would otherwise leak). `acp.stop` is idempotent — an already
+    // stopped session simply has no entry in the map and is skipped.
+    // Called before taking the storage lock so the lock order stays
+    // acp-then-storage everywhere (matches stop_acp_session).
+    let _ = state.acp.stop(&session_id);
     let storage = state
         .storage
         .lock()
