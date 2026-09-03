@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointer
 import { Bell, BellOff, ChevronDown, ChevronRight, Folder, FolderOpen, Globe, GripVertical, Moon, MessageSquare, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Save, Search, Sun, Trash2, X, Zap } from "lucide-react";
 import type { AgentConfig, Project, ProxyConfig, ProxyTestResult, Session } from "../lib/types";
 import { loadCollapsedProjectIds, saveCollapsedProjectIds } from "../lib/uiRestore";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 type ThemeMode = "dark" | "light";
 
@@ -212,6 +213,10 @@ export function ProjectShelf({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const renameInputRef = useRef<HTMLInputElement>(null);
+  /** Pending destructive action — rendered as an in-app window instead of window.confirm. */
+  const [pendingDelete, setPendingDelete] = useState<
+    { kind: "project" | "session" | "chat"; id: string; label: string } | null
+  >(null);
   /**
    * Pointer-based reorder (not HTML5 DnD).
    * WebView2 often won't start a drag from nested <button>s, and React state
@@ -476,6 +481,7 @@ export function ProjectShelf({
   // Projects always fully listed; only sessions inside a project use Show more/less.
 
   return (
+    <>
     <section className="project-tree">
       {/* Same height as center tabs / right Information — flush to window top like Zed. */}
       <div className="sidebar-title titlebar-row">
@@ -603,9 +609,7 @@ export function ProjectShelf({
                     title={`Remove project ${project.name}`}
                     aria-label={`Remove project ${project.name}`}
                     onClick={() => {
-                      if (window.confirm(`Remove project “${project.name}” from the list?\n\nThis does not delete files on disk.`)) {
-                        onDeleteProject(project.id);
-                      }
+                      setPendingDelete({ kind: "project", id: project.id, label: project.name });
                     }}
                   >
                     <Trash2 size={13} />
@@ -740,9 +744,7 @@ export function ProjectShelf({
                             title={`Delete ${session.label}`}
                             aria-label={`Delete ${session.label}`}
                             onClick={() => {
-                              if (window.confirm(`Delete session “${session.label}”?\n\nThis removes its local transcript and cannot be undone.`)) {
-                                onDeleteSession(session.id);
-                              }
+                              setPendingDelete({ kind: "session", id: session.id, label: session.label });
                             }}
                           >
                             <Trash2 size={12} />
@@ -912,9 +914,7 @@ export function ProjectShelf({
                       aria-label={`Delete ${session.label}`}
                       onClick={(event) => {
                         event.stopPropagation();
-                        if (window.confirm(`删除对话“${session.label}”？\n\n这会删除本地对话记录，且无法撤销。`)) {
-                          onDeleteSession(session.id);
-                        }
+                        setPendingDelete({ kind: "chat", id: session.id, label: session.label });
                       }}
                     >
                       <Trash2 size={12} />
@@ -1013,5 +1013,39 @@ export function ProjectShelf({
       )}
       </div>
     </section>
+    {pendingDelete && (
+      <ConfirmDialog
+        title={
+          pendingDelete.kind === "project"
+            ? "移除项目"
+            : pendingDelete.kind === "chat"
+              ? "删除对话"
+              : "Delete session"
+        }
+        itemName={pendingDelete.label}
+        description={
+          pendingDelete.kind === "project"
+            ? "仅从列表中移除，不会删除磁盘上的文件。"
+            : pendingDelete.kind === "chat"
+              ? "这会删除本地对话记录，且无法撤销。"
+              : "This removes its local transcript and cannot be undone."
+        }
+        confirmLabel={
+          pendingDelete.kind === "project"
+            ? "移除"
+            : pendingDelete.kind === "session"
+              ? "Delete"
+              : "删除"
+        }
+        onCancel={() => setPendingDelete(null)}
+        onConfirm={() => {
+          const target = pendingDelete;
+          setPendingDelete(null);
+          if (target.kind === "project") onDeleteProject(target.id);
+          else onDeleteSession(target.id);
+        }}
+      />
+    )}
+    </>
   );
 }
