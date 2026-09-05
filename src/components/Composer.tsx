@@ -4,6 +4,7 @@ import { Expand, Plus, Search, SendHorizontal, Shrink, Square } from "lucide-rea
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -568,6 +569,8 @@ export function Composer({
   const errorTimer = useRef<ReturnType<typeof setTimeout>>();
   const updating = useRef(false);
   const modelSearchRef = useRef<HTMLInputElement>(null);
+  const modelMenuRef = useRef<HTMLDivElement>(null);
+  const modelMenuAnchorRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLElement>(null);
@@ -1704,6 +1707,34 @@ export function Composer({
     }
   }, [menu]);
 
+  // Size the model menu to the space *above* the trigger, inside the workspace
+  // clip box. `.center-workspace { overflow: hidden }` will otherwise crop a
+  // too-tall popup, and a fixed 320px list cap leaves most of that space unused.
+  useLayoutEffect(() => {
+    if (menu !== "model") return;
+    const menuEl = modelMenuRef.current;
+    const anchor = modelMenuAnchorRef.current;
+    if (!menuEl || !anchor) return;
+
+    const apply = () => {
+      const clip = anchor.closest(".center-workspace");
+      const clipTop = clip?.getBoundingClientRect().top ?? 0;
+      const available = Math.floor(anchor.getBoundingClientRect().top - clipTop - 8);
+      menuEl.style.maxHeight = `${Math.max(220, available)}px`;
+    };
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(anchor);
+    if (composerRef.current) ro.observe(composerRef.current);
+    const clipEl = anchor.closest(".center-workspace");
+    if (clipEl) ro.observe(clipEl);
+    window.addEventListener("resize", apply);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", apply);
+    };
+  }, [menu]);
+
   // Which agents can actually run — probed when the switcher opens, so the list
   // never offers a harness that would fail with "command not found" on send.
   const refreshAgentStatuses = useCallback(async () => {
@@ -2399,7 +2430,7 @@ export function Composer({
             {/* ── Model + Effort selector ─────────────────────────────── */}
             {/* Always show when caps exist (even empty for add-key prompt), or has effort */}
             {(hasModels || hasEffort || showKeyPrompt) && (
-              <div className="composer-menu-anchor">
+              <div className="composer-menu-anchor" ref={modelMenuAnchorRef}>
                 <button
                   className="composer-select composer-select--model"
                   type="button"
@@ -2412,7 +2443,12 @@ export function Composer({
                 </button>
 
                 {menu === "model" && (
-                  <div className="composer-menu composer-menu--models" role="listbox" aria-label={`${agent.label} models`}>
+                  <div
+                    ref={modelMenuRef}
+                    className="composer-menu composer-menu--models"
+                    role="listbox"
+                    aria-label={`${agent.label} models`}
+                  >
                     {/* The key prompt renders *above* the rest instead of replacing
                         it. As a ternary it also swallowed the effort block below,
                         and since nothing ever sets `menu = "effort"`, an agent with
@@ -2439,40 +2475,6 @@ export function Composer({
                     )}
                         {hasModels && (
                           <>
-                            {/* ── Recent models ── */}
-                            {recentModels.length > 0 && (
-                              <div className="composer-menu__recent">
-                                <span className="composer-menu__label">最近使用</span>
-                                {recentModels.map((entry) => {
-                                  const model = caps?.models.find((m) => m.id === entry.modelId);
-                                  if (!model) return null;
-                                  return (
-                                    <button
-                                      key={entry.modelId}
-                                      className={displayModel === entry.modelId ? "is-selected" : ""}
-                                      type="button"
-                                      role="option"
-                                      aria-selected={displayModel === entry.modelId}
-                                      onClick={() => {
-                                        const prev = displayModel;
-                                        pinOptions({ model: entry.modelId });
-                                        setCurrentModel(entry.modelId);
-                                        setMenu(null);
-                                        void commitUpdate({ model: entry.modelId }, () => {
-                                          unpinOption("model");
-                                          setCurrentModel(prev);
-                                        });
-                                      }}
-                                    >
-                                      <span className="composer-menu__model-name">{shortModelName(model)}</span>
-                                      <span className="composer-menu__model-recent-hint">{formatRecentTime(entry.lastUsedAt)}</span>
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            )}
-                            {recentModels.length > 0 && <span className="composer-menu__divider" />}
-
                             {/* ── Search ── */}
                             <div className="composer-menu__search">
                               <Search size={13} aria-hidden />
@@ -2492,6 +2494,40 @@ export function Composer({
                               />
                             </div>
                             <div className="composer-menu__scroll">
+                              {!modelQuery.trim() && recentModels.length > 0 && (
+                                <div className="composer-menu__recent">
+                                  <span className="composer-menu__label">最近使用</span>
+                                  {recentModels.map((entry) => {
+                                    const model = caps?.models.find((m) => m.id === entry.modelId);
+                                    if (!model) return null;
+                                    return (
+                                      <button
+                                        key={entry.modelId}
+                                        className={displayModel === entry.modelId ? "is-selected" : ""}
+                                        type="button"
+                                        role="option"
+                                        aria-selected={displayModel === entry.modelId}
+                                        onClick={() => {
+                                          const prev = displayModel;
+                                          pinOptions({ model: entry.modelId });
+                                          setCurrentModel(entry.modelId);
+                                          setMenu(null);
+                                          void commitUpdate({ model: entry.modelId }, () => {
+                                            unpinOption("model");
+                                            setCurrentModel(prev);
+                                          });
+                                        }}
+                                      >
+                                        <span className="composer-menu__model-name">{shortModelName(model)}</span>
+                                        <span className="composer-menu__model-recent-hint">{formatRecentTime(entry.lastUsedAt)}</span>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                              {!modelQuery.trim() && recentModels.length > 0 && (
+                                <span className="composer-menu__divider" />
+                              )}
                               {modelGroups.length === 0 && (
                                 <div className="composer-menu__empty">No models match “{modelQuery}”</div>
                               )}
