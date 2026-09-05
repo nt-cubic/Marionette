@@ -5978,10 +5978,17 @@ body.is-composer-resizing .composer {
 }
 
 .composer-menu--models {
-  width: min(300px, 72vw);
-  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  right: 0;
+  bottom: calc(100% + 6px);
+  width: min(380px, 82vw);
+  min-width: 260px;
+  max-width: min(420px, 86vw);
+  max-height: calc(100vh - 96px);
   padding: 6px;
   gap: 4px;
+  overflow: hidden;
 }
 
 .composer-menu__search {
@@ -6013,8 +6020,10 @@ body.is-composer-resizing .composer {
 .composer-menu__scroll {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
   gap: 2px;
-  max-height: min(320px, 45vh);
+  min-height: 0;
+  max-height: none;
   overflow-x: hidden;
   overflow-y: auto;
   padding-right: 2px;
@@ -6059,6 +6068,7 @@ body.is-composer-resizing .composer {
 
 .composer-menu__effort-inline {
   display: flex;
+  flex-shrink: 0;
   flex-wrap: wrap;
   gap: 4px;
   align-items: center;
@@ -6067,6 +6077,14 @@ body.is-composer-resizing .composer {
 
 .composer-menu__effort-inline .composer-menu__label {
   width: 100%;
+}
+
+.composer-menu__effort-inline button {
+  width: auto;
+  min-width: 0;
+  min-height: 24px;
+  padding: 0 9px;
+  flex: 0 0 auto;
 }
 
 .composer-menu__label {
@@ -6099,6 +6117,11 @@ body.is-composer-resizing .composer {
 
 .composer-menu--models button {
   min-height: 28px;
+}
+
+.composer-menu--models .composer-menu__scroll button,
+.composer-menu--models .composer-menu__recent button,
+.composer-menu--models .composer-menu__add-key-item {
   width: 100%;
 }
 
@@ -6758,8 +6781,16 @@ body.is-composer-resizing .composer {
 }
 
 /* ── Recent Models ─────────────────────────────────────────────────────── */
+.composer-menu__search,
+.composer-menu__add-key-item,
+.composer-menu__divider,
+.composer-menu__empty-state {
+  flex-shrink: 0;
+}
+
 .composer-menu__recent {
-  padding: 4px 0;
+  flex: 0 0 auto;
+  padding: 2px 0 0;
 }
 
 .composer-menu__recent .composer-menu__label {
