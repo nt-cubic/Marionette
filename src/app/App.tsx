@@ -1,4 +1,4 @@
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { ChevronLeft, ChevronRight, FolderOpen, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { agents, projects, sessions } from "../lib/mockData";
@@ -18,12 +18,18 @@ import {
 import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, startAcpSession, startAgentLogin, stopAcpSession, takeLaunchOpenPath, testProxy, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, CHAT_PROJECT_ID } from "../lib/api";
 import {
   bindDetachedWindowReaper,
+  DETACHED_HIDDEN_EVENT,
+  DETACHED_READY_EVENT,
   hideDetachedWindowForSession,
   listenMergeBackRequests,
   listenMergeHighlights,
   openDetachedSessionWindow,
   readDetachedSessionId,
   requestMergeBack,
+  sessionIdFromDetachedLabel,
+  setDetachedSessionOwner,
+  shouldHandleAcpSession,
+  type DetachedReadyPayload,
 } from "../lib/detachedWindow";
 import { broadcastSessionPatch, listenSessionPatches } from "../lib/sessionBus";
 import {
@@ -34,6 +40,7 @@ import {
 import { agentAuthSpec } from "../lib/agentAuth";
 import type { AcpEvent, AvailableCommand, CapabilitySnapshot, ChangedFile, HandoffResult, Project, ProjectContext, ProxyConfig, ProxyTestResult, Session, SessionComposerPrefs, SessionEvent, SessionViewMode, TurnStats, UsageSnapshot } from "../lib/types";
 import {
+  applyGrokLiveContext,
   buildTurnStats,
   buildUsageSnapshot,
   cumulativeFromEvents,
@@ -393,6 +400,10 @@ export function App() {
   const cancelWatchdogsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const transcriptSaveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const transcriptLoadedRef = useRef<Set<string>>(new Set());
+  /** Session ids currently shown in a visible detached OS window (main only). */
+  const detachedOwnedIdsRef = useRef<Set<string>>(new Set());
+  /** Main is reloading disk transcript after a detached hide — skip live events. */
+  const reloadingSessionsRef = useRef<Set<string>>(new Set());
   /**
    * Follow-up prompts typed while a turn is live. ACP allows only one
    * `session/prompt` in flight; the message waits in this queue (shown in a
@@ -530,6 +541,7 @@ export function App() {
   const openSessionIdsRef = useRef(openSessionIds);
   const liveEventsRef = useRef(liveEvents);
   const openSessionRef = useRef<(s: Session) => void>(() => undefined);
+  const loadSessionTranscriptRef = useRef<(id: string) => Promise<void>>(async () => undefined);
   sessionsRef.current = availableSessions;
   agentsRef.current = availableAgents;
   projectsRef.current = availableProjects;
@@ -537,6 +549,19 @@ export function App() {
   currentProjectIdRef.current = currentProjectId;
   openSessionIdsRef.current = openSessionIds;
   liveEventsRef.current = liveEvents;
+
+  const parentIdOfSession = (id: string): string | null => {
+    const row = sessionsRef.current.find((session) => session.id === id);
+    if (row?.parentSessionId) return row.parentSessionId;
+    return delegateMetaRef.current.get(id)?.parentId ?? null;
+  };
+
+  const ownsAcpSession = (sessionId: string): boolean =>
+    shouldHandleAcpSession(sessionId, {
+      detachedSessionId: DETACHED_SESSION_ID,
+      detachedOwnedIds: detachedOwnedIdsRef.current,
+      parentIdOf: parentIdOfSession,
+    });
 
   /** One workspace snapshot per prompt; used to turn real edits into timeline cards. */
   const fileChangeSnapshotsRef = useRef<Record<string, ProjectFileSnapshot>>({});
@@ -718,14 +743,6 @@ export function App() {
       agentLabel: agent.label,
       state: activeSession ? sessionUsageById[activeSession.id] : undefined,
       connected,
-      // Read events via ref — do NOT depend on liveEvents. Grok streams
-      // thousands of thought/message chunks; scanning the full transcript on
-      // every chunk froze the main thread (MAIN THREAD STALLED). Cumulative
-      // only changes when a turn stamps turnStats (sessionUsageById update)
-      // or when a restored transcript seeds usage state below.
-      cumulative: activeSession
-        ? cumulativeFromEvents(liveEventsRef.current, activeSession.id)
-        : null,
     });
   }, [availableAgents, availableSessions, currentSessionId, sessionUsageById]);
 
@@ -1106,6 +1123,58 @@ export function App() {
     return () => unlisten?.();
   }, []);
 
+  // Main: take / release stream ownership when a detached SPA is ready or hidden.
+  useEffect(() => {
+    if (!isTauriRuntime() || IS_DETACHED_WINDOW) return;
+    let unlistenReady: (() => void) | undefined;
+    let unlistenHidden: (() => void) | undefined;
+    void listen<DetachedReadyPayload>(DETACHED_READY_EVENT, (event) => {
+      const sessionId = event.payload?.sessionId;
+      if (!sessionId) return;
+      detachedOwnedIdsRef.current.add(sessionId);
+      const pending = transcriptSaveTimers.current.get(sessionId);
+      if (pending) {
+        clearTimeout(pending);
+        transcriptSaveTimers.current.delete(sessionId);
+      }
+      setLiveEvents((current) => {
+        const next = dropEventsForSessions(current, new Set([sessionId]));
+        liveEventsRef.current = next;
+        return next;
+      });
+      transcriptLoadedRef.current.delete(sessionId);
+    }).then((fn) => {
+      unlistenReady = fn;
+    });
+    void listen<string>(DETACHED_HIDDEN_EVENT, (event) => {
+      const label = typeof event.payload === "string" ? event.payload : "";
+      const sessionId = sessionIdFromDetachedLabel(label);
+      if (!sessionId) return;
+      detachedOwnedIdsRef.current.delete(sessionId);
+      reloadingSessionsRef.current.add(sessionId);
+      const pending = transcriptSaveTimers.current.get(sessionId);
+      if (pending) {
+        clearTimeout(pending);
+        transcriptSaveTimers.current.delete(sessionId);
+      }
+      transcriptLoadedRef.current.delete(sessionId);
+      setLiveEvents((current) => {
+        const next = dropEventsForSessions(current, new Set([sessionId]));
+        liveEventsRef.current = next;
+        return next;
+      });
+      void loadSessionTranscriptRef.current(sessionId).finally(() => {
+        reloadingSessionsRef.current.delete(sessionId);
+      });
+    }).then((fn) => {
+      unlistenHidden = fn;
+    });
+    return () => {
+      unlistenReady?.();
+      unlistenHidden?.();
+    };
+  }, []);
+
   // Main window only: detached shells hand their dialog back (merge button /
   // drag-over-main drop) → re-adopt the tab and hide the shell.
   useEffect(() => {
@@ -1113,6 +1182,7 @@ export function App() {
     let unlistenMerge: (() => void) | undefined;
     let unlistenGlow: (() => void) | undefined;
     void listenMergeBackRequests(async (sessionId) => {
+      detachedOwnedIdsRef.current.delete(sessionId);
       const session = sessionsRef.current.find((s) => s.id === sessionId);
       if (session) {
         setOpenSessionIds((current) =>
@@ -1279,6 +1349,9 @@ export function App() {
     void listen<AcpEvent>("acp-event", (event) => {
       if (disposed) return;
       const payload = event.payload;
+      // Other windows' streams must not rebuild this SPA's liveEvents / disk.
+      if (payload.sessionId && !ownsAcpSession(payload.sessionId)) return;
+      if (payload.sessionId && reloadingSessionsRef.current.has(payload.sessionId)) return;
       // ACP wire already logged in Rust emit_event → dev.log
       if (payload.sessionId) touchActivity(payload.sessionId);
 
@@ -1473,20 +1546,10 @@ export function App() {
           );
           const tokens = grokTurnUsageToTurnTokens(grokTurnUsageRef.current[sid]);
           if (tokens) {
-            setSessionUsageById((current) => {
-              const base = current[sid];
-              if (!base) return current;
-              return {
-                ...current,
-                [sid]: {
-                  ...base,
-                  turnTokens: tokens,
-                  contextUsed: base.contextUsed ?? tokens.input,
-                  refreshedAt: new Date().toISOString(),
-                  source: "grok per-call usage",
-                },
-              };
-            });
+            setSessionUsageById((current) => ({
+              ...current,
+              [sid]: applyGrokLiveContext(current[sid], tokens),
+            }));
           }
           return;
         }
@@ -1508,12 +1571,12 @@ export function App() {
         // End-of-turn token split. Most agents put it in the prompt RPC
         // response; Grok puts nothing there — its usage arrives per model call
         // on `_x.ai/session_notification`, so fall back to that accumulation.
-        let turnTokens = extractTurnTokens(payload.data);
-        if (!turnTokens) {
-          turnTokens = grokTurnUsageToTurnTokens(
-            grokTurnUsageRef.current[payload.sessionId]
-          );
-        }
+        const promptTokens = extractTurnTokens(payload.data);
+        const grokAccum = grokTurnUsageToTurnTokens(
+          grokTurnUsageRef.current[payload.sessionId]
+        );
+        const usedGrokAccum = promptTokens == null && grokAccum != null;
+        const turnTokens = promptTokens ?? grokAccum;
         delete grokTurnUsageRef.current[payload.sessionId];
         const firstChunkAt = turnStartedAtRef.current[payload.sessionId] ?? null;
         const sentAt = turnSentAtRef.current[payload.sessionId] ?? null;
@@ -1527,8 +1590,8 @@ export function App() {
             ? buildTurnStats(turnTokens, { sentAt, firstChunkAt, endedAt })
             : null;
 
-        // Stamp events first (and sync the ref) so the usage memo below can
-        // include this turn in Session total when sessionUsageById updates.
+        // Stamp events first (and sync the ref) so later transcript restore
+        // can seed lastTurnStats from this turn.
         const startedAt = firstChunkAt;
         const toolClose =
           stopReason === "cancelled"
@@ -1576,19 +1639,24 @@ export function App() {
 
         setSessionUsageById((current) => {
           const base = current[payload.sessionId];
-          if (!base) return current;
           const merged = mergeUsageFromPromptResult(base, payload.data);
-          const state = merged ?? base;
-          // An agent-level turn report (merged) wins; the accumulation only
-          // fills in when the RPC response carried no usage.
+          let state = merged ?? base;
+          if (!state && (turnTokens || turnStats)) {
+            state = emptySessionUsage();
+          }
+          if (!state) return current;
           const tokens = state.turnTokens ?? turnTokens;
           if (!tokens && !turnStats) return current;
+          // Grok has no usage_update; the latest call's input (incl. cache)
+          // is tokens currently in context and must overwrite, not seed-once.
+          const next = usedGrokAccum && tokens
+            ? applyGrokLiveContext(state, tokens)
+            : { ...state, turnTokens: tokens };
           return {
             ...current,
             [payload.sessionId]: {
-              ...state,
-              turnTokens: tokens,
-              lastTurnStats: turnStats ?? state.lastTurnStats,
+              ...next,
+              lastTurnStats: turnStats ?? next.lastTurnStats,
             },
           };
         });
@@ -1929,10 +1997,19 @@ export function App() {
         return;
       }
       unlistenAcp = dispose;
+      if (IS_DETACHED_WINDOW && DETACHED_SESSION_ID) {
+        void setDetachedSessionOwner(DETACHED_SESSION_ID, true);
+        void emit(DETACHED_READY_EVENT, {
+          sessionId: DETACHED_SESSION_ID,
+        } satisfies DetachedReadyPayload);
+      }
     });
 
     return () => {
       disposed = true;
+      if (IS_DETACHED_WINDOW && DETACHED_SESSION_ID) {
+        void setDetachedSessionOwner(DETACHED_SESSION_ID, false);
+      }
       unlistenAcp?.();
       for (const t of cancelWatchdogsRef.current.values()) clearTimeout(t);
       cancelWatchdogsRef.current.clear();
@@ -1940,11 +2017,38 @@ export function App() {
   }, [applyAgentSessionTitle, pushDebug, touchActivity, setAuthHintFor]);
   // note: pushDebug is stable via useCallback
 
+  // Detached close: flush JSONL then give the ACP stream back to main.
+  useEffect(() => {
+    if (!isTauriRuntime() || !IS_DETACHED_WINDOW || !DETACHED_SESSION_ID) return;
+    let unlisten: (() => void) | undefined;
+    void listen<string>(DETACHED_HIDDEN_EVENT, (event) => {
+      const label = typeof event.payload === "string" ? event.payload : "";
+      if (sessionIdFromDetachedLabel(label) !== DETACHED_SESSION_ID) return;
+      const events = persistableEventsForSession(
+        liveEventsRef.current,
+        DETACHED_SESSION_ID,
+      );
+      const release = () => {
+        void setDetachedSessionOwner(DETACHED_SESSION_ID, false);
+      };
+      if (events.length === 0) {
+        release();
+        return;
+      }
+      void writeTranscript(DETACHED_SESSION_ID, events).finally(release);
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => unlisten?.();
+  }, []);
+
   /** Debounced rewrite of Clean transcript JSONL per session. */
   useEffect(() => {
     if (!isTauriRuntime()) return;
     const sessionIds = new Set(liveEvents.map((e) => e.sessionId));
     for (const sessionId of sessionIds) {
+      if (!ownsAcpSession(sessionId)) continue;
+      if (reloadingSessionsRef.current.has(sessionId)) continue;
       const prev = transcriptSaveTimers.current.get(sessionId);
       if (prev) clearTimeout(prev);
       const timer = setTimeout(() => {
@@ -2035,9 +2139,9 @@ export function App() {
       liveEventsRef.current = next;
       return next;
     });
-    // Seed Last turn / Session total from persisted turnStats so the usage
-    // panel (which no longer re-scans on every liveEvents tick) still fills
-    // in for restored dialogs.
+    // Seed lastTurnStats from persisted transcript so a restored dialog
+    // still has per-turn token splits in memory (the Usage panel no longer
+    // renders those rows).
     let lastStats: TurnStats | null = null;
     for (let i = parsed.length - 1; i >= 0; i -= 1) {
       const e = parsed[i];
@@ -2075,6 +2179,7 @@ export function App() {
       });
     }
   }, []);
+  loadSessionTranscriptRef.current = loadSessionTranscript;
 
   // Restore Clean history whenever the active dialog changes.
   useEffect(() => {
@@ -2820,7 +2925,9 @@ export function App() {
     // Cross-window (detached) + disk SSOT — list_sessions must match the live turn
     // so a torn-off window shows Interrupt instead of Send mid-reply.
     void broadcastSessionPatch({ sessionId, status });
-    void updateSessionStatus(sessionId, status).catch(() => undefined);
+    if (ownsAcpSession(sessionId)) {
+      void updateSessionStatus(sessionId, status).catch(() => undefined);
+    }
   }, []);
 
   /**
@@ -2980,6 +3087,12 @@ export function App() {
    */
   const handleTabPopOut = async (session: Session, viaDrag = false) => {
     if (!isTauriRuntime() || IS_DETACHED_WINDOW) return;
+    // Flush before the detached SPA loads from disk, so tokens already in
+    // this window are not missing for the gap until it claims ownership.
+    const pending = persistableEventsForSession(liveEventsRef.current, session.id);
+    if (pending.length > 0) {
+      void writeTranscript(session.id, pending).catch(() => undefined);
+    }
     const ok = await openDetachedSessionWindow(session, { atCursor: viaDrag });
     if (!ok) return;
     // Detached SPA boots async — re-push live status/label so Interrupt matches
@@ -3029,6 +3142,10 @@ export function App() {
   const handleMergeBack = async (session: Session, viaDrag = false) => {
     if (!isTauriRuntime() || !IS_DETACHED_WINDOW) return;
     void viaDrag;
+    const events = persistableEventsForSession(liveEventsRef.current, session.id);
+    if (events.length > 0) {
+      await writeTranscript(session.id, events).catch(() => undefined);
+    }
     await requestMergeBack(session.id);
   };
 

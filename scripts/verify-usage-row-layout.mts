@@ -1,6 +1,6 @@
 /**
- * Layout check: long "tokens" usage rows (Last turn / Session total) must
- * render their value as a small line UNDER the label, not inline beside it.
+ * Layout check: Usage panel no longer renders Last turn / Session total.
+ * Context window and cost keep their inline % / amount + meter.
  *
  * Run: npx tsx scripts/verify-usage-row-layout.mts
  */
@@ -10,7 +10,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { ContextPanel } from "../src/components/ContextPanel";
 import { buildUsageSnapshot, emptySessionUsage } from "../src/lib/usage";
 
-// Mirrors the reported panel: a Grok turn with ~139K in / 2.2K out + speeds.
 const state: any = {
   ...emptySessionUsage(),
   contextUsed: 53000,
@@ -64,22 +63,14 @@ function check(name: string, fn: () => void) {
   console.log(`  ok  ${name}`);
 }
 
-check("Last turn value moves to a small detail line under the label", () => {
-  const r = row("Last turn");
-  assert.match(r, /<span class="usage-row__detail">/);
-  assert.match(r, /139K in · 2\.2K out · 139K cached/);
-  assert.match(r, /13\.8 tok\/s out/);
+check("Last turn is not rendered", () => {
+  assert.equal(html.includes("Last turn"), false);
+  assert.equal(snap.windows.find((w) => w.id === "last-turn"), undefined);
 });
 
-check("Last turn no longer carries an inline <strong> value", () => {
-  assert.doesNotMatch(row("Last turn"), /<strong/);
-});
-
-check("Session total gets the same stacked layout", () => {
-  const r = row("Session total");
-  assert.match(r, /<span class="usage-row__detail">/);
-  assert.match(r, /25K in · 58 out · 5\.6K cached · 2 turns/);
-  assert.doesNotMatch(r, /<strong/);
+check("Session total is not rendered", () => {
+  assert.equal(html.includes("Session total"), false);
+  assert.equal(snap.windows.find((w) => w.id === "session-total"), undefined);
 });
 
 check("context row keeps its inline % + meter", () => {

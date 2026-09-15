@@ -22,7 +22,7 @@ pub fn navigate_webview(label: String, url: String, app: AppHandle) -> Result<()
     win.eval(&js).map_err(|e| format!("eval navigate failed: {e}"))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_projects(state: State<'_, AppState>) -> Result<Vec<Project>, String> {
     let _trace = crate::debug_log::CmdTrace::new("list_projects");
     let storage = state
@@ -32,7 +32,7 @@ pub fn list_projects(state: State<'_, AppState>) -> Result<Vec<Project>, String>
     storage.list_projects()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn add_project(path: String, state: State<'_, AppState>) -> Result<Project, String> {
     let _trace = crate::debug_log::CmdTrace::new("add_project");
     let storage = state
@@ -60,7 +60,7 @@ pub fn get_default_folder() -> Result<String, String> {
 }
 
 /// Open a folder — as a project if it has `.marionette`, otherwise as a chat session.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_here(
     path: String,
     agent_id: String,
@@ -101,7 +101,7 @@ fn folder_name(path: &str) -> String {
 }
 
 /// Create a Chat session in the global Chat store.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_chat_session(
     agent_id: String,
     label: String,
@@ -165,7 +165,7 @@ pub fn pick_files() -> Result<Vec<String>, String> {
     Ok(picked)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_project(project_id: String, state: State<'_, AppState>) -> Result<(), String> {
     let _trace = crate::debug_log::CmdTrace::new("delete_project");
     let storage = state
@@ -176,7 +176,7 @@ pub fn delete_project(project_id: String, state: State<'_, AppState>) -> Result<
 }
 
 /// Reorder the global project list (`projects.json` array order = shelf order).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn reorder_projects(
     ordered_ids: Vec<String>,
     state: State<'_, AppState>,
@@ -531,7 +531,7 @@ fn install_failure_reason(stderr: &str, stdout: &str) -> String {
     lines[start..].join(" | ")
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_sessions(
     project_id: String,
     state: State<'_, AppState>,
@@ -547,7 +547,7 @@ pub fn list_sessions(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_session(
     project_id: String,
     agent_id: String,
@@ -563,7 +563,7 @@ pub fn create_session(
 }
 
 /// Create a hidden child session for `@agent` delegate (not listed in shelf).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_child_session(
     project_id: String,
     parent_session_id: String,
@@ -576,10 +576,13 @@ pub fn create_child_session(
         .storage
         .lock()
         .map_err(|_| "Storage lock poisoned".to_string())?;
-    storage.create_child_session(&project_id, &parent_session_id, agent_id, label)
+    let session =
+        storage.create_child_session(&project_id, &parent_session_id, agent_id, label)?;
+    crate::acp::register_parent_session(&session.id, &parent_session_id);
+    Ok(session)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_child_sessions(
     parent_session_id: String,
     state: State<'_, AppState>,
@@ -592,7 +595,7 @@ pub fn list_child_sessions(
     storage.list_child_sessions(&parent_session_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn update_session_agent(
     session_id: String,
     agent_id: String,
@@ -607,7 +610,7 @@ pub fn update_session_agent(
 }
 
 /// Persist per-dialog Composer prefs (model / mode / effort / always-approve).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn update_session_prefs(
     session_id: String,
     preferred_model: Option<String>,
@@ -632,13 +635,15 @@ pub fn update_session_prefs(
     )
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_session(
     project_id: String,
     session_id: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let _trace = crate::debug_log::CmdTrace::new("delete_session");
+    crate::acp::unregister_parent_session(&session_id);
+    crate::acp::set_detached_visible(&session_id, false);
     // Belt-and-suspenders: deleting a session must never leave an orphan ACP
     // process behind. The frontend already stops running sessions before this
     // command, but its decision relies on a status snapshot (exited-but-alive
@@ -654,7 +659,7 @@ pub fn delete_session(
     storage.delete_session(&project_id, &session_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn update_session_label(
     session_id: String,
     label: String,
@@ -672,7 +677,7 @@ pub fn update_session_label(
 /// Persist dialog runtime status (`starting` / `running` / `waiting` / …).
 /// Detached windows read this via list_sessions so Interrupt vs Send matches
 /// the live turn — ACP start alone used to leave the file stuck on `running`.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn update_session_status(
     session_id: String,
     status: String,
@@ -699,11 +704,20 @@ pub fn write_transcript(
     events: Vec<serde_json::Value>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let storage = state
-        .storage
-        .lock()
-        .map_err(|_| "Storage lock poisoned".to_string())?;
-    storage.write_transcript(&session_id, &events)
+    let path = {
+        let storage = state
+            .storage
+            .lock()
+            .map_err(|_| "Storage lock poisoned".to_string())?;
+        storage.transcript_path_for(&session_id)?
+    };
+    crate::storage::StorageService::write_transcript_file(&path, &events)
+}
+
+/// Detached SPA claims (or releases) ownership of a session's ACP event stream.
+#[tauri::command(async)]
+pub fn set_detached_session_owner(session_id: String, visible: bool) {
+    crate::acp::set_detached_visible(&session_id, visible);
 }
 
 #[tauri::command(async)]
@@ -1409,11 +1423,17 @@ pub async fn start_acp_session(
             .storage
             .lock()
             .map_err(|_| "Storage lock poisoned".to_string())?;
-        storage
-            .find_session(&session_id)
-            .ok()
-            .flatten()
-            .map(|session| session.agent_id)
+        let found = storage.find_session(&session_id).ok().flatten();
+        if let Some(ref session) = found {
+            if let Some(parent) = session
+                .parent_session_id
+                .as_deref()
+                .filter(|id| !id.is_empty())
+            {
+                crate::acp::register_parent_session(&session_id, parent);
+            }
+        }
+        found.map(|session| session.agent_id)
     };
 
     let acp = state.acp.clone();
@@ -1932,7 +1952,7 @@ fn write_todos_atomic(path: &Path, body: &str) -> Result<(), String> {
 }
 
 /// Full project todo list (frontend owns truth; whole-file write on each edit).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_todos(
     project_id: String,
     state: State<'_, AppState>,
@@ -1948,7 +1968,7 @@ pub fn list_todos(
     Ok(file.items)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_todos(
     project_id: String,
     items: Vec<TodoItemDto>,

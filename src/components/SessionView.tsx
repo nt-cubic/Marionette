@@ -11,8 +11,6 @@ import {
 import { createPortal } from "react-dom";
 import { extractAcpUpdateText, mergeStreamText, userMessageAnchorId } from "../lib/acpTranscript";
 import {
-  ACTIVITY_THRESHOLDS,
-  activityBarLabel,
   activityHealth,
   formatAgo,
   isSubagentTool,
@@ -25,7 +23,6 @@ import { detectForceWebSearchInText, stripForceWebSearchPrefix } from "../lib/fo
 import { cleanAssistantText } from "../lib/markdownText";
 import { newQuotePinId, type QuotePin } from "../lib/quoteComment";
 import { buildMessagePresentation } from "../lib/messagePresentation";
-import { formatTurnStatsTag } from "../lib/usage";
 import {
   classifyToolCall,
   extractCommandText,
@@ -495,9 +492,6 @@ export function SessionView({
   // Show thinking/tool rows by default (they render collapsed). Eye can hide them entirely.
   const [detailsVisible, setDetailsVisible] = useState(true);
   const [expandedChildId, setExpandedChildId] = useState<string | null>(null);
-  // Only a real turn earns the top bar. Connecting is background work — the
-  // composer floats a pill for it so the stage never resizes mid-reconnect.
-  const isLive = session.status === "running";
 
   /** childSessionId → result event (latest wins). */
   const subtaskResults = useMemo(() => {
@@ -510,31 +504,8 @@ export function SessionView({
     return map;
   }, [events]);
 
-  /** OpenCode `task` / nested agent: parent ACP is often silent by design. */
-  const openSubagent = useMemo(() => {
-    for (let i = events.length - 1; i >= 0; i -= 1) {
-      const e = events[i];
-      if (
-        e.type === "tool_call" &&
-        isToolInProgress(e.status) &&
-        isSubagentTool(e.toolName, e.title)
-      ) {
-        return true;
-      }
-    }
-    return false;
-  }, [events]);
-
   return (
     <section className="session-view" aria-label="Session view">
-
-      {isLive && (
-        <SessionActivityBar
-          status={session.status}
-          lastActivityAt={lastActivityAt}
-          openSubagent={openSubagent}
-        />
-      )}
 
       {authBanner && (
         <div className="session-auth-banner" role="status">
@@ -1406,17 +1377,6 @@ function CleanPlaceholder({
     // Relative paths in agent text resolve against this dialog's project root.
     <LinkCwdContext.Provider value={session.cwd || null}>
     <div className="clean-surface">
-      {(session.status === "running" || session.status === "starting") && (
-        <CleanLiveStatus
-          sessionId={session.id}
-          status={session.status}
-          events={visibleEvents}
-          awaitingFirstChunk={awaitingFirstChunk}
-          openTool={openTool}
-          openToolIsSubagent={openToolIsSubagent}
-          lastActivityAt={lastActivityAt}
-        />
-      )}
       <button
         className="pill-action pill-action--icon icon-button--eye"
         type="button"
@@ -2184,24 +2144,6 @@ function CleanPlaceholder({
                         {event.effortLabel && (
                           <span className="meta-tag">{event.effortLabel}</span>
                         )}
-                        {event.durationMs != null && (
-                          <span className="meta-tag meta-tag--duration">
-                            {(event.durationMs / 1000).toFixed(1)}s
-                          </span>
-                        )}
-                        {(() => {
-                          const tag = event.turnStats
-                            ? formatTurnStatsTag(event.turnStats)
-                            : null;
-                          return tag ? (
-                            <span
-                              className="meta-tag meta-tag--duration"
-                              title="tokens reported by the agent · TTFT/speeds measured locally"
-                            >
-                              {tag}
-                            </span>
-                          ) : null;
-                        })()}
                       </div>
                     ) : (
                       <span className="event-card__footer-spacer" />
@@ -2266,114 +2208,6 @@ function CleanPlaceholder({
       </div>
     </div>
     </LinkCwdContext.Provider>
-  );
-}
-
-/**
- * Clean View 运行时浮动状态 pill —— Claude 风格的
- * “Reading… / Thinking… / Writing… / Almost done…”。
- * 只读事件流推断（thought / tool_call / assistant_message），自带 1s 时钟
- * （Almost done 需要看最近更新间隔），独立重渲染不影响事件列表（selection 安全）。
- */
-function CleanLiveStatus({
-  sessionId,
-  status,
-  events,
-  awaitingFirstChunk,
-  openTool,
-  openToolIsSubagent,
-  lastActivityAt,
-}: {
-  sessionId: string;
-  status: SessionStatus;
-  events: SessionEvent[];
-  awaitingFirstChunk: boolean;
-  openTool: ToolCallEvent | null;
-  openToolIsSubagent: boolean;
-  lastActivityAt: number | null;
-}) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(id);
-  }, []);
-
-  const phase = useMemo(() => {
-    if (status === "starting") return { label: "Connecting…", tone: "starting" };
-    if (status !== "running") return { label: "Working…", tone: "working" };
-    // 刚发送、还没收到第一个 chunk —— 模型在思考/处理。
-    if (awaitingFirstChunk) return { label: "Thinking…", tone: "thinking" };
-
-    // 进行中的工具优先（工具运行时模型不会同时流式回复）。
-    if (openTool) {
-      const kind = classifyToolCall(openTool);
-      const file = openTool.path
-        ? openTool.path.split(/[\\/]/).filter(Boolean).pop() ?? ""
-        : "";
-      const cmd = extractCommandText(openTool);
-      const detail = file || cmd || openTool.title || undefined;
-      const isSub = openToolIsSubagent;
-      if (isSub || kind === "agent") {
-        return { label: "Agent working…", tone: "tool", detail };
-      }
-      switch (kind) {
-        case "read":
-          return { label: "Reading…", tone: "tool", detail };
-        case "edit":
-          return { label: "Editing…", tone: "tool", detail };
-        case "write":
-          return { label: "Writing files…", tone: "tool", detail };
-        case "command":
-          return { label: "Running…", tone: "tool", detail };
-        case "search":
-          return { label: "Searching…", tone: "tool", detail };
-        case "web":
-          return { label: "Fetching…", tone: "tool", detail };
-        default:
-          return { label: "Working…", tone: "tool", detail };
-      }
-    }
-
-    // 无进行中工具：从尾部扫描本会话的最后一个内容事件。
-    for (let i = events.length - 1; i >= 0; i -= 1) {
-      const e = events[i];
-      if (e.sessionId !== sessionId) continue;
-      if (e.type === "user_message") break;
-      if (e.type === "thought") return { label: "Thinking…", tone: "thinking" };
-      if (e.type === "assistant_message") {
-        // 流式回复中。“Almost done”= 最近更新变慢（3s+）但还没到 stall 阈值。
-        const quietFor = lastActivityAt != null ? now - lastActivityAt : 0;
-        if (quietFor >= 3000 && quietFor < ACTIVITY_THRESHOLDS.quietMs) {
-          return { label: "Almost done…", tone: "writing" };
-        }
-        return { label: "Writing…", tone: "writing" };
-      }
-      if (e.type === "tool_call") {
-        if (isToolInProgress(e.status)) {
-          return { label: "Working…", tone: "tool" };
-        }
-        continue; // 已完成的工具 —— 继续向前看真正的尾部。
-      }
-      if (e.type === "file_change" || e.type === "handoff_prepared") continue;
-      break;
-    }
-    return { label: "Working…", tone: "working" };
-  }, [status, awaitingFirstChunk, events, sessionId, openTool, openToolIsSubagent, lastActivityAt, now]);
-
-  return (
-    <div
-      className={`clean-live-status is-${phase.tone}`}
-      role="status"
-      aria-live="polite"
-    >
-      <span className="clean-live-status__dot" aria-hidden />
-      <span className="clean-live-status__label">{phase.label}</span>
-      {phase.detail ? (
-        <span className="clean-live-status__detail" title={phase.detail}>
-          {phase.detail}
-        </span>
-      ) : null}
-    </div>
   );
 }
 
@@ -2653,65 +2487,6 @@ function QuoteOverlay({
         </div>
       )}
     </>
-  );
-}
-
-/** Isolated clock — does NOT re-render the event list (fixes selection wipe). */
-function SessionActivityBar({
-  status,
-  lastActivityAt,
-  openSubagent = false,
-}: {
-  status: SessionStatus;
-  lastActivityAt: number | null;
-  /** Nested task/subagent open — silence is expected on parent ACP. */
-  openSubagent?: boolean;
-}) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(id);
-  }, []);
-  const healthOpts = openSubagent ? { openSubagent: true } : undefined;
-  const health = activityHealth(status, lastActivityAt, now, healthOpts);
-  const barLabel = activityBarLabel(status, health, healthOpts);
-  if (!barLabel) return null;
-  const severity =
-    health === "stuck" ? "stuck" : health === "stalled" ? "stalled" : health === "quiet" ? "stale" : "";
-  return (
-    <div
-      className={`session-activity${severity ? ` is-${severity}` : ""}${openSubagent ? " is-subagent" : ""} is-${status}`}
-      role="status"
-      aria-live="polite"
-    >
-      <span className="session-activity__pulse" aria-hidden />
-      {openSubagent && health === "live" && (
-        <span className="session-activity__nine" aria-hidden>
-          <NineDotSpinner compact />
-        </span>
-      )}
-      <span className="session-activity__label">{barLabel}</span>
-      {lastActivityAt != null && !openSubagent && (
-        <span className="session-activity__ago">
-          last update {formatAgo(lastActivityAt, now)}
-        </span>
-      )}
-      {openSubagent && health === "live" && (
-        <span className="session-activity__ago">nested agent · parent ACP silent by design</span>
-      )}
-      {openSubagent && health !== "live" && lastActivityAt != null && (
-        <span className="session-activity__ago">
-          last parent update {formatAgo(lastActivityAt, now)}
-        </span>
-      )}
-      {status === "running" && (
-        <span className="session-activity__hint">
-          {health === "stuck" || health === "stalled"
-            ? "Esc×2 or ■ to interrupt"
-            : "Esc×2 to interrupt"}
-        </span>
-      )}
-    </div>
   );
 }
 

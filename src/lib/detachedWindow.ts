@@ -38,7 +38,9 @@ export const HIDDEN_DETACHED_GRACE_MS = 10 * 60 * 1000;
 /** How many *aged* (past grace) hidden shells may keep a full SPA resident. */
 export const MAX_HIDDEN_DETACHED = 2;
 
-const DETACHED_HIDDEN_EVENT = "marionette-detached-hidden";
+export const DETACHED_HIDDEN_EVENT = "marionette-detached-hidden";
+/** Detached SPA has subscribed to acp-event and now owns that session's stream. */
+export const DETACHED_READY_EVENT = "marionette-detached-ready";
 
 /** Detached window asks the main window to re-adopt its dialog tab. */
 export const MERGE_BACK_EVENT = "marionette-merge-back";
@@ -55,6 +57,52 @@ export type MergeHighlightPayload = {
   active: boolean;
   origin?: string;
 };
+
+export type DetachedReadyPayload = {
+  sessionId: string;
+};
+
+/** Tell Rust which window should receive this session's ACP stream. */
+export async function setDetachedSessionOwner(
+  sessionId: string,
+  visible: boolean
+): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    await invoke("set_detached_session_owner", { sessionId, visible });
+  } catch {
+    /* optional */
+  }
+}
+
+/** Parent @-delegate child → parent, else the session itself. */
+export function acpUiRootSessionId(
+  sessionId: string,
+  parentIdOf: (id: string) => string | null | undefined
+): string {
+  return parentIdOf(sessionId) || sessionId;
+}
+
+/**
+ * Whether this window should apply an ACP event / persist transcript+status.
+ * Detached shells only own their URL session (and its delegate children).
+ * Main owns everything that is not in a visible detached window.
+ */
+export function shouldHandleAcpSession(
+  sessionId: string,
+  opts: {
+    detachedSessionId: string | null;
+    detachedOwnedIds: ReadonlySet<string>;
+    parentIdOf: (id: string) => string | null | undefined;
+  }
+): boolean {
+  if (!sessionId) return true;
+  const root = acpUiRootSessionId(sessionId, opts.parentIdOf);
+  if (opts.detachedSessionId) {
+    return sessionId === opts.detachedSessionId || root === opts.detachedSessionId;
+  }
+  return !opts.detachedOwnedIds.has(sessionId) && !opts.detachedOwnedIds.has(root);
+}
 
 /** label → last hidden / last used ms (for LRU reap). */
 const detachedTouch = new Map<string, number>();
@@ -272,6 +320,7 @@ export async function isCursorOverWindow(label: string): Promise<boolean> {
 /** Main window: hide a detached shell after its tab merged back. */
 export async function hideDetachedWindowForSession(sessionId: string): Promise<void> {
   if (!isTauriRuntime()) return;
+  await setDetachedSessionOwner(sessionId, false);
   try {
     const win = await WebviewWindow.getByLabel(detachedWindowLabel(sessionId));
     await win?.hide();

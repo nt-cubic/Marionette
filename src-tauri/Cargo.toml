@@ -48,6 +48,14 @@ default = []
 # Enable with: cargo run --features devtools  /  tauri dev still works via debug asserts path if needed
 devtools = ["tauri/devtools"]
 
+# tao 0.35.3 asserts that WM_PAINT on the thread-event-target is never re-entrant.
+# CJK IME (especially Chinese IME on a Japanese OS) pumps nested messages on
+# focus/click and trips that assert → process abort (tao#1140 / tauri#14088).
+# Patched copy honors the function's own "return false if re-entrant" contract.
+# Drop when tauri ships tao 0.36+ (subclassing removed, #1231).
+[patch.crates-io]
+tao = { path = "vendor/tao" }
+
 [profile.release]
 strip = true
 lto = true

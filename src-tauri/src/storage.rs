@@ -1,13 +1,19 @@
 use crate::models::{Project, Session};
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct StorageService {
     global_dir: PathBuf,
     projects_file: PathBuf,
+    /// session id → transcript JSONL path. Avoids `find_session` (full index
+    /// scan) on every stream-tick write, and lets the command drop the storage
+    /// lock before `fs::write`.
+    transcript_paths: Mutex<HashMap<String, PathBuf>>,
 }
 
 impl StorageService {
@@ -22,6 +28,7 @@ impl StorageService {
         let service = Self {
             global_dir,
             projects_file,
+            transcript_paths: Mutex::new(HashMap::new()),
         };
         // Older builds incorrectly persisted Chat as a normal project. Move
         // those rows to the global chat store before the project index is read.
@@ -152,6 +159,7 @@ impl StorageService {
         sessions.retain(|current| current.id != session.id);
         sessions.insert(0, session.clone());
         self.write_chat_sessions(&sessions)?;
+        self.remember_transcript_path(&session);
         Ok(session)
     }
 
@@ -375,6 +383,7 @@ impl StorageService {
         sessions.retain(|s| s.id != session.id);
         sessions.insert(0, session.clone());
         self.write_sessions(project_path, &sessions)?;
+        self.remember_transcript_path(&session);
         Ok(session)
     }
 
@@ -437,6 +446,7 @@ impl StorageService {
             sessions.retain(|current| current.id != session.id);
             sessions.insert(0, session.clone());
             self.write_chat_sessions(&sessions)?;
+            self.remember_transcript_path(&session);
             return Ok(session);
         }
         let project = self.project_by_id(project_id)?;
@@ -492,6 +502,7 @@ impl StorageService {
         sessions.retain(|s| s.id != session.id);
         sessions.insert(0, session.clone());
         self.write_sessions(project_path, &sessions)?;
+        self.remember_transcript_path(&session);
         Ok(session)
     }
 
@@ -555,6 +566,7 @@ impl StorageService {
     }
 
     pub fn save_session(&self, session: &Session) -> Result<(), String> {
+        self.remember_transcript_path(session);
         if session.project_id == crate::app_paths::CHAT_PROJECT_ID {
             let mut sessions = self.read_chat_sessions_all()?;
             if let Some(existing) = sessions.iter_mut().find(|current| current.id == session.id) {
@@ -692,16 +704,35 @@ impl StorageService {
         self.save_session(&session)
     }
 
-    /// Rewrite Clean-view transcript as JSONL (one SessionEvent per line).
-    pub fn write_transcript(
-        &self,
-        session_id: &str,
-        events: &[serde_json::Value],
-    ) -> Result<(), String> {
+    fn remember_transcript_path(&self, session: &Session) {
+        if session.transcript_path.is_empty() {
+            return;
+        }
+        if let Ok(mut map) = self.transcript_paths.lock() {
+            map.insert(session.id.clone(), PathBuf::from(&session.transcript_path));
+        }
+    }
+
+    /// Resolve the JSONL path without rewriting the file. Cache hit is a
+    /// HashMap lookup; miss scans indexes once and remembers.
+    pub fn transcript_path_for(&self, session_id: &str) -> Result<PathBuf, String> {
+        if let Ok(map) = self.transcript_paths.lock() {
+            if let Some(path) = map.get(session_id) {
+                return Ok(path.clone());
+            }
+        }
         let session = self
             .find_session(session_id)?
             .ok_or_else(|| format!("Session not found: {session_id}"))?;
-        let path = PathBuf::from(&session.transcript_path);
+        self.remember_transcript_path(&session);
+        Ok(PathBuf::from(session.transcript_path))
+    }
+
+    /// Disk write only — callers should drop the storage lock first.
+    pub fn write_transcript_file(
+        path: &Path,
+        events: &[serde_json::Value],
+    ) -> Result<(), String> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|error| format!("Create transcript dir failed: {error}"))?;
@@ -713,7 +744,17 @@ impl StorageService {
             body.push_str(&line);
             body.push('\n');
         }
-        fs::write(&path, body).map_err(|error| format!("Write transcript failed: {error}"))
+        fs::write(path, body).map_err(|error| format!("Write transcript failed: {error}"))
+    }
+
+    /// Rewrite Clean-view transcript as JSONL (one SessionEvent per line).
+    pub fn write_transcript(
+        &self,
+        session_id: &str,
+        events: &[serde_json::Value],
+    ) -> Result<(), String> {
+        let path = self.transcript_path_for(session_id)?;
+        Self::write_transcript_file(&path, events)
     }
 
     pub fn load_transcript(&self, session_id: &str) -> Result<Vec<serde_json::Value>, String> {
