@@ -97,7 +97,12 @@ fn append_inner(
 
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = file.write_all(line.as_bytes());
-        let _ = file.flush();
+        // Flushing every ACP token (~93/s × N sessions) serializes all
+        // dispatch threads on disk. Errors/warns still fsync so a crash
+        // leaves the stall/panic line.
+        if matches!(level, "error" | "warn") || source == "panic" {
+            let _ = file.flush();
+        }
     }
 }
 

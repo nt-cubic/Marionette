@@ -226,6 +226,29 @@ export function grokTurnUsageToTurnTokens(
   };
 }
 
+/**
+ * Apply Grok per-call (or turn-end fallback) tokens to usage state.
+ *
+ * Grok never sends `usage_update`. Each `response_completed` reports the
+ * tokens currently in context as input+cache, so later calls must overwrite
+ * `contextUsed` — not seed-once. Missing prior state is fine: create one.
+ */
+export function applyGrokLiveContext(
+  prev: SessionUsageState | undefined,
+  tokens: TurnTokens,
+  now = new Date()
+): SessionUsageState {
+  const base = prev ?? emptySessionUsage();
+  const used = tokens.input ?? tokens.total;
+  return {
+    ...base,
+    turnTokens: tokens,
+    contextUsed: used ?? base.contextUsed,
+    refreshedAt: now.toISOString(),
+    source: setSource(base.source, "grok per-call usage"),
+  };
+}
+
 /** Snapshot returned by Rust `probe_provider_usage`. */
 export type ProviderUsageProbe = {
   provider: string;
@@ -1088,7 +1111,7 @@ export function buildUsageSnapshot(args: {
   /** Whole-dialog totals derived from the dialog's events (live or restored). */
   cumulative?: CumulativeTokens | null;
 }): UsageSnapshot {
-  const { agentId, agentLabel, state, connected, cumulative } = args;
+  const { agentId, agentLabel, state, connected } = args;
   const windows: UsageWindow[] = [];
   const isOpenCode = agentId === "opencode";
 
@@ -1122,44 +1145,8 @@ export function buildUsageSnapshot(args: {
     });
   }
 
-  // Whole-dialog token totals (summed from each completed turn's turnStats).
-  if (cumulative) {
-    const parts: string[] = [];
-    if (cumulative.input > 0) parts.push(`${formatTokenCount(cumulative.input)} in`);
-    if (cumulative.output > 0) parts.push(`${formatTokenCount(cumulative.output)} out`);
-    if (cumulative.cached > 0) parts.push(`${formatTokenCount(cumulative.cached)} cached`);
-    if (cumulative.reasoning > 0) parts.push(`${formatTokenCount(cumulative.reasoning)} thinking`);
-    windows.push({
-      id: "session-total",
-      label: "Session total",
-      percentage: null,
-      detail: `${parts.length > 0 ? parts.join(" · ") : "0"} · ${cumulative.turns} turn${cumulative.turns === 1 ? "" : "s"}`,
-      kind: "tokens",
-    });
-  }
-
-  // Last turn: token split + locally measured TTFT / speeds.
-  const lastStats = state?.lastTurnStats;
-  const lastTokens = lastStats ?? (state?.turnTokens ? { ...state.turnTokens } : null);
-  if (lastTokens) {
-    const tokenPart = formatTurnTokens(lastTokens as TurnTokens);
-    const timing: string[] = [];
-    if (lastStats?.ttftMs != null) timing.push(`TTFT ${formatMs(lastStats.ttftMs)}`);
-    if (lastStats?.outputTps != null) timing.push(`${formatSpeed(lastStats.outputTps)} out`);
-    if (lastStats?.ppTps != null) timing.push(`${formatSpeed(lastStats.ppTps)} in`);
-    const detail = [tokenPart, timing.length > 0 ? timing.join(" · ") : null]
-      .filter(Boolean)
-      .join(" · ");
-    if (detail) {
-      windows.push({
-        id: "last-turn",
-        label: "Last turn",
-        percentage: null,
-        detail,
-        kind: "tokens",
-      });
-    }
-  }
+  // Session total / Last turn are not rendered. Token splits remain on
+  // in-memory state / the transcript (`turnStats`) for other consumers.
 
   // Provider balance (OpenCode: based on selected provider/model)
   const providerRows = Object.values(state?.providerWindows ?? {});

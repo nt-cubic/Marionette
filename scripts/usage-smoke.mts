@@ -10,19 +10,23 @@
 import assert from "node:assert/strict";
 import {
   emptySessionUsage,
+  applyGrokLiveContext,
   buildTurnStats,
   buildUsageSnapshot,
   cumulativeFromEvents,
   extractTurnTokens,
   extractUsageFromAcpData,
   formatTurnStatsTag,
+  grokTurnUsageToTurnTokens,
   mergeGrokBilling,
+  mergeGrokCallUsage,
   mergeUsageFromAcp,
   mergeUsageFromPromptResult,
   mergeUsageFromText,
   parseClaudeUsageText,
   parseCodexStatusRateLimits,
   parseGrokBilling,
+  parseGrokCallUsage,
   parseGrokCostText,
   seedContextSize,
 } from "../src/lib/usage.ts";
@@ -339,14 +343,49 @@ check("Grok shows a real meter from set-up size + turn result", () => {
   });
   const ctx = snap.windows.find((w) => w.id === "context");
   assert.equal(ctx?.percentage, 2.6, "12759/500000 = 2.6%");
-  const turn = snap.windows.find((w) => w.id === "last-turn");
-  // formatTokenCount rounds to whole K at/above 10K, keeps a decimal below it.
-  assert.equal(turn?.detail, "13K in · 29 out · 2.8K cached");
-  // The old dead branch keyed on "grok" and could never fire for this agent.
+  assert.equal(
+    snap.windows.find((w) => w.id === "last-turn"),
+    undefined,
+    "Last turn is not shown"
+  );
   assert.ok(
     !snap.windows.some((w) => w.detail === "Waiting for agent usage_update"),
     "no stale placeholder row"
   );
+});
+
+check("Grok later calls overwrite contextUsed (not seed-once)", () => {
+  const mk = (input: number, cacheRead: number, output: number) =>
+    parseGrokCallUsage({
+      method: "_x.ai/session_notification",
+      params: {
+        update: {
+          sessionUpdate: "response_completed",
+          usage: {
+            input_tokens: input,
+            cache_read_input_tokens: cacheRead,
+            cache_creation_input_tokens: 0,
+            output_tokens: output,
+            reasoning_tokens: 0,
+          },
+        },
+      },
+    })!;
+  const first = mk(1000, 2000, 10);
+  const second = mk(1500, 8000, 20);
+  let accum = mergeGrokCallUsage(undefined, first);
+  let state = applyGrokLiveContext(undefined, grokTurnUsageToTurnTokens(accum)!);
+  assert.equal(state.contextUsed, 3000, "creates state when none exists; 1000+2000");
+  accum = mergeGrokCallUsage(accum, second);
+  state = applyGrokLiveContext(state, grokTurnUsageToTurnTokens(accum)!);
+  assert.equal(state.contextUsed, 9500, "later call must overwrite, not keep 3000");
+  const snap = buildUsageSnapshot({
+    agentId: "grok-build",
+    agentLabel: "Grok Build",
+    state: seedContextSize(state, 200000) ?? state,
+    connected: true,
+  });
+  assert.equal(snap.windows.find((w) => w.id === "context")?.percentage, 4.8);
 });
 
 check("buildTurnStats derives TTFT and both speeds from local timings", () => {
@@ -391,19 +430,7 @@ check("cumulativeFromEvents sums per-turn stats per dialog only", () => {
   assert.equal(cumulativeFromEvents(events as any, "s3"), null);
 });
 
-check("session-total row shows dialog totals with turn count", () => {
-  const snap = buildUsageSnapshot({
-    agentId: "grok-build",
-    agentLabel: "Grok Build",
-    state: emptySessionUsage(),
-    connected: true,
-    cumulative: { input: 25_458, output: 58, cached: 5632, reasoning: 0, turns: 2 },
-  });
-  const total = snap.windows.find((w) => w.id === "session-total");
-  assert.equal(total?.detail, "25K in · 58 out · 5.6K cached · 2 turns");
-});
-
-check("last-turn row carries TTFT and speeds once measured", () => {
+check("session-total and last-turn rows are not shown", () => {
   const state: any = {
     ...emptySessionUsage(),
     turnTokens: { input: 12729, output: 29, cached: 2816, reasoning: null, total: 12759 },
@@ -424,9 +451,11 @@ check("last-turn row carries TTFT and speeds once measured", () => {
     agentLabel: "Grok Build",
     state,
     connected: true,
+    cumulative: { input: 25_458, output: 58, cached: 5632, reasoning: 0, turns: 2 },
   });
-  const row = snap.windows.find((w) => w.id === "last-turn");
-  assert.match(row!.detail!, /^13K in · 29 out · 2\.8K cached · TTFT 1\.2s · 5\.8 tok\/s out · 10\.6K tok\/s in$/);
+  assert.equal(snap.windows.find((w) => w.id === "session-total"), undefined);
+  assert.equal(snap.windows.find((w) => w.id === "last-turn"), undefined);
+  assert.ok(!snap.windows.some((w) => w.kind === "tokens"));
 });
 
 check("formatTurnStatsTag renders the reply-footer line, null without stats", () => {

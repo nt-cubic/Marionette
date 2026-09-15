@@ -269,6 +269,9 @@ fn main() {
                     } else {
                         let _ = window.hide();
                         // Frontend reaper blanks excess hidden shells (memory).
+                        // Detached SPA flushes transcript then releases ACP
+                        // ownership — do not steal the stream here or main
+                        // would rewrite JSONL from an empty in-memory rail.
                         let _ = window.app_handle().emit("marionette-detached-hidden", &label);
                         crate::debug_log::append(
                             "window",
@@ -338,6 +341,7 @@ fn main() {
             commands::update_session_prefs,
             commands::update_session_label,
             commands::update_session_status,
+            commands::set_detached_session_owner,
             commands::delete_session,
             commands::write_transcript,
             commands::load_transcript,

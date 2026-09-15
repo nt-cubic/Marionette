@@ -287,8 +287,8 @@ impl AcpService {
             );
         }
 
-        let _ = app.emit(
-            ACP_EVENT,
+        emit_acp_event(
+            &app,
             AcpEvent {
                 session_id: session_id.clone(),
                 kind: "system".to_string(),
@@ -537,8 +537,8 @@ impl AcpService {
         let stderr_session = session_id.clone();
         thread::spawn(move || read_stderr(stderr_app, stderr_session, stderr));
 
-        let _ = app.emit(
-            ACP_EVENT,
+        emit_acp_event(
+            &app,
             AcpEvent {
                 session_id: session_id.clone(),
                 kind: "system".to_string(),
@@ -649,8 +649,8 @@ impl AcpService {
             );
         }
 
-        let _ = app.emit(
-            ACP_EVENT,
+        emit_acp_event(
+            &app,
             AcpEvent {
                 session_id: session_id.clone(),
                 kind: "system".to_string(),
@@ -718,8 +718,8 @@ impl AcpService {
             caps_map.insert(session_id.clone(), caps.clone());
         }
 
-        let _ = app.emit(
-            ACP_EVENT,
+        emit_acp_event(
+            &app,
             AcpEvent {
                 session_id: session_id.clone(),
                 kind: "system".to_string(),
@@ -3720,6 +3720,36 @@ mod tests {
         );
         assert_eq!(extract_stop_reason(Some(&json!({}))), None);
     }
+
+    #[test]
+    fn acp_ui_target_follows_visible_detached_window() {
+        set_detached_visible("s-owner", false);
+        assert_eq!(acp_ui_target("s-owner"), "main");
+        set_detached_visible("s-owner", true);
+        assert_eq!(acp_ui_target("s-owner"), "detached-s-owner");
+        set_detached_visible("s-owner", false);
+        assert_eq!(acp_ui_target("s-owner"), "main");
+    }
+
+    #[test]
+    fn acp_ui_target_child_follows_parent_window() {
+        register_parent_session("s-child", "s-parent");
+        set_detached_visible("s-parent", true);
+        assert_eq!(acp_ui_target("s-child"), "detached-s-parent");
+        set_detached_visible("s-parent", false);
+        assert_eq!(acp_ui_target("s-child"), "main");
+        unregister_parent_session("s-child");
+    }
+
+    #[test]
+    fn session_id_from_detached_label_strips_prefix() {
+        assert_eq!(
+            session_id_from_detached_label("detached-session-1"),
+            Some("session-1")
+        );
+        assert_eq!(session_id_from_detached_label("main"), None);
+        assert_eq!(session_id_from_detached_label("detached-"), None);
+    }
 }
 
 // ── UI event dispatch ──────────────────────────────────────────────────────
@@ -3760,6 +3790,84 @@ fn register_emitter(session_id: &str, app: &AppHandle) {
 fn unregister_emitter(session_id: &str) {
     if let Ok(mut map) = emitters().lock() {
         map.remove(session_id);
+    }
+}
+
+// ── Which window owns a session's ACP stream ───────────────────────────────
+//
+// `app.emit` used to fan every token out to every WebView (main + each
+// detached SPA). N windows × M concurrent streams froze the UI. Route to the
+// visible detached shell for that dialog, otherwise `main`. Child @-delegate
+// sessions follow their parent window.
+
+static DETACHED_VISIBLE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static PARENT_OF: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+
+fn detached_visible() -> &'static Mutex<HashSet<String>> {
+    DETACHED_VISIBLE.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn parent_of() -> &'static Mutex<HashMap<String, String>> {
+    PARENT_OF.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub fn set_detached_visible(session_id: &str, visible: bool) {
+    let Ok(mut set) = detached_visible().lock() else {
+        return;
+    };
+    if visible {
+        set.insert(session_id.to_string());
+    } else {
+        set.remove(session_id);
+    }
+}
+
+pub fn register_parent_session(child_id: &str, parent_id: &str) {
+    if child_id.is_empty() || parent_id.is_empty() {
+        return;
+    }
+    if let Ok(mut map) = parent_of().lock() {
+        map.insert(child_id.to_string(), parent_id.to_string());
+    }
+}
+
+pub fn unregister_parent_session(child_id: &str) {
+    if let Ok(mut map) = parent_of().lock() {
+        map.remove(child_id);
+    }
+}
+
+pub fn session_id_from_detached_label(label: &str) -> Option<&str> {
+    label.strip_prefix("detached-").filter(|id| !id.is_empty())
+}
+
+fn ui_root_session_id(session_id: &str) -> String {
+    if let Ok(map) = parent_of().lock() {
+        if let Some(parent) = map.get(session_id) {
+            return parent.clone();
+        }
+    }
+    session_id.to_string()
+}
+
+fn acp_ui_target(session_id: &str) -> String {
+    let root = ui_root_session_id(session_id);
+    let owned = detached_visible()
+        .lock()
+        .ok()
+        .map(|set| set.contains(&root))
+        .unwrap_or(false);
+    if owned {
+        format!("detached-{root}")
+    } else {
+        "main".to_string()
+    }
+}
+
+fn emit_acp_event(app: &AppHandle, payload: AcpEvent) {
+    let target = acp_ui_target(&payload.session_id);
+    if app.emit_to(&target, ACP_EVENT, &payload).is_err() && target != "main" {
+        let _ = app.emit_to("main", ACP_EVENT, &payload);
     }
 }
 
@@ -4139,7 +4247,13 @@ fn emit_now(app: &AppHandle, session_id: &str, event: UiEvent) {
         .method
         .clone()
         .unwrap_or_else(|| event.kind.clone());
-    let detail = serde_json::to_string(&event.data).ok();
+    // Token chunks are tiny and frequent; serializing the whole JSON payload
+    // for the diary is more expensive than delivering the event to the UI.
+    let detail = if chunk_key(&event).is_some() {
+        None
+    } else {
+        serde_json::to_string(&event.data).ok()
+    };
     let level = if event.kind == "error" { "error" } else { "info" };
 
     let log_started = Instant::now();
@@ -4152,8 +4266,8 @@ fn emit_now(app: &AppHandle, session_id: &str, event: UiEvent) {
     if let Ok(mut slot) = emit_inflight().lock() {
         *slot = Some((format!("{session_id}:{summary}"), emit_started));
     }
-    let _ = app.emit(
-        ACP_EVENT,
+    emit_acp_event(
+        app,
         AcpEvent {
             session_id: session_id.to_string(),
             kind: event.kind,
