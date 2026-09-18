@@ -1923,7 +1923,12 @@ function CleanPlaceholder({
                         running={showWorkingBlock}
                       />
                     ) : (
-                      <ClippedBody className="event-card__clip" maxHeight={260}>
+                      <ClippedBody
+                        className="event-card__clip"
+                        maxHeight={260}
+                        stickToBottom
+                        lockToBottom={thoughtLive}
+                      >
                         {useMarkdown && typeof body === "string" ? (
                           <MarkdownBody text={body} className="event-card__body event-card__body--clipped-md" />
                         ) : (
