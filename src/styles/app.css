@@ -402,8 +402,8 @@ body.is-panel-resizing .context-panel {
 }
 
 .send-button {
-  border-color: rgba(103, 215, 189, 0.5);
-  color: #0d1515;
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+  color: var(--bg);
   background: var(--accent);
   font-weight: 700;
 }
@@ -1538,8 +1538,8 @@ body.is-project-reordering .project-list {
 
 .project-row.is-active,
 .session-row.is-active {
-  border-color: rgba(103, 215, 189, 0.18);
-  background: rgba(103, 215, 189, 0.07);
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+  background: var(--accent-soft);
 }
 
 .session-row {
@@ -2478,7 +2478,7 @@ body.is-tab-detaching * {
 }
 
 .editor-tab.is-active {
-  border-color: rgba(255, 255, 255, 0.06);
+  border-color: var(--border);
   color: var(--text);
   background: var(--panel-raised);
 }
@@ -3018,7 +3018,7 @@ body.is-tab-detaching * {
   place-items: center;
   border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--border));
   border-radius: 999px;
-  color: #0f1412;
+  color: var(--bg);
   background: var(--accent);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
   font: inherit;

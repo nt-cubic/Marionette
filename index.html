@@ -5,6 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/png" href="/src/marionette-logo.png" />
     <title>Marionette</title>
+    <script>
+      try {
+        var t = localStorage.getItem("marionette-theme") || localStorage.getItem("agentshell-theme");
+        if (t === "light" || t === "white" || t === "dim" || t === "dark") {
+          document.documentElement.setAttribute("data-theme", t);
+          document.documentElement.style.colorScheme = (t === "light" || t === "white") ? "light" : "dark";
+        }
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>
