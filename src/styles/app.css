@@ -3417,6 +3417,11 @@ body.is-tab-detaching * {
   overscroll-behavior: contain;
 }
 
+/* Thinking stream: don't let the browser's overflow-anchor fight pin-to-bottom. */
+.clipped-body--stick-bottom .clipped-body__content {
+  overflow-anchor: none;
+}
+
 .clipped-body__fade {
   position: absolute;
   pointer-events: none;
@@ -3431,6 +3436,19 @@ body.is-tab-detaching * {
   height: 28px;
   background: linear-gradient(
     to bottom,
+    color-mix(in srgb, var(--panel-soft) 0%, transparent),
+    color-mix(in srgb, var(--panel-soft) 88%, var(--panel-raised))
+  );
+}
+
+/* Thinking cards pin to the tail — fade the top to hint earlier text above. */
+.clipped-body__fade--top {
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 28px;
+  background: linear-gradient(
+    to top,
     color-mix(in srgb, var(--panel-soft) 0%, transparent),
     color-mix(in srgb, var(--panel-soft) 88%, var(--panel-raised))
   );
@@ -3455,7 +3473,8 @@ body.is-tab-detaching * {
   bottom: 0;
 }
 
-.clipped-body.is-clipped .clipped-body__fade--bottom {
+.clipped-body.is-clipped .clipped-body__fade--bottom,
+.clipped-body.is-clipped .clipped-body__fade--top {
   right: 6px;
 }
 
