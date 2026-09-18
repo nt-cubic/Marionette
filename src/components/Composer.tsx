@@ -18,12 +18,12 @@ import {
   normalizeAgentModeId,
 } from "../lib/acpSupplements";
 import {
-  addCustomAgent,
   agentPreflight,
   getSessionCapabilities,
   installAgent,
   isTauriRuntime,
   listAgentCommands,
+  listCustomAgents,
   pickFiles,
   removeCustomAgent,
   savePastedImage,
@@ -70,6 +70,7 @@ import {
 import { ProviderConfigDialog } from "./ProviderConfigDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ImageAnnotator } from "./ImageAnnotator";
+import { CustomAgentDialog } from "./CustomAgentDialog";
 import { recordModelUsage, getRecentModels, recordLastUsedDefaults } from "../lib/recentModels";
 import {
   attachmentFromPath,
@@ -559,6 +560,8 @@ export function Composer({
   const [installingAgentId, setInstallingAgentId] = useState<string | null>(null);
   const [installNote, setInstallNote] = useState("");
   const [pendingDeleteAgent, setPendingDeleteAgent] = useState<{ id: string; label: string } | null>(null);
+  const [showCustomAgentDialog, setShowCustomAgentDialog] = useState(false);
+  const [customAgentIds, setCustomAgentIds] = useState<Set<string>>(() => new Set());
   const [preflightById, setPreflightById] = useState<Record<string, PreflightResult>>({});
   /** Highlighted row in the `/` autocomplete list. */
   const [slashIndex, setSlashIndex] = useState(0);
@@ -1188,7 +1191,7 @@ export function Composer({
 
   const submitText = useCallback(
     (text: string) => {
-      // Busy turns queue in App (ACP allows one session/prompt at a time).
+      // Busy turns barge in via App (cancel the live prompt, then send).
       // Empty draft while busy still uses the Stop button / Esc×2 for interrupt.
       if (!sessionId || sessionId.startsWith("session-empty-")) return;
       // Allow send with only images / empty text when attachments exist.
@@ -1766,30 +1769,15 @@ export function Composer({
     })();
   }, [menu, refreshAgentStatuses, agents]);
 
-  const runAddCustomAgent = useCallback(async () => {
-    const id = window.prompt("自定义 agent id（字母数字-_，建议 custom-xxx）", "custom-");
-    if (!id?.trim()) return;
-    const label = window.prompt("显示名称", id.trim());
-    if (!label?.trim()) return;
-    const command = window.prompt("可执行命令（须在 PATH 上，或配合 npm 包名）", "");
-    if (!command?.trim()) return;
-    const npmPackage = window.prompt("可选：npm 包名（有则支持 Install 按钮）", "") ?? "";
-    try {
-      await addCustomAgent({
-        id: id.trim(),
-        label: label.trim(),
-        command: command.trim(),
-        args: [],
-        npmPackage: npmPackage.trim() || null,
-        note: null,
-      });
-      setInstallNote(`已添加自定义 agent「${label.trim()}」。`);
-      await onAgentsReload?.();
-      void refreshAgentStatuses();
-    } catch (e) {
-      setInstallNote(e instanceof Error ? e.message : String(e));
-    }
-  }, [onAgentsReload, refreshAgentStatuses]);
+  const refreshCustomIds = useCallback(async () => {
+    const list = await listCustomAgents();
+    setCustomAgentIds(new Set(list.map((d) => d.id)));
+  }, []);
+
+  useEffect(() => {
+    if (menu !== "agent") return;
+    void refreshCustomIds();
+  }, [menu, refreshCustomIds]);
 
   const runInstall = useCallback(
     async (agentId: string, options?: { upgrade?: boolean }) => {
@@ -2869,7 +2857,7 @@ export function Composer({
                               检查
                             </button>
                           )}
-                          {candidate.id.startsWith("custom-") || candidate.install.note?.includes("Custom agent") ? (
+                          {customAgentIds.has(candidate.id) || candidate.id.startsWith("custom-") || candidate.install.note?.includes("Custom agent") ? (
                             <button
                               className="composer-agent-row__install composer-agent-row__install--manual"
                               type="button"
@@ -2888,7 +2876,7 @@ export function Composer({
                   <button
                     type="button"
                     className="composer-menu__add-custom"
-                    onClick={() => void runAddCustomAgent()}
+                    onClick={() => setShowCustomAgentDialog(true)}
                   >
                     + 添加自定义 agent
                   </button>
@@ -2898,7 +2886,7 @@ export function Composer({
             </div>
 
             {/* ── Send / Interrupt (Esc×2 also interrupts) ──
-                While the agent is running: non-empty draft → queue send;
+                While the agent is running: non-empty draft → interrupt + send;
                 empty draft → interrupt. Right-click toggles Enter shortcut. */}
             <div className="composer-menu-anchor composer-menu-anchor--send">
               <button
@@ -2910,7 +2898,7 @@ export function Composer({
                 type="button"
                 title={
                   isBusy && (draft.trim() || imageAttachments.length > 0)
-                    ? "Queue message — sent when the current turn finishes"
+                    ? "打断当前回合并发送"
                     : isBusy && canCancel
                       ? "Interrupt (or double-press Esc)"
                       : isBusy && !canCancel
@@ -2919,7 +2907,7 @@ export function Composer({
                 }
                 aria-label={
                   isBusy && (draft.trim() || imageAttachments.length > 0)
-                    ? "Queue message for agent"
+                    ? "Interrupt turn and send"
                     : isBusy && canCancel
                       ? "Interrupt conversation"
                       : isBusy && !canCancel
@@ -3007,6 +2995,20 @@ export function Composer({
             />
           );
         })()}
+      {showCustomAgentDialog && (
+        <CustomAgentDialog
+          agents={agents}
+          customIds={customAgentIds}
+          onClose={() => setShowCustomAgentDialog(false)}
+          onAdded={(note) => {
+            setInstallNote(note);
+            setShowCustomAgentDialog(false);
+            void refreshCustomIds();
+            void onAgentsReload?.();
+            void refreshAgentStatuses();
+          }}
+        />
+      )}
       {pendingDeleteAgent && (
         <ConfirmDialog
           title="删除自定义 agent"

@@ -87,14 +87,18 @@ function MdImage({ src, alt }: { src?: string; alt?: string }) {
   const [zoomed, setZoomed] = useState(false);
   const target: LinkTarget | null = src
     ? {
-        kind: HTTP_URL_RE.test(src) ? "url" : "path",
+        kind:
+          HTTP_URL_RE.test(src) || src.startsWith("data:") || src.startsWith("blob:")
+            ? "url"
+            : "path",
         raw: src,
         start: 0,
         end: src.length,
       }
     : null;
   const displaySrc = (() => {
-    if (!src || HTTP_URL_RE.test(src)) return src;
+    if (!src) return src;
+    if (HTTP_URL_RE.test(src) || src.startsWith("data:") || src.startsWith("blob:")) return src;
     if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
       return convertFileSrc(src.replace(/^file:\/\//i, ""));
     }

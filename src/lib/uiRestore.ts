@@ -68,6 +68,74 @@ export function saveUiRestore(snap: {
   }
 }
 
+const QUEUED_SENDS_KEY = "marionette-queued-sends";
+const CLOSED_TABS_KEY = "marionette-closed-tabs";
+
+export type QueuedSendSnap = {
+  composed: string;
+  imageAttachments: unknown[];
+  forceWebSearch: boolean;
+  composerSnap?: {
+    modeId?: string | null;
+    modeLabel?: string | null;
+    modelId?: string | null;
+    modelLabel?: string | null;
+    effortLabel?: string | null;
+  };
+};
+
+export function saveQueuedSends(map: Record<string, QueuedSendSnap[]>): void {
+  try {
+    const trimmed: Record<string, QueuedSendSnap[]> = {};
+    for (const [id, items] of Object.entries(map)) {
+      if (items.length > 0) trimmed[id] = items;
+    }
+    window.localStorage.setItem(QUEUED_SENDS_KEY, JSON.stringify(trimmed));
+  } catch {
+    /* ignore */
+  }
+}
+
+export function loadQueuedSends(): Record<string, QueuedSendSnap[]> {
+  try {
+    const raw = window.localStorage.getItem(QUEUED_SENDS_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Record<string, QueuedSendSnap[]> = {};
+    for (const [id, items] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!Array.isArray(items)) continue;
+      out[id] = items.filter(
+        (item): item is QueuedSendSnap =>
+          Boolean(item) && typeof item === "object" && typeof (item as QueuedSendSnap).composed === "string",
+      );
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function saveClosedTabs(ids: string[]): void {
+  try {
+    window.localStorage.setItem(CLOSED_TABS_KEY, JSON.stringify(ids.slice(0, 20)));
+  } catch {
+    /* ignore */
+  }
+}
+
+export function loadClosedTabs(): string[] {
+  try {
+    const raw = window.localStorage.getItem(CLOSED_TABS_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((id): id is string => typeof id === "string" && id.trim() !== "");
+  } catch {
+    return [];
+  }
+}
+
 export function loadUiRestore(): UiRestoreSnapshot | null {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);

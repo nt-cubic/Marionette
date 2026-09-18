@@ -395,6 +395,24 @@ impl AcpService {
             for (k, v) in crate::agent_registry::launch_env_for(id) {
                 child_command.env(*k, *v);
             }
+            // DeepSeek Harness reads DEEPSEEK_API_KEY (or ~/.dsh/.credentials.yaml).
+            // If the process env is empty, reuse a key already in OpenCode auth.json.
+            if matches!(id, "deepseek" | "deepseek-acp")
+                && std::env::var("DEEPSEEK_API_KEY")
+                    .map(|v| v.trim().is_empty())
+                    .unwrap_or(true)
+            {
+                if let Some(key) = crate::provider_usage::peek_provider_key("deepseek") {
+                    child_command.env("DEEPSEEK_API_KEY", key);
+                    crate::debug_log::append(
+                        "acp",
+                        "info",
+                        &session_id,
+                        "DEEPSEEK_API_KEY taken from OpenCode auth.json",
+                        None,
+                    );
+                }
+            }
         }
         // Route agent traffic through the user-configured proxy when enabled.
         // The proxy client (Clash, v2ray, ...) decides rule-vs-global routing;

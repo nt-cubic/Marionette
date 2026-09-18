@@ -284,6 +284,17 @@ impl AgentConfig {
                     "OMP (Oh My Pi) ships its own installer / mise — no npm package. Install the CLI, then make sure `omp` is on PATH.",
                 ),
             ),
+            // Editor-facing DeepSeek Harness ACP (`deepseek-acp`). Needs Node 22+
+            // and a DeepSeek API key (`DEEPSEEK_API_KEY` or `deepseek-acp --setup`).
+            Self::new(
+                "deepseek",
+                "DeepSeek Harness",
+                "deepseek-acp",
+                vec![],
+                "acp",
+                "stdin",
+                AgentInstallSpec::npm("deepseek-acp", Vec::new()),
+            ),
         ]
     }
 

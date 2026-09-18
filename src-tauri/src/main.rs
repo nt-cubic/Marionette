@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod acp;
+mod acp_catalog;
 mod agent_registry;
 mod agent_update;
 mod app_paths;
@@ -327,6 +328,7 @@ fn main() {
             commands::list_custom_agents,
             commands::add_custom_agent,
             commands::remove_custom_agent,
+            commands::fetch_acp_registry,
             commands::test_agent_command,
             commands::list_agent_commands,
             commands::agent_preflight,

@@ -44,6 +44,7 @@ const EXACT_ALIASES: Record<string, string> = {
   ask_followup_question: "question",
   request_user_input: "question",
   spawn_agent: "agent",
+  list_agents: "list_agents",
   wait_agent: "task",
   close_agent: "task",
   update_plan: "task",

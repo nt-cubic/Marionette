@@ -213,6 +213,12 @@ pub fn remove_custom_agent(id: String) -> Result<(), String> {
     crate::custom_agents::remove(&id)
 }
 
+/// Public ACP agent catalog for the custom-agent picker.
+#[tauri::command(async)]
+pub fn fetch_acp_registry() -> Result<Vec<crate::acp_catalog::CatalogAgent>, String> {
+    crate::acp_catalog::fetch()
+}
+
 #[tauri::command(async)]
 pub fn test_agent_command(agent_id: String) -> Result<AgentCommandStatus, String> {
     let agent = crate::custom_agents::all_agents_merged()
@@ -762,6 +768,7 @@ pub fn probe_agent_auth(agent_id: String) -> Result<serde_json::Value, String> {
         "hermes" => probe_hermes_auth(),
         "codebuddy" => probe_codebuddy_auth(),
         "opencode" => probe_opencode_auth(),
+        "deepseek" | "deepseek-acp" => probe_deepseek_auth(),
         _ => Ok(auth_result(
             &agent_id,
             "unknown",
@@ -1268,6 +1275,40 @@ fn probe_opencode_auth() -> Result<serde_json::Value, String> {
     }
 }
 
+fn probe_deepseek_auth() -> Result<serde_json::Value, String> {
+    if env_var_set("DEEPSEEK_API_KEY") {
+        return Ok(auth_result(
+            "deepseek",
+            "logged_in",
+            "DeepSeek API key found in DEEPSEEK_API_KEY",
+        ));
+    }
+    if crate::provider_usage::peek_provider_key("deepseek").is_some() {
+        return Ok(auth_result(
+            "deepseek",
+            "logged_in",
+            "DeepSeek API key found in OpenCode auth.json",
+        ));
+    }
+    let creds = home_dir().map(|h| h.join(".dsh").join(".credentials.yaml"));
+    if creds
+        .as_ref()
+        .map(|p| p.exists() && fs::metadata(p).map(|m| m.len() > 0).unwrap_or(false))
+        .unwrap_or(false)
+    {
+        return Ok(auth_result(
+            "deepseek",
+            "logged_in",
+            "DeepSeek credentials found (~/.dsh/.credentials.yaml)",
+        ));
+    }
+    Ok(auth_result(
+        "deepseek",
+        "logged_out",
+        "DeepSeek has no API key (set DEEPSEEK_API_KEY, add it in Provider keys, or run `deepseek-acp --setup`)",
+    ))
+}
+
 /// Kick off an agent's native login (browser / CLI / TUI flow).
 /// Non-blocking spawn; the flow runs in its own console window.
 #[tauri::command(async)]
@@ -1344,6 +1385,12 @@ pub fn start_agent_login(agent_id: String) -> Result<serde_json::Value, String> 
             &["auth", "login"][..],
             "opencode",
             "Opened OpenCode login — complete sign-in in the terminal window, then return here.",
+        ),
+        "deepseek" | "deepseek-acp" => (
+            "deepseek-acp",
+            &["--setup"][..],
+            "deepseek",
+            "Opened DeepSeek Harness setup — store an API key (or set DEEPSEEK_API_KEY), then return here.",
         ),
         _ => return Err(format!("No in-app login flow for agent `{agent_id}`")),
     };
