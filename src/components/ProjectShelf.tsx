@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Bell, BellOff, ChevronDown, ChevronRight, Folder, FolderOpen, Globe, GripVertical, Moon, MessageSquare, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Save, Search, Sun, Trash2, X, Zap } from "lucide-react";
+import { Bell, BellOff, ChevronDown, ChevronRight, CloudMoon, Folder, FolderOpen, Globe, GripVertical, Moon, MessageSquare, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Save, Search, Sun, SunMedium, Trash2, X, Zap } from "lucide-react";
 import type { AgentConfig, Project, ProxyConfig, ProxyTestResult, Session } from "../lib/types";
+import { themeToggleTitle, type ThemeMode } from "../lib/theme";
 import { loadCollapsedProjectIds, saveCollapsedProjectIds } from "../lib/uiRestore";
 import { ConfirmDialog } from "./ConfirmDialog";
-
-type ThemeMode = "dark" | "light";
 
 /** Visible sessions per project before "Show more". Projects always list fully. */
 const SESSION_LIST_PREVIEW = 5;
@@ -405,11 +404,19 @@ export function ProjectShelf({
     <button
       className="pill-action pill-action--icon pill-action--sm sidebar-footer__button"
       type="button"
-      title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-      aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+      title={themeToggleTitle(theme)}
+      aria-label={themeToggleTitle(theme)}
       onClick={onToggleTheme}
     >
-      {theme === "dark" ? <Sun size={13} /> : <Moon size={13} />}
+      {theme === "dark" ? (
+        <Moon size={13} />
+      ) : theme === "dim" ? (
+        <CloudMoon size={13} />
+      ) : theme === "white" ? (
+        <SunMedium size={13} />
+      ) : (
+        <Sun size={13} />
+      )}
     </button>
   );
 

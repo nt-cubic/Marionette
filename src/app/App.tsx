@@ -125,8 +125,7 @@ import { SessionTabs, SessionView, type UserMessageAnchor } from "../components/
 import { WindowControls } from "../components/WindowControls";
 import { parseAskQuestionPrompt } from "../lib/askQuestion";
 import { initScrollbarAutoHide } from "../lib/scrollbarAutoHide";
-
-type ThemeMode = "dark" | "light";
+import { nextTheme, parseStoredTheme, themeColorScheme, type ThemeMode } from "../lib/theme";
 
 const LEFT_PANEL_MIN = 180;
 const LEFT_PANEL_MAX = 420;
@@ -337,7 +336,7 @@ export function App() {
     const stored =
       window.localStorage.getItem("marionette-theme") ??
       window.localStorage.getItem("agentshell-theme");
-    return stored === "light" ? "light" : "dark";
+    return parseStoredTheme(stored);
   });
   /** Taskbar flash + chime when AI replies / may be stuck (off while focused). */
   const [desktopNotifyOn, setDesktopNotifyOn] = useState(() => isDesktopNotifyEnabled());
@@ -2577,7 +2576,7 @@ export function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    document.documentElement.style.colorScheme = theme;
+    document.documentElement.style.colorScheme = themeColorScheme(theme);
     window.localStorage.setItem("marionette-theme", theme);
   }, [theme]);
 
@@ -5296,7 +5295,7 @@ export function App() {
             }}
             onCollapse={() => setLeftCollapsed(true)}
             onExpand={() => setLeftCollapsed(false)}
-            onToggleTheme={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
+            onToggleTheme={() => setTheme((current) => nextTheme(current))}
             onAddProject={() => { setProjectDialogOpen(true); setProjectError(""); }}
             onNewSession={(projectId) => {
               createSessionForProject(projectId);
