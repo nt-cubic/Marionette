@@ -240,6 +240,36 @@ export async function removeCustomAgent(id: string): Promise<void> {
   await invoke("remove_custom_agent", { id });
 }
 
+export async function listCustomAgents(): Promise<CustomAgentDef[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    return await invoke<CustomAgentDef[]>("list_custom_agents");
+  } catch {
+    return [];
+  }
+}
+
+export type AcpCatalogChannel = {
+  kind: "npx" | "uvx" | "binary" | string;
+  package?: string | null;
+  cmd?: string | null;
+  args: string[];
+};
+
+export type AcpCatalogAgent = {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  channels: AcpCatalogChannel[];
+  installable: boolean;
+};
+
+export async function fetchAcpRegistry(): Promise<AcpCatalogAgent[]> {
+  if (!isTauriRuntime()) return [];
+  return invoke<AcpCatalogAgent[]>("fetch_acp_registry");
+}
+
 export async function listSessions(projectId: string): Promise<Session[]> {
   if (!isTauriRuntime()) return mockSessions.filter((session) => session.projectId === projectId);
   try {

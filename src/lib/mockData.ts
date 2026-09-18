@@ -75,6 +75,19 @@ export const agents: AgentConfig[] = [
     transport: "acp",
     enabled: true,
     install: mockInstall(null)
+  },
+  {
+    id: "deepseek",
+    label: "DeepSeek Harness",
+    command: "deepseek-acp",
+    args: [],
+    cwdMode: "project-root",
+    launchMode: "pty",
+    sendStrategy: "stdin",
+    parser: "ansi-raw",
+    transport: "acp",
+    enabled: true,
+    install: mockInstall("deepseek-acp")
   }
 ];
 

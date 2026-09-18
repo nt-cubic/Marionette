@@ -99,6 +99,13 @@ export const AGENT_AUTH: Record<string, AgentAuthSpec> = {
     errorHint:
       "OpenCode 未登录时可点横幅 Sign in，或终端执行 `opencode auth login` 后新建会话。",
   },
+  deepseek: {
+    probe: true,
+    login: true,
+    loginCommand: "deepseek-acp --setup",
+    errorHint:
+      "DeepSeek 未配置时可点横幅 Sign in，或在 Provider keys 里填 DEEPSEEK_API_KEY，或终端执行 `deepseek-acp --setup`。",
+  },
 };
 
 export function agentAuthSpec(

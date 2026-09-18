@@ -109,8 +109,8 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
             mcp_wire_label: mcp_label(McpWirePolicy::Forward),
             distribution: DistributionKind::Npx,
             distribution_label: dist_label(DistributionKind::Npx),
-            pin_version: Some("1.1.0"),
-            pin_package: Some("@agentclientprotocol/codex-acp@1.1.0"),
+            pin_version: Some("1.11.0"),
+            pin_package: Some("@agentclientprotocol/codex-acp@1.11.0"),
             cmd: "codex-acp",
             args: &[],
             node_required: None,
@@ -128,8 +128,8 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
             mcp_wire_label: mcp_label(McpWirePolicy::Forward),
             distribution: DistributionKind::Npx,
             distribution_label: dist_label(DistributionKind::Npx),
-            pin_version: Some("0.57.0"),
-            pin_package: Some("@agentclientprotocol/claude-agent-acp@0.57.0"),
+            pin_version: Some("0.76.0"),
+            pin_package: Some("@agentclientprotocol/claude-agent-acp@0.76.0"),
             cmd: "claude-agent-acp",
             args: &[],
             node_required: None,
@@ -167,7 +167,7 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
             // Codeg uses Binary cache; we still list npm package for one-click until binary_cache lands.
             distribution: DistributionKind::Binary,
             distribution_label: dist_label(DistributionKind::Binary),
-            pin_version: Some("1.17.15"),
+            pin_version: Some("1.18.30"),
             pin_package: Some("opencode-ai"),
             cmd: "opencode",
             args: &["acp"],
@@ -186,11 +186,11 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
             mcp_wire_label: mcp_label(McpWirePolicy::Never),
             distribution: DistributionKind::Npx,
             distribution_label: dist_label(DistributionKind::Npx),
-            pin_version: Some("2026.6.11"),
-            pin_package: Some("openclaw@2026.6.11"),
+            pin_version: Some("2026.9.3"),
+            pin_package: Some("openclaw@2026.9.3"),
             cmd: "openclaw",
             args: &["acp"],
-            node_required: Some("22.19.0"),
+            node_required: Some("24.16.0"),
             uv_required: None,
             python_pin: None,
             requires_commands: &[],
@@ -224,8 +224,8 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
             mcp_wire_label: mcp_label(McpWirePolicy::Forward),
             distribution: DistributionKind::Npx,
             distribution_label: dist_label(DistributionKind::Npx),
-            pin_version: Some("3.0.38"),
-            pin_package: Some("cline@3.0.38"),
+            pin_version: Some("3.0.61"),
+            pin_package: Some("cline@3.0.61"),
             cmd: "cline",
             args: &["--acp"],
             node_required: None,
@@ -243,8 +243,8 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
             mcp_wire_label: mcp_label(McpWirePolicy::Forward),
             distribution: DistributionKind::Npx,
             distribution_label: dist_label(DistributionKind::Npx),
-            pin_version: Some("0.49.0"),
-            pin_package: Some("@google/gemini-cli@0.49.0"),
+            pin_version: Some("0.59.0"),
+            pin_package: Some("@google/gemini-cli@0.59.0"),
             cmd: "gemini",
             args: &["--acp", "--skip-trust"],
             node_required: Some("20.0.0"),
@@ -262,8 +262,8 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
             mcp_wire_label: mcp_label(McpWirePolicy::Forward),
             distribution: DistributionKind::Npx,
             distribution_label: dist_label(DistributionKind::Npx),
-            pin_version: Some("0.23.2"),
-            pin_package: Some("@moonshot-ai/kimi-code@0.23.2"),
+            pin_version: Some("0.42.0"),
+            pin_package: Some("@moonshot-ai/kimi-code@0.42.0"),
             cmd: "kimi",
             args: &["acp"],
             node_required: Some("22.19.0"),
@@ -281,8 +281,8 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
             mcp_wire_label: mcp_label(McpWirePolicy::Forward),
             distribution: DistributionKind::Npx,
             distribution_label: dist_label(DistributionKind::Npx),
-            pin_version: Some("2.117.2"),
-            pin_package: Some("@tencent-ai/codebuddy-code@2.117.2"),
+            pin_version: Some("2.149.0"),
+            pin_package: Some("@tencent-ai/codebuddy-code@2.149.0"),
             cmd: "codebuddy",
             args: &["--acp"],
             node_required: Some("22.0.0"),
@@ -300,8 +300,8 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
             mcp_wire_label: mcp_label(McpWirePolicy::Forward),
             distribution: DistributionKind::Uvx,
             distribution_label: dist_label(DistributionKind::Uvx),
-            pin_version: Some("0.18.2"),
-            pin_package: Some("hermes-agent[acp,mcp]==0.18.2"),
+            pin_version: Some("0.21.1"),
+            pin_package: Some("hermes-agent[acp,mcp]==0.21.1"),
             // Prefer PATH `hermes acp`; uvx path is install/preflight guidance.
             cmd: "hermes",
             args: &["acp"],
@@ -356,6 +356,28 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
             requires_commands: &[],
             launch_env: &[],
         },
+        // Community editor bridge (`deepseek-acp`), not the automation-only
+        // `@deepseek-ai/dsh-acp`. Speaks full ACP (streaming, tools, MCP over
+        // session/new). Auth is `DEEPSEEK_API_KEY` / `~/.dsh/.credentials.yaml`.
+        "deepseek" | "deepseek-acp" => AgentHarnessMeta {
+            id: "deepseek",
+            label: "DeepSeek Harness",
+            elicitation_form: false,
+            subagent_transcript: false,
+            mcp_wire: McpWirePolicy::Forward,
+            mcp_wire_label: mcp_label(McpWirePolicy::Forward),
+            distribution: DistributionKind::Npx,
+            distribution_label: dist_label(DistributionKind::Npx),
+            pin_version: Some("0.9.0"),
+            pin_package: Some("deepseek-acp@0.9.0"),
+            cmd: "deepseek-acp",
+            args: &[],
+            node_required: Some("22.0.0"),
+            uv_required: None,
+            python_pin: None,
+            requires_commands: &[],
+            launch_env: &[],
+        },
         _ => AgentHarnessMeta {
             id: "unknown",
             label: "Agent",
@@ -399,12 +421,23 @@ pub fn build_client_capabilities_json(agent_id: Option<&str>) -> Value {
             json!({ "form": {} }),
         );
     }
+    // Always advertise AIR sessionFailure so Claude (and adapters that
+    // follow it) can name connection / auth / limit failures instead of
+    // dumping a generic RPC error. subagent-transcript stays Claude-only.
+    let mut meta_obj = serde_json::Map::new();
+    meta_obj.insert(
+        "jetbrains.air".into(),
+        json!({
+            "version": 1,
+            "capabilities": ["sessionFailure"]
+        }),
+    );
     if meta.as_ref().map(|m| m.subagent_transcript).unwrap_or(false) {
-        caps.as_object_mut().unwrap().insert(
-            "_meta".into(),
-            json!({ "subagent-transcript": true }),
-        );
+        meta_obj.insert("subagent-transcript".into(), json!(true));
     }
+    caps.as_object_mut()
+        .unwrap()
+        .insert("_meta".into(), Value::Object(meta_obj));
     caps
 }
 
@@ -442,15 +475,34 @@ mod tests {
     }
 
     #[test]
-    fn pins_match_codeg_snapshot() {
-        assert_eq!(harness_meta("codex").pin_version, Some("1.1.0"));
-        assert_eq!(harness_meta("claude-code").pin_version, Some("0.57.0"));
-        assert_eq!(harness_meta("gemini").pin_version, Some("0.49.0"));
-        assert_eq!(harness_meta("cline").pin_version, Some("3.0.38"));
-        assert_eq!(harness_meta("hermes").pin_version, Some("0.18.2"));
+    fn pins_match_current_registry() {
+        assert_eq!(harness_meta("codex").pin_version, Some("1.11.0"));
+        assert_eq!(harness_meta("claude-code").pin_version, Some("0.76.0"));
+        assert_eq!(harness_meta("gemini").pin_version, Some("0.59.0"));
+        assert_eq!(harness_meta("cline").pin_version, Some("3.0.61"));
+        assert_eq!(harness_meta("hermes").pin_version, Some("0.21.1"));
         assert_eq!(harness_meta("hermes").python_pin, Some("3.13"));
         assert_eq!(harness_meta("pi").pin_version, Some("0.0.31"));
-        assert_eq!(harness_meta("opencode").pin_version, Some("1.17.15"));
+        assert_eq!(harness_meta("opencode").pin_version, Some("1.18.30"));
+        assert_eq!(harness_meta("deepseek").cmd, "deepseek-acp");
+        assert_eq!(harness_meta("deepseek").pin_version, Some("0.9.0"));
+        assert_eq!(harness_meta("openclaw").node_required, Some("24.16.0"));
+    }
+
+    #[test]
+    fn client_capabilities_advertise_air_session_failure() {
+        let caps = build_client_capabilities_json(Some("claude-code"));
+        assert_eq!(
+            caps["_meta"]["jetbrains.air"]["capabilities"][0],
+            "sessionFailure"
+        );
+        assert_eq!(caps["_meta"]["subagent-transcript"], true);
+        let grok = build_client_capabilities_json(Some("grok-build"));
+        assert!(grok["_meta"]["subagent-transcript"].is_null());
+        assert_eq!(
+            grok["_meta"]["jetbrains.air"]["capabilities"][0],
+            "sessionFailure"
+        );
     }
 
     #[test]

@@ -109,6 +109,72 @@ export function claudeParentToolUseId(update: Record<string, unknown>): string |
   return id.trim() || null;
 }
 
+export type CompactionMarker = {
+  trigger: "manual" | "auto" | "unknown";
+  summary: string;
+};
+
+/** Claude / DeepSeek / Codex context compaction on session_info_update or a dedicated update. */
+export function parseCompactionUpdate(update: Record<string, unknown>): CompactionMarker | null {
+  const kind = String(update.sessionUpdate ?? update.type ?? "").toLowerCase();
+  const meta = getMeta(update);
+  const compaction =
+    (meta && (asRecord(meta.compaction) || asRecord(meta.contextCompaction))) ||
+    asRecord(update.compaction) ||
+    asRecord(update.contextCompaction);
+  const looksLike =
+    kind.includes("compaction") ||
+    kind.includes("compact") ||
+    compaction != null;
+  if (!looksLike) return null;
+  const triggerRaw = compaction
+    ? String(compaction.trigger ?? compaction.source ?? compaction.reason ?? "")
+    : "";
+  const trigger: CompactionMarker["trigger"] = /manual|user|command|slash/i.test(triggerRaw)
+    ? "manual"
+    : /auto|threshold|limit|window/i.test(triggerRaw)
+      ? "auto"
+      : kind.includes("manual")
+        ? "manual"
+        : "unknown";
+  const summary =
+    (compaction && typeof compaction.summary === "string" && compaction.summary.trim()) ||
+    (typeof update.message === "string" && update.message.trim()) ||
+    (typeof update.text === "string" && update.text.trim()) ||
+    (trigger === "manual" ? "手动压缩了上下文。" : trigger === "auto" ? "自动压缩了上下文。" : "上下文已压缩。");
+  return { trigger, summary };
+}
+
+export type SessionFailureMarker = {
+  title: string;
+  details: string;
+  category: string;
+  actions: string[];
+};
+
+/** Claude AIR `sessionFailure` (client advertised jetbrains.air.sessionFailure). */
+export function parseSessionFailureUpdate(update: Record<string, unknown>): SessionFailureMarker | null {
+  const meta = getMeta(update);
+  if (!meta) return null;
+  const jetbrains = asRecord(meta.jetbrains) ?? asRecord(meta["jetbrains.air"]);
+  const air = jetbrains ? asRecord(jetbrains.air) ?? jetbrains : asRecord(meta["jetbrains.air"]);
+  const failure = air ? asRecord(air.sessionFailure) : asRecord(meta.sessionFailure);
+  if (!failure) return null;
+  const title =
+    (typeof failure.title === "string" && failure.title.trim()) ||
+    (typeof failure.category === "string" && failure.category.trim()) ||
+    "Session failure";
+  const details =
+    (typeof failure.details === "string" && failure.details.trim()) ||
+    (typeof failure.detail === "string" && failure.detail.trim()) ||
+    "";
+  const category = typeof failure.category === "string" ? failure.category : "unknown";
+  const actions = Array.isArray(failure.actions)
+    ? failure.actions.filter((a): a is string => typeof a === "string")
+    : [];
+  return { title, details, category, actions };
+}
+
 /** CodeBuddy marks subagent chunks — we do not suppress, but can parent if id known. */
 export function codebuddyIsSubagent(update: Record<string, unknown>): boolean {
   const meta = getMeta(update);

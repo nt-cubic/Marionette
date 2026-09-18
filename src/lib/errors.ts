@@ -7,6 +7,8 @@ export type AgentErrorKind =
   | "model"
   | "network"
   | "permission"
+  | "limit"
+  | "archived"
   | "generic";
 
 export type ClassifiedError = {
@@ -99,12 +101,35 @@ export function classifyAgentError(
     };
   }
 
-  if (/network|econnrefused|enotfound|dns|socket|fetch failed|connection refused|rate.?limit|429/i.test(message)) {
+  if (/archiv/i.test(lower)) {
+    return {
+      kind: "archived",
+      title: "会话已归档",
+      message,
+      actionHint:
+        "Codex 把这条会话归档了。在终端运行 `codex unarchive <session-id>` 后再重连，或开一个新会话。",
+    };
+  }
+
+  if (
+    /rate.?limit|429|quota|usage.?limit|token.?limit|limit reached|out of credits|insufficient.?quota/i.test(
+      message,
+    )
+  ) {
+    return {
+      kind: "limit",
+      title: "额度用尽",
+      message,
+      actionHint: "等重置窗口过了再试，或换一个模型 / 账号。",
+    };
+  }
+
+  if (/network|econnrefused|enotfound|dns|socket|fetch failed|connection refused/i.test(message)) {
     return {
       kind: "network",
-      title: "网络 / 配额",
+      title: "网络",
       message,
-      actionHint: "检查网络、代理与服务商状态；限流时稍后再试。",
+      actionHint: "检查网络、代理与服务商状态后再试。",
     };
   }
 

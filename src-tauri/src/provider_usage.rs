@@ -246,6 +246,12 @@ fn find_meta(provider: &str) -> Option<ProviderMeta> {
 }
 
 /// Extract API key for a provider id without ever returning the secret.
+/// Best-effort API key from OpenCode `auth.json`. Never logs the secret.
+pub fn peek_provider_key(provider: &str) -> Option<String> {
+    let auth = load_auth_json().ok()?;
+    auth_key_for(&auth, provider).ok().filter(|k| !k.trim().is_empty())
+}
+
 fn auth_key_for(auth: &Value, provider: &str) -> Result<String, String> {
     let mut keys: Vec<String> = Vec::new();
     if let Some(meta) = find_meta(provider) {

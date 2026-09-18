@@ -177,8 +177,9 @@ export type SessionEvent =
        */
       forceWebSearch?: boolean;
       /**
-       * Waiting for the live turn to finish before this prompt is sent over ACP
-       * (one in-flight `session/prompt` at a time). Cleared when the wire send starts.
+       * Waiting for the live turn to be cancelled before this prompt is sent
+       * over ACP (one in-flight `session/prompt` at a time). Cleared when the
+       * wire send starts.
        */
       queued?: boolean;
     }

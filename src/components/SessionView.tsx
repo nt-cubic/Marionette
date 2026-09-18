@@ -1983,10 +1983,10 @@ function CleanPlaceholder({
                     {isUser && "queued" in event && event.queued && (
                       <span
                         className="event-card__queued-badge"
-                        title="Agent 正在工作，当前回合结束后会自动发送"
-                        aria-label="已排队，等待发送"
+                        title="打断当前回合后立即发送"
+                        aria-label="插话中，等待发送"
                       >
-                        排队中
+                        插话中
                       </span>
                     )}
                   </span>

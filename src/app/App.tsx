@@ -112,9 +112,10 @@ import { formatPinsForSend } from "../lib/quoteComment";
 import { findLinkTargets } from "../lib/linkTargets";
 import { classifyAgentError, formatClassifiedError } from "../lib/errors";
 import { getLastUsedDefaults } from "../lib/recentModels";
-import { pickRestoredSession, saveUiRestore } from "../lib/uiRestore";
+import { pickRestoredSession, saveUiRestore, saveQueuedSends, loadQueuedSends, saveClosedTabs, loadClosedTabs } from "../lib/uiRestore";
 import { AskQuestionCard, type AskQuestionPrompt } from "../components/AskQuestionCard";
 import { Composer } from "../components/Composer";
+import { ComposerErrorStrip } from "../components/ComposerErrorStrip";
 import { ContextPanel } from "../components/ContextPanel";
 import { PermissionDialog, type PermissionPrompt } from "../components/PermissionDialog";
 import { PlanApprovalCard, type PlanApprovalPrompt } from "../components/PlanApprovalCard";
@@ -406,10 +407,10 @@ export function App() {
   const reloadingSessionsRef = useRef<Set<string>>(new Set());
   /**
    * Follow-up prompts typed while a turn is live. ACP allows only one
-   * `session/prompt` in flight; the message waits in this queue (shown in a
-   * strip above the composer, NOT as a timeline card — a card inserted
-   * mid-stream would split the running reply) and is wired when
-   * `turn/complete` frees the session.
+   * `session/prompt` in flight; sending mid-turn cancels the open prompt and
+   * the message waits here (strip above the composer, not a timeline card —
+   * a card inserted mid-stream would split the running reply) until
+   * `turn/complete` frees the slot, then it is wired immediately.
    */
   const pendingSendsRef = useRef<
     Map<
@@ -430,6 +431,28 @@ export function App() {
   >(new Map());
   /** Bumps to re-render the queued-strip (source of truth is pendingSendsRef). */
   const [queuedStripTick, setQueuedStripTick] = useState(0);
+  const lastClosedTabsRef = useRef<string[]>(loadClosedTabs());
+  const lastSendBySessionRef = useRef<
+    Map<
+      string,
+      {
+        composed: string;
+        imageAttachments: ImageAttachment[];
+        forceWebSearch: boolean;
+        composerSnap?: {
+          modeId?: string | null;
+          modeLabel?: string | null;
+          modelId?: string | null;
+          modelLabel?: string | null;
+          effortLabel?: string | null;
+        };
+      }
+    >
+  >(new Map());
+  const [composerFailure, setComposerFailure] = useState<{
+    sessionId: string;
+    error: import("../lib/errors").ClassifiedError;
+  } | null>(null);
   const flushingSendRef = useRef<Set<string>>(new Set());
   /** Set each render so turn/complete can drain the queue without stale closures. */
   const drainQueuedSendRef = useRef<(sessionId: string) => void>(() => undefined);
@@ -1376,7 +1399,16 @@ export function App() {
       ) {
         turnEndedAtRef.current[payload.sessionId] = Date.now();
         cancelIgnoredRef.current.delete(payload.sessionId);
-        streamSuppressedRef.current.delete(payload.sessionId);
+        // Keep suppressing late Thinking/Reply until a queued follow-up is
+        // actually wired — cancel emits turn/complete immediately, before
+        // drain creates the next You card. Process death drops the queue.
+        const keepSuppressed =
+          payload.method !== "process/ended" &&
+          payload.method !== "process/stopped" &&
+          (pendingSendsRef.current.get(payload.sessionId) ?? []).length > 0;
+        if (!keepSuppressed) {
+          streamSuppressedRef.current.delete(payload.sessionId);
+        }
         void syncFileChangesRef.current(payload.sessionId, true);
         // Finalize @-delegate child when its turn ends.
         if (delegateMetaRef.current.has(payload.sessionId)) {
@@ -1821,6 +1853,7 @@ export function App() {
             agentLabel: sessAgent?.label,
           });
           let body = formatClassifiedError(classified);
+          setComposerFailure({ sessionId: payload.sessionId, error: classified });
           if (classified.kind === "auth") {
             // Per-agent banner: some agents (CodeBuddy) only prove auth via ACP error.
             const spec = sessAgentId ? agentAuthSpec(sessAgentId) : undefined;
@@ -3030,6 +3063,11 @@ export function App() {
   }, [ensureAcpReady]);
 
   const closeSessionTab = (sessionId: string) => {
+    lastClosedTabsRef.current = [
+      sessionId,
+      ...lastClosedTabsRef.current.filter((id) => id !== sessionId),
+    ].slice(0, 20);
+    saveClosedTabs(lastClosedTabsRef.current);
     const nextOpenIds = openSessionIds.filter((id) => id !== sessionId);
     if (nextOpenIds.length === 0) {
       const closing = availableSessions.find((session) => session.id === sessionId);
@@ -3916,6 +3954,70 @@ export function App() {
     cancelWatchdogsRef.current.set(sid, timer);
   }, [pushDebug]);
 
+  /**
+   * Stop the live turn. `announce` paints the Interrupted card (Stop / Esc×2).
+   * Mid-turn follow-up sends pass `{ announce: false }` so the user's next
+   * You card is the continuation, not a system notice.
+   *
+   * Seal + suppress *before* `session/cancel`: cancel emits `turn/complete`
+   * immediately, which may drain a queued follow-up before this function
+   * returns — an unsealed Reply would then absorb the next turn's stream.
+   */
+  const cancelLiveTurn = useCallback(
+    async (sid: string, opts?: { announce?: boolean }) => {
+      const announce = opts?.announce === true;
+      const session = sessionsRef.current.find((s) => s.id === sid);
+      const midTurn = session?.status === "running";
+      const cancelAt = Date.now();
+      let cancelNote = "Cancel request sent to the agent.";
+
+      streamSuppressedRef.current.add(sid);
+      setLiveEvents((current) =>
+        sealOpenAssistantReplies(markOpenTools(current, sid, "cancelled"), sid),
+      );
+
+      try {
+        await cancelAcpSession(sid);
+        if (midTurn && announce) armCancelWatchdog(sid, cancelAt);
+      } catch (error) {
+        if (midTurn) cancelIgnoredRef.current.add(sid);
+        cancelNote = `Cancel request failed (${error instanceof Error ? error.message : String(error)}).${
+          midTurn ? " The agent will be restarted on your next message." : ""
+        }`;
+        pushDebug({
+          sessionId: sid,
+          level: "warn",
+          source: "interrupt",
+          summary: "cancel failed",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      }
+
+      setSessionStatusById(sid, "waiting");
+      touchActivity(sid);
+      if (announce) {
+        setLiveEvents((current) => [
+          ...current,
+          {
+            type: "assistant_message" as const,
+            sessionId: sid,
+            text: `**Interrupted.**\n\n${cancelNote}\n\nYou can send a new message now.`,
+            createdAt: new Date().toISOString(),
+            durationMs: 0,
+          },
+        ]);
+      }
+      pushDebug({
+        sessionId: sid,
+        level: "info",
+        source: "interrupt",
+        summary: announce ? "ACP cancel (interrupt)" : "ACP cancel (mid-turn follow-up)",
+      });
+      queueMicrotask(() => drainQueuedSendRef.current(sid));
+    },
+    [armCancelWatchdog, pushDebug, setSessionStatusById, touchActivity],
+  );
+
   const handleInterrupt = useCallback(async () => {
     if (!currentSessionId) return;
     const session = sessionsRef.current.find((s) => s.id === currentSessionId);
@@ -3923,62 +4025,35 @@ export function App() {
       agentsRef.current.find((a) => a.id === session?.agentId) ??
       agentsRef.current[0];
     if (!agent) return;
+    await cancelLiveTurn(currentSessionId, { announce: true });
+  }, [cancelLiveTurn, currentSessionId]);
 
-    const sid = currentSessionId;
-    let cancelNote = "";
-
-    // Esc×2 fires regardless of state, and an idle agent has nothing to say —
-    // silence only means "ignored the cancel" when a turn was actually live.
-    const midTurn = session?.status === "running";
-    // True turn cancel — do not kill the session process.
-    const cancelAt = Date.now();
-    try {
-      await cancelAcpSession(sid);
-      cancelNote = "Cancel request sent to the agent.";
-      if (midTurn) armCancelWatchdog(sid, cancelAt);
-    } catch (error) {
-      // The pipe or the process is already gone — only a restart recovers.
-      if (midTurn) cancelIgnoredRef.current.add(sid);
-      cancelNote = `Cancel request failed (${error instanceof Error ? error.message : String(error)}).${
-        midTurn ? " The agent will be restarted on your next message." : ""
-      }`;
-      pushDebug({
-        sessionId: sid,
-        level: "warn",
-        source: "interrupt",
-        summary: "cancel failed",
-        detail: error instanceof Error ? error.message : String(error),
-      });
+  useEffect(() => {
+    const stored = loadQueuedSends();
+    let restored = 0;
+    for (const [id, items] of Object.entries(stored)) {
+      if (!items.length) continue;
+      pendingSendsRef.current.set(
+        id,
+        items.map((item) => ({
+          composed: item.composed,
+          imageAttachments: (item.imageAttachments ?? []) as ImageAttachment[],
+          forceWebSearch: Boolean(item.forceWebSearch),
+          composerSnap: item.composerSnap,
+        })),
+      );
+      restored += 1;
     }
-    // Always free the composer — even if the agent ignored cancel.
-    setSessionStatusById(sid, "waiting");
-    touchActivity(sid);
-    // Seal open Replies and stamp Interrupted so late stream cannot append
-    // thinking/token chunks onto this card (was: unsealed → absorbed CoT).
-    streamSuppressedRef.current.add(sid);
-    setLiveEvents((current) => {
-      const sealed = sealOpenAssistantReplies(markOpenTools(current, sid, "cancelled"), sid);
-      return [
-        ...sealed,
-        {
-          type: "assistant_message" as const,
-          sessionId: sid,
-          text: `**Interrupted.**\n\n${cancelNote}\n\nYou can send a new message now.`,
-          createdAt: new Date().toISOString(),
-          // durationMs seals the bubble — applyAcpPartToEvents will not merge into it.
-          durationMs: 0,
-        },
-      ];
+    if (restored > 0) setQueuedStripTick((t) => t + 1);
+  }, []);
+
+  useEffect(() => {
+    const map: Record<string, ReturnType<typeof loadQueuedSends>[string]> = {};
+    pendingSendsRef.current.forEach((items, id) => {
+      map[id] = items;
     });
-    pushDebug({
-      sessionId: sid,
-      level: "info",
-      source: "interrupt",
-      summary: "ACP cancel (interrupt)",
-    });
-    // turn/complete may race after we already left "running" — drain here too.
-    queueMicrotask(() => drainQueuedSendRef.current(sid));
-  }, [armCancelWatchdog, currentSessionId, pushDebug, setSessionStatusById, touchActivity]);
+    saveQueuedSends(map);
+  }, [queuedStripTick]);
 
   // P2-UX-3: double Esc → interrupt (after closing overlays).
   useEffect(() => {
@@ -4046,6 +4121,36 @@ export function App() {
     handleAskDecline,
     handlePlanApproval,
   ]);
+
+  // Ctrl/Cmd+1..9 jumps to a tab; Ctrl/Cmd+Shift+T reopens the last closed one.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      if (event.key >= "1" && event.key <= "9" && !event.shiftKey) {
+        const idx = Number(event.key) - 1;
+        const tabs = openSessionIds
+          .map((id) => availableSessions.find((s) => s.id === id))
+          .filter((s): s is Session => Boolean(s));
+        const target = tabs[idx];
+        if (!target) return;
+        event.preventDefault();
+        openSession(target);
+        return;
+      }
+      if (event.shiftKey && (event.key === "T" || event.key === "t")) {
+        const id = lastClosedTabsRef.current[0];
+        if (!id) return;
+        const session = availableSessions.find((s) => s.id === id);
+        if (!session) return;
+        event.preventDefault();
+        lastClosedTabsRef.current = lastClosedTabsRef.current.slice(1);
+        saveClosedTabs(lastClosedTabsRef.current);
+        openSession(session);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [availableSessions, openSessionIds]);
 
   /** P2-UX-4: edit You → truncate following events for this session + resend. */
   const handleEditResend = useCallback(
@@ -4639,12 +4744,19 @@ export function App() {
       // History injection uses events *before* this message.
       const priorForInject = liveEventsRef.current.filter((e) => e.sessionId === sid);
       const liveStatus = sessionsRef.current.find((s) => s.id === sid)?.status;
-      // One ACP prompt at a time: while a turn is live, queue and flush later.
-      const shouldQueue = !options?.flushQueued && liveStatus === "running";
+      const pendingQueue = pendingSendsRef.current.get(sid) ?? [];
+      const flushing = flushingSendRef.current.has(sid);
+      // One ACP prompt at a time. A send while a turn is live (or while a
+      // follow-up is already flushing) queues; we then cancel the live turn
+      // so the follow-up is wired as soon as the slot frees — not after the
+      // agent finishes the current reply on its own.
+      const shouldQueue =
+        !options?.flushQueued &&
+        (liveStatus === "running" || flushing || pendingQueue.length > 0);
 
-      // Queued follow-ups wait in a strip above the composer — a timeline card
-      // here would sit mid-stream and split the running reply into two bubbles.
-      // The card is created when the flush happens, right after the reply.
+      // Follow-ups wait in a strip above the composer — a timeline card here
+      // would sit mid-stream and split the running reply into two bubbles.
+      // The card is created when the flush happens, right after cancel.
       if (shouldQueue) {
         const queue = pendingSendsRef.current.get(sid) ?? [];
         queue.push({ composed, imageAttachments, forceWebSearch, composerSnap });
@@ -4661,8 +4773,14 @@ export function App() {
           sessionId: sid,
           level: "info",
           source: "composer",
-          summary: `queued (agent busy): ${composed.length > 80 ? `${composed.slice(0, 80)}…` : composed}`,
+          summary:
+            liveStatus === "running"
+              ? `mid-turn follow-up (interrupt then send): ${composed.length > 80 ? `${composed.slice(0, 80)}…` : composed}`
+              : `queued (agent busy): ${composed.length > 80 ? `${composed.slice(0, 80)}…` : composed}`,
         });
+        if (liveStatus === "running") {
+          void cancelLiveTurn(sid, { announce: false });
+        }
         return;
       }
 
@@ -4670,6 +4788,13 @@ export function App() {
       // (queued sends only reach here at flush time, so the anchor is honest).
       turnSentAtRef.current[sid] = Date.now();
       grokTurnUsageRef.current[sid] = emptyGrokTurnUsage();
+      lastSendBySessionRef.current.set(sid, {
+        composed,
+        imageAttachments,
+        forceWebSearch,
+        composerSnap,
+      });
+      setComposerFailure((cur) => (cur?.sessionId === sid ? null : cur));
 
       // Starting a new turn supersedes a delayed completion cue for the
       // previous turn (the same reset OpenCode performs when it sees busy).
@@ -4865,6 +4990,7 @@ export function App() {
           );
         }
       }
+      setComposerFailure({ sessionId: sid, error: classified });
       setLiveEvents((current) => [
         ...current,
         {
@@ -5364,8 +5490,33 @@ export function App() {
             />
           )}
           <div className="composer-slot">
-          {/* Queued follow-ups wait here — they flush right after the running
-              reply ends, so no card is ever placed mid-stream. */}
+          <div className="composer-slot__notices">
+          {composerFailure && composerFailure.sessionId === displaySession.id && (
+            <ComposerErrorStrip
+              error={composerFailure.error}
+              canSignIn={Boolean(agentAuthSpec(currentAgent.id)?.login)}
+              onRetry={() => {
+                const last = lastSendBySessionRef.current.get(displaySession.id);
+                if (!last) return;
+                setComposerFailure(null);
+                void performSend(
+                  displaySession.id,
+                  last.composed,
+                  last.imageAttachments,
+                  last.forceWebSearch,
+                  last.composerSnap,
+                );
+              }}
+              onSignIn={() => void handleAgentSignIn(currentAgent.id)}
+              onNewSession={() => {
+                setComposerFailure(null);
+                void createSessionForProject(displaySession.projectId, displaySession.agentId);
+              }}
+              onDismiss={() => setComposerFailure(null)}
+            />
+          )}
+          {/* Mid-turn follow-ups wait here until cancel frees the prompt slot.
+              Never a timeline card — that would split the running reply. */}
           {(() => {
             const queuedSends = pendingSendsRef.current.get(displaySession.id) ?? [];
             if (queuedSends.length === 0) return null;
@@ -5373,12 +5524,24 @@ export function App() {
               .map((q) => (q.composed.length > 36 ? `${q.composed.slice(0, 36)}…` : q.composed))
               .join("、");
             return (
-              <div className="queued-strip" title="排队中 — 当前回复结束后自动发送">
-                <span className="queued-strip__badge">排队中 ×{queuedSends.length}</span>
+              <div className="queued-strip" title="插话 — 打断当前回合后立即发送">
+                <span className="queued-strip__badge">插话 ×{queuedSends.length}</span>
                 <span className="queued-strip__text">{preview}</span>
+                <button
+                  type="button"
+                  className="queued-strip__dismiss"
+                  title="取消插话"
+                  onClick={() => {
+                    pendingSendsRef.current.delete(displaySession.id);
+                    setQueuedStripTick((t) => t + 1);
+                  }}
+                >
+                  取消
+                </button>
               </div>
             );
           })()}
+          </div>
           {/* Ask fully occupies the composer slot so all options can show. */}
           {!(askPrompt && askPrompt.sessionId === displaySession.id) && (
           <Composer

@@ -4,6 +4,8 @@ import {
   extractAgentTranscript,
   parseCodexGoalUpdate,
   parseCodexRetryUpdate,
+  parseCompactionUpdate,
+  parseSessionFailureUpdate,
 } from "./acpMeta";
 import { ansiToPlainText } from "./ansi";
 import { stripSectionMarkers } from "./markdownText";
@@ -302,7 +304,8 @@ function renderToolContent(content: unknown): string {
     }
     const innerType = contentBlockType(inner);
     if (innerType === "image") {
-      parts.push("[image]");
+      const md = imageBlockToMarkdown(inner);
+      parts.push(md || "[image]");
     } else if (innerType === "audio") {
       parts.push("[audio]");
     } else if (innerType.startsWith("resource")) {
@@ -405,7 +408,54 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
         messageId,
       };
     }
+    const compaction = parseCompactionUpdate(update);
+    if (compaction) {
+      const how =
+        compaction.trigger === "manual"
+          ? "手动"
+          : compaction.trigger === "auto"
+            ? "自动"
+            : "";
+      return {
+        role: "system",
+        text: `**上下文压缩${how ? `（${how}）` : ""}**\n\n${compaction.summary}`,
+        isDelta: false,
+        sessionUpdate,
+        messageId,
+      };
+    }
+    const failure = parseSessionFailureUpdate(update);
+    if (failure) {
+      const extra = failure.details ? `\n\n${failure.details}` : "";
+      return {
+        role: "system",
+        text: `**会话失败（${failure.category}）：** ${failure.title}${extra}`,
+        isDelta: false,
+        sessionUpdate,
+        messageId,
+      };
+    }
     return null;
+  }
+
+  // Dedicated compaction updates (not nested under session_info_update).
+  if (/compact/i.test(sessionUpdate)) {
+    const compaction = parseCompactionUpdate(update);
+    if (compaction) {
+      const how =
+        compaction.trigger === "manual"
+          ? "手动"
+          : compaction.trigger === "auto"
+            ? "自动"
+            : "";
+      return {
+        role: "system",
+        text: `**上下文压缩${how ? `（${how}）` : ""}**\n\n${compaction.summary}`,
+        isDelta: false,
+        sessionUpdate,
+        messageId,
+      };
+    }
   }
 
   // ── tool_call / tool_call_update ──────────────────────────────────────────
@@ -444,10 +494,13 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
     // card used to throw it away, which is why long tools looked frozen.
     const toolPath = firstToolLocation(update);
     const agentTx = extractAgentTranscript(update);
-    const toolDetail =
+    let toolDetail =
       agentTx ||
       renderToolContent(update.content) ||
       renderToolRawOutput(update.rawOutput ?? update.raw_output);
+    if (/list_agents/i.test(normalized || title || "")) {
+      toolDetail = formatListAgentsRoster(toolDetail);
+    }
     // `{"filePath":"…"}` under a line that already shows that path is noise.
     const toolInput = inputIsOnlyPath(rawInput, toolPath) ? "" : clippedInput;
 
@@ -641,6 +694,66 @@ export function mergeStreamText(previous: string, incoming: string, isDelta: boo
   return incoming;
 }
 
+/** Codex `list_agents` dumps escaped JSON — turn it into a readable roster. */
+function formatListAgentsRoster(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return text;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    const rec = parsed && typeof parsed === "object" ? (parsed as UpdateObj) : null;
+    const agents = Array.isArray(parsed)
+      ? parsed
+      : rec && Array.isArray(rec.agents)
+        ? rec.agents
+        : rec && Array.isArray(rec.subagents)
+          ? rec.subagents
+          : null;
+    if (!Array.isArray(agents) || agents.length === 0) return text;
+    return agents
+      .map((item, i) => {
+        const a = asRecord(item) ?? {};
+        const name =
+          (typeof a.name === "string" && a.name) ||
+          (typeof a.id === "string" && a.id) ||
+          (typeof a.agentId === "string" && a.agentId) ||
+          `agent ${i + 1}`;
+        const status =
+          (typeof a.status === "string" && a.status) ||
+          (typeof a.outcome === "string" && a.outcome) ||
+          "";
+        const report =
+          (typeof a.report === "string" && a.report) ||
+          (typeof a.summary === "string" && a.summary) ||
+          (typeof a.result === "string" && a.result) ||
+          "";
+        const head = status ? `**${name}** · ${status}` : `**${name}**`;
+        return report ? `${head}\n${report}` : head;
+      })
+      .join("\n\n");
+  } catch {
+    return text;
+  }
+}
+
+function imageBlockToMarkdown(content: unknown): string {
+  const c = asRecord(content);
+  if (!c) return "";
+  const mime =
+    (typeof c.mimeType === "string" && c.mimeType) ||
+    (typeof c.mime_type === "string" && c.mime_type) ||
+    "image/png";
+  const uri = typeof c.uri === "string" ? c.uri.trim() : "";
+  const data = typeof c.data === "string" ? c.data.trim() : "";
+  if (uri) {
+    const path = uri.replace(/^file:\/\//i, "");
+    return `\n\n![image](${path})\n\n`;
+  }
+  if (data) {
+    return `\n\n![image](data:${mime};base64,${data})\n\n`;
+  }
+  return "";
+}
+
 function extractTextContent(content: unknown): string {
   if (typeof content === "string") return content;
   if (!content || typeof content !== "object") return "";
@@ -650,6 +763,9 @@ function extractTextContent(content: unknown): string {
   }
 
   const c = content as UpdateObj;
+  if (contentBlockType(c) === "image") {
+    return imageBlockToMarkdown(c);
+  }
 
   if (typeof c.text === "string") return c.text;
   if (typeof c.thought === "string") return c.thought;
@@ -676,7 +792,7 @@ export function userMessageEvent(
     effortLabel?: string;
     attachments?: import("./imageAttachments").ImageAttachment[];
     forceWebSearch?: boolean;
-    /** True while waiting for the current turn before this prompt is wired. */
+    /** True while waiting for the live turn to be cancelled before this prompt is wired. */
     queued?: boolean;
   },
 ): SessionEvent {

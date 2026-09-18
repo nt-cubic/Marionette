@@ -23,3 +23,18 @@ pub fn agent() -> Result<Agent, String> {
         })
         .clone()
 }
+
+/// GET JSON with a short timeout. Used for the public ACP agent registry.
+pub fn get_json(url: &str) -> Result<serde_json::Value, String> {
+    let resp = agent()?
+        .get(url)
+        .set("Accept", "application/json")
+        .set("User-Agent", "Marionette/0.1")
+        .timeout(std::time::Duration::from_secs(12))
+        .call()
+        .map_err(|e| format!("GET {url}: {e}"))?;
+    let text = resp
+        .into_string()
+        .map_err(|e| format!("Read {url}: {e}"))?;
+    serde_json::from_str(&text).map_err(|e| format!("JSON from {url}: {e}"))
+}
