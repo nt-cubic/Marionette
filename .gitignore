@@ -13,6 +13,9 @@ src-tauri/target/
 # Research repos - external project forks
 _research/repos/
 
+# Local scratch / test artifacts
+fortest/
+
 # IDE / AI config
 .claude/
 .marionette/
