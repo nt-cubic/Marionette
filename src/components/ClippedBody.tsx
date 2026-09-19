@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type UIEvent } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode, type UIEvent } from "react";
 
 type ClipEdges = { top: boolean; bottom: boolean; right: boolean };
 
@@ -11,12 +11,12 @@ type ClippedBodyProps = {
   maxHeight?: number;
   className?: string;
   /**
-   * Keep the viewport on the latest (bottom) content as the body grows.
-   * Used by thinking cards so the streaming tail stays visible.
+   * Follow the latest (bottom) content as the body grows, so a streaming tail
+   * stays visible. Following stops as soon as the user scrolls away from the
+   * bottom — reading back through a live body must not be interrupted — and
+   * resumes once they return to the bottom.
    */
   stickToBottom?: boolean;
-  /** While true, always pin to the bottom — even if the user wheels up. */
-  lockToBottom?: boolean;
 };
 
 function sameClip(a: ClipEdges, b: ClipEdges): boolean {
@@ -37,29 +37,19 @@ export function ClippedBody({
   maxHeight = 220,
   className,
   stickToBottom = false,
-  lockToBottom = false,
 }: ClippedBodyProps) {
   const [clip, setClip] = useState<ClipEdges>(CLIP_NONE);
   const contentRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true);
   const stickRef = useRef(stickToBottom);
-  const lockRef = useRef(lockToBottom);
   stickRef.current = stickToBottom;
-  lockRef.current = lockToBottom;
-
-  useEffect(() => {
-    if (lockToBottom) pinnedRef.current = true;
-  }, [lockToBottom]);
 
   useLayoutEffect(() => {
     const el = contentRef.current;
     if (!el) return;
 
     const measure = () => {
-      if (
-        (lockRef.current || (stickRef.current && pinnedRef.current)) &&
-        el.scrollHeight > el.clientHeight
-      ) {
+      if (stickRef.current && pinnedRef.current && el.scrollHeight > el.clientHeight) {
         el.scrollTop = el.scrollHeight;
       }
       const heightOverflow = el.scrollHeight > el.clientHeight + 1;
@@ -69,7 +59,7 @@ export function ClippedBody({
         bottom: heightOverflow && !atBottomOf(el),
         right: widthOverflow,
       };
-      if (stickRef.current && !lockRef.current) {
+      if (stickRef.current) {
         pinnedRef.current = !heightOverflow || atBottomOf(el);
       }
       setClip((prev) => (sameClip(prev, next) ? prev : next));
@@ -82,13 +72,13 @@ export function ClippedBody({
     return () => {
       ro.disconnect();
     };
-  }, [children, maxHeight, stickToBottom, lockToBottom]);
+  }, [children, maxHeight, stickToBottom]);
 
   const onScroll = (event: UIEvent<HTMLDivElement>) => {
     const el = event.currentTarget;
     const heightOverflow = el.scrollHeight > el.clientHeight + 1;
     const widthOverflow = el.scrollWidth > el.clientWidth + 1;
-    if (stickRef.current && !lockRef.current) {
+    if (stickRef.current) {
       pinnedRef.current = !heightOverflow || atBottomOf(el);
     }
     const next: ClipEdges = {
