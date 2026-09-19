@@ -10,6 +10,7 @@ import {
 import { ansiToPlainText } from "./ansi";
 import { isToolInProgress } from "./activityHealth";
 import { stripSectionMarkers } from "./markdownText";
+import { looksLikeUnifiedDiff } from "./toolBody";
 import { inferToolNameFromMeta } from "./toolCallNormalize";
 
 export type AcpTextPart = {
@@ -358,6 +359,32 @@ export function renderToolText(fields: {
   if (!fields.detail && fields.input) lines.push(ansiToPlainText(fields.input));
   if (fields.detail) lines.push("", ansiToPlainText(fields.detail));
   return lines.join("\n");
+}
+
+/** ACP tool statuses that mean the call is over. */
+const TERMINAL_TOOL_STATUS = /complet|success|fail|error|cancel|reject|denied|abort|timeout/i;
+/** …and the subset that means it did not do what it was asked to. */
+const FAILED_TOOL_STATUS = /fail|error|cancel|reject|denied|abort|timeout/i;
+
+/** "The file … has been updated successfully. (…no need to Read it back)" */
+function isEditSuccessNote(text: string): boolean {
+  return /^The file .+ has been updated successfully\.(?:\s*\([^)]*\))?$/s.test(text.trim());
+}
+
+/**
+ * True when a later update would erase a diff the call already produced.
+ *
+ * Claude's Edit/Write report their result as plain `rawOutput` text — the diff
+ * arrives in an earlier `content: [{type: "diff"}]` update, and the result
+ * update carries no content blocks at all. ACP updates are partial, so a
+ * result with nothing to say about content must not drop the diff. A failed
+ * call is the exception: there the text *is* the outcome.
+ */
+function keepsPriorDiff(prevDetail: string, nextDetail: string, status?: string): boolean {
+  if (!looksLikeUnifiedDiff(prevDetail)) return false;
+  if (looksLikeUnifiedDiff(nextDetail)) return false;
+  if (FAILED_TOOL_STATUS.test(status ?? "")) return false;
+  return TERMINAL_TOOL_STATUS.test(status ?? "") || isEditSuccessNote(nextDetail);
 }
 
 /** Extract human-readable progress from ACP session/update payloads. */
@@ -1163,6 +1190,12 @@ export function applyAcpPartToEvents(
             detail = `${prev.detail}\n${plainDetail}`;
             // Cap nested stream so a long subagent cannot blow the transcript.
             if (detail.length > 8000) detail = `…${detail.slice(-8000)}`;
+          } else if (prev.detail && keepsPriorDiff(prev.detail, plainDetail, part.toolStatus)) {
+            // The success note above a diff is noise; anything else is kept
+            // in front of it, where the card still shows it as prose.
+            detail = isEditSuccessNote(plainDetail)
+              ? prev.detail
+              : `${plainDetail}\n\n${prev.detail}`;
           } else {
             detail = plainDetail;
           }

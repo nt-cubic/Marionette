@@ -1122,8 +1122,15 @@ body.is-panel-resizing .context-panel {
   color: color-mix(in srgb, var(--red) 78%, var(--text));
 }
 
-.file-diff-card__line.is-hunk {
+.file-diff-card__line.is-hunk,
+.file-diff-card__line.is-meta {
   color: var(--text-faint);
+}
+
+/* Codex-style elision row: unchanged file content between hunks. */
+.file-diff-card__line.is-elide {
+  color: var(--text-faint);
+  user-select: none;
 }
 
 .file-diff-card__gutter {
@@ -3368,14 +3375,26 @@ body.is-tab-detaching * {
   overflow-wrap: normal;
 }
 
-/* Editing tools can carry a real unified diff. Keep the full text readable
-   inside the card instead of reducing it to a +N / -N summary. */
-.event-card__body--diff {
-  width: 100%;
+/* Tool card body: prose clip + the diff block, stacked. */
+.tool-body {
+  min-width: 0;
   max-width: 100%;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+}
+
+/* Editing tools can carry a real unified diff — same renderer as the Changed
+   Files card, taller clip and its own horizontal scroll (diff lines must never
+   wrap: alignment is the point). */
+.file-diff-card--tool {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.file-diff-card--tool .file-diff-card__body {
+  max-height: 460px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
 }
 
 /* Markdown thought: allow block flow but still clipped by parent. */
@@ -7435,6 +7454,61 @@ body.is-composer-resizing .composer {
 .user-image-card__muted {
   display: block;
   padding: 12px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+/* Images a tool looked at (read card). Same interaction as the You card:
+   click to zoom, caption keeps the file name reachable. */
+.tool-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 0 0;
+}
+
+.tool-image-card {
+  display: grid;
+  gap: 3px;
+  max-width: 280px;
+}
+
+.tool-image-card__frame {
+  display: block;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+  cursor: pointer;
+  line-height: 0;
+}
+
+.tool-image-card__img {
+  display: block;
+  max-width: 260px;
+  max-height: 180px;
+  object-fit: contain;
+}
+
+.tool-image-card__img.is-expanded {
+  max-width: min(720px, 70vw);
+  max-height: 70vh;
+}
+
+.tool-image-card__caption {
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-image-card__error,
+.tool-image-card__muted {
+  display: block;
+  padding: 10px 12px;
   color: var(--text-muted);
   font-size: 11px;
   line-height: 1.3;

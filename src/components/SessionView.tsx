@@ -18,12 +18,12 @@ import {
   isToolInProgress,
   stallBannerCopy,
 } from "../lib/activityHealth";
-import { parseUnifiedDiff } from "../lib/annotations";
 import { getFileDiff } from "../lib/api";
 import { detectForceWebSearchInText, stripForceWebSearchPrefix } from "../lib/forceWebSearch";
 import { cleanAssistantText } from "../lib/markdownText";
 import { newQuotePinId, type QuotePin } from "../lib/quoteComment";
 import { buildMessagePresentation, isDetailRow } from "../lib/messagePresentation";
+import { diffTargetPath, splitToolBody } from "../lib/toolBody";
 import {
   classifyToolCall,
   extractCommandText,
@@ -38,6 +38,8 @@ import { LinkCwdContext, LinkedText } from "./LinkedText";
 import { MarkdownBody } from "./MarkdownBody";
 import { MessageOutline } from "./MessageOutline";
 import { MessageTimestamp } from "./MessageTimestamp";
+import { ToolImageStrip } from "./ToolImageStrip";
+import { UnifiedDiffView } from "./UnifiedDiffView";
 import { UserImageCard } from "./UserImageCard";
 
 
@@ -629,7 +631,6 @@ function FileChangeCard({
   }, [open, projectId, path, diff, loading]);
 
   const fileName = path.split(/[\\/]/).filter(Boolean).pop() ?? path;
-  const parsed = useMemo(() => (diff ? parseUnifiedDiff(diff) : []), [diff]);
 
   return (
     <details
@@ -654,67 +655,19 @@ function FileChangeCard({
           {loading && <div className="file-diff-card__muted">Loading diff…</div>}
           {error && <div className="file-diff-card__muted">{error}</div>}
           {diff !== null && (
-            <pre className="file-diff-card__body custom-scrollbar scrollbar-autohide">
-              {parsed.map((line, i) => {
-                const cls =
-                  line.type === "add"
-                    ? "file-diff-card__line is-add"
-                    : line.type === "del"
-                      ? "file-diff-card__line is-del"
-                      : line.type === "hunk"
-                        ? "file-diff-card__line is-hunk"
-                        : "file-diff-card__line";
-                const side: "old" | "new" | null =
-                  line.type === "add"
-                    ? "new"
-                    : line.type === "del"
-                      ? "old"
-                      : line.type === "ctx"
-                        ? "new"
-                        : null;
-                const lineNo =
-                  side === "new" ? line.newLine : side === "old" ? line.oldLine : null;
-                const canComment =
-                  Boolean(onLineComment) &&
-                  side != null &&
-                  lineNo != null &&
-                  (line.type === "add" || line.type === "del" || line.type === "ctx");
-                return (
-                  <span className={cls} key={i}>
-                    <span className="file-diff-card__gutter" aria-hidden>
-                      <span className="file-diff-card__ln file-diff-card__ln--old">
-                        {line.oldLine ?? ""}
-                      </span>
-                      <span className="file-diff-card__ln file-diff-card__ln--new">
-                        {line.newLine ?? ""}
-                      </span>
-                    </span>
-                    {canComment ? (
-                      <button
-                        type="button"
-                        className="file-diff-card__code"
-                        title="评论此行"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          setCommenting({
-                            side: side!,
-                            lineNumber: lineNo!,
-                            quoted: line.raw.replace(/^[-+ ]/, ""),
-                          });
-                          setCommentDraft("");
-                        }}
-                      >
-                        {line.raw || " "}
-                      </button>
-                    ) : (
-                      <span className="file-diff-card__code">{line.raw || " "}</span>
-                    )}
-                    {"\n"}
-                  </span>
-                );
-              })}
-            </pre>
+            <UnifiedDiffView
+              className="file-diff-card__body custom-scrollbar scrollbar-autohide"
+              text={diff}
+              elideUnchanged
+              onLineComment={
+                onLineComment
+                  ? ({ side, lineNumber, quoted }) => {
+                      setCommenting({ side, lineNumber, quoted });
+                      setCommentDraft("");
+                    }
+                  : undefined
+              }
+            />
           )}
           {commenting && onLineComment && (
             <div className="file-diff-card__comment">
@@ -910,12 +863,15 @@ function ToolCallBody({
   event,
   body,
   projectId,
+  cwd,
   open,
   running = false,
 }: {
   event: ToolCallEvent;
   body: string;
   projectId?: string;
+  /** Session working directory — resolves relative image paths a tool reports. */
+  cwd?: string | null;
   open: boolean;
   /** Tool still in_progress — tall panel + 9-dot spinner until it settles. */
   running?: boolean;
@@ -969,8 +925,15 @@ function ToolCallBody({
       : diffError
         ? `${body}\n\n[full diff unavailable] ${diffError}`
         : body;
-  const isDiff = hasUnifiedDiff(displayBody) || needsWorkspaceDiff;
-  const hasBody = Boolean(displayBody?.trim());
+  // Images and the diff are pulled out of the text blob: a read card shows the
+  // image the model saw, an edit card shows a numbered diff instead of prose.
+  const parts = useMemo(
+    () => splitToolBody(displayBody, { toolPath: event.path, cwd }),
+    [displayBody, event.path, cwd],
+  );
+  const diffPath = parts.diff ? diffTargetPath(parts.diff, event.path) : "";
+  const isDiff = Boolean(parts.diff) || needsWorkspaceDiff;
+  const hasBody = Boolean(parts.text.trim()) || parts.images.length > 0 || Boolean(parts.diff);
 
   // Running with no output yet: reserve a tall OpenCode-style working block.
   if (running && !hasBody) {
@@ -997,10 +960,7 @@ function ToolCallBody({
   const maxHeight = running ? 420 : isDiff ? 560 : 220;
 
   return (
-    <ClippedBody
-      className={`event-card__clip${running ? " is-tool-running-tall" : ""}`}
-      maxHeight={maxHeight}
-    >
+    <div className="tool-body">
       {running && (
         <div className="tool-running-panel__inline">
           <NineDotSpinner
@@ -1009,11 +969,33 @@ function ToolCallBody({
           />
         </div>
       )}
-      <pre className={`event-card__body event-card__body--tool${isDiff ? " event-card__body--diff" : ""}`}>
-        <LinkedText text={displayBody} />
-        {open && needsWorkspaceDiff && !workspaceDiff && !diffError && "\n\nLoading full diff…"}
-      </pre>
-    </ClippedBody>
+      {parts.images.length > 0 && <ToolImageStrip images={parts.images} cwd={cwd} />}
+      {parts.text.trim() && (
+        <ClippedBody
+          className={`event-card__clip${running ? " is-tool-running-tall" : ""}`}
+          maxHeight={maxHeight}
+        >
+          <pre className="event-card__body event-card__body--tool">
+            <LinkedText text={parts.text} />
+            {open && needsWorkspaceDiff && !workspaceDiff && !diffError && "\n\nLoading full diff…"}
+          </pre>
+        </ClippedBody>
+      )}
+      {parts.diff && (
+        <div className="file-diff-card file-diff-card--tool">
+          {diffPath && (
+            <div className="file-diff-card__path" title={diffPath}>
+              {diffPath}
+            </div>
+          )}
+          <UnifiedDiffView
+            className="file-diff-card__body custom-scrollbar scrollbar-autohide"
+            text={parts.diff}
+            elideUnchanged
+          />
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1931,6 +1913,7 @@ function CleanPlaceholder({
                         event={event}
                         body={body}
                         projectId={projectId}
+                        cwd={session.cwd}
                         open={toolOpen}
                         running={showWorkingBlock}
                       />
