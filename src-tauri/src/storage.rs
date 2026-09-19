@@ -154,6 +154,7 @@ impl StorageService {
             preferred_always_approve: None,
             parent_session_id: None,
             origin: Some("user".to_string()),
+            pinned_at: None,
         };
         let mut sessions = self.read_chat_sessions_all()?;
         sessions.retain(|current| current.id != session.id);
@@ -377,6 +378,7 @@ impl StorageService {
             preferred_always_approve: None,
             parent_session_id: None,
             origin: Some("user".to_string()),
+            pinned_at: None,
         };
         // Prepend so newest dialogs appear at the top of the project shelf.
         let mut sessions = self.list_sessions_all(project_id)?;
@@ -442,6 +444,7 @@ impl StorageService {
                 preferred_always_approve: None,
                 parent_session_id: Some(parent_session_id.to_string()),
                 origin: Some("delegate".to_string()),
+                pinned_at: None,
             };
             sessions.retain(|current| current.id != session.id);
             sessions.insert(0, session.clone());
@@ -497,6 +500,7 @@ impl StorageService {
             preferred_always_approve: None,
             parent_session_id: Some(parent_session_id.to_string()),
             origin: Some("delegate".to_string()),
+            pinned_at: None,
         };
         let mut sessions = all;
         sessions.retain(|s| s.id != session.id);
@@ -702,6 +706,20 @@ impl StorageService {
         session.label_source = Some(source.to_string());
         session.last_active_at = now_string();
         self.save_session(&session)
+    }
+
+    /// Pin / unpin a dialog in the left shelf, returning the saved row.
+    ///
+    /// Deliberately does not touch `last_active_at`: pinning is not activity, and
+    /// bumping it would move the row inside the unpinned recency list the moment
+    /// you unpin it.
+    pub fn set_session_pinned(&self, session_id: &str, pinned: bool) -> Result<Session, String> {
+        let Some(mut session) = self.find_session(session_id)? else {
+            return Err(format!("Session not found: {session_id}"));
+        };
+        session.pinned_at = if pinned { Some(now_string()) } else { None };
+        self.save_session(&session)?;
+        Ok(session)
     }
 
     fn remember_transcript_path(&self, session: &Session) {
@@ -1265,6 +1283,45 @@ mod tests {
             .parent()
             .unwrap()
             .is_dir());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Pin state is disk-backed and must survive a restart (the shelf sorts on
+    /// it), and pinning must not disturb the row's recency stamp.
+    #[test]
+    fn session_pin_round_trips_and_leaves_recency_alone() {
+        let root = test_root();
+        let global_dir = root.join("global");
+        let project_dir = root.join("workspace");
+        fs::create_dir_all(&project_dir).unwrap();
+
+        let service = StorageService::from_global_dir(global_dir.clone()).unwrap();
+        let project = service
+            .add_project(project_dir.to_string_lossy().to_string())
+            .unwrap();
+        let session = service
+            .create_session(&project.id, "codex".to_string(), "Pin me".to_string())
+            .unwrap();
+        assert!(session.pinned_at.is_none());
+
+        let pinned = service.set_session_pinned(&session.id, true).unwrap();
+        assert!(pinned.pinned_at.is_some());
+        assert_eq!(
+            pinned.last_active_at, session.last_active_at,
+            "pinning is not activity — it must not reorder the recency list"
+        );
+
+        let restarted = StorageService::from_global_dir(global_dir).unwrap();
+        let restored = restarted.list_sessions(&project.id).unwrap();
+        assert_eq!(restored[0].pinned_at, pinned.pinned_at);
+
+        let unpinned = restarted.set_session_pinned(&session.id, false).unwrap();
+        assert!(unpinned.pinned_at.is_none());
+        assert_eq!(unpinned.last_active_at, session.last_active_at);
+
+        // An unknown dialog is an error, not a silent no-op.
+        assert!(restarted.set_session_pinned("session-nope", true).is_err());
 
         fs::remove_dir_all(root).unwrap();
     }

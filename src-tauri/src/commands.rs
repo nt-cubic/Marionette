@@ -680,6 +680,22 @@ pub fn update_session_label(
     storage.update_session_label(&session_id, &label, label_source.as_deref())
 }
 
+/// Pin / unpin a dialog in the left shelf. Returns the saved row so the shelf
+/// can adopt the authoritative pin timestamp.
+#[tauri::command(async)]
+pub fn set_session_pinned(
+    session_id: String,
+    pinned: bool,
+    state: State<'_, AppState>,
+) -> Result<crate::models::Session, String> {
+    let _trace = crate::debug_log::CmdTrace::new("set_session_pinned");
+    let storage = state
+        .storage
+        .lock()
+        .map_err(|_| "Storage lock poisoned".to_string())?;
+    storage.set_session_pinned(&session_id, pinned)
+}
+
 /// Persist dialog runtime status (`starting` / `running` / `waiting` / …).
 /// Detached windows read this via list_sessions so Interrupt vs Send matches
 /// the live turn — ACP start alone used to leave the file stuck on `running`.

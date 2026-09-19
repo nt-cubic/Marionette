@@ -28,7 +28,7 @@ import {
   parseGrokBilling,
   parseGrokCallUsage,
   parseGrokCostText,
-  seedContextSize,
+  applyModelContextSize,
 } from "../src/lib/usage.ts";
 
 let passed = 0;
@@ -320,18 +320,22 @@ check("mergeGrokBilling paints a weekly row for grok-build snapshot", () => {
 
 console.log("\nsession/ready context ceiling");
 
-check("seeds a size, then refuses to overwrite a live one", () => {
-  const seeded = seedContextSize(undefined, 500000);
-  assert.equal(seeded?.contextSize, 500000);
-  assert.equal(seedContextSize(seeded!, 123), null, "must not overwrite");
-  assert.equal(seedContextSize(undefined, 0), null, "0 is not a ceiling");
-  assert.equal(seedContextSize(undefined, null), null);
+check("applies a model ceiling, but a live usage_update owns the number", () => {
+  const applied = applyModelContextSize(undefined, 500000);
+  assert.equal(applied?.contextSize, 500000);
+  // A model switch must be able to replace a model-derived size…
+  assert.equal(applyModelContextSize(applied!, 123)?.contextSize, 123);
+  assert.equal(applyModelContextSize(undefined, 0), null, "0 is not a ceiling");
+  assert.equal(applyModelContextSize(undefined, null), null);
+  // …but never a size the agent measured itself.
+  const live = { ...applied!, contextSizeSource: "usage" as const };
+  assert.equal(applyModelContextSize(live, 123), null, "live usage_update wins");
 });
 
 console.log("\nsnapshot rendering");
 
 check("Grok shows a real meter from set-up size + turn result", () => {
-  let state = seedContextSize(undefined, 500000)!;
+  let state = applyModelContextSize(undefined, 500000)!;
   state = mergeUsageFromPromptResult(state, {
     result: { _meta: { totalTokens: 12759, inputTokens: 12729, outputTokens: 29, cachedReadTokens: 2816 } },
   })!;
@@ -382,7 +386,7 @@ check("Grok later calls overwrite contextUsed (not seed-once)", () => {
   const snap = buildUsageSnapshot({
     agentId: "grok-build",
     agentLabel: "Grok Build",
-    state: seedContextSize(state, 200000) ?? state,
+    state: applyModelContextSize(state, 200000) ?? state,
     connected: true,
   });
   assert.equal(snap.windows.find((w) => w.id === "context")?.percentage, 4.8);

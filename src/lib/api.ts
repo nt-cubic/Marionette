@@ -413,6 +413,18 @@ export async function updateSessionLabel(
   await invoke("update_session_label", { sessionId, label, labelSource });
 }
 
+/**
+ * Pin / unpin a dialog in the left shelf. Returns the saved row (the shelf sorts
+ * on `pinnedAt`, so it adopts the authoritative timestamp).
+ */
+export async function setSessionPinned(
+  sessionId: string,
+  pinned: boolean,
+): Promise<import("./types").Session | null> {
+  if (!isTauriRuntime()) return null;
+  return invoke<import("./types").Session>("set_session_pinned", { sessionId, pinned });
+}
+
 /** Persist dialog runtime status so detached windows load the correct Interrupt/Send state. */
 export async function updateSessionStatus(
   sessionId: string,

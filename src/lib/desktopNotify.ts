@@ -4,7 +4,8 @@
  * OpenCode's notifier uses short bundled WAV cues. Keep the same cues in the
  * frontend so Marionette does not depend on the user's OpenCode installation:
  * action-needed events are immediate, clean turn completion settles briefly,
- * and failures/stalls raise the error cue at once.
+ * failures/stalls raise the error cue at once, and an agent that stops on its
+ * own with nothing on screen still gets a chime while the window is focused.
  *
  * Windows: taskbar flash + yellow/red progress overlay (QQ/WeChat-ish).
  * Cleared when the window is focused again.
@@ -31,6 +32,8 @@ export const DESKTOP_NOTIFY_SETTLE_MS = 350;
 
 const SOUND_URLS: Partial<Record<NotifyKind, string>> = {
   reply: completeSoundUrl,
+  // Agent stopped on its own with nothing to show — same positive chime.
+  idle: completeSoundUrl,
   permission: permissionSoundUrl,
   question: questionSoundUrl,
   // OpenCode 0.2.8 does not ship a separate plan cue; use its positive chime.
@@ -46,6 +49,7 @@ const ACTION_KINDS = new Set<NotifyKind>(["permission", "question", "plan"]);
 
 export type NotifyKind =
   | "reply"
+  | "idle"
   | "stuck"
   | "permission"
   | "question"
@@ -53,6 +57,15 @@ export type NotifyKind =
   | "error"
   | "process"
   | "subagent_complete";
+
+export type RaiseOptions = {
+  /**
+   * Play the cue even when the window is focused (no taskbar chrome then).
+   * Used for a silent stop: the agent ended its turn with nothing on screen,
+   * so there is nothing to notice by looking.
+   */
+  audibleWhenFocused?: boolean;
+};
 
 export type DesktopNotifyState = {
   enabled: boolean;
@@ -171,11 +184,12 @@ export function scheduleDesktopNotify(
   kind: NotifyKind,
   detail?: string | null,
   delayMs = DESKTOP_NOTIFY_SETTLE_MS,
+  opts?: RaiseOptions,
 ): void {
   cancelScheduledDesktopNotify(key);
   const timer = setTimeout(() => {
     scheduledRaises.delete(key);
-    void raiseDesktopNotify(kind, detail);
+    void raiseDesktopNotify(kind, detail, opts);
   }, Math.max(0, delayMs));
   scheduledRaises.set(key, timer);
 }
@@ -216,22 +230,33 @@ export async function isAppWindowFocused(): Promise<boolean> {
 
 /**
  * Raise attention if the user is away and notifications are on.
- * No-op when already focused (you're watching the stream).
+ * No-op when already focused (you're watching the stream) — unless the caller
+ * marks the cue `audibleWhenFocused`, which then plays sound only.
  */
 export async function raiseDesktopNotify(
   kind: NotifyKind,
   detail?: string | null,
+  opts?: RaiseOptions,
 ): Promise<void> {
   if (!enabled) return;
-
-  const focused = await isAppWindowFocused();
-  if (focused) return;
 
   const now = Date.now();
   const prev = lastRaisedAt[kind] ?? 0;
   // Allow a higher-priority event to replace a previous one; throttle
   // same-kind spam (the OpenCode plugin uses a 1s event debounce).
   if (kind === pending && now - prev < DEDUPE_MS) return;
+
+  const focused = await isAppWindowFocused();
+  if (focused) {
+    // Taskbar chrome is pointless while the user is looking at the window, but
+    // an audible cue still plays — with the same 1s same-kind throttle.
+    if (!opts?.audibleWhenFocused) return;
+    if (now - prev < DEDUPE_MS) return;
+    lastRaisedAt[kind] = now;
+    playNotifySound(kind);
+    return;
+  }
+
   lastRaisedAt[kind] = now;
 
   pending = kind;
@@ -247,17 +272,19 @@ export async function raiseDesktopNotify(
       ? "Agent may be stuck"
       : kind === "reply"
         ? "Reply ready"
-        : kind === "subagent_complete"
-          ? "Subagent finished"
-          : kind === "permission"
-            ? "Permission required"
-            : kind === "question"
-              ? "Agent has a question"
-              : kind === "plan"
-                ? "Plan ready for review"
-                : kind === "process"
-                  ? "Agent process ended"
-                  : "Agent error";
+        : kind === "idle"
+          ? "Agent stopped"
+          : kind === "subagent_complete"
+            ? "Subagent finished"
+            : kind === "permission"
+              ? "Permission required"
+              : kind === "question"
+                ? "Agent has a question"
+                : kind === "plan"
+                  ? "Plan ready for review"
+                  : kind === "process"
+                    ? "Agent process ended"
+                    : "Agent error";
   const title = lastDetail
     ? `${prefix}${lastDetail} · ${BASE_TITLE}`
     : `${prefix}${fallback} · ${BASE_TITLE}`;

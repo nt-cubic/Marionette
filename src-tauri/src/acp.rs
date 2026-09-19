@@ -133,6 +133,13 @@ pub struct CapabilitySnapshot {
     /// Agent accepts `ContentBlock::Image` in session/prompt (from initialize).
     /// Defaults true so vision-capable CLIs work before we re-parse caps.
     pub prompt_image: bool,
+    /// Per-model context ceiling from the session/new catalog
+    /// (`availableModels[]._meta.totalContextTokens`), keyed by model id.
+    ///
+    /// Grok never sends `usage_update`, so this map is the only ceiling the UI
+    /// can show — and it has to follow the model the session is on, because the
+    /// catalog mixes 32K, 256K, 500K and 1M windows.
+    pub model_context_sizes: HashMap<String, u64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -822,6 +829,7 @@ impl AcpService {
                     &update,
                 ),
                 Some(config_id) => {
+                    let advertised = config_id_is_advertised(caps.as_ref(), update.target, config_id);
                     let params = json!({
                         "sessionId": agent_session_id,
                         "configId": config_id,
@@ -846,6 +854,18 @@ impl AcpService {
                                 &update,
                             )
                         }
+                        // Grok ≥ 1.0 *does* implement set_config_option, but it
+                        // advertises no `mode` option (plan/build is session/set_mode)
+                        // and answers -32602 for that invented id. Without this the
+                        // mode chip fails on an agent that simply uses another RPC.
+                        Err(error) if !advertised && is_invalid_params(&error) => {
+                            self.legacy_set_config(
+                                &process,
+                                &agent_session_id,
+                                session_id,
+                                &update,
+                            )
+                        }
                         Err(error) => Err(error),
                     }
                 }
@@ -863,8 +883,19 @@ impl AcpService {
                 if let Some(modes) = last_result.get("modes") {
                     refreshed_session["modes"] = modes.clone();
                 }
-                let next_caps = parse_session_capabilities(&refreshed_session);
+                let mut next_caps = parse_session_capabilities(&refreshed_session);
                 if let Ok(mut caps_map) = self.capabilities.lock() {
+                    if let Some(prev) = caps_map.get(session_id) {
+                        // A config-option echo carries no model catalog: keep the
+                        // catalog and the per-model ceilings learned at session/new,
+                        // or the UI loses every model but the current one.
+                        if next_caps.models.is_empty() {
+                            next_caps.models = prev.models.clone();
+                        }
+                        if next_caps.model_context_sizes.is_empty() {
+                            next_caps.model_context_sizes = prev.model_context_sizes.clone();
+                        }
+                    }
                     caps_map.insert(session_id.to_string(), next_caps);
                 }
             } else if let Ok(mut caps_map) = self.capabilities.lock() {
@@ -1458,6 +1489,31 @@ fn is_method_not_found(error: &str) -> bool {
     error.contains("-32601") || error.to_lowercase().contains("method not found")
 }
 
+/// JSON-RPC -32602 Invalid params: the agent knows the method but not this
+/// option (or not this value). Grok ≥ 1.0 implements `session/set_config_option`
+/// and answers this for a config id it never advertised.
+fn is_invalid_params(error: &str) -> bool {
+    error.contains("-32602") || error.to_lowercase().contains("invalid params")
+}
+
+/// Did the agent advertise this config id for the knob?
+///
+/// Only an *invented* id may fall back to the legacy per-knob RPC on Invalid
+/// params: an advertised id failing that way is a bad value, which must surface.
+fn config_id_is_advertised(
+    caps: Option<&CapabilitySnapshot>,
+    target: ConfigTarget,
+    config_id: &str,
+) -> bool {
+    let advertised = match target {
+        ConfigTarget::Model => caps.and_then(|c| c.model_config_id.as_deref()),
+        ConfigTarget::Mode => caps.and_then(|c| c.mode_config_id.as_deref()),
+        ConfigTarget::Effort => caps.and_then(|c| c.effort_config_id.as_deref()),
+        ConfigTarget::Other => None,
+    };
+    advertised == Some(config_id)
+}
+
 /// Collapse a 0..1 UI strength onto the discrete levels legacy agents accept.
 fn numeric_effort_to_level(n: f64) -> String {
     if n <= 0.25 {
@@ -1469,6 +1525,54 @@ fn numeric_effort_to_level(n: f64) -> String {
     }
 }
 
+/// Model id of one `availableModels[]` entry (Grok uses `modelId`).
+fn model_entry_id(entry: &Value) -> Option<&str> {
+    entry
+        .get("modelId")
+        .or_else(|| entry.get("model_id"))
+        .or_else(|| entry.get("id"))
+        .and_then(Value::as_str)
+}
+
+/// Context ceiling one `availableModels[]` entry advertises, if any.
+fn model_entry_context_size(entry: &Value) -> Option<u64> {
+    for key in ["totalContextTokens", "contextWindow", "contextWindowTokens"] {
+        if let Some(n) = entry
+            .get("_meta")
+            .and_then(|meta| meta.get(key))
+            .and_then(Value::as_u64)
+        {
+            return Some(n);
+        }
+        if let Some(n) = entry.get(key).and_then(Value::as_u64) {
+            return Some(n);
+        }
+    }
+    None
+}
+
+/// Per-model context ceilings from the `session/new` catalog, keyed by model id.
+fn advertised_model_context_sizes(session_response: &Value) -> HashMap<String, u64> {
+    let mut sizes = HashMap::new();
+    let Some(list) = session_response
+        .get("models")
+        .and_then(|models| {
+            models
+                .get("availableModels")
+                .or_else(|| models.get("available_models"))
+        })
+        .and_then(Value::as_array)
+    else {
+        return sizes;
+    };
+    for entry in list {
+        if let (Some(id), Some(size)) = (model_entry_id(entry), model_entry_context_size(entry)) {
+            sizes.insert(id.to_string(), size);
+        }
+    }
+    sizes
+}
+
 /// Context window size the agent advertised for the model the session is on.
 ///
 /// Standard ACP only reports context size inside `usage_update`, which some
@@ -1476,28 +1580,19 @@ fn numeric_effort_to_level(n: f64) -> String {
 /// session setup, so the UI can show `used / size` from turn one.
 fn advertised_context_size(session_response: &Value) -> Option<u64> {
     let models = session_response.get("models")?;
-    let available = models.get("availableModels")?.as_array()?;
-    let current = models.get("currentModelId").and_then(Value::as_str);
+    let available = models
+        .get("availableModels")
+        .or_else(|| models.get("available_models"))?
+        .as_array()?;
+    let current = models
+        .get("currentModelId")
+        .or_else(|| models.get("current_model_id"))
+        .and_then(Value::as_str);
     let pick = available
         .iter()
-        .find(|m| {
-            current.is_some() && m.get("modelId").and_then(Value::as_str) == current
-        })
+        .find(|m| current.is_some() && model_entry_id(m) == current)
         .or_else(|| available.first())?;
-
-    for key in ["totalContextTokens", "contextWindow", "contextWindowTokens"] {
-        if let Some(n) = pick
-            .get("_meta")
-            .and_then(|meta| meta.get(key))
-            .and_then(Value::as_u64)
-        {
-            return Some(n);
-        }
-        if let Some(n) = pick.get(key).and_then(Value::as_u64) {
-            return Some(n);
-        }
-    }
-    None
+    model_entry_context_size(pick)
 }
 
 fn apply_local_config_change(caps: &mut CapabilitySnapshot, config_id: &str, value: &Value) {
@@ -1558,6 +1653,12 @@ fn merge_legacy_models_field(session_response: &Value, caps: &mut CapabilitySnap
     let Some(models_obj) = session_response.get("models") else {
         return;
     };
+
+    // Ceilings are published only in this catalog — collect them for every
+    // model, not just the current one, so the meter can follow a later switch.
+    if caps.model_context_sizes.is_empty() {
+        caps.model_context_sizes = advertised_model_context_sizes(session_response);
+    }
 
     if caps.current_model.is_none() {
         if let Some(id) = models_obj
@@ -1873,6 +1974,7 @@ fn parse_capabilities_from_typed(response: acp_schema::NewSessionResponse) -> Ca
         mode_config_id,
         effort_config_id,
         prompt_image: true,
+        model_context_sizes: HashMap::new(),
     }
 }
 
@@ -2110,6 +2212,7 @@ fn parse_capabilities_fallback(session_response: &Value) -> CapabilitySnapshot {
         mode_config_id,
         effort_config_id,
         prompt_image: true,
+        model_context_sizes: HashMap::new(),
     }
 }
 
@@ -3435,6 +3538,30 @@ mod tests {
         ));
     }
 
+    /// Grok ≥ 1.0 answers -32602 for a config id it never advertised, and only
+    /// that case may fall back to the per-knob RPC.
+    #[test]
+    fn only_unadvertised_config_ids_fall_back_on_invalid_params() {
+        assert!(is_invalid_params(
+            r#"{"code":-32602,"message":"Invalid params"}"#
+        ));
+        assert!(!is_invalid_params(
+            r#"{"code":-32601,"message":"Method not found"}"#
+        ));
+
+        // Grok advertises `model` but no `mode`/`effort` option.
+        let mut caps = parse_session_capabilities(&json!({ "sessionId": "s1" }));
+        caps.model_config_id = Some("model".to_string());
+        assert!(config_id_is_advertised(Some(&caps), ConfigTarget::Model, "model"));
+        assert!(!config_id_is_advertised(Some(&caps), ConfigTarget::Mode, "mode"));
+        assert!(!config_id_is_advertised(Some(&caps), ConfigTarget::Effort, "effort"));
+        // Claude's advertised effort id must never take the legacy path.
+        caps.effort_config_id = Some("effort".to_string());
+        assert!(config_id_is_advertised(Some(&caps), ConfigTarget::Effort, "effort"));
+        // No snapshot at all: nothing is advertised, so nothing is trusted.
+        assert!(!config_id_is_advertised(None, ConfigTarget::Model, "model"));
+    }
+
     /// Grok reports its ceiling only here, so this is the whole reason the
     /// Usage panel can show `used / size` for it at all.
     #[test]
@@ -3453,6 +3580,34 @@ mod tests {
 
         // Agents that never advertise a ceiling must yield None, not a guess.
         assert_eq!(advertised_context_size(&json!({ "sessionId": "s1" })), None);
+    }
+
+    /// The ceiling map covers the whole catalog, so a later model switch can
+    /// move the Usage meter off whatever model was current at session/new.
+    #[test]
+    fn model_context_sizes_cover_the_whole_catalog() {
+        let response = json!({
+            "sessionId": "s1",
+            "models": {
+                "currentModelId": "qwen-small",
+                "availableModels": [
+                    { "modelId": "qwen-small", "_meta": { "totalContextTokens": 262144 } },
+                    { "modelId": "grok-4.6", "_meta": { "totalContextTokens": 500000 } },
+                    { "modelId": "big", "contextWindow": 1048576 },
+                    { "modelId": "no-ceiling", "_meta": { "agentType": "x" } }
+                ]
+            }
+        });
+        let caps = parse_session_capabilities(&response);
+        assert_eq!(caps.model_context_sizes.get("qwen-small"), Some(&262144));
+        assert_eq!(caps.model_context_sizes.get("grok-4.6"), Some(&500000));
+        assert_eq!(caps.model_context_sizes.get("big"), Some(&1048576));
+        assert!(!caps.model_context_sizes.contains_key("no-ceiling"));
+
+        // No catalog (Claude/Codex/OpenCode) → empty map, never a guess.
+        assert!(parse_session_capabilities(&json!({ "sessionId": "s1" }))
+            .model_context_sizes
+            .is_empty());
     }
 
     /// Grok puts model + effort on `models.*`, not configOptions — typed ACP

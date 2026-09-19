@@ -122,6 +122,12 @@ export type Session = {
   parentSessionId?: string | null;
   /** `"user"` | `"delegate"` — optional for legacy rows. */
   origin?: string | null;
+  /**
+   * Pinned dialogs sort above the rest of their project's list. Holds the pin
+   * timestamp so the pinned group keeps a stable order of its own; null/absent
+   * = not pinned.
+   */
+  pinnedAt?: string | null;
 };
 
 /** Snapshot of Composer model/mode/effort bound to a dialog. */
@@ -162,6 +168,12 @@ export type SessionEvent =
       /** Stable anchor for outline / edit&resend. */
       messageId?: string;
       createdAt: string;
+      /**
+       * When this prompt actually went over the wire. A queued follow-up waits
+       * for the live turn's slot, so this is later than `createdAt` — it is the
+       * honest anchor for the turn's first-token latency.
+       */
+      sentAt?: string;
       /** Snapshot of Composer config at send time. */
       agentId?: string;
       agentLabel?: string;
@@ -198,6 +210,12 @@ export type SessionEvent =
       effortLabel?: string;
       /** Generation duration in ms, computed at turn completion. */
       durationMs?: number;
+      /**
+       * Absolute end of this card's stream (turn completion). `durationMs`
+       * measures a turn, not this card, so the session-stats fold needs the
+       * wall-clock end to bound the step it closes.
+       */
+      endedAt?: string;
       /** End-of-turn token split + locally measured speeds, stamped at turn completion. */
       turnStats?: TurnStats | null;
     }
@@ -207,6 +225,8 @@ export type SessionEvent =
       text: string;
       messageId?: string;
       createdAt: string;
+      /** Absolute end of this card's stream — see `assistant_message.endedAt`. */
+      endedAt?: string;
     }
   | {
       type: "tool_call";
@@ -229,6 +249,8 @@ export type SessionEvent =
       /** Clipped `rawInput`, shown only until real output arrives. */
       input?: string;
       createdAt: string;
+      /** When a terminal status landed; absent while the tool is still open. */
+      completedAt?: string;
     }
   | {
       type: "handoff_prepared";
@@ -391,6 +413,13 @@ export type CapabilitySnapshot = {
   modelConfigId: string | null;
   modeConfigId: string | null;
   effortConfigId: string | null;
+  /**
+   * Context ceiling per model id, from the agent's session/new catalog
+   * (`availableModels[]._meta.totalContextTokens`). Grok mixes 32K…1M windows
+   * in one catalog and never sends `usage_update`, so the Usage meter reads the
+   * ceiling for the model the session is actually on.
+   */
+  modelContextSizes?: Record<string, number> | null;
 };
 
 /**

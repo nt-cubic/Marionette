@@ -401,11 +401,17 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
 }
 
 /// JSON clientCapabilities for ACP `initialize` (Codeg per-agent gates).
+///
+/// `fs.readTextFile` is deliberately not advertised. An agent that sees it
+/// routes every `read_file` through ACP's `fs/read_text_file`, whose result is
+/// a `String` and so can never carry an image; Grok then answers a PNG/JPG read
+/// with `stream did not contain valid UTF-8`. Our reader is a plain disk
+/// passthrough anyway, so the capability buys nothing and only denies agents
+/// their own image-aware reader.
 pub fn build_client_capabilities_json(agent_id: Option<&str>) -> Value {
     let meta = agent_id.map(harness_meta);
     let mut caps = json!({
         "fs": {
-            "readTextFile": true,
             "writeTextFile": true
         },
         "terminal": true,
@@ -503,6 +509,27 @@ mod tests {
             grok["_meta"]["jetbrains.air"]["capabilities"][0],
             "sessionFailure"
         );
+    }
+
+    /// Regression: advertising `fs.readTextFile` makes image-aware agents send
+    /// every `read_file` through ACP's text-only `fs/read_text_file`, so a PNG
+    /// or JPG read comes back as `stream did not contain valid UTF-8`.
+    #[test]
+    fn client_capabilities_never_advertise_text_file_reads() {
+        for agent in [
+            None,
+            Some("grok-build"),
+            Some("claude-code"),
+            Some("codex"),
+            Some("gemini"),
+        ] {
+            let caps = build_client_capabilities_json(agent);
+            assert!(
+                caps["fs"]["readTextFile"].is_null(),
+                "readTextFile must stay off (agent: {agent:?})"
+            );
+            assert_eq!(caps["fs"]["writeTextFile"], json!(true));
+        }
     }
 
     #[test]

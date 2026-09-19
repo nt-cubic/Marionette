@@ -53,6 +53,12 @@ pub struct Session {
     /// `"user"` | `"delegate"` — optional for legacy rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// Pinned dialogs sort above the rest of their project's list. Holds the pin
+    /// timestamp so the pinned group keeps its own stable order; `None` = not
+    /// pinned. Never derived from activity — pinning must not move the row in
+    /// the recency list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_at: Option<String>,
 }
 
 /// A CLI the ACP bridge shells out to (installed separately from the bridge).

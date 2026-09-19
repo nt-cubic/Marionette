@@ -1,27 +1,50 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Bell, BellOff, ChevronDown, ChevronRight, CloudMoon, Folder, FolderOpen, Globe, GripVertical, Moon, MessageSquare, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Save, Search, Sun, SunMedium, Trash2, X, Zap } from "lucide-react";
+import { Bell, BellOff, ChevronDown, ChevronRight, CloudMoon, Folder, FolderOpen, Globe, GripVertical, MessageSquare, PanelLeftClose, PanelLeftOpen, Pencil, Pin, PinOff, Plus, Save, Search, SunMedium, Trash2, X, Zap } from "lucide-react";
 import type { AgentConfig, Project, ProxyConfig, ProxyTestResult, Session } from "../lib/types";
 import { themeToggleTitle, type ThemeMode } from "../lib/theme";
+import { collapsedShelfSessions, pinStamp, sortSessionsNewestFirst } from "../lib/sessionOrder";
 import { loadCollapsedProjectIds, saveCollapsedProjectIds } from "../lib/uiRestore";
 import { ConfirmDialog } from "./ConfirmDialog";
 
 /** Visible sessions per project before "Show more". Projects always list fully. */
 const SESSION_LIST_PREVIEW = 5;
 
-function sessionRecency(session: Session): number {
-  const raw = session.lastActiveAt || session.startedAt || "";
-  const asNum = Number(raw);
-  if (Number.isFinite(asNum) && asNum > 1e11) return asNum;
-  const parsed = Date.parse(raw);
-  if (Number.isFinite(parsed)) return parsed;
-  // Fallback: session-… millis ids
-  const idNum = Number(String(session.id).replace(/^session-/, ""));
-  return Number.isFinite(idNum) ? idNum : 0;
+/** Pin toggle shared by project session rows and chat rows. */
+function SessionPinButton({
+  label,
+  pinned,
+  className,
+  onToggle,
+}: {
+  label: string;
+  pinned: boolean;
+  className: string;
+  onToggle: (next: boolean) => void;
+}) {
+  return (
+    <button
+      className={pinned ? `${className} is-pinned` : className}
+      type="button"
+      title={pinned ? `取消置顶 ${label}` : `置顶 ${label}`}
+      aria-label={pinned ? `Unpin ${label}` : `Pin ${label} to the top`}
+      aria-pressed={pinned}
+      onClick={(event) => {
+        event.stopPropagation();
+        onToggle(!pinned);
+      }}
+    >
+      {pinned ? <PinOff size={12} /> : <Pin size={12} />}
+    </button>
+  );
 }
 
-/** Newest activity first. Selecting a dialog must NOT reorder — only send/create bumps recency. */
-function sortSessionsNewestFirst(list: Session[]): Session[] {
-  return [...list].sort((a, b) => sessionRecency(b) - sessionRecency(a));
+/** Always-visible marker so a pinned row reads as pinned without hovering. */
+function PinnedMark({ className }: { className: string }) {
+  return (
+    <span className={className} title="已置顶" aria-hidden>
+      <Pin size={10} />
+    </span>
+  );
 }
 
 type ProjectShelfProps = {
@@ -51,6 +74,8 @@ type ProjectShelfProps = {
   onProjectSelect: (projectId: string) => void;
   onSessionSelect: (session: Session) => void;
   onDeleteSession: (sessionId: string) => void;
+  /** Pin / unpin a dialog so it sorts to the top of its project. */
+  onToggleSessionPin?: (sessionId: string, pinned: boolean) => void;
   onDeleteProject: (projectId: string) => void;
   /** Manual rename — always persists (like first-message auto-title). */
   onRenameSession?: (sessionId: string, label: string) => void;
@@ -106,6 +131,7 @@ export function ProjectShelf({
   desktopNotifyEnabled = true,
   onToggleDesktopNotify,
   onDeleteSession,
+  onToggleSessionPin,
   onDeleteProject,
   onRenameSession,
   onReorderProjects,
@@ -408,15 +434,7 @@ export function ProjectShelf({
       aria-label={themeToggleTitle(theme)}
       onClick={onToggleTheme}
     >
-      {theme === "dark" ? (
-        <Moon size={13} />
-      ) : theme === "dim" ? (
-        <CloudMoon size={13} />
-      ) : theme === "white" ? (
-        <SunMedium size={13} />
-      ) : (
-        <Sun size={13} />
-      )}
+      {theme === "dim" ? <CloudMoon size={13} /> : <SunMedium size={13} />}
     </button>
   );
 
@@ -430,7 +448,7 @@ export function ProjectShelf({
       type="button"
       title={
         desktopNotifyEnabled
-          ? "Desktop notify on · taskbar flash + sound for replies, questions, permissions, errors, and stalls"
+          ? "Desktop notify on · taskbar flash + sound for replies, questions, permissions, errors, stalls, and silent stops"
           : "Desktop notify off · click to enable"
       }
       aria-label={desktopNotifyEnabled ? "Disable desktop notifications" : "Enable desktop notifications"}
@@ -526,14 +544,14 @@ export function ProjectShelf({
           const rawSessions =
             filtered.sessionsByProject?.get(project.id) ??
             sessions.filter((session) => session.projectId === project.id);
-          // Recency only — click-to-select must not jump the row to the top.
+          // Pinned first, then recency — click-to-select must not jump the row.
           const projectSessions = sortSessionsNewestFirst(rawSessions);
           const projectExpanded = isProjectExpanded(project.id);
           const sessionsFullyExpanded = searching || sessionsExpandedByProject.has(project.id);
           const shouldCollapseSessions =
             !sessionsFullyExpanded && projectSessions.length > SESSION_LIST_PREVIEW;
           const visibleSessions = shouldCollapseSessions
-            ? projectSessions.slice(0, SESSION_LIST_PREVIEW)
+            ? collapsedShelfSessions(projectSessions, SESSION_LIST_PREVIEW)
             : projectSessions;
           const hiddenSessionCount = Math.max(0, projectSessions.length - visibleSessions.length);
 
@@ -652,6 +670,7 @@ export function ProjectShelf({
                   {visibleSessions.map((session) => {
                     const busy = sessionIsBusy(session.status);
                     const isRenaming = renamingId === session.id;
+                    const pinned = pinStamp(session) != null;
                     const beginRename = () => {
                       if (!onRenameSession) return;
                       setRenamingId(session.id);
@@ -659,11 +678,14 @@ export function ProjectShelf({
                     };
                     return (
                       <div
-                        className={
-                          session.id === currentSessionId
-                            ? `session-row is-active is-${session.status}`
-                            : `session-row is-${session.status}`
-                        }
+                        className={[
+                          "session-row",
+                          session.id === currentSessionId ? "is-active" : "",
+                          `is-${session.status}`,
+                          pinned ? "is-pinned" : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" ")}
                         key={session.id}
                       >
                         {isRenaming ? (
@@ -726,11 +748,20 @@ export function ProjectShelf({
                               />
                             )}
                             <span className="session-row__content">
+                              {pinned && <PinnedMark className="session-row__pin" />}
                               <strong>{session.label}</strong>
                             </span>
                           </button>
                         )}
                         <span className="session-row__actions">
+                          {onToggleSessionPin && !isRenaming && (
+                            <SessionPinButton
+                              label={session.label}
+                              pinned={pinned}
+                              className="session-row__action"
+                              onToggle={(next) => onToggleSessionPin(session.id, next)}
+                            />
+                          )}
                           {onRenameSession && !isRenaming && (
                             <button
                               className="session-row__action"
@@ -843,6 +874,7 @@ export function ProjectShelf({
               const busy = sessionIsBusy(session.status);
               const isActive = session.id === currentSessionId;
               const isRenaming = renamingId === session.id;
+              const pinned = pinStamp(session) != null;
               const beginRename = () => {
                 if (!onRenameSession) return;
                 setRenamingId(session.id);
@@ -854,6 +886,7 @@ export function ProjectShelf({
                     "chat-row",
                     isActive ? "is-active" : "",
                     busy ? "is-running" : "",
+                    pinned ? "is-pinned" : "",
                   ].filter(Boolean).join(" ")}
                   key={session.id}
                 >
@@ -895,11 +928,20 @@ export function ProjectShelf({
                     >
                       <span className={`chat-row__dot ${busy ? `is-${session.status}` : ""}`} aria-hidden />
                       <span className="chat-row__content">
+                        {pinned && <PinnedMark className="chat-row__pin" />}
                         <strong>{session.label}</strong>
                       </span>
                     </button>
                   )}
                   <span className="chat-row__actions">
+                    {onToggleSessionPin && !isRenaming && (
+                      <SessionPinButton
+                        label={session.label}
+                        pinned={pinned}
+                        className="chat-row__action"
+                        onToggle={(next) => onToggleSessionPin(session.id, next)}
+                      />
+                    )}
                     {onRenameSession && !isRenaming && (
                       <button
                         className="chat-row__action"

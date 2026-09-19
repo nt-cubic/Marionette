@@ -43,6 +43,18 @@ export type StandaloneTranscriptItem = {
 
 export type MessagePresentationItem = ReplyGroupItem | StandaloneTranscriptItem;
 
+/**
+ * Rows the Clean View eye hides: thinking and tool calls.
+ *
+ * The list drops them from its render units rather than hiding them with CSS:
+ * the virtual window measures mounted rows and ignores zero heights, so
+ * `display: none` rows kept their old sizes — every card below them was
+ * displaced and the scroll range stayed too tall.
+ */
+export function isDetailRow(event: { type: string }): boolean {
+  return event.type === "thought" || event.type === "tool_call";
+}
+
 type AssistantEvent = Extract<SessionEvent, { type: "assistant_message" }>;
 
 /**

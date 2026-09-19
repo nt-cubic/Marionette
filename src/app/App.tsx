@@ -13,9 +13,10 @@ import {
   getSessionUpdate,
   getSessionUpdateKind,
   sealOpenAssistantReplies,
+  turnEndedSilently,
   userMessageEvent,
 } from "../lib/acpTranscript";
-import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, startAcpSession, startAgentLogin, stopAcpSession, takeLaunchOpenPath, testProxy, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, CHAT_PROJECT_ID } from "../lib/api";
+import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, stopAcpSession, takeLaunchOpenPath, testProxy, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, CHAT_PROJECT_ID } from "../lib/api";
 import {
   bindDetachedWindowReaper,
   DETACHED_HIDDEN_EVENT,
@@ -41,6 +42,7 @@ import { agentAuthSpec } from "../lib/agentAuth";
 import type { AcpEvent, AvailableCommand, CapabilitySnapshot, ChangedFile, HandoffResult, Project, ProjectContext, ProxyConfig, ProxyTestResult, Session, SessionComposerPrefs, SessionEvent, SessionViewMode, TurnStats, UsageSnapshot } from "../lib/types";
 import {
   applyGrokLiveContext,
+  applyModelContextSize,
   buildTurnStats,
   buildUsageSnapshot,
   cumulativeFromEvents,
@@ -55,13 +57,13 @@ import {
   mergeUsageFromPromptResult,
   mergeUsageFromText,
   parseGrokCallUsage,
-  seedContextSize,
   type GrokTurnUsage,
   type SessionUsageState,
 } from "../lib/usage";
 import {
   bindDesktopNotifyFocusHandlers,
   cancelScheduledDesktopNotify,
+  DESKTOP_NOTIFY_SETTLE_MS,
   isDesktopNotifyEnabled,
   raiseDesktopNotify,
   scheduleDesktopNotify,
@@ -89,7 +91,7 @@ import {
   formatImageMarksForSend,
   type ImageAttachment,
 } from "../lib/imageAttachments";
-import { withForceWebSearch } from "../lib/forceWebSearch";
+import { foldSessionStats } from "../lib/sessionStats";
 import { isRuntimeMetadataOnly } from "../lib/markdownText";
 import {
   parseTranscriptEvents,
@@ -228,11 +230,19 @@ function turnStopReason(data: unknown): string {
   return typeof raw === "string" && raw.trim() ? raw.trim() : "end_turn";
 }
 
-/** Close out tools that never received a terminal status (stuck in_progress). */
+/**
+ * Close out tools that never received a terminal status (stuck in_progress).
+ *
+ * `endedAtMs` is the moment the turn actually ended, and is only passed when we
+ * observed it. Loading a dialog whose agent process is gone closes its tools
+ * too, but days later — stamping that as the tool's end would put a bogus
+ * duration into the session statistics, so it stays unstamped.
+ */
 function markOpenTools(
   events: SessionEvent[],
   sessionId: string,
-  status: "cancelled" | "failed"
+  status: "cancelled" | "failed",
+  endedAtMs?: number
 ): SessionEvent[] {
   return events.map((event) => {
     if (event.sessionId !== sessionId || event.type !== "tool_call") return event;
@@ -243,6 +253,9 @@ function markOpenTools(
     return {
       ...event,
       status,
+      ...(endedAtMs != null && event.completedAt == null
+        ? { completedAt: new Date(endedAtMs).toISOString() }
+        : {}),
       text: rest ? `${line1}${rest}` : line1,
     };
   });
@@ -417,7 +430,6 @@ export function App() {
       Array<{
         composed: string;
         imageAttachments: import("../lib/imageAttachments").ImageAttachment[];
-        forceWebSearch: boolean;
         composerSnap?: {
           modeId?: string | null;
           modeLabel?: string | null;
@@ -437,7 +449,6 @@ export function App() {
       {
         composed: string;
         imageAttachments: ImageAttachment[];
-        forceWebSearch: boolean;
         composerSnap?: {
           modeId?: string | null;
           modeLabel?: string | null;
@@ -539,7 +550,6 @@ export function App() {
     text: string;
     sessionId: string;
     imageAttachments?: ImageAttachment[];
-    forceWebSearch?: boolean;
     /** Composer chips at original submit — mode lags on caps, so keep the snapshot. */
     composerSnap?: {
       modeId?: string | null;
@@ -1336,15 +1346,20 @@ export function App() {
           const label = patch.label ?? s.label;
           const labelSource = patch.labelSource ?? s.labelSource;
           const status = patch.status ?? s.status;
+          // Pin travels as an explicit field: `null` means unpinned, so it cannot
+          // use the `?? s.x` fallback the others rely on.
+          const pinnedAt =
+            patch.pinnedAt === undefined ? s.pinnedAt : patch.pinnedAt;
           if (
             label === s.label &&
             labelSource === s.labelSource &&
-            status === s.status
+            status === s.status &&
+            pinnedAt === s.pinnedAt
           ) return s;
           changed = true;
           const processId =
             status === "exited" || status === "error" ? null : s.processId;
-          return { ...s, label, labelSource, status, processId };
+          return { ...s, label, labelSource, status, processId, pinnedAt };
         });
         return changed ? next : current;
       });
@@ -1440,7 +1455,7 @@ export function App() {
       if (payload.kind === "system" && payload.method === "session/ready") {
         const size = (payload.data as { contextSize?: unknown } | null)?.contextSize;
         setSessionUsageById((current) => {
-          const seeded = seedContextSize(
+          const seeded = applyModelContextSize(
             current[payload.sessionId],
             typeof size === "number" ? size : null
           );
@@ -1636,18 +1651,26 @@ export function App() {
           setLiveEvents((current) => {
             const sid = payload.sessionId;
             let next = current;
-            if (toolClose) next = markOpenTools(next, sid, toolClose);
+            if (toolClose) next = markOpenTools(next, sid, toolClose, endedAt);
             // Stamp this session's open Reply — not the absolute rail tail
             // (another window's stream may be last in the shared array).
             const lastIdx = findLastIndexForSession(next, sid);
             const last = lastIdx >= 0 ? next[lastIdx] : undefined;
-            if (
-              last?.type === "assistant_message" &&
-              last.sessionId === sid &&
-              last.durationMs == null
-            ) {
+            // The turn's last card is where its final step ends, so it carries
+            // the absolute end. `durationMs` keeps its own meaning (it seals a
+            // Reply for the coalescer), which is why a Thought card gets the
+            // end stamp only.
+            const isReply = last?.type === "assistant_message" && last.sessionId === sid;
+            const isThought = last?.type === "thought" && last.sessionId === sid;
+            const sealedReply = isReply && last.durationMs == null;
+            const endsHere = (isReply || isThought) && last.endedAt == null;
+            if (sealedReply || endsHere) {
               const stamped = [...next];
-              stamped[lastIdx] = { ...last, durationMs, ...(turnStats ? { turnStats } : {}) };
+              stamped[lastIdx] = {
+                ...last,
+                ...(sealedReply ? { durationMs, ...(turnStats ? { turnStats } : {}) } : {}),
+                ...(endsHere ? { endedAt: new Date(endedAt).toISOString() } : {}),
+              };
               next = collapseIntermediateAssistantAsThought(stamped, sid);
             } else {
               next = collapseIntermediateAssistantAsThought(next, sid);
@@ -1726,12 +1749,27 @@ export function App() {
             payload.kind === "error" ||
             stopReason === "error" ||
             stopReason === "refusal";
+          // No Reply card at the tail means the agent stopped on its own without
+          // anything to read (empty turn, or tools and then silence). That stop is
+          // invisible on screen, so its chime also plays while the window is focused.
+          const stoppedSilently = turnEndedSilently(
+            liveEventsRef.current,
+            payload.sessionId,
+          );
           if (!isDelegateChild) {
             if (turnFailed) {
               const errorDetail = compactNotifyDetail(formatAcpRpcError(payload.data));
               void raiseDesktopNotify(
                 "error",
                 errorDetail ? `${label} · ${errorDetail}` : `${label} · Agent error`,
+              );
+            } else if (stoppedSilently) {
+              scheduleDesktopNotify(
+                payload.sessionId,
+                "idle",
+                `${label} · agent stopped`,
+                DESKTOP_NOTIFY_SETTLE_MS,
+                { audibleWhenFocused: true },
               );
             } else {
               scheduleDesktopNotify(payload.sessionId, "reply", label);
@@ -1953,12 +1991,29 @@ export function App() {
         const parsed = parseAskQuestionPrompt(payload.sessionId, payload.data);
         if (parsed) {
           setAskPrompt(parsed);
+          // Receipt on disk: an ask that never reaches the screen is otherwise
+          // invisible in dev.log (Rust only logs that it emitted the request).
+          pushDebug({
+            sessionId: payload.sessionId,
+            level: "info",
+            source: "question",
+            summary: `ask card ready · ${parsed.questions.length} question(s)`,
+            detail: parsed.requestId,
+          });
           cancelScheduledDesktopNotify(payload.sessionId);
           const question = compactNotifyDetail(parsed.questions[0]?.question);
           void raiseDesktopNotify(
             "question",
             question ? `Agent question: ${question}` : "Agent has a question",
           );
+        } else {
+          pushDebug({
+            sessionId: payload.sessionId,
+            level: "warn",
+            source: "question",
+            summary: "question/prompt arrived but did not parse — no card shown",
+            detail: JSON.stringify(payload.data).slice(0, 800),
+          });
         }
       }
       if (payload.method === "question/timeout") {
@@ -2135,6 +2190,42 @@ export function App() {
         .catch(() => undefined);
     }
   }, []);
+
+  /**
+   * Pin / unpin a dialog in the left shelf.
+   *
+   * Optimistic: the shelf sorts on `pinnedAt`, so the row has to move on click.
+   * The disk write is the source of truth — its timestamp replaces the local
+   * guess, and a failure rolls the row back instead of leaving a lie on screen.
+   */
+  const handleToggleSessionPin = useCallback((sessionId: string, pinned: boolean) => {
+    const optimistic = pinned ? String(Date.now()) : null;
+    const before = sessionsRef.current.find((s) => s.id === sessionId)?.pinnedAt ?? null;
+    setAvailableSessions((current) =>
+      current.map((s) => (s.id === sessionId ? { ...s, pinnedAt: optimistic } : s))
+    );
+    void setSessionPinned(sessionId, pinned)
+      .then((saved) => {
+        if (saved) {
+          setAvailableSessions((current) =>
+            current.map((s) => (s.id === sessionId ? { ...s, ...saved } : s))
+          );
+          void broadcastSessionPatch({ sessionId, pinnedAt: saved.pinnedAt ?? null });
+        }
+      })
+      .catch((error) => {
+        setAvailableSessions((current) =>
+          current.map((s) => (s.id === sessionId ? { ...s, pinnedAt: before } : s))
+        );
+        pushDebug({
+          sessionId,
+          level: "warn",
+          source: "shelf",
+          summary: pinned ? "pin session failed" : "unpin session failed",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      });
+  }, [pushDebug]);
 
   const loadSessionTranscript = useCallback(async (sessionId: string) => {
     if (!isTauriRuntime()) return;
@@ -2646,6 +2737,29 @@ export function App() {
     return () => clearInterval(id);
   }, [desktopNotifyOn]);
 
+  /**
+   * The Usage meter's ceiling follows the model.
+   *
+   * Grok publishes one ceiling per model in its session/new catalog (32K…1M) and
+   * never sends usage_update, so a value seeded once at connect pinned the meter
+   * to whatever model happened to be current then. Agents that do send
+   * usage_update keep their own number — applyModelContextSize refuses those.
+   */
+  useEffect(() => {
+    const sid = currentSessionId;
+    const sizes = sessionCapabilities?.modelContextSizes;
+    if (!sid || !sizes) return;
+    const model = activeModelId ?? sessionCapabilities?.currentModel ?? null;
+    if (!model) return;
+    const size = sizes[model];
+    if (typeof size !== "number") return;
+    setSessionUsageById((current) => {
+      const next = applyModelContextSize(current[sid], size);
+      if (!next) return current;
+      return { ...current, [sid]: next };
+    });
+  }, [currentSessionId, sessionCapabilities, activeModelId]);
+
   // Drag-resize: mutate CSS vars on the grid during move (no React re-render).
   // Commit width to state + localStorage only on mouseup.
   useEffect(() => {
@@ -2759,6 +2873,47 @@ export function App() {
   const currentEvents = useMemo(() => {
     return liveEvents.filter((event) => event.sessionId === displaySession.id);
   }, [liveEvents, displaySession.id]);
+
+  const sessionRunning =
+    displaySession.status === "running" || displaySession.status === "starting";
+
+  // Whole-dialog statistics for the Usage card, folded from the same events the
+  // transcript renders — no separate live state to drift out of sync. A running
+  // turn is folded against a clock: its elapsed windows and the rate move every
+  // second, including while a tool runs silently. An idle dialog settles its
+  // last turn instead, so its final step counts even when the card carries no
+  // end stamp (older transcripts).
+  const [statsTick, setStatsTick] = useState(0);
+  useEffect(() => {
+    if (!sessionRunning) return;
+    const id = window.setInterval(() => setStatsTick((tick) => tick + 1), 1000);
+    return () => window.clearInterval(id);
+  }, [sessionRunning]);
+
+  const sessionStats = useMemo(
+    () =>
+      foldSessionStats(currentEvents, displaySession.id, {
+        settled: !sessionRunning,
+        now: sessionRunning ? Date.now() : undefined,
+        // Grok reports usage once per model call, so a turn that loops through
+        // tools has real numbers before it ends. Every other agent reports only
+        // when the turn ends, and its running turn is estimated from text.
+        liveTokens: sessionRunning
+          ? grokTurnUsageToTurnTokens(grokTurnUsageRef.current[displaySession.id])
+          : null,
+        agentId: displaySession.agentId,
+      }),
+    // statsTick is a clock and sessionUsageById carries the per-call reports:
+    // both force the re-fold without being read here.
+    [
+      currentEvents,
+      displaySession.id,
+      displaySession.agentId,
+      sessionRunning,
+      statsTick,
+      sessionUsageById,
+    ]
+  );
 
   const openSessions = useMemo(
     () => openSessionIds
@@ -2881,11 +3036,10 @@ export function App() {
     // HARD RULE: caps belong to (sessionId, agentId). Never leak previous dialog's models.
     setSessionCapabilities(null);
     setActiveModelId(null);
-    // Pending cards are process-scoped; never leak into another dialog.
-    setAskPrompt(null);
-    setPlanApproval(null);
-    setPlanApprovalBusy(false);
-    setPermissionPrompt(null);
+    // Pending Ask / Plan / Permission cards stay: every one of them is gated by
+    // session id at render time, so they cannot leak into another dialog — and
+    // dropping them here lost asks the agent was still blocked on (switch away
+    // and back, and the card never returned until its timeout declined it).
     lastProviderProbeKey.current = "";
     void loadSessionTranscript(nextSession.id);
   };
@@ -4037,7 +4191,6 @@ export function App() {
         items.map((item) => ({
           composed: item.composed,
           imageAttachments: (item.imageAttachments ?? []) as ImageAttachment[],
-          forceWebSearch: Boolean(item.forceWebSearch),
           composerSnap: item.composerSnap,
         })),
       );
@@ -4583,7 +4736,6 @@ export function App() {
     droppedPaths: string[] = [],
     imageAttachments: ImageAttachment[] = [],
     opts?: {
-      forceWebSearch?: boolean;
       modeId?: string | null;
       modeLabel?: string | null;
       modelId?: string | null;
@@ -4593,7 +4745,6 @@ export function App() {
   ) => {
     if (!currentSessionId) return;
     const sid = currentSessionId;
-    const forceWebSearch = opts?.forceWebSearch === true;
 
     // @-delegate: line-start @agent task — does not block the parent dialog.
     // Images on a delegate line are ignored for now (depth=1, simple task text).
@@ -4606,7 +4757,7 @@ export function App() {
       return;
     }
 
-    // Merge quote pins + image mark text + free Composer text (no force-search prefix here).
+    // Merge quote pins + image mark text + free Composer text.
     const pins = quotePins;
     let composed = pins.length > 0 ? formatPinsForSend(pins, text) : text;
     const markBlock = formatImageMarksForSend(imageAttachments);
@@ -4638,7 +4789,6 @@ export function App() {
         text: composed,
         sessionId: sid,
         imageAttachments,
-        forceWebSearch,
         composerSnap: opts
           ? {
               modeId: opts.modeId,
@@ -4653,7 +4803,7 @@ export function App() {
     }
 
     setQuotePins([]);
-    await performSend(sid, composed, imageAttachments, forceWebSearch, opts);
+    await performSend(sid, composed, imageAttachments, opts);
   };
 
   /** One-click: ask the active agent to commit local changes and push. */
@@ -4679,7 +4829,6 @@ export function App() {
     sid: string,
     composed: string,
     imageAttachments: ImageAttachment[] = [],
-    forceWebSearch = false,
     composerSnap?: {
       modeId?: string | null;
       modeLabel?: string | null;
@@ -4758,7 +4907,7 @@ export function App() {
       // The card is created when the flush happens, right after cancel.
       if (shouldQueue) {
         const queue = pendingSendsRef.current.get(sid) ?? [];
-        queue.push({ composed, imageAttachments, forceWebSearch, composerSnap });
+        queue.push({ composed, imageAttachments, composerSnap });
         pendingSendsRef.current.set(sid, queue);
         // Shelf order is recency-only: bump lastActiveAt only when the user sends.
         const activeAt = new Date().toISOString();
@@ -4790,7 +4939,6 @@ export function App() {
       lastSendBySessionRef.current.set(sid, {
         composed,
         imageAttachments,
-        forceWebSearch,
         composerSnap,
       });
       setComposerFailure((cur) => (cur?.sessionId === sid ? null : cur));
@@ -4801,7 +4949,7 @@ export function App() {
       const um = userMessageEvent(sid, composed, {
         ...(sendMetaRef.current ?? {}),
         attachments: imageAttachments.length > 0 ? imageAttachments : undefined,
-        forceWebSearch: forceWebSearch || undefined,
+        sentAt: new Date(turnSentAtRef.current[sid] ?? Date.now()).toISOString(),
       });
       setLiveEvents((current) => [...current, um]);
       // Shelf order is recency-only: bump lastActiveAt only when the user sends
@@ -4943,8 +5091,7 @@ export function App() {
       setSessionStatusById(sid, "running");
       touchActivity(sid);
       const imagePaths = imageAttachments.map((a) => a.path);
-      // Wire only: inject force-search prefix; You card keeps clean `composed`.
-      const wireText = withForceWebSearch(promptText, forceWebSearch);
+      const wireText = promptText;
       const projectId = displaySession.projectId || currentProjectId;
       const fileSnapshot = displaySession.projectId === CHAT_PROJECT_ID
         ? null
@@ -5028,7 +5175,6 @@ export function App() {
           sessionId,
           next.composed,
           next.imageAttachments,
-          next.forceWebSearch,
           next.composerSnap,
           { flushQueued: true },
         );
@@ -5115,7 +5261,6 @@ export function App() {
           prompt.sessionId,
           prompt.text,
           prompt.imageAttachments ?? [],
-          prompt.forceWebSearch === true,
           prompt.composerSnap,
         );
       } finally {
@@ -5314,6 +5459,7 @@ export function App() {
             onDeleteSession={deleteSession}
             onDeleteProject={handleDeleteProject}
             onRenameSession={handleRenameSession}
+            onToggleSessionPin={handleToggleSessionPin}
             onReorderProjects={handleReorderProjects}
             onRevealProject={(project) => {
               void revealInFileManager(project.rootPath).catch(() => undefined);
@@ -5502,7 +5648,6 @@ export function App() {
                   displaySession.id,
                   last.composed,
                   last.imageAttachments,
-                  last.forceWebSearch,
                   last.composerSnap,
                 );
               }}
@@ -5648,6 +5793,7 @@ export function App() {
           onExpand={() => setRightCollapsed(false)}
           usage={usage}
           onUsageRefresh={handleUsageRefreshForce}
+          sessionStats={sessionStats}
           changedFiles={changedFiles}
           changedFilesNote={changedFilesNote}
           onRefreshChangedFiles={() => void refreshChangedFiles()}

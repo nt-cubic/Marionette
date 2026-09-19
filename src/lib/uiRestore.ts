@@ -74,7 +74,6 @@ const CLOSED_TABS_KEY = "marionette-closed-tabs";
 export type QueuedSendSnap = {
   composed: string;
   imageAttachments: unknown[];
-  forceWebSearch: boolean;
   composerSnap?: {
     modeId?: string | null;
     modeLabel?: string | null;
