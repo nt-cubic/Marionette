@@ -7,23 +7,35 @@
 
 export type ActivityHealth = "idle" | "live" | "quiet" | "stalled" | "stuck";
 
+/**
+ * First silence warning for an active turn. Long tools, slow models and nested
+ * agents are routinely silent for minutes, so nothing is called quiet/stalled
+ * before five minutes without a single stream update.
+ */
+export const SILENCE_WARN_MS = 5 * 60_000;
+
 /** Silence thresholds while a turn is active (running / starting). */
 export const ACTIVITY_THRESHOLDS = {
   /** First warning: stream has gone quiet. */
-  quietMs: 20_000,
+  quietMs: SILENCE_WARN_MS,
   /** Stronger: likely hung mid-tool or mid-think. */
-  stalledMs: 60_000,
+  stalledMs: SILENCE_WARN_MS + 60_000,
   /** Almost certainly stuck — recommend interrupt. */
-  stuckMs: 120_000,
+  stuckMs: SILENCE_WARN_MS + 3 * 60_000,
   /**
    * Nested subagents (OpenCode `task`, etc.) usually emit **zero** parent-ACP
-   * events while working. Use a longer fuse so we don't scream "stuck" at 2m
-   * when silence is the only wire signal we ever get.
+   * events while working, so they run the same ladder: their silence is the
+   * expected signal, and warning earlier than a normal turn would be noise.
    */
-  subagentQuietMs: 90_000,
-  subagentStalledMs: 4 * 60_000,
-  subagentStuckMs: 8 * 60_000,
+  subagentQuietMs: SILENCE_WARN_MS,
+  subagentStalledMs: SILENCE_WARN_MS + 60_000,
+  subagentStuckMs: SILENCE_WARN_MS + 3 * 60_000,
 } as const;
+
+/** "6+ minutes" style label for warning copy, derived from a threshold. */
+export function silenceLabel(ms: number): string {
+  return `${Math.round(ms / 60_000)}+ minutes`;
+}
 
 export type ActivityHealthOpts = {
   /** An in-progress tool is a nested agent (task/subagent) with no parent stream. */
@@ -180,15 +192,15 @@ export function stallBannerCopy(health: ActivityHealth, opts: {
     return {
       title: "Agent appears stuck",
       body: opts.midTurn
-        ? `No stream updates for 2+ minutes${ago}.${toolBit} The turn may be hung inside a tool or model call. Interrupt to regain control, then send again.`
-        : `No stream updates for 2+ minutes${ago}. Interrupt if you need to send a new message.`,
+        ? `No stream updates for ${silenceLabel(ACTIVITY_THRESHOLDS.stuckMs)}${ago}.${toolBit} The turn may be hung inside a tool or model call. Interrupt to regain control, then send again.`
+        : `No stream updates for ${silenceLabel(ACTIVITY_THRESHOLDS.stuckMs)}${ago}. Interrupt if you need to send a new message.`,
     };
   }
   if (health === "stalled") {
     return {
       title: "No updates for a while",
       body: opts.midTurn
-        ? `Stream has been silent for 1+ minute${ago}.${toolBit} It may still be working, or it may be stuck. Interrupt anytime with Esc×2 or ■.`
+        ? `Stream has been silent for ${silenceLabel(ACTIVITY_THRESHOLDS.stalledMs)}${ago}.${toolBit} It may still be working, or it may be stuck. Interrupt anytime with Esc×2 or ■.`
         : `Still waiting for the first chunk${ago}. Interrupt if this hangs.`,
     };
   }
@@ -218,7 +230,7 @@ export function composerBusyCopy(
     return "Appears stuck — Esc×2 or ■ to interrupt and regain control";
   }
   if (health === "stalled") {
-    return "No updates for 1m+ — may be stuck. Esc×2 or ■ to interrupt";
+    return `No updates for ${silenceLabel(ACTIVITY_THRESHOLDS.stalledMs)} — may be stuck. Esc×2 or ■ to interrupt`;
   }
   if (health === "quiet") {
     return "Still working (no recent stream updates) — Esc×2 or ■ to interrupt";

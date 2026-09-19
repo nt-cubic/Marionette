@@ -9,7 +9,9 @@ import {
   X,
 } from "lucide-react";
 import { useState } from "react";
+import { SessionStatsSection } from "./SessionStatsSection";
 import type { PlanEntry } from "../lib/acpPlan";
+import type { SessionStats } from "../lib/sessionStats";
 import type { TodoItem, TodoMergePreview, TodoStatus } from "../lib/todos";
 import type {
   ChangedFile,
@@ -26,6 +28,8 @@ type ContextPanelProps = {
   onExpand: () => void;
   usage: UsageSnapshot;
   onUsageRefresh: () => void;
+  /** Whole-dialog totals folded from the active dialog's transcript. */
+  sessionStats?: SessionStats | null;
   changedFiles?: ChangedFile[];
   changedFilesNote?: string | null;
   onRefreshChangedFiles?: () => void;
@@ -145,6 +149,7 @@ export function ContextPanel({
   onExpand,
   usage,
   onUsageRefresh,
+  sessionStats = null,
   changedFiles = [],
   changedFilesNote = null,
   onRefreshChangedFiles,
@@ -471,6 +476,7 @@ export function ContextPanel({
           {usage.note ? `${usage.note} · ` : ""}
           {usage.refreshedAt || "尚未刷新"}
         </small>
+        {sessionStats && <SessionStatsSection stats={sessionStats} />}
       </section>
 
       <section className="context-card">

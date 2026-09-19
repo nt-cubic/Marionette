@@ -342,6 +342,7 @@ fn main() {
             commands::update_session_agent,
             commands::update_session_prefs,
             commands::update_session_label,
+            commands::set_session_pinned,
             commands::update_session_status,
             commands::set_detached_session_owner,
             commands::delete_session,

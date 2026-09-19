@@ -92,6 +92,8 @@ export function parseTranscriptEvents(raw: unknown[]): SessionEvent[] {
         ...(typeof e.modeLabel === "string" ? { modeLabel: e.modeLabel } : {}),
         ...(typeof e.effortLabel === "string" ? { effortLabel: e.effortLabel } : {}),
         ...(typeof e.durationMs === "number" ? { durationMs: e.durationMs } : {}),
+        ...(typeof e.endedAt === "string" ? { endedAt: e.endedAt } : {}),
+        ...(type === "user_message" && typeof e.sentAt === "string" ? { sentAt: e.sentAt } : {}),
         ...(type === "assistant_message"
           ? { turnStats: parseTurnStats(e.turnStats) }
           : {}),
@@ -118,6 +120,7 @@ export function parseTranscriptEvents(raw: unknown[]): SessionEvent[] {
         path: typeof e.path === "string" ? e.path : undefined,
         detail: typeof e.detail === "string" ? e.detail : undefined,
         input: typeof e.input === "string" ? e.input : undefined,
+        ...(typeof e.completedAt === "string" ? { completedAt: e.completedAt } : {}),
       });
       continue;
     }

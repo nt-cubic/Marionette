@@ -20,6 +20,11 @@ fortest/
 .claude/
 .marionette/
 
+# Claude Code CLI local state written into the repo root: the session registry
+# holds a peer token, and the config backup is a copy of ~/.claude.json.
+/sessions/
+/backups/
+
 # Portable release output (upload via GitHub Releases)
 dist-portable/
 

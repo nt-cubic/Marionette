@@ -17,6 +17,8 @@ export type SessionPatch = {
   label?: string;
   labelSource?: SessionLabelSource | string | null;
   status?: SessionStatus;
+  /** Shelf pin (timestamp) or null to unpin — other windows re-sort on it. */
+  pinnedAt?: string | null;
   /** Opaque origin window label — ignore echoes from ourselves. */
   origin?: string;
 };

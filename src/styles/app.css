@@ -1640,6 +1640,26 @@ body.is-project-reordering .project-list {
   background: var(--panel-soft);
 }
 
+/* Pin toggle: accent while the dialog is pinned, so the row and the control agree. */
+.session-row__action.is-pinned,
+.chat-row__action.is-pinned {
+  color: var(--accent);
+}
+
+/* Always-visible pin marker — a pinned row reads as pinned without hovering. */
+.session-row__pin,
+.chat-row__pin {
+  display: inline-block;
+  margin-right: 4px;
+  color: var(--accent);
+  vertical-align: -1px;
+}
+
+.session-row__pin svg,
+.chat-row__pin svg {
+  display: block;
+}
+
 .session-row__rename {
   display: grid;
   grid-template-columns: 10px minmax(0, 1fr);
@@ -3078,12 +3098,9 @@ body.is-tab-detaching * {
   opacity: 0.85;
 }
 
-/* Eye-off: hide secondary rows entirely. When visible, they stay collapsed by default. */
-.event-list.is-details-hidden .event-card--tool_call,
-.event-list.is-details-hidden .event-card--thought,
-.event-list.is-details-hidden .event-card--thinking {
-  display: none;
-}
+/* Eye off: thinking/tool rows are dropped from the render units themselves
+   (SessionView), never hidden with CSS — the virtual window measures mounted
+   rows, so display:none rows left stale heights and displaced the list. */
 
 .event-card {
   display: grid;
@@ -5321,6 +5338,94 @@ body.is-tab-detaching * {
   pointer-events: auto;
 }
 
+/* Whole-dialog statistics inside the Usage card: two collapsed groups whose
+   headers carry the at-a-glance summary. Folded from the transcript, so the
+   rule above them sets them apart from the agent-reported usage rows. */
+.session-stats {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+
+.session-stats__group {
+  min-width: 0;
+}
+
+.session-stats__summary,
+.session-stats__reading {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1px 8px;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 3px 0;
+  color: var(--text);
+  font-size: 12px;
+  list-style: none;
+}
+
+.session-stats__summary {
+  cursor: pointer;
+}
+
+/* The native disclosure marker would sit outside the flex row. */
+.session-stats__summary::-webkit-details-marker {
+  display: none;
+}
+
+.session-stats__summary:hover .session-stats__name {
+  color: var(--text);
+}
+
+.session-stats__name {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  color: var(--text-muted);
+}
+
+.session-stats__chev {
+  flex: 0 0 auto;
+  transition: transform 120ms ease;
+}
+
+.session-stats__group[open] .session-stats__chev {
+  transform: rotate(90deg);
+}
+
+.session-stats__value {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.session-stats__rows {
+  display: grid;
+  gap: 5px;
+  margin: 0 0 5px;
+  padding: 2px 0 0 16px;
+  font-size: 11.5px;
+}
+
+.session-stats__row {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.session-stats__row dt {
+  color: var(--text-muted);
+}
+
+.session-stats__row dd {
+  margin: 0;
+  color: var(--text-strong);
+  font-variant-numeric: tabular-nums;
+}
+
 .composer-error-strip {
   position: relative;
   display: flex;
@@ -5776,28 +5881,6 @@ body.is-composer-resizing .composer {
   cursor: pointer;
   text-transform: capitalize;
   transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
-}
-
-/* Force-web-search toggle (prompt prefix). Neutral when off, accent when on. */
-.composer-mode-chip--web-off {
-  --tone: var(--text-muted);
-  text-transform: none;
-}
-
-.composer-mode-chip--web-on {
-  --tone: var(--accent);
-  text-transform: none;
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-  color: var(--accent);
-  font-weight: 600;
-}
-
-.composer-mode-chip--icon-only {
-  width: 22px;
-  min-width: 22px;
-  padding: 0;
-  justify-content: center;
 }
 
 .composer-mode-chip__label {

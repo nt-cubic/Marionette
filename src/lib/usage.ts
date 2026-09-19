@@ -5,6 +5,12 @@ import type { SessionEvent, TurnStats, UsageSnapshot, UsageWindow } from "./type
 export type SessionUsageState = {
   contextUsed: number | null;
   contextSize: number | null;
+  /**
+   * Where `contextSize` came from. A live `usage_update` owns the number;
+   * "model" means it was derived from the agent's per-model catalog, which a
+   * model switch must be allowed to replace.
+   */
+  contextSizeSource: "usage" | "model" | null;
   costAmount: number | null;
   costCurrency: string | null;
   /** Rate-limit / quota windows keyed by stable id. */
@@ -55,6 +61,7 @@ export function emptySessionUsage(): SessionUsageState {
   return {
     contextUsed: null,
     contextSize: null,
+    contextSizeSource: null,
     costAmount: null,
     costCurrency: null,
     windows: {},
@@ -787,6 +794,8 @@ export function mergeUsageFromAcp(
     ...base,
     contextUsed: extracted.contextUsed ?? base.contextUsed,
     contextSize: extracted.contextSize ?? base.contextSize,
+    contextSizeSource:
+      extracted.contextSize != null ? "usage" : base.contextSizeSource,
     costAmount: extracted.costAmount ?? base.costAmount,
     costCurrency: extracted.costCurrency ?? base.costCurrency,
     windows,
@@ -907,20 +916,22 @@ export function mergeUsageFromPromptResult(
 }
 
 /**
- * Seed the context ceiling from `session/ready`.
+ * Apply the context ceiling the agent advertises for a model.
  *
- * Agents that never send `usage_update` still advertise a per-model ceiling at
- * session setup, and without it `used` has nothing to be a percentage of.
+ * Agents that never send `usage_update` (Grok) still publish one ceiling per
+ * model in the session/new catalog, and the catalog mixes windows (32K…1M) —
+ * so this has to follow the model the session is on. A live `usage_update`
+ * size always wins: it is the agent measuring its own window.
  */
-export function seedContextSize(
+export function applyModelContextSize(
   prev: SessionUsageState | undefined,
   size: number | null | undefined
 ): SessionUsageState | null {
   if (size == null || !Number.isFinite(size) || size <= 0) return null;
   const base = prev ?? emptySessionUsage();
-  // A live usage_update always wins — this is only a floor for agents with none.
-  if (base.contextSize != null) return null;
-  return { ...base, contextSize: size };
+  if (base.contextSizeSource === "usage") return null;
+  if (base.contextSize === size) return null;
+  return { ...base, contextSize: size, contextSizeSource: "model" };
 }
 
 export function mergeUsageFromText(

@@ -8,6 +8,7 @@ import {
   parseSessionFailureUpdate,
 } from "./acpMeta";
 import { ansiToPlainText } from "./ansi";
+import { isToolInProgress } from "./activityHealth";
 import { stripSectionMarkers } from "./markdownText";
 import { inferToolNameFromMeta } from "./toolCallNormalize";
 
@@ -791,12 +792,13 @@ export function userMessageEvent(
     modeLabel?: string;
     effortLabel?: string;
     attachments?: import("./imageAttachments").ImageAttachment[];
-    forceWebSearch?: boolean;
+    /** When this prompt goes over the wire — see `SessionEvent` user_message. */
+    sentAt?: string;
     /** True while waiting for the live turn to be cancelled before this prompt is wired. */
     queued?: boolean;
   },
 ): SessionEvent {
-  const { attachments, forceWebSearch, queued, ...rest } = meta ?? {};
+  const { attachments, queued, ...rest } = meta ?? {};
   return {
     type: "user_message",
     sessionId,
@@ -805,7 +807,6 @@ export function userMessageEvent(
     createdAt: new Date().toISOString(),
     ...rest,
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
-    ...(forceWebSearch ? { forceWebSearch: true } : {}),
     ...(queued ? { queued: true } : {}),
   };
 }
@@ -931,6 +932,19 @@ export function findLastIndexForSession(
     if (events[i].sessionId === sessionId) return i;
   }
   return -1;
+}
+
+/**
+ * A finished turn left no Reply card at the tail of its own stream: the agent
+ * stopped on its own with nothing to read (empty turn, or tool calls and then
+ * silence). Nothing on screen marks that stop, so it gets an audible cue.
+ */
+export function turnEndedSilently(
+  events: SessionEvent[],
+  sessionId: string,
+): boolean {
+  const index = findLastIndexForSession(events, sessionId);
+  return index < 0 || events[index].type !== "assistant_message";
 }
 
 /**
@@ -1164,6 +1178,11 @@ export function applyAcpPartToEvents(
         next[idx] = {
           ...prev,
           ...merged,
+          // First terminal status wins: the session-stats fold pairs it with
+          // `createdAt` for tool wall time, so a later duplicate must not move it.
+          ...(prev.completedAt == null && merged.status && !isToolInProgress(merged.status)
+            ? { completedAt: new Date().toISOString() }
+            : {}),
           // Never overwritten: `title` becomes a summary, the name must not.
           toolName: prev.toolName ?? part.toolName ?? part.toolTitle,
           text: renderToolText(merged),
@@ -1337,7 +1356,7 @@ export function sealOpenAssistantReplies(
         ? Math.max(0, endedAtMs - started)
         : 0;
     changed = true;
-    return { ...e, durationMs };
+    return { ...e, durationMs, endedAt: new Date(endedAtMs).toISOString() };
   });
   return changed ? next : events;
 }

@@ -1,32 +1,14 @@
 /**
- * Composer "force web search" toggle — not a network kill-switch.
- * Prepends a short hard instruction so agents that prefer offline solving
- * still use search/fetch tools when the user wants official docs first.
+ * Legacy display helpers for the retired Composer "force web search" toggle.
+ *
+ * The toggle prepended a hard "search first" instruction to the wire prompt.
+ * It is gone, but transcripts written while it existed still carry that block:
+ * You cards must keep showing clean text, and edit & resend must keep stripping
+ * it so a resent message is not double-prefixed.
  */
-
-export const FORCE_WEB_SEARCH_PREFIX = [
-  "【联网检索】回答前请先使用你可用的网络搜索 / 网页抓取 / 文档查阅工具，",
-  "查官方文档或权威来源；禁止仅凭训练记忆猜测 API、版本号、配置项或报错含义。",
-  "检索完成后再作答，并简要写出依据来源（链接或文档名即可）。",
-  "与当前项目仓库相关的仍可读本地文件，但外部事实以检索结果为准。",
-  "",
-  "---",
-  "",
-].join("");
-
-/** Prepend the force-search instruction when the Composer toggle is on. */
-export function withForceWebSearch(userText: string, enabled: boolean): string {
-  if (!enabled) return userText;
-  const body = userText.replace(/\r\n/g, "\n").trim();
-  if (!body) return FORCE_WEB_SEARCH_PREFIX.trimEnd();
-  // Avoid double-prefix if user resends / edit already includes it.
-  if (body.startsWith("【联网检索】")) return userText;
-  return `${FORCE_WEB_SEARCH_PREFIX}${body}`;
-}
 
 /**
  * Strip a previously prepended force-search block for display / re-edit.
- * Wire path should keep using {@link withForceWebSearch}; You cards show clean text.
  */
 export function stripForceWebSearchPrefix(text: string): string {
   const t = text.replace(/\r\n/g, "\n");

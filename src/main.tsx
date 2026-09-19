@@ -23,13 +23,13 @@ class RootErrorBoundary extends React.Component<
             boxSizing: "border-box",
             height: "100vh",
             padding: 24,
-            background: "#101214",
-            color: "#edf1f5",
+            background: "#1e2329",
+            color: "#f0f3f6",
             fontFamily: "ui-sans-serif, system-ui, sans-serif",
           }}
         >
           <h1 style={{ margin: "0 0 8px", fontSize: 18 }}>Marionette UI crashed</h1>
-          <p style={{ margin: "0 0 12px", color: "#84909d", fontSize: 13 }}>
+          <p style={{ margin: "0 0 12px", color: "#8b97a4", fontSize: 13 }}>
             The shell hit a render error. Copy the message, then reload the window.
           </p>
           <pre
@@ -37,8 +37,8 @@ class RootErrorBoundary extends React.Component<
               whiteSpace: "pre-wrap",
               padding: 12,
               borderRadius: 6,
-              background: "#1b1f24",
-              border: "1px solid #2a3037",
+              background: "#2c333b",
+              border: "1px solid #3d4650",
               color: "#ef6c73",
               fontSize: 12,
             }}
@@ -53,9 +53,9 @@ class RootErrorBoundary extends React.Component<
               marginTop: 16,
               padding: "8px 14px",
               borderRadius: 6,
-              border: "1px solid #3a424c",
-              background: "#20252b",
-              color: "#edf1f5",
+              border: "1px solid #515b67",
+              background: "#343c45",
+              color: "#f0f3f6",
               cursor: "pointer",
             }}
             onClick={() => window.location.reload()}

@@ -8,10 +8,11 @@
     <script>
       try {
         var t = localStorage.getItem("marionette-theme") || localStorage.getItem("agentshell-theme");
-        if (t === "light" || t === "white" || t === "dim" || t === "dark") {
-          document.documentElement.setAttribute("data-theme", t);
-          document.documentElement.style.colorScheme = (t === "light" || t === "white") ? "light" : "dark";
-        }
+        // Only 浅夜 / 纯白 remain; retired dark / light map onto them.
+        if (t === "light") t = "white";
+        else if (t !== "white") t = "dim";
+        document.documentElement.setAttribute("data-theme", t);
+        document.documentElement.style.colorScheme = t === "white" ? "light" : "dark";
       } catch (e) {}
     </script>
   </head>

@@ -3,7 +3,7 @@ rem Find or install a usable MSVC environment for Tauri's Windows build.
 
 :detect
 where cl >nul 2>&1
-if not errorlevel 1 exit /b 0
+if not errorlevel 1 goto resolve_rc
 
 set "VCVARS="
 if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" set "VCVARS=%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
@@ -23,7 +23,28 @@ if defined VCVARS (
 )
 
 where cl >nul 2>&1
-if not errorlevel 1 exit /b 0
+if errorlevel 1 goto missing
+
+rem tauri-winres (embed-resource) spawns rc.exe for the resource step. Pin it in
+rem %RC% because the 64-bit "KitsRoot10" registry value can name an SDK root that
+rem has no bin\ directory, and PATH only carries the SDK tools after vcvars64 runs.
+:resolve_rc
+set "RC="
+for /f "delims=" %%i in ('where rc 2^>nul') do if not defined RC set "RC=%%i"
+if defined RC goto rc_done
+for /f "delims=" %%i in ('dir /b /s /o-n "%ProgramFiles(x86)%\Windows Kits\10\bin\rc.exe" 2^>nul ^| findstr /i "\\x64\\rc.exe"') do if not defined RC set "RC=%%i"
+if defined RC goto rc_done
+for /f "delims=" %%i in ('dir /b /s /o-n "%ProgramFiles%\Windows Kits\10\bin\rc.exe" 2^>nul ^| findstr /i "\\x64\\rc.exe"') do if not defined RC set "RC=%%i"
+
+:rc_done
+if not defined RC goto rc_missing
+echo  [env] RC=%RC%
+exit /b 0
+
+:rc_missing
+echo  [warn] Windows SDK rc.exe not found - the resource step may fail.
+echo         Install "Windows SDK" (Desktop C++ workload) if the build stops here.
+exit /b 0
 
 :missing
 echo.

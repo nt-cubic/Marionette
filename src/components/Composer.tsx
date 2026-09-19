@@ -123,7 +123,6 @@ type ComposerProps = {
     droppedPaths?: string[],
     imageAttachments?: import("../lib/imageAttachments").ImageAttachment[],
     opts?: {
-      forceWebSearch?: boolean;
       /**
        * Composer chip snapshot at send time. Parent must not re-derive mode
        * from stale sessionCapabilities — mode switches skip immediate caps
@@ -529,11 +528,6 @@ export function Composer({
   /** Image attachments as Codex-style pills (not raw paths in the textarea). */
   const [imageAttachments, setImageAttachments] = useState<ImageAttachment[]>([]);
   const [annotatingId, setAnnotatingId] = useState<string | null>(null);
-  /**
-   * Force web-search instruction on send (prompt prefix only — not a network firewall).
-   * Remounted per dialog (`key` on Composer), so it is session-scoped for free.
-   */
-  const [forceWebSearch, setForceWebSearch] = useState(false);
   /** Draft snapshot right after a file drop — treats path-only draft as "empty" for chips. */
   const [draftAfterDrop, setDraftAfterDrop] = useState<string | null>(null);
   /** Paths from the most recent drop (feeds drop-source chips). */
@@ -586,6 +580,17 @@ export function Composer({
   const appliedPrefillToken = useRef(0);
   /** Restore disk prefs once per (session, agent) after caps are known. */
   const prefsRestoredKey = useRef("");
+  /**
+   * Grok's Always-approve replay is a `session/prompt`; a live turn would reject
+   * it ("already in flight"), so it waits for the session to go idle instead of
+   * flashing a warning the user cannot act on.
+   */
+  const deferredAlwaysApprove = useRef(false);
+  /** Latest status for closures that must not re-run when it changes. */
+  const sessionStatusRef = useRef(sessionStatus);
+  useEffect(() => {
+    sessionStatusRef.current = sessionStatus;
+  }, [sessionStatus]);
   /** Exact absolute paths from OS drops, kept verbatim for the grant check. */
   const droppedPathsRef = useRef<Set<string>>(new Set());
   /** After the user picks an option, ignore server echoes still reporting the old one. */
@@ -935,10 +940,15 @@ export function Composer({
         });
       } catch (error) {
         revert();
+        // Tauri rejects with a plain string for Rust `Err(String)`, and those
+        // messages name the real cause ("A turn is already in flight…") — a
+        // generic "may not support this option" toast hides exactly that.
         const msg =
           error instanceof Error
             ? error.message
-            : "Failed to update (agent may not support this option live)";
+            : typeof error === "string" && error.trim()
+              ? error.trim()
+              : "Failed to update (agent may not support this option live)";
         // Keep toast short but specific (Claude often rejects wrong effort/mode values).
         flash(msg.length > 140 ? `${msg.slice(0, 140)}…` : msg);
       } finally {
@@ -1083,11 +1093,16 @@ export function Composer({
 
       // 5) Always-approve is session-local on Grok; replay the slash after warm.
       // Only push when the user wants ON — default is ask, so re-sending "off"
-      // just burns a turn. Failures keep the disk pref for the next reconnect.
+      // just burns a turn. A live turn owns the connection, so the replay waits
+      // for it to finish rather than being rejected as "already in flight".
       if (aaSpec && prefAlways === true) {
-        await commitUpdate({ alwaysApprove: true }, () => {
-          if (!cancelled) setAlwaysApprove(false);
-        });
+        if (sessionStatusRef.current === "running") {
+          deferredAlwaysApprove.current = true;
+        } else {
+          await commitUpdate({ alwaysApprove: true }, () => {
+            if (!cancelled) setAlwaysApprove(false);
+          });
+        }
       }
 
       // 6) Effort — always against post-model caps. OpenCode's model switch
@@ -1184,6 +1199,15 @@ export function Composer({
   // Prefer advertised cancel; still offer interrupt while running (Esc×2 / button).
   const canCancel = isBusy && (caps?.supportsCancel ?? true);
 
+  // Replay a deferred Grok Always-approve once the live turn finishes.
+  useEffect(() => {
+    if (isBusy || !deferredAlwaysApprove.current) return;
+    if (!getAcpSupplement(agent.id)?.alwaysApprove) return;
+    if (!sessionId || sessionId.startsWith("session-empty-")) return;
+    deferredAlwaysApprove.current = false;
+    void commitUpdate({ alwaysApprove: true }, () => setAlwaysApprove(false));
+  }, [isBusy, agent.id, sessionId, commitUpdate]);
+
   const clearDropSuggest = useCallback(() => {
     setDraftAfterDrop(null);
     setSuggestDroppedPaths([]);
@@ -1221,13 +1245,12 @@ export function Composer({
             ? effortLabel(currentEffort)
             : null;
 
-      // Keep draft text clean for the You card; App injects the wire prefix.
+      // Keep draft text clean for the You card.
       onSend(
         text,
         droppedInText,
         imageAttachments.length > 0 ? imageAttachments : undefined,
         {
-          ...(forceWebSearch ? { forceWebSearch: true } : {}),
           modeId,
           modeLabel,
           modelId,
@@ -1252,9 +1275,8 @@ export function Composer({
       onSend,
       clearDropSuggest,
       imageAttachments,
-      forceWebSearch,
     ],
-  ); // forceWebSearch passed as flag, not baked into text
+  );
 
   const submit = () => {
     // Empty draft is OK when parent has quote-pins (App merges on send).
@@ -2394,25 +2416,6 @@ export function Composer({
                 </span>
               </button>
             )}
-            {/* Force web search via prompt prefix — not a network firewall. */}
-            <button
-              className={
-                forceWebSearch
-                  ? "composer-mode-chip composer-mode-chip--web-on composer-mode-chip--icon-only"
-                  : "composer-mode-chip composer-mode-chip--web-off composer-mode-chip--icon-only"
-              }
-              type="button"
-              title={
-                forceWebSearch
-                  ? "已开启：发送时会要求模型先联网检索再回答（需 agent 有搜索/抓取工具）"
-                  : "点击开启：在提示词中强制先联网检索官方文档再回答（不是断网开关）"
-              }
-              aria-pressed={forceWebSearch}
-              aria-label={forceWebSearch ? "关闭强制联网检索" : "开启强制联网检索"}
-              onClick={() => setForceWebSearch((v) => !v)}
-            >
-              <Search size={13} aria-hidden />
-            </button>
           </div>
           <div className="composer__actions">
             {/* ── Model + Effort selector ─────────────────────────────── */}

@@ -17,6 +17,13 @@ taskkill /IM marionette.exe /F >nul 2>&1
 timeout /t 1 /nobreak >nul
 
 echo  [2/3] Rebuilding debug binary (incremental)...
+call "%~dp0ensure-msvc.bat"
+if errorlevel 1 (
+  echo.
+  echo  BUILD ABORTED - MSVC / Windows SDK environment is incomplete.
+  pause
+  exit /b 1
+)
 pushd "%~dp0src-tauri"
 call cargo build
 set "BUILD=%ERRORLEVEL%"

@@ -12,42 +12,7 @@
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 
-  --bg: #101214;
-  --panel: #16191d;
-  --panel-raised: #1b1f24;
-  --panel-soft: #20252b;
-  --panel-muted: #14171a;
-  --border: #2a3037;
-  --border-strong: #3a424c;
-  --text-strong: #edf1f5;
-  --text: #c7d0da;
-  --text-muted: #84909d;
-  --text-faint: #5f6b77;
-  --accent: #67d7bd;
-  --accent-soft: rgba(103, 215, 189, 0.14);
-  --orange: #f0a15f;
-  --red: #ef6c73;
-  --yellow: #e7c86a;
-  --green: #73d391;
-  --blue: #72a7ff;
-  --shadow: rgba(0, 0, 0, 0.28);
-  --radius: 3px;
-  --radius-sm: 2px;
-  --workspace-bg: #111416;
-  --editor-bg: #101214;
-  --editor-toolbar-bg: #121416;
-  --terminal-bg: #0f1113;
-  --composer-bg: #0f1112;
-
-  --scrollbar-width: 4px;
-  --scrollbar-track: transparent;
-  --scrollbar-thumb: color-mix(in srgb, var(--text-muted) 38%, transparent);
-  --scrollbar-thumb-hover: color-mix(in srgb, var(--text-muted) 58%, transparent);
-  --scrollbar-thumb-faint: color-mix(in srgb, var(--text-muted) 10%, transparent);
-}
-
-:root[data-theme="dim"] {
-  color-scheme: dark;
+  /* Default palette = 浅夜 (dim); 纯白 is the only data-theme override. */
   --bg: #1e2329;
   --panel: #252b32;
   --panel-raised: #2c333b;
@@ -67,39 +32,19 @@
   --green: #73d391;
   --blue: #72a7ff;
   --shadow: rgba(0, 0, 0, 0.22);
+  --radius: 3px;
+  --radius-sm: 2px;
   --workspace-bg: #1f242a;
   --editor-bg: #1e2329;
   --editor-toolbar-bg: #22282f;
   --terminal-bg: #1c2127;
   --composer-bg: #1c2126;
-}
 
-:root[data-theme="light"] {
-  color-scheme: light;
-  --bg: #f7f7f5;
-  --panel: #eeeeec;
-  --panel-raised: #f7f7f5;
-  --panel-soft: #e5e5e2;
-  --panel-muted: #f1f1ef;
-  --border: #d5d5d1;
-  --border-strong: #b9b9b4;
-  --text-strong: #1d1d1f;
-  --text: #38383a;
-  --text-muted: #6d6d70;
-  --text-faint: #97979a;
-  --accent: #258d78;
-  --accent-soft: rgba(37, 141, 120, 0.12);
-  --orange: #c76d2f;
-  --red: #c65359;
-  --yellow: #a27c16;
-  --green: #338a4a;
-  --blue: #477dca;
-  --shadow: rgba(0, 0, 0, 0.12);
-  --workspace-bg: #f4f4f2;
-  --editor-bg: #fafaf8;
-  --editor-toolbar-bg: #f0f0ee;
-  --terminal-bg: #f7f7f5;
-  --composer-bg: #fafaf8;
+  --scrollbar-width: 4px;
+  --scrollbar-track: transparent;
+  --scrollbar-thumb: color-mix(in srgb, var(--text-muted) 38%, transparent);
+  --scrollbar-thumb-hover: color-mix(in srgb, var(--text-muted) 58%, transparent);
+  --scrollbar-thumb-faint: color-mix(in srgb, var(--text-muted) 10%, transparent);
 }
 
 :root[data-theme="white"] {

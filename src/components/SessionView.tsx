@@ -11,6 +11,7 @@ import {
 import { createPortal } from "react-dom";
 import { extractAcpUpdateText, mergeStreamText, userMessageAnchorId } from "../lib/acpTranscript";
 import {
+  ACTIVITY_THRESHOLDS,
   activityHealth,
   formatAgo,
   isSubagentTool,
@@ -22,7 +23,7 @@ import { getFileDiff } from "../lib/api";
 import { detectForceWebSearchInText, stripForceWebSearchPrefix } from "../lib/forceWebSearch";
 import { cleanAssistantText } from "../lib/markdownText";
 import { newQuotePinId, type QuotePin } from "../lib/quoteComment";
-import { buildMessagePresentation } from "../lib/messagePresentation";
+import { buildMessagePresentation, isDetailRow } from "../lib/messagePresentation";
 import {
   classifyToolCall,
   extractCommandText,
@@ -1099,6 +1100,12 @@ function CleanPlaceholder({
   );
   /**
    * Flat render units (reply parts expanded). Full data kept; mount is windowed.
+   *
+   * Eye off ("Clean View") drops thinking/tool units from the list *here*, not
+   * with `display: none`. The virtual window measures mounted rows and ignores
+   * zero heights, so CSS-hidden rows kept their old sizes: every card below them
+   * was displaced and the scroll range stayed too tall (the list looked spread
+   * out and scrolling stuck).
    */
   const renderUnits = useMemo(() => {
     const units: { key: string; event: SessionEvent; index: number }[] = [];
@@ -1121,8 +1128,9 @@ function CleanPlaceholder({
         });
       }
     }
-    return units;
-  }, [presentationItems]);
+    if (detailsVisible) return units;
+    return units.filter((unit) => !isDetailRow(unit.event));
+  }, [presentationItems, detailsVisible]);
   /**
    * Virtual window for long rails only. Short chats stay fully mounted (simpler
    * selection / stick-to-bottom). Threshold matches heavy tool-heavy sessions
@@ -1133,7 +1141,8 @@ function CleanPlaceholder({
   const virtual = useVirtualWindow(listRef, useVirtual ? renderUnits.length : 0, {
     estimate: 48,
     overscan: 12,
-    resetKey: `${session.id}|${useVirtual ? "v" : "full"}`,
+    // Details on/off re-indexes every unit, so measured heights must be dropped.
+    resetKey: `${session.id}|${detailsVisible ? "details" : "clean"}|${useVirtual ? "v" : "full"}`,
   });
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
@@ -1204,13 +1213,15 @@ function CleanPlaceholder({
   const showStallBanner = isRunning;
 
   // Content fingerprint — only real transcript changes should pin-scroll (never a clock tick / health).
+  // Details on/off changes the rendered height, so it re-pins too (only while
+  // the reader is already at the tail).
   const scrollKey = useMemo(() => {
     const last = visibleEvents[visibleEvents.length - 1];
     const lastSig = last
       ? `${last.type}:${last.createdAt}:${"text" in last ? String(last.text).length : ""}:${"status" in last ? last.status : ""}`
       : "empty";
-    return `${session.id}|${visibleEvents.length}|${lastSig}|wait:${awaitingFirstChunk}`;
-  }, [session.id, visibleEvents, awaitingFirstChunk]);
+    return `${session.id}|${detailsVisible ? "d" : "c"}|${visibleEvents.length}|${lastSig}|wait:${awaitingFirstChunk}`;
+  }, [session.id, visibleEvents, awaitingFirstChunk, detailsVisible]);
 
   const prevAwaitingRef = useRef(false);
 
@@ -1403,7 +1414,7 @@ function CleanPlaceholder({
       )}
       <div
         ref={listRef}
-        className={`${detailsVisible ? "event-list" : "event-list is-details-hidden"}${isLongTranscript ? " is-long" : ""} scrollbar-hidden`}
+        className={`event-list${isLongTranscript ? " is-long" : ""} scrollbar-hidden`}
         onScroll={onListScroll}
       >
         {/* Quote UI is isolated so its setState does not re-render cards (keeps selection).
@@ -1662,12 +1673,13 @@ function CleanPlaceholder({
             }
           }
 
-          // Stall styling without a 2s list clock: quiet after ~12s without activity.
-          // Re-evaluated when lastActivityAt / stream events update, not on a ticker.
+          // Stall styling without a 2s list clock: quiet only after the shared
+          // 5-minute silence bar. Re-evaluated when lastActivityAt / stream
+          // events update, not on a ticker.
           const toolQuietMs =
             toolRunning && lastActivityAt != null ? Date.now() - lastActivityAt : 0;
-          const toolStalled = toolRunning && toolQuietMs >= 12_000;
-          const toolStuck = toolRunning && toolQuietMs >= 45_000;
+          const toolStalled = toolRunning && toolQuietMs >= ACTIVITY_THRESHOLDS.quietMs;
+          const toolStuck = toolRunning && toolQuietMs >= ACTIVITY_THRESHOLDS.stuckMs;
 
           const toolStatusLabel = toolStalled
             ? toolStuck
