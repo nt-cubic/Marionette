@@ -16,6 +16,107 @@ const CLAUDE_USAGE_LINE =
   /^(?:You are currently using your subscription to power your Claude Code usage\s*|Current\s+(?:session|week)\b[^:\n]*:\s*\d+(?:\.\d+)?\s*%\s*used\b.*|What'?s contributing to your limits usage\??\s*|Approximate,\s*based on local sessions\b.*|Last\s+\d+\s*[hdwmy]?\s*[·•\-]\s*\d+\s+requests?\b.*|\d+(?:\.\d+)?%\s+of your usage was at\b.*)$/iu;
 
 /**
+ * Claude Code reprints its `/usage` panel — a cost/token table plus the TUI
+ * status bar under it — at the end of a turn. None of it is model prose, and
+ * the CLI emits it whether or not the user asked for usage, so it used to open
+ * a Reply card after every single turn.
+ *
+ * Live shape (Claude Code v2, tabs between columns):
+ *   Usage
+ *   This session
+ *   Cost	API time	Active
+ *   $13.49	14m 40s	19m 1s
+ *   Breakdown	Tokens
+ *   Input	167.9K
+ *   Output	173.7K
+ *   Cache read	16.6M
+ *   Cache write	0
+ *   ▣
+ *   Bypass permissions
+ *   Claude Code
+ *   deepseek-v4-flash
+ *   Max
+ *
+ * The block is only removed when every line after the first anchor is part of
+ * it — prose that follows the panel is never swallowed.
+ */
+const CLAUDE_PANEL_ANCHOR_LINE =
+  /^(?:\*\*)?(?:Usage|This session|Cost|Breakdown|Cache read|Cache write|Bypass permissions)(?:\*\*)?[\t ]*[:：]?.*$/iu;
+/** Lines that cannot be a lone prose sentence — at least one is required. */
+const CLAUDE_PANEL_STRONG_LINE =
+  /^(?:\*\*)?(?:Cost[\t ]+API time|Breakdown[\t ]+Tokens|Cache (?:read|write)[\t ]|Bypass permissions|This session)(?:\*\*)?[\t ]*[:：]?.*$/iu;
+/** `Usage`, `This session`, `Breakdown`, and the two table headers. */
+const CLAUDE_PANEL_HEADING_LINE =
+  /^(?:\*\*)?(?:Usage|This session|Cost[\t ]+API time[\t ]+Active|Breakdown[\t ]+Tokens)(?:\*\*)?[\t ]*$/iu;
+/** `Input	167.9K` / `Cache write	0` / `Total tokens	1.2M`. */
+const CLAUDE_PANEL_ROW_LINE =
+  /^(?:\*\*)?(?:Input|Output|Cache read|Cache write|Total|Total tokens|Cost|Cost \(USD\))[\t ]+[\d.,]+[KMB]?%?[\t ]*$/iu;
+/** `$13.49	14m 40s	19m 1s` (durations may be missing). */
+const CLAUDE_PANEL_COST_ROW =
+  /^\$[\d,]+(?:\.\d+)?(?:[\t ]+(?:\d+[smhd]|-))+[\t ]*$/iu;
+/** The status-bar indicator glyph. */
+const CLAUDE_PANEL_GLYPH = /^[▣◐◓◑◒●○]$/u;
+/** Status-bar words: permission mode / the CLI's own name. */
+const CLAUDE_PANEL_STATUS_WORD =
+  /^(?:Bypass permissions|Accept edits|Plan mode|Default mode|⏵⏵ bypass permissions on|Claude Code)$/iu;
+/** Model and effort chips trailing `Claude Code` (single token, no spaces). */
+const CLAUDE_PANEL_STATUS_CHIP = /^[A-Za-z0-9][\w.+@/-]*$/u;
+
+/** Walk the tail after an anchor: every line must belong to the panel. */
+function isClaudeUsagePanel(tail: string[]): boolean {
+  // Model / effort chips follow the status bar words; they are bare tokens, so
+  // they are only accepted once a status word has been seen.
+  let chipsAllowed = false;
+  let chips = 0;
+  for (const line of tail) {
+    const trimmed = line.trim();
+    if (CLAUDE_PANEL_STATUS_WORD.test(trimmed)) {
+      chipsAllowed = true;
+      chips = 0;
+      continue;
+    }
+    if (
+      CLAUDE_PANEL_HEADING_LINE.test(trimmed) ||
+      CLAUDE_PANEL_ROW_LINE.test(trimmed) ||
+      CLAUDE_PANEL_COST_ROW.test(trimmed) ||
+      CLAUDE_PANEL_GLYPH.test(trimmed)
+    ) {
+      continue;
+    }
+    if (chipsAllowed && chips < 4 && CLAUDE_PANEL_STATUS_CHIP.test(trimmed)) {
+      chips += 1;
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Drop a trailing Claude Code `/usage` panel (see {@link CLAUDE_PANEL_ANCHOR_LINE}).
+ * Returns the text unchanged when the tail is anything but that panel.
+ */
+export function stripClaudeUsagePanel(text: string): string {
+  if (!text) return text;
+  const normalized = text.replace(/\r\n?/g, "\n");
+  const lines = normalized.split("\n");
+
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!CLAUDE_PANEL_ANCHOR_LINE.test(lines[index].trim())) continue;
+    const tail = lines.slice(index).filter((line) => line.trim());
+    // A lone "Usage" / "This session" heading is prose, not the panel.
+    if (tail.length < 3) continue;
+    if (!tail.some((line) => CLAUDE_PANEL_STRONG_LINE.test(line.trim()))) continue;
+    if (!isClaudeUsagePanel(tail)) continue;
+
+    const visible = lines.slice(0, index).join("\n").replace(/[ \t\r\n]+$/g, "");
+    return visible.trim() ? visible : "";
+  }
+
+  return text;
+}
+
+/**
  * Remove section markers that some ACP/OpenCode streams expose as visible
  * assistant text (for example `§11` or `§13§ Reply`). They are transport
  * delimiters, not user-facing prose.
@@ -83,13 +184,14 @@ export function isRuntimeMetadataOnly(text: string): boolean {
   const hasMetadataLine = normalized
     .split("\n")
     .some((line) => isRuntimeMetadataLine(line));
-  if (!hasMetadataLine) return false;
-  return !stripRuntimeMetadata(normalized).trim();
+  if (hasMetadataLine && !stripRuntimeMetadata(normalized).trim()) return true;
+  const withoutPanel = stripClaudeUsagePanel(normalized);
+  return withoutPanel !== normalized && !withoutPanel.trim();
 }
 
 /** Clean assistant-facing transport artifacts while preserving user text. */
 export function cleanAssistantText(text: string): string {
-  return stripRuntimeMetadata(stripSectionMarkers(text));
+  return stripRuntimeMetadata(stripClaudeUsagePanel(stripSectionMarkers(text)));
 }
 
 function splitTableRow(line: string): string[] | null {
