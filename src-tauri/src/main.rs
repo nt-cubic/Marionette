@@ -37,6 +37,9 @@ pub struct AppState {
     pub sessions: SessionManager,
 }
 
+/// Longest to wait for agent kills on close before exiting anyway.
+const SHUTDOWN_KILL_TIMEOUT_SECS: u64 = 5;
+
 /// Shut down our own state, then leave — deliberately without unwinding.
 ///
 /// Closing the window makes tao tear down the WebView2 host, which pumps a
@@ -53,17 +56,36 @@ pub struct AppState {
 fn shutdown_and_exit(app: &tauri::AppHandle) -> ! {
     use tauri::Manager;
 
-    // Kill agents best-effort, then leave immediately. Do not touch the window
+    // Kill agents best-effort, then leave. Do not touch the window
     // (hide/destroy/emit) — any Win32 re-entry here can hit the tao paint assert.
+    //
+    // stop_all runs on a helper thread with a bounded wait: every kill is a
+    // lock-then-block pair, so a hang in that chain must cost the close a few
+    // seconds, never freeze the window (an orphaned agent beats a dead UI).
     if let Some(state) = app.try_state::<AppState>() {
-        let acp = state.acp.stop_all();
-        debug_log::append(
-            "shutdown",
-            "info",
-            "",
-            &format!("stopped {acp} acp"),
-            Some("exiting before tao window teardown (tao#1180)"),
-        );
+        let acp = state.acp.clone();
+        let (tx, rx) = std::sync::mpsc::channel::<usize>();
+        std::thread::spawn(move || {
+            let _ = tx.send(acp.stop_all());
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(SHUTDOWN_KILL_TIMEOUT_SECS)) {
+            Ok(count) => debug_log::append(
+                "shutdown",
+                "info",
+                "",
+                &format!("stopped {count} acp"),
+                Some("exiting before tao window teardown (tao#1180)"),
+            ),
+            Err(_) => debug_log::append(
+                "shutdown",
+                "warn",
+                "",
+                &format!(
+                    "agent cleanup timed out after {SHUTDOWN_KILL_TIMEOUT_SECS}s — exiting anyway"
+                ),
+                Some("exiting before tao window teardown (tao#1180)"),
+            ),
+        }
     }
     std::process::exit(0);
 }

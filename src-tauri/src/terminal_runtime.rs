@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -19,6 +19,9 @@ use serde_json::{json, Value};
 
 const DEFAULT_OUTPUT_BYTE_LIMIT: usize = 1_000_000;
 const READER_DRAIN_GRACE: Duration = Duration::from_millis(200);
+/// How often a parked `terminal/wait_for_exit` re-checks exit while NOT
+/// holding the child lock (see `wait_for_exit`).
+const WAIT_EXIT_POLL: Duration = Duration::from_millis(100);
 
 #[derive(Debug)]
 pub enum TerminalError {
@@ -165,25 +168,60 @@ impl TerminalInstance {
             }
         }
 
-        let status = {
-            let mut guard = self
-                .child
-                .lock()
-                .map_err(|_| TerminalError::Internal("child lock poisoned".into()))?;
-            if let Some(mut child) = guard.take() {
-                child.wait().map_err(|err| {
-                    TerminalError::Internal(format!("failed to wait for terminal: {err}"))
-                })?
-            } else {
-                let snap = self
-                    .snapshot
+        // Poll instead of blocking in `child.wait()` under the lock. Holding
+        // `child` across the wait deadlocked shutdown: `kill_command` (close
+        // path runs it on the main thread) needs this same lock to end the
+        // very process this wait is parked on, so any pending agent
+        // `terminal/wait_for_exit` froze the window permanently on close.
+        loop {
+            let status = {
+                let mut guard = self
+                    .child
                     .lock()
-                    .map_err(|_| TerminalError::Internal("snapshot lock poisoned".into()))?;
-                return Ok((snap.exit_code, snap.signal.clone()));
-            }
-        };
+                    .map_err(|_| TerminalError::Internal("child lock poisoned".into()))?;
+                match guard.as_mut() {
+                    Some(child) => match child.try_wait() {
+                        Ok(Some(status)) => {
+                            *guard = None;
+                            Some(status)
+                        }
+                        Ok(None) => None,
+                        Err(err) => {
+                            return Err(TerminalError::Internal(format!(
+                                "failed to wait for terminal: {err}"
+                            )));
+                        }
+                    },
+                    // Reaped elsewhere (kill_command / refresh_exit_status) —
+                    // the status is already recorded in the snapshot.
+                    None => {
+                        let snap = self
+                            .snapshot
+                            .lock()
+                            .map_err(|_| TerminalError::Internal("snapshot lock poisoned".into()))?;
+                        return Ok((snap.exit_code, snap.signal.clone()));
+                    }
+                }
+            };
 
-        self.drain_readers();
+            let Some(status) = status else {
+                thread::sleep(WAIT_EXIT_POLL);
+                continue;
+            };
+
+            self.drain_readers();
+            self.record_exit(status);
+            let snap = self
+                .snapshot
+                .lock()
+                .map_err(|_| TerminalError::Internal("snapshot lock poisoned".into()))?;
+            return Ok((snap.exit_code, snap.signal.clone()));
+        }
+    }
+
+    /// First reaper of the child records its status; later ones must not
+    /// clobber it.
+    fn record_exit(&self, status: ExitStatus) {
         let code = status.code();
         #[cfg(unix)]
         let signal = {
@@ -196,24 +234,34 @@ impl TerminalInstance {
         };
         #[cfg(not(unix))]
         let signal = None;
-        let mut snap = self
-            .snapshot
-            .lock()
-            .map_err(|_| TerminalError::Internal("snapshot lock poisoned".into()))?;
-        snap.exit_code = code;
-        snap.signal = signal.clone();
-        Ok((code, signal))
+        if let Ok(mut snap) = self.snapshot.lock() {
+            if snap.exit_code.is_none() && snap.signal.is_none() {
+                snap.exit_code = code;
+                snap.signal = signal;
+            }
+        }
     }
 
     fn kill_command(&self) -> Result<(), TerminalError> {
-        let mut guard = self
-            .child
-            .lock()
-            .map_err(|_| TerminalError::Internal("child lock poisoned".into()))?;
-        if let Some(child) = guard.as_mut() {
-            let _ = child.kill();
-            let _ = child.wait();
-            *guard = None;
+        let status = {
+            let mut guard = self
+                .child
+                .lock()
+                .map_err(|_| TerminalError::Internal("child lock poisoned".into()))?;
+            match guard.as_mut() {
+                Some(child) => {
+                    let _ = child.kill();
+                    let reaped = child.wait().ok();
+                    *guard = None;
+                    reaped
+                }
+                None => None,
+            }
+        };
+        // Record what the kill produced: a concurrent wait_for_exit poller
+        // only sees `child == None` and returns the snapshot.
+        if let Some(status) = status {
+            self.record_exit(status);
         }
         Ok(())
     }
@@ -728,5 +776,54 @@ mod tests {
             sid,
             None,
         );
+    }
+
+    /// Regression for the close-freeze deadlock: wait_for_exit used to block
+    /// in `child.wait()` while holding the `child` lock, so the shutdown-path
+    /// kill_command (main thread) deadlocked on that lock whenever an agent
+    /// left a `terminal/wait_for_exit` pending. Kill must proceed while a
+    /// waiter is parked, and the waiter must report the kill's status.
+    #[test]
+    fn kill_proceeds_while_wait_for_exit_is_parked() {
+        let mut cmd = Command::new(if cfg!(windows) { "cmd" } else { "sh" });
+        if cfg!(windows) {
+            cmd.args(["/C", "ping -n 30 127.0.0.1 > nul"]);
+        } else {
+            cmd.arg("-c").arg("sleep 30");
+        }
+        let child = cmd
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn long-running child");
+        let term = Arc::new(TerminalInstance::new(
+            "agent-wait-kill-test".to_string(),
+            DEFAULT_OUTPUT_BYTE_LIMIT,
+            child,
+        ));
+
+        let waiter_term = Arc::clone(&term);
+        let waiter = thread::spawn(move || waiter_term.wait_for_exit());
+
+        // Park the waiter, then act as the close path: kill from this thread
+        // while the waiter holds nothing we need.
+        thread::sleep(Duration::from_millis(150));
+        let started = std::time::Instant::now();
+        term.kill_command().expect("kill must not deadlock");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "kill_command blocked behind a parked wait_for_exit"
+        );
+
+        let (code, signal) = waiter
+            .join()
+            .expect("waiter thread must not panic")
+            .expect("wait_for_exit succeeds after kill");
+        if cfg!(windows) {
+            assert_eq!(code, Some(1), "TerminateProcess exits with code 1");
+        } else {
+            assert!(code.is_none() && signal.is_some(), "killed by signal");
+        }
     }
 }
