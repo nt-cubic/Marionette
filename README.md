@@ -128,4 +128,4 @@ Marionette/
 
 ## License
 
-MIT
+MIT，全文见 [LICENSE](LICENSE)。
