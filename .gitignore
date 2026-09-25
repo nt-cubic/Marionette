@@ -1,30 +1,30 @@
+# --- Dependencies / build output ---
 node_modules/
 dist/
+dist-portable/
 target/
-src-tauri/target/
 
+# --- OS / editor noise ---
 .DS_Store
+Thumbs.db
 *.log
 *.tmp
 
+# --- Secrets ---
 .env
 .env.*
 
-# Research repos - external project forks
-_research/repos/
-
-# Local scratch / test artifacts
-fortest/
-
-# IDE / AI config
-.claude/
+# --- Runtime state written into the repo root ---
+# Marionette's own project state: sessions, transcripts, handoff
 .marionette/
-
-# Claude Code CLI local state written into the repo root: the session registry
-# holds a peer token, and the config backup is a copy of ~/.claude.json.
+# Claude Code CLI: the session registry holds a peer token, and the config
+# backup is a copy of ~/.claude.json
+.claude/
 /sessions/
 /backups/
 
-# Portable release output (upload via GitHub Releases)
-dist-portable/
-
+# --- Local tools / external forks ---
+# Drop a UPX binary here for build-portable.bat; never commit it
+tools/upx.exe
+tools/upx/
+_research/repos/

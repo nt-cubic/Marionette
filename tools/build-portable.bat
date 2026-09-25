@@ -2,7 +2,7 @@
 setlocal EnableExtensions EnableDelayedExpansion
 title Marionette portable build
 
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 echo.
 echo  === Marionette portable build ===
@@ -110,13 +110,13 @@ echo.
 call npm run build:portable
 if errorlevel 1 goto fail
 
-set "SRC=%~dp0src-tauri\target\release\marionette.exe"
+set "SRC=%~dp0..\src-tauri\target\release\marionette.exe"
 if not exist "%SRC%" (
   echo  [error] binary missing: %SRC%
   goto fail
 )
 
-set "OUTDIR=%~dp0dist-portable"
+set "OUTDIR=%~dp0..\dist-portable"
 if not exist "%OUTDIR%\" mkdir "%OUTDIR%"
 
 set "OUT_RAW=%OUTDIR%\Marionette-uncompressed.exe"
@@ -197,8 +197,8 @@ if not errorlevel 1 (
     goto :eof
   )
 )
-if exist "%~dp0tools\upx.exe" set "UPX_BIN=%~dp0tools\upx.exe" & goto :eof
-if exist "%~dp0tools\upx\upx.exe" set "UPX_BIN=%~dp0tools\upx\upx.exe" & goto :eof
+if exist "%~dp0upx.exe" set "UPX_BIN=%~dp0upx.exe" & goto :eof
+if exist "%~dp0upx\upx.exe" set "UPX_BIN=%~dp0upx\upx.exe" & goto :eof
 if exist "%USERPROFILE%\bin\upx.exe" set "UPX_BIN=%USERPROFILE%\bin\upx.exe" & goto :eof
 if exist "C:\tools\upx\upx.exe" set "UPX_BIN=C:\tools\upx\upx.exe" & goto :eof
 for /f "delims=" %%P in ('dir /s /b "%LOCALAPPDATA%\Microsoft\WinGet\Packages\upx.exe" 2^>nul') do (

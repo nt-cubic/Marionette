@@ -16,7 +16,7 @@ if exist "%APPDATA%\npm" (
   set "PATH=%APPDATA%\npm;%PATH%"
 )
 
-call "%~dp0ensure-msvc.bat"
+call "%~dp0tools\ensure-msvc.bat"
 if errorlevel 1 goto fail
 
 where node >nul 2>&1
@@ -30,7 +30,7 @@ if errorlevel 1 (
   goto fail
 )
 
-call "%~dp0ensure-rust.bat"
+call "%~dp0tools\ensure-rust.bat"
 if errorlevel 1 goto fail
 
 if not exist "package.json" (

@@ -14,7 +14,7 @@ tauri-build = { version = "2", features = [] }
 
 # SIZE BUDGET (portable Windows x64):
 #   Uncompressed release (LTO+strip+opt-z, ring-less TLS): ~7 MB
-#   After UPX --best --lzma (see build-portable.bat): ~1.2–1.3 MB  ← product target
+#   After UPX --best --lzma (see tools/build-portable.bat): ~1.2–1.3 MB  ← product target
 #   Keep TLS as ureq + native-tls (Windows schannel). NEVER reintroduce ring/rustls.
 #   Do NOT add: tokio, zip/tar extractors, reqwest, download caches, extra UI crates.
 #   Agents stay on PATH + npm auto-update — never embed agent binaries.
