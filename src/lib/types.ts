@@ -380,6 +380,11 @@ export type UsageSnapshot = {
 export type ModeDef = {
   id: string;
   label: string;
+  /**
+   * The agent's own option description. For file-permission levels this is its
+   * consequence text ("不施加任何文件限制…") — show it, never invent it.
+   */
+  description?: string | null;
 };
 
 export type ModelDef = {
@@ -413,6 +418,17 @@ export type CapabilitySnapshot = {
   modelConfigId: string | null;
   modeConfigId: string | null;
   effortConfigId: string | null;
+  /**
+   * File-permission / sandbox select (DeepSeek Harness `sandbox`: 只读 /
+   * 可写工作区 / 完全访问). A knob of its own — never a session mode, even when
+   * the agent labels it `category: "mode"`: mode is the collaboration state,
+   * this is what the turn's tools are allowed to touch.
+   */
+  permissionOptions: ModeDef[];
+  permissionConfigId: string | null;
+  currentPermission: string | null;
+  /** The agent's own label for that select ("文件权限") — never invent one. */
+  permissionLabel: string | null;
   /**
    * Context ceiling per model id, from the agent's session/new catalog
    * (`availableModels[]._meta.totalContextTokens`). Grok mixes 32K…1M windows

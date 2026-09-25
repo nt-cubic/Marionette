@@ -170,6 +170,10 @@ export function mergeAcpCapabilities(
     modelConfigId: null,
     modeConfigId: null,
     effortConfigId: null,
+    permissionOptions: [],
+    permissionConfigId: null,
+    currentPermission: null,
+    permissionLabel: null,
   };
 
   if (!sup) {
@@ -318,6 +322,15 @@ export function expandAcpConfigAttempts(
     for (const id of [...new Set(ids)]) {
       attempts.push({ configId: id, value: modeValue });
     }
+  }
+
+  // File permission / sandbox. Only the id the agent actually advertised is ever
+  // sent: unlike model/mode there is no "model" default worth guessing, and a
+  // fabricated id would come back -32602 with the user staring at a chip that
+  // flipped for nothing. No permission option advertised → no attempt → the
+  // Composer reports it instead of pretending the level changed.
+  if (typeof patch.permission === "string" && caps?.permissionConfigId) {
+    attempts.push({ configId: caps.permissionConfigId, value: patch.permission });
   }
 
   // Grok-style: no config id exists, so hand Rust the logical knob and let

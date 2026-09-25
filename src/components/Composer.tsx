@@ -325,6 +325,7 @@ function applyCapabilities(
     setCurrentModel: (m: string | null) => void;
     setCurrentEffort: (e: number | null) => void;
     setCurrentEffortId: (e: string | null) => void;
+    setCurrentPermission: (p: string | null) => void;
   },
 ) {
   if (!result) return;
@@ -343,11 +344,16 @@ function applyCapabilities(
     modelConfigId: result.modelConfigId ?? null,
     modeConfigId: result.modeConfigId ?? null,
     effortConfigId: result.effortConfigId ?? null,
+    permissionOptions: result.permissionOptions ?? [],
+    permissionConfigId: result.permissionConfigId ?? null,
+    currentPermission: result.currentPermission ?? null,
+    permissionLabel: result.permissionLabel ?? null,
   };
   setters.setCaps(normalized);
   setters.setCurrentMode(normalized.currentMode);
   setters.setCurrentModel(normalized.currentModel);
   setters.setCurrentEffortId(normalized.currentEffortId);
+  setters.setCurrentPermission(normalized.currentPermission);
   if (normalized.currentEffort != null) {
     setters.setCurrentEffort(normalized.currentEffort);
   } else if (normalized.thinkingEffort) {
@@ -363,6 +369,7 @@ type OptionPins = {
   mode?: string;
   effortId?: string;
   effort?: number;
+  permission?: string;
 };
 
 /** How long a local pick outranks server echoes (agents settle within ~1–2s). */
@@ -421,6 +428,7 @@ function applyPinnedDisplay(
     setCurrentModel: (m: string | null) => void;
     setCurrentEffort: (e: number | null) => void;
     setCurrentEffortId: (e: string | null) => void;
+    setCurrentPermission: (p: string | null) => void;
   },
 ) {
   if (!pin || Date.now() >= pin.until) return;
@@ -428,6 +436,7 @@ function applyPinnedDisplay(
   if (pin.pins.mode != null) setters.setCurrentMode(pin.pins.mode);
   if (pin.pins.effortId != null) setters.setCurrentEffortId(pin.pins.effortId);
   if (pin.pins.effort != null) setters.setCurrentEffort(pin.pins.effort);
+  if (pin.pins.permission != null) setters.setCurrentPermission(pin.pins.permission);
 }
 
 /**
@@ -490,6 +499,14 @@ export function Composer({
   const [currentEffortId, setCurrentEffortId] = useState<string | null>(
     initialCaps?.currentEffortId ?? null,
   );
+  /**
+   * File permission / sandbox level. Never restored from disk or the offline
+   * cache (see `capabilityCache.normalize`): a session always starts on the
+   * level the agent itself reports, and the chip follows it from there.
+   */
+  const [currentPermission, setCurrentPermission] = useState<string | null>(
+    initialCaps?.currentPermission ?? null,
+  );
   /** Fresh chip snapshot for side effects that must not dep-track every setter. */
   const chipStateRef = useRef<{
     model: string | null;
@@ -522,7 +539,9 @@ export function Composer({
   }, [sessionPrefs?.preferredAlwaysApprove]);
   /** True once caps came from a live agent — cached caps must not act as live. */
   const [capsLive, setCapsLive] = useState(false);
-  const [menu, setMenu] = useState<"mode" | "model" | "effort" | "agent" | "send" | null>(null);
+  const [menu, setMenu] = useState<
+    "mode" | "model" | "effort" | "permission" | "agent" | "send" | null
+  >(null);
   const [modelQuery, setModelQuery] = useState("");
   const [draft, setDraft] = useState(() => readDraftCache(sessionId));
   /** Image attachments as Codex-style pills (not raw paths in the textarea). */
@@ -635,6 +654,7 @@ export function Composer({
     setCurrentModel,
     setCurrentEffort,
     setCurrentEffortId,
+    setCurrentPermission,
   };
 
   /**
@@ -754,6 +774,7 @@ export function Composer({
     setCurrentModel(null);
     setCurrentEffort(null);
     setCurrentEffortId(null);
+    setCurrentPermission(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, agent.id]);
 
@@ -879,6 +900,9 @@ export function Composer({
             throw new Error(
               "This model does not expose an Effort control (not a login issue)",
             );
+          }
+          if (patch.permission != null) {
+            throw new Error("This agent exposes no file-permission control");
           }
           throw new Error("No config mapping for this control");
         }
@@ -1703,6 +1727,37 @@ export function Composer({
   const displayModeLabel =
     (displayMode && caps?.modes.find((m) => m.id === displayMode)?.label) || displayMode;
 
+  // ── File permission / sandbox chip ─────────────────────────────────────────
+  // Only agents that advertise a permission knob of their own get this control
+  // (DeepSeek Harness `sandbox`). Codex carries permission in its *modes* and Grok
+  // in a slash command, so neither grows a second, competing switch here.
+  //
+  // No fallback to `permissionOptions[0]`: unlike a model, guessing "read-only"
+  // or "full access" and painting it as the current state would be a claim about
+  // what the agent may touch. Until the agent says, the chip is not rendered.
+  const permissionOptions = caps?.permissionOptions ?? [];
+  const hasPermission =
+    Boolean(caps?.permissionConfigId) && permissionOptions.length > 1 && currentPermission != null;
+  const displayPermissionLabel = hasPermission
+    ? (permissionOptions.find((o) => o.id === currentPermission)?.label ?? currentPermission)
+    : null;
+  const permissionTitle = caps?.permissionLabel?.trim() || "File permissions";
+  /** Full access / bypass levels read as a warning, the rest stay muted. */
+  const permissionIsLoose = (id: string | null | undefined) => {
+    const v = (id ?? "").toLowerCase();
+    return (
+      v.includes("danger") ||
+      v.includes("full-access") ||
+      v.includes("full_access") ||
+      v.includes("bypass") ||
+      v.includes("yolo")
+    );
+  };
+  const permissionIsReadOnly = (id: string | null | undefined) => {
+    const v = (id ?? "").toLowerCase();
+    return v.includes("read-only") || v.includes("read_only") || v === "read";
+  };
+
   const modelGroups = useMemo(() => {
     if (!caps?.models?.length) return [];
     const q = modelQuery.trim().toLowerCase();
@@ -2379,6 +2434,65 @@ export function Composer({
                       >
                         <span className="composer-menu__mode-dot" aria-hidden />
                         {m.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            {/* File permission / sandbox (DeepSeek Harness `sandbox`). Its own
+                knob beside the mode chip: 计划 mode still writes files if the
+                level allows it, so the two must not be merged. */}
+            {hasPermission && (
+              <div className="composer-menu-anchor composer-menu-anchor--permission">
+                <button
+                  className={
+                    permissionIsLoose(currentPermission)
+                      ? "composer-mode-chip composer-mode-chip--perm composer-mode-chip--perm-loose"
+                      : permissionIsReadOnly(currentPermission)
+                        ? "composer-mode-chip composer-mode-chip--perm composer-mode-chip--perm-readonly"
+                        : "composer-mode-chip composer-mode-chip--perm"
+                  }
+                  type="button"
+                  title={`${permissionTitle}: ${displayPermissionLabel}`}
+                  aria-expanded={menu === "permission"}
+                  onClick={() => setMenu(menu === "permission" ? null : "permission")}
+                >
+                  <span className="composer-mode-chip__label">{displayPermissionLabel}</span>
+                </button>
+                {menu === "permission" && (
+                  <div
+                    className="composer-menu composer-menu--permission"
+                    role="menu"
+                    aria-label={permissionTitle}
+                  >
+                    {permissionOptions.map((option) => (
+                      <button
+                        key={option.id}
+                        className={currentPermission === option.id ? "is-selected" : ""}
+                        type="button"
+                        role="menuitem"
+                        data-mode-tone={
+                          permissionIsLoose(option.id)
+                            ? "debug"
+                            : permissionIsReadOnly(option.id)
+                              ? "default"
+                              : "build"
+                        }
+                        title={option.description ?? undefined}
+                        onClick={() => {
+                          const prev = currentPermission;
+                          pinOptions({ permission: option.id });
+                          setCurrentPermission(option.id);
+                          setMenu(null);
+                          void commitUpdate({ permission: option.id }, () => {
+                            unpinOption("permission");
+                            setCurrentPermission(prev);
+                          });
+                        }}
+                      >
+                        <span className="composer-menu__mode-dot" aria-hidden />
+                        {option.label}
                       </button>
                     ))}
                   </div>

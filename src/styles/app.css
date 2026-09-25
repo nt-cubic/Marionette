@@ -5930,6 +5930,22 @@ body.is-composer-resizing .composer {
   text-transform: none;
 }
 
+/* File permission / sandbox (DeepSeek Harness `sandbox`). Same toolbar family as
+   the mode chip, but its own axis: it says what the turn's tools may touch, so
+   the loose levels read as a warning and the read-only one stays quiet. */
+.composer-mode-chip--perm {
+  --tone: var(--text-faint);
+  text-transform: none;
+}
+
+.composer-mode-chip--perm-readonly {
+  --tone: var(--text-faint);
+}
+
+.composer-mode-chip--perm-loose {
+  --tone: var(--orange, #f59e0b);
+}
+
 /* ── Mode menu (drops up from the toolbar chip) ─────────────────────── */
 .composer-menu--mode {
   left: 0;
@@ -5943,6 +5959,22 @@ body.is-composer-resizing .composer {
    directly rather than inherited from the menu container. */
 .composer-menu--mode button {
   text-transform: capitalize;
+}
+
+/* ── File permission menu (DeepSeek Harness `sandbox`) ──────────────── */
+/* Its own menu, not a reuse of `--mode`: the modes are capitalized product
+   labels, these are the agent's own level names (可写工作区) and must render
+   exactly as the agent wrote them. */
+.composer-menu--permission {
+  left: 0;
+  right: auto;
+  top: auto;
+  bottom: calc(100% + 6px);
+  min-width: 170px;
+}
+
+.composer-menu--permission button {
+  text-transform: none;
 }
 
 .composer-menu__mode-dot {

@@ -66,6 +66,14 @@ function normalize(snapshot: CapabilitySnapshot): CapabilitySnapshot {
     modelConfigId: snapshot.modelConfigId ?? null,
     modeConfigId: snapshot.modeConfigId ?? null,
     effortConfigId: snapshot.effortConfigId ?? null,
+    permissionOptions: snapshot.permissionOptions ?? [],
+    permissionConfigId: snapshot.permissionConfigId ?? null,
+    permissionLabel: snapshot.permissionLabel ?? null,
+    // Deliberately NOT cached. A model/mode chip painting a stale value costs a
+    // flicker; a *permission* chip painting one is a claim about what the agent
+    // may touch. `null` keeps the chip off screen until the live handshake says
+    // which level this session is actually on — the safe direction.
+    currentPermission: null,
   };
 }
 
