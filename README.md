@@ -97,10 +97,10 @@ npm install && npm run tauri dev
 ### 直接下载
 
 ```bash
-gh release download --clobber -p Marionette.exe
+gh release download --clobber -p "Marionette-*-windows-x64.exe"
 ```
 
-拿到最新的 `Marionette.exe`，双击即用。
+拿到最新的 `Marionette-<版本>-windows-x64.exe`（约 1.4 MB），双击即用。
 
 ---
 
