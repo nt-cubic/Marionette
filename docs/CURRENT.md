@@ -36,8 +36,9 @@ Windows 本地 **多 Agent CLI 图形壳**（Tauri + React）。不替代 OpenCo
 
 - 前端：`src/`
 - 后端：`src-tauri/src/`
-- 启动：`start-marionette.bat` / `npm run tauri dev`
-- 便携构建：`build-portable.bat`
+- 启动：`start-marionette.bat`（根目录唯一入口）/ `npm run tauri dev`
+- 便携构建：`tools/build-portable.bat` → `dist-portable/`
+- 验证脚本：`scripts/`；Windows 脚本：`tools/`（各目录索引见其中的 `README.md`）
 
 ## 归档说明
 

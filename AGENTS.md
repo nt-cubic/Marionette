@@ -6,16 +6,18 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
 ## 常用命令
 
 - 启动开发版：`npm run tauri dev`（或 `start-marionette.bat`）
-- 构建便携版：`build-portable.bat`（release 产物在 `dist-portable/`）
+- 构建便携版：`tools\build-portable.bat`（release 产物在 `dist-portable/`）
 - 前端构建：`npm run build`（`tsc && vite build`）
 - Rust 检查：`cargo check`（在 `src-tauri/` 下）
-- 发布版本号：`scripts/bump-version.ps1`（或 `bump-version.bat`）
+- 发布版本号：`tools\bump-version.ps1`（或 `tools\bump-version.bat`）
 
 ## 目录
 
 - 前端：`src/`（React；会话流处理核心在 `src/lib/acpTranscript.ts`）
 - 后端：`src-tauri/src/`（ACP 服务 `acp.rs`、终端 `terminal_runtime.rs`）
-- 现行产品说明：`docs/CURRENT.md`；`docs/archive/` 是历史归档，不是现行契约
+- 现行产品说明：`docs/CURRENT.md`；索引见 `docs/README.md`，`docs/archive/` 是历史归档，不是现行契约
+- 验证脚本：`scripts/`（清单见 `scripts/README.md`）；Windows 启动/构建/发布：`tools/`（清单见 `tools/README.md`）
+- 根目录只保留 `start-marionette.bat` 一个入口；改 `tools/` 里的脚本时，仓库根一律用 `%~dp0..`
 
 ## 排查「卡退」（崩溃/闪退）—— 第一件事
 

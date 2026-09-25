@@ -104,6 +104,23 @@ gh release download --clobber -p Marionette.exe
 
 ---
 
+## 仓库结构
+
+```
+Marionette/
+├─ start-marionette.bat   # 唯一双击入口：起开发版
+├─ src/                   # 前端（React）：app / components / lib / styles
+├─ src-tauri/             # 后端（Rust + Tauri 2）
+├─ docs/                  # 文档：CURRENT.md 是现行契约，索引见 docs/README.md
+├─ scripts/               # 代码验证脚本（caps / stream / usage 冒烟）
+└─ tools/                 # Windows 启动、构建、发布脚本 + 本地二进制（upx）
+```
+
+约定：根目录只放工具链需要的文件（`package.json`、`vite.config.ts`、`index.html` 等）和那一个启动入口，
+其余按用途进 `docs/`、`scripts/`、`tools/`。运行期产物 `.marionette/`、`dist/`、`dist-portable/`、`node_modules/` 都已忽略。
+
+---
+
 ## License
 
 MIT

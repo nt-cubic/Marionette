@@ -2,11 +2,11 @@
 setlocal EnableExtensions
 title Marionette rebuild (quick)
 
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 if exist "%USERPROFILE%\.cargo\bin" set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
 
-set "EXE=%~dp0src-tauri\target\debug\marionette.exe"
+set "EXE=%~dp0..\src-tauri\target\debug\marionette.exe"
 
 echo.
 echo  === Marionette quick rebuild ===
@@ -24,7 +24,7 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-pushd "%~dp0src-tauri"
+pushd "%~dp0..\src-tauri"
 call cargo build
 set "BUILD=%ERRORLEVEL%"
 popd
