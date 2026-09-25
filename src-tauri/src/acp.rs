@@ -30,6 +30,11 @@ const TIMEOUT_PLAN_APPROVAL_SECS: u64 = 600;
 pub struct ModeDef {
     pub id: String,
     pub label: String,
+    /// From the ACP select option's own description. For file-permission levels
+    /// this is the agent's consequence text ("不施加任何文件限制。仅在你清楚后果
+    /// 时选择") — the reason the menu can warn without inventing wording.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -130,6 +135,19 @@ pub struct CapabilitySnapshot {
     pub model_config_id: Option<String>,
     pub mode_config_id: Option<String>,
     pub effort_config_id: Option<String>,
+    /// The agent's file-permission select (DeepSeek Harness `sandbox`:
+    /// 只读 / 可写工作区 / 完全访问).
+    ///
+    /// Its own knob, never a session mode — DSH labels it `category: "mode"`,
+    /// which is a UX hint the protocol says must not be trusted for correctness.
+    /// The values are the sandbox levels a *turn's tools* run under, whereas
+    /// `modes` is the collaboration state (plan / build).
+    pub permission_options: Vec<ModeDef>,
+    pub permission_config_id: Option<String>,
+    pub current_permission: Option<String>,
+    /// The agent's own label for that select ("文件权限"), so the Composer chip
+    /// is not hard-coded to one vendor's wording.
+    pub permission_label: Option<String>,
     /// Agent accepts `ContentBlock::Image` in session/prompt (from initialize).
     /// Defaults true so vision-capable CLIs work before we re-parse caps.
     pub prompt_image: bool,
@@ -883,19 +901,13 @@ impl AcpService {
                 if let Some(modes) = last_result.get("modes") {
                     refreshed_session["modes"] = modes.clone();
                 }
-                let mut next_caps = parse_session_capabilities(&refreshed_session);
+                let prev = self.get_capabilities(session_id);
+                let mut next_caps =
+                    parse_session_capabilities_after(&refreshed_session, prev.as_ref());
+                if let Some(prev) = prev.as_ref() {
+                    carry_forward_unsaid(&mut next_caps, prev);
+                }
                 if let Ok(mut caps_map) = self.capabilities.lock() {
-                    if let Some(prev) = caps_map.get(session_id) {
-                        // A config-option echo carries no model catalog: keep the
-                        // catalog and the per-model ceilings learned at session/new,
-                        // or the UI loses every model but the current one.
-                        if next_caps.models.is_empty() {
-                            next_caps.models = prev.models.clone();
-                        }
-                        if next_caps.model_context_sizes.is_empty() {
-                            next_caps.model_context_sizes = prev.model_context_sizes.clone();
-                        }
-                    }
                     caps_map.insert(session_id.to_string(), next_caps);
                 }
             } else if let Ok(mut caps_map) = self.capabilities.lock() {
@@ -905,6 +917,7 @@ impl AcpService {
                             ConfigTarget::Model => "model",
                             ConfigTarget::Mode => "mode",
                             ConfigTarget::Effort => "effort",
+                            ConfigTarget::Permission => "permission",
                             ConfigTarget::Other => "",
                         }
                         .to_string()
@@ -991,7 +1004,7 @@ impl AcpService {
                     }),
                 )
             }
-            ConfigTarget::Other => Err(format!(
+            ConfigTarget::Other | ConfigTarget::Permission => Err(format!(
                 "Agent does not support session/set_config_option, and \"{}\" has no legacy equivalent",
                 update.config_id.as_deref().unwrap_or("(unknown)")
             )),
@@ -1411,7 +1424,23 @@ enum ConfigTarget {
     Model,
     Mode,
     Effort,
+    Permission,
     Other,
+}
+
+/// Which knob a wire config id names, using the same classifier as the parser.
+///
+/// One classifier for both directions on purpose: an id this app accepts as
+/// "the model select" while setting must be the same id it parsed as the model
+/// select, or a patch lands on a knob nobody parsed.
+fn config_target_for_id(id: &str) -> ConfigTarget {
+    match knob_by_id(id) {
+        Some(ConfigKnob::Model) => ConfigTarget::Model,
+        Some(ConfigKnob::Mode) => ConfigTarget::Mode,
+        Some(ConfigKnob::Effort) => ConfigTarget::Effort,
+        Some(ConfigKnob::Permission) => ConfigTarget::Permission,
+        None => ConfigTarget::Other,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1437,12 +1466,7 @@ fn expand_config_updates(
             .as_str()
             .ok_or_else(|| "configId must be a string".to_string())?
             .to_string();
-        let target = match id.as_str() {
-            "model" => ConfigTarget::Model,
-            "mode" | "approval-policy" | "approvalPolicy" => ConfigTarget::Mode,
-            "effort" | "reasoning" | "reasoning-effort" | "thought_level" => ConfigTarget::Effort,
-            _ => ConfigTarget::Other,
-        };
+        let target = config_target_for_id(&id);
         return Ok(vec![ConfigUpdate {
             target,
             config_id: Some(id),
@@ -1480,6 +1504,16 @@ fn expand_config_updates(
             value: effort.clone(),
         });
     }
+    // File permission / sandbox level. No legacy equivalent exists, so an agent
+    // that advertises no such option gets a clear error rather than a silent
+    // no-op — this is the one knob where pretending would be unsafe.
+    if let Some(permission) = obj.get("permission") {
+        updates.push(ConfigUpdate {
+            target: ConfigTarget::Permission,
+            config_id: caps.and_then(|c| c.permission_config_id.clone()),
+            value: permission.clone(),
+        });
+    }
     Ok(updates)
 }
 
@@ -1509,6 +1543,7 @@ fn config_id_is_advertised(
         ConfigTarget::Model => caps.and_then(|c| c.model_config_id.as_deref()),
         ConfigTarget::Mode => caps.and_then(|c| c.mode_config_id.as_deref()),
         ConfigTarget::Effort => caps.and_then(|c| c.effort_config_id.as_deref()),
+        ConfigTarget::Permission => caps.and_then(|c| c.permission_config_id.as_deref()),
         ConfigTarget::Other => None,
     };
     advertised == Some(config_id)
@@ -1622,9 +1657,19 @@ fn apply_local_config_change(caps: &mut CapabilitySnapshot, config_id: &str, val
         if let Some(n) = value.as_f64() {
             caps.current_effort = Some(n);
             caps.current_effort_id = Some(n.to_string());
-        } else if let Some(text) = text {
+        } else if let Some(text) = text.clone() {
             caps.current_effort_id = Some(text.clone());
             caps.current_effort = text.parse().ok();
+        }
+    }
+    // File permission / sandbox: an echo-less agent (no `configOptions` in its
+    // response) still changed the level, and the chip has to follow it. Same
+    // classifier as everywhere else, so an alias cannot drift apart.
+    if Some(config_id) == caps.permission_config_id.as_deref()
+        || knob_by_id(config_id) == Some(ConfigKnob::Permission)
+    {
+        if let Some(text) = text.clone() {
+            caps.current_permission = Some(text);
         }
     }
 }
@@ -1632,6 +1677,28 @@ fn apply_local_config_change(caps: &mut CapabilitySnapshot, config_id: &str, val
 // ─── Capability parsing from session/new response ──────────────────────────
 
 fn parse_session_capabilities(session_response: &Value) -> CapabilitySnapshot {
+    parse_session_capabilities_after(session_response, None)
+}
+
+/// Parse any session-state response: `session/new`, or the `configOptions` echo
+/// a `session/set_config_option` returns.
+///
+/// The echo re-sends only the options it changed, so a knob `session/new`
+/// assigned stays assigned. Without that, DeepSeek Harness's `sandbox`
+/// (category "mode") takes the plan/build knob on the first model change — the
+/// pre-v2 `modes` field it loses to is simply absent from the echo.
+fn parse_session_capabilities_after(
+    session_response: &Value,
+    previous: Option<&CapabilitySnapshot>,
+) -> CapabilitySnapshot {
+    // The pre-v2 `modes` field is the session-mode list, and it keeps a
+    // *different* `category: "mode"` option from replacing it.
+    let legacy_modes = legacy_modes_from_json(session_response);
+    let held = KnobClaims {
+        model: previous.is_some_and(|caps| caps.model_config_id.is_some()),
+        effort: previous.is_some_and(|caps| caps.effort_config_id.is_some()),
+        mode: legacy_modes.is_some() || previous.is_some_and(|caps| !caps.modes.is_empty()),
+    };
     let mut caps = if let Ok(response) =
         serde_json::from_value::<acp_schema::NewSessionResponse>(session_response.clone())
     {
@@ -1639,12 +1706,255 @@ fn parse_session_capabilities(session_response: &Value) -> CapabilitySnapshot {
         // pre-v2 agents) put the list under top-level `models.currentModelId` /
         // `availableModels`. Ignoring that left current_model=None and made
         // effort changes fail with "no current model known for this session".
-        parse_capabilities_from_typed(response)
+        parse_capabilities_from_typed(response, legacy_modes, held)
     } else {
-        parse_capabilities_fallback(session_response)
+        parse_capabilities_fallback(session_response, legacy_modes, held)
     };
     merge_legacy_models_field(session_response, &mut caps);
     caps
+}
+
+/// The pre-v2 `modes` field of `session/new`: `{ availableModes, currentModeId }`.
+///
+/// These ids are the ones `session/set_mode` takes; nothing here names a
+/// `session/set_config_option` id.
+fn legacy_modes_from_json(session_response: &Value) -> Option<(Vec<ModeDef>, Option<String>)> {
+    let modes = session_response.get("modes")?;
+    let available = modes
+        .get("availableModes")
+        .or_else(|| modes.get("available_modes"))
+        .and_then(Value::as_array);
+    let list = available
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| {
+                    let id = entry.get("id").and_then(Value::as_str)?;
+                    let name = entry
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or(id)
+                        .to_string();
+                    Some(ModeDef {
+                        id: id.to_string(),
+                        label: name,
+                        description: entry
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let current = modes
+        .get("currentModeId")
+        .or_else(|| modes.get("current_mode_id"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Some((list, current))
+}
+
+/// Which Composer knob a `configOptions` entry drives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigKnob {
+    Model,
+    Mode,
+    Effort,
+    /// File permission / sandbox level. Never a mode: the two are separate axes
+    /// (a session can be in plan mode with full file access).
+    Permission,
+}
+
+/// Knobs already spoken for: the model/mode/effort control has been found.
+#[derive(Debug, Clone, Copy, Default)]
+struct KnobClaims {
+    model: bool,
+    mode: bool,
+    effort: bool,
+}
+
+/// The knob an option *is*, from its id.
+///
+/// ACP ids are the stable identity (`model`, `mode`, `thought_level`); the
+/// category is a UX hint that "MUST NOT be required for correctness". Effort
+/// words are unambiguous, so a compound id (`reasoning_effort_level`) still
+/// lands on the effort knob — while `fast-mode` (a `model_config` toggle) and
+/// `collaboration_mode` (Codex's own plan switch) stay out of the mode knob.
+/// `sandbox` is a knob of its own, not a mode, however it is categorised.
+fn knob_by_id(id: &str) -> Option<ConfigKnob> {
+    let lower = id.trim().to_ascii_lowercase();
+    match lower.as_str() {
+        "model" | "model_id" | "modelid" => return Some(ConfigKnob::Model),
+        "mode" | "mode_id" | "modeid" | "approval-policy" | "approvalpolicy" => {
+            return Some(ConfigKnob::Mode);
+        }
+        "sandbox" | "sandbox_mode" | "sandbox-mode" | "permission_mode" | "permission-mode" => {
+            return Some(ConfigKnob::Permission)
+        }
+        _ => {}
+    }
+    if lower.contains("effort")
+        || lower.contains("reason")
+        || lower.contains("think")
+        || lower.contains("thought")
+    {
+        return Some(ConfigKnob::Effort);
+    }
+    None
+}
+
+/// The knob an option's category claims when its id names none.
+///
+/// `model_config` is deliberately absent: it labels a parameter *of* the model
+/// (Codex's `fast-mode`), not the model catalog.
+fn knob_by_category(category: Option<&str>) -> Option<ConfigKnob> {
+    match category?.trim().to_ascii_lowercase().as_str() {
+        "model" => Some(ConfigKnob::Model),
+        "mode" => Some(ConfigKnob::Mode),
+        "thought_level" => Some(ConfigKnob::Effort),
+        _ => None,
+    }
+}
+
+/// Classify one `configOptions` entry.
+///
+/// The id decides whenever it names a knob; the category may only claim a knob
+/// that no id named and that nothing else holds. DeepSeek Harness is why: it
+/// ships its 推理档位 select as `category: "model"` (last-wins per category used
+/// to hand the Composer 关闭/低/高/最高 as the model list) and its 文件权限 select
+/// as `category: "mode"` (which replaced the plan/build modes).
+///
+/// No category ever claims `Permission`: "mode" on a sandbox select means "this
+/// is a session setting", not "this is the collaboration mode", and the two axes
+/// must not collapse into one control.
+fn config_option_knob(
+    id: &str,
+    category: Option<&str>,
+    held: KnobClaims,
+) -> Option<ConfigKnob> {
+    if let Some(knob) = knob_by_id(id) {
+        return Some(knob);
+    }
+    match knob_by_category(category)? {
+        ConfigKnob::Model if !held.model => Some(ConfigKnob::Model),
+        ConfigKnob::Mode if !held.mode => Some(ConfigKnob::Mode),
+        ConfigKnob::Effort if !held.effort => Some(ConfigKnob::Effort),
+        _ => None,
+    }
+}
+
+/// Category name as it appears on the wire, for the string-based classifier.
+fn category_name(category: &acp_schema::SessionConfigOptionCategory) -> Option<String> {
+    match serde_json::to_value(category) {
+        Ok(Value::String(name)) => Some(name),
+        _ => None,
+    }
+}
+
+/// (value, name, optional description) from a typed select's options.
+fn extract_typed_options(
+    options: &acp_schema::SessionConfigSelectOptions,
+) -> Vec<(String, String, Option<String>)> {
+    let one = |o: &acp_schema::SessionConfigSelectOption| {
+        (
+            o.value.0.to_string(),
+            o.name.clone(),
+            o.description.clone(),
+        )
+    };
+    match options {
+        acp_schema::SessionConfigSelectOptions::Ungrouped(list) => list.iter().map(one).collect(),
+        acp_schema::SessionConfigSelectOptions::Grouped(groups) => groups
+            .iter()
+            .flat_map(|g| &g.options)
+            .map(one)
+            .collect(),
+        _ => vec![],
+    }
+}
+
+/// (value, name, optional description) from raw JSON select options, flattening
+/// the `{ group, name, options: [...] }` headers the wire format allows.
+fn json_select_options(items: &[Value]) -> Vec<(String, String, Option<String>)> {
+    let mut out = Vec::new();
+    for item in items {
+        if let Some(group) = item.get("options").and_then(Value::as_array) {
+            out.extend(json_select_options(group));
+            continue;
+        }
+        let Some(value) = json_scalar_string(item.get("value")) else {
+            continue;
+        };
+        let name = item
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or(value.as_str())
+            .to_string();
+        let description = item
+            .get("description")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        out.push((value, name, description));
+    }
+    out
+}
+
+/// A config option's value (or an option value) as text: the wire carries
+/// strings, numbers and bools for the same field.
+fn json_scalar_string(value: Option<&Value>) -> Option<String> {
+    let value = value?;
+    value
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| value.as_f64().map(|n| n.to_string()))
+        .or_else(|| value.as_bool().map(|b| b.to_string()))
+}
+
+/// Debug hook: the raw catalog an agent advertised, so a mislabelled
+/// `configOptions` entry can be told apart from a missing one.
+fn log_raw_model_options(path: &str, options: &[(String, String, Option<String>)]) {
+    for (id, name, desc) in options {
+        crate::debug_log::append(
+            "acp",
+            "debug",
+            "",
+            "raw_model_option",
+            Some(&format!(
+                "path={path} id={id} name={name} desc={:?}",
+                desc.as_deref().unwrap_or("(none)")
+            )),
+        );
+    }
+}
+
+/// A `session/set_config_option` echo is a *partial* session state: it speaks
+/// about the options it changed and omits everything else. Carry forward what it
+/// stayed silent about, or the Composer loses controls it still needs — the
+/// model catalog at session/new, and (DeepSeek Harness, whose echo carries
+/// `configOptions` alone) the plan/build mode list after any model change.
+fn carry_forward_unsaid(next: &mut CapabilitySnapshot, prev: &CapabilitySnapshot) {
+    if next.models.is_empty() {
+        next.models = prev.models.clone();
+    }
+    if next.model_context_sizes.is_empty() {
+        next.model_context_sizes = prev.model_context_sizes.clone();
+    }
+    if next.modes.is_empty() && next.current_mode.is_none() {
+        next.modes = prev.modes.clone();
+        next.current_mode = prev.current_mode.clone();
+    }
+    // File permission is a config option, so an echo that mentions other options
+    // may still have left it out — an empty list is "not mentioned", not
+    // "the agent removed it".
+    if next.permission_options.is_empty() {
+        next.permission_options = prev.permission_options.clone();
+        next.permission_config_id = prev.permission_config_id.clone();
+        next.permission_label = prev.permission_label.clone();
+        if next.current_permission.is_none() {
+            next.current_permission = prev.current_permission.clone();
+        }
+    }
 }
 
 /// Grok / pre-v2 ACP: `session/new` returns
@@ -1749,7 +2059,14 @@ fn merge_legacy_models_field(session_response: &Value, caps: &mut CapabilitySnap
                                 .and_then(Value::as_str)
                                 .unwrap_or(id.as_str())
                                 .to_string();
-                            caps.effort_options.push(ModeDef { id, label });
+                            caps.effort_options.push(ModeDef {
+                                id,
+                                label,
+                                description: level
+                                    .get("description")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string),
+                            });
                         }
                     }
                 }
@@ -1772,9 +2089,12 @@ fn merge_legacy_models_field(session_response: &Value, caps: &mut CapabilitySnap
     }
 }
 
-fn parse_capabilities_from_typed(response: acp_schema::NewSessionResponse) -> CapabilitySnapshot {
+fn parse_capabilities_from_typed(
+    response: acp_schema::NewSessionResponse,
+    legacy_modes: Option<(Vec<ModeDef>, Option<String>)>,
+    held: KnobClaims,
+) -> CapabilitySnapshot {
     use acp_schema::SessionConfigKind as Kind;
-    use acp_schema::SessionConfigOptionCategory as Cat;
 
     let mut modes: Vec<ModeDef> = Vec::new();
     let mut models: Vec<ModelDef> = Vec::new();
@@ -1787,83 +2107,48 @@ fn parse_capabilities_from_typed(response: acp_schema::NewSessionResponse) -> Ca
     let mut model_config_id: Option<String> = None;
     let mut mode_config_id: Option<String> = None;
     let mut effort_config_id: Option<String> = None;
+    let mut permission_options: Vec<ModeDef> = Vec::new();
+    let mut permission_config_id: Option<String> = None;
+    let mut current_permission: Option<String> = None;
+    let mut permission_label: Option<String> = None;
 
-    /// (value, name, optional description)
-    fn extract_options(
-        options: &acp_schema::SessionConfigSelectOptions,
-    ) -> Vec<(String, String, Option<String>)> {
-        match options {
-            acp_schema::SessionConfigSelectOptions::Ungrouped(list) => list
-                .iter()
-                .map(|o| {
-                    (
-                        o.value.0.to_string(),
-                        o.name.clone(),
-                        o.description.clone(),
-                    )
-                })
-                .collect(),
-            acp_schema::SessionConfigSelectOptions::Grouped(groups) => groups
-                .iter()
-                .flat_map(|g| &g.options)
-                .map(|o| {
-                    (
-                        o.value.0.to_string(),
-                        o.name.clone(),
-                        o.description.clone(),
-                    )
-                })
-                .collect(),
-            _ => vec![],
+    let mut held = held;
+    if let Some((legacy, current)) = legacy_modes {
+        if !legacy.is_empty() {
+            modes = legacy;
         }
-    }
-
-    // Legacy modes field on NewSessionResponse
-    if let Some(mode_state) = &response.modes {
-        current_mode = Some(mode_state.current_mode_id.0.to_string());
-        for mode in &mode_state.available_modes {
-            modes.push(ModeDef {
-                id: mode.id.0.to_string(),
-                label: mode.name.clone(),
-            });
-        }
-        if mode_config_id.is_none() {
-            mode_config_id = Some("mode".to_string());
-        }
+        current_mode = current;
     }
 
     if let Some(config_options) = &response.config_options {
         for opt in config_options {
             let id_str = opt.id.0.to_string();
-            let category = opt.category.clone();
-            match category {
-                Some(Cat::Mode) => {
+            let category = opt.category.as_ref().and_then(category_name);
+            match config_option_knob(&id_str, category.as_deref(), held) {
+                Some(ConfigKnob::Mode) => {
+                    held.mode = true;
                     mode_config_id = Some(id_str.clone());
                     if let Kind::Select(select) = &opt.kind {
-                        let extracted = extract_options(&select.options);
+                        let extracted = extract_typed_options(&select.options);
                         if !extracted.is_empty() {
                             modes = extracted
                                 .into_iter()
-                                .map(|(id, name, _)| ModeDef { id, label: name })
+                                .map(|(id, name, description)| ModeDef {
+                                    id,
+                                    label: name,
+                                    description,
+                                })
                                 .collect();
                         }
                         current_mode = Some(select.current_value.0.to_string());
                     }
                 }
-                Some(Cat::Model) => {
+                Some(ConfigKnob::Model) => {
+                    held.model = true;
                     model_config_id = Some(id_str.clone());
                     if let Kind::Select(select) = &opt.kind {
-                        let raw = extract_options(&select.options);
-                        // DEBUG: log raw model options from ACP typed path
-                        for (mid, mname, mdesc) in &raw {
-                            crate::debug_log::append(
-                                "acp",
-                                "debug",
-                                "",
-                                "raw_model_option",
-                                Some(&format!("id={mid} name={mname} desc={:?}", mdesc.as_deref().unwrap_or("(none)"))),
-                            );
-                        }
+                        let raw = extract_typed_options(&select.options);
+                        log_raw_model_options("typed", &raw);
                         models = raw
                             .into_iter()
                             .map(|(id, name, desc)| ModelDef {
@@ -1875,15 +2160,17 @@ fn parse_capabilities_from_typed(response: acp_schema::NewSessionResponse) -> Ca
                         current_model = Some(select.current_value.0.to_string());
                     }
                 }
-                Some(Cat::ThoughtLevel) => {
+                Some(ConfigKnob::Effort) => {
+                    held.effort = true;
                     effort_config_id = Some(id_str.clone());
                     if let Kind::Select(select) = &opt.kind {
-                        let extracted = extract_options(&select.options);
+                        let extracted = extract_typed_options(&select.options);
                         effort_options = extracted
                             .iter()
-                            .map(|(id, name, _)| ModeDef {
+                            .map(|(id, name, description)| ModeDef {
                                 id: id.clone(),
                                 label: name.clone(),
+                                description: description.clone(),
                             })
                             .collect();
                         let vals: Vec<f64> = extracted
@@ -1904,44 +2191,22 @@ fn parse_capabilities_from_typed(response: acp_schema::NewSessionResponse) -> Ca
                         current_effort = cur.parse::<f64>().ok();
                     }
                 }
-                _ => {
-                    let lower = id_str.to_lowercase();
-                    if lower.contains("effort")
-                        || lower.contains("thinking")
-                        || lower.contains("thought")
-                    {
-                        effort_config_id = Some(id_str);
-                        if let Kind::Select(select) = &opt.kind {
-                            let extracted = extract_options(&select.options);
-                            if effort_options.is_empty() {
-                                effort_options = extracted
-                                    .iter()
-                                    .map(|(id, name, _)| ModeDef {
-                                        id: id.clone(),
-                                        label: name.clone(),
-                                    })
-                                    .collect();
-                            }
-                            let vals: Vec<f64> = extracted
-                                .iter()
-                                .filter_map(|(v, _, _)| v.parse::<f64>().ok())
-                                .collect();
-                            if !vals.is_empty() {
-                                let min_val = vals.iter().cloned().fold(f64::INFINITY, f64::min);
-                                let max_val =
-                                    vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-                                thinking_effort = Some(ThinkingEffort {
-                                    min: min_val,
-                                    max: max_val,
-                                    default: min_val + (max_val - min_val) * 0.5,
-                                });
-                            }
-                            let cur = select.current_value.0.to_string();
-                            current_effort_id = Some(cur.clone());
-                            current_effort = cur.parse::<f64>().ok();
-                        }
+                Some(ConfigKnob::Permission) => {
+                    permission_config_id = Some(id_str.clone());
+                    permission_label = Some(opt.name.clone());
+                    if let Kind::Select(select) = &opt.kind {
+                        permission_options = extract_typed_options(&select.options)
+                            .into_iter()
+                            .map(|(id, name, description)| ModeDef {
+                                id,
+                                label: name,
+                                description,
+                            })
+                            .collect();
+                        current_permission = Some(select.current_value.0.to_string());
                     }
                 }
+                None => {}
             }
         }
     }
@@ -1973,12 +2238,20 @@ fn parse_capabilities_from_typed(response: acp_schema::NewSessionResponse) -> Ca
         model_config_id,
         mode_config_id,
         effort_config_id,
+        permission_options,
+        permission_config_id,
+        current_permission,
+        permission_label,
         prompt_image: true,
         model_context_sizes: HashMap::new(),
     }
 }
 
-fn parse_capabilities_fallback(session_response: &Value) -> CapabilitySnapshot {
+fn parse_capabilities_fallback(
+    session_response: &Value,
+    legacy_modes: Option<(Vec<ModeDef>, Option<String>)>,
+    held: KnobClaims,
+) -> CapabilitySnapshot {
     let config_options = session_response
         .get("configOptions")
         .and_then(|c| c.as_array());
@@ -1994,6 +2267,18 @@ fn parse_capabilities_fallback(session_response: &Value) -> CapabilitySnapshot {
     let mut model_config_id: Option<String> = None;
     let mut mode_config_id: Option<String> = None;
     let mut effort_config_id: Option<String> = None;
+    let mut permission_options: Vec<ModeDef> = Vec::new();
+    let mut permission_config_id: Option<String> = None;
+    let mut current_permission: Option<String> = None;
+    let mut permission_label: Option<String> = None;
+
+    let mut held = held;
+    if let Some((legacy, current)) = legacy_modes {
+        if !legacy.is_empty() {
+            modes = legacy;
+        }
+        current_mode = current;
+    }
 
     if let Some(options) = config_options {
         for opt in options {
@@ -2003,94 +2288,36 @@ fn parse_capabilities_fallback(session_response: &Value) -> CapabilitySnapshot {
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
-            let current_value = opt
-                .get("currentValue")
-                .and_then(|v| {
-                    v.as_str()
-                        .map(str::to_string)
-                        .or_else(|| v.as_f64().map(|n| n.to_string()))
-                        .or_else(|| v.as_bool().map(|b| b.to_string()))
-                });
+            let current_value = json_scalar_string(opt.get("currentValue"));
 
             // (value, name, description)
             let select_options = opt
                 .get("options")
                 .and_then(|o| o.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|item| {
-                            // Flat options or one level of groups
-                            if item.get("options").and_then(|o| o.as_array()).is_some() {
-                                return None; // handled below via flatten - skip group headers
-                            }
-                            let value = item.get("value")?.as_str()?.to_string();
-                            let name = item
-                                .get("name")
-                                .and_then(Value::as_str)
-                                .unwrap_or(value.as_str())
-                                .to_string();
-                            let description = item
-                                .get("description")
-                                .and_then(Value::as_str)
-                                .map(str::to_string);
-                            Some((value, name, description))
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_else(|| {
-                    // Grouped: options[].options[]
-                    opt.get("options")
-                        .and_then(|o| o.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .flat_map(|item| {
-                                    item.get("options")
-                                        .and_then(|o| o.as_array())
-                                        .into_iter()
-                                        .flatten()
-                                        .filter_map(|inner| {
-                                            let value = inner.get("value")?.as_str()?.to_string();
-                                            let name = inner
-                                                .get("name")
-                                                .and_then(Value::as_str)
-                                                .unwrap_or(value.as_str())
-                                                .to_string();
-                                            let description = inner
-                                                .get("description")
-                                                .and_then(Value::as_str)
-                                                .map(str::to_string);
-                                            Some((value, name, description))
-                                        })
-                                })
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default()
-                });
+                .map(|arr| json_select_options(arr))
+                .unwrap_or_default();
 
-            match category.as_str() {
-                "mode" => {
+            match config_option_knob(&id, Some(category.as_str()), held) {
+                Some(ConfigKnob::Mode) => {
+                    held.mode = true;
                     mode_config_id = Some(id);
                     if !select_options.is_empty() {
                         modes = select_options
                             .into_iter()
-                            .map(|(id, name, _)| ModeDef { id, label: name })
+                            .map(|(id, name, description)| ModeDef {
+                                id,
+                                label: name,
+                                description,
+                            })
                             .collect();
                     }
                     current_mode = current_value;
                 }
-                "model" => {
+                Some(ConfigKnob::Model) => {
+                    held.model = true;
                     model_config_id = Some(id);
                     if !select_options.is_empty() {
-                        // DEBUG: log raw model options from ACP fallback path (category="model")
-                        for (mid, mname, mdesc) in &select_options {
-                            crate::debug_log::append(
-                                "acp",
-                                "debug",
-                                "",
-                                "raw_model_option",
-                                Some(&format!("id={mid} name={mname} desc={:?}", mdesc.as_deref().unwrap_or("(none)"))),
-                            );
-                        }
+                        log_raw_model_options("fallback", &select_options);
                         models = select_options
                             .into_iter()
                             .map(|(id, name, desc)| ModelDef {
@@ -2102,14 +2329,16 @@ fn parse_capabilities_fallback(session_response: &Value) -> CapabilitySnapshot {
                     }
                     current_model = current_value;
                 }
-                "thought_level" | "effort" | "thinking" => {
+                Some(ConfigKnob::Effort) => {
+                    held.effort = true;
                     effort_config_id = Some(id);
                     if !select_options.is_empty() {
                         effort_options = select_options
                             .iter()
-                            .map(|(id, name, _)| ModeDef {
+                            .map(|(id, name, description)| ModeDef {
                                 id: id.clone(),
                                 label: name.clone(),
+                                description: description.clone(),
                             })
                             .collect();
                         let vals: Vec<f64> = select_options
@@ -2129,58 +2358,25 @@ fn parse_capabilities_fallback(session_response: &Value) -> CapabilitySnapshot {
                     current_effort_id = current_value.clone();
                     current_effort = current_value.and_then(|v| v.parse().ok());
                 }
-                _ => {
-                    let lower = id.to_lowercase();
-                    if lower.contains("model") {
-                        model_config_id = Some(id);
-                        if !select_options.is_empty() {
-                            // DEBUG: log raw model options from ACP fallback path (generic "model")
-                            for (mid, mname, mdesc) in &select_options {
-                                crate::debug_log::append(
-                                    "acp",
-                                    "debug",
-                                    "",
-                                    "raw_model_option",
-                                    Some(&format!("id={mid} name={mname} desc={:?}", mdesc.as_deref().unwrap_or("(none)"))),
-                                );
-                            }
-                            models = select_options
-                                .into_iter()
-                                .map(|(id, name, desc)| ModelDef {
-                                    id,
-                                    label: model_display_label(&name, desc.as_deref()),
-                                    description: desc,
-                                })
-                                .collect();
-                        }
-                        current_model = current_value;
-                    } else if lower.contains("mode") {
-                        mode_config_id = Some(id);
-                        if !select_options.is_empty() {
-                            modes = select_options
-                                .into_iter()
-                                .map(|(id, name, _)| ModeDef { id, label: name })
-                                .collect();
-                        }
-                        current_mode = current_value;
-                    } else if lower.contains("effort")
-                        || lower.contains("thinking")
-                        || lower.contains("thought")
-                    {
-                        effort_config_id = Some(id);
-                        if !select_options.is_empty() && effort_options.is_empty() {
-                            effort_options = select_options
-                                .iter()
-                                .map(|(id, name, _)| ModeDef {
-                                    id: id.clone(),
-                                    label: name.clone(),
-                                })
-                                .collect();
-                        }
-                        current_effort_id = current_value.clone();
-                        current_effort = current_value.and_then(|v| v.parse().ok());
+                Some(ConfigKnob::Permission) => {
+                    permission_config_id = Some(id);
+                    permission_label = opt
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    if !select_options.is_empty() {
+                        permission_options = select_options
+                            .into_iter()
+                            .map(|(id, name, description)| ModeDef {
+                                id,
+                                label: name,
+                                description,
+                            })
+                            .collect();
                     }
+                    current_permission = current_value;
                 }
+                None => {}
             }
         }
     }
@@ -2211,6 +2407,10 @@ fn parse_capabilities_fallback(session_response: &Value) -> CapabilitySnapshot {
         model_config_id,
         mode_config_id,
         effort_config_id,
+        permission_options,
+        permission_config_id,
+        current_permission,
+        permission_label,
         prompt_image: true,
         model_context_sizes: HashMap::new(),
     }
@@ -3638,6 +3838,311 @@ mod tests {
         assert_eq!(caps.models.len(), 1);
         assert_eq!(caps.effort_options.len(), 3);
         assert!(caps.effort_options.iter().any(|o| o.id == "low"));
+    }
+
+    /// The three `configOptions` DeepSeek Harness returns, with `current` on the
+    /// model select. `reasoning` is the effort knob (as 推理档位) and `sandbox`
+    /// (文件权限) is not a Composer knob at all.
+    fn deepseek_config_options(current: &str) -> Value {
+        json!([
+            {
+                "type": "select",
+                "id": "model",
+                "name": "模型",
+                "category": "model",
+                "currentValue": current,
+                "options": [
+                    { "group": "deepseek-official", "name": "DeepSeek", "options": [
+                        { "value": "deepseek-official::deepseek-flash", "name": "DeepSeek-V4.1-Flash" },
+                        { "value": "deepseek-official::deepseek-v4-pro", "name": "DeepSeek-V4-Pro" }
+                    ] },
+                    { "group": "xai", "name": "xai", "options": [
+                        { "value": "xai::grok-4.6", "name": "Grok 4.6" }
+                    ] }
+                ]
+            },
+            {
+                "type": "select",
+                "id": "reasoning",
+                "name": "推理档位",
+                "category": "model",
+                "currentValue": "high",
+                "options": [
+                    { "value": "off", "name": "关闭" },
+                    { "value": "low", "name": "低" },
+                    { "value": "high", "name": "高" },
+                    { "value": "max", "name": "最高" }
+                ]
+            },
+            {
+                "type": "select",
+                "id": "sandbox",
+                "name": "文件权限",
+                "category": "mode",
+                "currentValue": "workspace-write",
+                "options": [
+                    { "value": "read-only", "name": "只读" },
+                    { "value": "workspace-write", "name": "可写工作区" },
+                    { "value": "danger-full-access", "name": "完全访问" }
+                ]
+            }
+        ])
+    }
+
+    /// `session/new` as deepseek-acp 0.9.0 answers it (grouped model catalog;
+    /// the app's own run reports the same models with the provider prefix
+    /// dropped when DeepSeek is the only reachable provider).
+    fn deepseek_session_new() -> Value {
+        json!({
+            "sessionId": "s1",
+            "configOptions": deepseek_config_options("deepseek-official::deepseek-flash"),
+            "modes": {
+                "availableModes": [
+                    { "id": "default", "name": "常规" },
+                    { "id": "plan", "name": "计划" }
+                ],
+                "currentModeId": "default"
+            }
+        })
+    }
+
+    /// DeepSeek Harness ships its 推理档位 select as `category: "model"` and its
+    /// 文件权限 select as `category: "mode"` (probed 2026-09-25, deepseek-acp
+    /// 0.9.0). Trusting the category handed the Composer 关闭/低/高/最高 as the
+    /// model list and the sandbox levels as the modes, so no real model could be
+    /// picked. The id decides now — and both parse paths have to agree.
+    #[test]
+    fn mislabelled_config_options_do_not_steal_a_knob() {
+        let response = deepseek_session_new();
+
+        let typed: acp_schema::NewSessionResponse =
+            serde_json::from_value(response.clone()).expect("typed ACP parse");
+        let legacy = legacy_modes_from_json(&response);
+        let held = KnobClaims {
+            mode: legacy.is_some(),
+            ..KnobClaims::default()
+        };
+        for caps in [
+            parse_capabilities_from_typed(typed, legacy.clone(), held),
+            parse_capabilities_fallback(&response, legacy, held),
+            parse_session_capabilities(&response),
+        ] {
+            assert_eq!(
+                caps.models.iter().map(|m| m.id.clone()).collect::<Vec<_>>(),
+                vec![
+                    "deepseek-official::deepseek-flash",
+                    "deepseek-official::deepseek-v4-pro",
+                    "xai::grok-4.6"
+                ]
+            );
+            assert_eq!(
+                caps.current_model.as_deref(),
+                Some("deepseek-official::deepseek-flash")
+            );
+            assert_eq!(caps.model_config_id.as_deref(), Some("model"));
+
+            // The reasoning select is the effort knob, not a model catalog.
+            assert_eq!(caps.effort_config_id.as_deref(), Some("reasoning"));
+            assert_eq!(
+                caps.effort_options.iter().map(|o| o.id.clone()).collect::<Vec<_>>(),
+                vec!["off", "low", "high", "max"]
+            );
+            assert_eq!(caps.current_effort_id.as_deref(), Some("high"));
+
+            // The pre-v2 `modes` field owns the mode knob; the sandbox select is
+            // a knob of its own. Nothing names a mode config option, so mode
+            // changes route through session/set_mode (the RPC that takes exactly
+            // these ids).
+            assert_eq!(
+                caps.modes.iter().map(|m| m.id.clone()).collect::<Vec<_>>(),
+                vec!["default", "plan"]
+            );
+            assert_eq!(caps.current_mode.as_deref(), Some("default"));
+            assert_eq!(caps.mode_config_id, None);
+
+            // 文件权限 takes the permission knob — not the mode one, despite its
+            // `category: "mode"`. Its own label rides along so the chip is not
+            // hard-coded to DSH's wording.
+            assert_eq!(caps.permission_config_id.as_deref(), Some("sandbox"));
+            assert_eq!(caps.permission_label.as_deref(), Some("文件权限"));
+            assert_eq!(
+                caps.permission_options.iter().map(|o| o.id.clone()).collect::<Vec<_>>(),
+                vec!["read-only", "workspace-write", "danger-full-access"]
+            );
+            assert_eq!(caps.current_permission.as_deref(), Some("workspace-write"));
+        }
+    }
+
+    /// Codex advertises its own read-only/agent/full-access switch as `mode`,
+    /// a `collaboration_mode` plan switch and a `model_config` fast-mode toggle
+    /// (probed 2026-09-25, codex-acp 1.10.0). Only `mode` may fill the mode knob.
+    #[test]
+    fn model_config_and_collaboration_mode_stay_off_the_mode_knob() {
+        let response = json!({
+            "sessionId": "s1",
+            "configOptions": [
+                { "id": "mode", "name": "Mode", "category": "mode", "type": "select",
+                  "currentValue": "agent",
+                  "options": [
+                      { "value": "read-only", "name": "Ask for approval" },
+                      { "value": "agent", "name": "Approve for me" },
+                      { "value": "agent-full-access", "name": "Full access" }
+                  ] },
+                { "id": "collaboration_mode", "name": "Collaboration mode",
+                  "category": "collaboration_mode", "type": "select", "currentValue": "default",
+                  "options": [
+                      { "value": "default", "name": "Default" },
+                      { "value": "plan", "name": "Plan" }
+                  ] },
+                { "id": "model", "name": "Model", "category": "model", "type": "select",
+                  "currentValue": "gpt-5.6-terra",
+                  "options": [ { "value": "gpt-5.6-terra", "name": "GPT-5.6-Terra" } ] },
+                { "id": "reasoning_effort", "name": "Reasoning effort",
+                  "category": "thought_level", "type": "select", "currentValue": "medium",
+                  "options": [
+                      { "value": "low", "name": "Low" },
+                      { "value": "medium", "name": "Medium" }
+                  ] },
+                { "id": "fast-mode", "name": "Fast mode", "category": "model_config",
+                  "type": "select", "currentValue": "off",
+                  "options": [
+                      { "value": "off", "name": "Off" },
+                      { "value": "on", "name": "On" }
+                  ] }
+            ],
+            "modes": {
+                "availableModes": [
+                    { "id": "read-only", "name": "Ask for approval" },
+                    { "id": "agent", "name": "Approve for me" },
+                    { "id": "agent-full-access", "name": "Full access" }
+                ],
+                "currentModeId": "agent"
+            }
+        });
+
+        let caps = parse_session_capabilities(&response);
+        assert_eq!(
+            caps.modes.iter().map(|m| m.id.clone()).collect::<Vec<_>>(),
+            vec!["read-only", "agent", "agent-full-access"]
+        );
+        assert_eq!(caps.mode_config_id.as_deref(), Some("mode"));
+        assert_eq!(caps.current_mode.as_deref(), Some("agent"));
+        assert_eq!(caps.model_config_id.as_deref(), Some("model"));
+        assert_eq!(caps.models.len(), 1);
+        assert_eq!(caps.effort_config_id.as_deref(), Some("reasoning_effort"));
+        assert_eq!(
+            caps.effort_options.iter().map(|o| o.id.clone()).collect::<Vec<_>>(),
+            vec!["low", "medium"]
+        );
+        // Codex has no separate permission select — its `mode` *is* the
+        // permission axis — so nothing may invent a second control for it.
+        assert_eq!(caps.permission_config_id, None);
+        assert!(caps.permission_options.is_empty());
+    }
+
+    /// A `session/set_config_option` echo speaks only about the option it
+    /// changed. DeepSeek Harness echoes `configOptions` alone, so without this a
+    /// model or effort switch would drop the plan/build mode chip.
+    #[test]
+    fn a_config_option_echo_keeps_what_it_did_not_mention() {
+        let prev = parse_session_capabilities(&json!({
+            "sessionId": "s1",
+            "modes": {
+                "availableModes": [
+                    { "id": "default", "name": "常规" },
+                    { "id": "plan", "name": "计划" }
+                ],
+                "currentModeId": "plan"
+            },
+            "configOptions": [{
+                "id": "model", "name": "模型", "category": "model", "type": "select",
+                "currentValue": "m1",
+                "options": [
+                    { "value": "m1", "name": "M1" },
+                    { "value": "m2", "name": "M2" }
+                ]
+            }]
+        }));
+        let mut echo = parse_session_capabilities(&json!({
+            "sessionId": "s1",
+            "configOptions": [{
+                "id": "model", "name": "模型", "category": "model", "type": "select",
+                "currentValue": "m2",
+                "options": [
+                    { "value": "m1", "name": "M1" },
+                    { "value": "m2", "name": "M2" }
+                ]
+            }]
+        }));
+        assert!(echo.modes.is_empty() && echo.current_mode.is_none());
+
+        carry_forward_unsaid(&mut echo, &prev);
+        assert_eq!(
+            echo.modes.iter().map(|m| m.id.clone()).collect::<Vec<_>>(),
+            vec!["default", "plan"]
+        );
+        assert_eq!(echo.current_mode.as_deref(), Some("plan"));
+        // The echo is still the authority on what it did mention.
+        assert_eq!(echo.current_model.as_deref(), Some("m2"));
+    }
+
+    /// The Composer's permission chip sends the logical knob (`permission`); the
+    /// wire id has to be the one the agent advertised. Sending an invented
+    /// `permission` id instead gets -32602 from DeepSeek Harness.
+    #[test]
+    fn a_permission_change_routes_to_the_advertised_option_id() {
+        let caps = parse_session_capabilities(&deepseek_session_new());
+        let updates =
+            expand_config_updates(&json!({ "permission": "read-only" }), Some(&caps)).unwrap();
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].target, ConfigTarget::Permission);
+        assert_eq!(updates[0].config_id.as_deref(), Some("sandbox"));
+        assert_eq!(updates[0].value, json!("read-only"));
+        assert!(config_id_is_advertised(
+            Some(&caps),
+            ConfigTarget::Permission,
+            "sandbox"
+        ));
+
+        // An agent with no such option must not be sent a fabricated id; the
+        // value rejection that follows is the honest answer.
+        let none = expand_config_updates(&json!({ "permission": "read-only" }), None).unwrap();
+        assert_eq!(none[0].target, ConfigTarget::Permission);
+        assert_eq!(none[0].config_id, None);
+    }
+
+    /// DeepSeek Harness answers `session/set_config_option` with `configOptions`
+    /// alone — the pre-v2 `modes` field is not in the echo. Re-classifying from
+    /// scratch let the sandbox select (category "mode") claim the plan/build
+    /// knob, which showed up live as the mode chip flipping 常规 → 可写工作区 on
+    /// the first model change.
+    #[test]
+    fn a_config_option_echo_cannot_reassign_a_knob() {
+        let prev = parse_session_capabilities(&deepseek_session_new());
+        let echo = json!({
+            "sessionId": "s1",
+            "configOptions": deepseek_config_options("deepseek-official::deepseek-v4-pro"),
+        });
+
+        let next = parse_session_capabilities_after(&echo, Some(&prev));
+        assert_eq!(
+            next.current_model.as_deref(),
+            Some("deepseek-official::deepseek-v4-pro")
+        );
+        assert_eq!(next.model_config_id.as_deref(), Some("model"));
+        assert_eq!(next.effort_config_id.as_deref(), Some("reasoning"));
+        // Nothing in the echo speaks for the mode knob.
+        assert!(next.modes.is_empty());
+        assert!(next.current_mode.is_none());
+        assert_eq!(next.mode_config_id, None);
+
+        let mut merged = next;
+        carry_forward_unsaid(&mut merged, &prev);
+        assert_eq!(
+            merged.modes.iter().map(|m| m.id.clone()).collect::<Vec<_>>(),
+            vec!["default", "plan"]
+        );
+        assert_eq!(merged.current_mode.as_deref(), Some("default"));
     }
 
     #[test]
