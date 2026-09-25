@@ -1,7 +1,8 @@
 import type { ModelDef } from "./types";
 
 /**
- * Display-only model name cleanup. Wire ids stay untouched for set_model / prefs.
+ * Display-only cleanup for ACP labels — model names and effort tiers. Wire ids
+ * stay untouched for set_model / prefs.
  *
  * Structural heuristics (not per-model tables) so ACP label churn does not require
  * a Marionette release each time.
@@ -120,4 +121,22 @@ export function prettyModelTrigger(
 /** Full tooltip text (id + description). */
 export function modelTooltip(model: Pick<ModelDef, "id" | "label" | "description">): string {
   return [model.label || model.id, model.description, model.id].filter(Boolean).join("\n");
+}
+
+/**
+ * Effort-tier label without the axis name the composer already prints above the
+ * row. Agents name the axis themselves ("High Effort"), so rendering that label
+ * verbatim under an "EFFORT" header repeats the word on every button.
+ *
+ * Falls back to the wire id, which is what Rust substitutes when a tier arrives
+ * with no label at all.
+ */
+export function prettyEffortLabel(
+  label: string | null | undefined,
+  id?: string | null,
+): string {
+  const raw = (label ?? "").trim() || (id ?? "").trim();
+  if (!raw) return "";
+  // "Max Effort" → "Max"; a label that is only "Effort" is kept as-is.
+  return raw.replace(/\s+effort$/i, "").trim() || raw;
 }

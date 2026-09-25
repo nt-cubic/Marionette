@@ -113,6 +113,7 @@ import {
 import { formatPinsForSend } from "../lib/quoteComment";
 import { findLinkTargets } from "../lib/linkTargets";
 import { classifyAgentError, formatClassifiedError } from "../lib/errors";
+import { prettyEffortLabel } from "../lib/modelLabel";
 import { getLastUsedDefaults } from "../lib/recentModels";
 import { pickRestoredSession, saveUiRestore, saveQueuedSends, loadQueuedSends, saveClosedTabs, loadClosedTabs } from "../lib/uiRestore";
 import { AskQuestionCard, type AskQuestionPrompt } from "../components/AskQuestionCard";
@@ -4874,7 +4875,10 @@ export function App() {
       const effortLabelVal =
         composerSnap?.effortLabel?.trim() ||
         (effortId
-          ? caps?.effortOptions?.find((o) => o.id === effortId)?.label ?? effortId
+          ? prettyEffortLabel(
+              caps?.effortOptions?.find((o) => o.id === effortId)?.label,
+              effortId,
+            )
           : displaySession.preferredEffort != null
             ? effortLabel(displaySession.preferredEffort)
             : undefined);

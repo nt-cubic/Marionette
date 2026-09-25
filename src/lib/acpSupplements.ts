@@ -60,8 +60,11 @@ const SUPPLEMENTS: Record<string, AcpSupplement> = {
       { id: "build", label: "Build" },
     ],
     models: [{ id: "grok-4.5", label: "Grok 4.5" }],
-    // Grok publishes these under _meta["x.ai/sessionConfig"] (confusingly with
-    // category "mode") and _meta.modelState[].reasoningEfforts.
+    // Grok advertises the *current model's* levels under
+    // `models.availableModels[]._meta.reasoningEfforts` — a custom catalog entry
+    // can list all seven tiers (none … max), grok-4.7 lists four. The three
+    // below are only a fallback for a harness build that advertises none, so
+    // `mergeAcpCapabilities` lets the live list win.
     effortOptions: [
       { id: "high", label: "High" },
       { id: "medium", label: "Medium" },
@@ -204,7 +207,9 @@ export function mergeAcpCapabilities(
     sup.effortViaLegacyModel === true && (sup.effortOptions?.length ?? 0) > 0;
 
   const effortOptions = legacyEffort
-    ? sup.effortOptions ?? []
+    ? (base.effortOptions?.length ?? 0) > 0
+      ? base.effortOptions
+      : sup.effortOptions ?? []
     : liveHasEffort
       ? (base.effortOptions?.length ?? 0) > 0
         ? base.effortOptions

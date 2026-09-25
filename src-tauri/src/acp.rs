@@ -964,13 +964,11 @@ impl AcpService {
                 });
                 // A bare set_model snaps effort back to the model default, which
                 // would leave the Effort chip claiming a level the agent dropped.
-                // Re-assert whatever the session is on.
-                if let Some(effort) = self
-                    .get_capabilities(session_id)
-                    .and_then(|caps| caps.current_effort_id)
-                    .filter(|id| matches!(id.as_str(), "low" | "medium" | "high"))
-                {
-                    params["_meta"] = json!({ "reasoningEffort": effort });
+                // Re-assert whatever the session is on — gated on what it advertised.
+                if let Some(caps) = self.get_capabilities(session_id) {
+                    if let Some(effort) = reassertable_effort(&caps) {
+                        params["_meta"] = json!({ "reasoningEffort": effort });
+                    }
                 }
                 request(process, "session/set_model", params)
             }
@@ -1558,6 +1556,23 @@ fn numeric_effort_to_level(n: f64) -> String {
     } else {
         "medium".to_string()
     }
+}
+
+/// The level to re-assert when a bare `session/set_model` would otherwise snap
+/// effort back to the model's default.
+///
+/// The menu is per model and wider than the old low/medium/high trio (a custom
+/// Grok catalog entry publishes `none` … `max`), so the session's own advertised
+/// list is the gate. An empty list means the harness published no menu at all,
+/// where the historical trio is all we ever sent.
+fn reassertable_effort(caps: &CapabilitySnapshot) -> Option<String> {
+    caps.current_effort_id.clone().filter(|id| {
+        if caps.effort_options.is_empty() {
+            matches!(id.as_str(), "low" | "medium" | "high")
+        } else {
+            caps.effort_options.iter().any(|o| &o.id == id)
+        }
+    })
 }
 
 /// Model id of one `availableModels[]` entry (Grok uses `modelId`).
@@ -3711,6 +3726,101 @@ mod tests {
         assert_eq!(updates[0].target, ConfigTarget::Effort);
         assert_eq!(updates[0].config_id, None);
         assert_eq!(updates[0].value, json!("low"));
+    }
+
+    /// End to end on the real wire shape: what session/new advertises for a
+    /// custom catalog entry has to reach the re-assert gate unchanged.
+    #[test]
+    fn a_custom_catalog_menu_survives_parsing_into_the_reassert_gate() {
+        let response = json!({
+            "sessionId": "s1",
+            "models": {
+                "currentModelId": "deepseek-flash",
+                "availableModels": [{
+                    "modelId": "deepseek-flash",
+                    "name": "DeepSeek Flash (Official)",
+                    "_meta": {
+                        "reasoningEffort": "max",
+                        "reasoningEfforts": [
+                            { "id": "none", "label": "No Reasoning" },
+                            { "id": "minimal", "label": "Minimal Effort" },
+                            { "id": "low", "label": "Low Effort" },
+                            { "id": "medium", "label": "Medium Effort" },
+                            { "id": "high", "label": "High Effort" },
+                            { "id": "xhigh", "label": "Extra High Effort" },
+                            { "id": "max", "label": "Max Effort" }
+                        ]
+                    }
+                }]
+            }
+        });
+        let caps = parse_session_capabilities(&response);
+        assert_eq!(caps.effort_options.len(), 7);
+        assert_eq!(reassertable_effort(&caps).as_deref(), Some("max"));
+    }
+
+    fn caps_with_effort(current: Option<&str>, menu: &[&str]) -> CapabilitySnapshot {
+        CapabilitySnapshot {
+            modes: Vec::new(),
+            models: Vec::new(),
+            thinking_effort: None,
+            effort_options: menu
+                .iter()
+                .map(|id| ModeDef {
+                    id: id.to_string(),
+                    label: id.to_string(),
+                    description: None,
+                })
+                .collect(),
+            supports_cancel: true,
+            current_mode: None,
+            current_model: None,
+            current_effort: None,
+            current_effort_id: current.map(str::to_string),
+            model_config_id: None,
+            mode_config_id: None,
+            effort_config_id: None,
+            permission_options: Vec::new(),
+            permission_config_id: None,
+            current_permission: None,
+            permission_label: None,
+            prompt_image: true,
+            model_context_sizes: HashMap::new(),
+        }
+    }
+
+    /// A model switch re-asserts the session's level, and a custom Grok catalog
+    /// entry goes past the old trio — dropping `max` there silently resets a
+    /// DeepSeek/teamo session to the model default.
+    #[test]
+    fn a_model_switch_reasserts_levels_past_the_old_trio() {
+        let deepseek = caps_with_effort(
+            Some("max"),
+            &["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+        );
+        assert_eq!(reassertable_effort(&deepseek).as_deref(), Some("max"));
+
+        let grok47 = caps_with_effort(Some("xhigh"), &["xhigh", "high", "medium", "low"]);
+        assert_eq!(reassertable_effort(&grok47).as_deref(), Some("xhigh"));
+
+        let low = caps_with_effort(Some("low"), &["xhigh", "high", "medium", "low"]);
+        assert_eq!(reassertable_effort(&low).as_deref(), Some("low"));
+    }
+
+    /// Never re-assert a level the session did not advertise: an older harness
+    /// build publishes no menu at all, where only the historical trio was sent.
+    #[test]
+    fn a_model_switch_never_invents_a_level() {
+        let no_menu = caps_with_effort(Some("high"), &[]);
+        assert_eq!(reassertable_effort(&no_menu).as_deref(), Some("high"));
+        let no_menu_max = caps_with_effort(Some("max"), &[]);
+        assert_eq!(reassertable_effort(&no_menu_max), None);
+
+        let outside_menu = caps_with_effort(Some("max"), &["high", "medium", "low"]);
+        assert_eq!(reassertable_effort(&outside_menu), None);
+
+        let unknown = caps_with_effort(None, &["high", "medium", "low"]);
+        assert_eq!(reassertable_effort(&unknown), None);
     }
 
     /// A mode change must stay recognisable as a *mode* after expansion, or the
