@@ -46,6 +46,7 @@ import {
 import { detectCapabilityDrift } from "../lib/capabilityDrift";
 import {
   modelTooltip,
+  prettyEffortLabel,
   prettyModelLabel,
   prettyModelTrigger,
 } from "../lib/modelLabel";
@@ -1264,7 +1265,10 @@ export function Composer({
       const effortOpts = caps?.effortOptions ?? [];
       const effortLabelVal =
         currentEffortId != null
-          ? (effortOpts.find((o) => o.id === currentEffortId)?.label ?? currentEffortId)
+          ? prettyEffortLabel(
+              effortOpts.find((o) => o.id === currentEffortId)?.label,
+              currentEffortId,
+            )
           : currentEffort != null
             ? effortLabel(currentEffort)
             : null;
@@ -1716,8 +1720,10 @@ export function Composer({
     onActiveModelChange?.(displayModel);
   }, [displayModel, onActiveModelChange]);
   const displayEffort = hasStringEffort
-    ? (effortOptions.find((o) => o.id === currentEffortId)?.label ??
-        currentEffortId)
+    ? prettyEffortLabel(
+        effortOptions.find((o) => o.id === currentEffortId)?.label,
+        currentEffortId,
+      ) || null
     : hasEffort && currentEffort != null
       ? effortLabel(currentEffort)
       : null;
@@ -2707,7 +2713,7 @@ export function Composer({
                                       });
                                     }}
                                   >
-                                    {opt.label}
+                                    {prettyEffortLabel(opt.label, opt.id)}
                                   </button>
                                 ))
                               : numericEffortPresets.map((preset) => (
@@ -2762,7 +2768,7 @@ export function Composer({
                               });
                             }}
                           >
-                            {opt.label}
+                            {prettyEffortLabel(opt.label, opt.id)}
                           </button>
                         ))
                       : numericEffortPresets.map((preset) => (
