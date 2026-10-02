@@ -38,8 +38,15 @@ fn strip_v(tag: &str) -> &str {
     tag.trim().trim_start_matches(['v', 'V'])
 }
 
-/// Prefer a Windows portable exe asset from the release.
+/// Prefer a platform-appropriate update asset from the release.
 fn pick_asset(assets: &[Value]) -> Option<(&str, &str)> {
+    #[cfg(target_os = "macos")]
+    let suffixes: &[&str] = &[".dmg", ".app.tar.gz", ".zip", ".app"];
+    #[cfg(target_os = "windows")]
+    let suffixes: &[&str] = &[".exe"];
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    let suffixes: &[&str] = &[".AppImage", ".tar.gz", ".zip"];
+
     let mut best: Option<(&str, &str, i32)> = None;
     for a in assets {
         let name = a.get("name").and_then(Value::as_str).unwrap_or("");
@@ -51,11 +58,11 @@ fn pick_asset(assets: &[Value]) -> Option<(&str, &str)> {
             continue;
         }
         let lower = name.to_ascii_lowercase();
-        if !lower.ends_with(".exe") {
+        if !suffixes.iter().any(|s| lower.ends_with(s)) {
             continue;
         }
-        // Score: prefer plain Marionette.exe, then anything with marionette.
-        let score = if lower == "marionette.exe" {
+        // Score: prefer plain Marionette.<suffix>, then anything named marionette.
+        let score = if lower.starts_with("marionette.") {
             100
         } else if lower.starts_with("marionette") {
             80
@@ -270,7 +277,7 @@ fn current_exe_path() -> Result<PathBuf, String> {
     std::env::current_exe().map_err(|e| format!("current_exe failed: {e}"))
 }
 
-/// Spawn a helper that replaces this exe after we exit, then exit.
+/// Spawn a helper that replaces this app after we exit, then exit.
 pub fn apply_and_relaunch() -> Result<(), String> {
     let dir = updates_dir()?;
     let meta_path = dir.join("pending.json");
@@ -287,15 +294,16 @@ pub fn apply_and_relaunch() -> Result<(), String> {
         return Err(format!("Pending update file missing: {new_exe}"));
     }
 
-    let target = current_exe_path()?;
-    let target_str = target.to_string_lossy().to_string();
-    let new_str = new_path.to_string_lossy().to_string();
-    let pid = std::process::id();
-
     // Windows batch: wait for PID to die, copy, restart, self-delete.
-    let bat = dir.join("apply-update.bat");
-    let bat_body = format!(
-        r#"@echo off
+    #[cfg(target_os = "windows")]
+    {
+        let target_str = current_exe_path()?.to_string_lossy().to_string();
+        let new_str = new_path.to_string_lossy().to_string();
+        let pid = std::process::id();
+
+        let bat = dir.join("apply-update.bat");
+        let bat_body = format!(
+            r#"@echo off
 setlocal
 set "TARGET={target}"
 set "NEW={new}"
@@ -314,14 +322,12 @@ if errorlevel 1 (
 start "" "%TARGET%"
 del "%~f0"
 "#,
-        target = target_str.replace('"', ""),
-        new = new_str.replace('"', ""),
-        pid = pid,
-    );
-    fs::write(&bat, bat_body).map_err(|e| format!("Write updater bat failed: {e}"))?;
+            target = target_str.replace('"', ""),
+            new = new_str.replace('"', ""),
+            pid = pid,
+        );
+        fs::write(&bat, bat_body).map_err(|e| format!("Write updater bat failed: {e}"))?;
 
-    #[cfg(target_os = "windows")]
-    {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         Command::new("cmd")
@@ -330,12 +336,60 @@ del "%~f0"
             .spawn()
             .map_err(|e| format!("Spawn updater failed: {e}"))?;
     }
-    #[cfg(not(target_os = "windows"))]
+
+    // macOS: extract the new bundle, then a shell helper waits for this
+    // process to die, swaps the .app in place and relaunches via `open`.
+    #[cfg(target_os = "macos")]
     {
-        let _ = bat;
-        return Err("App update apply is only implemented on Windows".into());
+        // Running image: <App>.app/Contents/MacOS/marionette → three parents up.
+        let app_dir = current_exe_path()?
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+            .map(Path::to_path_buf)
+            .filter(|p| p.extension().map(|e| e == "app").unwrap_or(false))
+            .ok_or_else(|| {
+                "App update apply requires the bundled Marionette.app (dev builds cannot self-update)"
+                    .to_string()
+            })?;
+
+        let staging = dir.join("staging");
+        let _ = fs::remove_dir_all(&staging);
+        fs::create_dir_all(&staging).map_err(|e| format!("Create staging dir failed: {e}"))?;
+        let new_app = extract_app_bundle(new_path, &staging)?.to_string_lossy().to_string();
+        let pid = std::process::id();
+
+        let helper = dir.join("apply-update.sh");
+        let helper_body = r#"#!/bin/sh
+TARGET_APP="$1"
+NEW_APP="$2"
+PID="$3"
+while kill -0 "$PID" 2>/dev/null; do sleep 1; done
+rm -rf "$TARGET_APP"
+ditto "$NEW_APP" "$TARGET_APP"
+rm -rf "$(dirname "$NEW_APP")"
+open "$TARGET_APP"
+rm -f "$0"
+"#;
+        fs::write(&helper, helper_body).map_err(|e| format!("Write updater script failed: {e}"))?;
+        Command::new("sh")
+            .arg(&helper)
+            .arg(&app_dir)
+            .arg(&new_app)
+            .arg(pid.to_string())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Spawn updater failed: {e}"))?;
     }
 
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        return Err("App update apply is only implemented on Windows and macOS".into());
+    }
+
+    let new_str = new_path.to_string_lossy().to_string();
     crate::debug_log::append(
         "update",
         "info",
@@ -344,6 +398,156 @@ del "%~f0"
         Some(&new_str),
     );
 
-    // Leave quickly so the bat can replace the image.
+    // Leave quickly so the helper can swap the image.
     std::process::exit(0);
+}
+
+/// Extract an update artifact into `staging` and locate the `.app` bundle.
+///
+/// Supports Tauri's macOS outputs: `.dmg` (mounted read-only via hdiutil),
+/// `.tar.gz` / `.tgz`, `.zip`, or an already-extracted `.app` directory.
+#[cfg(target_os = "macos")]
+fn extract_app_bundle(update: &Path, staging: &Path) -> Result<PathBuf, String> {
+    let lower = update.to_string_lossy().to_ascii_lowercase();
+    if update.is_dir() {
+        return find_app_bundle(update)
+            .ok_or_else(|| "No .app bundle found in update directory".to_string());
+    }
+    if lower.ends_with(".dmg") {
+        let mnt = staging.join("mnt");
+        fs::create_dir_all(&mnt).map_err(|e| format!("Create mount dir failed: {e}"))?;
+        run_quiet(
+            "hdiutil",
+            &[
+                "attach",
+                "-nobrowse",
+                "-readonly",
+                "-mountpoint",
+                &mnt.to_string_lossy(),
+                &update.to_string_lossy(),
+            ],
+        )?;
+        let found = find_app_bundle(&mnt);
+        let _ = run_quiet("hdiutil", &["detach", &mnt.to_string_lossy()]);
+        return found.ok_or_else(|| "No .app bundle found in update .dmg".to_string());
+    }
+    if lower.ends_with(".tar.gz") || lower.ends_with(".tgz") {
+        run_quiet(
+            "tar",
+            &[
+                "-xzf",
+                &update.to_string_lossy(),
+                "-C",
+                &staging.to_string_lossy(),
+            ],
+        )?;
+        return find_app_bundle(staging)
+            .ok_or_else(|| "No .app bundle found in update archive".to_string());
+    }
+    if lower.ends_with(".zip") {
+        run_quiet(
+            "unzip",
+            &["-q", &update.to_string_lossy(), "-d", &staging.to_string_lossy()],
+        )?;
+        return find_app_bundle(staging)
+            .ok_or_else(|| "No .app bundle found in update archive".to_string());
+    }
+    Err(format!(
+        "Unsupported macOS update format: {lower} (expected .dmg, .tar.gz, or .zip)"
+    ))
+}
+
+/// First `.app` bundle under `dir`, top level then one level deeper.
+#[cfg(target_os = "macos")]
+fn find_app_bundle(dir: &Path) -> Option<PathBuf> {
+    let is_app = |p: &Path| p.is_dir() && p.extension().map(|e| e == "app").unwrap_or(false);
+    let entries: Vec<PathBuf> = fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).collect();
+    for p in &entries {
+        if is_app(p) {
+            return Some(p.clone());
+        }
+    }
+    for p in &entries {
+        if p.is_dir() {
+            if let Ok(subs) = fs::read_dir(p) {
+                for sub in subs.flatten() {
+                    let sp = sub.path();
+                    if is_app(&sp) {
+                        return Some(sp);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Run a helper binary silently; error on non-zero exit.
+#[cfg(target_os = "macos")]
+fn run_quiet(program: &str, args: &[&str]) -> Result<(), String> {
+    let status = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| format!("{program} failed to start: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{program} exited with {status}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn asset_list() -> Vec<Value> {
+        serde_json::json!([
+            {"name": "Marionette.exe", "browser_download_url": "https://example.invalid/Marionette.exe"},
+            {"name": "Marionette_0.2.0_aarch64.dmg", "browser_download_url": "https://example.invalid/Marionette_0.2.0_aarch64.dmg"},
+            {"name": "Marionette_0.2.0_aarch64.app.tar.gz", "browser_download_url": "https://example.invalid/a.app.tar.gz"},
+            {"name": "NOTES.txt", "browser_download_url": "https://example.invalid/NOTES.txt"},
+        ])
+        .as_array()
+        .unwrap()
+        .clone()
+    }
+
+    #[test]
+    fn picks_platform_appropriate_asset() {
+        let assets = asset_list();
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            pick_asset(&assets).map(|(n, _)| n),
+            Some("Marionette_0.2.0_aarch64.dmg"),
+            "macOS should prefer the .dmg over the .exe"
+        );
+        #[cfg(target_os = "windows")]
+        assert_eq!(
+            pick_asset(&assets).map(|(n, _)| n),
+            Some("Marionette.exe"),
+            "Windows should keep preferring the portable .exe"
+        );
+        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+        assert_eq!(
+            pick_asset(&assets).map(|(n, _)| n),
+            Some("Marionette_0.2.0_aarch64.app.tar.gz")
+        );
+    }
+
+    #[test]
+    fn asset_matching_is_case_insensitive() {
+        let assets: Vec<Value> = serde_json::json!([
+            {"name": "marionette_0.2.0_universal.DMG", "browser_download_url": "https://example.invalid/u.dmg"},
+        ])
+        .as_array()
+        .unwrap()
+        .clone();
+        #[cfg(target_os = "macos")]
+        assert!(pick_asset(&assets).is_some(), ".DMG must match case-insensitively");
+        #[cfg(not(target_os = "macos"))]
+        assert!(pick_asset(&assets).is_none(), "a .dmg must be ignored off-macOS");
+    }
 }
