@@ -20,6 +20,7 @@ import {
 } from "../lib/activityHealth";
 import { getFileDiff } from "../lib/api";
 import { detectForceWebSearchInText, stripForceWebSearchPrefix } from "../lib/forceWebSearch";
+import { collectToolImageSrcs, fileNameFromPath } from "../lib/imageAttachments";
 import { cleanAssistantText } from "../lib/markdownText";
 import { newQuotePinId, type QuotePin } from "../lib/quoteComment";
 import { buildMessagePresentation, isDetailRow } from "../lib/messagePresentation";
@@ -35,7 +36,7 @@ import { isCursorOverWindow, setMergeHighlight } from "../lib/detachedWindow";
 import type { AgentConfig, Session, SessionEvent, SessionStatus, SessionViewMode } from "../lib/types";
 import { ClippedBody } from "./ClippedBody";
 import { LinkCwdContext, LinkedText } from "./LinkedText";
-import { MarkdownBody } from "./MarkdownBody";
+import { MarkdownBody, PreviewImage } from "./MarkdownBody";
 import { MessageOutline } from "./MessageOutline";
 import { MessageTimestamp } from "./MessageTimestamp";
 import { ToolImageStrip } from "./ToolImageStrip";
@@ -796,6 +797,27 @@ function hasUnifiedDiff(text: string): boolean {
   return /^@@\s+-\d+/m.test(text) && /^(?:\+\+\+|---|[+-])\s?/m.test(text);
 }
 
+/** Drop `[image]` / `[image] foo.png` placeholder lines once the real picture is shown. */
+function stripImagePlaceholders(text: string): string {
+  return text
+    .replace(/^\s*\[image\](?:\s+\S+)?\s*$/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/** PNG/JPEG dumps and similar binary noise that should not sit under a preview. */
+function looksLikeNonTextPayload(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed || /^\[image\](?:\s+\S+)?$/i.test(trimmed)) return true;
+  const sample = trimmed.slice(0, 400);
+  let weird = 0;
+  for (let i = 0; i < sample.length; i += 1) {
+    const code = sample.charCodeAt(i);
+    if (code === 0xfffd || code < 9 || (code > 13 && code < 32)) weird += 1;
+  }
+  return weird > sample.length * 0.08;
+}
+
 /**
  * OpenCode-style 3×3 activity grid. Pure CSS — no React state clock, so parent
  * transcript cards do not re-render every frame (selection-safe).
@@ -933,7 +955,13 @@ function ToolCallBody({
   );
   const diffPath = parts.diff ? diffTargetPath(parts.diff, event.path) : "";
   const isDiff = Boolean(parts.diff) || needsWorkspaceDiff;
-  const hasBody = Boolean(parts.text.trim()) || parts.images.length > 0 || Boolean(parts.diff);
+  const imageSrcs = collectToolImageSrcs(event);
+  const textBody = imageSrcs.length > 0 ? stripImagePlaceholders(parts.text) : parts.text;
+  const remoteImageSrcs = imageSrcs.filter((src) => /^https?:\/\//i.test(src));
+  const hasImages = parts.images.length > 0 || imageSrcs.length > 0;
+  const hideText =
+    hasImages && !isDiff && looksLikeNonTextPayload(event.detail ?? "");
+  const hasBody = Boolean(textBody.trim()) || hasImages || Boolean(parts.diff);
 
   // Running with no output yet: reserve a tall OpenCode-style working block.
   if (running && !hasBody) {
@@ -957,7 +985,7 @@ function ToolCallBody({
   }
 
   // Running with partial output: keep the tall clip so the block stays large.
-  const maxHeight = running ? 420 : isDiff ? 560 : 220;
+  const maxHeight = running ? 420 : isDiff ? 560 : hasImages ? 440 : 220;
 
   return (
     <div className="tool-body">
@@ -970,13 +998,20 @@ function ToolCallBody({
         </div>
       )}
       {parts.images.length > 0 && <ToolImageStrip images={parts.images} cwd={cwd} />}
-      {parts.text.trim() && (
+      {remoteImageSrcs.length > 0 && (
+        <div className="tool-read-images">
+          {remoteImageSrcs.map((src) => (
+            <PreviewImage key={src} src={src} alt={fileNameFromPath(src)} />
+          ))}
+        </div>
+      )}
+      {!hideText && (textBody.trim() || (open && needsWorkspaceDiff && !workspaceDiff && !diffError)) && (
         <ClippedBody
           className={`event-card__clip${running ? " is-tool-running-tall" : ""}`}
           maxHeight={maxHeight}
         >
           <pre className="event-card__body event-card__body--tool">
-            <LinkedText text={parts.text} />
+            <LinkedText text={textBody} />
             {open && needsWorkspaceDiff && !workspaceDiff && !diffError && "\n\nLoading full diff…"}
           </pre>
         </ClippedBody>

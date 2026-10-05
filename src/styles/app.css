@@ -3351,6 +3351,26 @@ body.is-tab-detaching * {
   word-break: break-word;
 }
 
+.tool-read-images {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 6px;
+  max-width: 100%;
+}
+
+.tool-read-images .md-body__img {
+  max-width: min(100%, 520px);
+  max-height: 360px;
+  margin: 0;
+  border: 1px solid var(--border);
+  background: var(--panel-soft);
+}
+
+.tool-read-images .md-body__img--zoomed {
+  max-width: none;
+  max-height: none;
+}
+
 /*
  * Tool body: NO wrap. Natural width may exceed the card; the *parent*
  * `.clipped-body__content` is the clip box (overflow:hidden).

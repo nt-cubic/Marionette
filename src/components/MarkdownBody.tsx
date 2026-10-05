@@ -3,6 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { stripFileUri } from "../lib/imageAttachments";
 import { prepareMarkdownForRender } from "../lib/markdownText";
 import { linkifyChildren, useLinkMenu } from "./LinkedText";
 import type { LinkTarget } from "../lib/linkTargets";
@@ -82,31 +83,38 @@ function MdLink({ href, children }: { href?: string; children?: ReactNode }) {
  * The click/right-click target stays the raw path — Open / Copy / Show in
  * Explorer must see the real filesystem path, not the asset URL.
  */
-function MdImage({ src, alt }: { src?: string; alt?: string }) {
+export function PreviewImage({ src, alt }: { src?: string; alt?: string }) {
   const { openMenu, renderMenu } = useLinkMenu();
   const [zoomed, setZoomed] = useState(false);
-  const target: LinkTarget | null = src
+  const localPath = src && !HTTP_URL_RE.test(src) && !src.startsWith("data:") ? stripFileUri(src) : src;
+  const target: LinkTarget | null = localPath
     ? {
         kind:
-          HTTP_URL_RE.test(src) || src.startsWith("data:") || src.startsWith("blob:")
+          HTTP_URL_RE.test(localPath) || localPath.startsWith("data:") || localPath.startsWith("blob:")
             ? "url"
             : "path",
-        raw: src,
+        raw: localPath,
         start: 0,
-        end: src.length,
+        end: localPath.length,
       }
     : null;
   const displaySrc = (() => {
-    if (!src) return src;
-    if (HTTP_URL_RE.test(src) || src.startsWith("data:") || src.startsWith("blob:")) return src;
-    if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
-      return convertFileSrc(src.replace(/^file:\/\//i, ""));
+    if (!localPath) return localPath;
+    if (
+      HTTP_URL_RE.test(localPath) ||
+      localPath.startsWith("data:") ||
+      localPath.startsWith("blob:")
+    ) {
+      return localPath;
     }
-    return src;
+    if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+      return convertFileSrc(localPath);
+    }
+    return localPath;
   })();
   useEffect(() => {
     setZoomed(false);
-  }, [src]);
+  }, [localPath]);
   return (
     <>
       <img
@@ -114,7 +122,7 @@ function MdImage({ src, alt }: { src?: string; alt?: string }) {
         alt={alt ?? ""}
         loading="lazy"
         className={zoomed ? "md-body__img md-body__img--zoomed" : "md-body__img"}
-        title={src}
+        title={localPath}
         onClick={(event) => {
           if (!target) return;
           event.preventDefault();
@@ -159,7 +167,7 @@ export const MarkdownBody = memo(function MarkdownBody({ text, className }: Mark
         components={{
           // Never let a link navigate the app window — hand it to the OS.
           a: MdLink,
-          img: MdImage,
+          img: PreviewImage,
           // Paths / URLs written as prose become clickable too.
           p: ({ children }) => <p className="md-body__p">{linkifyChildren(children)}</p>,
           li: ({ children }) => <li className="md-body__li">{linkifyChildren(children)}</li>,

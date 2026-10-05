@@ -11,6 +11,7 @@ import { ansiToPlainText } from "./ansi";
 import { isToolInProgress } from "./activityHealth";
 import { stripSectionMarkers } from "./markdownText";
 import { looksLikeUnifiedDiff } from "./toolBody";
+import { stripFileUri } from "./imageAttachments";
 import { inferToolNameFromMeta } from "./toolCallNormalize";
 
 export type AcpTextPart = {
@@ -31,6 +32,8 @@ export type AcpTextPart = {
   toolDetail?: string;
   /** Clipped `rawInput` — only useful until real output arrives. */
   toolInput?: string;
+  /** File / http(s) srcs from ACP image content blocks (no data-URLs). */
+  toolImages?: string[];
   /**
    * Claude subagent-transcript: stream this chunk into the parent Agent tool card
    * instead of the main assistant/thought rail (Codeg parentToolUseId).
@@ -226,6 +229,72 @@ function firstToolLocation(update: UpdateObj): string | undefined {
     if (path) return path;
   }
   return undefined;
+}
+
+/** Path from `rawInput` when the agent omitted `locations[]`. */
+function pathFromRawInput(rawInput: unknown): string | undefined {
+  if (rawInput == null) return undefined;
+  if (typeof rawInput === "string") {
+    const trimmed = rawInput.trim();
+    if (!trimmed) return undefined;
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        return pathFromRawInput(JSON.parse(trimmed));
+      } catch {
+        return undefined;
+      }
+    }
+    // Plain string: a path (`D:\a.png`, `src\app.ts`), not `ls foo.png`.
+    if (/[/\\]/.test(trimmed) || (!/\s/.test(trimmed) && /\.\w{1,8}$/.test(trimmed))) {
+      return trimmed;
+    }
+    return undefined;
+  }
+  const record = asRecord(rawInput);
+  if (!record) return undefined;
+  for (const key of ["path", "filePath", "file_path", "uri"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+/**
+ * File / http(s) srcs from ACP image content blocks.
+ * Skips `data:` payloads so the transcript JSONL stays small.
+ */
+function extractToolImageSrcs(content: unknown): string[] {
+  const srcs: string[] = [];
+  const add = (raw: unknown) => {
+    if (typeof raw !== "string") return;
+    const trimmed = raw.trim();
+    if (!trimmed || /^data:/i.test(trimmed)) return;
+    const src = stripFileUri(trimmed);
+    if (!src) return;
+    if (srcs.some((existing) => samePath(existing, src))) return;
+    srcs.push(src);
+  };
+  const walk = (node: unknown) => {
+    if (node == null) return;
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+      return;
+    }
+    const record = asRecord(node);
+    if (!record) return;
+    const type = typeof record.type === "string" ? record.type.toLowerCase() : "";
+    if (type === "image") {
+      add(record.uri);
+      add(record.url);
+      add(record.path);
+      add(record.filePath);
+      add(record.file_path);
+      return;
+    }
+    if (record.content != null) walk(record.content);
+  };
+  walk(content);
+  return srcs;
 }
 
 /** Windows vs POSIX separators and escaping differ per agent — compare loosely. */
@@ -520,7 +589,11 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
     const clippedInput = inputPreview.length > 200 ? `${inputPreview.slice(0, 200)}…` : inputPreview;
     // What the tool is actually doing / produced — agents stream this and the
     // card used to throw it away, which is why long tools looked frozen.
-    const toolPath = firstToolLocation(update);
+    const imageSrcs = extractToolImageSrcs(update.content);
+    const toolPath =
+      firstToolLocation(update) ||
+      pathFromRawInput(rawInput) ||
+      imageSrcs[0];
     const agentTx = extractAgentTranscript(update);
     let toolDetail =
       agentTx ||
@@ -546,6 +619,7 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
       toolPath,
       toolDetail,
       toolInput,
+      ...(imageSrcs.length > 0 ? { toolImages: imageSrcs } : {}),
     };
   }
 
@@ -770,11 +844,17 @@ function imageBlockToMarkdown(content: unknown): string {
     (typeof c.mimeType === "string" && c.mimeType) ||
     (typeof c.mime_type === "string" && c.mime_type) ||
     "image/png";
-  const uri = typeof c.uri === "string" ? c.uri.trim() : "";
+  const uri =
+    (typeof c.uri === "string" && c.uri.trim()) ||
+    (typeof c.url === "string" && c.url.trim()) ||
+    (typeof c.path === "string" && c.path.trim()) ||
+    (typeof c.filePath === "string" && c.filePath.trim()) ||
+    (typeof c.file_path === "string" && c.file_path.trim()) ||
+    "";
   const data = typeof c.data === "string" ? c.data.trim() : "";
   if (uri) {
-    const path = uri.replace(/^file:\/\//i, "");
-    return `\n\n![image](${path})\n\n`;
+    const src = /^https?:\/\//i.test(uri) ? uri : stripFileUri(uri);
+    return `\n\n![image](${src})\n\n`;
   }
   if (data) {
     return `\n\n![image](data:${mime};base64,${data})\n\n`;
@@ -912,7 +992,7 @@ export function toolCallEvent(
   toolCallId?: string,
   status?: string,
   title?: string,
-  extra?: { path?: string; detail?: string; input?: string; toolName?: string },
+  extra?: { path?: string; detail?: string; input?: string; toolName?: string; images?: string[] },
 ): SessionEvent {
   return {
     type: "tool_call",
@@ -926,6 +1006,7 @@ export function toolCallEvent(
     path: extra?.path,
     detail: extra?.detail,
     input: extra?.input,
+    ...(extra?.images && extra.images.length > 0 ? { images: extra.images } : {}),
     createdAt: new Date().toISOString(),
   };
 }
@@ -1207,6 +1288,8 @@ export function applyAcpPartToEvents(
           detail: detail || prev.detail,
           input: part.toolInput || prev.input,
         };
+        const images =
+          part.toolImages && part.toolImages.length > 0 ? part.toolImages : prev.images;
         const next = [...base];
         next[idx] = {
           ...prev,
@@ -1219,6 +1302,7 @@ export function applyAcpPartToEvents(
           // Never overwritten: `title` becomes a summary, the name must not.
           toolName: prev.toolName ?? part.toolName ?? part.toolTitle,
           text: renderToolText(merged),
+          ...(images && images.length > 0 ? { images } : {}),
         };
         return next;
       }
@@ -1253,6 +1337,7 @@ export function applyAcpPartToEvents(
           detail: part.toolDetail,
           input: part.toolInput,
           toolName: part.toolName ?? part.toolTitle,
+          images: part.toolImages,
         },
       ),
     ];

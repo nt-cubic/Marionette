@@ -244,6 +244,11 @@ export type SessionEvent =
       toolName?: string;
       /** File the tool is working on (ACP `locations[0]`). */
       path?: string;
+      /**
+       * Image srcs from ACP image content blocks (file path or http(s)).
+       * Never data-URLs — those would bloat the JSONL transcript.
+       */
+      images?: string[];
       /** What the tool produced (ACP `content[]` / `rawOutput`), clipped. */
       detail?: string;
       /** Clipped `rawInput`, shown only until real output arrives. */

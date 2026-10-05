@@ -29,6 +29,10 @@ export function persistableEventsForSession(
       if (event.type === "thought") {
         return { ...event, text: stripSectionMarkers(event.text) };
       }
+      if (event.type === "tool_call" && event.images && event.images.length > 0) {
+        const images = event.images.filter((src) => src && !src.startsWith("data:"));
+        return { ...event, images: images.length > 0 ? images : undefined };
+      }
       return event;
     });
 }
@@ -121,6 +125,15 @@ export function parseTranscriptEvents(raw: unknown[]): SessionEvent[] {
         detail: typeof e.detail === "string" ? e.detail : undefined,
         input: typeof e.input === "string" ? e.input : undefined,
         ...(typeof e.completedAt === "string" ? { completedAt: e.completedAt } : {}),
+        ...(Array.isArray(e.images)
+          ? (() => {
+              const images = e.images.filter(
+                (src): src is string =>
+                  typeof src === "string" && src.length > 0 && !src.startsWith("data:"),
+              );
+              return images.length > 0 ? { images } : {};
+            })()
+          : {}),
       });
       continue;
     }
