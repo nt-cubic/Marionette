@@ -40,10 +40,89 @@ const IMAGE_EXT = new Set([
 ]);
 
 export function isImagePath(path: string): boolean {
-  const base = path.replace(/[/\\]+$/, "").split(/[/\\]/).pop() ?? path;
+  const base = stripFileUri(path).replace(/[/\\]+$/, "").split(/[/\\]/).pop() ?? path;
   const dot = base.lastIndexOf(".");
   if (dot < 0) return false;
   return IMAGE_EXT.has(base.slice(dot).toLowerCase());
+}
+
+/** `file:///D:/x.png` / `file://localhost/C:/x` → filesystem path. */
+export function stripFileUri(value: string): string {
+  const trimmed = value.trim();
+  if (!/^file:/i.test(trimmed)) return trimmed;
+  const fromUrl = (url: URL): string => {
+    let rest = decodeURIComponent(url.pathname);
+    if (url.hostname && url.hostname.toLowerCase() !== "localhost") {
+      rest = `//${url.hostname}${rest}`;
+    }
+    if (/^\/[a-zA-Z]:/.test(rest)) rest = rest.slice(1);
+    else if (/^\/[a-zA-Z]\|/.test(rest)) rest = `${rest.charAt(1)}:${rest.slice(3)}`;
+    return rest;
+  };
+  try {
+    return fromUrl(new URL(trimmed));
+  } catch {
+    // Non-standard `file://D:/x` (two slashes + drive) — strip manually.
+    let rest = trimmed.replace(/^file:\/\//i, "").replace(/^file:/i, "");
+    if (/^\/[a-zA-Z]:/.test(rest)) rest = rest.slice(1);
+    try {
+      rest = decodeURIComponent(rest);
+    } catch {
+      // keep the raw remainder
+    }
+    return rest;
+  }
+}
+
+function pathFromToolInputJson(input: string): string | undefined {
+  const trimmed = input.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      for (const key of ["path", "filePath", "file_path", "uri"]) {
+        const value = parsed[key];
+        if (typeof value === "string" && value.trim()) return value.trim();
+      }
+    } catch {
+      return undefined;
+    }
+    return undefined;
+  }
+  // Plain string: a real path (`D:\a.png`, `screenshot.png`), not `ls foo.png`.
+  if (!isImagePath(trimmed)) return undefined;
+  const base = trimmed.replace(/[/\\]+$/, "").split(/[/\\]/).pop() ?? trimmed;
+  if (base !== trimmed) return trimmed;
+  return /\s/.test(trimmed) ? undefined : trimmed;
+}
+
+/**
+ * Image srcs a tool card can preview: ACP `images[]`, `locations` path, and
+ * structured `rawInput` path fields. Never treats a shell command as a path.
+ */
+export function collectToolImageSrcs(event: {
+  path?: string;
+  input?: string;
+  images?: string[];
+}): string[] {
+  const srcs: string[] = [];
+  const add = (raw?: string) => {
+    if (!raw) return;
+    const src = stripFileUri(raw);
+    if (!src || src.startsWith("data:")) return;
+    const http = /^https?:\/\//i.test(src);
+    if (!http && !isImagePath(src)) return;
+    if (srcs.some((existing) => existing.replace(/\\/g, "/").toLowerCase() === src.replace(/\\/g, "/").toLowerCase())) {
+      return;
+    }
+    srcs.push(src);
+  };
+  if (Array.isArray(event.images)) {
+    for (const src of event.images) add(src);
+  }
+  add(event.path);
+  add(pathFromToolInputJson(event.input ?? ""));
+  return srcs;
 }
 
 export function mimeFromImagePath(path: string): string {
