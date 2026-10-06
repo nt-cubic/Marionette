@@ -271,6 +271,15 @@ body.is-panel-resizing .context-panel {
   letter-spacing: 0.03em;
 }
 
+.session-auth-banner--upgrade {
+  border-color: color-mix(in srgb, #e0a040 55%, var(--border));
+  background: color-mix(in srgb, #e0a040 14%, var(--panel));
+}
+
+.session-auth-banner--upgrade strong {
+  color: #c4841d;
+}
+
 .session-auth-banner__button {
   flex: 0 0 auto;
   height: 28px;

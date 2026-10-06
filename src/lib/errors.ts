@@ -2,6 +2,7 @@ import { agentAuthSpec } from "./agentAuth";
 
 export type AgentErrorKind =
   | "auth"
+  | "upgrade"
   | "command_missing"
   | "timeout"
   | "model"
@@ -24,6 +25,50 @@ export type ClassifyAgentErrorOpts = {
   agentId?: string | null;
   agentLabel?: string | null;
 };
+
+/**
+ * Pull a human-readable error from an ACP JSON-RPC payload.
+ *
+ * Grok wraps the real reason as `error.message = "Internal error"` and puts
+ * the CLI sentence in `error.data.message` (426 outdated, 401 logged out, …).
+ * Prefer that nested sentence so the banner can tell login from “update me”.
+ */
+export function formatAcpRpcError(data: unknown): string | null {
+  if (data == null) return null;
+  if (typeof data === "string") return data;
+  if (typeof data !== "object") return String(data);
+  const root = data as Record<string, unknown>;
+  const err = (
+    root.error && typeof root.error === "object" ? root.error : root
+  ) as Record<string, unknown>;
+  const message =
+    (typeof err.message === "string" && err.message) ||
+    (typeof root.message === "string" && root.message) ||
+    null;
+  const dataObj =
+    err.data && typeof err.data === "object"
+      ? (err.data as Record<string, unknown>)
+      : null;
+  const nested =
+    (dataObj && typeof dataObj.message === "string" && dataObj.message) ||
+    (dataObj && typeof dataObj.details === "string" && dataObj.details) ||
+    (typeof err.data === "string" ? err.data : null) ||
+    null;
+  if (
+    nested &&
+    (!message || /^internal error$/i.test(message.trim()) || message === nested)
+  ) {
+    return nested;
+  }
+  if (message && nested && !message.includes(nested)) return `${message}: ${nested}`;
+  if (message) return message;
+  if (nested) return nested;
+  try {
+    return JSON.stringify(data);
+  } catch {
+    return "Unknown agent error";
+  }
+}
 
 /** Map agent / transport errors into a stable product taxonomy. */
 export function classifyAgentError(
@@ -51,9 +96,27 @@ export function classifyAgentError(
     (opts?.agentId
       ? `点横幅 Sign in 登录 ${agentLabel}，或在终端运行对应登录命令后新建/重连会话。`
       : "点横幅 Sign in，或在终端运行该 agent 的登录命令。");
+  const isGrok = opts?.agentId === "grok-build" || opts?.agentId === "grok";
+  const upgradeHint = isGrok
+    ? "Grok CLI 版本过低。点横幅「更新」运行 `grok update`，完成后新建会话。"
+    : "这个 CLI 版本过低。按提示更新后新建会话。";
+
+  // Before auth: a 426 body can mention `grok update` without being a login failure.
+  if (
+    /upgrade required|\bstatus\s*426\b|http_status["']?\s*[:=]\s*426|cli version\b[\s\S]{0,80}outdated|\boutdated\b[\s\S]{0,60}\bupdate\b/i.test(
+      message
+    )
+  ) {
+    return {
+      kind: "upgrade",
+      title: "需要更新",
+      message,
+      actionHint: upgradeHint,
+    };
+  }
 
   if (
-    /auth|login|unauthorized|401|not logged|authentication required|sign.?in|oauth|api.?key|missing.?key|credentials/i.test(
+    /auth|login|unauthorized|401|not logged|authentication required|sign.?in|oauth|api.?key|missing.?key|credentials|not authenticated|token expired|re-?auth/i.test(
       message
     )
   ) {

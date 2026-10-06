@@ -5,6 +5,7 @@ type ComposerErrorStripProps = {
   canSignIn: boolean;
   onRetry: () => void;
   onSignIn?: () => void;
+  onUpdate?: () => void;
   onNewSession: () => void;
   onDismiss: () => void;
 };
@@ -14,6 +15,7 @@ export function ComposerErrorStrip({
   canSignIn,
   onRetry,
   onSignIn,
+  onUpdate,
   onNewSession,
   onDismiss,
 }: ComposerErrorStripProps) {
@@ -30,6 +32,11 @@ export function ComposerErrorStrip({
         {canSignIn && onSignIn && error.kind === "auth" ? (
           <button type="button" onClick={onSignIn}>
             Sign in
+          </button>
+        ) : null}
+        {onUpdate && error.kind === "upgrade" ? (
+          <button type="button" onClick={onUpdate}>
+            更新
           </button>
         ) : null}
         <button type="button" onClick={onNewSession}>

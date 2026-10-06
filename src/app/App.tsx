@@ -16,7 +16,7 @@ import {
   turnEndedSilently,
   userMessageEvent,
 } from "../lib/acpTranscript";
-import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, stopAcpSession, takeLaunchOpenPath, testProxy, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, CHAT_PROJECT_ID } from "../lib/api";
+import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, CHAT_PROJECT_ID } from "../lib/api";
 import {
   bindDetachedWindowReaper,
   DETACHED_HIDDEN_EVENT,
@@ -112,7 +112,7 @@ import {
 } from "../lib/sessionHistory";
 import { formatPinsForSend } from "../lib/quoteComment";
 import { findLinkTargets } from "../lib/linkTargets";
-import { classifyAgentError, formatClassifiedError } from "../lib/errors";
+import { classifyAgentError, formatAcpRpcError, formatClassifiedError } from "../lib/errors";
 import { prettyEffortLabel } from "../lib/modelLabel";
 import { getLastUsedDefaults } from "../lib/recentModels";
 import { pickRestoredSession, saveUiRestore, saveQueuedSends, loadQueuedSends, saveClosedTabs, loadClosedTabs } from "../lib/uiRestore";
@@ -160,34 +160,7 @@ function readStoredPanelWidth(key: "leftWidth" | "rightWidth", fallback: number,
   }
 }
 
-/** Pull a human-readable error from ACP JSON-RPC error payloads. */
-function formatAcpRpcError(data: unknown): string | null {
-  if (data == null) return null;
-  if (typeof data === "string") return data;
-  if (typeof data !== "object") return String(data);
-  const root = data as Record<string, unknown>;
-  const err = (root.error && typeof root.error === "object"
-    ? (root.error as Record<string, unknown>)
-    : root) as Record<string, unknown>;
-  const message =
-    (typeof err.message === "string" && err.message) ||
-    (typeof root.message === "string" && root.message) ||
-    null;
-  const details =
-    err.data && typeof err.data === "object"
-      ? (err.data as Record<string, unknown>).details
-      : typeof err.data === "string"
-        ? err.data
-        : null;
-  if (message && typeof details === "string") return `${message}: ${details}`;
-  if (message) return message;
-  if (typeof details === "string") return details;
-  try {
-    return JSON.stringify(data);
-  } catch {
-    return "Unknown agent error";
-  }
-}
+type AgentBannerKind = "auth" | "upgrade";
 
 /** Keep native title/taskbar details readable when an agent returns JSON. */
 function compactNotifyDetail(value: string | null | undefined, max = 160): string {
@@ -506,23 +479,69 @@ export function App() {
     (childId: string, status: "done" | "failed" | "cancelled" | "timeout", error?: string) => void
   >(() => undefined);
   const [searchHitIds, setSearchHitIds] = useState<string[] | null>(null);
-  /** agentId → banner text (null = no banner). Probe-driven or error-driven. */
-  const [agentAuthHint, setAgentAuthHint] = useState<Record<string, string | null>>({});
+  /** agentId → sticky banner. Probe-driven (logged out) or error-driven (auth / outdated CLI). */
+  const [agentBanner, setAgentBanner] = useState<
+    Record<string, { kind: AgentBannerKind; message: string }>
+  >({});
   const [signInBusy, setSignInBusy] = useState(false);
+  const [updateBusy, setUpdateBusy] = useState(false);
   const authPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  /** Stable per-agent setter so the ACP listener can raise/clear banners. */
-  const setAuthHintFor = useCallback((agentId: string, hint: string | null) => {
-    setAgentAuthHint((current) => {
-      if (hint === null) {
-        if (!current[agentId]) return current;
-        const next = { ...current };
-        delete next[agentId];
-        return next;
-      }
-      if (current[agentId] === hint) return current;
-      return { ...current, [agentId]: hint };
+  /**
+   * Stable per-agent setter so the ACP listener can raise/clear banners.
+   * Clearing `auth` leaves an `upgrade` notice in place — a logged-in probe
+   * must not wipe “your CLI is too old”.
+   */
+  const setAuthHintFor = useCallback(
+    (agentId: string, hint: string | null, kind: AgentBannerKind = "auth") => {
+      setAgentBanner((current) => {
+        const existing = current[agentId];
+        if (hint === null) {
+          if (!existing || existing.kind !== kind) return current;
+          const next = { ...current };
+          delete next[agentId];
+          return next;
+        }
+        if (existing?.kind === kind && existing.message === hint) return current;
+        return { ...current, [agentId]: { kind, message: hint } };
+      });
+    },
+    []
+  );
+  const clearAgentBanner = useCallback((agentId: string) => {
+    setAgentBanner((current) => {
+      if (!current[agentId]) return current;
+      const next = { ...current };
+      delete next[agentId];
+      return next;
     });
   }, []);
+  const raiseClassifiedBanner = useCallback(
+    (agentId: string | undefined, classified: { kind: string; actionHint?: string }) => {
+      if (!agentId) return;
+      if (classified.kind === "auth") {
+        const spec = agentAuthSpec(agentId);
+        if (!spec) return;
+        setAuthHintFor(
+          agentId,
+          spec.login
+            ? `需要登录 — 点 Sign in，或终端执行 \`${spec.loginCommand}\``
+            : `需要登录 — 终端执行 \`${spec.loginCommand}\``
+        );
+        return;
+      }
+      if (classified.kind === "upgrade") {
+        const grok = agentId === "grok-build" || agentId === "grok";
+        setAuthHintFor(
+          agentId,
+          grok
+            ? "版本过低 — 点「更新」运行 `grok update`，完成后新建会话。"
+            : classified.actionHint || "版本过低 — 按提示更新 CLI 后新建会话。",
+          "upgrade"
+        );
+      }
+    },
+    [setAuthHintFor]
+  );
   const [composerPrefill, setComposerPrefill] = useState<{ text: string; token: number } | null>(null);
   /** Inline Clean quote-comments (numbered pins) for the active dialog. */
   const [quotePins, setQuotePins] = useState<import("../lib/quoteComment").QuotePin[]>([]);
@@ -1731,10 +1750,10 @@ export function App() {
           }
         }
 
-        // A clean turn proves auth is fine — drop any auth banner for this agent.
+        // A clean turn proves login and CLI version are fine — drop the banner.
         if (payload.kind !== "error" && stopReason !== "error" && stopReason !== "refusal") {
           const sessAgentId = sessionsRef.current.find((s) => s.id === payload.sessionId)?.agentId;
-          if (sessAgentId) setAuthHintFor(sessAgentId, null);
+          if (sessAgentId) clearAgentBanner(sessAgentId);
         }
 
         // Usage panel: refresh once after each completed Reply turn.
@@ -1892,18 +1911,9 @@ export function App() {
           });
           let body = formatClassifiedError(classified);
           setComposerFailure({ sessionId: payload.sessionId, error: classified });
-          if (classified.kind === "auth") {
-            // Per-agent banner: some agents (CodeBuddy) only prove auth via ACP error.
-            const spec = sessAgentId ? agentAuthSpec(sessAgentId) : undefined;
-            if (spec) {
-              setAuthHintFor(
-                sessAgentId!,
-                spec.login
-                  ? `需要登录 — 点 Sign in，或终端执行 \`${spec.loginCommand}\``
-                  : `需要登录 — 终端执行 \`${spec.loginCommand}\``
-              );
-            }
-          }
+          // Auth and “CLI too old” both arrive as Internal error + data.message.
+          // The banner is the Claude/Codex-style prompt; the strip is the button.
+          raiseClassifiedBanner(sessAgentId, classified);
           setLiveEvents((current) => {
             // Avoid spamming the same auth error on every retry.
             // Session-scoped: another window's event may own the absolute tail.
@@ -2102,7 +2112,7 @@ export function App() {
       for (const t of cancelWatchdogsRef.current.values()) clearTimeout(t);
       cancelWatchdogsRef.current.clear();
     };
-  }, [applyAgentSessionTitle, pushDebug, touchActivity, setAuthHintFor]);
+  }, [applyAgentSessionTitle, pushDebug, touchActivity, clearAgentBanner, raiseClassifiedBanner]);
   // note: pushDebug is stable via useCallback
 
   // Detached close: flush JSONL then give the ACP stream back to main.
@@ -2389,12 +2399,16 @@ export function App() {
     [setAuthHintFor]
   );
 
-  // Probe the active agent's login state whenever the session/agent changes.
+  const probedAgentId =
+    availableSessions.find((s) => s.id === currentSessionId)?.agentId ??
+    availableAgents[0]?.id ??
+    "";
+
+  // Probe when the active agent changes — not on every status tick.
+  // A status update used to re-probe and wipe an error-driven banner
+  // (expired Grok token, CLI too old) a moment after it appeared.
   useEffect(() => {
-    const agentId =
-      availableSessions.find((s) => s.id === currentSessionId)?.agentId ??
-      availableAgents[0]?.id ??
-      "";
+    const agentId = probedAgentId;
     if (!agentId) return;
     if (!agentAuthSpec(agentId)?.probe) {
       setAuthHintFor(agentId, null);
@@ -2411,7 +2425,7 @@ export function App() {
         authPollRef.current = null;
       }
     };
-  }, [availableAgents, availableSessions, currentSessionId, refreshAgentAuth, setAuthHintFor]);
+  }, [probedAgentId, refreshAgentAuth, setAuthHintFor]);
 
   const handleAgentSignIn = useCallback(
     async (agentId: string) => {
@@ -2453,6 +2467,27 @@ export function App() {
       }, 3000);
     },
     [pushDebug, refreshAgentAuth, setAuthHintFor]
+  );
+
+  const handleGrokUpdate = useCallback(
+    async (agentId: string) => {
+      setUpdateBusy(true);
+      pushDebug({
+        level: "info",
+        source: "auth",
+        summary: "start grok update",
+      });
+      const result = await startGrokUpdate();
+      setUpdateBusy(false);
+      setAuthHintFor(
+        agentId,
+        result?.started
+          ? "已打开 `grok update`。完成后新建会话，新版本才会生效。"
+          : result?.message || "无法启动更新。请在终端执行 `grok update`。",
+        "upgrade"
+      );
+    },
+    [pushDebug, setAuthHintFor]
   );
 
   const refreshProviderBalance = useCallback(
@@ -4407,6 +4442,8 @@ export function App() {
           agentId: sess?.agentId,
           agentLabel: agent?.label,
         });
+        raiseClassifiedBanner(sess?.agentId, classified);
+        setComposerFailure({ sessionId: sid, error: classified });
         setLiveEvents((events) => [
           ...events,
           {
@@ -4418,7 +4455,7 @@ export function App() {
         ]);
       }
     },
-    [ensureAcpReady, pushDebug, renameSessionFromText, setSessionStatusById]
+    [ensureAcpReady, pushDebug, raiseClassifiedBanner, renameSessionFromText, setSessionStatusById]
   );
 
   const countRunningDelegates = useCallback((parentId: string) => {
@@ -5129,17 +5166,7 @@ export function App() {
         "error",
         sendError ? `${label} · ${sendError}` : `${label} · Send failed`,
       );
-      if (classified.kind === "auth" && sess?.agentId) {
-        const spec = agentAuthSpec(sess.agentId);
-        if (spec) {
-          setAuthHintFor(
-            sess.agentId,
-            spec.login
-              ? `需要登录 — 点 Sign in，或终端执行 \`${spec.loginCommand}\``
-              : `需要登录 — 终端执行 \`${spec.loginCommand}\``
-          );
-        }
-      }
+      raiseClassifiedBanner(sess?.agentId, classified);
       setComposerFailure({ sessionId: sid, error: classified });
       setLiveEvents((current) => [
         ...current,
@@ -5557,13 +5584,20 @@ export function App() {
             viewMode={viewMode}
             openSessions={openSessions}
             lastActivityAt={lastActivityById[displaySession.id] ?? null}
-            authBanner={agentAuthHint[currentAgent.id] ?? null}
+            authBanner={agentBanner[currentAgent.id]?.message ?? null}
+            bannerKind={agentBanner[currentAgent.id]?.kind ?? "auth"}
             onSignIn={
               agentAuthSpec(currentAgent.id)?.login
                 ? () => void handleAgentSignIn(currentAgent.id)
                 : undefined
             }
             signInBusy={signInBusy}
+            onUpdate={
+              currentAgent.id === "grok-build" || currentAgent.id === "grok"
+                ? () => void handleGrokUpdate(currentAgent.id)
+                : undefined
+            }
+            updateBusy={updateBusy}
             onTabSelect={openSession}
             onTabClose={closeSessionTab}
             onNewTab={() => {
@@ -5644,6 +5678,11 @@ export function App() {
             <ComposerErrorStrip
               error={composerFailure.error}
               canSignIn={Boolean(agentAuthSpec(currentAgent.id)?.login)}
+              onUpdate={
+                currentAgent.id === "grok-build" || currentAgent.id === "grok"
+                  ? () => void handleGrokUpdate(currentAgent.id)
+                  : undefined
+              }
               onRetry={() => {
                 const last = lastSendBySessionRef.current.get(displaySession.id);
                 if (!last) return;

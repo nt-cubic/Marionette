@@ -962,14 +962,6 @@ fn probe_cursor_auth() -> Result<serde_json::Value, String> {
 }
 
 fn probe_grok_auth() -> Result<serde_json::Value, String> {
-    let auth_json = home_dir().map(|h| h.join(".grok").join("auth.json"));
-    if auth_json.map(|p| p.exists()).unwrap_or(false) {
-        return Ok(auth_result(
-            "grok-build",
-            "logged_in",
-            "Grok credentials found (~/.grok/auth.json) — tokens expire after ~7 days",
-        ));
-    }
     if env_var_set("XAI_API_KEY") {
         return Ok(auth_result(
             "grok-build",
@@ -977,11 +969,60 @@ fn probe_grok_auth() -> Result<serde_json::Value, String> {
             "Grok API key set via XAI_API_KEY",
         ));
     }
+    // A stub or empty auth.json is not a login. Claude/Codex only raise the
+    // Sign in banner when the probe says logged_out — existence alone hid it.
+    let auth_json = home_dir().map(|h| h.join(".grok").join("auth.json"));
+    if let Some(path) = auth_json {
+        if let Ok(text) = fs::read_to_string(&path) {
+            if grok_auth_has_credential(&text) {
+                return Ok(auth_result(
+                    "grok-build",
+                    "logged_in",
+                    "Grok credentials found (~/.grok/auth.json) — tokens expire after ~7 days",
+                ));
+            }
+        }
+    }
     Ok(auth_result(
         "grok-build",
         "logged_out",
         "Grok is not logged in (run `grok login`)",
     ))
+}
+
+/// True when `~/.grok/auth.json` holds a non-empty token (`key` / `access_token` / …).
+fn grok_auth_has_credential(text: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return false;
+    };
+    fn walk(value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::Object(map) => map.iter().any(|(key, child)| {
+                let name = key.to_ascii_lowercase();
+                let named = matches!(
+                    name.as_str(),
+                    "key"
+                        | "access_token"
+                        | "refresh_token"
+                        | "id_token"
+                        | "api_key"
+                        | "apikey"
+                        | "token"
+                );
+                if named {
+                    if let Some(secret) = child.as_str() {
+                        if !secret.trim().is_empty() {
+                            return true;
+                        }
+                    }
+                }
+                walk(child)
+            }),
+            serde_json::Value::Array(items) => items.iter().any(walk),
+            _ => false,
+        }
+    }
+    walk(&value)
 }
 
 /// A `~/.kimi/config.toml` line that looks like a stored credential.
@@ -1323,6 +1364,18 @@ fn probe_deepseek_auth() -> Result<serde_json::Value, String> {
         "logged_out",
         "DeepSeek has no API key (set DEEPSEEK_API_KEY, add it in Provider keys, or run `deepseek-acp --setup`)",
     ))
+}
+
+/// Open `grok update` in its own console. The ACP process already running
+/// keeps the old binary until the user starts a new session.
+#[tauri::command(async)]
+pub fn start_grok_update() -> Result<serde_json::Value, String> {
+    start_cli_login(
+        "grok",
+        &["update"],
+        "grok-build",
+        "Opened `grok update` — when it finishes, start a new session so the new CLI is picked up.",
+    )
 }
 
 /// Kick off an agent's native login (browser / CLI / TUI flow).
@@ -2245,6 +2298,21 @@ mod tests {
                 "resolved path should not be empty"
             );
         }
+    }
+
+    #[test]
+    fn grok_auth_json_needs_a_real_token() {
+        use super::grok_auth_has_credential;
+        assert!(!grok_auth_has_credential(""));
+        assert!(!grok_auth_has_credential("{}"));
+        assert!(!grok_auth_has_credential(
+            r#"{"https://accounts.x.ai/sign-in":{"type":"oauth","key":""}}"#
+        ));
+        assert!(grok_auth_has_credential(
+            r#"{"https://accounts.x.ai/sign-in":{"type":"oauth","key":"sess-1"}}"#
+        ));
+        assert!(grok_auth_has_credential(r#"{"access_token":"eyJabc"}"#));
+        assert!(!grok_auth_has_credential(r#"{"access_token":"  "}"#));
     }
 
     #[test]
