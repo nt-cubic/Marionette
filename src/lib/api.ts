@@ -487,6 +487,19 @@ export async function startAgentLogin(agentId: string): Promise<{ started: boole
   }
 }
 
+/** Open `grok update` in its own console. The running session keeps the old binary. */
+export async function startGrokUpdate(): Promise<{ started: boolean; message?: string } | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await invoke("start_grok_update");
+  } catch (error) {
+    return {
+      started: false,
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 export async function startAcpSession(
   sessionId: string,
   command: string,

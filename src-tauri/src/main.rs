@@ -373,6 +373,7 @@ fn main() {
             commands::search_sessions,
             commands::probe_agent_auth,
             commands::start_agent_login,
+            commands::start_grok_update,
             commands::start_acp_session,
             commands::send_acp_prompt,
             commands::read_image_data_url,

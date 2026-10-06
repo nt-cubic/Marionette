@@ -56,11 +56,15 @@ type SessionViewProps = {
   session: Session;
   viewMode: SessionViewMode;
   openSessions: Session[];
-  /** Sticky auth / account warning for the active agent (e.g. Claude not logged in). */
+  /** Sticky auth / outdated-CLI warning for the active agent. */
   authBanner?: string | null;
+  bannerKind?: "auth" | "upgrade";
   /** Start native login (browser/CLI). */
   onSignIn?: () => void | Promise<void>;
   signInBusy?: boolean;
+  /** Grok: open `grok update` in a console window. */
+  onUpdate?: () => void | Promise<void>;
+  updateBusy?: boolean;
   onTabSelect: (session: Session) => void;
   onTabClose: (sessionId: string) => void;
   onNewTab: () => void;
@@ -475,8 +479,11 @@ export function SessionView({
   viewMode,
   openSessions,
   authBanner = null,
+  bannerKind = "auth",
   onSignIn,
   signInBusy = false,
+  onUpdate,
+  updateBusy = false,
   onTabSelect,
   onTabClose,
   onNewTab,
@@ -512,12 +519,24 @@ export function SessionView({
     <section className="session-view" aria-label="Session view">
 
       {authBanner && (
-        <div className="session-auth-banner" role="status">
+        <div
+          className={`session-auth-banner${bannerKind === "upgrade" ? " session-auth-banner--upgrade" : ""}`}
+          role="status"
+        >
           <div className="session-auth-banner__copy">
-            <strong>需要登录</strong>
+            <strong>{bannerKind === "upgrade" ? "需要更新" : "需要登录"}</strong>
             <span>{authBanner}</span>
           </div>
-          {onSignIn && (
+          {bannerKind === "upgrade" && onUpdate ? (
+            <button
+              className="session-auth-banner__button"
+              type="button"
+              disabled={updateBusy}
+              onClick={() => void onUpdate()}
+            >
+              {updateBusy ? "正在打开更新…" : `更新 ${agent.label}`}
+            </button>
+          ) : onSignIn ? (
             <button
               className="session-auth-banner__button"
               type="button"
@@ -526,7 +545,7 @@ export function SessionView({
             >
               {signInBusy ? "正在打开登录…" : `用 ${agent.label} 登录`}
             </button>
-          )}
+          ) : null}
         </div>
       )}
 
@@ -539,8 +558,11 @@ export function SessionView({
             detailsVisible={detailsVisible}
             onDetailsToggle={() => setDetailsVisible((visible) => !visible)}
             authBanner={authBanner}
+            bannerKind={bannerKind}
             onSignIn={onSignIn}
             signInBusy={signInBusy}
+            onUpdate={onUpdate}
+            updateBusy={updateBusy}
             onEditResend={onEditResend}
             lastActivityAt={lastActivityAt}
             quotePins={quotePins}
@@ -1041,8 +1063,11 @@ function CleanPlaceholder({
   detailsVisible,
   onDetailsToggle,
   authBanner = null,
+  bannerKind = "auth",
   onSignIn,
   signInBusy = false,
+  onUpdate,
+  updateBusy = false,
   onEditResend,
   lastActivityAt = null,
   quotePins = [],
@@ -1063,8 +1088,11 @@ function CleanPlaceholder({
   detailsVisible: boolean;
   onDetailsToggle: () => void;
   authBanner?: string | null;
+  bannerKind?: "auth" | "upgrade";
   onSignIn?: () => void | Promise<void>;
   signInBusy?: boolean;
+  onUpdate?: () => void | Promise<void>;
+  updateBusy?: boolean;
   onEditResend?: (anchor: UserMessageAnchor, newText: string) => void | Promise<void>;
   lastActivityAt?: number | null;
   quotePins?: QuotePin[];
@@ -1450,14 +1478,29 @@ function CleanPlaceholder({
         {visibleEvents.length === 0 && (
           <div className="clean-empty" role="status">
             <p className="clean-empty__title">
-              {authBanner ? "Sign in to continue" : `Message ${agent.label}`}
+              {authBanner
+                ? bannerKind === "upgrade"
+                  ? "Update to continue"
+                  : "Sign in to continue"
+                : `Message ${agent.label}`}
             </p>
             <p className="clean-empty__hint">
               {authBanner
-                ? `Use the Sign in button above — it opens ${agent.label}’s browser login. Come back here when done.`
+                ? bannerKind === "upgrade"
+                  ? `Use the update button above — it runs \`grok update\`. Start a new session when it finishes.`
+                  : `Use the Sign in button above — it opens ${agent.label}’s browser login. Come back here when done.`
                 : "Type below to warm the agent in the background, then send when ready."}
             </p>
-            {authBanner && onSignIn && (
+            {authBanner && bannerKind === "upgrade" && onUpdate ? (
+              <button
+                className="session-auth-banner__button"
+                type="button"
+                disabled={updateBusy}
+                onClick={() => void onUpdate()}
+              >
+                {updateBusy ? "Opening update…" : `Update ${agent.label}`}
+              </button>
+            ) : authBanner && onSignIn ? (
               <button
                 className="session-auth-banner__button"
                 type="button"
@@ -1466,7 +1509,7 @@ function CleanPlaceholder({
               >
                 {signInBusy ? "Opening login…" : `Sign in with ${agent.label}`}
               </button>
-            )}
+            ) : null}
           </div>
         )}
         {(() => {
