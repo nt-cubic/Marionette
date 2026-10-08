@@ -94,6 +94,7 @@ import {
 import { foldSessionStats } from "../lib/sessionStats";
 import { isRuntimeMetadataOnly } from "../lib/markdownText";
 import {
+  isInjectedPromptText,
   parseTranscriptEvents,
   persistableEventsForSession,
   shouldAutoRenameLabel,
@@ -760,6 +761,10 @@ export function App() {
 
   /** Apply an ACP-provided conversation title without overriding a manual rename. */
   const applyAgentSessionTitle = useCallback((sessionId: string, rawTitle: string) => {
+    // An agent titles the session from its first prompt. After a reconnect that
+    // prompt is Marionette's own history/skills preamble — refuse it, or every
+    // resumed dialog ends up called "[Marionette — prior conversation…".
+    if (isInjectedPromptText(rawTitle)) return;
     const title = titleFromUserText(rawTitle);
     if (!title || manuallyRenamedSessionIdsRef.current.has(sessionId)) return;
     const known = sessionsRef.current.find((session) => session.id === sessionId);
@@ -1013,6 +1018,7 @@ export function App() {
         );
         const merged = [...pendingChats, ...loadedById.values()];
         setAvailableSessions(merged);
+        void repairInjectedLabels(merged);
         return merged;
       };
 
@@ -2230,6 +2236,30 @@ export function App() {
       void import("@tauri-apps/api/window")
         .then(({ getCurrentWindow }) => getCurrentWindow().setTitle(next))
         .catch(() => undefined);
+    }
+  }, []);
+
+  /**
+   * Repair labels already stored from a Marionette prompt preamble: re-derive
+   * the title from the first message the user actually typed, out of the
+   * session's own transcript. Runs once per startup, on the affected rows only.
+   */
+  const repairInjectedLabels = useCallback(async (sessions: Session[]) => {
+    if (!isTauriRuntime()) return;
+    for (const session of sessions) {
+      if (!isInjectedPromptText(session.label)) continue;
+      const raw = await loadTranscript(session.id).catch(() => []);
+      const first = parseTranscriptEvents(raw).find(
+        (event) => event.type === "user_message" && !isInjectedPromptText(event.text),
+      );
+      if (!first || first.type !== "user_message") continue;
+      const label = titleFromUserText(first.text);
+      if (!label || isInjectedPromptText(label)) continue;
+      setAvailableSessions((current) =>
+        current.map((s) => (s.id === session.id ? { ...s, label, labelSource: "user" } : s))
+      );
+      void updateSessionLabel(session.id, label, "user").catch(() => undefined);
+      void broadcastSessionPatch({ sessionId: session.id, label, labelSource: "user" });
     }
   }, []);
 
