@@ -45,9 +45,11 @@ import {
 } from "../lib/capabilityCache";
 import { detectCapabilityDrift } from "../lib/capabilityDrift";
 import {
+  groupModelsByProvider,
+  modelProviderGroup,
+  modelRowLabel,
   modelTooltip,
   prettyEffortLabel,
-  prettyModelLabel,
   prettyModelTrigger,
 } from "../lib/modelLabel";
 import {
@@ -87,7 +89,6 @@ import type {
   AgentVersionInfo,
   AvailableCommand,
   CapabilitySnapshot,
-  ModelDef,
   SessionComposerPrefs,
   SessionEvent,
   SessionStatus,
@@ -188,72 +189,8 @@ function effortLabel(value: number): string {
   return value < 0.5 ? "Medium" : "High";
 }
 
-/** Group model id/label like `opencode/foo` or `OpenCode Zen/Bar` by provider. */
-function providerOf(model: ModelDef): string {
-  const id = model.id.toLowerCase();
-  // Claude ACP uses family aliases, not provider/model paths
-  if (
-    id === "default" ||
-    id === "opus" ||
-    id === "sonnet" ||
-    id === "haiku" ||
-    id === "fable" ||
-    id === "best" ||
-    id === "opusplan" ||
-    id.startsWith("opus") ||
-    id.startsWith("sonnet") ||
-    id.startsWith("haiku") ||
-    id.startsWith("fable") ||
-    id.startsWith("claude-") ||
-    id.includes("claude-")
-  ) {
-    return "Claude";
-  }
-
-  const idPart = model.id.includes("/") ? model.id.split("/")[0] : "";
-  const labelPart = model.label.includes("/") ? model.label.split("/")[0] : "";
-  const raw = (labelPart || idPart || "Models").trim();
-  if (!raw) return "Models";
-  const key = raw.toLowerCase();
-  if (key.startsWith("opencode")) return "OpenCode";
-  if (key.startsWith("deepseek")) return "DeepSeek";
-  if (key.startsWith("openrouter")) return "OpenRouter";
-  if (key === "zai" || key.startsWith("z.ai") || key.startsWith("glm")) return "Z.AI";
-  if (key.startsWith("anthropic") || key.startsWith("claude")) return "Claude";
-  if (key.startsWith("openai") || key.startsWith("gpt")) return "OpenAI";
-  if (key.startsWith("google") || key.startsWith("gemini")) return "Google";
-  if (key.startsWith("xai") || key.startsWith("grok")) return "xAI";
-  if (key.startsWith("logfare")) return "Logfare";
-  if (key.startsWith("kimi") || key.startsWith("moonshot")) return "Kimi";
-  if (key.startsWith("minimax")) return "MiniMax";
-  if (key.startsWith("qwen") || key.startsWith("alibaba")) return "Qwen";
-  // Bare family names from Claude labels
-  if (/^(opus|sonnet|haiku|fable)\b/i.test(model.label)) return "Claude";
-  return raw;
-}
-
-function shortModelName(model: ModelDef): string {
-  return prettyModelLabel(model, { maxLen: 40 });
-}
-
 function shortTriggerLabel(label: string | null, id: string | null): string {
   return prettyModelTrigger(label, id);
-}
-
-function groupModels(models: ModelDef[]): { provider: string; models: ModelDef[] }[] {
-  const map = new Map<string, ModelDef[]>();
-  for (const m of models) {
-    const p = providerOf(m);
-    const list = map.get(p);
-    if (list) list.push(m);
-    else map.set(p, [m]);
-  }
-  return [...map.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([provider, items]) => ({
-      provider,
-      models: items.slice().sort((x, y) => shortModelName(x).localeCompare(shortModelName(y))),
-    }));
 }
 
 function displayModeSafe(caps: CapabilitySnapshot): string | null {
@@ -1773,10 +1710,10 @@ export function Composer({
             m.id.toLowerCase().includes(q) ||
             m.label.toLowerCase().includes(q) ||
             (m.description ?? "").toLowerCase().includes(q) ||
-            providerOf(m).toLowerCase().includes(q),
+            modelProviderGroup(m).toLowerCase().includes(q),
         )
       : caps.models;
-    return groupModels(filtered);
+    return groupModelsByProvider(filtered);
   }, [caps?.models, modelQuery]);
 
   const recentModels = useMemo(() => {
@@ -2629,7 +2566,7 @@ export function Composer({
                                           });
                                         }}
                                       >
-                                        <span className="composer-menu__model-name">{shortModelName(model)}</span>
+                                        <span className="composer-menu__model-name">{modelRowLabel(model)}</span>
                                         <span className="composer-menu__model-recent-hint">{formatRecentTime(entry.lastUsedAt)}</span>
                                       </button>
                                     );
@@ -2666,7 +2603,7 @@ export function Composer({
                                         });
                                       }}
                                     >
-                                      <span className="composer-menu__model-name">{shortModelName(m)}</span>
+                                      <span className="composer-menu__model-name">{modelRowLabel(m)}</span>
                                     </button>
                                   ))}
                                 </div>

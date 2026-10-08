@@ -15,7 +15,12 @@ import {
   expandAcpConfigAttempts,
   mergeAcpCapabilities,
 } from "../src/lib/acpSupplements.ts";
-import { prettyEffortLabel } from "../src/lib/modelLabel.ts";
+import {
+  groupModelsByProvider,
+  modelProviderGroup,
+  modelRowLabel,
+  prettyEffortLabel,
+} from "../src/lib/modelLabel.ts";
 import type { CapabilitySnapshot } from "../src/lib/types.ts";
 
 let passed = 0;
@@ -229,6 +234,71 @@ check("labels that never carried the axis name survive verbatim", () => {
   assert.equal(prettyEffortLabel(null, null), "");
   // A label that *is* the axis name must not be reduced to nothing.
   assert.equal(prettyEffortLabel("Effort", "effort"), "Effort");
+});
+
+console.log("\nmodel menu groups (Grok publishes a flat catalog: modelId + name)");
+
+/** The catalog this user's Grok advertises, name tags included. */
+const GROK_CATALOG = [
+  { id: "grok-4.7", label: "Grok 4.7" },
+  { id: "grok-4.7-build-fast", label: "Grok 4.7 Fast" },
+  { id: "grok-4.6", label: "Grok 4.6" },
+  { id: "qwen3.8-27b-efficientthink", label: "Qwen 3.8 27B EfficientThink (Local)" },
+  { id: "qwen3.8-27b-dflash", label: "Qwen 3.8 27B EfficientThink (Local, DFlash2)" },
+  { id: "deepseek-v4-dspark", label: "DeepSeek V4 Flash 0731 DSpark (Local, 1M)" },
+  { id: "deepseek-v4-vision", label: "DeepSeek V4 Flash Vision (Local, 256K)" },
+  { id: "teamo-claude-opus-5", label: "claude-opus-5 (Teamo)" },
+  { id: "teamo-deepseek-v4-pro", label: "deepseek-v4-pro (Teamo)" },
+  { id: "teamo-gpt-image-2", label: "gpt-image-2 (Teamo)" },
+  { id: "deepseek-flash", label: "DeepSeek Flash (Official)" },
+  { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro (Official)" },
+];
+
+check("a backend tag in the name beats the model family", () => {
+  const byId = (id: string) => GROK_CATALOG.find((m) => m.id === id)!;
+  // These two carry a DeepSeek family name but run on a Team Router / local box.
+  assert.equal(modelProviderGroup(byId("teamo-deepseek-v4-pro")), "Team Router");
+  assert.equal(modelProviderGroup(byId("deepseek-v4-dspark")), "Local");
+  assert.equal(modelProviderGroup(byId("qwen3.8-27b-efficientthink")), "Local");
+  // Untagged official entries fall back to the family prefix.
+  assert.equal(modelProviderGroup(byId("deepseek-flash")), "DeepSeek");
+  assert.equal(modelProviderGroup(byId("grok-4.6")), "xAI");
+});
+
+check("rows drop the tag the group header already prints", () => {
+  const byId = (id: string) => GROK_CATALOG.find((m) => m.id === id)!;
+  assert.equal(modelRowLabel(byId("teamo-claude-opus-5")), "Claude Opus 5");
+  // "(Local, 1M)" keeps the size and loses the redundant word.
+  assert.equal(
+    modelRowLabel(byId("deepseek-v4-dspark")),
+    "DeepSeek V4 Flash 0731 DSpark (1M)",
+  );
+  assert.equal(modelRowLabel(byId("deepseek-flash")), "DeepSeek Flash");
+  // A tag that separates two same-family entries survives.
+  assert.equal(
+    modelRowLabel(byId("qwen3.8-27b-dflash")),
+    "Qwen 3.8 27B EfficientThink (DFlash2)",
+  );
+});
+
+check("the catalog lands in one group per backend, not one pile", () => {
+  const groups = groupModelsByProvider(GROK_CATALOG);
+  assert.deepEqual(
+    groups.map((g) => `${g.provider}:${g.models.length}`),
+    ["DeepSeek:2", "Local:4", "Team Router:3", "xAI:3"],
+  );
+});
+
+check("provider/model ids and Claude aliases keep their old groups", () => {
+  assert.equal(modelProviderGroup({ id: "opencode/zen", label: "opencode/zen" }), "OpenCode");
+  assert.equal(
+    modelProviderGroup({ id: "OpenCode Zen/foo", label: "OpenCode Zen/foo" }),
+    "OpenCode",
+  );
+  assert.equal(modelProviderGroup({ id: "opus", label: "Opus" }), "Claude");
+  assert.equal(modelProviderGroup({ id: "claude-sonnet-4-6", label: "Sonnet 4.6" }), "Claude");
+  // Nothing recognisable still has to land somewhere the user can click.
+  assert.equal(modelProviderGroup({ id: "mystery-1", label: "Mystery One" }), "Models");
 });
 
 console.log(`\n${passed} checks passed.`);
