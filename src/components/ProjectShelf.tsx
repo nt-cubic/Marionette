@@ -3,6 +3,7 @@ import { Bell, BellOff, ChevronDown, ChevronRight, CloudMoon, Folder, FolderOpen
 import type { AgentConfig, Project, ProxyConfig, ProxyTestResult, Session } from "../lib/types";
 import { themeToggleTitle, type ThemeMode } from "../lib/theme";
 import { collapsedShelfSessions, pinStamp, sortSessionsNewestFirst } from "../lib/sessionOrder";
+import { suspendControl } from "../lib/sessionSuspend";
 import { loadCollapsedProjectIds, saveCollapsedProjectIds } from "../lib/uiRestore";
 import { ConfirmDialog } from "./ConfirmDialog";
 
@@ -672,6 +673,7 @@ export function ProjectShelf({
                   )}
                   {visibleSessions.map((session) => {
                     const busy = sessionIsBusy(session.status);
+                    const park = suspendControl(session, session.label);
                     const isRenaming = renamingId === session.id;
                     const pinned = pinStamp(session) != null;
                     const beginRename = () => {
@@ -779,12 +781,13 @@ export function ProjectShelf({
                               <Pencil size={12} />
                             </button>
                           )}
-                          {onSuspendSession && !isRenaming && session.status === "waiting" && (
+                          {onSuspendSession && !isRenaming && (
                             <button
                               className="session-row__action"
                               type="button"
-                              title={`挂起 ${session.label} — 结束它的 agent 进程，下次发消息自动接上`}
-                              aria-label={`Suspend ${session.label}`}
+                              disabled={!park.enabled}
+                              title={park.title}
+                              aria-label={park.ariaLabel}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 onSuspendSession(session.id);
@@ -889,6 +892,7 @@ export function ProjectShelf({
             )}
             {sortSessionsNewestFirst(visibleChatSessions).map((session) => {
               const busy = sessionIsBusy(session.status);
+              const park = suspendControl(session, session.label);
               const isActive = session.id === currentSessionId;
               const isRenaming = renamingId === session.id;
               const pinned = pinStamp(session) != null;
@@ -973,12 +977,13 @@ export function ProjectShelf({
                         <Pencil size={12} />
                       </button>
                     )}
-                    {onSuspendSession && !isRenaming && session.status === "waiting" && (
+                    {onSuspendSession && !isRenaming && (
                       <button
                         className="chat-row__action"
                         type="button"
-                        title={`挂起 ${session.label} — 结束它的 agent 进程，下次发消息自动接上`}
-                        aria-label={`Suspend ${session.label}`}
+                        disabled={!park.enabled}
+                        title={park.title}
+                        aria-label={park.ariaLabel}
                         onClick={(event) => {
                           event.stopPropagation();
                           onSuspendSession(session.id);

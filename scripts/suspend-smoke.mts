@@ -11,6 +11,8 @@ import {
   SUSPEND_IDLE_MS,
   lastActiveMs,
   isSuspendable,
+  canPark,
+  suspendControl,
   shouldAutoSuspend,
 } from "../src/lib/sessionSuspend.ts";
 
@@ -65,6 +67,39 @@ check("empty or unreadable rows never trigger a park", () => {
   assert.equal(lastActiveMs({ lastActiveAt: "not a date" }), 0);
   assert.equal(shouldAutoSuspend(warm({ lastActiveAt: "" }), NOW), false);
   assert.equal(shouldAutoSuspend(warm({ lastActiveAt: "not a date" }), NOW), false);
+});
+
+console.log("\nwhat the row's park control says");
+check("a warm dialog offers to park", () => {
+  const control = suspendControl(warm(), "Jingzhe");
+  assert.equal(control.enabled, true);
+  assert.match(control.title, /^挂起 Jingzhe — /);
+  assert.equal(control.ariaLabel, "Suspend Jingzhe");
+});
+check("a failed turn still holds a process, so it can be parked", () => {
+  assert.equal(canPark(warm({ status: "error" })), true);
+  assert.equal(suspendControl(warm({ status: "error" })).enabled, true);
+});
+check("a working dialog refuses and says why", () => {
+  for (const status of ["starting", "running"]) {
+    const control = suspendControl(warm({ status }), "Jingzhe");
+    assert.equal(control.enabled, false, status);
+    assert.match(control.title, /正在跑/, status);
+  }
+});
+check("an already parked dialog refuses without pretending to park", () => {
+  for (const status of ["exited", "", "weird"]) {
+    const control = suspendControl(warm({ status }), "Jingzhe");
+    assert.equal(control.enabled, false, status);
+    assert.match(control.title, /已挂起/, status);
+  }
+});
+check("the control is drawn for every status, so the affordance never moves", () => {
+  for (const status of ["starting", "running", "waiting", "exited", "error"]) {
+    const control = suspendControl(warm({ status }), "s1");
+    assert.equal(typeof control.title, "string");
+    assert.ok(control.title.length > 0, status);
+  }
 });
 
 console.log(`\n${passed} checks passed.`);
