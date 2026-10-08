@@ -1607,24 +1607,30 @@ pub fn send_acp_prompt(
         .send_prompt(&session_id, text, image_paths.unwrap_or_default())
 }
 
-/// Read a local image as a `data:` URL for the annotator / You-card preview.
+/// Read a local image as a `data:` URL for previews (annotator, You-card,
+/// markdown replies).
+///
+/// A path an agent wrote into a reply is sometimes a near miss: the file is
+/// there, one character off (`21-3.1_rest.png` for `LH21-3.1_rest.png`). When
+/// the exact path is missing, the same folder is searched for one unique
+/// case-insensitive name, or one unique name *ending* with the requested one,
+/// and that file is read. The response reports the path actually used, so the
+/// UI can show the real file. Two candidates keep the original error: guessing
+/// between them could show the wrong picture.
 #[tauri::command(async)]
 pub fn read_image_data_url(path: String) -> Result<serde_json::Value, String> {
     use base64::{engine::general_purpose::STANDARD as B64, Engine};
     use std::fs;
-    use std::path::Path;
 
-    let p = Path::new(&path);
-    if !p.is_file() {
-        return Err(format!("not a file: {path}"));
-    }
+    let resolved = resolve_image_path(&path)?;
+    let p = resolved.as_path();
     let meta = fs::metadata(p).map_err(|e| format!("stat failed: {e}"))?;
     const MAX_BYTES: u64 = 12 * 1024 * 1024;
     if meta.len() > MAX_BYTES {
         return Err(format!("image too large (max 12 MB)"));
     }
     let bytes = fs::read(p).map_err(|e| format!("read failed: {e}"))?;
-    let lower = path.to_ascii_lowercase();
+    let lower = resolved.to_string_lossy().to_ascii_lowercase();
     let mime = if lower.ends_with(".png") {
         "image/png"
     } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
@@ -1642,11 +1648,61 @@ pub fn read_image_data_url(path: String) -> Result<serde_json::Value, String> {
     };
     let data = B64.encode(&bytes);
     Ok(serde_json::json!({
-        "path": path,
+        "path": resolved.to_string_lossy(),
         "mimeType": mime,
         "dataUrl": format!("data:{mime};base64,{data}"),
         "byteLength": bytes.len(),
     }))
+}
+
+/// The file to read for a reported image path: the path itself, or a unique
+/// near miss in the same folder (see `read_image_data_url`).
+fn resolve_image_path(path: &str) -> Result<std::path::PathBuf, String> {
+    use std::fs;
+    use std::path::PathBuf;
+
+    let requested = PathBuf::from(path);
+    if requested.is_file() {
+        return Ok(requested);
+    }
+    let not_found = || format!("not a file: {path}");
+    let Some(dir) = requested.parent() else {
+        return Err(not_found());
+    };
+    if !dir.is_dir() {
+        return Err(not_found());
+    }
+    let name = requested
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    if name.is_empty() {
+        return Err(not_found());
+    }
+    // A one- or two-letter name matches half the folder; only guess when the
+    // requested name carries enough of itself to be a real near miss.
+    let stem = name.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(name);
+    if stem.chars().count() < 3 {
+        return Err(not_found());
+    }
+    let wanted = name.to_lowercase();
+    let mut same_name: Vec<PathBuf> = Vec::new();
+    let mut name_suffix: Vec<PathBuf> = Vec::new();
+    for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+        let candidate = entry.file_name().to_string_lossy().to_lowercase();
+        if candidate == wanted {
+            same_name.push(entry.path());
+        } else if candidate.ends_with(&wanted) {
+            name_suffix.push(entry.path());
+        }
+    }
+    if same_name.len() == 1 {
+        return Ok(same_name.remove(0));
+    }
+    if name_suffix.len() == 1 {
+        return Ok(name_suffix.remove(0));
+    }
+    Err(not_found())
 }
 
 /// Materialize a clipboard/paste image (base64) under `~/.marionette/clipboard/`.
@@ -2345,5 +2401,41 @@ mod tests {
         assert!(json_has_credential_markers(r#"{"cline": {"apiKey": "sk-.."}}"#));
         assert!(!json_has_credential_markers("{}"));
         assert!(!json_has_credential_markers(r#"{"openai": {"key": ""}}"#));
+    }
+
+    #[test]
+    fn image_path_falls_back_to_a_unique_near_miss() {
+        use super::resolve_image_path;
+        use std::fs;
+
+        let root = std::env::temp_dir().join(format!(
+            "marionette-image-path-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        // The real name an agent misquoted in its reply, and a decoy that must
+        // not be picked when the near miss is ambiguous.
+        let real = root.join("LH21-3.1_rest.png");
+        fs::write(&real, b"png").unwrap();
+
+        let exact = resolve_image_path(real.to_str().unwrap()).unwrap();
+        assert_eq!(exact.file_name().unwrap(), "LH21-3.1_rest.png");
+
+        let near = root.join("21-3.1_rest.png");
+        let matched = resolve_image_path(near.to_str().unwrap()).unwrap();
+        assert_eq!(matched, real);
+
+        fs::write(root.join("OLD21-3.1_rest.png"), b"png").unwrap();
+        assert!(
+            resolve_image_path(near.to_str().unwrap()).is_err(),
+            "two candidates must not be guessed between"
+        );
+
+        assert!(resolve_image_path(root.join("nope.png").to_str().unwrap()).is_err());
+        // A two-letter name would match half the folder — never guessed at.
+        fs::write(root.join("ab.png"), b"png").unwrap();
+        assert!(resolve_image_path(root.join("b.png").to_str().unwrap()).is_err());
+        let _ = fs::remove_dir_all(&root);
     }
 }

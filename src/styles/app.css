@@ -3896,6 +3896,36 @@ body.is-tab-detaching * {
   cursor: zoom-out;
 }
 
+/* A local image whose bytes have not arrived (or never will): show its name
+   and path instead of the webview's broken-image icon. Click opens it in the
+   system viewer, same as the right-click menu. */
+.md-body__img-fallback {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+  margin: 0.5em 0;
+  padding: 5px 9px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+}
+
+.md-body__img-fallback:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.md-body__img-fallback__alt {
+  color: var(--text-strong);
+  font-weight: 600;
+}
+
 .event-card__body.md-body {
   margin-left: 22px;
   padding-top: 8px;

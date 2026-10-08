@@ -1,10 +1,12 @@
-import { memo, useEffect, useState, type ReactNode } from "react";
+import { createContext, memo, useContext, useEffect, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { isTauriRuntime, readImageDataUrl } from "../lib/api";
 import { stripFileUri } from "../lib/imageAttachments";
 import { prepareMarkdownForRender } from "../lib/markdownText";
+import { resolveToolImagePath } from "../lib/toolBody";
 import { linkifyChildren, useLinkMenu } from "./LinkedText";
 import type { LinkTarget } from "../lib/linkTargets";
 
@@ -72,70 +74,153 @@ function MdLink({ href, children }: { href?: string; children?: ReactNode }) {
 }
 
 /**
+ * Working directory for markdown images.
+ *
+ * A reply names its screenshots the way the agent saw them — relative to the
+ * session cwd (`Docs/关卡/…/shot.png`). The webview cannot resolve those and
+ * the asset protocol needs an absolute path, so the loader joins them here.
+ */
+export const MarkdownImageCwdContext = createContext<string | null>(null);
+
+/** Resolved path → its bytes, so scrolling and re-renders never re-read. */
+type LoadedImage = { dataUrl: string; path: string };
+const imageDataUrlCache = new Map<string, Promise<LoadedImage>>();
+
+function loadImage(path: string): Promise<LoadedImage> {
+  const cached = imageDataUrlCache.get(path);
+  if (cached) return cached;
+  const pending = readImageDataUrl(path).then((result) => ({
+    dataUrl: result.dataUrl,
+    // The reader may have matched a near-miss name; show the file it used.
+    path: result.path || path,
+  }));
+  // A failed read is not cached: the file may be written a moment later.
+  pending.catch(() => imageDataUrlCache.delete(path));
+  return pending;
+}
+
+/** Paths the asset protocol can serve when the byte reader refuses a format. */
+function isAbsolutePath(value: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith("\\\\") || value.startsWith("/");
+}
+
+/**
  * Inline image — single click toggles zoom (600px cap ↔ natural size),
  * right-click opens the menu (Open with system viewer / Show in Explorer /
  * Copy path). No delay: there is no double-click action to disambiguate.
  * stopPropagation so a click inside a markdown link (`[![alt](img)](url)`)
  * doesn't fire twice.
  *
- * Display src: http(s) loads natively; local paths can't be loaded by the
- * webview directly, so they go through the asset protocol (convertFileSrc).
- * The click/right-click target stays the raw path — Open / Copy / Show in
- * Explorer must see the real filesystem path, not the asset URL.
+ * Display src: http(s) loads natively; a local file cannot be loaded by the
+ * webview by URL, so its bytes come through the same reader the tool cards
+ * use. The click/right-click target is the resolved absolute path — Open /
+ * Copy / Show in Explorer must see the real filesystem path.
  */
 export function PreviewImage({ src, alt }: { src?: string; alt?: string }) {
-  const { openMenu, renderMenu } = useLinkMenu();
+  const cwd = useContext(MarkdownImageCwdContext);
+  const { openMenu, primaryAction, renderMenu } = useLinkMenu();
   const [zoomed, setZoomed] = useState(false);
-  const localPath = src && !HTTP_URL_RE.test(src) && !src.startsWith("data:") ? stripFileUri(src) : src;
+  const [loaded, setLoaded] = useState<LoadedImage | null>(null);
+  const [failed, setFailed] = useState(false);
+  const remote = Boolean(
+    src &&
+      (HTTP_URL_RE.test(src) || src.startsWith("data:") || src.startsWith("blob:")),
+  );
+  const localPath = src && !remote ? resolveToolImagePath(stripFileUri(src), cwd) : src;
   const target: LinkTarget | null = localPath
     ? {
-        kind:
-          HTTP_URL_RE.test(localPath) || localPath.startsWith("data:") || localPath.startsWith("blob:")
-            ? "url"
-            : "path",
+        kind: remote ? "url" : "path",
         raw: localPath,
         start: 0,
         end: localPath.length,
       }
     : null;
-  const displaySrc = (() => {
-    if (!localPath) return localPath;
-    if (
-      HTTP_URL_RE.test(localPath) ||
-      localPath.startsWith("data:") ||
-      localPath.startsWith("blob:")
-    ) {
-      return localPath;
-    }
-    if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
-      return convertFileSrc(localPath);
-    }
-    return localPath;
-  })();
+
   useEffect(() => {
     setZoomed(false);
-  }, [localPath]);
+    if (!src || remote) {
+      setLoaded(null);
+      setFailed(false);
+      return;
+    }
+    if (!isTauriRuntime()) {
+      // Plain-browser preview has no filesystem: keep the path visible instead
+      // of an empty <img>.
+      setFailed(true);
+      return;
+    }
+    let cancelled = false;
+    setFailed(false);
+    setLoaded(null);
+    void loadImage(localPath ?? "")
+      .then((image) => {
+        if (!cancelled) setLoaded(image);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        // The reader refuses some formats / very large files; the asset
+        // protocol can still serve an absolute one.
+        if (localPath && isAbsolutePath(localPath)) {
+          setLoaded({ dataUrl: convertFileSrc(localPath), path: localPath });
+          return;
+        }
+        setFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [localPath, remote, src]);
+
+  const displaySrc = remote ? localPath : loaded?.dataUrl;
+  // A near-miss match means the file read is not the path in the reply.
+  const shownPath = loaded?.path ?? localPath;
+
   return (
     <>
-      <img
-        src={displaySrc}
-        alt={alt ?? ""}
-        loading="lazy"
-        className={zoomed ? "md-body__img md-body__img--zoomed" : "md-body__img"}
-        title={localPath}
-        onClick={(event) => {
-          if (!target) return;
-          event.preventDefault();
-          event.stopPropagation();
-          setZoomed((z) => !z);
-        }}
-        onContextMenu={(event) => {
-          if (!target) return;
-          event.preventDefault();
-          event.stopPropagation();
-          void openMenu(event, target);
-        }}
-      />
+      {displaySrc ? (
+        <img
+          src={displaySrc}
+          alt={alt ?? ""}
+          loading="lazy"
+          className={zoomed ? "md-body__img md-body__img--zoomed" : "md-body__img"}
+          title={shownPath}
+          onClick={(event) => {
+            if (!target) return;
+            event.preventDefault();
+            event.stopPropagation();
+            setZoomed((z) => !z);
+          }}
+          onContextMenu={(event) => {
+            if (!target) return;
+            event.preventDefault();
+            event.stopPropagation();
+            void openMenu(event, target);
+          }}
+        />
+      ) : (
+        <button
+          type="button"
+          className="md-body__img-fallback"
+          title={shownPath}
+          onClick={(event) => {
+            if (!target) return;
+            event.preventDefault();
+            event.stopPropagation();
+            void primaryAction(event, target);
+          }}
+          onContextMenu={(event) => {
+            if (!target) return;
+            event.preventDefault();
+            event.stopPropagation();
+            void openMenu(event, target);
+          }}
+        >
+          <span className="md-body__img-fallback__alt">{alt || "图片"}</span>
+          <span className="md-body__img-fallback__hint">
+            {failed ? "读不到这张图，点开用系统查看器" : "正在读取…"}
+          </span>
+        </button>
+      )}
       {renderMenu()}
     </>
   );

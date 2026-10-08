@@ -37,7 +37,7 @@ import { isCursorOverWindow, setMergeHighlight } from "../lib/detachedWindow";
 import type { AgentConfig, Session, SessionEvent, SessionStatus, SessionViewMode } from "../lib/types";
 import { ClippedBody } from "./ClippedBody";
 import { LinkCwdContext, LinkedText } from "./LinkedText";
-import { MarkdownBody, PreviewImage } from "./MarkdownBody";
+import { MarkdownBody, MarkdownImageCwdContext, PreviewImage } from "./MarkdownBody";
 import { MessageOutline } from "./MessageOutline";
 import { MessageTimestamp } from "./MessageTimestamp";
 import { ToolImageStrip } from "./ToolImageStrip";
@@ -556,6 +556,7 @@ export function SessionView({
       )}
 
       <div className="session-stage">
+        <MarkdownImageCwdContext.Provider value={session.cwd ?? null}>
         <div className="session-stage__clean">
           <CleanPlaceholder
             agent={agent}
@@ -585,6 +586,7 @@ export function SessionView({
             onSubtaskRetry={onSubtaskRetry}
           />
         </div>
+        </MarkdownImageCwdContext.Provider>
       </div>
     </section>
   );
