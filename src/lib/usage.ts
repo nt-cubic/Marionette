@@ -1059,12 +1059,10 @@ export function parseGrokBilling(data: unknown): {
     (typeof root.subscriptionTier === "string" && root.subscriptionTier) ||
     null;
 
-  // creditUsagePercent is already 0–100 (live: 6 ≈ TUI "Weekly limit: 5%").
-  // Only treat values in (0, 1] as fractions if the field ever changes shape.
-  const percentage =
-    pct > 0 && pct <= 1
-      ? normalizeUtilizationPercent(pct) ?? pct * 100
-      : Math.max(0, Math.min(100, pct));
+  // creditUsagePercent is already 0–100. Live `_x.ai/billing` sends `1.0` for
+  // 1% used (and `6` ≈ TUI "Weekly limit: 5%"). Treating `(0, 1]` as a 0–1
+  // fraction mapped a real 1% week onto a full 100% bar.
+  const percentage = Math.max(0, Math.min(100, Math.round(pct * 10) / 10));
 
   return {
     windows: [
