@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Bell, BellOff, ChevronDown, ChevronRight, CloudMoon, Folder, FolderOpen, Globe, GripVertical, MessageSquare, PanelLeftClose, PanelLeftOpen, Pencil, Pin, PinOff, Plus, Save, Search, SunMedium, Trash2, X, Zap } from "lucide-react";
+import { Bell, BellOff, ChevronDown, ChevronRight, CloudMoon, Folder, FolderOpen, Globe, GripVertical, MessageSquare, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, Save, Search, SunMedium, Trash2, X, Zap } from "lucide-react";
 import type { AgentConfig, Project, ProxyConfig, ProxyTestResult, Session } from "../lib/types";
 import { themeToggleTitle, type ThemeMode } from "../lib/theme";
 import { collapsedShelfSessions, pinStamp, sortSessionsNewestFirst } from "../lib/sessionOrder";
@@ -79,6 +79,8 @@ type ProjectShelfProps = {
   onDeleteProject: (projectId: string) => void;
   /** Manual rename — always persists (like first-message auto-title). */
   onRenameSession?: (sessionId: string, label: string) => void;
+  /** Park an idle dialog: stop its agent process, reconnect on the next send. */
+  onSuspendSession?: (sessionId: string) => void;
   /**
    * Drag reorder. `place` is where the dragged row lands relative to the target:
    * before = insert above the line, after = insert below the line.
@@ -134,6 +136,7 @@ export function ProjectShelf({
   onToggleSessionPin,
   onDeleteProject,
   onRenameSession,
+  onSuspendSession,
   onReorderProjects,
   onRevealProject,
   proxyConfig = null,
@@ -776,6 +779,20 @@ export function ProjectShelf({
                               <Pencil size={12} />
                             </button>
                           )}
+                          {onSuspendSession && !isRenaming && session.status === "waiting" && (
+                            <button
+                              className="session-row__action"
+                              type="button"
+                              title={`挂起 ${session.label} — 结束它的 agent 进程，下次发消息自动接上`}
+                              aria-label={`Suspend ${session.label}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onSuspendSession(session.id);
+                              }}
+                            >
+                              <Pause size={12} />
+                            </button>
+                          )}
                           <button
                             className="session-row__action session-row__action--danger"
                             type="button"
@@ -954,6 +971,20 @@ export function ProjectShelf({
                         }}
                       >
                         <Pencil size={12} />
+                      </button>
+                    )}
+                    {onSuspendSession && !isRenaming && session.status === "waiting" && (
+                      <button
+                        className="chat-row__action"
+                        type="button"
+                        title={`挂起 ${session.label} — 结束它的 agent 进程，下次发消息自动接上`}
+                        aria-label={`Suspend ${session.label}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onSuspendSession(session.id);
+                        }}
+                      >
+                        <Pause size={12} />
                       </button>
                     )}
                     <button

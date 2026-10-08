@@ -16,7 +16,7 @@ Windows 本地 **多 Agent CLI 图形壳**（Tauri + React）。不替代 OpenCo
 
 | 能力 | 说明 |
 |------|------|
-| 项目 / 会话 | 项目 CRUD、搜索 threads、项目拖拽排序、会话按发送 recency 排序 |
+| 项目 / 会话 | 项目 CRUD、搜索 threads、项目拖拽排序、会话按发送 recency 排序；空闲 30 分钟的会话自动「挂起」（结束 agent 进程，下次发消息自动接上历史），行内悬浮按钮可手动挂起 |
 | Chat 对话 | 侧栏项目列表下的独立对话列表；使用进程默认工作目录，不创建项目或工作区 `.marionette`；资源管理器「在此处打开」遇到已有 `.marionette` 才按项目打开 |
 | 多 Agent | 内置 + custom ACP agents；懒启动、能力协商、model/mode/effort/文件权限（agent 自己 advertise 的旋钮才出现，按 option id 判定，category 只当提示） |
 | Clean 对话 | transcript JSONL、edit&resend、权限弹窗、Ask/Plan、@ 派任务 |

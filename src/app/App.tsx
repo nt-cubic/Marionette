@@ -117,6 +117,7 @@ import { classifyAgentError, formatAcpRpcError, formatClassifiedError } from "..
 import { prettyEffortLabel } from "../lib/modelLabel";
 import { getLastUsedDefaults } from "../lib/recentModels";
 import { pickRestoredSession, saveUiRestore, saveQueuedSends, loadQueuedSends, saveClosedTabs, loadClosedTabs } from "../lib/uiRestore";
+import { shouldAutoSuspend } from "../lib/sessionSuspend";
 import { AskQuestionCard, type AskQuestionPrompt } from "../components/AskQuestionCard";
 import { Composer } from "../components/Composer";
 import { ComposerErrorStrip, SessionNoticeStrip } from "../components/ComposerErrorStrip";
@@ -2238,6 +2239,59 @@ export function App() {
         .catch(() => undefined);
     }
   }, []);
+
+  /**
+   * Park an idle dialog: stop its agent process and arm the history injection,
+   * so the next send reconnects with the local transcript on top — the same
+   * path a restart takes. Queued sends and live turns are never parked.
+   */
+  const handleSuspendSession = useCallback((sessionId: string) => {
+    const session = sessionsRef.current.find((s) => s.id === sessionId);
+    if (!session || session.status !== "waiting") return;
+    void stopAcpSession(sessionId)
+      .catch(() => undefined)
+      .then(() => {
+        acpBootstrapRef.current.delete(sessionId);
+        acpNeedsHistoryRef.current.add(sessionId);
+        setSessionStatusById(sessionId, "exited");
+        if (sessionId === currentSessionIdRef.current) setSessionCapabilities(null);
+        pushDebug({
+          sessionId,
+          level: "info",
+          source: "shelf",
+          summary: "suspended idle dialog",
+        });
+      });
+  }, [pushDebug]);
+
+  /**
+   * Suspend warm dialogs nobody is using. A warm session holds an agent process
+   * per dialog, and a shelf of untouched dialogs is memory the user is not
+   * spending on anything.
+   */
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    const timer = setInterval(() => {
+      const now = Date.now();
+      const pendingSessionIds = [permissionPrompt, askPrompt, planApproval]
+        .map((prompt) => prompt?.sessionId)
+        .filter((id): id is string => Boolean(id));
+      const queuedSessionIds = [...pendingSendsRef.current.keys()];
+      for (const session of sessionsRef.current) {
+        if (
+          !shouldAutoSuspend(session, now, {
+            currentSessionId: currentSessionIdRef.current,
+            pendingSessionIds,
+            queuedSessionIds,
+          })
+        ) {
+          continue;
+        }
+        handleSuspendSession(session.id);
+      }
+    }, 60_000);
+    return () => clearInterval(timer);
+  }, [askPrompt, handleSuspendSession, permissionPrompt, planApproval]);
 
   /**
    * Repair labels already stored from a Marionette prompt preamble: re-derive
@@ -5551,6 +5605,7 @@ export function App() {
             onDeleteSession={deleteSession}
             onDeleteProject={handleDeleteProject}
             onRenameSession={handleRenameSession}
+            onSuspendSession={handleSuspendSession}
             onToggleSessionPin={handleToggleSessionPin}
             onReorderProjects={handleReorderProjects}
             onRevealProject={(project) => {
