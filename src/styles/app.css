@@ -5550,6 +5550,60 @@ body.is-tab-detaching * {
   color: var(--text-muted) !important;
 }
 
+.session-notice {
+  position: relative;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  background: var(--panel-raised);
+  font-size: 12px;
+  line-height: 1.35;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+}
+
+.session-notice--warning {
+  border-color: color-mix(in srgb, var(--warn, #c90) 45%, var(--border));
+}
+
+.session-notice--error {
+  border-color: color-mix(in srgb, var(--danger, #c44) 40%, var(--border));
+}
+
+.session-notice__copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.session-notice__copy span {
+  color: var(--text-muted);
+}
+
+.session-notice__dismiss {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+}
+
+.session-notice__dismiss:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
 .custom-agent-dialog {
   width: min(560px, 92vw);
   max-height: min(72vh, 640px);

@@ -145,6 +145,78 @@ export function parseCompactionUpdate(update: Record<string, unknown>): Compacti
   return { trigger, summary };
 }
 
+export type SessionNotice = {
+  severity: "info" | "warning" | "error";
+  title: string;
+  description: string;
+};
+
+function noticeSeverity(raw: unknown): SessionNotice["severity"] {
+  const s = String(raw ?? "").toLowerCase();
+  if (s === "error" || s === "danger" || s === "fatal") return "error";
+  if (s === "warning" || s === "warn") return "warning";
+  return "info";
+}
+
+/**
+ * ACP `sessionUpdate: "notice"` (v1 clientCapabilities.session.notices).
+ * Advisory only — must not become conversation history.
+ */
+export function parseSessionNoticeUpdate(update: Record<string, unknown>): SessionNotice | null {
+  const kind = String(update.sessionUpdate ?? update.type ?? "").toLowerCase();
+  if (
+    kind !== "notice" &&
+    kind !== "session_notice" &&
+    !kind.endsWith("/notice")
+  ) {
+    return null;
+  }
+  const nested = asRecord(update.notice);
+  const src = nested ?? update;
+  const title =
+    (typeof src.title === "string" && src.title.trim()) ||
+    (typeof src.message === "string" && src.message.trim()) ||
+    "";
+  if (!title) return null;
+  const description =
+    (typeof src.description === "string" && src.description.trim()) ||
+    (typeof src.detail === "string" && src.detail.trim()) ||
+    (typeof src.body === "string" && src.body.trim()) ||
+    "";
+  return {
+    severity: noticeSeverity(src.severity ?? src.level),
+    title,
+    description,
+  };
+}
+
+/**
+ * Live advisory that belongs above the composer, not in the chat:
+ * protocol notices, Codex retry, Claude AIR sessionFailure.
+ */
+export function parseLiveNotice(update: Record<string, unknown>): SessionNotice | null {
+  const notice = parseSessionNoticeUpdate(update);
+  if (notice) return notice;
+  const retry = parseCodexRetryUpdate(update);
+  if (retry) {
+    return {
+      severity: "warning",
+      title: retry.httpStatus != null ? `正在重试（HTTP ${retry.httpStatus}）` : "正在重试…",
+      description: retry.message,
+    };
+  }
+  const failure = parseSessionFailureUpdate(update);
+  if (failure) {
+    const extra = failure.details ? ` ${failure.details}` : "";
+    return {
+      severity: "error",
+      title: failure.title,
+      description: `${failure.category}${extra}`.trim(),
+    };
+  }
+  return null;
+}
+
 export type SessionFailureMarker = {
   title: string;
   details: string;

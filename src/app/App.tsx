@@ -118,7 +118,8 @@ import { getLastUsedDefaults } from "../lib/recentModels";
 import { pickRestoredSession, saveUiRestore, saveQueuedSends, loadQueuedSends, saveClosedTabs, loadClosedTabs } from "../lib/uiRestore";
 import { AskQuestionCard, type AskQuestionPrompt } from "../components/AskQuestionCard";
 import { Composer } from "../components/Composer";
-import { ComposerErrorStrip } from "../components/ComposerErrorStrip";
+import { ComposerErrorStrip, SessionNoticeStrip } from "../components/ComposerErrorStrip";
+import { parseLiveNotice } from "../lib/acpMeta";
 import { ContextPanel } from "../components/ContextPanel";
 import { PermissionDialog, type PermissionPrompt } from "../components/PermissionDialog";
 import { PlanApprovalCard, type PlanApprovalPrompt } from "../components/PlanApprovalCard";
@@ -437,6 +438,10 @@ export function App() {
     sessionId: string;
     error: import("../lib/errors").ClassifiedError;
   } | null>(null);
+  /** Live advisory (retry / crash / protocol notice). Not written into chat. */
+  const [sessionNotices, setSessionNotices] = useState<
+    Record<string, import("../components/ComposerErrorStrip").SessionNoticeView>
+  >({});
   const flushingSendRef = useRef<Set<string>>(new Set());
   /** Set each render so turn/complete can drain the queue without stale closures. */
   const drainQueuedSendRef = useRef<(sessionId: string) => void>(() => undefined);
@@ -1484,6 +1489,13 @@ export function App() {
         });
         const title = extractAcpSessionTitle(payload.data);
         if (title) applyAgentSessionTitle(payload.sessionId, title);
+        setSessionNotices((current) => {
+          const held = current[payload.sessionId];
+          if (!held || held.title !== "Agent 已退出") return current;
+          const next = { ...current };
+          delete next[payload.sessionId];
+          return next;
+        });
       }
 
       // Live transcript: thinking / tool / assistant stream as events arrive
@@ -1498,6 +1510,28 @@ export function App() {
         const update = getSessionUpdate(payload.data);
         const title = extractAcpSessionTitle(payload.data);
         if (title) applyAgentSessionTitle(payload.sessionId, title);
+
+        if (update) {
+          const notice = parseLiveNotice(update);
+          if (notice) {
+            const sid = payload.sessionId;
+            setSessionNotices((current) => ({
+              ...current,
+              [sid]: { sessionId: sid, ...notice },
+            }));
+            if (notice.severity === "info") {
+              window.setTimeout(() => {
+                setSessionNotices((current) => {
+                  const held = current[sid];
+                  if (!held || held.title !== notice.title) return current;
+                  const next = { ...current };
+                  delete next[sid];
+                  return next;
+                });
+              }, 8000);
+            }
+          }
+        }
 
         // ACP slash command catalogue for Composer `/` autocomplete.
         const slashList = parseAvailableCommandsUpdate(payload.data);
@@ -1808,6 +1842,13 @@ export function App() {
         if (turnedIdle || stopReason === "cancelled" || stopReason === "end_turn" || !stopReason) {
           queueMicrotask(() => drainQueuedSendRef.current(payload.sessionId));
         }
+        setSessionNotices((current) => {
+          const held = current[payload.sessionId];
+          if (!held || !held.title.startsWith("正在重试")) return current;
+          const next = { ...current };
+          delete next[payload.sessionId];
+          return next;
+        });
       }
       // Agent process stdout closed (crash / exit) — never leave the UI "Working" forever.
       if (payload.method === "process/ended" || payload.method === "process/stopped") {
@@ -1828,27 +1869,17 @@ export function App() {
         setPlanApprovalBusy(false);
         setPermissionPrompt((cur) => (cur?.sessionId === payload.sessionId ? null : cur));
         if (endedHard) {
-          setLiveEvents((current) => {
-            const sid = payload.sessionId;
-            const lastIdx = findLastIndexForSession(current, sid);
-            const last = lastIdx >= 0 ? current[lastIdx] : undefined;
-            if (
-              last?.type === "assistant_message" &&
-              last.sessionId === sid &&
-              last.text.includes("Agent process ended")
-            ) {
-              return markOpenTools(current, sid, "failed");
-            }
-            return [
-              ...markOpenTools(current, sid, "failed"),
-              {
-                type: "assistant_message" as const,
-                sessionId: sid,
-                text: `**Agent process ended.**\n\n${detail}\n\nThe turn is no longer live. Warm the agent again (focus composer / send) or start a new session.`,
-                createdAt: new Date().toISOString(),
-              },
-            ];
-          });
+          const sid = payload.sessionId;
+          setLiveEvents((current) => markOpenTools(current, sid, "failed"));
+          setSessionNotices((current) => ({
+            ...current,
+            [sid]: {
+              sessionId: sid,
+              severity: "error",
+              title: "Agent 已退出",
+              description: `${detail}。点输入框或发一条消息会重新拉起，也可以开新会话。`,
+            },
+          }));
         }
         // Always leave running/starting — intentional stop (agent switch) or crash.
         // turn/complete usually arrived first; this is the belt for races.
@@ -5674,6 +5705,18 @@ export function App() {
           )}
           <div className="composer-slot">
           <div className="composer-slot__notices">
+          {sessionNotices[displaySession.id] && (
+            <SessionNoticeStrip
+              notice={sessionNotices[displaySession.id]}
+              onDismiss={() => {
+                setSessionNotices((current) => {
+                  const next = { ...current };
+                  delete next[displaySession.id];
+                  return next;
+                });
+              }}
+            />
+          )}
           {composerFailure && composerFailure.sessionId === displaySession.id && (
             <ComposerErrorStrip
               error={composerFailure.error}

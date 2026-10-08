@@ -342,4 +342,40 @@ assert.equal(
   "tool between same-session Replies must keep two cards",
 );
 
+console.log("notices stay off the transcript");
+{
+  const noticePart = extractAcpUpdateText({
+    params: {
+      update: {
+        sessionUpdate: "notice",
+        severity: "warning",
+        title: "MCP server unavailable",
+        description: "Continuing without it.",
+      },
+    },
+  });
+  assert.equal(noticePart, null, "protocol notice must not become a chat card");
+
+  const retryPart = extractAcpUpdateText({
+    params: {
+      update: {
+        sessionUpdate: "session_info_update",
+        _meta: { codex: { error: { willRetry: true, message: "rate limited" } } },
+      },
+    },
+  });
+  assert.equal(retryPart, null, "Codex retry must not become a Reply");
+
+  const compactPart = extractAcpUpdateText({
+    params: {
+      update: {
+        sessionUpdate: "compaction_update",
+        compaction: { trigger: "auto", summary: "kept the plan" },
+      },
+    },
+  });
+  assert.equal(compactPart?.role, "system");
+  assert.match(compactPart!.text, /kept the plan/);
+}
+
 console.log("smoke-stream-merge: ok");

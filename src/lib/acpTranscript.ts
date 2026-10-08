@@ -3,9 +3,8 @@ import {
   claudeParentToolUseId,
   extractAgentTranscript,
   parseCodexGoalUpdate,
-  parseCodexRetryUpdate,
   parseCompactionUpdate,
-  parseSessionFailureUpdate,
+  parseLiveNotice,
 } from "./acpMeta";
 import { ansiToPlainText } from "./ansi";
 import { isToolInProgress } from "./activityHealth";
@@ -469,7 +468,11 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
         ? update.message_id
         : undefined;
 
-  // ── Codex session_info_update: goal / retry (Codeg codex_goal + retry) ──
+  // Notices (retry / sessionFailure / sessionUpdate:"notice") stay off the
+  // transcript — App shows them above the composer.
+  if (parseLiveNotice(update)) return null;
+
+  // ── Codex session_info_update: goal (retry/failure are notices above) ──
   if (
     sessionUpdate === "session_info_update" ||
     sessionUpdate === "sessioninfoupdate" ||
@@ -494,17 +497,6 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
         toolDetail: goal.objective,
       };
     }
-    const retry = parseCodexRetryUpdate(update);
-    if (retry) {
-      const statusBit = retry.httpStatus != null ? ` (HTTP ${retry.httpStatus})` : "";
-      return {
-        role: "system",
-        text: `**Retrying…**${statusBit}\n\n${retry.message}`,
-        isDelta: false,
-        sessionUpdate,
-        messageId,
-      };
-    }
     const compaction = parseCompactionUpdate(update);
     if (compaction) {
       const how =
@@ -516,17 +508,6 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
       return {
         role: "system",
         text: `**上下文压缩${how ? `（${how}）` : ""}**\n\n${compaction.summary}`,
-        isDelta: false,
-        sessionUpdate,
-        messageId,
-      };
-    }
-    const failure = parseSessionFailureUpdate(update);
-    if (failure) {
-      const extra = failure.details ? `\n\n${failure.details}` : "";
-      return {
-        role: "system",
-        text: `**会话失败（${failure.category}）：** ${failure.title}${extra}`,
         isDelta: false,
         sessionUpdate,
         messageId,
