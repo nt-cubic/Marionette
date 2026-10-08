@@ -35,7 +35,7 @@ pub struct PreflightResult {
 
 /// Run preflight for one agent id (PATH + runtime tools + deps from registry).
 ///
-/// `command_override`: for custom agents whose CLI name is not in the pin table.
+/// `command_override`: for custom agents whose CLI name is not a built-in.
 pub fn run_preflight_with_cmd(agent_id: &str, command_override: Option<&str>) -> PreflightResult {
     let meta = agent_registry::harness_meta(agent_id);
     let cmd = command_override.unwrap_or(meta.cmd);
@@ -75,7 +75,7 @@ pub fn run_preflight_with_cmd(agent_id: &str, command_override: Option<&str>) ->
             if let Some(py) = meta.python_pin {
                 checks.push(CheckItem {
                     check_id: "python_pin".into(),
-                    label: "Python pin".into(),
+                    label: "Python for uvx".into(),
                     status: CheckStatus::Pass,
                     message: format!(
                         "uvx should use --python {py} (Hermes requires <3.14)"

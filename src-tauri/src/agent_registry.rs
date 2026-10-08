@@ -1,7 +1,8 @@
-//! Built-in ACP agent harness metadata (Codeg-aligned ids, pins, launch policy).
+//! Built-in ACP agent harness metadata (ids, launch policy, capability ads).
 //!
 //! Does **not** replace project-level Skill/MCP lending (`context_inventory`).
 //! Policy hooks tell `acp` how to advertise capabilities and whether to inject MCP.
+//! Install/update follows npm **latest** on PATH — this file does not pin versions.
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -17,10 +18,10 @@ pub enum McpWirePolicy {
     SkipForward,
 }
 
-/// How the agent binary / adapter is distributed (Codeg pin model).
+/// How the agent binary / adapter is installed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DistributionKind {
-    /// Global npm / npx package (pin as `name@version` when installing).
+    /// Global npm / npx package. Install tracks registry latest.
     Npx,
     /// Vendor binary or release zip (binary_cache later).
     Binary,
@@ -35,8 +36,6 @@ pub enum DistributionKind {
 pub struct AgentHarnessMeta {
     pub id: &'static str,
     pub label: &'static str,
-    /// Advertise ACP `elicitation.form` on initialize (Codex only in Codeg).
-    pub elicitation_form: bool,
     /// Claude Code subagent transcript meta.
     pub subagent_transcript: bool,
     #[serde(skip)]
@@ -46,11 +45,6 @@ pub struct AgentHarnessMeta {
     #[serde(skip)]
     pub distribution: DistributionKind,
     pub distribution_label: &'static str,
-    /// Pinned package / release version (Codeg registry). `None` = unpinned manual.
-    pub pin_version: Option<&'static str>,
-    /// npm / uvx package spec used for install or cold start.
-    /// e.g. `@agentclientprotocol/codex-acp@1.1.0` or `hermes-agent[acp,mcp]==0.18.2`.
-    pub pin_package: Option<&'static str>,
     /// Primary ACP command on PATH (or console script).
     pub cmd: &'static str,
     /// Default args after `cmd`.
@@ -59,7 +53,7 @@ pub struct AgentHarnessMeta {
     pub node_required: Option<&'static str>,
     /// Min `uv` version when distribution is Uvx.
     pub uv_required: Option<&'static str>,
-    /// `uvx --python` pin (Hermes).
+    /// `uvx --python` for Hermes (`<3.14`).
     pub python_pin: Option<&'static str>,
     /// Extra CLI commands that must exist for the agent to work (e.g. `codex`, `pi`).
     pub requires_commands: &'static [&'static str],
@@ -97,20 +91,17 @@ fn dist_label(d: DistributionKind) -> &'static str {
     }
 }
 
-/// Codeg-aligned pin table (2026-07 registry snapshot). Prefer PATH binary over npx cold start.
+/// Built-in launch metadata. Prefer PATH binary over npx cold start.
 pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
     match agent_id {
         "codex" | "codex-acp" => AgentHarnessMeta {
             id: "codex",
             label: "Codex CLI",
-            elicitation_form: true,
             subagent_transcript: false,
             mcp_wire: McpWirePolicy::Forward,
             mcp_wire_label: mcp_label(McpWirePolicy::Forward),
             distribution: DistributionKind::Npx,
             distribution_label: dist_label(DistributionKind::Npx),
-            pin_version: Some("1.11.0"),
-            pin_package: Some("@agentclientprotocol/codex-acp@1.11.0"),
             cmd: "codex-acp",
             args: &[],
             node_required: None,
@@ -122,14 +113,11 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
         "claude-code" | "claude-acp" => AgentHarnessMeta {
             id: "claude-code",
             label: "Claude Code",
-            elicitation_form: false,
             subagent_transcript: true,
             mcp_wire: McpWirePolicy::Forward,
             mcp_wire_label: mcp_label(McpWirePolicy::Forward),
             distribution: DistributionKind::Npx,
             distribution_label: dist_label(DistributionKind::Npx),
-            pin_version: Some("0.76.0"),
-            pin_package: Some("@agentclientprotocol/claude-agent-acp@0.76.0"),
             cmd: "claude-agent-acp",
             args: &[],
             node_required: None,
@@ -141,14 +129,11 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
         "grok-build" | "grok" => AgentHarnessMeta {
             id: "grok-build",
             label: "Grok Build",
-            elicitation_form: false,
             subagent_transcript: false,
             mcp_wire: McpWirePolicy::Forward,
             mcp_wire_label: mcp_label(McpWirePolicy::Forward),
             distribution: DistributionKind::Manual,
             distribution_label: dist_label(DistributionKind::Manual),
-            pin_version: None,
-            pin_package: None,
             cmd: "grok",
             args: &["--trust", "agent", "stdio"],
             node_required: None,
@@ -160,15 +145,12 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
         "opencode" => AgentHarnessMeta {
             id: "opencode",
             label: "OpenCode",
-            elicitation_form: false,
             subagent_transcript: false,
             mcp_wire: McpWirePolicy::Forward,
             mcp_wire_label: mcp_label(McpWirePolicy::Forward),
             // Codeg uses Binary cache; we still list npm package for one-click until binary_cache lands.
             distribution: DistributionKind::Binary,
             distribution_label: dist_label(DistributionKind::Binary),
-            pin_version: Some("1.18.30"),
-            pin_package: Some("opencode-ai"),
             cmd: "opencode",
             args: &["acp"],
             node_required: None,
@@ -180,14 +162,11 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
         "openclaw" | "openclaw-acp" => AgentHarnessMeta {
             id: "openclaw",
             label: "OpenClaw",
-            elicitation_form: false,
             subagent_transcript: false,
             mcp_wire: McpWirePolicy::Never,
             mcp_wire_label: mcp_label(McpWirePolicy::Never),
             distribution: DistributionKind::Npx,
             distribution_label: dist_label(DistributionKind::Npx),
-            pin_version: Some("2026.9.3"),
-            pin_package: Some("openclaw@2026.9.3"),
             cmd: "openclaw",
             args: &["acp"],
             node_required: Some("24.16.0"),
@@ -199,14 +178,11 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
         "pi" | "pi-acp" => AgentHarnessMeta {
             id: "pi",
             label: "Pi",
-            elicitation_form: false,
             subagent_transcript: false,
             mcp_wire: McpWirePolicy::SkipForward,
             mcp_wire_label: mcp_label(McpWirePolicy::SkipForward),
             distribution: DistributionKind::Npx,
             distribution_label: dist_label(DistributionKind::Npx),
-            pin_version: Some("0.0.31"),
-            pin_package: Some("pi-acp@0.0.31"),
             cmd: "pi-acp",
             args: &[],
             node_required: Some("22.0.0"),
@@ -218,14 +194,11 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
         "cline" => AgentHarnessMeta {
             id: "cline",
             label: "Cline",
-            elicitation_form: false,
             subagent_transcript: false,
             mcp_wire: McpWirePolicy::Forward,
             mcp_wire_label: mcp_label(McpWirePolicy::Forward),
             distribution: DistributionKind::Npx,
             distribution_label: dist_label(DistributionKind::Npx),
-            pin_version: Some("3.0.61"),
-            pin_package: Some("cline@3.0.61"),
             cmd: "cline",
             args: &["--acp"],
             node_required: None,
@@ -237,14 +210,11 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
         "gemini" => AgentHarnessMeta {
             id: "gemini",
             label: "Gemini CLI",
-            elicitation_form: false,
             subagent_transcript: false,
             mcp_wire: McpWirePolicy::Forward,
             mcp_wire_label: mcp_label(McpWirePolicy::Forward),
             distribution: DistributionKind::Npx,
             distribution_label: dist_label(DistributionKind::Npx),
-            pin_version: Some("0.59.0"),
-            pin_package: Some("@google/gemini-cli@0.59.0"),
             cmd: "gemini",
             args: &["--acp", "--skip-trust"],
             node_required: Some("20.0.0"),
@@ -256,14 +226,11 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
         "kimi-code" | "kimi" => AgentHarnessMeta {
             id: "kimi-code",
             label: "Kimi Code",
-            elicitation_form: false,
             subagent_transcript: false,
             mcp_wire: McpWirePolicy::Forward,
             mcp_wire_label: mcp_label(McpWirePolicy::Forward),
             distribution: DistributionKind::Npx,
             distribution_label: dist_label(DistributionKind::Npx),
-            pin_version: Some("0.42.0"),
-            pin_package: Some("@moonshot-ai/kimi-code@0.42.0"),
             cmd: "kimi",
             args: &["acp"],
             node_required: Some("22.19.0"),
@@ -275,14 +242,11 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
         "codebuddy" | "codebuddy-code" => AgentHarnessMeta {
             id: "codebuddy",
             label: "CodeBuddy",
-            elicitation_form: false,
             subagent_transcript: false,
             mcp_wire: McpWirePolicy::Forward,
             mcp_wire_label: mcp_label(McpWirePolicy::Forward),
             distribution: DistributionKind::Npx,
             distribution_label: dist_label(DistributionKind::Npx),
-            pin_version: Some("2.149.0"),
-            pin_package: Some("@tencent-ai/codebuddy-code@2.149.0"),
             cmd: "codebuddy",
             args: &["--acp"],
             node_required: Some("22.0.0"),
@@ -294,14 +258,11 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
         "hermes" => AgentHarnessMeta {
             id: "hermes",
             label: "Hermes Agent",
-            elicitation_form: false,
             subagent_transcript: false,
             mcp_wire: McpWirePolicy::Forward,
             mcp_wire_label: mcp_label(McpWirePolicy::Forward),
             distribution: DistributionKind::Uvx,
             distribution_label: dist_label(DistributionKind::Uvx),
-            pin_version: Some("0.21.1"),
-            pin_package: Some("hermes-agent[acp,mcp]==0.21.1"),
             // Prefer PATH `hermes acp`; uvx path is install/preflight guidance.
             cmd: "hermes",
             args: &["acp"],
@@ -314,14 +275,11 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
         "cursor" => AgentHarnessMeta {
             id: "cursor",
             label: "Cursor",
-            elicitation_form: false,
             subagent_transcript: false,
             mcp_wire: McpWirePolicy::Forward,
             mcp_wire_label: mcp_label(McpWirePolicy::Forward),
             distribution: DistributionKind::Manual,
             distribution_label: dist_label(DistributionKind::Manual),
-            pin_version: None,
-            pin_package: None,
             // Must not install a global `agent` that collides with Grok.
             cmd: "cursor-agent",
             args: &["acp"],
@@ -335,19 +293,15 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
         // `session/new.mcpServers` as an array of {name, command, args, env}
         // entries (env/headers as {name, value} arrays) — exactly what
         // `mcp_payload_for_agent` emits, and acp.rs always sends the key.
-        // Form elicitation on: omp routes generic approval prompts through
-        // `elicitation.form` when the client advertises it (Codex path).
+        // omp routes generic approval prompts through `elicitation.form`.
         "omp" => AgentHarnessMeta {
             id: "omp",
             label: "OMP",
-            elicitation_form: true,
             subagent_transcript: false,
             mcp_wire: McpWirePolicy::Forward,
             mcp_wire_label: mcp_label(McpWirePolicy::Forward),
             distribution: DistributionKind::Manual,
             distribution_label: dist_label(DistributionKind::Manual),
-            pin_version: None,
-            pin_package: None,
             cmd: "omp",
             args: &["acp"],
             node_required: None,
@@ -362,14 +316,11 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
         "deepseek" | "deepseek-acp" => AgentHarnessMeta {
             id: "deepseek",
             label: "DeepSeek Harness",
-            elicitation_form: false,
             subagent_transcript: false,
             mcp_wire: McpWirePolicy::Forward,
             mcp_wire_label: mcp_label(McpWirePolicy::Forward),
             distribution: DistributionKind::Npx,
             distribution_label: dist_label(DistributionKind::Npx),
-            pin_version: Some("0.9.0"),
-            pin_package: Some("deepseek-acp@0.9.0"),
             cmd: "deepseek-acp",
             args: &[],
             node_required: Some("22.0.0"),
@@ -381,14 +332,11 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
         _ => AgentHarnessMeta {
             id: "unknown",
             label: "Agent",
-            elicitation_form: false,
             subagent_transcript: false,
             mcp_wire: McpWirePolicy::Forward,
             mcp_wire_label: mcp_label(McpWirePolicy::Forward),
             distribution: DistributionKind::Manual,
             distribution_label: dist_label(DistributionKind::Manual),
-            pin_version: None,
-            pin_package: None,
             cmd: "agent",
             args: &[],
             node_required: None,
@@ -400,7 +348,11 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
     }
 }
 
-/// JSON clientCapabilities for ACP `initialize` (Codeg per-agent gates).
+/// JSON clientCapabilities for ACP `initialize`.
+///
+/// Advertise every client feature we actually implement so agents will use it
+/// (form questions, compaction summaries, session notices). Per-agent gates
+/// stay only where the wire is agent-specific (`subagent-transcript`).
 ///
 /// `fs.readTextFile` is deliberately not advertised. An agent that sees it
 /// routes every `read_file` through ACP's `fs/read_text_file`, whose result is
@@ -415,18 +367,17 @@ pub fn build_client_capabilities_json(agent_id: Option<&str>) -> Value {
             "writeTextFile": true
         },
         "terminal": true,
+        "elicitation": {
+            "form": {}
+        },
         "session": {
             "configOptions": {
                 "boolean": {}
-            }
+            },
+            "compaction": {},
+            "notices": {}
         }
     });
-    if meta.as_ref().map(|m| m.elicitation_form).unwrap_or(false) {
-        caps.as_object_mut().unwrap().insert(
-            "elicitation".into(),
-            json!({ "form": {} }),
-        );
-    }
     // Always advertise AIR sessionFailure so Claude (and adapters that
     // follow it) can name connection / auth / limit failures instead of
     // dumping a generic RPC error. subagent-transcript stays Claude-only.
@@ -465,10 +416,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_codex_gets_elicitation_form() {
-        assert!(harness_meta("codex").elicitation_form);
-        assert!(!harness_meta("claude-code").elicitation_form);
-        assert!(!harness_meta("grok-build").elicitation_form);
+    fn every_agent_gets_form_elicitation_compaction_and_notices() {
+        for agent in [
+            None,
+            Some("grok-build"),
+            Some("opencode"),
+            Some("claude-code"),
+            Some("codex"),
+            Some("omp"),
+        ] {
+            let caps = build_client_capabilities_json(agent);
+            assert_eq!(
+                caps["elicitation"]["form"],
+                json!({}),
+                "form elicitation (agent: {agent:?})"
+            );
+            assert_eq!(
+                caps["session"]["compaction"],
+                json!({}),
+                "compaction (agent: {agent:?})"
+            );
+            assert_eq!(
+                caps["session"]["notices"],
+                json!({}),
+                "notices (agent: {agent:?})"
+            );
+        }
     }
 
     #[test]
@@ -481,18 +454,11 @@ mod tests {
     }
 
     #[test]
-    fn pins_match_current_registry() {
-        assert_eq!(harness_meta("codex").pin_version, Some("1.11.0"));
-        assert_eq!(harness_meta("claude-code").pin_version, Some("0.76.0"));
-        assert_eq!(harness_meta("gemini").pin_version, Some("0.59.0"));
-        assert_eq!(harness_meta("cline").pin_version, Some("3.0.61"));
-        assert_eq!(harness_meta("hermes").pin_version, Some("0.21.1"));
+    fn launch_metadata_still_names_the_binaries() {
         assert_eq!(harness_meta("hermes").python_pin, Some("3.13"));
-        assert_eq!(harness_meta("pi").pin_version, Some("0.0.31"));
-        assert_eq!(harness_meta("opencode").pin_version, Some("1.18.30"));
         assert_eq!(harness_meta("deepseek").cmd, "deepseek-acp");
-        assert_eq!(harness_meta("deepseek").pin_version, Some("0.9.0"));
         assert_eq!(harness_meta("openclaw").node_required, Some("24.16.0"));
+        assert_eq!(harness_meta("codex").cmd, "codex-acp");
     }
 
     #[test]
@@ -540,7 +506,10 @@ mod tests {
     #[test]
     fn omp_uses_acp_launch_with_form_elicitation_and_mcp() {
         let meta = harness_meta("omp");
-        assert!(meta.elicitation_form);
+        assert_eq!(
+            build_client_capabilities_json(Some("omp"))["elicitation"]["form"],
+            json!({})
+        );
         assert_eq!(meta.mcp_wire, McpWirePolicy::Forward);
         assert!(should_inject_mcp(Some("omp")));
         assert_eq!(meta.cmd, "omp");
