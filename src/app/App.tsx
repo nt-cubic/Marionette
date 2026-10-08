@@ -5843,6 +5843,7 @@ export function App() {
           gitBranch={gitBranch}
           onCommitAndPush={handleCommitAndPush}
           onOpenDiff={(path) => void handleOpenDiff(path)}
+          projectRoot={currentProject?.rootPath ?? null}
           handoff={lastHandoff}
           projectContext={projectContext}
           projectContextScanning={projectContextScanning}

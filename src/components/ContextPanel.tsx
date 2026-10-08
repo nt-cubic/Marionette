@@ -1,6 +1,7 @@
 import {
   ArrowUpCircle,
-  FileDiff,
+  ExternalLink,
+  FolderOpen,
   PanelRightClose,
   PanelRightOpen,
   Plus,
@@ -9,6 +10,8 @@ import {
   X,
 } from "lucide-react";
 import { useState } from "react";
+import { openExternal, revealInFileManager } from "../lib/api";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { SessionStatsSection } from "./SessionStatsSection";
 import type { PlanEntry } from "../lib/acpPlan";
 import type { SessionStats } from "../lib/sessionStats";
@@ -38,6 +41,8 @@ type ContextPanelProps = {
   /** Ask the active agent to commit local changes and push. */
   onCommitAndPush?: () => void;
   onOpenDiff?: (path: string) => void;
+  /** Project root used to open / reveal changed files. */
+  projectRoot?: string | null;
   handoff?: HandoffResult | null;
   /** MCP servers + skills found on this machine / in this project. */
   projectContext?: ProjectContext | null;
@@ -143,6 +148,96 @@ function changeBadge(changeType: ChangedFile["changeType"]): string {
   }
 }
 
+function parentRelativePath(path: string): string {
+  const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  const slash = normalized.lastIndexOf("/");
+  if (slash <= 0) return ".";
+  return normalized.slice(0, slash);
+}
+
+function ChangedFileRow({
+  file,
+  cwd,
+  onOpenDiff,
+  onRisky,
+  onNote,
+}: {
+  file: ChangedFile;
+  cwd: string | null;
+  onOpenDiff?: (path: string) => void;
+  onRisky: (path: string) => void;
+  onNote: (note: string | null) => void;
+}) {
+  const deleted = file.changeType === "deleted";
+  const canAct = Boolean(cwd);
+
+  const openFile = async () => {
+    if (!cwd || deleted) return;
+    onNote(null);
+    try {
+      const result = await openExternal(file.path, cwd);
+      if (result.reason === "risky") {
+        onRisky(file.path);
+        return;
+      }
+      if (!result.opened) {
+        onNote(result.message ?? "无法打开这个文件。");
+      }
+    } catch (error) {
+      onNote(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const reveal = async () => {
+    if (!cwd) return;
+    onNote(null);
+    const target = deleted ? parentRelativePath(file.path) : file.path;
+    try {
+      await revealInFileManager(target, cwd);
+    } catch (error) {
+      onNote(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  return (
+    <li>
+      <div className="changed-file-row">
+        <button
+          type="button"
+          className="changed-file-row__main"
+          title={`${file.path}\n点击查看 diff`}
+          onClick={() => onOpenDiff?.(file.path)}
+        >
+          <span className={`change-badge change-${file.changeType}`}>{changeBadge(file.changeType)}</span>
+          <span className="changed-file-row__path">{file.path}</span>
+        </button>
+        <div className="changed-file-row__actions">
+          <button
+            type="button"
+            className="pill-action pill-action--icon pill-action--sm changed-file-row__action"
+            title={deleted ? "文件已删除，无法打开" : "用默认程序打开"}
+            aria-label={deleted ? "文件已删除，无法打开" : "用默认程序打开"}
+            disabled={!canAct || deleted}
+            onClick={() => void openFile()}
+          >
+            <ExternalLink size={11} />
+          </button>
+          <button
+            type="button"
+            className="pill-action pill-action--icon pill-action--sm changed-file-row__action"
+            title={deleted ? "在资源管理器中打开所在文件夹" : "在资源管理器中显示"}
+            aria-label={deleted ? "在资源管理器中打开所在文件夹" : "在资源管理器中显示"}
+            disabled={!canAct}
+            onClick={() => void reveal()}
+          >
+            <FolderOpen size={11} />
+          </button>
+        </div>
+      </div>
+    </li>
+  );
+}
+
 export function ContextPanel({
   collapsed,
   onCollapse,
@@ -156,6 +251,7 @@ export function ContextPanel({
   gitBranch = null,
   onCommitAndPush,
   onOpenDiff,
+  projectRoot = null,
   handoff = null,
   projectContext = null,
   projectContextScanning = false,
@@ -183,6 +279,8 @@ export function ContextPanel({
   const [draftTodo, setDraftTodo] = useState("");
   const [mergePreview, setMergePreview] = useState<TodoMergePreview | null>(null);
   const [mergeError, setMergeError] = useState<string | null>(null);
+  const [riskyOpenPath, setRiskyOpenPath] = useState<string | null>(null);
+  const [fileActionNote, setFileActionNote] = useState<string | null>(null);
 
   const toggleTodo = (id: string) => {
     if (!onTodosChange) return;
@@ -514,21 +612,18 @@ export function ContextPanel({
         ) : (
           <ul className="changed-files-list custom-scrollbar scrollbar-autohide">
             {changedFiles.map((file) => (
-              <li key={`${file.changeType}:${file.path}`}>
-                <button
-                  type="button"
-                  className="changed-file-row"
-                  title={file.path}
-                  onClick={() => onOpenDiff?.(file.path)}
-                >
-                  <span className={`change-badge change-${file.changeType}`}>{changeBadge(file.changeType)}</span>
-                  <span className="changed-file-row__path">{file.path}</span>
-                  {onOpenDiff && <FileDiff size={12} className="changed-file-row__icon" aria-hidden />}
-                </button>
-              </li>
+              <ChangedFileRow
+                key={`${file.changeType}:${file.path}`}
+                file={file}
+                cwd={projectRoot}
+                onOpenDiff={onOpenDiff}
+                onRisky={setRiskyOpenPath}
+                onNote={setFileActionNote}
+              />
             ))}
           </ul>
         )}
+        {fileActionNote ? <p className="changed-files-note">{fileActionNote}</p> : null}
       </section>
 
       <section className="context-card">
@@ -670,6 +765,25 @@ export function ContextPanel({
           </p>
         )}
       </section>
+
+      {riskyOpenPath && (
+        <ConfirmDialog
+          title="打开可执行文件"
+          itemName={riskyOpenPath}
+          description="这类文件会被系统直接运行。确认要用默认程序打开吗？"
+          confirmLabel="打开"
+          cancelLabel="取消"
+          onCancel={() => setRiskyOpenPath(null)}
+          onConfirm={() => {
+            const path = riskyOpenPath;
+            setRiskyOpenPath(null);
+            if (!path || !projectRoot) return;
+            void openExternal(path, projectRoot, true).catch((error) => {
+              setFileActionNote(error instanceof Error ? error.message : String(error));
+            });
+          }}
+        />
+      )}
 
       <div className="context-panel__footer">
         <button className="pill-action pill-action--icon pill-action--sm" type="button" title={collapsed ? "Pin information panel open" : "Collapse information panel"} aria-label={collapsed ? "Pin information panel open" : "Collapse information panel"} onClick={collapsed ? onExpand : onCollapse}>
