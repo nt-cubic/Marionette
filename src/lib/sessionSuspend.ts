@@ -34,6 +34,43 @@ export function lastActiveMs(session: { lastActiveAt: string }): number {
   return Number.isFinite(iso) ? iso : 0;
 }
 
+/**
+ * Whether the dialog holds an agent process right now — the only kind that can
+ * be parked. `error` counts: the last turn failed, the process stayed up.
+ */
+export function canPark(session: SuspendableSession): boolean {
+  return session.status === "waiting" || session.status === "error";
+}
+
+/**
+ * What a row's park control should be. The control is always drawn so the
+ * affordance never moves; the title says why it refuses when it does.
+ */
+export function suspendControl(
+  session: SuspendableSession,
+  label = session.id,
+): { enabled: boolean; title: string; ariaLabel: string } {
+  if (canPark(session)) {
+    return {
+      enabled: true,
+      title: `挂起 ${label} — 结束它的 agent 进程，下次发消息自动接上`,
+      ariaLabel: `Suspend ${label}`,
+    };
+  }
+  if (session.status === "starting" || session.status === "running") {
+    return {
+      enabled: false,
+      title: `${label} 正在跑 — 跑完才能挂起`,
+      ariaLabel: `Cannot suspend ${label} while it is working`,
+    };
+  }
+  return {
+    enabled: false,
+    title: `${label} 已挂起 — 下次发消息自动接上`,
+    ariaLabel: `${label} is already parked`,
+  };
+}
+
 /** A warm, idle, unblocked dialog — the only kind worth parking. */
 export function isSuspendable(session: SuspendableSession, rules: SuspendRules = {}): boolean {
   if (session.status !== "waiting") return false;

@@ -117,7 +117,7 @@ import { classifyAgentError, formatAcpRpcError, formatClassifiedError } from "..
 import { prettyEffortLabel } from "../lib/modelLabel";
 import { getLastUsedDefaults } from "../lib/recentModels";
 import { pickRestoredSession, saveUiRestore, saveQueuedSends, loadQueuedSends, saveClosedTabs, loadClosedTabs } from "../lib/uiRestore";
-import { shouldAutoSuspend } from "../lib/sessionSuspend";
+import { canPark, shouldAutoSuspend } from "../lib/sessionSuspend";
 import { forkCopyEvents, forkCutIndex } from "../lib/sessionFork";
 import { AskQuestionCard, type AskQuestionPrompt } from "../components/AskQuestionCard";
 import { Composer } from "../components/Composer";
@@ -2248,7 +2248,7 @@ export function App() {
    */
   const handleSuspendSession = useCallback((sessionId: string) => {
     const session = sessionsRef.current.find((s) => s.id === sessionId);
-    if (!session || session.status !== "waiting") return;
+    if (!session || !canPark(session)) return;
     void stopAcpSession(sessionId)
       .catch(() => undefined)
       .then(() => {

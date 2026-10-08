@@ -1651,6 +1651,20 @@ body.is-project-reordering .project-list {
   background: var(--panel-soft);
 }
 
+/* Park control: drawn on every row, dimmed when there is nothing to park. */
+.session-row__action:disabled,
+.chat-row__action:disabled {
+  color: var(--text-faint);
+  opacity: 0.4;
+  cursor: default;
+}
+
+.session-row__action:disabled:hover,
+.chat-row__action:disabled:hover {
+  color: var(--text-faint);
+  background: transparent;
+}
+
 .session-row__action--danger:hover {
   color: var(--red);
   background: var(--panel-soft);
