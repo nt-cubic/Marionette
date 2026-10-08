@@ -132,8 +132,7 @@ impl AgentConfig {
         vec![
             // Clean View product path = ACP for every first-class agent.
             // npm packages are **unpinned names** so `agent_update` / auto-update
-            // can always pull registry **latest**. Codeg pin table lives in
-            // `agent_registry` for docs/preflight only — do not bake @ver here.
+            // can always pull registry **latest**. Do not bake @ver here.
             Self::new(
                 "opencode",
                 "OpenCode",

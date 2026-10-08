@@ -593,7 +593,7 @@ impl AcpService {
             },
         );
 
-        // ── Phase 1: initialize (per-agent capabilities — Codeg gates) ──
+        // ── Phase 1: initialize (client capabilities we actually implement) ──
         let client_capabilities =
             crate::agent_registry::build_client_capabilities_json(agent_id.as_deref());
         let initialized = request(
@@ -3148,8 +3148,8 @@ fn handle_agent_request(
                 }
             });
         }
-        // Codex form elicitation (Plan request_user_input, MCP approvals, …).
-        // Only advertised for Codex via clientCapabilities.elicitation.form.
+        // Form elicitation (Plan request_user_input, MCP approvals, OpenCode
+        // multiple-choice / web-search, …). Advertised for every agent.
         // Approval-style → permission/prompt; questions → question/prompt.
         "elicitation/create" => {
             let plan = match crate::elicitation::classify_elicitation(&params) {
