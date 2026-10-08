@@ -28,3 +28,7 @@ Thumbs.db
 tools/upx.exe
 tools/upx/
 _research/repos/
+
+# --- Local scratch ---
+# Verification harnesses / diagnostics written while checking a change
+fortest/
