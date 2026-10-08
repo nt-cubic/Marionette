@@ -118,6 +118,7 @@ import { prettyEffortLabel } from "../lib/modelLabel";
 import { getLastUsedDefaults } from "../lib/recentModels";
 import { pickRestoredSession, saveUiRestore, saveQueuedSends, loadQueuedSends, saveClosedTabs, loadClosedTabs } from "../lib/uiRestore";
 import { shouldAutoSuspend } from "../lib/sessionSuspend";
+import { forkCopyEvents, forkCutIndex } from "../lib/sessionFork";
 import { AskQuestionCard, type AskQuestionPrompt } from "../components/AskQuestionCard";
 import { Composer } from "../components/Composer";
 import { ComposerErrorStrip, SessionNoticeStrip } from "../components/ComposerErrorStrip";
@@ -127,7 +128,7 @@ import { PermissionDialog, type PermissionPrompt } from "../components/Permissio
 import { PlanApprovalCard, type PlanApprovalPrompt } from "../components/PlanApprovalCard";
 import { UnifiedDiffView } from "../components/UnifiedDiffView";
 import { ProjectShelf } from "../components/ProjectShelf";
-import { SessionTabs, SessionView, type UserMessageAnchor } from "../components/SessionView";
+import { SessionTabs, SessionView, type ForkAnchor, type UserMessageAnchor } from "../components/SessionView";
 import { WindowControls } from "../components/WindowControls";
 import { parseAskQuestionPrompt } from "../lib/askQuestion";
 import { initScrollbarAutoHide } from "../lib/scrollbarAutoHide";
@@ -2292,6 +2293,91 @@ export function App() {
     }, 60_000);
     return () => clearInterval(timer);
   }, [askPrompt, handleSuspendSession, permissionPrompt, planApproval]);
+
+  /**
+   * Fork: copy the dialog up to one reply into a new session and open it.
+   *
+   * The copy becomes the new dialog's transcript, and its first send arms the
+   * history injection — so the agent starts from exactly that context while the
+   * original dialog stays untouched.
+   */
+  const handleForkFromReply = useCallback(
+    async (sessionId: string, anchor: ForkAnchor) => {
+      const source = sessionsRef.current.find((s) => s.id === sessionId);
+      if (!source) return;
+      const events = liveEventsRef.current.filter((e) => e.sessionId === sessionId);
+      // Nothing to copy means the anchor is gone (the reply was truncated or
+      // the transcript reloaded) — bail before creating a dialog.
+      if (forkCutIndex(events, anchor) < 0) return;
+
+      const label = `${source.label} · 分叉`;
+      const created =
+        source.projectId === CHAT_PROJECT_ID
+          ? await createChatSession(source.agentId, label, source.cwd || null)
+          : await createSessionApi(source.projectId, source.agentId);
+      if (!created) return;
+
+      const forked: Session = {
+        ...created,
+        label,
+        labelSource: "manual",
+        preferredModel: source.preferredModel ?? null,
+        preferredMode: source.preferredMode ?? null,
+        preferredEffort: source.preferredEffort ?? null,
+        preferredEffortId: source.preferredEffortId ?? null,
+        preferredAlwaysApprove: source.preferredAlwaysApprove ?? null,
+      };
+      setAvailableSessions((current) => [
+        forked,
+        ...current.filter((s) => s.id !== forked.id),
+      ]);
+      setOpenSessionIds((current) => [
+        forked.id,
+        ...current.filter((id) => id !== forked.id),
+      ]);
+      setCurrentProjectId(forked.projectId);
+      setCurrentSessionId(forked.id);
+      setViewMode("clean");
+      setSessionCapabilities(null);
+      setActiveModelId(null);
+
+      // Subtask cards and handoffs point at the old dialog's children and
+      // paths, so the copy drops them.
+      const copied = forkCopyEvents(events, anchor, forked.id);
+      if (!copied) return;
+      setLiveEvents((current) => [...current, ...copied]);
+      // The agent starts empty; the first send carries this transcript.
+      acpNeedsHistoryRef.current.add(forked.id);
+
+      try {
+        await writeTranscript(forked.id, persistableEventsForSession(copied, forked.id));
+        await updateSessionLabel(forked.id, label, "manual");
+        await updateSessionPrefs(forked.id, {
+          preferredModel: forked.preferredModel ?? null,
+          preferredMode: forked.preferredMode ?? null,
+          preferredEffort: forked.preferredEffort ?? null,
+          preferredEffortId: forked.preferredEffortId ?? null,
+          preferredAlwaysApprove: forked.preferredAlwaysApprove ?? null,
+        });
+      } catch (error) {
+        pushDebug({
+          sessionId: forked.id,
+          level: "warn",
+          source: "fork",
+          summary: "fork copy failed",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      }
+      pushDebug({
+        sessionId: forked.id,
+        level: "info",
+        source: "fork",
+        summary: `forked ${sessionId} (${copied.length} rows)`,
+        detail: label,
+      });
+    },
+    [pushDebug],
+  );
 
   /**
    * Repair labels already stored from a Marionette prompt preamble: re-derive
@@ -5726,6 +5812,7 @@ export function App() {
             onSessionStatusChange={handleSessionStatusChange}
             onCapabilities={setSessionCapabilities}
             onEditResend={(anchor, text) => void handleEditResend(anchor, text)}
+            onForkReply={(anchor) => void handleForkFromReply(displaySession.id, anchor)}
             quotePins={quotePins}
             onQuotePinsChange={setQuotePins}
             onInterrupt={() => void handleInterrupt()}

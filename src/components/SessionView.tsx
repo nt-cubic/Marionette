@@ -1,4 +1,4 @@
-import { Check, ChevronDown, Copy, Eye, EyeOff, FileText, Globe, Merge, MessageSquareQuote, Pencil, Plus, Square, SquareArrowOutUpRight, X } from "lucide-react";
+import { Check, ChevronDown, Copy, Eye, EyeOff, FileText, Globe, Merge, MessageSquareQuote, Pencil, Plus, Split, Square, SquareArrowOutUpRight, X } from "lucide-react";
 import {
   memo,
   useCallback,
@@ -22,6 +22,7 @@ import { getFileDiff } from "../lib/api";
 import { detectForceWebSearchInText, stripForceWebSearchPrefix } from "../lib/forceWebSearch";
 import { collectToolImageSrcs, fileNameFromPath } from "../lib/imageAttachments";
 import { cleanAssistantText } from "../lib/markdownText";
+import { type ForkAnchor } from "../lib/sessionFork";
 import { newQuotePinId, type QuotePin } from "../lib/quoteComment";
 import { buildMessagePresentation, isDetailRow } from "../lib/messagePresentation";
 import { diffTargetPath, splitToolBody } from "../lib/toolBody";
@@ -50,6 +51,8 @@ export type UserMessageAnchor = {
   text: string;
 };
 
+export type { ForkAnchor };
+
 type SessionViewProps = {
   agent: AgentConfig;
   events: SessionEvent[];
@@ -72,6 +75,8 @@ type SessionViewProps = {
   onCapabilities?: (caps: import("../lib/types").CapabilitySnapshot | null) => void;
   /** P2-UX-4: edit You → truncate following + resend. */
   onEditResend?: (anchor: UserMessageAnchor, newText: string) => void | Promise<void>;
+  /** Fork: copy this dialog up to that reply into a new session. */
+  onForkReply?: (anchor: ForkAnchor) => void;
   /** Last ACP activity ms for this session (heartbeat / stale). */
   lastActivityAt?: number | null;
   /** Pending inline quote-comments for this dialog (sent with Composer text). */
@@ -490,6 +495,7 @@ export function SessionView({
   onSessionStatusChange,
   onCapabilities,
   onEditResend,
+  onForkReply,
   lastActivityAt = null,
   quotePins = [],
   onQuotePinsChange,
@@ -564,6 +570,7 @@ export function SessionView({
             onUpdate={onUpdate}
             updateBusy={updateBusy}
             onEditResend={onEditResend}
+            onForkReply={onForkReply}
             lastActivityAt={lastActivityAt}
             quotePins={quotePins}
             onQuotePinsChange={onQuotePinsChange}
@@ -1069,6 +1076,7 @@ function CleanPlaceholder({
   onUpdate,
   updateBusy = false,
   onEditResend,
+  onForkReply,
   lastActivityAt = null,
   quotePins = [],
   onQuotePinsChange,
@@ -1094,6 +1102,7 @@ function CleanPlaceholder({
   onUpdate?: () => void | Promise<void>;
   updateBusy?: boolean;
   onEditResend?: (anchor: UserMessageAnchor, newText: string) => void | Promise<void>;
+  onForkReply?: (anchor: ForkAnchor) => void;
   lastActivityAt?: number | null;
   quotePins?: QuotePin[];
   onQuotePinsChange?: (pins: QuotePin[]) => void;
@@ -2224,6 +2233,20 @@ function CleanPlaceholder({
                       </div>
                     ) : (
                       <span className="event-card__footer-spacer" />
+                    )}
+                    {onForkReply && (
+                      <button
+                        type="button"
+                        className="pill-action pill-action--icon event-card__fork"
+                        title="从这里分叉 — 复制到这条回复为止的对话，另开一条新会话"
+                        aria-label="Fork from this reply"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() =>
+                          onForkReply({ text: event.text, messageId: event.messageId })
+                        }
+                      >
+                        <Split size={13} aria-hidden />
+                      </button>
                     )}
                     {typeof body === "string" && body.trim() && (
                       <CopyReplyButton text={body} />
