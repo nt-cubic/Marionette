@@ -1,4 +1,7 @@
 import type { ClassifiedError } from "../lib/errors";
+import type { SessionNotice } from "../lib/acpMeta";
+
+export type SessionNoticeView = SessionNotice & { sessionId: string };
 
 type ComposerErrorStripProps = {
   error: ClassifiedError;
@@ -46,6 +49,27 @@ export function ComposerErrorStrip({
           关闭
         </button>
       </div>
+    </div>
+  );
+}
+
+/** Advisory from the agent (retry, crash, model fallback). Not chat history. */
+export function SessionNoticeStrip({
+  notice,
+  onDismiss,
+}: {
+  notice: SessionNoticeView;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className={`session-notice session-notice--${notice.severity}`} role="status">
+      <div className="session-notice__copy">
+        <strong>{notice.title}</strong>
+        {notice.description ? <span>{notice.description}</span> : null}
+      </div>
+      <button type="button" className="session-notice__dismiss" onClick={onDismiss}>
+        关闭
+      </button>
     </div>
   );
 }
