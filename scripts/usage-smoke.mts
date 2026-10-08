@@ -290,6 +290,34 @@ check("parses live _x.ai/billing shape", () => {
   assert.ok(parsed!.windows[0].detail?.toLowerCase().includes("reset"));
 });
 
+check("creditUsagePercent 1.0 is 1% used, not a 100% fraction", () => {
+  // Captured 2026-10-03 from `_x.ai/billing` while the Usage panel showed 100%.
+  const parsed = parseGrokBilling({
+    config: {
+      creditUsagePercent: 1.0,
+      currentPeriod: {
+        type: "USAGE_PERIOD_TYPE_WEEKLY",
+        start: "2026-09-26T12:09:03.306900+00:00",
+        end: "2026-10-03T12:09:03.306900+00:00",
+      },
+      billingPeriodEnd: "2026-10-03T12:09:03.306900+00:00",
+    },
+    subscription_tier: "SuperGrok",
+  });
+  assert.equal(parsed!.windows[0].percentage, 1);
+});
+
+check("creditUsagePercent 0 and 100 stay at the ends of the bar", () => {
+  assert.equal(
+    parseGrokBilling({ config: { creditUsagePercent: 0 } })!.windows[0].percentage,
+    0
+  );
+  assert.equal(
+    parseGrokBilling({ config: { creditUsagePercent: 100 } })!.windows[0].percentage,
+    100
+  );
+});
+
 check("parses TUI Weekly limit text fallback", () => {
   const rows = parseGrokCostText(
     "Weekly limit: 5%\nNext reset: August 1, 01:12"
