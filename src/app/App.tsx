@@ -2242,13 +2242,30 @@ export function App() {
   }, []);
 
   /**
-   * Park an idle dialog: stop its agent process and arm the history injection,
-   * so the next send reconnects with the local transcript on top — the same
-   * path a restart takes. Queued sends and live turns are never parked.
+   * Park a dialog: stop its agent process and arm the history injection, so the
+   * next send reconnects with the local transcript on top — the same path a
+   * restart takes.
+   *
+   * Parking works mid-turn too — the user parking a working dialog is asking it
+   * to stop. Seal the open Reply and its tools locally *before* the kill, so
+   * chunks already in flight cannot reopen the card this call just closed, and
+   * so the next turn on this dialog starts from a closed card rather than
+   * swallowing the new process's stream. `process/stopped` then takes care of
+   * the rest: queued sends, Ask/Plan/Permission cards, capabilities.
    */
   const handleSuspendSession = useCallback((sessionId: string) => {
     const session = sessionsRef.current.find((s) => s.id === sessionId);
     if (!session || !canPark(session)) return;
+    const midTurn = session.status === "running" || session.status === "starting";
+    const label = session.label?.trim() || "会话";
+
+    if (midTurn) {
+      streamSuppressedRef.current.add(sessionId);
+      setLiveEvents((current) =>
+        sealOpenAssistantReplies(markOpenTools(current, sessionId, "cancelled"), sessionId),
+      );
+    }
+
     void stopAcpSession(sessionId)
       .catch(() => undefined)
       .then(() => {
@@ -2256,13 +2273,27 @@ export function App() {
         acpNeedsHistoryRef.current.add(sessionId);
         setSessionStatusById(sessionId, "exited");
         if (sessionId === currentSessionIdRef.current) setSessionCapabilities(null);
+        if (midTurn) {
+          setLiveEvents((current) => [
+            ...current,
+            {
+              type: "assistant_message" as const,
+              sessionId,
+              text: `**已挂起。**\n\n${label} 当时正在跑，我中断了它并结束了 agent 进程。说出口的部分留在上面。对话记录都在 —— 下次发消息会自动重新拉起进程，并把这段历史接上去。`,
+              createdAt: new Date().toISOString(),
+              durationMs: 0,
+            },
+          ]);
+        }
         pushDebug({
           sessionId,
           level: "info",
           source: "shelf",
-          summary: "suspended idle dialog",
+          summary: midTurn ? "suspended a working dialog" : "suspended idle dialog",
         });
       });
+  // `setSessionStatusById` is a stable `useCallback` declared further down; it
+  // cannot be named in this dep array without a TDZ read at definition time.
   }, [pushDebug]);
 
   /**

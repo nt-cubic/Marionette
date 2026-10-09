@@ -4,10 +4,27 @@ const MAX_CHARS = 28_000;
 const MAX_TURNS = 40; // user+assistant pairs roughly
 const MAX_MSG_CHARS = 2_400;
 
+/**
+ * Bold cards Marionette writes about itself rather than about the agent:
+ * `**已挂起。**`, `**Interrupted.**`, `**The agent did not answer the cancel.**`.
+ *
+ * They narrate a process lifecycle the freshly spawned agent never lived
+ * through. Replayed as conversation they teach it to expect interruptions it
+ * did not cause, and they cost context budget the real turns need.
+ */
+const SELF_NOTICES = /^(已挂起|Interrupted\.|The agent did not answer the cancel)/;
+
 function clip(text: string, max = MAX_MSG_CHARS): string {
   const t = text.trim();
   if (t.length <= max) return t;
   return `${t.slice(0, max - 1)}…`;
+}
+
+/** The bold heading of a `**Heading**\n\nbody` card, or "" for anything else. */
+function cardHeading(text: string): string {
+  if (!text.startsWith("**")) return "";
+  const close = text.indexOf("**", 2);
+  return close < 0 ? "" : text.slice(2, close);
 }
 
 /**
@@ -35,6 +52,10 @@ export function buildHistoryInjection(
     } else if (e.type === "assistant_message") {
       // Skip shell error cards
       if (e.text.startsWith("**") && /error|Agent error|Sign in/i.test(e.text.slice(0, 80))) {
+        continue;
+      }
+      // Skip Marionette's own interruption / park notices — see SELF_NOTICES.
+      if (SELF_NOTICES.test(cardHeading(e.text))) {
         continue;
       }
       lines.push(`Assistant:\n${clip(e.text)}`);

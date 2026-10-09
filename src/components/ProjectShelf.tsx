@@ -781,11 +781,10 @@ export function ProjectShelf({
                               <Pencil size={12} />
                             </button>
                           )}
-                          {onSuspendSession && !isRenaming && (
+                          {park.shown && onSuspendSession && !isRenaming && (
                             <button
                               className="session-row__action"
                               type="button"
-                              disabled={!park.enabled}
                               title={park.title}
                               aria-label={park.ariaLabel}
                               onClick={(e) => {
@@ -977,11 +976,10 @@ export function ProjectShelf({
                         <Pencil size={12} />
                       </button>
                     )}
-                    {onSuspendSession && !isRenaming && (
+                    {park.shown && onSuspendSession && !isRenaming && (
                       <button
                         className="chat-row__action"
                         type="button"
-                        disabled={!park.enabled}
                         title={park.title}
                         aria-label={park.ariaLabel}
                         onClick={(event) => {
