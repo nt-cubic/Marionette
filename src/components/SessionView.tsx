@@ -3,10 +3,12 @@ import {
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 import { extractAcpUpdateText, mergeStreamText, userMessageAnchorId } from "../lib/acpTranscript";
@@ -24,17 +26,23 @@ import { collectToolImageSrcs, fileNameFromPath } from "../lib/imageAttachments"
 import { cleanAssistantText } from "../lib/markdownText";
 import { type ForkAnchor } from "../lib/sessionFork";
 import { newQuotePinId, type QuotePin } from "../lib/quoteComment";
-import { buildMessagePresentation, isDetailRow } from "../lib/messagePresentation";
+import { buildMessagePresentation } from "../lib/messagePresentation";
 import { diffTargetPath, splitToolBody } from "../lib/toolBody";
 import {
   classifyToolCall,
-  extractCommandText,
+  clusterActivityRuns,
   extractDiffStats,
+  groupConsecutiveByKind,
+  summarizeActivity,
+  summarizeKindGroup,
   toolKindVerb,
+  toolMainText,
+  type ActivityClusterUnit,
 } from "../lib/turnActivity";
 import { useVirtualWindow } from "../lib/useVirtualWindow";
 import { isCursorOverWindow, setMergeHighlight } from "../lib/detachedWindow";
 import type { AgentConfig, Session, SessionEvent, SessionStatus, SessionViewMode } from "../lib/types";
+import { ActivityKindGroup, ActivityPanel } from "./ActivityPanel";
 import { ClippedBody } from "./ClippedBody";
 import { LinkCwdContext, LinkedText } from "./LinkedText";
 import { MarkdownBody, MarkdownImageCwdContext, PreviewImage } from "./MarkdownBody";
@@ -506,7 +514,8 @@ export function SessionView({
   onSubtaskQuote,
   onSubtaskRetry,
 }: SessionViewProps) {
-  // Show thinking/tool rows by default (they render collapsed). Eye can hide them entirely.
+  // Eye open: each thought/tool is its own card. Eye closed: consecutive
+  // thought+tool runs collapse into nested activity folds (not hidden).
   const [detailsVisible, setDetailsVisible] = useState(true);
   const [expandedChildId, setExpandedChildId] = useState<string | null>(null);
 
@@ -907,6 +916,83 @@ function toolExpandKey(event: ToolCallEvent, index: number): string {
   return `${event.toolCallId ?? event.createdAt}-${index}`;
 }
 
+type TranscriptUnit = ActivityClusterUnit;
+type TranscriptActivity = Extract<ActivityClusterUnit, { kind: "activity" }>;
+
+/** Latest in-flight thought/tool in a clustered run, if the session is still live. */
+function findLiveDetail(
+  items: { event: SessionEvent; index: number }[],
+  visibleEvents: SessionEvent[],
+  sessionId: string,
+  running: boolean,
+): { event: SessionEvent; index: number } | null {
+  if (!running) return null;
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const item = items[i];
+    const { event, index } = item;
+    if (event.type === "tool_call" && isToolInProgress(event.status)) return item;
+    if (event.type !== "thought") continue;
+    let followed = false;
+    for (let j = index + 1; j < visibleEvents.length; j += 1) {
+      const next = visibleEvents[j];
+      if (next.sessionId !== sessionId) continue;
+      if (
+        next.type === "thought" ||
+        next.type === "assistant_message" ||
+        next.type === "tool_call" ||
+        next.type === "user_message"
+      ) {
+        followed = true;
+        break;
+      }
+    }
+    if (!followed) return item;
+  }
+  return null;
+}
+
+function toggleSetKey(
+  setter: (updater: (current: Set<string>) => Set<string>) => void,
+  key: string,
+  isOpen: boolean,
+) {
+  setter((current) => {
+    const has = current.has(key);
+    if (isOpen === has) return current;
+    const next = new Set(current);
+    if (isOpen) next.add(key);
+    else next.delete(key);
+    return next;
+  });
+}
+
+/** Virtual row that remeasures when a nested fold changes height. */
+function VirtItem({
+  index,
+  measureRef,
+  children,
+}: {
+  index: number;
+  measureRef: (index: number, node: HTMLElement | null) => void;
+  children: ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    measureRef(index, el);
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => measureRef(index, el));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [index, measureRef]);
+  return (
+    <div ref={ref} className="event-list__virt-item">
+      {children}
+    </div>
+  );
+}
+
 /**
  * Older transcripts only persisted the one-line diff summary. For those
  * cards, retrieve the current workspace diff when the tool card is opened.
@@ -1155,37 +1241,36 @@ function CleanPlaceholder({
     [session.id, visibleEvents],
   );
   /**
-   * Flat render units (reply parts expanded). Full data kept; mount is windowed.
-   *
-   * Eye off ("Clean View") drops thinking/tool units from the list *here*, not
-   * with `display: none`. The virtual window measures mounted rows and ignores
-   * zero heights, so CSS-hidden rows kept their old sizes: every card below them
-   * was displaced and the scroll range stayed too tall (the list looked spread
-   * out and scrolling stuck).
+   * Flat render units (reply parts expanded).
+   * Eye open: each thought/tool is its own card (original chrome).
+   * Eye closed: consecutive thought+tool runs collapse into one nested fold.
+   * Rows stay in the list — the eye never drops them.
    */
   const renderUnits = useMemo(() => {
-    const units: { key: string; event: SessionEvent; index: number }[] = [];
+    const flat: { key: string; event: SessionEvent; index: number }[] = [];
     for (const item of presentationItems) {
       if (item.kind === "reply_group") {
         for (const part of item.parts) {
           const ev = part.event.event;
           const idx = part.event.index;
-          units.push({
+          flat.push({
             key: `u-${item.key}-${part.type}-${idx}`,
             event: ev,
             index: idx,
           });
         }
       } else {
-        units.push({
+        flat.push({
           key: item.key,
           event: item.event,
           index: item.index,
         });
       }
     }
-    if (detailsVisible) return units;
-    return units.filter((unit) => !isDetailRow(unit.event));
+    if (detailsVisible) {
+      return flat.map((unit): TranscriptUnit => ({ kind: "row", ...unit }));
+    }
+    return clusterActivityRuns(flat);
   }, [presentationItems, detailsVisible]);
   /**
    * Virtual window for long rails only. Short chats stay fully mounted (simpler
@@ -1207,6 +1292,9 @@ function CleanPlaceholder({
   const [expandedToolKeys, setExpandedToolKeys] = useState<Set<string>>(() => new Set());
   /** User-expanded thought cards (lazy body mount). */
   const [expandedThoughtKeys, setExpandedThoughtKeys] = useState<Set<string>>(() => new Set());
+  /** User-expanded activity / kind-group folds. Live force-open is not stored. */
+  const [expandedActivityKeys, setExpandedActivityKeys] = useState<Set<string>>(() => new Set());
+  const [expandedKindKeys, setExpandedKindKeys] = useState<Set<string>>(() => new Set());
   /** toolKey set that was force-open (working/stall) on the previous events pass. */
   const prevForcedToolKeysRef = useRef<Set<string>>(new Set());
 
@@ -1301,6 +1389,8 @@ function CleanPlaceholder({
     setFreezeGen((g) => g + 1);
     setExpandedToolKeys(new Set());
     setExpandedThoughtKeys(new Set());
+    setExpandedActivityKeys(new Set());
+    setExpandedKindKeys(new Set());
     window.getSelection()?.removeAllRanges();
   }, [session.id]);
 
@@ -1415,6 +1505,7 @@ function CleanPlaceholder({
       if (!id || !listRef.current) return;
       const idx = renderUnits.findIndex(
         (u) =>
+          u.kind === "row" &&
           u.event.type === "user_message" &&
           userMessageAnchorId(u.event) === id
       );
@@ -1448,10 +1539,24 @@ function CleanPlaceholder({
         className="pill-action pill-action--icon icon-button--eye"
         type="button"
         title={
-          "Clean View · live stream · thinking/tools collapsed by default"
-          + " — " + (detailsVisible ? "hide" : "show") + " details"
+          detailsVisible
+            ? "折叠全部 tool / thinking"
+            : "展开全部 tool / thinking"
         }
-        onClick={onDetailsToggle}
+        aria-label={
+          detailsVisible
+            ? "折叠全部 tool / thinking"
+            : "展开全部 tool / thinking"
+        }
+        onClick={() => {
+          if (detailsVisible) {
+            setExpandedActivityKeys(new Set());
+            setExpandedKindKeys(new Set());
+            setExpandedToolKeys(new Set());
+            setExpandedThoughtKeys(new Set());
+          }
+          onDetailsToggle();
+        }}
       >
         {detailsVisible ? <Eye size={14} /> : <EyeOff size={14} />}
       </button>
@@ -1850,21 +1955,7 @@ function CleanPlaceholder({
           let previewFull = "";
           let toolDiff: { add: number; del: number } | null = null;
           if (event.type === "tool_call") {
-            const fileName = event.path
-              ? event.path.split(/[\\/]/).filter(Boolean).pop() ?? ""
-              : "";
-            const commandText = extractCommandText(event);
-            const titleText = event.title ? oneLine(String(event.title)) : "";
-            let main = "";
-            if (toolKind === "read" || toolKind === "edit" || toolKind === "write") {
-              main = fileName || commandText || titleText;
-            } else if (toolKind === "command") {
-              main = commandText || titleText || fileName;
-            } else if (toolKind === "search" || toolKind === "web") {
-              main = commandText || titleText || fileName;
-            } else {
-              main = titleText || fileName || commandText;
-            }
+            const main = toolMainText(event);
             const statusText = String(event.status ?? "");
             const statusBit =
               toolStatusLabel ||
@@ -1890,10 +1981,12 @@ function CleanPlaceholder({
           // Tool: collapsed by default. Only shell / subagent tools auto-expand
           // into a tall "working" block while in_progress; ordinary read/edit stay
           // one-line. Stall still forces open so the user can see what hung.
+          // Closed eye ("fold all"): never auto-expand — the summary stays one line.
           // Bodies are lazy-mounted: closed cards keep only the one-line summary
           // (critical for tool-heavy Grok sessions with 500+ tools).
           // User / assistant: always fully visible.
           if (isCollapsible) {
+            const foldAll = !detailsVisible;
             const longRunningTool =
               event.type === "tool_call" && isLongRunningToolKind(event);
             // Only the latest in-flight shell/subagent tool gets the tall block —
@@ -1909,10 +2002,11 @@ function CleanPlaceholder({
                   event.createdAt === openTool.createdAt &&
                   event.text === openTool.text));
             const showWorkingBlock = Boolean(
-              longRunningTool && isLatestOpenTool,
+              !foldAll && longRunningTool && isLatestOpenTool,
             );
             const forceOpen =
-              thoughtLive || showWorkingBlock || (isLatestOpenTool && (toolStuck || toolStalled));
+              !foldAll &&
+              (thoughtLive || showWorkingBlock || (isLatestOpenTool && (toolStuck || toolStalled)));
             const toolKey =
               event.type === "tool_call" ? toolExpandKey(event, index) : null;
             const thoughtKey =
@@ -2260,21 +2354,83 @@ function CleanPlaceholder({
           );
         };
 
+          const renderActivity = (unit: TranscriptActivity) => {
+            const liveItem = findLiveDetail(
+              unit.items,
+              visibleEvents,
+              session.id,
+              isRunning,
+            );
+            const liveEvent = liveItem?.event ?? null;
+            const open = expandedActivityKeys.has(unit.key);
+            const groups = groupConsecutiveByKind(unit.items);
+            const liveIcon = <NineDotSpinner compact />;
+            return (
+              <ActivityPanel
+                key={unit.key}
+                id={unit.key}
+                summary={summarizeActivity(unit.items, { liveEvent })}
+                open={open}
+                live={Boolean(liveItem)}
+                liveIcon={liveIcon}
+                onToggle={(isOpen) =>
+                  toggleSetKey(setExpandedActivityKeys, unit.key, isOpen)
+                }
+              >
+                {groups.map((group) => {
+                  const groupKey = `${unit.key}-${group.bucket}-${group.items[0].index}`;
+                  const groupHasLive =
+                    liveItem != null &&
+                    group.items.some((it) => it.index === liveItem.index);
+                  const groupOpen = expandedKindKeys.has(groupKey);
+                  const cards = group.items.map((it) =>
+                    renderEvent(it.event, it.index),
+                  );
+                  if (!(groups.length > 1 && group.items.length > 1)) {
+                    return (
+                      <div key={groupKey} className="activity-panel__items">
+                        {cards}
+                      </div>
+                    );
+                  }
+                  return (
+                    <ActivityKindGroup
+                      key={groupKey}
+                      id={groupKey}
+                      summary={summarizeKindGroup(group)}
+                      open={groupOpen}
+                      live={groupHasLive}
+                      liveIcon={liveIcon}
+                      onToggle={(isOpen) =>
+                        toggleSetKey(setExpandedKindKeys, groupKey, isOpen)
+                      }
+                    >
+                      {cards}
+                    </ActivityKindGroup>
+                  );
+                })}
+              </ActivityPanel>
+            );
+          };
+
           const slice = useVirtual
             ? renderUnits.slice(virtual.start, virtual.end)
             : renderUnits;
           const nodes = slice.map((unit, sliceIndex) => {
             const absoluteIndex = useVirtual ? virtual.start + sliceIndex : sliceIndex;
-            const node = renderEvent(unit.event, unit.index);
+            const node =
+              unit.kind === "activity"
+                ? renderActivity(unit)
+                : renderEvent(unit.event, unit.index);
             if (!node || !useVirtual) return node;
             return (
-              <div
+              <VirtItem
                 key={unit.key}
-                ref={(el) => virtual.measureRef(absoluteIndex, el)}
-                className="event-list__virt-item"
+                index={absoluteIndex}
+                measureRef={virtual.measureRef}
               >
                 {node}
-              </div>
+              </VirtItem>
             );
           });
           if (!useVirtual) return nodes;

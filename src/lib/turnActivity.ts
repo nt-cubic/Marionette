@@ -160,3 +160,230 @@ export function extractDiffStats(
   if (add === 0 && del === 0) return null;
   return { add, del };
 }
+
+/** Basename of a tool path (`D:\\a\\b.ts` → `b.ts`). */
+export function toolFileName(path: string | null | undefined): string {
+  if (!path) return "";
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? "";
+}
+
+export function oneLine(s: string): string {
+  return s.replace(/\s+/g, " ").trim();
+}
+
+export function clipTeaser(s: string, max = 72): string {
+  const t = oneLine(s);
+  if (!t) return "";
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+}
+
+/**
+ * One-line subject for a tool row: filename, command, query, or title.
+ * Matches the Clean View card teaser (verb lives separately).
+ */
+export function toolMainText(event: ToolCallEvent): string {
+  const kind = classifyToolCall(event);
+  const fileName = toolFileName(event.path);
+  const commandText = extractCommandText(event);
+  const titleText = event.title ? oneLine(String(event.title)) : "";
+  if (kind === "read" || kind === "edit" || kind === "write") {
+    return fileName || commandText || titleText;
+  }
+  if (kind === "command" || kind === "search" || kind === "web") {
+    return commandText || titleText || fileName;
+  }
+  return titleText || fileName || commandText;
+}
+
+export type ActivityKindBucket = ToolActivityKind | "thought";
+
+export type ActivityDetailItem = {
+  event: SessionEvent;
+  index: number;
+};
+
+export type ActivityKindGroup = {
+  bucket: ActivityKindBucket;
+  items: ActivityDetailItem[];
+};
+
+export type ActivitySummary = {
+  title: string;
+  preview: string;
+  diff: { add: number; del: number } | null;
+};
+
+export function activityBucket(event: SessionEvent): ActivityKindBucket | null {
+  if (event.type === "thought") return "thought";
+  if (event.type === "tool_call") return classifyToolCall(event);
+  return null;
+}
+
+export function isActivityEvent(event: SessionEvent): boolean {
+  return activityBucket(event) != null;
+}
+
+export type ActivityClusterUnit =
+  | { kind: "row"; key: string; event: SessionEvent; index: number }
+  | { kind: "activity"; key: string; items: ActivityDetailItem[] };
+
+/**
+ * Consecutive thought + tool_call runs become one activity fold.
+ * A lone thought/tool stays a row (its own card already folds).
+ */
+export function clusterActivityRuns(
+  units: { key: string; event: SessionEvent; index: number }[],
+): ActivityClusterUnit[] {
+  const clustered: ActivityClusterUnit[] = [];
+  let i = 0;
+  while (i < units.length) {
+    const unit = units[i];
+    if (!isActivityEvent(unit.event)) {
+      clustered.push({ kind: "row", ...unit });
+      i += 1;
+      continue;
+    }
+    const start = i;
+    i += 1;
+    while (i < units.length && isActivityEvent(units[i].event)) i += 1;
+    const slice = units.slice(start, i);
+    if (slice.length === 1) {
+      clustered.push({ kind: "row", ...slice[0] });
+    } else {
+      clustered.push({
+        kind: "activity",
+        // Start index only — the run grows as tools stream in; a key that
+        // included the last index remounted the fold on every new tool.
+        key: `act-${slice[0].index}`,
+        items: slice.map(({ event, index }) => ({ event, index })),
+      });
+    }
+  }
+  return clustered;
+}
+
+/** Consecutive same-kind runs (Read, Read, Edit → two groups). */
+export function groupConsecutiveByKind(items: ActivityDetailItem[]): ActivityKindGroup[] {
+  const groups: ActivityKindGroup[] = [];
+  for (const item of items) {
+    const bucket = activityBucket(item.event);
+    if (!bucket) continue;
+    const last = groups[groups.length - 1];
+    if (last && last.bucket === bucket) last.items.push(item);
+    else groups.push({ bucket, items: [item] });
+  }
+  return groups;
+}
+
+export function sumDiffStats(items: ActivityDetailItem[]): { add: number; del: number } | null {
+  let add = 0;
+  let del = 0;
+  let any = false;
+  for (const { event } of items) {
+    if (event.type !== "tool_call") continue;
+    const stats = extractDiffStats(event.detail);
+    if (!stats) continue;
+    any = true;
+    add += stats.add;
+    del += stats.del;
+  }
+  return any ? { add, del } : null;
+}
+
+function uncapitalize(s: string): string {
+  if (!s) return s;
+  return s.charAt(0).toLowerCase() + s.slice(1);
+}
+
+function joinHeadlines(parts: string[]): string {
+  return parts.map((part, i) => (i === 0 ? part : uncapitalize(part))).join(", ");
+}
+
+function kindCountPhrase(bucket: ActivityKindBucket, count: number): string {
+  switch (bucket) {
+    case "thought":
+      return count > 1 ? `Thought · ${count}` : "Thought";
+    case "read":
+      return `Read ${count} files`;
+    case "edit":
+      return `Edited ${count} files`;
+    case "write":
+      return `Wrote ${count} files`;
+    case "command":
+      return `Ran ${count} commands`;
+    case "search":
+      return `Searched ${count} times`;
+    case "web":
+      return `Fetched ${count} pages`;
+    case "agent":
+      return count === 1 ? "Task" : `${count} tasks`;
+    default:
+      return count === 1 ? "Tool" : `${count} tools`;
+  }
+}
+
+/** Inline headline for a kind run: "Read foo.ts" / "Ran 3 commands". */
+export function kindGroupTitle(group: ActivityKindGroup): string {
+  const { bucket, items } = group;
+  if (items.length === 1) {
+    const event = items[0].event;
+    if (event.type === "thought") return "Thought";
+    if (event.type === "tool_call") {
+      const verb = toolKindVerb(bucket === "thought" ? "other" : bucket);
+      const main = toolMainText(event);
+      return main ? `${verb} ${main}` : verb;
+    }
+  }
+  return kindCountPhrase(bucket, items.length);
+}
+
+export function summarizeKindGroup(group: ActivityKindGroup): ActivitySummary {
+  const title = kindGroupTitle(group);
+  let preview = "";
+  if (group.items.length === 1 && group.items[0].event.type === "tool_call") {
+    // Title already has verb+main; keep preview empty so the row stays one phrase.
+    preview = "";
+  } else if (group.bucket === "command" && group.items.length > 1) {
+    const last = group.items[group.items.length - 1].event;
+    if (last.type === "tool_call") preview = toolMainText(last);
+  }
+  return {
+    title,
+    preview,
+    diff: sumDiffStats(group.items),
+  };
+}
+
+/**
+ * Headline for a consecutive thought/tool run.
+ * Mixed: "Wrote HudGammaBlend.cs, ran 3 commands".
+ * Live: current tool's own headline so the closed row tracks the work.
+ */
+export function summarizeActivity(
+  items: ActivityDetailItem[],
+  opts?: { liveEvent?: SessionEvent | null },
+): ActivitySummary {
+  const live = opts?.liveEvent;
+  if (live?.type === "thought") {
+    return { title: "Thinking…", preview: "", diff: sumDiffStats(items) };
+  }
+  if (live?.type === "tool_call") {
+    const verb = toolKindVerb(classifyToolCall(live));
+    const main = toolMainText(live);
+    return {
+      title: main ? `${verb} ${main}` : verb,
+      preview: "",
+      diff: sumDiffStats(items),
+    };
+  }
+  const groups = groupConsecutiveByKind(items);
+  if (groups.length === 0) {
+    return { title: "Activity", preview: "", diff: null };
+  }
+  const title = clipTeaser(joinHeadlines(groups.map(kindGroupTitle)), 96);
+  return {
+    title,
+    preview: "",
+    diff: sumDiffStats(items),
+  };
+}

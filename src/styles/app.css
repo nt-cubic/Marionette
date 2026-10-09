@@ -2898,8 +2898,10 @@ body.is-tab-detaching * {
 /* Every transcript row is width-bound by the clean column — never content. */
 .event-list > .event-card,
 .event-list > .event-card--collapsible,
+.event-list > .activity-panel,
 .event-list__virt-item > .event-card,
-.event-list__virt-item > .event-card--collapsible {
+.event-list__virt-item > .event-card--collapsible,
+.event-list__virt-item > .activity-panel {
   flex: 0 0 auto;
   width: 100%;
   max-width: 100%;
@@ -3114,9 +3116,9 @@ body.is-tab-detaching * {
   opacity: 0.85;
 }
 
-/* Eye off: thinking/tool rows are dropped from the render units themselves
-   (SessionView), never hidden with CSS — the virtual window measures mounted
-   rows, so display:none rows left stale heights and displaced the list. */
+/* Eye closed: thinking/tool rows stay mounted, clustered into activity folds
+   in SessionView. Never hide them with CSS — the virtual window measures
+   mounted rows, so display:none rows left stale heights and displaced the list. */
 
 .event-card {
   display: grid;
@@ -3258,6 +3260,142 @@ body.is-tab-detaching * {
 
 .event-card--collapsible[open] > .event-card__summary::before {
   content: "▾";
+}
+
+/*
+ * Nested activity fold (closed eye): same card chrome as thought/tool cards.
+ * Inner kind-groups and event-cards keep their own backgrounds too.
+ */
+.activity-panel,
+.activity-kind {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, var(--text-muted));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--panel-soft) 88%, transparent);
+  overflow: hidden;
+  contain: inline-size;
+}
+
+.activity-panel.is-live,
+.activity-kind.is-live {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+}
+
+.activity-panel:not([open]) > *:not(summary),
+.activity-kind:not([open]) > *:not(summary) {
+  display: none !important;
+}
+
+.activity-panel__summary,
+.activity-kind .activity-panel__summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.activity-panel__summary::-webkit-details-marker,
+.activity-kind .activity-panel__summary::-webkit-details-marker {
+  display: none;
+}
+
+.activity-panel__summary::before,
+.activity-kind .activity-panel__summary::before {
+  content: "▸";
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.activity-panel[open] > .activity-panel__summary::before,
+.activity-kind[open] > .activity-panel__summary::before {
+  content: "▾";
+}
+
+.activity-panel__title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.activity-panel__summary:hover .activity-panel__title,
+.activity-kind .activity-panel__summary:hover .activity-panel__title {
+  color: var(--text);
+}
+
+.activity-panel.is-live > .activity-panel__summary .activity-panel__title,
+.activity-kind.is-live > .activity-panel__summary .activity-panel__title {
+  color: var(--accent);
+}
+
+.activity-panel__preview-wrap {
+  position: relative;
+  flex: 1 1 0%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.activity-panel__preview {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.activity-panel__preview-wrap::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 36px;
+  pointer-events: none;
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--panel-soft) 0%, transparent),
+    color-mix(in srgb, var(--panel-soft) 92%, var(--panel-raised))
+  );
+}
+
+.activity-panel__body,
+.activity-kind__body,
+.activity-panel__items {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.activity-panel__body,
+.activity-kind__body {
+  margin: 8px 0 2px;
+}
+
+.activity-panel .nine-dot-spinner.is-compact {
+  margin-left: 2px;
 }
 
 .event-card__icon {
