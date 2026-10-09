@@ -3,8 +3,10 @@
  *
  * Run: npx tsx scripts/suspend-smoke.mts
  *
- * Parking a dialog stops its agent process, so the rules have to be exact:
- * only a warm, idle, unblocked dialog that nobody is using may go.
+ * Parking a dialog stops its agent process, so the rules have to be exact.
+ * Two different rules live here: the hand-driven park button stops any dialog
+ * that still holds a process (including one mid-turn), while the unattended idle
+ * timer only touches warm, idle, unblocked dialogs nobody is using.
  */
 import assert from "node:assert/strict";
 import {
@@ -48,11 +50,17 @@ check("a dialog with a question / plan / permission card is never parked", () =>
 check("a dialog with a queued follow-up is never parked", () => {
   assert.equal(shouldAutoSuspend(warm(), NOW, { queuedSessionIds: ["s1"] }), false);
 });
-check("only warm dialogs are parked", () => {
+check("only warm idle dialogs are parked, even though a working one can be", () => {
   for (const status of ["running", "starting", "exited", "error"]) {
     assert.equal(isSuspendable(warm({ status })), false, status);
   }
   assert.equal(isSuspendable(warm()), true);
+  // The hand-driven park is wider than the idle timer: anything still holding a
+  // process can be stopped. Only an already parked one cannot.
+  for (const status of ["starting", "running", "waiting", "error"]) {
+    assert.equal(canPark(warm({ status })), true, status);
+  }
+  assert.equal(canPark(warm({ status: "exited" })), false);
 });
 
 console.log("\nhow idle time is read");
@@ -72,33 +80,35 @@ check("empty or unreadable rows never trigger a park", () => {
 console.log("\nwhat the row's park control says");
 check("a warm dialog offers to park", () => {
   const control = suspendControl(warm(), "Jingzhe");
-  assert.equal(control.enabled, true);
+  assert.equal(control.shown, true);
   assert.match(control.title, /^挂起 Jingzhe — /);
   assert.equal(control.ariaLabel, "Suspend Jingzhe");
 });
 check("a failed turn still holds a process, so it can be parked", () => {
   assert.equal(canPark(warm({ status: "error" })), true);
-  assert.equal(suspendControl(warm({ status: "error" })).enabled, true);
+  assert.equal(suspendControl(warm({ status: "error" })).shown, true);
 });
-check("a working dialog refuses and says why", () => {
+check("a working dialog is stoppable, and the title says it cuts the turn", () => {
   for (const status of ["starting", "running"]) {
+    assert.equal(canPark(warm({ status })), true, status);
     const control = suspendControl(warm({ status }), "Jingzhe");
-    assert.equal(control.enabled, false, status);
-    assert.match(control.title, /正在跑/, status);
+    assert.equal(control.shown, true, status);
+    assert.match(control.title, /^挂起 Jingzhe — /, status);
   }
+  assert.match(suspendControl(warm({ status: "running" }), "Jingzhe").title, /中断/);
 });
-check("an already parked dialog refuses without pretending to park", () => {
+check("an already parked dialog draws no control at all", () => {
   for (const status of ["exited", "", "weird"]) {
-    const control = suspendControl(warm({ status }), "Jingzhe");
-    assert.equal(control.enabled, false, status);
-    assert.match(control.title, /已挂起/, status);
+    assert.equal(canPark(warm({ status })), false, status);
+    assert.equal(suspendControl(warm({ status }), "Jingzhe").shown, false, status);
   }
 });
-check("the control is drawn for every status, so the affordance never moves", () => {
-  for (const status of ["starting", "running", "waiting", "exited", "error"]) {
+check("every drawn control is live — no dead affordance is painted", () => {
+  for (const status of ["starting", "running", "waiting", "error"]) {
     const control = suspendControl(warm({ status }), "s1");
-    assert.equal(typeof control.title, "string");
+    assert.equal(control.shown, true, status);
     assert.ok(control.title.length > 0, status);
+    assert.equal(control.ariaLabel, "Suspend s1", status);
   }
 });
 
