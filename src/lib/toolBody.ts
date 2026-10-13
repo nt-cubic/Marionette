@@ -178,6 +178,26 @@ function dedupeInlineCopy(images: ToolImageRef[]): ToolImageRef[] {
   return [inline];
 }
 
+/**
+ * True when git can reasonably diff this path inside the session workspace.
+ * Absolute paths outside `cwd` (temp writes, other drives) must not trigger
+ * the "Loading full diff…" workspace fallback.
+ */
+export function isWorkspaceDiffPath(path: string, cwd?: string | null): boolean {
+  const value = path.trim();
+  if (!value) return false;
+  const isAbs =
+    /^[A-Za-z]:[\\/]/.test(value) || value.startsWith("\\\\") || value.startsWith("/");
+  if (!isAbs) return true;
+  const root = (cwd ?? "").trim();
+  if (!root) return false;
+  const normalize = (v: string) => v.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const abs = normalize(value);
+  const base = normalize(root);
+  if (!base) return false;
+  return abs === base || abs.startsWith(`${base}/`);
+}
+
 /** File a diff belongs to: the `+++ b/<path>` header, else the tool path. */
 export function diffTargetPath(diff: string, fallback?: string | null): string {
   const header = diff.match(/^\+\+\+\s+([^\t\n]+)/m);

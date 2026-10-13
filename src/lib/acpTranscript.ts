@@ -316,6 +316,51 @@ function inputIsOnlyPath(rawInput: unknown, path: string | undefined): boolean {
   );
 }
 
+const RAW_NEW_TEXT_KEYS = [
+  "content",
+  "contents",
+  "newText",
+  "new_text",
+  "newString",
+  "new_string",
+] as const;
+const RAW_OLD_TEXT_KEYS = [
+  "oldText",
+  "old_text",
+  "oldString",
+  "old_string",
+  "oldContents",
+  "old_contents",
+] as const;
+
+function firstStringField(record: UpdateObj, keys: readonly string[]): string | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string") return value;
+  }
+  return undefined;
+}
+
+/** ACP `kind: edit` covers write+edit; names catch agents that omit kind. */
+function isFileMutationTool(name?: string, kind?: string): boolean {
+  if ((kind ?? "").toLowerCase() === "edit") return true;
+  return /write|edit|patch|replace/.test((name ?? "").toLowerCase());
+}
+
+/**
+ * OpenCode write never sends `content: [{type:"diff"}]`. The new file lives in
+ * `rawInput.content` (edits may also carry oldText/newText there). Turn that
+ * into the same unified diff the card already knows how to render.
+ */
+function diffFromRawInput(rawInput: unknown, path: string | undefined): string | undefined {
+  const record = asRecord(rawInput);
+  if (!record) return undefined;
+  const newText = firstStringField(record, RAW_NEW_TEXT_KEYS);
+  if (newText === undefined) return undefined;
+  const oldText = firstStringField(record, RAW_OLD_TEXT_KEYS) ?? "";
+  return renderTextDiff(path ?? "", oldText, newText);
+}
+
 /**
  * Render ACP `ToolCallContent[]` — text blocks, diffs and terminals.
  *
@@ -438,7 +483,13 @@ const FAILED_TOOL_STATUS = /fail|error|cancel|reject|denied|abort|timeout/i;
 
 /** "The file … has been updated successfully. (…no need to Read it back)" */
 function isEditSuccessNote(text: string): boolean {
-  return /^The file .+ has been updated successfully\.(?:\s*\([^)]*\))?$/s.test(text.trim());
+  const trimmed = text.trim();
+  return (
+    /^The file .+ has been updated successfully\.(?:\s*\([^)]*\))?$/s.test(trimmed) ||
+    /^Created file successfully:/i.test(trimmed) ||
+    /^Wrote .+ successfully\.?$/i.test(trimmed) ||
+    /^Edited .+\(\d+ replacements?\)/i.test(trimmed)
+  );
 }
 
 /**
@@ -446,9 +497,11 @@ function isEditSuccessNote(text: string): boolean {
  *
  * Claude's Edit/Write report their result as plain `rawOutput` text — the diff
  * arrives in an earlier `content: [{type: "diff"}]` update, and the result
- * update carries no content blocks at all. ACP updates are partial, so a
- * result with nothing to say about content must not drop the diff. A failed
- * call is the exception: there the text *is* the outcome.
+ * update carries no content blocks at all. OpenCode write is the same shape
+ * after we synthesize a diff from `rawInput.content`: completed then sends
+ * only "Created file successfully: …". ACP updates are partial, so a result
+ * with nothing to say about content must not drop the diff. A failed call is
+ * the exception: there the text *is* the outcome.
  */
 function keepsPriorDiff(prevDetail: string, nextDetail: string, status?: string): boolean {
   if (!looksLikeUnifiedDiff(prevDetail)) return false;
@@ -614,8 +667,21 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
     if (/list_agents/i.test(normalized || title || "")) {
       toolDetail = formatListAgentsRoster(toolDetail);
     }
+    // OpenCode write: full file in rawInput, no type:diff block. Synthesize
+    // once so the card (and +/− badge) have a unified diff to keep.
+    let synthesized = "";
+    if (
+      !agentTx &&
+      !looksLikeUnifiedDiff(toolDetail ?? "") &&
+      isFileMutationTool(normalized || title, typeof update.kind === "string" ? update.kind : undefined)
+    ) {
+      synthesized = diffFromRawInput(rawInput, toolPath) ?? "";
+      if (synthesized) toolDetail = clipToolDetail(synthesized);
+    }
     // `{"filePath":"…"}` under a line that already shows that path is noise.
-    const toolInput = inputIsOnlyPath(rawInput, toolPath) ? "" : clippedInput;
+    // After a synthesized diff the raw JSON is the file body — hide it.
+    const toolInput =
+      synthesized || inputIsOnlyPath(rawInput, toolPath) ? "" : clippedInput;
 
     return {
       role: "tool",
