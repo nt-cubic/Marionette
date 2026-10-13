@@ -3336,7 +3336,9 @@ export function App() {
     const work = (async (): Promise<Session | undefined> => {
       try {
         const resolvedAgentId =
-          agentId ?? availableAgents[0]?.id ?? agents[0].id;
+          typeof agentId === "string" && agentId
+            ? agentId
+            : (availableAgents[0]?.id ?? agents[0].id);
         const cwd = defaultFolderPath || (await getDefaultFolder());
         const session = await createChatSession(resolvedAgentId, "新对话", cwd || null);
         if (!session) return undefined;
@@ -5760,7 +5762,9 @@ export function App() {
             defaultFolderPath={defaultFolderPath}
             chatSessions={chatSessions}
             onChatSessionSelect={openChatSession}
-            onNewChat={handleCreateChatSession}
+            onNewChat={() => {
+              void handleCreateChatSession();
+            }}
           />
           )}
           {!leftCollapsed && !IS_DETACHED_WINDOW && (

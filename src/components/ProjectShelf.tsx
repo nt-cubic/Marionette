@@ -877,7 +877,7 @@ export function ProjectShelf({
                 type="button"
                 title="新建对话"
                 aria-label="New chat"
-                onClick={onNewChat}
+                onClick={() => onNewChat()}
               >
                 <Plus size={13} />
               </button>
