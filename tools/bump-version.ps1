@@ -79,7 +79,7 @@ Update-File (Join-Path $root 'src-tauri\tauri.conf.json') `
     ('"version": "' + $newVersion + '"') 1
 
 Update-File (Join-Path $root 'src-tauri\Cargo.toml') `
-    ('^version\s*=\s*"' + $escaped + '"$') `
+    ('^version\s*=\s*"' + $escaped + '"\r?$') `
     ('version = "' + $newVersion + '"') 1
 
 Update-File (Join-Path $root 'src-tauri\Cargo.lock') `
