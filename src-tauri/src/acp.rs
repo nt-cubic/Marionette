@@ -438,6 +438,26 @@ impl AcpService {
             for (k, v) in crate::agent_registry::launch_env_for(id) {
                 child_command.env(*k, *v);
             }
+            // DSH 0.2.0-rc.2 moved its settings into profile patches and renamed
+            // the flat document the ACP adapter still resolves, which silently
+            // hid every routed provider (opencode-go, …) behind the two built-in
+            // DeepSeek models. Put the routes back before the agent boots.
+            if matches!(id, "deepseek" | "deepseek-acp") {
+                let bridged = crate::dsh_settings::ensure_settings_bridge();
+                let failed = matches!(
+                    bridged,
+                    crate::dsh_settings::BridgeAction::Failed { .. }
+                );
+                if bridged.changed() || failed {
+                    crate::debug_log::append(
+                        "acp",
+                        if failed { "warn" } else { "info" },
+                        &session_id,
+                        &format!("DSH settings bridge: {}", bridged.describe()),
+                        None,
+                    );
+                }
+            }
             // DeepSeek Harness reads DEEPSEEK_API_KEY (or ~/.dsh/.credentials.yaml).
             // If the process env is empty, reuse a key already in OpenCode auth.json.
             if matches!(id, "deepseek" | "deepseek-acp")

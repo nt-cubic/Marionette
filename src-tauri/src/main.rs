@@ -12,6 +12,7 @@ mod context_inventory;
 mod custom_agents;
 mod data_dir_gate;
 mod debug_log;
+mod dsh_settings;
 mod git_service;
 mod handoff;
 mod http_client;

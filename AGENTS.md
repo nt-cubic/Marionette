@@ -78,3 +78,71 @@ icacls D:\Apps\Marionette /setintegritylevel (OI)(CI)Medium
 **产品侧兜底（已加）：** 启动时 `app_paths::ensure_global_dir_writable()` 会写探测文件，失败则走
 `data_dir_gate::prompt_and_exit()` 弹原生对话框并 `exit(1)`，不再出现「静默 exit(0)」；
 单实例锁只有真被占用（Windows 32/33 共享冲突）才交接，权限类错误会记一条 `[shell] warn` 后照常启动。
+
+## 排查「DeepSeek Harness 只剩官方两个模型 / 看不到 opencode-go 等路由模型」—— 先看设置文档
+
+**症状：** Marionette 里 DSH 会话的模型下拉只有 `DeepSeek-V4.1-Flash`、`DeepSeek-V4-Pro` 两个（或不带 provider
+前缀的两个 id），用户配的 `opencode-go` / `opencode` / `xai` 全部不见；已保存的偏好模型切过去会回
+`config option "model" has no value "opencode-go::…"`。`dev.log` 里 `session/new` 的 `configOptions` 就是那两个。
+
+**根因（两层，都与 Marionette 代码无关，但只有 Marionette 能补）：**
+
+1. DSH 0.2.0-rc.2 把设置从 `$DSH_HOME/settings.yaml` 搬进了 **profile patch**
+   （`$DSH_HOME/profiles/<name>/cordis.patch.yml`），旧文档改名成 `settings.yaml.imported` 且不再读取。
+2. Marionette 走的是社区适配器 `deepseek-acp`（0.9.0，已是 npm 最新）。它 compose 的是 `dsh-settings-file`，
+   设置文档**死锁在 `<DSH_HOME>/settings.yaml`**；而且只有该文档原文里含 `llm-pi-ai` 这个子串时，它才挂载把
+   `llm-pi-ai.providers` 变成可选模型的 pi-ai 插件（`settingsMentionsPiAi` 的惰性加载预筛，省 5 秒 import）。
+   文件被改走之后预筛恒为假 → 路由全丢，只剩 `dsh-llm-deepseek` 内建的两个。
+
+**修复（已加）：** `src-tauri/src/dsh_settings.rs` 的 `ensure_settings_bridge()`，在 `acp.rs` 的 DSH 启动分支里调用。
+它把 profile patch 里的 `llm-pi-ai` 段**原文搬运**（不 parse/不重新 emit，`!!js`、block scalar、引号都原样保留）
+到 `$DSH_HOME/settings.yaml`：只读 DSH 自己的文件、只写这一个段、带所有权头注释，非自家文件绝不覆盖，profile
+变新了才刷新。每台机器上 DSH 应用一启动又会把该文件改名搬走，所以**每次启动都补一次**才是正确姿势。
+
+**验证（不用起 GUI）：**
+
+```powershell
+# 1. 桥接是否发生：起一次 DSH 会话后看这行
+Select-String "$env:USERPROFILE\.marionette\logs\dev.log" -Pattern 'DSH settings bridge' | Select-Object -Last 1
+# 2. 镜像文件存在且带所有权头
+Get-Content "$env:USERPROFILE\.dsh\settings.yaml" -TotalCount 2
+# 3. session/new 报出来的模型：分组形态里能看到 opencode-go 等 provider 名
+Select-String "$env:USERPROFILE\.marionette\logs\dev.log" -Pattern 'opencode-go::' | Select-Object -Last 1
+```
+
+想脱离 GUI 直接问适配器，就自己写个 NDJSON 探针：`spawn deepseek-acp`（`lib/bin.js`），stdin 依次发
+`initialize`（`protocolVersion: 1`）和 `session/new`（`cwd` 必须是绝对路径、`mcpServers: []`），
+读 `id=2` 应答里的 `configOptions` → `id: "model"` 的 `options`。
+
+**顺带两条上游限制（都不是 Marionette 的 bug，也不要拿配置去"修"）：**
+
+1. **catalog 里没有的 model id 会被 DSH 丢掉。** 先澄清一点：`llm-pi-ai` 不是 Marionette 引入的，它是 **DSH 官方唯一的多
+   provider 层** —— DSH 只有两类 LLM 适配器（`dsh-llm-deepseek*` 官方直连、`dsh-llm-pi-ai` 其余全部，见
+   `@deepseek-ai/dsh-llm-pi-ai/README.md`「When to choose it」），部署要接第三方网关就只能用它。
+   pi-ai 只服务它描述得出的模型：本机 catalog（`@earendil-works/pi-ai/dist/providers/data/opencode*.json`）有
+   `longcat-2.0`、`ling-3.0-flash-fin-free` 等，但**没有** `deepseek-v4.1-flash`、`mimo-v2.6-flash-free`。
+   **不要给既有路由补 `api:` 来救** —— 路由级 `api` 优先级高于每个模型自己的协议
+   （`api = request.api ?? base?.api ?? routeApi`），而 `opencode` 这类 catalog 路由横跨
+   `openai-completions` / `openai-responses` / `anthropic-messages`：补一个 `api` 会把同路由里别的模型的协议
+   一起改掉（实测其 `muse-spark-1.2/1.3` 是 `openai-responses`，补 `openai-completions` 就是打错端点）。
+   **上游给的处方是拆路由**（README「Known Limitations」：*One wire protocol per route — a mixed-protocol
+   catalog route cannot host a model of the other protocol; **splitting the provider across two route keys is the
+   workaround***；README「Resolve the model catalog」也说明"加一个比 catalog 更新的模型"属受支持的一行改动）。
+   即：新开一个 **catalog 不收录的 route key**，自己声明 `api` + `baseURL` + `apiKeyEnv` + 只列这一个模型。
+   实测有效，且不动原路由上其它模型的协议。**注意：拆路由只解决"模型进不进下拉"，不解决"有没有推理档位"。**
+
+2. **pi-ai 路由一律没有"推理档位"控件，只有 `deepseek-official` 有。** 供应商侧的档位其实存在
+   （直接问 pi-ai：`xai/grok-4.6` → low/medium/high/xhigh，`opencode-go/longcat-2.0` →
+   off/minimal/low/medium/high），断点在 harness：`deepseek-acp` 取
+   `resolveModelInfo(provider, model).reasoning`，`dsh-llm-pi-ai` 只在路由成功绑成 pi-ai provider 且该模型无
+   per-model 错误时才给，否则 `modelOf()`（`lib/index.js:1769`）抛错；且该错被 `deepseek-acp`
+   （`lib/port/in-process.js:318` 的 `() => undefined`）**静默吞成"无此能力"**，stderr 一个字都没有。
+   另外 `deepseek-acp` 只在 `efforts.length > 1` 时才发这个选项（`lib/config/options.js:165`）。
+   **不要在配置里手写 `reasoningEfforts` 顶替**：那是替供应商断言 wire 映射（写错会被 `invalid()` 拒），
+   而且实测即使写了也不会出现控件。Marionette 只渲染 agent 声明过的 option，且**刻意不伪造** effort
+   （伪造会换来 `Unknown config option: effort`）——所以这里 Marionette 的正确做法就是什么都不做。
+
+**什么时候可以删掉 `dsh_settings.rs`：** 满足任一条即可 —— `deepseek-acp` 改为读 profile patch
+（即 `settingsMentionsPiAi` 那条路不再依赖 `$DSH_HOME/settings.yaml`）、或 Marionette 改用官方
+profile 化的 ACP app（`@deepseek-ai/dsh-acp-app` 挂在某个 profile 上）。删之前先确认
+`$DSH_HOME/settings.yaml` 不再是适配器唯一的设置来源。
