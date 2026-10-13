@@ -27,7 +27,7 @@ import { cleanAssistantText } from "../lib/markdownText";
 import { type ForkAnchor } from "../lib/sessionFork";
 import { newQuotePinId, type QuotePin } from "../lib/quoteComment";
 import { buildMessagePresentation } from "../lib/messagePresentation";
-import { diffTargetPath, splitToolBody } from "../lib/toolBody";
+import { diffTargetPath, isWorkspaceDiffPath, splitToolBody } from "../lib/toolBody";
 import {
   classifyToolCall,
   clusterActivityRuns,
@@ -1029,7 +1029,8 @@ function ToolCallBody({
     projectId &&
       event.path &&
       !hasUnifiedDiff(body) &&
-      (isFileEditTool || /\[diff\]/i.test(body)),
+      (isFileEditTool || /\[diff\]/i.test(body)) &&
+      isWorkspaceDiffPath(event.path, cwd),
   );
   const isSubagent = isSubagentTool(event.toolName, event.title);
 

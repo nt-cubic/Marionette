@@ -14,6 +14,8 @@ import {
   userMessageEvent,
   type SessionEvent,
 } from "../src/lib/acpTranscript.ts";
+import { isWorkspaceDiffPath, looksLikeUnifiedDiff } from "../src/lib/toolBody.ts";
+import { extractDiffStats } from "../src/lib/turnActivity.ts";
 
 let events: SessionEvent[] = [
   userMessageEvent("s1", "hi", {
@@ -590,6 +592,107 @@ console.log("OpenCode v2 child-session streams stay off the parent Reply");
   assert.equal(childUpdateChunk?.role, "tool");
   assert.equal(childUpdateChunk?.toolCallId, "ses_child_explore");
   assert.equal(childUpdateChunk?.toolDetail, "via child_update");
+}
+
+// OpenCode write: file body in rawInput.content, completed is a success note.
+{
+  const writePath = "C:\\Users\\c_huang\\AppData\\Local\\Temp\\opencode\\hud_probe\\BuildAnim.cs";
+  const fileBody = "using UnityEngine;\nclass BuildAnim {}\n";
+  let writeEvents: SessionEvent[] = [userMessageEvent("s1", "write the file")];
+
+  const pending = extractAcpUpdateText({
+    params: {
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "call_write_1",
+        name: "write",
+        title: "write",
+        kind: "edit",
+        status: "pending",
+        locations: [],
+        rawInput: {},
+      },
+    },
+  });
+  assert.equal(pending?.role, "tool");
+  writeEvents = applyAcpPartToEvents(writeEvents, "s1", pending!);
+
+  const inProgress = extractAcpUpdateText({
+    params: {
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "call_write_1",
+        status: "in_progress",
+        kind: "edit",
+        title: "write",
+        locations: [{ path: writePath }],
+        rawInput: { content: fileBody },
+      },
+    },
+  });
+  assert.equal(inProgress?.role, "tool");
+  assert.equal(inProgress?.toolInput, "", "rawInput JSON must not be the card body");
+  assert.ok(inProgress?.toolDetail && looksLikeUnifiedDiff(inProgress.toolDetail), "write synthesizes a unified diff");
+  assert.ok(inProgress.toolDetail.includes("+using UnityEngine;"));
+  assert.ok(inProgress.toolDetail.includes("+class BuildAnim {}"));
+  const liveStats = extractDiffStats(inProgress.toolDetail);
+  assert.equal(liveStats?.add, 2);
+  assert.equal(liveStats?.del, 0);
+  writeEvents = applyAcpPartToEvents(writeEvents, "s1", inProgress!);
+
+  const completed = extractAcpUpdateText({
+    params: {
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "call_write_1",
+        status: "completed",
+        locations: [{ path: writePath }],
+        content: [
+          {
+            type: "content",
+            content: { type: "text", text: `Created file successfully: ${writePath.replace(/\\/g, "/")}` },
+          },
+        ],
+        rawOutput: { metadata: { truncated: false } },
+      },
+    },
+  });
+  writeEvents = applyAcpPartToEvents(writeEvents, "s1", completed!);
+  const writeCard = writeEvents.find((e) => e.type === "tool_call" && e.toolCallId === "call_write_1");
+  assert.ok(writeCard && writeCard.type === "tool_call");
+  assert.ok(writeCard.detail && looksLikeUnifiedDiff(writeCard.detail), "completed must keep the synthesized diff");
+  assert.equal(writeCard.detail.includes("Created file successfully"), false, "success note must not replace the diff");
+  const doneStats = extractDiffStats(writeCard.detail);
+  assert.equal(doneStats?.add, 2);
+  assert.equal(doneStats?.del, 0);
+
+  // Real ACP type:diff wins over rawInput.content.
+  const acpDiff = extractAcpUpdateText({
+    params: {
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "call_edit_1",
+        name: "edit",
+        kind: "edit",
+        status: "in_progress",
+        locations: [{ path: "src/a.ts" }],
+        rawInput: { content: "SHOULD_NOT_APPEAR" },
+        content: [{ type: "diff", path: "src/a.ts", oldText: "a\n", newText: "b\n" }],
+      },
+    },
+  });
+  assert.ok(acpDiff?.toolDetail && looksLikeUnifiedDiff(acpDiff.toolDetail));
+  assert.equal(acpDiff.toolDetail.includes("SHOULD_NOT_APPEAR"), false);
+  assert.ok(acpDiff.toolDetail.includes("-a"));
+  assert.ok(acpDiff.toolDetail.includes("+b"));
+
+  assert.equal(isWorkspaceDiffPath("src/a.ts", "D:\\Myself\\Marionette"), true);
+  assert.equal(isWorkspaceDiffPath("D:\\Myself\\Marionette\\src\\a.ts", "D:\\Myself\\Marionette"), true);
+  assert.equal(
+    isWorkspaceDiffPath("C:\\Users\\c_huang\\AppData\\Local\\Temp\\opencode\\hud_probe\\BuildAnim.cs", "D:\\Myself\\Marionette"),
+    false,
+  );
+  assert.equal(isWorkspaceDiffPath("C:\\Users\\c_huang\\AppData\\Local\\Temp\\x.cs", null), false);
 }
 
 console.log("smoke-stream-merge: ok");
