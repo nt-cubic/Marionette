@@ -102,6 +102,8 @@ export type QueuedSendSnap = {
     modeLabel?: string | null;
     modelId?: string | null;
     modelLabel?: string | null;
+    effortId?: string | null;
+    effort?: number | null;
     effortLabel?: string | null;
   };
 };

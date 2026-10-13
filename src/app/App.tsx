@@ -171,6 +171,22 @@ function readStoredPanelWidth(key: "leftWidth" | "rightWidth", fallback: number,
 
 type AgentBannerKind = "auth" | "upgrade";
 
+/**
+ * Composer chip snapshot taken at send time. The parent must not re-derive
+ * mode/model from stale sessionCapabilities — a chip may already show a pick
+ * whose `set_config` echo has not landed. Effort rides along so a dialog whose
+ * effort was inherited (never explicitly picked here) can persist it.
+ */
+type ComposerChipSnapshot = {
+  modeId?: string | null;
+  modeLabel?: string | null;
+  modelId?: string | null;
+  modelLabel?: string | null;
+  effortId?: string | null;
+  effort?: number | null;
+  effortLabel?: string | null;
+};
+
 /** Keep native title/taskbar details readable when an agent returns JSON. */
 function compactNotifyDetail(value: string | null | undefined, max = 160): string {
   const compact = value?.replace(/\s+/g, " ").trim() ?? "";
@@ -467,13 +483,7 @@ export function App() {
       Array<{
         composed: string;
         imageAttachments: import("../lib/imageAttachments").ImageAttachment[];
-        composerSnap?: {
-          modeId?: string | null;
-          modeLabel?: string | null;
-          modelId?: string | null;
-          modelLabel?: string | null;
-          effortLabel?: string | null;
-        };
+        composerSnap?: ComposerChipSnapshot;
       }>
     >
   >(new Map());
@@ -486,13 +496,7 @@ export function App() {
       {
         composed: string;
         imageAttachments: ImageAttachment[];
-        composerSnap?: {
-          modeId?: string | null;
-          modeLabel?: string | null;
-          modelId?: string | null;
-          modelLabel?: string | null;
-          effortLabel?: string | null;
-        };
+        composerSnap?: ComposerChipSnapshot;
       }
     >
   >(new Map());
@@ -648,13 +652,7 @@ export function App() {
     sessionId: string;
     imageAttachments?: ImageAttachment[];
     /** Composer chips at original submit — mode lags on caps, so keep the snapshot. */
-    composerSnap?: {
-      modeId?: string | null;
-      modeLabel?: string | null;
-      modelId?: string | null;
-      modelLabel?: string | null;
-      effortLabel?: string | null;
-    };
+    composerSnap?: ComposerChipSnapshot;
   } | null>(null);
   const [pathGrantBusy, setPathGrantBusy] = useState(false);
   const lastEscAtRef = useRef(0);
@@ -3309,17 +3307,26 @@ export function App() {
     // Model/mode/effort only transfer when the agent is the same (or the
     // caller passed prefs explicitly). A different agent has a different catalog.
     const sameAgentAsSource = !source || source.agentId === resolvedAgentId;
+    const sourcePrefs: SessionComposerPrefs | null =
+      source && sameAgentAsSource
+        ? {
+            preferredModel: source.preferredModel ?? null,
+            preferredMode: source.preferredMode ?? null,
+            preferredEffort: source.preferredEffort ?? null,
+            preferredEffortId: source.preferredEffortId ?? null,
+            preferredAlwaysApprove: source.preferredAlwaysApprove ?? null,
+          }
+        : null;
+    // All-null source prefs mean "this dialog remembers nothing" — inherit from
+    // the agent's last-used chips instead of treating the empty row as a choice.
+    const hasSourcePrefs = sourcePrefs
+      ? Object.values(sourcePrefs).some((value) => value != null)
+      : false;
     const resolvedPrefs: SessionComposerPrefs | null =
       prefs !== undefined
         ? prefs
-        : source && sameAgentAsSource
-          ? {
-              preferredModel: source.preferredModel ?? null,
-              preferredMode: source.preferredMode ?? null,
-              preferredEffort: source.preferredEffort ?? null,
-              preferredEffortId: source.preferredEffortId ?? null,
-              preferredAlwaysApprove: source.preferredAlwaysApprove ?? null,
-            }
+        : hasSourcePrefs
+          ? sourcePrefs
           : (() => {
               // No dialog to inherit from — fall back to the agent's last-used
               // chips so a fresh session opens with the model/档位 we left on.
@@ -3486,6 +3493,50 @@ export function App() {
       void updateSessionStatus(sessionId, status).catch(() => undefined);
     }
   }, []);
+
+  /**
+   * Merge a Composer prefs patch onto the dialog row, publish it to the UI and
+   * write it to disk.
+   *
+   * The row is read from `sessionsRef` (latest render), not from inside a
+   * `setAvailableSessions` updater: React may call an updater after this
+   * function returns, and capturing the merged value from within it silently
+   * dropped the disk write whenever the update was batched.
+   */
+  const persistComposerPrefs = useCallback(
+    (sid: string, patch: SessionComposerPrefs) => {
+      if (!sid || sid.startsWith("session-empty-")) return;
+      const row = sessionsRef.current.find((session) => session.id === sid);
+      if (!row) return;
+      const merged: SessionComposerPrefs = {
+        preferredModel:
+          patch.preferredModel !== undefined ? patch.preferredModel : row.preferredModel,
+        preferredMode:
+          patch.preferredMode !== undefined ? patch.preferredMode : row.preferredMode,
+        preferredEffort:
+          patch.preferredEffort !== undefined ? patch.preferredEffort : row.preferredEffort,
+        preferredEffortId:
+          patch.preferredEffortId !== undefined ? patch.preferredEffortId : row.preferredEffortId,
+        preferredAlwaysApprove:
+          patch.preferredAlwaysApprove !== undefined
+            ? patch.preferredAlwaysApprove
+            : row.preferredAlwaysApprove,
+      };
+      setAvailableSessions((current) =>
+        current.map((session) => (session.id === sid ? { ...session, ...merged } : session))
+      );
+      void updateSessionPrefs(sid, merged).catch((error) => {
+        pushDebug({
+          sessionId: sid,
+          level: "warn",
+          source: "session",
+          summary: "persist composer prefs failed",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      });
+    },
+    [pushDebug],
+  );
 
   /**
    * Lazy ACP: start only when the user is about to talk (type/focus/send).
@@ -5141,13 +5192,7 @@ export function App() {
     text: string,
     droppedPaths: string[] = [],
     imageAttachments: ImageAttachment[] = [],
-    opts?: {
-      modeId?: string | null;
-      modeLabel?: string | null;
-      modelId?: string | null;
-      modelLabel?: string | null;
-      effortLabel?: string | null;
-    },
+    opts?: ComposerChipSnapshot,
   ) => {
     let sid = currentSessionId;
     if (!sid || sid.startsWith("session-empty-")) {
@@ -5203,15 +5248,7 @@ export function App() {
         text: composed,
         sessionId: sid,
         imageAttachments,
-        composerSnap: opts
-          ? {
-              modeId: opts.modeId,
-              modeLabel: opts.modeLabel,
-              modelId: opts.modelId,
-              modelLabel: opts.modelLabel,
-              effortLabel: opts.effortLabel,
-            }
-          : undefined,
+        composerSnap: opts ? { ...opts } : undefined,
       });
       return;
     }
@@ -5284,13 +5321,7 @@ export function App() {
     sid: string,
     composed: string,
     imageAttachments: ImageAttachment[] = [],
-    composerSnap?: {
-      modeId?: string | null;
-      modeLabel?: string | null;
-      modelId?: string | null;
-      modelLabel?: string | null;
-      effortLabel?: string | null;
-    },
+    composerSnap?: ComposerChipSnapshot,
     options?: {
       /** Flushing a queued follow-up: no card exists yet — create it now,
        *  right after the reply that just freed the slot. */
@@ -5325,7 +5356,19 @@ export function App() {
       const modelLabel =
         composerSnap?.modelLabel?.trim() ||
         (modelId ? caps?.models.find((m) => m.id === modelId)?.label ?? modelId : undefined);
-      const effortId = displaySession.preferredEffortId;
+      // The chip's effort, not just the disk pref: a dialog that inherited its
+      // effort never had a pref written, and the send would silently go out on
+      // the agent default while the chip showed something else.
+      const effortId =
+        composerSnap?.effortId?.trim() ||
+        displaySession.preferredEffortId?.trim() ||
+        null;
+      const sendEffort =
+        typeof composerSnap?.effort === "number" && Number.isFinite(composerSnap.effort)
+          ? composerSnap.effort
+          : typeof displaySession.preferredEffort === "number"
+            ? displaySession.preferredEffort
+            : null;
       const effortLabelVal =
         composerSnap?.effortLabel?.trim() ||
         (effortId
@@ -5333,8 +5376,8 @@ export function App() {
               caps?.effortOptions?.find((o) => o.id === effortId)?.label,
               effortId,
             )
-          : displaySession.preferredEffort != null
-            ? effortLabel(displaySession.preferredEffort)
+          : sendEffort != null
+            ? effortLabel(sendEffort)
             : undefined);
       sendMetaRef.current = {
         agentId: currentAgent.id,
@@ -5388,6 +5431,19 @@ export function App() {
           void cancelLiveTurn(sid, { announce: false });
         }
         return;
+      }
+
+      // The chips are this dialog's own choice even when they were inherited
+      // (offline catalog / last-used defaults) and never explicitly picked here.
+      // Persist what is actually being sent, or the next launch restores the
+      // harness defaults and the selection looks forgotten.
+      {
+        const prefsPatch: SessionComposerPrefs = {};
+        if (modelId) prefsPatch.preferredModel = modelId;
+        if (modeId) prefsPatch.preferredMode = modeId;
+        if (effortId) prefsPatch.preferredEffortId = effortId;
+        if (sendEffort != null) prefsPatch.preferredEffort = sendEffort;
+        if (Object.keys(prefsPatch).length > 0) persistComposerPrefs(sid, prefsPatch);
       }
 
       // TTFT anchor: the moment this prompt is about to go over the wire
@@ -5490,11 +5546,11 @@ export function App() {
         ) {
           await pushConfig({ effortId });
         } else if (
-          typeof displaySession.preferredEffort === "number" &&
+          sendEffort != null &&
           liveCaps?.effortConfigId &&
-          displaySession.preferredEffort !== liveCaps.currentEffort
+          sendEffort !== liveCaps.currentEffort
         ) {
-          await pushConfig({ thinkingEffort: displaySession.preferredEffort });
+          await pushConfig({ thinkingEffort: sendEffort });
         }
       }
 
@@ -6201,50 +6257,7 @@ export function App() {
               preferredAlwaysApprove: displaySession.preferredAlwaysApprove,
             }}
             onSessionPrefsChange={(patch: SessionComposerPrefs) => {
-              const sid = displaySession.id;
-              if (!sid || sid.startsWith("session-empty-")) return;
-              // Merge patch onto existing session so a model-only write cannot null mode/effort.
-              let merged: SessionComposerPrefs | null = null;
-              setAvailableSessions((current) =>
-                current.map((s) => {
-                  if (s.id !== sid) return s;
-                  const next = {
-                    ...s,
-                    preferredModel:
-                      patch.preferredModel !== undefined ? patch.preferredModel : s.preferredModel,
-                    preferredMode:
-                      patch.preferredMode !== undefined ? patch.preferredMode : s.preferredMode,
-                    preferredEffort:
-                      patch.preferredEffort !== undefined ? patch.preferredEffort : s.preferredEffort,
-                    preferredEffortId:
-                      patch.preferredEffortId !== undefined
-                        ? patch.preferredEffortId
-                        : s.preferredEffortId,
-                    preferredAlwaysApprove:
-                      patch.preferredAlwaysApprove !== undefined
-                        ? patch.preferredAlwaysApprove
-                        : s.preferredAlwaysApprove,
-                  };
-                  merged = {
-                    preferredModel: next.preferredModel,
-                    preferredMode: next.preferredMode,
-                    preferredEffort: next.preferredEffort,
-                    preferredEffortId: next.preferredEffortId,
-                    preferredAlwaysApprove: next.preferredAlwaysApprove,
-                  };
-                  return next;
-                })
-              );
-              if (!merged) return;
-              void updateSessionPrefs(sid, merged).catch((error) => {
-                pushDebug({
-                  sessionId: sid,
-                  level: "warn",
-                  source: "session",
-                  summary: "persist composer prefs failed",
-                  detail: error instanceof Error ? error.message : String(error),
-                });
-              });
+              persistComposerPrefs(displaySession.id, patch);
             }}
             onAgentChange={(id) => void handleAgentChange(id)}
             onInterrupt={() => void handleInterrupt()}
