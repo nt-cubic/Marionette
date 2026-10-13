@@ -8,6 +8,7 @@ use std::env;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 /// A spawnable program + optional leading args (e.g. `cmd.exe /C script.cmd`).
 #[derive(Clone, Debug)]
@@ -79,8 +80,10 @@ pub fn resolve_spawn_command(command: &str) -> Result<ResolvedCommand, String> {
     let mut seen = std::collections::HashSet::new();
     candidates.retain(|p| seen.insert(p.clone()));
 
-    // Prefer real executables over extensionless npm shims
-    candidates.sort_by_key(|p| rank_candidate(p));
+    // Prefer the active `npm prefix -g` bin over a stale earlier PATH hit
+    // (custom prefix + leftover %APPDATA%\npm is common on Windows).
+    let preferred_bins = active_npm_bin_dirs();
+    sort_command_candidates(&mut candidates, &preferred_bins);
 
     for candidate in candidates {
         if candidate.is_file() {
@@ -126,6 +129,8 @@ pub fn env_path_with_node_bins(node_program: &str) -> OsString {
     if let Some(dir) = Path::new(node_program).parent() {
         prepend.push(dir.to_path_buf());
     }
+    // Active `npm prefix -g` first — that is where `npm install -g` writes.
+    prepend.extend(active_npm_bin_dirs());
     if let Some(appdata) = env::var_os("APPDATA") {
         prepend.push(PathBuf::from(appdata).join("npm"));
     }
@@ -142,6 +147,86 @@ pub fn env_path_with_node_bins(node_program: &str) -> OsString {
     parts.retain(|p| seen.insert(p.clone()));
 
     env::join_paths(parts).unwrap_or(current)
+}
+
+/// Parse a `prefix=…` line from a user/global `.npmrc` (comments / blanks ignored).
+fn parse_npmrc_prefix(text: &str) -> Option<PathBuf> {
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim().eq_ignore_ascii_case("prefix") {
+            let value = value.trim().trim_matches('"').trim_matches('\'');
+            if !value.is_empty() {
+                return Some(PathBuf::from(value));
+            }
+        }
+    }
+    None
+}
+
+/// Directories `npm install -g` currently writes shims into (Windows: the prefix itself).
+fn active_npm_bin_dirs() -> Vec<PathBuf> {
+    static CACHED: OnceLock<Vec<PathBuf>> = OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            let mut dirs = Vec::new();
+            if let Some(prefix) = discover_npm_prefix() {
+                dirs.push(prefix);
+            }
+            dirs
+        })
+        .clone()
+}
+
+fn discover_npm_prefix() -> Option<PathBuf> {
+    // Env wins (matches npm's own resolution order for npm_config_*).
+    for key in ["npm_config_prefix", "NPM_CONFIG_PREFIX"] {
+        if let Ok(value) = env::var(key) {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(PathBuf::from(value));
+            }
+        }
+    }
+    let home = env::var_os("USERPROFILE").or_else(|| env::var_os("HOME"))?;
+    let npmrc = PathBuf::from(home).join(".npmrc");
+    let text = std::fs::read_to_string(npmrc).ok()?;
+    parse_npmrc_prefix(&text)
+}
+
+/// Sort so active npm-prefix hits beat stale PATH duplicates, then by shim quality.
+fn sort_command_candidates(candidates: &mut [PathBuf], preferred_bins: &[PathBuf]) {
+    candidates.sort_by_key(|p| {
+        let under_preferred = preferred_bins.iter().any(|bin| path_is_under(p, bin));
+        (if under_preferred { 0 } else { 1 }, rank_candidate(p))
+    });
+}
+
+fn path_is_under(path: &Path, parent: &Path) -> bool {
+    let path = normalize_for_compare(path);
+    let parent = normalize_for_compare(parent);
+    path.starts_with(&parent)
+}
+
+fn normalize_for_compare(path: &Path) -> PathBuf {
+    let raw = path.to_string_lossy();
+    let stripped = raw
+        .strip_prefix(r"\\?\")
+        .unwrap_or(raw.as_ref())
+        .replace('/', "\\");
+    #[cfg(windows)]
+    {
+        PathBuf::from(stripped.to_ascii_lowercase())
+    }
+    #[cfg(not(windows))]
+    {
+        PathBuf::from(stripped)
+    }
 }
 
 /// Decode subprocess stdout/stderr that may be UTF-8 or the Windows ANSI code page.
@@ -461,6 +546,9 @@ fn windows_extra_candidates(command: &str) -> Vec<PathBuf> {
     ];
 
     let mut dirs: Vec<PathBuf> = Vec::new();
+    // Active npm prefix first so a custom global dir is found even when PATH
+    // still lists an older %APPDATA%\npm ahead of it.
+    dirs.extend(active_npm_bin_dirs());
     if let Ok(path) = env::var("PATH") {
         for part in env::split_paths(&path) {
             dirs.push(part);
@@ -775,5 +863,61 @@ mod tests {
         }
         let npm = resolve_npm_for_install().expect("npm should resolve via node or PATH");
         assert!(!npm.program.is_empty());
+    }
+
+    #[test]
+    fn parses_prefix_from_user_npmrc() {
+        assert_eq!(
+            parse_npmrc_prefix("prefix=D:\\npm-global\r\ncache=D:\\npm-cache\n"),
+            Some(PathBuf::from(r"D:\npm-global"))
+        );
+        assert_eq!(
+            parse_npmrc_prefix("cache=D:\\npm-cache\n; prefix=/ignored\nprefix = C:/custom-npm\n"),
+            Some(PathBuf::from(r"C:/custom-npm"))
+        );
+        assert_eq!(parse_npmrc_prefix("cache=/tmp\n"), None);
+    }
+
+    #[test]
+    fn prefers_active_npm_prefix_over_stale_appdata_shim() {
+        // Repro: npm install -g writes to a custom prefix (D:\npm-global) while an
+        // older shim remains earlier on PATH under %APPDATA%\npm. Version checks
+        // and launches must follow the active prefix or upgrades look like no-ops.
+        let active = PathBuf::from(r"D:\npm-global");
+        let stale = PathBuf::from(r"C:\Users\Administrator\AppData\Roaming\npm\codex-acp.cmd");
+        let fresh = PathBuf::from(r"D:\npm-global\codex-acp.cmd");
+        let mut candidates = vec![stale.clone(), fresh.clone()];
+        sort_command_candidates(&mut candidates, &[active]);
+        assert_eq!(
+            candidates[0], fresh,
+            "active npm prefix must win over an earlier PATH hit"
+        );
+        assert_eq!(candidates[1], stale);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn live_codex_acp_follows_active_npm_prefix_when_dual_copy_exists() {
+        let Some(active) = discover_npm_prefix() else {
+            return;
+        };
+        let fresh = active.join("codex-acp.cmd");
+        let Some(appdata) = env::var_os("APPDATA") else {
+            return;
+        };
+        let stale = PathBuf::from(appdata).join("npm").join("codex-acp.cmd");
+        if !fresh.is_file() || !stale.is_file() {
+            return;
+        }
+        if normalize_for_compare(&fresh) == normalize_for_compare(&stale) {
+            return;
+        }
+        let resolved = resolve_spawn_command("codex-acp").expect("codex-acp on PATH");
+        assert!(
+            path_is_under(Path::new(&resolved.resolved_path), &active),
+            "dual install: expected active prefix {:?}, got {}",
+            active,
+            resolved.resolved_path
+        );
     }
 }

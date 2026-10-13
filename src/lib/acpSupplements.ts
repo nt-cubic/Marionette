@@ -289,6 +289,43 @@ export function mapNumericEffortToOptionId(
   return options[Math.floor(options.length / 2)]?.id ?? options[0].id;
 }
 
+/**
+ * Decide whether Composer must (re)assert a model so the agent republishes
+ * model-dependent options such as Effort.
+ *
+ * OpenCode's `session/new` can already sit on e.g. `opencode-go/deepseek-v4.1-flash`
+ * while omitting the `effort` config option (same class of bug as
+ * anomalyco/opencode#31961 in Zed). Marionette used to skip `set_config` when
+ * the preferred model already matched `currentModel`, so Effort never appeared
+ * until the user switched away and back. Re-asserting the same model forces a
+ * full `configOptions` echo.
+ *
+ * Returns null when nothing needs to be sent.
+ */
+export function modelAssertForEffortRefresh(
+  caps: Pick<
+    CapabilitySnapshot,
+    "currentModel" | "effortConfigId" | "effortOptions"
+  >,
+  preferredModel?: string | null,
+): { model: string; reason: "switch" | "republish" } | null {
+  const pref = preferredModel?.trim() || null;
+  const current = caps.currentModel?.trim() || null;
+  const hasEffort =
+    Boolean(caps.effortConfigId) || (caps.effortOptions?.length ?? 0) > 0;
+
+  if (pref && pref !== current) {
+    return { model: pref, reason: "switch" };
+  }
+
+  const target = pref || current;
+  if (target && !hasEffort) {
+    return { model: target, reason: "republish" };
+  }
+
+  return null;
+}
+
 /** Expand a UI patch into one or more ACP set_config payloads to try. */
 export function expandAcpConfigAttempts(
   agentId: string,

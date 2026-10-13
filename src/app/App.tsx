@@ -113,7 +113,12 @@ import {
 } from "../lib/sessionHistory";
 import { formatPinsForSend } from "../lib/quoteComment";
 import { findLinkTargets } from "../lib/linkTargets";
-import { classifyAgentError, formatAcpRpcError, formatClassifiedError } from "../lib/errors";
+import {
+  classifyAgentError,
+  formatAcpRpcError,
+  formatClassifiedError,
+  isTurnInFlightError,
+} from "../lib/errors";
 import { prettyEffortLabel } from "../lib/modelLabel";
 import { getLastUsedDefaults } from "../lib/recentModels";
 import { pickRestoredSession, saveUiRestore, saveQueuedSends, loadQueuedSends, saveClosedTabs, loadClosedTabs } from "../lib/uiRestore";
@@ -192,6 +197,56 @@ function asIdleOnLoad(session: Session): Session {
  * an agent that honours it reacts within a second or two.
  */
 const CANCEL_ACK_GRACE_MS = 6_000;
+
+/**
+ * How long a `session/prompt` refused by the ACP concurrency gate waits for the
+ * occupying turn to end before retrying once. Generous on purpose: the turn in
+ * flight may be one the UI never saw start (a hidden slash replay), and giving
+ * up early is what produced the bogus "Agent 错误: a turn is already in flight".
+ */
+const TURN_SLOT_WAIT_MS = 120_000;
+
+/** Wake every send parked on `sessionId`'s turn slot (see `waitForTurnSlot`). */
+function releaseTurnSlotWaiters(
+  waiters: Map<string, Set<() => void>>,
+  sessionId: string
+) {
+  const list = waiters.get(sessionId);
+  if (!list?.size) return;
+  waiters.delete(sessionId);
+  for (const wake of list) wake();
+}
+
+/**
+ * Resolve once `sessionId` reports a turn boundary (`turn/complete` or process
+ * end), or `false` when `timeoutMs` passes first — a turn that never ends must
+ * not park the send forever.
+ */
+function waitForTurnSlot(
+  waiters: Map<string, Set<() => void>>,
+  sessionId: string,
+  timeoutMs: number
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const list = waiters.get(sessionId) ?? new Set<() => void>();
+    function finish(freed: boolean) {
+      if (settled) return;
+      settled = true;
+      list.delete(wake);
+      if (list.size === 0 && waiters.get(sessionId) === list) {
+        waiters.delete(sessionId);
+      }
+      resolve(freed);
+    }
+    function wake() {
+      finish(true);
+    }
+    list.add(wake);
+    waiters.set(sessionId, list);
+    setTimeout(() => finish(false), timeoutMs);
+  });
+}
 
 /**
  * True turn boundary (Codeg-aligned). Generic `rpc/response` is used for
@@ -450,6 +505,16 @@ export function App() {
     Record<string, import("../components/ComposerErrorStrip").SessionNoticeView>
   >({});
   const flushingSendRef = useRef<Set<string>>(new Set());
+  /**
+   * Sends parked on a session's single ACP turn slot — see
+   * `sendPromptWithTurnWait`. Woken by the acp-event listener on turn boundary.
+   */
+  const turnSlotWaitersRef = useRef<Map<string, Set<() => void>>>(new Map());
+  /**
+   * Sessions whose live turn is a silent prompt (`sendSilentPrompt`). Consumed
+   * on turn/complete so that turn's invisible end stays quiet.
+   */
+  const silentTurnRef = useRef<Set<string>>(new Set());
   /** Set each render so turn/complete can drain the queue without stale closures. */
   const drainQueuedSendRef = useRef<(sessionId: string) => void>(() => undefined);
   /**
@@ -1456,6 +1521,8 @@ export function App() {
           payload.method === "process/ended" ||
           payload.method === "process/stopped")
       ) {
+        // A send parked because the connection's turn slot was busy may go now.
+        releaseTurnSlotWaiters(turnSlotWaitersRef.current, payload.sessionId);
         turnEndedAtRef.current[payload.sessionId] = Date.now();
         cancelIgnoredRef.current.delete(payload.sessionId);
         // Keep suppressing late Thinking/Reply until a queued follow-up is
@@ -1820,7 +1887,10 @@ export function App() {
         // Desktop notify only for a real completed turn (was running, not cancel).
         // Clean completion follows OpenCode's 350ms idle-settle window so a
         // queued follow-up can cancel the intermediate completion alert.
-        if (wasRunning && stopReason !== "cancelled") {
+        // A silent turn (hidden `/always-approve` replay) completes with nothing
+        // on screen — chiming for it would be noise the user cannot explain.
+        const silentTurnEnded = silentTurnRef.current.delete(payload.sessionId);
+        if (wasRunning && stopReason !== "cancelled" && !silentTurnEnded) {
           const sess = sessionsRef.current.find((s) => s.id === payload.sessionId);
           const label = sess?.label?.trim() || "Session";
           const isDelegateChild = delegateMetaRef.current.has(payload.sessionId);
@@ -1887,6 +1957,7 @@ export function App() {
         // Drop queued follow-ups — the process cannot receive them anymore.
         pendingSendsRef.current.delete(payload.sessionId);
         flushingSendRef.current.delete(payload.sessionId);
+        silentTurnRef.current.delete(payload.sessionId);
         setQueuedStripTick((t) => t + 1);
         // Zombie Ask / Plan / Permission cards block the composer — clear for this session.
         setAskPrompt((cur) => (cur?.sessionId === payload.sessionId ? null : cur));
@@ -3515,6 +3586,40 @@ export function App() {
     void ensureAcpReady(sid).catch(() => undefined);
   }, [ensureAcpReady]);
 
+  /**
+   * Hidden turn: an agent-side slash replay (Grok `/always-approve`) still needs
+   * the connection's one turn slot. Marking the session `running` is the whole
+   * point — the composer's queue guard, the Working bar and the turn/complete
+   * bookkeeping all key off status. Without it the replay was invisible while
+   * `acp.rs` refused the user's next send as "already in flight".
+   *
+   * No user card / history injection / file snapshot: this is a preference sync,
+   * not something the user said.
+   */
+  const sendSilentPrompt = useCallback(
+    async (sessionId: string, text: string) => {
+      await ensureAcpReady(sessionId);
+      setSessionStatusById(sessionId, "running");
+      touchActivity(sessionId);
+      pushDebug({
+        sessionId,
+        level: "info",
+        source: "acp",
+        summary: `silent prompt: ${text}`,
+      });
+      try {
+        silentTurnRef.current.add(sessionId);
+        return await sendAcpPrompt(sessionId, text);
+      } catch (error) {
+        // Hand the slot back — nothing is running, so "Working" would lie.
+        silentTurnRef.current.delete(sessionId);
+        setSessionStatusById(sessionId, "waiting");
+        throw error;
+      }
+    },
+    [ensureAcpReady, pushDebug, setSessionStatusById, touchActivity]
+  );
+
   const closeSessionTab = (sessionId: string) => {
     lastClosedTabsRef.current = [
       sessionId,
@@ -5075,10 +5180,13 @@ export function App() {
     if (!composed.trim() && imageAttachments.length === 0) return;
 
     const projectId = displaySession.projectId || currentProjectId;
+    // Image attachments are inlined as ACP `ContentBlock::Image` (base64);
+    // the agent never reads those files from disk, so their folders must
+    // not trigger a workspace grant / session/new. DSH rejects a non-empty
+    // `additionalDirectories` list.
     const candidates = [
       ...new Set([
         ...droppedPaths,
-        ...imageAttachments.map((a) => a.path),
         ...findLinkTargets(composed)
           .filter((target) => target.kind === "path")
           .map((target) => target.raw),
@@ -5129,6 +5237,47 @@ export function App() {
     if (gitBranch) parts.push(`当前分支：\`${gitBranch}\``);
     parts.push("", "当前改动文件：", list);
     void handleSend(parts.join("\n"));
+  };
+
+  /**
+   * `session/prompt` can be refused by the ACP concurrency gate ("a turn is
+   * already in flight", `acp.rs::send_prompt`) when the connection's single turn
+   * slot is held by a turn this side never saw start — a hidden slash replay, or
+   * one whose `turn/complete` was missed. The user's card is already on screen,
+   * so wait for the boundary and retry the wire write once rather than painting
+   * an "Agent 错误" for something that is merely busy.
+   */
+  const sendPromptWithTurnWait = async (
+    sid: string,
+    text: string,
+    imagePaths: string[]
+  ) => {
+    try {
+      return await sendAcpPrompt(sid, text, imagePaths);
+    } catch (error) {
+      if (!isTurnInFlightError(error)) throw error;
+      pushDebug({
+        sessionId: sid,
+        level: "warn",
+        source: "composer",
+        summary: "session/prompt refused — another turn holds the slot",
+        detail: "waiting for the turn boundary, then retrying once",
+      });
+      const freed = await waitForTurnSlot(
+        turnSlotWaitersRef.current,
+        sid,
+        TURN_SLOT_WAIT_MS
+      );
+      pushDebug({
+        sessionId: sid,
+        level: freed ? "info" : "warn",
+        source: "composer",
+        summary: freed
+          ? "turn slot freed — retrying session/prompt"
+          : `turn still in flight after ${Math.round(TURN_SLOT_WAIT_MS / 1000)}s — retrying anyway`,
+      });
+      return await sendAcpPrompt(sid, text, imagePaths);
+    }
   };
 
   const performSend = async (
@@ -5406,7 +5555,7 @@ export function App() {
         ? null
         : await captureProjectFileSnapshot(projectId);
       if (fileSnapshot) fileChangeSnapshotsRef.current[sid] = fileSnapshot;
-      await sendAcpPrompt(sid, wireText, imagePaths);
+      await sendPromptWithTurnWait(sid, wireText, imagePaths);
       touchActivity(sid);
       pushDebug({
         sessionId: sid,
@@ -6116,6 +6265,7 @@ export function App() {
                 return false;
               }
             }}
+            onSilentPrompt={(text) => sendSilentPrompt(displaySession.id, text)}
           />
           )}
           </div>

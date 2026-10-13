@@ -10,6 +10,7 @@ export type AgentErrorKind =
   | "permission"
   | "limit"
   | "archived"
+  | "busy"
   | "generic";
 
 export type ClassifiedError = {
@@ -205,11 +206,38 @@ export function classifyAgentError(
     };
   }
 
+  if (isTurnInFlightError(raw)) {
+    return {
+      kind: "busy",
+      title: "上一条指令还没跑完",
+      message,
+      actionHint: "等这一轮结束会自动发送；也可点停止（Esc）中断当前回合后再发。",
+    };
+  }
+
   return {
     kind: "generic",
     title: "Agent 错误",
     message,
   };
+}
+
+/**
+ * Marionette's ACP concurrency gate refusing a second prompt on one connection
+ * (`acp.rs::send_prompt`: one prompt turn per connection). A *transient* state,
+ * not an agent failure — the caller should wait for `turn/complete` and retry
+ * (see `performSend` in App.tsx) instead of painting an "Agent 错误" card.
+ */
+export function isTurnInFlightError(raw: unknown): boolean {
+  const message =
+    typeof raw === "string"
+      ? raw
+      : raw instanceof Error
+        ? raw.message
+        : typeof (raw as { message?: unknown } | null)?.message === "string"
+          ? String((raw as { message: string }).message)
+          : "";
+  return /turn is already in flight/i.test(message);
 }
 
 export function formatClassifiedError(err: ClassifiedError): string {

@@ -49,6 +49,38 @@ pub fn ensure_project_layout(project_root: &Path) -> Result<PathBuf, String> {
     Ok(root)
 }
 
+/// Verify the global data dir accepts writes, and name what failed if not.
+///
+/// Existence proves nothing here: a process with restricted rights (a restricted
+/// token, or an image whose mandatory integrity label is Low) still reads the
+/// folder while every write is denied. Startup needs writes — instance lock, dev
+/// diary, session state — so probe one and report the real OS error, which is the
+/// only way a caller can tell "unusable folder" apart from "should be fine".
+pub fn ensure_global_dir_writable() -> Result<(), String> {
+    let dir = global_dir()?;
+    fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+
+    let probe = dir.join("write-probe.tmp");
+    fs::write(&probe, b"marionette").map_err(|e| format!("{}: {e}", probe.display()))?;
+    // Cleanup failure is not fatal — the write above is the part that matters.
+    let _ = fs::remove_file(&probe);
+    Ok(())
+}
+
+/// Drop the Windows verbatim (`\\?\`) prefix from a path string.
+///
+/// `fs::canonicalize` hands back verbatim paths, which our own file I/O accepts
+/// but other programs often do not. A Node agent runtime that takes the root of
+/// `\\?\D:\Projects\x` gets `D:` — a drive-relative path — and dies in
+/// `realpath` before the first turn. Verbatim UNC keeps its `\\server\share`
+/// spelling instead of turning into a relative path.
+pub fn plain_path(path: &str) -> String {
+    match path.strip_prefix(r"\\?\UNC\") {
+        Some(rest) => format!(r"\\{rest}"),
+        None => path.strip_prefix(r"\\?\").unwrap_or(path).to_string(),
+    }
+}
+
 /// Returns the current working directory of the process.
 pub fn current_dir() -> Result<String, String> {
     env::current_dir()
@@ -58,4 +90,25 @@ pub fn current_dir() -> Result<String, String> {
                 .map(|s| s.to_string())
                 .ok_or_else(|| "Current directory path is not valid UTF-8".to_string())
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::plain_path;
+
+    #[test]
+    fn plain_path_drops_the_verbatim_prefix() {
+        assert_eq!(plain_path(r"\\?\D:\Projects\x"), r"D:\Projects\x");
+        // Drive-relative spellings must keep their meaning: `D:` alone is not
+        // `D:\`, and an agent that derives it from a verbatim path dies.
+        assert_eq!(plain_path(r"\\?\D:"), r"D:");
+        assert_eq!(plain_path(r"\\?\D:\"), r"D:\");
+        assert_eq!(
+            plain_path(r"\\?\UNC\server\share\x"),
+            r"\\server\share\x"
+        );
+        // Already plain, or POSIX, is left alone.
+        assert_eq!(plain_path(r"D:\Projects\x"), r"D:\Projects\x");
+        assert_eq!(plain_path("/home/x"), "/home/x");
+    }
 }

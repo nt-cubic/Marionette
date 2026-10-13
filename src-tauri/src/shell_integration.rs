@@ -167,11 +167,11 @@ pub fn acquire_single_instance_or_handoff(open_path: Option<&str>) -> bool {
     }
 
     match try_acquire_instance_lock(&lock_path) {
-        Some(file) => {
+        Ok(file) => {
             let _ = INSTANCE_LOCK.set(file);
             true
         }
-        None => {
+        Err(err) if holds_another_instance(&err) => {
             // Another Marionette holds the lock — hand off and exit.
             if let Some(path) = open_path {
                 let _ = write_pending_open_path(path);
@@ -181,10 +181,34 @@ pub fn acquire_single_instance_or_handoff(open_path: Option<&str>) -> bool {
             focus_main_window();
             false
         }
+        Err(err) => {
+            // Not "someone else has it": this process could not open the lock at
+            // all (permissions, missing directory). Treating that as a handoff
+            // exits with no window and no log, so the app looks dead for a reason
+            // nobody can see. Start as primary and leave a trace instead.
+            crate::debug_log::append(
+                "shell",
+                "warn",
+                "",
+                "instance lock could not be opened — starting anyway",
+                Some(&format!("{}: {err}", lock_path.display())),
+            );
+            true
+        }
     }
 }
 
-fn try_acquire_instance_lock(path: &Path) -> Option<std::fs::File> {
+/// Only a sharing/lock violation means a second Marionette owns the lock.
+///
+/// `share_mode(0)` asks for exclusive access, so Windows answers
+/// `ERROR_SHARING_VIOLATION` (32) — or `ERROR_LOCK_VIOLATION` (33) for a byte
+/// range lock — while another process holds it. Every other error (access
+/// denied, path not found) describes this process, not a running instance.
+fn holds_another_instance(err: &std::io::Error) -> bool {
+    matches!(err.raw_os_error(), Some(32) | Some(33))
+}
+
+fn try_acquire_instance_lock(path: &Path) -> Result<std::fs::File, std::io::Error> {
     use std::fs::OpenOptions;
     #[cfg(windows)]
     {
@@ -196,7 +220,6 @@ fn try_acquire_instance_lock(path: &Path) -> Option<std::fs::File> {
             .read(true)
             .share_mode(0)
             .open(path)
-            .ok()
     }
     #[cfg(not(windows))]
     {
@@ -205,11 +228,7 @@ fn try_acquire_instance_lock(path: &Path) -> Option<std::fs::File> {
             // Stale lock from a crash — try remove if process is gone is hard; allow multi.
             let _ = fs::remove_file(path);
         }
-        OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(path)
-            .ok()
+        OpenOptions::new().create_new(true).write(true).open(path)
     }
 }
 
