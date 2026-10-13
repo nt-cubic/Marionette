@@ -135,6 +135,13 @@ type ComposerProps = {
       modeLabel?: string | null;
       modelId?: string | null;
       modelLabel?: string | null;
+      /**
+       * Effort as displayed. The parent persists these with the dialog so a
+       * selection that was inherited (never explicitly picked here) is not
+       * lost on restart — `preferredEffort` on disk may still be empty.
+       */
+      effortId?: string | null;
+      effort?: number | null;
       effortLabel?: string | null;
     },
   ) => void;
@@ -1022,6 +1029,20 @@ export function Composer({
     );
     if (!hasAny) {
       prefsRestoredKey.current = key;
+      // Nothing saved for this dialog: adopt the chips the user is looking at
+      // (agent cache / harness defaults) as its prefs. Without this a dialog
+      // whose model/effort were inherited never wrote them, so the next launch
+      // repainted the harness defaults over the selection ("it changes by
+      // itself when I click the dialog").
+      const adopted: SessionComposerPrefs = {};
+      if (caps.currentModel) adopted.preferredModel = caps.currentModel;
+      if (caps.currentMode) {
+        adopted.preferredMode = normalizeAgentModeId(agent.id, caps.currentMode);
+      }
+      if (caps.currentEffortId) adopted.preferredEffortId = caps.currentEffortId;
+      else if (caps.currentEffort != null) adopted.preferredEffort = caps.currentEffort;
+      else if (caps.thinkingEffort != null) adopted.preferredEffort = caps.thinkingEffort.default;
+      if (Object.keys(adopted).length > 0) persistPrefs(adopted);
       return;
     }
 
@@ -1188,6 +1209,20 @@ export function Composer({
       // Drop model/mode pins after the full restore sequence settles.
       unpinOption("model");
       unpinOption("mode");
+
+      // Wholly-unsaved dialog (e.g. OpenCode republished a model to surface the
+      // Effort menu): remember the settled live chips, or the next launch will
+      // have nothing to restore.
+      if (!cancelled && !prefModel && !prefMode && !prefEffortId && prefEffort == null) {
+        const adopted: SessionComposerPrefs = {};
+        if (live.currentModel) adopted.preferredModel = live.currentModel;
+        if (live.currentMode) {
+          adopted.preferredMode = normalizeAgentModeId(agent.id, live.currentMode);
+        }
+        if (live.currentEffortId) adopted.preferredEffortId = live.currentEffortId;
+        else if (live.currentEffort != null) adopted.preferredEffort = live.currentEffort;
+        if (Object.keys(adopted).length > 0) persistPrefs(adopted);
+      }
     })();
 
     return () => {
@@ -1287,6 +1322,8 @@ export function Composer({
           modeLabel,
           modelId,
           modelLabel,
+          effortId: currentEffortId,
+          effort: currentEffort,
           effortLabel: effortLabelVal,
         },
       );
