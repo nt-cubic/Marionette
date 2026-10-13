@@ -1,13 +1,17 @@
-//! ACP `elicitation/create` (form mode) — Codex Plan / request_user_input / MCP approvals.
+//! ACP `elicitation/create` (form mode) — Codex Plan / request_user_input / OpenCode questions.
 //!
-//! Wire semantics aligned with Codeg `acp/question.rs` (codex-acp + Grok-free path).
+//! Two wire shapes share this path:
+//! - Codex (Codeg): `mode` is an object `{ type: "form", requestedSchema, scope }`
+//! - ACP spec / OpenCode v2: `mode` is the string `"form"`, `requestedSchema` +
+//!   `toolCallId` sit on the request params themselves
+//!
 //! Pure `serde_json` — no sacp dependency. UI reuses permission + ask events.
 
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-const MAX_QUESTIONS: usize = 4;
-const MAX_OPTIONS: usize = 4;
+const MAX_QUESTIONS: usize = 8;
+const MAX_OPTIONS: usize = 16;
 const MAX_TEXT: usize = 4096;
 pub const DECLINE_OPTION_ID: &str = "decline";
 
@@ -15,6 +19,7 @@ pub const DECLINE_OPTION_ID: &str = "decline";
 pub struct ElicitationChoice {
     pub label: String,
     pub value: String,
+    pub description: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +37,8 @@ pub struct ElicitationField {
     pub kind: FieldKind,
     /// Display label → wire value (const).
     pub value_by_label: HashMap<String, String>,
+    /// OpenCode `{id}_custom` (or Codex `{id}_other`) free-text companion.
+    pub custom_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -84,7 +91,53 @@ fn is_mcp_tool_call_approval(raw: &Value) -> bool {
 }
 
 fn is_other_companion(id: &str) -> bool {
-    id.ends_with("__other") || id.ends_with("_other")
+    id.ends_with("__other") || id.ends_with("_other") || id.ends_with("_custom")
+}
+
+fn elicitation_mode_type(mode: &Value) -> &str {
+    if let Some(s) = mode.as_str() {
+        return s;
+    }
+    mode.get("type")
+        .or_else(|| mode.get("mode"))
+        .and_then(Value::as_str)
+        .unwrap_or("form")
+}
+
+/// ACP spec puts `requestedSchema` on params; Codex nests it under `mode`.
+fn requested_schema<'a>(mode: &'a Value, raw: &'a Value) -> Option<&'a Value> {
+    raw.get("requestedSchema")
+        .or_else(|| raw.get("requested_schema"))
+        .or_else(|| mode.get("requestedSchema"))
+        .or_else(|| mode.get("requested_schema"))
+}
+
+fn tool_call_id_of(mode: &Value, raw: &Value) -> Option<String> {
+    raw.get("toolCallId")
+        .or_else(|| raw.get("tool_call_id"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            mode.get("scope")
+                .and_then(|s| {
+                    s.get("toolCallId")
+                        .or_else(|| s.get("tool_call_id"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .filter(|s| !s.is_empty())
+        })
+}
+
+fn companion_id_for(id: &str, props: &Map<String, Value>) -> Option<String> {
+    for suffix in ["_custom", "__other", "_other"] {
+        let key = format!("{id}{suffix}");
+        if props.contains_key(&key) {
+            return Some(key);
+        }
+    }
+    None
 }
 
 /// Classify form elicitation params into permission-style or ask-style plan.
@@ -92,11 +145,7 @@ pub fn classify_elicitation(raw: &Value) -> Result<ElicitationPlan, String> {
     let mode = raw
         .get("mode")
         .ok_or_else(|| "elicitation missing mode".to_string())?;
-    let mode_type = mode
-        .get("type")
-        .or_else(|| mode.get("mode"))
-        .and_then(Value::as_str)
-        .unwrap_or("form");
+    let mode_type = elicitation_mode_type(mode);
     if mode_type != "form" {
         return Err(format!("elicitation mode {mode_type:?} not supported"));
     }
@@ -107,19 +156,12 @@ pub fn classify_elicitation(raw: &Value) -> Result<ElicitationPlan, String> {
         .map(|s| clip(s, MAX_TEXT))
         .unwrap_or_default();
 
-    let tool_call_id = mode
-        .get("scope")
-        .and_then(|s| {
-            s.get("toolCallId")
-                .or_else(|| s.get("tool_call_id"))
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
-        .filter(|s| !s.is_empty());
+    let tool_call_id = tool_call_id_of(mode, raw);
 
     if is_mcp_tool_call_approval(raw) {
         return Ok(ElicitationPlan::Approval(approval_from_form(
             mode,
+            raw,
             message,
             tool_call_id,
         )));
@@ -154,12 +196,11 @@ fn decline_option() -> ApprovalOption {
 
 fn approval_from_form(
     mode: &Value,
+    raw: &Value,
     message: String,
     tool_call_id: Option<String>,
 ) -> ElicitationApproval {
-    let props = mode
-        .get("requestedSchema")
-        .or_else(|| mode.get("requested_schema"))
+    let props = requested_schema(mode, raw)
         .and_then(|s| s.get("properties"))
         .and_then(Value::as_object);
 
@@ -211,54 +252,89 @@ fn approval_from_form(
     }
 }
 
-fn string_prop_choices(prop: &Value) -> Vec<ElicitationChoice> {
-    let mut out = Vec::new();
-    // oneOf: [{ const, title }]
-    if let Some(arr) = prop.get("oneOf").and_then(Value::as_array) {
-        for item in arr {
-            let value = item
-                .get("const")
+fn const_value(item: &Value) -> Option<String> {
+    item.get("const")
+        .and_then(|v| match v {
+            Value::String(s) => Some(s.clone()),
+            Value::Number(n) => Some(n.to_string()),
+            Value::Bool(b) => Some(b.to_string()),
+            _ => None,
+        })
+        .or_else(|| {
+            item.get("enum")
+                .and_then(Value::as_array)
+                .and_then(|a| a.first())
                 .and_then(|v| match v {
                     Value::String(s) => Some(s.clone()),
                     Value::Number(n) => Some(n.to_string()),
                     Value::Bool(b) => Some(b.to_string()),
                     _ => None,
                 })
-                .or_else(|| item.get("enum").and_then(Value::as_array).and_then(|a| a.first()).and_then(|v| v.as_str().map(str::to_string)))
-                .unwrap_or_default();
-            if value.is_empty() {
-                continue;
+        })
+        .filter(|s| !s.is_empty())
+}
+
+fn choices_from_union(arr: &[Value]) -> Vec<ElicitationChoice> {
+    let mut out = Vec::new();
+    for item in arr {
+        let Some(value) = const_value(item) else {
+            continue;
+        };
+        let label = item
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or(value.as_str())
+            .to_string();
+        let description = item
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        out.push(ElicitationChoice {
+            label,
+            value,
+            description,
+        });
+    }
+    out
+}
+
+fn string_prop_choices(prop: &Value) -> Vec<ElicitationChoice> {
+    // oneOf / anyOf: [{ const, title, description }]
+    // OpenCode multi-select uses items.anyOf; Codex uses oneOf.
+    for key in ["oneOf", "anyOf"] {
+        if let Some(arr) = prop.get(key).and_then(Value::as_array) {
+            let out = choices_from_union(arr);
+            if !out.is_empty() {
+                return out;
             }
-            let label = item
-                .get("title")
-                .and_then(Value::as_str)
-                .unwrap_or(value.as_str())
-                .to_string();
-            out.push(ElicitationChoice { label, value });
         }
     }
     // enum: ["a","b"] with optional enumNames
-    if out.is_empty() {
-        if let Some(arr) = prop.get("enum").and_then(Value::as_array) {
-            let names = prop
-                .get("enumNames")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            for (i, item) in arr.iter().enumerate() {
-                let value = match item {
-                    Value::String(s) => s.clone(),
-                    Value::Number(n) => n.to_string(),
-                    Value::Bool(b) => b.to_string(),
-                    _ => continue,
-                };
-                let label = names
-                    .get(i)
-                    .and_then(Value::as_str)
-                    .unwrap_or(value.as_str())
-                    .to_string();
-                out.push(ElicitationChoice { label, value });
-            }
+    let mut out = Vec::new();
+    if let Some(arr) = prop.get("enum").and_then(Value::as_array) {
+        let names = prop
+            .get("enumNames")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for (i, item) in arr.iter().enumerate() {
+            let value = match item {
+                Value::String(s) => s.clone(),
+                Value::Number(n) => n.to_string(),
+                Value::Bool(b) => b.to_string(),
+                _ => continue,
+            };
+            let label = names
+                .get(i)
+                .and_then(Value::as_str)
+                .unwrap_or(value.as_str())
+                .to_string();
+            out.push(ElicitationChoice {
+                label,
+                value,
+                description: String::new(),
+            });
         }
     }
     out
@@ -275,9 +351,7 @@ fn parse_form_questions(
     message: String,
     tool_call_id: Option<String>,
 ) -> ElicitationQuestions {
-    let props = mode
-        .get("requestedSchema")
-        .or_else(|| mode.get("requested_schema"))
+    let props = requested_schema(mode, raw)
         .and_then(|s| s.get("properties"))
         .and_then(Value::as_object)
         .cloned()
@@ -315,11 +389,7 @@ fn parse_form_questions(
         let (kind, multi_select, choices) = match prop_type.as_str() {
             "array" => {
                 let items = prop.get("items").cloned().unwrap_or(Value::Null);
-                (
-                    FieldKind::MultiSelect,
-                    true,
-                    multi_select_choices(&items),
-                )
+                (FieldKind::MultiSelect, true, multi_select_choices(&items))
             }
             "boolean" => (
                 FieldKind::Boolean,
@@ -328,10 +398,12 @@ fn parse_form_questions(
                     ElicitationChoice {
                         label: "Yes".into(),
                         value: "true".into(),
+                        description: String::new(),
                     },
                     ElicitationChoice {
                         label: "No".into(),
                         value: "false".into(),
+                        description: String::new(),
                     },
                 ],
             ),
@@ -362,15 +434,15 @@ fn parse_form_questions(
                 continue;
             }
             value_by_label.insert(label.clone(), c.value.clone());
-            options.push((label, String::new()));
+            options.push((label, clip(&c.description, MAX_TEXT)));
         }
 
         // Free-text only fields: still one question with empty options (Other path in UI).
         // If no options and not free-text-ish, still emit so user can type Other.
         let header = title
             .as_deref()
-            .map(|h| clip(h, 12))
-            .unwrap_or_else(|| clip(&question, 12));
+            .map(|h| clip(h, 32))
+            .unwrap_or_else(|| clip(&question, 32));
 
         let _is_secret = prop
             .get("_meta")
@@ -378,7 +450,6 @@ fn parse_form_questions(
             .and_then(|c| c.get("isSecret"))
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let _ = raw; // reserved for secret meta on raw path
 
         specs.push(QuestionSpec {
             id: id.clone(),
@@ -391,6 +462,7 @@ fn parse_form_questions(
             id: id.clone(),
             kind,
             value_by_label,
+            custom_id: companion_id_for(id, &props),
         });
     }
 
@@ -412,8 +484,8 @@ pub fn elicitation_cancel() -> Value {
 
 /// Build Accept response for approval-style elicitation (permission card).
 pub fn build_approval_response(approval: &ElicitationApproval, option_id: &str) -> Value {
-    let accepted = option_id != DECLINE_OPTION_ID
-        && approval.options.iter().any(|o| o.option_id == option_id);
+    let accepted =
+        option_id != DECLINE_OPTION_ID && approval.options.iter().any(|o| o.option_id == option_id);
     if !accepted {
         return elicitation_decline();
     }
@@ -427,7 +499,11 @@ pub fn build_approval_response(approval: &ElicitationApproval, option_id: &str) 
 }
 
 /// Build Accept response from UI ask answers `[{ question, selected: string[] }]`.
-pub fn build_questions_response(questions: &ElicitationQuestions, answers: &Value, declined: bool) -> Value {
+pub fn build_questions_response(
+    questions: &ElicitationQuestions,
+    answers: &Value,
+    declined: bool,
+) -> Value {
     if declined {
         return elicitation_decline();
     }
@@ -462,16 +538,20 @@ pub fn build_questions_response(questions: &ElicitationQuestions, answers: &Valu
             continue;
         };
         let field = &questions.fields[idx];
-        let mapped: Vec<String> = selected
-            .iter()
-            .map(|l| {
-                field
-                    .value_by_label
-                    .get(l)
-                    .cloned()
-                    .unwrap_or_else(|| l.clone())
-            })
-            .collect();
+        let mut known = Vec::new();
+        let mut custom_parts = Vec::new();
+        for label in &selected {
+            if let Some(v) = field.value_by_label.get(label) {
+                known.push(v.clone());
+            } else if !label.trim().is_empty() {
+                custom_parts.push(label.clone());
+            }
+        }
+        let mapped = if known.is_empty() {
+            custom_parts.clone()
+        } else {
+            known
+        };
 
         let value = match field.kind {
             FieldKind::Text => mapped.into_iter().next().map(Value::String),
@@ -491,6 +571,12 @@ pub fn build_questions_response(questions: &ElicitationQuestions, answers: &Valu
         };
         if let Some(v) = value {
             content.insert(field.id.clone(), v);
+        }
+        if let Some(cid) = &field.custom_id {
+            let custom = custom_parts.join(", ");
+            if !custom.trim().is_empty() {
+                content.insert(cid.clone(), Value::String(custom));
+            }
         }
     }
 
@@ -557,7 +643,11 @@ pub fn questions_to_stored(q: &ElicitationQuestions) -> Value {
         .fields
         .iter()
         .map(|f| {
-            let map: BTreeMap<String, String> = f.value_by_label.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            let map: BTreeMap<String, String> = f
+                .value_by_label
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
             json!({
                 "id": f.id,
                 "kind": match f.kind {
@@ -568,6 +658,7 @@ pub fn questions_to_stored(q: &ElicitationQuestions) -> Value {
                     FieldKind::Integer => "integer",
                 },
                 "valueByLabel": map,
+                "customId": f.custom_id,
             })
         })
         .collect();
@@ -651,6 +742,12 @@ pub fn questions_from_stored(v: &Value) -> Option<ElicitationQuestions> {
             id: f.get("id")?.as_str()?.to_string(),
             kind,
             value_by_label,
+            custom_id: f
+                .get("customId")
+                .or_else(|| f.get("custom_id"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .filter(|s| !s.is_empty()),
         });
     }
     Some(ElicitationQuestions {
@@ -806,5 +903,135 @@ mod tests {
             }
             _ => panic!("expected approval"),
         }
+    }
+
+    /// OpenCode v2 question tool: ACP spec shape (`mode: "form"` string,
+    /// `requestedSchema` on params, `{id}_custom` companion).
+    #[test]
+    fn opencode_question_form_becomes_ask_card() {
+        let raw = json!({
+            "mode": "form",
+            "sessionId": "ses_abc",
+            "toolCallId": "call_question_1",
+            "message": "Questions",
+            "requestedSchema": {
+                "type": "object",
+                "properties": {
+                    "q0": {
+                        "type": "string",
+                        "title": "编辑器卡死，怎么恢复",
+                        "description": "编辑器卡住了。要不要我直接结束 Unity 进程？",
+                        "oneOf": [
+                            {
+                                "const": "你来重启（推荐）",
+                                "title": "你来重启（推荐）",
+                                "description": "我 kill 掉卡住的 Unity 进程"
+                            },
+                            {
+                                "const": "先别动，我自己重启",
+                                "title": "先别动，我自己重启",
+                                "description": "你自己在任务管理器结束 Unity"
+                            }
+                        ]
+                    },
+                    "q0_custom": {
+                        "type": "string",
+                        "title": "编辑器卡死，怎么恢复 (other)",
+                        "description": "Type your own answer"
+                    }
+                },
+                "required": []
+            }
+        });
+        let plan = classify_elicitation(&raw).unwrap();
+        match plan {
+            ElicitationPlan::Questions(q) => {
+                assert_eq!(
+                    q.specs.len(),
+                    1,
+                    "custom companion must not be a second question"
+                );
+                assert_eq!(q.tool_call_id.as_deref(), Some("call_question_1"));
+                assert_eq!(q.specs[0].header, "编辑器卡死，怎么恢复");
+                assert!(q.specs[0].question.contains("结束 Unity"));
+                assert_eq!(q.specs[0].options.len(), 2);
+                assert_eq!(q.specs[0].options[0].1, "我 kill 掉卡住的 Unity 进程");
+                assert_eq!(q.fields[0].custom_id.as_deref(), Some("q0_custom"));
+
+                let picked = build_questions_response(
+                    &q,
+                    &json!([{
+                        "question": q.specs[0].question,
+                        "selected": ["你来重启（推荐）"]
+                    }]),
+                    false,
+                );
+                assert_eq!(picked["action"], "accept");
+                assert_eq!(picked["content"]["q0"], "你来重启（推荐）");
+                assert!(picked["content"].get("q0_custom").is_none());
+
+                let typed = build_questions_response(
+                    &q,
+                    &json!([{
+                        "question": q.specs[0].question,
+                        "selected": ["先等等，我自己看一眼"]
+                    }]),
+                    false,
+                );
+                assert_eq!(typed["action"], "accept");
+                assert_eq!(typed["content"]["q0"], "先等等，我自己看一眼");
+                assert_eq!(typed["content"]["q0_custom"], "先等等，我自己看一眼");
+            }
+            other => panic!("expected questions, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn opencode_multiselect_any_of_items() {
+        let raw = json!({
+            "mode": "form",
+            "message": "Questions",
+            "requestedSchema": {
+                "type": "object",
+                "properties": {
+                    "q0": {
+                        "type": "array",
+                        "title": "Pick files",
+                        "description": "Which files should I touch?",
+                        "items": {
+                            "anyOf": [
+                                { "const": "a.rs", "title": "a.rs" },
+                                { "const": "b.rs", "title": "b.rs" }
+                            ]
+                        }
+                    }
+                }
+            }
+        });
+        let plan = classify_elicitation(&raw).unwrap();
+        match plan {
+            ElicitationPlan::Questions(q) => {
+                assert!(q.specs[0].multi_select);
+                assert_eq!(q.specs[0].options.len(), 2);
+                let resp = build_questions_response(
+                    &q,
+                    &json!([{ "question": "Which files should I touch?", "selected": ["a.rs", "b.rs"] }]),
+                    false,
+                );
+                assert_eq!(resp["content"]["q0"], json!(["a.rs", "b.rs"]));
+            }
+            other => panic!("expected questions, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn url_mode_is_rejected() {
+        let raw = json!({
+            "mode": "url",
+            "message": "Open this",
+            "url": "https://example.com"
+        });
+        let err = classify_elicitation(&raw).unwrap_err();
+        assert!(err.contains("url"));
     }
 }
