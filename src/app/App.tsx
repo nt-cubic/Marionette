@@ -120,7 +120,7 @@ import { pickRestoredSession, saveUiRestore, saveQueuedSends, loadQueuedSends, s
 import { canPark, shouldAutoSuspend } from "../lib/sessionSuspend";
 import { forkCopyEvents, forkCutIndex } from "../lib/sessionFork";
 import { AskQuestionCard, type AskQuestionPrompt } from "../components/AskQuestionCard";
-import { Composer } from "../components/Composer";
+import { Composer, transferEmptyDraft } from "../components/Composer";
 import { ComposerErrorStrip, SessionNoticeStrip } from "../components/ComposerErrorStrip";
 import { parseLiveNotice } from "../lib/acpMeta";
 import { ContextPanel } from "../components/ContextPanel";
@@ -284,14 +284,18 @@ export function App() {
   const [availableAgents, setAvailableAgents] = useState(agents);
   const [availableSessions, setAvailableSessions] = useState<Session[]>(sessions);
   const [currentProjectId, setCurrentProjectId] = useState(projects[0]?.id ?? "");
-  const [currentSessionId, setCurrentSessionId] = useState(sessions[0]?.id ?? "");
-  const [openSessionIds, setOpenSessionIds] = useState<string[]>([sessions[0]?.id ?? ""]);
+  const [currentSessionId, setCurrentSessionId] = useState("");
+  const [openSessionIds, setOpenSessionIds] = useState<string[]>([]);
   /** Project opened via Explorer "在此处打开" / --open-path — pinned at shelf top. */
   const [openHereProjectId, setOpenHereProjectId] = useState<string | null>(null);
   /** Default folder for the Chat section (from --open-path or CWD). */
   const [defaultFolderPath, setDefaultFolderPath] = useState<string>("");
   /** Chat rows created before the initial async storage restore completed. */
   const startupCreatedChatsRef = useRef<Session[]>([]);
+  /** Dedup Chat creates from empty-composer click / send / agent chip. */
+  const createChatInFlightRef = useRef<Promise<Session | undefined> | null>(null);
+  /** Focus the composer after creating a Chat from the empty workspace. */
+  const [composerAutoFocus, setComposerAutoFocus] = useState(false);
   /** Manual rename wins over any later title emitted by an agent. */
   const manuallyRenamedSessionIdsRef = useRef<Set<string>>(new Set());
   /** Ignore stale filesystem-search responses when the user keeps typing. */
@@ -1147,6 +1151,7 @@ export function App() {
         } else {
           setCurrentSessionId("");
           setOpenSessionIds([]);
+          setCurrentProjectId(CHAT_PROJECT_ID);
         }
       }
 
@@ -1177,6 +1182,13 @@ export function App() {
       openSessionIds,
     });
   }, [currentSessionId, currentProjectId, openSessionIds]);
+
+  useEffect(() => {
+    if (!composerAutoFocus) return;
+    if (!currentSessionId || currentSessionId.startsWith("session-empty-")) return;
+    const id = window.requestAnimationFrame(() => setComposerAutoFocus(false));
+    return () => window.cancelAnimationFrame(id);
+  }, [composerAutoFocus, currentSessionId]);
 
   // Reap aged hidden detached windows (about:blank) — never blanks recent closes.
   useEffect(() => {
@@ -3110,7 +3122,7 @@ export function App() {
   const currentSession = useMemo(
     () =>
       availableSessions.find((session) => session.id === currentSessionId) ??
-      projectSessions[0],
+      (currentSessionId ? projectSessions[0] : undefined),
     [availableSessions, currentSessionId, projectSessions]
   );
 
@@ -3319,50 +3331,63 @@ export function App() {
   }, []);
 
   /** Create a new Chat session in the current/default working folder. */
-  const handleCreateChatSession = useCallback(async () => {
+  const handleCreateChatSession = useCallback(async (agentId?: string) => {
+    if (createChatInFlightRef.current) return createChatInFlightRef.current;
+    const work = (async (): Promise<Session | undefined> => {
+      try {
+        const resolvedAgentId =
+          agentId ?? availableAgents[0]?.id ?? agents[0].id;
+        const cwd = defaultFolderPath || (await getDefaultFolder());
+        const session = await createChatSession(resolvedAgentId, "新对话", cwd || null);
+        if (!session) return undefined;
+        if (!defaultFolderPath && session.cwd) {
+          setDefaultFolderPath(session.cwd);
+        }
+        const last = getLastUsedDefaults(resolvedAgentId);
+        let sessionWithPrefs = session;
+        if (last) {
+          sessionWithPrefs = {
+            ...session,
+            preferredModel: last.modelId,
+            preferredMode: last.modeId,
+            preferredEffort: last.effort,
+            preferredEffortId: last.effortId,
+            preferredAlwaysApprove: last.alwaysApprove,
+          };
+          void updateSessionPrefs(session.id, {
+            preferredModel: sessionWithPrefs.preferredModel,
+            preferredMode: sessionWithPrefs.preferredMode,
+            preferredEffort: sessionWithPrefs.preferredEffort,
+            preferredEffortId: sessionWithPrefs.preferredEffortId,
+            preferredAlwaysApprove: sessionWithPrefs.preferredAlwaysApprove,
+          }).catch(() => undefined);
+        }
+        transferEmptyDraft(sessionWithPrefs.id);
+        startupCreatedChatsRef.current = [
+          sessionWithPrefs,
+          ...startupCreatedChatsRef.current.filter((item) => item.id !== sessionWithPrefs.id),
+        ];
+        setAvailableSessions((current) => [
+          sessionWithPrefs,
+          ...current.filter((item) => item.id !== sessionWithPrefs.id),
+        ]);
+        openSessionRef.current(sessionWithPrefs);
+        return sessionWithPrefs;
+      } catch (error) {
+        pushDebug({
+          level: "error",
+          source: "chat",
+          summary: "create chat failed",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+        return undefined;
+      }
+    })();
+    createChatInFlightRef.current = work;
     try {
-      const agentId = availableAgents[0]?.id ?? agents[0].id;
-      const cwd = defaultFolderPath || (await getDefaultFolder());
-      const session = await createChatSession(agentId, "新对话", cwd || null);
-      if (!session) return;
-      if (!defaultFolderPath && session.cwd) {
-        setDefaultFolderPath(session.cwd);
-      }
-      const last = getLastUsedDefaults(agentId);
-      let sessionWithPrefs = session;
-      if (last) {
-        sessionWithPrefs = {
-          ...session,
-          preferredModel: last.modelId,
-          preferredMode: last.modeId,
-          preferredEffort: last.effort,
-          preferredEffortId: last.effortId,
-          preferredAlwaysApprove: last.alwaysApprove,
-        };
-        void updateSessionPrefs(session.id, {
-          preferredModel: sessionWithPrefs.preferredModel,
-          preferredMode: sessionWithPrefs.preferredMode,
-          preferredEffort: sessionWithPrefs.preferredEffort,
-          preferredEffortId: sessionWithPrefs.preferredEffortId,
-          preferredAlwaysApprove: sessionWithPrefs.preferredAlwaysApprove,
-        }).catch(() => undefined);
-      }
-      startupCreatedChatsRef.current = [
-        sessionWithPrefs,
-        ...startupCreatedChatsRef.current.filter((item) => item.id !== sessionWithPrefs.id),
-      ];
-      setAvailableSessions((current) => [
-        sessionWithPrefs,
-        ...current.filter((item) => item.id !== sessionWithPrefs.id),
-      ]);
-      openSessionRef.current(sessionWithPrefs);
-    } catch (error) {
-      pushDebug({
-        level: "error",
-        source: "chat",
-        summary: "create chat failed",
-        detail: error instanceof Error ? error.message : String(error),
-      });
+      return await work;
+    } finally {
+      createChatInFlightRef.current = null;
     }
   }, [availableAgents, defaultFolderPath, pushDebug]);
 
@@ -3974,14 +3999,13 @@ export function App() {
   );
 
   const handleAgentChange = async (agentId: string) => {
-    if (!currentProject && !currentSession) return;
-
     // If no current session, create one bound to this agent
-    if (!currentSession || !currentSessionId) {
+    if (!currentSession || !currentSessionId || currentSessionId.startsWith("session-empty-")) {
       if (currentProject) {
         void createSessionForProject(currentProject.id, agentId);
       } else {
-        void handleCreateChatSession();
+        setComposerAutoFocus(true);
+        void handleCreateChatSession(agentId);
       }
       return;
     }
@@ -5013,8 +5037,13 @@ export function App() {
       effortLabel?: string | null;
     },
   ) => {
-    if (!currentSessionId) return;
-    const sid = currentSessionId;
+    let sid = currentSessionId;
+    if (!sid || sid.startsWith("session-empty-")) {
+      setComposerAutoFocus(true);
+      const created = await handleCreateChatSession(displaySession.agentId);
+      if (!created) return;
+      sid = created.id;
+    }
 
     // @-delegate: line-start @agent task — does not block the parent dialog.
     // Images on a delegate line are ignored for now (depth=1, simple task text).
@@ -5756,7 +5785,7 @@ export function App() {
             onTabSelect={openSession}
             onTabClose={closeSessionTab}
             onNewTab={() => {
-              if (displaySession.projectId === CHAT_PROJECT_ID) {
+              if (!currentSession || displaySession.projectId === CHAT_PROJECT_ID) {
                 void handleCreateChatSession();
               } else {
                 void createSessionForProject(currentProject?.id ?? "");
@@ -5834,7 +5863,7 @@ export function App() {
             onTabSelect={openSession}
             onTabClose={closeSessionTab}
             onNewTab={() => {
-              if (displaySession.projectId === CHAT_PROJECT_ID) {
+              if (!currentSession || displaySession.projectId === CHAT_PROJECT_ID) {
                 void handleCreateChatSession();
               } else {
                 void createSessionForProject(currentProject?.id ?? "");
@@ -5985,6 +6014,13 @@ export function App() {
             currentAgentId={displaySession.agentId}
             sessionId={displaySession.id}
             sessionStatus={displaySession.status}
+            autoFocus={composerAutoFocus}
+            onEmptyActivate={() => {
+              if (displaySession.id.startsWith("session-empty-") || !currentSessionId) {
+                setComposerAutoFocus(true);
+                void handleCreateChatSession(displaySession.agentId);
+              }
+            }}
             lastActivityAt={lastActivityById[displaySession.id] ?? null}
             onProviderKeysChanged={handleProviderKeysChanged}
             onAgentBinaryUpdated={handleAgentBinaryUpdated}

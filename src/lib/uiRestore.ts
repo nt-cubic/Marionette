@@ -2,6 +2,7 @@ import type { Session } from "./types";
 
 const STORAGE_KEY = "marionette-ui-restore";
 const SHELF_COLLAPSE_KEY = "marionette-project-shelf-collapsed";
+const DETAILS_VISIBLE_KEY = "marionette-details-visible";
 
 /** Last focused dialog + open tabs — restored on cold start. */
 export type UiRestoreSnapshot = {
@@ -33,6 +34,28 @@ export function saveCollapsedProjectIds(ids: Set<string> | Iterable<string>): vo
   try {
     const list = [...ids].filter((id) => id.trim() !== "");
     window.localStorage.setItem(SHELF_COLLAPSE_KEY, JSON.stringify(list));
+  } catch {
+    // localStorage might be disabled or full
+  }
+}
+
+/**
+ * Clean View eye: closed = quiet folds (product default). Missing key is
+ * closed so a first launch / cleared storage stays quiet. Open is remembered.
+ */
+export function loadDetailsVisible(): boolean {
+  try {
+    const raw = window.localStorage.getItem(DETAILS_VISIBLE_KEY);
+    if (raw == null) return false;
+    return raw === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function saveDetailsVisible(visible: boolean): void {
+  try {
+    window.localStorage.setItem(DETAILS_VISIBLE_KEY, visible ? "1" : "0");
   } catch {
     // localStorage might be disabled or full
   }
@@ -159,7 +182,8 @@ export function loadUiRestore(): UiRestoreSnapshot | null {
 
 /**
  * Choose the session to focus after loading all project sessions.
- * Priority: detached URL → last UI focus → newest lastActiveAt on disk.
+ * Priority: detached URL → last UI focus. No snapshot (first launch /
+ * cleared storage / stale ids) leaves the workspace empty.
  */
 export function pickRestoredSession(
   loaded: Session[],
@@ -185,14 +209,12 @@ export function pickRestoredSession(
         openSessionIds: open.length > 0 ? open : [session.id],
       };
     }
+    const open = saved.openSessionIds.filter((id) => byId.has(id));
+    if (open.length > 0) {
+      const fallback = byId.get(open[0]);
+      if (fallback) return { session: fallback, openSessionIds: open };
+    }
   }
 
-  // Fallback: most recently touched session on disk (prefs / agent / send update lastActiveAt).
-  const sorted = [...loaded].sort((a, b) => {
-    const tb = Date.parse(b.lastActiveAt) || 0;
-    const ta = Date.parse(a.lastActiveAt) || 0;
-    return tb - ta;
-  });
-  const session = sorted[0];
-  return { session, openSessionIds: [session.id] };
+  return null;
 }
