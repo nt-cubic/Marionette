@@ -41,6 +41,7 @@ import {
 } from "../lib/turnActivity";
 import { useVirtualWindow } from "../lib/useVirtualWindow";
 import { isCursorOverWindow, setMergeHighlight } from "../lib/detachedWindow";
+import { loadDetailsVisible, saveDetailsVisible } from "../lib/uiRestore";
 import type { AgentConfig, Session, SessionEvent, SessionStatus, SessionViewMode } from "../lib/types";
 import { ActivityKindGroup, ActivityPanel } from "./ActivityPanel";
 import { ClippedBody } from "./ClippedBody";
@@ -516,7 +517,11 @@ export function SessionView({
 }: SessionViewProps) {
   // Eye open: each thought/tool is its own card. Eye closed: consecutive
   // thought+tool runs collapse into nested activity folds (not hidden).
-  const [detailsVisible, setDetailsVisible] = useState(true);
+  // Default is closed (quiet). Open is remembered across launches.
+  const [detailsVisible, setDetailsVisible] = useState(() => loadDetailsVisible());
+  useEffect(() => {
+    saveDetailsVisible(detailsVisible);
+  }, [detailsVisible]);
   const [expandedChildId, setExpandedChildId] = useState<string | null>(null);
 
   /** childSessionId → result event (latest wins). */

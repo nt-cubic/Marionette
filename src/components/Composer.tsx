@@ -166,6 +166,13 @@ type ComposerProps = {
    * when null/empty (see `resolveSlashCommands`).
    */
   availableCommands?: AvailableCommand[] | null;
+  /** Focus the textarea on mount (after creating a Chat from an empty workspace). */
+  autoFocus?: boolean;
+  /**
+   * Empty workspace: interacting with the composer should create a Chat.
+   * Parent dedupes in-flight creates.
+   */
+  onEmptyActivate?: () => void;
 };
 
 /**
@@ -385,14 +392,27 @@ function applyPinnedDisplay(
 const draftBySessionId = new Map<string, string>();
 
 function readDraftCache(sessionId: string): string {
-  if (!sessionId || sessionId.startsWith("session-empty-")) return "";
+  if (!sessionId) return "";
   return draftBySessionId.get(sessionId) ?? "";
 }
 
 function writeDraftCache(sessionId: string, text: string) {
-  if (!sessionId || sessionId.startsWith("session-empty-")) return;
+  if (!sessionId) return;
   if (text) draftBySessionId.set(sessionId, text);
   else draftBySessionId.delete(sessionId);
+}
+
+/** Carry unsent text from the empty placeholder composer onto a new Chat. */
+export function transferEmptyDraft(toSessionId: string): void {
+  if (!toSessionId || toSessionId.startsWith("session-empty-")) return;
+  let text = "";
+  for (const [key, value] of draftBySessionId) {
+    if (key.startsWith("session-empty-") && value) text = value;
+  }
+  for (const key of [...draftBySessionId.keys()]) {
+    if (key.startsWith("session-empty-")) draftBySessionId.delete(key);
+  }
+  if (text) draftBySessionId.set(toSessionId, text);
 }
 
 export function Composer({
@@ -418,6 +438,8 @@ export function Composer({
   onAgentBinaryUpdated,
   onAgentsReload,
   availableCommands = null,
+  autoFocus = false,
+  onEmptyActivate,
 }: ComposerProps) {
   /**
    * Offline-first controls: the last catalog this agent advertised, with this
@@ -577,6 +599,17 @@ export function Composer({
   useEffect(() => {
     writeDraftCache(sessionId, draft);
   }, [sessionId, draft]);
+
+  const isEmptySession = !sessionId || sessionId.startsWith("session-empty-");
+  const activateEmpty = useCallback(() => {
+    if (!isEmptySession) return;
+    onEmptyActivate?.();
+  }, [isEmptySession, onEmptyActivate]);
+
+  useEffect(() => {
+    if (!autoFocus) return;
+    textareaRef.current?.focus();
+  }, [autoFocus]);
 
   // Handoff / external prefill — never auto-send.
   useEffect(() => {
@@ -1179,7 +1212,7 @@ export function Composer({
     (text: string) => {
       // Busy turns barge in via App (cancel the live prompt, then send).
       // Empty draft while busy still uses the Stop button / Esc×2 for interrupt.
-      if (!sessionId || sessionId.startsWith("session-empty-")) return;
+      if (!sessionId) return;
       // Allow send with only images / empty text when attachments exist.
       if (!text.trim() && imageAttachments.length === 0) return;
       onWarmAgent?.();
@@ -1210,7 +1243,9 @@ export function Composer({
             ? effortLabel(currentEffort)
             : null;
 
-      // Keep draft text clean for the You card.
+      // Keep draft text clean for the You card. Flush the cache now so an
+      // in-flight empty→Chat create cannot resurrect the sent text.
+      writeDraftCache(sessionId, "");
       onSend(
         text,
         droppedInText,
@@ -1982,6 +2017,7 @@ export function Composer({
       data-mode-tone={tone}
       style={{ height: composerHeight }}
       aria-label="Composer"
+      onPointerDown={activateEmpty}
     >
       {/* Drag handle: top edge — free height between MIN/MAX, remembered. */}
       <button
@@ -2151,6 +2187,7 @@ export function Composer({
         <textarea
           ref={textareaRef}
           aria-label="Prompt composer"
+          autoFocus={autoFocus}
           placeholder={
             isWarming && !composingRef.current
               ? "Agent connecting in background… keep typing"
@@ -2161,6 +2198,7 @@ export function Composer({
           rows={isTall ? 10 : 2}
           value={draft}
           onFocus={() => {
+            activateEmpty();
             warmedThisFocusRef.current = false;
             // Warm after focus settles — not on every keystroke.
             warmIfNeeded();
