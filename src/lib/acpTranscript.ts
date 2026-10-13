@@ -1,13 +1,15 @@
 import type { SessionEvent } from "./types";
 import {
-  claudeParentToolUseId,
   extractAgentTranscript,
+  nestedSubagentParentId,
+  opencodeChildSession,
+  opencodeChildToolStatus,
   parseCodexGoalUpdate,
   parseCompactionUpdate,
   parseLiveNotice,
 } from "./acpMeta";
 import { ansiToPlainText } from "./ansi";
-import { isToolInProgress } from "./activityHealth";
+import { isSubagentTool, isToolInProgress } from "./activityHealth";
 import { stripSectionMarkers } from "./markdownText";
 import { looksLikeUnifiedDiff } from "./toolBody";
 import { stripFileUri } from "./imageAttachments";
@@ -34,8 +36,8 @@ export type AcpTextPart = {
   /** File / http(s) srcs from ACP image content blocks (no data-URLs). */
   toolImages?: string[];
   /**
-   * Claude subagent-transcript: stream this chunk into the parent Agent tool card
-   * instead of the main assistant/thought rail (Codeg parentToolUseId).
+   * Nested subagent stream: Claude parentToolUseId or OpenCode child session id.
+   * Applied onto the parent Task/Agent tool card, not the main Reply rail.
    */
   parentToolCallId?: string;
   /** Append toolDetail instead of replace (subagent stream). */
@@ -516,6 +518,35 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
     return null;
   }
 
+  // OpenCode v2 child_update status (created/running/completed/…) — no inner
+  // sessionUpdate. Open a / settle the nested Task card; never a Reply.
+  const childStatus = opencodeChildToolStatus(
+    typeof update.status === "string" ? update.status : sessionUpdate,
+  );
+  if (
+    childStatus &&
+    !sessionUpdate.includes("tool") &&
+    !sessionUpdate.includes("chunk") &&
+    !sessionUpdate.includes("message") &&
+    !sessionUpdate.includes("thought")
+  ) {
+    const child = opencodeChildSession(update);
+    if (child) {
+      const title = child.title || "Subagent";
+      return {
+        role: "tool",
+        text: title,
+        isDelta: false,
+        sessionUpdate,
+        messageId,
+        toolCallId: child.id,
+        toolStatus: childStatus,
+        toolTitle: title,
+        toolName: "task",
+      };
+    }
+  }
+
   // Dedicated compaction updates (not nested under session_info_update).
   if (/compact/i.test(sessionUpdate)) {
     const compaction = parseCompactionUpdate(update);
@@ -630,9 +661,11 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
 
   if (!textFromContent) return null;
 
-  // Claude subagent-transcript: parented chunks → Agent tool card stream (not main rail).
-  const parentToolCallId = claudeParentToolUseId(update);
+  // Nested subagent stream (Claude parentToolUseId / OpenCode child-session):
+  // parented chunks → Task/Agent tool card, never the main Reply/Thought rail.
+  const parentToolCallId = nestedSubagentParentId(update);
   if (parentToolCallId) {
+    const child = opencodeChildSession(update);
     return {
       role: "tool",
       text: textFromContent,
@@ -642,8 +675,9 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
       toolCallId: parentToolCallId,
       toolDetail: textFromContent,
       toolDetailAppend: true,
-      toolTitle: "Agent",
-      toolName: "agent",
+      toolStatus: "in_progress",
+      toolTitle: child?.title || "Agent",
+      toolName: child ? "task" : "agent",
     };
   }
 
@@ -992,6 +1026,35 @@ export function toolCallEvent(
   };
 }
 
+/**
+ * Map an OpenCode child-session stream onto an existing Task/Agent card.
+ * Exact toolCallId is tried first by the caller. Then: a subagent tool whose
+ * input/detail mentions the child id, else the only in-progress subagent in
+ * this turn (safe for one Task; parallel Tasks keep separate child cards).
+ */
+function findNestedSubagentCard(
+  events: SessionEvent[],
+  sessionId: string,
+  childId: string,
+): number {
+  let lastUser = -1;
+  for (let i = 0; i < events.length; i += 1) {
+    if (events[i].sessionId === sessionId && events[i].type === "user_message") lastUser = i;
+  }
+  const candidates: number[] = [];
+  for (let i = lastUser + 1; i < events.length; i += 1) {
+    const e = events[i];
+    if (e.sessionId !== sessionId || e.type !== "tool_call") continue;
+    if (!isToolInProgress(e.status)) continue;
+    if (!isSubagentTool(e.toolName, e.title)) continue;
+    const hay = `${e.input ?? ""}\n${e.detail ?? ""}\n${e.toolCallId ?? ""}`;
+    if (childId && hay.includes(childId)) return i;
+    candidates.push(i);
+  }
+  if (candidates.length === 1) return candidates[0];
+  return -1;
+}
+
 function sameStreamTarget(
   last: SessionEvent,
   sessionId: string,
@@ -1238,9 +1301,14 @@ export function applyAcpPartToEvents(
     const base = current;
 
     if (part.toolCallId) {
-      const idx = base.findIndex(
+      let idx = base.findIndex(
         (e) => e.type === "tool_call" && e.sessionId === sessionId && e.toolCallId === part.toolCallId,
       );
+      // OpenCode child streams use the child session id, not the parent Task
+      // toolCallId. Attach to the in-progress Task when we can tell them apart.
+      if (idx < 0 && part.toolDetailAppend) {
+        idx = findNestedSubagentCard(base, sessionId, part.toolCallId);
+      }
       if (idx >= 0) {
         const prev = base[idx];
         if (prev.type !== "tool_call") return base;
@@ -1249,7 +1317,9 @@ export function applyAcpPartToEvents(
         if (part.toolDetail) {
           const plainDetail = ansiToPlainText(part.toolDetail);
           if (part.toolDetailAppend && prev.detail) {
-            detail = `${prev.detail}\n${plainDetail}`;
+            // Token deltas must concatenate like Reply — a newline per chunk
+            // turns OpenCode child streams into one character per line.
+            detail = mergeStreamText(prev.detail, plainDetail, true);
             // Cap nested stream so a long subagent cannot blow the transcript.
             if (detail.length > 8000) detail = `…${detail.slice(-8000)}`;
           } else if (prev.detail && keepsPriorDiff(prev.detail, plainDetail, part.toolStatus)) {
@@ -1263,7 +1333,7 @@ export function applyAcpPartToEvents(
           }
         }
         const merged = {
-          title: part.toolTitle ?? prev.title,
+          title: part.toolDetailAppend ? (prev.title ?? part.toolTitle) : (part.toolTitle ?? prev.title),
           status: part.toolStatus ?? prev.status,
           path: part.toolPath ?? prev.path,
           detail: detail || prev.detail,
@@ -1303,6 +1373,11 @@ export function applyAcpPartToEvents(
             },
           ),
         ];
+      }
+      // Child status for a stream already nested in the parent Task: don't
+      // mint a second card or complete the Task early.
+      if (isSubagentTool(part.toolName, part.toolTitle)) {
+        if (findNestedSubagentCard(base, sessionId, part.toolCallId) >= 0) return base;
       }
     }
     return [

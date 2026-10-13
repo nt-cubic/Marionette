@@ -1,10 +1,20 @@
 /**
- * Codex / Claude session meta extraction (Codeg-aligned, pure data).
+ * Codex / Claude / OpenCode session meta extraction (Codeg-aligned, pure data).
  *
  * - Codex: `session_info_update` → `_meta.codex.goal` / `.error` (retry)
  * - Claude: chunk `_meta.claudeCode.parentToolUseId` → subagent stream
+ * - OpenCode v2: `_meta["opencode/child-session"]` or `opencode/session/child_update`
  * - Tool content: `agent_transcript` / nested subagent text
  */
+
+/** OpenCode v2 child events when the client advertised child-session-updates. */
+export const OPENCODE_CHILD_UPDATE_METHOD = "opencode/session/child_update";
+/** Client capability OpenCode v2 checks before using the custom child method. */
+export const OPENCODE_CHILD_SESSION_UPDATES = "opencode/child-session-updates";
+
+export function isAcpTranscriptMethod(method: string | null | undefined): boolean {
+  return method === "session/update" || method === OPENCODE_CHILD_UPDATE_METHOD;
+}
 
 export type CodexGoalMarker = {
   toolName: "create_goal" | "update_goal";
@@ -107,6 +117,72 @@ export function claudeParentToolUseId(update: Record<string, unknown>): string |
     (typeof claude.parent_tool_use_id === "string" && claude.parent_tool_use_id) ||
     "";
   return id.trim() || null;
+}
+
+export type OpenCodeChildSession = {
+  id: string;
+  parentID: string;
+  depth: number;
+  title?: string;
+};
+
+/**
+ * OpenCode v2 Task/subagent projection (`packages/cli/src/acp/child.ts`).
+ *
+ * Without `opencode/child-session-updates`, child tokens land on the parent
+ * `session/update` with `_meta["opencode/child-session"]`. With the capability,
+ * the same fields sit on `opencode/session/child_update` params.
+ */
+export function opencodeChildSession(update: Record<string, unknown>): OpenCodeChildSession | null {
+  const meta = getMeta(update);
+  const nested =
+    (meta && (asRecord(meta["opencode/child-session"]) ?? asRecord(meta.opencodeChildSession))) ||
+    null;
+  const id =
+    (nested && typeof nested.id === "string" && nested.id.trim()) ||
+    (typeof update.childSessionId === "string" && update.childSessionId.trim()) ||
+    (typeof update.child_session_id === "string" && update.child_session_id.trim()) ||
+    "";
+  if (!id) return null;
+  const parentID =
+    (nested && typeof nested.parentID === "string" && nested.parentID) ||
+    (nested && typeof nested.parentId === "string" && nested.parentId) ||
+    (typeof update.parentSessionId === "string" && update.parentSessionId) ||
+    (typeof update.parent_session_id === "string" && update.parent_session_id) ||
+    "";
+  const depthRaw = nested?.depth ?? update.depth;
+  const depth = typeof depthRaw === "number" && Number.isFinite(depthRaw) ? depthRaw : 1;
+  const titleRaw =
+    (nested && typeof nested.title === "string" && nested.title) ||
+    (typeof update.title === "string" && update.title) ||
+    "";
+  const title = titleRaw.trim() || undefined;
+  return { id, parentID, depth, title };
+}
+
+/**
+ * Id to nest this chunk under a tool card: Claude's parent Agent tool, or the
+ * OpenCode child session (mapped onto the parent Task card at apply time).
+ */
+export function nestedSubagentParentId(update: Record<string, unknown>): string | null {
+  return claudeParentToolUseId(update) ?? opencodeChildSession(update)?.id ?? null;
+}
+
+/** `opencode/session/child_update` status → ACP tool status. */
+export function opencodeChildToolStatus(status: string): string | null {
+  switch (status.trim().toLowerCase()) {
+    case "created":
+    case "running":
+      return "in_progress";
+    case "completed":
+      return "completed";
+    case "failed":
+      return "failed";
+    case "interrupted":
+      return "cancelled";
+    default:
+      return null;
+  }
 }
 
 export type CompactionMarker = {
