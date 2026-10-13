@@ -122,7 +122,7 @@ import { forkCopyEvents, forkCutIndex } from "../lib/sessionFork";
 import { AskQuestionCard, type AskQuestionPrompt } from "../components/AskQuestionCard";
 import { Composer, transferEmptyDraft } from "../components/Composer";
 import { ComposerErrorStrip, SessionNoticeStrip } from "../components/ComposerErrorStrip";
-import { parseLiveNotice } from "../lib/acpMeta";
+import { isAcpTranscriptMethod, parseLiveNotice } from "../lib/acpMeta";
 import { ContextPanel } from "../components/ContextPanel";
 import { PermissionDialog, type PermissionPrompt } from "../components/PermissionDialog";
 import { PlanApprovalCard, type PlanApprovalPrompt } from "../components/PlanApprovalCard";
@@ -1518,7 +1518,10 @@ export function App() {
         });
       }
 
-      // Live transcript: thinking / tool / assistant stream as events arrive
+      // Live transcript: thinking / tool / assistant stream as events arrive.
+      // OpenCode v2 child sessions arrive as `opencode/session/child_update`
+      // when we advertised child-session-updates; otherwise they are projected
+      // onto session/update with `_meta["opencode/child-session"]`.
       if (payload.method === "session/update") {
         // Context window / cost / vendor rate-limit meta
         setSessionUsageById((current) => {
@@ -1570,7 +1573,9 @@ export function App() {
             [payload.sessionId]: planEntries,
           }));
         }
+      }
 
+      if (isAcpTranscriptMethod(payload.method)) {
         const extracted = extractAcpUpdateText(payload.data);
         if (
           extracted &&

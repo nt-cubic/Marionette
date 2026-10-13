@@ -378,4 +378,218 @@ console.log("notices stay off the transcript");
   assert.match(compactPart!.text, /kept the plan/);
 }
 
+console.log("OpenCode v2 child-session streams stay off the parent Reply");
+{
+  const childMeta = {
+    "opencode/child-session": {
+      id: "ses_child_explore",
+      parentID: "ses_parent",
+      depth: 1,
+      title: "explore Notion (@explore subagent)",
+    },
+  };
+
+  const childPart = extractAcpUpdateText({
+    params: {
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        messageId: "msg_child",
+        content: { type: "text", text: "正在看 Notion" },
+        _meta: childMeta,
+      },
+    },
+  });
+  assert.equal(childPart?.role, "tool", "child text must nest in a tool card");
+  assert.equal(childPart?.toolCallId, "ses_child_explore");
+  assert.equal(childPart?.toolDetailAppend, true);
+  assert.equal(childPart?.toolName, "task");
+
+  const childThought = extractAcpUpdateText({
+    params: {
+      update: {
+        sessionUpdate: "agent_thought_chunk",
+        content: { type: "text", text: "先搜目录" },
+        _meta: childMeta,
+      },
+    },
+  });
+  assert.equal(childThought?.role, "tool", "child thought must not open a Thought card");
+
+  const parentPart = extractAcpUpdateText({
+    params: {
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "我来拆任务" },
+      },
+    },
+  });
+  assert.equal(parentPart?.role, "assistant");
+
+  let mixed: SessionEvent[] = [userMessageEvent("s1", "go")];
+  mixed = applyAcpPartToEvents(mixed, "s1", parentPart!);
+  for (const token of ["正在", "看", " Notion"]) {
+    mixed = applyAcpPartToEvents(
+      mixed,
+      "s1",
+      extractAcpUpdateText({
+        params: {
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: token },
+            _meta: childMeta,
+          },
+        },
+      })!,
+    );
+  }
+  const replies = mixed.filter((e) => e.type === "assistant_message");
+  assert.equal(replies.length, 1, "parent Reply must stay a single card");
+  assert.equal(replies[0].text, "我来拆任务");
+  const tools = mixed.filter((e) => e.type === "tool_call");
+  assert.equal(tools.length, 1);
+  assert.equal(tools[0].detail, "正在看 Notion");
+  assert.doesNotMatch(tools[0].detail ?? "", /\n正在\n/);
+
+  // One in-progress Task absorbs the child stream (Codeg-style nesting).
+  let nested: SessionEvent[] = [
+    userMessageEvent("s1", "go"),
+    {
+      type: "tool_call",
+      sessionId: "s1",
+      text: "task",
+      toolCallId: "task_1",
+      toolName: "task",
+      title: "Task (explore)",
+      status: "in_progress",
+      createdAt: new Date().toISOString(),
+    },
+  ];
+  nested = applyAcpPartToEvents(nested, "s1", childPart!);
+  const taskCards = nested.filter((e) => e.type === "tool_call");
+  assert.equal(taskCards.length, 1, "child stream should land on the open Task");
+  assert.equal(taskCards[0].toolCallId, "task_1");
+  assert.match(taskCards[0].detail ?? "", /正在看 Notion/);
+  const childDone = extractAcpUpdateText({
+    method: "opencode/session/child_update",
+    params: {
+      rootSessionId: "ses_parent",
+      childSessionId: "ses_child_explore",
+      parentSessionId: "ses_parent",
+      depth: 1,
+      title: "explore Notion (@explore subagent)",
+      type: "status",
+      status: "completed",
+    },
+  });
+  assert.equal(childDone?.toolStatus, "completed");
+  nested = applyAcpPartToEvents(nested, "s1", childDone!);
+  assert.equal(nested.filter((e) => e.type === "tool_call").length, 1);
+  assert.equal(
+    nested.find((e) => e.type === "tool_call")?.status,
+    "in_progress",
+    "child completed must not settle the parent Task",
+  );
+
+  // Parallel Tasks: each child keeps its own card.
+  let parallel: SessionEvent[] = [
+    userMessageEvent("s1", "go"),
+    {
+      type: "tool_call",
+      sessionId: "s1",
+      text: "task a",
+      toolCallId: "task_a",
+      toolName: "task",
+      title: "Task (explore)",
+      status: "in_progress",
+      createdAt: new Date().toISOString(),
+    },
+    {
+      type: "tool_call",
+      sessionId: "s1",
+      text: "task b",
+      toolCallId: "task_b",
+      toolName: "task",
+      title: "Task (general)",
+      status: "in_progress",
+      createdAt: new Date().toISOString(),
+    },
+  ];
+  const otherChild = extractAcpUpdateText({
+    params: {
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "噩梦关卡" },
+        _meta: {
+          "opencode/child-session": {
+            id: "ses_child_boss",
+            parentID: "ses_parent",
+            depth: 1,
+            title: "噩梦 (@general subagent)",
+          },
+        },
+      },
+    },
+  })!;
+  parallel = applyAcpPartToEvents(parallel, "s1", childPart!);
+  parallel = applyAcpPartToEvents(parallel, "s1", otherChild);
+  const parallelTools = parallel.filter((e) => e.type === "tool_call");
+  assert.equal(parallelTools.length, 4, "two Tasks + two child cards");
+  assert.equal(
+    parallelTools.find((e) => e.type === "tool_call" && e.toolCallId === "ses_child_explore")?.detail,
+    "正在看 Notion",
+  );
+  assert.equal(
+    parallelTools.find((e) => e.type === "tool_call" && e.toolCallId === "ses_child_boss")?.detail,
+    "噩梦关卡",
+  );
+
+  const claudePart = extractAcpUpdateText({
+    params: {
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "nested agent text" },
+        _meta: { claudeCode: { parentToolUseId: "toolu_agent" } },
+      },
+    },
+  });
+  assert.equal(claudePart?.role, "tool");
+  assert.equal(claudePart?.toolCallId, "toolu_agent");
+  assert.equal(claudePart?.toolName, "agent");
+
+  const childUpdateStatus = extractAcpUpdateText({
+    method: "opencode/session/child_update",
+    params: {
+      rootSessionId: "ses_parent",
+      childSessionId: "ses_child_explore",
+      parentSessionId: "ses_parent",
+      depth: 1,
+      title: "explore Notion (@explore subagent)",
+      type: "status",
+      status: "running",
+    },
+  });
+  assert.equal(childUpdateStatus?.role, "tool");
+  assert.equal(childUpdateStatus?.toolCallId, "ses_child_explore");
+  assert.equal(childUpdateStatus?.toolStatus, "in_progress");
+
+  const childUpdateChunk = extractAcpUpdateText({
+    method: "opencode/session/child_update",
+    params: {
+      rootSessionId: "ses_parent",
+      childSessionId: "ses_child_explore",
+      parentSessionId: "ses_parent",
+      depth: 1,
+      type: "update",
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "via child_update" },
+        _meta: childMeta,
+      },
+    },
+  });
+  assert.equal(childUpdateChunk?.role, "tool");
+  assert.equal(childUpdateChunk?.toolCallId, "ses_child_explore");
+  assert.equal(childUpdateChunk?.toolDetail, "via child_update");
+}
+
 console.log("smoke-stream-merge: ok");

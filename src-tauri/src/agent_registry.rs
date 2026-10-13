@@ -392,6 +392,11 @@ pub fn build_client_capabilities_json(agent_id: Option<&str>) -> Value {
     if meta.as_ref().map(|m| m.subagent_transcript).unwrap_or(false) {
         meta_obj.insert("subagent-transcript".into(), json!(true));
     }
+    // OpenCode v2: opt into `opencode/session/child_update` so Task child
+    // tokens are not remapped onto the parent as unattributed message chunks.
+    if agent_id == Some("opencode") {
+        meta_obj.insert("opencode/child-session-updates".into(), json!(true));
+    }
     caps.as_object_mut()
         .unwrap()
         .insert("_meta".into(), Value::Object(meta_obj));
@@ -471,10 +476,14 @@ mod tests {
         assert_eq!(caps["_meta"]["subagent-transcript"], true);
         let grok = build_client_capabilities_json(Some("grok-build"));
         assert!(grok["_meta"]["subagent-transcript"].is_null());
+        assert!(grok["_meta"]["opencode/child-session-updates"].is_null());
         assert_eq!(
             grok["_meta"]["jetbrains.air"]["capabilities"][0],
             "sessionFailure"
         );
+        let opencode = build_client_capabilities_json(Some("opencode"));
+        assert_eq!(opencode["_meta"]["opencode/child-session-updates"], true);
+        assert!(opencode["_meta"]["subagent-transcript"].is_null());
     }
 
     /// Regression: advertising `fs.readTextFile` makes image-aware agents send
