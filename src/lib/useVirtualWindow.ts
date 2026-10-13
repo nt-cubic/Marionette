@@ -1,4 +1,5 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { sizeMapForKey } from "./virtualSizeCache";
 
 const DEFAULT_ESTIMATE = 128;
 const DEFAULT_OVERSCAN = 8;
@@ -16,16 +17,15 @@ export function useVirtualWindow(
   const overscan = opts?.overscan ?? DEFAULT_OVERSCAN;
   const resetKey = opts?.resetKey ?? "";
 
-  const sizeMapRef = useRef<Map<number, number>>(new Map());
+  const sizeMapRef = useRef<Map<number, number>>(sizeMapForKey(resetKey));
+  const appliedKeyRef = useRef(resetKey);
+  if (appliedKeyRef.current !== resetKey) {
+    appliedKeyRef.current = resetKey;
+    sizeMapRef.current = sizeMapForKey(resetKey);
+  }
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportH, setViewportH] = useState(600);
   const [version, setVersion] = useState(0);
-
-  // Drop measured heights when the transcript identity changes.
-  useLayoutEffect(() => {
-    sizeMapRef.current = new Map();
-    setVersion((v) => v + 1);
-  }, [resetKey, itemCount > 0 ? Math.floor(itemCount / 50) : 0]);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -65,7 +65,7 @@ export function useVirtualWindow(
       offsets[i + 1] = acc;
     }
     return { offsets, totalSize: acc };
-  }, [getSize, itemCount, version]);
+  }, [getSize, itemCount, resetKey, version]);
 
   const { start, end } = useMemo(() => {
     if (itemCount === 0) return { start: 0, end: 0 };
@@ -134,6 +134,13 @@ export function useVirtualWindow(
     [itemCount, offsets]
   );
 
+  const syncFromDom = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setScrollTop(el.scrollTop);
+    setViewportH(el.clientHeight || 600);
+  }, [scrollRef]);
+
   return {
     start,
     end,
@@ -142,6 +149,8 @@ export function useVirtualWindow(
     totalSize,
     measureRef,
     offsetOf,
+    /** After a tab restore writes scrollTop, pull it into the window state. */
+    syncFromDom,
     /** Call after stick-to-bottom when sizes may have changed. */
     forceRemeasure: () => setVersion((v) => v + 1),
   };

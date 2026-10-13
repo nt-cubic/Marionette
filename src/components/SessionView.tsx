@@ -39,6 +39,12 @@ import {
   toolMainText,
   type ActivityClusterUnit,
 } from "../lib/turnActivity";
+import {
+  applyScrollSnap,
+  captureScrollSnap,
+  isNearTranscriptBottom,
+  type TranscriptScrollSnap,
+} from "../lib/transcriptScroll";
 import { useVirtualWindow } from "../lib/useVirtualWindow";
 import { isCursorOverWindow, setMergeHighlight } from "../lib/detachedWindow";
 import { loadDetailsVisible, saveDetailsVisible } from "../lib/uiRestore";
@@ -1215,6 +1221,10 @@ function CleanPlaceholder({
   const stickToBottomRef = useRef(true);
   /** State mirror of stickToBottom so the jump-to-bottom chip can re-render. */
   const [atBottom, setAtBottom] = useState(true);
+  /** Per-dialog list camera — survives tab switches in this shell. */
+  const scrollSnapsRef = useRef<Map<string, TranscriptScrollSnap>>(new Map());
+  const sessionIdRef = useRef(session.id);
+  sessionIdRef.current = session.id;
   const isRunning = session.status === "running";
 
   /**
@@ -1288,7 +1298,8 @@ function CleanPlaceholder({
   const virtual = useVirtualWindow(listRef, useVirtual ? renderUnits.length : 0, {
     estimate: 48,
     overscan: 12,
-    // Details on/off re-indexes every unit, so measured heights must be dropped.
+    // Details on/off re-indexes every unit — cache is keyed so tab switches
+    // reuse measured heights instead of collapsing to 48px estimates.
     resetKey: `${session.id}|${detailsVisible ? "details" : "clean"}|${useVirtual ? "v" : "full"}`,
   });
   const [editingKey, setEditingKey] = useState<string | null>(null);
@@ -1374,6 +1385,8 @@ function CleanPlaceholder({
   }, [session.id, visibleEvents, awaitingFirstChunk, detailsVisible]);
 
   const prevAwaitingRef = useRef(false);
+  const awaitingRef = useRef(awaitingFirstChunk);
+  awaitingRef.current = awaitingFirstChunk;
 
   // Own send → jump back to live tail (even if you were reading history).
   useEffect(() => {
@@ -1384,12 +1397,24 @@ function CleanPlaceholder({
     prevAwaitingRef.current = awaitingFirstChunk;
   }, [awaitingFirstChunk]);
 
-  // Switching dialog → follow the new session's tail by default.
-  // Also drop any leftover text selection so QuoteOverlay chrome / WebView2
+  const rememberScrollSnap = useCallback(() => {
+    const el = listRef.current;
+    if (!el) return;
+    scrollSnapsRef.current.set(sessionIdRef.current, captureScrollSnap(el));
+  }, []);
+
+  // Switching dialog → restore that tab's camera. First visit / last-seen-at-tail
+  // pins to the live end. Always-jump-to-tail used to fire once against 48px
+  // virtual estimates, then real card heights grew and left the reader at the top.
+  // Also drop leftover text selection so QuoteOverlay chrome / WebView2
   // selection ghosts cannot hide the next dialog's transcript until a click.
-  useEffect(() => {
-    stickToBottomRef.current = true;
-    setAtBottom(true);
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    const snap = scrollSnapsRef.current.get(session.id);
+    const mode = el ? applyScrollSnap(el, snap) : !snap || snap.stickToBottom ? "bottom" : "offset";
+    stickToBottomRef.current = mode === "bottom";
+    setAtBottom(mode === "bottom");
+    virtual.syncFromDom();
     selectingRef.current = false;
     frozenEventsRef.current = null;
     setFreezeGen((g) => g + 1);
@@ -1397,8 +1422,9 @@ function CleanPlaceholder({
     setExpandedThoughtKeys(new Set());
     setExpandedActivityKeys(new Set());
     setExpandedKindKeys(new Set());
+    prevAwaitingRef.current = awaitingRef.current;
     window.getSelection()?.removeAllRanges();
-  }, [session.id]);
+  }, [session.id, virtual.syncFromDom]);
 
   // Freeze transcript DOM while selecting so stream ticks cannot clear the highlight.
   useEffect(() => {
@@ -1479,11 +1505,11 @@ function CleanPlaceholder({
     const el = listRef.current;
     if (!el) return;
     // User scrolled up to read history → stop auto-jumping to bottom.
-    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-    const nearBottom = distance < 80;
+    const nearBottom = isNearTranscriptBottom(el);
     stickToBottomRef.current = nearBottom;
     setAtBottom(nearBottom);
-  }, []);
+    rememberScrollSnap();
+  }, [rememberScrollSnap]);
 
   const jumpToBottom = useCallback(() => {
     const el = listRef.current;
@@ -1491,18 +1517,40 @@ function CleanPlaceholder({
     stickToBottomRef.current = true;
     setAtBottom(true);
     el.scrollTop = el.scrollHeight;
-  }, []);
+    rememberScrollSnap();
+  }, [rememberScrollSnap]);
 
   // Stick to bottom only while the user is already near the end (chat apps pattern).
   // Never key this off the activity clock / health — that caused jump/flicker bugs.
   // Never while selection is locked — scroll jumps clear the caret/highlight.
-  useEffect(() => {
+  // Re-pin when virtual measurements (totalSize) or row count change — a single
+  // post-paint pin against estimate heights is what sent tab-restores to the top.
+  useLayoutEffect(() => {
     if (selectionLocked) return;
     const el = listRef.current;
     if (!el) return;
     if (!stickToBottomRef.current) return;
     el.scrollTop = el.scrollHeight;
-  }, [scrollKey, selectionLocked]);
+    rememberScrollSnap();
+  }, [scrollKey, selectionLocked, virtual.totalSize, rememberScrollSnap]);
+
+  // Non-virtual cards (markdown / images) grow after first layout. Observe
+  // children so a tail pin survives that growth the same way ClippedBody does.
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const pinIfNeeded = () => {
+      if (selectionLocked) return;
+      if (!stickToBottomRef.current) return;
+      el.scrollTop = el.scrollHeight;
+    };
+    pinIfNeeded();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(pinIfNeeded);
+    ro.observe(el);
+    for (const child of el.children) ro.observe(child);
+    return () => ro.disconnect();
+  }, [scrollKey, selectionLocked, renderUnits.length, virtual.totalSize]);
 
   // Outline jump when the target card is not mounted (virtual window).
   useEffect(() => {
