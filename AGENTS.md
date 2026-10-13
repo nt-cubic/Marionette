@@ -40,3 +40,41 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
   `assert!(flush_paint_messages(..))`。关窗路径：`main.rs` 的 `is_tao_paint_assert` + `shutdown_and_exit`（不要再改那条）。
   点击/IME 路径：`src-tauri/vendor/tao` 把 assert 改成尊重 re-entrant `false`（见 `vendor/tao/MARIONETTE-PATCH.md`）。
   Tauri 升到 tao ≥ 0.36 后删掉 `[patch.crates-io]`。
+
+## 排查「exe 双击没反应 / 构建报 esbuild Access is denied」—— 先查完整性标签
+
+**症状 1：** 双击 `dist-portable\Marionette.exe`（或 `target\release\marionette.exe`）完全没反应：没有窗口、没有日志、
+退出码 0，`dev.log` 一行都不加。
+**症状 2：** `npm run build` / `build-portable.bat` 反复失败：
+`[vite:esbuild-transpile] remove C:\Users\...\AppData\Local\Temp\esbuild-<hex>: Access is denied.`，
+且在 `%LOCALAPPDATA%\Temp` 里能看到那个删不掉的 1.7 MB `esbuild-*` 残留文件。
+
+**同一个根因：程序以 Low 完整性（Low integrity）运行。** Windows 取「令牌完整性」和「镜像文件完整性标签」中较低者作为
+进程完整性；低完整性进程对 `%USERPROFILE%\.marionette`（Medium）和真实 `%TEMP%`（Medium）只能读不能写：
+
+- Marionette 打不开 `instance.lock` → 走单实例交接分支 → **静默 `exit(0)`**（`shell_integration.rs`）；
+- esbuild 的 Go 进程删不掉自己写在 `%TEMP%` 的临时文件 → `remove ...: Access is denied.`。
+
+**来源：** Windows 沙箱（如 DSH 的 workspace-write 限制）会给工作区目录加一条**可继承的 Low 完整性标签**，
+于是 `D:\Apps\Marionette` 下**所有 .exe**（包括 `Marionette.exe`、`node_modules\@esbuild\win32-x64\esbuild.exe`，
+甚至拷进来的 `cmd.exe`）都以 Low 跑起来——沙箱早已结束，标签却留在文件上，双击也一样中招。
+
+**确认（看到 Low 即确诊）：**
+
+```powershell
+icacls D:\Apps\Marionette | Select-String 'Mandatory Label'
+icacls D:\Apps\Marionette\dist-portable\Marionette.exe | Select-String 'Mandatory Label'
+```
+
+**修复：** 跑 `scripts\fix-workspace-integrity.ps1`（等价于下面这条；只改完整性标签，不动文件内容、所有者或访问权限）：
+
+```powershell
+icacls D:\Apps\Marionette /setintegritylevel (OI)(CI)Medium
+```
+
+改完 `npm run build` 与 `dist-portable\Marionette.exe` 立即恢复正常。**只要本工作区再被沙箱以 workspace-write
+限制跑过一次，标签就会再来一遍**，所以再次出现上述症状时先跑这个脚本。
+
+**产品侧兜底（已加）：** 启动时 `app_paths::ensure_global_dir_writable()` 会写探测文件，失败则走
+`data_dir_gate::prompt_and_exit()` 弹原生对话框并 `exit(1)`，不再出现「静默 exit(0)」；
+单实例锁只有真被占用（Windows 32/33 共享冲突）才交接，权限类错误会记一条 `[shell] warn` 后照常启动。

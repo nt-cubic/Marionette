@@ -10,6 +10,7 @@ mod app_update;
 mod commands;
 mod context_inventory;
 mod custom_agents;
+mod data_dir_gate;
 mod debug_log;
 mod git_service;
 mod handoff;
@@ -191,6 +192,18 @@ mod tests {
 fn main() {
     // Before any WebView host is created — native dialog if runtime missing.
     webview2_gate::ensure_or_exit();
+
+    // The global data dir holds the instance lock, the dev diary and every
+    // session. When it is not writable the single-instance check below cannot
+    // open the lock, the app concludes another instance owns it and exits 0
+    // with no window, no log line and no dialog — indistinguishable from "the
+    // exe does nothing". That is what Windows file permissions produce when the
+    // process runs with restricted rights (a sandbox token, or an image whose
+    // mandatory integrity label is Low): writes to %USERPROFILE%\.marionette are
+    // denied while reads still succeed, so only a write probe can see it.
+    if let Err(err) = app_paths::ensure_global_dir_writable() {
+        data_dir_gate::prompt_and_exit(&err);
+    }
 
     // Explorer "Open Marionette here" / CLI: resolve folder before UI starts.
     let open_path = shell_integration::parse_open_path_from_args();

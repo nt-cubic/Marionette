@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import {
   expandAcpConfigAttempts,
   mergeAcpCapabilities,
+  modelAssertForEffortRefresh,
 } from "../src/lib/acpSupplements.ts";
 import {
   groupModelsByProvider,
@@ -299,6 +300,58 @@ check("provider/model ids and Claude aliases keep their old groups", () => {
   assert.equal(modelProviderGroup({ id: "claude-sonnet-4-6", label: "Sonnet 4.6" }), "Claude");
   // Nothing recognisable still has to land somewhere the user can click.
   assert.equal(modelProviderGroup({ id: "mystery-1", label: "Mystery One" }), "Models");
+});
+
+console.log("\nopencode effort republish (session/new may omit effort when already on model)");
+
+check("re-asserts preferred model when it already matches but effort is missing", () => {
+  const caps = emptyLive({
+    models: [{ id: "opencode-go/deepseek-v4.1-flash", label: "DeepSeek V4.1 Flash" }],
+    currentModel: "opencode-go/deepseek-v4.1-flash",
+    modelConfigId: "model",
+  });
+  assert.deepEqual(
+    modelAssertForEffortRefresh(caps, "opencode-go/deepseek-v4.1-flash"),
+    { model: "opencode-go/deepseek-v4.1-flash", reason: "republish" },
+  );
+});
+
+check("switches when preferred model differs (switch itself republishes)", () => {
+  const caps = emptyLive({
+    models: [
+      { id: "opencode/big-pickle", label: "Big Pickle" },
+      { id: "opencode-go/deepseek-v4.1-flash", label: "DeepSeek V4.1 Flash" },
+    ],
+    currentModel: "opencode/big-pickle",
+    modelConfigId: "model",
+  });
+  assert.deepEqual(
+    modelAssertForEffortRefresh(caps, "opencode-go/deepseek-v4.1-flash"),
+    { model: "opencode-go/deepseek-v4.1-flash", reason: "switch" },
+  );
+});
+
+check("does nothing when effort is already advertised", () => {
+  const caps = emptyLive({
+    currentModel: "opencode-go/deepseek-v4.1-flash",
+    effortConfigId: "effort",
+    effortOptions: [
+      { id: "low", label: "Low" },
+      { id: "high", label: "High" },
+    ],
+  });
+  assert.equal(modelAssertForEffortRefresh(caps, "opencode-go/deepseek-v4.1-flash"), null);
+});
+
+check("republishes current model when prefs are empty but effort is missing", () => {
+  const caps = emptyLive({
+    currentModel: "opencode-go/deepseek-v4.1-flash",
+    modelConfigId: "model",
+  });
+  assert.deepEqual(modelAssertForEffortRefresh(caps, null), {
+    model: "opencode-go/deepseek-v4.1-flash",
+    reason: "republish",
+  });
 });
 
 console.log(`\n${passed} checks passed.`);

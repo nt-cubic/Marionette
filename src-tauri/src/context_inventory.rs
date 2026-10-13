@@ -79,10 +79,10 @@ pub struct ContextSelection {
     pub skills: BTreeMap<String, bool>,
     /// Folders outside the project the user granted this project's agents.
     ///
-    /// Sent as ACP `session/new.additionalDirectories`, which "expands the
-    /// session's filesystem scope without changing cwd". Granting up front is
-    /// the only way to unblock a *subagent*: its approval prompt never reaches
-    /// us, so it can only be answered before the turn starts.
+    /// Sent as ACP `session/new.additionalDirectories` when the agent advertised
+    /// that capability (omitted otherwise — DSH 0.9.0 rejects a non-empty list).
+    /// Granting up front is the only way to unblock a *subagent*: its approval
+    /// prompt never reaches us, so it can only be answered before the turn starts.
     #[serde(default)]
     pub workspace_roots: Vec<String>,
     #[serde(default)]

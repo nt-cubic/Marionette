@@ -263,6 +263,24 @@ impl AcpService {
         // Which agent this dialog is bound to — decides what gets lent to it.
         agent_id: Option<String>,
     ) -> Result<CapabilitySnapshot, String> {
+        // Agents are third-party programs; hand them the plain spelling of the
+        // project path. The verbatim (`\\?\`) form that `fs::canonicalize` gives
+        // the storage layer makes several of them mis-parse the drive root
+        // (`\\?\D:\x` → `D:`) and fail before the first turn. Every path below —
+        // process cwd, session/new, terminal fallback, folder trust — derives
+        // from this one value, so normalize once here.
+        let requested_cwd = cwd;
+        let cwd = crate::app_paths::plain_path(&requested_cwd);
+        if cwd != requested_cwd {
+            // The caller logs what it asked for; this is what the agent gets.
+            crate::debug_log::append(
+                "acp",
+                "info",
+                &session_id,
+                "normalized the project path for the agent",
+                Some(&format!("{requested_cwd} -> {cwd}")),
+            );
+        }
         if !std::path::Path::new(&cwd).is_dir() {
             return Err(format!("ACP cwd is not a directory: {cwd}"));
         }
@@ -708,26 +726,27 @@ impl AcpService {
         // ── Phase 2: session/new ────────────────────────────────────────
         // Folders the user granted outside the project. Must be set here: a
         // subagent's permission prompt never reaches us, so scope has to be
-        // agreed before the turn starts.
+        // agreed before the turn starts. Only agents that advertised the
+        // capability get the field — DSH 0.9.0 rejects a non-empty list
+        // (`additionalDirectories is not supported`).
         let extra_roots = crate::context_inventory::workspace_roots(std::path::Path::new(&cwd));
+        let send_extra = advertises_additional_directories(&initialized);
         if !extra_roots.is_empty() {
-            crate::debug_log::append(
-                "context",
-                "info",
-                &session_id,
-                &format!("additionalDirectories: {}", extra_roots.join(" · ")),
-                None,
-            );
+            let extra_note = if send_extra {
+                format!("additionalDirectories: {}", extra_roots.join(" · "))
+            } else {
+                format!(
+                    "omitted additionalDirectories (agent did not advertise support): {}",
+                    extra_roots.join(" · ")
+                )
+            };
+            crate::debug_log::append("context", "info", &session_id, &extra_note, None);
         }
 
         let new_session = match request(
             &process,
             "session/new",
-            json!({
-                "cwd": cwd,
-                "mcpServers": mcp_servers,
-                "additionalDirectories": extra_roots,
-            }),
+            session_new_params(&cwd, &mcp_servers, &extra_roots, send_extra),
         ) {
             Ok(value) => value,
             Err(error) => {
@@ -1687,6 +1706,35 @@ fn apply_local_config_change(caps: &mut CapabilitySnapshot, config_id: &str, val
             caps.current_permission = Some(text);
         }
     }
+}
+
+/// ACP: omitted or `null` both mean the agent does not support extra
+/// workspace roots. Supplying `{}` (or `true`) means it does.
+fn advertises_additional_directories(initialize: &Value) -> bool {
+    let extra = initialize
+        .pointer("/agentCapabilities/sessionCapabilities/additionalDirectories")
+        .or_else(|| initialize.pointer("/agentCapabilities/session/additionalDirectories"));
+    match extra {
+        Some(Value::Object(_)) => true,
+        Some(Value::Bool(true)) => true,
+        _ => false,
+    }
+}
+
+fn session_new_params(
+    cwd: &str,
+    mcp_servers: &[Value],
+    extra_roots: &[String],
+    advertise: bool,
+) -> Value {
+    let mut params = json!({
+        "cwd": cwd,
+        "mcpServers": mcp_servers,
+    });
+    if advertise && !extra_roots.is_empty() {
+        params["additionalDirectories"] = json!(extra_roots);
+    }
+    params
 }
 
 // ─── Capability parsing from session/new response ──────────────────────────
@@ -4537,6 +4585,67 @@ mod tests {
         );
         assert_eq!(session_id_from_detached_label("main"), None);
         assert_eq!(session_id_from_detached_label("detached-"), None);
+    }
+
+    /// deepseek-acp 0.9.0 initialize: close/fork only. No additionalDirectories.
+    fn deepseek_initialize() -> Value {
+        json!({
+            "protocolVersion": 1,
+            "agentInfo": { "name": "deepseek-acp", "version": "0.9.0" },
+            "agentCapabilities": {
+                "promptCapabilities": { "image": true, "audio": false, "embeddedContext": true },
+                "mcpCapabilities": { "http": true, "sse": false, "acp": false },
+                "sessionCapabilities": { "close": {}, "fork": {} }
+            }
+        })
+    }
+
+    /// DSH rejects a non-empty additionalDirectories list on session/new
+    /// (`Invalid params: additionalDirectories is not supported`). Sending an
+    /// image from outside the project used to grant that folder and reconnect
+    /// with the list filled in — the agent never advertised the capability.
+    #[test]
+    fn session_new_omits_extra_roots_when_agent_did_not_advertise_them() {
+        assert!(!advertises_additional_directories(&deepseek_initialize()));
+        let params = session_new_params(
+            r"D:\Projects\惊蛰",
+            &[],
+            &[r"C:\Users\me\Pictures".into()],
+            advertises_additional_directories(&deepseek_initialize()),
+        );
+        assert_eq!(params.get("cwd").and_then(Value::as_str), Some(r"D:\Projects\惊蛰"));
+        assert!(
+            params.get("additionalDirectories").is_none(),
+            "DSH session/new must not carry additionalDirectories: {params}"
+        );
+        assert_eq!(params.get("mcpServers").and_then(Value::as_array).map(|a| a.len()), Some(0));
+    }
+
+    #[test]
+    fn session_new_includes_extra_roots_only_when_advertised_and_nonempty() {
+        let advertised = json!({
+            "agentCapabilities": {
+                "sessionCapabilities": { "additionalDirectories": {} }
+            }
+        });
+        assert!(advertises_additional_directories(&advertised));
+        let with_roots = session_new_params(
+            r"D:\proj",
+            &[json!({"name": "demo"})],
+            &[r"D:\extra".into()],
+            true,
+        );
+        assert_eq!(
+            with_roots.get("additionalDirectories"),
+            Some(&json!([r"D:\extra"]))
+        );
+        let empty = session_new_params(r"D:\proj", &[], &[], true);
+        assert!(empty.get("additionalDirectories").is_none());
+        assert!(!advertises_additional_directories(&json!({
+            "agentCapabilities": {
+                "sessionCapabilities": { "additionalDirectories": null }
+            }
+        })));
     }
 }
 

@@ -55,6 +55,15 @@ impl StorageService {
         Ok(projects
             .into_iter()
             .filter(|project| project.id != crate::app_paths::CHAT_PROJECT_ID)
+            // Rows written before verbatim paths were dropped keep working: the
+            // plain spelling is the same directory, and the next write to the
+            // index persists it. Leaving them verbatim would also break the
+            // duplicate check in `add_project`, which compares the canonicalized
+            // pick against the stored root.
+            .map(|mut project| {
+                project.root_path = crate::app_paths::plain_path(&project.root_path);
+                project
+            })
             .collect())
     }
 
@@ -65,7 +74,7 @@ impl StorageService {
             return Err("Project path must be a directory".to_string());
         }
 
-        let path_string = path.to_string_lossy().to_string();
+        let path_string = crate::app_paths::plain_path(&path.to_string_lossy());
         let mut projects = self.list_projects()?;
         if let Some(existing) = projects
             .iter_mut()
@@ -125,7 +134,7 @@ impl StorageService {
                 label
             },
             label_source: Some("default".to_string()),
-            cwd: cwd_path.to_string_lossy().to_string(),
+            cwd: crate::app_paths::plain_path(&cwd_path.to_string_lossy()),
             status: "exited".to_string(),
             process_id: None,
             pty_id: None,
@@ -1221,6 +1230,55 @@ mod tests {
     }
 
     #[test]
+    fn stored_project_and_session_paths_carry_no_verbatim_prefix() {
+        let root = test_root();
+        let global_dir = root.join("global");
+        let project_dir = root.join("workspace");
+        fs::create_dir_all(&project_dir).unwrap();
+
+        let service = StorageService::from_global_dir(global_dir.clone()).unwrap();
+        let project = service
+            .add_project(project_dir.to_string_lossy().to_string())
+            .unwrap();
+        assert!(
+            !project.root_path.starts_with(r"\\?\"),
+            "project root kept the verbatim prefix: {}",
+            project.root_path
+        );
+
+        let session = service
+            .create_session(&project.id, "deepseek".to_string(), "Hello".to_string())
+            .unwrap();
+        assert!(
+            !session.cwd.starts_with(r"\\?\"),
+            "session cwd kept the verbatim prefix: {}",
+            session.cwd
+        );
+
+        // A verbatim row written by an older build still resolves to its
+        // project, is reported plain, and is not duplicated by re-adding it.
+        let stored = fs::read_to_string(global_dir.join("projects.json")).unwrap();
+        let legacy_root = format!(r"\\?\{}", project.root_path);
+        fs::write(
+            global_dir.join("projects.json"),
+            stored.replace(&project.root_path, &legacy_root),
+        )
+        .unwrap();
+
+        let restarted = StorageService::from_global_dir(global_dir).unwrap();
+        let listed = restarted.list_projects().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].root_path, project.root_path);
+        let again = restarted
+            .add_project(project_dir.to_string_lossy().to_string())
+            .unwrap();
+        assert_eq!(again.id, project.id);
+        assert_eq!(restarted.list_projects().unwrap().len(), 1);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn projects_can_be_reordered() {
         let root = test_root();
         let global_dir = root.join("global");
@@ -1340,7 +1398,12 @@ mod tests {
 
         assert!(service.list_projects().unwrap().is_empty());
         assert_eq!(service.list_chat_sessions().unwrap()[0].id, session.id);
-        assert_eq!(Path::new(&session.cwd), workspace.canonicalize().unwrap());
+        // Chat sessions record the plain folder spelling: agent runtimes choke on
+        // the verbatim (`\\?\`) form that canonicalize produces.
+        assert_eq!(
+            session.cwd,
+            crate::app_paths::plain_path(&workspace.canonicalize().unwrap().to_string_lossy())
+        );
         assert!(!workspace.join(".marionette").exists());
         assert!(global_dir.join("chats/sessions/index.json").is_file());
 

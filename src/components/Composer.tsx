@@ -15,6 +15,7 @@ import {
   expandAcpConfigAttempts,
   getAcpSupplement,
   mergeAcpCapabilities,
+  modelAssertForEffortRefresh,
   normalizeAgentModeId,
 } from "../lib/acpSupplements";
 import {
@@ -143,6 +144,14 @@ type ComposerProps = {
   onWarmAgent?: () => void;
   /** Ensure ACP is ready before set_config_option (returns false if failed). */
   onEnsureAgentReady?: () => Promise<boolean>;
+  /**
+   * Agent-side housekeeping prompt (Grok `/always-approve`) that Marionette
+   * sends on the user's behalf. It still consumes the connection's one turn
+   * slot, so it must run through the host pipeline — which marks the session
+   * running — instead of a raw `sendAcpPrompt`. Otherwise the replay is
+   * invisible and the user's next send is refused as "already in flight".
+   */
+  onSilentPrompt?: (text: string) => Promise<unknown>;
   /** Last stream activity (ms) — escalates busy strip when the turn goes quiet. */
   lastActivityAt?: number | null;
   /**
@@ -433,6 +442,7 @@ export function Composer({
   onActiveModelChange,
   onWarmAgent,
   onEnsureAgentReady,
+  onSilentPrompt,
   lastActivityAt = null,
   onProviderKeysChanged,
   onAgentBinaryUpdated,
@@ -847,7 +857,11 @@ export function Composer({
           const aa = getAcpSupplement(agent.id)?.alwaysApprove;
           if (!aa) throw new Error("This agent has no always-approve control");
           const cmd = patch.alwaysApprove ? aa.on : aa.off;
-          await sendAcpPrompt(sessionId, cmd);
+          // Host pipeline when wired: the replay owns the turn slot, and the
+          // session has to say so (see onSilentPrompt). Raw send is the fallback
+          // for an isolated render.
+          if (onSilentPrompt) await onSilentPrompt(cmd);
+          else await sendAcpPrompt(sessionId, cmd);
           persistPrefs({ preferredAlwaysApprove: patch.alwaysApprove });
           // Same localStorage last-used path as model/mode so a *new* Grok
           // dialog inherits Always approve instead of always opening as Ask.
@@ -950,7 +964,7 @@ export function Composer({
         updating.current = false;
       }
     },
-    [sessionId, flash, loadCapabilities, agent.id, caps, onEnsureAgentReady, persistPrefs],
+    [sessionId, flash, loadCapabilities, agent.id, caps, onEnsureAgentReady, onSilentPrompt, persistPrefs],
   );
 
   // Restore preferred model/mode/effort once caps are available for this dialog.
@@ -983,8 +997,28 @@ export function Composer({
         : null;
     const aaSpec = getAcpSupplement(agent.id)?.alwaysApprove;
 
+    const modelOk =
+      prefModel &&
+      (caps.models.length === 0 || caps.models.some((m) => m.id === prefModel));
+    const modeOk =
+      prefMode &&
+      (caps.modes.length === 0 || caps.modes.some((m) => m.id === prefMode));
+
+    // OpenCode may already sit on the preferred model while omitting Effort
+    // from session/new. Re-asserting that model is still work we must do even
+    // when disk prefs are otherwise empty.
+    const modelAssert = modelAssertForEffortRefresh(
+      caps,
+      modelOk ? prefModel : caps.currentModel,
+    );
+
     const hasAny = Boolean(
-      prefModel || prefMode || prefEffortId || prefEffort != null || (aaSpec && prefAlways != null),
+      prefModel ||
+        prefMode ||
+        prefEffortId ||
+        prefEffort != null ||
+        (aaSpec && prefAlways != null) ||
+        modelAssert,
     );
     if (!hasAny) {
       prefsRestoredKey.current = key;
@@ -994,13 +1028,6 @@ export function Composer({
     // Claim the key before the async work so handshake re-entries do not fan
     // out parallel restores. Failures still leave disk prefs intact for next warm.
     prefsRestoredKey.current = key;
-
-    const modelOk =
-      prefModel &&
-      (caps.models.length === 0 || caps.models.some((m) => m.id === prefModel));
-    const modeOk =
-      prefMode &&
-      (caps.modes.length === 0 || caps.modes.some((m) => m.id === prefMode));
 
     // Optimistic UI for model/mode; effort waits until we know the model list.
     if (modelOk && prefModel) setCurrentModel(prefModel);
@@ -1035,8 +1062,10 @@ export function Composer({
       const baseline = caps;
 
       // 1) Model — switching resets agent-side effort to the model default.
-      if (modelOk && prefModel && prefModel !== baseline.currentModel) {
-        await commitUpdate({ model: prefModel }, () => {
+      //    Also re-assert when preferred already matches but Effort was omitted
+      //    from session/new (OpenCode / Zed #31961 class of bug).
+      if (modelAssert) {
+        await commitUpdate({ model: modelAssert.model }, () => {
           if (!cancelled) setCurrentModel(baseline.currentModel);
         });
       }
@@ -1044,17 +1073,20 @@ export function Composer({
       // 2) Wait until live caps reflect the preferred model (effort options
       //    are re-advertised with it). getSessionCapabilities is in-memory and
       //    cheap; a few short polls cover OpenCode's post-set_model refresh.
-      const needModelWait =
-        Boolean(modelOk && prefModel) && prefModel !== baseline.currentModel;
+      const needModelWait = Boolean(modelAssert);
       let live = baseline;
-      if (needModelWait) {
+      if (needModelWait && modelAssert) {
         for (let i = 0; i < 8; i++) {
           if (cancelled) return;
           await new Promise((r) => window.setTimeout(r, 80 + i * 40));
           const next = await getSessionCapabilities(sessionId).catch(() => null);
           if (!next) continue;
           live = next;
-          if (next.currentModel === prefModel) break;
+          const onTarget = next.currentModel === modelAssert.model;
+          const effortReady =
+            Boolean(next.effortConfigId) || (next.effortOptions?.length ?? 0) > 0;
+          // switch: land on the model first; republish: wait for Effort echo.
+          if (modelAssert.reason === "switch" ? onTarget : effortReady) break;
         }
       } else {
         const next = await getSessionCapabilities(sessionId).catch(() => null);
@@ -1216,11 +1248,11 @@ export function Composer({
       // Allow send with only images / empty text when attachments exist.
       if (!text.trim() && imageAttachments.length === 0) return;
       onWarmAgent?.();
-      const dropped = [
-        ...droppedPathsRef.current,
-        ...imageAttachments.map((a) => a.path),
-      ].filter((p, i, arr) => arr.indexOf(p) === i);
-      const droppedInText = dropped.filter((p) => text.includes(p) || imageAttachments.some((a) => a.path === p));
+      // Images go as ACP image blocks, not as files the agent must open.
+      const dropped = [...droppedPathsRef.current].filter(
+        (p, i, arr) => arr.indexOf(p) === i,
+      );
+      const droppedInText = dropped.filter((p) => text.includes(p));
       const sentWith = currentModel ?? (caps && caps.models.length > 0 ? caps.models[0].id : null);
       if (sentWith) recordModelUsage(sentWith);
 

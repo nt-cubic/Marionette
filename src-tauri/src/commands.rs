@@ -426,8 +426,9 @@ fn install_agent_blocking(
         for dependency in &agent.install.requires {
             if let Some(package) = &dependency.package {
                 let missing = matches!(resolve_command(&dependency.command), Ok(None));
-                // Force upgrades only the agent package; deps install when absent.
-                if missing {
+                // UI "→ latest" passes force=true with deps included — refresh the
+                // driven CLI (e.g. @openai/codex) into the same npm prefix too.
+                if force || missing {
                     packages.push(crate::agent_update::npm_registry_name(package).to_string());
                 }
             }
