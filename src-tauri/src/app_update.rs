@@ -71,8 +71,37 @@ fn pick_asset(assets: &[Value]) -> Option<(&str, &str)> {
     best.map(|(n, u, _)| (n, u))
 }
 
+/// If the last apply failed, read the bat's failure note and consume the
+/// marker. The bat writes `apply-result.txt` in the updates dir and the app
+/// exits before the copy result is known, so the next check surfaces it.
+fn read_apply_result(dir: &Path) -> Option<String> {
+    let marker = dir.join("apply-result.txt");
+    let bytes = match fs::read(&marker) {
+        Ok(b) => b,
+        Err(_) => return None,
+    };
+    let _ = fs::remove_file(&marker);
+    let text = String::from_utf8_lossy(&bytes);
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    // A successful copy leaves "1 file(s) copied." in the marker before it is
+    // deleted; only report genuine failures.
+    if !text.contains("Update copy failed") && !text.contains("timed out") {
+        return None;
+    }
+    // Cap bytes without splitting a UTF-8 char (cmd may emit localized text).
+    let mut end = text.len().min(300);
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(format!("上次自动更新失败，未能替换程序文件：{}", &text[..end]))
+}
+
 pub fn check_for_update() -> AppUpdateInfo {
     let current = current_version();
+    let failed_note = updates_dir().ok().and_then(|d| read_apply_result(&d));
     let url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest");
     let agent = match crate::http_client::agent() {
         Ok(a) => a,
@@ -85,7 +114,9 @@ pub fn check_for_update() -> AppUpdateInfo {
                 asset_name: None,
                 asset_url: None,
                 notes: None,
-                note: Some(format!("TLS unavailable: {e}")),
+                note: failed_note
+                    .clone()
+                    .or_else(|| Some(format!("TLS unavailable: {e}"))),
             };
         }
     };
@@ -106,7 +137,9 @@ pub fn check_for_update() -> AppUpdateInfo {
                 asset_name: None,
                 asset_url: None,
                 notes: None,
-                note: Some("Could not reach GitHub Releases".into()),
+                note: failed_note
+                    .clone()
+                    .or_else(|| Some("Could not reach GitHub Releases".into())),
             };
         }
     };
@@ -122,7 +155,9 @@ pub fn check_for_update() -> AppUpdateInfo {
                 asset_name: None,
                 asset_url: None,
                 notes: None,
-                note: Some("Invalid GitHub Releases response".into()),
+                note: failed_note
+                    .clone()
+                    .or_else(|| Some("Invalid GitHub Releases response".into())),
             };
         }
     };
@@ -168,6 +203,8 @@ pub fn check_for_update() -> AppUpdateInfo {
     let update_available = !latest.is_empty() && is_newer(&latest, &current) && asset_url.is_some();
     let note = if update_available {
         None
+    } else if failed_note.is_some() {
+        failed_note
     } else if asset_url.is_none() && !latest.is_empty() {
         Some("Release has no .exe asset".into())
     } else {
@@ -293,24 +330,42 @@ pub fn apply_and_relaunch() -> Result<(), String> {
     let pid = std::process::id();
 
     // Windows batch: wait for PID to die, copy, restart, self-delete.
+    //
+    // `chcp 65001` must run before any non-ASCII path is parsed: the bat is
+    // written as UTF-8, and cmd otherwise decodes it with the system ANSI/OEM
+    // codepage (Shift-JIS/GBK on CJK systems), which garbles non-ASCII paths
+    // (工具 → mojibake) and silently breaks the copy. Verified to work under
+    // the CREATE_NO_WINDOW spawn below.
+    //
+    // Failures (copy error / wait timeout) write apply-result.txt in this dir
+    // so the next check_for_update() can surface them — the app has already
+    // exited by the time the bat runs, so nothing else can report them.
     let bat = dir.join("apply-update.bat");
     let bat_body = format!(
         r#"@echo off
-setlocal
+chcp 65001 >NUL
+setlocal EnableDelayedExpansion
 set "TARGET={target}"
 set "NEW={new}"
 set "PID={pid}"
+set /a TRIES=0
 :wait
 tasklist /FI "PID eq %PID%" 2>NUL | find "%PID%" >NUL
 if not errorlevel 1 (
+  set /a TRIES+=1
+  if !TRIES! GEQ 180 (
+    echo timed out waiting for app exit > "%~dp0apply-result.txt"
+    exit /b 2
+  )
   timeout /t 1 /nobreak >NUL
   goto wait
 )
-copy /Y "%NEW%" "%TARGET%" >NUL
+copy /Y "%NEW%" "%TARGET%" > "%~dp0apply-result.txt" 2>&1
 if errorlevel 1 (
-  echo Update copy failed
+  echo Update copy failed >> "%~dp0apply-result.txt"
   exit /b 1
 )
+del "%~dp0apply-result.txt" 2>NUL
 start "" "%TARGET%"
 del "%~f0"
 "#,

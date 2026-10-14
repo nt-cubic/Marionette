@@ -882,7 +882,7 @@ export function App() {
     if (!isTauriRuntime()) return;
     const t = window.setTimeout(() => {
       void checkAppUpdate().then((info) => {
-        if (info?.updateAvailable) setAppUpdate(info);
+        if (info?.updateAvailable || info?.note) setAppUpdate(info);
       });
     }, 4000);
     return () => window.clearTimeout(t);
