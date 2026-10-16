@@ -4,8 +4,17 @@ title Marionette portable build
 
 cd /d "%~dp0.."
 
+rem -- variant: --engine = single exe with the engine embedded (gzip, ~+18.5MB) --
+set "EMBED_ENGINE="
+if /I "%~1"=="--engine" set "EMBED_ENGINE=1"
+
 echo.
 echo  === Marionette portable build ===
+if defined EMBED_ENGINE (
+  echo  Variant: ENGINE-EMBEDDED ^(third_party\magpie, offline install^)
+) else (
+  echo  Variant: plain ^(engine downloads on demand^)
+)
 echo  Single exe ^| ring-less TLS ^(schannel^) ^| UPX ship ~1.2 MB
 echo.
 echo  Env: SKIP_UPX=1  REQUIRE_UPX=1  INSTALL_UPX=1
@@ -104,10 +113,64 @@ echo  [upx] found: !UPX_BIN!
 
 :after_upx_find
 
+rem -- embedded engine: build magpie from third_party, gzip into src-tauri/engine-embedded --
+if not defined EMBED_ENGINE goto after_embed
+
+echo.
+echo  [engine] building nogui magpie from third_party\magpie ...
+if not exist "third_party\magpie\main.go" (
+  echo  [error] third_party\magpie missing - first run: powershell -File tools\import-magpie.ps1
+  goto fail
+)
+set "GO_BIN="
+where go >nul 2>&1
+if not errorlevel 1 (
+  for /f "delims=" %%P in ('where go 2^>nul') do (
+    set "GO_BIN=%%P"
+    goto go_found
+  )
+)
+if exist "C:\Program Files\Go\bin\go.exe" (
+  set "GO_BIN=C:\Program Files\Go\bin\go.exe"
+  goto go_found
+)
+echo  [error] Go toolchain not found - winget install -e --id GoLang.Go
+goto fail
+
+:go_found
+echo  [engine] go: !GO_BIN!
+set "MAG_VER="
+for /f "usebackq delims=" %%V in ("third_party\magpie\VERSION") do set "MAG_VER=%%V"
+if not defined MAG_VER (
+  echo  [error] third_party\magpie\VERSION missing - re-run tools\import-magpie.ps1
+  goto fail
+)
+if not exist "src-tauri\engine-embedded" mkdir "src-tauri\engine-embedded"
+pushd "third_party\magpie"
+set "CGO_ENABLED=0"
+"!GO_BIN!" build -tags nogui -trimpath -ldflags "-s -w -X main.version=!MAG_VER!" -o "..\..\src-tauri\engine-embedded\magpie-windows-amd64.exe" .
+if errorlevel 1 (
+  popd
+  echo  [hint] module download failures: set GOPROXY=https://goproxy.cn,direct and retry
+  goto fail
+)
+popd
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0gzip-file.ps1" "src-tauri\engine-embedded\magpie-windows-amd64.exe" "src-tauri\engine-embedded\magpie-windows-amd64.exe.gz"
+if errorlevel 1 goto fail
+copy /Y "third_party\magpie\VERSION" "src-tauri\engine-embedded\VERSION" >nul
+del "src-tauri\engine-embedded\magpie-windows-amd64.exe" >nul 2>&1
+echo  [engine] embedded artifact ready: version !MAG_VER!
+
+:after_embed
+
 echo.
 echo  [build] tauri release (LTO+strip+opt-z)...
 echo.
-call npm run build:portable
+if defined EMBED_ENGINE (
+  call npm run build:portable -- --features embedded-engine
+) else (
+  call npm run build:portable
+)
 if errorlevel 1 goto fail
 
 set "SRC=%~dp0..\src-tauri\target\release\marionette.exe"
@@ -119,8 +182,13 @@ if not exist "%SRC%" (
 set "OUTDIR=%~dp0..\dist-portable"
 if not exist "%OUTDIR%\" mkdir "%OUTDIR%"
 
-set "OUT_RAW=%OUTDIR%\Marionette-uncompressed.exe"
-set "OUT=%OUTDIR%\Marionette.exe"
+if defined EMBED_ENGINE (
+  set "OUT_RAW=%OUTDIR%\Marionette-Engine-uncompressed.exe"
+  set "OUT=%OUTDIR%\Marionette-Engine.exe"
+) else (
+  set "OUT_RAW=%OUTDIR%\Marionette-uncompressed.exe"
+  set "OUT=%OUTDIR%\Marionette.exe"
+)
 copy /Y "%SRC%" "%OUT_RAW%" >nul
 if errorlevel 1 goto fail
 copy /Y "%SRC%" "%OUT%" >nul
@@ -164,6 +232,7 @@ if defined UPX_NOTE echo  UPX:          %UPX_NOTE%
 echo  TLS:          ring-less (ureq + native-tls / schannel)
 echo.
 
+if defined EMBED_ENGINE goto size_ok
 if %BYTES% GEQ 10485760 (
   echo  [warn] Ship over 10 MB
 ) else if %BYTES% GEQ 3145728 (
@@ -175,9 +244,17 @@ if %BYTES% GEQ 10485760 (
 ) else (
   echo  [ok] Ship size in portable band (target ~1.2 MB with UPX)
 )
+goto after_size_bands
+:size_ok
+echo  [ok] Embedded-engine build - ship size includes the gzipped engine (~19 MB expected)
+:after_size_bands
 
 echo.
-echo  Copy dist-portable\Marionette.exe and run. Needs WebView2 Runtime.
+if defined EMBED_ENGINE (
+  echo  Copy dist-portable\Marionette-Engine.exe and run. Needs WebView2 Runtime.
+) else (
+  echo  Copy dist-portable\Marionette.exe and run. Needs WebView2 Runtime.
+)
 echo.
 if /I not "%NOPAUSE%"=="1" pause
 exit /b 0

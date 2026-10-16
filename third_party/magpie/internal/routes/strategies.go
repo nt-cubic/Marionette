@@ -1,0 +1,222 @@
+package routes
+
+import (
+	"sort"
+	"sync"
+	"time"
+
+	"github.com/yetone/magpie/internal/provider"
+)
+
+// Shares of an allowance past which an account is kept for when the others
+// can't take a request: low, and all but used up — where the agent signed
+// in to it is signed in to another, too (provider.SpentShare).
+const (
+	LowShare  = 90
+	UsedShare = provider.SpentShare
+)
+
+// tier is 0 for a share with room, 1 for low, 2 for all but used up.
+func tier(share float64) int {
+	switch {
+	case share >= UsedShare:
+		return 2
+	case share >= LowShare:
+		return 1
+	}
+	return 0
+}
+
+func identity(n int) []int {
+	idx := make([]int, n)
+	for i := range idx {
+		idx[i] = i
+	}
+	return idx
+}
+
+// Smart is the default: of those with quota to spare, the one whose
+// allowance renews soonest, since what it has left is lost then, while one
+// renewing later keeps: the biggest window decides — the week, not the five
+// hours in it — and the next one only when that renews in the same hour. An
+// account with no week (Claude Enterprise's five hours alone) goes by its
+// five hours, so ahead of every week but one renewing sooner; a window not
+// started renews its whole span from now (#576). A Codex account that
+// spends a reset about to run out by itself (auto-use on, its windows used)
+// renews when that is spent, if sooner: what it has left is lost there just
+// the same (#718). Only holding one, or one that runs out after the week
+// renews, changes nothing. Those alike stay in their order, keeping the
+// vendor's prompt cache warm. Past that, whichever has the most left, and
+// one all but used up only when nothing else can take it. Only the windows
+// that count the model do: Opus's own weekly allowance being used up leaves
+// Sonnet alone.
+//
+// One not known that tells what it has left as it answers goes first,
+// once: else, kept after those known, it would never answer and never be
+// known (Anthropic's usage endpoint can turn magpie away for hours).
+var Smart = Strategy{Order: func(_ string, seats []Seat) []int {
+	var fine, low, spent []int
+	for i, s := range seats {
+		switch tier(s.Used) {
+		case 2:
+			spent = append(spent, i)
+		case 1:
+			low = append(low, i)
+		default:
+			fine = append(fine, i)
+		}
+	}
+	sort.SliceStable(fine, func(i, j int) bool {
+		a, b := seats[fine[i]], seats[fine[j]]
+		if a.Learns != b.Learns {
+			return a.Learns
+		}
+		ri, rj := a.Soon, b.Soon
+		for k := 0; k < len(ri) || k < len(rj); k++ {
+			var x, y time.Time // to the hour, so a few minutes don't reorder
+			if k < len(ri) {
+				x = ri[k].Truncate(time.Hour)
+			}
+			if k < len(rj) {
+				y = rj[k].Truncate(time.Hour)
+			}
+			switch {
+			case x.Equal(y):
+				continue
+			case x.IsZero() || y.IsZero(): // not known: after those known
+				return y.IsZero()
+			}
+			return x.Before(y)
+		}
+		return false
+	})
+	for _, l := range [][]int{low, spent} {
+		sort.SliceStable(l, func(i, j int) bool { return seats[l[i]].Used < seats[l[j]].Used })
+	}
+	return append(append(fine, low...), spent...)
+}}
+
+// Ordered tries a pool in its order: the first until it can't answer.
+var Ordered = Strategy{Exact: true, Order: func(_ string, seats []Seat) []int { return identity(len(seats)) }}
+
+var turns = struct {
+	sync.Mutex
+	m map[string]int // pool → requests routed in turn
+}{m: map[string]int{}}
+
+// Rotate starts each request one further along the pool.
+var Rotate = Strategy{Order: func(pool string, seats []Seat) []int {
+	turns.Lock()
+	n := turns.m[pool] % len(seats)
+	turns.m[pool]++
+	turns.Unlock()
+	return append(identity(len(seats))[n:], identity(n)...)
+}}
+
+// LeastUsed puts a subscription, or a key that reads its own windows, by the
+// share of its allowance used, as the vendor says; then, and for other
+// keys, by what magpie sent it lately.
+var LeastUsed = Strategy{ByUse: true, Order: func(_ string, seats []Seat) []int {
+	idx := identity(len(seats))
+	sort.SliceStable(idx, func(a, b int) bool {
+		sa, sb := seats[idx[a]], seats[idx[b]]
+		if sa.Used != sb.Used {
+			return sa.Used < sb.Used
+		}
+		return sa.Tokens < sb.Tokens
+	})
+	return idx
+}}
+
+// Pace puts a subscription by what it has left of its week per hour until
+// that renews, the most first: it has the most to lose at the reset, where
+// the most left alone (least used) sends a fresh account ahead of one with
+// 80% left and an hour to go, and the soonest reset alone (smart) sends one
+// with 3% left and an hour to go ahead of one with 90% and two. The tiers
+// are Smart's: one at 90% or more of any window that counts the model — the
+// five hours too, a rate cap it would be sent into before its allowance was
+// read again — waits until the others can't answer, one all but used up
+// until nothing else can; each tier by the share used. Among the rest, one
+// not known that tells what it has left as it answers goes first while it
+// isn't, as in Smart, else it would never be known; then the pace, those
+// alike within a tenth by what magpie sent them lately, then in their
+// order, keeping the vendor's prompt cache warm. An account not known
+// counts as a whole week ahead of it; a key has no week, unless it reads
+// its own windows (a sub2api key's limits). A Codex account that spends a
+// reset about to run out by itself goes by the hours until then when that
+// is sooner (Allowance.Pace, #717).
+var Pace = Strategy{ByUse: true, Order: func(_ string, seats []Seat) []int {
+	// the bands of pace alike within a tenth, the highest first: drawn
+	// before sorting, from each band's highest down, so that sorting by
+	// them is consistent — "within a tenth of each other" alone is not,
+	// three paces a twelfth apart each going round in a circle. Drawn among
+	// those the pace orders alone — one running low would otherwise set a
+	// band's top and part two alike behind it
+	var byPace []int
+	for i, s := range seats {
+		if tier(s.Used) == 0 && !s.Learns {
+			byPace = append(byPace, i)
+		}
+	}
+	sort.SliceStable(byPace, func(a, b int) bool { return seats[byPace[a]].Pace > seats[byPace[b]].Pace })
+	band, top := make([]int, len(seats)), 0.0
+	for k, i := range byPace {
+		if p := seats[i].Pace; k == 0 || p < 0.9*top {
+			top = p
+			if k > 0 {
+				band[i] = band[byPace[k-1]] + 1
+				continue
+			}
+		} else {
+			band[i] = band[byPace[k-1]]
+		}
+	}
+	idx := identity(len(seats))
+	sort.SliceStable(idx, func(a, b int) bool {
+		sa, sb := seats[idx[a]], seats[idx[b]]
+		if ta, tb := tier(sa.Used), tier(sb.Used); ta != tb {
+			return ta < tb
+		} else if ta > 0 {
+			if sa.Used != sb.Used {
+				return sa.Used < sb.Used
+			}
+		} else if sa.Learns != sb.Learns {
+			return sa.Learns
+		} else if band[idx[a]] != band[idx[b]] {
+			return band[idx[a]] < band[idx[b]]
+		}
+		return sa.Tokens < sb.Tokens
+	})
+	return idx
+}}
+
+// Weighted spreads a pool's requests over its seats by each one's weight,
+// smoothly (Round): the one the pool's round picks now first, the others
+// after it in their order, for failover.
+var Weighted = Strategy{Order: func(pool string, seats []Seat) []int {
+	keys, weights, rests := make([]string, len(seats)), make([]int, len(seats)), make([]bool, len(seats))
+	for i, s := range seats {
+		keys[i], weights[i], rests[i] = s.Key, max(s.Weight, 1), s.Resting
+	}
+	return First(Round(pool, keys, weights, rests), len(seats))
+}}
+
+// First is the order of n with best first and the others after it in their
+// order; best below 1 leaves it as it is.
+func First(best, n int) []int {
+	idx := identity(n)
+	if best <= 0 {
+		return idx
+	}
+	return append(append([]int{best}, idx[:best]...), idx[best+1:]...)
+}
+
+// Builtin are the routings besides Smart and their strategies, as
+// plugins/rotation registers them.
+var Builtin = map[string]Strategy{
+	provider.Ordered:   Ordered,
+	provider.Rotate:    Rotate,
+	provider.LeastUsed: LeastUsed,
+	provider.Pace:      Pace,
+	provider.Weighted:  Weighted,
+}

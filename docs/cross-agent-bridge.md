@@ -251,6 +251,15 @@ grok 重放含 assistant 消息的历史时会在每条消息对象上标注 `mo
 - **补注册钩子**（`engine::reregister_key_providers`，仅自拉实例、复用实例跳过）：`bridge_add_key`（新存/换 key）与 `bridge_scan`（凭据页打开/刷新——吸收 opencode auth.json 的外部变更）时后台重跑注册。引擎自身的 enable 流水线仍是最全面的注册时机。
 - **已知限制**：删除凭据条目**不会**从引擎回收 provider（magpie 侧需 `provider rm`，注册器只做 upsert）；复用实例（用户自装 magpie）永不写入。回收机制与引擎空闲回收一起放 M3。
 
+**落地记录 · 第三轮（2026-10-16 深夜，「单 exe 内置引擎」定稿）：**
+
+- **形态**：带引擎版把 nogui magpie **gzip 内嵌进 exe**（实测 47.9MB → 18.5MB，UPX 后整 exe ~20MB）；普通版保持现状（首次启用下载）。两版并存，`build-portable.bat --engine` 产出 `Marionette-Engine.exe`。
+- **源码吸纳**：`tools\import-magpie.ps1 -Tag <v>` 把上游 magpie 的构建子集（main.go / go.mod / internal / plugins / LICENSE，裁掉 59MB 的 site/）吸进 `third_party\magpie`（~38MB，MIT 保留）。**升引擎 = 换 tag 重跑 import + 重编**，引擎版本与 app 版本一起走，运行时下载路径退役为无内嵌构建的回退。
+- **构建链**（`build-portable.bat --engine`）：Go 工具链编 `third_party` → `gzip-file.ps1` 压成 `src-tauri\engine-embedded\magpie-windows-amd64.exe.gz`（gitignored 产物）+ `VERSION` 戳 → `tauri build --features embedded-engine`（`include_bytes!` 进二进制）。
+- **运行时**（`engine.rs`）：安装期内嵌优先——manifest 版本与内嵌版本不一致或缺失 → 离线解压落位（临时文件 + rename + 真实 sha 进 manifest，与下载路径共用 `is_installed_at` 校验语义）；解压后仍不完整或无内嵌 → 原下载路径不变。flate2 纯 Rust 后端解码，只有 embedded-engine 构建为它付体积。
+- **左下角入口改版**：钥匙按钮 → **互联图标**（`Network`）；点击不再弹凭据窗——一键确保网关在跑（未运行即 `engine_enable`）+ 状态浮层（运行端口/下载进度/失败原因），「管理密钥与来源」退居浮层底部链接。引擎随 app 自动启动（第二轮已落地），所以这个按钮日常只是状态灯。
+- **机器实测（本机）**：自编 v0.1.1274 nogui `-s -w` = 47.9MB、gzip 18.5MB、`Marionette-Engine.exe` UPX 后 20.1MB（普通版同 UPX 1.5MB）。端到端构建链已跑通（2026-10-16 23:38）。
+
 ### M3 — 打磨
 
 配额合并展示（provider 探测 ∪ `magpie quota`）、引擎空闲回收与自动升级、**引擎侧 provider 回收**（删除凭据条目时 `provider rm` 同步进引擎）、扫描开关 UI、文档收尾（CURRENT.md 更新、本稿归档）。

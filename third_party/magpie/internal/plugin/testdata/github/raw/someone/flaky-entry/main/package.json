@@ -1,0 +1,7 @@
+{
+  "name": "flaky-entry",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./index.js",
+  "magpie": { "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxNiAxNiI+PGNpcmNsZSBjeD0iOCIgY3k9IjgiIHI9IjYiLz48L3N2Zz4=" }
+}

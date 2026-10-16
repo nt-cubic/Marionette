@@ -1,0 +1,7 @@
+{
+  "name": "magpie-plugins",
+  "private": true,
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "1.2.0"
+  }
+}

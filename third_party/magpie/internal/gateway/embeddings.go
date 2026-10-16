@@ -1,0 +1,347 @@
+package gateway
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/usage"
+)
+
+// retrieveTimeout bounds an embeddings or rerank call: a vendor answers
+// one in seconds, a long batch in a minute or two.
+const retrieveTimeout = 3 * time.Minute
+
+// retrieve serves the retrieval APIs (#765): POST /v1/embeddings in
+// OpenAI's shape and POST /v1/rerank in the shape Cohere, Jina and Voyage
+// share. Neither is a chat, so neither is translated: the body goes to the
+// model's provider at its OpenAI-style base + path as the agent sent it,
+// the model id the provider's own, and the vendor's answer comes back as
+// it said it. The call is recorded and its tokens counted like a turn's.
+func (s *Server) retrieve(path, operation string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, admitted := s.requestBody(w, r, provider.Chat)
+		if !admitted {
+			return
+		}
+		start := time.Now()
+		var req map[string]json.RawMessage
+		if json.Unmarshal(body, &req) != nil || req == nil {
+			writeError(w, provider.Chat, 400, "the body isn't a JSON object")
+			return
+		}
+		var asked string
+		json.Unmarshal(req["model"], &asked)
+		if asked == "" {
+			writeError(w, provider.Chat, 400, "name the model: \"model\" is a magpie model id, as /v1/models lists them")
+			return
+		}
+		s.serveRetrieval(w, r, path, operation, start, asked, &jsonRetrieval{req: req})
+	}
+}
+
+// retrieval is a retrieval request as read: what goes to a vendor for each
+// model it may be asked of.
+type retrieval interface {
+	// mask masks what goes to the vendors, and gives the writer that puts
+	// the masked values back in their answer
+	mask(w http.ResponseWriter) (http.ResponseWriter, func(), error)
+	// forModel is the body and its Content-Type for the provider's own id
+	// of the model
+	forModel(model string) ([]byte, string, error)
+	// answerType is the Content-Type the vendor's answer goes back with,
+	// given the one it came with
+	answerType(got string) string
+}
+
+// jsonRetrieval is an embeddings or rerank body: a JSON object.
+type jsonRetrieval struct{ req map[string]json.RawMessage }
+
+func (j *jsonRetrieval) mask(w http.ResponseWriter) (http.ResponseWriter, func(), error) {
+	// masked once, as the settings say: a document a reranker gives back
+	// has its secrets again
+	all, _ := json.Marshal(j.req)
+	w, all, done, err := redacted(w, all)
+	json.Unmarshal(all, &j.req)
+	return w, done, err
+}
+
+// answerType is JSON, whatever a vendor labels it.
+func (j *jsonRetrieval) answerType(string) string { return "application/json" }
+
+func (j *jsonRetrieval) forModel(model string) ([]byte, string, error) {
+	j.req["model"], _ = json.Marshal(model)
+	out, err := json.Marshal(j.req)
+	return out, "application/json", err
+}
+
+// serveRetrieval routes a retrieval request for the model asked to its
+// provider, or over a group's members, and passes the answer back.
+func (s *Server) serveRetrieval(w http.ResponseWriter, r *http.Request, path, operation string, start time.Time, asked string, req retrieval) {
+	who := callerOf(r)
+	call := Call{Time: start, From: provider.Chat, Agent: who.agent, Via: who.via, Model: asked}
+	usage.Saw(agentOf(r))
+	// a model the user disabled (#1867), or a group of them all
+	if msg, off := idOff(asked); off {
+		call.Status, call.Error = 403, msg
+		writeError(w, provider.Chat, 403, msg)
+		s.record(call)
+		return
+	}
+	p, model, ok := resolveRetrievalModel(asked)
+	if _, _, isGroup := provider.FindGroup(asked); ok && !isGroup {
+		if msg, off := modelOff(p, model, asked); off {
+			call.Status, call.Error = 403, msg
+			writeError(w, provider.Chat, 403, msg)
+			s.record(call)
+			return
+		}
+	}
+	if !ok {
+		msg := unknownModel(asked, "")
+		if off, isOff := provider.SwitchedOff(asked); isOff {
+			msg = switchedOff(off, asked)
+		}
+		call.Status, call.Error = 404, msg
+		writeError(w, provider.Chat, 404, msg)
+		s.record(call)
+		return
+	}
+	g, ms, isGroup := provider.FindGroup(asked)
+	if keyWho, held := keyHolds(r); held && (isGroup && !groupAllowed(keyWho, g, ms) || !isGroup && !modelAllowed(keyWho, p, model)) {
+		msg := keyModelError(keyWho, asked)
+		call.Status, call.Error = 403, msg
+		writeError(w, provider.Chat, 403, msg)
+		s.record(call)
+		return
+	}
+	if isGroup {
+		// a model a pause rule holds for now is left out, as for a chat
+		var paused []provider.Paused
+		if ms, paused = provider.PausedOut(g.Live(), ms, agentOf(r), "", ruleClock()); len(ms) == 0 && len(paused) > 0 {
+			msg := pausedError(asked, paused)
+			call.Status, call.Error = 503, msg
+			writeError(w, provider.Chat, 503, msg)
+			s.record(call)
+			return
+		} else if len(paused) > 0 {
+			p, model = ms[0].Provider, ms[0].Model // not the paused one, when planning finds none
+		}
+	}
+	call.To = provider.Chat
+	// a routing group's members are tried as its routing orders them,
+	// each account or key of theirs too (#773), the next asked when one
+	// fails: a member that serves no such API (404), one out of quota
+	// (429) or one whose vendor fails; a model is asked on its own
+	tries := []candidate{{p: p, model: model}}
+	if isGroup {
+		if cs, _ := s.planGroup(g.Live(), ms, provider.Chat); len(cs) > 0 {
+			tries = cs
+		}
+	} else {
+		// a model of one provider goes over its keys or accounts as a
+		// chat does, never on one whose own list of models leaves it
+		// out (#1657)
+		cs, code, msg := s.onKeys(r, p, model, asked)
+		if code != 0 {
+			call.Status, call.Error = code, msg
+			writeError(w, provider.Chat, code, msg)
+			s.record(call)
+			return
+		}
+		tries = cs
+	}
+	// the accounts or keys the calling key may not use are left out of
+	// the tries too (#905): a group's members through it no less
+	if keyWho, held := accountHolds(r); held {
+		tries = slices.DeleteFunc(tries, func(c candidate) bool { return !accountAllowed(keyWho, c) })
+		if len(tries) == 0 {
+			msg := keyAccountsError(keyWho, asked)
+			call.Status, call.Error = 403, msg
+			writeError(w, provider.Chat, 403, msg)
+			s.record(call)
+			return
+		}
+	}
+	tries = probeOne(tries) // of those resting, only the one back soonest (#1799)
+	var skipped []string
+	// unless every try is on this machine or the local network, set
+	// to go unmasked (provider.SkipsRedaction)
+	if slices.ContainsFunc(tries, func(c candidate) bool { return !c.p.SkipsRedaction() }) {
+		var done func()
+		var err error
+		w, done, err = req.mask(w)
+		defer done()
+		if err != nil { // fails closed
+			call.Status, call.Error = http.StatusServiceUnavailable, err.Error()
+			writeError(w, provider.Chat, http.StatusServiceUnavailable, err.Error())
+			s.record(call)
+			return
+		}
+	}
+	for i, c := range tries {
+		last := i == len(tries)-1
+		call.Provider = c.p.ID
+		base := strings.TrimRight(c.p.Base(provider.Chat), "/")
+		if base == "" {
+			msg := fmt.Sprintf("%s has no OpenAI-style API for %s", c.p.Name, path)
+			if !last {
+				skipped = append(skipped, c.label()+": "+msg)
+				continue
+			}
+			call.Status, call.Error, call.Millis = 400, msg, time.Since(start).Milliseconds()
+			call.Fallback = strings.Join(skipped, "; ")
+			writeError(w, provider.Chat, 400, msg)
+			s.record(call)
+			return
+		}
+		out, ctype, err := req.forModel(c.model)
+		if err != nil {
+			call.Status, call.Error, call.Millis = 400, err.Error(), time.Since(start).Milliseconds()
+			writeError(w, provider.Chat, 400, err.Error())
+			s.record(call)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), retrieveTimeout)
+		b, got, code, err := s.retrieveAs(ctx, c.p, base+path, ctype, out)
+		cancel()
+		call.Millis = time.Since(start).Milliseconds()
+		if err != nil && !last && r.Context().Err() == nil {
+			skipped = append(skipped, c.label()+": "+err.Error())
+			continue
+		}
+		call.Status = code
+		in, outTokens := retrievedTokens(b), answeredTokens(b)
+		call.Usage.Input, call.Usage.Output = in, outTokens
+		call.Fallback = strings.Join(skipped, "; ")
+		providerKeyID, providerKeyName := "", ""
+		if c.p.Account == nil && c.p.Key != "" {
+			providerKeyID, providerKeyName = provider.KeyID(c.p.Key), c.p.KeyName
+		}
+		appendUsage(r, usage.Record{Operation: operation, Time: start, Agent: call.Agent, Via: call.Via, Provider: c.p.ID, Host: c.p.Where(), Model: c.model, Requested: asked, ProviderKeyID: providerKeyID, ProviderKeyName: providerKeyName, ProviderAccount: accountOf(c.p),
+			Input: in, Output: outTokens, Millis: call.Millis, Status: code, Session: sessionOf(r.Header)})
+		if err != nil {
+			call.Error = err.Error()
+			s.record(call)
+			msg := err.Error()
+			if len(skipped) > 0 {
+				msg += " (tried first: " + call.Fallback + ")"
+			}
+			writeError(w, provider.Chat, code, msg)
+			return
+		}
+		s.record(call)
+		w.Header().Set("Content-Type", req.answerType(got))
+		w.WriteHeader(code)
+		w.Write(b)
+		return
+	}
+}
+
+// resolveRetrievalModel also finds a preset plan's embedding model by its
+// bare id. Such models stay out of agents' chat-model lists, so the general
+// resolver does not otherwise see them there.
+func resolveRetrievalModel(id string) (provider.Provider, string, bool) {
+	if p, model, ok := provider.Resolve(id); ok {
+		return p, model, true
+	}
+	if strings.Contains(id, "/") {
+		return provider.Provider{}, "", false
+	}
+	for _, p := range provider.All() {
+		if !p.On() || p.DecideOnly() {
+			continue
+		}
+		for _, m := range p.PlanEmbeddings() {
+			if m.ID == id {
+				return p, id, true
+			}
+		}
+	}
+	return provider.Provider{}, "", false
+}
+
+// retrieveFrom posts body to url as the provider signs its requests, and
+// reads the answer; a failure's code is the vendor's, with its message.
+func (s *Server) retrieveFrom(ctx context.Context, p provider.Provider, url string, body []byte) ([]byte, int, error) {
+	b, _, code, err := s.retrieveAs(ctx, p, url, "application/json", body)
+	return b, code, err
+}
+
+// retrieveAs is retrieveFrom with a body of its own Content-Type, a
+// multipart form's with its boundary; it also gives the answer's.
+func (s *Server) retrieveAs(ctx context.Context, p provider.Provider, url, ctype string, body []byte) ([]byte, string, int, error) {
+	ctx = s.metered(p.Via(ctx), p, "") // counted against its MaxRPM (rpm.go)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, "", 500, err
+	}
+	req.Header.Set("Content-Type", ctype)
+	if ctype == "application/json" {
+		req.Header.Set("Accept", "application/json")
+	}
+	// magpie's, or the agent's own where the provider passes it on (#1851)
+	stampUA(ctx, p, req.Header)
+	if p.IsRemoteMagpie() {
+		req.Header.Set("User-Agent", "magpie/"+Version)
+		passOnCaller(ctx, req)
+	}
+	if err := p.Sign(ctx, req, provider.Chat, body); err != nil {
+		return nil, "", 502, err
+	}
+	res, err := p.Do(s.client, req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, "", 504, fmt.Errorf("%s didn't answer in %s", p.Name, retrieveTimeout)
+		}
+		return nil, "", 502, err
+	}
+	defer res.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(res.Body, 256<<20))
+	if err != nil {
+		return nil, "", 502, err
+	}
+	got := res.Header.Get("Content-Type")
+	if res.StatusCode >= 300 {
+		hint := ""
+		if res.StatusCode == http.StatusNotFound || res.StatusCode == http.StatusMethodNotAllowed {
+			hint = " — " + p.Name + " may not serve this API"
+		}
+		return b, got, res.StatusCode, fmt.Errorf("%s: %d %s%s%s", provider.HostOf(url), res.StatusCode, http.StatusText(res.StatusCode), vendorSaid(vendorMessage(b)), hint)
+	}
+	return b, got, res.StatusCode, nil
+}
+
+// retrievedTokens is what an answer says it counted: OpenAI's
+// prompt_tokens, Jina's and Voyage's total_tokens, or Cohere's billed
+// input tokens.
+func retrievedTokens(b []byte) int {
+	var a struct {
+		Usage struct {
+			Prompt int `json:"prompt_tokens"`
+			Input  int `json:"input_tokens"`
+			Total  int `json:"total_tokens"`
+		} `json:"usage"`
+		Meta struct {
+			Billed struct {
+				Input int `json:"input_tokens"`
+			} `json:"billed_units"`
+		} `json:"meta"`
+	}
+	if json.Unmarshal(b, &a) != nil {
+		return 0
+	}
+	for _, n := range []int{a.Usage.Prompt, a.Usage.Input, a.Usage.Total, a.Meta.Billed.Input} {
+		if n > 0 {
+			return n
+		}
+	}
+	return 0
+}
