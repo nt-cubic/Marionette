@@ -2363,8 +2363,18 @@ pub fn bridge_delete_entry(id: String) -> Result<(), String> {
 #[tauri::command(async)]
 pub fn bridge_list_models(agent_id: String) -> crate::model_bridge::BridgeModelsResult {
     let _trace = crate::debug_log::CmdTrace::new("bridge_list_models");
-    // 空闲回收后的自动唤醒：菜单打开 = 有人要跨用；已安装才唤（不惊喜下载）。
-    crate::engine::wake_if_installed();
+    // 空闲回收后的一键优雅（2026-10-17）：菜单打开 = 有人要跨用。对引擎相关
+    // agent 先短暂等引擎醒来（已安装才等，绝不惊喜下载），这一次响应就能
+    // 带上引擎源；睡过头（>5s）就按当前状态答（note 有指引）。
+    if matches!(
+        crate::model_bridge::classify_agent(&agent_id),
+        crate::model_bridge::BridgeAgent::ClaudeCode
+            | crate::model_bridge::BridgeAgent::GrokBuild
+            | crate::model_bridge::BridgeAgent::Codex
+            | crate::model_bridge::BridgeAgent::Opencode
+    ) {
+        crate::engine::ensure_bridge_ready_if_installed(std::time::Duration::from_secs(5));
+    }
     let result = crate::model_bridge::list_models(&agent_id);
     // B4-2 漂移防线：按 source 对比指纹存档，变化记 dev.log（只记日志，失败
     // 不影响目录本身）。
