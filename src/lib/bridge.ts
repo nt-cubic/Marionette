@@ -71,8 +71,8 @@ export function bridgeSourceGroupTitle(label: string): string {
 }
 
 /**
- * Short provider labels for engine (`provider/model`) ids — the flat
- * cross-use list badges each row with where the model comes from.
+ * Short provider labels for engine (`provider/model`) ids — used to split the
+ * engine source into per-provider menu groups.
  * Subscription families read as subscriptions; unmapped prefixes show raw.
  */
 const ENGINE_PROVIDER_LABELS: Record<string, string> = {
@@ -91,21 +91,21 @@ const ENGINE_PROVIDER_LABELS: Record<string, string> = {
   xai: "xAI",
 };
 
+/** Friendly label for an engine provider prefix (falls back to the raw id). */
+export function engineProviderLabel(provider: string): string {
+  return ENGINE_PROVIDER_LABELS[provider] ?? provider;
+}
+
 /**
- * Source badge for one cross-use row in the unified picker list. Engine
- * models badge by their `provider/` prefix; key/reference models badge by
- * preset label.
+ * Normalized model name for cross-source dedup: engine ids are
+ * `provider/model` — compare by the model part so `opencode-go/glm-5.3`
+ * (engine) and `glm-5.3` (direct key) collapse to one menu entry.
  */
-export function crossUseSourceBadge(
-  entryId: string,
-  preset: string,
-  modelId: string,
-): string {
-  if (entryId === "engine") {
-    const provider = modelId.includes("/") ? modelId.split("/")[0]! : "";
-    return ENGINE_PROVIDER_LABELS[provider] ?? provider ?? "引擎";
+export function crossUseModelKey(entryId: string, modelId: string): string {
+  if (entryId === "engine" && modelId.includes("/")) {
+    return modelId.slice(modelId.indexOf("/") + 1);
   }
-  return bridgePresetLabel(preset);
+  return modelId;
 }
 
 /**
