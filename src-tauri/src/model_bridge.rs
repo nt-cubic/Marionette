@@ -457,6 +457,67 @@ fn push_engine_models(models: &mut Vec<BridgeModel>) -> bool {
     truncated
 }
 
+// ─── opencode 原生跨用（provider「marionette」→ 引擎 /v1）───────────────────
+
+/// 构建写进子进程 `OPENCODE_CONFIG_CONTENT` 的内联配置：provider
+/// 「marionette」指向引擎 `/v1`（openai-compatible），引擎目录的每个模型
+/// 一条（id 原样——多斜杠形态 `grok/grok-4.7` 是 magpie 对 opencode 的
+/// 生产用法，见 third_party/magpie internal/agent/agents.go 的同款配方）。
+/// `existing` 是调用方环境里已有的内联配置（JSON object）：合并进同一对象
+/// 只覆盖 `provider.marionette`，别的键/别的 provider 原样保留；不是合法
+/// JSON object 就整体替换。纯函数，测试直接喂夹具。
+pub fn opencode_engine_config_content(
+    port: u16,
+    models: &[String],
+    existing: Option<&str>,
+) -> String {
+    use serde_json::Value;
+    let mut root: serde_json::Map<String, Value> = existing
+        .and_then(|text| serde_json::from_str::<Value>(text).ok())
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    let mut provider = serde_json::Map::new();
+    provider.insert(
+        "npm".to_string(),
+        Value::String("@ai-sdk/openai-compatible".to_string()),
+    );
+    provider.insert(
+        "name".to_string(),
+        Value::String("Marionette 跨用引擎".to_string()),
+    );
+    provider.insert(
+        "options".to_string(),
+        serde_json::json!({
+            "baseURL": format!("http://127.0.0.1:{port}/v1"),
+            "apiKey": crate::engine::ENGINE_TOKEN,
+        }),
+    );
+    let mut catalog = serde_json::Map::new();
+    for id in models {
+        let name = id.rsplit('/').next().unwrap_or(id);
+        catalog.insert(id.clone(), serde_json::json!({ "name": name }));
+    }
+    provider.insert("models".to_string(), Value::Object(catalog));
+    // provider 层合并：已有 provider 深对象保留，只覆盖 marionette。
+    let mut providers = root
+        .remove("provider")
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    providers.insert("marionette".to_string(), Value::Object(provider));
+    root.insert("provider".to_string(), Value::Object(providers));
+    serde_json::to_string(&Value::Object(root)).unwrap_or_default()
+}
+
+/// spawn 时刻的真实参数版（引擎没跑或目录为空 → None，不注入）。
+pub fn opencode_engine_config(existing: Option<&str>) -> Option<String> {
+    let (port, _) = crate::engine::running_base()?;
+    let models = crate::engine::catalog();
+    if models.is_empty() {
+        return None;
+    }
+    Some(opencode_engine_config_content(port, &models, existing))
+}
+
 fn list_models_at(
     credentials_path: &Path,
     opencode_scan: &AgentScan,
@@ -498,12 +559,20 @@ fn list_models_at(
                 note,
             }
         }
-        // opencode 有原生 provider 管理（write_provider_key），不走跨用目录；
-        // 顺带落实「reference 对宿主 agent 自己不可见」的去重规则。
+        // opencode 走**原生**跨用（2026-10-17 定稿）：spawn 时把引擎目录作
+        // 为 provider「marionette」写进子进程的 OPENCODE_CONFIG_CONTENT
+        // （acp.rs），模型出现在 opencode 自己的模型菜单里——不走 Composer
+        // 跨用段，避免双通道。也顺带落实「reference 对宿主 agent 自己不可
+        // 见」的去重规则。
         BridgeAgent::Opencode => BridgeModelsResult {
             models: Vec::new(),
             sources: Vec::new(),
-            note: Some("请在设置的 provider 管理里添加".to_string()),
+            note: Some(if crate::engine::bridge_ready() {
+                "跨用模型在上方原生菜单的「Marionette 跨用引擎」分组里（会话启动时注入；引擎刚唤醒的话，发下一条消息或重开会话生效）"
+                    .to_string()
+            } else {
+                "跨用需要翻译引擎 — 点左下角跨用按钮启动（或稍候自动唤醒）后，发下一条消息或重开会话生效".to_string()
+            }),
         },
         // M1 只给 claude-code / grok-build 接了直连注入，codex 走引擎伪来源
         // （上面的分支）；其余 agent 列了也选不上（spawn 时不会有任何注入）。
@@ -595,6 +664,14 @@ fn list_models_at(
             } else {
                 None
             };
+            // 引擎睡着时明说（2026-10-17 用户反馈）：订阅族（Grok/GPT…）
+            // 缺席不是没有，是引擎未运行——给出动作指引。
+            if !crate::engine::bridge_ready() && note.is_none() {
+                note = Some(
+                    "跨用引擎未运行 — Grok/GPT 等订阅模型暂不可见；点左下角跨用按钮启动（或稍候自动唤醒）后重开此菜单"
+                        .to_string(),
+                );
+            }
             if truncated {
                 let suffix = "目录过长已截断，更多模型请用「自定义模型」输入";
                 note = Some(match note {
@@ -2494,7 +2571,13 @@ official_marketplace_auto_installed = true\n";
         //（端点核实了但模型 id 没核实 —— 不拍脑袋），所以只剩 opencode-go 的。
         for agent in ["claude-code", "grok-build", "grok"] {
             let result = list_models_at(&credentials, &scan, agent);
-            assert!(result.note.is_none(), "agent {agent}: note = {:?}", result.note);
+            // 测试态引擎未 Running → 引擎指引 note（2026-10-17 起：明说订阅族
+            // 缺席的原因，而不是静默少一组）。
+            assert!(
+                result.note.as_deref().is_some_and(|n| n.contains("引擎未运行")),
+                "agent {agent}: note = {:?}",
+                result.note
+            );
             let models: Vec<&str> = result.models.iter().map(|m| m.model_id.as_str()).collect();
             assert_eq!(
                 models,
@@ -2517,7 +2600,10 @@ official_marketplace_auto_installed = true\n";
         }
         let opencode = list_models_at(&credentials, &scan, "opencode");
         assert!(opencode.models.is_empty());
-        assert_eq!(opencode.note.as_deref(), Some("请在设置的 provider 管理里添加"));
+        assert_eq!(
+            opencode.note.as_deref(),
+            Some("跨用需要翻译引擎 — 点左下角跨用按钮启动（或稍候自动唤醒）后，发下一条消息或重开会话生效")
+        );
 
         // 其它 agent：M1 没有注入通道，空 + 说明。
         let other = list_models_at(&credentials, &scan, "deepseek");
@@ -3012,6 +3098,42 @@ official_marketplace_auto_installed = true\n";
     }
 
     /// 映射表覆盖规格清单的全部键名（含别名），大小写不敏感；未映射 → None。
+    /// opencode 原生跨用配置：provider「marionette」指引擎 /v1、api_key 是
+    /// 字面量令牌、模型 id 原样（多斜杠）；已有内联配置深合并（别人的
+    /// provider 保留），坏 JSON 整体替换。
+    #[test]
+    fn opencode_engine_config_merges_and_shapes() {
+        let content = opencode_engine_config_content(
+            3425,
+            &[
+                "grok/grok-4.7".to_string(),
+                "codex/gpt-5.6-luna".to_string(),
+                "opencode-go/glm-5.3".to_string(),
+            ],
+            Some(r#"{"autoupdate":false,"provider":{"mine":{"name":"Keep Me"}}}"#),
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        // 用户自己的键与 provider 原样保留。
+        assert_eq!(parsed["autoupdate"], false);
+        assert_eq!(parsed["provider"]["mine"]["name"], "Keep Me");
+        // marionette provider 形状（magpie 同款配方）。
+        let provider = &parsed["provider"]["marionette"];
+        assert_eq!(provider["npm"], "@ai-sdk/openai-compatible");
+        assert_eq!(provider["options"]["baseURL"], "http://127.0.0.1:3425/v1");
+        assert_eq!(provider["options"]["apiKey"], crate::engine::ENGINE_TOKEN);
+        // 模型 id 原样、名字取最后一段。
+        assert_eq!(provider["models"]["grok/grok-4.7"]["name"], "grok-4.7");
+        assert_eq!(provider["models"]["codex/gpt-5.6-luna"]["name"], "gpt-5.6-luna");
+        assert_eq!(provider["models"]["opencode-go/glm-5.3"]["name"], "glm-5.3");
+
+        // 坏 JSON existing → 整体替换（只剩 marionette）。
+        let replaced =
+            opencode_engine_config_content(3425, &["grok/grok-4.7".to_string()], Some("not json"));
+        let parsed: serde_json::Value = serde_json::from_str(&replaced).unwrap();
+        assert!(parsed.get("autoupdate").is_none());
+        assert!(parsed["provider"]["marionette"]["models"]["grok/grok-4.7"].is_object());
+    }
+
     #[test]
     fn opencode_provider_map_is_case_insensitive_and_covers_the_bridge() {
         for (provider, expected) in [
@@ -3090,7 +3212,12 @@ Connection: close
         clear_dynamic_cache_for_test();
 
         let result = list_models_at(&credentials, &scan, "grok-build");
-        assert!(result.note.is_none(), "note = {:?}", result.note);
+        // 测试态引擎未 Running → 引擎指引 note（2026-10-17 起）。
+        assert!(
+            result.note.as_deref().is_some_and(|n| n.contains("引擎未运行")),
+            "note = {:?}",
+            result.note
+        );
         let ds: Vec<&BridgeModel> = result
             .models
             .iter()
@@ -3141,7 +3268,12 @@ Connection: close
 
         for agent in ["grok-build", "claude-code"] {
             let result = list_models_at(&credentials, &scan, agent);
-            assert!(result.note.is_none(), "{agent}: note = {:?}", result.note);
+            // 测试态引擎未 Running → 引擎指引 note（2026-10-17 起）。
+            assert!(
+                result.note.as_deref().is_some_and(|n| n.contains("引擎未运行")),
+                "{agent}: note = {:?}",
+                result.note
+            );
             // 来源：store 的 xai + 扫描的 deepseek / openrouter。openrouter 的
             // preset 没有默认模型列表，来源照样要报（契约：空也要让前端知道）。
             let mut source_ids: Vec<&str> =
@@ -3179,7 +3311,10 @@ Connection: close
         let self_view = list_models_at(&credentials, &scan, "opencode");
         assert!(self_view.models.is_empty());
         assert!(self_view.sources.is_empty());
-        assert_eq!(self_view.note.as_deref(), Some("请在设置的 provider 管理里添加"));
+        assert_eq!(
+            self_view.note.as_deref(),
+            Some("跨用需要翻译引擎 — 点左下角跨用按钮启动（或稍候自动唤醒）后，发下一条消息或重开会话生效")
+        );
 
         // 扫描失败（auth.json 损坏）→ 静默跳过该家，store 条目照常。
         let auth = home.join(".local").join("share").join("opencode").join("auth.json");
@@ -3190,7 +3325,8 @@ Connection: close
         let source_ids: Vec<&str> = result.sources.iter().map(|s| s.entry_id.as_str()).collect();
         assert_eq!(source_ids, vec!["xai"], "扫描坏了不该连 store 条目也没了");
         assert!(result.models.iter().all(|m| m.entry_id == "xai"));
-        assert!(result.note.is_none());
+        // 测试态引擎未 Running → 引擎指引 note（2026-10-17 起）。
+        assert!(result.note.as_deref().is_some_and(|n| n.contains("引擎未运行")));
 
         // 只有「模型列表为空」的来源时：models 空 + 说明，但来源在。
         let home_or = dir.join("opencode-or-only");

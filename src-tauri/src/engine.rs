@@ -1172,14 +1172,39 @@ fn engine_binding_count() -> usize {
 /// 引擎已安装但处于 Absent（典型：空闲回收后）→ 后台唤醒。幂等；未安装
 /// 不动（绝不因菜单打开触发 48MB 下载）。
 pub fn wake_if_installed() {
-    if !matches!(status(), EngineStatus::Absent) {
+    #[cfg(test)]
+    {
+        // 测试构建：绝不在单测里真拉引擎（enable 会触碰真实 ~/.marionette）。
         return;
     }
-    let Ok(dir) = engine_dir() else { return };
-    if !is_installed_at(&dir) {
-        return;
+    #[cfg(not(test))]
+    {
+        if !matches!(status(), EngineStatus::Absent) {
+            return;
+        }
+        let Ok(dir) = engine_dir() else { return };
+        if !is_installed_at(&dir) {
+            return;
+        }
+        let _ = enable();
     }
-    let _ = enable();
+}
+
+/// 菜单级短暂唤醒：已安装才同步等待（未安装立即 false，绝不触发下载）。
+pub fn ensure_bridge_ready_if_installed(timeout: Duration) -> bool {
+    if bridge_ready() {
+        return true;
+    }
+    #[cfg(test)]
+    {
+        let _ = timeout;
+        return false;
+    }
+    #[cfg(not(test))]
+    {
+        let installed = engine_dir().map(|dir| is_installed_at(&dir)).unwrap_or(false);
+        installed && ensure_bridge_ready(timeout)
+    }
 }
 
 /// 等引擎就绪（跨用绑定的一键优雅路径，2026-10-17 用户反馈）：就绪立即真；
@@ -1193,6 +1218,7 @@ pub fn ensure_bridge_ready(timeout: Duration) -> bool {
     {
         // 测试构建：seam 没摆出 Running 就直接失败——绝不在单测里真拉引擎
         //（enable 会触碰真实 ~/.marionette）。要测等待行为就先摆 seam。
+        let _ = timeout;
         return false;
     }
     #[cfg(not(test))]

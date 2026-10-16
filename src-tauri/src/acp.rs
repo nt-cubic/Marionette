@@ -501,6 +501,28 @@ impl AcpService {
                 }
             }
         }
+        // ── opencode 原生跨用（2026-10-17 定稿）：不经绑定——引擎在跑就把
+        //    整个引擎目录作为 provider「marionette」写进子进程的
+        //    OPENCODE_CONFIG_CONTENT（内联配置、合并语义、仅本进程可见），
+        //    模型直接出现在 opencode 自己的模型菜单里。引擎睡着就不注入
+        //    （唤醒后的下一次 spawn 自然带上）；顺手踢一脚幂等唤醒。
+        if crate::model_bridge::classify_agent(agent_id.as_deref().unwrap_or(""))
+            == crate::model_bridge::BridgeAgent::Opencode
+        {
+            crate::engine::wake_if_installed();
+            if let Some(content) = crate::model_bridge::opencode_engine_config(
+                std::env::var("OPENCODE_CONFIG_CONTENT").ok().as_deref(),
+            ) {
+                child_command.env("OPENCODE_CONFIG_CONTENT", &content);
+                crate::debug_log::append(
+                    "bridge",
+                    "info",
+                    &session_id,
+                    "opencode session bridged via OPENCODE_CONFIG_CONTENT",
+                    Some("provider=marionette"),
+                );
+            }
+        }
         // ── Cross-agent model bridge (docs/cross-agent-bridge.md §4.4): a
         //    binding exists only after the user picked a cross-use model for
         //    this dialog; nothing is lent otherwise. The key goes straight into
