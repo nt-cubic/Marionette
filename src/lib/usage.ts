@@ -1,5 +1,50 @@
 import { getSessionUpdate, getSessionUpdateKind } from "./acpTranscript";
+import type { EngineQuotaEntry } from "./api";
 import type { SessionEvent, TurnStats, UsageSnapshot, UsageWindow } from "./types";
+
+/**
+ * Engine quota rows skip the active agent's own subscription family — the
+ * agent's own rate-limit rows already cover it (codex reports Codex usage,
+ * grok reports Grok weekly, …).
+ */
+const ENGINE_OWN_FAMILY: Record<string, string> = {
+  codex: "codex",
+  "codex-acp": "codex",
+  "claude-code": "claude",
+  claude: "claude",
+  "grok-build": "grok",
+  grok: "grok",
+};
+
+function formatQuotaReset(iso: string): string {
+  const t = new Date(iso);
+  if (Number.isNaN(t.getTime())) return iso;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${t.getMonth() + 1}/${t.getDate()} ${pad(t.getHours())}:${pad(t.getMinutes())}`;
+}
+
+/** `magpie quota` entries → Usage panel rows (percentage meters). */
+function engineQuotaRows(entries: EngineQuotaEntry[], agentId: string): UsageWindow[] {
+  const ownFamily = ENGINE_OWN_FAMILY[agentId];
+  const rows: UsageWindow[] = [];
+  for (const entry of entries) {
+    if (entry.provider === ownFamily) continue;
+    for (const w of entry.windows) {
+      if (w.used == null && w.remaining == null && w.resetsAt == null) continue;
+      const parts: string[] = [];
+      if (w.remaining != null) parts.push(`剩 ${Math.round(w.remaining)}%`);
+      if (w.resetsAt) parts.push(`${formatQuotaReset(w.resetsAt)} 重置`);
+      rows.push({
+        id: `engine:${entry.provider}:${w.name}`,
+        label: `${entry.name || entry.provider} · ${w.name}`,
+        percentage: w.used != null ? Math.max(0, Math.min(100, w.used)) : null,
+        detail: parts.join(" · ") || null,
+        kind: "provider",
+      });
+    }
+  }
+  return rows;
+}
 
 /** Per-session usage state accumulated from ACP (and opportunistic text). */
 export type SessionUsageState = {
@@ -1119,6 +1164,8 @@ export function buildUsageSnapshot(args: {
   connected: boolean;
   /** Whole-dialog totals derived from the dialog's events (live or restored). */
   cumulative?: CumulativeTokens | null;
+  /** Engine subscription quotas (merged rows; the agent's own family is skipped). */
+  engineQuota?: EngineQuotaEntry[] | null;
 }): UsageSnapshot {
   const { agentId, agentLabel, state, connected } = args;
   const windows: UsageWindow[] = [];
@@ -1219,6 +1266,10 @@ export function buildUsageSnapshot(args: {
     extras.sort((a, b) => order(a.id) - order(b.id) || a.label.localeCompare(b.label));
     windows.push(...extras);
   }
+
+  // 订阅配额（引擎 · `magpie quota`）：跨 agent 可见的订阅窗口合并进同一面板；
+  // 当前 agent 自己的家族由它自己的 rate-limit 行负责，这里跳过防重复。
+  windows.push(...engineQuotaRows(args.engineQuota ?? [], agentId));
 
   // Honest empty-state labels: never imply a live % when we only know plan ceilings.
   for (const w of windows) {

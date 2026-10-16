@@ -456,6 +456,7 @@ fn main() {
             commands::bridge_get_binding,
             commands::engine_status,
             commands::engine_enable,
+            commands::engine_quota,
             commands::get_proxy_config,
             commands::set_proxy_config,
             commands::test_proxy,

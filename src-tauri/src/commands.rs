@@ -2348,7 +2348,13 @@ pub fn bridge_add_key(
 #[tauri::command]
 pub fn bridge_delete_entry(id: String) -> Result<(), String> {
     let _trace = crate::debug_log::CmdTrace::new("bridge_delete_entry");
-    crate::model_bridge::delete_entry(&id)
+    let result = crate::model_bridge::delete_entry(&id);
+    // 删除也要被引擎吸收：注册对账会把账本里不再有凭据来源的 provider
+    // 从引擎侧 `provider rm`（engine::register_key_providers 的 reconcile）。
+    if result.is_ok() {
+        crate::engine::reregister_key_providers();
+    }
+    result
 }
 
 /// Cross-use models one agent may borrow (dedup per the product table: M1
@@ -2357,6 +2363,8 @@ pub fn bridge_delete_entry(id: String) -> Result<(), String> {
 #[tauri::command(async)]
 pub fn bridge_list_models(agent_id: String) -> crate::model_bridge::BridgeModelsResult {
     let _trace = crate::debug_log::CmdTrace::new("bridge_list_models");
+    // 空闲回收后的自动唤醒：菜单打开 = 有人要跨用；已安装才唤（不惊喜下载）。
+    crate::engine::wake_if_installed();
     let result = crate::model_bridge::list_models(&agent_id);
     // B4-2 漂移防线：按 source 对比指纹存档，变化记 dev.log（只记日志，失败
     // 不影响目录本身）。
@@ -2425,6 +2433,13 @@ pub fn engine_status() -> crate::engine::EngineStatus {
 pub fn engine_enable() -> Result<crate::engine::EngineStatus, String> {
     let _trace = crate::debug_log::CmdTrace::new("engine_enable");
     crate::engine::enable()
+}
+
+/// 订阅配额（`magpie quota`）→ 用量面板合并展示；引擎没跑返回空表。
+#[tauri::command(async)]
+pub fn engine_quota() -> Vec<crate::engine::EngineQuotaEntry> {
+    let _trace = crate::debug_log::CmdTrace::new("engine_quota");
+    crate::engine::quota()
 }
 
 /// Read the agent proxy config (single exit address for spawned agents).

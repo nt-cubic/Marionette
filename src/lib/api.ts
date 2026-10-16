@@ -1100,6 +1100,32 @@ export async function engineEnable(): Promise<EngineStatus | null> {
   }
 }
 
+/** One subscription quota window from `magpie quota` (percent-based). */
+export type EngineQuotaWindow = {
+  name: string;
+  used?: number | null;
+  remaining?: number | null;
+  resetsAt?: string | null;
+};
+
+/** One subscription family's quota (merged into the Usage panel). */
+export type EngineQuotaEntry = {
+  provider: string;
+  name: string;
+  user?: string | null;
+  windows: EngineQuotaWindow[];
+};
+
+/** Subscription quotas from the engine; empty when the engine is not running. */
+export async function engineQuota(): Promise<EngineQuotaEntry[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    return await invoke<EngineQuotaEntry[]>("engine_quota");
+  } catch {
+    return [];
+  }
+}
+
 /** Agent proxy config: single exit address injected into spawned agents. */
 export async function getProxyConfig(): Promise<ProxyConfig> {
   if (!isTauriRuntime()) return { enabled: false, url: "" };

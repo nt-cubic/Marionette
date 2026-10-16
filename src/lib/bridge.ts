@@ -71,6 +71,44 @@ export function bridgeSourceGroupTitle(label: string): string {
 }
 
 /**
+ * Short provider labels for engine (`provider/model`) ids — the flat
+ * cross-use list badges each row with where the model comes from.
+ * Subscription families read as subscriptions; unmapped prefixes show raw.
+ */
+const ENGINE_PROVIDER_LABELS: Record<string, string> = {
+  grok: "Grok 订阅",
+  codex: "ChatGPT",
+  claude: "Claude 订阅",
+  gemini: "Gemini 订阅",
+  copilot: "Copilot",
+  "opencode-go": "OpenCode Go",
+  deepseek: "DeepSeek",
+  glm: "GLM",
+  zhipu: "GLM",
+  moonshot: "Kimi",
+  kimi: "Kimi",
+  openrouter: "OpenRouter",
+  xai: "xAI",
+};
+
+/**
+ * Source badge for one cross-use row in the unified picker list. Engine
+ * models badge by their `provider/` prefix; key/reference models badge by
+ * preset label.
+ */
+export function crossUseSourceBadge(
+  entryId: string,
+  preset: string,
+  modelId: string,
+): string {
+  if (entryId === "engine") {
+    const provider = modelId.includes("/") ? modelId.split("/")[0]! : "";
+    return ENGINE_PROVIDER_LABELS[provider] ?? provider ?? "引擎";
+  }
+  return bridgePresetLabel(preset);
+}
+
+/**
  * Group descriptors the picker builds its cross-use groups from.
  *
  * Newer backends send one source per usable credential entry (key-plan and

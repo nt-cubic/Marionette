@@ -16,6 +16,7 @@ import {
   turnEndedSilently,
   userMessageEvent,
 } from "../lib/acpTranscript";
+import { engineQuota as fetchEngineQuota, type EngineQuotaEntry } from "../lib/api";
 import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, CHAT_PROJECT_ID } from "../lib/api";
 import {
   bindDetachedWindowReaper,
@@ -858,6 +859,17 @@ export function App() {
     }
   }, []);
 
+  /** Engine subscription quotas (`magpie quota`) merged into the Usage panel. */
+  const [engineQuotaRows, setEngineQuotaRows] = useState<EngineQuotaEntry[]>([]);
+  const refreshEngineQuota = useCallback(() => {
+    void fetchEngineQuota()
+      .then((rows) => setEngineQuotaRows(rows ?? []))
+      .catch(() => undefined);
+  }, []);
+  useEffect(() => {
+    refreshEngineQuota();
+  }, [refreshEngineQuota]);
+
   const usage = useMemo<UsageSnapshot>(() => {
     const activeSession = availableSessions.find((session) => session.id === currentSessionId);
     const agent =
@@ -874,8 +886,9 @@ export function App() {
       agentLabel: agent.label,
       state: activeSession ? sessionUsageById[activeSession.id] : undefined,
       connected,
+      engineQuota: engineQuotaRows,
     });
-  }, [availableAgents, availableSessions, currentSessionId, sessionUsageById]);
+  }, [availableAgents, availableSessions, currentSessionId, sessionUsageById, engineQuotaRows]);
 
   // Portable app update check — delayed so it never stalls first paint.
   useEffect(() => {
@@ -3029,8 +3042,9 @@ export function App() {
   // Manual refresh should re-hit the network even if model unchanged.
   const handleUsageRefreshForce = useCallback(() => {
     lastProviderProbeKey.current = "";
+    refreshEngineQuota();
     handleUsageRefresh();
-  }, [handleUsageRefresh]);
+  }, [handleUsageRefresh, refreshEngineQuota]);
 
   /**
    * After an AI turn ends (`turn/complete`), refresh the Usage panel once.
