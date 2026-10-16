@@ -7305,11 +7305,14 @@ body.is-composer-resizing .composer {
   letter-spacing: 0;
 }
 
-/* Per-row source badge in the unified cross-use list: where this model
-   comes from (Grok 订阅 / OpenCode Go / DeepSeek / …). */
-.composer-menu__model-badge {
-  flex: 0 0 auto;
-  margin-left: 8px;
+/* Cross-use group headers: provider name left, 右上角跨用 mark. */
+.composer-menu__label--cross {
+  display: flex;
+  align-items: center;
+}
+
+.composer-menu__cross-mark {
+  margin-left: auto;
   padding: 0 5px;
   border: 1px solid var(--border);
   border-radius: 999px;

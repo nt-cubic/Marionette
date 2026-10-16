@@ -39,8 +39,10 @@ import {
 import {
   bridgeGroupTitle,
   bridgePresetFor,
+  bridgePresetLabel,
   bridgeSourceGroupTitle,
-  crossUseSourceBadge,
+  crossUseModelKey,
+  engineProviderLabel,
   getBridgeModels,
   resolveBridgeSources,
 } from "../lib/bridge";
@@ -2118,31 +2120,68 @@ export function Composer({
   }, [bridgeCatalog, bridgeSelection, modelQuery]);
 
   /**
-   * Unified cross-use list (2026-10-16 product decision: the engine is
-   * invisible plumbing — ONE section, one alphabet, a per-row source badge;
-   * per-source sections read like bolted-on machinery). Derived from
-   * crossGroups so query filtering and active-binding extras stay shared.
-   * Custom-id rows stay per source (bind targets an entry) but render as a
-   * compact footer instead of section headers.
+   * Cross-use menu sections (2026-10-17 user decision): provider-grouped
+   * lists — key/reference sources keep one group each (titled by preset),
+   * the engine source splits into per-provider groups (grok/* → Grok 订阅…).
+   * A model offered both direct AND through the engine collapses to the
+   * direct source (same wire, fewer hops — the flat list duplicated them).
+   * Group headers carry a right-aligned 跨用 mark; custom-id rows stay per
+   * source as a compact footer (binding targets an entry).
    */
-  const crossFlat = useMemo(() => {
-    const models = crossGroups
-      .flatMap((group) => group.models)
-      .map((model) => ({
-        model,
-        badge: crossUseSourceBadge(model.entryId, model.preset, model.modelId),
-      }))
-      .sort(
-        (a, b) =>
-          a.model.label.localeCompare(b.model.label) || a.badge.localeCompare(b.badge),
-      );
-    const sources = crossGroups.map((group) => ({
+  const crossSections = useMemo(() => {
+    // Dedup across sources: direct (manual key) > scanned reference > engine.
+    const rank = (group: CrossUseGroup) =>
+      group.entryId === "engine" ? 2 : group.fromScan ? 1 : 0;
+    const ordered = crossGroups.slice().sort((a, b) => rank(a) - rank(b));
+    const seen = new Set<string>();
+    const deduped = ordered.map((group) => ({
+      ...group,
+      models: group.models.filter((m) => {
+        const key = crossUseModelKey(m.entryId, m.modelId);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }),
+    }));
+    const byLabel = (a: BridgeModel, b: BridgeModel) => a.label.localeCompare(b.label);
+    type Section = { key: string; title: string; models: BridgeModel[] };
+    const sections: Section[] = [];
+    // Engine → one section per provider prefix.
+    const engine = deduped.find((group) => group.entryId === "engine");
+    if (engine) {
+      const byProvider = new Map<string, BridgeModel[]>();
+      for (const m of engine.models) {
+        const provider = m.modelId.includes("/") ? m.modelId.split("/")[0]! : "engine";
+        const list = byProvider.get(provider) ?? [];
+        list.push(m);
+        byProvider.set(provider, list);
+      }
+      for (const [provider, models] of byProvider) {
+        sections.push({
+          key: `engine:${provider}`,
+          title: engineProviderLabel(provider),
+          models: models.sort(byLabel),
+        });
+      }
+    }
+    // Key / reference sources → one section each, titled by preset label.
+    for (const group of deduped) {
+      if (group.entryId === "engine" || group.models.length === 0) continue;
+      const preset = group.models[0]?.preset;
+      sections.push({
+        key: group.key,
+        title: preset ? bridgePresetLabel(preset) : group.title.replace(/^跨用 · /, ""),
+        models: group.models.slice().sort(byLabel),
+      });
+    }
+    sections.sort((a, b) => a.title.localeCompare(b.title));
+    const customSources = deduped.map((group) => ({
       entryId: group.entryId,
       sampleModelId: group.sampleModelId,
       hasPresetModels: group.hasPresetModels,
       label: group.title.replace(/^跨用 · /, ""),
     }));
-    return { models, sources };
+    return { sections, customSources };
   }, [crossGroups]);
 
   /** Backend explanation when cross-use is not available for this agent (e.g. codex M2). */
@@ -3060,15 +3099,24 @@ export function Composer({
                                   })}
                                 </div>
                               ))}
-                              {/* ── Cross-use (跨用) — one unified list with per-row source badges ── */}
-                              {(crossFlat.models.length > 0 || crossFlat.sources.length > 0) &&
+                              {/* ── Cross-use (跨用) — provider sections + 右上角跨用标记 ── */}
+                              {(crossSections.sections.length > 0 ||
+                                crossSections.customSources.length > 0) &&
                                 modelGroups.length > 0 && (
                                   <span className="composer-menu__divider" />
                                 )}
-                              {(crossFlat.models.length > 0 || crossFlat.sources.length > 0) && (
-                                <div className="composer-menu__group">
-                                  <span className="composer-menu__label">跨用模型</span>
-                                  {crossFlat.models.map(({ model: m, badge }) => {
+                              {crossSections.sections.map((section) => (
+                                <div className="composer-menu__group" key={section.key}>
+                                  <span className="composer-menu__label composer-menu__label--cross">
+                                    {section.title}
+                                    <span
+                                      className="composer-menu__cross-mark"
+                                      title="跨用来源 · 由 Marionette 桥接"
+                                    >
+                                      跨用
+                                    </span>
+                                  </span>
+                                  {section.models.map((m) => {
                                     const selected =
                                       bridgeActive &&
                                       bridgeSelection?.entryId === m.entryId &&
@@ -3080,66 +3128,69 @@ export function Composer({
                                         type="button"
                                         role="option"
                                         aria-selected={selected}
-                                        title={`${m.label}\n${m.modelId} · ${badge}（跨用）`}
+                                        title={`${m.label}\n${m.modelId}（跨用）`}
                                         onClick={() => pickBridgeModel(m)}
                                       >
-                                        <span className="composer-menu__model-name">{m.label}</span>
-                                        <span className="composer-menu__model-badge">{badge}</span>
+                                        <span className="composer-menu__model-name">
+                                          {m.label}
+                                        </span>
                                       </button>
                                     );
                                   })}
-                                  {/* Per-source custom-id rows (binding targets
-                                      an entry) — a compact footer, not headers. */}
-                                  {crossFlat.sources.map((source) => (
-                                    <div key={source.entryId}>
-                                      {/* Source whose model list is not enumerable
-                                          (e.g. openrouter) — custom ids only. */}
-                                      {!source.hasPresetModels && (
-                                        <div className="composer-menu__bridge-empty">
-                                          {source.label} 没有预置清单，输入模型 id 使用
-                                        </div>
-                                      )}
-                                      {bridgeCustomEntryId === source.entryId ? (
-                                        <div className="composer-menu__bridge-custom">
-                                          <input
-                                            ref={bridgeCustomInputRef}
-                                            type="text"
-                                            value={bridgeCustomDraft}
-                                            placeholder={`输入模型 id，如 ${source.sampleModelId}`}
-                                            aria-label="输入自定义模型 id"
-                                            onChange={(e) => setBridgeCustomDraft(e.target.value)}
-                                            onKeyDown={(e) => {
-                                              if (e.key === "Enter" && !e.nativeEvent.isComposing) {
-                                                e.preventDefault();
-                                                e.stopPropagation();
-                                                confirmBridgeCustomModel(source.entryId);
-                                              } else if (e.key === "Escape") {
-                                                // Cancel the input, keep the menu open.
-                                                e.stopPropagation();
-                                                setBridgeCustomEntryId(null);
-                                              }
-                                            }}
-                                          />
-                                        </div>
-                                      ) : (
-                                        <button
-                                          className="composer-menu__bridge-custom-trigger"
-                                          type="button"
-                                          title="输入任意模型 id 绑定到此来源（不限于上方清单）"
-                                          onClick={() => {
-                                            setBridgeCustomEntryId(source.entryId);
-                                            setBridgeCustomDraft("");
-                                          }}
-                                        >
-                                          ＋ 自定义模型
-                                          {crossFlat.sources.length > 1 ? ` · ${source.label}` : ""}
-                                          …
-                                        </button>
-                                      )}
-                                    </div>
-                                  ))}
                                 </div>
-                              )}
+                              ))}
+                              {/* Per-source custom-id rows (binding targets
+                                  an entry) — a compact footer, not headers. */}
+                              {crossSections.customSources.map((source) => (
+                                <div key={source.entryId}>
+                                  {/* Source whose model list is not enumerable
+                                      (e.g. openrouter) — custom ids only. */}
+                                  {!source.hasPresetModels && (
+                                    <div className="composer-menu__bridge-empty">
+                                      {source.label} 没有预置清单，输入模型 id 使用
+                                    </div>
+                                  )}
+                                  {bridgeCustomEntryId === source.entryId ? (
+                                    <div className="composer-menu__bridge-custom">
+                                      <input
+                                        ref={bridgeCustomInputRef}
+                                        type="text"
+                                        value={bridgeCustomDraft}
+                                        placeholder={`输入模型 id，如 ${source.sampleModelId}`}
+                                        aria-label="输入自定义模型 id"
+                                        onChange={(e) => setBridgeCustomDraft(e.target.value)}
+                                        onKeyDown={(e) => {
+                                          if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            confirmBridgeCustomModel(source.entryId);
+                                          } else if (e.key === "Escape") {
+                                            // Cancel the input, keep the menu open.
+                                            e.stopPropagation();
+                                            setBridgeCustomEntryId(null);
+                                          }
+                                        }}
+                                      />
+                                    </div>
+                                  ) : (
+                                    <button
+                                      className="composer-menu__bridge-custom-trigger"
+                                      type="button"
+                                      title="输入任意模型 id 绑定到此来源（不限于上方清单）"
+                                      onClick={() => {
+                                        setBridgeCustomEntryId(source.entryId);
+                                        setBridgeCustomDraft("");
+                                      }}
+                                    >
+                                      ＋ 自定义模型
+                                      {crossSections.customSources.length > 1
+                                        ? ` · ${source.label}`
+                                        : ""}
+                                      …
+                                    </button>
+                                  )}
+                                </div>
+                              ))}
                               {bridgeNote && (
                                 <div className="composer-menu__bridge-note">{bridgeNote}</div>
                               )}

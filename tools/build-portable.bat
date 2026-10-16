@@ -145,6 +145,10 @@ if not defined MAG_VER (
   echo  [error] third_party\magpie\VERSION missing - re-run tools\import-magpie.ps1
   goto fail
 )
+if not defined UPX_BIN (
+  echo  [error] engine variant needs UPX to pack the embedded magpie ^(winget install -e --id UPX.UPX^)
+  goto fail
+)
 if not exist "src-tauri\engine-embedded" mkdir "src-tauri\engine-embedded"
 pushd "third_party\magpie"
 set "CGO_ENABLED=0"
@@ -155,10 +159,15 @@ if errorlevel 1 (
   goto fail
 )
 popd
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0gzip-file.ps1" "src-tauri\engine-embedded\magpie-windows-amd64.exe" "src-tauri\engine-embedded\magpie-windows-amd64.exe.gz"
-if errorlevel 1 goto fail
+rem UPX the engine itself (2026-10-17 measured: 47.9MB -^> ~13.6MB, 5MB better than
+rem gzip and no decode step at runtime - the packed exe self-extracts on launch).
+echo  [engine] upx-packing embedded magpie ...
+"!UPX_BIN!" --best --lzma -q "src-tauri\engine-embedded\magpie-windows-amd64.exe"
+if errorlevel 1 (
+  echo  [error] UPX failed on the embedded magpie
+  goto fail
+)
 copy /Y "third_party\magpie\VERSION" "src-tauri\engine-embedded\VERSION" >nul
-del "src-tauri\engine-embedded\magpie-windows-amd64.exe" >nul 2>&1
 echo  [engine] embedded artifact ready: version !MAG_VER!
 
 :after_embed
@@ -246,7 +255,7 @@ if %BYTES% GEQ 10485760 (
 )
 goto after_size_bands
 :size_ok
-echo  [ok] Embedded-engine build - ship size includes the gzipped engine (~19 MB expected)
+echo  [ok] Embedded-engine build - ship includes the UPX-packed engine (~15 MB expected)
 :after_size_bands
 
 echo.

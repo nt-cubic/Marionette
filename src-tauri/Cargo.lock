@@ -1926,7 +1926,6 @@ version = "0.2.11"
 dependencies = [
  "agent-client-protocol-schema",
  "base64 0.22.1",
- "flate2",
  "rfd",
  "serde",
  "serde_json",
