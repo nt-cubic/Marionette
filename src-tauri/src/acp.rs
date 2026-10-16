@@ -158,6 +158,15 @@ pub struct CapabilitySnapshot {
     /// can show — and it has to follow the model the session is on, because the
     /// catalog mixes 32K, 256K, 500K and 1M windows.
     pub model_context_sizes: HashMap<String, u64>,
+    /// Per-model reasoning menus from `availableModels[]._meta.reasoningEfforts`.
+    /// Grok 1.x `session/set_config_option` for model does not carry effort, so
+    /// a DeepSeek `max` would otherwise stick onto `grok-4.6` (xAI 400).
+    /// Internal — the Composer still reads the session-level `effort_options`.
+    #[serde(skip)]
+    pub model_effort_menus: HashMap<String, Vec<ModeDef>>,
+    /// Per-model default effort (`default: true`, else `_meta.reasoningEffort`).
+    #[serde(skip)]
+    pub model_default_efforts: HashMap<String, String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -964,8 +973,78 @@ impl AcpService {
                     apply_local_config_change(caps, &id, &update.value);
                 }
             }
+
+            // Grok 1.x answers set_config_option for model and keeps the
+            // previous reasoning level. Clamp before the next prompt, or
+            // grok-4.6 inherits DeepSeek's `max` and xAI returns 400.
+            if update.target == ConfigTarget::Model {
+                self.clamp_effort_to_model(session_id, &process, &agent_session_id);
+            }
         }
         Ok(last_result)
+    }
+
+    /// After a model switch, snap effort onto a level the new model advertises.
+    ///
+    /// `session/set_config_option` for model does not carry `_meta.reasoningEffort`,
+    /// so this is the follow-up. The legacy `session/set_model` path already
+    /// attached the clamped level — skip a second RPC when that flag is latched.
+    fn clamp_effort_to_model(
+        &self,
+        session_id: &str,
+        process: &Arc<AcpProcess>,
+        agent_session_id: &str,
+    ) {
+        let Some(mut caps) = self.get_capabilities(session_id) else {
+            return;
+        };
+        let Some(model_id) = caps.current_model.clone() else {
+            return;
+        };
+
+        if let Some(menu) = caps.model_effort_menus.get(&model_id).cloned() {
+            if !menu.is_empty() {
+                caps.effort_options = menu;
+            }
+        }
+
+        let desired = effort_for_model(&caps, &model_id);
+        let current = caps.current_effort_id.clone();
+        let already_sent_with_model = process
+            .config_option_unsupported
+            .load(Ordering::Relaxed);
+
+        if let Some(effort) = desired {
+            if current.as_deref() != Some(effort.as_str()) && !already_sent_with_model {
+                let sent = send_effort_for_model(
+                    process,
+                    agent_session_id,
+                    &caps,
+                    &model_id,
+                    &effort,
+                );
+                if let Err(error) = sent {
+                    crate::debug_log::append(
+                        "acp",
+                        "warn",
+                        session_id,
+                        "clamp effort after model switch failed",
+                        Some(&error),
+                    );
+                } else {
+                    caps.current_effort_id = Some(effort.clone());
+                    caps.current_effort = effort.parse().ok();
+                }
+            } else if current.as_deref() != Some(effort.as_str()) && already_sent_with_model {
+                // Legacy set_model already carried the clamped level.
+                caps.current_effort_id = Some(effort.clone());
+                caps.current_effort = effort.parse().ok();
+            }
+        }
+
+        if let Ok(mut map) = self.capabilities.lock() {
+            map.insert(session_id.to_string(), caps);
+        }
     }
 
     /// Pre-v2 ACP per-knob RPCs, used when `session/set_config_option` is absent.
@@ -1005,7 +1084,7 @@ impl AcpService {
                 // would leave the Effort chip claiming a level the agent dropped.
                 // Re-assert whatever the session is on — gated on what it advertised.
                 if let Some(caps) = self.get_capabilities(session_id) {
-                    if let Some(effort) = reassertable_effort(&caps) {
+                    if let Some(effort) = effort_for_model(&caps, model_id) {
                         params["_meta"] = json!({ "reasoningEffort": effort });
                     }
                 }
@@ -1025,12 +1104,15 @@ impl AcpService {
                     .ok_or_else(|| {
                         "Cannot set effort: no current model known for this session".to_string()
                     })?;
-                let effort = update
+                let mut effort = update
                     .value
                     .as_str()
                     .map(str::to_string)
                     .or_else(|| update.value.as_f64().map(numeric_effort_to_level))
                     .ok_or_else(|| "Effort must be a string level or number".to_string())?;
+                if let Some(caps) = self.get_capabilities(session_id) {
+                    effort = clamp_effort_id(&caps, &model_id, &effort);
+                }
                 request(
                     process,
                     "session/set_model",
@@ -1614,6 +1696,80 @@ fn reassertable_effort(caps: &CapabilitySnapshot) -> Option<String> {
     })
 }
 
+/// Effort to send when switching onto `model_id`.
+///
+/// Keep the session's current level when the target model advertises it;
+/// otherwise the model's default. No per-model catalog (older harness, or a
+/// session-wide effort select like DeepSeek Harness) falls back to
+/// `reassertable_effort`.
+fn effort_for_model(caps: &CapabilitySnapshot, model_id: &str) -> Option<String> {
+    if let Some(menu) = caps.model_effort_menus.get(model_id) {
+        if !menu.is_empty() {
+            if let Some(id) = caps.current_effort_id.as_deref() {
+                if menu.iter().any(|o| o.id == id) {
+                    return Some(id.to_string());
+                }
+            }
+            return caps
+                .model_default_efforts
+                .get(model_id)
+                .cloned()
+                .or_else(|| menu.first().map(|o| o.id.clone()));
+        }
+    }
+    reassertable_effort(caps)
+}
+
+/// Snap `effort` onto a level `model_id` actually advertises.
+///
+/// Unknown ids become the model's default (then the first menu item). A
+/// session with no per-model catalog returns `effort` unchanged — we never
+/// invent a level the agent did not publish.
+fn clamp_effort_id(caps: &CapabilitySnapshot, model_id: &str, effort: &str) -> String {
+    let Some(menu) = caps.model_effort_menus.get(model_id) else {
+        return effort.to_string();
+    };
+    if menu.is_empty() || menu.iter().any(|o| o.id == effort) {
+        return effort.to_string();
+    }
+    caps.model_default_efforts
+        .get(model_id)
+        .cloned()
+        .or_else(|| menu.first().map(|o| o.id.clone()))
+        .unwrap_or_else(|| effort.to_string())
+}
+
+/// Push an effort level after a model switch that could not carry it.
+fn send_effort_for_model(
+    process: &Arc<AcpProcess>,
+    agent_session_id: &str,
+    caps: &CapabilitySnapshot,
+    model_id: &str,
+    effort: &str,
+) -> Result<Value, String> {
+    if let Some(config_id) = caps.effort_config_id.as_deref() {
+        request_quiet(
+            process,
+            "session/set_config_option",
+            json!({
+                "sessionId": agent_session_id,
+                "configId": config_id,
+                "value": effort,
+            }),
+        )
+    } else {
+        request_quiet(
+            process,
+            "session/set_model",
+            json!({
+                "sessionId": agent_session_id,
+                "modelId": model_id,
+                "_meta": { "reasoningEffort": effort },
+            }),
+        )
+    }
+}
+
 /// Model id of one `availableModels[]` entry (Grok uses `modelId`).
 fn model_entry_id(entry: &Value) -> Option<&str> {
     entry
@@ -1660,6 +1816,110 @@ fn advertised_model_context_sizes(session_response: &Value) -> HashMap<String, u
         }
     }
     sizes
+}
+
+/// Reasoning menu of one `availableModels[]` entry (`_meta.reasoningEfforts`).
+fn model_entry_effort_menu(entry: &Value) -> Vec<ModeDef> {
+    let Some(levels) = entry
+        .get("_meta")
+        .and_then(|meta| {
+            meta.get("reasoningEfforts")
+                .or_else(|| meta.get("reasoning_efforts"))
+        })
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    let mut menu = Vec::new();
+    for level in levels {
+        let id = level
+            .get("id")
+            .or_else(|| level.get("value"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        if id.is_empty() {
+            continue;
+        }
+        let label = level
+            .get("label")
+            .or_else(|| level.get("name"))
+            .and_then(Value::as_str)
+            .unwrap_or(id.as_str())
+            .to_string();
+        menu.push(ModeDef {
+            id,
+            label,
+            description: level
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        });
+    }
+    menu
+}
+
+/// Default effort of one catalog entry: `default: true` on a menu item, else
+/// `_meta.reasoningEffort`.
+fn model_entry_default_effort(entry: &Value) -> Option<String> {
+    let meta = entry.get("_meta")?;
+    if let Some(levels) = meta
+        .get("reasoningEfforts")
+        .or_else(|| meta.get("reasoning_efforts"))
+        .and_then(Value::as_array)
+    {
+        for level in levels {
+            if level.get("default").and_then(Value::as_bool) != Some(true) {
+                continue;
+            }
+            if let Some(id) = level
+                .get("id")
+                .or_else(|| level.get("value"))
+                .and_then(Value::as_str)
+            {
+                if !id.is_empty() {
+                    return Some(id.to_string());
+                }
+            }
+        }
+    }
+    meta.get("reasoningEffort")
+        .or_else(|| meta.get("reasoning_effort"))
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+}
+
+/// Per-model reasoning menus and defaults from the `session/new` catalog.
+fn advertised_model_effort_catalog(
+    session_response: &Value,
+) -> (HashMap<String, Vec<ModeDef>>, HashMap<String, String>) {
+    let mut menus = HashMap::new();
+    let mut defaults = HashMap::new();
+    let Some(list) = session_response
+        .get("models")
+        .and_then(|models| {
+            models
+                .get("availableModels")
+                .or_else(|| models.get("available_models"))
+        })
+        .and_then(Value::as_array)
+    else {
+        return (menus, defaults);
+    };
+    for entry in list {
+        let Some(id) = model_entry_id(entry) else {
+            continue;
+        };
+        let menu = model_entry_effort_menu(entry);
+        if !menu.is_empty() {
+            menus.insert(id.to_string(), menu);
+        }
+        if let Some(default) = model_entry_default_effort(entry) {
+            defaults.insert(id.to_string(), default);
+        }
+    }
+    (menus, defaults)
 }
 
 /// Context window size the agent advertised for the model the session is on.
@@ -2023,6 +2283,21 @@ fn carry_forward_unsaid(next: &mut CapabilitySnapshot, prev: &CapabilitySnapshot
     if next.model_context_sizes.is_empty() {
         next.model_context_sizes = prev.model_context_sizes.clone();
     }
+    if next.model_effort_menus.is_empty() {
+        next.model_effort_menus = prev.model_effort_menus.clone();
+    }
+    if next.model_default_efforts.is_empty() {
+        next.model_default_efforts = prev.model_default_efforts.clone();
+    }
+    if next.effort_options.is_empty() && next.current_effort_id.is_none() {
+        next.effort_options = prev.effort_options.clone();
+        next.current_effort_id = prev.current_effort_id.clone();
+        next.current_effort = prev.current_effort;
+        next.thinking_effort = prev.thinking_effort.clone();
+        if next.effort_config_id.is_none() {
+            next.effort_config_id = prev.effort_config_id.clone();
+        }
+    }
     if next.modes.is_empty() && next.current_mode.is_none() {
         next.modes = prev.modes.clone();
         next.current_mode = prev.current_mode.clone();
@@ -2051,6 +2326,13 @@ fn merge_legacy_models_field(session_response: &Value, caps: &mut CapabilitySnap
     // model, not just the current one, so the meter can follow a later switch.
     if caps.model_context_sizes.is_empty() {
         caps.model_context_sizes = advertised_model_context_sizes(session_response);
+    }
+    if caps.model_effort_menus.is_empty() {
+        let (menus, defaults) = advertised_model_effort_catalog(session_response);
+        caps.model_effort_menus = menus;
+        if caps.model_default_efforts.is_empty() {
+            caps.model_default_efforts = defaults;
+        }
     }
 
     if caps.current_model.is_none() {
@@ -2098,7 +2380,8 @@ fn merge_legacy_models_field(session_response: &Value, caps: &mut CapabilitySnap
             }
         }
 
-        // Effort levels live on the current model's `_meta` for Grok.
+        // Effort levels live on each model's `_meta` for Grok. Composer still
+        // reads the session-level list, so copy the current model's menu there.
         let current = caps.current_model.clone();
         let pick = list.iter().find(|m| {
             let id = m
@@ -2109,49 +2392,28 @@ fn merge_legacy_models_field(session_response: &Value, caps: &mut CapabilitySnap
             current.as_deref().zip(id).is_some_and(|(c, i)| c == i)
         }).or_else(|| list.first());
 
-        if let Some(entry) = pick {
-            if let Some(meta) = entry.get("_meta") {
-                if caps.current_effort_id.is_none() {
-                    if let Some(effort) = meta
-                        .get("reasoningEffort")
-                        .or_else(|| meta.get("reasoning_effort"))
-                        .and_then(Value::as_str)
-                    {
-                        caps.current_effort_id = Some(effort.to_string());
-                    }
+        if caps.effort_options.is_empty() {
+            let menu_key = current
+                .clone()
+                .or_else(|| pick.and_then(model_entry_id).map(str::to_string));
+            if let Some(key) = menu_key {
+                if let Some(menu) = caps.model_effort_menus.get(&key) {
+                    caps.effort_options = menu.clone();
                 }
-                if caps.effort_options.is_empty() {
-                    if let Some(levels) = meta
-                        .get("reasoningEfforts")
-                        .or_else(|| meta.get("reasoning_efforts"))
-                        .and_then(Value::as_array)
-                    {
-                        for level in levels {
-                            let id = level
-                                .get("id")
-                                .or_else(|| level.get("value"))
-                                .and_then(Value::as_str)
-                                .unwrap_or("")
-                                .to_string();
-                            if id.is_empty() {
-                                continue;
-                            }
-                            let label = level
-                                .get("label")
-                                .or_else(|| level.get("name"))
-                                .and_then(Value::as_str)
-                                .unwrap_or(id.as_str())
-                                .to_string();
-                            caps.effort_options.push(ModeDef {
-                                id,
-                                label,
-                                description: level
-                                    .get("description")
-                                    .and_then(Value::as_str)
-                                    .map(str::to_string),
-                            });
-                        }
-                    }
+            }
+        }
+
+        if let Some(entry) = pick {
+            if caps.current_effort_id.is_none() {
+                if let Some(effort) = entry
+                    .get("_meta")
+                    .and_then(|meta| {
+                        meta.get("reasoningEffort")
+                            .or_else(|| meta.get("reasoning_effort"))
+                    })
+                    .and_then(Value::as_str)
+                {
+                    caps.current_effort_id = Some(effort.to_string());
                 }
             }
         }
@@ -2327,6 +2589,8 @@ fn parse_capabilities_from_typed(
         permission_label,
         prompt_image: true,
         model_context_sizes: HashMap::new(),
+        model_effort_menus: HashMap::new(),
+        model_default_efforts: HashMap::new(),
     }
 }
 
@@ -2496,6 +2760,8 @@ fn parse_capabilities_fallback(
         permission_label,
         prompt_image: true,
         model_context_sizes: HashMap::new(),
+        model_effort_menus: HashMap::new(),
+        model_default_efforts: HashMap::new(),
     }
 }
 
@@ -3825,6 +4091,16 @@ mod tests {
         let caps = parse_session_capabilities(&response);
         assert_eq!(caps.effort_options.len(), 7);
         assert_eq!(reassertable_effort(&caps).as_deref(), Some("max"));
+        assert_eq!(
+            caps.model_effort_menus
+                .get("deepseek-flash")
+                .map(|m| m.len()),
+            Some(7)
+        );
+        assert_eq!(
+            caps.model_default_efforts.get("deepseek-flash").map(String::as_str),
+            Some("max")
+        );
     }
 
     fn caps_with_effort(current: Option<&str>, menu: &[&str]) -> CapabilitySnapshot {
@@ -3854,6 +4130,8 @@ mod tests {
             permission_label: None,
             prompt_image: true,
             model_context_sizes: HashMap::new(),
+            model_effort_menus: HashMap::new(),
+            model_default_efforts: HashMap::new(),
         }
     }
 
@@ -3889,6 +4167,125 @@ mod tests {
 
         let unknown = caps_with_effort(None, &["high", "medium", "low"]);
         assert_eq!(reassertable_effort(&unknown), None);
+    }
+
+    fn grok_mixed_catalog() -> Value {
+        json!({
+            "sessionId": "s1",
+            "models": {
+                "currentModelId": "deepseek-flash",
+                "availableModels": [
+                    {
+                        "modelId": "deepseek-flash",
+                        "name": "DeepSeek Flash (Official)",
+                        "_meta": {
+                            "reasoningEffort": "max",
+                            "reasoningEfforts": [
+                                { "id": "none", "label": "No Reasoning" },
+                                { "id": "minimal", "label": "Minimal" },
+                                { "id": "low", "label": "Low" },
+                                { "id": "medium", "label": "Medium" },
+                                { "id": "high", "label": "High" },
+                                { "id": "xhigh", "label": "Extra High" },
+                                { "id": "max", "label": "Max", "default": true }
+                            ]
+                        }
+                    },
+                    {
+                        "modelId": "grok-4.6",
+                        "name": "Grok 4.6",
+                        "_meta": {
+                            "reasoningEffort": "high",
+                            "reasoningEfforts": [
+                                { "id": "xhigh", "label": "Extra High" },
+                                { "id": "high", "label": "High", "default": true },
+                                { "id": "medium", "label": "Medium" },
+                                { "id": "low", "label": "Low" }
+                            ]
+                        }
+                    }
+                ]
+            }
+        })
+    }
+
+    /// A Grok catalog mixes DeepSeek `max` with grok-4.6's four-level menu.
+    /// Switching onto grok-4.6 must drop `max` (xAI 400) and take that model's
+    /// default; a shared level like `high` must survive.
+    #[test]
+    fn a_model_switch_clamps_effort_to_the_target_menu() {
+        let caps = parse_session_capabilities(&grok_mixed_catalog());
+        assert_eq!(caps.current_effort_id.as_deref(), Some("max"));
+        assert_eq!(caps.effort_options.len(), 7);
+        assert_eq!(
+            caps.model_default_efforts.get("grok-4.6").map(String::as_str),
+            Some("high")
+        );
+
+        assert_eq!(
+            effort_for_model(&caps, "grok-4.6").as_deref(),
+            Some("high")
+        );
+        assert_eq!(
+            effort_for_model(&caps, "deepseek-flash").as_deref(),
+            Some("max")
+        );
+        assert_eq!(clamp_effort_id(&caps, "grok-4.6", "max"), "high");
+        assert_eq!(clamp_effort_id(&caps, "grok-4.6", "low"), "low");
+        assert_eq!(clamp_effort_id(&caps, "deepseek-flash", "max"), "max");
+
+        let mut on_high = caps.clone();
+        on_high.current_effort_id = Some("high".to_string());
+        assert_eq!(
+            effort_for_model(&on_high, "grok-4.6").as_deref(),
+            Some("high")
+        );
+    }
+
+    /// A set_config_option echo has no `models` field. The per-model menus
+    /// from session/new have to survive, or the clamp after a model switch
+    /// has nothing to read.
+    #[test]
+    fn a_config_echo_keeps_per_model_effort_menus() {
+        let prev = parse_session_capabilities(&grok_mixed_catalog());
+        let mut echo = parse_session_capabilities(&json!({
+            "sessionId": "s1",
+            "configOptions": [{
+                "id": "model", "name": "Model", "category": "model", "type": "select",
+                "currentValue": "grok-4.6",
+                "options": [
+                    { "value": "deepseek-flash", "name": "DeepSeek Flash" },
+                    { "value": "grok-4.6", "name": "Grok 4.6" }
+                ]
+            }]
+        }));
+        assert!(echo.model_effort_menus.is_empty());
+        carry_forward_unsaid(&mut echo, &prev);
+        assert_eq!(
+            echo.model_effort_menus.get("grok-4.6").map(|m| m.len()),
+            Some(4)
+        );
+        assert_eq!(echo.current_effort_id.as_deref(), Some("max"));
+        assert_eq!(
+            effort_for_model(&echo, "grok-4.6").as_deref(),
+            Some("high")
+        );
+    }
+
+    /// Without a per-model catalog the new helpers equal the old session-wide
+    /// gate, so DeepSeek Harness / Claude keep their existing behaviour.
+    #[test]
+    fn effort_for_model_falls_back_without_a_catalog() {
+        let deepseek = caps_with_effort(
+            Some("max"),
+            &["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+        );
+        assert_eq!(
+            effort_for_model(&deepseek, "whatever").as_deref(),
+            reassertable_effort(&deepseek).as_deref()
+        );
+        assert_eq!(clamp_effort_id(&deepseek, "whatever", "max"), "max");
+        assert_eq!(clamp_effort_id(&deepseek, "whatever", "nope"), "nope");
     }
 
     /// A mode change must stay recognisable as a *mode* after expansion, or the

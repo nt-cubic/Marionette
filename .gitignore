@@ -17,6 +17,8 @@ Thumbs.db
 # --- Runtime state written into the repo root ---
 # Marionette's own project state: sessions, transcripts, handoff
 .marionette/
+# Legacy AgentShell state, migrated to .marionette on first start (app_paths.rs)
+.agentshell/
 # Claude Code CLI: the session registry holds a peer token, and the config
 # backup is a copy of ~/.claude.json
 .claude/
