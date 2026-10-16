@@ -117,11 +117,15 @@ struct EngineState {
     status: EngineStatus,
     /// 我们自己拉起的 serve 进程（reused 实例为 None）。
     child: Option<ChildHandle>,
+    /// 最近一次「有人需要引擎」的时刻（目录查询 / 别名同步 / 注入解析 /
+    /// 注册）。空闲回收的计时基准。
+    last_needed_at: Option<Instant>,
 }
 
 static STATE: Mutex<EngineState> = Mutex::new(EngineState {
     status: EngineStatus::Absent,
     child: None,
+    last_needed_at: None,
 });
 
 fn state_lock() -> &'static Mutex<EngineState> {
@@ -858,6 +862,40 @@ fn registration_plan(
     plan
 }
 
+/// 注册对账：账本里有、本次计划没有的 provider → 应从引擎回收。
+/// （凭据被删 / opencode auth.json 变更后，注册器只加不减就会留下旧 key。）
+fn reconcile_removals(ledger: &[String], plan_names: &[&str]) -> Vec<String> {
+    ledger
+        .iter()
+        .filter(|name| !plan_names.contains(&name.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// 我们注册进引擎的 provider 账本（engine/registered-providers.json）。
+/// 只记名字——对账用；回收只碰账本里的名字，绝不动用户在 magpie 里自加的。
+fn load_registered_ledger(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn save_registered_ledger(path: &Path, names: &[String]) {
+    if let Ok(text) = serde_json::to_string(names) {
+        let temp = path.with_extension("json.tmp");
+        if std::fs::write(&temp, text).and_then(|_| std::fs::rename(&temp, path)).is_err() {
+            crate::debug_log::append(
+                "engine",
+                "warn",
+                "",
+                "engine provider ledger write failed",
+                Some(&path.display().to_string()),
+            );
+        }
+    }
+}
+
 /// 把「凭据库 key-plan + opencode 扫描引用的 api key」注册进引擎。
 ///
 /// 2026-10-16 产品定稿「无脑打开软件就能用」：引用（opencode auth.json）的
@@ -905,10 +943,44 @@ fn register_key_providers(exe: &Path) {
         }
     }
     let references = crate::credentials::peek_opencode_api_keys();
-    if key_plans.is_empty() && references.is_empty() {
+    let plan = registration_plan(&key_plans, &references);
+    let ledger_path = home.join(".marionette").join("engine").join("registered-providers.json");
+    let ledger = load_registered_ledger(&ledger_path);
+    let plan_names: Vec<&str> = plan.iter().map(|(name, _, _)| *name).collect();
+    // 对账：账本里有、本次计划没有 → 引擎侧回收（只碰我们自己注册过的名字）。
+    let mut kept_ledger: Vec<String> = ledger
+        .iter()
+        .filter(|name| plan_names.contains(&name.as_str()))
+        .cloned()
+        .collect();
+    for name in reconcile_removals(&ledger, &plan_names) {
+        match run_magpie_cli(exe, &["provider", "rm", name.as_str()]) {
+            Ok(()) => {
+                crate::debug_log::append(
+                    "engine",
+                    "info",
+                    "",
+                    "engine provider reclaimed",
+                    Some(&name),
+                );
+            }
+            Err(error) => {
+                // 回收失败留在账本里，下次注册时机重试。
+                crate::debug_log::append(
+                    "engine",
+                    "warn",
+                    "",
+                    "engine provider reclaim failed",
+                    Some(&format!("provider={name}: {error}")),
+                );
+                kept_ledger.push(name);
+            }
+        }
+    }
+    if plan.is_empty() && kept_ledger.is_empty() && ledger.is_empty() {
         return;
     }
-    for (provider_name, key, extra) in registration_plan(&key_plans, &references) {
+    for (provider_name, key, extra) in plan {
         // key 绝不进日志/事件——命令行参数只存在于这个短命子进程里。
         let updated = run_magpie_cli(
             exe,
@@ -925,13 +997,16 @@ fn register_key_providers(exe: &Path) {
             }
         };
         match result {
-            Ok(()) => crate::debug_log::append(
-                "engine",
-                "info",
-                "",
-                "engine provider registered",
-                Some(provider_name),
-            ),
+            Ok(()) => {
+                crate::debug_log::append(
+                    "engine",
+                    "info",
+                    "",
+                    "engine provider registered",
+                    Some(provider_name),
+                );
+                kept_ledger.push(provider_name.to_string());
+            }
             Err(error) => crate::debug_log::append(
                 "engine",
                 "warn",
@@ -941,6 +1016,7 @@ fn register_key_providers(exe: &Path) {
             ),
         }
     }
+    save_registered_ledger(&ledger_path, &kept_ledger);
 }
 
 /// 凭据侧有变化（新增/删除 key-plan、opencode auth.json 更新）后的补注册。
@@ -953,6 +1029,7 @@ pub fn reregister_key_providers() {
     ) {
         return;
     }
+    note_engine_needed();
     let Ok(dir) = engine_dir() else { return };
     let exe = exe_path(&dir);
     if !exe.is_file() {
@@ -961,6 +1038,215 @@ pub fn reregister_key_providers() {
     let _ = std::thread::Builder::new()
         .name("engine-reregister".into())
         .spawn(move || register_key_providers(&exe));
+}
+
+// ─── 订阅配额（`magpie quota --json` → 用量面板；30s 缓存）─────────────────
+
+/// 一条订阅配额（序列化给前端；字段全部宽松——magpie 输出里缺什么都容忍）。
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineQuotaWindow {
+    pub name: String,
+    pub used: Option<f64>,
+    pub remaining: Option<f64>,
+    pub resets_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineQuotaEntry {
+    pub provider: String,
+    pub name: String,
+    pub user: Option<String>,
+    pub windows: Vec<EngineQuotaWindow>,
+}
+
+/// 解析 `magpie quota --json` 的输出（坏形状 → 空表，绝不 panic）。
+fn parse_quota_json(text: &str) -> Vec<EngineQuotaEntry> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return Vec::new();
+    };
+    let Some(items) = value.as_array() else {
+        return Vec::new();
+    };
+    let string = |v: &serde_json::Value, key: &str| {
+        v.get(key).and_then(serde_json::Value::as_str).map(str::to_string)
+    };
+    let mut out = Vec::new();
+    for item in items {
+        let Some(provider) = string(item, "provider") else { continue };
+        let windows = item
+            .get("windows")
+            .and_then(serde_json::Value::as_array)
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|row| {
+                        let name = string(row, "name")?;
+                        Some(EngineQuotaWindow {
+                            name,
+                            used: row.get("used").and_then(serde_json::Value::as_f64),
+                            remaining: row.get("remaining").and_then(serde_json::Value::as_f64),
+                            resets_at: string(row, "resetsAt"),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.push(EngineQuotaEntry {
+            provider,
+            name: string(item, "name").unwrap_or_default(),
+            user: string(item, "user"),
+            windows,
+        });
+    }
+    out
+}
+
+/// 拉订阅配额（仅自拉实例；复用实例的数据不在我们的 engine/data 里）。
+/// 30s 缓存——用量面板刷新与回合结束都会问，不该每次都跑 CLI。
+pub fn quota() -> Vec<EngineQuotaEntry> {
+    static CACHE: std::sync::Mutex<Option<(std::time::Instant, Vec<EngineQuotaEntry>)>> =
+        std::sync::Mutex::new(None);
+    if !matches!(status(), EngineStatus::Running { reused: false, .. }) {
+        return Vec::new();
+    }
+    if let Ok(guard) = CACHE.lock() {
+        if let Some((at, cached)) = guard.as_ref() {
+            if at.elapsed() < Duration::from_secs(30) {
+                return cached.clone();
+            }
+        }
+    }
+    let Ok(dir) = engine_dir() else { return Vec::new() };
+    let exe = exe_path(&dir);
+    if !exe.is_file() {
+        return Vec::new();
+    }
+    let entries = run_magpie_cli_capture(&exe, &["quota", "--json"])
+        .map(|text| parse_quota_json(&text))
+        .unwrap_or_default();
+    if let Ok(mut guard) = CACHE.lock() {
+        *guard = Some((std::time::Instant::now(), entries.clone()));
+    }
+    entries
+}
+
+// ─── 空闲回收（长时间无需求且无引擎绑定 → 停 serve；任何跨用入口自动唤醒）──
+//
+// 与「常开不可见」的折中：回收条件极保守 —— ①没有任何会话绑着引擎模型，
+// ②30 分钟没人查目录 / 同步别名 / 解析注入 / 动过凭据。唤醒是全自动的：
+// 模型菜单打开（已安装才唤醒，绝不惊喜下载）、绑定、网关按钮、下次启动。
+
+/// 空闲多久后回收自拉 serve（无绑定 + 无需求）。
+const IDLE_RECLAIM_AFTER: Duration = Duration::from_secs(30 * 60);
+/// 回收巡检间隔。
+const IDLE_CHECK_EVERY: Duration = Duration::from_secs(60);
+
+/// 「有人需要引擎」——目录查询 / 别名同步 / 注入解析 / 注册时机都会打点。
+pub fn note_engine_needed() {
+    lock_state().last_needed_at = Some(Instant::now());
+}
+
+/// 绑定着引擎模型的会话数（只读 model_bridge 的存储文件——直接解析避免
+/// engine ↔ model_bridge 循环依赖；形状见 BindingFile）。
+fn engine_binding_count_at(path: &Path) -> usize {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return 0;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return 0;
+    };
+    value
+        .get("bindings")
+        .and_then(serde_json::Value::as_object)
+        .map(|bindings| {
+            bindings
+                .values()
+                .filter(|selection| {
+                    selection.get("entryId").and_then(serde_json::Value::as_str)
+                        == Some(crate::engine::ENGINE_ENTRY_ID)
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+fn engine_binding_count() -> usize {
+    let Some(home) = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+    else {
+        return 0;
+    };
+    engine_binding_count_at(&home.join(".marionette").join("bridge-bindings.json"))
+}
+
+/// 引擎已安装但处于 Absent（典型：空闲回收后）→ 后台唤醒。幂等；未安装
+/// 不动（绝不因菜单打开触发 48MB 下载）。
+pub fn wake_if_installed() {
+    if !matches!(status(), EngineStatus::Absent) {
+        return;
+    }
+    let Ok(dir) = engine_dir() else { return };
+    if !is_installed_at(&dir) {
+        return;
+    }
+    let _ = enable();
+}
+
+/// 回收巡检线程：Running（自拉）期间每分钟看一眼；不满足回收条件就继续，
+/// 状态不再是自拉 Running 就退出。在 enable_pipeline 成功后启动。
+fn idle_watchdog() {
+    loop {
+        std::thread::sleep(IDLE_CHECK_EVERY);
+        let mut state = lock_state();
+        if !matches!(state.status, EngineStatus::Running { reused: false, .. }) {
+            return;
+        }
+        let idle_for = state
+            .last_needed_at
+            .map(|at| at.elapsed())
+            .unwrap_or(Duration::ZERO);
+        if idle_for < IDLE_RECLAIM_AFTER || engine_binding_count() > 0 {
+            continue;
+        }
+        if let Some(child) = state.child.as_mut() {
+            child.kill();
+        }
+        state.child = None;
+        state.status = EngineStatus::Absent;
+        drop(state);
+        crate::debug_log::append(
+            "engine",
+            "info",
+            "",
+            &format!("engine idle-reclaimed after {}min idle", IDLE_RECLAIM_AFTER.as_secs() / 60),
+            Some("bindings=0; any cross-use entry auto-wakes it"),
+        );
+        emit_event("engine-state-changed", &EngineStatus::Absent);
+        return;
+    }
+}
+
+/// 跑一个短命 magpie CLI 命令并捕获 stdout（quota 用；测试缝同 run_magpie_cli）。
+fn run_magpie_cli_capture(exe: &Path, args: &[&str]) -> Result<String, String> {
+    #[cfg(test)]
+    if let Some(hook) = test_cli_capture_hook() {
+        return hook(args);
+    }
+    let output = std::process::Command::new(exe)
+        .args(args)
+        .env("MAGPIE_NO_STATS", "1")
+        .output()
+        .map_err(|e| format!("启动 magpie CLI 失败: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "magpie {} 退出码 {:?}",
+            args.first().unwrap_or(&""),
+            output.status.code()
+        ));
+    }
+    String::from_utf8(output.stdout).map_err(|e| format!("magpie 输出不是 UTF-8: {e}"))
 }
 
 /// 跑一个短命 magpie CLI 命令（.portable 围栏由 exe 位置决定，无需 env）。
@@ -1048,6 +1334,7 @@ fn owned_serve_exe() -> Option<PathBuf> {
 /// CLI 失败一律只记 warn：流量照进引擎，未别名的内建名会在引擎侧 404，
 /// dev.log 里有原因可查。
 pub fn codex_alias_sync(session_id: &str, builtin: &str, engine_model: &str) {
+    note_engine_needed();
     let Some(group_id) = codex_group_id(builtin) else {
         crate::debug_log::append(
             "engine",
@@ -1279,11 +1566,16 @@ fn enable_pipeline(dir: &Path) -> Result<(), String> {
     }
     // 4. key 型 provider 注册（失败不阻塞；订阅由引擎 discovery 自己发现）。
     register_key_providers(&exe);
+    note_engine_needed();
     set_status(EngineStatus::Running {
         port,
         version,
         reused: false,
     });
+    // 5. 空闲回收巡检（无绑定 + 30 分钟无需求 → 停 serve；见 idle_watchdog）。
+    let _ = std::thread::Builder::new()
+        .name("engine-idle-watchdog".into())
+        .spawn(idle_watchdog);
     Ok(())
 }
 
@@ -1322,7 +1614,14 @@ pub fn running_base() -> Option<(u16, Option<String>)> {
 /// 引擎的 `/v1` 地址（grok owned 表的 `base_url`——chat_completions 后端向
 /// base_url 拼 `/chat/completions`）。
 pub fn engine_v1_url() -> Option<String> {
-    running_base().map(|(port, _)| format!("http://127.0.0.1:{port}/v1"))
+    // 注入解析 = 有会话真要用引擎 → 空闲回收的打点（测试构建除外：测试态
+    // 没有 watchdog，打了也无妨，但保持纯净）。
+    let base = running_base();
+    #[cfg(not(test))]
+    if base.is_some() {
+        note_engine_needed();
+    }
+    base.map(|(port, _)| format!("http://127.0.0.1:{port}/v1"))
 }
 
 /// model_bridge 侧「引擎就绪」的统一判定（伪来源可见性 / 绑定校验 / 注入
@@ -1368,6 +1667,7 @@ pub fn catalog() -> Vec<String> {
     if let Some(models) = test_catalog() {
         return models;
     }
+    note_engine_needed();
     let cache = CATALOG.get_or_init(|| Mutex::new(None));
     if let Ok(guard) = cache.lock() {
         if let Some(entry) = guard.as_ref() {
@@ -1424,6 +1724,9 @@ type BoxReuse = std::sync::Arc<dyn Fn(u16) -> Option<Option<String>> + Send + Sy
 type BoxVoid = std::sync::Arc<dyn Fn() + Send + Sync>;
 #[cfg(test)]
 pub(crate) type BoxCli = std::sync::Arc<dyn Fn(&[&str]) -> Result<(), String> + Send + Sync>;
+#[cfg(test)]
+pub(crate) type BoxCliCapture =
+    std::sync::Arc<dyn Fn(&[&str]) -> Result<String, String> + Send + Sync>;
 
 #[cfg(test)]
 struct Seams {
@@ -1440,6 +1743,8 @@ struct Seams {
     bridge_visible: bool,
     /// magpie CLI 捕获缝（run_magpie_cli 的替代；别名组测试记录参数用）。
     cli: Option<BoxCli>,
+    /// 带输出捕获的 CLI 缝（quota 用）。
+    cli_capture: Option<BoxCliCapture>,
 }
 
 #[cfg(test)]
@@ -1456,6 +1761,7 @@ impl Default for Seams {
             direct_http: false,
             bridge_visible: false,
             cli: None,
+            cli_capture: None,
         }
     }
 }
@@ -1578,6 +1884,11 @@ fn test_register_hook() -> Option<BoxVoid> {
 #[cfg(test)]
 fn test_cli_hook() -> Option<BoxCli> {
     seams().and_then(|guard| guard.as_ref().and_then(|s| s.cli.clone()))
+}
+
+#[cfg(test)]
+fn test_cli_capture_hook() -> Option<BoxCliCapture> {
+    seams().and_then(|guard| guard.as_ref().and_then(|s| s.cli_capture.clone()))
 }
 
 #[cfg(test)]
@@ -2024,6 +2335,94 @@ mod tests {
         );
         assert_eq!(glm[0].0, "zhipu");
         assert_eq!(glm[0].2, "region=coding");
+    }
+
+    /// 注册对账：账本减去本次计划 = 引擎侧应回收的名字；计划里的不动。
+    #[test]
+    fn reconcile_removals_only_reclaims_ledger_names_missing_from_the_plan() {
+        let ledger = vec![
+            "opencode-go".to_string(),
+            "deepseek".to_string(),
+            "moonshot".to_string(),
+        ];
+        let plan = vec!["opencode-go", "xai"];
+        assert_eq!(reconcile_removals(&ledger, &plan), vec!["deepseek", "moonshot"]);
+        // 空计划 → 全回收（用户删光了 key）。
+        assert_eq!(reconcile_removals(&ledger, &[]), ledger);
+        // 空账本 → 无事可做。
+        assert!(reconcile_removals(&[], &plan).is_empty());
+    }
+
+    /// 账本读写 roundtrip；损坏文件按空账本处理（绝不动引擎状态）。
+    #[test]
+    fn registered_ledger_roundtrips_and_tolerates_corruption() {
+        let dir = temp_dir("ledger");
+        let path = dir.join("registered-providers.json");
+        assert!(load_registered_ledger(&path).is_empty(), "缺文件 → 空账本");
+        save_registered_ledger(&path, &["opencode-go".to_string(), "deepseek".to_string()]);
+        assert_eq!(
+            load_registered_ledger(&path),
+            vec!["opencode-go".to_string(), "deepseek".to_string()]
+        );
+        std::fs::write(&path, "{not json").unwrap();
+        assert!(load_registered_ledger(&path).is_empty(), "坏文件 → 空账本");
+        assert!(!path.with_extension("json.tmp").exists(), "临时文件已 rename 走");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `magpie quota --json` 解析：实机形状（2026-10-17 实测）→ 条目与窗口；
+    /// 缺字段容忍、坏形状 → 空表。
+    #[test]
+    fn quota_json_parses_the_measured_shape_and_tolerates_junk() {
+        let json = r#"[
+  {"provider":"grok","name":"Grok (SuperGrok)","kind":"subscription",
+   "user":"ntcubic@yahoo.com",
+   "windows":[{"name":"7 days","used":68,"remaining":32,
+               "resetsAt":"2026-10-17T12:09:03.3069Z","holdsWhy":"log"}],
+   "readAt":"2026-10-17T00:10:27.7158835+09:00"},
+  {"provider":"codex","name":"Codex","plan":"free",
+   "windows":[{"name":"30 days","used":0,"remaining":100}]}
+]"#;
+        let entries = parse_quota_json(json);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].provider, "grok");
+        assert_eq!(entries[0].user.as_deref(), Some("ntcubic@yahoo.com"));
+        assert_eq!(entries[0].windows[0].used, Some(68.0));
+        assert_eq!(entries[0].windows[0].remaining, Some(32.0));
+        assert!(entries[0].windows[0].resets_at.is_some());
+        // 第二条无 user、无 resetsAt —— 全部容忍。
+        assert_eq!(entries[1].user, None);
+        assert_eq!(entries[1].windows[0].resets_at, None);
+
+        assert!(parse_quota_json("not json").is_empty());
+        assert!(parse_quota_json("{}").is_empty());
+        assert!(parse_quota_json(r#"[{"windows":[]}]"#).is_empty(), "无 provider 的条目跳过");
+    }
+
+    /// 引擎绑定计数（空闲回收的「有人在用」判据）：只数 entryId=engine 的；
+    /// 坏文件/缺文件按 0（宁可不回收也不误杀）。
+    #[test]
+    fn engine_binding_count_reads_only_engine_selections() {
+        let dir = temp_dir("bindcount");
+        let path = dir.join("bridge-bindings.json");
+        assert_eq!(engine_binding_count_at(&path), 0, "缺文件 → 0");
+
+        std::fs::write(
+            &path,
+            r#"{"version":1,"bindings":{
+                 "s1":{"entryId":"engine","modelId":"grok/grok-4.7"},
+                 "s2":{"entryId":"engine","modelId":"opencode-go/glm-5.3"},
+                 "s3":{"entryId":"opencode-go","modelId":"glm-5.3"},
+                 "s4":{"entryId":"opencode/deepseek","modelId":"deepseek-v4-pro"}
+               }}"#,
+        )
+        .unwrap();
+        assert_eq!(engine_binding_count_at(&path), 2);
+
+        std::fs::write(&path, "{corrupt").unwrap();
+        assert_eq!(engine_binding_count_at(&path), 0, "坏文件 → 0（不误判有人在用）");
+
+        fs::remove_dir_all(&dir).ok();
     }
 
     // ─── codex 内建名 → 路由组别名（M2 收官；CLI 由测试缝记录）──────────────

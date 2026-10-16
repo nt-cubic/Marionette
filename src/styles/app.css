@@ -7305,6 +7305,21 @@ body.is-composer-resizing .composer {
   letter-spacing: 0;
 }
 
+/* Per-row source badge in the unified cross-use list: where this model
+   comes from (Grok 订阅 / OpenCode Go / DeepSeek / …). */
+.composer-menu__model-badge {
+  flex: 0 0 auto;
+  margin-left: 8px;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 15px;
+  white-space: nowrap;
+}
+
 /* Placeholder for a cross-use source whose model list is not enumerable —
    custom model ids are the only way to use it (e.g. openrouter). */
 .composer-menu__bridge-empty {
