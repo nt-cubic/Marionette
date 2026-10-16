@@ -2,8 +2,8 @@
 
 | 位置 | 性质 |
 |---|---|
-| [`CURRENT.md`](./CURRENT.md) | **现行契约**：当前实现状态、产品底线、工程入口。与代码冲突时以代码和本文件为准 |
-| [`cross-agent-bridge.md`](./cross-agent-bridge.md) | **设计稿（未实现）**：跨 agent 模型桥——凭据扫描 + key 直连 + 内嵌翻译引擎的分层设计与里程碑 |
+| [`CURRENT.md`](./CURRENT.md) | **现行契约**：当前实现状态、产品底线、工程入口（含「跨用引擎」一节）。与代码冲突时以代码和本文件为准 |
+| [`cross-agent-bridge.md`](./cross-agent-bridge.md) | 指针：跨用桥已落地，现行行为在 `CURRENT.md`；完整设计稿在 [`archive/cross-agent-bridge.md`](./archive/cross-agent-bridge.md) |
 | [`close-freeze-deadlock.md`](./close-freeze-deadlock.md) | 案例记录：关窗死锁的成因、日志证据链，以及后续 kill 路径必须遵守的规则 |
 | `archive/` | 历史归档（2026-07 前后的策划、路线图、规格与调研）。**不是**待办清单 |
 | `screenshots/` | 根 README 用的界面截图 |
