@@ -20,10 +20,13 @@
 //!   附录 B4.4——200 + HTML 是 Cloudflare 挑战，不是引擎）。
 //! - **退出**：child 句柄存全局状态，app 退出路径 TerminateProcess 直杀
 //!   （magpie 的 JSON 全部 tmp+rename 原子写，强杀安全）。
-//! - **provider add**：引擎健康后对本机凭据库里的 key-plan entry 跑短命 CLI
-//!   进程注册（先 `provider key` 更新、不存在再 `provider add`——直接 add 对
-//!   已存在的 provider 会开出 `deepseek-2` 副本）。订阅账号由引擎自己的
-//!   discovery 发现，Marionette 不碰。
+//! - **provider add**：引擎健康后把「凭据库 key-plan + opencode 扫描引用的
+//!   api key」注册进引擎（2026-10-16 产品定稿「无脑打开软件就能用」；先
+//!   `provider key` 更新、不存在再 `provider add`——直接 add 对已存在的
+//!   provider 会开出 `deepseek-2` 副本；同一 provider 的 key-plan 优先于
+//!   扫描引用）。订阅账号由引擎自己的 discovery 发现，Marionette 不碰。
+//!   引擎随应用启动自动拉起（main.rs setup → `enable()`）；凭据变化 /
+//!   扫描刷新时经 `reregister_key_providers()` 后台补注册（仅自拉实例）。
 //!
 //! 安全底线（§5）：key 只进子进程命令行（短命、不落日志、不落 Marionette 磁盘）；
 //! 日志只记 provider 名与事件。引擎令牌是字面量 `magpie`（S1：网关回环任意
@@ -741,8 +744,32 @@ fn magpie_provider_for_preset(preset: &str) -> Option<(&'static str, &'static st
     }
 }
 
-/// 对凭据库里的每个 key-plan entry 注册进引擎。幂等策略：先试
-/// `provider key <id> <key>`（已存在 → 换 key），失败再 `provider add`
+/// 本次要注册的 (magpie provider, key, add 附带 k=v)。key-plan 优先：同一
+/// provider 已有 key-plan 时跳过它的扫描引用（否则两边各注册一次会开出 `-2`
+/// 副本 / 互相覆盖 key）。
+fn registration_plan(
+    key_plans: &[(String, String)],
+    references: &[(String, String)],
+) -> Vec<(&'static str, String, &'static str)> {
+    let mut plan: Vec<(&'static str, String, &'static str)> = Vec::new();
+    for (preset, key) in key_plans.iter().chain(references.iter()) {
+        let Some((name, extra)) = magpie_provider_for_preset(preset) else {
+            continue;
+        };
+        if plan.iter().any(|(n, _, _)| *n == name) {
+            continue;
+        }
+        plan.push((name, key.clone(), extra));
+    }
+    plan
+}
+
+/// 把「凭据库 key-plan + opencode 扫描引用的 api key」注册进引擎。
+///
+/// 2026-10-16 产品定稿「无脑打开软件就能用」：引用（opencode auth.json）的
+/// key 只在注册瞬间读出、只进 magpie CLI 的命令行（除此之外扫描路径仍然
+/// 绝不复制/存储 key，`scan_entry` 的 secret 恒为 None 不变）。幂等策略：
+/// 先试 `provider key <id> <key>`（已存在 → 换 key），失败再 `provider add`
 /// （不存在 → 新增；对已存在会开出 `-2` 副本，所以顺序是 key 在前）。
 /// 任何一条失败只记 warn，不阻塞引擎进入 Running。
 fn register_key_providers(exe: &Path) {
@@ -757,29 +784,37 @@ fn register_key_providers(exe: &Path) {
         return;
     };
     let credentials = home.join(".marionette").join("credentials.json");
-    let Ok(store) = crate::credentials::load_store_at(&credentials) else {
+    let mut key_plans: Vec<(String, String)> = Vec::new();
+    if let Ok(store) = crate::credentials::load_store_at(&credentials) {
+        for entry in store
+            .entries
+            .iter()
+            .filter(|entry| entry.kind == crate::credentials::CredentialKind::KeyPlan)
+        {
+            let Some(preset) = entry.preset.as_deref() else { continue };
+            if magpie_provider_for_preset(preset).is_none() {
+                continue;
+            }
+            match crate::credentials::peek_secret_at(&credentials, &entry.id) {
+                Ok(Some(key)) => key_plans.push((preset.to_string(), key)),
+                Ok(None) => {}
+                Err(_) => {
+                    crate::debug_log::append(
+                        "engine",
+                        "warn",
+                        "",
+                        "engine provider register: key undecryptable",
+                        Some(&format!("entry={}", entry.id)),
+                    );
+                }
+            }
+        }
+    }
+    let references = crate::credentials::peek_opencode_api_keys();
+    if key_plans.is_empty() && references.is_empty() {
         return;
-    };
-    for entry in store
-        .entries
-        .iter()
-        .filter(|entry| entry.kind == crate::credentials::CredentialKind::KeyPlan)
-    {
-        let Some(preset) = entry.preset.as_deref() else { continue };
-        let Some((provider_name, extra)) = magpie_provider_for_preset(preset) else {
-            continue;
-        };
-        let Ok(key) = crate::credentials::peek_secret_at(&credentials, &entry.id) else {
-            crate::debug_log::append(
-                "engine",
-                "warn",
-                "",
-                "engine provider register: key undecryptable",
-                Some(&format!("entry={}", entry.id)),
-            );
-            continue;
-        };
-        let Some(key) = key else { continue };
+    }
+    for (provider_name, key, extra) in registration_plan(&key_plans, &references) {
         // key 绝不进日志/事件——命令行参数只存在于这个短命子进程里。
         let updated = run_magpie_cli(
             exe,
@@ -812,6 +847,26 @@ fn register_key_providers(exe: &Path) {
             ),
         }
     }
+}
+
+/// 凭据侧有变化（新增/删除 key-plan、opencode auth.json 更新）后的补注册。
+/// 引擎的 enable 流水线只在拉起时注册一次；这个入口让已 Running 的自拉实例
+/// 即时补上。复用实例（用户自装 magpie）照旧跳过——不碰别人的引擎状态。
+pub fn reregister_key_providers() {
+    if !matches!(
+        status(),
+        EngineStatus::Running { reused: false, .. }
+    ) {
+        return;
+    }
+    let Ok(dir) = engine_dir() else { return };
+    let exe = exe_path(&dir);
+    if !exe.is_file() {
+        return;
+    }
+    let _ = std::thread::Builder::new()
+        .name("engine-reregister".into())
+        .spawn(move || register_key_providers(&exe));
 }
 
 /// 跑一个短命 magpie CLI 命令（.portable 围栏由 exe 位置决定，无需 env）。
@@ -1799,6 +1854,31 @@ mod tests {
         assert_eq!(magpie_provider_for_preset("xai"), Some(("xai", "")));
         assert_eq!(magpie_provider_for_preset("opencode-go"), Some(("opencode-go", "")));
         assert_eq!(magpie_provider_for_preset("unknown"), None);
+    }
+
+    /// 注册计划：key-plan 优先于同 provider 的扫描引用；未映射的引用跳过；
+    /// glm 携带 region=coding 附加参数。
+    #[test]
+    fn registration_plan_prefers_key_plans_and_skips_unmapped() {
+        let plan = registration_plan(
+            &[("opencode-go".to_string(), "store-key".to_string())],
+            &[
+                ("opencode-go".to_string(), "ref-key".to_string()), // 同名：引用让位
+                ("deepseek".to_string(), "ds-key".to_string()),     // 独立引用：保留
+                ("anthropic".to_string(), "oauth-key".to_string()), // OAuth 引用：不注册
+            ],
+        );
+        let names: Vec<&str> = plan.iter().map(|(n, _, _)| *n).collect();
+        assert_eq!(names, vec!["opencode-go", "deepseek"]);
+        assert_eq!(plan[0].1, "store-key");
+        assert_eq!(plan[1].1, "ds-key");
+
+        let glm = registration_plan(
+            &[("glm".to_string(), "g".to_string())],
+            &[],
+        );
+        assert_eq!(glm[0].0, "zhipu");
+        assert_eq!(glm[0].2, "region=coding");
     }
 
     // ─── codex 内建名 → 路由组别名（M2 收官；CLI 由测试缝记录）──────────────

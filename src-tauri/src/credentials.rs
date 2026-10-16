@@ -523,6 +523,46 @@ fn classify_opencode_entry(entry: &Value) -> OpencodeAuthType {
     OpencodeAuthType::Unknown
 }
 
+/// 引擎注册专用：读出一份 auth.json 里 api 型条目的 (provider-id, 明文 key)。
+///
+/// 这是全仓库唯一把扫描引用的 key **值**读出来的地方——2026-10-16 产品定稿
+/// 「无脑打开软件就能用」：跨用引擎注册需要 key 进 magpie CLI 的命令行。
+/// 除此之外的扫描路径仍然绝不复制/存储 key（`scan_entry` 的 secret 恒为
+/// None 不变）；解析失败按无 key 处理（空表），绝不 panic。
+pub fn peek_opencode_api_keys_at(path: &Path) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let Ok(text) = fs::read_to_string(path) else {
+        return out;
+    };
+    let Ok(auth) = serde_json::from_str::<Value>(&text) else {
+        return out;
+    };
+    let Some(obj) = auth.as_object() else {
+        return out;
+    };
+    for (provider, entry) in obj {
+        if !matches!(classify_opencode_entry(entry), OpencodeAuthType::Api) {
+            continue;
+        }
+        let Some(key) = entry
+            .get("key")
+            .and_then(Value::as_str)
+            .filter(|key| !key.is_empty())
+        else {
+            continue;
+        };
+        out.push((provider.clone(), key.to_string()));
+    }
+    out
+}
+
+/// 真实路径版（路径探测与扫描一致：.local/share → .config → %APPDATA%）。
+pub fn peek_opencode_api_keys() -> Vec<(String, String)> {
+    crate::provider_usage::opencode_auth_path()
+        .map(|path| peek_opencode_api_keys_at(&path))
+        .unwrap_or_default()
+}
+
 /// 解析一份 opencode auth.json。解析失败 → `error`，绝不 panic、绝不猜半截文件。
 fn scan_opencode_auth(path: &Path) -> AgentScan {
     let mut scan = AgentScan::new("opencode");
@@ -864,8 +904,8 @@ pub fn scan_all() -> ScanReport {
 mod tests {
     use super::{
         add_key_plan_at, decrypt_stored, delete_entry_at, encrypt_stored, load_store_at,
-        peek_secret_at, scan_all_at, scan_claude_at, scan_codex_at, scan_grok_at,
-        scan_opencode_at, touch_last_used_at, CredentialEntry, CredentialKind,
+        peek_opencode_api_keys_at, peek_secret_at, scan_all_at, scan_claude_at, scan_codex_at,
+        scan_grok_at, scan_opencode_at, touch_last_used_at, CredentialEntry, CredentialKind,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1103,6 +1143,43 @@ mod tests {
 
         // 纯读：原文件一字未动。
         assert!(fs::read_to_string(&auth_path).unwrap().contains("sk-opencode-secret"));
+
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// 引擎注册专用的 key 读取：api 条目（含无 type 的旧格式）带出明文 key，
+    /// oauth / 空条目跳过；坏文件 / 缺文件 → 空表，绝不 panic。
+    #[test]
+    fn peek_opencode_api_keys_reads_only_api_entries() {
+        let home = temp_home("opencode_peek");
+        let auth_path = home.join(".local").join("share").join("opencode").join("auth.json");
+        write_file(
+            &auth_path,
+            r#"{
+  "deepseek": {"type": "api", "key": "sk-ds"},
+  "opencode-go": {"key": "sk-go-legacy"},
+  "anthropic": {"type": "oauth", "refresh": "rt-x", "access": "at-x"},
+  "empty": {}
+}"#,
+        );
+        let mut keys = peek_opencode_api_keys_at(&auth_path);
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![
+                ("deepseek".to_string(), "sk-ds".to_string()),
+                ("opencode-go".to_string(), "sk-go-legacy".to_string()),
+            ]
+        );
+
+        // 纯读：原文件一字未动。
+        assert!(fs::read_to_string(&auth_path).unwrap().contains("sk-ds"));
+
+        // 坏 JSON / 缺文件 → 空表。
+        write_file(&auth_path, r#"{"deepseek":{"key":"sk-x","#);
+        assert!(peek_opencode_api_keys_at(&auth_path).is_empty());
+        let missing = home.join("nowhere").join("auth.json");
+        assert!(peek_opencode_api_keys_at(&missing).is_empty());
 
         let _ = fs::remove_dir_all(&home);
     }

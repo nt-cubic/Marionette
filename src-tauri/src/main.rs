@@ -288,6 +288,18 @@ fn main() {
             // Startup is the only safe moment: no session exists yet, so an
             // upgrade cannot replace a binary an agent is mid-turn on.
             commands::auto_update_agents_in_background();
+            // 无脑可用（2026-10-16 产品定稿）：翻译引擎随应用启动自动拉起——
+            // 已装则 serve + provider 注册，未装则后台下载（进度在凭据页）。
+            // enable 幂等；失败只落 Failed 状态（凭据页可见/可重试），不阻塞启动。
+            if let Err(error) = engine::enable() {
+                debug_log::append(
+                    "engine",
+                    "warn",
+                    "",
+                    "engine auto-start at launch failed",
+                    Some(&error),
+                );
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
