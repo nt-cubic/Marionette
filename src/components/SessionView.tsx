@@ -144,6 +144,7 @@ function pointerOutsideTabStrip(
 export function SessionTabs({
   openSessions,
   session,
+  doneUnreadIds,
   onTabSelect,
   onTabClose,
   onNewTab,
@@ -156,6 +157,8 @@ export function SessionTabs({
 }: {
   openSessions: Session[];
   session: Session;
+  /** Dialogs that finished a turn while this window was looking elsewhere. */
+  doneUnreadIds?: ReadonlySet<string>;
   onTabSelect: (session: Session) => void;
   onTabClose: (sessionId: string) => void;
   onNewTab: () => void;
@@ -364,23 +367,35 @@ export function SessionTabs({
         const isRenaming = renamingId === openSession.id;
         const isDragging = draggingTabId === openSession.id;
         const isGhostSource = ghost?.session.id === openSession.id;
+        const doneUnread = doneUnreadIds?.has(openSession.id) ?? false;
         return (
           <div
-            className={
-              openSession.id === session.id
-                ? `editor-tab is-active is-${openSession.status}${isDragging ? " is-dragging-out" : ""}${isGhostSource ? " is-tear-source" : ""}`
-                : `editor-tab is-${openSession.status}${isDragging ? " is-dragging-out" : ""}${isGhostSource ? " is-tear-source" : ""}`
-            }
+            className={[
+              "editor-tab",
+              `is-${openSession.status}`,
+              openSession.id === session.id ? "is-active" : "",
+              isDragging ? "is-dragging-out" : "",
+              isGhostSource ? "is-tear-source" : "",
+              doneUnread ? "is-done" : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
             key={openSession.id}
             role="tab"
             aria-selected={openSession.id === session.id}
           >
-            {busy && (
+            {busy ? (
               <span
                 className={`editor-tab__pulse is-${openSession.status}`}
                 aria-hidden
               />
-            )}
+            ) : doneUnread ? (
+              <span
+                className="editor-tab__done"
+                title="任务已完成"
+                aria-label="任务已完成"
+              />
+            ) : null}
             {isRenaming ? (
               <input
                 ref={renameInputRef}
@@ -405,11 +420,13 @@ export function SessionTabs({
                 className="editor-tab__select"
                 type="button"
                 title={
-                  onTabPopOut && !detachedMode
-                    ? `${openSession.label} · drag out to tear off · double-click to rename`
-                    : onTabMergeBack
-                      ? `${openSession.label} · drag out to merge back · double-click to rename`
-                      : `${openSession.cwd} · double-click to rename`
+                  doneUnread
+                    ? `${openSession.label} · 任务已完成`
+                    : onTabPopOut && !detachedMode
+                      ? `${openSession.label} · drag out to tear off · double-click to rename`
+                      : onTabMergeBack
+                        ? `${openSession.label} · drag out to merge back · double-click to rename`
+                        : `${openSession.cwd} · double-click to rename`
                 }
                 onPointerDown={(e) => onTabPointerDown(openSession, e)}
                 onPointerMove={onTabPointerMove}

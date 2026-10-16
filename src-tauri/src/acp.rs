@@ -167,6 +167,18 @@ pub struct CapabilitySnapshot {
     /// Per-model default effort (`default: true`, else `_meta.reasoningEffort`).
     #[serde(skip)]
     pub model_default_efforts: HashMap<String, String>,
+    /// Models whose reasoning-effort *writes* the agent itself rejected.
+    ///
+    /// Grok ≥1.0.5x answers
+    /// `-32602 "the session's current model does not support reasoning effort"`
+    /// for GLM-family catalog entries even though `reasoning_efforts` is
+    /// declared in `~/.grok/config.toml` (measured 2026-10-16: `zai-glm-5.3` /
+    /// `teamo-glm-5.3` deny low/high/max; `teamo-deepseek-v4-flash` accepts).
+    /// Latched from the live error so the Composer can drop the Effort control
+    /// and `update_session` can answer locally instead of re-asking on every
+    /// prompt. Session-local by design: a fresh `session/new` starts clean,
+    /// which self-heals the knob after a grok update fixes the gate.
+    pub effort_reject_models: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1043,6 +1055,16 @@ impl AcpService {
 
         let mut last_result = Value::Null;
         for update in updates {
+            // A model the agent already rejected effort writes for (grok's
+            // per-model gate latched below): answer locally instead of firing
+            // another doomed RPC on every prompt / restore.
+            if update.target == ConfigTarget::Effort
+                && self.get_capabilities(session_id).is_some_and(|caps| {
+                    effort_write_rejected(&caps, caps.current_model.as_deref())
+                })
+            {
+                continue;
+            }
             let skip_config_option = process
                 .config_option_unsupported
                 .load(Ordering::Relaxed);
@@ -1091,6 +1113,19 @@ impl AcpService {
                                 session_id,
                                 &update,
                             )
+                        }
+                        // The agent speaks set_config_option but rejects effort
+                        // writes for this model outright (grok's per-model gate).
+                        // Latch the model so the Composer drops the Effort chip
+                        // and the write above is answered locally next time; the
+                        // error still surfaces once for the user.
+                        Err(error)
+                            if update.target == ConfigTarget::Effort
+                                && is_invalid_params(&error)
+                                && is_effort_reject_error(&error) =>
+                        {
+                            self.latch_effort_reject_model(session_id);
+                            Err(error)
                         }
                         Err(error) => Err(error),
                     }
@@ -1160,6 +1195,33 @@ impl AcpService {
         Ok(last_result)
     }
 
+    /// Record that the agent rejects effort writes for the session's model.
+    ///
+    /// Idempotent and logged once per model: the dev.log trail is how a "why is
+    /// the Effort chip gone" question gets answered a week later.
+    fn latch_effort_reject_model(&self, session_id: &str) {
+        let Some(mut caps) = self.get_capabilities(session_id) else {
+            return;
+        };
+        let Some(model) = caps.current_model.clone() else {
+            return;
+        };
+        if caps.effort_reject_models.iter().any(|m| *m == model) {
+            return;
+        }
+        crate::debug_log::append(
+            "acp",
+            "info",
+            session_id,
+            "agent rejects effort writes for model; disabling Effort knob",
+            Some(&model),
+        );
+        caps.effort_reject_models.push(model);
+        if let Ok(mut map) = self.capabilities.lock() {
+            map.insert(session_id.to_string(), caps);
+        }
+    }
+
     /// After a model switch, snap effort onto a level the new model advertises.
     ///
     /// `session/set_config_option` for model does not carry `_meta.reasoningEffort`,
@@ -1177,6 +1239,13 @@ impl AcpService {
         let Some(model_id) = caps.current_model.clone() else {
             return;
         };
+
+        // The agent already rejected effort writes for this model (grok's
+        // per-model gate): a clamp write would be another doomed RPC, and the
+        // model's own default — which grok re-applies on the switch — stands.
+        if effort_write_rejected(&caps, Some(&model_id)) {
+            return;
+        }
 
         if let Some(menu) = caps.model_effort_menus.get(&model_id).cloned() {
             if !menu.is_empty() {
@@ -1829,6 +1898,18 @@ fn is_invalid_params(error: &str) -> bool {
     error.contains("-32602") || error.to_lowercase().contains("invalid params")
 }
 
+/// Grok's per-model effort gate: the write came back
+/// `-32602 … "does not support reasoning effort"`. Distinct from a bad value,
+/// which grok words `unknown reasoning_effort value`.
+fn is_effort_reject_error(error: &str) -> bool {
+    error.contains("does not support reasoning effort")
+}
+
+/// Did the agent already reject effort writes for this model?
+fn effort_write_rejected(caps: &CapabilitySnapshot, model: Option<&str>) -> bool {
+    model.is_some_and(|m| caps.effort_reject_models.iter().any(|x| x == m))
+}
+
 /// Did the agent advertise this config id for the knob?
 ///
 /// Only an *invented* id may fall back to the legacy per-knob RPC on Invalid
@@ -2469,6 +2550,13 @@ fn carry_forward_unsaid(next: &mut CapabilitySnapshot, prev: &CapabilitySnapshot
     if next.model_default_efforts.is_empty() {
         next.model_default_efforts = prev.model_default_efforts.clone();
     }
+    // The effort-reject latch is learned from a failed write, never from a
+    // response — no echo mentions it, so it always carries forward.
+    for model in &prev.effort_reject_models {
+        if !next.effort_reject_models.contains(model) {
+            next.effort_reject_models.push(model.clone());
+        }
+    }
     if next.effort_options.is_empty() && next.current_effort_id.is_none() {
         next.effort_options = prev.effort_options.clone();
         next.current_effort_id = prev.current_effort_id.clone();
@@ -2771,6 +2859,7 @@ fn parse_capabilities_from_typed(
         model_context_sizes: HashMap::new(),
         model_effort_menus: HashMap::new(),
         model_default_efforts: HashMap::new(),
+        effort_reject_models: Vec::new(),
     }
 }
 
@@ -2942,6 +3031,7 @@ fn parse_capabilities_fallback(
         model_context_sizes: HashMap::new(),
         model_effort_menus: HashMap::new(),
         model_default_efforts: HashMap::new(),
+        effort_reject_models: Vec::new(),
     }
 }
 
@@ -4312,6 +4402,7 @@ mod tests {
             model_context_sizes: HashMap::new(),
             model_effort_menus: HashMap::new(),
             model_default_efforts: HashMap::new(),
+            effort_reject_models: Vec::new(),
         }
     }
 
@@ -4450,6 +4541,44 @@ mod tests {
             effort_for_model(&echo, "grok-4.6").as_deref(),
             Some("high")
         );
+    }
+
+    /// The effort-reject latch is learned from a failed write, never from a
+    /// response, so a config echo must not drop it — otherwise every model
+    /// switch would re-arm the doomed writes grok ≥1.0.5x rejects for GLM
+    /// entries (`-32602 "does not support reasoning effort"`).
+    #[test]
+    fn a_config_echo_keeps_the_effort_reject_latch() {
+        let mut prev = parse_session_capabilities(&grok_mixed_catalog());
+        prev.effort_reject_models.push("zai-glm-5.3".to_string());
+        let mut echo = parse_session_capabilities(&json!({
+            "sessionId": "s1",
+            "configOptions": [{
+                "id": "model", "name": "Model", "category": "model", "type": "select",
+                "currentValue": "zai-glm-5.3",
+                "options": [
+                    { "value": "deepseek-flash", "name": "DeepSeek Flash" },
+                    { "value": "zai-glm-5.3", "name": "GLM 5.3" }
+                ]
+            }]
+        }));
+        assert!(echo.effort_reject_models.is_empty());
+        carry_forward_unsaid(&mut echo, &prev);
+        assert!(effort_write_rejected(&echo, Some("zai-glm-5.3")));
+        assert!(!effort_write_rejected(&echo, Some("deepseek-flash")));
+    }
+
+    /// grok words a per-model rejection and a bad value differently; only the
+    /// former may latch the knob off.
+    #[test]
+    fn effort_reject_matches_groks_gate_error_only() {
+        let gate = r#"{"code":-32602,"message":"Invalid params","data":"the session's current model does not support reasoning effort"}"#;
+        assert!(is_invalid_params(gate));
+        assert!(is_effort_reject_error(gate));
+
+        let unknown = r#"{"code":-32602,"message":"Invalid params","data":"unknown reasoning_effort value"}"#;
+        assert!(is_invalid_params(unknown));
+        assert!(!is_effort_reject_error(unknown));
     }
 
     /// Without a per-model catalog the new helpers equal the old session-wide

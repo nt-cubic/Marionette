@@ -11,6 +11,7 @@ import { CredentialsDialog } from "./CredentialsDialog";
 
 /** Visible sessions per project before "Show more". Projects always list fully. */
 const SESSION_LIST_PREVIEW = 5;
+const EMPTY_DONE_UNREAD: ReadonlySet<string> = new Set();
 
 /** Pin toggle shared by project session rows and chat rows. */
 function SessionPinButton({
@@ -56,6 +57,8 @@ type ProjectShelfProps = {
   sessions: Session[];
   currentProjectId: string;
   currentSessionId?: string;
+  /** Dialogs that finished a turn while this window was looking elsewhere. */
+  doneUnreadIds?: ReadonlySet<string>;
   /**
    * Project opened via Explorer "在此处打开 Marionette" — always listed first
    * with a small "此处" badge for this app session.
@@ -123,6 +126,7 @@ export function ProjectShelf({
   sessions,
   currentProjectId,
   currentSessionId,
+  doneUnreadIds,
   pinnedProjectId = null,
   onProjectSelect,
   onSessionSelect,
@@ -152,6 +156,7 @@ export function ProjectShelf({
   onChatSessionSelect,
   onNewChat,
 }: ProjectShelfProps) {
+  const unreadDone = doneUnreadIds ?? EMPTY_DONE_UNREAD;
   /** Collapsed project ids (persisted). Default for unknown ids is expanded. */
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() => loadCollapsedProjectIds());
   const [query, setQuery] = useState("");
@@ -283,6 +288,26 @@ export function ProjectShelf({
 
   /** Project ids whose session list is fully expanded past the preview cap. */
   const [sessionsExpandedByProject, setSessionsExpandedByProject] = useState<Set<string>>(() => new Set());
+
+  // A finished dialog behind a collapsed project would be invisible — open it.
+  useEffect(() => {
+    if (unreadDone.size === 0) return;
+    const projectIds = new Set<string>();
+    for (const session of sessions) {
+      if (unreadDone.has(session.id)) projectIds.add(session.projectId);
+    }
+    if (projectIds.size === 0) return;
+    setCollapsedProjects((current) => {
+      let changed = false;
+      const next = new Set(current);
+      for (const id of projectIds) {
+        if (next.delete(id)) changed = true;
+      }
+      if (!changed) return current;
+      saveCollapsedProjectIds(next);
+      return next;
+    });
+  }, [unreadDone, sessions]);
 
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
@@ -497,7 +522,7 @@ export function ProjectShelf({
       type="button"
       title={
         desktopNotifyEnabled
-          ? "Desktop notify on · taskbar flash + sound for replies, questions, permissions, errors, stalls, and silent stops"
+          ? "Desktop notify on · completion chime even while focused; taskbar flash when away"
           : "Desktop notify off · click to enable"
       }
       aria-label={desktopNotifyEnabled ? "Disable desktop notifications" : "Enable desktop notifications"}
@@ -659,7 +684,7 @@ export function ProjectShelf({
           const shouldCollapseSessions =
             !sessionsFullyExpanded && projectSessions.length > SESSION_LIST_PREVIEW;
           const visibleSessions = shouldCollapseSessions
-            ? collapsedShelfSessions(projectSessions, SESSION_LIST_PREVIEW)
+            ? collapsedShelfSessions(projectSessions, SESSION_LIST_PREVIEW, unreadDone)
             : projectSessions;
           const hiddenSessionCount = Math.max(0, projectSessions.length - visibleSessions.length);
 
@@ -675,11 +700,13 @@ export function ProjectShelf({
             draggingProjectId !== project.id;
 
           const isPinnedHere = pinnedProjectId === project.id;
+          const hasDoneUnread = projectSessions.some((session) => unreadDone.has(session.id));
           const rowClass = [
             "project-row",
             project.id === currentProjectId ? "is-active" : "",
             draggingProjectId === project.id ? "is-dragging" : "",
             isPinnedHere ? "is-open-here" : "",
+            hasDoneUnread ? "is-done" : "",
           ]
             .filter(Boolean)
             .join(" ");
@@ -728,6 +755,11 @@ export function ProjectShelf({
                     {isPinnedHere && (
                       <em className="project-row__here-badge" title="当前从资源管理器打开的路径">
                         此处
+                      </em>
+                    )}
+                    {hasDoneUnread && (
+                      <em className="project-row__done-badge" title="有对话已完成任务">
+                        完成
                       </em>
                     )}
                   </span>
@@ -780,11 +812,30 @@ export function ProjectShelf({
                     const park = suspendControl(session, session.label);
                     const isRenaming = renamingId === session.id;
                     const pinned = pinStamp(session) != null;
+                    const doneUnread = unreadDone.has(session.id);
                     const beginRename = () => {
                       if (!onRenameSession) return;
                       setRenamingId(session.id);
                       setRenameDraft(session.label);
                     };
+                    const statusMark = busy ? (
+                      <span
+                        className={`session-row__pulse is-${session.status}`}
+                        title={session.status}
+                        aria-label={session.status}
+                      />
+                    ) : doneUnread ? (
+                      <span
+                        className="session-row__dot is-done"
+                        title="任务已完成"
+                        aria-label="任务已完成"
+                      />
+                    ) : (
+                      <span
+                        className={`session-row__dot is-${session.status}`}
+                        aria-hidden
+                      />
+                    );
                     return (
                       <div
                         className={[
@@ -792,6 +843,7 @@ export function ProjectShelf({
                           session.id === currentSessionId ? "is-active" : "",
                           `is-${session.status}`,
                           pinned ? "is-pinned" : "",
+                          doneUnread ? "is-done" : "",
                         ]
                           .filter(Boolean)
                           .join(" ")}
@@ -805,14 +857,7 @@ export function ProjectShelf({
                               commitRename();
                             }}
                           >
-                            {busy ? (
-                              <span
-                                className={`session-row__pulse is-${session.status}`}
-                                aria-hidden
-                              />
-                            ) : (
-                              <span className="session-row__dot" aria-hidden />
-                            )}
+                            {statusMark}
                             <input
                               ref={renameInputRef}
                               className="session-row__rename-input"
@@ -833,9 +878,11 @@ export function ProjectShelf({
                             className="session-row__select"
                             type="button"
                             title={
-                              busy
-                                ? `${agentLabel(session.agentId)} · ${session.status} · double-click or pencil to rename`
-                                : `${agentLabel(session.agentId)} · double-click or pencil to rename`
+                              doneUnread
+                                ? `${session.label} · 任务已完成`
+                                : busy
+                                  ? `${agentLabel(session.agentId)} · ${session.status} · double-click or pencil to rename`
+                                  : `${agentLabel(session.agentId)} · double-click or pencil to rename`
                             }
                             onClick={() => onSessionSelect(session)}
                             onDoubleClick={(e) => {
@@ -844,18 +891,7 @@ export function ProjectShelf({
                               beginRename();
                             }}
                           >
-                            {busy ? (
-                              <span
-                                className={`session-row__pulse is-${session.status}`}
-                                title={session.status}
-                                aria-label={session.status}
-                              />
-                            ) : (
-                              <span
-                                className={`session-row__dot is-${session.status}`}
-                                aria-hidden
-                              />
-                            )}
+                            {statusMark}
                             <span className="session-row__content">
                               {pinned && <PinnedMark className="session-row__pin" />}
                               <strong>{session.label}</strong>
@@ -915,7 +951,7 @@ export function ProjectShelf({
                     );
                   })}
 
-                  {shouldCollapseSessions && (
+                  {shouldCollapseSessions && hiddenSessionCount > 0 && (
                     <div className="shelf-clip shelf-clip--sessions">
                       <div className="shelf-clip__fade" aria-hidden />
                       <button
@@ -999,11 +1035,20 @@ export function ProjectShelf({
               const isActive = session.id === currentSessionId;
               const isRenaming = renamingId === session.id;
               const pinned = pinStamp(session) != null;
+              const doneUnread = unreadDone.has(session.id);
               const beginRename = () => {
                 if (!onRenameSession) return;
                 setRenamingId(session.id);
                 setRenameDraft(session.label);
               };
+              const chatDot = (
+                <span
+                  className={`chat-row__dot${busy ? ` is-${session.status}` : doneUnread ? " is-done" : ""}`}
+                  title={doneUnread ? "任务已完成" : undefined}
+                  aria-label={doneUnread ? "任务已完成" : undefined}
+                  aria-hidden={!doneUnread}
+                />
+              );
               return (
                 <div
                   className={[
@@ -1011,6 +1056,7 @@ export function ProjectShelf({
                     isActive ? "is-active" : "",
                     busy ? "is-running" : "",
                     pinned ? "is-pinned" : "",
+                    doneUnread ? "is-done" : "",
                   ].filter(Boolean).join(" ")}
                   key={session.id}
                 >
@@ -1022,7 +1068,7 @@ export function ProjectShelf({
                         commitRename();
                       }}
                     >
-                      <span className={`chat-row__dot ${busy ? `is-${session.status}` : ""}`} aria-hidden />
+                      {chatDot}
                       <input
                         ref={renameInputRef}
                         className="chat-row__rename-input"
@@ -1042,7 +1088,11 @@ export function ProjectShelf({
                     <button
                       className="chat-row__select"
                       type="button"
-                      title={`${session.label} · ${session.agentId} · double-click or pencil to rename`}
+                      title={
+                        doneUnread
+                          ? `${session.label} · 任务已完成`
+                          : `${session.label} · ${session.agentId} · double-click or pencil to rename`
+                      }
                       onClick={() => onChatSessionSelect(session)}
                       onDoubleClick={(event) => {
                         event.preventDefault();
@@ -1050,7 +1100,7 @@ export function ProjectShelf({
                         beginRename();
                       }}
                     >
-                      <span className={`chat-row__dot ${busy ? `is-${session.status}` : ""}`} aria-hidden />
+                      {chatDot}
                       <span className="chat-row__content">
                         {pinned && <PinnedMark className="chat-row__pin" />}
                         <strong>{session.label}</strong>

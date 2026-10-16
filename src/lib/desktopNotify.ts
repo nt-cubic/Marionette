@@ -4,8 +4,8 @@
  * OpenCode's notifier uses short bundled WAV cues. Keep the same cues in the
  * frontend so Marionette does not depend on the user's OpenCode installation:
  * action-needed events are immediate, clean turn completion settles briefly,
- * failures/stalls raise the error cue at once, and an agent that stops on its
- * own with nothing on screen still gets a chime while the window is focused.
+ * failures/stalls raise the error cue at once, and completion / silent-stop
+ * chimes also play while the window is focused.
  *
  * Windows: taskbar flash + yellow/red progress overlay (QQ/WeChat-ish).
  * Cleared when the window is focused again.
@@ -61,8 +61,8 @@ export type NotifyKind =
 export type RaiseOptions = {
   /**
    * Play the cue even when the window is focused (no taskbar chrome then).
-   * Used for a silent stop: the agent ended its turn with nothing on screen,
-   * so there is nothing to notice by looking.
+   * Used for turn completion and silent stop: the user may be in another
+   * dialog, or watching the stream, and still wants the chime.
    */
   audibleWhenFocused?: boolean;
 };

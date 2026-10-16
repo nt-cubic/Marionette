@@ -405,8 +405,10 @@ export function App() {
       window.localStorage.getItem("agentshell-theme");
     return parseStoredTheme(stored);
   });
-  /** Taskbar flash + chime when AI replies / may be stuck (off while focused). */
+  /** Taskbar flash + chime when AI replies / may be stuck. Completion also chimes while focused. */
   const [desktopNotifyOn, setDesktopNotifyOn] = useState(() => isDesktopNotifyEnabled());
+  /** Sessions that finished a turn while this window was looking at another dialog. */
+  const [doneUnreadIds, setDoneUnreadIds] = useState<Set<string>>(() => new Set());
   /** Agent proxy config (single exit address), loaded on mount. */
   const [proxyConfig, setProxyConfigState] = useState<ProxyConfig | null>(null);
   /** Main window only: a detached tab drag is hovering the tab strip. */
@@ -678,6 +680,32 @@ export function App() {
   openSessionIdsRef.current = openSessionIds;
   liveEventsRef.current = liveEvents;
 
+  // Opening a dialog means the user has seen it — drop the "just finished" mark.
+  useEffect(() => {
+    if (!currentSessionId) return;
+    setDoneUnreadIds((current) => {
+      if (!current.has(currentSessionId)) return current;
+      const next = new Set(current);
+      next.delete(currentSessionId);
+      return next;
+    });
+  }, [currentSessionId]);
+
+  // Drop marks for sessions that no longer exist.
+  useEffect(() => {
+    setDoneUnreadIds((current) => {
+      if (current.size === 0) return current;
+      const live = new Set(availableSessions.map((session) => session.id));
+      let changed = false;
+      const next = new Set<string>();
+      for (const id of current) {
+        if (live.has(id)) next.add(id);
+        else changed = true;
+      }
+      return changed ? next : current;
+    });
+  }, [availableSessions]);
+
   const parentIdOfSession = (id: string): string | null => {
     const row = sessionsRef.current.find((session) => session.id === id);
     if (row?.parentSessionId) return row.parentSessionId;
@@ -805,10 +833,16 @@ export function App() {
   const syncFileChangesRef = useRef(syncFileChangesForTurn);
   syncFileChangesRef.current = syncFileChangesForTurn;
 
+  // State-publish cadence for lastActivityById. The ref above stays exact on
+  // every event; the state copy re-renders the App root, so a 60–80 events/sec
+  // stream (2026-10-16 freeze) must not publish it per event.
+  const lastActivityStateAtRef = useRef<Record<string, number>>({});
   const touchActivity = useCallback((sessionId: string) => {
     if (!sessionId) return;
     const now = Date.now();
     lastActivityByIdRef.current = { ...lastActivityByIdRef.current, [sessionId]: now };
+    if (now - (lastActivityStateAtRef.current[sessionId] ?? 0) < 1000) return;
+    lastActivityStateAtRef.current[sessionId] = now;
     setLastActivityById((current) => ({ ...current, [sessionId]: now }));
   }, []);
 
@@ -1504,12 +1538,9 @@ export function App() {
     let disposed = false;
     let unlistenAcp: (() => void) | undefined;
 
-    void listen<AcpEvent>("acp-event", (event) => {
-      if (disposed) return;
-      const payload = event.payload;
-      // Other windows' streams must not rebuild this SPA's liveEvents / disk.
-      if (payload.sessionId && !ownsAcpSession(payload.sessionId)) return;
-      if (payload.sessionId && reloadingSessionsRef.current.has(payload.sessionId)) return;
+    // Full per-event handler. Runs from flushAcpInbox in batches — never
+    // straight from the Tauri listener (see the batching block after the body).
+    const handleAcpEvent = (payload: AcpEvent) => {
       // ACP wire already logged in Rust emit_event → dev.log
       if (payload.sessionId) touchActivity(payload.sessionId);
 
@@ -1932,7 +1963,21 @@ export function App() {
                 { audibleWhenFocused: true },
               );
             } else {
-              scheduleDesktopNotify(payload.sessionId, "reply", label);
+              scheduleDesktopNotify(
+                payload.sessionId,
+                "reply",
+                label,
+                DESKTOP_NOTIFY_SETTLE_MS,
+                { audibleWhenFocused: true },
+              );
+            }
+            if (!turnFailed && payload.sessionId !== currentSessionIdRef.current) {
+              setDoneUnreadIds((current) => {
+                if (current.has(payload.sessionId)) return current;
+                const next = new Set(current);
+                next.add(payload.sessionId);
+                return next;
+              });
             }
           }
         }
@@ -2227,6 +2272,53 @@ export function App() {
           }
         }
       }
+    };
+
+    // ── acp-event stream batching ──────────────────────────────────────────
+    // 2026-10-16 假死根因:两个 agent 并发流式输出时 acp-event 以 60–80 条/秒
+    // 到达,每条事件各自触发根组件 setState(整条聊天栏重建),渲染主线程被
+    // 打满,暂停/关闭按钮再也无法响应,只能杀进程。改为先收进缓冲、每
+    // ACP_EVENT_FLUSH_MS 统一应用一次:同一次 flush 里的全部 setState 会被
+    // React 18 合并成一个渲染批次,而文本到达延迟仍远低于感知阈值。
+    const ACP_EVENT_FLUSH_MS = 50;
+    const acpInbox: AcpEvent[] = [];
+    let acpFlushTimer: number | undefined;
+    const flushAcpInbox = () => {
+      acpFlushTimer = undefined;
+      if (disposed) {
+        acpInbox.length = 0;
+        return;
+      }
+      if (acpInbox.length === 0) return;
+      const batch = acpInbox.splice(0, acpInbox.length);
+      // One bad event must not drop the rest of the batch.
+      for (const payload of batch) {
+        try {
+          // Guards run at processing time, exactly as they did pre-batching —
+          // ownership / reload state may flip while events sit in the inbox.
+          if (payload.sessionId && !ownsAcpSession(payload.sessionId)) continue;
+          if (payload.sessionId && reloadingSessionsRef.current.has(payload.sessionId)) continue;
+          handleAcpEvent(payload);
+        } catch (err) {
+          pushDebug({
+            sessionId: payload.sessionId,
+            level: "error",
+            source: "acp",
+            summary: `event handler failed: ${String(err)}`,
+          });
+        }
+      }
+    };
+    const scheduleAcpFlush = () => {
+      if (acpFlushTimer === undefined) {
+        acpFlushTimer = window.setTimeout(flushAcpInbox, ACP_EVENT_FLUSH_MS);
+      }
+    };
+
+    void listen<AcpEvent>("acp-event", (event) => {
+      if (disposed) return;
+      acpInbox.push(event.payload);
+      scheduleAcpFlush();
     }).then((dispose) => {
       if (disposed) {
         dispose();
@@ -2242,6 +2334,11 @@ export function App() {
     });
 
     return () => {
+      // Drain whatever is still in the inbox so teardown (unmount / detached
+      // hide) cannot silently drop up to one flush window of stream. Also
+      // clears the pending timer slot; a late callback on an empty inbox is a
+      // no-op.
+      flushAcpInbox();
       disposed = true;
       if (IS_DETACHED_WINDOW && DETACHED_SESSION_ID) {
         void setDetachedSessionOwner(DETACHED_SESSION_ID, false);
@@ -5689,7 +5786,7 @@ export function App() {
       });
       // The one-turn gate refused us: a live turn this side failed to bookkeep
       // as "running" (missed boundary, reconnect window) still owns the
-      // connection. That is the queue condition, not a failure 窶・route into
+      // connection. That is the queue condition, not a failure — route into
       // the standard pending queue (the flush after the turn boundary pushes
       // the You card itself, so drop the one this attempt painted) instead of
       // an error card + toast + "error" status, which historically dropped the
@@ -5712,7 +5809,7 @@ export function App() {
           sessionId: sid,
           level: "info",
           source: "composer",
-          summary: `queued after busy gate: ${composed.length > 80 ? `${composed.slice(0, 80)}窶ｦ` : composed}`,
+          summary: `queued after busy gate: ${composed.length > 80 ? `${composed.slice(0, 80)}…` : composed}`,
         });
         // Same contract as any mid-turn send: interrupt then send, so the
         // follow-up is wired as soon as the slot actually frees.
@@ -6011,6 +6108,7 @@ export function App() {
             sessions={availableSessions}
             currentProjectId={currentProjectId}
             currentSessionId={displaySession.id}
+            doneUnreadIds={doneUnreadIds}
             pinnedProjectId={openHereProjectId}
             collapsed={leftCollapsed}
             theme={theme}
@@ -6083,6 +6181,7 @@ export function App() {
           <SessionTabs
             openSessions={openSessions}
             session={displaySession}
+            doneUnreadIds={doneUnreadIds}
             onTabSelect={openSession}
             onTabClose={closeSessionTab}
             onNewTab={() => {
@@ -6121,10 +6220,16 @@ export function App() {
           {(leftCollapsed || leftEdgeHover) && (
             <button
               type="button"
-              className={`floating-trigger floating-trigger--center-left${leftEdgeHover ? " is-visible" : ""}`}
+              className={`floating-trigger floating-trigger--center-left${leftEdgeHover ? " is-visible" : ""}${leftCollapsed && doneUnreadIds.size > 0 ? " is-done" : ""}`}
               onClick={() => setLeftCollapsed(!leftCollapsed)}
               aria-label={leftCollapsed ? "Show projects and sessions" : "Hide projects and sessions"}
-              title={leftCollapsed ? "Show projects and sessions" : "Hide projects and sessions"}
+              title={
+                leftCollapsed && doneUnreadIds.size > 0
+                  ? "有对话已完成任务 · 打开侧边栏查看"
+                  : leftCollapsed
+                    ? "Show projects and sessions"
+                    : "Hide projects and sessions"
+              }
             >
               {leftCollapsed ? <ChevronRight size={12} /> : <ChevronLeft size={12} />}
             </button>

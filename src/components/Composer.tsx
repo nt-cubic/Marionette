@@ -326,6 +326,7 @@ function applyCapabilities(
     modelConfigId: result.modelConfigId ?? null,
     modeConfigId: result.modeConfigId ?? null,
     effortConfigId: result.effortConfigId ?? null,
+    effortRejectModels: result.effortRejectModels ?? [],
     permissionOptions: result.permissionOptions ?? [],
     permissionConfigId: result.permissionConfigId ?? null,
     currentPermission: result.currentPermission ?? null,
@@ -343,6 +344,20 @@ function applyCapabilities(
   } else {
     setters.setCurrentEffort(null);
   }
+}
+
+/**
+ * The agent already rejected reasoning-effort writes for this model (grok's
+ * per-model gate, latched in Rust from the agent's own -32602 answer). While
+ * true the Effort control stays dropped: a click or an automatic re-sync would
+ * each be another doomed write.
+ */
+function effortWriteRejectedFor(
+  caps: Pick<CapabilitySnapshot, "effortRejectModels"> | null | undefined,
+  model: string | null | undefined,
+): boolean {
+  if (!model) return false;
+  return (caps?.effortRejectModels ?? []).includes(model);
 }
 
 /** A pick the user just made, held while the agent echoes the old value back. */
@@ -1165,8 +1180,15 @@ export function Composer({
             : typeof error === "string" && error.trim()
               ? error.trim()
               : "Failed to update (agent may not support this option live)";
-        // Keep toast short but specific (Claude often rejects wrong effort/mode values).
-        flash(msg.length > 140 ? `${msg.slice(0, 140)}…` : msg);
+        if (msg.includes("does not support reasoning effort")) {
+          // grok's per-model gate: Rust just latched the model, so reload caps
+          // to drop the Effort control now rather than after the next touch.
+          flash("此模型不支持 Effort 档位写入，已在该模型下停用档位调节");
+          loadCapabilities(sessionId);
+        } else {
+          // Keep toast short but specific (Claude often rejects wrong effort/mode values).
+          flash(msg.length > 140 ? `${msg.slice(0, 140)}…` : msg);
+        }
       } finally {
         updating.current = false;
       }
@@ -1368,7 +1390,9 @@ export function Composer({
         live.thinkingEffort != null &&
         prefEffort >= live.thinkingEffort.min &&
         prefEffort <= live.thinkingEffort.max;
+      const effortRejectedLive = effortWriteRejectedFor(live, live.currentModel);
       const canTryEffortId =
+        !effortRejectedLive &&
         Boolean(prefEffortId) &&
         (liveEffortIdOk || (Boolean(live.effortConfigId) && needModelWait));
 
@@ -1389,7 +1413,7 @@ export function Composer({
         } else {
           unpinOption("effortId");
         }
-      } else if (liveNumericOk && prefEffort != null) {
+      } else if (liveNumericOk && !effortRejectedLive && prefEffort != null) {
         if (!cancelled) setCurrentEffort(prefEffort);
         if (live.currentEffort == null || Math.abs(live.currentEffort - prefEffort) > 1e-6) {
           await commitUpdate({ thinkingEffort: prefEffort }, () => {
@@ -1928,11 +1952,19 @@ export function Composer({
   //   Unknown config option: effort
   // and a stale Effort menu would crash on thinkingEffort!.default.
   // Exception: Grok carries effort on session/set_model `_meta` (no config id).
+  // A model the agent rejected effort writes for (grok ≥1.0.5x per-model gate)
+  // loses the knob the same way — advertised tiers or not, no write sticks.
+  const effortRejected = effortWriteRejectedFor(
+    caps,
+    currentModel ?? caps?.currentModel ?? null,
+  );
   const hasStringEffort =
+    !effortRejected &&
     effortOptions.length > 0 &&
     (Boolean(caps?.effortConfigId) || agentSupplement?.effortViaLegacyModel === true);
   const hasNumericEffort =
     caps != null &&
+    !effortRejected &&
     caps.thinkingEffort != null &&
     Boolean(caps.effortConfigId);
   const hasEffort = hasStringEffort || hasNumericEffort;
@@ -3263,6 +3295,11 @@ export function Composer({
                                     {preset.label}
                                   </button>
                                 ))}
+                          </div>
+                        )}
+                        {effortRejected && hasModels && (
+                          <div className="composer-menu__empty">
+                            此模型不支持 Effort 档位调节（agent 侧拒绝写入）
                           </div>
                         )}
                   </div>

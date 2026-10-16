@@ -424,6 +424,14 @@ export type CapabilitySnapshot = {
   modeConfigId: string | null;
   effortConfigId: string | null;
   /**
+   * Models whose reasoning-effort writes the agent itself rejected (grok ≥1.0.5x
+   * answers -32602 "the session's current model does not support reasoning
+   * effort" for GLM-family catalog entries even when tiers are declared).
+   * While the current model is listed, Composer drops the Effort control and
+   * skips effort re-syncs; Rust answers these writes locally as no-ops.
+   */
+  effortRejectModels?: string[] | null;
+  /**
    * File-permission / sandbox select (DeepSeek Harness `sandbox`: 只读 /
    * 可写工作区 / 完全访问). A knob of its own — never a session mode, even when
    * the agent labels it `category: "mode"`: mode is the collaboration state,
