@@ -976,7 +976,10 @@ export function Composer({
       setBridgeSelection(model);
       void bridgeBind(sessionId, { entryId: model.entryId, modelId: model.modelId })
         .then(() => {
-          if (agent.id === "grok-build") {
+          // grok / opencode：注入是 spawn 级的（owned 表 / OPENCODE_CONFIG
+          // provider），把 `marionette/<modelId>` 钉成原生偏好，重启后原生
+          // 目录接管、跨用 chip 退位。
+          if (agent.id === "grok-build" || agent.id === "opencode") {
             persistPrefs({ preferredModel: `marionette/${model.modelId}` });
           }
           // 注入是 spawn 级的（env / 配置表）：活进程当场换血，历史保留，
@@ -1009,10 +1012,17 @@ export function Composer({
   /** Switching back to a native model drops the dialog's bridge binding. */
   const unbindBridge = useCallback(() => {
     if (!bridgeSelection) return;
+    const agentId = agent.id;
     setBridgeSelection(null);
     if (sessionId && !sessionId.startsWith("session-empty-")) {
       void bridgeBind(sessionId, null)
         .then(() => {
+          // opencode：跨用 provider 是 spawn 注入的常驻目录——解绑后它仍在
+          // 菜单里，钉着的 marionette/<id> 偏好会把会话又拉回去；清掉偏好
+          // 让重启落回原生默认。grok 无此问题（owned 表随解绑移除）。
+          if (agentId === "opencode") {
+            persistPrefs({ preferredModel: null });
+          }
           // 活进程的 env 还指着跨用端点 —— 同样当场换血，切回原生立即生效。
           const status = sessionStatusRef.current;
           if (
@@ -1030,7 +1040,7 @@ export function Composer({
         })
         .catch(() => undefined);
     }
-  }, [bridgeSelection, onRestartAgentSession, sessionId]);
+  }, [agent.id, bridgeSelection, onRestartAgentSession, persistPrefs, sessionId]);
 
   /**
    * Confirm the inline custom-model input: validate + trim the id, then bind
