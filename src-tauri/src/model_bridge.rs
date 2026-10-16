@@ -427,21 +427,77 @@ pub fn list_models(agent_id: &str) -> BridgeModelsResult {
     list_models_at(&credentials, &scan, agent_id)
 }
 
+/// 引擎伪来源的 source 行（claude/grok 通用分支与 codex 专用分支共用）。
+fn engine_bridge_source() -> BridgeSource {
+    BridgeSource {
+        entry_id: crate::engine::ENGINE_ENTRY_ID.to_string(),
+        preset: crate::engine::ENGINE_PRESET_ID.to_string(),
+        label: "翻译引擎（订阅跨用）".to_string(),
+        from_scan: false,
+    }
+}
+
+/// 引擎目录装进 models（只在引擎可见时调用；DYNAMIC_CAP 截断与动态目录一致）。
+/// 返回是否截断。
+fn push_engine_models(models: &mut Vec<BridgeModel>) -> bool {
+    let mut engine_ids = crate::engine::catalog();
+    let mut truncated = false;
+    if engine_ids.len() > DYNAMIC_CAP {
+        engine_ids.truncate(DYNAMIC_CAP);
+        truncated = true;
+    }
+    for model_id in engine_ids {
+        models.push(BridgeModel {
+            entry_id: crate::engine::ENGINE_ENTRY_ID.to_string(),
+            preset: crate::engine::ENGINE_PRESET_ID.to_string(),
+            label: model_id.clone(),
+            model_id,
+        });
+    }
+    truncated
+}
+
 fn list_models_at(
     credentials_path: &Path,
     opencode_scan: &AgentScan,
     agent_id: &str,
 ) -> BridgeModelsResult {
     match classify_agent(agent_id) {
-        // S2 硬边界：chat 端点直连被 codex 拒（Responses-only）。M2 引擎已能
-        // 翻译，但 codex 的模型 id 必须保持内建名（gpt-6.1-sol…），引擎的
-        // `provider/model` id 进不去 —— 待「引擎路由组别名 codex 内建模型名」
-        // 方案落地后再开放（M2 决策，见任务报告）。
-        BridgeAgent::Codex => BridgeModelsResult {
-            models: Vec::new(),
-            sources: Vec::new(),
-            note: Some("需要翻译引擎路由组（模型名映射），暂未开放".to_string()),
-        },
+        // codex 只接引擎源（M2 收官）：key/reference 端点全是 chat-completions，
+        // 被 codex 的 Responses-only 拒（§4.4 S2）。模型 id 保持 codex 内建名
+        // —— 绑定 = providers/set 指引擎 `/v1` + 路由组把内建名别名到所选
+        // 引擎模型（engine::codex_alias_sync）。
+        BridgeAgent::Codex => {
+            if !crate::engine::bridge_ready() {
+                return BridgeModelsResult {
+                    models: Vec::new(),
+                    sources: Vec::new(),
+                    note: Some(
+                        "跨用需要翻译引擎 — 请先在设置的凭据页启用（引擎运行中后重开此菜单）"
+                            .to_string(),
+                    ),
+                };
+            }
+            let mut models = Vec::new();
+            let truncated = push_engine_models(&mut models);
+            let mut note = if models.is_empty() {
+                Some("引擎还没有可用模型（订阅发现进行中，稍后重试）".to_string())
+            } else {
+                None
+            };
+            if truncated {
+                let suffix = "目录过长已截断，更多模型请用「自定义模型」输入";
+                note = Some(match note {
+                    Some(existing) => format!("{existing}；{suffix}"),
+                    None => suffix.to_string(),
+                });
+            }
+            BridgeModelsResult {
+                models,
+                sources: vec![engine_bridge_source()],
+                note,
+            }
+        }
         // opencode 有原生 provider 管理（write_provider_key），不走跨用目录；
         // 顺带落实「reference 对宿主 agent 自己不可见」的去重规则。
         BridgeAgent::Opencode => BridgeModelsResult {
@@ -449,12 +505,15 @@ fn list_models_at(
             sources: Vec::new(),
             note: Some("请在设置的 provider 管理里添加".to_string()),
         },
-        // M1 只给 claude-code / grok-build 接了注入通道；其它 agent 列了也
-        // 选不上（spawn 时不会有任何注入）。
+        // M1 只给 claude-code / grok-build 接了直连注入，codex 走引擎伪来源
+        // （上面的分支）；其余 agent 列了也选不上（spawn 时不会有任何注入）。
         BridgeAgent::Other => BridgeModelsResult {
             models: Vec::new(),
             sources: Vec::new(),
-            note: Some("该 agent 暂不支持跨用模型（当前支持 Claude Code 与 Grok）".to_string()),
+            note: Some(
+                "该 agent 暂不支持跨用模型（当前支持 Claude Code、Grok 与 Codex（经翻译引擎））"
+                    .to_string(),
+            ),
         },
         agent => {
             let store = match crate::credentials::load_store_at(credentials_path) {
@@ -526,25 +585,8 @@ fn list_models_at(
             //    （claude/codex/grok 登录态）不逐条列出：引擎源出现即代表
             //    它们可跨用，模型 id 是引擎的 `provider/model` 形态。
             if crate::engine::bridge_ready() {
-                sources.push(BridgeSource {
-                    entry_id: crate::engine::ENGINE_ENTRY_ID.to_string(),
-                    preset: crate::engine::ENGINE_PRESET_ID.to_string(),
-                    label: "翻译引擎（订阅跨用）".to_string(),
-                    from_scan: false,
-                });
-                let mut engine_ids = crate::engine::catalog();
-                if engine_ids.len() > DYNAMIC_CAP {
-                    engine_ids.truncate(DYNAMIC_CAP);
-                    truncated = true;
-                }
-                for model_id in engine_ids {
-                    models.push(BridgeModel {
-                        entry_id: crate::engine::ENGINE_ENTRY_ID.to_string(),
-                        preset: crate::engine::ENGINE_PRESET_ID.to_string(),
-                        label: model_id.clone(),
-                        model_id,
-                    });
-                }
+                sources.push(engine_bridge_source());
+                truncated |= push_engine_models(&mut models);
             }
             let mut note = if sources.is_empty() {
                 Some("还没有可跨用的 API Key，请先在设置的凭据页添加".to_string())
@@ -571,6 +613,91 @@ fn list_models_at(
 // 我们对齐：bridge_list_models 用已配的 key GET <chat_base>/models，结果按
 // entry 缓存（TTL 10 分钟，失败 90 秒负缓存），与 preset 静态清单取并集。
 // 拉取用并发线程 + 3.5s 总预算，赶不上本次装配的线程会把缓存焐热给下一次。
+
+// ─── B4-2 目录指纹漂移日志 ─────────────────────────────────────────────────
+
+/// 存档形状：`{ "version": 1, "sources": { "<entry_id>": [model_id…] } }`。
+/// 存清单本身而非只存 hash：diff 精确到 added/removed，且人类可读。
+#[derive(serde::Serialize, serde::Deserialize)]
+struct FingerprintFile {
+    version: u32,
+    sources: HashMap<String, Vec<String>>,
+}
+
+/// 对 `bridge_list_models` 的结果按 source 做指纹对比（B4-2 防线）：模型清单
+/// 变化 → dev.log 记 `[bridge] model catalog drift`（source + added/removed）
+/// 并原子更新存档 `~/.marionette/bridge-model-fingerprints.json`。只 diff 本次
+/// 询问里出现的来源（不同 agent 看到的来源集合不同，「缺席≠删除」）；无漂移
+/// 零写入。任何失败只 warn，不影响目录本身。
+pub(crate) fn note_catalog_drift(result: &BridgeModelsResult) {
+    let Some(home) = home_dir() else { return };
+    let path = home.join(".marionette").join("bridge-model-fingerprints.json");
+    if let Err(error) = note_catalog_drift_at(&path, result) {
+        crate::debug_log::append(
+            "bridge",
+            "warn",
+            "",
+            "model fingerprint drift check failed",
+            Some(&error),
+        );
+    }
+}
+
+fn note_catalog_drift_at(path: &Path, result: &BridgeModelsResult) -> Result<(), String> {
+    let previous: HashMap<String, Vec<String>> = match fs::read_to_string(path) {
+        Ok(text) => serde_json::from_str::<FingerprintFile>(&text)
+            .map_err(|e| format!("指纹存档解析失败: {e}"))?
+            .sources,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
+        Err(e) => return Err(format!("指纹存档读取失败: {e}")),
+    };
+    // 本次询问的每个来源 → 排序后的模型清单（排序保证 diff 与存档稳定）。
+    let mut current: HashMap<String, Vec<String>> = HashMap::new();
+    for source in &result.sources {
+        let mut ids: Vec<String> = result
+            .models
+            .iter()
+            .filter(|model| model.entry_id == source.entry_id)
+            .map(|model| model.model_id.clone())
+            .collect();
+        ids.sort();
+        ids.dedup();
+        current.insert(source.entry_id.clone(), ids);
+    }
+    if previous == current {
+        return Ok(());
+    }
+    for (entry_id, ids) in &current {
+        let before: std::collections::BTreeSet<&String> = previous
+            .get(entry_id)
+            .map(|list| list.iter().collect())
+            .unwrap_or_default();
+        let now: std::collections::BTreeSet<&String> = ids.iter().collect();
+        if before == now {
+            continue;
+        }
+        let added: Vec<&str> = now.difference(&before).map(|s| s.as_str()).collect();
+        let removed: Vec<&str> = before.difference(&now).map(|s| s.as_str()).collect();
+        crate::debug_log::append(
+            "bridge",
+            "info",
+            "",
+            "model catalog drift",
+            Some(&format!(
+                "source={} added=[{}] removed=[{}]",
+                entry_id,
+                added.join(","),
+                removed.join(","),
+            )),
+        );
+    }
+    let body = serde_json::to_string_pretty(&FingerprintFile {
+        version: 1,
+        sources: current,
+    })
+    .map_err(|e| format!("指纹存档序列化失败: {e}"))?;
+    write_text_atomic(path, &body)
+}
 
 struct DynamicEntry {
     fetched_at: std::time::Instant,
@@ -601,6 +728,15 @@ fn set_fetch_base_override_for_test(preset_id: &str, base: &str) {
         .lock()
         .unwrap()
         .insert(preset_id.to_string(), base.to_string());
+}
+
+/// 测试清理：清掉全部端点覆盖（并行测试不把「指向死端口」的覆盖泄漏给
+/// 后面的目录测试）。
+#[cfg(test)]
+fn clear_fetch_overrides_for_test() {
+    if let Some(overrides) = FETCH_BASE_OVERRIDE.get() {
+        overrides.lock().unwrap().clear();
+    }
 }
 
 #[cfg(test)]
@@ -985,6 +1121,7 @@ pub fn bind_session_at(
             }
             let was_grok =
                 matches!(classify_agent(agent_id.unwrap_or("")), BridgeAgent::GrokBuild);
+            let was_codex = matches!(classify_agent(agent_id.unwrap_or("")), BridgeAgent::Codex);
             if was_grok {
                 match remove_grok_model_tables_at(grok_config_path) {
                     Ok(_) => crate::debug_log::append(
@@ -1002,6 +1139,18 @@ pub fn bind_session_at(
                         Some(&error),
                     ),
                 }
+            } else if was_codex {
+                // codex 的注入是 spawn 级 providers/set（前端绑/解绑都会重启
+                // 进程，还原走重拉），引擎侧的路由组别名在这里清：无人引用
+                // 即删，别的会话还指着就保留。
+                crate::engine::codex_alias_clear(session_id);
+                crate::debug_log::append(
+                    "bridge",
+                    "info",
+                    session_id,
+                    "model bridge unbound (codex engine alias cleared)",
+                    None,
+                );
             } else {
                 // claude 是 env 注入，进程退出即消失，无需还原（§4.4）。
                 crate::debug_log::append("bridge", "info", session_id, "model bridge unbound", None);
@@ -1671,12 +1820,49 @@ pub(crate) fn codex_providers_set_params(base_url: &str, api_key: &str) -> serde
     })
 }
 
-/// codex 绑定 → (baseUrl, key)。**M1 恒为 None**：presets 表里没有
-/// Responses 协议核实过的端点（chat-completions-only 的端点被 codex 硬拒，
-/// §4.4 S2），所以 codex 场景整体移到 M2 的翻译引擎（`providers/set` 指向
-/// 引擎的 `/v1/responses`）。框架先立着，返回类型即 M2 的接线点。
-pub(crate) fn codex_bridge_route(_selection: &BridgeSelection) -> Option<(String, String)> {
-    None
+/// codex 绑定 → (baseUrl, key)。引擎伪来源：baseUrl 用引擎的 `/v1` 根 ——
+/// codex-acp 把它写进 `model_providers.custom-gateway` 的 `base_url`
+/// （wire_api 固定 `responses`），codex 自己向 `<baseUrl>/responses` 发请求，
+/// 而 magpie 恰好服务 `POST /v1/responses`（2026-10-16 源码核实）。key 用
+/// 引擎令牌字面量（回环任意 token 放行）。key-plan/reference 端点仍是
+/// chat-completions，被 codex 的 Responses-only 拒（§4.4 S2）→ None。
+pub(crate) fn codex_bridge_route(selection: &BridgeSelection) -> Option<(String, String)> {
+    if selection.entry_id != crate::engine::ENGINE_ENTRY_ID {
+        return None;
+    }
+    crate::engine::engine_v1_url().map(|base| (base, crate::engine::ENGINE_TOKEN.to_string()))
+}
+
+/// codex × 引擎绑定：把会话当前内建名同步成引擎路由组别名。调用点 = acp.rs
+/// 的 session/new 之后、codex 原生切模型之后；解绑清理走 `bind_session_at`。
+/// 非 codex / 未绑引擎 / caps 没报当前模型 → 静默 no-op（codex 的 model
+/// select 必带 currentValue，None 只是防御）。
+pub(crate) fn sync_codex_engine_alias(
+    session_id: &str,
+    agent_id: Option<&str>,
+    current_model: Option<&str>,
+) {
+    let Some(path) = bindings_path() else { return };
+    sync_codex_engine_alias_at(&path, session_id, agent_id, current_model);
+}
+
+fn sync_codex_engine_alias_at(
+    bindings_path: &Path,
+    session_id: &str,
+    agent_id: Option<&str>,
+    current_model: Option<&str>,
+) {
+    if classify_agent(agent_id.unwrap_or("")) != BridgeAgent::Codex {
+        return;
+    }
+    let Some(current) = current_model else { return };
+    let Some(selection) = binding_for_at(bindings_path, session_id).ok().flatten() else {
+        return;
+    };
+    if selection.entry_id != crate::engine::ENGINE_ENTRY_ID {
+        return;
+    }
+    crate::engine::codex_alias_sync(session_id, current, &selection.model_id);
 }
 
 /// initialize 应答是否声明了 `agentCapabilities.providers`（providers/set 的
@@ -2320,11 +2506,14 @@ official_marketplace_auto_installed = true\n";
             assert!(result.models.iter().all(|m| m.entry_id != "grok/login"));
         }
 
-        // codex：空 + 指定文案（别名同）；opencode：空 + 指定文案。
+        // codex：引擎没跑 → 空 + 指引文案（别名同）；opencode：空 + 指定文案。
         for codex_alias in ["codex", "codex-acp"] {
             let codex = list_models_at(&credentials, &scan, codex_alias);
             assert!(codex.models.is_empty());
-            assert_eq!(codex.note.as_deref(), Some("需要翻译引擎路由组（模型名映射），暂未开放"));
+            assert_eq!(
+                codex.note.as_deref(),
+                Some("跨用需要翻译引擎 — 请先在设置的凭据页启用（引擎运行中后重开此菜单）")
+            );
         }
         let opencode = list_models_at(&credentials, &scan, "opencode");
         assert!(opencode.models.is_empty());
@@ -2583,6 +2772,183 @@ official_marketplace_auto_installed = true\n";
         fs::remove_dir_all(&dir).ok();
     }
 
+    /// codex 跨用目录只含引擎源：引擎不在 → note 指引（不自动拉起）；Running
+    /// → 仅 engine 源 + 引擎模型（key/reference 端点进不了 codex，§4.4 S2）。
+    #[test]
+    fn codex_lists_the_engine_source_only() {
+        let dir = temp_dir("codexsrc");
+        let credentials = dir.join("credentials.json");
+        let scan = crate::credentials::scan_opencode_at(&dir);
+
+        // 不 Running：空目录 + 指引 note。
+        let result = list_models_at(&credentials, &scan, "codex");
+        assert!(result.sources.is_empty() && result.models.is_empty());
+        assert!(
+            result.note.as_deref().unwrap_or_default().contains("翻译引擎"),
+            "unexpected note: {:?}",
+            result.note
+        );
+
+        // Running：engine 源 + 引擎模型，别名 codex-acp 也归同一桶。
+        let _engine = crate::engine::test_running(vec![
+            "grok/grok-4.7".to_string(),
+            "kimi/k2.6".to_string(),
+        ]);
+        for agent in ["codex", "codex-acp"] {
+            let result = list_models_at(&credentials, &scan, agent);
+            assert_eq!(result.sources.len(), 1, "codex 只列引擎源");
+            assert_eq!(result.sources[0].entry_id, crate::engine::ENGINE_ENTRY_ID);
+            let ids: Vec<&str> = result
+                .models
+                .iter()
+                .map(|m| m.model_id.as_str())
+                .collect();
+            assert_eq!(ids, vec!["grok/grok-4.7", "kimi/k2.6"]);
+            assert!(result.note.is_none(), "unexpected note: {:?}", result.note);
+        }
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// codex 的 providers/set 路由：引擎绑定 → (引擎 `/v1` 根, 字面量令牌)
+    /// —— codex-acp 把 baseUrl 写进 base_url、wire_api 固定 responses，codex
+    /// 自己拼 `/responses`；key 型条目仍然解析不出路由。
+    #[test]
+    fn codex_engine_route_points_at_the_engine_v1_root() {
+        let _engine = crate::engine::test_running(Vec::new());
+        let (base_url, token) = codex_bridge_route(&BridgeSelection {
+            entry_id: crate::engine::ENGINE_ENTRY_ID.to_string(),
+            model_id: "grok/grok-4.7".to_string(),
+        })
+        .expect("engine 绑定必须解析出路由");
+        assert_eq!(base_url, "http://127.0.0.1:39999/v1");
+        assert_eq!(token, crate::engine::ENGINE_TOKEN);
+    }
+
+    /// codex × 引擎别名同步的门控：非 codex / 无绑定 / caps 没报当前模型 →
+    /// 不碰引擎；codex + 引擎绑定 + 当前模型 → 按处方建组（CLI 参数由引擎
+    /// 测试缝记录）。
+    #[test]
+    fn sync_codex_engine_alias_gates_on_agent_binding_and_model() {
+        let dir = temp_dir("codexsync");
+        let credentials = dir.join("credentials.json");
+        let scan = crate::credentials::scan_opencode_at(&dir);
+        let bindings = dir.join("bridge-bindings.json");
+        let grok_config = dir.join("config.toml");
+        put_binding_at(
+            &bindings,
+            "s1",
+            Some(&BridgeSelection {
+                entry_id: crate::engine::ENGINE_ENTRY_ID.to_string(),
+                model_id: "grok/grok-4.7".to_string(),
+            }),
+        )
+        .unwrap();
+
+        let calls: std::sync::Arc<std::sync::Mutex<Vec<Vec<String>>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorder = calls.clone();
+        let _engine = crate::engine::test_running_with_cli(Vec::new(), std::sync::Arc::new(
+            move |args| {
+                recorder
+                    .lock()
+                    .unwrap()
+                    .push(args.iter().map(|s| s.to_string()).collect());
+                Ok(())
+            },
+        ));
+
+        // 非 codex / 无当前模型 / 未绑定的会话 → 零 CLI。
+        sync_codex_engine_alias_at(&bindings, "s1", Some("claude-code"), Some("m"));
+        sync_codex_engine_alias_at(&bindings, "s1", Some("codex"), None);
+        sync_codex_engine_alias_at(&bindings, "s-other", Some("codex"), Some("m"));
+        assert!(calls.lock().unwrap().is_empty(), "门控条件下不能碰引擎");
+
+        // codex + 引擎绑定 → 组处方（id=内建名、pick=引擎模型、manual 路由
+        // 由 pick 自带）；幂等重放不重复跑 CLI。
+        sync_codex_engine_alias_at(&bindings, "s1", Some("codex"), Some("gpt-5.2-codex"));
+        assert_eq!(
+            calls.lock().unwrap()[0],
+            vec![
+                "group".to_string(),
+                "add".to_string(),
+                "Marionette gpt-5.2-codex".to_string(),
+                "models=grok/grok-4.7".to_string(),
+                "id=gpt-5.2-codex".to_string(),
+                "pick=grok/grok-4.7".to_string(),
+            ]
+        );
+        sync_codex_engine_alias_at(&bindings, "s1", Some("codex"), Some("gpt-5.2-codex"));
+        assert_eq!(calls.lock().unwrap().len(), 1, "同会话同模型重放是 no-op");
+
+        // 解绑（None）→ codex 分支清别名（无人引用即删组）。
+        bind_session_at(&bindings, &credentials, &grok_config, &scan, "s1", Some("codex"), None)
+            .unwrap();
+        let calls = calls.lock().unwrap();
+        assert_eq!(
+            calls[1],
+            vec!["group".to_string(), "rm".to_string(), "gpt-5.2-codex".to_string()]
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// B4-2 指纹漂移：首问落基线；清单不变零写入；变化 → 存档更新且 diff
+    /// 精确（added/removed）；空结果不落档。
+    #[test]
+    fn catalog_drift_persists_and_diffs() {
+        let dir = temp_dir("drift");
+        let path = dir.join("bridge-model-fingerprints.json");
+        let source = BridgeSource {
+            entry_id: "engine".to_string(),
+            preset: "engine".to_string(),
+            label: "翻译引擎（订阅跨用）".to_string(),
+            from_scan: false,
+        };
+        let result_of = |ids: &[&str]| BridgeModelsResult {
+            models: ids
+                .iter()
+                .map(|id| BridgeModel {
+                    entry_id: "engine".to_string(),
+                    preset: "engine".to_string(),
+                    label: id.to_string(),
+                    model_id: id.to_string(),
+                })
+                .collect(),
+            sources: vec![source.clone()],
+            note: None,
+        };
+
+        // 首问：落基线（排序稳定，与传入顺序无关）。
+        note_catalog_drift_at(&path, &result_of(&["b-model", "a-model"])).unwrap();
+        let baseline = fs::read_to_string(&path).unwrap();
+        assert!(baseline.contains("\"a-model\""));
+        assert!(
+            baseline.find("\"a-model\"").unwrap() < baseline.find("\"b-model\"").unwrap(),
+            "清单按排序落档"
+        );
+
+        // 不变：内容零变化（原子写会换 inode/时间戳，比较内容本身）。
+        note_catalog_drift_at(&path, &result_of(&["a-model", "b-model"])).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), baseline);
+
+        // 变化：新档反映差集（c 加入、a 移除）。
+        note_catalog_drift_at(&path, &result_of(&["b-model", "c-model"])).unwrap();
+        let updated = fs::read_to_string(&path).unwrap();
+        assert!(updated.contains("\"c-model\"") && !updated.contains("\"a-model\""));
+
+        // 空结果：不创建档案（首问无来源 = 无可对比）。
+        let empty_path = dir.join("empty.json");
+        note_catalog_drift_at(
+            &empty_path,
+            &BridgeModelsResult { models: Vec::new(), sources: Vec::new(), note: None },
+        )
+        .unwrap();
+        assert!(!empty_path.exists());
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
     /// 引擎版 grok owned 表：base 指引擎 `/v1`、api_key 是字面量令牌（不走
     /// $VAR）；用户内容保留、绝不设 `[models] default`、幂等、端口漂移原位
     /// 替换；remove 把 `marionette/` 前缀的引擎表一并清掉。
@@ -2680,20 +3046,18 @@ official_marketplace_auto_installed = true\n";
         }
     }
 
-    /// reference 并入 list_models：grok / claude 看到 opencode auth.json 里映射
-    /// 得到 preset 的条目（模型列表为空的来源也要出现）；宿主 opencode 自己
-    /// 不可见；未映射 provider 与 OAuth 条目不出现；扫描失败静默跳过该家、
-    /// store 条目照常。
-    #[test]
+    /// 目录测试的串行锁：动态缓存与端点覆盖表是**模块级**全局（fn 内的
+    /// static 各是各的锁，互不了斥——两个目录测试曾因此互踩覆盖表）。一切
+    /// 会触发 fetch 的 list_models_at 测试都必须持有它。
+    static CATALOG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// 动态目录：/models 拉取结果与静态清单并集；label 用模型 id（回归：
     /// 此前整组都显示 preset 名，一排「DeepSeek」）。
     #[test]
     fn dynamic_catalog_merges_and_labels_use_model_id() {
         use std::io::{Read, Write};
         use std::net::TcpListener;
-        // 静态覆盖表/缓存是全局的：两个目录测试必须串行。
-        static FETCH_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _fetch_guard = FETCH_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _fetch_guard = CATALOG_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let dir = temp_dir("dyncat");
         let home = fixture_opencode_home(&dir);
         let scan = crate::credentials::scan_opencode_at(&home);
@@ -2754,10 +3118,13 @@ Connection: close
         );
         assert!(parse_models_catalog("not json").is_empty());
     }
+    /// reference 并入 list_models：grok / claude 看到 opencode auth.json 里映射
+    /// 得到 preset 的条目（模型列表为空的来源也要出现）；宿主 opencode 自己
+    /// 不可见；未映射 provider 与 OAuth 条目不出现；扫描失败静默跳过该家、
+    /// store 条目照常。
+    #[test]
     fn list_models_merges_scanned_references() {
-        // 静态覆盖表/缓存是全局的：两个目录测试必须串行。
-        static FETCH_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _fetch_guard = FETCH_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _fetch_guard = CATALOG_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let dir = temp_dir("reflist");
         let home = fixture_opencode_home(&dir);
         let scan = crate::credentials::scan_opencode_at(&home);
@@ -2840,13 +3207,16 @@ Connection: close
         assert!(result.models.is_empty());
         assert_eq!(
             result.note.as_deref(),
-            Some("当前凭证没有可用的跨用模型（端点或默认模型列表缺失）")
+            Some("当前凭证没有可用的跨用模型（拉取模型目录失败，可稍后重试或用自定义输入）")
         );
         assert_eq!(result.sources.len(), 1);
         assert_eq!(result.sources[0].entry_id, "opencode/openrouter");
         assert!(result.sources[0].from_scan);
         assert_eq!(result.sources[0].preset, "openrouter");
 
+        // 全局状态复位（死端口覆盖 / 失败缓存不能泄漏给并行的目录测试）。
+        clear_fetch_overrides_for_test();
+        clear_dynamic_cache_for_test();
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -3070,7 +3440,8 @@ Connection: close
                 "headers": { "Authorization": "Bearer sk-codex-test" }
             })
         );
-        // M1：codex 路由解析恒为 None（无 Responses 核实端点，引擎 M2 才有）。
+        // key/reference 端点（chat-completions）解析不出 codex 路由；引擎伪
+        // 来源的路由形态由 codex_engine_route 专测验证。
         assert!(codex_bridge_route(&BridgeSelection {
             entry_id: "opencode-go".into(),
             model_id: "x".into(),

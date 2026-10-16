@@ -236,6 +236,14 @@ grok 重放含 assistant 消息的历史时会在每条消息对象上标注 `mo
 
 **验收**：Grok 订阅模型在 Codex 会话跑通；**OpenCode Go key 经引擎在 Codex 会话跑通 DeepSeek**（S2 移入的旗舰场景）；引擎随 app 退出；`~/.marionette` 之外无新增可见目录（`.portable` 围栏生效）。
 
+**落地记录（2026-10-16，两轮）**：引擎生命周期 + claude/grok 引擎注入 + codex `providers/set` 框架在第一轮落地；codex 通路在第二轮以**路由组别名**收官——
+
+- **codex 跨用目录只含引擎源**（`list_models_at` codex 分支）：key/reference 端点全是 chat-completions，被 codex 的 Responses-only 拒；引擎没跑时 note 指引去凭据页启用。
+- **`providers/set` 指引擎 `/v1` 根**（`codex_bridge_route`）：codex-acp 把 baseUrl 写进 `model_providers.custom-gateway.base_url`（wire_api 固定 responses），codex 自己向 `<baseUrl>/responses` 发请求，magpie 恰好服务 `POST /v1/responses`。模型 id 保持 codex 内建名。
+- **路由组别名**（`engine.rs` 的 `codex_alias_sync`，机制 2026-10-16 从 magpie 源码核实）：`group add "Marionette <内建名>" models=<引擎模型> id=<内建名> pick=<引擎模型>`。`GroupFor` 对裸名先按组 id 原文小写命中，组 id 即 codex 内建名；`pick=` 自带 manual 路由，全流量走该成员；同 id `group add` 幂等 upsert。触发点：session/new 后（session/ready 前同步执行，首条消息不会踩未别名名）、codex 原生切模型后、解绑时清理（多会话共享同名组时最后一个引用者才删）。复用实例（reused）写不了组（状态不在我们的 engine/data）→ 留痕跳过。
+- **组名空间全局共享**是 magpie 语义：两个 codex 会话绑同一内建名时后写者胜（dev.log 记 warn）。
+- **B4-2 漂移日志落地**（`note_catalog_drift`，挂 `bridge_list_models`）：按 source 存排序模型清单到 `~/.marionette/bridge-model-fingerprints.json`（存清单本身而非只存 hash——diff 精确到 added/removed），变化记 `[bridge] model catalog drift source=<id> added=[..] removed=[..]`；只 diff 本次询问出现的来源（不同 agent 来源集合不同，「缺席≠删除」）；无漂移零写入。
+
 ### M3 — 打磨
 
 配额合并展示（provider 探测 ∪ `magpie quota`）、引擎空闲回收与自动升级、扫描开关 UI、文档收尾（CURRENT.md 更新、本稿归档）。
@@ -321,7 +329,7 @@ grok 重放含 assistant 消息的历史时会在每条消息对象上标注 `mo
 
 分层防御，全部对标 magpie 已验证的姿势：
 1. **学习式剥离闭环**（抄 unfit 机制）：规整器收到 400 且错误文本形如 `unsupported_parameter: messages[n].<field>` / `Unknown parameter` 时，解析字段路径，会话内自动入 strip 清单并**立刻重发一次**，dev.log 记 `[dialect] auto-strip <field> preset=<id>`——新方言从「用户报错+考古」变成「带纸面轨迹的半自动流程」。这是对升级漂移的第一道自适应防线。
-2. **模型目录指纹**：`bridge_list_models` 对各 source 清单做 hash 存 `~/.marionette/`，变化记 `[drift] source=<id> added/removed`——上游 catalog 一变我们有第一手时间线。
+2. **模型目录指纹**（✅ 已落地，`model_bridge::note_catalog_drift`）：`bridge_list_models` 对各 source 清单存 `~/.marionette/bridge-model-fingerprints.json`，变化记 `[bridge] model catalog drift source=<id> added/removed`——上游 catalog 一变我们有第一手时间线。
 3. **retired 记忆**（抄 retired.json）：`preset×model` 级别的「厂商侧已死」信号（410/连续 404）持久化一周，picker 过滤、显式请求放行作金丝雀。
 4. **健康检查验形状不验状态码**：200 但 body 是 HTML/信封=不健康（Cloudflare 挑战、智谱 200 拒绝信封都实锤过）；引擎升级走「下载→试启动→成功才切换→失败记 blocked 版本」（Windows Smart App Control 处方）。
 5. **订阅侧外包**：M2 引擎化后，grok 伪装头版本号、ChatGPT HTTP/1.1 这类真猫鼠游戏由 magpie 上游（日更）替所有人追。

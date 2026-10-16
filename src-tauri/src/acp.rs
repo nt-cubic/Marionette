@@ -241,6 +241,9 @@ struct PendingPlanApproval {
 pub struct AcpService {
     sessions: Arc<Mutex<HashMap<String, Arc<AcpProcess>>>>,
     capabilities: Arc<Mutex<HashMap<String, CapabilitySnapshot>>>,
+    /// session_id → agent_id：config 更新时按 agent 分流副作用（codex 的
+    /// 引擎别名同步）。start_session 记、stop 清；session/new 之前为空。
+    session_agents: Arc<Mutex<HashMap<String, String>>>,
     /// UI-gated `session/request_permission` waiters, keyed by request_id.
     permissions: Arc<Mutex<HashMap<String, PendingPermission>>>,
     permission_seq: Arc<AtomicU64>,
@@ -672,6 +675,11 @@ impl AcpService {
         });
         sessions.insert(session_id.clone(), Arc::clone(&process));
         drop(sessions);
+        if let Ok(mut agents) = self.session_agents.lock() {
+            if let Some(agent) = agent_id.as_deref() {
+                agents.insert(session_id.clone(), agent.to_string());
+            }
+        }
 
         // Must exist before the readers start, or their first lines would be
         // dispatched inline on the reader thread — the exact thing to avoid.
@@ -747,10 +755,10 @@ impl AcpService {
         // ── Cross-agent bridge: codex `providers/set` (§4.4 S2) ──
         // codex-acp advertises `agentCapabilities.providers` and only accepts
         // `apiType:"openai"` (Responses protocol) — chat-completions-only
-        // presets cannot ride it directly, so M1 resolves no codex route yet
-        // (`codex_bridge_route` stays None until the M2 translation engine).
-        // The wiring sits ready here; when a route exists the openai slot is
-        // re-pointed with the key in headers only — nothing hits disk or logs.
+        // presets cannot ride it directly, so key-plan/reference bindings resolve
+        // no route. The engine binding does (M2): the openai slot is re-pointed
+        // at the engine's `/v1` root — codex appends `/responses` itself — with
+        // the token in headers only; nothing secret hits disk or logs.
         if crate::model_bridge::classify_agent(agent_id.as_deref().unwrap_or(""))
             == crate::model_bridge::BridgeAgent::Codex
         {
@@ -788,6 +796,16 @@ impl AcpService {
                             None,
                         );
                     }
+                } else {
+                    // 有绑定但解析不出路由：非引擎绑定（chat-only，进不了
+                    // codex）或引擎不在跑 —— 会话按原生跑，留痕说明。
+                    crate::debug_log::append(
+                        "bridge",
+                        "warn",
+                        &session_id,
+                        "codex binding present but no route resolved; session runs native",
+                        Some(&format!("entry={}", selection.entry_id)),
+                    );
                 }
             }
         }
@@ -940,6 +958,16 @@ impl AcpService {
         if let Ok(mut caps_map) = self.capabilities.lock() {
             caps_map.insert(session_id.clone(), caps.clone());
         }
+
+        // codex × 引擎绑定：把会话当前内建名别名成引擎路由组（模型 id 保持
+        // codex 内建名，组把裸名路由到所选引擎模型）。同步执行 —— CLI 只需
+        // 百来毫秒，但必须赶在 session/ready 之前，首条消息才不会踩未别名
+        // 的模型名。非 codex / 未绑引擎时是纯 no-op（读一次绑定文件）。
+        crate::model_bridge::sync_codex_engine_alias(
+            &session_id,
+            agent_id.as_deref(),
+            caps.current_model.as_deref(),
+        );
 
         emit_acp_event(
             &app,
@@ -1111,6 +1139,22 @@ impl AcpService {
             // grok-4.6 inherits DeepSeek's `max` and xAI returns 400.
             if update.target == ConfigTarget::Model {
                 self.clamp_effort_to_model(session_id, &process, &agent_session_id);
+                // codex × 引擎：模型切换换的是 codex 内建名 —— 引擎侧路由组
+                // 要跟着重别名（旧名无人引用即删）。同步执行，下一条消息
+                // 必走新名。
+                let agent_of_session = self
+                    .session_agents
+                    .lock()
+                    .ok()
+                    .and_then(|map| map.get(session_id).cloned());
+                let builtin = self
+                    .get_capabilities(session_id)
+                    .and_then(|caps| caps.current_model);
+                crate::model_bridge::sync_codex_engine_alias(
+                    session_id,
+                    agent_of_session.as_deref(),
+                    builtin.as_deref(),
+                );
             }
         }
         Ok(last_result)
@@ -1610,6 +1654,10 @@ impl AcpService {
             .remove(session_id);
         let _ = self
             .capabilities
+            .lock()
+            .map(|mut map| map.remove(session_id));
+        let _ = self
+            .session_agents
             .lock()
             .map(|mut map| map.remove(session_id));
         if let Some(process) = process {
@@ -5283,6 +5331,7 @@ pub fn unregister_parent_session(child_id: &str) {
     }
 }
 
+#[cfg(test)]
 pub fn session_id_from_detached_label(label: &str) -> Option<&str> {
     label.strip_prefix("detached-").filter(|id| !id.is_empty())
 }

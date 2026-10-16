@@ -282,6 +282,7 @@ fn is_installed_at(dir: &Path) -> bool {
 
 // ─── SHA256 ─────────────────────────────────────────────────────────────────
 
+#[cfg(test)]
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -814,7 +815,12 @@ fn register_key_providers(exe: &Path) {
 }
 
 /// 跑一个短命 magpie CLI 命令（.portable 围栏由 exe 位置决定，无需 env）。
+/// 测试构建下先查 CLI 缝（别名组测试记录参数用），有缝就不真的拉子进程。
 fn run_magpie_cli(exe: &Path, args: &[&str]) -> Result<(), String> {
+    #[cfg(test)]
+    if let Some(hook) = test_cli_hook() {
+        return hook(args);
+    }
     let mut command = std::process::Command::new(exe);
     command
         .args(args)
@@ -836,6 +842,194 @@ fn run_magpie_cli(exe: &Path, args: &[&str]) -> Result<(), String> {
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(cap_at_char_boundary(stderr.trim(), MAX_LOG_LINE).to_string())
+    }
+}
+
+// ─── codex 内建名 → 引擎模型的路由组别名（M2 收官）────────────────────────
+//
+// codex 的 `providers/set` 只换端点（Responses 协议），模型 id 必须保持
+// codex 内建名（gpt-5.2-codex…）——引擎的 `provider/model` id 进不去。magpie
+// 的路由组补上这一环（2026-10-16 源码核实，internal/provider/group.go）：
+// `GroupFor` 对无斜杠的裸名先按组 id 原文小写命中，组 id 即 codex 内建名；
+// `pick=` 同时把 routing 钉成 manual，全部流量走那一个成员。`group add` 按
+// id 幂等 upsert（同名 id 整组替换），所以会话启动 / 切模型时重跑一遍即可。
+// 组名空间全局共享：两个 codex 会话绑同一个内建名时后写者胜（记 warn），
+// 旧组只在没有任何会话引用时删除。
+
+/// Marionette 所建路由组的名字前缀（magpie Routing 视图里的可读标识）。
+const CODEX_GROUP_PREFIX: &str = "Marionette ";
+
+/// 每个绑了引擎的 codex 会话当前持有的别名：session_id → (组 id, 引擎模型)。
+static CODEX_ALIASES: OnceLock<Mutex<std::collections::HashMap<String, (String, String)>>> =
+    OnceLock::new();
+
+fn alias_map() -> &'static Mutex<std::collections::HashMap<String, (String, String)>> {
+    CODEX_ALIASES.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 组 id 规则对齐 magpie CLI 的校验（小写字母 / 数字 / 点 / 横线）；codex
+/// 内建名本身全小写，这里只做防御性归一，不合法的名字直接拒（留痕）。
+fn codex_group_id(builtin: &str) -> Option<String> {
+    let id = builtin.trim().to_lowercase();
+    if id.is_empty() {
+        return None;
+    }
+    id.chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-')
+        .then_some(id)
+}
+
+/// 别名组（以及一切 CLI 状态写入）只对**我们自己拉起**的 serve 有效：
+/// reused 实例的状态不在我们的 `engine/data/` 里，CLI 写进去它也读不到。
+/// Running 且非 reused → 我们那份 magpie.exe 的路径。
+fn owned_serve_exe() -> Option<PathBuf> {
+    if !matches!(status(), EngineStatus::Running { reused: false, .. }) {
+        return None;
+    }
+    engine_dir().ok().map(|dir| exe_path(&dir))
+}
+
+/// 把 codex 会话当前的内建模型名别名到所选引擎模型。
+///
+/// - 内容有变 → `group add "Marionette <名>" models=<m> id=<内建名> pick=<m>`；
+/// - 会话之前别名过别的内建名（codex 原生切模型）→ 旧组无人引用时 `group rm`；
+/// - 引擎没在自拉运行 / 复用实例 → 留痕跳过（绑定侧已保证前者在 spawn 时
+///   不发生；复用实例是支持态，用户可在自己的 magpie 里手工建组）。
+///
+/// CLI 失败一律只记 warn：流量照进引擎，未别名的内建名会在引擎侧 404，
+/// dev.log 里有原因可查。
+pub fn codex_alias_sync(session_id: &str, builtin: &str, engine_model: &str) {
+    let Some(group_id) = codex_group_id(builtin) else {
+        crate::debug_log::append(
+            "engine",
+            "warn",
+            session_id,
+            "codex alias skipped: built-in name is not a valid group id",
+            Some(builtin),
+        );
+        return;
+    };
+    // 幂等快速路径：同会话、同内建名、同引擎模型 → 不再拉 CLI。
+    {
+        let map = alias_map().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if map
+            .get(session_id)
+            .is_some_and(|(id, model)| id == &group_id && model == engine_model)
+        {
+            return;
+        }
+    }
+    let Some(exe) = owned_serve_exe() else {
+        let reused = matches!(status(), EngineStatus::Running { reused: true, .. });
+        crate::debug_log::append(
+            "engine",
+            if reused { "warn" } else { "info" },
+            session_id,
+            if reused {
+                "codex alias skipped: engine is a reused user install (create the group in your own magpie if needed)"
+            } else {
+                "codex alias skipped: engine not running"
+            },
+            None,
+        );
+        return;
+    };
+    let previous = alias_map()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(session_id)
+        .cloned();
+    let name = format!("{CODEX_GROUP_PREFIX}{group_id}");
+    let result = run_magpie_cli(
+        &exe,
+        &[
+            "group",
+            "add",
+            &name,
+            &format!("models={engine_model}"),
+            &format!("id={group_id}"),
+            &format!("pick={engine_model}"),
+        ],
+    );
+    match result {
+        Ok(()) => {
+            let mut map = alias_map().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            map.insert(
+                session_id.to_string(),
+                (group_id.clone(), engine_model.to_string()),
+            );
+            if map.values().filter(|(id, _)| id == &group_id).count() > 1 {
+                crate::debug_log::append(
+                    "engine",
+                    "warn",
+                    session_id,
+                    "codex alias group shared by multiple sessions; last bind wins",
+                    Some(&group_id),
+                );
+            }
+            crate::debug_log::append(
+                "engine",
+                "info",
+                session_id,
+                "codex alias group updated",
+                Some(&format!("group={group_id} model={engine_model}")),
+            );
+        }
+        Err(error) => crate::debug_log::append(
+            "engine",
+            "warn",
+            session_id,
+            "codex alias group add failed",
+            Some(&error),
+        ),
+    }
+    // 旧别名清理：别的会话还在用就不删（共享名空间）。
+    if let Some((old_id, _)) = previous {
+        if old_id != group_id {
+            drop_codex_alias_group(&old_id);
+        }
+    }
+}
+
+/// 会话解绑 / 会话侧清理入口：移除该会话登记的别名，组在无人引用时删掉。
+pub fn codex_alias_clear(session_id: &str) {
+    let previous = alias_map()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(session_id);
+    let Some((old_id, _)) = previous else {
+        return;
+    };
+    drop_codex_alias_group(&old_id);
+}
+
+/// 删一个别名组（先查引用计数；引擎侧删不掉只留痕）。
+fn drop_codex_alias_group(group_id: &str) {
+    let still_used = alias_map()
+        .lock()
+        .map(|map| map.values().any(|(id, _)| id == group_id))
+        .unwrap_or(true); // 锁坏了宁可漏删也不误删
+    if still_used {
+        return;
+    }
+    let Some(exe) = owned_serve_exe() else {
+        return;
+    };
+    match run_magpie_cli(&exe, &["group", "rm", group_id]) {
+        Ok(()) => crate::debug_log::append(
+            "engine",
+            "info",
+            "",
+            "codex alias group removed",
+            Some(group_id),
+        ),
+        Err(error) => crate::debug_log::append(
+            "engine",
+            "warn",
+            "",
+            "codex alias group remove failed",
+            Some(&format!("group={group_id}: {error}")),
+        ),
     }
 }
 
@@ -1074,6 +1268,8 @@ type BoxHealth = std::sync::Arc<dyn Fn(u16) -> bool + Send + Sync>;
 type BoxReuse = std::sync::Arc<dyn Fn(u16) -> Option<Option<String>> + Send + Sync>;
 #[cfg(test)]
 type BoxVoid = std::sync::Arc<dyn Fn() + Send + Sync>;
+#[cfg(test)]
+pub(crate) type BoxCli = std::sync::Arc<dyn Fn(&[&str]) -> Result<(), String> + Send + Sync>;
 
 #[cfg(test)]
 struct Seams {
@@ -1088,6 +1284,8 @@ struct Seams {
     direct_http: bool,
     /// model_bridge 的引擎伪来源在测试里是否可见（见 engine_source_visible）。
     bridge_visible: bool,
+    /// magpie CLI 捕获缝（run_magpie_cli 的替代；别名组测试记录参数用）。
+    cli: Option<BoxCli>,
 }
 
 #[cfg(test)]
@@ -1103,6 +1301,7 @@ impl Default for Seams {
             catalog: None,
             direct_http: false,
             bridge_visible: false,
+            cli: None,
         }
     }
 }
@@ -1135,6 +1334,11 @@ impl Drop for TestHandle {
                 *guard = None;
             }
         }
+        if let Some(map) = CODEX_ALIASES.get() {
+            if let Ok(mut guard) = map.lock() {
+                guard.clear();
+            }
+        }
     }
 }
 
@@ -1154,11 +1358,28 @@ fn install_test_seams(seams: Seams) -> TestHandle {
 /// （model_bridge 的引擎接线测试用）。
 #[cfg(test)]
 pub(crate) fn test_running(catalog: Vec<String>) -> TestHandle {
-    let handle = install_test_seams(Seams {
+    install_test_running(Seams {
         catalog: Some(catalog),
         bridge_visible: true,
         ..Seams::default()
-    });
+    })
+}
+
+/// [`test_running`] + CLI 捕获缝：别名组接线测试记录 magpie CLI 参数用。
+#[cfg(test)]
+pub(crate) fn test_running_with_cli(catalog: Vec<String>, cli: BoxCli) -> TestHandle {
+    install_test_running(Seams {
+        catalog: Some(catalog),
+        bridge_visible: true,
+        cli: Some(cli),
+        ..Seams::default()
+    })
+}
+
+/// test_running* 的共同落地：装缝 + 把状态摆成自拉 Running。
+#[cfg(test)]
+fn install_test_running(seams: Seams) -> TestHandle {
+    let handle = install_test_seams(seams);
     let mut state = lock_state();
     state.status = EngineStatus::Running {
         port: 39999,
@@ -1198,6 +1419,11 @@ fn test_reuse_hook() -> Option<BoxReuse> {
 #[cfg(test)]
 fn test_register_hook() -> Option<BoxVoid> {
     seams().and_then(|guard| guard.as_ref().and_then(|s| s.register.clone()))
+}
+
+#[cfg(test)]
+fn test_cli_hook() -> Option<BoxCli> {
+    seams().and_then(|guard| guard.as_ref().and_then(|s| s.cli.clone()))
 }
 
 #[cfg(test)]
@@ -1573,5 +1799,145 @@ mod tests {
         assert_eq!(magpie_provider_for_preset("xai"), Some(("xai", "")));
         assert_eq!(magpie_provider_for_preset("opencode-go"), Some(("opencode-go", "")));
         assert_eq!(magpie_provider_for_preset("unknown"), None);
+    }
+
+    // ─── codex 内建名 → 路由组别名（M2 收官；CLI 由测试缝记录）──────────────
+
+    /// CLI 录制器：每次 magpie CLI 调用的参数 + 一个可选的应答注入。
+    struct CliRecorder {
+        calls: std::sync::Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+        _engine: TestHandle,
+    }
+
+    impl CliRecorder {
+        /// 引擎摆成自拉 Running + CLI 缝记录所有调用（默认全部成功）。
+        fn install(catalog: Vec<String>) -> Self {
+            let calls: std::sync::Arc<std::sync::Mutex<Vec<Vec<String>>>> =
+                std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let recorder = calls.clone();
+            let engine = test_running_with_cli(
+                catalog,
+                std::sync::Arc::new(move |args| {
+                    recorder
+                        .lock()
+                        .unwrap()
+                        .push(args.iter().map(|s| s.to_string()).collect());
+                    Ok(())
+                }),
+            );
+            Self { calls, _engine: engine }
+        }
+
+        fn calls(&self) -> Vec<Vec<String>> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    /// 组处方逐字段锚定（magpie groups_cli.go 2026-10-16 核实）：
+    /// `group add "Marionette <内建名>" models=<引擎模型> id=<内建名> pick=<引擎模型>`
+    /// —— id 命中 GroupFor 的裸名首查，pick 自带 manual 路由；幂等重放零 CLI。
+    #[test]
+    fn codex_alias_group_add_uses_the_prescribed_shape() {
+        let cli = CliRecorder::install(Vec::new());
+        codex_alias_sync("s1", "gpt-5.2-codex", "grok/grok-4.7");
+        assert_eq!(
+            cli.calls(),
+            vec![vec![
+                "group",
+                "add",
+                "Marionette gpt-5.2-codex",
+                "models=grok/grok-4.7",
+                "id=gpt-5.2-codex",
+                "pick=grok/grok-4.7",
+            ]]
+        );
+        // 同会话同内建名同模型：快速路径，不再拉 CLI。
+        codex_alias_sync("s1", "gpt-5.2-codex", "grok/grok-4.7");
+        assert_eq!(cli.calls().len(), 1);
+        // 同名不同引擎模型（换绑）：重跑 add（pick 换人）。
+        codex_alias_sync("s1", "gpt-5.2-codex", "kimi/k2.6");
+        assert_eq!(cli.calls().len(), 2);
+    }
+
+    /// codex 原生切模型：新内建名建组，旧组无人引用即删（模型名不再 404）。
+    #[test]
+    fn codex_alias_switch_removes_the_old_group() {
+        let cli = CliRecorder::install(Vec::new());
+        codex_alias_sync("s1", "gpt-5.2-codex", "grok/grok-4.7");
+        codex_alias_sync("s1", "gpt-5.1-codex", "grok/grok-4.7");
+        let calls = cli.calls();
+        assert_eq!(calls[0][..2], ["group".to_string(), "add".to_string()]);
+        assert_eq!(calls[1][..2], ["group".to_string(), "add".to_string()]);
+        assert_eq!(
+            calls[2],
+            vec!["group".to_string(), "rm".to_string(), "gpt-5.2-codex".to_string()]
+        );
+    }
+
+    /// 共享名空间：两个会话别名同一个内建名 → 先解绑的保留组（后者还在
+    /// 用），最后一个解绑才删。
+    #[test]
+    fn codex_alias_clear_respects_shared_groups() {
+        let cli = CliRecorder::install(Vec::new());
+        codex_alias_sync("s1", "gpt-5.2-codex", "grok/grok-4.7");
+        codex_alias_sync("s2", "gpt-5.2-codex", "kimi/k2.6");
+        assert_eq!(cli.calls().len(), 2, "两次 add，无删除");
+        codex_alias_clear("s1");
+        assert_eq!(
+            cli.calls().len(),
+            2,
+            "s2 还在用同名组，s1 解绑不能删"
+        );
+        codex_alias_clear("s2");
+        let calls = cli.calls();
+        assert_eq!(
+            calls[2],
+            vec!["group".to_string(), "rm".to_string(), "gpt-5.2-codex".to_string()],
+            "最后一个引用者解绑时删组"
+        );
+        // 无登记的会话清别名：no-op。
+        codex_alias_clear("s-unknown");
+        assert_eq!(cli.calls().len(), 3);
+    }
+
+    /// 复用实例 / 引擎没跑：别名静默跳过（组写不进别人的状态；留痕走
+    /// debug_log，不进 CLI）。
+    #[test]
+    fn codex_alias_skipped_on_reused_or_stopped_engine() {
+        let cli = CliRecorder::install(Vec::new());
+        // 引擎自拉 Running（CLIRecorder 装的）→ 正常；然后改成 reused。
+        codex_alias_sync("s1", "gpt-5.2-codex", "grok/grok-4.7");
+        assert_eq!(cli.calls().len(), 1);
+        {
+            let mut state = lock_state();
+            state.status = EngineStatus::Running {
+                port: 3425,
+                version: None,
+                reused: true,
+            };
+        }
+        codex_alias_sync("s2", "gpt-5.1-codex", "grok/grok-4.7");
+        assert_eq!(cli.calls().len(), 1, "reused 实例不能写组");
+        {
+            let mut state = lock_state();
+            state.status = EngineStatus::Absent;
+        }
+        codex_alias_sync("s3", "gpt-5.1-codex", "grok/grok-4.7");
+        assert_eq!(cli.calls().len(), 1, "引擎没跑同样跳过");
+    }
+
+    /// 组 id 规则对齐 magpie CLI 校验：大写防御性归一，空名 / 非法字符拒绝
+    /// （不拉 CLI、不进表）。
+    #[test]
+    fn codex_alias_validates_group_ids() {
+        let cli = CliRecorder::install(Vec::new());
+        // 大写内建名：归一成小写后建组（codex 实际全小写，防御路径）。
+        codex_alias_sync("s1", "GPT-5.2-CODEX", "grok/grok-4.7");
+        assert!(cli.calls()[0].contains(&"id=gpt-5.2-codex".to_string()));
+        // 非法字符（空格 / 斜杠）与空名：拒绝。
+        codex_alias_sync("s2", "gpt 5", "m");
+        codex_alias_sync("s3", "provider/model", "m");
+        codex_alias_sync("s4", "  ", "m");
+        assert_eq!(cli.calls().len(), 1);
     }
 }
