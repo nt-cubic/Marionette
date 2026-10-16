@@ -80,6 +80,8 @@ enum ProbeStrategy {
     Openrouter,
     Openai,
     OpencodeZen,
+    Kimi,
+    Glm,
     None,
 }
 
@@ -90,6 +92,8 @@ impl ProbeStrategy {
             Self::Openrouter => "openrouter",
             Self::Openai => "openai",
             Self::OpencodeZen => "opencode-zen",
+            Self::Kimi => "kimi",
+            Self::Glm => "glm",
             Self::None => "none",
         }
     }
@@ -100,6 +104,8 @@ impl ProbeStrategy {
             "openrouter" => Self::Openrouter,
             "openai" | "chatgpt" | "codex" => Self::Openai,
             "opencode-zen" | "opencode_zen" | "zen" => Self::OpencodeZen,
+            "kimi" | "moonshot" => Self::Kimi,
+            "glm" | "zhipu" | "bigmodel" => Self::Glm,
             _ => Self::None,
         }
     }
@@ -137,11 +143,20 @@ fn builtin_catalog() -> Vec<ProviderMeta> {
         b("anthropic", "Anthropic", &["anthropic"], ProbeStrategy::None),
         b("google", "Google", &["google"], ProbeStrategy::None),
         b("xai", "xAI (Grok)", &["xai", "grok"], ProbeStrategy::None),
+        // Z.AI (z.ai) 与智谱 open.bigmodel.cn 是两家厂商（附录 B1「zai 不映射
+        // glm」），glm/zhipu 的凭证归下面的 glm 条目，这里不再共用别名。
+        b("zai", "Z.AI (GLM)", &["zai", "z-ai"], ProbeStrategy::None),
         b(
-            "zai",
-            "Z.AI (GLM)",
-            &["zai", "zhipu", "glm", "z-ai"],
-            ProbeStrategy::None,
+            "glm",
+            "GLM Coding Plan (Zhipu)",
+            &["glm", "zhipu", "bigmodel"],
+            ProbeStrategy::Glm,
+        ),
+        b(
+            "kimi",
+            "Kimi (Moonshot)",
+            &["kimi", "moonshot"],
+            ProbeStrategy::Kimi,
         ),
         b(
             "siliconflow",
@@ -377,14 +392,32 @@ fn http_get_json_with_account(
     bearer: &str,
     account_id: Option<&str>,
 ) -> Result<Value, String> {
+    let extra: Vec<(&str, &str)> = account_id
+        .map(|id| vec![("ChatGPT-Account-Id", id)])
+        .unwrap_or_default();
+    http_get_json_headers(url, &format!("Bearer {bearer}"), &extra)
+}
+
+fn http_get_json(url: &str, bearer: &str) -> Result<Value, String> {
+    http_get_json_with_account(url, bearer, None)
+}
+
+/// Core GET-JSON with full control over the `Authorization` header value and
+/// extra headers. `authorization` is set verbatim — Bearer is the caller's
+/// choice (GLM's monitor endpoint wants the bare key, see `probe_glm`).
+fn http_get_json_headers(
+    url: &str,
+    authorization: &str,
+    extra_headers: &[(&str, &str)],
+) -> Result<Value, String> {
     let mut request = crate::http_client::agent()?
         .get(url)
-        .set("Authorization", &format!("Bearer {bearer}"))
+        .set("Authorization", authorization)
         .set("Accept", "application/json")
         .set("User-Agent", "Marionette/0.1 (provider-usage)")
         .timeout(std::time::Duration::from_secs(15));
-    if let Some(account_id) = account_id {
-        request = request.set("ChatGPT-Account-Id", account_id);
+    for (name, value) in extra_headers {
+        request = request.set(name, value);
     }
     let resp = match request.call() {
         Ok(response) => response,
@@ -397,10 +430,6 @@ fn http_get_json_with_account(
         .into_string()
         .map_err(|e| format!("Read body {url}: {e}"))?;
     serde_json::from_str(&text).map_err(|e| format!("JSON from {url}: {e}"))
-}
-
-fn http_get_json(url: &str, bearer: &str) -> Result<Value, String> {
-    http_get_json_with_account(url, bearer, None)
 }
 
 fn money(amount: f64, currency: &str) -> String {
@@ -420,6 +449,11 @@ fn value_f64(value: &Value) -> Option<f64> {
 /// Format ChatGPT's Unix reset timestamp as a short relative hint.
 fn reset_hint(value: Option<&Value>) -> Option<String> {
     let raw = value.and_then(value_f64)?;
+    reset_hint_secs(raw)
+}
+
+/// Same hint from raw Unix seconds (or milliseconds — auto-detected).
+fn reset_hint_secs(raw: f64) -> Option<String> {
     let reset_seconds = if raw >= 1_000_000_000_000.0 {
         raw / 1000.0
     } else {
@@ -443,6 +477,78 @@ fn reset_hint(value: Option<&Value>) -> Option<String> {
         return Some(format!("resets in {}h", (remaining / 3600.0).round() as u64));
     }
     Some(format!("resets in {}d", (remaining / 86_400.0).round() as u64))
+}
+
+/// Strict-UTC ISO-8601 (`YYYY-MM-DDTHH:MM:SS[.fff][Z]`) → Unix seconds.
+///
+/// Dependency-free (no chrono in this crate). Only the shape OpenCode's usage
+/// endpoint returns for `resetsAt` is accepted; `+08:00`-style offsets are
+/// rejected rather than guessed.
+fn parse_iso8601_utc(text: &str) -> Option<f64> {
+    let text = text.trim();
+    let bytes = text.as_bytes();
+    if bytes.len() < 19 {
+        return None;
+    }
+    let num = |from: usize, len: usize| -> Option<i64> {
+        let slice = text.get(from..from + len)?;
+        if !slice.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        slice.parse::<i64>().ok()
+    };
+    let year = num(0, 4)?;
+    let month = num(5, 2)?;
+    let day = num(8, 2)?;
+    // 'T' is the spec separator; tolerate a space for hand-written fixtures.
+    if bytes[10] != b'T' && bytes[10] != b' ' {
+        return None;
+    }
+    if bytes[4] != b'-' || bytes[7] != b'-' || bytes[13] != b':' || bytes[16] != b':' {
+        return None;
+    }
+    let hour = num(11, 2)?;
+    let minute = num(14, 2)?;
+    let second = num(17, 2)?;
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || !(0..=23).contains(&hour)
+        || !(0..=59).contains(&minute)
+        || !(0..=59).contains(&second)
+    {
+        return None;
+    }
+    // Days-from-civil (Howard Hinnant): proleptic Gregorian, valid for all
+    // dates the endpoint can return.
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    let secs = (days * 86_400 + hour * 3_600 + minute * 60 + second) as f64;
+
+    let mut idx = 19;
+    let mut frac = 0.0f64;
+    if bytes.get(idx) == Some(&b'.') {
+        let start = idx + 1;
+        let mut end = start;
+        while end < bytes.len() && bytes[end].is_ascii_digit() {
+            end += 1;
+        }
+        if end == start {
+            return None;
+        }
+        frac = format!("0.{}", &text[start..end]).parse::<f64>().ok()?;
+        idx = end;
+    }
+    match bytes.get(idx) {
+        // Bare local time is treated as UTC; anything with an offset is refused.
+        None => Some(secs + frac),
+        Some(&b'Z') | Some(&b'z') if idx + 1 == bytes.len() => Some(secs + frac),
+        _ => None,
+    }
 }
 
 fn openai_window_identity(window: &Value) -> (String, String) {
@@ -708,19 +814,315 @@ fn probe_openrouter(key: &str, model: Option<&str>) -> Result<ProviderUsageSnaps
     })
 }
 
-/// OpenCode Go/Zen: no public usage API yet (see upstream feature requests).
-/// Surface plan ceilings + credential check so the panel is still useful.
-fn probe_opencode_plan(provider: &str, key: &str, model: Option<&str>) -> ProviderUsageSnapshot {
-    let is_go = matches!(provider, "opencode-go" | "opencode_go" | "go");
-    // Auth works if models list succeeds.
-    let models_url = if is_go {
-        "https://opencode.ai/zen/go/v1/models"
-    } else {
-        "https://opencode.ai/zen/v1/models"
-    };
-    let auth_ok = http_get_json(models_url, key).is_ok();
+/// Parse Moonshot's balance envelope `{"code":0,"data":{"available_balance":…}}`.
+fn parse_kimi_balance(json: &Value) -> Result<f64, String> {
+    if let Some(code) = json.get("code").and_then(value_f64) {
+        if code != 0.0 {
+            let msg = json
+                .get("msg")
+                .or_else(|| json.get("message"))
+                .and_then(Value::as_str)
+                .unwrap_or("balance query rejected");
+            return Err(format!(
+                "Moonshot balance query failed (code {}): {msg}",
+                code as i64
+            ));
+        }
+    }
+    let data = json
+        .get("data")
+        .ok_or_else(|| "Moonshot balance response missing `data`".to_string())?;
+    data.get("available_balance")
+        .and_then(value_f64)
+        .ok_or_else(|| "Moonshot balance response missing `available_balance`".to_string())
+}
 
-    let mut windows = vec![
+/// Kimi (Moonshot): prepaid balance, presented like DeepSeek's balance window.
+/// Endpoint: `GET https://api.moonshot.ai/v1/users/me/balance` (magpie-mined,
+/// docs/cross-agent-bridge.md 附录 B2「配额端点补缺」).
+fn probe_kimi(key: &str, model: Option<&str>) -> Result<ProviderUsageSnapshot, String> {
+    let json = http_get_json("https://api.moonshot.ai/v1/users/me/balance", key)?;
+    let available = parse_kimi_balance(&json)?;
+    // Moonshot bills in CNY; mirror probe_deepseek's balance window shape.
+    let windows = vec![ProviderUsageWindow {
+        id: "balance-cny".into(),
+        label: "Balance (CNY)".into(),
+        // No utilization % for prepaid balance — the UI reads the leading
+        // amount from `detail` (see formatPrimary).
+        percentage: None,
+        detail: Some(money(available, "CNY")),
+        kind: "provider".into(),
+    }];
+    Ok(ProviderUsageSnapshot {
+        provider: "kimi".into(),
+        provider_label: provider_label("kimi"),
+        model: model.map(str::to_string),
+        model_label: model.map(str::to_string),
+        windows,
+        note: Some("Live from Moonshot GET /v1/users/me/balance".into()),
+        refreshed_at: now_iso(),
+        source: "moonshot /v1/users/me/balance".into(),
+        ok: true,
+    })
+}
+
+#[derive(Debug)]
+struct GlmUsage {
+    level: Option<String>,
+    windows: Vec<ProviderUsageWindow>,
+}
+
+/// Map GLM's in-envelope error codes to user-facing semantics. All rejections
+/// arrive as **HTTP 200** envelopes `{"success":false,"code":…,"msg":…}` —
+/// the code carries the status (magpie-mined, 附录 B2):
+/// 1000-1005 auth failure · 1113/1302-1399 quota (429-ish) · 1220 forbidden ·
+/// 1210-1229/1261/1301 bad request.
+fn glm_reject_message(code: i64, msg: &str) -> String {
+    let msg = msg.trim();
+    match code {
+        1000..=1005 => format!("GLM key rejected (code {code}): {msg} — check the Zhipu API key"),
+        1113 | 1302..=1399 => format!(
+            "GLM quota hit (code {code}): {msg} — top up or upgrade the coding plan"
+        ),
+        1220 => format!("GLM refused this key/account (code {code}): {msg}"),
+        1210..=1229 | 1261 | 1301 => {
+            format!("GLM rejected the request (code {code}): {msg}")
+        }
+        _ => format!("GLM rejected the request (code {code}): {msg}"),
+    }
+}
+
+/// Parse GLM's quota envelope:
+/// `{"success":true,"data":{"level":"pro","limits":[{"type":"TOKENS_LIMIT",
+///    "unit":3,"percentage":0.42,"nextResetTime":1798000000000},…]}}`
+/// `unit` 3 = hourly window, 6 = weekly window; `percentage` is a 0-1 fraction;
+/// `nextResetTime` is epoch milliseconds.
+fn parse_glm_usage(json: &Value) -> Result<GlmUsage, String> {
+    if json.get("success").and_then(Value::as_bool) == Some(false) {
+        let code = json.get("code").and_then(value_f64).unwrap_or(-1.0) as i64;
+        let msg = json
+            .get("msg")
+            .or_else(|| json.get("message"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        return Err(glm_reject_message(code, msg));
+    }
+    let data = json
+        .get("data")
+        .ok_or_else(|| "GLM quota response missing `data`".to_string())?;
+    let level = data
+        .get("level")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let mut windows = Vec::new();
+    if let Some(limits) = data.get("limits").and_then(Value::as_array) {
+        for limit in limits {
+            // Only the token-quota rows; unknown limit types carry no
+            // window semantics we can honestly map.
+            let limit_type = limit.get("type").and_then(Value::as_str);
+            if limit_type.is_some_and(|t| t != "TOKENS_LIMIT") {
+                continue;
+            }
+            let unit = limit.get("unit").and_then(value_f64).map(|u| u as i64);
+            let (id, label) = match unit {
+                Some(3) => ("hourly", "Hourly limit"),
+                Some(6) => ("weekly", "Weekly limit"),
+                _ => continue,
+            };
+            let percentage = limit
+                .get("percentage")
+                .and_then(value_f64)
+                .map(|fraction| (fraction * 100.0).clamp(0.0, 100.0));
+            let detail = reset_hint(limit.get("nextResetTime"));
+            if percentage.is_none() && detail.is_none() {
+                continue;
+            }
+            windows.push(ProviderUsageWindow {
+                id: id.into(),
+                label: label.into(),
+                percentage,
+                detail,
+                kind: "rate_limit".into(),
+            });
+        }
+    }
+    if windows.is_empty() {
+        return Err("GLM quota response contained no usable windows".to_string());
+    }
+    Ok(GlmUsage { level, windows })
+}
+
+/// GLM (Zhipu) coding-plan quota. Two endpoint quirks (magpie-mined, 附录 B2):
+/// the monitor endpoint wants the **bare** key in `Authorization` — no Bearer
+/// prefix — and rejections come back as HTTP 200 envelopes (see
+/// `glm_reject_message`), so a 200 body must be inspected before trusting it.
+fn probe_glm(key: &str, model: Option<&str>) -> Result<ProviderUsageSnapshot, String> {
+    let json = http_get_json_headers(
+        "https://open.bigmodel.cn/api/monitor/usage/quota/limit",
+        key,
+        &[],
+    )?;
+    let parsed = parse_glm_usage(&json)?;
+    let note = match parsed.level.as_deref() {
+        Some(level) => format!("Coding plan: {level} · live from bigmodel quota/limit"),
+        None => "Live from bigmodel quota/limit".to_string(),
+    };
+    Ok(ProviderUsageSnapshot {
+        provider: "glm".into(),
+        provider_label: provider_label("glm"),
+        model: model.map(str::to_string),
+        model_label: model.map(str::to_string),
+        windows: parsed.windows,
+        note: Some(note),
+        refreshed_at: now_iso(),
+        source: "bigmodel /api/monitor/usage/quota/limit".into(),
+        ok: true,
+    })
+}
+
+/// opencode 网关 2026-09 起校验 OpenCode 客户端会话头：缺 `x-opencode-session`
+/// 直接 400。会话 id 的形态是网关校验的 —— `ses_` + 12 位小写 hex + 14 位
+/// base62（出处：magpie opencode_client.go 的实测形状，docs/cross-agent-bridge.md
+/// 附录 B1「OpenCode 会话头」/ B2「配额端点补缺」；grok_dialect.rs 有同形态的
+/// 生成器，但文件所有权不重叠，这里自带一份）。无 rand 依赖：时钟 + 计数器混合。
+fn generate_opencode_session_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mixed = (nanos as u64) ^ count.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    let hex: String = (0..6)
+        .map(|i| format!("{:02x}", (mixed >> (i * 8)) as u8))
+        .collect();
+    const BASE62: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    let tail: String = (0..7)
+        .map(|i| {
+            let byte = (mixed >> (i * 4)) as u8 ^ (nanos >> (i * 11)) as u8;
+            BASE62[(byte as usize) % BASE62.len()] as char
+        })
+        .collect();
+    format!("ses_{hex}{tail}{tail}")
+}
+
+/// Process-fixed session id for usage probes — mirrors the opencode client,
+/// which keeps one session id per process run.
+fn opencode_usage_session_id() -> String {
+    static SESSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SESSION
+        .get_or_init(generate_opencode_session_id)
+        .clone()
+}
+
+/// Turn a raw HTTP error from the Go usage endpoint into a friendly message.
+/// 403 means the key is not the subscription owner ("Go belongs to the member
+/// who subscribed" — magpie-mined, 附录 B2).
+fn opencode_usage_error(error: &str) -> String {
+    if error.contains("HTTP 403") {
+        "OpenCode refused this key for Go usage: \"Go belongs to the member who \
+         subscribed\" — use the API key of the subscribing account"
+            .into()
+    } else {
+        error.to_string()
+    }
+}
+
+/// Parse `{"usage":{"rolling":{"percent":42,"resetsAt":"…"},"weekly":{…},
+/// "monthly":{…}}}` — `rolling` is the 5-hour window (hourly-window style),
+/// `weekly`/`monthly` the longer ceilings. `percent` is 0-100, `resetsAt` an
+/// ISO-8601 string.
+fn parse_opencode_usage(usage: &Value) -> Vec<ProviderUsageWindow> {
+    let mut windows = Vec::new();
+    let specs: &[(&str, &str, &str)] = &[
+        ("rolling", "five-hour", "5-hour limit"),
+        ("weekly", "weekly", "Weekly limit"),
+        ("monthly", "monthly", "Monthly limit"),
+    ];
+    for (field, id, label) in specs {
+        let Some(entry) = usage.get(field) else {
+            continue;
+        };
+        let percentage = entry
+            .get("percent")
+            .and_then(value_f64)
+            .map(|value| value.clamp(0.0, 100.0));
+        let detail = entry.get("resetsAt").and_then(Value::as_str).map(|raw| {
+            match parse_iso8601_utc(raw).and_then(reset_hint_secs) {
+                Some(hint) => hint,
+                // Unparseable shape: still show something instead of nothing.
+                None if raw.trim().is_empty() => "resets soon".into(),
+                None => format!("resets at {}", raw.trim()),
+            }
+        });
+        if percentage.is_none() && detail.is_none() {
+            continue;
+        }
+        windows.push(ProviderUsageWindow {
+            id: (*id).into(),
+            label: (*label).into(),
+            percentage,
+            detail,
+            kind: "rate_limit".into(),
+        });
+    }
+    windows
+}
+
+/// OpenCode Go live usage: `GET https://opencode.ai/zen/go/v1/usage` with
+/// Bearer auth **plus** the `x-opencode-session` header (see
+/// `generate_opencode_session_id`). Replaces the old "no public usage API"
+/// credential-check stub.
+fn probe_opencode_go_usage(
+    key: &str,
+    model: Option<&str>,
+) -> Result<ProviderUsageSnapshot, String> {
+    let session = opencode_usage_session_id();
+    let json = match http_get_json_headers(
+        "https://opencode.ai/zen/go/v1/usage",
+        &format!("Bearer {key}"),
+        &[("x-opencode-session", session.as_str())],
+    ) {
+        Ok(json) => json,
+        Err(error) => return Err(opencode_usage_error(&error)),
+    };
+    let usage = json.get("usage").unwrap_or(&json);
+    let windows = parse_opencode_usage(usage);
+    if windows.is_empty() {
+        return Err("OpenCode Go usage response contained no windows".into());
+    }
+    Ok(ProviderUsageSnapshot {
+        provider: "opencode-go".into(),
+        provider_label: provider_label("opencode-go"),
+        model: model.map(str::to_string),
+        model_label: model.map(str::to_string),
+        windows,
+        note: Some("Live from OpenCode Go GET /zen/go/v1/usage".into()),
+        refreshed_at: now_iso(),
+        source: "opencode-go /zen/go/v1/usage".into(),
+        ok: true,
+    })
+}
+
+/// OpenCode Go: live usage via [`probe_opencode_go_usage`].
+/// OpenCode Zen: no public usage API yet — surface a credential check so the
+/// panel is still useful.
+fn probe_opencode_plan(
+    provider: &str,
+    key: &str,
+    model: Option<&str>,
+) -> Result<ProviderUsageSnapshot, String> {
+    let is_go = matches!(provider, "opencode-go" | "opencode_go" | "go");
+    if is_go {
+        return probe_opencode_go_usage(key, model);
+    }
+
+    // Auth works if models list succeeds.
+    let auth_ok = http_get_json("https://opencode.ai/zen/v1/models", key).is_ok();
+
+    let windows = vec![
         ProviderUsageWindow {
             id: "credential".into(),
             label: "API key".into(),
@@ -732,64 +1134,29 @@ fn probe_opencode_plan(provider: &str, key: &str, model: Option<&str>) -> Provid
             }),
             kind: "provider".into(),
         },
-    ];
-
-    if is_go {
-        // Documented Go subscription ceilings (not remaining usage).
-        windows.push(ProviderUsageWindow {
-            id: "five-hour".into(),
-            label: "5-hour limit".into(),
-            percentage: None,
-            detail: Some("$12 usage ceiling (plan)".into()),
-            kind: "rate_limit".into(),
-        });
-        windows.push(ProviderUsageWindow {
-            id: "weekly".into(),
-            label: "Weekly limit".into(),
-            percentage: None,
-            detail: Some("$30 usage ceiling (plan)".into()),
-            kind: "rate_limit".into(),
-        });
-        windows.push(ProviderUsageWindow {
-            id: "monthly".into(),
-            label: "Monthly limit".into(),
-            percentage: None,
-            detail: Some("$60 usage ceiling (plan)".into()),
-            kind: "rate_limit".into(),
-        });
-    } else {
-        windows.push(ProviderUsageWindow {
+        ProviderUsageWindow {
             id: "zen-balance".into(),
             label: "Zen balance".into(),
             percentage: None,
             detail: Some("No public balance API — check opencode.ai/auth".into()),
             kind: "provider".into(),
-        });
-    }
-
-    ProviderUsageSnapshot {
-        provider: if is_go {
-            "opencode-go".into()
-        } else {
-            "opencode".into()
         },
-        provider_label: provider_label(if is_go { "opencode-go" } else { "opencode" }),
+    ];
+
+    Ok(ProviderUsageSnapshot {
+        provider: "opencode".into(),
+        provider_label: provider_label("opencode"),
         model: model.map(str::to_string),
         model_label: model.map(str::to_string),
         windows,
-        note: Some(if is_go {
-            "OpenCode Go has no public remaining-usage API yet; ceilings from docs. Track live usage at opencode.ai/auth.".into()
-        } else {
-            "OpenCode Zen balance API is not public yet; open the console for remaining credits.".into()
-        }),
+        note: Some(
+            "OpenCode Zen balance API is not public yet; open the console for remaining credits."
+                .into(),
+        ),
         refreshed_at: now_iso(),
-        source: if is_go {
-            "opencode-go models + plan docs".into()
-        } else {
-            "opencode zen models".into()
-        },
+        source: "opencode zen models".into(),
         ok: auth_ok,
-    }
+    })
 }
 
 fn unsupported(provider: &str, model: Option<&str>, reason: &str) -> ProviderUsageSnapshot {
@@ -846,17 +1213,39 @@ pub fn probe_provider_usage(model_id: Option<String>) -> ProviderUsageSnapshot {
             Ok(key) => probe_openrouter(&key, model_ref),
             Err(e) => Err(e),
         },
+        "kimi" | "moonshot" => match auth_key_for(&auth, "kimi") {
+            Ok(key) => probe_kimi(&key, model_ref),
+            Err(e) => Err(e),
+        },
+        "glm" | "zhipu" | "bigmodel" => match auth_key_for(&auth, "glm") {
+            Ok(key) => probe_glm(&key, model_ref),
+            Err(e) => Err(e),
+        },
         "opencode-go" | "opencode_go" | "go" => match auth_key_for(&auth, "opencode-go") {
-            Ok(key) => Ok(probe_opencode_plan("opencode-go", &key, model_ref)),
+            Ok(key) => probe_opencode_plan("opencode-go", &key, model_ref),
             Err(e) => Err(e),
         },
         "opencode" | "opencode-zen" | "zen" => match auth_key_for(&auth, "opencode") {
-            Ok(key) => Ok(probe_opencode_plan("opencode", &key, model_ref)),
+            Ok(key) => probe_opencode_plan("opencode", &key, model_ref),
             Err(e) => Err(e),
         },
-        other => Err(format!(
-            "No balance probe for `{other}` yet (supported: deepseek, openai, openrouter, opencode-go, opencode)"
-        )),
+        other => {
+            // Catalog-driven fallback: a user providers.json entry can map an
+            // arbitrary id/alias onto a probe strategy.
+            match find_meta(other).map(|meta| meta.probe) {
+                Some(ProbeStrategy::Kimi) => match auth_key_for(&auth, other) {
+                    Ok(key) => probe_kimi(&key, model_ref),
+                    Err(e) => Err(e),
+                },
+                Some(ProbeStrategy::Glm) => match auth_key_for(&auth, other) {
+                    Ok(key) => probe_glm(&key, model_ref),
+                    Err(e) => Err(e),
+                },
+                _ => Err(format!(
+                    "No balance probe for `{other}` yet (supported: deepseek, openai, openrouter, opencode-go, opencode, kimi, glm)"
+                )),
+            }
+        }
     };
 
     match result {
@@ -1281,7 +1670,11 @@ pub fn delete_provider_key(provider: &str, force: bool) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{chatgpt_oauth_for, parse_openai_usage, split_model_id};
+    use super::{
+        builtin_catalog, chatgpt_oauth_for, generate_opencode_session_id, glm_reject_message,
+        money, opencode_usage_error, parse_glm_usage, parse_iso8601_utc, parse_kimi_balance,
+        parse_opencode_usage, parse_openai_usage, reset_hint_secs, split_model_id, ProbeStrategy,
+    };
     use serde_json::json;
 
     #[test]
@@ -1337,6 +1730,243 @@ mod tests {
         assert_eq!(windows.len(), 1);
         assert_eq!(windows[0].id, "weekly");
         assert_eq!(windows[0].label, "Weekly limit");
+    }
+
+    // ─── kimi (moonshot) ────────────────────────────────────────────────────
+
+    #[test]
+    fn parses_kimi_balance_envelope() {
+        // Shape from magpie source mining (docs/cross-agent-bridge.md 附录 B2).
+        let json = json!({
+            "code": 0,
+            "data": { "available_balance": 49.58 }
+        });
+        assert_eq!(parse_kimi_balance(&json).unwrap(), 49.58);
+        // Balance also arrives as a string on some accounts.
+        let as_string = json!({
+            "code": 0,
+            "data": { "available_balance": "12.5" }
+        });
+        assert_eq!(parse_kimi_balance(&as_string).unwrap(), 12.5);
+        // Presentation follows DeepSeek's balance window style.
+        assert_eq!(money(parse_kimi_balance(&json).unwrap(), "CNY"), "¥49.58");
+
+        let rejected = json!({ "code": 1003, "msg": "invalid key" });
+        let err = parse_kimi_balance(&rejected).unwrap_err();
+        assert!(err.contains("1003"), "unexpected error: {err}");
+        assert!(err.contains("invalid key"));
+
+        let no_data = json!({ "code": 0 });
+        assert!(parse_kimi_balance(&no_data).is_err());
+    }
+
+    #[test]
+    fn catalog_maps_kimi_and_glm_aliases() {
+        let catalog = builtin_catalog();
+        let kimi = catalog.iter().find(|p| p.id == "kimi").unwrap();
+        assert_eq!(kimi.probe, ProbeStrategy::Kimi);
+        assert!(kimi.key_aliases.iter().any(|a| a == "moonshot"));
+
+        let glm = catalog.iter().find(|p| p.id == "glm").unwrap();
+        assert_eq!(glm.probe, ProbeStrategy::Glm);
+        assert!(glm.key_aliases.iter().any(|a| a == "zhipu"));
+        assert!(glm.key_aliases.iter().any(|a| a == "bigmodel"));
+
+        // zai is a different vendor (Z.AI ≠ open.bigmodel.cn) — its aliases
+        // must not claim the GLM coding-plan keys anymore.
+        let zai = catalog.iter().find(|p| p.id == "zai").unwrap();
+        assert!(!zai.key_aliases.iter().any(|a| a == "glm" || a == "zhipu"));
+
+        assert_eq!(ProbeStrategy::parse("moonshot"), ProbeStrategy::Kimi);
+        assert_eq!(ProbeStrategy::parse("Kimi"), ProbeStrategy::Kimi);
+        assert_eq!(ProbeStrategy::parse("zhipu"), ProbeStrategy::Glm);
+        assert_eq!(ProbeStrategy::parse("bigmodel"), ProbeStrategy::Glm);
+        assert_eq!(ProbeStrategy::parse("glm"), ProbeStrategy::Glm);
+        assert_eq!(ProbeStrategy::Glm.as_str(), "glm");
+        assert_eq!(ProbeStrategy::Kimi.as_str(), "kimi");
+    }
+
+    // ─── glm (zhipu coding plan) ────────────────────────────────────────────
+
+    #[test]
+    fn parses_glm_quota_windows() {
+        let json = json!({
+            "success": true,
+            "data": {
+                "level": "pro",
+                "limits": [
+                    { "type": "TOKENS_LIMIT", "unit": 3, "percentage": 0.42, "nextResetTime": 1798000000000_i64 },
+                    { "type": "TOKENS_LIMIT", "unit": 6, "percentage": 0.71, "nextResetTime": 1798000000000_i64 },
+                    { "type": "TOKENS_LIMIT", "unit": 9, "percentage": 0.5 },
+                    { "type": "REQUESTS_LIMIT", "unit": 3, "percentage": 0.1 }
+                ]
+            }
+        });
+        let parsed = parse_glm_usage(&json).unwrap();
+        assert_eq!(parsed.level.as_deref(), Some("pro"));
+        assert_eq!(parsed.windows.len(), 2, "unknown units/types must be skipped");
+        assert_eq!(parsed.windows[0].id, "hourly");
+        assert_eq!(parsed.windows[0].label, "Hourly limit");
+        assert_eq!(parsed.windows[0].percentage, Some(42.0));
+        assert_eq!(parsed.windows[0].kind, "rate_limit");
+        assert!(
+            parsed.windows[0].detail.as_deref().unwrap().starts_with("resets"),
+            "detail: {:?}",
+            parsed.windows[0].detail
+        );
+        assert_eq!(parsed.windows[1].id, "weekly");
+        assert_eq!(parsed.windows[1].percentage, Some(71.0));
+
+        // Millisecond epochs must not be read as seconds ("resets soon").
+        // ~68 days out — the days-scale branch regardless of run time.
+        let hint = reset_hint_secs(1_798_000_000_000.0).unwrap();
+        assert!(hint.starts_with("resets in "), "hint: {hint}");
+        assert!(hint.ends_with('d'), "hint: {hint}");
+    }
+
+    #[test]
+    fn glm_rejection_envelope_is_an_error_not_windows() {
+        // GLM rejects inside a HTTP 200 envelope — success:false wins over data.
+        let json = json!({
+            "success": false,
+            "code": 1001,
+            "msg": "身份验证失败。token 校验失败",
+            "data": { "level": "pro", "limits": [] }
+        });
+        let err = parse_glm_usage(&json).unwrap_err();
+        assert!(err.contains("check the Zhipu API key"), "error: {err}");
+        assert!(err.contains("身份验证失败"), "error: {err}");
+
+        let empty = json!({ "success": true, "data": { "limits": [] } });
+        assert!(parse_glm_usage(&empty).is_err());
+        let no_data = json!({ "success": true });
+        assert!(parse_glm_usage(&no_data).is_err());
+    }
+
+    #[test]
+    fn glm_reject_codes_map_to_semantics() {
+        // 1113 / 1302-1399 → quota (suggest recharge/plan).
+        assert!(glm_reject_message(1113, "x").contains("top up"));
+        assert!(glm_reject_message(1302, "x").contains("top up"));
+        assert!(glm_reject_message(1399, "x").contains("top up"));
+        // 1220 → forbidden.
+        assert!(glm_reject_message(1220, "x").contains("refused"));
+        // 1210-1229 (minus 1220) / 1261 / 1301 → bad request.
+        assert!(glm_reject_message(1210, "x").contains("rejected the request"));
+        assert!(glm_reject_message(1229, "x").contains("rejected the request"));
+        assert!(glm_reject_message(1261, "x").contains("rejected the request"));
+        assert!(glm_reject_message(1301, "x").contains("rejected the request"));
+        // 1000-1005 → auth.
+        assert!(glm_reject_message(1005, "身份验证失败。").contains("key rejected"));
+        // Unknown codes still surface the code and message.
+        assert!(glm_reject_message(4242, "boom").contains("4242"));
+    }
+
+    // ─── opencode-go live usage ─────────────────────────────────────────────
+
+    #[test]
+    fn parses_opencode_go_usage_windows() {
+        let json = json!({
+            "usage": {
+                "rolling": { "percent": 42, "resetsAt": "2999-01-01T00:00:00Z" },
+                "weekly": { "percent": 71, "resetsAt": "2999-01-08T00:00:00Z" },
+                "monthly": { "percent": 8, "resetsAt": "2999-02-01T00:00:00Z" }
+            }
+        });
+        let usage = json.get("usage").unwrap();
+        let windows = parse_opencode_usage(usage);
+        assert_eq!(windows.len(), 3);
+        // rolling maps to the 5-hour window id, like the old plan ceilings.
+        assert_eq!(windows[0].id, "five-hour");
+        assert_eq!(windows[0].label, "5-hour limit");
+        assert_eq!(windows[0].percentage, Some(42.0));
+        assert_eq!(windows[0].kind, "rate_limit");
+        assert!(
+            windows[0].detail.as_deref().unwrap().starts_with("resets in"),
+            "detail: {:?}",
+            windows[0].detail
+        );
+        assert_eq!(windows[1].id, "weekly");
+        assert_eq!(windows[1].percentage, Some(71.0));
+        assert_eq!(windows[2].id, "monthly");
+        assert_eq!(windows[2].percentage, Some(8.0));
+
+        // Unparseable reset strings degrade to the raw value, not nothing.
+        let odd = json!({
+            "usage": { "rolling": { "percent": 5, "resetsAt": "sometime" } }
+        });
+        let windows = parse_opencode_usage(odd.get("usage").unwrap());
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].detail.as_deref(), Some("resets at sometime"));
+
+        // Empty usage → no windows (probe turns that into an error).
+        assert!(parse_opencode_usage(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn opencode_usage_403_gets_a_friendly_message() {
+        let friendly = opencode_usage_error("HTTP 403 from https://opencode.ai/zen/go/v1/usage");
+        assert!(
+            friendly.contains("Go belongs to the member who subscribed"),
+            "message: {friendly}"
+        );
+        // Everything else passes through untouched.
+        assert_eq!(
+            opencode_usage_error("HTTP 500 from https://opencode.ai/zen/go/v1/usage"),
+            "HTTP 500 from https://opencode.ai/zen/go/v1/usage"
+        );
+    }
+
+    #[test]
+    fn session_id_matches_opencode_client_shape() {
+        // `ses_` + 12 lowercase hex + 14 base62 (gateway validates the shape —
+        // magpie opencode_client.go, docs appendix B1).
+        let id = generate_opencode_session_id();
+        assert!(id.starts_with("ses_"), "id = {id}");
+        assert_eq!(id.len(), 4 + 12 + 14, "id = {id}");
+        let hex = &id[4..16];
+        assert!(
+            hex.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "hex part = {hex}"
+        );
+        const BASE62: &str =
+            "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+        let tail = &id[16..];
+        assert!(
+            tail.chars().all(|c| BASE62.contains(c)),
+            "tail part = {tail}"
+        );
+        // Successive ids differ (counter mix), still well-formed.
+        let another = generate_opencode_session_id();
+        assert_ne!(id, another);
+        assert!(another.starts_with("ses_"));
+    }
+
+    #[test]
+    fn iso8601_utc_parsing() {
+        assert_eq!(
+            parse_iso8601_utc("1970-01-01T00:00:00Z"),
+            Some(0.0)
+        );
+        assert_eq!(
+            parse_iso8601_utc("1970-01-02T00:00:00Z"),
+            Some(86_400.0)
+        );
+        // 2026-10-16T00:00:00Z = day 20742 since epoch.
+        assert_eq!(
+            parse_iso8601_utc("2026-10-16T00:00:00Z"),
+            Some(20_742.0 * 86_400.0)
+        );
+        assert_eq!(
+            parse_iso8601_utc("2026-10-16T00:00:30.5Z"),
+            Some(20_742.0 * 86_400.0 + 30.5)
+        );
+        // Offsets other than Z are refused rather than guessed.
+        assert_eq!(parse_iso8601_utc("2026-10-16T00:00:00+08:00"), None);
+        // Malformed input.
+        assert_eq!(parse_iso8601_utc("not a date"), None);
+        assert_eq!(parse_iso8601_utc("2026-13-40T99:99:99Z"), None);
+        assert_eq!(parse_iso8601_utc(""), None);
     }
 
     #[test]

@@ -2359,6 +2359,17 @@ pub fn bridge_bind(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let _trace = crate::debug_log::CmdTrace::new("bridge_bind");
+    // M2：绑定 engine 模型但引擎不在跑（残留绑定恢复 / 极端时序）→ 后台踢
+    // 一次幂等的 engine_enable（不等待；本次 bind 仍会因校验失败而报错并
+    // 指引，重试即可）。正常路径不受影响：引擎未 Running 时 engine 源本就
+    // 不出现在 picker 里。
+    if selection
+        .as_ref()
+        .is_some_and(|s| s.entry_id == crate::engine::ENGINE_ENTRY_ID)
+        && !crate::engine::bridge_ready()
+    {
+        let _ = crate::engine::enable();
+    }
     // The session's agent decides the unbind semantics (grok tables); look it
     // up the same way start_acp_session does — session.agentId is the truth.
     let agent_id = {
@@ -2383,6 +2394,22 @@ pub fn bridge_get_binding(
 ) -> Option<crate::model_bridge::BridgeSelection> {
     let _trace = crate::debug_log::CmdTrace::new("bridge_get_binding");
     crate::model_bridge::binding_for(&session_id)
+}
+
+/// M2 翻译引擎：状态快照（含子进程存活检查）。UI 只读这一个命令 + 事件。
+#[tauri::command(async)]
+pub fn engine_status() -> crate::engine::EngineStatus {
+    let _trace = crate::debug_log::CmdTrace::new("engine_status");
+    crate::engine::status()
+}
+
+/// M2 翻译引擎：幂等启用（下载 → serve → key 型 provider 注册 → Running）。
+/// 后台线程执行，进度走 `engine-download-progress` 事件、状态迁移走
+/// `engine-state-changed` 事件；这里只返回启动时的快照。
+#[tauri::command(async)]
+pub fn engine_enable() -> Result<crate::engine::EngineStatus, String> {
+    let _trace = crate::debug_log::CmdTrace::new("engine_enable");
+    crate::engine::enable()
 }
 
 /// Read the agent proxy config (single exit address for spawned agents).

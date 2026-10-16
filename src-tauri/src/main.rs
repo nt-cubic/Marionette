@@ -14,6 +14,7 @@ mod custom_agents;
 mod data_dir_gate;
 mod debug_log;
 mod dsh_settings;
+mod engine;
 mod git_service;
 mod grok_dialect;
 mod handoff;
@@ -60,6 +61,11 @@ const SHUTDOWN_KILL_TIMEOUT_SECS: u64 = 5;
 /// starts while we are still on the event-handler stack.
 fn shutdown_and_exit(app: &tauri::AppHandle) -> ! {
     use tauri::Manager;
+
+    // Kill our embedded translation engine first (fast TerminateProcess; the
+    // reused user instance is not ours and stays). magpie's JSON writes are
+    // all tmp+rename atomic, so a hard kill is safe (S1).
+    crate::engine::kill_engine();
 
     // Kill agents best-effort, then leave. Do not touch the window
     // (hide/destroy/emit) — any Win32 re-entry here can hit the tao paint assert.
@@ -265,6 +271,9 @@ fn main() {
         .setup(|app| {
             spawn_main_thread_watchdog(app.handle().clone());
             acp::spawn_pipeline_watchdog();
+            // Engine progress/state events are emitted from its background
+            // threads — they need an app handle kept for the process lifetime.
+            engine::set_app_handle(app.handle().clone());
             // Keep Explorer menu pointing at this portable exe (moves / rebuilds).
             if let Err(err) = shell_integration::register_context_menu() {
                 debug_log::append(
@@ -326,6 +335,7 @@ fn main() {
                 // CloseRequested. Never try to paint/teardown here — exit.
                 tauri::WindowEvent::Destroyed => {
                     let app = window.app_handle();
+                    crate::engine::kill_engine();
                     if window.label() == "main" {
                         std::process::exit(0);
                     }
@@ -432,6 +442,8 @@ fn main() {
             commands::bridge_list_models,
             commands::bridge_bind,
             commands::bridge_get_binding,
+            commands::engine_status,
+            commands::engine_enable,
             commands::get_proxy_config,
             commands::set_proxy_config,
             commands::test_proxy,

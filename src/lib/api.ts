@@ -1060,6 +1060,46 @@ export async function bridgeGetBinding(sessionId: string): Promise<BridgeSelecti
   }
 }
 
+// ─── M2 Translation Engine (翻译引擎) ────────────────────────────────────────
+
+/**
+ * Embedded magpie engine state (`engine_status` / `engine-state-changed`).
+ * Tagged by `state`; `running.reused` means a user-installed magpie on 3425
+ * was detected and reused rather than spawning our own subprocess.
+ */
+export type EngineStatus =
+  | { state: "absent" }
+  | { state: "downloading"; downloaded: number; total: number }
+  | { state: "starting" }
+  | { state: "running"; port: number; version?: string | null; reused?: boolean }
+  | { state: "failed"; error: string };
+
+/** `engine-download-progress` event payload (bytes). */
+export type EngineDownloadProgress = { downloaded: number; total: number };
+
+export async function engineStatus(): Promise<EngineStatus | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await invoke<EngineStatus>("engine_status");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Idempotent engine enable (download → serve → provider register → running).
+ * Runs in the background; resolves with the snapshot taken at kick-off and
+ * the UI follows `engine-download-progress` / `engine-state-changed` events.
+ */
+export async function engineEnable(): Promise<EngineStatus | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await invoke<EngineStatus>("engine_enable");
+  } catch {
+    return null;
+  }
+}
+
 /** Agent proxy config: single exit address injected into spawned agents. */
 export async function getProxyConfig(): Promise<ProxyConfig> {
   if (!isTauriRuntime()) return { enabled: false, url: "" };

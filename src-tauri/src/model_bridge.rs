@@ -25,6 +25,13 @@
 //!   providers` 时把 openai 槽路由到目标端点（仅 apiType:"openai" / Responses，
 //!   S2 实测约束）。M1 没有 Responses 核实过的 preset，路由解析恒为 None、
 //!   不会真的发送；框架留给 M2 的翻译引擎。
+//! - **M2 翻译引擎伪来源**（`crate::engine`，docs §4.5）：引擎 Running 时
+//!   `list_models` 追加 `{entryId:"engine"}` 来源（模型 id = 引擎的
+//!   `provider/model` 形态）；绑定不需要凭据（令牌是字面量 `magpie`，
+//!   S1：引擎回环任意 token 放行）；claude 注入引擎根（服务 /v1/messages），
+//!   grok 复用 owned 表机制但 base 指引擎的 `/v1`、api_key 用字面量。codex
+//!   侧因模型 id 问题未接（内建名 vs `provider/model`，见 list_models_at 的
+//!   codex 分支注释）。
 //!
 //! 安全底线（§5）：明文 key 只进 env / owned-section 的 env 引用，绝不进日志
 //! （日志只记事件与端点，不记值），绝不复制进 agent 磁盘配置。
@@ -426,11 +433,14 @@ fn list_models_at(
     agent_id: &str,
 ) -> BridgeModelsResult {
     match classify_agent(agent_id) {
-        // S2 硬边界：chat 端点直连被 codex 拒（Responses-only），M1 无解。
+        // S2 硬边界：chat 端点直连被 codex 拒（Responses-only）。M2 引擎已能
+        // 翻译，但 codex 的模型 id 必须保持内建名（gpt-6.1-sol…），引擎的
+        // `provider/model` id 进不去 —— 待「引擎路由组别名 codex 内建模型名」
+        // 方案落地后再开放（M2 决策，见任务报告）。
         BridgeAgent::Codex => BridgeModelsResult {
             models: Vec::new(),
             sources: Vec::new(),
-            note: Some("需翻译引擎，下版本开放".to_string()),
+            note: Some("需要翻译引擎路由组（模型名映射），暂未开放".to_string()),
         },
         // opencode 有原生 provider 管理（write_provider_key），不走跨用目录；
         // 顺带落实「reference 对宿主 agent 自己不可见」的去重规则。
@@ -510,6 +520,32 @@ fn list_models_at(
                 source_rows.push((entry.id.clone(), preset));
             }
             let (models, truncated) = assemble_models(credentials_path, opencode_scan, &source_rows);
+            let (mut models, mut truncated) = (models, truncated);
+            // ── M2 翻译引擎伪来源（§4.4 L2）：引擎 Running 才出现 —— 不自动
+            //    下载、不自动拉起（启用是凭据页的显式动作）。订阅条目
+            //    （claude/codex/grok 登录态）不逐条列出：引擎源出现即代表
+            //    它们可跨用，模型 id 是引擎的 `provider/model` 形态。
+            if crate::engine::bridge_ready() {
+                sources.push(BridgeSource {
+                    entry_id: crate::engine::ENGINE_ENTRY_ID.to_string(),
+                    preset: crate::engine::ENGINE_PRESET_ID.to_string(),
+                    label: "翻译引擎（订阅跨用）".to_string(),
+                    from_scan: false,
+                });
+                let mut engine_ids = crate::engine::catalog();
+                if engine_ids.len() > DYNAMIC_CAP {
+                    engine_ids.truncate(DYNAMIC_CAP);
+                    truncated = true;
+                }
+                for model_id in engine_ids {
+                    models.push(BridgeModel {
+                        entry_id: crate::engine::ENGINE_ENTRY_ID.to_string(),
+                        preset: crate::engine::ENGINE_PRESET_ID.to_string(),
+                        label: model_id.clone(),
+                        model_id,
+                    });
+                }
+            }
             let mut note = if sources.is_empty() {
                 Some("还没有可跨用的 API Key，请先在设置的凭据页添加".to_string())
             } else if models.is_empty() {
@@ -625,8 +661,8 @@ fn fetch_models_from_endpoint(chat_base: &str, key: &str) -> Vec<String> {
     parse_models_catalog(&text)
 }
 
-/// 目录 JSON → 模型 id 列表（保序去重）。
-fn parse_models_catalog(text: &str) -> Vec<String> {
+/// 目录 JSON → 模型 id 列表（保序去重）。engine.rs 的引擎目录共用。
+pub(crate) fn parse_models_catalog(text: &str) -> Vec<String> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
         return Vec::new();
     };
@@ -981,6 +1017,9 @@ enum BoundPreset {
     Store(&'static ProviderPreset),
     /// opencode auth.json 现场扫描出的 reference（preset 由 provider 映射命中）。
     Reference(&'static ProviderPreset),
+    /// M2 翻译引擎伪来源：不需要凭据（令牌是字面量 `magpie`，见
+    /// `peek_spawn_key_at`），model_id 即引擎的 `provider/model` id。
+    Engine,
 }
 
 /// 绑定 entry_id → 直连 preset 的统一解析（validate / injection 共用）。
@@ -1030,8 +1069,9 @@ fn resolve_bound_preset(
 }
 
 /// 绑定校验：key-plan 须在凭据库内且 preset 在表内；reference 须 ref 路径
-/// 解析得出 provider-id 且映射到 preset。返回解析结果，供调用方区分来源
-/// （lastUsedAt 只记 key-plan）。
+/// 解析得出 provider-id 且映射到 preset；**engine 伪来源**（M2）只要求引擎
+/// 在 Running（令牌用字面量，见 [`BoundPreset::Engine`]）。返回解析结果，供
+/// 调用方区分来源（lastUsedAt 只记 key-plan）。
 fn validate_selection_at(
     credentials_path: &Path,
     opencode_scan: &AgentScan,
@@ -1039,6 +1079,16 @@ fn validate_selection_at(
 ) -> Result<BoundPreset, String> {
     if selection.model_id.trim().is_empty() {
         return Err("model_id 不能为空".to_string());
+    }
+    if selection.entry_id == crate::engine::ENGINE_ENTRY_ID {
+        return if crate::engine::bridge_ready() {
+            Ok(BoundPreset::Engine)
+        } else {
+            Err(
+                "翻译引擎未在运行 — 请先在设置的凭据页启用（引擎就绪后重新选择模型）"
+                    .to_string(),
+            )
+        };
     }
     resolve_bound_preset(credentials_path, opencode_scan, &selection.entry_id)
 }
@@ -1223,35 +1273,36 @@ fn blocks_to_text(blocks: &[TomlBlock]) -> String {
     out
 }
 
-/// ensure 的本体：写 / 更新 grok config.toml 里的 owned 表。
-///
-/// 返回 `Ok(true)` = 写入了；`Ok(false)` = 已存在且逐字节一致（零写入）。
-/// 原则（S3 实测约束）：
-/// - **原文搬运**其余内容（用户自定义表、grok 自己写的 `[marketplace]` 段）。
-/// - **绝不设 `[models] default`**（会让 Grok 退出自身登录，§10.6）。
-/// - **幂等**：一致则不碰文件。
-/// - **写前重读**：每次调用现读现写（无全文缓存），修改是块级替换，容忍
-///   grok 并发自改写。
-/// - **解析失败不写半截**：原文或产物任一过不了 toml 校验就中止且不动文件。
-pub fn ensure_grok_model_table_at(
-    config_path: &Path,
-    model_id: &str,
-    preset: &ProviderPreset,
-    key_env_name: &str,
-) -> Result<bool, String> {
-    let model_id = model_id.trim();
-    if model_id.is_empty() {
-        return Err("model_id 不能为空".to_string());
-    }
-    if preset.chat_base.is_none() {
-        return Err(format!(
-            "preset `{}` 没有核实过的 chat 端点，拒绝写 grok 表",
-            preset.id
-        ));
-    }
-    let desired = grok_owned_block(model_id, preset, &channel_base(preset), key_env_name);
-    let wanted_name = grok_table_name(model_id);
+/// 引擎版 owned 块：base_url 指引擎的 `/v1`（grok 的 chat_completions 后端
+/// 向 base_url 拼 `/chat/completions`），api_key 用字面量令牌（S1：引擎回环
+/// 任意 token 放行——真实订阅凭证在引擎自己的 data 里，永不进 agent 配置）。
+fn grok_engine_owned_block(model_id: &str, base_url: &str) -> String {
+    format!(
+        concat!(
+            "{marker}\n",
+            "{header}\n",
+            "model = \"{model}\"\n",
+            "name = \"{name} (via Marionette)\"\n",
+            "base_url = \"{base}\"\n",
+            "api_backend = \"chat_completions\"\n",
+            "api_key = \"{key}\"\n",
+        ),
+        marker = GROK_OWNED_MARKER,
+        header = grok_table_header(&grok_table_name(model_id)),
+        model = toml_escape(model_id),
+        name = toml_escape("翻译引擎"),
+        base = toml_escape(base_url),
+        key = toml_escape(crate::engine::ENGINE_TOKEN),
+    )
+}
 
+/// ensure 的核心（块级替换 + 幂等 + 原文搬运；`desired` 是完整 owned 块全文，
+/// `wanted_name` 是表名）。原则见 [`ensure_grok_model_table_at`] 的注释。
+fn ensure_grok_block_at(
+    config_path: &Path,
+    wanted_name: &str,
+    desired: &str,
+) -> Result<bool, String> {
     let original = match fs::read_to_string(config_path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -1304,7 +1355,7 @@ pub fn ensure_grok_model_table_at(
                 }
             }
             blocks.push(TomlBlock {
-                header: Some(grok_table_header(&wanted_name)),
+                header: Some(grok_table_header(wanted_name)),
                 lines: desired.lines().map(str::to_string).collect(),
             });
         }
@@ -1315,6 +1366,50 @@ pub fn ensure_grok_model_table_at(
         .map_err(|e| format!("生成的 grok config.toml 未通过 TOML 校验（{e}）— 已放弃写入"))?;
     write_text_atomic(config_path, &output)?;
     Ok(true)
+}
+
+/// ensure 的本体：写 / 更新 grok config.toml 里的 owned 表。
+///
+/// 返回 `Ok(true)` = 写入了；`Ok(false)` = 已存在且逐字节一致（零写入）。
+/// 原则（S3 实测约束）：
+/// - **原文搬运**其余内容（用户自定义表、grok 自己写的 `[marketplace]` 段）。
+/// - **绝不设 `[models] default`**（会让 Grok 退出自身登录，§10.6）。
+/// - **幂等**：一致则不碰文件。
+/// - **写前重读**：每次调用现读现写（无全文缓存），修改是块级替换，容忍
+///   grok 并发自改写。
+/// - **解析失败不写半截**：原文或产物任一过不了 toml 校验就中止且不动文件。
+pub fn ensure_grok_model_table_at(
+    config_path: &Path,
+    model_id: &str,
+    preset: &ProviderPreset,
+    key_env_name: &str,
+) -> Result<bool, String> {
+    let model_id = model_id.trim();
+    if model_id.is_empty() {
+        return Err("model_id 不能为空".to_string());
+    }
+    if preset.chat_base.is_none() {
+        return Err(format!(
+            "preset `{}` 没有核实过的 chat 端点，拒绝写 grok 表",
+            preset.id
+        ));
+    }
+    let desired = grok_owned_block(model_id, preset, &channel_base(preset), key_env_name);
+    ensure_grok_block_at(config_path, &grok_table_name(model_id), &desired)
+}
+
+/// 引擎版 ensure 的路径注入体：引擎不在 Running → Err（残留绑定降级路径）。
+pub fn ensure_grok_engine_table_at(
+    config_path: &Path,
+    model_id: &str,
+    base_url: &str,
+) -> Result<bool, String> {
+    let model_id = model_id.trim();
+    if model_id.is_empty() {
+        return Err("model_id 不能为空".to_string());
+    }
+    let desired = grok_engine_owned_block(model_id, base_url);
+    ensure_grok_block_at(config_path, &grok_table_name(model_id), &desired)
 }
 
 /// remove 的本体：删掉**所有** `marionette/` 前缀的 owned 表 + 所有 owned
@@ -1368,10 +1463,18 @@ pub fn remove_grok_model_tables_at(config_path: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
-/// 真实路径包装：ensure（key env 固定 `MARIONETTE_PROVIDER_KEY`）。
+/// 真实路径包装：ensure（key env 固定 `MARIONETTE_PROVIDER_KEY`）。M2：引擎
+/// 绑定走 `preset_id == "engine"` 分支 —— base_url 指引擎的 `/v1`、api_key
+/// 用字面量令牌（acp.rs 的 SpawnInjection::GrokTable 传进来的就是它）。
 pub fn ensure_grok_model_table(model_id: &str, preset_id: &str) -> Result<bool, String> {
-    let preset = find_preset(preset_id).ok_or_else(|| format!("未知 preset `{preset_id}`"))?;
     let path = grok_config_path().ok_or_else(|| "无法定位用户目录".to_string())?;
+    if preset_id == crate::engine::ENGINE_PRESET_ID {
+        let base_url = crate::engine::engine_v1_url().ok_or_else(|| {
+            "翻译引擎未在运行，无法写 grok 引擎表（绑定已降级）".to_string()
+        })?;
+        return ensure_grok_engine_table_at(&path, model_id, &base_url);
+    }
+    let preset = find_preset(preset_id).ok_or_else(|| format!("未知 preset `{preset_id}`"))?;
     ensure_grok_model_table_at(&path, model_id, preset, GROK_KEY_ENV)
 }
 
@@ -1458,10 +1561,38 @@ pub fn injection_for_agent_at(
     if !matches!(agent, BridgeAgent::ClaudeCode | BridgeAgent::GrokBuild) {
         return Ok(None);
     }
+    // ── M2 翻译引擎伪来源：不经 preset 表 —— claude 拿引擎根（引擎在根上
+    //    服务 /v1/messages），grok 复用 owned 表机制但 base_url 指引擎的
+    //    /v1、api_key 用字面量（见 ensure_grok_model_table 的 engine 分支）。
+    //    引擎不在 Running → Err（acp.rs 走残留绑定降级路径：warn + 普通会话）。
+    if entry_id == crate::engine::ENGINE_ENTRY_ID {
+        if !crate::engine::bridge_ready() {
+            return Err(format!(
+                "翻译引擎未在运行（绑定 `{}` 已失效）— 降级为普通会话",
+                crate::engine::ENGINE_ENTRY_ID
+            ));
+        }
+        let Some(port) = crate::engine::running_base().map(|(port, _)| port) else {
+            return Err("翻译引擎状态不可用 — 降级为普通会话".to_string());
+        };
+        return Ok(match agent {
+            BridgeAgent::ClaudeCode => Some(SpawnInjection::ClaudeEnv {
+                base_url: format!("http://127.0.0.1:{port}"),
+                model: model_id.to_string(),
+            }),
+            BridgeAgent::GrokBuild => Some(SpawnInjection::GrokTable {
+                model_id: model_id.to_string(),
+                preset_id: crate::engine::ENGINE_PRESET_ID.to_string(),
+            }),
+            _ => unreachable!("claude/grok 已在上方过滤"),
+        });
+    }
     // Reference 与 KeyPlan 走同一套注入（claude env / grok owned 表）——
     // 唯一的区别是钥匙来源（见 peek_spawn_key），注入形态完全一致。
+    // （引擎伪来源已在上方单独返回，resolve_bound_preset 不产出 Engine。）
     let preset = match resolve_bound_preset(credentials_path, opencode_scan, entry_id)? {
         BoundPreset::Store(preset) | BoundPreset::Reference(preset) => preset,
+        BoundPreset::Engine => unreachable!("engine entry is handled above"),
     };
     Ok(injection_for(preset, agent, model_id))
 }
@@ -1504,6 +1635,12 @@ fn peek_spawn_key_at(
     opencode_scan: &AgentScan,
     entry_id: &str,
 ) -> Option<String> {
+    // M2 引擎伪来源：令牌是字面量 `magpie`（S1：网关回环任意 token 放行，
+    // 真实订阅凭证永不进 agent 配置）。引擎是否在跑由 injection_for_agent_at
+    // 判定——那边 Err 时这把钥匙根本不会被用。
+    if entry_id == crate::engine::ENGINE_ENTRY_ID {
+        return Some(crate::engine::ENGINE_TOKEN.to_string());
+    }
     // key-plan：store 现解（错误按既有语义 flat 成 None）。
     if let Some(key) = crate::credentials::peek_secret_at(credentials_path, entry_id)
         .ok()
@@ -2187,7 +2324,7 @@ official_marketplace_auto_installed = true\n";
         for codex_alias in ["codex", "codex-acp"] {
             let codex = list_models_at(&credentials, &scan, codex_alias);
             assert!(codex.models.is_empty());
-            assert_eq!(codex.note.as_deref(), Some("需翻译引擎，下版本开放"));
+            assert_eq!(codex.note.as_deref(), Some("需要翻译引擎路由组（模型名映射），暂未开放"));
         }
         let opencode = list_models_at(&credentials, &scan, "opencode");
         assert!(opencode.models.is_empty());
@@ -2293,6 +2430,193 @@ official_marketplace_auto_installed = true\n";
         assert_eq!(injection_for_agent_at(&credentials, &scan, "deepseek", "deepseek", "x").unwrap(), None);
         let error = injection_for_agent_at(&credentials, &scan, "claude-code", "ghost", "x").unwrap_err();
         assert!(error.contains("不存在"), "unexpected: {error}");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    // ─── M2 翻译引擎伪来源（crate::engine 的接线规则）───────────────────────
+
+    /// 可见性：引擎不在 Running → 完全不出现（不自动下载）；Running → 追加
+    /// engine 源，模型 id 原样（`provider/model` 形态）、label 同 id、>60 截断。
+    #[test]
+    fn engine_source_appears_only_when_running() {
+        let dir = temp_dir("engvis");
+        let credentials = dir.join("credentials.json");
+        let scan = crate::credentials::scan_opencode_at(&dir);
+
+        // 不 Running（测试缝默认关）→ 与 M1 结果一致，engine 源不出现。
+        let result = list_models_at(&credentials, &scan, "claude-code");
+        assert!(
+            !result
+                .sources
+                .iter()
+                .any(|s| s.entry_id == crate::engine::ENGINE_ENTRY_ID),
+            "引擎未就绪时不能出现 engine 源"
+        );
+
+        // Running → engine 源出现，模型挂在 engine entry 上。
+        let _engine = crate::engine::test_running(vec![
+            "grok/grok-4.7".to_string(),
+            "claude/claude-opus-4-6".to_string(),
+        ]);
+        let result = list_models_at(&credentials, &scan, "claude-code");
+        let engine_source = result
+            .sources
+            .iter()
+            .find(|s| s.entry_id == crate::engine::ENGINE_ENTRY_ID)
+            .expect("引擎 Running 时 engine 源应出现");
+        assert_eq!(engine_source.preset, crate::engine::ENGINE_PRESET_ID);
+        assert_eq!(engine_source.label, "翻译引擎（订阅跨用）");
+        assert!(!engine_source.from_scan);
+        let ids: Vec<&str> = result
+            .models
+            .iter()
+            .filter(|m| m.entry_id == crate::engine::ENGINE_ENTRY_ID)
+            .map(|m| m.model_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["grok/grok-4.7", "claude/claude-opus-4-6"]);
+        assert!(result
+            .models
+            .iter()
+            .filter(|m| m.entry_id == crate::engine::ENGINE_ENTRY_ID)
+            .all(|m| m.label == m.model_id));
+
+        // >60 截断同现有逻辑 + 提示。（先 drop 前一个句柄——TestHandle 持有
+        // 引擎测试的串行锁，两个句柄同时活着会自死锁。）
+        drop(_engine);
+        let many: Vec<String> = (0..70).map(|i| format!("p/model-{i}")).collect();
+        let _engine_many = crate::engine::test_running(many);
+        let result = list_models_at(&credentials, &scan, "grok-build");
+        assert_eq!(
+            result
+                .models
+                .iter()
+                .filter(|m| m.entry_id == crate::engine::ENGINE_ENTRY_ID)
+                .count(),
+            60
+        );
+        assert!(result.note.as_deref().unwrap_or_default().contains("截断"));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// engine 绑定：不在 Running 拒（消息指路）；Running 放行且不需要任何凭据
+    /// （不进 store、不记 lastUsedAt）；注入两臂的形态；钥匙是字面量令牌。
+    #[test]
+    fn engine_binding_and_injection_shapes() {
+        let dir = temp_dir("engbind");
+        let credentials = dir.join("credentials.json");
+        let scan = crate::credentials::scan_opencode_at(&dir);
+        let bindings = dir.join("bridge-bindings.json");
+        let grok_config = dir.join("config.toml");
+
+        // 不 Running：绑定拒绝、文件不动；注入解析走降级路径（Err 带指引）。
+        let error = bind_session_at(
+            &bindings,
+            &credentials,
+            &grok_config,
+            &scan,
+            "s1",
+            Some("claude-code"),
+            Some(BridgeSelection {
+                entry_id: crate::engine::ENGINE_ENTRY_ID.to_string(),
+                model_id: "grok/grok-4.7".to_string(),
+            }),
+        )
+        .unwrap_err();
+        assert!(error.contains("未在运行"), "unexpected: {error}");
+        assert!(binding_for_at(&bindings, "s1").unwrap().is_none());
+        let error = injection_for_agent_at(&credentials, &scan, "claude-code", "engine", "x").unwrap_err();
+        assert!(error.contains("降级"), "unexpected: {error}");
+
+        // Running：绑定成功（不落 store、无 lastUsedAt 可记）。
+        let _engine = crate::engine::test_running(Vec::new());
+        bind_session_at(
+            &bindings,
+            &credentials,
+            &grok_config,
+            &scan,
+            "s1",
+            Some("claude-code"),
+            Some(BridgeSelection {
+                entry_id: crate::engine::ENGINE_ENTRY_ID.to_string(),
+                model_id: "grok/grok-4.7".to_string(),
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            binding_for_at(&bindings, "s1").unwrap().map(|s| s.entry_id),
+            Some("engine".to_string())
+        );
+        let store = crate::credentials::load_store_at(&credentials).unwrap();
+        assert!(store.entries.is_empty(), "engine 绑定不产生任何凭据条目");
+
+        // claude 臂：env 形态，base 是引擎根（引擎在根上服务 /v1/messages）。
+        assert_eq!(
+            injection_for_agent_at(&credentials, &scan, "claude-code", "engine", "grok/grok-4.7")
+                .unwrap(),
+            Some(SpawnInjection::ClaudeEnv {
+                base_url: "http://127.0.0.1:39999".into(),
+                model: "grok/grok-4.7".into(),
+            })
+        );
+        // grok 臂：owned 表形态，preset_id 指到 engine 分支。
+        assert_eq!(
+            injection_for_agent_at(&credentials, &scan, "grok-build", "engine", "grok/grok-4.7")
+                .unwrap(),
+            Some(SpawnInjection::GrokTable {
+                model_id: "grok/grok-4.7".into(),
+                preset_id: crate::engine::ENGINE_PRESET_ID.to_string(),
+            })
+        );
+        // 无注入通道的 agent → None（同既有语义）。
+        assert_eq!(
+            injection_for_agent_at(&credentials, &scan, "deepseek", "engine", "x").unwrap(),
+            None
+        );
+        // 钥匙：字面量令牌（引擎回环任意 token 放行——真实订阅凭证不外流）。
+        assert_eq!(
+            peek_spawn_key_at(&credentials, &scan, crate::engine::ENGINE_ENTRY_ID).unwrap(),
+            crate::engine::ENGINE_TOKEN
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 引擎版 grok owned 表：base 指引擎 `/v1`、api_key 是字面量令牌（不走
+    /// $VAR）；用户内容保留、绝不设 `[models] default`、幂等、端口漂移原位
+    /// 替换；remove 把 `marionette/` 前缀的引擎表一并清掉。
+    #[test]
+    fn grok_engine_table_uses_engine_base_and_literal_token() {
+        let dir = temp_dir("engtable");
+        let config = dir.join("config.toml");
+        fs::write(&config, USER_CONFIG).unwrap();
+        let _engine = crate::engine::test_running(Vec::new());
+
+        assert!(ensure_grok_engine_table_at(&config, "grok/grok-4.7", "http://127.0.0.1:39999/v1").unwrap());
+        let text = fs::read_to_string(&config).unwrap();
+        assert!(text.contains("[model.\"marionette/grok/grok-4.7\"]"));
+        assert!(text.contains("model = \"grok/grok-4.7\""));
+        assert!(text.contains("base_url = \"http://127.0.0.1:39999/v1\""));
+        assert!(text.contains(&format!("api_key = \"{}\"", crate::engine::ENGINE_TOKEN)));
+        assert!(!text.contains("$MARIONETTE_PROVIDER_KEY"), "引擎表不用 env 引用");
+        assert!(text.contains("user-own-key"), "用户内容原样保留");
+        assert_eq!(text.matches("default =").count(), 1, "绝不新增 [models] default");
+        toml::from_str::<toml::Value>(&text).unwrap();
+
+        // 幂等；端口漂移 → 原位替换（引擎换了端口，表跟着走）。
+        assert!(!ensure_grok_engine_table_at(&config, "grok/grok-4.7", "http://127.0.0.1:39999/v1").unwrap());
+        assert!(ensure_grok_engine_table_at(&config, "grok/grok-4.7", "http://127.0.0.1:40001/v1").unwrap());
+        let text = fs::read_to_string(&config).unwrap();
+        assert!(text.contains("40001"));
+        assert!(!text.contains("39999"));
+
+        // remove 清掉引擎表（marionette/ 前缀），用户表保留。
+        assert!(remove_grok_model_tables_at(&config).unwrap());
+        let text = fs::read_to_string(&config).unwrap();
+        assert!(!text.contains("marionette/"));
+        assert!(text.contains("user-own-key"));
+        toml::from_str::<toml::Value>(&text).unwrap();
 
         fs::remove_dir_all(&dir).ok();
     }

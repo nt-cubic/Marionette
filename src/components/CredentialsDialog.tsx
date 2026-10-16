@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import {
   bridgeAddKey,
   bridgeDeleteEntry,
   bridgeListEntries,
   bridgeScan,
+  engineEnable,
+  engineStatus,
+  isTauriRuntime,
   type BridgeEntryKind,
   type BridgeEntryView,
   type BridgeScanSource,
+  type EngineStatus,
 } from "../lib/api";
 import { BRIDGE_PRESETS, invalidateBridgeModels } from "../lib/bridge";
 import type { AgentConfig } from "../lib/types";
@@ -33,6 +38,31 @@ function scanStatusText(source: BridgeScanSource, foundCount: number): string {
   return "未检测到";
 }
 
+/** One-line engine status text (未安装 / 下载中 x% / 运行中 端口+版本 / 失败原因). */
+function engineStatusText(engine: EngineStatus | null): string {
+  const mb = (n: number) => `${(n / 1024 / 1024).toFixed(1)} MB`;
+  switch (engine?.state) {
+    case "downloading":
+      return engine.total > 0
+        ? `下载中 ${Math.round((engine.downloaded / engine.total) * 100)}%（${mb(
+            engine.downloaded,
+          )} / ${mb(engine.total)}）`
+        : `下载中…（已收 ${mb(engine.downloaded)}）`;
+    case "starting":
+      return "启动中…（正在拉起本地网关）";
+    case "running":
+      return engine.reused
+        ? `运行中 · 端口 ${engine.port}（复用本机已装的 magpie${
+            engine.version ? ` · ${engine.version}` : ""
+          }）`
+        : `运行中 · 端口 ${engine.port}${engine.version ? ` · ${engine.version}` : ""}`;
+    case "failed":
+      return `失败：${engine.error}`;
+    default:
+      return "未安装（约 48 MB，启用时从 GitHub 下载）";
+  }
+}
+
 export function CredentialsDialog({ agents, onClose }: Props) {
   const [scanSources, setScanSources] = useState<BridgeScanSource[]>([]);
   const [entries, setEntries] = useState<BridgeEntryView[]>([]);
@@ -44,6 +74,7 @@ export function CredentialsDialog({ agents, onClose }: Props) {
   const [deleting, setDeleting] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<Confirming | null>(null);
   const [error, setError] = useState("");
+  const [engine, setEngine] = useState<EngineStatus | null>(null);
 
   const load = useCallback(async () => {
     const [report, list] = await Promise.all([bridgeScan(), bridgeListEntries()]);
@@ -55,6 +86,47 @@ export function CredentialsDialog({ agents, onClose }: Props) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // ── M2 translation engine: initial snapshot + event-driven updates ──
+  // Progress arrives as `engine-download-progress`; every other transition as
+  // `engine-state-changed`. Reaching running also refreshes the picker cache
+  // (the engine source becomes visible to the model panel).
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let disposed = false;
+    const unlisteners: Array<() => void> = [];
+    void engineStatus().then((snapshot) => {
+      if (!disposed && snapshot) setEngine(snapshot);
+    });
+    void listen<{ downloaded: number; total: number }>(
+      "engine-download-progress",
+      (event) => {
+        setEngine({ state: "downloading", ...event.payload });
+      },
+    ).then((dispose) => unlisteners.push(dispose));
+    void listen<EngineStatus>("engine-state-changed", (event) => {
+      setEngine(event.payload);
+      if (event.payload.state === "running") invalidateBridgeModels();
+    }).then((dispose) => unlisteners.push(dispose));
+    return () => {
+      disposed = true;
+      unlisteners.forEach((dispose) => dispose());
+    };
+  }, []);
+
+  const engineBusy =
+    engine?.state === "downloading" || engine?.state === "starting";
+
+  const handleEngineEnable = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      const snapshot = await engineEnable();
+      if (snapshot) setEngine(snapshot);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const agentLabel = useCallback(
     (agentId: string) => agents.find((a) => a.id === agentId)?.label ?? agentId,
@@ -140,6 +212,47 @@ export function CredentialsDialog({ agents, onClose }: Props) {
                   </span>
                 </div>
               ))}
+            </div>
+          </div>
+
+          {/* ── M2 translation engine (subscription cross-use) ── */}
+          <div className="provider-dialog__section">
+            <span className="provider-dialog__section-title">翻译引擎</span>
+            <p className="provider-dialog__hint">
+              订阅型跨用（Grok / Claude / ChatGPT 登录态）经内嵌 magpie
+              引擎翻译为标准协议；引擎按需下载（约 48 MB）、只在本机环回监听、随本应用退出。
+            </p>
+            <div className="credentials-dialog__scan">
+              <div
+                className="credentials-dialog__scan-row"
+                title={engine?.state === "failed" ? engine.error : undefined}
+              >
+                <span
+                  className={`credentials-dialog__scan-dot ${
+                    engine?.state === "running"
+                      ? "is-found"
+                      : engine?.state === "failed"
+                        ? "is-restricted"
+                        : "is-missing"
+                  }`}
+                  aria-hidden
+                />
+                <span className="credentials-dialog__scan-name">magpie 引擎</span>
+                <span className="credentials-dialog__scan-status">
+                  {engineStatusText(engine)}
+                </span>
+                {engine?.state !== "running" && (
+                  <button
+                    type="button"
+                    className="project-dialog__submit"
+                    disabled={engineBusy || saving}
+                    onClick={() => void handleEngineEnable()}
+                    title="下载并启动翻译引擎（幂等，重复点击安全）"
+                  >
+                    {engineBusy ? "准备中…" : engine?.state === "failed" ? "重试" : "启用"}
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 
