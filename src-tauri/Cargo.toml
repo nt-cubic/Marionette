@@ -34,6 +34,8 @@ toml = "0.8"
 # Native folder picker for "Add project" (no tauri dialog plugin).
 rfd = "0.15"
 base64 = "0.22"
+# Engine download SHA256 verification (already in the graph via tauri/tao — zero size cost).
+sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
