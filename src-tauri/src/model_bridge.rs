@@ -559,28 +559,48 @@ fn list_models_at(
                 note,
             }
         }
-        // opencode 走**原生**跨用（2026-10-17 定稿）：spawn 时把引擎目录作
-        // 为 provider「marionette」写进子进程的 OPENCODE_CONFIG_CONTENT
-        // （acp.rs），模型出现在 opencode 自己的模型菜单里——不走 Composer
-        // 跨用段，避免双通道。也顺带落实「reference 对宿主 agent 自己不可
-        // 见」的去重规则。
-        BridgeAgent::Opencode => BridgeModelsResult {
-            models: Vec::new(),
-            sources: Vec::new(),
-            note: Some(if crate::engine::bridge_ready() {
-                "跨用模型在上方原生菜单的「Marionette 跨用引擎」分组里（会话启动时注入；引擎刚唤醒的话，发下一条消息或重开会话生效）"
-                    .to_string()
+        // opencode（2026-10-17 二段定稿）：与 claude/grok/codex **同一 Composer
+        // 跨用通道** —— 引擎源照常列出（引擎没跑就给指引，跑起来后前端缓存
+        // 失效、重开菜单即现）；选中即绑定 + 重启，spawn 时把引擎目录作为
+        // provider「marionette」注入 OPENCODE_CONFIG_CONTENT（acp.rs），前端
+        // 把 `marionette/<id>` 钉成原生偏好，重启后原生菜单接管。「reference
+        // 对宿主自己不可见」的去重规则照旧（key 型来源不列）。
+        BridgeAgent::Opencode => {
+            let mut models = Vec::new();
+            let mut truncated = false;
+            let mut sources = Vec::new();
+            if crate::engine::bridge_ready() {
+                sources.push(engine_bridge_source());
+                truncated = push_engine_models(&mut models);
+            }
+            let mut note = if crate::engine::bridge_ready() {
+                None
             } else {
-                "跨用需要翻译引擎 — 点左下角跨用按钮启动（或稍候自动唤醒）后，发下一条消息或重开会话生效".to_string()
-            }),
-        },
+                Some(
+                    "跨用引擎未运行 — Grok/GPT 等订阅模型暂不可见；点左下角跨用按钮启动（或稍候自动唤醒）后重开此菜单"
+                        .to_string(),
+                )
+            };
+            if truncated {
+                let suffix = "目录过长已截断，更多模型请用「自定义模型」输入";
+                note = Some(match note {
+                    Some(existing) => format!("{existing}；{suffix}"),
+                    None => suffix.to_string(),
+                });
+            }
+            BridgeModelsResult {
+                models,
+                sources,
+                note,
+            }
+        }
         // M1 只给 claude-code / grok-build 接了直连注入，codex 走引擎伪来源
         // （上面的分支）；其余 agent 列了也选不上（spawn 时不会有任何注入）。
         BridgeAgent::Other => BridgeModelsResult {
             models: Vec::new(),
             sources: Vec::new(),
             note: Some(
-                "该 agent 暂不支持跨用模型（当前支持 Claude Code、Grok 与 Codex（经翻译引擎））"
+                "该 agent 的跨用通道还没接（当前支持 Claude Code、Grok、Codex 与 OpenCode）"
                     .to_string(),
             ),
         },
@@ -2602,13 +2622,13 @@ official_marketplace_auto_installed = true\n";
         assert!(opencode.models.is_empty());
         assert_eq!(
             opencode.note.as_deref(),
-            Some("跨用需要翻译引擎 — 点左下角跨用按钮启动（或稍候自动唤醒）后，发下一条消息或重开会话生效")
+            Some("跨用引擎未运行 — Grok/GPT 等订阅模型暂不可见；点左下角跨用按钮启动（或稍候自动唤醒）后重开此菜单")
         );
 
-        // 其它 agent：M1 没有注入通道，空 + 说明。
+        // 其它 agent：没有注入通道，空 + 说明。
         let other = list_models_at(&credentials, &scan, "deepseek");
         assert!(other.models.is_empty());
-        assert!(other.note.unwrap().contains("暂不支持"));
+        assert!(other.note.unwrap().contains("还没接"));
 
         // 规则本体：reference 对宿主不可见、对别人可见；subscription 一律不可见。
         let host = crate::credentials::CredentialEntry {
@@ -2734,6 +2754,23 @@ official_marketplace_auto_installed = true\n";
             "grok/grok-4.7".to_string(),
             "claude/claude-opus-4-6".to_string(),
         ]);
+        // opencode（2026-10-17 起）与 claude/grok/codex 同款：引擎 Running 时
+        // Composer 跨用段同样列出引擎源（key 型来源仍不列——宿主去重规则）。
+        let oc = list_models_at(&credentials, &scan, "opencode");
+        assert!(
+            oc.sources
+                .iter()
+                .any(|s| s.entry_id == crate::engine::ENGINE_ENTRY_ID),
+            "opencode 在引擎 Running 时应列出 engine 源"
+        );
+        assert_eq!(
+            oc.models
+                .iter()
+                .filter(|m| m.entry_id == crate::engine::ENGINE_ENTRY_ID)
+                .count(),
+            2
+        );
+        assert!(oc.note.is_none());
         let result = list_models_at(&credentials, &scan, "claude-code");
         let engine_source = result
             .sources
@@ -3313,7 +3350,7 @@ Connection: close
         assert!(self_view.sources.is_empty());
         assert_eq!(
             self_view.note.as_deref(),
-            Some("跨用需要翻译引擎 — 点左下角跨用按钮启动（或稍候自动唤醒）后，发下一条消息或重开会话生效")
+            Some("跨用引擎未运行 — Grok/GPT 等订阅模型暂不可见；点左下角跨用按钮启动（或稍候自动唤醒）后重开此菜单")
         );
 
         // 扫描失败（auth.json 损坏）→ 静默跳过该家，store 条目照常。
