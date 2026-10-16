@@ -123,6 +123,15 @@ body.is-panel-resizing .workspace-grid {
   opacity: 1;
 }
 
+/* Sidebar collapsed: keep the left chevron visible when a dialog just finished. */
+.floating-trigger.is-done {
+  opacity: 0.95;
+  pointer-events: auto;
+  border-color: color-mix(in srgb, var(--green) 55%, var(--border));
+  color: var(--green);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 24%, transparent);
+}
+
 /* Anchored inside .center-workspace so they never straddle the rail border. */
 .floating-trigger--center-left,
 .floating-trigger--center-right {
@@ -915,6 +924,16 @@ body.is-panel-resizing .context-panel {
   color: var(--accent);
 }
 
+.chat-row.is-done:not(.is-active) {
+  background: color-mix(in srgb, var(--green) 12%, transparent);
+  border-left: 2px solid var(--green);
+}
+
+.chat-row.is-done:not(.is-active) strong {
+  color: var(--green);
+  font-weight: 650;
+}
+
 .chat-row__dot {
   flex: 0 0 auto;
   width: 5px;
@@ -937,6 +956,13 @@ body.is-panel-resizing .context-panel {
 .chat-row__dot.is-error {
   background: var(--red);
   opacity: 0.85;
+}
+
+.chat-row__dot.is-done {
+  background: var(--green);
+  opacity: 1;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 30%, transparent);
+  animation: done-attention 1.15s ease-in-out 2;
 }
 
 .chat-row__content {
@@ -1376,6 +1402,20 @@ body.is-project-reordering .project-list {
   line-height: 16px;
 }
 
+.project-row__done-badge {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--green) 45%, var(--border));
+  background: color-mix(in srgb, var(--green) 16%, transparent);
+  color: var(--green);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 16px;
+}
+
 .project-row.is-open-here {
   border-color: color-mix(in srgb, var(--accent) 28%, transparent);
 }
@@ -1619,6 +1659,13 @@ body.is-project-reordering .project-list {
   opacity: 0.85;
 }
 
+.session-row__dot.is-done {
+  background: var(--green);
+  opacity: 1;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 30%, transparent);
+  animation: done-attention 1.15s ease-in-out 2;
+}
+
 .session-row__actions {
   display: flex;
   flex: 0 0 auto;
@@ -1822,6 +1869,21 @@ body.is-project-reordering .project-list {
   border-color: transparent;
   border-left-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+}
+
+.project-tree .project-row.is-done:not(.is-active) {
+  background: color-mix(in srgb, var(--green) 10%, var(--panel));
+}
+
+.project-tree .session-row.is-done:not(.is-active) {
+  border-color: transparent;
+  border-left-color: var(--green);
+  background: color-mix(in srgb, var(--green) 14%, var(--panel));
+}
+
+.project-tree .session-row.is-done:not(.is-active) .session-row__content strong {
+  color: var(--green);
+  font-weight: 650;
 }
 
 /* Actions float over the metadata only when the row is being inspected. */
@@ -2105,6 +2167,35 @@ body.is-tab-detaching * {
 
 .editor-tab__pulse.is-running {
   background: var(--accent);
+}
+
+.editor-tab.is-done:not(.is-active) {
+  border-color: color-mix(in srgb, var(--green) 55%, var(--border));
+  color: var(--text);
+  background: color-mix(in srgb, var(--green) 14%, transparent);
+}
+
+.editor-tab__done {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  margin-right: 2px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 30%, transparent);
+  animation: done-attention 1.15s ease-in-out 2;
+}
+
+@keyframes done-attention {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 22%, transparent);
+  }
+  50% {
+    transform: scale(1.25);
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--green) 38%, transparent);
+  }
 }
 
 @keyframes activity-pulse {

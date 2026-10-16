@@ -42,13 +42,26 @@ export function sortSessionsNewestFirst(list: Session[]): Session[] {
 }
 
 /**
- * Rows a collapsed shelf shows: every pinned dialog, plus the newest unpinned
- * ones up to `preview`. Pinning exists to keep a dialog in reach, so a pinned
- * row must never end up behind "Show more".
+ * Rows a collapsed shelf shows: every pinned dialog, plus ids in `keepIds`
+ * (unread completed turns), plus the newest remaining ones up to `preview`.
+ * Pinning and "just finished" both exist to keep a dialog in reach, so those
+ * rows must never end up behind "Show more".
  */
-export function collapsedShelfSessions(sorted: Session[], preview: number): Session[] {
+export function collapsedShelfSessions(
+  sorted: Session[],
+  preview: number,
+  keepIds?: ReadonlySet<string>,
+): Session[] {
   if (sorted.length <= preview) return sorted;
-  const pinned = sorted.filter((session) => pinStamp(session) != null);
-  const rest = sorted.filter((session) => pinStamp(session) == null);
-  return [...pinned, ...rest.slice(0, Math.max(0, preview - pinned.length))];
+  const keep = (session: Session) =>
+    pinStamp(session) != null || (keepIds?.has(session.id) ?? false);
+  const sticky = sorted.filter(keep);
+  const rest = sorted.filter((session) => !keep(session));
+  const chosen = new Set(
+    [...sticky, ...rest.slice(0, Math.max(0, preview - sticky.length))].map(
+      (session) => session.id,
+    ),
+  );
+  // Keep the caller's order (pins already sit first; unread-complete stays put).
+  return sorted.filter((session) => chosen.has(session.id));
 }

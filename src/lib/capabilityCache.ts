@@ -66,6 +66,11 @@ function normalize(snapshot: CapabilitySnapshot): CapabilitySnapshot {
     modelConfigId: snapshot.modelConfigId ?? null,
     modeConfigId: snapshot.modeConfigId ?? null,
     effortConfigId: snapshot.effortConfigId ?? null,
+    // Deliberately NOT cached: the latch is learned live from a rejected write
+    // and self-heals on the next session/new (e.g. after a grok update lifts
+    // the per-model effort gate). A cached rejection would keep the knob
+    // hidden for a model that accepts writes again.
+    effortRejectModels: [],
     permissionOptions: snapshot.permissionOptions ?? [],
     permissionConfigId: snapshot.permissionConfigId ?? null,
     permissionLabel: snapshot.permissionLabel ?? null,
