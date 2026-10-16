@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Bell, BellOff, ChevronDown, ChevronRight, CloudMoon, Folder, FolderOpen, Globe, GripVertical, MessageSquare, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, Save, Search, SunMedium, Trash2, X, Zap } from "lucide-react";
+import { Bell, BellOff, ChevronDown, ChevronRight, CloudMoon, Folder, FolderOpen, Globe, GripVertical, KeyRound, MessageSquare, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, Save, Search, SunMedium, Trash2, X, Zap } from "lucide-react";
 import type { AgentConfig, Project, ProxyConfig, ProxyTestResult, Session } from "../lib/types";
 import { themeToggleTitle, type ThemeMode } from "../lib/theme";
 import { collapsedShelfSessions, pinStamp, sortSessionsNewestFirst } from "../lib/sessionOrder";
 import { suspendControl } from "../lib/sessionSuspend";
 import { loadCollapsedProjectIds, saveCollapsedProjectIds } from "../lib/uiRestore";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { CredentialsDialog } from "./CredentialsDialog";
 
 /** Visible sessions per project before "Show more". Projects always list fully. */
 const SESSION_LIST_PREVIEW = 5;
@@ -237,6 +238,9 @@ export function ProjectShelf({
       setProxyBusy(null);
     }
   };
+  /** Credentials (cross-agent bridge) dialog — key scan + manual keys. */
+  const [credentialsOpen, setCredentialsOpen] = useState(false);
+
   /** Project ids whose session list is fully expanded past the preview cap. */
   const [sessionsExpandedByProject, setSessionsExpandedByProject] = useState<Set<string>>(() => new Set());
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -484,6 +488,20 @@ export function ProjectShelf({
       onClick={openProxyPopover}
     >
       <Globe size={13} />
+    </button>
+  );
+
+  const credentialsButton = (
+    <button
+      type="button"
+      className="pill-action pill-action--icon pill-action--sm sidebar-footer__button"
+      title="凭据 · 跨 agent 复用密钥与订阅来源"
+      aria-label="凭据（跨用密钥与来源）"
+      aria-haspopup="dialog"
+      aria-expanded={credentialsOpen}
+      onClick={() => setCredentialsOpen(true)}
+    >
+      <KeyRound size={13} />
     </button>
   );
 
@@ -1014,6 +1032,7 @@ export function ProjectShelf({
         {themeButton}
         {notifyButton}
         {proxyButton}
+        {credentialsButton}
         <button className="pill-action pill-action--icon pill-action--sm sidebar-footer__button sidebar-footer__button--collapse" type="button" title={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} aria-label={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} onClick={collapsed ? onExpand : onCollapse}>
           {collapsed ? <PanelLeftOpen size={13} /> : <PanelLeftClose size={13} />}
         </button>
@@ -1096,6 +1115,9 @@ export function ProjectShelf({
       )}
       </div>
     </section>
+    {credentialsOpen && (
+      <CredentialsDialog agents={agents} onClose={() => setCredentialsOpen(false)} />
+    )}
     {pendingDelete && (
       <ConfirmDialog
         title={

@@ -20,6 +20,8 @@ import {
 } from "../lib/acpSupplements";
 import {
   agentPreflight,
+  bridgeBind,
+  bridgeGetBinding,
   getSessionCapabilities,
   installAgent,
   isTauriRuntime,
@@ -30,8 +32,17 @@ import {
   savePastedImage,
   sendAcpPrompt,
   updateAcpSession,
+  type BridgeModel,
+  type BridgeModelsResult,
   type PreflightResult,
 } from "../lib/api";
+import {
+  bridgeGroupTitle,
+  bridgePresetFor,
+  bridgeSourceGroupTitle,
+  getBridgeModels,
+  resolveBridgeSources,
+} from "../lib/bridge";
 import {
   getCachedAgentVersions,
   patchAgentVersion,
@@ -102,6 +113,12 @@ type ComposerProps = {
   currentAgentId: string;
   sessionId: string;
   sessionStatus: SessionStatus;
+  /**
+   * 当场重启会话的 agent 进程（复用挂起机制：历史保留、下一条消息带历史自动
+   * 拉起）。跨用模型切换/切回原生时，注入是 spawn 级的（env/配置表），活进程
+   * 必须换血才能立即生效 —— 「下次打开才有效」不可接受。
+   */
+  onRestartAgentSession?: (sessionId: string, banner: string) => void;
   /** Caps pushed from ACP start (avoids invoke race). */
   capabilities?: CapabilitySnapshot | null;
   /** Current session transcript (for suggestion chips). */
@@ -338,6 +355,21 @@ type OptionPins = {
 const OPTION_PIN_MS = 4000;
 
 /**
+ * One cross-use (跨用) group in the model picker — 1:1 with a source entry.
+ * `hasPresetModels` false means the source's model list is not enumerable
+ * (custom-id-only, e.g. openrouter): the group renders a hint line instead.
+ */
+type CrossUseGroup = {
+  key: string;
+  title: string;
+  entryId: string;
+  fromScan: boolean;
+  hasPresetModels: boolean;
+  sampleModelId: string;
+  models: BridgeModel[];
+};
+
+/**
  * Keep the dialog's saved choice on the chips even when the agent reports its
  * own defaults. Display only — the snapshot stays live, so the restore pass can
  * still tell what needs pushing (and what to revert to).
@@ -446,6 +478,7 @@ export function Composer({
   onSessionPrefsChange,
   onAgentChange,
   onInterrupt,
+  onRestartAgentSession,
   onSend,
   onActiveModelChange,
   onWarmAgent,
@@ -540,6 +573,20 @@ export function Composer({
   const [showProviderDialog, setShowProviderDialog] = useState(false);
   /** A key was added/removed this visit — the agent must restart to see it. */
   const [providerKeysDirty, setProviderKeysDirty] = useState(false);
+  /**
+   * Cross-use (跨用) model bridge: Marionette-side catalog + the dialog's
+   * current binding. Never part of agent-advertised caps — rendered as its own
+   * group after the native ones (§4.6/§4.8 of cross-agent-bridge.md).
+   */
+  const [bridgeCatalog, setBridgeCatalog] = useState<BridgeModelsResult | null>(null);
+  const [bridgeSelection, setBridgeSelection] = useState<BridgeModel | null>(null);
+  /**
+   * Inline custom-model input inside one cross-use group (§ bridge_bind only
+   * requires a non-empty model_id — the preset list cannot enumerate every
+   * vendor model). Keyed by the group's entryId; one input open at a time.
+   */
+  const [bridgeCustomEntryId, setBridgeCustomEntryId] = useState<string | null>(null);
+  const [bridgeCustomDraft, setBridgeCustomDraft] = useState("");
   const [flashError, setFlashError] = useState("");
   const [dropActive, setDropActive] = useState(false);
   /** CLI availability per agent — loaded when the agent menu opens. */
@@ -563,6 +610,7 @@ export function Composer({
   const errorTimer = useRef<ReturnType<typeof setTimeout>>();
   const updating = useRef(false);
   const modelSearchRef = useRef<HTMLInputElement>(null);
+  const bridgeCustomInputRef = useRef<HTMLInputElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
   const modelMenuAnchorRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -752,6 +800,11 @@ export function Composer({
     // Keep draft/prefill + remembered height when switching dialog/agent.
     prefsRestoredKey.current = "";
     setCapsLive(false);
+    // Cross-use bridge state is dialog-scoped too — the loader below repopulates.
+    setBridgeCatalog(null);
+    setBridgeSelection(null);
+    setBridgeCustomEntryId(null);
+    setBridgeCustomDraft("");
     // Rebind from this agent's own last known catalog.
     const rebound = cachedCapabilitiesFor(agent.id, sessionPrefsRef.current);
     if (rebound) {
@@ -764,6 +817,45 @@ export function Composer({
     setCurrentEffort(null);
     setCurrentEffortId(null);
     setCurrentPermission(null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, agent.id]);
+
+  // ── Cross-use (bridge) catalog + binding restore ──────────────────────────
+  // Loaded once per dialog; the module cache (lib/bridge.ts) keeps it cheap.
+  // Stale data after a credential change is accepted until the next remount.
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    if (!sessionId || sessionId.startsWith("session-empty-")) return;
+    let cancelled = false;
+    void (async () => {
+      const [catalog, binding] = await Promise.all([
+        getBridgeModels(agent.id),
+        bridgeGetBinding(sessionId),
+      ]);
+      if (cancelled) return;
+      setBridgeCatalog(catalog);
+      // Restore the display state for an existing binding (suspend/restart);
+      // the backend applies the binding itself at spawn time.
+      if (!binding) return;
+      const match = catalog.models.find(
+        (m) => m.entryId === binding.entryId && m.modelId === binding.modelId,
+      );
+      if (match) {
+        setBridgeSelection(match);
+      } else {
+        // Custom model ids are never in the preset catalog — keep the binding
+        // state and show the raw id as the label instead of dropping it.
+        setBridgeSelection({
+          entryId: binding.entryId,
+          modelId: binding.modelId,
+          label: binding.modelId,
+          preset: bridgePresetFor(catalog, binding.entryId),
+        });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, agent.id]);
 
@@ -834,6 +926,110 @@ export function Composer({
       onSessionPrefsChange(patch);
     },
     [onSessionPrefsChange, sessionId],
+  );
+
+  /**
+   * The cross-use chip wins over the native model until grok re-exposes the
+   * binding as a native `marionette/<modelId>` option after a restart — from
+   * that point the normal model preference channel takes over.
+   */
+  const bridgeActive =
+    bridgeSelection != null && currentModel !== `marionette/${bridgeSelection.modelId}`;
+
+  /**
+   * Cross-use pick (§4.8): never sends session/set_model from here — the
+   * backend pins the model at spawn time (claude env / grok owned TOML table).
+   * grok additionally persists `marionette/<modelId>` as the dialog's normal
+   * model preference so the native catalog takes over after restart.
+   */
+  const pickBridgeModel = useCallback(
+    (model: BridgeModel) => {
+      setMenu(null);
+      // Re-clicking the selected cross item keeps the selection — no repeat bind.
+      if (
+        bridgeSelection &&
+        bridgeSelection.entryId === model.entryId &&
+        bridgeSelection.modelId === model.modelId
+      ) {
+        return;
+      }
+      if (!sessionId || sessionId.startsWith("session-empty-")) return;
+      const prev = bridgeSelection;
+      setBridgeSelection(model);
+      void bridgeBind(sessionId, { entryId: model.entryId, modelId: model.modelId })
+        .then(() => {
+          if (agent.id === "grok-build") {
+            persistPrefs({ preferredModel: `marionette/${model.modelId}` });
+          }
+          // 注入是 spawn 级的（env / 配置表）：活进程当场换血，历史保留，
+          // 下一条消息即以新模型继续 —— 不等「下次打开会话」。
+          const status = sessionStatusRef.current;
+          if (
+            onRestartAgentSession &&
+            (status === "running" ||
+              status === "waiting" ||
+              status === "starting" ||
+              status === "error")
+          ) {
+            onRestartAgentSession(
+              sessionId,
+              `**已切换到跨用模型 ${model.label}。**\n\nagent 进程已用新模型重启，历史保留 —— 下一条消息直接生效。`,
+            );
+            flash(`已切换到 ${model.label}，下一条消息即生效`);
+          }
+        })
+        .catch((error) => {
+          setBridgeSelection(prev);
+          const msg =
+            error instanceof Error ? error.message : typeof error === "string" ? error : "";
+          flash(msg.length > 140 ? `${msg.slice(0, 140)}…` : msg || "绑定跨用模型失败");
+        });
+    },
+    [agent.id, bridgeSelection, flash, onRestartAgentSession, persistPrefs, sessionId],
+  );
+
+  /** Switching back to a native model drops the dialog's bridge binding. */
+  const unbindBridge = useCallback(() => {
+    if (!bridgeSelection) return;
+    setBridgeSelection(null);
+    if (sessionId && !sessionId.startsWith("session-empty-")) {
+      void bridgeBind(sessionId, null)
+        .then(() => {
+          // 活进程的 env 还指着跨用端点 —— 同样当场换血，切回原生立即生效。
+          const status = sessionStatusRef.current;
+          if (
+            onRestartAgentSession &&
+            (status === "running" ||
+              status === "waiting" ||
+              status === "starting" ||
+              status === "error")
+          ) {
+            onRestartAgentSession(
+              sessionId,
+              `**已切回原生模型。**\n\nagent 进程已重启（历史保留），下一条消息直接生效。`,
+            );
+          }
+        })
+        .catch(() => undefined);
+    }
+  }, [bridgeSelection, onRestartAgentSession, sessionId]);
+
+  /**
+   * Confirm the inline custom-model input: validate + trim the id, then bind
+   * exactly like a catalog pick (`bridge_bind` only requires a non-empty
+   * model_id — preset lists cannot enumerate every vendor model, e.g.
+   * opencode-go's cat-jam-free). Empty input keeps the box open.
+   */
+  const confirmBridgeCustomModel = useCallback(
+    (entryId: string) => {
+      const modelId = bridgeCustomDraft.trim();
+      if (!modelId) return;
+      setBridgeCustomEntryId(null);
+      setBridgeCustomDraft("");
+      const preset = bridgeCatalog ? bridgePresetFor(bridgeCatalog, entryId) : "";
+      pickBridgeModel({ entryId, modelId, label: modelId, preset });
+    },
+    [bridgeCatalog, bridgeCustomDraft, pickBridgeModel],
   );
 
   const commitUpdate = useCallback(
@@ -1297,9 +1493,14 @@ export function Composer({
       const modeId = currentMode ?? (caps && caps.modes.length > 0 ? caps.modes[0].id : null);
       const modeLabel =
         (modeId && caps?.modes.find((m) => m.id === modeId)?.label) || modeId || null;
-      const modelId = sentWith;
+      // Cross-use pick: snapshot shows the bridged model the chip displays, not
+      // the native id the agent still reports underneath.
+      const modelId =
+        bridgeActive && bridgeSelection ? bridgeSelection.modelId : sentWith;
       const modelLabel =
-        (modelId && caps?.models.find((m) => m.id === modelId)?.label) || modelId || null;
+        bridgeActive && bridgeSelection
+          ? bridgeSelection.label
+          : (sentWith && caps?.models.find((m) => m.id === sentWith)?.label) || sentWith || null;
       const effortOpts = caps?.effortOptions ?? [];
       const effortLabelVal =
         currentEffortId != null
@@ -1345,6 +1546,8 @@ export function Composer({
       onSend,
       clearDropSuggest,
       imageAttachments,
+      bridgeActive,
+      bridgeSelection,
     ],
   );
 
@@ -1782,6 +1985,13 @@ export function Composer({
         .filter((value, index, list) => value && list.indexOf(value) === index)
         .join("\n")
     : (displayModelFull ?? "Choose model");
+  /** Cross-use chip display — local state, independent of agent advertisement. */
+  const bridgeChipLabel =
+    bridgeActive && bridgeSelection ? `跨用 · ${bridgeSelection.label}` : null;
+  const bridgeChipTitle =
+    bridgeActive && bridgeSelection
+      ? [`跨用 · ${bridgeSelection.label}`, bridgeSelection.preset, bridgeSelection.modelId].join("\n")
+      : null;
   const displayModeLabel =
     (displayMode && caps?.modes.find((m) => m.id === displayMode)?.label) || displayMode;
 
@@ -1837,13 +2047,94 @@ export function Composer({
     return getRecentModels(validIds);
   }, [caps?.models]);
 
+  /**
+   * Cross-use groups — appended after the native ones, never merged into them.
+   * Built per source (`bridge_list_models` → sources): key-plan entries and
+   * scanned references each get one group, and a source with zero preset
+   * models still shows (custom-id-only sources like openrouter) with a hint
+   * line. Older backends without `sources` degrade to one group per preset
+   * derived from the models themselves (resolveBridgeSources).
+   * The active custom binding (id not in the preset catalog) rides along in
+   * its group so the picker keeps showing what the chip shows.
+   */
+  const crossGroups = useMemo<CrossUseGroup[]>(() => {
+    if (!bridgeCatalog) return [];
+    const sources = resolveBridgeSources(bridgeCatalog);
+    const models = bridgeCatalog.models;
+    if (sources.length === 0 && models.length === 0) return [];
+    // Active binding whose id is not in the preset catalog (custom id).
+    const extras: BridgeModel[] = [];
+    if (
+      bridgeSelection &&
+      !models.some(
+        (m) => m.entryId === bridgeSelection.entryId && m.modelId === bridgeSelection.modelId,
+      )
+    ) {
+      extras.push(bridgeSelection);
+    }
+    const q = modelQuery.trim().toLowerCase();
+    const groups: CrossUseGroup[] = [];
+    const covered = new Set<string>();
+    for (const source of sources) {
+      covered.add(source.entryId);
+      const own = models.filter((m) => m.entryId === source.entryId);
+      const pooled = [...own, ...extras.filter((e) => e.entryId === source.entryId)];
+      // A query matches models individually, or the whole group by its
+      // source name; no query keeps every usable source visible.
+      const labelMatch =
+        source.label.toLowerCase().includes(q) || source.preset.toLowerCase().includes(q);
+      const modelMatch = (m: BridgeModel) =>
+        m.modelId.toLowerCase().includes(q) ||
+        m.label.toLowerCase().includes(q) ||
+        m.preset.toLowerCase().includes(q);
+      const shown = !q ? pooled : labelMatch ? pooled : pooled.filter(modelMatch);
+      if (q && shown.length === 0) continue;
+      groups.push({
+        key: source.entryId,
+        title: bridgeSourceGroupTitle(source.label),
+        entryId: source.entryId,
+        fromScan: source.fromScan,
+        hasPresetModels: own.length > 0,
+        sampleModelId: own[0]?.modelId ?? "cat-jam-free",
+        models: shown.slice().sort((x, y) => x.label.localeCompare(y.label)),
+      });
+    }
+    // Active binding on an entry the catalog no longer lists (credential
+    // removed meanwhile) — keep an ad-hoc group so the chip stays explainable.
+    for (const extra of extras) {
+      if (covered.has(extra.entryId)) continue;
+      groups.push({
+        key: `orphan:${extra.entryId}`,
+        title: bridgeGroupTitle(extra.preset || extra.label),
+        entryId: extra.entryId,
+        fromScan: false,
+        hasPresetModels: true,
+        sampleModelId: "cat-jam-free",
+        models: [extra],
+      });
+    }
+    return groups;
+  }, [bridgeCatalog, bridgeSelection, modelQuery]);
+
+  /** Backend explanation when cross-use is not available for this agent (e.g. codex M2). */
+  const bridgeNote = bridgeCatalog?.note?.trim() || null;
+
   // Reset + focus search when opening model menu
   useEffect(() => {
     if (menu === "model") {
       setModelQuery("");
+      setBridgeCustomEntryId(null);
+      setBridgeCustomDraft("");
       requestAnimationFrame(() => modelSearchRef.current?.focus());
     }
   }, [menu]);
+
+  // Focus the inline custom-model input when it opens inside a cross-use group.
+  useEffect(() => {
+    if (bridgeCustomEntryId) {
+      requestAnimationFrame(() => bridgeCustomInputRef.current?.focus());
+    }
+  }, [bridgeCustomEntryId]);
 
   // Size the model menu to the space *above* the trigger, inside the workspace
   // clip box. `.center-workspace { overflow: hidden }` will otherwise crop a
@@ -2600,11 +2891,11 @@ export function Composer({
                 <button
                   className="composer-select composer-select--model"
                   type="button"
-                  title={displayModelTitle}
+                  title={bridgeChipTitle ?? displayModelTitle}
                   aria-expanded={menu === "model" || menu === "effort"}
                   onClick={() => setMenu(menu === "model" ? null : "model")}
                 >
-                  {displayModelLabel ?? "default"}
+                  {bridgeChipLabel ?? displayModelLabel ?? "default"}
                   {displayEffort != null && hasEffort ? ` · ${displayEffort}` : ""}
                 </button>
 
@@ -2667,16 +2958,20 @@ export function Composer({
                                     const model = caps?.models.find((m) => m.id === entry.modelId);
                                     if (!model) return null;
                                     const provider = modelProviderGroup(model);
+                                    const selected =
+                                      !bridgeActive && displayModel === entry.modelId;
                                     return (
                                       <button
                                         key={entry.modelId}
-                                        className={displayModel === entry.modelId ? "is-selected" : ""}
+                                        className={selected ? "is-selected" : ""}
                                         type="button"
                                         role="option"
-                                        aria-selected={displayModel === entry.modelId}
+                                        aria-selected={selected}
                                         title={modelTooltip(model)}
                                         onClick={() => {
                                           const prev = displayModel;
+                                          // Picking a native model drops the cross-use binding.
+                                          unbindBridge();
                                           pinOptions({ model: entry.modelId });
                                           setCurrentModel(entry.modelId);
                                           setMenu(null);
@@ -2699,38 +2994,126 @@ export function Composer({
                               {!modelQuery.trim() && recentModels.length > 0 && (
                                 <span className="composer-menu__divider" />
                               )}
-                              {modelGroups.length === 0 && (
+                              {modelGroups.length === 0 && crossGroups.length === 0 && (
                                 <div className="composer-menu__empty">No models match “{modelQuery}”</div>
                               )}
                               {modelGroups.map((group) => (
                                 <div className="composer-menu__group" key={group.provider}>
                                   <span className="composer-menu__label">{group.provider}</span>
-                                  {group.models.map((m) => (
-                                    <button
-                                      key={m.id}
-                                      className={displayModel === m.id ? "is-selected" : ""}
-                                      type="button"
-                                      role="option"
-                                      aria-selected={displayModel === m.id}
-                                      title={modelTooltip(m)}
-                                      onClick={() => {
-                                        const prev = displayModel;
-                                        pinOptions({ model: m.id });
-                                        setCurrentModel(m.id);
-                                        // Never jump to Effort before the agent re-negotiates
-                                        // options — Haiku drops effort and a stale menu white-screens.
-                                        setMenu(null);
-                                        void commitUpdate({ model: m.id }, () => {
-                                          unpinOption("model");
-                                          setCurrentModel(prev);
-                                        });
-                                      }}
-                                    >
-                                      <span className="composer-menu__model-name">{modelRowLabel(m)}</span>
-                                    </button>
-                                  ))}
+                                  {group.models.map((m) => {
+                                    const selected = !bridgeActive && displayModel === m.id;
+                                    return (
+                                      <button
+                                        key={m.id}
+                                        className={selected ? "is-selected" : ""}
+                                        type="button"
+                                        role="option"
+                                        aria-selected={selected}
+                                        title={modelTooltip(m)}
+                                        onClick={() => {
+                                          const prev = displayModel;
+                                          // Picking a native model drops the cross-use binding.
+                                          unbindBridge();
+                                          pinOptions({ model: m.id });
+                                          setCurrentModel(m.id);
+                                          // Never jump to Effort before the agent re-negotiates
+                                          // options — Haiku drops effort and a stale menu white-screens.
+                                          setMenu(null);
+                                          void commitUpdate({ model: m.id }, () => {
+                                            unpinOption("model");
+                                            setCurrentModel(prev);
+                                          });
+                                        }}
+                                      >
+                                        <span className="composer-menu__model-name">{modelRowLabel(m)}</span>
+                                      </button>
+                                    );
+                                  })}
                                 </div>
                               ))}
+                              {/* ── Cross-use (跨用) groups — after the native ones ── */}
+                              {crossGroups.length > 0 && modelGroups.length > 0 && (
+                                <span className="composer-menu__divider" />
+                              )}
+                              {crossGroups.map((group) => (
+                                <div className="composer-menu__group" key={group.key}>
+                                  <span className="composer-menu__label">
+                                    {group.title}
+                                    {group.fromScan && (
+                                      <span className="composer-menu__bridge-scan-badge">
+                                        扫描
+                                      </span>
+                                    )}
+                                  </span>
+                                  {group.models.map((m) => {
+                                    const selected =
+                                      bridgeActive &&
+                                      bridgeSelection?.entryId === m.entryId &&
+                                      bridgeSelection?.modelId === m.modelId;
+                                    return (
+                                      <button
+                                        key={`${m.entryId}:${m.modelId}`}
+                                        className={selected ? "is-selected" : ""}
+                                        type="button"
+                                        role="option"
+                                        aria-selected={selected}
+                                        title={`${m.label}\n${m.modelId} · ${m.preset}（跨用）`}
+                                        onClick={() => pickBridgeModel(m)}
+                                      >
+                                        <span className="composer-menu__model-name">{m.label}</span>
+                                      </button>
+                                    );
+                                  })}
+                                  {/* Source whose model list is not enumerable
+                                      (e.g. openrouter) — custom ids only. */}
+                                  {!group.hasPresetModels && (
+                                    <div className="composer-menu__bridge-empty">
+                                      该来源没有预置清单，输入模型 id 使用
+                                    </div>
+                                  )}
+                                  {/* Custom model id — the preset list cannot
+                                      enumerate every vendor model; bridge_bind
+                                      only requires a non-empty model_id. */}
+                                  {bridgeCustomEntryId === group.entryId ? (
+                                    <div className="composer-menu__bridge-custom">
+                                      <input
+                                        ref={bridgeCustomInputRef}
+                                        type="text"
+                                        value={bridgeCustomDraft}
+                                        placeholder={`输入模型 id，如 ${group.sampleModelId}`}
+                                        aria-label="输入自定义模型 id"
+                                        onChange={(e) => setBridgeCustomDraft(e.target.value)}
+                                        onKeyDown={(e) => {
+                                          if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            confirmBridgeCustomModel(group.entryId);
+                                          } else if (e.key === "Escape") {
+                                            // Cancel the input, keep the menu open.
+                                            e.stopPropagation();
+                                            setBridgeCustomEntryId(null);
+                                          }
+                                        }}
+                                      />
+                                    </div>
+                                  ) : (
+                                    <button
+                                      className="composer-menu__bridge-custom-trigger"
+                                      type="button"
+                                      title="输入任意模型 id 绑定到此来源（不限于上方清单）"
+                                      onClick={() => {
+                                        setBridgeCustomEntryId(group.entryId);
+                                        setBridgeCustomDraft("");
+                                      }}
+                                    >
+                                      ＋ 自定义模型…
+                                    </button>
+                                  )}
+                                </div>
+                              ))}
+                              {bridgeNote && (
+                                <div className="composer-menu__bridge-note">{bridgeNote}</div>
+                              )}
                             </div>
 
                             {/* ── Add API Key entry at bottom ── */}

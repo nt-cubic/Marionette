@@ -27,6 +27,8 @@ tauri = { version = "2", default-features = false, features = ["wry", "protocol-
 agent-client-protocol-schema = "1.4.0"
 # Small blocking HTTP (usage + npm version + app update). No tokio.
 ureq = { version = "2", features = ["json", "native-tls"], default-features = false }
+# grok 方言规整器的环回 HTTP 服务（同步、std 线程，无异步运行时）
+tiny_http = "0.12"
 # Codex keeps its MCP servers in config.toml
 toml = "0.8"
 # Native folder picker for "Add project" (no tauri dialog plugin).
@@ -37,6 +39,7 @@ base64 = "0.22"
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
   "Win32_Globalization",
+  "Win32_Security_Cryptography",
   "Win32_System_Registry",
   "Win32_System_Threading",
   "Win32_UI_Shell",

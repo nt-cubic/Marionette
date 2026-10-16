@@ -1,0 +1,2797 @@
+//! 跨 agent 模型桥 — L1 注入链（docs/cross-agent-bridge.md §4.3/§4.4/§4.8）。
+//!
+//! 凭据层（扫描 / DPAPI 存储）在 [`crate::credentials`]，本模块在其上补齐
+//! M1 的接线：
+//!
+//! - **presets 表**：preset id → 双端点（anthropic 兼容给 claude-code 用 env、
+//!   OpenAI chat 兼容给 grok 用 owned 表）。端点逐条经官方文档 / 实测核实，
+//!   出处与日期写在每条的注释里；核不实的字段是 `None`。
+//! - **绑定存储** `~/.marionette/bridge-bindings.json`：会话 → {entryId,
+//!   modelId}。原子写、损坏留档重建（镜像 credentials.rs 的立场）。会话删除
+//!   不强求清理 —— 残留绑定在 spawn 时解不出条目就跳过注入并记 warn，无害。
+//! - **reference 直连**：opencode auth.json 里的 api 条目不复制第二份（§2），
+//!   `list_models` 现场扫描并入、`preset_for_opencode_provider` 桥到 preset 表；
+//!   绑定校验放行，spawn 时 `peek_reference_secret` 现场读钥匙（OAuth / 混合
+//!   条目拒绝）。源文件 / 条目消失 → 解析不出，走残留绑定的降级路径。
+//! - **grok owned 表写入器**：往真实 `~/.grok/config.toml` 写
+//!   `[model."marionette/<model>"]`，api_key 用 `$MARIONETTE_PROVIDER_KEY`
+//!   env 展开（S3 实测有效），**绝不设 `[models] default`**（会让 Grok 退出
+//!   自身登录）。原则照抄 dsh_settings.rs：原文搬运、带所有权头注释、幂等
+//!   （一致则零写入）、写前重读容忍 grok 并发自改写、解析失败不写半截。
+//! - **去重规则**（§4.8 / 产品定稿）：key-plan → claude-code / grok-build 可
+//!   见；reference → 宿主 agent 自己不可见；subscription → M2 前不可见。
+//!   **不做任何跨 agent 模型名模糊匹配**。
+//! - **codex `providers/set` 框架**：initialize 应答声明 `agentCapabilities.
+//!   providers` 时把 openai 槽路由到目标端点（仅 apiType:"openai" / Responses，
+//!   S2 实测约束）。M1 没有 Responses 核实过的 preset，路由解析恒为 None、
+//!   不会真的发送；框架留给 M2 的翻译引擎。
+//!
+//! 安全底线（§5）：明文 key 只进 env / owned-section 的 env 引用，绝不进日志
+//! （日志只记事件与端点，不记值），绝不复制进 agent 磁盘配置。
+
+use crate::credentials::{AgentScan, CredentialEntry, CredentialKind};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+// ─── presets 表（§4.3）──────────────────────────────────────────────────────
+
+/// 一个 key 型 plan 的「钥匙→门牌」：preset id → 双端点 + 默认模型。
+///
+/// 端点核实记录见 [`presets`] 表里每条的注释；`anthropic_base` 是 Claude 系
+/// env 注入（`ANTHROPIC_BASE_URL`，客户端自己拼 `/v1/messages`），
+/// `chat_base` 是 grok owned 表的 `base_url`（`api_backend =
+/// "chat_completions"`，grok 向 base_url 拼 `/chat/completions`，所以形态统一
+/// 带 `/v1`）。
+#[derive(Clone, Copy, Debug)]
+pub struct ProviderPreset {
+    pub id: &'static str,
+    pub label: &'static str,
+    /// Anthropic Messages 兼容端点 base（claude-code 用）。核不实 → None。
+    pub anthropic_base: Option<&'static str>,
+    /// OpenAI chat-completions 兼容端点 base（grok owned 表用）。核不实 → None。
+    pub chat_base: Option<&'static str>,
+    /// 默认模型 id 列表（picker 预填；未核实过的确切 id 不列，宁缺毋滥）。
+    pub models: &'static [&'static str],
+    /// 端点最后一次被核实的日期（§9「坏了好修」）。人工维护的元数据，没有
+    /// 运行时读取方 —— 单测锚定它非空。
+    #[allow(dead_code)]
+    pub last_verified: &'static str,
+}
+
+/// preset 表本体。全部端点 2026-10-16 核实（官方文档 WebFetch + 直连探测），
+/// 逐条出处见每条上方的注释。
+pub fn presets() -> &'static [ProviderPreset] {
+    &PRESETS
+}
+
+static PRESETS: [ProviderPreset; 6] = [
+    // anthropic：api-docs.deepseek.com/guides/anthropic_api 原文
+    // "base_url being https://api.deepseek.com/anthropic"。
+    // chat：官方文档同时支持 https://api.deepseek.com 与 …/v1 两种 base；
+    // grok 的 chat_completions 后端向 base_url 拼 /chat/completions，取 /v1
+    // 形态（与用户 ~/.grok 里已在用的 DeepSeek 表一致），与其余 preset 统一。
+    // models：api-docs.deepseek.com/quick_start/pricing（deepseek-chat /
+    // deepseek-reasoner 旧名已退役，现役是 deepseek-flash、deepseek-v4-pro）。
+    ProviderPreset {
+        id: "deepseek",
+        label: "DeepSeek",
+        anthropic_base: Some("https://api.deepseek.com/anthropic"),
+        chat_base: Some("https://api.deepseek.com/v1"),
+        models: &["deepseek-flash", "deepseek-v4-pro"],
+        last_verified: "2026-10-16",
+    },
+    // 官方文档（opencode.ai/docs/go）摘要给出的 …/openai/v1 路径实测 404；
+    // 以直连探测为准：GET …/inference/go/v1/models → 200（完整模型列表）。
+    // 2026-10-16 二次核实（magpie opencode_endpoints.go 实测对照）：
+    // ① Messages 路由在网关根上（anthropic base = 根形态，客户端拼 /v1/messages），
+    //    /anthropic 路径 magpie 从不使用（此前 /anthropic/v1/messages 的 500 是
+    //    兜底路由，不是 Messages 端点）；/inference/go 与 /zen/go 是同一路由两名。
+    // ② OpenCode 网关 2026-09 起对缺 x-opencode-session 头的请求答 400 ——
+    //    头由 grok_dialect 规整器按会话注入（claude/grok 通道都过规整器）。
+    // chat_base 与用户 ~/.grok 里已在用的 opencode-go 表逐字一致。
+    // models 取自实测模型列表的常用子集。
+    ProviderPreset {
+        id: "opencode-go",
+        label: "OpenCode Go",
+        anthropic_base: Some("https://opencode.ai/inference/go"),
+        chat_base: Some("https://opencode.ai/inference/go/v1"),
+        models: &[
+            "deepseek-v4.1-flash",
+            "deepseek-v4-pro",
+            "grok-4.7",
+            "kimi-k3",
+            "longcat-2.0",
+        ],
+        last_verified: "2026-10-16",
+    },
+    // docs.bigmodel.cn/cn/coding-plan/quick-start（GLM Coding Plan 官方）：
+    // Anthropic 协议 https://open.bigmodel.cn/api/anthropic；OpenAI Chat
+    // 协议 https://open.bigmodel.cn/api/coding/paas/v4。注意普通按量 key 用
+    // /api/paas/v4（用户 ~/.grok 实配即此），coding 端点只吃套餐 key。
+    // models：官方页未给确切 id —— 留空，不拍脑袋。
+    ProviderPreset {
+        id: "glm",
+        label: "智谱 GLM",
+        anthropic_base: Some("https://open.bigmodel.cn/api/anthropic"),
+        chat_base: Some("https://open.bigmodel.cn/api/coding/paas/v4"),
+        models: &[],
+        last_verified: "2026-10-16",
+    },
+    // platform.kimi.ai（官方 Claude Code 指南）：ANTHROPIC_BASE_URL=
+    // https://api.moonshot.ai/anthropic（端点 …/anthropic/v1/messages）；
+    // platform.kimi.ai/docs/api/overview：OpenAI Chat Completions base
+    // https://api.moonshot.ai/v1。国内域名是 api.moonshot.cn，preset 取官方
+    // 现行文档的国际域名。models：overview 未列确切 id（在 /v1/models 动态
+    // 查）—— 留空。
+    ProviderPreset {
+        id: "kimi",
+        label: "Kimi (Moonshot)",
+        anthropic_base: Some("https://api.moonshot.ai/anthropic"),
+        chat_base: Some("https://api.moonshot.ai/v1"),
+        models: &[],
+        last_verified: "2026-10-16",
+    },
+    // 官方 cookbook（openrouter.ai/docs/cookbook/coding-agents/claude-code-
+    // integration）原文：ANTHROPIC_BASE_URL=https://openrouter.ai/api（即官方
+    // 所谓 Anthropic Skin，客户端拼 /v1/messages）；官方 quickstart：OpenAI
+    // 兼容 base https://openrouter.ai/api/v1。models：目录是 provider/model
+    // 动态形态，不设默认列表。
+    ProviderPreset {
+        id: "openrouter",
+        label: "OpenRouter",
+        anthropic_base: Some("https://openrouter.ai/api"),
+        chat_base: Some("https://openrouter.ai/api/v1"),
+        models: &[],
+        last_verified: "2026-10-16",
+    },
+    // docs.x.ai/developers/quickstart：OpenAI 兼容 base https://api.x.ai/v1，
+    // 模型 grok-4.7。anthropic：2026-10-16 以 magpie presets.go 实测对照修正 ——
+    // Anthropic 兼容端点是**根形态** https://api.x.ai（客户端自拼 /v1/messages；
+    // magpie provider.go 的 normalize 注释描述的正是 /v1 形态「模型列表能答、
+    // 每条消息 404」的坑：会拼出 /v1/v1/messages）。
+    ProviderPreset {
+        id: "xai",
+        label: "xAI (Grok)",
+        anthropic_base: Some("https://api.x.ai"),
+        chat_base: Some("https://api.x.ai/v1"),
+        models: &["grok-4.7"],
+        last_verified: "2026-10-16",
+    },
+];
+
+pub fn find_preset(id: &str) -> Option<&'static ProviderPreset> {
+    presets().iter().find(|preset| preset.id == id)
+}
+
+/// opencode auth.json 的 provider 键名 → preset 表的桥（reference 直连的门票）。
+///
+/// opencode 的 provider id 与我们的 preset id 不同名时也认：kimi 的 auth 键有
+/// `moonshot` / `kimi` 两种写法。大小写不敏感。未映射的 provider 返回 `None` ——
+/// 凭据页照样展示（bridge_scan），但直连没有核实过的 L1 端点，picker 不列、绑定
+/// 拒绝。注意 `zai` **不**映射到 glm：Z.ai（api.z.ai）与智谱 open.bigmodel.cn 是
+/// 两个 host（magpie 分列两个 preset），映射等于把别家的 key 发错厂商。
+pub fn preset_for_opencode_provider(provider_id: &str) -> Option<&'static ProviderPreset> {
+    let key = provider_id.trim().to_ascii_lowercase();
+    let preset_id = match key.as_str() {
+        "openrouter" => "openrouter",
+        "deepseek" => "deepseek",
+        "moonshot" | "kimi" => "kimi",
+        "glm" => "glm",
+        "xai" => "xai",
+        // opencode 自己的 key（Zen/Go 平台）在 auth.json 里的键名是 "opencode"。
+        // OAuth 订阅条目在扫描侧已分类成 subscription、进不了 reference，所以
+        // 这里映射是安全的：只有 type:"api" 的 Go key 会走到直连。
+        "opencode" | "opencode-go" => "opencode-go",
+        _ => return None,
+    };
+    find_preset(preset_id)
+}
+
+/// 解析 reference 的 `文件路径#provider-id` → provider-id。
+///
+/// 从右往左第一个 `#` 切（`rsplit_once`）：Windows 路径与 provider id 都不含
+/// `#`，万一含了也以最后一段为 provider-id。解析不出（缺 ref、缺 `#`）→ None。
+fn ref_path_provider(ref_path: Option<&str>) -> Option<String> {
+    let (_, provider) = ref_path?.rsplit_once('#')?;
+    Some(provider.to_string())
+}
+
+// ─── agent 分类（§4.8 规则按 agent 区分）────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BridgeAgent {
+    ClaudeCode,
+    GrokBuild,
+    Codex,
+    Opencode,
+    /// M1 未接线的其余 agent（DSH、gemini…）：没有注入通道，列表为空。
+    Other,
+}
+
+/// 把 agent registry 里的 id 归到桥认识的桶（别名一并收，对齐
+/// commands.rs probe_agent_auth 的同名习惯）。
+pub fn classify_agent(agent_id: &str) -> BridgeAgent {
+    match agent_id {
+        "claude-code" | "claude" => BridgeAgent::ClaudeCode,
+        "grok-build" | "grok" => BridgeAgent::GrokBuild,
+        "codex" | "codex-acp" => BridgeAgent::Codex,
+        "opencode" => BridgeAgent::Opencode,
+        _ => BridgeAgent::Other,
+    }
+}
+
+// ─── 去重规则（产品定稿，别加戏）────────────────────────────────────────────
+
+/// 一条凭据对一个询问 agent 是否可见。
+///
+/// - key-plan：对 claude-code / grok-build 可见（M1 的全部受众）。
+/// - reference：**宿主 agent 自己不可见**（host_agent 与询问方相同 → 过滤）；
+///   别的 agent 可以看（M2 接线用）。
+/// - subscription：不可见（M2 引擎）。
+fn entry_visible_to(entry: &CredentialEntry, agent: BridgeAgent) -> bool {
+    match entry.kind {
+        CredentialKind::KeyPlan => true,
+        CredentialKind::Reference => match entry.host_agent.as_deref() {
+            Some(host) => classify_agent(host) != agent,
+            None => true,
+        },
+        CredentialKind::Subscription => false,
+    }
+}
+
+/// 一个 preset 对一个 agent 有没有可用的兼容端点（端点驱动，非名字匹配）。
+fn preset_serves_agent(preset: &ProviderPreset, agent: BridgeAgent) -> bool {
+    match agent {
+        BridgeAgent::ClaudeCode => preset.anthropic_base.is_some(),
+        BridgeAgent::GrokBuild => preset.chat_base.is_some(),
+        _ => false,
+    }
+}
+
+// ─── 视图（命令契约：字段名 camelCase，签名逐字对齐前端）────────────────────
+
+/// 扫描报告透传类型（bridge_scan 的返回；即 credentials::scan_all 的形状）。
+pub type BridgeScanReport = crate::credentials::ScanReport;
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeEntryView {
+    pub id: String,
+    /// "key-plan" | "subscription" | "reference"（kebab-case，同 §4.2 schema）。
+    pub kind: String,
+    pub label: String,
+    pub preset: Option<String>,
+    /// 末四位掩码（如 "…21zz"）；key 太短 / 解密失败 / 无 secret → None。绝无明文。
+    pub masked_key: Option<String>,
+    pub source: String,
+    pub note: Option<String>,
+    pub created_at: String,
+}
+
+/// 供 picker 绑定的一个模型（entry × model 摊平）。
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeModel {
+    pub entry_id: String,
+    pub preset: String,
+    pub label: String,
+    pub model_id: String,
+}
+
+/// 一个跨用来源（picker 的分组锚点）。key-plan 与 reference 都进 `sources`：
+/// 即使某来源的 `models` 为空（preset 没有核实过的默认模型列表），前端也要
+/// 知道这个来源存在（例如提示用户手输模型 id）。`from_scan = true` 即
+/// reference —— key 住在 opencode 的 auth.json 里，未复制。
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeSource {
+    pub entry_id: String,
+    pub preset: String,
+    pub label: String,
+    pub from_scan: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeModelsResult {
+    pub models: Vec<BridgeModel>,
+    pub sources: Vec<BridgeSource>,
+    pub note: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeSelection {
+    pub entry_id: String,
+    pub model_id: String,
+}
+
+fn kind_str(kind: CredentialKind) -> &'static str {
+    match kind {
+        CredentialKind::KeyPlan => "key-plan",
+        CredentialKind::Subscription => "subscription",
+        CredentialKind::Reference => "reference",
+    }
+}
+
+/// 掩码只露末四位（§5.2）。短于 8 位的 key 全遮 —— 掩码不能等于明文。
+fn mask_key(key: &str) -> Option<String> {
+    let trimmed = key.trim();
+    if trimmed.chars().count() < 8 {
+        return None;
+    }
+    let tail: String = trimmed
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    Some(format!("…{tail}"))
+}
+
+fn entry_view(credentials_path: &Path, entry: &CredentialEntry) -> BridgeEntryView {
+    let masked_key = if entry.kind == CredentialKind::KeyPlan {
+        crate::credentials::peek_secret_at(credentials_path, &entry.id)
+            .ok()
+            .flatten()
+            .and_then(|key| mask_key(&key))
+    } else {
+        None
+    };
+    let note = match entry.kind {
+        CredentialKind::KeyPlan => None,
+        CredentialKind::Subscription => Some("订阅型，跨用将在下版本开放".to_string()),
+        CredentialKind::Reference => Some("key 保存在原 agent 文件里，未复制".to_string()),
+    };
+    BridgeEntryView {
+        id: entry.id.clone(),
+        kind: kind_str(entry.kind).to_string(),
+        label: entry.label.clone(),
+        preset: entry.preset.clone(),
+        masked_key,
+        source: entry.source.clone(),
+        note,
+        created_at: entry.created_at.clone(),
+    }
+}
+
+/// bridge_list_entries 本体（默认路径包装）。
+pub fn list_entries() -> Result<Vec<BridgeEntryView>, String> {
+    let path = credentials_path().ok_or_else(|| "无法定位用户目录".to_string())?;
+    list_entries_at(&path)
+}
+
+fn list_entries_at(path: &Path) -> Result<Vec<BridgeEntryView>, String> {
+    let store = crate::credentials::load_store_at(path)?;
+    Ok(store
+        .entries
+        .iter()
+        .map(|entry| entry_view(path, entry))
+        .collect())
+}
+
+/// bridge_add_key 本体：校验 preset 在表内，落 DPAPI store，返回新视图。
+pub fn add_key(preset: &str, label: Option<&str>, key: &str) -> Result<BridgeEntryView, String> {
+    let path = credentials_path().ok_or_else(|| "无法定位用户目录".to_string())?;
+    add_key_at(&path, preset, label, key)
+}
+
+fn add_key_at(
+    path: &Path,
+    preset: &str,
+    label: Option<&str>,
+    key: &str,
+) -> Result<BridgeEntryView, String> {
+    let known = find_preset(preset)
+        .ok_or_else(|| {
+            let known: Vec<&str> = presets().iter().map(|p| p.id).collect();
+            format!("未知 preset `{preset}`（可选：{}）", known.join(", "))
+        })?;
+    let label = label
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(known.label);
+    crate::credentials::add_key_plan_at(path, preset, label, key)?;
+    let store = crate::credentials::load_store_at(path)?;
+    let entry = store
+        .entries
+        .iter()
+        .find(|entry| entry.id == preset)
+        .ok_or_else(|| "写入后读不回条目".to_string())?;
+    Ok(entry_view(path, entry))
+}
+
+/// bridge_list_models 本体（默认路径包装）。
+pub fn list_models(agent_id: &str) -> BridgeModelsResult {
+    let Some(home) = home_dir() else {
+        return BridgeModelsResult {
+            models: Vec::new(),
+            sources: Vec::new(),
+            note: Some("无法定位用户目录".to_string()),
+        };
+    };
+    let credentials = home.join(".marionette").join("credentials.json");
+    // 真实路径扫描复用 provider_usage 的多路径探测（含 %APPDATA% fallback）。
+    let scan = crate::credentials::scan_opencode();
+    list_models_at(&credentials, &scan, agent_id)
+}
+
+fn list_models_at(
+    credentials_path: &Path,
+    opencode_scan: &AgentScan,
+    agent_id: &str,
+) -> BridgeModelsResult {
+    match classify_agent(agent_id) {
+        // S2 硬边界：chat 端点直连被 codex 拒（Responses-only），M1 无解。
+        BridgeAgent::Codex => BridgeModelsResult {
+            models: Vec::new(),
+            sources: Vec::new(),
+            note: Some("需翻译引擎，下版本开放".to_string()),
+        },
+        // opencode 有原生 provider 管理（write_provider_key），不走跨用目录；
+        // 顺带落实「reference 对宿主 agent 自己不可见」的去重规则。
+        BridgeAgent::Opencode => BridgeModelsResult {
+            models: Vec::new(),
+            sources: Vec::new(),
+            note: Some("请在设置的 provider 管理里添加".to_string()),
+        },
+        // M1 只给 claude-code / grok-build 接了注入通道；其它 agent 列了也
+        // 选不上（spawn 时不会有任何注入）。
+        BridgeAgent::Other => BridgeModelsResult {
+            models: Vec::new(),
+            sources: Vec::new(),
+            note: Some("该 agent 暂不支持跨用模型（当前支持 Claude Code 与 Grok）".to_string()),
+        },
+        agent => {
+            let store = match crate::credentials::load_store_at(credentials_path) {
+                Ok(store) => store,
+                Err(error) => {
+                    return BridgeModelsResult {
+                        models: Vec::new(),
+                        sources: Vec::new(),
+                        note: Some(error),
+                    }
+                }
+            };
+            let mut sources: Vec<BridgeSource> = Vec::new();
+            // (entry_id, preset, 静态清单) —— 模型目录在收集完来源后统一装配
+            // （静态清单 ∪ 动态 /models 拉取，见 assemble_models）。
+            let mut source_rows: Vec<(String, &'static ProviderPreset)> = Vec::new();
+            // key-plan（凭据库，DPAPI 存的那份）。
+            for entry in store
+                .entries
+                .iter()
+                .filter(|entry| entry.kind == CredentialKind::KeyPlan)
+                .filter(|entry| entry_visible_to(entry, agent))
+            {
+                let Some(preset) = entry.preset.as_deref().and_then(find_preset) else {
+                    continue;
+                };
+                if !preset_serves_agent(preset, agent) {
+                    continue;
+                }
+                sources.push(BridgeSource {
+                    entry_id: entry.id.clone(),
+                    preset: preset.id.to_string(),
+                    label: entry.label.clone(),
+                    from_scan: false,
+                });
+                source_rows.push((entry.id.clone(), preset));
+            }
+            // reference 并入：opencode auth.json 的实时扫描（纯读、不落盘，
+            // §2「nothing is stored twice」）。扫描失败（文件损坏等）时 entries
+            // 为空 —— 静默跳过该家，store 条目照常。只列映射得到 preset 的；
+            // OAuth 条目在扫描侧已分类成 subscription，这里天然进不来。
+            for entry in opencode_scan
+                .entries
+                .iter()
+                .filter(|entry| entry.kind == CredentialKind::Reference)
+                .filter(|entry| entry_visible_to(entry, agent))
+            {
+                let Some(provider) = ref_path_provider(entry.ref_path.as_deref()) else {
+                    continue;
+                };
+                let Some(preset) = preset_for_opencode_provider(&provider) else {
+                    continue;
+                };
+                if !preset_serves_agent(preset, agent) {
+                    continue;
+                }
+                sources.push(BridgeSource {
+                    entry_id: entry.id.clone(),
+                    preset: preset.id.to_string(),
+                    label: entry.label.clone(),
+                    from_scan: true,
+                });
+                source_rows.push((entry.id.clone(), preset));
+            }
+            let (models, truncated) = assemble_models(credentials_path, opencode_scan, &source_rows);
+            let mut note = if sources.is_empty() {
+                Some("还没有可跨用的 API Key，请先在设置的凭据页添加".to_string())
+            } else if models.is_empty() {
+                Some("当前凭证没有可用的跨用模型（拉取模型目录失败，可稍后重试或用自定义输入）".to_string())
+            } else {
+                None
+            };
+            if truncated {
+                let suffix = "目录过长已截断，更多模型请用「自定义模型」输入";
+                note = Some(match note {
+                    Some(existing) => format!("{existing}；{suffix}"),
+                    None => suffix.to_string(),
+                });
+            }
+            BridgeModelsResult { models, sources, note }
+        }
+    }
+}
+
+// ─── 动态模型目录（/v1/models，带缓存）──────────────────────────────────────
+//
+// opencode 里「配了 key 就有完整模型列表」的体验来自它启动时拉 provider 目录；
+// 我们对齐：bridge_list_models 用已配的 key GET <chat_base>/models，结果按
+// entry 缓存（TTL 10 分钟，失败 90 秒负缓存），与 preset 静态清单取并集。
+// 拉取用并发线程 + 3.5s 总预算，赶不上本次装配的线程会把缓存焐热给下一次。
+
+struct DynamicEntry {
+    fetched_at: std::time::Instant,
+    models: Vec<String>,
+}
+
+static DYNAMIC_MODELS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, DynamicEntry>>> =
+    std::sync::OnceLock::new();
+
+const DYNAMIC_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+const DYNAMIC_FAIL_TTL: std::time::Duration = std::time::Duration::from_secs(90);
+const DYNAMIC_CAP: usize = 60;
+const DYNAMIC_BUDGET: std::time::Duration = std::time::Duration::from_millis(3500);
+
+fn dynamic_cache() -> &'static std::sync::Mutex<HashMap<String, DynamicEntry>> {
+    DYNAMIC_MODELS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// 测试钩子：按 preset 覆盖动态目录的端点（保持测试封闭，不打真网络）。
+#[cfg(test)]
+static FETCH_BASE_OVERRIDE: std::sync::OnceLock<std::sync::Mutex<HashMap<String, String>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn set_fetch_base_override_for_test(preset_id: &str, base: &str) {
+    let overrides = FETCH_BASE_OVERRIDE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    overrides
+        .lock()
+        .unwrap()
+        .insert(preset_id.to_string(), base.to_string());
+}
+
+#[cfg(test)]
+fn clear_dynamic_cache_for_test() {
+    dynamic_cache().lock().unwrap().clear();
+}
+
+/// 动态目录的端点（测试可覆盖；生产 = preset.chat_base）。
+fn effective_chat_base(preset: &ProviderPreset) -> Option<String> {
+    #[cfg(test)]
+    {
+        if let Some(overrides) = FETCH_BASE_OVERRIDE.get().and_then(|map| map.lock().ok()) {
+            if let Some(base) = overrides.get(preset.id) {
+                return Some(base.clone());
+            }
+        }
+    }
+    preset.chat_base.map(str::to_string)
+}
+
+/// 新鲜缓存（命中 TTL）里的动态清单；没有或过期 → None。
+fn fresh_dynamic(entry_id: &str) -> Option<Vec<String>> {
+    let cache = dynamic_cache().lock().ok()?;
+    let entry = cache.get(entry_id)?;
+    let ttl = if entry.models.is_empty() {
+        DYNAMIC_FAIL_TTL
+    } else {
+        DYNAMIC_TTL
+    };
+    entry.fresh_with(ttl).then(|| entry.models.clone())
+}
+
+impl DynamicEntry {
+    fn fresh_with(&self, ttl: std::time::Duration) -> bool {
+        self.fetched_at.elapsed() < ttl
+    }
+}
+
+/// GET <chat_base>/models，解析 OpenAI 形状（`data[].id`）或 `models[].id`
+/// 变体（deepseek 用后者）。任何失败 → 空表（走负缓存）。
+fn fetch_models_from_endpoint(chat_base: &str, key: &str) -> Vec<String> {
+    let url = format!("{}/models", chat_base.trim_end_matches('/'));
+    let Ok(agent) = crate::http_client::agent() else {
+        return Vec::new();
+    };
+    let Ok(response) = agent
+        .get(&url)
+        .set("Authorization", &format!("Bearer {key}"))
+        .set("Accept", "application/json")
+        .timeout(std::time::Duration::from_secs(4))
+        .call()
+    else {
+        return Vec::new();
+    };
+    let Ok(text) = response.into_string() else {
+        return Vec::new();
+    };
+    parse_models_catalog(&text)
+}
+
+/// 目录 JSON → 模型 id 列表（保序去重）。
+fn parse_models_catalog(text: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return Vec::new();
+    };
+    let items = value
+        .get("data")
+        .and_then(|data| data.as_array())
+        .or_else(|| value.get("models").and_then(|models| models.as_array()));
+    let Some(items) = items else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = Vec::new();
+    for item in items {
+        let Some(id) = item.get("id").and_then(|id| id.as_str()) else {
+            continue;
+        };
+        let id = id.trim();
+        if !id.is_empty() && !out.iter().any(|existing| existing == id) {
+            out.push(id.to_string());
+        }
+    }
+    out
+}
+
+/// 装配每个来源的最终模型清单（动态 ∪ 静态），并驱动缓存预热。
+/// 返回 (models, 是否截断)。
+fn assemble_models(
+    credentials_path: &Path,
+    opencode_scan: &crate::credentials::AgentScan,
+    source_rows: &[(String, &'static ProviderPreset)],
+) -> (Vec<BridgeModel>, bool) {
+    // 需要刷新的来源：缓存不新鲜且取得到 key。
+    let mut pending: Vec<(String, &'static ProviderPreset)> = Vec::new();
+    for (entry_id, preset) in source_rows {
+        if fresh_dynamic(entry_id).is_some() {
+            continue;
+        }
+        if let Some(chat_base) = preset.chat_base {
+            if peek_spawn_key_at(credentials_path, opencode_scan, entry_id).is_some() {
+                let _ = chat_base; // 仅为可读性：拉取在 warm 线程里做
+                pending.push((entry_id.clone(), preset));
+            }
+        }
+    }
+    if !pending.is_empty() {
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let mut waiting = pending.len();
+        for (entry_id, preset) in &pending {
+            let entry_id = entry_id.clone();
+            let chat_base = effective_chat_base(preset).unwrap_or_default();
+            let key =
+                peek_spawn_key_at(credentials_path, opencode_scan, &entry_id).unwrap_or_default();
+            let done_tx = done_tx.clone();
+            std::thread::Builder::new()
+                .name("bridge-models-fetch".into())
+                .spawn(move || {
+                    let models = fetch_models_from_endpoint(&chat_base, &key);
+                    if let Ok(mut cache) = dynamic_cache().lock() {
+                        cache.insert(
+                            entry_id,
+                            DynamicEntry {
+                                fetched_at: std::time::Instant::now(),
+                                models,
+                            },
+                        );
+                    }
+                    let _ = done_tx.send(());
+                })
+                .ok();
+        }
+        let deadline = std::time::Instant::now() + DYNAMIC_BUDGET;
+        while waiting > 0 {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() || done_rx.recv_timeout(remaining).is_err() {
+                break;
+            }
+            waiting -= 1;
+        }
+    }
+    // 装配：动态清单为主，静态清单补差；都空 → 静态（可能也为空）。
+    let mut models = Vec::new();
+    let mut truncated = false;
+    for (entry_id, preset) in source_rows {
+        let dynamic = fresh_dynamic(entry_id).unwrap_or_default();
+        let mut ids: Vec<String> = dynamic;
+        for static_id in preset.models {
+            if !ids.iter().any(|existing| existing == static_id) {
+                ids.push(static_id.to_string());
+            }
+        }
+        if ids.len() > DYNAMIC_CAP {
+            ids.truncate(DYNAMIC_CAP);
+            truncated = true;
+        }
+        for model_id in ids {
+            // label 用模型 id 本身：动态目录的名字就是用户在 opencode 里看到的
+            // 那套（此前用 preset 标签是 bug——一整组全显示同一个名字）。
+            models.push(BridgeModel {
+                entry_id: entry_id.clone(),
+                preset: preset.id.to_string(),
+                label: model_id.clone(),
+                model_id,
+            });
+        }
+    }
+    (models, truncated)
+}
+
+// ─── 路径（默认 = 真实用户目录；*_at 注入路径供测试）────────────────────────
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+}
+
+fn credentials_path() -> Option<PathBuf> {
+    Some(home_dir()?.join(".marionette").join("credentials.json"))
+}
+
+fn bindings_path() -> Option<PathBuf> {
+    Some(home_dir()?.join(".marionette").join("bridge-bindings.json"))
+}
+
+pub fn grok_config_path() -> Option<PathBuf> {
+    Some(home_dir()?.join(".grok").join("config.toml"))
+}
+
+/// 临时兄弟文件（进程 × 调用双唯一）—— 与 credentials::temp_sibling 同款教训。
+fn temp_sibling(path: &Path) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("bridge-bindings.json");
+    path.with_file_name(format!("{name}.{}.{seq}.tmp", std::process::id()))
+}
+
+fn write_text_atomic(path: &Path, body: &str) -> Result<(), String> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| format!("创建目录失败: {e}"))?;
+    }
+    let temp = temp_sibling(path);
+    fs::write(&temp, body).map_err(|e| format!("写入临时文件失败: {e}"))?;
+    if let Err(error) = fs::rename(&temp, path) {
+        let _ = fs::remove_file(&temp);
+        return Err(format!("重命名临时文件失败: {error}"));
+    }
+    Ok(())
+}
+
+// ─── 绑定存储 `~/.marionette/bridge-bindings.json`（B）───────────────────────
+
+const BINDINGS_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingFile {
+    pub version: u32,
+    #[serde(default)]
+    pub bindings: HashMap<String, BridgeSelection>,
+}
+
+/// 损坏的绑定文件改名留档（`bridge-bindings.corrupt-<ts>.json`）。绑定是可
+/// 重选的状态而非密钥，但立场仍与 credentials 一致：不覆盖原始字节、不静默
+/// 清空，留档排查。
+fn archive_corrupt(path: &Path) -> Result<PathBuf, String> {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("bridge-bindings.json");
+    let stem = name.strip_suffix(".json").unwrap_or(name);
+    let mut candidate = path.with_file_name(format!("{stem}.corrupt-{ts}.json"));
+    let mut n = 1u32;
+    while candidate.exists() {
+        candidate = path.with_file_name(format!("{stem}.corrupt-{ts}-{n}.json"));
+        n += 1;
+    }
+    fs::rename(path, &candidate)
+        .map_err(|e| format!("bridge-bindings.json 已损坏且留档失败（{e}）— 已中止"))?;
+    Ok(candidate)
+}
+
+fn empty_bindings() -> BindingFile {
+    BindingFile {
+        version: BINDINGS_VERSION,
+        bindings: HashMap::new(),
+    }
+}
+
+/// 读取绑定文件：缺失 / 空文件 → 空；解析失败 / 版本不认识 → 留档重建。
+pub fn load_bindings_at(path: &Path) -> Result<BindingFile, String> {
+    if !path.is_file() {
+        return Ok(empty_bindings());
+    }
+    let text =
+        fs::read_to_string(path).map_err(|e| format!("读取 bridge-bindings.json 失败: {e}"))?;
+    if text.trim().is_empty() {
+        return Ok(empty_bindings());
+    }
+    match serde_json::from_str::<BindingFile>(&text) {
+        Ok(file) if file.version == BINDINGS_VERSION => Ok(file),
+        Ok(_) | Err(_) => {
+            archive_corrupt(path)?;
+            Ok(empty_bindings())
+        }
+    }
+}
+
+pub fn save_bindings_at(path: &Path, file: &BindingFile) -> Result<(), String> {
+    let body = serde_json::to_string_pretty(file)
+        .map_err(|e| format!("序列化 bridge-bindings.json 失败: {e}"))?;
+    write_text_atomic(path, &format!("{body}\n"))
+}
+
+/// 查一个会话的绑定（acp.rs spawn 注入的入口；默认路径包装）。
+pub fn binding_for(session_id: &str) -> Option<BridgeSelection> {
+    let path = bindings_path()?;
+    binding_for_at(&path, session_id).ok().flatten()
+}
+
+pub fn binding_for_at(path: &Path, session_id: &str) -> Result<Option<BridgeSelection>, String> {
+    Ok(load_bindings_at(path)?.bindings.get(session_id).cloned())
+}
+
+/// 写 / 清绑定，返回**之前的**绑定（None = 原本没有）。
+fn put_binding_at(
+    path: &Path,
+    session_id: &str,
+    selection: Option<&BridgeSelection>,
+) -> Result<Option<BridgeSelection>, String> {
+    let mut file = load_bindings_at(path)?;
+    let previous = file.bindings.remove(session_id);
+    if let Some(selection) = selection {
+        file.bindings.insert(session_id.to_string(), selection.clone());
+    }
+    save_bindings_at(path, &file)?;
+    Ok(previous)
+}
+
+/// bridge_bind 本体（默认路径包装；命令层先把 session 的 agent_id 查出来）。
+pub fn bind_session(
+    session_id: &str,
+    agent_id: Option<&str>,
+    selection: Option<BridgeSelection>,
+) -> Result<(), String> {
+    let bindings = bindings_path().ok_or_else(|| "无法定位用户目录".to_string())?;
+    let credentials = credentials_path().ok_or_else(|| "无法定位用户目录".to_string())?;
+    let grok_config = grok_config_path().ok_or_else(|| "无法定位用户目录".to_string())?;
+    let scan = crate::credentials::scan_opencode();
+    bind_session_at(
+        &bindings,
+        &credentials,
+        &grok_config,
+        &scan,
+        session_id,
+        agent_id,
+        selection,
+    )
+}
+
+/// 绑定的全部副作用（路径注入，测试不碰真实目录）：
+/// - 绑定成功 → key-plan 记 `credentials::touch_last_used`（best-effort，失败
+///   只记日志；reference 不落 store、无 lastUsedAt 可记）。
+/// - 解绑（None）且原本有绑定且会话是 grok → 移除 owned 表（表还被 grok
+///   advertise 着，留着会在列表里残留死条目）。claude 是 env 注入，进程退出
+///   即还原，无需清理。
+pub fn bind_session_at(
+    bindings_path: &Path,
+    credentials_path: &Path,
+    grok_config_path: &Path,
+    opencode_scan: &AgentScan,
+    session_id: &str,
+    agent_id: Option<&str>,
+    selection: Option<BridgeSelection>,
+) -> Result<(), String> {
+    match selection {
+        Some(selection) => {
+            let resolved = validate_selection_at(credentials_path, opencode_scan, &selection)?;
+            put_binding_at(bindings_path, session_id, Some(&selection))?;
+            // §4.2 lastUsedAt：绑定时记一笔。best-effort —— 存不下不该让绑定
+            // 失败。reference 型的条目不住在 store 里（nothing is stored
+            // twice），没有地方记，也不该为了记账把它落盘。
+            if matches!(resolved, BoundPreset::Store(_)) {
+                if let Err(error) =
+                    crate::credentials::touch_last_used_at(credentials_path, &selection.entry_id)
+                {
+                    crate::debug_log::append(
+                        "bridge",
+                        "warn",
+                        session_id,
+                        "touch_last_used failed",
+                        Some(&error),
+                    );
+                }
+            }
+            crate::debug_log::append(
+                "bridge",
+                "info",
+                session_id,
+                "model bridge bound",
+                Some(&format!(
+                    "entry={} model={} agent={}",
+                    selection.entry_id,
+                    selection.model_id,
+                    agent_id.unwrap_or("(unknown)")
+                )),
+            );
+            Ok(())
+        }
+        None => {
+            let previous = put_binding_at(bindings_path, session_id, None)?;
+            if previous.is_none() {
+                return Ok(());
+            }
+            let was_grok =
+                matches!(classify_agent(agent_id.unwrap_or("")), BridgeAgent::GrokBuild);
+            if was_grok {
+                match remove_grok_model_tables_at(grok_config_path) {
+                    Ok(_) => crate::debug_log::append(
+                        "bridge",
+                        "info",
+                        session_id,
+                        "grok owned model tables removed on unbind",
+                        None,
+                    ),
+                    Err(error) => crate::debug_log::append(
+                        "bridge",
+                        "warn",
+                        session_id,
+                        "failed to remove grok owned model tables",
+                        Some(&error),
+                    ),
+                }
+            } else {
+                // claude 是 env 注入，进程退出即消失，无需还原（§4.4）。
+                crate::debug_log::append("bridge", "info", session_id, "model bridge unbound", None);
+            }
+            Ok(())
+        }
+    }
+}
+
+/// 绑定 entry_id 解析出的直连 preset，以及它来自哪一侧。
+enum BoundPreset {
+    /// 凭据库里的 key-plan（preset 已核实存在）。
+    Store(&'static ProviderPreset),
+    /// opencode auth.json 现场扫描出的 reference（preset 由 provider 映射命中）。
+    Reference(&'static ProviderPreset),
+}
+
+/// 绑定 entry_id → 直连 preset 的统一解析（validate / injection 共用）。
+///
+/// key-plan 走凭据库；reference 匹配实时扫描结果 —— 扫描是 reference 的唯一
+/// 权威来源（§2「用时现场读」），auth.json 里的条目消失或改成 OAuth 登录态后
+/// 这里就解析不出，Err 给 acp.rs 走「残留绑定降级为普通会话 + warn」的既有
+/// 路径。
+fn resolve_bound_preset(
+    credentials_path: &Path,
+    opencode_scan: &AgentScan,
+    entry_id: &str,
+) -> Result<BoundPreset, String> {
+    let store = crate::credentials::load_store_at(credentials_path)?;
+    if let Some(entry) = store.entries.iter().find(|entry| entry.id == entry_id) {
+        if entry.kind != CredentialKind::KeyPlan {
+            return Err(format!(
+                "凭证 `{entry_id}` 不是 key 型 plan（kind = {}），无法直连",
+                kind_str(entry.kind)
+            ));
+        }
+        let preset_id = entry
+            .preset
+            .as_deref()
+            .ok_or_else(|| format!("凭证 `{entry_id}` 缺少 preset"))?;
+        let preset = find_preset(preset_id)
+            .ok_or_else(|| format!("凭证 `{entry_id}` 的 preset `{preset_id}` 不在预设表内"))?;
+        return Ok(BoundPreset::Store(preset));
+    }
+    if let Some(entry) = opencode_scan.entries.iter().find(|entry| {
+        entry.id == entry_id && entry.kind == CredentialKind::Reference
+    }) {
+        let provider = ref_path_provider(entry.ref_path.as_deref()).ok_or_else(|| {
+            format!("凭证 `{entry_id}` 的 ref 路径解析不出 provider-id，无法直连")
+        })?;
+        let preset = preset_for_opencode_provider(&provider).ok_or_else(|| {
+            format!(
+                "opencode provider `{provider}` 未映射到任何直连 preset \
+                （没有核实过的 L1 端点），无法直连"
+            )
+        })?;
+        return Ok(BoundPreset::Reference(preset));
+    }
+    Err(format!(
+        "绑定引用的凭证 `{entry_id}` 不存在（凭据库与 opencode auth.json 的扫描里都没有）"
+    ))
+}
+
+/// 绑定校验：key-plan 须在凭据库内且 preset 在表内；reference 须 ref 路径
+/// 解析得出 provider-id 且映射到 preset。返回解析结果，供调用方区分来源
+/// （lastUsedAt 只记 key-plan）。
+fn validate_selection_at(
+    credentials_path: &Path,
+    opencode_scan: &AgentScan,
+    selection: &BridgeSelection,
+) -> Result<BoundPreset, String> {
+    if selection.model_id.trim().is_empty() {
+        return Err("model_id 不能为空".to_string());
+    }
+    resolve_bound_preset(credentials_path, opencode_scan, &selection.entry_id)
+}
+
+// ─── grok owned 表写入器（C / S3 实测约束）──────────────────────────────────
+
+/// owned 段的所有权标记行。整行匹配才认领 / 删除。
+const GROK_OWNED_MARKER: &str = "# ── marionette key-bridge (owned) ──";
+/// 我们在 grok config 里的模型命名空间前缀。
+const GROK_MODEL_PREFIX: &str = "marionette/";
+/// grok owned 表引用的 env 名（spawn 时注入明文 key；`$VAR` 展开实测有效）。
+pub const GROK_KEY_ENV: &str = "MARIONETTE_PROVIDER_KEY";
+
+/// TOML basic string 转义（表头键与值共用；只转义会破坏引号的两个字符）。
+fn toml_escape(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn grok_table_name(model_id: &str) -> String {
+    format!("{GROK_MODEL_PREFIX}{model_id}")
+}
+
+fn grok_table_header(name: &str) -> String {
+    format!("[model.\"{}\"]", toml_escape(name))
+}
+
+/// 我们想要的 owned 块全文（标记行 + 表头 + 五个字段）。
+/// `base_url` 由调用方给：生产路径是 grok_dialect 规整器的环回地址（剥离
+/// `model_id` 方言字段后再转发到 preset 的 chat 端点），测试可传任意字面量。
+fn grok_owned_block(model_id: &str, preset: &ProviderPreset, base_url: &str, key_env_name: &str) -> String {
+    format!(
+        concat!(
+            "{marker}\n",
+            "{header}\n",
+            "model = \"{model}\"\n",
+            "name = \"{name} (via Marionette)\"\n",
+            "base_url = \"{base}\"\n",
+            "api_backend = \"chat_completions\"\n",
+            "api_key = \"${key_env}\"\n",
+        ),
+        marker = GROK_OWNED_MARKER,
+        header = grok_table_header(&grok_table_name(model_id)),
+        model = toml_escape(model_id),
+        name = toml_escape(preset.label),
+        base = toml_escape(base_url),
+        key_env = key_env_name,
+    )
+}
+
+/// grok channel 的 base_url：走方言规整器（环回，剥 `model_id` 后转发到
+/// preset.chat_base）。规整器起不来（端口全被占之类的极端情形）时退回直连
+/// 端点——多轮对话会踩 400，但单轮可用，好过完全不可用；退化要留痕。
+/// 跨用 channel 的 base：走方言规整器（环回，按路径区分 anthropic/chat 上游，
+/// 剥离已知方言字段、按 preset 叠加必需头——opencode-go 的会话头）后再转发。
+/// claude 与 grok 共用同一地址（协议由 agent 自拼的路径决定）。规整器起不来
+/// （端口全被占之类的极端情形）时退回直连端点——opencode-go 目标会缺会话头
+/// 而不可用，其余 preset 多轮可能踩方言 400，但好过完全不可用；退化要留痕。
+fn channel_base(preset: &ProviderPreset) -> String {
+    let fallback = preset.chat_base.unwrap_or_default().to_string();
+    match crate::grok_dialect::channel_base_url(preset.id) {
+        Ok(url) => url,
+        Err(error) => {
+            crate::debug_log::append(
+                "bridge",
+                "warn",
+                "",
+                "dialect normalizer unavailable, falling back to direct endpoint",
+                Some(&error),
+            );
+            fallback
+        }
+    }
+}
+
+/// claude 侧的直连回退用 anthropic 端点（claude 拼的是 /v1/messages）。
+fn claude_channel_base(preset: &ProviderPreset) -> String {
+    let fallback = preset.anthropic_base.unwrap_or_default().to_string();
+    match crate::grok_dialect::channel_base_url(preset.id) {
+        Ok(url) => url,
+        Err(error) => {
+            crate::debug_log::append(
+                "bridge",
+                "warn",
+                "",
+                "dialect normalizer unavailable, claude falls back to direct anthropic endpoint",
+                Some(&error),
+            );
+            fallback
+        }
+    }
+}
+
+/// 一段文档：首个表头之前的序言段（header = None），或一张表（表头行 + 属于
+/// 它的行，表头行自身也在 lines 里）。
+#[derive(Debug, Clone)]
+struct TomlBlock {
+    header: Option<String>,
+    lines: Vec<String>,
+}
+
+/// 按表头切分 TOML 文本，行级原文搬运。
+///
+/// 对多行字符串（`"""` / `'''`）里的伪装表头行保持不敏感：进入多行字符串后
+/// 逐行只判闭合定界符，不认表头。真实文件另由 toml crate 整体校验兜底
+/// （ensure / remove 在手术前后都会校验）。
+fn split_blocks(text: &str) -> Vec<TomlBlock> {
+    let mut blocks: Vec<TomlBlock> = vec![TomlBlock {
+        header: None,
+        lines: Vec::new(),
+    }];
+    let mut multiline: Option<&'static str> = None;
+    for raw in text.lines() {
+        let line = raw.strip_suffix('\r').unwrap_or(raw).to_string();
+        if let Some(delim) = multiline {
+            blocks.last_mut().unwrap().lines.push(line.clone());
+            if line.matches(delim).count() % 2 == 1 {
+                multiline = None;
+            }
+            continue;
+        }
+        if line.trim_start().starts_with('[') {
+            blocks.push(TomlBlock {
+                header: Some(line.trim_start().to_string()),
+                lines: vec![line.clone()],
+            });
+        } else {
+            blocks.last_mut().unwrap().lines.push(line.clone());
+        }
+        for delim in ["\"\"\"", "'''"] {
+            if line.matches(delim).count() % 2 == 1 {
+                multiline = Some(delim);
+            }
+        }
+    }
+    blocks
+}
+
+/// 解析 `[model."<name>"]` / `[model.<bare>]` 表头 → name。
+/// `models`（复数表）与其它表不认 —— 与 grok channel 的语义一致。
+fn model_table_name(header: &str) -> Option<String> {
+    let header = header.trim();
+    if !header.starts_with('[') || header.starts_with("[[") {
+        return None;
+    }
+    let end = header.find(']')?;
+    let inner = header[1..end].trim();
+    let rest = inner.strip_prefix("model")?;
+    let rest = rest.strip_prefix('.')?;
+    parse_quoted_key(rest)
+}
+
+/// 解析 dotted key 的余段：`"quoted"`（含转义）、`'literal'` 或裸 key。
+fn parse_quoted_key(part: &str) -> Option<String> {
+    if let Some(quoted) = part.strip_prefix('"') {
+        let mut out = String::new();
+        let mut chars = quoted.chars();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => out.push(chars.next()?),
+                '"' => return Some(out),
+                _ => out.push(c),
+            }
+        }
+        None // 没闭合 —— 不是合法表头
+    } else if let Some(literal) = part.strip_prefix('\'') {
+        literal.split_once('\'').map(|(name, _)| name.to_string())
+    } else {
+        part.split('.')
+            .next()
+            .map(|bare| bare.trim().to_string())
+    }
+}
+
+fn blocks_to_text(blocks: &[TomlBlock]) -> String {
+    let mut out = String::new();
+    for block in blocks {
+        for line in &block.lines {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// ensure 的本体：写 / 更新 grok config.toml 里的 owned 表。
+///
+/// 返回 `Ok(true)` = 写入了；`Ok(false)` = 已存在且逐字节一致（零写入）。
+/// 原则（S3 实测约束）：
+/// - **原文搬运**其余内容（用户自定义表、grok 自己写的 `[marketplace]` 段）。
+/// - **绝不设 `[models] default`**（会让 Grok 退出自身登录，§10.6）。
+/// - **幂等**：一致则不碰文件。
+/// - **写前重读**：每次调用现读现写（无全文缓存），修改是块级替换，容忍
+///   grok 并发自改写。
+/// - **解析失败不写半截**：原文或产物任一过不了 toml 校验就中止且不动文件。
+pub fn ensure_grok_model_table_at(
+    config_path: &Path,
+    model_id: &str,
+    preset: &ProviderPreset,
+    key_env_name: &str,
+) -> Result<bool, String> {
+    let model_id = model_id.trim();
+    if model_id.is_empty() {
+        return Err("model_id 不能为空".to_string());
+    }
+    if preset.chat_base.is_none() {
+        return Err(format!(
+            "preset `{}` 没有核实过的 chat 端点，拒绝写 grok 表",
+            preset.id
+        ));
+    }
+    let desired = grok_owned_block(model_id, preset, &channel_base(preset), key_env_name);
+    let wanted_name = grok_table_name(model_id);
+
+    let original = match fs::read_to_string(config_path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(format!("读取 grok config.toml 失败: {error}")),
+    };
+    if !original.trim().is_empty() {
+        toml::from_str::<toml::Value>(&original)
+            .map_err(|e| format!("grok config.toml 解析失败（{e}）— 拒绝写入半截"))?;
+    }
+
+    let mut blocks = split_blocks(&original);
+    let existing = blocks.iter().position(|block| {
+        block
+            .header
+            .as_deref()
+            .and_then(model_table_name)
+            .map(|name| name == wanted_name)
+            .unwrap_or(false)
+    });
+
+    match existing {
+        Some(index) => {
+            let block = &blocks[index];
+            // 已存在的块开头可能带我们旧版的标记行；比较时剥离，正文（表头+
+            // 字段）逐字节一致才算幂等。
+            let body: String = block
+                .lines
+                .iter()
+                .filter(|line| line.trim() != GROK_OWNED_MARKER)
+                .map(|line| format!("{line}\n"))
+                .collect();
+            let desired_body: String = desired
+                .lines()
+                .filter(|line| !line.trim().is_empty() && *line != GROK_OWNED_MARKER)
+                .map(|line| format!("{line}\n"))
+                .collect();
+            if body == desired_body {
+                return Ok(false);
+            }
+            blocks[index] = TomlBlock {
+                header: block.header.clone(),
+                lines: desired.lines().map(str::to_string).collect(),
+            };
+        }
+        None => {
+            // 追加到文件尾。原文件非空且无结尾换行时补一个空行，避免表头粘行。
+            if !original.trim().is_empty() && !original.ends_with('\n') {
+                if let Some(last) = blocks.last_mut() {
+                    last.lines.push(String::new());
+                }
+            }
+            blocks.push(TomlBlock {
+                header: Some(grok_table_header(&wanted_name)),
+                lines: desired.lines().map(str::to_string).collect(),
+            });
+        }
+    }
+
+    let output = blocks_to_text(&blocks);
+    toml::from_str::<toml::Value>(&output)
+        .map_err(|e| format!("生成的 grok config.toml 未通过 TOML 校验（{e}）— 已放弃写入"))?;
+    write_text_atomic(config_path, &output)?;
+    Ok(true)
+}
+
+/// remove 的本体：删掉**所有** `marionette/` 前缀的 owned 表 + 所有 owned
+/// 标记行（表删光了标记必然孤立，含残留的半个 owned 段）。返回是否动了文件。
+pub fn remove_grok_model_tables_at(config_path: &Path) -> Result<bool, String> {
+    let original = match fs::read_to_string(config_path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("读取 grok config.toml 失败: {error}")),
+    };
+    if original.trim().is_empty() {
+        return Ok(false);
+    }
+    toml::from_str::<toml::Value>(&original)
+        .map_err(|e| format!("grok config.toml 解析失败（{e}）— 拒绝写入半截"))?;
+
+    let mut blocks = split_blocks(&original);
+    // 只删 marionette/ 前缀的 model 表；序言、非 model 表（[cli]/[models]/
+    // [marketplace]/用户自定义表）一律保留。
+    blocks.retain(|block| {
+        match block.header.as_deref().and_then(model_table_name) {
+            Some(name) => !name.starts_with(GROK_MODEL_PREFIX),
+            None => true,
+        }
+    });
+    for block in &mut blocks {
+        block.lines.retain(|line| line.trim() != GROK_OWNED_MARKER);
+    }
+    // 尾部只剩空行的段收掉，避免文件尾堆积空行。
+    while blocks.len() > 1 {
+        let last_is_empty = blocks
+            .last()
+            .map(|block| block.lines.iter().all(|line| line.trim().is_empty()))
+            .unwrap_or(false);
+        if last_is_empty {
+            blocks.pop();
+        } else {
+            break;
+        }
+    }
+    let output = blocks_to_text(&blocks);
+    if output == original {
+        return Ok(false);
+    }
+    if !output.trim().is_empty() {
+        toml::from_str::<toml::Value>(&output).map_err(|e| {
+            format!("生成的 grok config.toml 未通过 TOML 校验（{e}）— 已放弃写入")
+        })?;
+    }
+    write_text_atomic(config_path, &output)?;
+    Ok(true)
+}
+
+/// 真实路径包装：ensure（key env 固定 `MARIONETTE_PROVIDER_KEY`）。
+pub fn ensure_grok_model_table(model_id: &str, preset_id: &str) -> Result<bool, String> {
+    let preset = find_preset(preset_id).ok_or_else(|| format!("未知 preset `{preset_id}`"))?;
+    let path = grok_config_path().ok_or_else(|| "无法定位用户目录".to_string())?;
+    ensure_grok_model_table_at(&path, model_id, preset, GROK_KEY_ENV)
+}
+
+/// 真实路径包装：删除全部 marionette/ owned 表。目前没有调用方（解绑路径
+/// 走 `bind_session` → `remove_grok_model_tables_at` 的路径注入版）；保留
+/// 是为了给未来的全局清理（如设置页「移除全部跨用表」）一个直接入口。
+#[allow(dead_code)]
+pub fn remove_grok_model_tables() -> Result<bool, String> {
+    let path = grok_config_path().ok_or_else(|| "无法定位用户目录".to_string())?;
+    remove_grok_model_tables_at(&path)
+}
+
+// ─── spawn 注入解析（D；acp.rs 的 env 注入段调用）───────────────────────────
+
+/// 一个会话该拿到的注入形态。key 明文**不在这里** —— acp.rs 用
+/// `peek_spawn_key`（key-plan = 凭据库 DPAPI 现解；reference = 现场读原文件）
+/// 解出后直接放进 env，不在结构体间传递。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SpawnInjection {
+    /// claude-code：三个 env（base / token / model）。§4.8：跨用会话**不发**
+    /// set_model，模型由 env 钉住。
+    ClaudeEnv {
+        base_url: String,
+        model: String,
+    },
+    /// grok：先 ensure_grok_model_table（`marionette/<model_id>` 表），再 env
+    /// MARIONETTE_PROVIDER_KEY=key（表里的 `$MARIONETTE_PROVIDER_KEY` 展开）。
+    /// §4.8：grok 相反，**必须发** set_model 选 `marionette/<model>`（前端职责）。
+    GrokTable {
+        model_id: String,
+        preset_id: String,
+    },
+}
+
+/// 按注入策略把 (preset, agent, model) 解析成注入形态。
+/// None = 该 agent 没有对应端点或不归 M1 管 —— 静默跳过。
+fn injection_for(
+    preset: &ProviderPreset,
+    agent: BridgeAgent,
+    model_id: &str,
+) -> Option<SpawnInjection> {
+    match agent {
+        BridgeAgent::ClaudeCode => preset
+            .anthropic_base
+            .map(|_direct| SpawnInjection::ClaudeEnv {
+                // 走规整器：opencode-go 的 /anthropic 端点要求会话头（claude
+                // 不会自发带），且未来 claude 侧方言（billing 行等）在此落地。
+                base_url: claude_channel_base(preset),
+                model: model_id.to_string(),
+            }),
+        BridgeAgent::GrokBuild => preset
+            .chat_base
+            .is_some()
+            .then(|| SpawnInjection::GrokTable {
+                model_id: model_id.to_string(),
+                preset_id: preset.id.to_string(),
+            }),
+        _ => None,
+    }
+}
+
+/// spawn 注入解析（默认路径包装；acp.rs 用）。
+/// key-plan 与 reference 统一走 [`resolve_bound_preset`]：解析不出条目 / 映射
+/// 不上 preset → Err 说明为什么跳过（绑定可能引用了已消失的凭证或 auth.json
+/// 里改成了登录态 —— 残留无害，但要留下线索）。
+pub fn injection_for_agent(
+    agent_id: &str,
+    entry_id: &str,
+    model_id: &str,
+) -> Result<Option<SpawnInjection>, String> {
+    let path = credentials_path().ok_or_else(|| "无法定位用户目录".to_string())?;
+    let scan = crate::credentials::scan_opencode();
+    injection_for_agent_at(&path, &scan, agent_id, entry_id, model_id)
+}
+
+pub fn injection_for_agent_at(
+    credentials_path: &Path,
+    opencode_scan: &AgentScan,
+    agent_id: &str,
+    entry_id: &str,
+    model_id: &str,
+) -> Result<Option<SpawnInjection>, String> {
+    let agent = classify_agent(agent_id);
+    if !matches!(agent, BridgeAgent::ClaudeCode | BridgeAgent::GrokBuild) {
+        return Ok(None);
+    }
+    // Reference 与 KeyPlan 走同一套注入（claude env / grok owned 表）——
+    // 唯一的区别是钥匙来源（见 peek_spawn_key），注入形态完全一致。
+    let preset = match resolve_bound_preset(credentials_path, opencode_scan, entry_id)? {
+        BoundPreset::Store(preset) | BoundPreset::Reference(preset) => preset,
+    };
+    Ok(injection_for(preset, agent, model_id))
+}
+
+// ─── reference 现场读钥匙（C；§2「用时现场读原文件」）──────────────────────
+
+/// 现场读一条 reference 的 key 明文。按 ref_path 找到 auth.json、按 provider-id
+/// 取条目；条目语义复用 `provider_usage::strict_api_key_of` —— OAuth / 混合
+/// 条目拒绝（直连需要真 API key），key 有效性规则与 `auth_key_for` 一致。
+/// 读到的明文**绝不打日志、绝不落盘**，只进调用方注入的子进程 env（§5）。
+pub fn peek_reference_secret(entry: &CredentialEntry) -> Result<String, String> {
+    let ref_path = entry
+        .ref_path
+        .as_deref()
+        .ok_or_else(|| format!("reference `{}` 没有 ref 路径", entry.id))?;
+    let (path, provider) = ref_path
+        .rsplit_once('#')
+        .ok_or_else(|| format!("ref 路径不是 `文件路径#provider-id` 形态: {ref_path}"))?;
+    let text = fs::read_to_string(path)
+        .map_err(|e| format!("读取 reference 源文件失败（`{provider}`）: {e}"))?;
+    let auth: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("reference 源文件解析失败（`{provider}`）: {e}"))?;
+    let value = auth
+        .get(provider)
+        .ok_or_else(|| format!("`{provider}` 条目已不在 reference 源文件里"))?;
+    crate::provider_usage::strict_api_key_of(value)
+        .map_err(|e| format!("`{provider}` 的 key 现场读失败: {e}"))
+}
+
+/// spawn 注入的钥匙统一解析（acp.rs 的注入段调用）：key-plan → 凭据库 DPAPI
+/// 现解；reference → 现场扫描匹配后读原文件。明文只在内存与子进程 env（§5）。
+pub fn peek_spawn_key(entry_id: &str) -> Option<String> {
+    let path = credentials_path()?;
+    let scan = crate::credentials::scan_opencode();
+    peek_spawn_key_at(&path, &scan, entry_id)
+}
+
+fn peek_spawn_key_at(
+    credentials_path: &Path,
+    opencode_scan: &AgentScan,
+    entry_id: &str,
+) -> Option<String> {
+    // key-plan：store 现解（错误按既有语义 flat 成 None）。
+    if let Some(key) = crate::credentials::peek_secret_at(credentials_path, entry_id)
+        .ok()
+        .flatten()
+    {
+        return Some(key);
+    }
+    // reference：扫描结果里按 id 匹配后现场读。匹配不到 / 读不出（源文件没了、
+    // 条目改成 OAuth）→ None —— acp.rs 侧配合 injection 的结果走降级路径。
+    let entry = opencode_scan
+        .entries
+        .iter()
+        .find(|entry| entry.id == entry_id && entry.kind == CredentialKind::Reference)?;
+    peek_reference_secret(entry).ok()
+}
+
+// ─── codex providers/set 框架（D；M1 只搭框架不触发）────────────────────────
+
+/// `providers/set` 的参数（S2 实测处方：codex-acp 只认 `apiType:"openai"` =
+/// Responses 协议；key 经 headers 进程内传递，零落盘）。acp.rs 在 initialize
+/// 应答后调用。
+pub(crate) fn codex_providers_set_params(base_url: &str, api_key: &str) -> serde_json::Value {
+    serde_json::json!({
+        "providerId": "openai",
+        "apiType": "openai",
+        "baseUrl": base_url,
+        "headers": { "Authorization": format!("Bearer {api_key}") },
+    })
+}
+
+/// codex 绑定 → (baseUrl, key)。**M1 恒为 None**：presets 表里没有
+/// Responses 协议核实过的端点（chat-completions-only 的端点被 codex 硬拒，
+/// §4.4 S2），所以 codex 场景整体移到 M2 的翻译引擎（`providers/set` 指向
+/// 引擎的 `/v1/responses`）。框架先立着，返回类型即 M2 的接线点。
+pub(crate) fn codex_bridge_route(_selection: &BridgeSelection) -> Option<(String, String)> {
+    None
+}
+
+/// initialize 应答是否声明了 `agentCapabilities.providers`（providers/set 的
+/// 前置条件，S2 实测）。
+pub(crate) fn advertises_providers(initialize_result: &serde_json::Value) -> bool {
+    initialize_result
+        .get("agentCapabilities")
+        .and_then(|caps| caps.get("providers"))
+        .map(|providers| !providers.is_null())
+        .unwrap_or(false)
+}
+
+// ─── 命令包装（commands.rs 调）──────────────────────────────────────────────
+
+/// bridge_delete_entry：直接落到 credentials 存储。
+pub fn delete_entry(id: &str) -> Result<(), String> {
+    crate::credentials::delete_entry(id)
+}
+
+// ─── 测试 ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "marionette_test_bridge_{tag}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    // ─── presets 完整性 ─────────────────────────────────────────────────────
+
+    /// 每个 preset 至少一个非 None base（否则它谁也服务不了）；id 唯一；
+    /// DeepSeek 双端点这两个已知锚点不许被改坏。
+    #[test]
+    fn presets_table_is_complete_and_anchored() {
+        let table = presets();
+        assert!(
+            table.len() >= 6,
+            "至少六家：deepseek/opencode-go/glm/kimi/openrouter/xai"
+        );
+        let mut ids: Vec<&str> = table.iter().map(|p| p.id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), table.len(), "preset id 必须唯一");
+        for preset in table {
+            assert!(
+                preset.anthropic_base.is_some() || preset.chat_base.is_some(),
+                "preset `{}` 两个端点都是 None —— 至少要有一个核实过的 base",
+                preset.id
+            );
+            assert!(!preset.last_verified.is_empty(), "preset `{}` 缺 last_verified", preset.id);
+        }
+        for required in ["deepseek", "opencode-go", "glm", "kimi", "openrouter", "xai"] {
+            assert!(find_preset(required).is_some(), "缺 preset `{required}`");
+        }
+        let deepseek = find_preset("deepseek").unwrap();
+        assert_eq!(deepseek.anthropic_base, Some("https://api.deepseek.com/anthropic"));
+        assert_eq!(deepseek.chat_base, Some("https://api.deepseek.com/v1"));
+        // 端点必须是 https 绝对 URL（要写进 grok 表 / claude env 的东西）。
+        for preset in table {
+            for base in [preset.anthropic_base, preset.chat_base].into_iter().flatten() {
+                assert!(
+                    base.starts_with("https://"),
+                    "preset `{}` 的 base 不是 https: {base}",
+                    preset.id
+                );
+            }
+        }
+    }
+
+    /// xai 的 anthropic 端点是根形态（2026-10-16 以 magpie presets.go 实测对照
+    /// 修正）：/v1 形态会拼出 /v1/v1/messages——模型列表能答、每条消息 404。
+    #[test]
+    fn xai_anthropic_is_root_form() {
+        let xai = find_preset("xai").unwrap();
+        assert_eq!(xai.anthropic_base, Some("https://api.x.ai"));
+        assert_eq!(xai.chat_base, Some("https://api.x.ai/v1"));
+    }
+
+    // ─── 绑定生命周期 ───────────────────────────────────────────────────────
+
+    #[test]
+    fn binding_lifecycle_roundtrips_and_validates() {
+        let dir = temp_dir("bindings");
+        let bindings = dir.join("bridge-bindings.json");
+        let credentials = dir.join("credentials.json");
+        // 假 opencode home（本测试没有 auth.json fixture → 空扫描，足矣）。
+        let scan = crate::credentials::scan_opencode_at(&dir);
+        crate::credentials::add_key_plan_at(&credentials, "opencode-go", "OpenCode Go", "sk-bind-9f2c11")
+            .unwrap();
+
+        // 绑定 → 文件是 camelCase schema。
+        let selection = BridgeSelection {
+            entry_id: "opencode-go".to_string(),
+            model_id: "deepseek-v4-pro".to_string(),
+        };
+        bind_session_at(
+            &bindings,
+            &credentials,
+            &dir.join("config.toml"),
+            &scan,
+            "sess-1",
+            Some("claude-code"),
+            Some(selection.clone()),
+        )
+        .unwrap();
+        let raw = fs::read_to_string(&bindings).unwrap();
+        assert!(
+            raw.contains("\"entryId\": \"opencode-go\"")
+                && raw.contains("\"modelId\": \"deepseek-v4-pro\""),
+            "camelCase schema 缺失: {raw}"
+        );
+        assert!(raw.contains("\"version\": 1"));
+        assert_eq!(binding_for_at(&bindings, "sess-1").unwrap().as_ref(), Some(&selection));
+
+        // 绑定记了 touch_last_used。
+        let store = crate::credentials::load_store_at(&credentials).unwrap();
+        assert!(
+            store.entries.iter().any(|entry| entry.last_used_at.is_some()),
+            "绑定应记 touch_last_used"
+        );
+
+        // 重绑覆盖，不会累积。
+        let selection2 = BridgeSelection {
+            entry_id: "opencode-go".to_string(),
+            model_id: "deepseek-v4.1-flash".to_string(),
+        };
+        bind_session_at(
+            &bindings,
+            &credentials,
+            &dir.join("config.toml"),
+            &scan,
+            "sess-1",
+            Some("claude-code"),
+            Some(selection2.clone()),
+        )
+        .unwrap();
+        assert_eq!(binding_for_at(&bindings, "sess-1").unwrap().as_ref(), Some(&selection2));
+
+        // 校验：未知 entry / 非 key-plan / 空 model 拒绝且文件不动。
+        let before = fs::read_to_string(&bindings).unwrap();
+        assert!(bind_session_at(
+            &bindings,
+            &credentials,
+            &dir.join("config.toml"),
+            &scan,
+            "sess-2",
+            Some("claude-code"),
+            Some(BridgeSelection {
+                entry_id: "nope".to_string(),
+                model_id: "x".to_string(),
+            })
+        )
+        .is_err());
+        let subscription_store = serde_json::json!({
+            "version": 1,
+            "entries": [{
+                "id": "claude/login", "kind": "subscription", "label": "Claude Code 登录",
+                "source": "scan:claude", "createdAt": "0"
+            }]
+        });
+        fs::write(
+            dir.join("credentials-sub.json"),
+            serde_json::to_string_pretty(&subscription_store).unwrap(),
+        )
+        .unwrap();
+        assert!(bind_session_at(
+            &bindings,
+            &dir.join("credentials-sub.json"),
+            &dir.join("config.toml"),
+            &scan,
+            "sess-2",
+            Some("claude-code"),
+            Some(BridgeSelection {
+                entry_id: "claude/login".to_string(),
+                model_id: "x".to_string(),
+            })
+        )
+        .is_err());
+        assert!(bind_session_at(
+            &bindings,
+            &credentials,
+            &dir.join("config.toml"),
+            &scan,
+            "sess-2",
+            Some("claude-code"),
+            Some(BridgeSelection {
+                entry_id: "opencode-go".to_string(),
+                model_id: "  ".to_string(),
+            })
+        )
+        .is_err());
+        assert_eq!(fs::read_to_string(&bindings).unwrap(), before, "校验失败不能动文件");
+
+        // 解绑 → 绑定清空；再解绑（原本没有）也 OK。
+        bind_session_at(
+            &bindings,
+            &credentials,
+            &dir.join("config.toml"),
+            &scan,
+            "sess-1",
+            Some("claude-code"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(binding_for_at(&bindings, "sess-1").unwrap(), None);
+        bind_session_at(
+            &bindings,
+            &credentials,
+            &dir.join("config.toml"),
+            &scan,
+            "sess-1",
+            Some("claude-code"),
+            None,
+        )
+        .unwrap();
+
+        // 损坏 → 留档重建，原始字节一份不丢。
+        let corrupt = r#"{"version":1,"bindings":{"sess-x":{"entryId":"#;
+        fs::write(&bindings, corrupt).unwrap();
+        let file = load_bindings_at(&bindings).unwrap();
+        assert!(file.bindings.is_empty());
+        let archives: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|name| name.starts_with("bridge-bindings.corrupt-"))
+            .collect();
+        assert_eq!(archives.len(), 1, "应恰好留档一份: {archives:?}");
+        assert_eq!(
+            fs::read_to_string(dir.join(archives.into_iter().next().unwrap())).unwrap(),
+            corrupt,
+            "留档必须逐字节保留"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// grok 解绑语义（F）：绑定置 None 且原本是 grok 绑定 → 移除 owned 表；
+    /// claude 解绑不动 grok 文件。
+    #[test]
+    fn unbind_removes_grok_tables_only_for_grok_sessions() {
+        let dir = temp_dir("unbind");
+        let bindings = dir.join("bridge-bindings.json");
+        let credentials = dir.join("credentials.json");
+        let grok_config = dir.join("config.toml");
+        let scan = crate::credentials::scan_opencode_at(&dir);
+        crate::credentials::add_key_plan_at(&credentials, "deepseek", "DeepSeek", "sk-unbind-aabb99")
+            .unwrap();
+        let selection = BridgeSelection {
+            entry_id: "deepseek".to_string(),
+            model_id: "deepseek-flash".to_string(),
+        };
+
+        // grok 会话：绑定 → 表由 spawn 时写入（这里模拟一次 spawn 的产物）。
+        bind_session_at(
+            &bindings,
+            &credentials,
+            &grok_config,
+            &scan,
+            "grok-sess",
+            Some("grok-build"),
+            Some(selection),
+        )
+        .unwrap();
+        let preset = find_preset("deepseek").unwrap();
+        ensure_grok_model_table_at(&grok_config, "deepseek-flash", preset, GROK_KEY_ENV).unwrap();
+        assert!(grok_config.is_file());
+        // 解绑 → owned 表被移除（否则 grok 列表里残留死条目）。
+        bind_session_at(
+            &bindings,
+            &credentials,
+            &grok_config,
+            &scan,
+            "grok-sess",
+            Some("grok-build"),
+            None,
+        )
+        .unwrap();
+        assert!(
+            !fs::read_to_string(&grok_config).unwrap().contains("marionette/"),
+            "grok 解绑应移除 owned 表"
+        );
+
+        // claude 会话解绑：不动 grok 文件（env 注入进程级，无需还原）。
+        bind_session_at(
+            &bindings,
+            &credentials,
+            &grok_config,
+            &scan,
+            "claude-sess",
+            Some("claude-code"),
+            Some(BridgeSelection {
+                entry_id: "deepseek".to_string(),
+                model_id: "deepseek-flash".to_string(),
+            }),
+        )
+        .unwrap();
+        ensure_grok_model_table_at(&grok_config, "deepseek-flash", preset, GROK_KEY_ENV).unwrap();
+        bind_session_at(
+            &bindings,
+            &credentials,
+            &grok_config,
+            &scan,
+            "claude-sess",
+            Some("claude-code"),
+            None,
+        )
+        .unwrap();
+        assert!(
+            fs::read_to_string(&grok_config).unwrap().contains("marionette/"),
+            "claude 解绑不该动 grok 的 owned 表"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    // ─── grok owned 表写入器三件套 ───────────────────────────────────────────
+
+    const USER_CONFIG: &str = "# grok fixture — user's own file\n\
+[cli]\n\
+auto_update = true\n\
+\n\
+[models]\n\
+default = \"grok-4.6\"\n\
+\n\
+[model.home-qwen]\n\
+model = \"qwen3.8-27b\"\n\
+base_url = \"http://100.94.137.45:8082/v1\"\n\
+name = \"Qwen3.8 (Tailscale)\"\n\
+api_key = \"user-own-key\"\n\
+\n\
+[model.\"zhipu-glm-4.7\"]\n\
+model = \"glm-4.7\"\n\
+base_url = \"https://open.bigmodel.cn/api/paas/v4\"\n\
+api_key = \"user-own-key\"\n\
+api_backend = \"chat_completions\"\n\
+\n\
+[marketplace]\n\
+official_marketplace_auto_installed = true\n";
+
+    #[test]
+    fn grok_writer_creates_table_and_preserves_user_content() {
+        let dir = temp_dir("grok_write");
+        let config = dir.join("config.toml");
+        fs::write(&config, USER_CONFIG).unwrap();
+
+        let preset = find_preset("deepseek").unwrap();
+        assert!(ensure_grok_model_table_at(&config, "deepseek-flash", preset, GROK_KEY_ENV).unwrap());
+
+        // 期望的 base：方言规整器的环回地址（剥 model_id 后转发到 chat 端点）。
+        let expected_base = crate::grok_dialect::channel_base_url("deepseek").unwrap();
+        assert!(expected_base.starts_with("http://127.0.0.1:"));
+        assert!(expected_base.contains("/p/deepseek"));
+
+        let text = fs::read_to_string(&config).unwrap();
+        // owned 表内容逐字段正确。
+        assert!(text.contains(GROK_OWNED_MARKER));
+        assert!(text.contains("[model.\"marionette/deepseek-flash\"]"));
+        assert!(text.contains("model = \"deepseek-flash\""));
+        assert!(text.contains("name = \"DeepSeek (via Marionette)\""));
+        assert!(text.contains(&format!("base_url = \"{expected_base}\"")));
+        assert!(text.contains("api_backend = \"chat_completions\""));
+        assert!(text.contains("api_key = \"$MARIONETTE_PROVIDER_KEY\""));
+        // 用户内容原样保留。
+        assert!(text.contains("[model.home-qwen]"));
+        assert!(text.contains("user-own-key"));
+        assert!(text.contains("[marketplace]"));
+        assert!(text.contains("# grok fixture — user's own file"));
+        // 绝不新增 [models] default（S3：设 default 会让 Grok 退出自身登录）。
+        assert!(text.contains("default = \"grok-4.6\""));
+        assert_eq!(text.matches("default =").count(), 1);
+        // 产物是合法 TOML，解析后我们的表字段正确。
+        let value: toml::Value = toml::from_str(&text).unwrap();
+        assert_eq!(
+            value["model"]["marionette/deepseek-flash"]["base_url"],
+            toml::Value::from(expected_base)
+        );
+        assert_eq!(
+            value["model"]["marionette/deepseek-flash"]["api_key"],
+            toml::Value::from("$MARIONETTE_PROVIDER_KEY")
+        );
+        assert_eq!(value["model"]["home-qwen"]["api_key"], toml::Value::from("user-own-key"));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 文件不存在 = 空文档：只写我们的表，不带任何用户内容。
+    #[test]
+    fn grok_writer_treats_missing_config_as_empty_document() {
+        let dir = temp_dir("grok_missing");
+        let config = dir.join("config.toml");
+        let preset = find_preset("opencode-go").unwrap();
+        assert!(ensure_grok_model_table_at(&config, "grok-4.7", preset, GROK_KEY_ENV).unwrap());
+        let text = fs::read_to_string(&config).unwrap();
+        assert!(text.starts_with(GROK_OWNED_MARKER));
+        let expected_base = crate::grok_dialect::channel_base_url("opencode-go").unwrap();
+        assert!(text.contains(&format!("base_url = \"{expected_base}\"")));
+        toml::from_str::<toml::Value>(&text).unwrap();
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn grok_writer_is_idempotent() {
+        let dir = temp_dir("grok_idempotent");
+        let config = dir.join("config.toml");
+        fs::write(&config, USER_CONFIG).unwrap();
+        let preset = find_preset("deepseek").unwrap();
+        assert!(ensure_grok_model_table_at(&config, "deepseek-flash", preset, GROK_KEY_ENV).unwrap());
+        let after_first = fs::read_to_string(&config).unwrap();
+        // 幂等：已存在且一致 → 零写入（返回 false，文件字节不动）。
+        assert!(!ensure_grok_model_table_at(&config, "deepseek-flash", preset, GROK_KEY_ENV).unwrap());
+        assert_eq!(fs::read_to_string(&config).unwrap(), after_first);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 内容漂移（端点/键名变了）→ 原位替换，同名的表仍只有一张；换模型 →
+    /// 追加第二张表，两张共存（多会话各绑各的模型）。
+    #[test]
+    fn grok_writer_replaces_stale_block_in_place() {
+        let dir = temp_dir("grok_replace");
+        let config = dir.join("config.toml");
+        fs::write(&config, USER_CONFIG).unwrap();
+        let deepseek = find_preset("deepseek").unwrap();
+        ensure_grok_model_table_at(&config, "deepseek-flash", deepseek, GROK_KEY_ENV).unwrap();
+        // 手动把 base_url 改成旧值（模拟端点/端口漂移后的刷新）。
+        let current_base = crate::grok_dialect::channel_base_url("deepseek").unwrap();
+        let stale = fs::read_to_string(&config)
+            .unwrap()
+            .replace(&current_base, "https://old.example.invalid/v1");
+        fs::write(&config, stale).unwrap();
+        assert!(ensure_grok_model_table_at(&config, "deepseek-flash", deepseek, GROK_KEY_ENV).unwrap());
+        let text = fs::read_to_string(&config).unwrap();
+        assert_eq!(
+            text.matches("[model.\"marionette/deepseek-flash\"]").count(),
+            1,
+            "同名的表只能有一张"
+        );
+        assert!(text.contains(&current_base), "刷新后应回到规整器地址");
+        assert!(!text.contains("old.example.invalid"));
+        assert!(text.contains("user-own-key"), "替换不得伤及用户表");
+        toml::from_str::<toml::Value>(&text).unwrap();
+
+        ensure_grok_model_table_at(&config, "deepseek-v4-pro", deepseek, GROK_KEY_ENV).unwrap();
+        let text = fs::read_to_string(&config).unwrap();
+        assert!(text.contains("[model.\"marionette/deepseek-flash\"]"));
+        assert!(text.contains("[model.\"marionette/deepseek-v4-pro\"]"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// S3 实测：grok 会并发改写自己的 config.toml（追加段）。写前重读 + 块级
+    /// 替换 ⇒ 外部新增内容一条不丢。
+    #[test]
+    fn grok_writer_tolerates_concurrent_external_edits() {
+        let dir = temp_dir("grok_concurrent");
+        let config = dir.join("config.toml");
+        fs::write(&config, USER_CONFIG).unwrap();
+        let preset = find_preset("deepseek").unwrap();
+        ensure_grok_model_table_at(&config, "deepseek-flash", preset, GROK_KEY_ENV).unwrap();
+
+        // grok 自写：追加一段（grok 1.x 实测追加 [marketplace] 类段）。
+        let mut concurrent = fs::read_to_string(&config).unwrap();
+        concurrent.push_str("\n[privacy]\nprivacy_banner_acked = \"2026-10-07T01:21:40Z\"\n");
+        fs::write(&config, concurrent).unwrap();
+
+        // 再 ensure（幂等路径）：不丢新增、不重写文件。
+        ensure_grok_model_table_at(&config, "deepseek-flash", preset, GROK_KEY_ENV).unwrap();
+        let text = fs::read_to_string(&config).unwrap();
+        assert!(text.contains("privacy_banner_acked"), "并发新增的段不能丢");
+        assert!(text.contains("marionette/deepseek-flash"));
+        toml::from_str::<toml::Value>(&text).unwrap();
+
+        // 内容漂移（key env 变了）+ 并发新增共存：替换我们的块，保留新增。
+        let drifted = text.replace("$MARIONETTE_PROVIDER_KEY", "$OLD_ENV");
+        fs::write(&config, drifted).unwrap();
+        assert!(ensure_grok_model_table_at(&config, "deepseek-flash", preset, GROK_KEY_ENV).unwrap());
+        let text = fs::read_to_string(&config).unwrap();
+        assert!(text.contains("$MARIONETTE_PROVIDER_KEY"));
+        assert!(!text.contains("$OLD_ENV"));
+        assert!(text.contains("privacy_banner_acked"), "替换路径也不能丢并发新增");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 解析失败不写半截：原文过不了 TOML 校验 → 报错且文件一字不动。
+    #[test]
+    fn grok_writer_refuses_to_touch_unparseable_config() {
+        let dir = temp_dir("grok_corrupt");
+        let config = dir.join("config.toml");
+        let broken = "[model.\"x\"\nbroken = = toml\n";
+        fs::write(&config, broken).unwrap();
+        let preset = find_preset("deepseek").unwrap();
+        let error =
+            ensure_grok_model_table_at(&config, "deepseek-flash", preset, GROK_KEY_ENV).unwrap_err();
+        assert!(error.contains("解析失败"), "unexpected: {error}");
+        assert_eq!(fs::read_to_string(&config).unwrap(), broken, "失败路径不能动文件");
+        // remove 同样拒绝。
+        let error = remove_grok_model_tables_at(&config).unwrap_err();
+        assert!(error.contains("解析失败"), "unexpected: {error}");
+        assert_eq!(fs::read_to_string(&config).unwrap(), broken);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// remove：删所有 marionette/ 表 + 孤立标记行，用户表逐字节保留；幂等。
+    #[test]
+    fn grok_remover_deletes_owned_tables_and_orphan_markers_only() {
+        let dir = temp_dir("grok_remove");
+        let config = dir.join("config.toml");
+        let deepseek = find_preset("deepseek").unwrap();
+        ensure_grok_model_table_at(&config, "deepseek-flash", deepseek, GROK_KEY_ENV).unwrap();
+        ensure_grok_model_table_at(&config, "deepseek-v4-pro", deepseek, GROK_KEY_ENV).unwrap();
+        // 人为制造孤立标记行（表被外部删了一半）。
+        let mut text = fs::read_to_string(&config).unwrap();
+        text.push_str(&format!("\n{GROK_OWNED_MARKER}\n"));
+        fs::write(&config, text).unwrap();
+
+        assert!(remove_grok_model_tables_at(&config).unwrap());
+        let text = fs::read_to_string(&config).unwrap();
+        assert!(!text.contains("marionette/"), "所有 marionette/ 表都应删除:\n{text}");
+        assert!(!text.contains(GROK_OWNED_MARKER), "孤立标记行也应删除:\n{text}");
+        assert!(text.trim().is_empty(), "这个文件里只有我们的东西，删完应为空:\n{text}");
+        // 幂等：再删零写入。
+        assert!(!remove_grok_model_tables_at(&config).unwrap());
+
+        // 与用户内容混排：只删我们的。
+        fs::write(&config, USER_CONFIG).unwrap();
+        ensure_grok_model_table_at(&config, "deepseek-flash", deepseek, GROK_KEY_ENV).unwrap();
+        assert!(remove_grok_model_tables_at(&config).unwrap());
+        let text = fs::read_to_string(&config).unwrap();
+        assert!(!text.contains("marionette/"));
+        assert!(text.contains("user-own-key"));
+        assert!(text.contains("[marketplace]"));
+        assert!(text.contains("default = \"grok-4.6\""));
+        toml::from_str::<toml::Value>(&text).unwrap();
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 多行字符串里伪装成表头的行不能骗过切块器。
+    #[test]
+    fn grok_writer_ignores_fake_headers_inside_multiline_strings() {
+        let dir = temp_dir("grok_multiline");
+        let config = dir.join("config.toml");
+        fs::write(
+            &config,
+            concat!(
+                "[model.user-ml]\n",
+                "model = \"m\"\n",
+                "description = \"\"\"\n",
+                "[model.\"marionette/fake\"]\n",
+                "api_key = \"not-real\"\n",
+                "\"\"\"\n",
+            ),
+        )
+        .unwrap();
+        let preset = find_preset("deepseek").unwrap();
+        ensure_grok_model_table_at(&config, "deepseek-flash", preset, GROK_KEY_ENV).unwrap();
+        let text = fs::read_to_string(&config).unwrap();
+        // 伪表头仍在用户的字符串里（原文搬运），真表只被认出一张。
+        assert_eq!(
+            text.matches("marionette/").count(),
+            2,
+            "字符串里一个 + 我们的表一个:\n{text}"
+        );
+        let value: toml::Value = toml::from_str(&text).unwrap();
+        assert!(value["model"]["user-ml"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("[model.\"marionette/fake\"]"));
+        // remove 只删真表（伪表头在字符串值里，不是 model 下的表）。
+        assert!(remove_grok_model_tables_at(&config).unwrap());
+        let text = fs::read_to_string(&config).unwrap();
+        assert!(text.contains("marionette/fake"), "用户字符串里的伪表头必须保留");
+        assert!(!text.contains("[model.\"marionette/deepseek-flash\"]"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    // ─── 去重规则 ───────────────────────────────────────────────────────────
+
+    fn fixture_store(dir: &Path) -> PathBuf {
+        let path = dir.join("credentials.json");
+        crate::credentials::add_key_plan_at(&path, "opencode-go", "OpenCode Go", "sk-dedup-8811aa")
+            .unwrap();
+        // 直接构造存储文件：key-plan / reference(宿主 opencode) / subscription /
+        // key-plan(默认模型为空的 glm)。
+        let store = serde_json::json!({
+            "version": 1,
+            "entries": [
+                { "id": "opencode-go", "kind": "key-plan", "label": "OpenCode Go",
+                  "preset": "opencode-go", "secret": path_ok_secret(), "source": "manual", "createdAt": "1" },
+                { "id": "opencode/deepseek", "kind": "reference", "label": "deepseek",
+                  "ref": "~/.local/share/opencode/auth.json#deepseek",
+                  "hostAgent": "opencode", "source": "scan:opencode", "createdAt": "1" },
+                { "id": "grok/login", "kind": "subscription", "label": "Grok 订阅",
+                  "hostAgent": "grok", "source": "scan:grok", "createdAt": "1" },
+                { "id": "glm", "kind": "key-plan", "label": "智谱 GLM",
+                  "preset": "glm", "source": "manual", "createdAt": "1" }
+            ]
+        });
+        fs::write(&path, serde_json::to_string_pretty(&store).unwrap()).unwrap();
+        path
+    }
+
+    /// 一个与真实密文形态一致的假 secret（前缀对、内容非空；用不上解密 —
+    /// 列表模型不走 maskedKey）。跨平台测试里 peek 失败也无妨。
+    fn path_ok_secret() -> String {
+        if cfg!(windows) { "dpapi:QUJDRA==" } else { "plain:QUJDRA==" }.to_string()
+    }
+
+    #[test]
+    fn dedup_rules_follow_the_product_table() {
+        let dir = temp_dir("dedup");
+        let credentials = fixture_store(&dir);
+        // 假 home 下没有 opencode auth.json → 扫描恒空：这里只验 store 侧的
+        // 去重；reference 并入由 list_models_merges_scanned_references 验。
+        let scan = crate::credentials::scan_opencode_at(&dir);
+
+        // claude / grok：只看到 key-plan 的模型。glm 的默认模型列表为空
+        //（端点核实了但模型 id 没核实 —— 不拍脑袋），所以只剩 opencode-go 的。
+        for agent in ["claude-code", "grok-build", "grok"] {
+            let result = list_models_at(&credentials, &scan, agent);
+            assert!(result.note.is_none(), "agent {agent}: note = {:?}", result.note);
+            let models: Vec<&str> = result.models.iter().map(|m| m.model_id.as_str()).collect();
+            assert_eq!(
+                models,
+                vec!["deepseek-v4.1-flash", "deepseek-v4-pro", "grok-4.7", "kimi-k3", "longcat-2.0"]
+            );
+            assert!(result.models.iter().all(|m| m.entry_id == "opencode-go"));
+            // reference / subscription 一概不出现。
+            assert!(result.models.iter().all(|m| m.entry_id != "opencode/deepseek"));
+            assert!(result.models.iter().all(|m| m.entry_id != "grok/login"));
+        }
+
+        // codex：空 + 指定文案（别名同）；opencode：空 + 指定文案。
+        for codex_alias in ["codex", "codex-acp"] {
+            let codex = list_models_at(&credentials, &scan, codex_alias);
+            assert!(codex.models.is_empty());
+            assert_eq!(codex.note.as_deref(), Some("需翻译引擎，下版本开放"));
+        }
+        let opencode = list_models_at(&credentials, &scan, "opencode");
+        assert!(opencode.models.is_empty());
+        assert_eq!(opencode.note.as_deref(), Some("请在设置的 provider 管理里添加"));
+
+        // 其它 agent：M1 没有注入通道，空 + 说明。
+        let other = list_models_at(&credentials, &scan, "deepseek");
+        assert!(other.models.is_empty());
+        assert!(other.note.unwrap().contains("暂不支持"));
+
+        // 规则本体：reference 对宿主不可见、对别人可见；subscription 一律不可见。
+        let host = crate::credentials::CredentialEntry {
+            id: "opencode/deepseek".into(),
+            kind: CredentialKind::Reference,
+            label: "deepseek".into(),
+            preset: None,
+            secret: None,
+            ref_path: None,
+            host_agent: Some("opencode".into()),
+            source: "scan:opencode".into(),
+            created_at: "0".into(),
+            last_used_at: None,
+        };
+        assert!(!entry_visible_to(&host, BridgeAgent::Opencode), "宿主自己不可见");
+        assert!(entry_visible_to(&host, BridgeAgent::ClaudeCode), "别的 agent 可见（M2 用）");
+        assert!(
+            !entry_visible_to(
+                &crate::credentials::CredentialEntry {
+                    id: "grok/login".into(),
+                    kind: CredentialKind::Subscription,
+                    label: "Grok 订阅".into(),
+                    host_agent: Some("grok".into()),
+                    ..host.clone()
+                },
+                BridgeAgent::ClaudeCode
+            ),
+            "subscription M2 前不可见"
+        );
+
+        // 没有 key-plan 凭证 → 引导文案。
+        let empty = dir.join("credentials-empty.json");
+        let result = list_models_at(&empty, &scan, "claude-code");
+        assert!(result.models.is_empty());
+        assert!(result.note.unwrap().contains("添加"));
+
+        // 端点驱动过滤：缺 anthropic_base 的 preset 对 claude 不可见（合成
+        // preset 验规则本体，不动产品表）。
+        let chat_only = ProviderPreset {
+            id: "chat-only",
+            label: "ChatOnly",
+            anthropic_base: None,
+            chat_base: Some("https://chat-only.example/v1"),
+            models: &["m1"],
+            last_verified: "test",
+        };
+        assert!(!preset_serves_agent(&chat_only, BridgeAgent::ClaudeCode));
+        assert!(preset_serves_agent(&chat_only, BridgeAgent::GrokBuild));
+        assert!(injection_for(&chat_only, BridgeAgent::ClaudeCode, "m1").is_none());
+        assert!(injection_for(&chat_only, BridgeAgent::GrokBuild, "m1").is_some());
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    // ─── spawn 注入解析 + providers/set 框架 ────────────────────────────────
+
+    #[test]
+    fn spawn_injection_resolves_per_agent() {
+        let dir = temp_dir("inject");
+        let credentials = dir.join("credentials.json");
+        let scan = crate::credentials::scan_opencode_at(&dir);
+        crate::credentials::add_key_plan_at(&credentials, "opencode-go", "OpenCode Go", "sk-inject-4f9a2c")
+            .unwrap();
+        crate::credentials::add_key_plan_at(&credentials, "deepseek", "DeepSeek", "sk-inject-ds-9933")
+            .unwrap();
+
+        // claude → env 形态（base 走规整器：opencode-go 的 anthropic 端点要求
+        // 会话头，claude 不自带，由规整器按 preset 叠加）。
+        assert_eq!(
+            injection_for_agent_at(&credentials, &scan, "claude-code", "opencode-go", "deepseek-v4-pro")
+                .unwrap(),
+            Some(SpawnInjection::ClaudeEnv {
+                base_url: crate::grok_dialect::channel_base_url("opencode-go").unwrap(),
+                model: "deepseek-v4-pro".into(),
+            })
+        );
+        // 别名 claude 同样命中。
+        assert!(matches!(
+            injection_for_agent_at(&credentials, &scan, "claude", "deepseek", "deepseek-flash").unwrap(),
+            Some(SpawnInjection::ClaudeEnv { .. })
+        ));
+
+        // grok → owned 表形态（chat base）。
+        assert_eq!(
+            injection_for_agent_at(&credentials, &scan, "grok-build", "deepseek", "deepseek-flash").unwrap(),
+            Some(SpawnInjection::GrokTable {
+                model_id: "deepseek-flash".into(),
+                preset_id: "deepseek".into(),
+            })
+        );
+
+        // 非 M1 agent → None；引用死条目 → Err（带线索）。
+        assert_eq!(injection_for_agent_at(&credentials, &scan, "codex", "deepseek", "x").unwrap(), None);
+        assert_eq!(injection_for_agent_at(&credentials, &scan, "deepseek", "deepseek", "x").unwrap(), None);
+        let error = injection_for_agent_at(&credentials, &scan, "claude-code", "ghost", "x").unwrap_err();
+        assert!(error.contains("不存在"), "unexpected: {error}");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    // ─── reference 直连（opencode auth.json 现场读）──────────────────────────
+
+    /// 假 opencode home：deepseek / openrouter / google 是 api 条目，anthropic
+    /// 是 OAuth 登录态，hybrid 是「type api 但带 refresh」的混合条目（按 OAuth
+    /// 优先的规则归登录态）。key 全是假 key，仅测试用。
+    fn fixture_opencode_home(dir: &Path) -> PathBuf {
+        let home = dir.join("opencode-home");
+        let auth = home.join(".local").join("share").join("opencode").join("auth.json");
+        fs::create_dir_all(auth.parent().unwrap()).unwrap();
+        fs::write(
+            &auth,
+            serde_json::json!({
+                "deepseek": { "type": "api", "key": "sk-fixture-ds-0a1b2c" },
+                "openrouter": { "type": "api", "key": "sk-fixture-or-3d4e5f" },
+                "google": { "type": "api", "key": "sk-fixture-google-6d7e8f" },
+                "anthropic": { "type": "oauth", "refresh": "rt-fixture", "access": "at-fixture" },
+                "hybrid": { "type": "api", "key": "sk-fixture-hy-9f0a1b", "refresh": "rt-fixture" }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        home
+    }
+
+    /// 映射表覆盖规格清单的全部键名（含别名），大小写不敏感；未映射 → None。
+    #[test]
+    fn opencode_provider_map_is_case_insensitive_and_covers_the_bridge() {
+        for (provider, expected) in [
+            ("openrouter", "openrouter"),
+            ("deepseek", "deepseek"),
+            ("moonshot", "kimi"),
+            ("kimi", "kimi"),
+            ("glm", "glm"),
+            ("xai", "xai"),
+            ("opencode", "opencode-go"),
+            ("OPENCODE-GO", "opencode-go"),
+            ("OpenRouter", "openrouter"),
+            ("DeepSeek", "deepseek"),
+            ("Moonshot", "kimi"),
+            ("KIMI", "kimi"),
+            ("GLM", "glm"),
+            ("XAI", "xai"),
+        ] {
+            let preset = preset_for_opencode_provider(provider)
+                .unwrap_or_else(|| panic!("`{provider}` 应映射到 `{expected}`"));
+            assert_eq!(preset.id, expected, "provider `{provider}`");
+            assert_eq!(preset.id, find_preset(expected).unwrap().id);
+        }
+        // 未映射 → None：凭据页展示，但没有 L1 端点、不直连。zai 是 Z.ai
+        // （api.z.ai）的键，与智谱 open.bigmodel.cn 不同 host，映射等于把别家
+        // 的 key 发错厂商（magpie 分列两个 preset，我们只展不连）。
+        for unknown in ["google", "anthropic", "openai", "vercel", "zai", ""] {
+            assert!(
+                preset_for_opencode_provider(unknown).is_none(),
+                "`{unknown}` 不在映射表里，不该命中"
+            );
+        }
+    }
+
+    /// reference 并入 list_models：grok / claude 看到 opencode auth.json 里映射
+    /// 得到 preset 的条目（模型列表为空的来源也要出现）；宿主 opencode 自己
+    /// 不可见；未映射 provider 与 OAuth 条目不出现；扫描失败静默跳过该家、
+    /// store 条目照常。
+    #[test]
+    /// 动态目录：/models 拉取结果与静态清单并集；label 用模型 id（回归：
+    /// 此前整组都显示 preset 名，一排「DeepSeek」）。
+    #[test]
+    fn dynamic_catalog_merges_and_labels_use_model_id() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        // 静态覆盖表/缓存是全局的：两个目录测试必须串行。
+        static FETCH_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _fetch_guard = FETCH_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = temp_dir("dyncat");
+        let home = fixture_opencode_home(&dir);
+        let scan = crate::credentials::scan_opencode_at(&home);
+        let credentials = dir.join("credentials.json");
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf); // 读完请求头
+            let body = br#"{"data":[{"id":"deepseek-chat"},{"id":"deepseek-reasoner"}]}"#;
+            let head = format!(
+                "HTTP/1.1 200 OK
+Content-Type: application/json
+Content-Length: {}
+Connection: close
+
+",
+                body.len()
+            );
+            stream.write_all(head.as_bytes()).unwrap();
+            stream.write_all(body).unwrap();
+        });
+
+        for preset in presets() {
+            set_fetch_base_override_for_test(preset.id, "http://127.0.0.1:1");
+        }
+        set_fetch_base_override_for_test("deepseek", &format!("http://127.0.0.1:{port}/v1"));
+        clear_dynamic_cache_for_test();
+
+        let result = list_models_at(&credentials, &scan, "grok-build");
+        assert!(result.note.is_none(), "note = {:?}", result.note);
+        let ds: Vec<&BridgeModel> = result
+            .models
+            .iter()
+            .filter(|m| m.entry_id == "opencode/deepseek")
+            .collect();
+        let ids: Vec<&str> = ds.iter().map(|m| m.model_id.as_str()).collect();
+        assert!(ids.contains(&"deepseek-chat"), "ids = {ids:?}");
+        assert!(ids.contains(&"deepseek-reasoner"), "ids = {ids:?}");
+        assert!(ids.contains(&"deepseek-flash"), "静态清单要并集保留: {ids:?}");
+        for model in &ds {
+            assert_eq!(model.label, model.model_id, "label 必须是模型 id，不是 preset 名");
+        }
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn parses_both_catalog_shapes() {
+        assert_eq!(
+            parse_models_catalog(r#"{"data":[{"id":"a"},{"id":"b"},{"id":"a"}]}"#),
+            vec!["a".to_string(), "b".to_string()]
+        );
+        assert_eq!(
+            parse_models_catalog(r#"{"models":[{"id":"deepseek-chat"}]}"#),
+            vec!["deepseek-chat".to_string()]
+        );
+        assert!(parse_models_catalog("not json").is_empty());
+    }
+    fn list_models_merges_scanned_references() {
+        // 静态覆盖表/缓存是全局的：两个目录测试必须串行。
+        static FETCH_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _fetch_guard = FETCH_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = temp_dir("reflist");
+        let home = fixture_opencode_home(&dir);
+        let scan = crate::credentials::scan_opencode_at(&home);
+        assert!(scan.error.is_none());
+        let credentials = dir.join("credentials.json");
+        crate::credentials::add_key_plan_at(&credentials, "xai", "xAI", "sk-fixture-xai-889900")
+            .unwrap();
+        // 测试封闭性：把所有 preset 的动态目录端点指向必然拒连的本地端口，
+        // 走「拉取失败 → 静态清单」路径（动态路径由专属测试用本地监听验证）。
+        for preset in presets() {
+            set_fetch_base_override_for_test(preset.id, "http://127.0.0.1:1");
+        }
+        clear_dynamic_cache_for_test();
+
+        for agent in ["grok-build", "claude-code"] {
+            let result = list_models_at(&credentials, &scan, agent);
+            assert!(result.note.is_none(), "{agent}: note = {:?}", result.note);
+            // 来源：store 的 xai + 扫描的 deepseek / openrouter。openrouter 的
+            // preset 没有默认模型列表，来源照样要报（契约：空也要让前端知道）。
+            let mut source_ids: Vec<&str> =
+                result.sources.iter().map(|s| s.entry_id.as_str()).collect();
+            source_ids.sort_unstable();
+            assert_eq!(
+                source_ids,
+                vec!["opencode/deepseek", "opencode/openrouter", "xai"],
+                "{agent}"
+            );
+            assert!(result.sources.iter().any(|s| s.entry_id == "opencode/deepseek"
+                && s.preset == "deepseek"
+                && s.from_scan));
+            assert!(result.sources.iter().any(|s| s.entry_id == "xai" && !s.from_scan));
+            // google（未映射）、anthropic / hybrid（OAuth）一概不出现。
+            // 模型：xai 的 grok-4.7 + deepseek 的两个，各自挂在 entry 上。
+            let mut model_ids: Vec<&str> = result.models.iter().map(|m| m.model_id.as_str()).collect();
+            model_ids.sort_unstable();
+            assert_eq!(model_ids, vec!["deepseek-flash", "deepseek-v4-pro", "grok-4.7"], "{agent}");
+            assert!(result
+                .models
+                .iter()
+                .filter(|m| m.entry_id == "opencode/deepseek")
+                .all(|m| m.preset == "deepseek"));
+            // 序列化无明文（reference 不带 key，key-plan 是密文）；契约字段名
+            // （camelCase）逐字钉住 —— 前端并行开发中。
+            let leaked = serde_json::to_string(&result).unwrap();
+            assert!(!leaked.contains("sk-fixture"), "{agent} 的结果泄漏了明文 key");
+            assert!(leaked.contains("\"sources\":"), "{agent}: {leaked}");
+            assert!(leaked.contains("\"entryId\":\"opencode/deepseek\""), "{agent}");
+            assert!(leaked.contains("\"fromScan\":true"), "{agent}");
+        }
+
+        // 宿主 opencode 自己：空 + 原生管理文案（去重规则不变）。
+        let self_view = list_models_at(&credentials, &scan, "opencode");
+        assert!(self_view.models.is_empty());
+        assert!(self_view.sources.is_empty());
+        assert_eq!(self_view.note.as_deref(), Some("请在设置的 provider 管理里添加"));
+
+        // 扫描失败（auth.json 损坏）→ 静默跳过该家，store 条目照常。
+        let auth = home.join(".local").join("share").join("opencode").join("auth.json");
+        fs::write(&auth, "{broken").unwrap();
+        let broken = crate::credentials::scan_opencode_at(&home);
+        assert!(broken.error.is_some(), "损坏的 auth.json 应报 error");
+        let result = list_models_at(&credentials, &broken, "grok-build");
+        let source_ids: Vec<&str> = result.sources.iter().map(|s| s.entry_id.as_str()).collect();
+        assert_eq!(source_ids, vec!["xai"], "扫描坏了不该连 store 条目也没了");
+        assert!(result.models.iter().all(|m| m.entry_id == "xai"));
+        assert!(result.note.is_none());
+
+        // 只有「模型列表为空」的来源时：models 空 + 说明，但来源在。
+        let home_or = dir.join("opencode-or-only");
+        let or_auth = home_or.join(".local").join("share").join("opencode").join("auth.json");
+        fs::create_dir_all(or_auth.parent().unwrap()).unwrap();
+        fs::write(
+            &or_auth,
+            r#"{"openrouter": {"type": "api", "key": "sk-fixture-or-3d4e5f"}}"#,
+        )
+        .unwrap();
+        let scan_or = crate::credentials::scan_opencode_at(&home_or);
+        let empty_store = dir.join("credentials-none.json");
+        let result = list_models_at(&empty_store, &scan_or, "grok-build");
+        assert!(result.models.is_empty());
+        assert_eq!(
+            result.note.as_deref(),
+            Some("当前凭证没有可用的跨用模型（端点或默认模型列表缺失）")
+        );
+        assert_eq!(result.sources.len(), 1);
+        assert_eq!(result.sources[0].entry_id, "opencode/openrouter");
+        assert!(result.sources[0].from_scan);
+        assert_eq!(result.sources[0].preset, "openrouter");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// reference 绑定校验：映射命中放行（绑定文件里只有 entryId，key 不复制）；
+    /// 未映射 → 拒且消息说明没有 L1 端点；OAuth / 混合 / 消失的条目 → 拒。
+    #[test]
+    fn reference_binding_validates_mapping() {
+        let dir = temp_dir("refbind");
+        let home = fixture_opencode_home(&dir);
+        let scan = crate::credentials::scan_opencode_at(&home);
+        let credentials = dir.join("credentials.json");
+        let bindings = dir.join("bridge-bindings.json");
+        let grok_config = dir.join("config.toml");
+
+        // 有映射 → 绑定成功。
+        bind_session_at(
+            &bindings,
+            &credentials,
+            &grok_config,
+            &scan,
+            "s1",
+            Some("grok-build"),
+            Some(BridgeSelection {
+                entry_id: "opencode/deepseek".to_string(),
+                model_id: "deepseek-flash".to_string(),
+            }),
+        )
+        .unwrap();
+        let bound = binding_for_at(&bindings, "s1").unwrap().expect("应已绑定");
+        assert_eq!(bound.entry_id, "opencode/deepseek");
+        // reference 不进 store（nothing is stored twice）。
+        let store = crate::credentials::load_store_at(&credentials).unwrap();
+        assert!(store.entries.is_empty());
+
+        // 未映射 provider → 拒，消息说明原因。
+        let error = bind_session_at(
+            &bindings,
+            &credentials,
+            &grok_config,
+            &scan,
+            "s2",
+            Some("grok-build"),
+            Some(BridgeSelection {
+                entry_id: "opencode/google".to_string(),
+                model_id: "x".to_string(),
+            }),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("未映射") && error.contains("L1"),
+            "unexpected: {error}"
+        );
+        assert!(binding_for_at(&bindings, "s2").unwrap().is_none(), "失败的绑定不能落盘");
+
+        // OAuth 条目 / 混合条目（扫描侧归 subscription，不是 reference）与
+        // 彻底消失的条目 → 一律按「不存在」拒。
+        for ghost in ["opencode/anthropic", "opencode/hybrid", "opencode/nope"] {
+            let error = bind_session_at(
+                &bindings,
+                &credentials,
+                &grok_config,
+                &scan,
+                "s3",
+                Some("grok-build"),
+                Some(BridgeSelection {
+                    entry_id: ghost.to_string(),
+                    model_id: "x".to_string(),
+                }),
+            )
+            .unwrap_err();
+            assert!(error.contains("不存在"), "`{ghost}`: unexpected: {error}");
+        }
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 现场读钥匙：api 条目取到；OAuth / 混合条目拒；文件缺失 / 条目不在 /
+    /// 缺 ref / 坏格式 → Err。结果只进断言，不进任何日志（防泄漏由序列化断言
+    /// 与 grep 守卫另测）。
+    #[test]
+    fn peek_reference_secret_reads_api_and_rejects_oauth() {
+        let dir = temp_dir("refpeek");
+        let home = fixture_opencode_home(&dir);
+        let auth = home.join(".local").join("share").join("opencode").join("auth.json");
+        let scan = crate::credentials::scan_opencode_at(&home);
+
+        let ref_entry = |provider: &str| CredentialEntry {
+            id: format!("opencode/{provider}"),
+            kind: CredentialKind::Reference,
+            label: provider.to_string(),
+            preset: None,
+            secret: None,
+            ref_path: Some(format!("{}#{provider}", auth.display())),
+            host_agent: Some("opencode".to_string()),
+            source: "scan:opencode".to_string(),
+            created_at: "0".to_string(),
+            last_used_at: None,
+        };
+
+        // api 条目 → 取到（假）key。
+        assert_eq!(
+            peek_reference_secret(&ref_entry("deepseek")).unwrap(),
+            "sk-fixture-ds-0a1b2c"
+        );
+        // OAuth 条目 → 拒（直连需要真 API key，access token 顶不了）。
+        let error = peek_reference_secret(&ref_entry("anthropic")).unwrap_err();
+        assert!(error.contains("api"), "unexpected: {error}");
+        // 混合条目（type api + refresh）→ 拒：refresh 丢了不可恢复，OAuth 优先。
+        let error = peek_reference_secret(&ref_entry("hybrid")).unwrap_err();
+        assert!(error.contains("api"), "unexpected: {error}");
+        // 条目不在文件里 → Err。
+        let error = peek_reference_secret(&ref_entry("ghost")).unwrap_err();
+        assert!(error.contains("已不在"), "unexpected: {error}");
+        // 文件缺失 → Err。
+        let mut missing = ref_entry("deepseek");
+        missing.ref_path =
+            Some(format!("{}#deepseek", dir.join("no-such-file.json").display()));
+        let error = peek_reference_secret(&missing).unwrap_err();
+        assert!(error.contains("读取"), "unexpected: {error}");
+        // 缺 ref / 坏格式（没有 #）→ Err。
+        let mut no_ref = ref_entry("deepseek");
+        no_ref.ref_path = None;
+        assert!(peek_reference_secret(&no_ref).is_err());
+        let mut bad_shape = ref_entry("deepseek");
+        bad_shape.ref_path = Some(auth.display().to_string());
+        assert!(peek_reference_secret(&bad_shape).is_err());
+
+        // 扫描出来的真条目与 peek 端到端对得上。
+        let scanned = scan
+            .entries
+            .iter()
+            .find(|entry| entry.id == "opencode/deepseek")
+            .expect("扫描应含 opencode/deepseek");
+        assert_eq!(peek_reference_secret(scanned).unwrap(), "sk-fixture-ds-0a1b2c");
+
+        // peek_spawn_key：key-plan 走 store DPAPI，reference 现场读。
+        let credentials = dir.join("credentials.json");
+        crate::credentials::add_key_plan_at(&credentials, "deepseek", "DeepSeek", "sk-fixture-store-ds")
+            .unwrap();
+        assert_eq!(
+            peek_spawn_key_at(&credentials, &scan, "deepseek").unwrap(),
+            "sk-fixture-store-ds"
+        );
+        assert_eq!(
+            peek_spawn_key_at(&credentials, &scan, "opencode/deepseek").unwrap(),
+            "sk-fixture-ds-0a1b2c"
+        );
+        assert_eq!(peek_spawn_key_at(&credentials, &scan, "opencode/ghost"), None);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// reference 的注入形态与 key-plan 完全一致（claude env / grok owned 表）；
+    /// 源文件消失 → Err（残留绑定降级为普通会话 + warn 的上游信号），
+    /// key-plan 条目不受影响。
+    #[test]
+    fn reference_injection_matches_key_plan_shape() {
+        let dir = temp_dir("refinject");
+        let home = fixture_opencode_home(&dir);
+        let auth = home.join(".local").join("share").join("opencode").join("auth.json");
+        let scan = crate::credentials::scan_opencode_at(&home);
+        let credentials = dir.join("credentials.json");
+        crate::credentials::add_key_plan_at(&credentials, "deepseek", "DeepSeek", "sk-fixture-store-77aa")
+            .unwrap();
+
+        // 同一个 preset（deepseek）：reference 与 key-plan 的注入逐字段相等。
+        for agent in ["claude-code", "grok-build", "claude", "grok"] {
+            let via_reference =
+                injection_for_agent_at(&credentials, &scan, agent, "opencode/deepseek", "deepseek-flash")
+                    .unwrap();
+            let via_store =
+                injection_for_agent_at(&credentials, &scan, agent, "deepseek", "deepseek-flash")
+                    .unwrap();
+            assert_eq!(via_reference, via_store, "agent {agent}");
+        }
+        assert_eq!(
+            injection_for_agent_at(&credentials, &scan, "claude-code", "opencode/deepseek", "deepseek-flash")
+                .unwrap(),
+            Some(SpawnInjection::ClaudeEnv {
+                base_url: crate::grok_dialect::channel_base_url("deepseek").unwrap(),
+                model: "deepseek-flash".into(),
+            })
+        );
+        assert_eq!(
+            injection_for_agent_at(&credentials, &scan, "grok-build", "opencode/deepseek", "deepseek-flash")
+                .unwrap(),
+            Some(SpawnInjection::GrokTable {
+                model_id: "deepseek-flash".into(),
+                preset_id: "deepseek".into(),
+            })
+        );
+
+        // 源文件消失 → Err；store 里的 key-plan 照常解析、钥匙照常可取。
+        fs::remove_file(&auth).unwrap();
+        let gone = crate::credentials::scan_opencode_at(&home);
+        let error =
+            injection_for_agent_at(&credentials, &gone, "claude-code", "opencode/deepseek", "x")
+                .unwrap_err();
+        assert!(error.contains("不存在"), "unexpected: {error}");
+        assert!(
+            injection_for_agent_at(&credentials, &gone, "claude-code", "deepseek", "x")
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(peek_spawn_key_at(&credentials, &gone, "opencode/deepseek"), None);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// providers/set 参数逐字段对齐 S2 实测处方（providerId/apiType/baseUrl/
+    /// headers.Authorization Bearer）。key 只进 headers，不进任何日志路径。
+    #[test]
+    fn codex_providers_set_params_match_the_s2_prescription() {
+        let params = codex_providers_set_params("https://engine.local/v1", "sk-codex-test");
+        assert_eq!(
+            params,
+            serde_json::json!({
+                "providerId": "openai",
+                "apiType": "openai",
+                "baseUrl": "https://engine.local/v1",
+                "headers": { "Authorization": "Bearer sk-codex-test" }
+            })
+        );
+        // M1：codex 路由解析恒为 None（无 Responses 核实端点，引擎 M2 才有）。
+        assert!(codex_bridge_route(&BridgeSelection {
+            entry_id: "opencode-go".into(),
+            model_id: "x".into(),
+        })
+        .is_none());
+        // 能力声明的判定：agentCapabilities.providers 存在且非 null。
+        assert!(advertises_providers(&serde_json::json!({
+            "agentCapabilities": { "providers": { "supportedApiTypes": ["openai"] } }
+        })));
+        assert!(!advertises_providers(&serde_json::json!({
+            "agentCapabilities": { "loadSession": true }
+        })));
+        assert!(!advertises_providers(&serde_json::json!({
+            "agentCapabilities": { "providers": null }
+        })));
+    }
+
+    // ─── 视图与掩码 ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn entries_are_masked_and_never_carry_plaintext() {
+        let dir = temp_dir("views");
+        let credentials = dir.join("credentials.json");
+        crate::credentials::add_key_plan_at(&credentials, "deepseek", "DeepSeek", "sk-view-77aa21zz")
+            .unwrap();
+
+        let views = list_entries_at(&credentials).unwrap();
+        assert_eq!(views.len(), 1);
+        let view = &views[0];
+        assert_eq!(view.id, "deepseek");
+        assert_eq!(view.kind, "key-plan");
+        assert_eq!(view.preset.as_deref(), Some("deepseek"));
+        assert_eq!(view.masked_key.as_deref(), Some("…21zz"), "末四位掩码");
+        // 全序列化无明文。
+        let leaked = serde_json::to_string(&views).unwrap();
+        assert!(!leaked.contains("sk-view-77aa21zz"));
+
+        // 短 key 全遮（掩码不能等于明文）。
+        assert_eq!(mask_key("short"), None);
+        assert_eq!(mask_key("sk-1234abcd"), Some("…abcd".to_string()));
+
+        // add_key 校验 preset。
+        let error = add_key_at(&credentials, "not-a-preset", None, "sk-x-123456").unwrap_err();
+        assert!(error.contains("未知 preset"), "unexpected: {error}");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+}

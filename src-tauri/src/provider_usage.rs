@@ -924,6 +924,25 @@ fn classify_entry(entry: &Value) -> AuthKind {
     AuthKind::Unknown
 }
 
+/// Extract the API key of a single `auth.json` entry — strict variant for the
+/// model bridge's reference credentials (`model_bridge::peek_reference_secret`).
+///
+/// OAuth / hybrid entries are rejected outright: an L1 direct connection needs a
+/// real API key, and an OAuth access token is not one. The lenient `access`
+/// fallback inside [`auth_key_for`] is a usage-probe privilege — never reuse it
+/// for injection. Key validity rules match `auth_key_for`: non-empty, and not
+/// an http(s) placeholder.
+pub fn strict_api_key_of(entry: &Value) -> Result<String, String> {
+    if classify_entry(entry) != AuthKind::Api {
+        return Err("not an api-type entry (OAuth login state cannot direct-connect)".to_string());
+    }
+    let key = entry.get("key").and_then(Value::as_str).unwrap_or("");
+    if key.is_empty() || key.starts_with("http://") || key.starts_with("https://") {
+        return Err("api entry has no usable key".to_string());
+    }
+    Ok(key.to_string())
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderInfo {

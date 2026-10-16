@@ -486,6 +486,90 @@ impl AcpService {
                 }
             }
         }
+        // ── Cross-agent model bridge (docs/cross-agent-bridge.md §4.4): a
+        //    binding exists only after the user picked a cross-use model for
+        //    this dialog; nothing is lent otherwise. The key goes straight into
+        //    the child's env / the env reference inside an owned grok table —
+        //    never into logs, never into plaintext agent config. Key source is
+        //    unified: key-plan = DPAPI store, reference (opencode auth.json) =
+        //    read live from the original file at spawn time.
+        if let Some(selection) = crate::model_bridge::binding_for(&session_id) {
+            let key = crate::model_bridge::peek_spawn_key(&selection.entry_id)
+                .filter(|key| !key.is_empty());
+            match (
+                crate::model_bridge::injection_for_agent(
+                    agent_id.as_deref().unwrap_or(""),
+                    &selection.entry_id,
+                    &selection.model_id,
+                ),
+                key,
+            ) {
+                (Ok(Some(injection)), Some(key)) => match injection {
+                    crate::model_bridge::SpawnInjection::ClaudeEnv { base_url, model } => {
+                        // §4.8: bridged claude sessions never send set_model —
+                        // the env pins the model instead.
+                        child_command
+                            .env("ANTHROPIC_BASE_URL", &base_url)
+                            .env("ANTHROPIC_AUTH_TOKEN", &key)
+                            .env("ANTHROPIC_MODEL", &model);
+                        crate::debug_log::append(
+                            "bridge",
+                            "info",
+                            &session_id,
+                            "claude session bridged via env",
+                            Some(&format!("model={model} base={base_url}")),
+                        );
+                    }
+                    crate::model_bridge::SpawnInjection::GrokTable { model_id, preset_id } => {
+                        // Owned `[model."marionette/<id>"]` table + `$MARIONETTE_
+                        // PROVIDER_KEY` expansion (S3-verified). §4.8: grok is
+                        // the opposite of claude — the frontend must send
+                        // set_model to pick `marionette/<model>`.
+                        match crate::model_bridge::ensure_grok_model_table(&model_id, &preset_id) {
+                            Ok(_) => {
+                                child_command
+                                    .env(crate::model_bridge::GROK_KEY_ENV, &key);
+                                crate::debug_log::append(
+                                    "bridge",
+                                    "info",
+                                    &session_id,
+                                    "grok session bridged via owned table + env",
+                                    Some(&format!(
+                                        "model=marionette/{model_id} preset={preset_id}"
+                                    )),
+                                );
+                            }
+                            Err(error) => crate::debug_log::append(
+                                "bridge",
+                                "warn",
+                                &session_id,
+                                "grok owned model table write failed; bridge skipped",
+                                Some(&error),
+                            ),
+                        }
+                    }
+                },
+                (Ok(Some(_)), None) => crate::debug_log::append(
+                    "bridge",
+                    "warn",
+                    &session_id,
+                    "bridge key unavailable (deleted, undecryptable, or reference source gone); injection skipped",
+                    None,
+                ),
+                // Agent without an M1 injection channel (dsh, …) — nothing to do.
+                (Ok(None), _) => {}
+                // Stale binding (credential deleted / preset gone): degrade to a
+                // plain session rather than blocking the start — leftover
+                // bindings are documented as harmless residue.
+                (Err(error), _) => crate::debug_log::append(
+                    "bridge",
+                    "warn",
+                    &session_id,
+                    "stale model bridge binding ignored",
+                    Some(&error),
+                ),
+            }
+        }
         // Route agent traffic through the user-configured proxy when enabled.
         // The proxy client (Clash, v2ray, ...) decides rule-vs-global routing;
         // we only hand it the exit address. Loopback stays direct so local MCP
@@ -659,6 +743,54 @@ impl AcpService {
                 return Err(format!("ACP initialize failed: {error}"));
             }
         };
+
+        // ── Cross-agent bridge: codex `providers/set` (§4.4 S2) ──
+        // codex-acp advertises `agentCapabilities.providers` and only accepts
+        // `apiType:"openai"` (Responses protocol) — chat-completions-only
+        // presets cannot ride it directly, so M1 resolves no codex route yet
+        // (`codex_bridge_route` stays None until the M2 translation engine).
+        // The wiring sits ready here; when a route exists the openai slot is
+        // re-pointed with the key in headers only — nothing hits disk or logs.
+        if crate::model_bridge::classify_agent(agent_id.as_deref().unwrap_or(""))
+            == crate::model_bridge::BridgeAgent::Codex
+        {
+            if let Some(selection) = crate::model_bridge::binding_for(&session_id) {
+                if let Some((base_url, api_key)) =
+                    crate::model_bridge::codex_bridge_route(&selection)
+                {
+                    if crate::model_bridge::advertises_providers(&initialized) {
+                        let params = crate::model_bridge::codex_providers_set_params(
+                            &base_url,
+                            &api_key,
+                        );
+                        match request_quiet(&process, "providers/set", params) {
+                            Ok(_) => crate::debug_log::append(
+                                "bridge",
+                                "info",
+                                &session_id,
+                                "codex openai slot routed via providers/set",
+                                Some(&base_url),
+                            ),
+                            Err(error) => crate::debug_log::append(
+                                "bridge",
+                                "warn",
+                                &session_id,
+                                "codex providers/set failed",
+                                Some(&error),
+                            ),
+                        }
+                    } else {
+                        crate::debug_log::append(
+                            "bridge",
+                            "warn",
+                            &session_id,
+                            "codex did not advertise agentCapabilities.providers; routing skipped",
+                            None,
+                        );
+                    }
+                }
+            }
+        }
 
         // Project context (needs 1: what this agent is missing). Remote transports
         // are only offered when the agent said it can take them.

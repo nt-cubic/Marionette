@@ -2305,6 +2305,86 @@ pub fn delete_provider_key(provider: String, force: Option<bool>) -> Result<(), 
     crate::provider_usage::delete_provider_key(&provider, force.unwrap_or(false))
 }
 
+// ─── Cross-agent model bridge (docs/cross-agent-bridge.md M1) ────────────────
+
+/// Read-only credential scan across the four CLIs (transparency for the
+/// credentials settings page). Pure read: nothing is written anywhere.
+#[tauri::command(async)]
+pub fn bridge_scan() -> crate::model_bridge::BridgeScanReport {
+    let _trace = crate::debug_log::CmdTrace::new("bridge_scan");
+    crate::credentials::scan_all()
+}
+
+/// Stored bridge entries (manual API keys in the DPAPI store). Keys are
+/// masked to their last four characters — plaintext never crosses this line.
+#[tauri::command(async)]
+pub fn bridge_list_entries() -> Result<Vec<crate::model_bridge::BridgeEntryView>, String> {
+    let _trace = crate::debug_log::CmdTrace::new("bridge_list_entries");
+    crate::model_bridge::list_entries()
+}
+
+/// Add (or rotate) an API key for a known preset. Same id = key rotation.
+#[tauri::command(async)]
+pub fn bridge_add_key(
+    preset: String,
+    label: Option<String>,
+    key: String,
+) -> Result<crate::model_bridge::BridgeEntryView, String> {
+    let _trace = crate::debug_log::CmdTrace::new("bridge_add_key");
+    crate::model_bridge::add_key(&preset, label.as_deref(), &key)
+}
+
+#[tauri::command]
+pub fn bridge_delete_entry(id: String) -> Result<(), String> {
+    let _trace = crate::debug_log::CmdTrace::new("bridge_delete_entry");
+    crate::model_bridge::delete_entry(&id)
+}
+
+/// Cross-use models one agent may borrow (dedup per the product table: M1
+/// lists key-plan models for Claude Code / Grok only; codex needs the M2
+/// engine; opencode uses its native provider manager).
+#[tauri::command(async)]
+pub fn bridge_list_models(agent_id: String) -> crate::model_bridge::BridgeModelsResult {
+    let _trace = crate::debug_log::CmdTrace::new("bridge_list_models");
+    crate::model_bridge::list_models(&agent_id)
+}
+
+/// Bind (or unbind: `selection = None`) a session to a cross-use model.
+/// Side effects: binding records `lastUsedAt`; unbinding a grok session also
+/// removes the owned model tables (they stay advertised otherwise).
+#[tauri::command(async)]
+pub fn bridge_bind(
+    session_id: String,
+    selection: Option<crate::model_bridge::BridgeSelection>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let _trace = crate::debug_log::CmdTrace::new("bridge_bind");
+    // The session's agent decides the unbind semantics (grok tables); look it
+    // up the same way start_acp_session does — session.agentId is the truth.
+    let agent_id = {
+        let storage = state
+            .storage
+            .lock()
+            .map_err(|_| "Storage lock poisoned".to_string())?;
+        storage
+            .find_session(&session_id)
+            .ok()
+            .flatten()
+            .map(|session| session.agent_id)
+    };
+    crate::model_bridge::bind_session(&session_id, agent_id.as_deref(), selection)
+}
+
+/// Current cross-use binding for a session (frontend restores the picker
+/// display state after suspend/restart; spawn applies it independently).
+#[tauri::command(async)]
+pub fn bridge_get_binding(
+    session_id: String,
+) -> Option<crate::model_bridge::BridgeSelection> {
+    let _trace = crate::debug_log::CmdTrace::new("bridge_get_binding");
+    crate::model_bridge::binding_for(&session_id)
+}
+
 /// Read the agent proxy config (single exit address for spawned agents).
 #[tauri::command]
 pub fn get_proxy_config() -> crate::proxy::ProxyConfig {

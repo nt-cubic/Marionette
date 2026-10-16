@@ -931,6 +931,135 @@ export async function deleteProviderMeta(id: string): Promise<void> {
   await invoke("delete_provider_meta", { id });
 }
 
+// ─── Cross-Agent Model Bridge (凭据/跨用) ────────────────────────────────────
+
+/** One scanned agent in a `bridge_scan` report. */
+export type BridgeScanSource = {
+  agent: string;
+  status: "found" | "missing" | "restricted";
+  detail?: string | null;
+};
+
+export type BridgeScanReport = {
+  sources: BridgeScanSource[];
+};
+
+export type BridgeEntryKind = "key-plan" | "subscription" | "reference";
+
+/** A credential as shown in the settings page — the secret never crosses the wire. */
+export type BridgeEntryView = {
+  id: string;
+  kind: BridgeEntryKind;
+  label: string;
+  preset?: string | null;
+  maskedKey?: string | null;
+  /** `scan:<origin>` | `manual`. */
+  source: string;
+  note?: string | null;
+  createdAt: string;
+};
+
+/** One cross-usable model for an agent (Marionette-side catalog). */
+export type BridgeModel = {
+  entryId: string;
+  modelId: string;
+  label: string;
+  preset: string;
+};
+
+/**
+ * One cross-use source (credential entry) the catalog groups models by.
+ * `fromScan` marks reference entries discovered by the credential scan vs
+ * keys the user added manually. Sources with zero models are still listed —
+ * their models are simply not enumerable (e.g. openrouter), custom ids only.
+ */
+export type BridgeModelSource = {
+  entryId: string;
+  preset: string;
+  label: string;
+  fromScan: boolean;
+};
+
+export type BridgeModelsResult = {
+  models: BridgeModel[];
+  /** One entry per usable credential; older backends omit it (derive from models). */
+  sources?: BridgeModelSource[] | null;
+  note: string | null;
+};
+
+/** What `bridge_bind` persists per dialog. */
+export type BridgeSelection = {
+  entryId: string;
+  modelId: string;
+};
+
+export async function bridgeScan(): Promise<BridgeScanReport | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await invoke<BridgeScanReport>("bridge_scan");
+  } catch {
+    return null;
+  }
+}
+
+export async function bridgeListEntries(): Promise<BridgeEntryView[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    return await invoke<BridgeEntryView[]>("bridge_list_entries");
+  } catch {
+    return [];
+  }
+}
+
+export async function bridgeAddKey(
+  preset: string,
+  label: string | null,
+  key: string,
+): Promise<BridgeEntryView> {
+  return invoke<BridgeEntryView>("bridge_add_key", { preset, label, key });
+}
+
+export async function bridgeDeleteEntry(id: string): Promise<void> {
+  await invoke("bridge_delete_entry", { id });
+}
+
+export async function bridgeListModels(agentId: string): Promise<BridgeModelsResult> {
+  if (!isTauriRuntime()) return { models: [], note: null };
+  try {
+    return await invoke<BridgeModelsResult>("bridge_list_models", { agentId });
+  } catch {
+    return { models: [], note: null };
+  }
+}
+
+/**
+ * Bind / unbind a cross-use model for one dialog. The backend applies the
+ * binding at spawn time, so a live process only picks it up after a restart.
+ */
+export async function bridgeBind(
+  sessionId: string,
+  selection: BridgeSelection | null,
+): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("bridge_bind", { sessionId, selection });
+}
+
+/**
+ * Current binding for a dialog — used to restore the chip display after a
+ * restart/suspend without re-deriving it from agent advertisements.
+ *
+ * NOTE: not in the initial M1 command contract; the backend is expected to
+ * expose `bridge_get_binding`. Returns null until the command exists.
+ */
+export async function bridgeGetBinding(sessionId: string): Promise<BridgeSelection | null> {
+  if (!isTauriRuntime() || !sessionId) return null;
+  try {
+    return await invoke<BridgeSelection | null>("bridge_get_binding", { sessionId });
+  } catch {
+    return null;
+  }
+}
+
 /** Agent proxy config: single exit address injected into spawned agents. */
 export async function getProxyConfig(): Promise<ProxyConfig> {
   if (!isTauriRuntime()) return { enabled: false, url: "" };
