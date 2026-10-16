@@ -2346,7 +2346,11 @@ pub fn bridge_delete_entry(id: String) -> Result<(), String> {
 #[tauri::command(async)]
 pub fn bridge_list_models(agent_id: String) -> crate::model_bridge::BridgeModelsResult {
     let _trace = crate::debug_log::CmdTrace::new("bridge_list_models");
-    crate::model_bridge::list_models(&agent_id)
+    let result = crate::model_bridge::list_models(&agent_id);
+    // B4-2 漂移防线：按 source 对比指纹存档，变化记 dev.log（只记日志，失败
+    // 不影响目录本身）。
+    crate::model_bridge::note_catalog_drift(&result);
+    result
 }
 
 /// Bind (or unbind: `selection = None`) a session to a cross-use model.
