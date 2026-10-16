@@ -1,0 +1,9 @@
+{
+  "name": "fake-pi-package",
+  "version": "1.0.0",
+  "type": "module",
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./extensions"]
+  }
+}

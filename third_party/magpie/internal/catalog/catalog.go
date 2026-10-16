@@ -1,0 +1,1574 @@
+// Package catalog knows which models exist. It reads the models.dev catalog
+// (from magpie's own cache or OpenCode's), Codex's model cache, and falls back
+// to a small built-in list so the picker is never empty.
+package catalog
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/yetone/magpie/internal/appdir"
+	"github.com/yetone/magpie/internal/filememo"
+)
+
+// Model is one entry the picker can offer.
+type Model struct {
+	ID          string // e.g. "claude-sonnet-5"
+	Name        string // display name
+	Provider    string // models.dev provider id
+	Released    string // YYYY-MM-DD, used for ordering
+	Efforts     []string
+	Temperature *bool  // false when the model refuses temperature/top_p
+	Price       *Price // USD per million tokens, when models.dev lists it
+	// Keys, for a vendor whose keys each see models of their own, are the
+	// keys (by fingerprint) whose list has this one; empty is every key.
+	Keys []string `json:",omitempty"`
+	// APIs, when the vendor says, are the APIs the model is served on
+	// ("chat", "responses", "anthropic"); empty is not known.
+	APIs []string `json:",omitempty"`
+	// Images is set on a model that takes images as input.
+	Images bool `json:",omitempty"`
+	// ImageInput is the source's explicit answer; nil means it did not say.
+	ImageInput *bool `json:",omitempty"`
+	// InputModalities and OutputModalities are what the model takes and
+	// gives (text, image, audio, video, pdf) as its source listed them;
+	// nil is not said. Images (and the user's override of it) still
+	// decides "image" (provider.Entry.Modalities).
+	InputModalities  []string `json:",omitempty"`
+	OutputModalities []string `json:",omitempty"`
+	// Context is how many tokens a prompt may hold, when known: models.dev's
+	// input limit, else its context window.
+	Context int `json:",omitempty"`
+	// MaxContext is the most a prompt may hold when asked for, above
+	// Context: Codex's max_context_window (872k on GPT-6, 272k by default).
+	MaxContext int `json:",omitempty"`
+	// Output is the most tokens a reply may hold, when known.
+	Output int `json:",omitempty"`
+	// OutputSet is set when Output is a Max output the user typed for the
+	// model or its provider (provider.Entry.OutputSet): an agent that trims
+	// a vendor's figure for its own reasons hands this one on as it is.
+	OutputSet bool `json:"-"`
+	// Compact is where the user has Codex compact a conversation on this
+	// model (#876), its own or its provider's (settings.ModelCompacts), or
+	// Context itself when that is a window the user typed (#1809,
+	// provider.CompactFor): the window it is told when Context is longer.
+	// 0 is none set, for the one for every model (settings.Compact).
+	Compact int `json:",omitempty"`
+	// Plain, on a model of another magpie's list, is its name there alone
+	// (display_name), when Name is its label there, with that magpie's
+	// provider after it (magpie_label): the name Provider in model names
+	// Off has here (ARNO on Discord).
+	Plain string `json:",omitempty"`
+	// Fast is set on a model Codex may ask for priority processing (its
+	// Fast mode): one a ChatGPT account serves.
+	Fast bool `json:",omitempty"`
+	// Tiers, in one ChatGPT account's own model list, are the service
+	// tiers its plan offers on the model ("priority", "ultrafast"); in
+	// another magpie's, the tiers it offers its Codex on the model
+	// (#1234); in a provider plugin's, the tiers it says its vendor serves
+	// the model at (#2514).
+	Tiers []string `json:",omitempty"`
+	// OwnTier is set on a model of a provider the user added by its
+	// address, which the gateway sends the tier Codex asks for as it is
+	// (gateway Request.Tier): Codex offers it the tiers of its own entry
+	// for the same model, Fast on another GPT model.
+	OwnTier bool `json:",omitempty"`
+	// CodexFast is set on a GPT model a ChatGPT account serves itself, not
+	// through a routing group: one Codex's /fast (service_tier "priority")
+	// is asked of, which OpenCode is offered as fast variants (#2379).
+	// Not kept with a list: it is the provider's, worked out each time.
+	CodexFast bool `json:"-"`
+	// AgentsV2 is set on a model Codex is told multi-agent V2 for, so its
+	// Ultra hands work to Codex's agents: one offering Ultra that no
+	// ChatGPT account answers for (provider.Entry's).
+	AgentsV2 bool `json:",omitempty"`
+	// Draws is set on a vendor-listed model that makes images (gpt-image-1,
+	// a relay's flux): kept with the list for Settings → Images, never
+	// offered to agents as a model to talk to.
+	Draws bool `json:",omitempty"`
+	// Films is set on a model another magpie lists as one it makes videos
+	// with (a Remote magpie's Grok Imagine Video): kept with the list for
+	// its videos API, never offered as a model to talk to or draw with.
+	Films bool `json:",omitempty"`
+	// Decides marks a decision model another magpie explicitly lists,
+	// including models whose ids don't name Jev.
+	Decides bool `json:",omitempty"`
+	// Free is set on a model a subscription serves at no cost to its
+	// allowance: WorkBuddy's "credits": "x0.00".
+	Free bool `json:",omitempty"`
+	// Rate is what a request costs of a subscription's credits, as a
+	// multiple, when its vendor lists it: Qoder's price_factor (0.5),
+	// WorkBuddy's "credits": "x0.03". 0 is not listed, or Free.
+	Rate float64 `json:",omitempty"`
+	// RateWas is the rate before a discount running now, when the vendor
+	// says it: Qoder's Qwen3.8-Flash at 0× with 0.1× struck through.
+	RateWas float64 `json:",omitempty"`
+	// Reasoning is set on a model that thinks, whether or not it takes
+	// levels: mimo-v2.6-flash thinks with a switch alone (#402).
+	Reasoning bool `json:",omitempty"`
+	// WebSearch is how another magpie (a Remote magpie) searches the web
+	// for the model when a web search tool is offered: "native", its own
+	// provider by itself, or "magpie", with that magpie's searcher; "" it
+	// doesn't, or didn't say.
+	WebSearch string `json:",omitempty"`
+}
+
+func imageInput(modalities []string) *bool {
+	if modalities == nil {
+		return nil
+	}
+	yes := slices.Contains(modalities, "image")
+	return &yes
+}
+
+// Price is what a model costs, in USD per million tokens.
+type Price struct {
+	Input      float64 `json:"input"`
+	Output     float64 `json:"output"`
+	CacheRead  float64 `json:"cache_read"`
+	CacheWrite float64 `json:"cache_write"`
+	// CacheWrite1h is what a cache write kept for an hour costs, Anthropic's
+	// 1-hour TTL, which it bills at 2× input where a 5-minute write (the
+	// CacheWrite above) is 1.25×. 0 is not given: such a write is then
+	// counted at the 5-minute price, as no other vendor has an hour's
+	// writes to bill apart; a Claude model's is 2× input (OneHourFor).
+	CacheWrite1h float64 `json:"cache_write_1h,omitempty"`
+	// Tiers are the prices a request is billed at, whole, once its input
+	// goes over a size (OpenAI's gpt-6-astra: 2× input and cache, 1.5×
+	// output above 272K), lowest first. models.dev lists them as "tiers" of
+	// type "context".
+	Tiers []Tier `json:"tiers,omitempty"`
+}
+
+// Tier is a price from a request's input size on: what the whole request
+// costs once its input, cached and cache-written tokens included, is over
+// Above tokens.
+type Tier struct {
+	Above        int     `json:"above"`
+	Input        float64 `json:"input"`
+	Output       float64 `json:"output"`
+	CacheRead    float64 `json:"cache_read"`
+	CacheWrite   float64 `json:"cache_write"`
+	CacheWrite1h float64 `json:"cache_write_1h,omitempty"`
+}
+
+// UnmarshalJSON reads a price as magpie writes it, and as models.dev does,
+// whose tiers name their size as {"tier": {"type": "context", "size": N}}
+// and may leave a part out, which is then the base price's. A tier of
+// another type, or of no size, is left out.
+func (p *Price) UnmarshalJSON(b []byte) error {
+	type flat Price
+	var raw struct {
+		flat
+		Tiers []struct {
+			Above        int      `json:"above"`
+			Input        *float64 `json:"input"`
+			Output       *float64 `json:"output"`
+			CacheRead    *float64 `json:"cache_read"`
+			CacheWrite   *float64 `json:"cache_write"`
+			CacheWrite1h *float64 `json:"cache_write_1h"`
+			Tier         *struct {
+				Type string `json:"type"`
+				Size int    `json:"size"`
+			} `json:"tier"`
+		} `json:"tiers"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	*p = Price(raw.flat)
+	p.Tiers = nil
+	or := func(v *float64, base float64) float64 {
+		if v != nil {
+			return *v
+		}
+		return base
+	}
+	for _, t := range raw.Tiers {
+		above := t.Above
+		if t.Tier != nil {
+			if t.Tier.Type != "" && t.Tier.Type != "context" {
+				continue
+			}
+			above = t.Tier.Size
+		}
+		if above <= 0 {
+			continue
+		}
+		p.Tiers = append(p.Tiers, Tier{Above: above, Input: or(t.Input, p.Input), Output: or(t.Output, p.Output),
+			CacheRead: or(t.CacheRead, p.CacheRead), CacheWrite: or(t.CacheWrite, p.CacheWrite), CacheWrite1h: or(t.CacheWrite1h, 0)})
+	}
+	slices.SortFunc(p.Tiers, func(a, b Tier) int { return a.Above - b.Above })
+	return nil
+}
+
+// OneHourFor gives a Claude model's price its 1-hour cache write where none
+// is given — models.dev lists none, and a price the user gives may leave it
+// out: 2× input, as Anthropic bills it for every model, wherever the model
+// has a (5-minute) cache write price at all. Any other model's stays
+// unset, its writes all at the 5-minute price: only Anthropic has a 1-hour
+// one (PAMI on Discord: gpt-6-astra was shown a $20 one that isn't).
+func OneHourFor(id string, p *Price) {
+	if p == nil || p.CacheWrite <= 0 || p.CacheWrite1h > 0 || !strings.Contains(strings.ToLower(id), "claude") {
+		return
+	}
+	p.CacheWrite1h = 2 * p.Input
+	for i := range p.Tiers {
+		if p.Tiers[i].CacheWrite1h <= 0 {
+			p.Tiers[i].CacheWrite1h = 2 * p.Tiers[i].Input
+		}
+	}
+}
+
+// Times is the price at r times each of its parts.
+func (p Price) Times(r float64) Price {
+	out := Price{Input: p.Input * r, Output: p.Output * r, CacheRead: p.CacheRead * r, CacheWrite: p.CacheWrite * r, CacheWrite1h: p.CacheWrite1h * r}
+	for _, t := range p.Tiers {
+		out.Tiers = append(out.Tiers, Tier{Above: t.Above, Input: t.Input * r, Output: t.Output * r, CacheRead: t.CacheRead * r, CacheWrite: t.CacheWrite * r, CacheWrite1h: t.CacheWrite1h * r})
+	}
+	return out
+}
+
+// Same is whether two prices are the same in every part and tier.
+func (p Price) Same(q Price) bool {
+	return p.Input == q.Input && p.Output == q.Output && p.CacheRead == q.CacheRead && p.CacheWrite == q.CacheWrite &&
+		p.CacheWrite1h == q.CacheWrite1h && slices.Equal(p.Tiers, q.Tiers)
+}
+
+// At is the flat price a request whose input, cached and cache-written
+// tokens included, comes to prompt tokens is billed at: that of the highest
+// tier it is over, else the base price. OpenAI counts a request's input
+// with its cached tokens in it, and bills the whole request at the tier.
+func (p Price) At(prompt int) Price {
+	flat := Price{Input: p.Input, Output: p.Output, CacheRead: p.CacheRead, CacheWrite: p.CacheWrite, CacheWrite1h: p.CacheWrite1h}
+	for _, t := range p.Tiers {
+		if prompt > t.Above {
+			flat = Price{Input: t.Input, Output: t.Output, CacheRead: t.CacheRead, CacheWrite: t.CacheWrite, CacheWrite1h: t.CacheWrite1h}
+		}
+	}
+	return flat
+}
+
+// OneHour is what a 1-hour cache write costs at this flat price: the price
+// given, else the 5-minute one (a Claude model's is given, OneHourFor).
+func (p Price) OneHour() float64 {
+	if p.CacheWrite1h > 0 {
+		return p.CacheWrite1h
+	}
+	return p.CacheWrite
+}
+
+// Cost of a call at this price, every cache write a 5-minute one.
+// Reasoning tokens are billed as output by every vendor, and are already
+// inside the output count.
+func (p Price) Cost(input, output, cacheRead, cacheWrite int) float64 {
+	return p.CostSplit(input, output, cacheRead, cacheWrite, 0)
+}
+
+// CostSplit is Cost where cacheWrite1h of the cacheWrite tokens were
+// written for an hour, billed at that price, and the rest for 5 minutes.
+// The whole call is billed at the tier its input reaches.
+func (p Price) CostSplit(input, output, cacheRead, cacheWrite, cacheWrite1h int) float64 {
+	cacheWrite1h = min(max(cacheWrite1h, 0), max(cacheWrite, 0))
+	f := p.At(input + cacheRead + cacheWrite)
+	return (float64(input)*f.Input + float64(output)*f.Output +
+		float64(cacheRead)*f.CacheRead + float64(cacheWrite-cacheWrite1h)*f.CacheWrite +
+		float64(cacheWrite1h)*f.OneHour()) / 1e6
+}
+
+type mdProvider struct {
+	ID   string   `json:"id"`
+	Name string   `json:"name"`
+	Env  []string `json:"env"`
+	// API is the base URL models.dev says the provider serves its models
+	// at (AMD's https://developer.amd.com.cn/radeon/api/v1)
+	API    string             `json:"api"`
+	Models map[string]mdModel `json:"models"`
+}
+
+type mdModel struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	ReleaseDate string `json:"release_date"`
+	// Family is the line models.dev puts the model in (gpt-sol, mimo):
+	// the levels a new one it lists without any most likely takes
+	Family      string `json:"family"`
+	Temperature *bool  `json:"temperature"` // false: rejects temperature/top_p
+	Thinks      bool   `json:"reasoning"`
+	Reasoning   []struct {
+		Type   string   `json:"type"`
+		Values []string `json:"values"`
+	} `json:"reasoning_options"`
+	Modalities struct {
+		Input  []string `json:"input"`
+		Output []string `json:"output"`
+	} `json:"modalities"`
+	Cost *Price `json:"cost"`
+	// Canonical is the model models.dev says this entry is, as
+	// "maker/model": DeepSeek lists V4.1 Flash as deepseek-flash, its
+	// canonical deepseek/deepseek-v4.1-flash, the id everyone else serves
+	// it under (#1520)
+	Canonical string `json:"canonical_model_id"`
+	// Provider, on a model its vendor serves another way than the rest,
+	// names the SDK that talks to it ("@ai-sdk/openai": the Responses API)
+	Provider *struct {
+		NPM string `json:"npm"`
+	} `json:"provider"`
+	Limit struct {
+		Context int `json:"context"`
+		Input   int `json:"input"`
+		Output  int `json:"output"`
+	} `json:"limit"`
+}
+
+// reasoningOffProviders are models.dev providers whose APIs have verified
+// that their toggled models accept the off effort (#1098).
+var reasoningOffProviders = map[string]struct{}{
+	"deepseek":              {},
+	"kimi-code-plan-cn":     {},
+	"kimi-code-plan-global": {},
+}
+
+// efforts are the reasoning levels models.dev says the model takes. A
+// toggle adds the off level only for providers whose APIs verified it;
+// other providers keep their listed levels because they may reject "none".
+func (m mdModel) efforts(providerID string) []string {
+	var out []string
+	toggle := false
+	for _, r := range m.Reasoning {
+		switch r.Type {
+		case "toggle":
+			toggle = true
+		case "effort":
+			out = r.Values
+		}
+	}
+	if _, ok := reasoningOffProviders[providerID]; ok && toggle && len(out) > 0 && !slices.Contains(out, "none") {
+		return append([]string{"none"}, out...)
+	}
+	return out
+}
+
+// levels are the reasoning levels p gives m: its own, else, for one it
+// says thinks but lists without levels — a model just added, as OpenAI's
+// gpt-6.1-sol was (NextCommit on Discord) — those of the newest of p's
+// thinking models of its family released by then (gpt-6-sol's). A family
+// whose models all take a thinking switch alone (Xiaomi's mimo) gives
+// none, as before (#214).
+func (p mdProvider) levels(m mdModel, providerID string) []string {
+	if e := m.efforts(providerID); len(e) > 0 || !m.Thinks || m.Family == "" || m.budgeted() {
+		return e
+	}
+	var kin *mdModel
+	for _, x := range p.Models {
+		if x.Family != m.Family || !x.Thinks || x.ID == m.ID || len(x.efforts(providerID)) == 0 {
+			continue
+		}
+		if m.ReleaseDate != "" && x.ReleaseDate > m.ReleaseDate {
+			continue
+		}
+		if kin == nil || x.ReleaseDate > kin.ReleaseDate || x.ReleaseDate == kin.ReleaseDate && x.ID > kin.ID {
+			kin = &x
+		}
+	}
+	if kin == nil {
+		return nil
+	}
+	return kin.efforts(providerID)
+}
+
+// window is the tokens a prompt to m may hold: the input limit where
+// models.dev gives one (gpt-5's 272K of its 400K), else the whole context.
+// A row whose input limit sits above its window (Cloudflare AI Gateway's
+// gpt-5 at 272K over 128K) holds the window: the cap never exceeds it.
+//
+// Either limit under LeastWindow says nothing (Window), so the other one
+// answers, or none does.
+func (m mdModel) window() int {
+	in, ctx := Window(m.Limit.Input), Window(m.Limit.Context)
+	if in > 0 {
+		if ctx > 0 && ctx < in {
+			return ctx
+		}
+		return in
+	}
+	return ctx
+}
+
+// LeastWindow is the smallest context window a list is taken at its word
+// for. Less can't hold an agent's system prompt, let alone a turn, and an
+// agent told it compacts at once or won't send at all (H20 on Discord: hy3
+// and Cline's free models listed at 512, which Claude Code and Codex took
+// as the model's window). The smallest real chat models' windows are
+// about 4096 (gpt-3.5-turbo-instruct's 4095, mythomax's 4096): those stand.
+const LeastWindow = 2048
+
+// Window is n as a model's context window: n, or 0 — not known, for
+// models.dev, a family's window or the agent's default to answer — when n
+// is under LeastWindow.
+func Window(n int) int {
+	if n < LeastWindow {
+		return 0
+	}
+	return n
+}
+
+var modelsDevURL = "https://models.dev/api.json" // a var for tests
+
+var (
+	// loadMu guards loading and Reset: a background Sync (fresh.go) resets
+	// while a call is pricing its model
+	loadMu sync.Mutex
+	loaded bool
+	mdev   map[string]mdProvider
+	// images are the models, by bare id, most of the providers serving
+	// them say take images (a few mislabel a text model)
+	images map[string]bool
+	// windows are the models' context windows, by bare id, as most of the
+	// providers serving them give it
+	windows map[string]int
+	// outputs are the most tokens their replies may hold, likewise
+	outputs map[string]int
+	// efforts are the models' reasoning levels, by bare id, as most of the
+	// providers that give any for them give them
+	efforts map[string][]string
+	// thinks are the models, by bare id, most of the providers serving
+	// them say reason, levels or not
+	thinks map[string]bool
+	// names are the models' names, by bare id, as most of the providers
+	// serving them give it
+	names map[string]string
+	// listed are the bare ids of every model models.dev lists, whatever it
+	// says of them: an id listed is never taken for another (renamed)
+	listed map[string]bool
+	// canonical are the bare ids of every model models.dev says an entry is
+	// (canonical_model_id, #1520): DeepSeek's deepseek-flash is
+	// deepseek/deepseek-v4.1-flash, the id WorkBuddy and the relays serve it
+	// under, which no catalog lists by it. One is a model as a listed one
+	// is, so it is never taken for another either (renamed)
+	canonical map[string]bool
+
+	syncCh = make(chan struct{}, 1)
+)
+
+// CachePath is where `magpie sync` stores the models.dev catalog.
+func CachePath() string { return filepath.Join(appdir.Cache(), "models.json") }
+
+func opencodeCache() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".cache", "opencode", "models.json")
+}
+
+// Source reports which catalog file is in use ("" when only built-ins are).
+func Source() string {
+	for _, p := range []string{CachePath(), opencodeCache()} {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+func load() map[string]mdProvider {
+	loadMu.Lock()
+	defer loadMu.Unlock()
+	if !loaded {
+		loaded = true
+		func() {
+			for _, p := range []string{CachePath(), opencodeCache()} {
+				b, err := os.ReadFile(p)
+				if err != nil {
+					continue
+				}
+				var m map[string]mdProvider
+				if json.Unmarshal(b, &m) == nil && len(m) > 0 {
+					mdev = m
+					votes, reasons := map[string]int{}, map[string]int{}
+					named := map[string]map[string]int{}
+					sizes, outs := map[string]map[int]int{}, map[string]map[int]int{}
+					levels := map[string]map[string]int{}
+					voted := map[string]bool{}
+					listed = map[string]bool{}
+					canonical = map[string]bool{}
+					// vote is what one entry says of a model, counted for
+					// the id it names it by: its window, reply limit,
+					// thinking, images, levels and name. One vote a
+					// provider for each list it gives a model: a gateway
+					// listing it under each host it routes to (llmgateway's
+					// deepinfra/…, xiaomi/…) votes its levels once, not
+					// once a host.
+					vote := func(who, own, by string, x mdModel) {
+						if x.Name != "" && x.Name != own && x.Name != who {
+							if named[who] == nil {
+								named[who] = map[string]int{}
+							}
+							named[who][x.Name]++
+						}
+						// This vote answers what the catalog lists for the
+						// model across providers. A verified provider's toggle
+						// support is applied only when that provider itself is
+						// queried; it must not leak into relays or aggregates.
+						if e := x.efforts(""); len(e) > 0 {
+							l := strings.Join(e, ",")
+							if levels[who] == nil {
+								levels[who] = map[string]int{}
+							}
+							if k := by + "\x00" + who + "\x00" + l; !voted[k] {
+								voted[k] = true
+								levels[who][l]++
+							}
+						}
+						if x.Thinks || len(x.efforts("")) > 0 {
+							reasons[who]++
+						} else {
+							reasons[who]--
+						}
+						if slices.Contains(x.Modalities.Input, "image") {
+							votes[who]++
+						} else {
+							votes[who]--
+						}
+						if w := x.window(); w > 0 {
+							if sizes[who] == nil {
+								sizes[who] = map[int]int{}
+							}
+							sizes[who][w]++
+						}
+						if o := x.Limit.Output; o > 0 {
+							if outs[who] == nil {
+								outs[who] = map[int]int{}
+							}
+							outs[who][o]++
+						}
+					}
+					for pid, p := range m {
+						for id, x := range p.Models {
+							listed[bareID(id)] = true
+							if _, _, ok := strings.Cut(x.Canonical, "/"); ok {
+								canonical[bareID(x.Canonical)] = true
+							}
+							OneHourFor(id, x.Cost)
+							vote(bareID(id), id, pid, x)
+						}
+					}
+					// and a model no catalog lists by its id, one entries
+					// only name as their canonical_model_id (#1520), takes
+					// their word for it too: its window, thinking, images
+					// and name are the model's, whoever serves it. One
+					// listed by its id keeps the answers it has, so nothing
+					// known changes.
+					for pid, p := range m {
+						for id, x := range p.Models {
+							if _, _, ok := strings.Cut(x.Canonical, "/"); !ok {
+								continue
+							}
+							if c := bareID(x.Canonical); !listed[c] {
+								vote(c, id, pid, x)
+							}
+						}
+					}
+					windows = map[string]int{}
+					for id, by := range sizes {
+						windows[id] = mostGiven(by)
+					}
+					outputs = map[string]int{}
+					for id, by := range outs {
+						outputs[id] = mostGiven(by)
+					}
+					efforts = map[string][]string{}
+					for id, by := range levels {
+						efforts[id] = strings.Split(mostListed(by), ",")
+					}
+					names = map[string]string{}
+					for id, by := range named {
+						names[id] = mostNamed(by)
+					}
+					thinks = map[string]bool{}
+					for id, v := range reasons {
+						if v > 0 {
+							thinks[id] = true
+						}
+					}
+					images = map[string]bool{}
+					for id, v := range votes {
+						if v > 0 {
+							images[id] = true
+						}
+					}
+					return
+				}
+			}
+		}()
+	}
+	return mdev
+}
+
+// Reset forgets the loaded catalog so the next call re-reads the cache.
+func Reset() {
+	loadMu.Lock()
+	defer loadMu.Unlock()
+	loaded = false
+	mdev, images, windows, outputs, efforts, thinks, names, listed, canonical = nil, nil, nil, nil, nil, nil, nil, nil, nil
+}
+
+// Sync downloads the models.dev catalog into CachePath. It serializes with
+// itself so a background refresh and a manual one cannot interleave writes.
+func Sync(ctx context.Context) error {
+	return syncLock(ctx, false)
+}
+
+// SyncIfMissing is Sync, but returns nil if a catalog already exists once the
+// lock is acquired.
+func SyncIfMissing(ctx context.Context) error {
+	return syncLock(ctx, true)
+}
+
+func syncLock(ctx context.Context, onlyIfMissing bool) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case syncCh <- struct{}{}:
+	}
+	defer func() { <-syncCh }()
+	if onlyIfMissing && Source() != "" {
+		return nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsDevURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "magpie")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("models.dev: %s", resp.Status)
+	}
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	if err != nil {
+		return err
+	}
+	var probe map[string]mdProvider
+	if err := json.Unmarshal(b, &probe); err != nil || len(probe) == 0 {
+		return fmt.Errorf("models.dev: unexpected payload")
+	}
+	p := CachePath()
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(p, b, 0o644); err != nil {
+		return err
+	}
+	Reset()
+	Touched() // names, reasoning levels and context windows may be others
+	return nil
+}
+
+// Stale reports whether no catalog exists or the cache is older than a day
+// (fresh.go).
+func Stale() bool {
+	src := Source()
+	if src == "" {
+		return true
+	}
+	st, err := os.Stat(src)
+	return err != nil || time.Since(st.ModTime()) > staleAfter
+}
+
+// PriceOf is the list price of a models.dev provider's model, if known.
+func PriceOf(providerID, modelID string) (Price, bool) {
+	if p, ok := load()[providerID]; ok {
+		if m, ok := p.Models[modelID]; ok && m.Cost != nil {
+			return *m.Cost, true
+		}
+	}
+	return Price{}, false
+}
+
+// PricedBy is the list price the first of providers (models.dev ids)
+// pricing a model of this id gives it: by its own key first, then by its
+// id without a path or case ("openai/GPT-6-Sol" is gpt-6-sol), a Bedrock
+// profile's geography, a "(variant)" or a ":tag"; then with a dot taken
+// for a dash, then as the model an entry names as its canonical_model_id
+// (DeepSeek's deepseek-flash is deepseek-v4.1-flash).
+func PricedBy(providers []string, id string) (Price, bool) {
+	all := load()
+	for _, pid := range providers {
+		if m, ok := all[pid].Models[id]; ok && m.Cost != nil {
+			return *m.Cost, true
+		}
+	}
+	b := bareID(id)
+	if r, ok := unprofiled(b); ok {
+		b = r
+	}
+	for _, want := range []string{b, cutAt(b, '('), cutAt(b, ':')} {
+		for _, pid := range providers {
+			keys := make([]string, 0, len(all[pid].Models))
+			for key, m := range all[pid].Models {
+				if m.Cost != nil && bareID(key) == want {
+					keys = append(keys, key)
+				}
+			}
+			if len(keys) > 0 {
+				slices.Sort(keys)
+				return *all[pid].Models[keys[0]].Cost, true
+			}
+		}
+	}
+	// and last with a dot and a dash taken for the same: Copilot and the
+	// relays spell Anthropic's models claude-opus-4.6, Anthropic's own entry
+	// claude-opus-4-6. Only where nothing above priced it, so a vendor that
+	// lists the id as given, at a price of its own, is still the one asked.
+	want := dashed(b)
+	for _, pid := range providers {
+		keys := []string{}
+		for key, m := range all[pid].Models {
+			if m.Cost != nil && dashed(bareID(key)) == want {
+				keys = append(keys, key)
+			}
+		}
+		if len(keys) > 0 {
+			slices.Sort(keys)
+			return *all[pid].Models[keys[0]].Cost, true
+		}
+	}
+	// and by what models.dev says an entry is (canonical_model_id): DeepSeek
+	// sells V4.1 Flash as deepseek-flash, whose canonical is
+	// deepseek/deepseek-v4.1-flash, the id WorkBuddy and the relays serve it
+	// under, and lists no deepseek-v4.1-flash of its own (#1520). Only where
+	// nothing above priced it, so an id a vendor lists keeps its own price.
+	if pr, ok := canonicallyPriced(all, providers, b); ok {
+		return pr, true
+	}
+	// and a relay's rename of a model none of them lists as given
+	// (claude-deepseek-v4.1-flash[1M] is deepseek-v4.1-flash, #1383)
+	if r, _, ok := renamed(b); ok {
+		return PricedBy(providers, r)
+	}
+	return Price{}, false
+}
+
+// canonicallyPriced is the list price the first of providers gives the
+// model whose canonical_model_id is b (a bare id), by that id, then with a
+// dot and a dash taken for the same. Only a vendor's own model counts — an
+// entry whose canonical names the provider listing it as its maker
+// (deepseek's deepseek-flash, deepseek/deepseek-v4.1-flash) — and only at
+// a price: a reseller's entry under a canonical is often a variant of the
+// model, sold at a price of its own (OpenCode's mimo-v2.6-flash-free at $0,
+// Baseten's -Fast at twice the price), and a model a relay doesn't list by
+// its id is priced at its maker's, as it was. A vendor listing several
+// entries under one canonical at different prices names none of them:
+// which one was called isn't known.
+func canonicallyPriced(all map[string]mdProvider, providers []string, b string) (Price, bool) {
+	for _, same := range []func(c string) bool{
+		func(c string) bool { return bareID(c) == b },
+		func(c string) bool { return dashed(bareID(c)) == dashed(b) },
+	} {
+		for _, pid := range providers {
+			var got *Price
+			agree := true
+			for _, m := range all[pid].Models {
+				maker, _, ok := strings.Cut(m.Canonical, "/")
+				if !ok || !strings.EqualFold(maker, pid) || m.Cost == nil || m.Cost.Same(Price{}) || !same(m.Canonical) {
+					continue
+				}
+				if got != nil && !got.Same(*m.Cost) {
+					agree = false
+					break
+				}
+				got = m.Cost
+			}
+			if got != nil && agree {
+				return *got, true
+			}
+		}
+	}
+	return Price{}, false
+}
+
+// dashed is an id with its dots as dashes: the spelling two ids are compared
+// in when one vendor writes a model's version 4.6 and another 4-6.
+func dashed(id string) string { return strings.ReplaceAll(id, ".", "-") }
+
+// APIOf is the API a models.dev provider's model is served on, when the
+// catalog says it's one of its own: "responses", "anthropic" or "gemini"
+// for a model OpenCode serves through OpenAI's, Anthropic's or Google's
+// SDK (Gemini's generateContent: Zen's Gemini models, Go's Gemini 4 Argon
+// Contributor, #2168), not the OpenAI-compatible one the rest of its
+// models go through.
+func APIOf(providerID, modelID string) string {
+	if p, ok := load()[providerID]; ok {
+		if m, ok := p.Models[modelID]; ok && m.Provider != nil {
+			switch m.Provider.NPM {
+			case "@ai-sdk/openai":
+				return "responses"
+			case "@ai-sdk/anthropic":
+				return "anthropic"
+			case "@ai-sdk/google":
+				return "gemini"
+			}
+		}
+	}
+	return ""
+}
+
+// Provider returns the text models of one models.dev provider, newest first.
+// The list comes from the synced models.dev catalog; nothing is compiled in.
+// A vendor's own /models answer, once fetched, is layered over it by the
+// provider package (see provider.Provider.Available).
+func Provider(id string) []Model {
+	p, ok := load()[id]
+	if !ok {
+		return nil
+	}
+	var out []Model
+	for _, m := range p.Models {
+		if !textModel(m) {
+			continue
+		}
+		mm := Model{ID: m.ID, Name: m.Name, Provider: id, Released: m.ReleaseDate, Price: m.Cost, Temperature: m.Temperature,
+			Images: slices.Contains(m.Modalities.Input, "image"), ImageInput: imageInput(m.Modalities.Input), Context: m.window(), Output: m.Limit.Output,
+			InputModalities: m.Modalities.Input, OutputModalities: m.Modalities.Output}
+		mm.Efforts = p.levels(m, id)
+		mm.Reasoning = m.Thinks || len(mm.Efforts) > 0
+		out = append(out, mm)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Released != out[j].Released {
+			return out[i].Released > out[j].Released
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
+// ProviderName is a models.dev provider's display name ("GitHub Copilot"
+// for "github-copilot"), or "" when the catalog doesn't know it.
+func ProviderName(id string) string {
+	return load()[id].Name
+}
+
+// Thinks reports whether models.dev says a model of this id reasons, as
+// most of the providers it lists serving it do, whether or not they give
+// it levels; for a vendor it doesn't list, serving a model it knows from
+// others.
+func Thinks(id string) bool {
+	load()
+	v, _ := lookup(id, thinks)
+	return v
+}
+
+// NameOf is the name models.dev gives a model of this id, as most of the
+// providers it lists serving it do, matched as SeesImages matches it:
+// without a vendor's prefix, in any case. "" when no provider names it
+// other than by its id.
+func NameOf(id string) string {
+	load()
+	b := bareID(id)
+	if n, ok := found(b, names); ok {
+		return n
+	}
+	r, w, ok := renamedBy(b, false)
+	if !ok {
+		return ""
+	}
+	n, _ := found(r, names)
+	if n != "" && w > 0 {
+		// two of a relay's models apart by their window alone read apart:
+		// "DeepSeek V4.1 Flash [1M]", the mark as the id writes it
+		n += " " + id[strings.LastIndexByte(id, '['):]
+	}
+	return n
+}
+
+// Named gives a model the list names by its id alone the name models.dev
+// knows it by (NameOf), so one model reads the same under every provider:
+// a GLM Coding Plan's glm-5-turbo, which Zhipu's catalog doesn't list, is
+// GLM-5-Turbo as ZCode's is. Its id, and where requests go, stay as they
+// are. A supplemented name shared by different ids falls back to the id.
+// Already named models in reserved count toward collisions but stay as given.
+func Named(ms []Model, reserved ...Model) []Model {
+	out := slices.Clone(ms)
+	fallback := make([]string, len(ms))
+	for i, m := range ms {
+		if m.Name == "" || m.Name == m.ID {
+			fallback[i] = NameOf(m.ID)
+		}
+	}
+	fillNames(out, fallback, reserved...)
+	return out
+}
+
+// fillNames applies catalog names without giving different ids the same
+// name. The ids are reserved too, so falling back to one cannot collide
+// with another model's supplemented name. The caller owns ms.
+func fillNames(ms []Model, fallback []string, reserved ...Model) {
+	owners := make(map[string]string)
+	collisions := make(map[string]bool)
+	claim := func(name, id string) {
+		if name == "" {
+			return
+		}
+		if owner, ok := owners[name]; ok && owner != id {
+			collisions[name] = true
+		}
+		owners[name] = id
+	}
+	for _, m := range reserved {
+		claim(m.ID, m.ID)
+		claim(m.Name, m.ID)
+	}
+	for i, m := range ms {
+		claim(m.ID, m.ID)
+		name := m.Name
+		if fallback[i] != "" {
+			name = fallback[i]
+		}
+		claim(name, m.ID)
+	}
+	for i, name := range fallback {
+		if name == "" {
+			continue
+		}
+		if collisions[name] {
+			name = ms[i].ID
+		}
+		ms[i].Name = name
+	}
+}
+
+// Knows reports whether models.dev lists a model of this id at all, under
+// any provider, as ContextOf and EffortsOf match it.
+func Knows(id string) bool {
+	return ContextOf(id) > 0 || len(EffortsOf(id)) > 0 || Thinks(id)
+}
+
+// SeesImages reports whether models.dev says a model of this id takes
+// images, as most of the providers it lists serving it do; for a vendor it
+// doesn't list, serving a model it knows from others ("z-ai/glm-5.3" is
+// glm-5.3).
+func SeesImages(id string) bool {
+	load()
+	v, _ := lookup(id, images)
+	return v
+}
+
+// ContextOf is the context window models.dev gives a model of this id, as
+// most of the providers it lists serving it do, or 0 when it doesn't know
+// the model. Like SeesImages it reaches a vendor models.dev doesn't list: a
+// proxy serving "openai/gpt-5.4", or "gpt-5.4(high)" with the reasoning
+// level CLIProxyAPI takes in the id, which a static model list would
+// otherwise leave at the agent's default.
+//
+// A relay's rename of a model it knows (renamed) that names its window
+// ("[1M]", "[200K]", Claude Code's "[1m]") has the window it names: what
+// the relay serves it at, as Claude Code takes claude-opus-5[1m] for 1M.
+func ContextOf(id string) int {
+	load()
+	b := bareID(id)
+	if w, ok := found(b, windows); ok {
+		return w
+	}
+	if r, w, ok := renamed(b); ok {
+		if w > 0 {
+			return w
+		}
+		w, _ = found(r, windows)
+		return w
+	}
+	return 0
+}
+
+// OutputOf is the most tokens a reply from a model of this id may hold, as
+// most of the providers serving it give it, or 0 when not known.
+func OutputOf(id string) int {
+	load()
+	o, _ := lookup(id, outputs)
+	return o
+}
+
+// EffortsOf is the reasoning levels models.dev gives a model of this id, as
+// most of the providers giving any for it do, or nil when none does. Like
+// ContextOf it reaches a vendor models.dev doesn't list: a custom provider
+// serving "glm-5.3-flash" takes the levels Z.ai and the others serving it
+// say it does, where it would otherwise be taken for a model that doesn't
+// reason, and an agent offer no levels for it.
+func EffortsOf(id string) []string {
+	load()
+	e, _ := lookup(id, efforts)
+	return slices.Clone(e)
+}
+
+// lookup is what table holds for a model of this id: as found finds it,
+// else as the relay's rename of a model found finds (renamed). Every
+// capability is looked up the same way, so a model the catalog knows has
+// all of them or none.
+func lookup[T any](id string, table map[string]T) (T, bool) {
+	b := bareID(id)
+	if v, ok := found(b, table); ok {
+		return v, true
+	}
+	if r, _, ok := renamed(b); ok {
+		return found(r, table)
+	}
+	var zero T
+	return zero, false
+}
+
+// found is what table holds for a bare id: by the id itself, a Bedrock
+// profile's without its geography, "gpt-5.4(high)" (CLIProxyAPI's level in
+// the id) as gpt-5.4, or "glm-5:free" (":batch", ":thinking") as glm-5.
+func found[T any](b string, table map[string]T) (T, bool) {
+	if v, ok := table[b]; ok {
+		return v, true
+	}
+	if r, ok := unprofiled(b); ok {
+		return found(r, table)
+	}
+	if i := strings.IndexByte(b, '('); i > 0 && strings.HasSuffix(b, ")") {
+		if v, ok := table[b[:i]]; ok {
+			return v, true
+		}
+		b = b[:i]
+	}
+	if i := strings.IndexByte(b, ':'); i > 0 {
+		v, ok := table[b[:i]]
+		return v, ok
+	}
+	var zero T
+	return zero, false
+}
+
+// relayPrefixes are what relays put before a model's id to rename it, so
+// Claude Code, which takes a model for a Claude one by its name, serves it:
+// claude-deepseek-v4.1-flash (#1383).
+var relayPrefixes = []string{"claude-"}
+
+// channelPrefix is any other word a relay puts before a model's id to name
+// the channel it serves it on: nyro-gpt-5.5, nyro-gemini-3.8-flash (#2157).
+// It is letters alone, as every such word models.dev's own lists put before
+// a model another of them lists is (openai-, databricks-, doubao-, zai-):
+// the model after it is the same model, its window, levels and images
+// included.
+var channelPrefix = regexp.MustCompile(`^[a-z]{2,24}-`)
+
+// renamed is the model a relay renamed to b, when models.dev lists none
+// by b (found), and the window the rename names, if any: a window mark
+// taken off ("deepseek-v4.1-flash[1m]", "[200k]", and Claude Code's
+// claude-opus-5[1m], which is claude-opus-5), then a relay's prefix
+// ("claude-deepseek-v4.1-flash", and a channel's word, "nyro-gpt-5.5").
+// An id models.dev lists, or knows as an entry's canonical_model_id, is
+// always its own model, never renamed (cortecs's claude-sonnet-4 is
+// claude-sonnet-4-0, not sonnet-4-0); a prefix comes off only when what is
+// left is known — listed, or an entry's canonical_model_id (#1520) — and
+// names a version ("claude-auto" is not the router "auto").
+func renamed(b string) (string, int, bool) { return renamedBy(b, true) }
+
+// renamedBy is renamed, a channel's word (channelPrefix) taken off only
+// with channels: the name a model is shown by keeps a channel's word, so
+// a relay's nyro-gpt-5.5 and its gpt-5.5 still read apart.
+func renamedBy(b string, channels bool) (string, int, bool) {
+	if _, ok := found(b, listed); ok || canonical[b] {
+		return "", 0, false
+	}
+	r, w := unmarked(b)
+	if r != b {
+		if knownModel(r) {
+			return r, w, true
+		}
+	}
+	for _, pre := range relayPrefixes {
+		rest, ok := strings.CutPrefix(r, pre)
+		if !ok || !strings.ContainsAny(rest, "0123456789") {
+			continue
+		}
+		if knownModel(rest) {
+			return rest, w, true
+		}
+	}
+	if pre := channelPrefix.FindString(r); channels && pre != "" {
+		if rest := r[len(pre):]; strings.ContainsAny(rest, "0123456789") && knownModel(rest) {
+			return rest, w, true
+		}
+	}
+	return "", 0, false
+}
+
+// knownModel is whether models.dev knows b as a model: listed by its id,
+// or named as an entry's canonical_model_id (#1520) — a model no catalog
+// lists by it, which relays serve and Claude Code asks for under a prefix.
+func knownModel(b string) bool {
+	if _, ok := found(b, listed); ok {
+		return true
+	}
+	return canonical[b]
+}
+
+// unmarked is a bare id without a window mark at its end ("[1m]",
+// "[200k]", "[1.5m]") and the window it names, or the id and 0 without one.
+func unmarked(b string) (string, int) {
+	if !strings.HasSuffix(b, "]") {
+		return b, 0
+	}
+	i := strings.LastIndexByte(b, '[')
+	if i <= 0 {
+		return b, 0
+	}
+	mark := b[i+1 : len(b)-1]
+	unit := 0
+	switch {
+	case strings.HasSuffix(mark, "k"):
+		unit = 1_000
+	case strings.HasSuffix(mark, "m"):
+		unit = 1_000_000
+	default:
+		return b, 0
+	}
+	num := mark[:len(mark)-1]
+	if strings.Trim(num, "0123456789.") != "" {
+		return b, 0
+	}
+	n, err := strconv.ParseFloat(num, 64)
+	if err != nil || n <= 0 {
+		return b, 0
+	}
+	return b[:i], int(n * float64(unit))
+}
+
+// ListedBy is the reasoning levels the first of providers (models.dev
+// ids) listing a model of this id gives it — none, for one listed with a
+// thinking switch alone or nothing at all — and whether any of them says.
+// One listed with a thinking budget and no levels says nothing of them
+// (Anthropic's claude-sonnet-4-5, whose budget an effort is sent as). The
+// id is matched as EffortsOf matches it: without a vendor's prefix, in any
+// case. It is how a model's maker is heard before its resellers: Xiaomi
+// lists mimo-v2.6-flash with a switch alone, where gateways reselling it
+// give levels up to max, which Xiaomi turns away (#214).
+func ListedBy(providers []string, id string) ([]string, bool) {
+	return listedBy(providers, id, true)
+}
+
+// ListedByBorrowed is ListedBy for levels borrowed from another provider:
+// it uses the levels the catalog lists, without adding a verified provider's
+// toggle-only off level. A provider's API accepting "none" does not verify
+// that a relay, reseller, or another provider does too.
+func ListedByBorrowed(providers []string, id string) ([]string, bool) {
+	return listedBy(providers, id, false)
+}
+
+func listedBy(providers []string, id string, providerOverrides bool) ([]string, bool) {
+	all := load()
+	b := bareID(id)
+	if r, _, ok := renamed(b); ok {
+		b = r
+	}
+	if r, ok := unprofiled(b); ok {
+		b = r
+	}
+	for _, want := range []string{b, cutAt(b, '('), cutAt(b, ':')} {
+		for _, pid := range providers {
+			for key, m := range all[pid].Models {
+				if bareID(key) != want {
+					continue
+				}
+				providerID := ""
+				if providerOverrides {
+					providerID = pid
+				}
+				if e := all[pid].levels(m, providerID); len(e) > 0 || !m.budgeted() {
+					return slices.Clone(e), true
+				}
+			}
+		}
+	}
+	return nil, false
+}
+
+// KinEfforts are the reasoning levels of a model none of the providers
+// named lists, taken from the newest of their thinking models of the same
+// name but for its version (gpt-6.1-sol's from gpt-6-sol, mimo-v2.7-flash's
+// from mimo-v2.6-flash): a model newer than the catalog on this machine
+// offers its line's levels, not none. False when none of them has one.
+func KinEfforts(providers []string, id string) ([]string, bool) {
+	all := load()
+	shape, ok := versionless(bareID(id))
+	if !ok {
+		return nil, false
+	}
+	var (
+		levels             []string
+		newest, from, name string
+		found              bool
+	)
+	for _, pid := range providers {
+		for key, m := range all[pid].Models {
+			if !m.Thinks && len(m.efforts("")) == 0 || m.budgeted() {
+				continue
+			}
+			if s, ok := versionless(bareID(key)); !ok || s != shape {
+				continue
+			}
+			// the newest; of two the same day, the first provider's, then
+			// the greater id, whatever order the map gives
+			if !found || m.ReleaseDate > newest || m.ReleaseDate == newest && pid == from && key > name {
+				levels, newest, from, name, found = all[pid].levels(m, ""), m.ReleaseDate, pid, key, true
+			}
+		}
+	}
+	return slices.Clone(levels), found
+}
+
+// versionless is a model id with each of its version parts (6.1, v2.6) as
+// "#", and whether it has one beside a name: gpt-#-sol.
+func versionless(b string) (string, bool) {
+	parts := strings.Split(b, "-")
+	versioned, named := false, false
+	for i, s := range parts {
+		v := strings.TrimPrefix(s, "v")
+		if v != "" && strings.Trim(v, "0123456789.") == "" && v[0] != '.' {
+			parts[i], versioned = "#", true
+		} else {
+			named = true
+		}
+	}
+	return strings.Join(parts, "-"), versioned && named
+}
+
+// budgeted reports whether models.dev says the model takes a thinking
+// budget.
+func (m mdModel) budgeted() bool {
+	for _, r := range m.Reasoning {
+		if r.Type == "budget_tokens" {
+			return true
+		}
+	}
+	return false
+}
+
+// cutAt is s before sep: "gpt-5.4(high)" is gpt-5.4, "glm-5:free" glm-5.
+func cutAt(s string, sep byte) string {
+	if i := strings.IndexByte(s, sep); i > 0 {
+		return s[:i]
+	}
+	return s
+}
+
+// mostListed is the list most providers give; a tie goes to the shorter,
+// then the first in order, so the answer doesn't change from run to run.
+func mostListed(by map[string]int) string {
+	best, n := "", 0
+	for l, c := range by {
+		if c > n || c == n && (strings.Count(l, ",") < strings.Count(best, ",") || strings.Count(l, ",") == strings.Count(best, ",") && l < best) {
+			best, n = l, c
+		}
+	}
+	return best
+}
+
+// mostNamed is the name most providers give; a tie goes to the shorter,
+// then the first in order, so the answer doesn't change from run to run.
+func mostNamed(by map[string]int) string {
+	best, n := "", 0
+	for s, c := range by {
+		if c > n || c == n && (len(s) < len(best) || len(s) == len(best) && s < best) {
+			best, n = s, c
+		}
+	}
+	return best
+}
+
+// mostGiven is the size most providers give; a tie goes to the smaller,
+// which a prompt fits either way.
+func mostGiven(by map[int]int) int {
+	best, n := 0, 0
+	for w, c := range by {
+		if c > n || c == n && w < best {
+			best, n = w, c
+		}
+	}
+	return best
+}
+
+// bareID is a model's id without the vendor's prefix, lowercase.
+func bareID(id string) string {
+	id = strings.ToLower(id)
+	if i := strings.LastIndexByte(id, '/'); i >= 0 {
+		id = id[i+1:]
+	}
+	return id
+}
+
+// bedrockGeos are the geographies a Bedrock inference profile's id starts
+// with.
+var bedrockGeos = []string{"global.", "us.", "us-gov.", "eu.", "apac.", "jp.", "au.", "ca.", "in."}
+
+// unprofiled is a Bedrock inference profile's id without its geography
+// (apac.anthropic.claude-opus-5-5 is anthropic.claude-opus-5-5): models.dev
+// lists each model in only some of them, the model id in all.
+func unprofiled(b string) (string, bool) {
+	for _, g := range bedrockGeos {
+		if r, ok := strings.CutPrefix(b, g); ok && strings.Contains(r, ".") {
+			return r, true
+		}
+	}
+	return "", false
+}
+
+func textModel(m mdModel) bool {
+	if len(m.Modalities.Output) > 0 {
+		text := false
+		for _, o := range m.Modalities.Output {
+			if o == "text" {
+				text = true
+			}
+		}
+		if !text {
+			return false
+		}
+	}
+	id := m.ID
+	for _, bad := range []string{"embed", "-tts", "image", "audio", "-live", "robotics", "computer-use", "deep-research", "transcribe", "realtime", "moderation", "whisper", "dall-e", "sora"} {
+		if strings.Contains(id, bad) {
+			return false
+		}
+	}
+	return true
+}
+
+// draws is whether a models.dev row is a model that makes images: one
+// whose only output is images (gpt-image-1, imagen, flux), or that answers
+// in text and images and is named for them (gemini-2.5-flash-image,
+// gpt-5-image) — not a text model that can also put a chart in its answer
+// (deep-research, openrouter/auto).
+func draws(m mdModel) bool {
+	if !slices.Contains(m.Modalities.Output, "image") {
+		return false
+	}
+	id := strings.ToLower(m.ID)
+	if strings.Contains(id, "deep-research") || strings.HasSuffix(id, "/auto") {
+		return false
+	}
+	return !slices.Contains(m.Modalities.Output, "text") || DrawsID(id)
+}
+
+// DrawsID is whether a model's id names one that makes images, for a model
+// the catalog doesn't know (one typed in, or a vendor's own list's). Banana
+// is the Nano Banana the Gemini image models are called on a relay, whatever
+// its spelling there (#2071).
+func DrawsID(id string) bool {
+	id = strings.ToLower(id)
+	for _, w := range []string{"image", "imagen", "imagine", "dall-e", "flux", "seedream", "cogview", "stable-diffusion", "sdxl", "wanx", "kolors", "hidream", "banana"} {
+		if strings.Contains(id, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// ImagesAPI is whether a model draws on an images API rather than answering
+// in chat with pictures: gpt-image, dall-e, imagen, flux, seedream… — not
+// gemini-*-image or gpt-5-image, which chat.
+func ImagesAPI(id string) bool {
+	id = strings.ToLower(id)
+	for _, w := range []string{"gpt-image", "chatgpt-image", "dall-e", "imagen", "imagine", "qwen-image", "wanx", "wan2", "seedream", "cogview", "flux", "stable-diffusion", "sdxl", "kolors", "hidream"} {
+		if strings.Contains(id, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// PointsToImagesAPI is whether a vendor's refusal of a chat request names
+// its images API as the one the model is asked on: Agnes answers
+// agnes-image-2.5-flash on chat completions with 400 "Model
+// agnes-image-2.5-flash is an image model. Use /v1/images/generations"
+// (#1837), a model ImagesAPI can't tell by its name from gemini's -flash
+// image ones, which chat. The vendor's own words decide it then.
+func PointsToImagesAPI(text string) bool {
+	return strings.Contains(strings.ToLower(text), "images/generations")
+}
+
+// PointsToChat is PointsToImagesAPI the other way round: a refusal on the
+// images API that names chat completions as where the model draws.
+func PointsToChat(text string) bool {
+	return strings.Contains(strings.ToLower(text), "chat/completions")
+}
+
+// Drawers are the models of one models.dev provider that make images,
+// newest first.
+func Drawers(id string) []Model {
+	p, ok := load()[id]
+	if !ok {
+		return nil
+	}
+	var out []Model
+	for _, m := range p.Models {
+		if !draws(m) {
+			continue
+		}
+		out = append(out, Model{ID: m.ID, Name: m.Name, Provider: id, Released: m.ReleaseDate, Price: m.Cost,
+			Images: slices.Contains(m.Modalities.Input, "image"), ImageInput: imageInput(m.Modalities.Input)})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Released != out[j].Released {
+			return out[i].Released > out[j].Released
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
+// AtEndpoint are the models.dev providers whose models are served at base
+// (their "api"), in order: the catalog of a provider the user added by its
+// endpoint alone. A trailing slash and the case of the address don't count.
+func AtEndpoint(base string) []string {
+	want := endpointKey(base)
+	if want == "" {
+		return nil
+	}
+	var ids []string
+	for id, p := range load() {
+		if endpointKey(p.API) == want {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+func endpointKey(u string) string {
+	return strings.ToLower(strings.TrimRight(strings.TrimSpace(u), "/"))
+}
+
+// Providers returns models.dev provider ids known to the catalog.
+func Providers() []string {
+	var ids []string
+	for id := range load() {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// CodexHome is where Codex CLI keeps its state: $CODEX_HOME, else ~/.codex.
+func CodexHome() string { return appdir.CodexHome() }
+
+// CodexModelsCache is the model list Codex CLI keeps, under CodexHome.
+func CodexModelsCache() string { return filepath.Join(CodexHome(), "models_cache.json") }
+
+// Codex returns the models Codex itself lists, straight from the cache the
+// Codex CLI writes; there is no compiled-in list to fall back to.
+func Codex() []Model {
+	out, _ := filememo.Read("codex models", CodexModelsCache(), parseCodex)
+	return slices.Clone(out)
+}
+
+func parseCodex(b []byte) ([]Model, error) {
+	var cache struct {
+		ETag   string `json:"etag"`
+		Models []struct {
+			Slug        string   `json:"slug"`
+			DisplayName string   `json:"display_name"`
+			Description string   `json:"description"`
+			Visibility  string   `json:"visibility"`
+			Priority    int      `json:"priority"`
+			Input       []string `json:"input_modalities"`
+			Levels      []struct {
+				Effort string `json:"effort"`
+			} `json:"supported_reasoning_levels"`
+			Context int `json:"context_window"`
+			Max     int `json:"max_context_window"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(b, &cache); err != nil || len(cache.Models) == 0 {
+		return nil, err
+	}
+	sort.SliceStable(cache.Models, func(i, j int) bool { return cache.Models[i].Priority < cache.Models[j].Priority })
+	var out []Model
+	for _, m := range cache.Models {
+		if m.Visibility == "hide" || MagpieAdded(cache.ETag, m.Slug, m.Description) {
+			continue
+		}
+		mm := Model{ID: m.Slug, Name: m.DisplayName, Provider: "openai", ImageInput: imageInput(m.Input)}
+		if m.Max > m.Context && m.Context > 0 {
+			mm.MaxContext = m.Max
+		}
+		if mm.ImageInput != nil {
+			mm.Images = *mm.ImageInput
+		}
+		for _, l := range m.Levels {
+			mm.Efforts = append(mm.Efforts, l.Effort)
+		}
+		out = append(out, mm)
+	}
+	return out, nil
+}
+
+// MagpieAdded reports whether an entry of Codex's models_cache.json is one
+// of magpie's, not Codex's own: the list Codex keeps is the one it was last
+// handed, and handed through the gateway it has magpie's models in it too
+// ("group/semantic", "deepseek/deepseek-v4", "codex/gpt-5.5" — magpie's ids,
+// which Codex's slugs never look like). Read back as Codex's own, they were
+// listed under OpenAI, and kept there after Codex was routed elsewhere.
+func MagpieAdded(etag, slug, description string) bool {
+	return strings.HasSuffix(description, " via magpie") ||
+		strings.Contains(etag, "+magpie-") && strings.Contains(slug, "/")
+}
+
+// EffortRank orders the reasoning levels agents and vendors name, weakest
+// first.
+var EffortRank = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+
+// NearestEffort is the level of levels nearest want in EffortRank's order,
+// a tie going up, never "none" unless it is want; want itself when levels
+// are none, hold it, or want is no level EffortRank knows. The gateway
+// fits an effort to a model's levels by it on the way out (fitEffort), and
+// Codex's catalog gives a model the effort set for new sessions by it
+// (codexcat.ModelDefault), so the level a model starts at is the one it
+// would be sent at.
+func NearestEffort(want string, levels []string) string {
+	at := slices.Index(EffortRank, want)
+	if len(levels) == 0 || at < 0 || slices.Contains(levels, want) {
+		return want
+	}
+	best, dist := want, len(EffortRank)
+	for _, l := range levels {
+		i := slices.Index(EffortRank, l)
+		if i < 0 || l == "none" {
+			continue
+		}
+		d := i - at
+		if d < 0 {
+			d = -d
+		}
+		if d < dist || d == dist && i > at {
+			best, dist = l, d
+		}
+	}
+	return best
+}
+
+// Efforts returns the reasoning levels a model supports, if known.
+func Efforts(models []Model, id string) []string {
+	for _, m := range models {
+		if m.ID == id && len(m.Efforts) > 0 {
+			return m.Efforts
+		}
+	}
+	return nil
+}

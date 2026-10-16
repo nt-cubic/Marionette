@@ -1,0 +1,687 @@
+package gateway
+
+// The routing trace: what routing did with each request, as it did it, for
+// the Gateway view to play back. Every account or key in the order it was
+// weighed and what put it there — the share of its allowance used and when
+// that renews, the tokens it served lately, whose turn it was, why it
+// rests — then each try, what it answered, and how long one that failed
+// now sits out. It's recorded where the decisions are made, from the same
+// values they are made with; nothing is worked out again afterwards.
+
+import (
+	"context"
+	"net/http"
+	"slices"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/yetone/magpie/internal/access"
+	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/usage"
+)
+
+// traceKeep is how many requests the trace keeps.
+const traceKeep = 60
+
+// Route is one request's way through routing.
+type Route struct {
+	// callerKey: the gateway key the request came with, so a key held to
+	// a budget, models or accounts is told the routes of its own requests
+	// alone (sessionLatest, #1981)
+	callerKey     string
+	imageTurn     string
+	imageCaller   string
+	imageProvider string
+	// turn: a request of an agent's turn, for the notification that it is
+	// done (turns); dirOf, the folder its body says, read once as a turn
+	// starts; tools, whether its reply called a tool
+	turn          bool
+	dirOf         func() string
+	tools         *toolScan
+	Seq           int64        `json:"seq"` // the trace's count when it last changed
+	ID            int64        `json:"id"`
+	Time          time.Time    `json:"time"`
+	Agent         string       `json:"agent"`
+	ParentSession string       `json:"parentSession,omitempty"` // title helper's explicit originating chat; does not affect routing
+	Session       string       `json:"session,omitempty"`       // the client's session id, never inferred from its model or account
+	TitleLink     *TitleLink   `json:"titleLink,omitempty"`     // digests only; display evidence, never account affinity
+	ParentMatched bool         `json:"parentMatched,omitempty"` // parent inferred for this view, not supplied by Codex
+	Usage         []RouteUsage `json:"usage,omitempty"`         // token tiers of billable tries; priced when read
+	Kind          string       `json:"kind,omitempty"`          // what the call is for, as Call's
+	For           *CallFor     `json:"for,omitempty"`           // the request it was made for, as Call's
+	Model         string       `json:"model"`                   // as the agent asked
+	Effort        string       `json:"effort,omitempty"`        // the reasoning the agent asked for; "" for none
+	Tier          string       `json:"tier,omitempty"`          // the service tier the agent asked for (bodyTier); "" for none
+	Provider      string       `json:"provider"`                // the provider the model resolved to
+	Group         *GroupRef    `json:"group,omitempty"`         // the routing group the agent asked for
+	Rule          *RuleHit     `json:"rule,omitempty"`          // the group's rules for it, when it has any
+	SealedTask    bool         `json:"sealedTask,omitempty"`    // only ChatGPT accounts can read this subagent's task
+	LeadAccount   string       `json:"leadAccount,omitempty"`   // the parent account put first for a sealed task
+	// Subagent is a Codex or Claude Desktop subagent's request put on
+	// the model set for its subagents, or kept on the one asked for and why
+	Subagent *SubagentPick `json:"subagent,omitempty"`
+	// Sub: the Claude Code subagent the request is of (subagentOf), whose
+	// session header is its conversation's; "" for the conversation's own
+	Sub string `json:"sub,omitempty"`
+	// SubagentEffort is Desktop's configured effort. Tries keep the actual
+	// level after member overrides and fitting to the model.
+	SubagentEffort string `json:"subagentEffort,omitempty"`
+	// SubagentID is the Claude Code subagent whose turn this is
+	// (subagentTurnOf), the id the ledger's Subagent keeps too. Claude Code
+	// names no kind for it, so Kind stays empty and the Routing page tags
+	// it as Codex's subagents are.
+	SubagentID string `json:"subagentId,omitempty"`
+	// Nested: the rules of the groups in the group, down the way to the
+	// one that went first, each as it decided
+	Nested   []NestedRule `json:"nested,omitempty"`
+	Affinity *Affinity    `json:"affinity,omitempty"` // its conversation, and whether it stayed put
+	Pinned   string       `json:"pinned,omitempty"`   // the account AccountHeader named: only it was tried
+	Order    []Weighed    `json:"order"`              // who was to try it, first first
+	Left     []Weighed    `json:"left,omitempty"`
+	Tries    []Try        `json:"tries"`
+	Done     bool         `json:"done"`
+	Status   int          `json:"status,omitempty"`
+	Error    string       `json:"error,omitempty"`
+	Millis   int64        `json:"ms,omitempty"`
+	Tokens   int          `json:"tokens,omitempty"`
+	Output   int          `json:"out,omitempty"` // of Tokens, the reply's
+	// Reasoning: of Output, the reply's reasoning, which its speed leaves
+	// out (usage.DecodeOf)
+	Reasoning int `json:"reasoning,omitempty"`
+	// TTFT: ms from the request to its reply's first content (text,
+	// reasoning or a tool call), FirstText to its first text, as Millis
+	// counts: streamed replies only (#196)
+	TTFT      int64 `json:"ttft,omitempty"`
+	FirstText int64 `json:"firstText,omitempty"`
+	// FirstReasoning is the start of paced visible reasoning, absent for hidden reasoning.
+	FirstReasoning  int64 `json:"firstReasoning,omitempty"`
+	ReasoningHidden bool  `json:"reasoningHidden,omitempty"`
+	// Flow: the ms its content took to come (Call.Flow)
+	Flow int64 `json:"flow,omitempty"`
+	// Sent: ms from the request to its answering try's request written
+	// to the vendor, and of it Own magpie's, Retried the tries that
+	// failed first, Queued waiting for a slot, as the usage record has
+	// them (Record.Sent); the rest of Sent is connecting and sending
+	Sent    int64 `json:"sent,omitempty"`
+	Own     int64 `json:"own,omitempty"`
+	Retried int64 `json:"retried,omitempty"`
+	Queued  int64 `json:"queued,omitempty"`
+	// Served: the model the reply says answered, as the last try has it;
+	// Swapped: another than the one that try asked for; Routed: that try
+	// asked another magpie's routing group, and Served is its member
+	Served  string `json:"served,omitempty"`
+	Swapped bool   `json:"swapped,omitempty"`
+	Routed  bool   `json:"routed,omitempty"`
+	// Upstream: the provider an aggregator said answered behind it
+	Upstream string `json:"upstream,omitempty"`
+	// Prompt: what the prompt held, part by part, and the window it went
+	// into (prompt.go)
+	Prompt *Prompt `json:"prompt,omitempty"`
+	// Conv: the conversation a request without a session id is part of,
+	// as a digest of its first user turn (conversationID)
+	Conv string `json:"conv,omitempty"`
+	// Folder: the last two levels of the folder its agent says it works
+	// in (shortFolder), never the whole path; a request that says none
+	// takes its session's, as said last (#1068)
+	Folder string `json:"folder,omitempty"`
+	// Archive: "<date>/<id>", where the request archive keeps the call,
+	// when it was on (Call.Archive), for the page to read its bodies back
+	// once the recent calls have let them go
+	Archive string `json:"archive,omitempty"`
+}
+
+// RouteUsage is one billable attempt's pricing inputs, kept in routing history.
+// Its JSON keys also read the earlier history that stored full usage records.
+type RouteUsage struct {
+	Provider   string `json:"provider"`
+	Model      string `json:"model"`
+	Input      int    `json:"in"`
+	Output     int    `json:"out"`
+	CacheRead  int    `json:"cache_read,omitempty"`
+	CacheWrite int    `json:"cache_write,omitempty"`
+	Reasoning  int    `json:"reasoning,omitempty"`
+}
+
+// PricingRecord lets the routing view reuse the ledger's effective prices.
+func (u RouteUsage) PricingRecord() usage.Record {
+	return usage.Record{Provider: u.Provider, Model: u.Model, Input: u.Input,
+		Output: u.Output, CacheRead: u.CacheRead, CacheWrite: u.CacheWrite, Reasoning: u.Reasoning}
+}
+
+// GroupRef is the routing group a request asked for.
+type GroupRef struct {
+	ID       string   `json:"id"`
+	Name     string   `json:"name"`
+	Routing  string   `json:"routing"`
+	Affinity string   `json:"affinity"`
+	Auto     bool     `json:"auto,omitempty"`
+	Sink     bool     `json:"sink,omitempty"` // provider.Group.Sink, as it applies
+	Members  []string `json:"members"`        // those ready, as provider/model[:effort fixed on it]
+	// Subs: the groups in the group, at any depth, outermost first
+	Subs []SubGroup `json:"subs,omitempty"`
+	// Via: for each of Members, the groups in the group it is of, as
+	// "fast>cheap" ("" for the group's own), when it has groups in it
+	Via []string `json:"via,omitempty"`
+	// Fast: those of Members sent in their vendor's fast mode
+	Fast []string `json:"fast,omitempty"`
+	// Paused: the models a pause rule left out of the request, so not in
+	// Members (provider.PausedOut)
+	Paused []provider.Paused `json:"paused,omitempty"`
+}
+
+// SubGroup is a routing group in the group a request asked for.
+type SubGroup struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Routing string `json:"routing"`
+	In      string `json:"in"`              // the group it is in
+	Rules   int    `json:"rules,omitempty"` // how many rules it has
+}
+
+// NestedRule is a group in the group's rules, as they decided.
+type NestedRule struct {
+	Group string   `json:"group"`
+	Name  string   `json:"name"`
+	Rule  *RuleHit `json:"rule"`
+}
+
+// groupRef is the trace's g, with its models ms.
+func groupRef(g provider.Group, ms []provider.Member) *GroupRef {
+	ref := &GroupRef{ID: g.ID, Name: g.Name, Routing: g.Routing, Affinity: g.Affinity, Auto: g.Auto, Sink: sinks(g.Sink, g.Routing)}
+	seen := map[string]bool{}
+	for _, m := range ms {
+		ref.Members = append(ref.Members, provider.WithMemberEffort(m.Provider.ID+"/"+m.Model, m.Effort))
+		if m.Fast {
+			ref.Fast = append(ref.Fast, ref.Members[len(ref.Members)-1])
+		}
+		ref.Via = append(ref.Via, strings.Join(m.Groups(), ">"))
+		in := g.ID
+		for _, v := range m.Via {
+			if !seen[v.ID] {
+				seen[v.ID] = true
+				ref.Subs = append(ref.Subs, SubGroup{ID: v.ID, Name: v.Name, Routing: v.Routing, In: in, Rules: len(v.Rules)})
+			}
+			in = v.ID
+		}
+	}
+	if len(ref.Subs) == 0 {
+		ref.Via = nil
+	}
+	return ref
+}
+
+// Weighed is one account or key as routing weighed it.
+type Weighed struct {
+	ID       string  `json:"id"` // what rests after a failure
+	Provider string  `json:"provider"`
+	Name     string  `json:"name"` // the provider's
+	Icon     string  `json:"icon,omitempty"`
+	Preset   string  `json:"preset,omitempty"`
+	Who      string  `json:"who,omitempty"` // the account, or the key's name or its masked self
+	Kind     string  `json:"kind"`          // "account", "key", or "provider" when it has one
+	Agent    string  `json:"agent,omitempty"`
+	Plan     string  `json:"plan,omitempty"`
+	Model    string  `json:"model"`
+	Fixed    string  `json:"fixed,omitempty"` // the effort the group's member it is of is fixed at
+	Fast     bool    `json:"fast,omitempty"`  // the group's member it is of is sent fast
+	Routing  string  `json:"routing"`         // its provider's: "", order, rotate, usage
+	Fallback bool    `json:"fallback,omitempty"`
+	Shared   bool    `json:"shared,omitempty"` // its provider has more than one on
+	Known    bool    `json:"known,omitempty"`  // the vendor said what the account has left
+	Learns   bool    `json:"learns,omitempty"` // not known, but its answer will tell
+	Used     float64 `json:"used"`             // share of the allowance counting the model, used
+	// Amount of Limit in Unit: the count that share is of, when the
+	// vendor counts it so (WorkBuddy's credits, #659)
+	Amount   float64           `json:"amount,omitempty"`
+	Limit    float64           `json:"limit,omitempty"`
+	Unit     string            `json:"unit,omitempty"`
+	Renews   []time.Time       `json:"renews,omitempty"` // when those windows renew, the biggest first
+	Pace     float64           `json:"pace,omitempty"`   // remaining allowance per hour until its window resets
+	Due      *time.Time        `json:"due,omitempty"`    // when the allowance window used for pace resets
+	Tokens   float64           `json:"tokens,omitempty"` // least used: tokens it served lately
+	Turn     bool              `json:"turn,omitempty"`   // in turn: it was this one's turn
+	Fit      int               `json:"fit,omitempty"`    // keyFit
+	Speaks   provider.Protocol `json:"speaks,omitempty"` // a key made for one protocol only
+	Rest     *Rest             `json:"rest,omitempty"`   // resting after a failure, when the request came
+	Unlisted bool              `json:"unlisted,omitempty"`
+	// DueBy: "reset" when Due is when an auto-used Codex reset about to
+	// run out starts the windows again, sooner than they renew (#717)
+	DueBy string `json:"dueBy,omitempty"`
+	// Restarts: when that reset starts them again, set when it is sooner
+	// than its biggest window renews — Smart goes by it then (#718)
+	Restarts *time.Time `json:"restarts,omitempty"`
+	// Barred: left out as the user set it not to serve the model, its
+	// own list of models leaving it out (#474)
+	Barred bool `json:"barred,omitempty"`
+	// Held: left out as the gateway key asking may not use its account or
+	// key (#905)
+	Held bool `json:"held,omitempty"`
+	// Capped: left out as held at the usage cap the user set on the
+	// account, this cap in percent; Used is then its fullest window's
+	// share, CapBack when the last window at or past it renews
+	Capped  int        `json:"capped,omitempty"`
+	CapBack *time.Time `json:"capBack,omitempty"`
+	// NoCredits: held at 100% (Capped), a Codex account the user set not
+	// to spend its credits once its allowance is used up
+	NoCredits bool `json:"noCredits,omitempty"`
+	// Rank: its place in its provider's own list of accounts or keys, the
+	// order the provider's page shows and a drag sets (#217); routing may
+	// weigh them in another
+	Rank int `json:"rank,omitempty"`
+	// Aside: a key made for another protocol than the keys routed over,
+	// tried only after them
+	Aside bool `json:"aside,omitempty"`
+	// NoURL: its keys are all set to this protocol, which its provider has
+	// no URL for, so it was tried on the URLs it has (#1702)
+	NoURL provider.Protocol `json:"noURL,omitempty"`
+	// Via: the groups in the group it is of, outermost first, when it is
+	// of a group in the group asked for
+	Via []string `json:"via,omitempty"`
+	// UsedRenews: when the window Used is the share of renews, apart
+	// from Renews' biggest first: a row says the two together, so of one
+	// window, a Factory account's week and not its month (#1778)
+	UsedRenews *time.Time `json:"usedRenews,omitempty"`
+	// Sunk: when it was rate limited with quota left, sending it to the
+	// back of an order that sinks (sink.go); nil when it didn't, or the
+	// order doesn't sink
+	Sunk *time.Time `json:"sunk,omitempty"`
+}
+
+// Try is one candidate trying the request.
+type Try struct {
+	ID     string `json:"id"`
+	Model  string `json:"model,omitempty"`  // the model it was asked for: a group's members may share a provider's keys
+	Effort string `json:"effort,omitempty"` // the reasoning it was sent at, fitted to its model's levels; "" for none
+	Picked bool   `json:"picked,omitempty"` // Effort is the turn's pick, in place of the agent's
+	// Fixed: the effort the group's member it went to is fixed at, which
+	// Effort is (fitted to the model's levels) whatever was asked
+	Fixed  string    `json:"fixed,omitempty"`
+	Fast   bool      `json:"fast,omitempty"` // sent in its vendor's fast mode, as the group's member it went to is
+	Start  time.Time `json:"start"`
+	Done   bool      `json:"done"`
+	Status int       `json:"status,omitempty"`
+	Millis int64     `json:"ms,omitempty"`
+	// TTFT: ms from Start to its reply's first content, FirstText to its
+	// first text, when it streamed any (#196)
+	TTFT      int64 `json:"ttft,omitempty"`
+	FirstText int64 `json:"firstText,omitempty"`
+	// FirstReasoning is the start of paced visible reasoning, absent for hidden reasoning.
+	FirstReasoning  int64 `json:"firstReasoning,omitempty"`
+	ReasoningHidden bool  `json:"reasoningHidden,omitempty"`
+	// Flow: the ms its content took to come (Call.Flow)
+	Flow int64 `json:"flow,omitempty"`
+	// Served: the model its reply said answered, when it named one;
+	// Swapped: another model than Model, not just its dated name; Routed:
+	// Model is another magpie's routing group, and Served the member it
+	// routed to (usage.GroupRouted)
+	Served  string `json:"served,omitempty"`
+	Swapped bool   `json:"swapped,omitempty"`
+	Routed  bool   `json:"routed,omitempty"`
+	// Upstream: the provider an aggregator said answered behind it
+	// (OpenRouter's DeepInfra, Novita …)
+	Upstream string `json:"upstream,omitempty"`
+	// Tier: the service tier it went out at, once a fast pick or an
+	// account without Ultrafast had changed it; TierServed: the one its
+	// reply said it ran at, when it said one (#1784)
+	Tier       string `json:"tier,omitempty"`
+	TierServed string `json:"tierServed,omitempty"`
+	Fail       string `json:"fail,omitempty"` // why it failed, as rest tells it
+	Error      string `json:"error,omitempty"`
+	Rest       *Rest  `json:"rest,omitempty"`  // how long it now sits out; none when it was the last to try
+	Again      int64  `json:"again,omitempty"` // ms waited before it was tried again, the last one left
+	// Replan: every member had failed in a way that passes, so after
+	// Again the Replan of them that may answer by then were asked again,
+	// in turn, within the group's Patience (seconds) for the request
+	// (#1418)
+	Replan   int `json:"replan,omitempty"`
+	Patience int `json:"patience,omitempty"`
+	// Gone: the agent canceled the request in the pause Again was to be
+	// waited, so nobody was asked again (#1894: the Routing page's story
+	// otherwise ended on "tried again in 1s", a retry that never came)
+	Gone bool `json:"gone,omitempty"`
+	// Earlier: the last try, its allowance run out, whose error the agent
+	// wasn't told: it got the first failure before it that wasn't an
+	// allowance's (Discord, waroy). Whether a try went on is the next
+	// try in Tries, which is appended only as it is asked (#2281)
+	Earlier bool `json:"earlier,omitempty"`
+	// Queued: ms it waited for one of its key's or account's slots, the
+	// provider's MaxConcurrency out already (concurrency.go)
+	Queued int64 `json:"queued,omitempty"`
+	// Net: where its time went up to its reply's first byte (TryNet)
+	Net *TryNet `json:"net,omitempty"`
+	// Reset: its week used up and nobody else left, one of the account's
+	// Codex resets was spent by itself (the user's setting) — on Who, and
+	// what spending it did — and the request asked again
+	Reset *AutoReset `json:"reset,omitempty"`
+	// Auto: the models Copilot's Auto picked for it, in turn — where each
+	// pick came from and Copilot's refusal of it — Model being "auto"
+	Auto []provider.AutoPick `json:"auto,omitempty"`
+}
+
+// AutoReset is a Codex reset spent by itself, on Who's account. (Claude's
+// resets were taken out in 9bf6d4352 and aren't coming back: reading or
+// spending one means magpie calling Anthropic with the account's token,
+// #1972.)
+type AutoReset struct {
+	Who   string `json:"who"`
+	Text  string `json:"text"`
+	Agent string `json:"agent,omitempty"` // the account's agent, as Account.Agent has it
+}
+
+type planned struct {
+	order, left []Weighed
+	// held: the accounts left out (in left) as they won't spend their
+	// credits, for one that spends its resets by itself to spend one
+	held []candidate
+	// capped: the accounts left out (in left) as they are past the usage
+	// cap set on them, for a conversation that stays strictly on one to
+	// go on there (provider.AffinityStrict, #1797)
+	capped []candidate
+}
+
+func weighed(c candidate, p provider.Provider, wg weighing, fallback bool, from provider.Protocol) Weighed {
+	w := Weighed{ID: c.rest, Provider: p.ID, Name: p.Name, Icon: p.Icon, Preset: p.Preset, Model: c.model, Fixed: c.effort, Fast: c.fast,
+		Routing: p.Routing, Fallback: fallback, Shared: c.rest != p.ID, Rank: c.rank, NoURL: c.noURL}
+	switch {
+	case c.p.Account != nil:
+		w.Kind, w.Who, w.Agent, w.Plan = "account", c.p.Account.User, c.p.Account.Agent, c.p.Account.Plan
+		if w.Agent == "plugin" {
+			// a plugin's account is told as its provider's: a moved Grok's
+			// plan reads as the built-in's did
+			w.Agent = c.p.ID
+		}
+	case c.rest != p.ID:
+		w.Kind, w.Who = "key", c.p.KeyName
+		if w.Who == "" {
+			w.Who = provider.Mask(c.p.Key)
+		}
+		w.Fit, w.Speaks = keyFit(c.p, c.model, from), c.p.KeyProtocol
+	default:
+		w.Kind = "provider"
+	}
+	if l, ok := wg.lefts[c.allowanceKey()]; ok {
+		w.Known, w.Used, w.Renews, w.Pace = true, l.used, l.renews, l.pace
+		if !l.fullest.IsZero() {
+			ur := l.fullest
+			w.UsedRenews = &ur
+		}
+		if l.of > 0 {
+			w.Amount, w.Limit, w.Unit = l.amount, l.of, l.unit
+		}
+		if !l.due.IsZero() {
+			due := l.due
+			w.Due = &due
+			if l.dueRestart {
+				w.DueBy = "reset"
+			}
+		}
+		if rs := l.restarts; !rs.IsZero() && len(l.soon) > 0 && rs.Equal(l.soon[0]) {
+			w.Restarts = &rs
+		}
+	} else if wg.lefts != nil {
+		w.Learns = learns(c, wg.lefts)
+	}
+	if wg.tokens != nil {
+		w.Tokens = wg.tokens[c.rest]
+	}
+	if sinks(p.Sink, p.Routing) {
+		markSunk(&w, c)
+	}
+	return w
+}
+
+// trace keeps the last requests' routes, and wakes those waiting for more.
+type trace struct {
+	mu     sync.Mutex
+	seq    int64
+	ids    int64
+	routes []*Route
+	wake   chan struct{}
+	totals Totals
+	// bodies are the last requests' masked bodies, for their prompts'
+	// text (PromptText): in memory only, never in the history
+	bodies []keptBody
+	// turns follows agents' turns, to say when one is done (TurnDone)
+	turns turns
+	// folders: each session's folder, as its requests said it last, for
+	// the requests that don't say it (a title, a topic check)
+	folders map[string]sessionFolder
+}
+
+type sessionFolder struct {
+	folder string
+	at     time.Time
+}
+
+// Totals count the requests routed since the gateway started.
+type Totals struct {
+	Requests int `json:"requests"` // answered, one way or the other
+	Rerouted int `json:"rerouted"` // tries that failed and handed the request on
+	Errors   int `json:"errors"`   // requests whose agent got an error
+}
+
+// TraceState is the routes changed since a seq, and the totals.
+type TraceState struct {
+	Seq    int64   `json:"seq"`
+	Routes []Route `json:"routes"`
+	Totals Totals  `json:"totals"`
+}
+
+func (t *trace) changed() {
+	t.seq++
+	if t.wake != nil {
+		close(t.wake)
+		t.wake = nil
+	}
+}
+
+// beginFor begins req's route, marked with the gateway key req came with.
+// Every route of a request begins here, so a held key's own routes are
+// told it: one begun without (begin alone) is told to no held key.
+func (t *trace) beginFor(req *http.Request, r Route) *Route {
+	r.callerKey = access.Caller(req.Context()).KeyID
+	rt := t.begin(r)
+	noteRoute(req.Context(), rt)
+	return rt
+}
+
+func (t *trace) begin(r Route) *Route {
+	// the body is read for its folder before the lock: a long one takes
+	// a while, and every route waits on the lock
+	if r.dirOf != nil {
+		dir := r.dirOf()
+		r.dirOf = func() string { return dir }
+		r.Folder = shortFolder(dir)
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.sessionFolder(&r, time.Now())
+	if t.ids == 0 {
+		// ids go on from one run to the next, the history keeping them
+		// all: counted on from the time the gateway began
+		t.ids = time.Now().UnixMilli()
+	}
+	t.ids++
+	r.ID = t.ids
+	if r.Tries == nil {
+		r.Tries = []Try{}
+	}
+	rp := &r
+	t.turns.begin(rp, time.Now())
+	t.routes = append(t.routes, rp)
+	t.trim()
+	t.changed()
+	rp.Seq = t.seq
+	return rp
+}
+
+// foldersKeep is how many sessions' folders are kept, the oldest said
+// going first when there are more.
+const foldersKeep = 512
+
+// sessionFolder gives r its session's folder when it says none, and keeps
+// the one it says for those that come after: an agent's requests on the
+// side, a title or a topic check, have no full system prompt to say it.
+// A request with no session id has only its own (#1068).
+func (t *trace) sessionFolder(r *Route, now time.Time) {
+	key := func(s string) string {
+		if s == "" {
+			return ""
+		}
+		return r.Agent + "\x00" + s
+	}
+	own, parent := key(r.Session), key(r.ParentSession)
+	if r.Folder == "" {
+		for _, k := range []string{own, parent} {
+			if f, ok := t.folders[k]; ok && k != "" {
+				r.Folder = f.folder
+				return
+			}
+		}
+		return
+	}
+	if own == "" {
+		return
+	}
+	if t.folders == nil {
+		t.folders = map[string]sessionFolder{}
+	}
+	t.folders[own] = sessionFolder{r.Folder, now}
+	for len(t.folders) > foldersKeep {
+		oldest := ""
+		for k, f := range t.folders {
+			if oldest == "" || f.at.Before(t.folders[oldest].at) {
+				oldest = k
+			}
+		}
+		delete(t.folders, oldest)
+	}
+}
+
+// shortFolder is the last two levels of dir, "/"-joined: enough to tell
+// one project from another, without the rest of the path (#1068). A
+// Windows drive is no level; "" for none.
+func shortFolder(dir string) string {
+	parts := strings.FieldsFunc(strings.TrimSpace(dir), func(c rune) bool { return c == '/' || c == '\\' })
+	if len(parts) > 0 && len(parts[0]) == 2 && parts[0][1] == ':' {
+		parts = parts[1:]
+	}
+	if len(parts) > 2 {
+		parts = parts[len(parts)-2:]
+	}
+	return strings.Join(parts, "/")
+}
+
+// trim keeps traceKeep routes, the oldest finished ones going first: a
+// request still going isn't dropped for those that came after it (#436),
+// as the history has only finished ones, unless more than twice traceKeep
+// are going at once.
+func (t *trace) trim() {
+	for len(t.routes) > traceKeep {
+		i := slices.IndexFunc(t.routes, func(r *Route) bool { return r.Done })
+		if i < 0 {
+			if len(t.routes) <= 2*traceKeep {
+				return
+			}
+			i = 0
+		}
+		t.routes = slices.Delete(t.routes, i, i+1)
+	}
+}
+
+// update changes a route under the lock.
+func (t *trace) update(r *Route, f func(r *Route)) {
+	if r == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	done := r.Done
+	f(r)
+	if r.Done && !done {
+		t.totals.Requests++
+		for i, try := range r.Tries {
+			if try.Rest != nil && i < len(r.Tries)-1 { // the last rests with nobody after it (failVerify)
+				t.totals.Rerouted++
+			}
+		}
+		if r.Status >= 400 || r.Error != "" {
+			t.totals.Errors++
+		}
+		t.turns.end(r, r.Status < 400 && r.Error == "" && !r.tools.called(), time.Now())
+		if keepsRoutes() {
+			c := *r
+			c.Order = append([]Weighed{}, r.Order...) // [] for none: the GUI reads it as a list
+			c.Left = append([]Weighed(nil), r.Left...)
+			c.Tries = append([]Try{}, r.Tries...)
+			c.Usage = append([]RouteUsage(nil), r.Usage...)
+			go saveRoute(c)
+		}
+	}
+	t.changed()
+	r.Seq = t.seq
+}
+
+// Trace is the routes changed after seq, oldest first. With none, it waits
+// up to wait for one.
+func (s *Server) Trace(ctx context.Context, after int64, wait time.Duration) TraceState {
+	t := &s.trace
+	deadline := time.NewTimer(wait)
+	defer deadline.Stop()
+	for {
+		t.mu.Lock()
+		if t.seq < after {
+			after = 0 // the gateway started over since
+		}
+		st := TraceState{Seq: t.seq, Routes: []Route{}, Totals: t.totals}
+		for _, r := range t.routes {
+			if r.Seq > after {
+				c := *r
+				c.Order = append([]Weighed{}, r.Order...) // [] for none: the GUI reads it as a list
+				c.Left = append([]Weighed(nil), r.Left...)
+				c.Tries = append([]Try{}, r.Tries...)
+				c.Usage = append([]RouteUsage(nil), r.Usage...)
+				st.Routes = append(st.Routes, c)
+			}
+		}
+		if len(st.Routes) > 0 || wait <= 0 {
+			t.mu.Unlock()
+			return st
+		}
+		if t.wake == nil {
+			t.wake = make(chan struct{})
+		}
+		wake := t.wake
+		t.mu.Unlock()
+		select {
+		case <-wake:
+		case <-deadline.C:
+			return st
+		case <-ctx.Done():
+			return st
+		}
+	}
+}
+
+// swapped reports whether served is another model than sent: not the same
+// name, however dated, pinned or prefixed (usage.Swapped).
+func swapped(sent, served string) bool { return usage.Swapped(sent, served) }
+
+// routeUsage retains only what pricing needs, without another copy of the
+// request's metadata. Unknown token counts have no price, including failures.
+// What the reply counted of earlier requests (Deferred) is priced as a tier
+// of its own before the request's, which stays last: the prompt is read
+// from the last (promptCounted), and is the request's own.
+func routeUsage(id, model string, u Usage) []RouteUsage {
+	var out []RouteUsage
+	if d := u.Deferred; d != nil && d.Input+d.Output+d.CacheRead+d.CacheWrite > 0 {
+		out = append(out, RouteUsage{Provider: id, Model: model, Input: d.Input, Output: d.Output,
+			CacheRead: d.CacheRead, CacheWrite: d.CacheWrite, Reasoning: d.Reasoning})
+	}
+	if u.Input+u.Output == 0 {
+		return out
+	}
+	return append(out, RouteUsage{Provider: id, Model: model, Input: u.Input, Output: u.Output,
+		CacheRead: u.CacheRead, CacheWrite: u.CacheWrite, Reasoning: u.Reasoning})
+}

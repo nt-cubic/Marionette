@@ -1,0 +1,71 @@
+package provider
+
+import (
+	"bytes"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync/atomic"
+
+	"github.com/klauspost/compress/zstd"
+)
+
+// Codex's own client sends a ChatGPT account's turns to the backend
+// zstd-compressed, and nothing else: read in openai/codex at a9b08151,
+// codex-rs/core/src/client.rs responses_request_compression (the
+// enable_request_compression feature, on by default in
+// codex-rs/features/src/lib.rs, a ChatGPT sign-in, the OpenAI provider)
+// and codex-rs/http-client/src/request.rs, which compresses the body at
+// level 3 and sets Content-Encoding: zstd. Only POST /responses is: an API
+// key, another provider, /responses/compact and /models go plain.
+//
+// ylorn (X, v0.1.1202): a text-only gpt-6-luna turn of 1100224 bytes sent
+// plain was answered 503, the same turn zstd-compressed (259 bytes) 200,
+// and through magpie, which decoded Codex's zstd and sent the backend
+// plain JSON, 503 again.
+
+// codexZstd is level 3 (klauspost's SpeedDefault, "roughly equivalent to
+// the default Zstandard mode (level 3)"), without the frame checksum,
+// which libzstd leaves off by default. EncodeAll is safe to share.
+var codexZstd, _ = zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault), zstd.WithEncoderCRC(false))
+
+// codexZstdOff leaves turns plain, for tests alone: the fake backends of
+// most of the gateway's and provider's tests read the body as it comes, so
+// those packages' TestMain sets it (CodexZstdForTests(false)), and the
+// tests of the compression clear it again.
+var codexZstdOff atomic.Bool
+
+// CodexZstdForTests sets whether turns to the ChatGPT backend go
+// compressed, for a test, and returns what puts it back.
+func CodexZstdForTests(on bool) (restore func()) {
+	was := codexZstdOff.Swap(!on)
+	return func() { codexZstdOff.Store(was) }
+}
+
+// CodexCompressed sends req's body, body, zstd-compressed as Codex's own
+// client sends it, when req is a turn to the ChatGPT backend
+// (CodexBase/responses), and as it is otherwise. It is called once the
+// body is final and signed, and returns the bytes that go on the wire. The
+// body is still the plain body everywhere magpie keeps or shows it.
+func CodexCompressed(req *http.Request, body []byte) int {
+	if req.Method != http.MethodPost || codexZstdOff.Load() || !codexTurnURL(req.URL) {
+		return len(body)
+	}
+	if enc := req.Header.Get("Content-Encoding"); enc != "" && !strings.EqualFold(enc, "identity") {
+		return len(body) // already encoded: as Codex, never twice
+	}
+	z := codexZstd.EncodeAll(body, make([]byte, 0, len(body)/8+64))
+	req.Body = io.NopCloser(bytes.NewReader(z))
+	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(z)), nil }
+	req.ContentLength = int64(len(z))
+	req.Header.Del("Content-Length")
+	req.Header.Set("Content-Encoding", "zstd")
+	return len(z)
+}
+
+// codexTurnURL is CodexBase's /responses, where Codex sends a turn.
+func codexTurnURL(u *url.URL) bool {
+	base, err := url.Parse(CodexBase)
+	return err == nil && u != nil && strings.EqualFold(u.Host, base.Host) && u.Path == base.Path+"/responses"
+}

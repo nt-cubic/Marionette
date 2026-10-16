@@ -1,0 +1,276 @@
+package gateway
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/yetone/magpie/internal/plugin"
+	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/testenv"
+)
+
+// wbRestrictedBody is WorkBuddy's 403 for an account it restricted, byte
+// for byte as #1849 gives it.
+const wbRestrictedBody = `{"code":11140,"msg":"request illegal",
+ "displayMsg":{"en":"Your account has been restricted due to unusual activity",
+               "zh":"账号存在异常行为，已被限制使用","zh-hant":"帳號存在異常行為，已被限制使用"},
+ "displayTips":{"en":"We detected unusual activity on this account. Submit feedback to appeal this restriction",
+                "zh":"系统检测到该账号存在异常使用行为，如需申诉请提交反馈"},
+ "actions":["EDIT_INPUT","SUBMIT_FEEDBACK"]}`
+
+// wbAISignedIn signs WorkBuddy AI's desktop app in under the test's HOME
+// and gives its provider, its chat endpoint at base.
+func wbAISignedIn(t *testing.T, base string) provider.Provider {
+	t.Helper()
+	home := os.Getenv("HOME")
+	t.Setenv("USERPROFILE", home)
+	dir := filepath.Join(home, ".local", "share")
+	switch runtime.GOOS {
+	case "darwin":
+		dir = filepath.Join(home, "Library", "Application Support")
+	case "windows":
+		dir = filepath.Join(home, "AppData", "Local")
+	}
+	future := strconv.FormatInt(time.Now().Add(24*time.Hour).UnixMilli(), 10)
+	info := `{"account":{"uid":"u1","nickname":"me"},"auth":{"accessToken":"a","refreshToken":"r","expiresAt":` + future +
+		`,"refreshExpiresAt":` + future + `,"domain":"www.codebuddy.ai"}}`
+	auth := filepath.Join(dir, "CodeBuddyExtension", "Data", "Public", "auth", "workbuddy-desktop-ai.info")
+	if err := os.MkdirAll(filepath.Dir(auth), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(auth, []byte(info), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range provider.All() {
+		if p.ID == provider.WorkBuddyAIID && p.Account != nil {
+			p.Chat = base + "/v2" // never the real endpoint
+			return p
+		}
+	}
+	t.Fatal("WorkBuddy AI isn't signed in")
+	return provider.Provider{}
+}
+
+// restedFor is how long r rests from when it was decided.
+func restedFor(r Rest, from time.Time) time.Duration { return r.Until.Sub(from) }
+
+// WorkBuddy's 403 11140 says the account itself is restricted (#1849): in
+// each shape the gateway reads it — the vendor's JSON as it came, the
+// built-in's translation of it, and the plugin's — the account rests two
+// hours, as "restricted", not a minute's backoff; and the agent and the
+// Routing page are told what brings it back.
+func TestWorkBuddyRestrictedRestsHours(t *testing.T) {
+	fresh(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(403)
+		w.Write([]byte(wbRestrictedBody))
+	}))
+	defer up.Close()
+	p := wbAISignedIn(t, up.URL)
+	s := New()
+
+	// the built-in: what the agent is given, and what the gateway reads
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	var u Usage
+	status, msg := s.translate(w, r, p, provider.Chat, provider.Chat, "deepseek-v4.1-flash",
+		[]byte(`{"model":"deepseek-v4.1-flash","messages":[{"role":"user","content":"hi"}],"stream":true}`), &u)
+	if status != 403 || msg != p.Name+": request illegal — "+provider.WBRestrictedHint {
+		t.Fatalf("the built-in says %d %q", status, msg)
+	}
+	translated := w.Body.Bytes()
+	if !strings.Contains(string(translated), provider.WBRestrictedHint) {
+		t.Fatalf("the agent gets %s", translated)
+	}
+
+	// the plugin's explained(), as it puts the same answer
+	// (@magpie-community/opencode-workbuddy-auth 0.1.17)
+	plugin := []byte(`{"error":{"message":"request illegal — ` + provider.WBRestrictedHint + `","type":"permission_error","code":11140}}`)
+
+	escaped := []byte(`{"code":"11140","msg":"request illegal","displayMsg":{"zh":"账号存在异常行为，已被限制使用"}}`)
+	worded := []byte(`{"msg":"request illegal","displayMsg":{"zh-hant":"帳號存在異常行為，已被限制使用"}}`)
+	c := candidate{p: p, model: "deepseek-v4.1-flash", rest: p.ID + "#u1"}
+	for name, body := range map[string][]byte{
+		"vendor's JSON": []byte(wbRestrictedBody), "built-in's translation": translated, "plugin's": plugin,
+		"code as a string, Chinese escaped": escaped, "words alone": worded,
+	} {
+		fresh(t)
+		now := time.Now()
+		rest := s.restAfter(c, 403, nil, body)
+		if rest.Why != failRestricted || rest.By != "restricted" {
+			t.Fatalf("%s: rests %+v", name, rest)
+		}
+		if d := restedFor(rest, now); d < restrictedRest-time.Minute || d > restrictedRest+time.Minute {
+			t.Fatalf("%s: rests %v", name, d)
+		}
+		// the account, not one model of it
+		if rest.Key != c.restKey() {
+			t.Fatalf("%s: rests %q, not the account %q", name, rest.Key, c.restKey())
+		}
+		// a user whose appeal went through lifts it at once
+		if !s.Unrest(rest.Key) {
+			t.Fatalf("%s: its rest can't be lifted", name)
+		}
+		if _, ok := restOf(rest.Key); ok {
+			t.Fatalf("%s: still resting once lifted", name)
+		}
+	}
+}
+
+// Another vendor's code 11140, and WorkBuddy's other refusals, aren't an
+// account restricted: a key's 403 with code 11140 rests as any failure
+// does, and WorkBuddy's 11128 "unapproved channel" (#182) still rests
+// nobody, as the agent's prompt is at fault.
+func TestOnlyWorkBuddyRestrictedRestsAsRestricted(t *testing.T) {
+	fresh(t)
+	s := New()
+	other := candidate{p: provider.Provider{ID: "acme", Name: "Acme"}, model: "m", rest: "acme"}
+	for _, body := range []string{
+		`{"code":11140,"msg":"request illegal"}`,
+		`{"error":{"code":11140,"message":"forbidden"}}`,
+		`{"error":{"message":"Acme: request illegal","type":"permission_error"},"type":"error"}`,
+	} {
+		if f := failureOf(other, 403, []byte(body)); f == failRestricted {
+			t.Fatalf("another vendor's %s read as restricted", body)
+		}
+		rest := s.restAfter(other, 403, nil, []byte(body))
+		if rest.Why != failOther || rest.By == "restricted" || restedFor(rest, time.Now()) > longestRetry {
+			t.Fatalf("another vendor's %s rests %+v", body, rest)
+		}
+	}
+	// another plugin's account (fakeco) with WorkBuddy's own body is that
+	// vendor's answer too
+	if restrictedRefused(provider.Provider{ID: "fakeco", Account: &provider.Account{Agent: "plugin"}}, 403, []byte(wbRestrictedBody)) {
+		t.Fatal("a non-WorkBuddy account's 11140 read as restricted")
+	}
+
+	wb := provider.Provider{ID: provider.WorkBuddyAIID, Account: &provider.Account{Agent: provider.WorkBuddyAIID, User: "u1"}}
+	for _, body := range []string{
+		`{"code":11128,"msg":"Illegal API invocation from an unapproved channel"}`,
+		`{"code":14018,"msg":"Credits exhausted. Please visit the link to purchase."}`,
+		`{"code":111400,"msg":"something else"}`,
+	} {
+		if restrictedRefused(wb, 403, []byte(body)) || restrictedRefused(wb, 400, []byte(body)) {
+			t.Fatalf("WorkBuddy's %s read as restricted", body)
+		}
+	}
+	// 11128 is still the agent's prompt, which rests nobody
+	if !promptRefused(400, []byte(`{"code":11128,"msg":"Illegal API invocation from an unapproved channel"}`)) {
+		t.Fatal("11128 no longer read as the agent's prompt turned away")
+	}
+	// an answer that went through is nobody's refusal
+	if restrictedRefused(wb, 200, []byte(wbRestrictedBody)) {
+		t.Fatal("a 200 read as restricted")
+	}
+}
+
+// Through a plugin, as the moved WorkBuddy is served: an account whose
+// answer is the plugin's restricted refusal rests two hours and the next
+// account answers, on this request and on the ones after it, which don't
+// ask the restricted one again (before #1849 it was back within minutes
+// and asked by every request). The same vendor's raw 11140 from a plugin
+// that isn't WorkBuddy's (fakeco) rests as any failure does.
+func TestPluginRestrictedAccountSkipped(t *testing.T) {
+	bun := testenv.Bun(t)
+	for _, tc := range []struct {
+		name, body, why string
+	}{
+		{"WorkBuddy plugin's words", `{"error":{"message":"request illegal — ` + provider.WBRestrictedHint + `","type":"permission_error","code":11140}}`, failRestricted},
+		{"another vendor's 11140", wbRestrictedBody, failOther},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fresh(t)
+			t.Setenv("MAGPIE_BUN", bun)
+			t.Cleanup(plugin.Settle)
+			var mu sync.Mutex
+			var tried []string
+			up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				io.ReadAll(r.Body)
+				who := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer fresh-r-")
+				mu.Lock()
+				tried = append(tried, who)
+				mu.Unlock()
+				if who == "a" {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(403)
+					fmt.Fprint(w, tc.body)
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprint(w, `data: {"id":"c","object":"chat.completion.chunk","model":"fake-1","choices":[{"index":0,"delta":{"role":"assistant","content":"from `+who+`"},"finish_reason":null}]}`+"\n\n")
+				fmt.Fprint(w, `data: {"id":"c","object":"chat.completion.chunk","model":"fake-1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`+"\n\ndata: [DONE]\n\n")
+			}))
+			defer up.Close()
+			t.Setenv("FAKE_BASE", up.URL+"/v1")
+
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			abs, _ := filepath.Abs("../plugin/testdata/fake/index.js")
+			if _, err := plugin.Add(ctx, abs); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := plugin.Providers(ctx); err != nil {
+				t.Fatal(err)
+			}
+			for _, team := range []string{"a", "b"} {
+				st, err := provider.StartPluginSignIn("fakeco", 1, map[string]string{"where": "work", "team": team})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := provider.SubmitSignInCallback(st.ID, "good"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := plugin.Providers(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := provider.SwitchLogin("fakeco", "a@fake"); err != nil {
+				t.Fatal(err)
+			}
+			s := New()
+			code, body := postAs(t, s, "", `{"model":"fakeco/fake-1","messages":[{"role":"user","content":"hi"}]}`)
+			if code != 200 || !strings.Contains(body, "from b") {
+				t.Fatalf("%d %s", code, body)
+			}
+			r := s.trace.routes[len(s.trace.routes)-1]
+			if len(r.Tries) != 2 {
+				t.Fatalf("tries %+v", r.Tries)
+			}
+			f := r.Tries[0]
+			if f.Fail != tc.why || f.Rest == nil || f.Rest.Why != tc.why {
+				t.Fatalf("a's try %+v rest %+v", f, f.Rest)
+			}
+			d := f.Rest.Until.Sub(time.Now())
+			if tc.why == failRestricted && (d < restrictedRest-time.Minute || f.Rest.By != "restricted") {
+				t.Fatalf("a rests %v by %q", d, f.Rest.By)
+			}
+			if tc.why == failOther && (d > longestRetry || f.Rest.By != "backoff") {
+				t.Fatalf("another vendor's 11140 rests %v by %q", d, f.Rest.By)
+			}
+			// the next request doesn't ask a again
+			mu.Lock()
+			tried = nil
+			mu.Unlock()
+			if code, body := postAs(t, s, "", `{"model":"fakeco/fake-1","messages":[{"role":"user","content":"hi"}]}`); code != 200 || !strings.Contains(body, "from b") {
+				t.Fatalf("again: %d %s", code, body)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if strings.Join(tried, ",") != "b" {
+				t.Fatalf("the next request asked %v", tried)
+			}
+		})
+	}
+}

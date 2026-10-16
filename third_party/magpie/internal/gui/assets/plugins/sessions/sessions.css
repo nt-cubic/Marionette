@@ -1,0 +1,117 @@
+/* Sessions: every session of an agent, by folder, to resume or delete (sessions.js) */
+.sm-head { gap: 8px; height: auto; min-height: 34px; }
+.sm-switch { min-width: 0; flex: 1; display: flex; align-items: center; }
+.sm-agents { min-width: 0; max-width: 100%; }
+.segs.sm-agents { background: var(--seg-track); }
+.sm-agents .opt:not(.on, :hover) { color: var(--ctl-fg); }
+.sm-agents .opt { display: inline-flex; align-items: center; gap: 5px; }
+.sm-agents .opt.on { background: var(--seg-thumb); box-shadow: var(--seg-edge); }
+.sm-agents .opt.on em { color: var(--muted); }
+.sm-agents .opt .ic { width: 13px; height: 13px; }
+.sm-agent-pick { min-width: 0; max-width: 220px; gap: 6px; color: var(--fg); }
+.sm-agent-pick .ic { width: 13px; height: 13px; flex: none; }
+.sm-agent-pick em, .sm-agents em, .sm-trash-btn em { font-style: normal; font-size: 10.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.pop.proto-menu.sm-agent-menu { width: min(280px, calc(100vw - 16px)); max-height: min(360px, 70vh); overflow-y: auto; background: var(--card); }
+.sm-agent-menu .pm-words { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: 1; }
+.sm-agent-menu .pm-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sm-agent-menu .pm-note { flex: none; font-variant-numeric: tabular-nums; }
+.sm-filter { width: 200px; flex: 0 1 200px; min-width: 110px; }
+.sm-trash-btn { display: inline-flex; align-items: center; gap: 5px; flex: none; }
+.sm-trash-btn.on { background: var(--pill); color: var(--fg); }
+.sm-body { display: flex; flex-direction: column; gap: 8px; flex: none; }
+.sm-note { margin: 0 2px; }
+/* where a session said what was searched for, the words themselves marked */
+.row .sub.sm-hit { color: var(--fg-2); }
+.sm-hit mark { background: var(--accent-soft); color: var(--fg); border-radius: 3px; padding: 0 1px; font-weight: 500; }
+.sm-bar { gap: 8px; padding: 0 11px; }
+.sm-bar .grow { flex: 1; }
+.sm-bar .sm-delete, .sm-bar .sm-empty { display: inline-flex; align-items: center; gap: 5px; }
+.sm-bar .sm-delete:disabled { opacity: .45; }
+.sm-count { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.sm-check { flex: none; margin: 0; width: 14px; height: 14px; accent-color: var(--accent); }
+.sm-tree { display: flex; flex-direction: column; gap: 8px; }
+.sm-group .skeleton.sk-line { width: 60%; height: 12px; }
+.row.sm-folder { min-height: 34px; gap: 8px; }
+.row.sm-folder .fold { color: var(--fg-2); font-weight: 500; flex: none; max-width: 45%; }
+.row.sm-folder .fold .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row.sm-folder .sm-path { flex: 0 1 auto; min-width: 0; margin: 0; font-family: var(--code-font, var(--code)); font-size: 10.5px; color: var(--faint); }
+:where(html[data-fonts]) .row.sm-folder .sm-path { font-style: var(--code-style, inherit); font-weight: var(--code-weight, inherit); font-stretch: var(--code-stretch, 100%); }
+.row.sm-folder .grow { flex: 1; }
+.row.sm-folder .note { flex: none; font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.row.sm-sess { min-height: 44px; }
+.sm-item .sess-detail { padding-left: 34px; }
+.row.sess .sm-del:hover { color: var(--red); background: var(--red-soft); }
+/* carrying a session on in another agent, and its conversation (#845) */
+.row.sm-sess .sess-carry { height: 24px; color: var(--fg); }
+.pop.proto-menu.sess-carry-menu { width: min(300px, calc(100vw - 16px)); background: var(--card); }
+.sess-talk-btn, .sess-export { height: 22px; padding: 0 8px; font-size: 11.5px; }
+.sess-talk { max-height: min(560px, 70vh); overflow-y: auto; margin-top: 4px; padding: 8px 10px 4px; border-radius: 9px; border: 1px solid var(--line-2); background: var(--bg); }
+.sm-restore { display: inline-flex; align-items: center; gap: 5px; }
+.sm-ask-list { grid-column: 1 / -1; min-width: 0; margin: 0; padding: 0; list-style: none; font-size: 12.5px; color: var(--fg); line-height: 1.6; }
+.sm-ask-list li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sm-ask-list li.more { color: var(--muted); }
+/* a field in a session dialog (#1991): its label above it, both across the
+   dialog, never squeezed into the form's 72px label column */
+.editor label.sm-ask-field { grid-column: 1 / -1; min-width: 0; display: flex; flex-direction: column; gap: 6px; text-align: left; padding-top: 0; }
+.editor label.sm-ask-field input { width: 100%; min-width: 0; }
+.sm-ask-path { grid-column: 1 / -1; min-width: 0; margin: 0; font-family: var(--code-font, var(--code)); font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+:where(html[data-fonts]) .sm-ask-path { font-style: var(--code-style, inherit); font-weight: var(--code-weight, inherit); font-stretch: var(--code-stretch, 100%); }
+@media (max-width: 560px) {
+  .sm-filter { width: 130px; flex-basis: 130px; }
+  .row.sm-folder .sm-path { display: none; }
+  /* the cost stays; the title keeps the room the tokens took (#752) */
+  .row.sm-sess .num { display: none; }
+  .row.sm-sess .cost { min-width: 0; }
+  /* five gaps of 12px left a 420px window's title 90px once the list
+     scrolled and its scrollbar took 10px */
+  .row.sess.sm-sess { gap: 8px; }
+}
+@media (max-width: 420px) {
+  .sm-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; row-gap: 6px; }
+  .sm-switch { grid-column: 1 / -1; }
+  .sm-agent-pick { max-width: 100%; }
+  .sm-filter { width: 100%; min-width: 0; }
+  .sm-trash-btn { grid-column: 2; justify-self: end; }
+}
+/* Codex sessions made with another provider, hidden from Codex's history (#887) */
+.row.sm-provider { gap: 10px; min-height: 40px; padding: 8px 11px; height: auto; }
+.sm-provider-text { min-width: 0; font-size: 12px; color: var(--fg-2); line-height: 1.45; }
+.sm-provider .grow { flex: 1; }
+.sm-provider .text { flex: none; display: inline-flex; align-items: center; gap: 5px; }
+.sm-prov { display: inline-block; padding: 0 5px; border-radius: 4px; background: var(--pill); color: var(--muted); font-family: var(--code-font, var(--code)); font-size: 10.5px; line-height: 16px; }
+:where(html[data-fonts]) .sm-prov { font-style: var(--code-style, inherit); font-weight: var(--code-weight, inherit); font-stretch: var(--code-stretch, 100%); }
+.sm-provider-list li label { display: flex; align-items: center; gap: 8px; min-width: 0; cursor: pointer; }
+.sm-provider-list li .name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sm-provider-list li .note { flex: none; font-size: 11px; color: var(--faint); }
+.sm-provider-list { max-height: min(300px, 45vh); overflow-y: auto; }
+/* Recording gateway conversations (#1355): a setting card above the list,
+   its switch, what it keeps and where, and a labelled delete */
+.list.row.sm-record { gap: 6px 12px; min-height: 48px; padding: 9px 11px 9px 13px; height: auto; flex-wrap: wrap; }
+.sm-record .lib-switch { cursor: pointer; padding: 0; border: 0; }
+.sm-record .lib-switch:disabled { opacity: .5; cursor: default; }
+.sm-record-words { flex: 1 1 240px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.sm-record-name { font-size: 12.5px; font-weight: 500; color: var(--fg); }
+.sm-record-sub { font-size: 11.5px; color: var(--muted); line-height: 1.45; }
+.sm-record-clear { flex: none; margin-left: auto; display: inline-flex; align-items: center; gap: 5px; }
+.sm-record-clear:hover:not(:disabled) { color: var(--red); background: var(--red-soft); }
+/* a folder's next page of sessions, under the ones drawn */
+.sm-group .sm-more { margin: 4px 8px 6px; }
+/* a session's subagents, folded under it (#2261): set in by how deep they
+   are, never marked off by a stripe */
+.sm-subs { --sub-step: 16px; padding: 0 12px 6px calc(30px + var(--sub-depth, 0) * var(--sub-step)); }
+.sm-subs-fold { font-size: 11.5px; }
+.sm-subs-fold span { font-variant-numeric: tabular-nums; }
+.sm-subs-list { display: flex; flex-direction: column; margin-top: 2px; border: 1px solid var(--line-2); border-radius: 9px; overflow: hidden; background: var(--card); }
+.sm-subs-list > .sess-item .sess-detail { padding-left: 12px; }
+/* set in, a thread's details have less room: a line's buttons go under it */
+.sm-subs-list .sess-line { flex-wrap: wrap; }
+.sm-subs-list > .sm-sub + .sm-sub, .sm-subs-list > .sess-item + .sm-sub, .sm-subs-list > .sm-sub + .sess-item { border-top: 1px solid var(--line-2); }
+.sm-subs-list > .sess-item > .sm-subs { padding-left: calc(8px + var(--sub-step)); }
+.sm-sub.open { background: color-mix(in srgb, var(--pill) 45%, transparent); }
+.row.sm-sub-row { width: 100%; min-height: 38px; text-align: left; padding-left: calc(11px + var(--sub-in, 0) * var(--sub-step)); }
+body.window .row.sm-sub-row { min-height: 42px; padding-left: calc(14px + var(--sub-in, 0) * var(--sub-step)); }
+.row.sm-sub-row .who { display: flex; flex-direction: column; }
+.sm-sub .sess-talk { margin: 0 10px 8px; }
+@media (max-width: 560px) {
+  .sm-subs { --sub-step: 10px; padding-left: calc(12px + var(--sub-depth, 0) * var(--sub-step)); padding-right: 8px; }
+}

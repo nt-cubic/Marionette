@@ -36,6 +36,13 @@ rfd = "0.15"
 base64 = "0.22"
 # Engine download SHA256 verification (already in the graph via tauri/tao — zero size cost).
 sha2 = "0.10"
+# gzip decode for the embedded-engine build (pure Rust backend, no C toolchain).
+# Optional: only the embedded-engine feature pays for it in release binaries.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"], optional = true }
+
+[dev-dependencies]
+# Tests gzip fixtures for the embedded-engine extraction path (feature-independent).
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
@@ -52,6 +59,11 @@ windows-sys = { version = "0.59", features = [
 default = []
 # Enable with: cargo run --features devtools  /  tauri dev still works via debug asserts path if needed
 devtools = ["tauri/devtools"]
+# 单 exe 内置引擎（产品定稿 2026-10-16）：third_party/magpie 编出的 nogui
+# magpie 经 tools\build-portable.bat --engine gzip 内嵌（+~18.5MB），离线解压
+# 安装。构建前必须先由构建脚本生成 src-tauri/engine-embedded/*.gz 与 VERSION
+# （gitignored 产物，见 tools/README.md）。
+embedded-engine = ["dep:flate2"]
 
 # tao 0.35.3 asserts that WM_PAINT on the thread-event-target is never re-entrant.
 # CJK IME (especially Chinese IME on a Japanese OS) pumps nested messages on

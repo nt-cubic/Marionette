@@ -5,7 +5,9 @@
 
 | 脚本 | 用途 |
 |---|---|
-| `build-portable.bat` | 打便携版单文件：release 构建 → `..\dist-portable\Marionette.exe`，有 UPX 则压到 ~1.2 MB。环境变量：`SKIP_UPX=1`、`REQUIRE_UPX=1`、`INSTALL_UPX=1`、`NOPAUSE=1` |
+| `build-portable.bat` | 打便携版单文件：release 构建 → `..\dist-portable\Marionette.exe`，有 UPX 则压到 ~1.2 MB。`--engine` 变体产出 `Marionette-Engine.exe`（单 exe 内置引擎，~20 MB，离线解压安装）。环境变量：`SKIP_UPX=1`、`REQUIRE_UPX=1`、`INSTALL_UPX=1`、`NOPAUSE=1` |
+| `import-magpie.ps1` | 吸纳/更新内置引擎源码：从上游 magpie 拉 `--Tag` 指定版本进 `third_party\magpie`（只留构建子集）。升引擎 = 换 tag 重跑 + `build-portable.bat --engine` |
+| `gzip-file.ps1` | `build-portable.bat --engine` 的辅助：.NET gzip 压缩内嵌产物 |
 | `rebuild-quick.bat` | 增量重建 debug 二进制并重启；Vite 还在跑就只重启 exe |
 | `start-marionette-quick.bat` | 已有 debug 构建时的快速启动：只拉起 Vite + `marionette.exe`，跳过工具链检查 |
 | `bump-version.bat` | 版本号提升的包装（转发给 `bump-version.ps1`；不带参数会交互询问） |
