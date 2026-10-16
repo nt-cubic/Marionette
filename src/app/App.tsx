@@ -2339,48 +2339,89 @@ export function App() {
    * swallowing the new process's stream. `process/stopped` then takes care of
    * the rest: queued sends, Ask/Plan/Permission cards, capabilities.
    */
-  const handleSuspendSession = useCallback((sessionId: string) => {
-    const session = sessionsRef.current.find((s) => s.id === sessionId);
-    if (!session || !canPark(session)) return;
-    const midTurn = session.status === "running" || session.status === "starting";
-    const label = session.label?.trim() || "会话";
-
-    if (midTurn) {
-      streamSuppressedRef.current.add(sessionId);
-      setLiveEvents((current) =>
-        sealOpenAssistantReplies(markOpenTools(current, sessionId, "cancelled"), sessionId),
-      );
-    }
-
-    void stopAcpSession(sessionId)
-      .catch(() => undefined)
-      .then(() => {
-        acpBootstrapRef.current.delete(sessionId);
-        acpNeedsHistoryRef.current.add(sessionId);
-        setSessionStatusById(sessionId, "exited");
-        if (sessionId === currentSessionIdRef.current) setSessionCapabilities(null);
-        if (midTurn) {
-          setLiveEvents((current) => [
-            ...current,
-            {
-              type: "assistant_message" as const,
-              sessionId,
-              text: `**已挂起。**\n\n${label} 当时正在跑，我中断了它并结束了 agent 进程。说出口的部分留在上面。对话记录都在 —— 下次发消息会自动重新拉起进程，并把这段历史接上去。`,
-              createdAt: new Date().toISOString(),
-              durationMs: 0,
-            },
-          ]);
-        }
-        pushDebug({
-          sessionId,
-          level: "info",
-          source: "shelf",
-          summary: midTurn ? "suspended a working dialog" : "suspended idle dialog",
+  /** 结束会话的 agent 进程并标记「下一条消息带历史自动拉起」的共享实现。 */
+  const parkSessionProcess = useCallback(
+    (sessionId: string, opts: { midTurnBanner?: string; debugSummary: string }) => {
+      const midTurn = opts.midTurnBanner != null;
+      void stopAcpSession(sessionId)
+        .catch(() => undefined)
+        .then(() => {
+          acpBootstrapRef.current.delete(sessionId);
+          acpNeedsHistoryRef.current.add(sessionId);
+          setSessionStatusById(sessionId, "exited");
+          if (sessionId === currentSessionIdRef.current) setSessionCapabilities(null);
+          if (midTurn) {
+            setLiveEvents((current) => [
+              ...current,
+              {
+                type: "assistant_message" as const,
+                sessionId,
+                text: opts.midTurnBanner!,
+                createdAt: new Date().toISOString(),
+                durationMs: 0,
+              },
+            ]);
+          }
+          pushDebug({
+            sessionId,
+            level: "info",
+            source: "shelf",
+            summary: opts.debugSummary,
+          });
         });
+    },
+    // `setSessionStatusById` is a stable `useCallback` declared further down; it
+    // cannot be named in this dep array without a TDZ read at definition time.
+    [pushDebug],
+  );
+
+  const handleSuspendSession = useCallback(
+    (sessionId: string) => {
+      const session = sessionsRef.current.find((s) => s.id === sessionId);
+      if (!session || !canPark(session)) return;
+      const midTurn = session.status === "running" || session.status === "starting";
+      const label = session.label?.trim() || "会话";
+
+      if (midTurn) {
+        streamSuppressedRef.current.add(sessionId);
+        setLiveEvents((current) =>
+          sealOpenAssistantReplies(markOpenTools(current, sessionId, "cancelled"), sessionId),
+        );
+      }
+
+      parkSessionProcess(sessionId, {
+        midTurnBanner: midTurn
+          ? `**已挂起。**\n\n${label} 当时正在跑，我中断了它并结束了 agent 进程。说出口的部分留在上面。对话记录都在 —— 下次发消息会自动重新拉起进程，并把这段历史接上去。`
+          : undefined,
+        debugSummary: midTurn ? "suspended a working dialog" : "suspended idle dialog",
       });
-  // `setSessionStatusById` is a stable `useCallback` declared further down; it
-  // cannot be named in this dep array without a TDZ read at definition time.
-  }, [pushDebug]);
+    },
+    [parkSessionProcess],
+  );
+
+  /**
+   * 跨用模型切换的「当场生效」：注入是 spawn 级的（env / grok 配置表），活
+   * 进程必须换血。复用挂起机制结束进程（历史保留、下一条消息自动拉起），
+   * banner 换成切换说明。midTurn 时同样先封口再杀。
+   */
+  const handleRestartAgentSession = useCallback(
+    (sessionId: string, banner: string) => {
+      const session = sessionsRef.current.find((s) => s.id === sessionId);
+      if (!session || !canPark(session)) return;
+      const midTurn = session.status === "running" || session.status === "starting";
+      if (midTurn) {
+        streamSuppressedRef.current.add(sessionId);
+        setLiveEvents((current) =>
+          sealOpenAssistantReplies(markOpenTools(current, sessionId, "cancelled"), sessionId),
+        );
+      }
+      parkSessionProcess(sessionId, {
+        midTurnBanner: midTurn ? banner : undefined,
+        debugSummary: "restarted agent process for bridge model switch",
+      });
+    },
+    [parkSessionProcess],
+  );
 
   /**
    * Suspend warm dialogs nobody is using. A warm session holds an agent process
@@ -6228,6 +6269,7 @@ export function App() {
             currentAgentId={displaySession.agentId}
             sessionId={displaySession.id}
             sessionStatus={displaySession.status}
+            onRestartAgentSession={handleRestartAgentSession}
             autoFocus={composerAutoFocus}
             onEmptyActivate={() => {
               if (displaySession.id.startsWith("session-empty-") || !currentSessionId) {

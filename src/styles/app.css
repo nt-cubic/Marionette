@@ -7218,6 +7218,145 @@ body.is-composer-resizing .composer {
   text-decoration: underline;
 }
 
+/* ── Credentials (跨用凭据) Dialog ─────────────────────────────────────── */
+.credentials-dialog {
+  min-width: 440px;
+}
+
+.credentials-dialog__scan {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.credentials-dialog__scan-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--surface-secondary);
+}
+
+.credentials-dialog__scan-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.credentials-dialog__scan-status {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.credentials-dialog__scan-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.credentials-dialog__scan-dot.is-found {
+  background: var(--green, #22c55e);
+}
+
+.credentials-dialog__scan-dot.is-missing {
+  background: var(--text-faint);
+}
+
+.credentials-dialog__scan-dot.is-restricted {
+  background: var(--yellow, #e7c86a);
+}
+
+/* Subscription / reference rows: not ours to delete — muted marker. */
+.credentials-dialog__dot--borrowed {
+  background: var(--text-faint);
+}
+
+.credentials-dialog__masked {
+  color: var(--text-faint);
+  font-size: 10px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  letter-spacing: 0.02em;
+}
+
+/* ── Cross-use (跨用) note in the model menu ──────────────────────────── */
+.composer-menu__bridge-note {
+  padding: 6px 7px 4px;
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* Scan-origin badge on a cross-use group title: reference entries found by
+   the credential scan, as opposed to keys the user added manually. */
+.composer-menu__bridge-scan-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 15px;
+  vertical-align: 1px;
+  letter-spacing: 0;
+}
+
+/* Placeholder for a cross-use source whose model list is not enumerable —
+   custom model ids are the only way to use it (e.g. openrouter). */
+.composer-menu__bridge-empty {
+  padding: 2px 8px 3px;
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* ── Cross-use (跨用) custom model id — entry + inline input ─────────── */
+/* Weakened vs regular rows: the preset list stays the primary path. */
+.composer-menu__bridge-custom-trigger {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 4px 8px;
+  border: none;
+  background: none;
+  color: var(--text-faint);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+  border-radius: 4px;
+}
+
+.composer-menu__bridge-custom {
+  display: flex;
+  align-items: center;
+  margin: 1px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+}
+
+.composer-menu__bridge-custom input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  padding: 5px 7px;
+}
+
+.composer-menu__bridge-custom input::placeholder {
+  color: var(--text-faint);
+  font-family: inherit;
+}
+
 /* ── Model Dropdown Empty State ────────────────────────────────────────── */
 .composer-menu__empty-state {
   display: flex;

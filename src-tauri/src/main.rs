@@ -9,14 +9,17 @@ mod elicitation;
 mod app_update;
 mod commands;
 mod context_inventory;
+mod credentials;
 mod custom_agents;
 mod data_dir_gate;
 mod debug_log;
 mod dsh_settings;
 mod git_service;
+mod grok_dialect;
 mod handoff;
 mod http_client;
 mod models;
+mod model_bridge;
 mod open_target;
 mod preflight;
 mod process_util;
@@ -422,6 +425,13 @@ fn main() {
             commands::delete_provider_key,
             commands::upsert_provider_meta,
             commands::delete_provider_meta,
+            commands::bridge_scan,
+            commands::bridge_list_entries,
+            commands::bridge_add_key,
+            commands::bridge_delete_entry,
+            commands::bridge_list_models,
+            commands::bridge_bind,
+            commands::bridge_get_binding,
             commands::get_proxy_config,
             commands::set_proxy_config,
             commands::test_proxy,
