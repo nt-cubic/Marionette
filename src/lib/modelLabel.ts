@@ -35,6 +35,19 @@ function providerPrefix(text: string): { provider: string; rest: string } | null
   return { provider: text.slice(0, idx), rest: text.slice(idx + 1) };
 }
 
+/** Leading `[OpenCode] GLM-5.3` — a Grok catalog `name` tagging the billed host. */
+function leadingBracketTag(label: string): { tag: string; rest: string } | null {
+  const m = /^\s*\[([^\]]+)\]\s*(.*)$/.exec(label);
+  if (!m) return null;
+  const tag = m[1].trim();
+  if (!tag) return null;
+  return { tag, rest: m[2].trim() };
+}
+
+function stripLeadingBracket(label: string): string {
+  return leadingBracketTag(label)?.rest || label.trim();
+}
+
 /** Humanize common slug tails without maintaining a full catalog. */
 function humanizeSlug(slug: string): string {
   let s = slug.trim();
@@ -79,6 +92,7 @@ export function prettyModelLabel(
   const rawId = (model.id || "").trim();
 
   let candidate = rawLabel || rawId;
+  candidate = stripLeadingBracket(candidate);
   const fromLabel = providerPrefix(candidate);
   if (fromLabel) candidate = fromLabel.rest;
 
@@ -133,7 +147,11 @@ const FAMILY_GROUPS: Array<{ match: RegExp; group: string }> = [
   { match: /^openrouter\b/i, group: "OpenRouter" },
   { match: /^deepseek\b/i, group: "DeepSeek" },
   { match: /^(xai|grok)\b/i, group: "xAI" },
-  { match: /^(glm|zai|z\.ai)\b/i, group: "Z.AI" },
+  { match: /^(glm|zai|z\.ai|zhipu)\b/i, group: "Z.AI" },
+  // Grok catalog key `home-qwen-dflash` (hyphen continues). OpenCode's path
+  // prefix is the exact segment `home-qwen` and must stay that provider name.
+  { match: /^home-qwen[-_]/i, group: "SelfHosted" },
+  { match: /^(selfhosted|self-hosted)\b/i, group: "SelfHosted" },
   { match: /^(claude|anthropic)\b/i, group: "Claude" },
   { match: /^(gpt|openai)\b/i, group: "OpenAI" },
   { match: /^(gemini|google)\b/i, group: "Google" },
@@ -161,9 +179,10 @@ function pathPrefix(model: Pick<ModelDef, "id" | "label">): string | null {
 
 /**
  * Group header for one model row. A flat catalog (Grok: `modelId` + `name`
- * only) has no endpoint field, so the user's own naming decides: a backend tag
+ * only) has no endpoint field, so the billed host is inferred: a backend tag
  * in the name wins, then a `provider/model` path, then the family prefix of the
- * catalog key, then the label. Agents that already advertise paths keep working.
+ * catalog key (`opencode-go-*`, `zhipu-*`), then a leading `[Provider]` tag,
+ * then the label. Agents that already advertise paths keep working.
  */
 export function modelProviderGroup(model: Pick<ModelDef, "id" | "label">): string {
   const label = (model.label || "").trim();
@@ -178,7 +197,16 @@ export function modelProviderGroup(model: Pick<ModelDef, "id" | "label">): strin
 
   if (CLAUDE_ALIASES.test(id.toLowerCase())) return "Claude";
 
-  return familyGroup(id) ?? familyGroup(label) ?? "Models";
+  const fromId = familyGroup(id);
+  if (fromId) return fromId;
+
+  const bracket = leadingBracketTag(label);
+  if (bracket) {
+    const fromTag = familyGroup(bracket.tag);
+    if (fromTag) return fromTag;
+  }
+
+  return familyGroup(stripLeadingBracket(label)) ?? (bracket ? bracket.tag : "Models");
 }
 
 /**
@@ -190,7 +218,7 @@ export function modelRowLabel(
   model: Pick<ModelDef, "id" | "label" | "description">,
   maxLen = 40,
 ): string {
-  const label = (model.label || "").trim();
+  const label = stripLeadingBracket((model.label || "").trim());
   const tag = trailingTag(label);
   let stripped = label;
   if (tag) {
@@ -234,6 +262,22 @@ export function prettyModelTrigger(
     { id: id || "", label: label || id || "model", description: undefined },
     { maxLen: 22 },
   );
+}
+
+/**
+ * Closed composer chip. Prefix the catalog/backend when the pretty name does
+ * not already say where the model runs — "DeepSeek V4 Pro" from Logfare vs
+ * official DeepSeek, so the user can see which key is billed.
+ */
+export function prettyModelChip(
+  model: Pick<ModelDef, "id" | "label" | "description">,
+  opts?: { maxLen?: number },
+): string {
+  const name = prettyModelLabel(model, { maxLen: opts?.maxLen ?? 22 });
+  const provider = modelProviderGroup(model);
+  if (!provider || provider === "Models") return name;
+  if (name.toLowerCase().includes(provider.toLowerCase())) return name;
+  return `${provider} · ${name}`;
 }
 
 /** Full tooltip text (id + description). */
