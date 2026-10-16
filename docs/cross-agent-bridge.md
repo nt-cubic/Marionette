@@ -244,9 +244,16 @@ grok 重放含 assistant 消息的历史时会在每条消息对象上标注 `mo
 - **组名空间全局共享**是 magpie 语义：两个 codex 会话绑同一内建名时后写者胜（dev.log 记 warn）。
 - **B4-2 漂移日志落地**（`note_catalog_drift`，挂 `bridge_list_models`）：按 source 存排序模型清单到 `~/.marionette/bridge-model-fingerprints.json`（存清单本身而非只存 hash——diff 精确到 added/removed），变化记 `[bridge] model catalog drift source=<id> added=[..] removed=[..]`；只 diff 本次询问出现的来源（不同 agent 来源集合不同，「缺席≠删除」）；无漂移零写入。
 
+**落地记录 · 第二轮（2026-10-16 晚，「无脑打开软件就能用」定稿）：**
+
+- **引擎随应用启动自动拉起**（`main.rs` setup → `engine::enable()`）：已装则 serve + 注册，未装则后台下载（进度在凭据页可见）；`enable` 幂等，失败只落 Failed 状态不阻塞启动。凭据页的「启用」按钮保留为状态/重试入口。
+- **扫描引用的 key 进引擎**（`register_key_providers` 扩展）：注册面从「凭据库 key-plan」扩为「key-plan ∪ opencode 扫描引用的 api key」。引用的 key 只在注册瞬间经 `credentials::peek_opencode_api_keys` 读出、只进 magpie CLI 命令行——除此之外扫描路径仍绝不复制/存储 key（`scan_entry` secret 恒 None 不变）。同一 provider 的 key-plan 优先于引用（`registration_plan` 去重，避免 `-2` 副本）。**这补齐了 M2 旗舰验收场景的供给面**：opencode-go / DeepSeek 的 key 现在自动出现在引擎目录（codex 的「跨用 · 翻译引擎」组里可选），无需用户手动录入。
+- **补注册钩子**（`engine::reregister_key_providers`，仅自拉实例、复用实例跳过）：`bridge_add_key`（新存/换 key）与 `bridge_scan`（凭据页打开/刷新——吸收 opencode auth.json 的外部变更）时后台重跑注册。引擎自身的 enable 流水线仍是最全面的注册时机。
+- **已知限制**：删除凭据条目**不会**从引擎回收 provider（magpie 侧需 `provider rm`，注册器只做 upsert）；复用实例（用户自装 magpie）永不写入。回收机制与引擎空闲回收一起放 M3。
+
 ### M3 — 打磨
 
-配额合并展示（provider 探测 ∪ `magpie quota`）、引擎空闲回收与自动升级、扫描开关 UI、文档收尾（CURRENT.md 更新、本稿归档）。
+配额合并展示（provider 探测 ∪ `magpie quota`）、引擎空闲回收与自动升级、**引擎侧 provider 回收**（删除凭据条目时 `provider rm` 同步进引擎）、扫描开关 UI、文档收尾（CURRENT.md 更新、本稿归档）。
 
 ## 8. 测试计划
 

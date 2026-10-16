@@ -2308,10 +2308,16 @@ pub fn delete_provider_key(provider: String, force: Option<bool>) -> Result<(), 
 // ─── Cross-agent model bridge (docs/cross-agent-bridge.md M1) ────────────────
 
 /// Read-only credential scan across the four CLIs (transparency for the
-/// credentials settings page). Pure read: nothing is written anywhere.
+/// credentials settings page). The scan itself is a pure read; it also doubles
+/// as the «absorb external auth.json edits» trigger for a running engine
+/// (background, idempotent upsert — see the reregister call below).
 #[tauri::command(async)]
 pub fn bridge_scan() -> crate::model_bridge::BridgeScanReport {
     let _trace = crate::debug_log::CmdTrace::new("bridge_scan");
+    // 扫描刷新也是「无脑可用」的补注册时机：opencode auth.json 的外部变更
+    // （用户在 opencode 里加/换 key）在这里被引擎吸收。幂等 upsert，无变化
+    // 时只是每 provider 两条短命 CLI 调用。
+    crate::engine::reregister_key_providers();
     crate::credentials::scan_all()
 }
 
@@ -2331,7 +2337,12 @@ pub fn bridge_add_key(
     key: String,
 ) -> Result<crate::model_bridge::BridgeEntryView, String> {
     let _trace = crate::debug_log::CmdTrace::new("bridge_add_key");
-    crate::model_bridge::add_key(&preset, label.as_deref(), &key)
+    let view = crate::model_bridge::add_key(&preset, label.as_deref(), &key)?;
+    // 引擎可能已在 Running（enable 流水线只在拉起时注册一次）→ 后台补注册，
+    // 新 key 即时进引擎目录。删除条目暂不回收引擎侧 provider（已知限制，
+    // 见 docs/cross-agent-bridge.md M3）。
+    crate::engine::reregister_key_providers();
+    Ok(view)
 }
 
 #[tauri::command]
