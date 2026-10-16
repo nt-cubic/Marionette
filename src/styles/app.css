@@ -6529,6 +6529,8 @@ body.is-composer-resizing .composer {
 
 .composer-menu__model-name {
   display: block;
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -7302,10 +7304,35 @@ body.is-composer-resizing .composer {
 }
 
 .composer-menu__model-recent-hint {
-  font-size: 11px;
-  color: var(--text-tertiary);
-  white-space: nowrap;
+  display: flex;
+  flex-shrink: 0;
+  align-items: baseline;
+  gap: 6px;
   margin-left: 8px;
+  white-space: nowrap;
+}
+
+.composer-menu__model-source {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.composer-menu__model-recent-time {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.composer-menu__recent button.is-selected .composer-menu__model-source,
+.composer-menu__recent button:hover .composer-menu__model-source {
+  color: var(--text-muted);
+}
+
+.composer-menu__recent button.is-selected .composer-menu__model-recent-time,
+.composer-menu__recent button:hover .composer-menu__model-recent-time {
+  color: var(--text-faint);
 }
 
 /* ── Add Key item in model list ────────────────────────────────────────── */

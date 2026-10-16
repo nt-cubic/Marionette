@@ -51,6 +51,7 @@ import {
   modelRowLabel,
   modelTooltip,
   prettyEffortLabel,
+  prettyModelChip,
   prettyModelTrigger,
 } from "../lib/modelLabel";
 import {
@@ -1768,9 +1769,19 @@ export function Composer({
     : hasEffort && currentEffort != null
       ? effortLabel(currentEffort)
       : null;
-  const displayModelFull =
-    (displayModel && caps?.models.find((m) => m.id === displayModel)?.label) || displayModel;
-  const displayModelLabel = shortTriggerLabel(displayModelFull, displayModel);
+  const displayModelDef =
+    displayModel && caps?.models
+      ? caps.models.find((m) => m.id === displayModel)
+      : undefined;
+  const displayModelFull = displayModelDef?.label || displayModel;
+  const displayModelLabel = displayModelDef
+    ? prettyModelChip(displayModelDef)
+    : shortTriggerLabel(displayModelFull, displayModel);
+  const displayModelTitle = displayModelDef
+    ? [modelProviderGroup(displayModelDef), displayModelDef.label || displayModelDef.id, displayModelDef.id]
+        .filter((value, index, list) => value && list.indexOf(value) === index)
+        .join("\n")
+    : (displayModelFull ?? "Choose model");
   const displayModeLabel =
     (displayMode && caps?.modes.find((m) => m.id === displayMode)?.label) || displayMode;
 
@@ -2589,7 +2600,7 @@ export function Composer({
                 <button
                   className="composer-select composer-select--model"
                   type="button"
-                  title={displayModelFull ?? "Choose model"}
+                  title={displayModelTitle}
                   aria-expanded={menu === "model" || menu === "effort"}
                   onClick={() => setMenu(menu === "model" ? null : "model")}
                 >
@@ -2655,6 +2666,7 @@ export function Composer({
                                   {recentModels.map((entry) => {
                                     const model = caps?.models.find((m) => m.id === entry.modelId);
                                     if (!model) return null;
+                                    const provider = modelProviderGroup(model);
                                     return (
                                       <button
                                         key={entry.modelId}
@@ -2662,6 +2674,7 @@ export function Composer({
                                         type="button"
                                         role="option"
                                         aria-selected={displayModel === entry.modelId}
+                                        title={modelTooltip(model)}
                                         onClick={() => {
                                           const prev = displayModel;
                                           pinOptions({ model: entry.modelId });
@@ -2674,7 +2687,10 @@ export function Composer({
                                         }}
                                       >
                                         <span className="composer-menu__model-name">{modelRowLabel(model)}</span>
-                                        <span className="composer-menu__model-recent-hint">{formatRecentTime(entry.lastUsedAt)}</span>
+                                        <span className="composer-menu__model-recent-hint">
+                                          <span className="composer-menu__model-source">{provider}</span>
+                                          <span className="composer-menu__model-recent-time">{formatRecentTime(entry.lastUsedAt)}</span>
+                                        </span>
                                       </button>
                                     );
                                   })}

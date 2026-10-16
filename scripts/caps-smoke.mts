@@ -21,6 +21,7 @@ import {
   modelProviderGroup,
   modelRowLabel,
   prettyEffortLabel,
+  prettyModelChip,
 } from "../src/lib/modelLabel.ts";
 import type { CapabilitySnapshot } from "../src/lib/types.ts";
 
@@ -300,6 +301,104 @@ check("provider/model ids and Claude aliases keep their old groups", () => {
   assert.equal(modelProviderGroup({ id: "claude-sonnet-4-6", label: "Sonnet 4.6" }), "Claude");
   // Nothing recognisable still has to land somewhere the user can click.
   assert.equal(modelProviderGroup({ id: "mystery-1", label: "Mystery One" }), "Models");
+});
+
+check("closed chip prefixes the source when the pretty name hides it", () => {
+  assert.equal(
+    prettyModelChip({ id: "logfare/deepseek-v4-pro", label: "DeepSeek V4 Pro" }),
+    "Logfare · DeepSeek V4 Pro",
+  );
+  assert.equal(
+    prettyModelChip({ id: "home-qwen/qwen3.8-27b-dflash", label: "Qwen3.8-27B DFlash" }),
+    "home-qwen · Qwen3.8-27B DFlash",
+  );
+  // Official DeepSeek already says DeepSeek, so the chip stays short.
+  assert.equal(
+    prettyModelChip({ id: "deepseek/deepseek-v4.1-flash", label: "DeepSeek V4.1 Flash" }),
+    "DeepSeek V4.1 Flash",
+  );
+  assert.equal(
+    prettyModelChip({ id: "opencode/cat-jam-free", label: "Cat Jam Free" }),
+    "OpenCode · Cat Jam Free",
+  );
+});
+
+check("Grok catalog keys group by billed host; [Provider] names are display-only", () => {
+  assert.equal(
+    modelProviderGroup({ id: "zhipu-glm-4.5", label: "[Zhipu] GLM-4.5" }),
+    "Z.AI",
+  );
+  assert.equal(
+    modelProviderGroup({ id: "zhipu-glm-4.5", label: "GLM-4.5" }),
+    "Z.AI",
+  );
+  assert.equal(
+    modelProviderGroup({ id: "opencode-go-cat-jam-free", label: "[OpenCode] cat-jam-free" }),
+    "OpenCode",
+  );
+  assert.equal(
+    modelProviderGroup({ id: "opencode-go-glm-5.3", label: "[OpenCode] GLM-5.3" }),
+    "OpenCode",
+  );
+  assert.equal(
+    modelProviderGroup({ id: "deepseek-flash", label: "[DeepSeek] Flash (V4.1)" }),
+    "DeepSeek",
+  );
+  assert.equal(
+    modelProviderGroup({
+      id: "home-qwen-dflash",
+      label: "[SelfHosted] Qwen3.8-27B DFlash (Tailscale)",
+    }),
+    "SelfHosted",
+  );
+  assert.equal(modelProviderGroup({ id: "grok-4.6", label: "Grok 4.6" }), "xAI");
+});
+
+check("Grok row labels drop the [Provider] prefix the group header already prints", () => {
+  assert.equal(modelRowLabel({ id: "zhipu-glm-4.5", label: "[Zhipu] GLM-4.5" }), "GLM-4.5");
+  assert.equal(
+    modelRowLabel({ id: "opencode-go-cat-jam-free", label: "[OpenCode] cat-jam-free" }),
+    "cat-jam-free",
+  );
+  assert.equal(
+    modelRowLabel({ id: "deepseek-flash", label: "[DeepSeek] Flash (V4.1)" }),
+    "Flash (V4.1)",
+  );
+});
+
+check("Grok closed chip prefixes every billed host, not only xAI", () => {
+  assert.equal(
+    prettyModelChip({ id: "opencode-go-cat-jam-free", label: "[OpenCode] cat-jam-free" }),
+    "OpenCode · cat-jam-free",
+  );
+  assert.equal(
+    prettyModelChip({ id: "opencode-go-glm-5.3", label: "[OpenCode] GLM-5.3" }),
+    "OpenCode · GLM-5.3",
+  );
+  assert.equal(
+    prettyModelChip({ id: "zhipu-glm-4.5", label: "[Zhipu] GLM-4.5" }),
+    "Z.AI · GLM-4.5",
+  );
+  assert.equal(
+    prettyModelChip({ id: "deepseek-flash", label: "[DeepSeek] Flash (V4.1)" }),
+    "DeepSeek · Flash (V4.1)",
+  );
+  // After dropping the [DeepSeek] tag, official names already say DeepSeek.
+  assert.equal(
+    prettyModelChip({ id: "deepseek-flash", label: "DeepSeek Flash (V4.1)" }),
+    "DeepSeek Flash (V4.1)",
+  );
+  assert.equal(prettyModelChip({ id: "grok-4.6", label: "Grok 4.6" }), "xAI · Grok 4.6");
+  assert.equal(
+    prettyModelChip(
+      {
+        id: "home-qwen-dflash",
+        label: "[SelfHosted] Qwen3.8-27B DFlash (Tailscale)",
+      },
+      { maxLen: 40 },
+    ),
+    "SelfHosted · Qwen3.8-27B DFlash (Tailscale)",
+  );
 });
 
 console.log("\nopencode effort republish (session/new may omit effort when already on model)");
