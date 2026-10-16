@@ -5665,7 +5665,6 @@ export function App() {
       delete fileChangeSnapshotsRef.current[sid];
       delete fileChangePublishedRef.current[sid];
       fileChangeFinalizeRef.current.delete(sid);
-      setSessionStatusById(sid, "error");
       const sess = sessionsRef.current.find((s) => s.id === sid);
       const agent = sess
         ? agentsRef.current.find((a) => a.id === sess.agentId)
@@ -5674,6 +5673,39 @@ export function App() {
         agentId: sess?.agentId,
         agentLabel: agent?.label,
       });
+      // The one-turn gate refused us: a live turn this side failed to bookkeep
+      // as "running" (missed boundary, reconnect window) still owns the
+      // connection. That is the queue condition, not a failure 窶・route into
+      // the standard pending queue (the flush after the turn boundary pushes
+      // the You card itself, so drop the one this attempt painted) instead of
+      // an error card + toast + "error" status, which historically dropped the
+      // message AND un-gated every following send into the same refusal.
+      if (classified.kind === "busy") {
+        setLiveEvents((current) => {
+          for (let i = current.length - 1; i >= 0; i -= 1) {
+            const e = current[i];
+            if (e.sessionId === sid && e.type === "user_message" && e.text === composed) {
+              return [...current.slice(0, i), ...current.slice(i + 1)];
+            }
+          }
+          return current;
+        });
+        const queue = pendingSendsRef.current.get(sid) ?? [];
+        queue.push({ composed, imageAttachments, composerSnap });
+        pendingSendsRef.current.set(sid, queue);
+        setQueuedStripTick((t) => t + 1);
+        pushDebug({
+          sessionId: sid,
+          level: "info",
+          source: "composer",
+          summary: `queued after busy gate: ${composed.length > 80 ? `${composed.slice(0, 80)}窶ｦ` : composed}`,
+        });
+        // Same contract as any mid-turn send: interrupt then send, so the
+        // follow-up is wired as soon as the slot actually frees.
+        void cancelLiveTurn(sid, { announce: false });
+        return;
+      }
+      setSessionStatusById(sid, "error");
       const label = sess?.label?.trim() || "Session";
       const sendError = compactNotifyDetail(classified.message);
       void raiseDesktopNotify(
