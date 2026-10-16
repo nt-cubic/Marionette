@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Bell, BellOff, ChevronDown, ChevronRight, CloudMoon, Folder, FolderOpen, Globe, GripVertical, KeyRound, MessageSquare, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, Save, Search, SunMedium, Trash2, X, Zap } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { Bell, BellOff, ChevronDown, ChevronRight, CloudMoon, Folder, FolderOpen, Globe, GripVertical, KeyRound, MessageSquare, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, Save, Search, SunMedium, Trash2, X, Zap } from "lucide-react";
 import type { AgentConfig, Project, ProxyConfig, ProxyTestResult, Session } from "../lib/types";
 import { themeToggleTitle, type ThemeMode } from "../lib/theme";
 import { collapsedShelfSessions, pinStamp, sortSessionsNewestFirst } from "../lib/sessionOrder";
 import { suspendControl } from "../lib/sessionSuspend";
 import { loadCollapsedProjectIds, saveCollapsedProjectIds } from "../lib/uiRestore";
+import { engineEnable, engineStatus, type EngineStatus } from "../lib/api";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { CredentialsDialog } from "./CredentialsDialog";
 
@@ -241,8 +242,48 @@ export function ProjectShelf({
   /** Credentials (cross-agent bridge) dialog — key scan + manual keys. */
   const [credentialsOpen, setCredentialsOpen] = useState(false);
 
+  /**
+   * Cross-use gateway (engine) popover. The engine auto-starts with the app
+   * (2026-10-16 product decision: open the app and everything works); this
+   * button is its always-visible status + one-click start, NOT a dialog —
+   * key management stays one hop deeper (footer link → CredentialsDialog).
+   */
+  const [engineOpen, setEngineOpen] = useState(false);
+  const [engineAnchor, setEngineAnchor] = useState<{ left: number; top: number } | null>(null);
+  const [engineState, setEngineState] = useState<EngineStatus | null>(null);
+  const engineBtnRef = useRef<HTMLButtonElement | null>(null);
+  const enginePopRef = useRef<HTMLDivElement | null>(null);
+
+  const refreshEngine = useCallback(() => {
+    void engineStatus().then(setEngineState);
+  }, []);
+  useEffect(refreshEngine, [refreshEngine]);
+
+  /** Open popover: anchor + 1 Hz status polling (catches download/start transitions). */
+  useEffect(() => {
+    if (!engineOpen) return;
+    refreshEngine();
+    const timer = window.setInterval(refreshEngine, 1000);
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (enginePopRef.current?.contains(target) || engineBtnRef.current?.contains(target)) return;
+      setEngineOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setEngineOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [engineOpen, refreshEngine]);
+
   /** Project ids whose session list is fully expanded past the preview cap. */
   const [sessionsExpandedByProject, setSessionsExpandedByProject] = useState<Set<string>>(() => new Set());
+
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const renameInputRef = useRef<HTMLInputElement>(null);
@@ -491,17 +532,62 @@ export function ProjectShelf({
     </button>
   );
 
-  const credentialsButton = (
+  const engineRunning = engineState?.state === "running";
+  const engineBusyTransient =
+    engineState?.state === "downloading" || engineState?.state === "starting";
+  const engineStatusLine = (() => {
+    if (!engineState) return "状态未知";
+    switch (engineState.state) {
+      case "running":
+        return `运行中 · 127.0.0.1:${engineState.port}${engineState.reused ? " · 复用自装实例" : ""}${engineState.version ? ` · magpie ${engineState.version}` : ""}`;
+      case "downloading": {
+        const { downloaded, total } = engineState;
+        const mb = (n: number) => `${(n / 1024 / 1024).toFixed(1)} MB`;
+        return total > 0
+          ? `下载中 ${mb(downloaded)} / ${mb(total)}（${Math.min(100, Math.round((downloaded / total) * 100))}%）`
+          : "下载中…";
+      }
+      case "starting":
+        return "启动中…";
+      case "failed":
+        return `启动失败：${engineState.error.slice(0, 120)}`;
+      default:
+        return "未启动";
+    }
+  })();
+
+  const gatewayButton = (
     <button
+      ref={engineBtnRef}
       type="button"
-      className="pill-action pill-action--icon pill-action--sm sidebar-footer__button"
-      title="凭据 · 跨 agent 复用密钥与订阅来源"
-      aria-label="凭据（跨用密钥与来源）"
+      className={
+        engineRunning
+          ? "pill-action pill-action--icon pill-action--sm sidebar-footer__button is-engine-on"
+          : "pill-action pill-action--icon pill-action--sm sidebar-footer__button is-engine-off"
+      }
+      title={
+        engineRunning
+          ? `跨用网关 ${engineStatusLine} · 点此查看`
+          : "跨用网关未运行 · 点击启动并查看"
+      }
+      aria-label={engineRunning ? "跨用网关（运行中）" : "跨用网关（未运行）"}
+      aria-pressed={engineRunning}
       aria-haspopup="dialog"
-      aria-expanded={credentialsOpen}
-      onClick={() => setCredentialsOpen(true)}
+      aria-expanded={engineOpen}
+      onClick={() => {
+        const rect = engineBtnRef.current?.getBoundingClientRect();
+        setEngineAnchor(rect ? { left: rect.left, top: rect.top } : null);
+        setEngineOpen((open) => !open);
+        // 一键启动：不在运行（且不在下载/启动中）时，点击即拉起网关；
+        // 弹层只负责展示状态，凭据管理退到弹层底部入口。
+        if (!engineRunning && !engineBusyTransient) {
+          void engineEnable().then((snapshot) => {
+            if (snapshot) setEngineState(snapshot);
+          });
+        }
+      }}
     >
-      <KeyRound size={13} />
+      <Network size={13} />
     </button>
   );
 
@@ -1032,7 +1118,7 @@ export function ProjectShelf({
         {themeButton}
         {notifyButton}
         {proxyButton}
-        {credentialsButton}
+        {gatewayButton}
         <button className="pill-action pill-action--icon pill-action--sm sidebar-footer__button sidebar-footer__button--collapse" type="button" title={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} aria-label={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} onClick={collapsed ? onExpand : onCollapse}>
           {collapsed ? <PanelLeftOpen size={13} /> : <PanelLeftClose size={13} />}
         </button>
@@ -1109,6 +1195,61 @@ export function ProjectShelf({
               onClick={() => void saveProxy()}
             >
               {proxyBusy === "save" ? <span className="proxy-popover__spinner" aria-hidden /> : <Save size={13} />}
+            </button>
+          </div>
+        </div>
+      )}
+      {engineOpen && engineAnchor && (
+        <div
+          ref={enginePopRef}
+          className="proxy-popover engine-popover"
+          role="dialog"
+          aria-label="跨用网关"
+          style={{ left: engineAnchor.left, bottom: window.innerHeight - engineAnchor.top + 6 }}
+        >
+          <div className="proxy-popover__header">
+            <span className="proxy-popover__title">跨用网关</span>
+            <button
+              type="button"
+              className="pill-action pill-action--icon pill-action--sm"
+              aria-label="关闭"
+              onClick={() => setEngineOpen(false)}
+            >
+              <X size={12} />
+            </button>
+          </div>
+          <p className="engine-popover__status" data-state={engineState?.state ?? "unknown"}>
+            {engineStatusLine}
+          </p>
+          {engineRunning ? (
+            <div className="proxy-popover__hint">
+              Grok / Claude / ChatGPT 订阅与本机 key 已并入；各 agent 模型菜单的「跨用」组里直接选用。
+            </div>
+          ) : (
+            <button
+              type="button"
+              className="engine-popover__start"
+              disabled={engineBusyTransient}
+              onClick={() => {
+                void engineEnable().then((snapshot) => {
+                  if (snapshot) setEngineState(snapshot);
+                  refreshEngine();
+                });
+              }}
+            >
+              {engineBusyTransient ? "准备中…" : engineState?.state === "failed" ? "重试启动" : "启动网关"}
+            </button>
+          )}
+          <div className="engine-popover__footer">
+            <button
+              type="button"
+              className="engine-popover__link"
+              onClick={() => {
+                setEngineOpen(false);
+                setCredentialsOpen(true);
+              }}
+            >
+              <KeyRound size={11} aria-hidden /> 管理密钥与来源…
             </button>
           </div>
         </div>
