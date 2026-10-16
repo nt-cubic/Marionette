@@ -12,8 +12,8 @@
 //!   临时文件 + rename 原子落位；下载尊重 `proxy.rs` 的代理配置。
 //!   **embedded-engine 构建**（产品定稿 2026-10-16「单 exe 内置引擎」）：
 //!   nogui magpie 从 `third_party/magpie`（`tools\import-magpie.ps1` 吸纳）
-//!   编出后 gzip 内嵌进 exe（47.9MB → 18.5MB），安装期内嵌优先、离线解压，
-//!   下载路径仅作无内嵌构建的回退。
+//!   编出后 **UPX 压缩直嵌**进 exe（47.9MB → ~13.6MB，自解压零解码），
+//!   安装期内嵌优先、离线落位，下载路径仅作无内嵌构建的回退。
 //! - **拉起**：`magpie serve`，env `MAGPIE_ADDR=127.0.0.1:<port>` +
 //!   `MAGPIE_NO_STATS=1`；**不设** `MAGPIE_NO_ACCOUNTS`（订阅 discovery 要开）、
 //!   **保留** `USERPROFILE`/`APPDATA`（discovery 要读 `~/.grok` 等真实凭证）。
@@ -569,19 +569,22 @@ fn now_epoch_millis() -> String {
         .to_string()
 }
 
-// ─── 内嵌引擎（embedded-engine feature：gzip 进 exe，离线解压安装）──────────
+// ─── 内嵌引擎（embedded-engine feature：UPX 压缩进 exe，离线解出安装）──────
 //
 // 产品定稿（2026-10-16）：带引擎版把 nogui magpie（third_party/magpie，
-// `tools\import-magpie.ps1` 吸纳的上游子集）用 gzip 压进二进制（实测
-// 47.9MB → 18.5MB）。安装顺序：**内嵌优先** —— manifest 版本与内嵌版本
-// 不一致（或缺失）→ 就地解压落位，离线、零下载；无内嵌的构建或解压后
-// 仍不完整 → 原下载路径不变。升级 = `import-magpie.ps1 -Tag 新tag` 重编。
+// `tools\import-magpie.ps1` 吸纳的上游子集）压进二进制。压缩层 2026-10-17
+// 从 gzip 换成 **UPX**（实测 47.9MB → ~13.6MB，比 gzip 的 18.5MB 小 5MB，
+// 且免掉运行时解码——UPX exe 启动时自解压）。安装顺序：**内嵌优先** ——
+// manifest 版本与内嵌版本不一致（或缺失）→ 就地写盘落位，离线、零下载；
+// 无内嵌的构建或落位后仍不完整 → 原下载路径不变。升级 = `import-magpie.ps1
+// -Tag 新tag` 重编。
 
 /// 内嵌引擎版本（下载路径存的是去 v 形态，这里同规矩归一后比较）。
 #[cfg(feature = "embedded-engine")]
 const EMBEDDED_ENGINE_VERSION: &str = include_str!("../engine-embedded/VERSION");
+/// UPX 压缩后的 magpie exe 字节（自解压，无需解码层）。
 #[cfg(feature = "embedded-engine")]
-const EMBEDDED_MAGPIE_GZ: &[u8] = include_bytes!("../engine-embedded/magpie-windows-amd64.exe.gz");
+const EMBEDDED_MAGPIE: &[u8] = include_bytes!("../engine-embedded/magpie-windows-amd64.exe");
 
 fn embedded_version() -> Option<&'static str> {
     #[cfg(feature = "embedded-engine")]
@@ -597,7 +600,7 @@ fn embedded_version() -> Option<&'static str> {
 fn embedded_artifact() -> (&'static [u8], &'static str) {
     #[cfg(feature = "embedded-engine")]
     {
-        (EMBEDDED_MAGPIE_GZ, strip_v(EMBEDDED_ENGINE_VERSION))
+        (EMBEDDED_MAGPIE, strip_v(EMBEDDED_ENGINE_VERSION))
     }
     #[cfg(not(feature = "embedded-engine"))]
     {
@@ -605,7 +608,7 @@ fn embedded_artifact() -> (&'static [u8], &'static str) {
     }
 }
 
-/// 内嵌版本与在位 manifest 不一致（或引擎缺失）→ 需要重新解压。
+/// 内嵌版本与在位 manifest 不一致（或引擎缺失）→ 需要重新落位。
 /// 无内嵌的构建恒 false（走下载路径）。
 fn embedded_stale_at(dir: &Path) -> bool {
     match (embedded_version(), load_manifest_at(dir)) {
@@ -615,29 +618,14 @@ fn embedded_stale_at(dir: &Path) -> bool {
     }
 }
 
-/// 把一段 gzip 的 magpie 字节解压安装（临时文件 + rename 原子落位 +
+/// 把内嵌的（UPX 自解压）magpie 字节落位安装：临时文件 + rename 原子写 +
 /// `.portable` 围栏 + manifest 记真实 sha——与下载路径共用 `is_installed_at`
-/// 的校验语义）。纯输入参数，测试直接喂小夹具。
-fn install_gzipped_engine_at(gz: &[u8], version: &str, dir: &Path) -> Result<(), String> {
-    use std::io::Read;
+/// 的校验语义。纯输入参数，测试直接喂小夹具。
+fn install_embedded_engine_at(bytes: &[u8], version: &str, dir: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("创建 engine 目录失败: {e}"))?;
     let temp = dir.join(format!("magpie.exe.{}.extract", std::process::id()));
-    let mut decoder = flate2::read::GzDecoder::new(gz);
-    let mut file = std::fs::File::create(&temp)
-        .map_err(|e| format!("创建解压临时文件失败（{}）: {e}", temp.display()))?;
-    let mut buffer = vec![0u8; 64 * 1024];
-    loop {
-        let n = decoder
-            .read(&mut buffer)
-            .map_err(|e| format!("解压内嵌引擎失败: {e}"))?;
-        if n == 0 {
-            break;
-        }
-        std::io::Write::write_all(&mut file, &buffer[..n])
-            .map_err(|e| format!("写入解压流失败: {e}"))?;
-    }
-    std::io::Write::flush(&mut file).map_err(|e| format!("落盘失败: {e}"))?;
-    drop(file);
+    std::fs::write(&temp, bytes)
+        .map_err(|e| format!("写解出临时文件失败（{}）: {e}", temp.display()))?;
     let sha = sha256_of_file(&temp)?;
     std::fs::rename(&temp, exe_path(dir))
         .map_err(|e| format!("magpie.exe 原子落位失败: {e}"))?;
@@ -653,8 +641,8 @@ fn install_gzipped_engine_at(gz: &[u8], version: &str, dir: &Path) -> Result<(),
         "engine",
         "info",
         "",
-        &format!("engine embedded artifact extracted version={version}"),
-        Some(&format!("bytes={}", gz.len())),
+        &format!("engine embedded artifact installed version={version}"),
+        Some(&format!("bytes={}", bytes.len())),
     );
     Ok(())
 }
@@ -1194,6 +1182,33 @@ pub fn wake_if_installed() {
     let _ = enable();
 }
 
+/// 等引擎就绪（跨用绑定的一键优雅路径，2026-10-17 用户反馈）：就绪立即真；
+/// 否则幂等 `enable` 后在窗口内轮询——已装引擎通常 2-5s（内嵌版首启含解压），
+/// 超时返回 false 由调用方走原有指引错误。
+pub fn ensure_bridge_ready(timeout: Duration) -> bool {
+    if bridge_ready() {
+        return true;
+    }
+    #[cfg(test)]
+    {
+        // 测试构建：seam 没摆出 Running 就直接失败——绝不在单测里真拉引擎
+        //（enable 会触碰真实 ~/.marionette）。要测等待行为就先摆 seam。
+        return false;
+    }
+    #[cfg(not(test))]
+    {
+        let _ = enable();
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if bridge_ready() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        false
+    }
+}
+
 /// 回收巡检线程：Running（自拉）期间每分钟看一眼；不满足回收条件就继续，
 /// 状态不再是自拉 Running 就退出。在 enable_pipeline 成功后启动。
 fn idle_watchdog() {
@@ -1520,11 +1535,11 @@ fn enable_pipeline(dir: &Path) -> Result<(), String> {
         });
         return Ok(());
     }
-    // 2. 安装：**内嵌优先**（带引擎构建且版本不匹配/缺失 → 离线解压落位），
-    //    无内嵌/解压后仍不完整 → 原下载路径（sha 校验 + 重试）不变。
+    // 2. 安装：**内嵌优先**（带引擎构建且版本不匹配/缺失 → 离线落位——
+    //    UPX 自解压字节直写，无解码），无内嵌/落位后仍不完整 → 原下载路径。
     if embedded_stale_at(dir) {
-        let (gz, version) = embedded_artifact();
-        install_gzipped_engine_at(gz, version, dir)?;
+        let (bytes, version) = embedded_artifact();
+        install_embedded_engine_at(bytes, version, dir)?;
     }
     if !is_installed_at(dir) {
         let plan = resolve_latest_release()?;
@@ -2020,18 +2035,14 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// 内嵌引擎解压安装：gzip 夹具 → exe 原字节落位 + `.portable` + manifest
-    /// 记真实 sha（与下载路径共用 `is_installed_at` 的校验语义）；篡改即失效。
+    /// 内嵌引擎落位安装：字节原样写盘 + `.portable` + manifest 记真实 sha
+    /// （与下载路径共用 `is_installed_at` 的校验语义）；篡改即失效。
     #[test]
-    fn embedded_extraction_roundtrips_and_verifies() {
-        use std::io::Write as _;
+    fn embedded_install_roundtrips_and_verifies() {
         let dir = temp_dir("embedded");
         let payload = b"fake embedded magpie exe payload 0123456789";
-        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        encoder.write_all(payload).unwrap();
-        let gz = encoder.finish().unwrap();
 
-        install_gzipped_engine_at(&gz, "0.1.9999", &dir).unwrap();
+        install_embedded_engine_at(payload, "0.1.9999", &dir).unwrap();
         assert_eq!(fs::read(exe_path(&dir)).unwrap(), payload);
         assert!(dir.join(".portable").exists(), "围栏标记必须一并落位");
         let manifest = load_manifest_at(&dir).unwrap();
@@ -2041,7 +2052,7 @@ mod tests {
 
         // stale 判定语义（按构建形态分开断言）：
         // - 无内嵌构建：恒不 stale（下载路径做安装）；
-        // - 内嵌构建：manifest 与当前内嵌版本一致才免重解压。
+        // - 内嵌构建：manifest 与当前内嵌版本一致才免重落位。
         #[cfg(not(feature = "embedded-engine"))]
         assert!(!embedded_stale_at(&dir));
         #[cfg(feature = "embedded-engine")]

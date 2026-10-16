@@ -2382,16 +2382,16 @@ pub fn bridge_bind(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let _trace = crate::debug_log::CmdTrace::new("bridge_bind");
-    // M2：绑定 engine 模型但引擎不在跑（残留绑定恢复 / 极端时序）→ 后台踢
-    // 一次幂等的 engine_enable（不等待；本次 bind 仍会因校验失败而报错并
-    // 指引，重试即可）。正常路径不受影响：引擎未 Running 时 engine 源本就
-    // 不出现在 picker 里。
+    // 一键优雅（2026-10-17 用户反馈）：绑定 engine 模型时引擎恰好睡着
+    // （空闲回收 / 应用刚启动 / 残留绑定恢复）→ **同步等它就绪**再继续校验，
+    // 切换一次成功；不再「先报错、用户重试」。已装引擎通常 2-5s（内嵌版首启
+    // 含离线解压）；超时仍按原路走指引错误。
     if selection
         .as_ref()
         .is_some_and(|s| s.entry_id == crate::engine::ENGINE_ENTRY_ID)
         && !crate::engine::bridge_ready()
     {
-        let _ = crate::engine::enable();
+        crate::engine::ensure_bridge_ready(std::time::Duration::from_secs(20));
     }
     // The session's agent decides the unbind semantics (grok tables); look it
     // up the same way start_acp_session does — session.agentId is the truth.
