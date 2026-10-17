@@ -93,3 +93,6 @@ if ($script:changed.Count -eq 0) {
 
 Write-Host
 Write-Host "done - $($script:changed.Count) file(s) updated to $newVersion"
+Write-Host
+Write-Host "next: tools\build-portable.bat          (plain + engine)"
+Write-Host "then: tools\publish-release.bat         (GitHub Release with both exes)"

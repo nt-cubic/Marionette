@@ -5,11 +5,12 @@
 
 | 脚本 | 用途 |
 |---|---|
-| `build-portable.bat` | 打便携版单文件：release 构建 → `..\dist-portable\Marionette.exe`，有 UPX 则压到 ~1.2 MB。`--engine` 变体产出 `Marionette-Engine.exe`（单 exe 内置引擎，~15MB，离线落位安装；内嵌层用 UPX 压 magpie，需 UPX）。环境变量：`SKIP_UPX=1`（`--engine` 不适用）、`REQUIRE_UPX=1`、`INSTALL_UPX=1`、`NOPAUSE=1` |
-| `import-magpie.ps1` | 吸纳/更新内置引擎源码：从上游 magpie 拉 `--Tag` 指定版本进 `third_party\magpie`（只留构建子集）。升引擎 = 换 tag 重跑 + `build-portable.bat --engine` |
+| `build-portable.bat` | 打便携版。**默认一次打两个变体**（与 GitHub Release 对齐）：`Marionette-<ver>-windows-x64.exe`（普通版 ~2MB）和 `Marionette-Engine-<ver>-windows-x64.exe`（内置引擎 ~16MB），另各留一份本地名 `Marionette.exe` / `Marionette-Engine.exe`。`--plain` / `--engine` 只打其中一个。环境变量：`SKIP_UPX=1`（引擎内嵌 magpie 仍需要 UPX）、`REQUIRE_UPX=1`、`INSTALL_UPX=1`、`NOPAUSE=1` |
+| `publish-release.bat` | 把 `dist-portable` 里两个版本化 exe 发到 GitHub Release（`gh`）。已有同 tag 则 `--clobber` 覆盖资产。可选 `-NotesFile`、`-Draft` |
+| `import-magpie.ps1` | 吸纳/更新内置引擎源码：从上游 magpie 拉 `--Tag` 指定版本进 `third_party\magpie`（只留构建子集）。升引擎 = 换 tag 重跑 + `build-portable.bat` |
 | `rebuild-quick.bat` | 增量重建 debug 二进制并重启；Vite 还在跑就只重启 exe |
 | `start-marionette-quick.bat` | 已有 debug 构建时的快速启动：只拉起 Vite + `marionette.exe`，跳过工具链检查 |
-| `bump-version.bat` | 版本号提升的包装（转发给 `bump-version.ps1`；不带参数会交互询问） |
+| `bump-version.bat` | 版本号提升的包装（转发给 `bump-version.ps1`；不带参数会交互询问）。完成后提示接着打双变体、再 `publish-release` |
 | `bump-version.ps1` | 一次改完 `package.json`、`package-lock.json`、`src-tauri\tauri.conf.json`、`Cargo.toml`、`Cargo.lock` |
 | `ensure-msvc.bat` | 检查 MSVC / Windows SDK，缺失时可经 winget 安装 |
 | `ensure-rust.bat` | 检查 Rust 工具链，缺失时可经 rustup 安装 |
