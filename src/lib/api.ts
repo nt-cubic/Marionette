@@ -270,6 +270,21 @@ export async function fetchAcpRegistry(): Promise<AcpCatalogAgent[]> {
   return invoke<AcpCatalogAgent[]>("fetch_acp_registry");
 }
 
+export type ExternalRefreshResult = {
+  added: number;
+  updated: number;
+  skipped: number;
+  failed: number;
+  sessions: Session[];
+};
+
+export async function refreshExternalSessions(projectId: string): Promise<ExternalRefreshResult> {
+  if (!isTauriRuntime()) {
+    return { added: 0, updated: 0, skipped: 0, failed: 0, sessions: [] };
+  }
+  return invoke<ExternalRefreshResult>("refresh_external_sessions", { projectId });
+}
+
 export async function listSessions(projectId: string): Promise<Session[]> {
   if (!isTauriRuntime()) return mockSessions.filter((session) => session.projectId === projectId);
   try {

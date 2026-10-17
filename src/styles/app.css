@@ -1666,6 +1666,11 @@ body.is-project-reordering .project-list {
   animation: done-attention 1.15s ease-in-out 2;
 }
 
+.session-row__action .is-spinning,
+.project-row__action .is-spinning {
+  animation: context-lend-spin 900ms linear infinite;
+}
+
 .session-row__actions {
   display: flex;
   flex: 0 0 auto;

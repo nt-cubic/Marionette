@@ -578,6 +578,119 @@ impl StorageService {
         self.write_sessions(Path::new(&project.root_path), &sessions)
     }
 
+    /// Insert or refresh a conversation scanned from an agent CLI store.
+    ///
+    /// Live Marionette dialogs are never overwritten. A row the user already
+    /// continued here (last_active newer than the CLI copy) keeps its transcript.
+    pub fn import_cli_session(
+        &self,
+        project_id: &str,
+        session_id: &str,
+        agent_id: &str,
+        label: &str,
+        started_at: Option<&str>,
+        last_active_at: Option<&str>,
+        events: Vec<serde_json::Value>,
+    ) -> Result<(&'static str, Session), String> {
+        let project = self.project_by_id(project_id)?;
+        let project_path = Path::new(&project.root_path);
+        self.ensure_project_dirs(project_path)?;
+        let cli_active = last_active_at
+            .filter(|s| !s.trim().is_empty())
+            .or(started_at.filter(|s| !s.trim().is_empty()))
+            .unwrap_or("");
+        let existing = self
+            .list_sessions_all(project_id)?
+            .into_iter()
+            .find(|s| s.id == session_id);
+
+        if let Some(mut session) = existing {
+            let live = matches!(
+                session.status.as_str(),
+                "starting" | "running" | "waiting"
+            );
+            let ours_newer = crate::parsers::util::recency_ms(&session.last_active_at)
+                >= crate::parsers::util::recency_ms(cli_active)
+                && crate::parsers::util::recency_ms(&session.last_active_at) > 0;
+            if live || ours_newer {
+                return Ok(("skipped", session));
+            }
+            let keep_label = matches!(
+                session.label_source.as_deref(),
+                Some("user") | Some("manual")
+            );
+            if !keep_label && !label.trim().is_empty() {
+                session.label = label.to_string();
+                session.label_source = Some("agent".to_string());
+            }
+            if !cli_active.is_empty() {
+                session.last_active_at = cli_active.to_string();
+            }
+            if let Some(started) = started_at.filter(|s| !s.is_empty()) {
+                if session.started_at.is_empty() {
+                    session.started_at = started.to_string();
+                }
+            }
+            session.status = "exited".to_string();
+            self.save_session(&session)?;
+            if !events.is_empty() {
+                self.write_transcript(&session.id, &events)?;
+            }
+            return Ok(("updated", session));
+        }
+
+        let id = session_id.to_string();
+        let raw_log_path = session_log_path(project_path, &id);
+        let session = Session {
+            id: id.clone(),
+            project_id: project.id,
+            agent_id: agent_id.to_string(),
+            label: if label.trim().is_empty() {
+                "Imported session".to_string()
+            } else {
+                label.to_string()
+            },
+            label_source: Some("agent".to_string()),
+            cwd: project.root_path.clone(),
+            status: "exited".to_string(),
+            process_id: None,
+            pty_id: None,
+            started_at: started_at.unwrap_or("").to_string(),
+            last_active_at: if cli_active.is_empty() {
+                now_string()
+            } else {
+                cli_active.to_string()
+            },
+            exited_at: None,
+            exit_code: None,
+            raw_log_path: raw_log_path.to_string_lossy().to_string(),
+            transcript_path: crate::app_paths::project_dir(project_path)
+                .join("transcripts")
+                .join(format!("{id}.jsonl"))
+                .to_string_lossy()
+                .to_string(),
+            handoff_path: crate::app_paths::project_dir(project_path)
+                .join("handoff")
+                .join(format!("{id}.md"))
+                .to_string_lossy()
+                .to_string(),
+            view_mode: "clean".to_string(),
+            preferred_model: None,
+            preferred_mode: None,
+            preferred_effort: None,
+            preferred_effort_id: None,
+            preferred_always_approve: None,
+            parent_session_id: None,
+            origin: Some("import".to_string()),
+            pinned_at: None,
+        };
+        self.save_session(&session)?;
+        if !events.is_empty() {
+            self.write_transcript(&session.id, &events)?;
+        }
+        Ok(("added", session))
+    }
+
     pub fn save_session(&self, session: &Session) -> Result<(), String> {
         self.remember_transcript_path(session);
         if session.project_id == crate::app_paths::CHAT_PROJECT_ID {
@@ -1522,6 +1635,56 @@ mod tests {
         // Workspace folder and .marionette data stay on disk.
         assert!(project_dir.is_dir());
         assert!(project_dir.join(".marionette").is_dir());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn import_cli_session_is_idempotent_and_skips_newer_local() {
+        let root = test_root();
+        let global_dir = root.join("global");
+        let project_dir = root.join("workspace");
+        fs::create_dir_all(&project_dir).unwrap();
+        let service = StorageService::from_global_dir(global_dir).unwrap();
+        let project = service
+            .add_project(project_dir.to_string_lossy().to_string())
+            .unwrap();
+        let events = vec![serde_json::json!({
+            "type": "user_message",
+            "sessionId": "ext-grok-aaa",
+            "text": "hello",
+            "createdAt": "2026-08-24T15:52:48Z"
+        })];
+        let (kind, session) = service
+            .import_cli_session(
+                &project.id,
+                "ext-grok-aaa",
+                "grok-build",
+                "Fix the freeze",
+                Some("2026-08-24T15:52:48Z"),
+                Some("2026-08-24T16:10:48Z"),
+                events.clone(),
+            )
+            .unwrap();
+        assert_eq!(kind, "added");
+        assert_eq!(session.label, "Fix the freeze");
+        assert_eq!(session.origin.as_deref(), Some("import"));
+        let loaded = service.load_transcript(&session.id).unwrap();
+        assert_eq!(loaded.len(), 1);
+
+        let (kind, _) = service
+            .import_cli_session(
+                &project.id,
+                "ext-grok-aaa",
+                "grok-build",
+                "Fix the freeze",
+                Some("2026-08-24T15:52:48Z"),
+                Some("2026-08-24T16:10:48Z"),
+                events.clone(),
+            )
+            .unwrap();
+        assert_eq!(kind, "skipped");
+        assert_eq!(service.list_sessions(&project.id).unwrap().len(), 1);
 
         fs::remove_dir_all(root).unwrap();
     }

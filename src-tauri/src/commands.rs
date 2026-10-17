@@ -538,6 +538,183 @@ fn install_failure_reason(stderr: &str, stdout: &str) -> String {
     lines[start..].join(" | ")
 }
 
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalRefreshResult {
+    pub added: u32,
+    pub updated: u32,
+    pub skipped: u32,
+    pub failed: u32,
+    pub sessions: Vec<Session>,
+}
+
+/// Scan CLI stores for this project, write matching conversations as normal
+/// Marionette sessions (idempotent), and return the project's session list.
+#[tauri::command]
+pub async fn refresh_external_sessions(
+    project_id: String,
+    state: State<'_, AppState>,
+) -> Result<ExternalRefreshResult, String> {
+    let _trace = crate::debug_log::CmdTrace::new("refresh_external_sessions");
+    let root_path = {
+        let storage = state
+            .storage
+            .lock()
+            .map_err(|_| "Storage lock poisoned".to_string())?;
+        storage
+            .list_projects()?
+            .into_iter()
+            .find(|p| p.id == project_id)
+            .ok_or_else(|| format!("Unknown project: {project_id}"))?
+            .root_path
+    };
+    let convs = tauri::async_runtime::spawn_blocking({
+        let root_path = root_path.clone();
+        move || crate::parsers::list_all(&root_path)
+    })
+    .await
+    .map_err(|e| format!("external scan join: {e}"))?;
+
+    let mut added = 0u32;
+    let mut updated = 0u32;
+    let mut skipped = 0u32;
+    let mut failed = 0u32;
+
+    for conv in convs {
+        let session_id =
+            crate::parsers::imported_session_id(&conv.source, &conv.native_id);
+        let existing = {
+            let storage = state
+                .storage
+                .lock()
+                .map_err(|_| "Storage lock poisoned".to_string())?;
+            storage
+                .list_sessions_all(&project_id)?
+                .into_iter()
+                .find(|s| s.id == session_id)
+        };
+        let need_load = match &existing {
+            None => true,
+            Some(session) => {
+                let live = matches!(
+                    session.status.as_str(),
+                    "starting" | "running" | "waiting"
+                );
+                let ours_newer = crate::parsers::util::recency_ms(&session.last_active_at)
+                    >= crate::parsers::util::recency_ms(
+                        conv.last_active_at
+                            .as_deref()
+                            .or(conv.started_at.as_deref())
+                            .unwrap_or(""),
+                    )
+                    && crate::parsers::util::recency_ms(&session.last_active_at) > 0;
+                !live && !ours_newer
+            }
+        };
+        let events = if need_load {
+            let source = conv.source.clone();
+            let locator = conv.locator.clone();
+            match tauri::async_runtime::spawn_blocking(move || {
+                crate::parsers::load_one(&source, &locator)
+            })
+            .await
+            {
+                Ok(Ok(mut events)) => {
+                    for event in &mut events {
+                        if let Some(obj) = event.as_object_mut() {
+                            obj.insert(
+                                "sessionId".into(),
+                                serde_json::json!(session_id.clone()),
+                            );
+                        }
+                    }
+                    events
+                }
+                Ok(Err(e)) => {
+                    crate::debug_log::append(
+                        "external",
+                        "warn",
+                        "",
+                        &format!("{} load failed", conv.source),
+                        Some(&e),
+                    );
+                    failed += 1;
+                    continue;
+                }
+                Err(e) => {
+                    crate::debug_log::append(
+                        "external",
+                        "warn",
+                        "",
+                        "external load join failed",
+                        Some(&e.to_string()),
+                    );
+                    failed += 1;
+                    continue;
+                }
+            }
+        } else {
+            Vec::new()
+        };
+
+        let storage = state
+            .storage
+            .lock()
+            .map_err(|_| "Storage lock poisoned".to_string())?;
+        match storage.import_cli_session(
+            &project_id,
+            &session_id,
+            &conv.agent_id,
+            &conv.title,
+            conv.started_at.as_deref(),
+            conv.last_active_at.as_deref(),
+            events,
+        ) {
+            Ok(("added", _)) => added += 1,
+            Ok(("updated", _)) => updated += 1,
+            Ok(_) => skipped += 1,
+            Err(e) => {
+                crate::debug_log::append(
+                    "external",
+                    "warn",
+                    "",
+                    "import failed",
+                    Some(&e),
+                );
+                failed += 1;
+            }
+        }
+    }
+
+    let sessions = {
+        let storage = state
+            .storage
+            .lock()
+            .map_err(|_| "Storage lock poisoned".to_string())?;
+        storage.list_sessions_healed(&project_id, |session_id| {
+            state.acp.is_live(session_id) || state.sessions.is_live(session_id).unwrap_or(false)
+        })?
+    };
+
+    crate::debug_log::append(
+        "external",
+        "info",
+        "",
+        &format!(
+            "refresh {project_id}: added={added} updated={updated} skipped={skipped} failed={failed}"
+        ),
+        None,
+    );
+
+    Ok(ExternalRefreshResult {
+        added,
+        updated,
+        skipped,
+        failed,
+        sessions,
+    })
+}
+
 #[tauri::command(async)]
 pub fn list_sessions(
     project_id: String,

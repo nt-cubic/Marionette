@@ -22,6 +22,7 @@ mod http_client;
 mod models;
 mod model_bridge;
 mod open_target;
+mod parsers;
 mod preflight;
 mod process_util;
 mod provider_usage;
@@ -397,6 +398,7 @@ fn main() {
             commands::install_agent,
             commands::agent_versions,
             commands::list_sessions,
+            commands::refresh_external_sessions,
             commands::create_session,
             commands::create_child_session,
             commands::list_child_sessions,
