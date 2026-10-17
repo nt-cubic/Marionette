@@ -150,7 +150,7 @@ Marionette/
 约定：根目录只放工具链需要的文件（`package.json`、`vite.config.ts`、`index.html` 等）和那一个启动入口，
 其余按用途进 `docs/`、`scripts/`、`tools/`。运行期产物 `.marionette/`、`dist/`、`dist-portable/`、`node_modules/` 都已忽略。
 
-便携构建：`tools\build-portable.bat`（普通版）· 加 `--engine` 出内置引擎版。
+便携构建：`tools\build-portable.bat` 默认一次打出普通版和内置引擎版。发布：`tools\publish-release.bat`。
 
 ---
 
