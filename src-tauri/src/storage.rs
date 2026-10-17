@@ -163,6 +163,7 @@ impl StorageService {
             preferred_always_approve: None,
             parent_session_id: None,
             origin: Some("user".to_string()),
+            native_session_ids: Vec::new(),
             pinned_at: None,
         };
         let mut sessions = self.read_chat_sessions_all()?;
@@ -387,6 +388,7 @@ impl StorageService {
             preferred_always_approve: None,
             parent_session_id: None,
             origin: Some("user".to_string()),
+            native_session_ids: Vec::new(),
             pinned_at: None,
         };
         // Prepend so newest dialogs appear at the top of the project shelf.
@@ -453,6 +455,7 @@ impl StorageService {
                 preferred_always_approve: None,
                 parent_session_id: Some(parent_session_id.to_string()),
                 origin: Some("delegate".to_string()),
+                native_session_ids: Vec::new(),
                 pinned_at: None,
             };
             sessions.retain(|current| current.id != session.id);
@@ -509,6 +512,7 @@ impl StorageService {
             preferred_always_approve: None,
             parent_session_id: Some(parent_session_id.to_string()),
             origin: Some("delegate".to_string()),
+            native_session_ids: Vec::new(),
             pinned_at: None,
         };
         let mut sessions = all;
@@ -590,6 +594,7 @@ impl StorageService {
         label: &str,
         started_at: Option<&str>,
         last_active_at: Option<&str>,
+        native_id: Option<&str>,
         events: Vec<serde_json::Value>,
     ) -> Result<(&'static str, Session), String> {
         let project = self.project_by_id(project_id)?;
@@ -605,6 +610,9 @@ impl StorageService {
             .find(|s| s.id == session_id);
 
         if let Some(mut session) = existing {
+            if let Some(native) = native_id {
+                self.merge_native_id(&mut session, native);
+            }
             let live = matches!(
                 session.status.as_str(),
                 "starting" | "running" | "waiting"
@@ -613,6 +621,7 @@ impl StorageService {
                 >= crate::parsers::util::recency_ms(cli_active)
                 && crate::parsers::util::recency_ms(&session.last_active_at) > 0;
             if live || ours_newer {
+                self.save_session(&session)?;
                 return Ok(("skipped", session));
             }
             let keep_label = matches!(
@@ -682,6 +691,11 @@ impl StorageService {
             preferred_always_approve: None,
             parent_session_id: None,
             origin: Some("import".to_string()),
+            native_session_ids: native_id
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(|id| vec![id.to_string()])
+                .unwrap_or_default(),
             pinned_at: None,
         };
         self.save_session(&session)?;
@@ -689,6 +703,39 @@ impl StorageService {
             self.write_transcript(&session.id, &events)?;
         }
         Ok(("added", session))
+    }
+
+    fn merge_native_id(&self, session: &mut Session, native_id: &str) {
+        let native_id = native_id.trim();
+        if native_id.is_empty() {
+            return;
+        }
+        if session.native_session_ids.iter().any(|id| id == native_id) {
+            return;
+        }
+        session.native_session_ids.push(native_id.to_string());
+        const CAP: usize = 24;
+        if session.native_session_ids.len() > CAP {
+            let extra = session.native_session_ids.len() - CAP;
+            session.native_session_ids.drain(..extra);
+        }
+    }
+
+    /// Record an ACP `sessionId` on this dialog without touching recency.
+    pub fn remember_native_session_id(
+        &self,
+        session_id: &str,
+        native_id: &str,
+    ) -> Result<(), String> {
+        let Some(mut session) = self.find_session(session_id)? else {
+            return Ok(());
+        };
+        let before = session.native_session_ids.len();
+        self.merge_native_id(&mut session, native_id);
+        if session.native_session_ids.len() == before {
+            return Ok(());
+        }
+        self.save_session(&session)
     }
 
     pub fn save_session(&self, session: &Session) -> Result<(), String> {
@@ -1663,12 +1710,14 @@ mod tests {
                 "Fix the freeze",
                 Some("2026-08-24T15:52:48Z"),
                 Some("2026-08-24T16:10:48Z"),
+                Some("aaa"),
                 events.clone(),
             )
             .unwrap();
         assert_eq!(kind, "added");
         assert_eq!(session.label, "Fix the freeze");
         assert_eq!(session.origin.as_deref(), Some("import"));
+        assert_eq!(session.native_session_ids, vec!["aaa".to_string()]);
         let loaded = service.load_transcript(&session.id).unwrap();
         assert_eq!(loaded.len(), 1);
 
@@ -1680,11 +1729,35 @@ mod tests {
                 "Fix the freeze",
                 Some("2026-08-24T15:52:48Z"),
                 Some("2026-08-24T16:10:48Z"),
+                Some("aaa"),
                 events.clone(),
             )
             .unwrap();
         assert_eq!(kind, "skipped");
         assert_eq!(service.list_sessions(&project.id).unwrap().len(), 1);
+
+        let local = service
+            .create_session(&project.id, "grok-build".into(), "Local dialog".into())
+            .unwrap();
+        let before = local.last_active_at.clone();
+        service
+            .remember_native_session_id(&local.id, "native-xyz")
+            .unwrap();
+        let reloaded = service.find_session(&local.id).unwrap().unwrap();
+        assert_eq!(reloaded.native_session_ids, vec!["native-xyz".to_string()]);
+        assert_eq!(reloaded.last_active_at, before);
+        service
+            .remember_native_session_id(&local.id, "native-xyz")
+            .unwrap();
+        assert_eq!(
+            service
+                .find_session(&local.id)
+                .unwrap()
+                .unwrap()
+                .native_session_ids
+                .len(),
+            1
+        );
 
         fs::remove_dir_all(root).unwrap();
     }

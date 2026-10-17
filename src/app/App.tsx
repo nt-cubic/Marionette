@@ -3572,9 +3572,11 @@ export function App() {
       const importedIds = new Set(
         result.sessions.filter((s) => s.id.startsWith("ext-")).map((s) => s.id),
       );
+      const redirectTo = new Map(result.redirected.map((item) => [item.from, item.to]));
       for (const id of importedIds) transcriptLoadedRef.current.delete(id);
+      for (const from of redirectTo.keys()) transcriptLoadedRef.current.delete(from);
       setLiveEvents((current) => {
-        const next = current.filter((e) => !importedIds.has(e.sessionId));
+        const next = current.filter((e) => !importedIds.has(e.sessionId) && !redirectTo.has(e.sessionId));
         liveEventsRef.current = next;
         return next;
       });
@@ -3582,8 +3584,20 @@ export function App() {
         ...current.filter((s) => s.projectId !== projectId),
         ...result.sessions,
       ]);
+      setOpenSessionIds((current) => {
+        const next: string[] = [];
+        for (const id of current) {
+          const mapped = redirectTo.get(id) ?? id;
+          if (!next.includes(mapped)) next.push(mapped);
+        }
+        return next;
+      });
       const activeId = currentSessionIdRef.current;
-      if (activeId && importedIds.has(activeId)) {
+      const mappedActive = (activeId && redirectTo.get(activeId)) || activeId;
+      if (mappedActive && mappedActive !== activeId) {
+        setCurrentSessionId(mappedActive);
+        void loadSessionTranscriptRef.current(mappedActive);
+      } else if (activeId && importedIds.has(activeId)) {
         void loadSessionTranscriptRef.current(activeId);
       }
     } catch (error) {

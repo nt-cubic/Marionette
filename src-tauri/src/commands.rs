@@ -540,11 +540,20 @@ fn install_failure_reason(stderr: &str, stdout: &str) -> String {
 
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SessionRedirect {
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExternalRefreshResult {
     pub added: u32,
     pub updated: u32,
     pub skipped: u32,
     pub failed: u32,
+    pub removed: u32,
+    pub redirected: Vec<SessionRedirect>,
     pub sessions: Vec<Session>,
 }
 
@@ -579,35 +588,106 @@ pub async fn refresh_external_sessions(
     let mut updated = 0u32;
     let mut skipped = 0u32;
     let mut failed = 0u32;
+    let mut removed = 0u32;
+    let mut redirected = Vec::new();
+
+    let mut index = {
+        let storage = state
+            .storage
+            .lock()
+            .map_err(|_| "Storage lock poisoned".to_string())?;
+        let listed = storage.list_sessions_all(&project_id)?;
+        listed
+            .iter()
+            .map(|session| {
+                let live = state.acp.is_live(&session.id)
+                    || state.sessions.is_live(&session.id).unwrap_or(false);
+                crate::parsers::dedup::row_from_session(session, live)
+            })
+            .collect::<Vec<_>>()
+    };
+
+    for (drop_id, keep_id) in crate::parsers::dedup::import_ids_to_drop(&index) {
+        let storage = state
+            .storage
+            .lock()
+            .map_err(|_| "Storage lock poisoned".to_string())?;
+        match storage.delete_session(&project_id, &drop_id) {
+            Ok(()) => {
+                removed += 1;
+                redirected.push(SessionRedirect {
+                    from: drop_id.clone(),
+                    to: keep_id,
+                });
+                index.retain(|row| row.id != drop_id);
+            }
+            Err(e) => {
+                crate::debug_log::append(
+                    "external",
+                    "warn",
+                    "",
+                    "drop duplicate import failed",
+                    Some(&e),
+                );
+            }
+        }
+    }
 
     for conv in convs {
         let session_id =
             crate::parsers::imported_session_id(&conv.source, &conv.native_id);
-        let existing = {
+        let title_twin = crate::parsers::dedup::find_match(&index, &conv, &session_id, None)
+            .and_then(|(row, kind)| {
+                (row.id != session_id).then(|| (row.id.clone(), kind))
+            });
+        if let Some((twin_id, kind)) = title_twin {
             let storage = state
                 .storage
                 .lock()
                 .map_err(|_| "Storage lock poisoned".to_string())?;
-            storage
-                .list_sessions_all(&project_id)?
-                .into_iter()
-                .find(|s| s.id == session_id)
-        };
-        let need_load = match &existing {
+            let _ = storage.remember_native_session_id(&twin_id, &conv.native_id);
+            if let Some(row) = index.iter_mut().find(|row| row.id == twin_id) {
+                if !row.native_ids.iter().any(|id| id == &conv.native_id) {
+                    row.native_ids.push(conv.native_id.clone());
+                }
+            }
+            skipped += 1;
+            crate::debug_log::append(
+                "external",
+                "info",
+                &twin_id,
+                &format!("skip CLI clone ({kind:?}) {}", conv.native_id),
+                None,
+            );
+            continue;
+        }
+        let existing_live = index
+            .iter()
+            .find(|row| row.id == session_id)
+            .map(|row| row.live);
+        let need_load = match existing_live {
             None => true,
-            Some(session) => {
-                let live = matches!(
-                    session.status.as_str(),
-                    "starting" | "running" | "waiting"
-                );
-                let ours_newer = crate::parsers::util::recency_ms(&session.last_active_at)
-                    >= crate::parsers::util::recency_ms(
-                        conv.last_active_at
-                            .as_deref()
-                            .or(conv.started_at.as_deref())
-                            .unwrap_or(""),
-                    )
-                    && crate::parsers::util::recency_ms(&session.last_active_at) > 0;
+            Some(live) => {
+                let session = {
+                    let storage = state
+                        .storage
+                        .lock()
+                        .map_err(|_| "Storage lock poisoned".to_string())?;
+                    storage.find_session(&session_id)?
+                };
+                let ours_newer = session
+                    .as_ref()
+                    .map(|s| {
+                        crate::parsers::util::recency_ms(&s.last_active_at)
+                            >= crate::parsers::util::recency_ms(
+                                conv.last_active_at
+                                    .as_deref()
+                                    .or(conv.started_at.as_deref())
+                                    .unwrap_or(""),
+                            )
+                            && crate::parsers::util::recency_ms(&s.last_active_at) > 0
+                    })
+                    .unwrap_or(false);
                 !live && !ours_newer
             }
         };
@@ -657,6 +737,44 @@ pub async fn refresh_external_sessions(
             Vec::new()
         };
 
+        if crate::parsers::dedup::events_are_resume_injection(&events) {
+            skipped += 1;
+            continue;
+        }
+        let first_user = crate::parsers::dedup::first_user_from_events(&events);
+        if !first_user.is_empty() {
+            let text_twin = crate::parsers::dedup::find_match(
+                &index,
+                &conv,
+                &session_id,
+                Some(&first_user),
+            )
+            .and_then(|(row, kind)| {
+                (row.id != session_id).then(|| (row.id.clone(), kind))
+            });
+            if let Some((twin_id, kind)) = text_twin {
+                let storage = state
+                    .storage
+                    .lock()
+                    .map_err(|_| "Storage lock poisoned".to_string())?;
+                let _ = storage.remember_native_session_id(&twin_id, &conv.native_id);
+                if let Some(row) = index.iter_mut().find(|row| row.id == twin_id) {
+                    if !row.native_ids.iter().any(|id| id == &conv.native_id) {
+                        row.native_ids.push(conv.native_id.clone());
+                    }
+                }
+                skipped += 1;
+                crate::debug_log::append(
+                    "external",
+                    "info",
+                    &twin_id,
+                    &format!("skip CLI clone ({kind:?}) {}", conv.native_id),
+                    None,
+                );
+                continue;
+            }
+        }
+
         let storage = state
             .storage
             .lock()
@@ -668,9 +786,13 @@ pub async fn refresh_external_sessions(
             &conv.title,
             conv.started_at.as_deref(),
             conv.last_active_at.as_deref(),
+            Some(conv.native_id.as_str()),
             events,
         ) {
-            Ok(("added", _)) => added += 1,
+            Ok(("added", session)) => {
+                added += 1;
+                index.push(crate::parsers::dedup::row_from_session(&session, false));
+            }
             Ok(("updated", _)) => updated += 1,
             Ok(_) => skipped += 1,
             Err(e) => {
@@ -701,7 +823,7 @@ pub async fn refresh_external_sessions(
         "info",
         "",
         &format!(
-            "refresh {project_id}: added={added} updated={updated} skipped={skipped} failed={failed}"
+            "refresh {project_id}: added={added} updated={updated} skipped={skipped} failed={failed} removed={removed}"
         ),
         None,
     );
@@ -711,6 +833,8 @@ pub async fn refresh_external_sessions(
         updated,
         skipped,
         failed,
+        removed,
+        redirected,
         sessions,
     })
 }
@@ -1747,6 +1871,17 @@ pub async fn start_acp_session(
                     .lock()
                     .map_err(|_| "Storage lock poisoned".to_string())?;
                 storage.update_session_status(&session_id, "running")?;
+                if let Some(native) = state.acp.agent_session_id(&session_id) {
+                    if let Err(error) = storage.remember_native_session_id(&session_id, &native) {
+                        crate::debug_log::append(
+                            "acp",
+                            "warn",
+                            &session_id,
+                            "remember native session id failed",
+                            Some(&error),
+                        );
+                    }
+                }
             }
             crate::debug_log::append(
                 "acp",

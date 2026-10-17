@@ -275,12 +275,22 @@ export type ExternalRefreshResult = {
   updated: number;
   skipped: number;
   failed: number;
+  removed: number;
+  redirected: { from: string; to: string }[];
   sessions: Session[];
 };
 
 export async function refreshExternalSessions(projectId: string): Promise<ExternalRefreshResult> {
   if (!isTauriRuntime()) {
-    return { added: 0, updated: 0, skipped: 0, failed: 0, sessions: [] };
+    return {
+      added: 0,
+      updated: 0,
+      skipped: 0,
+      failed: 0,
+      removed: 0,
+      redirected: [],
+      sessions: [],
+    };
   }
   return invoke<ExternalRefreshResult>("refresh_external_sessions", { projectId });
 }

@@ -1046,6 +1046,12 @@ impl AcpService {
             .unwrap_or(false)
     }
 
+    pub fn agent_session_id(&self, session_id: &str) -> Option<String> {
+        let sessions = self.sessions.lock().ok()?;
+        let process = sessions.get(session_id)?;
+        process.agent_session_id.lock().ok().and_then(|guard| guard.clone())
+    }
+
     pub fn get_capabilities(&self, session_id: &str) -> Option<CapabilitySnapshot> {
         self.capabilities
             .lock()
