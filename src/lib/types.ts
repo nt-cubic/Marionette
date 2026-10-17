@@ -120,8 +120,10 @@ export type Session = {
   preferredAlwaysApprove?: boolean | null;
   /** Present on @-delegate child sessions; omitted from list_sessions. */
   parentSessionId?: string | null;
-  /** `"user"` | `"delegate"` — optional for legacy rows. */
+  /** `"user"` | `"delegate"` | `"import"` — optional for legacy rows. */
   origin?: string | null;
+  /** ACP session ids this dialog has used; refresh uses them to skip clones. */
+  nativeSessionIds?: string[];
   /**
    * Pinned dialogs sort above the rest of their project's list. Holds the pin
    * timestamp so the pinned group keeps a stable order of its own; null/absent

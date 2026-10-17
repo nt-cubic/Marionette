@@ -7,6 +7,7 @@ mod claude;
 mod cline;
 mod codex;
 mod cursor;
+pub(crate) mod dedup;
 mod deepseek;
 mod gemini;
 mod grok;

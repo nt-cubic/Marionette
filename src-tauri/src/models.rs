@@ -50,9 +50,13 @@ pub struct Session {
     /// Parent dialog when this session was created via `@` delegate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
-    /// `"user"` | `"delegate"` — optional for legacy rows.
+    /// `"user"` | `"delegate"` | `"import"` — optional for legacy rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// ACP `sessionId` values this dialog has used. Refresh uses them so a
+    /// conversation opened here is not cloned back in from the agent CLI store.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub native_session_ids: Vec<String>,
     /// Pinned dialogs sort above the rest of their project's list. Holds the pin
     /// timestamp so the pinned group keeps its own stable order; `None` = not
     /// pinned. Never derived from activity — pinning must not move the row in
