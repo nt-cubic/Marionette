@@ -819,6 +819,25 @@ func SetCodexAutoReview(id string) error {
 	return nil
 }
 
+// SetCodexAsyncCompact sets Codex's background compaction
+// (settings.CodexAsyncCompact) and the share of a model's window it starts
+// at, 1–100 or 0 for Codex's own, and has Codex's config written again.
+func SetCodexAsyncCompact(on bool, percent int) error {
+	if percent < 0 || percent > 100 {
+		return fmt.Errorf("Codex compacts in the background past 1 to 100%% of a model's window, not %d%%", percent)
+	}
+	s := settings.Load()
+	if s.CodexAsyncCompact == on && s.CodexAsyncCompactPercent == percent {
+		return nil
+	}
+	s.CodexAsyncCompact, s.CodexAsyncCompactPercent = on, percent
+	if err := settings.Save(s); err != nil {
+		return err
+	}
+	catalog.Touched()
+	return nil
+}
+
 // SetFullContext turns settings.FullContext on or off: Codex and Claude
 // Code are told a model's whole window, or the working one, again.
 func SetFullContext(on bool) error {

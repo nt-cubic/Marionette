@@ -1161,7 +1161,8 @@ func codexHeader(k string) bool {
 // makes on a hidden thread of its own goes without x-openai-subagent: its
 // x-codex-turn-metadata names the thread's source instead — "thread_title"
 // for the title of a new chat (#314), "guardian_review". A web search
-// magpie runs for a model that can't search is "web_search".
+// magpie runs for a model that can't search is "web_search". DSH marks its
+// compaction with x-deepseek-harness-compact: "compact" too.
 func callKind(h http.Header) string {
 	v := strings.TrimSpace(h.Get("x-openai-subagent"))
 	if v == "" && h.Get("x-openai-memgen-request") != "" {
@@ -1169,6 +1170,9 @@ func callKind(h http.Header) string {
 	}
 	if v == "" {
 		v = threadSource(h.Get("x-codex-turn-metadata"))
+	}
+	if v == "" && dshCompacts(h) {
+		v = "compact" // DSH's compaction of its context
 	}
 	if v == "" && h.Get("User-Agent") == SearchAgent {
 		v = "web_search"

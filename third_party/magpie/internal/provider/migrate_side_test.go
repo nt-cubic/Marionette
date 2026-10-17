@@ -13,10 +13,10 @@ import (
 	"github.com/yetone/magpie/internal/update"
 )
 
-// moveAndBack does what Move and MoveBack do with a mover's accounts, but
-// for the plugin in between: the accounts go out, the built-in's saved ones
-// go aside, extra (sign-ins made through the plugin since) join them, and
-// every one comes back. It gives the accounts that went out and the saved
+// moveAndBack does what Move, and putBack after a failed one, do with a
+// mover's accounts, but for the plugin in between: the accounts go out,
+// the built-in's saved ones go aside, extra (sign-ins made through the
+// plugin since) join them, and every one comes back. It gives the accounts that went out and the saved
 // accounts before and after.
 func moveAndBack(t *testing.T, id string, extra ...map[string]any) (out []Moving, before, after []savedLogin) {
 	t.Helper()
@@ -263,41 +263,5 @@ func TestMoveCursor(t *testing.T) {
 	cursorSignedOut = func() bool { return true }
 	if out, _ := movers["cursor"].out(); len(out) != 0 {
 		t.Fatalf("signed out: %+v", out)
-	}
-}
-
-// The Cursor plugin lists Cursor's picker, a model once per context size,
-// and runs the ids the built-in listed as the variants they stood for: a
-// move doesn't fail on those (#1656). The list is what the plugin's 0.2.7
-// lists for its own test picker (context.test.mjs PICKER); each id said
-// served here is one that plugin's request() resolves to a variant of
-// Cursor's (grok-4.7-fast to grok-4.7-high-fast, cursor-grok-4.6 to
-// cursor-grok-4.6-high), run against it.
-func TestCursorMoverServesBuiltinIDs(t *testing.T) {
-	listed := []string{"claude-opus-5-5@300k", "claude-opus-5-5@1m", "claude-haiku-5-5@300k", "claude-haiku-5-5@1m", "grok-4.7@256k", "grok-4.7@500k", "grok-4.6", "composer-2.5", "auto", "max-only"}
-	served := movers["cursor"].served
-	if served == nil {
-		t.Fatal("the Cursor mover has no served hook")
-	}
-	for _, id := range []string{
-		"grok-4.7", "grok-4.7-fast", "grok-4.7-low", "grok-4.7-high-fast", // a family, fast, a stale effort
-		"claude-opus-5-5", "claude-opus-5-5-fast", "claude-opus-5-5-high",
-		"claude-haiku-5-5-thinking", "claude-haiku-5-5-thinking-low",
-		"cursor-grok-4.6", "cursor-grok-4.6-high", // Cursor's own prefix the picker's name hasn't
-		"composer-2.5-fast", "default", "auto", "max-only",
-	} {
-		if !served(id, listed) {
-			t.Errorf("%s: not served, though the plugin runs it", id)
-		}
-	}
-	// a family the picker hasn't got is still refused
-	for _, id := range []string{"claude-fable-5-thinking-no-zdr", "codex-5.3-fast", "grok-4.5", "gpt-5.5-high", "claude-opus-5", "fast", "-fast"} {
-		if served(id, listed) {
-			t.Errorf("%s: served, though the plugin lists nothing of it", id)
-		}
-	}
-	// Auto only when the plugin lists it
-	if served("default", []string{"grok-4.7@256k"}) {
-		t.Error("default served by a list without Auto")
 	}
 }

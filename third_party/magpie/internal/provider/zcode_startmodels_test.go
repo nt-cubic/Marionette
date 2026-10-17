@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"context"
 	"encoding/json"
 	"slices"
 	"testing"
@@ -25,7 +24,7 @@ func zcodeIDs(ms []catalog.Model) []string {
 // last (the Coding Plan's) after that, so GLM-5.3 was listed and could be
 // ticked, though neither ZCode nor the built-in serves it there. Now such an
 // account neither lists nor exposes it, picked or not; a Coding Plan one
-// still does. And the move doesn't count it as one the plugin drops.
+// still does.
 func TestZCodeStartPlanHasNoGLM53(t *testing.T) {
 	signIn(t)
 	old := zcodeBuiltinFiles
@@ -64,12 +63,6 @@ func TestZCodeStartPlanHasNoGLM53(t *testing.T) {
 		t.Fatalf("a Start Plan account under the Coding Plan's list exposes %v", zcodeIDs(ms))
 	}
 
-	// the move: GLM-5.3 the built-in didn't serve on it, GLM-5.2 it did
-	a := Moving{User: "trial@x", Plan: "Start Plan"}
-	if b := movers["zcode"].builtin; b(context.Background(), a, "GLM-5.3") || !b(context.Background(), a, "GLM-5.2") {
-		t.Fatal("the move counts GLM-5.3 as served on a Start Plan account")
-	}
-
 	// a Coding Plan account still has it
 	coding := zcodeKey{Key: "plan.key", Base: ZCodeZaiBase, JWT: jwt}
 	saveLogins(t, savedLogin{Agent: "zcode", User: "pro@x", Plan: "GLM Coding Pro", First: true, On: true, Auth: json.RawMessage(jsonText(coding))})
@@ -77,8 +70,5 @@ func TestZCodeStartPlanHasNoGLM53(t *testing.T) {
 	p.Models = []string{"GLM-5.3"}
 	if !has53(p.Available()) || !has53(p.Exposed()) {
 		t.Fatalf("a Coding Plan account lists %v", zcodeIDs(p.Available()))
-	}
-	if !movers["zcode"].builtin(context.Background(), Moving{User: "pro@x", Plan: "GLM Coding Pro"}, "GLM-5.3") {
-		t.Fatal("the move counts GLM-5.3 as not served on a Coding Plan account")
 	}
 }

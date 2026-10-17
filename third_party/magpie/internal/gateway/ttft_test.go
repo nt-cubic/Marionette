@@ -14,11 +14,16 @@ import (
 )
 
 // paced is a vendor that streams its events a gap apart, the first at
-// once, or fails with a status after the gap.
+// once, or fails with a status after the gap. With heard, the gap before
+// each event marked after the first one starts only once the agent has
+// been sent the one before it (heard(0) for the first, and so on): a
+// gateway slow to read on a loaded machine otherwise reads two of them at
+// once and times them as one (#2575).
 type paced struct {
 	events []string
 	gap    time.Duration
 	fail   int
+	heard  func(i int)
 }
 
 func (p *paced) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -32,8 +37,13 @@ func (p *paced) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	f := w.(http.Flusher)
+	marked := 0
 	for i, ev := range p.events {
 		if strings.HasPrefix(ev, "~") { // a gap before it, but the first's
+			if p.heard != nil && marked > 0 {
+				p.heard(marked - 1)
+			}
+			marked++
 			if i > 0 {
 				time.Sleep(p.gap)
 			}
@@ -85,10 +95,68 @@ func lastUsage(t *testing.T) usage.Record {
 	return recs[len(recs)-1]
 }
 
+// hearing is an agent that tells when what it has been sent holds each
+// of words.
+type hearing struct {
+	*httptest.ResponseRecorder
+	words []string
+	got   []chan struct{}
+	told  []bool
+	late  time.Duration // how long its first write is held up
+	wrote bool
+}
+
+func newHearing(late time.Duration, words ...string) *hearing {
+	h := &hearing{ResponseRecorder: httptest.NewRecorder(), words: words, told: make([]bool, len(words)), late: late}
+	for range words {
+		h.got = append(h.got, make(chan struct{}))
+	}
+	return h
+}
+
+func (h *hearing) Write(b []byte) (int, error) {
+	if !h.wrote {
+		h.wrote = true
+		time.Sleep(h.late)
+	}
+	n, err := h.ResponseRecorder.Write(b)
+	for i, w := range h.words {
+		if !h.told[i] && strings.Contains(h.Body.String(), w) {
+			h.told[i] = true
+			close(h.got[i])
+		}
+	}
+	return n, err
+}
+
+func (h *hearing) WriteString(s string) (int, error) { return h.Write([]byte(s)) }
+
+// heard waits until the agent has been sent words[i], or gives up after a
+// while, so a stream that never sends it fails the test, not hangs it.
+func (h *hearing) heard(i int) {
+	select {
+	case <-h.got[i]:
+	case <-time.After(10 * time.Second):
+	}
+}
+
 // A streamed reply's first content (reasoning here) and first text are
 // timed from the request, whatever the vendor speaks and the agent asked
-// in, and kept in the usage, the request's route and its try.
+// in, and kept in the usage, the request's route and its try. Each comes
+// a gap after the agent was sent the one before it, so the times hold on
+// a loaded machine too (#2575): "late" holds the gateway's first write up
+// three gaps, as a busy scheduler did, while the vendor's events come in.
 func TestUsageKeepsTimeToFirstToken(t *testing.T) {
+	for _, late := range []time.Duration{0, 3 * pacedGap} {
+		name := "on time"
+		if late > 0 {
+			name = "late"
+		}
+		t.Run(name, func(t *testing.T) { usageKeepsTimeToFirstToken(t, late) })
+	}
+}
+
+func usageKeepsTimeToFirstToken(t *testing.T, late time.Duration) {
 	gap := pacedGap.Milliseconds()
 	for _, c := range []struct {
 		name   string
@@ -107,7 +175,9 @@ func TestUsageKeepsTimeToFirstToken(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			fresh(t)
-			up := httptest.NewServer(&paced{events: c.events, gap: pacedGap})
+			// the reasoning's and the text's words, as every format writes them
+			rec := newHearing(late, "hmm", `"hi"`)
+			up := httptest.NewServer(&paced{events: c.events, gap: pacedGap, heard: rec.heard})
 			t.Cleanup(up.Close)
 			p := provider.Provider{ID: "fake", Name: "Fake", Key: "k", Models: []string{"m1"}}
 			switch c.proto {
@@ -122,7 +192,6 @@ func TestUsageKeepsTimeToFirstToken(t *testing.T) {
 				t.Fatal(err)
 			}
 			s := New()
-			rec := httptest.NewRecorder()
 			s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", c.path, strings.NewReader(c.body)))
 			if rec.Code != 200 || !strings.Contains(rec.Body.String(), "hi") {
 				t.Fatalf("%d %s", rec.Code, rec.Body)

@@ -21,8 +21,8 @@ func TestMoveOutlivesRequest(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
 	t.Setenv("PATH", t.TempDir())
-	oldMove, oldBack, oldAdopt := moveProvider, moveBackProvider, adoptProvider
-	t.Cleanup(func() { moveProvider, moveBackProvider, adoptProvider = oldMove, oldBack, oldAdopt })
+	oldMove, oldAdopt := moveProvider, adoptProvider
+	t.Cleanup(func() { moveProvider, adoptProvider = oldMove, oldAdopt })
 	var got []string
 	check := func(ctx context.Context, id string) error {
 		_, deadline := ctx.Deadline()
@@ -33,16 +33,16 @@ func TestMoveOutlivesRequest(t *testing.T) {
 		}
 		return nil
 	}
-	moveProvider, moveBackProvider, adoptProvider = check, check, check
+	moveProvider, adoptProvider = check, check
 	mux := http.NewServeMux()
 	providerRoutes(mux, nil)
-	for _, action := range []string{"move", "moveback", "adopt"} {
+	for _, action := range []string{"move", "adopt"} {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // the page went away
 		r := httptest.NewRequest("POST", "/api/provider/"+action, strings.NewReader(`{"id":"zed"}`)).WithContext(ctx)
 		mux.ServeHTTP(httptest.NewRecorder(), r)
 	}
-	if strings.Join(got, ",") != "zed: going,zed: going,zed: going" {
+	if strings.Join(got, ",") != "zed: going,zed: going" {
 		t.Fatalf("%v", got)
 	}
 }
@@ -84,5 +84,26 @@ func TestMoveTakesEditorPicks(t *testing.T) {
 	}
 	if fmt.Sprint(seen) != "[[auto deep-model] [auto] [auto]]" {
 		t.Fatalf("the move saw the picks %v", seen)
+	}
+}
+
+// The built-ins are retired: a move back is refused, and nothing is moved.
+func TestMoveBackRefused(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	t.Setenv("PATH", t.TempDir())
+	oldMove, oldAdopt := moveProvider, adoptProvider
+	t.Cleanup(func() { moveProvider, adoptProvider = oldMove, oldAdopt })
+	moved := false
+	moveProvider = func(context.Context, string) error { moved = true; return nil }
+	adoptProvider = moveProvider
+	mux := http.NewServeMux()
+	providerRoutes(mux, nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("POST", "/api/provider/moveback", strings.NewReader(`{"id":"zed"}`)))
+	if rec.Code < 400 || !strings.Contains(rec.Body.String(), "retired") || moved {
+		t.Fatalf("%d %s moved=%v", rec.Code, rec.Body.String(), moved)
 	}
 }

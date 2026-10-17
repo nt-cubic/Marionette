@@ -77,6 +77,9 @@ var Vars = []string{
 	"REASONIX_HOME",
 	// Reasonix's state folder, where it reads REASONIX.md
 	"REASONIX_STATE_HOME",
+	// the skills CLI's lock ($XDG_STATE_HOME/skills/.skill-lock.json), which
+	// the Library groups skills by; the desktop app has it from the login shell
+	"XDG_STATE_HOME",
 	// PI-Desktop's data folder, where Sessions reads its chat titles
 	"PI_DESKTOP_DATA_DIR",
 	// Mister Morph's config file

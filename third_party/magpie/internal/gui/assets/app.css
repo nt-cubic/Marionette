@@ -1337,7 +1337,7 @@ body.window .field.solo { grid-column: auto; }
 .led.tight .led-dl .lc-opt { display: block; }
 .led.tight .model, .led.tight .where { max-width: 160px; }
 .led.tight th, .led.tight td { padding-left: 6px; padding-right: 6px; }
-.led.tighter .price-reference { display: none; }
+.led.tighter .price-reference, .led.tight2 .lc-opt2 { display: none; }
 /* the account's name is cut at 110px, but its column keeps room for the
    source badges under it, which don't wrap: capped at 110px the cell cut
    off the second English one ("Subscription") */

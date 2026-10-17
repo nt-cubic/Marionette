@@ -386,12 +386,18 @@ func codexIn(at place) *Agent {
 		return dropSubEffort()
 	}
 	// magpie as a provider Codex can name; its threads started on magpie do
+	// Codex's background compaction, as Settings has it (#2490): written
+	// where Codex is routed through magpie, taken back where it isn't
+	asyncCompaction := func(routed bool) error {
+		s := settings.Load()
+		return codexAsyncSync(path, at.key("codex.async"), routed, s.CodexAsyncCompact, s.CodexAsyncCompactPercent)
+	}
 	putProvider := func() error {
-		return edit.SetTOMLTable(path, "model_providers."+magpieID,
-			edit.KV{Path: "name", Value: "magpie"},
-			edit.KV{Path: "base_url", Value: at.v1()},
-			edit.KV{Path: "wire_api", Value: "responses"},
-			edit.KV{Path: "experimental_bearer_token", Value: at.gwKey()},
+		kvs := []edit.KV{
+			{Path: "name", Value: "magpie"},
+			{Path: "base_url", Value: at.v1()},
+			{Path: "wire_api", Value: "responses"},
+			{Path: "experimental_bearer_token", Value: at.gwKey()},
 			// Codex offers its built-in image tool (image_gen.imagegen) and
 			// the other OpenAI-provider tools only to a provider it reads as
 			// the OpenAI actor: one that does not require OpenAI auth but
@@ -404,8 +410,17 @@ func codexIn(at place) *Agent {
 			// gets the header set there, the user's others kept; written
 			// inline beside that table it defined http_headers twice and
 			// every model switch failed (wztlink1013 on Discord).
-			edit.KV{Path: "http_headers", Value: edit.Inline{{Path: "x-openai-actor-authorization", Value: "magpie"}}},
-		)
+			{Path: "http_headers", Value: edit.Inline{{Path: "x-openai-actor-authorization", Value: "magpie"}}},
+		}
+		// the table's capabilities, the user's or the background
+		// compaction's, aren't lost as it is written again
+		if caps := codexProviderCaps(path); caps != nil {
+			kvs = append(kvs, edit.KV{Path: "capabilities", Value: caps})
+		}
+		if err := edit.SetTOMLTable(path, "model_providers."+magpieID, kvs...); err != nil {
+			return err
+		}
+		return asyncCompaction(true)
 	}
 	hasProvider := func() bool {
 		t, err := edit.GetTOMLTable(path, "model_providers."+magpieID)
@@ -1143,6 +1158,9 @@ func codexIn(at place) *Agent {
 		},
 		OwnVia: codexOwnViaMagpie,
 		Sync: func() error {
+			if err := asyncCompaction(routed()); err != nil {
+				return err
+			}
 			// model_provider = "magpie" left with its table gone (taken by
 			// another tool, or a hand edit), which keeps Codex from loading
 			// its config at all, connected to magpie or not (Tystem on

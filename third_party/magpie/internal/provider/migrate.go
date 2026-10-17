@@ -10,12 +10,14 @@ package provider
 //  2. each account's sign-in is kept as the plugin keeps one, in the order
 //     and on or off as the user had it;
 //  3. each is tried as a request would try it (the plugin's loader and its
-//     model list for that account), and every model the built-in has in use
-//     must be one the plugin serves;
-//  4. only then does the id change hands: the built-in's saved accounts go
-//     out of logins.json into migrations.json, kept for going back.
+//     model list for that account): one the vendor refuses is marked, and
+//     one that fails otherwise goes along untried, since the built-in is
+//     retired and the plugin is where the account is fixed now;
+//  4. the id changes hands: the built-in's saved accounts go out of
+//     logins.json into migrations.json, kept for going back.
 //
-// Anything short of that puts everything back as it was — the plugin's
+// A failure on the way (the install, the plugin not serving the id, a
+// sign-in it won't import) puts everything back as it was — the plugin's
 // newer tokens included, since a refresh token used once is spent — and
 // the built-in carries on. MoveBack undoes a move the same way.
 
@@ -51,13 +53,18 @@ import (
 const (
 	MoveMoving = "moving" // under way, or cut short (put back at the next try)
 	MovePlugin = "plugin" // the plugin has the id
-	MovedBack  = "back"   // the user moved it back: it stays built-in
+	MovedBack  = "back"   // moved back to the built-in by an older magpie: moved again by itself
 	MoveFailed = "failed" // the last try failed: the built-in carries on
+	// MoveRemoved is a moved one whose plugin the user removed: its
+	// accounts stay with the plugin's sign-ins, and the plugin installed
+	// again has it at once (HandOver). Nothing installs it by itself.
+	MoveRemoved = "removed"
 )
 
-// Retiring are the built-ins magpie moves onto their plugins by itself,
-// at start-up; the rest move only when the user asks.
-var Retiring = []string{}
+// retiring are the built-ins magpie moves onto their plugins by itself:
+// every one with a mover, since each built-in is being retired (the owner,
+// 10-16: 陆续把内置Provider下线掉). A tests' list stands in for it.
+var retiring = MovableIDs
 
 // moveRetry is how long a failed move waits before it is tried again.
 const moveRetry = 6 * time.Hour
@@ -74,8 +81,8 @@ type Migration struct {
 	Backup []savedLogin `json:"backup,omitempty"`
 	// Kept is what else of the built-in's the move set aside (Kiro's key).
 	Kept json.RawMessage `json:"kept,omitempty"`
-	// Installed is whether the move installed the plugin: going back takes
-	// it away again when it serves nothing else.
+	// Installed is whether the move installed the plugin: a failed move
+	// takes it away again.
 	Installed bool `json:"installed,omitempty"`
 	// Host is the built-in's API host, which the plugin's provider shows.
 	Host string `json:"host,omitempty"`
@@ -89,10 +96,10 @@ type Migration struct {
 //
 //	offline   magpie couldn't reach npm (or Bun's download) to install the plugin
 //	install   npm couldn't install it: line
-//	lapsed    every account of name needs signing in again
-//	unserved  the plugin doesn't serve models (their names) for user (with
-//	          its plan), though the built-in does
-//	account   user doesn't work through the plugin: error
+//
+// An older magpie also failed a move for an account (lapsed, unserved,
+// account), which the page still reads from migrations.json; since the
+// built-ins are retired every account goes along.
 type MoveWhy struct {
 	Code string            `json:"code"`
 	Args map[string]string `json:"args,omitempty"`
@@ -223,14 +230,6 @@ type mover struct {
 	// what else of the built-in's they carry (a key onto its provider),
 	// whose saving syncs the agents, which read the accounts.
 	settle func(auths map[string]map[string]any) error
-	// served is whether the plugin, listing listed, still serves model, one
-	// of the built-in's picks it doesn't list; nil for none.
-	served func(model string, listed []string) bool
-	// builtin is whether the built-in served model on account a, by the
-	// plan a is on; nil for every model on every account. One it didn't
-	// (a ZCode Start Plan account's GLM-5.3) is no loss when the plugin
-	// doesn't list it either.
-	builtin func(ctx context.Context, a Moving, model string) bool
 }
 
 // movers are the deprecated built-ins and their plugins, by id. Once one
@@ -475,22 +474,9 @@ var (
 	// so a test can read what it is handed
 	addPlugin     = plugin.Add
 	upgradePlugin = plugin.Upgrade
+	// importAuth keeps a built-in's sign-in as one of the plugin's
+	importAuth = plugin.Import
 )
-
-// modelsInUse are the models the built-in id serves now: the ones agents,
-// picks and routing can name.
-var modelsInUse = func(id string) []string {
-	for _, p := range All() {
-		if p.ID == id && !p.IsPlugin() {
-			var out []string
-			for _, m := range p.Exposed() {
-				out = append(out, m.ID)
-			}
-			return out
-		}
-	}
-	return nil
-}
 
 // Move puts the built-in id's accounts onto its plugin (see above). An
 // error leaves the built-in as it was.
@@ -527,7 +513,8 @@ func Move(ctx context.Context, id string) error {
 
 // Adopt puts the built-in id onto its plugin before any account of it is
 // signed in: the plugin installed, and the subscription signs in through
-// it from now on, as a moved one does. One with accounts is moved instead.
+// it from now on, as a moved one does. One with accounts is moved instead,
+// and one whose plugin the user removed is the plugin's again.
 func Adopt(ctx context.Context, id string) error {
 	if settings.AccountDiscoveryOff() {
 		return errAccountDiscoveryOff
@@ -559,7 +546,14 @@ func Adopt(ctx context.Context, id string) error {
 	}
 	if err == nil {
 		err = setMigration(id, func(m *Migration) {
-			*m = Migration{State: MovePlugin, Package: mv.pkg, At: time.Now().UTC().Truncate(time.Second), Installed: !had}
+			at := time.Now().UTC().Truncate(time.Second)
+			// one whose plugin the user removed: its accounts are with
+			// the plugin's sign-ins still, and the record says which
+			if m.State == MoveRemoved {
+				m.State, m.At, m.Installed = MovePlugin, at, !had
+				return
+			}
+			*m = Migration{State: MovePlugin, Package: mv.pkg, At: at, Installed: !had}
 		})
 	}
 	if err != nil && !had {
@@ -571,7 +565,6 @@ func Adopt(ctx context.Context, id string) error {
 }
 
 func move(ctx context.Context, id string, mv *mover) (err error) {
-	inUse := modelsInUse(id)
 	var host string
 	if p, err := Find(id); err == nil && !p.IsPlugin() {
 		host = p.Host()
@@ -582,11 +575,6 @@ func move(ctx context.Context, id string, mv *mover) (err error) {
 	}
 	if len(accts) == 0 {
 		return fmt.Errorf("no %s account to move", id)
-	}
-	// every account lapsed: nothing to try the plugin with, so nothing is
-	// installed for it
-	if !slices.ContainsFunc(accts, func(a Moving) bool { return !a.Lapsed }) {
-		return lapsedAll(id)
 	}
 	had := pluginListed(mv.pkg)
 	if err := installPlugin(ctx, mv.pkg, mv.min); err != nil {
@@ -631,7 +619,7 @@ func move(ctx context.Context, id string, mv *mover) (err error) {
 	}()
 	var moved []movedAccount
 	for _, a := range accts {
-		key, err := plugin.Import(ctx, id, a.Auth)
+		key, err := importAuth(ctx, id, a.Auth)
 		if err != nil {
 			return fmt.Errorf("%s: %w", a.User, err)
 		}
@@ -644,52 +632,25 @@ func move(ctx context.Context, id string, mv *mover) (err error) {
 	if err := keepOrder(pp, accts, moved); err != nil {
 		return err
 	}
-	tried := false
+	// the built-in is retired, so every account goes: one the vendor
+	// refuses is marked, as the built-in marked it; one that is lapsed,
+	// or that the plugin couldn't prove (its vendor unreachable, its sign-in
+	// gone in words), goes untried and unmarked, and the plugin's own reads
+	// judge it from now on. No model the built-in served holds it back.
 	for i, a := range accts {
 		if a.Lapsed {
 			continue
 		}
 		// through the account's proxy, as its requests go
 		c, err := plugin.Check(ViaLogin(ctx, id, a.User), id, moved[i].Key)
-		if err == nil && (c.Refused != "" || refused(c.Usage)) {
-			// the vendor turned the sign-in away: marked, as the built-in
-			// marked it, and along untried, as a lapsed one goes
+		switch {
+		case err == nil && (c.Refused != "" || refused(c.Usage)):
 			notePluginLapse(pp, moved[i].Key, http.StatusUnauthorized)
-			continue
+		case err != nil:
+			log.Printf("moving %s's %s to its plugin untried: %s", id, a.User, err)
 		}
-		if err != nil && signInGone.MatchString(err.Error()) {
-			// the plugin says in words the sign-in is gone (Grok's past
-			// its time): it moves along untried, as a lapsed one does, and
-			// unmarked, as the plugin's own reads leave its accounts
-			continue
-		}
-		if err != nil {
-			return &moveError{MoveWhy{Code: "account", Args: map[string]string{"user": a.User, "error": err.Error()}}, fmt.Sprintf("%s doesn't work through the plugin: %s", a.User, err), err}
-		}
-		if !tried {
-			if missing := slices.DeleteFunc(slices.Clone(inUse), func(m string) bool {
-				return slices.Contains(c.Models, m) || mv.served != nil && mv.served(m, c.Models) ||
-					mv.builtin != nil && !mv.builtin(ctx, a, m)
-			}); len(missing) > 0 {
-				names := strings.Join(modelNames(id, missing), ", ")
-				who := a.User
-				if a.Plan != "" {
-					who += " (" + a.Plan + ")"
-				}
-				return &moveError{MoveWhy{Code: "unserved", Args: map[string]string{"models": names, "user": who}}, fmt.Sprintf("the plugin doesn't serve %s for %s, though the built-in does. Untick them under Models, or keep the built-in.", names, who), nil}
-			}
-			tried = true
-		}
-	}
-	if !tried {
-		return lapsedAll(id)
 	}
 	return commitMove(id, mv, moved, installed, host)
-}
-
-func lapsedAll(id string) error {
-	name := nameOf(id)
-	return &moveError{MoveWhy{Code: "lapsed", Args: map[string]string{"name": name}}, fmt.Sprintf("every %s account needs signing in again. Sign one in, then move.", name), nil}
 }
 
 // refused is a check's usage read saying the vendor turned the account's
@@ -697,28 +658,6 @@ func lapsedAll(id string) error {
 // back to a list it keeps, but the read asks the vendor of the account.
 func refused(u *plugin.Usage) bool {
 	return u != nil && (u.SignIn == "expired" || u.SignIn == "" && signInGone.MatchString(u.Error))
-}
-
-// modelNames are the ids' names, as the built-in id lists them.
-func modelNames(id string, ids []string) []string {
-	names := map[string]string{}
-	for _, p := range All() {
-		if p.ID == id && !p.IsPlugin() {
-			for _, m := range p.Available() {
-				names[m.ID] = m.Name
-			}
-		}
-	}
-	var out []string
-	for _, m := range ids {
-		if names[m] != "" {
-			m = names[m]
-		}
-		if !slices.Contains(out, m) {
-			out = append(out, m)
-		}
-	}
-	return out
 }
 
 // pluginListed is whether the package is in the plugin list already.
@@ -962,197 +901,22 @@ func handBack(ctx context.Context, id string, mv *mover, accts []movedAccount, k
 	return users, nil, nil
 }
 
-// MoveBack gives the id back to the built-in: its accounts as they were
-// set aside, with what the plugin has of them now (newer tokens, accounts
-// signed in to since), in the plugin's order; then the plugin signs out.
-func MoveBack(ctx context.Context, id string) error {
-	return moveBack(ctx, id, true)
-}
-
-// moveBack is MoveBack; tidy takes away a plugin the move installed that
-// serves nothing else now, which releasePlugin, about to remove or turn
-// off the plugin itself, leaves to its caller.
-func moveBack(ctx context.Context, id string, tidy bool) error {
-	if settings.AccountDiscoveryOff() {
-		return errAccountDiscoveryOff
-	}
-	mv := movers[id]
-	if mv == nil {
-		return fmt.Errorf("%s isn't a built-in subscription", id)
-	}
-	unlock, err := lockMoves()
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	m, ok := MigrationOf(id)
-	if !ok || m.State != MovePlugin {
-		return nil
-	}
-	var order []plugin.Account
-	if pp, ok := pluginOfAgent("plugin:" + id); ok {
-		for _, l := range pluginLogins(pp) {
-			order = append(order, l.acct)
-		}
-	}
-	keys := slices.Collect(maps.Keys(plugin.Auths(id)))
-	sort.SliceStable(keys, func(i, j int) bool {
-		if a, b := indexOfKey(order, keys[i]), indexOfKey(order, keys[j]); a != b {
-			return a < b
-		}
-		return keys[i] < keys[j]
-	})
-	onOf := pluginOn(id)
-	// the backup first, for back to write into the accounts it came from
-	prep := func(ls []savedLogin, _ map[string]string) []savedLogin {
-		for _, b := range m.Backup {
-			// the agent's own sign-in is one row: one written while moved
-			// (the agent signed in to another account meanwhile) gives
-			// way to the one set aside, which takes the agent's user anew
-			if b.own() {
-				ls = slices.DeleteFunc(ls, func(l savedLogin) bool { return l.Agent == b.Agent && l.own() && !sameMoved(l, b) })
-			}
-			if !slices.ContainsFunc(ls, func(l savedLogin) bool { return sameMoved(l, b) }) {
-				ls = append(ls, b)
-			}
-		}
-		return ls
-	}
-	arrange := func(ls []savedLogin, users map[string]string) []savedLogin {
-		// an account the vendor refused through the plugin goes back
-		// marked, as the built-in had marked it: back writes the plugin's
-		// sign-in as one just made, but the plugin's mark is the newer word
-		lapsed := map[string]string{}
-		for _, l := range ls {
-			if u := users[l.Home]; l.Agent == "plugin:"+id && u != "" && l.Lapsed != "" {
-				lapsed[strings.ToLower(u)] = l.Lapsed
-			}
-		}
-		// the plugin's rows of the accounts going back go with them, or
-		// the accounts page lists each twice, the plugin's copy empty
-		ls = slices.DeleteFunc(ls, func(l savedLogin) bool {
-			_, back := users[l.Home]
-			return l.Agent == "plugin:"+id && (back || len(keys) == 0)
-		})
-		firstUser := ""
-		for i, k := range keys {
-			user := users[k]
-			if user == "" {
-				continue
-			}
-			if firstUser == "" && i == 0 {
-				firstUser = user
-			}
-			for j := range ls {
-				if slices.Contains(mv.agents, ls[j].Agent) && strings.EqualFold(ls[j].User, user) {
-					if on, ok := onOf[k]; ok {
-						ls[j].On = on
-					}
-				}
-			}
-		}
-		for j := range ls {
-			if t := lapsed[strings.ToLower(ls[j].User)]; t != "" && slices.Contains(mv.agents, ls[j].Agent) && !ls[j].own() {
-				ls[j].Lapsed = t
-			}
-		}
-		if firstUser != "" {
-			for j := range ls {
-				if slices.Contains(mv.agents, ls[j].Agent) {
-					ls[j].First = strings.EqualFold(ls[j].User, firstUser) && !ls[j].own()
-				}
-			}
-		}
-		return ls
-	}
-	// the backup goes back even with no account left in the plugin
-	if len(keys) == 0 {
-		loginsMu.Lock()
-		err := writeLogins(arrange(prep(readLogins(), nil), nil))
-		loginsMu.Unlock()
-		if err != nil {
-			return err
-		}
-	} else {
-		_, errs, err := handBack(ctx, id, mv, m.Accounts, keys, nil, prep, arrange)
-		if err != nil {
-			tidyMoved(id)
-			return err
-		}
-		if len(errs) > 0 {
-			// the plugin keeps the id and every account
-			return errors.Join(errs...)
-		}
-	}
-	if mv.give != nil && len(m.Kept) > 0 {
-		if err := mv.give(m.Kept); err != nil {
-			return err
-		}
-	}
-	if err := setMigration(id, func(m *Migration) {
-		*m = Migration{State: MovedBack, Package: mv.pkg, At: time.Now().UTC().Truncate(time.Second)}
-	}); err != nil {
-		return err
-	}
-	if tidy && m.Installed && !servesAnything(mv.pkg) {
-		if err := removePlugin(context.WithoutCancel(ctx), mv.pkg); err != nil {
-			log.Printf("removing %s, installed by %s's move: %s", mv.pkg, id, err)
-		}
-	}
-	return nil
-}
-
-// servesAnything is whether the plugin package has an account signed in
-// to any of its providers, or a built-in moved onto it.
-func servesAnything(pkg string) bool {
-	for _, p := range plugin.Cached() {
-		if plugin.PackageName(p.Spec) == pkg && len(plugin.Auths(p.ID)) > 0 {
-			return true
-		}
-	}
-	for _, id := range OnPlugins() {
-		if m, _ := MigrationOf(id); m.Package == pkg {
-			return true
-		}
-	}
-	return false
-}
-
-func indexOfKey(order []plugin.Account, key string) int {
-	if i := slices.IndexFunc(order, func(a plugin.Account) bool { return a.Key == key }); i >= 0 {
-		return i
-	}
-	return len(order)
-}
-
-// pluginOn is which of the plugin provider id's accounts are on.
-func pluginOn(id string) map[string]bool {
-	out := map[string]bool{}
-	loginsMu.Lock()
-	defer loginsMu.Unlock()
-	for _, l := range readLogins() {
-		if l.Agent == "plugin:"+id {
-			out[l.Home] = l.On || l.First
-		}
-	}
-	return out
-}
-
 // MoveRetiring moves the built-ins being retired that have accounts, at
-// start-up: once, or again moveRetry after one failed. One the user moved
-// back stays.
+// start-up: once, or again moveRetry after one failed. One an older magpie
+// moved back is moved again: there is no way back, as the built-in is
+// going. One whose plugin the user removed waits for them to install it.
 func MoveRetiring(ctx context.Context) map[string]error {
 	if settings.AccountDiscoveryOff() {
 		return nil
 	}
 	out := map[string]error{}
-	for _, id := range Retiring {
+	for _, id := range retiring() {
 		m, ok := MigrationOf(id)
 		switch {
 		case ok && m.State == MovePlugin:
 			tidyMoved(id)
 			continue
-		case ok && m.State == MovedBack:
+		case ok && m.State == MoveRemoved:
 			continue
 		case ok && m.State == MoveFailed && time.Since(m.At) < moveRetry:
 			continue
@@ -1175,8 +939,9 @@ func MoveRetiring(ctx context.Context) map[string]error {
 // back on any failure, the built-in carrying on). One the plugin has
 // accounts of its own for already is left as it is, since its models are
 // in use as <id>-plugin's and the id changing would leave agents asking
-// for a provider gone; the add sheet lists it once regardless. One the
-// user moved back stays built-in, and a failed move waits moveRetry. No
+// for a provider gone; the add sheet lists it once regardless. One moved
+// whose plugin the user removed is the plugin's again once they install it,
+// its accounts still with the plugin, and a failed move waits moveRetry. No
 // plugin is installed for it: the user's own install is what says to.
 func HandOver(ctx context.Context, accounts bool) map[string]error {
 	if settings.AccountDiscoveryOff() {
@@ -1187,7 +952,16 @@ func HandOver(ctx context.Context, accounts bool) map[string]error {
 	asked := false
 	for _, id := range MovableIDs() {
 		mv := movers[id]
-		if m, ok := MigrationOf(id); ok && (m.State != MoveFailed || time.Since(m.At) < moveRetry) {
+		m, ok := MigrationOf(id)
+		if ok && m.State == MoveRemoved {
+			if pluginReady(mv) {
+				out[id] = setMigration(id, func(m *Migration) {
+					m.State, m.At, m.Installed = MovePlugin, time.Now().UTC().Truncate(time.Second), false
+				})
+			}
+			continue
+		}
+		if ok && (m.State != MoveFailed || time.Since(m.At) < moveRetry) {
 			continue
 		}
 		if !pluginReady(mv) {
@@ -1293,30 +1067,26 @@ func MovedOnto(name string) []string {
 	return out
 }
 
-// releasePlugin moves the built-ins on the plugin named back first, so
-// taking the plugin away leaves none of them without its accounts.
-func releasePlugin(ctx context.Context, name string) error {
-	for _, id := range MovedOnto(name) {
-		if err := moveBack(ctx, id, false); err != nil {
-			return fmt.Errorf("moving %s back to the built-in: %w", id, err)
-		}
-	}
-	return nil
-}
-
-// RemovePlugin removes the plugin named, the built-ins moved onto it moved
-// back to themselves first, and sets aside the model picks of its
-// providers it leaves in providers.json (plugin_left.go).
+// RemovePlugin removes the plugin named and sets aside the model picks of
+// its providers it leaves in providers.json (plugin_left.go). A built-in
+// moved onto it isn't moved back, as the built-in is going: it is
+// MoveRemoved, its accounts kept with the plugin's sign-ins for when the
+// plugin is installed again.
 func RemovePlugin(ctx context.Context, name string) error {
-	if err := releasePlugin(ctx, name); err != nil {
-		return err
-	}
 	// what it served is read while it is still on the list
+	moved := MovedOnto(name)
 	spec := installedSpec(name)
 	ids, known := pluginRecordIDs(spec)
 	pkg := plugin.PackageName(spec)
 	if err := plugin.Remove(ctx, name); err != nil {
 		return err
+	}
+	for _, id := range moved {
+		if err := setMigration(id, func(m *Migration) {
+			m.State, m.At = MoveRemoved, time.Now().UTC().Truncate(time.Second)
+		}); err != nil {
+			return fmt.Errorf("%s is removed; %s still reads as on it: %w", name, id, err)
+		}
 	}
 	if spec == "" || !known {
 		return nil
@@ -1327,13 +1097,9 @@ func RemovePlugin(ctx context.Context, name string) error {
 	return nil
 }
 
-// SetPluginOff turns the plugin named off, the built-ins moved onto it
-// moved back to themselves first, or back on.
-func SetPluginOff(ctx context.Context, name string, off bool) error {
-	if off {
-		if err := releasePlugin(ctx, name); err != nil {
-			return err
-		}
-	}
+// SetPluginOff turns the plugin named off, or back on. A built-in moved
+// onto it stays moved, off with it: nothing moves it back, as the built-in
+// is going.
+func SetPluginOff(_ context.Context, name string, off bool) error {
 	return plugin.SetOff(name, off)
 }

@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/yetone/magpie/internal/appdir"
 )
 
 // Where a skill came from, for the page to group it with the others from
@@ -16,7 +18,7 @@ import (
 // github.com/mattpocock/skills together, however each came in). One
 // installed from GitHub says so itself; for the others it is traced:
 // CC Switch's record, the skills CLI's lock (npx skills add, in
-// ~/.agents/.skill-lock.json), the git checkout a linked folder is in,
+// ~/.agents/.skill-lock.json or $XDG_STATE_HOME/skills), the git checkout a linked folder is in,
 // or the repository the user installed from since that has the very same
 // skill (From). It only groups: such a skill is not updated from there,
 // unless the library's own copy is the repository's to the file, which
@@ -63,9 +65,21 @@ type tracer struct {
 }
 
 // lock is the skills CLI's lock: each skill's repository by its name.
+// The CLI keeps it in ~/.agents, or under $XDG_STATE_HOME when that is set
+// (skills 1.7: $XDG_STATE_HOME/skills/.skill-lock.json, the skills still
+// in ~/.agents/skills). Both are read, the XDG one's entries winning: one
+// written before the variable was set names skills the newer doesn't.
 func (tr *tracer) lock() map[string]string {
 	if !tr.read {
 		tr.read, tr.locked = true, readSkillLock(filepath.Join(home(), ".agents", ".skill-lock.json"))
+		if x := appdir.Getenv("XDG_STATE_HOME"); x != "" {
+			for name, r := range readSkillLock(filepath.Join(x, "skills", ".skill-lock.json")) {
+				if tr.locked == nil {
+					tr.locked = map[string]string{}
+				}
+				tr.locked[name] = r
+			}
+		}
 	}
 	return tr.locked
 }

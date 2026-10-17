@@ -28,7 +28,8 @@ const GATEWAY_HIDES = ["agents", "library"];
 // same either way. Whatever is marked data-feature-off="<id>" is the
 // other way round, there only while its feature is off: where a page
 // says what went and turns it back on (bigbenniu on X: with routing
-// groups off, the Routing page had no New group and said nothing of why).
+// groups off, the Routing page offered no new group and said nothing of
+// why).
 let featuresOff = new Set(window.bootPrefs?.featuresOff || []);
 const featureSel = () => [...featuresOff].map((id) => `[data-feature~="${id}"]`).join(",");
 const featureHides = (n) => { const sel = featureSel(); return !!sel && !!n?.closest(sel); };
@@ -12404,10 +12405,12 @@ function renderSigning(sub) {
   // a plugin's browser sign-in whose page can't reach magpie (Docker: the
   // Command Code plugin's Studio posts its key to 127.0.0.1) can be left
   // for the plugin's own API key way, without starting over; one that
-  // takes a pasted key in place already (#2468) needs no second way
+  // takes a pasted key in place already (#2468) needs no second way, and
+  // nor does a moved one whose key import goes to its plugin (Factory,
+  // factory_key.go): two "Use an API key instead" links read as one
   const keyWay = sub.plugin && signing.method != null && !signing.pasteCode && !signing.pasteKey && signing.state === "waiting"
     ? (sub.plugin.methods || []).findIndex((m) => m.type === "api") : -1;
-  if (keyWay >= 0 && keyWay !== signing.method) {
+  if (keyWay >= 0 && keyWay !== signing.method && !(sub.moved && sub.importable)) {
     const acts = tt.querySelector(".acts") || tt.appendChild(el("span", "acts"));
     const k = el("button", "link", t("Use an API key instead"));
     k.title = t("If the page can't reach magpie (it runs on a server or in Docker)");
@@ -14559,7 +14562,8 @@ function moveWhy(m, p) {
 }
 
 // renderMove: which runs the subscription, magpie's built-in or its
-// community plugin, and the move between them. The editor stays open
+// community plugin, and the move onto the plugin; the built-ins are
+// retired, so a moved one has no way back. The editor stays open
 // through it: the button says what it is doing, a failure is said under
 // it, and on success the field turns over where the reader is.
 // moveSaid keeps both through a redraw mid-move (an allowance landing):
@@ -14583,42 +14587,41 @@ function renderMove(p) {
   const going = moveSaid[p.id];
   const failed = going?.why || m.state === "failed" && (m.why || m.error) && t("It stays built-in: {error}", { error: moveWhy(m, p) });
   say(failed || "");
-  const idle = () => onPlugin ? t("Use the built-in again") : failed ? t("Try again") : t("Move to the plugin");
+  const idle = () => failed ? t("Try again") : t("Move to the plugin");
   const b = el("button", "text action", going?.busy || idle()); // a button, not a line of text: it changes what runs the subscription
   b.disabled = b.classList.toggle("busy", !!going?.busy);
   b.onclick = async () => {
     b.classList.add("busy");
     b.disabled = true;
     say("");
-    b.textContent = onPlugin ? t("Moving back…") : t("Installing the plugin and checking each account…");
+    b.textContent = t("Installing the plugin and checking each account…");
     moveSaid[p.id] = { busy: b.textContent };
     try {
       // the models as the editor shows them picked, when changed and not
       // saved: the reason a move fails says to untick one there (noting_ever)
-      const picks = !onPlugin && draft && editing === p.id ? chosenIds() : null;
+      const picks = draft && editing === p.id ? chosenIds() : null;
       const was = pickedOf(p);
       const changed = picks && (picks.length !== was.length || picks.some((id) => !was.includes(id)));
-      providers = await api("provider/" + (onPlugin ? "moveback" : "move"), changed ? { id: p.id, models: picks } : { id: p.id });
+      providers = await api("provider/move", changed ? { id: p.id, models: picks } : { id: p.id });
       delete moveSaid[p.id];
       draft = null; // the provider changed under it
       renderProviders(); // the editor stays open, turned over, where it was
       const now = providers.providers.find((x) => x.id === p.id);
       const accts = now?.account?.logins?.length || 0, models = (now?.models || []).filter((x) => x.on).length;
-      saidMoved(onPlugin ? t("{name} is built-in again, with its accounts", { name: p.name })
-        : t("{name} now runs on its plugin — {accounts}, {models}. Use the built-in again from here any time.", {
-          name: p.name,
-          accounts: t(accts === 1 ? "{n} account" : "{n} accounts", { n: accts }),
-          models: t(models === 1 ? "{n} model" : "{n} models", { n: models }),
-        }));
+      saidMoved(t("{name} now runs on its plugin — {accounts}, {models}.", {
+        name: p.name,
+        accounts: t(accts === 1 ? "{n} account" : "{n} accounts", { n: accts }),
+        models: t(models === 1 ? "{n} model" : "{n} models", { n: models }),
+      }));
       state = await api("state");
       renderAgents();
     } catch (e) {
-      moveSaid[p.id] = { state: m.state, why: onPlugin ? e.message : t("It stays built-in: {error}", { error: moveWhy({ why: e.why, error: e.message }, p) }) };
+      moveSaid[p.id] = { state: m.state, why: t("It stays built-in: {error}", { error: moveWhy({ why: e.why, error: e.message }, p) }) };
       if (!box.isConnected) return renderProviders();
       say(moveSaid[p.id].why);
       b.classList.remove("busy");
       b.disabled = false;
-      b.textContent = onPlugin ? t("Use the built-in again") : t("Try again");
+      b.textContent = t("Try again");
     }
   };
   box.append(said);
@@ -14627,8 +14630,8 @@ function renderMove(p) {
     note.append(el("span", "badge deprecated", t("Deprecated")), el("span", "", t(DEPRECATED_WHY)));
     box.append(note);
   }
-  box.append(b, why);
-  return field(t("Runs on"), box, onPlugin ? t("Going back puts every account, with the plugin's newer sign-ins, back into the built-in.") : t("If an account doesn't work through the plugin, nothing changes."));
+  if (!onPlugin) box.append(b, why);
+  return field(t("Runs on"), box, onPlugin ? t("magpie's built-in is retired, so this subscription stays on its plugin.") : t("If an account doesn't work through the plugin, nothing changes."));
 }
 
 async function providerAction(action, body, okMsg, base = "provider/") {
@@ -19167,7 +19170,7 @@ function renderSettings() {
   row(t("Community"), t("questions, ideas and feedback, on Discord or GitHub"), "", join, repo);
   // gateway mode leaves out what is written into this computer's agents'
   // files, and the alerts its desktop would show
-  for (const r of [$("#plainNamesSegs").parentElement, $("#codexAgentsV1Segs").parentElement, $("#fullContextSegs").parentElement,
+  for (const r of [$("#plainNamesSegs").parentElement, $("#codexAgentsV1Segs").parentElement, $("#fullContextSegs").parentElement, $("#codexAsyncRow"),
     $("#codexTitlesRow"), $("#codexDescriptionsRow"), $("#codexPredictionsRow"), $("#codexAutoReviewRow"), $("#usageAlertRow"), $("#balanceAlertRow"), $("#resetReminderRow"), $("#turnDoneRow")]) r.hidden = gatewayMode;
   // the parts' tabs, one gone whose rows are all hidden here
   setSetTab(setTab);
@@ -19839,6 +19842,24 @@ function renderTrayUsage(s, keep) {
   const compactRow = el("div", "compact-at");
   compactRow.append(compactSegs, compactNum);
   $("#fullContextSegs").replaceChildren(compactRow);
+  // Codex's background compaction (#2490): [features.async_compaction] and
+  // its threshold, written where magpie routes Codex (codex_async.go)
+  const setAsync = (body) => writingPrefs(api("settings/codex-async-compact", body)).then((ns) => { prefs = ns; renderSettings(); }).catch((e) => { status(t(e.message), "err"); renderSettings(); });
+  const asyncSegs = segs([["off", t("Off")], ["on", t("On")]], s.codexAsyncCompact ? "on" : "off", (v) => setAsync({ on: v === "on" }));
+  const asyncNum = input(s.codexAsyncCompactPercent ? s.codexAsyncCompactPercent + "%" : "", "65%");
+  asyncNum.className = "words compact-num";
+  asyncNum.hidden = !s.codexAsyncCompact;
+  asyncNum.title = t("Background compaction at");
+  asyncNum.setAttribute("aria-label", t("Background compaction at"));
+  asyncNum.onchange = () => {
+    const v = asyncNum.value.trim().replace(/\s*%$/, "");
+    const n = v === "" ? 0 : Number(v);
+    if (!Number.isInteger(n) || n < 0 || n > 100) return status(t("Background compaction at: {v} is not a percent from 1 to 100", { v: asyncNum.value.trim() }), "err");
+    setAsync({ on: true, percent: n });
+  };
+  const asyncRow = el("div", "compact-at");
+  asyncRow.append(asyncSegs, asyncNum);
+  $("#codexAsyncSegs").replaceChildren(asyncRow);
   renderCodexTitles(s);
   renderCodexDescriptions(s);
   renderCodexPredictions(s);
@@ -21095,7 +21116,17 @@ function renderReplies(s, keep) {
   fval.append(segs([...counts, ["", t("All")]], n,
     (v) => savePrefs({ ...keep, refusalRetries: v === "" ? null : Number(v) })));
   f.append(fwho, fval);
-  box.append(r, l, f);
+  // the agent's instructions as a Claude run's system prompt (off unless on)
+  const c = el("div", "row pref");
+  c.id = "claudeLeanRow";
+  const cwho = el("div", "who");
+  cwho.append(el("div", "name", t("Short Claude system prompt")),
+    el("div", "sub wraps", t("A Claude subscription answers with the agent's own instructions as its system prompt, in place of Claude Code's, about 1K fewer tokens each request. Still the real Claude Code, but its requests look less like Claude Code's own, which can put the account more at risk")));
+  const cval = el("div", "val");
+  cval.append(segs([["off", t("Off")], ["on", t("On")]], s.claudeLeanPrompt ? "on" : "off",
+    (v) => savePrefs({ ...keep, claudeLeanPrompt: v === "on" })));
+  c.append(cwho, cval);
+  box.append(r, l, f, c);
 }
 
 // renderDisabledModels: the models the user turned off for every request
@@ -22027,7 +22058,7 @@ function prefsKeep(s) {
     redact: !!s.redact, redactPersonal: !!s.redactPersonal, redactKinds: s.redactKinds || {}, redactWords: s.redactWords || [], codexWarmup: s.codexWarmup || "",
     claudeWarmup: s.claudeWarmup || "", codexWarmAt: s.codexWarmAt || "", claudeWarmAt: s.claudeWarmAt || "",
     codexWarmAts: warmTimes(s.codexWarmAts, s.codexWarmAt), claudeWarmAts: warmTimes(s.claudeWarmAts, s.claudeWarmAt), workbuddyCheckin: !!s.workbuddyCheckin, traeCheckin: !!s.traeCheckin, minimaxCheckin: !!s.minimaxCheckin, qoderCheckin: !!s.qoderCheckin, noStats: !!s.noStats, noUsageStats: !!s.noUsageStats,
-    memberModel: !!s.memberModel, noLoopGuard: !!s.noLoopGuard, refusalRetries: s.refusalRetries ?? null,
+    memberModel: !!s.memberModel, noLoopGuard: !!s.noLoopGuard, claudeLeanPrompt: !!s.claudeLeanPrompt, refusalRetries: s.refusalRetries ?? null,
     noUpdatePill: !!s.noUpdatePill, noAutoUpdate: !!s.noAutoUpdate, updateEvery: s.updateEvery || 360, autoRestart: !!s.autoRestart, noAutoDownload: !!s.noAutoDownload,
     trayUsage: s.trayUsage || "", trayUsageEvery: s.trayUsageEvery || 3, trayNoLogos: !!s.trayNoLogos, trayNoBird: !!s.trayNoBird, trayPace: !!s.trayPace, trayNoCost: !!s.trayNoCost, vision: s.vision || "", visionEffort: s.visionEffort || "", searcherEffort: s.searcherEffort || "", imageGen: s.imageGen || "", searcher: s.searcher || "", searchFirst: s.searchFirst || "", currency: s.currency || "usd",
     chineseUnits: !!s.chineseUnits, usageAlert: s.usageAlert || 0, balanceAlert: s.balanceAlert || 0, resetReminder: s.resetReminder || 0,

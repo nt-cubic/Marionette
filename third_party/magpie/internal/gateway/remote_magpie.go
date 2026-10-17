@@ -38,6 +38,9 @@ type caller struct {
 	agent, via string
 	session    string
 	native     [2]string // header, value
+	// compact is DSH's compaction mark as it came, passed on with the
+	// session so the other magpie records the call as one (#2505)
+	compact string
 	// ua is the User-Agent the request came with, as it came: the one a
 	// provider that passes the agent's on is sent (userAgentFor)
 	ua string
@@ -50,6 +53,9 @@ type callerCtx struct{}
 func withCaller(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c := caller{agent: agentOf(r), session: boundedSession(r.Header.Get(SessionHeader)), ua: r.Header.Get("User-Agent")}
+		if dshCompacts(r.Header) {
+			c.compact = boundedSession(r.Header.Get(dshCompactHeader))
+		}
 		for _, h := range sessionHeaders {
 			if v := boundedSession(r.Header.Get(h)); v != "" {
 				c.native = [2]string{h, v}
@@ -119,6 +125,9 @@ func passOnCaller(ctx context.Context, req *http.Request) {
 	}
 	if c.native[0] != "" {
 		req.Header.Set(c.native[0], c.native[1])
+	}
+	if c.compact != "" {
+		req.Header.Set(dshCompactHeader, c.compact)
 	}
 	if c.agent == "" {
 		return

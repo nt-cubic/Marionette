@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,61 +12,6 @@ import (
 	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/testenv"
 )
-
-// An account the vendor refused while it ran on the plugin goes back to
-// the built-in marked, though back writes its sign-in as one just made
-// (every real mover clears the mark there): the built-in had marked it
-// the same way, and it would show signed in until its next refusal.
-func TestMoveBackKeepsLapse(t *testing.T) {
-	bun := testenv.Bun(t)
-	claudeHome(t)
-	t.Setenv("MAGPIE_BUN", bun)
-	t.Cleanup(plugin.Settle)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	abs, _ := filepath.Abs("../plugin/testdata/fake/index.js")
-	if _, err := plugin.Add(ctx, abs); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := plugin.Providers(ctx); err != nil {
-		t.Fatal(err)
-	}
-	inUse := []string{"fake-1"}
-	fakeMover(t, &inUse)
-	mv := movers["fakeco"]
-	mv.pkg = abs
-	back := mv.back
-	mv.back = func(ls []savedLogin, user string, auth map[string]any) ([]savedLogin, string, error) {
-		ls, u, err := back(ls, user, auth)
-		for i := range ls {
-			if ls[i].Agent == "fakeco" && ls[i].User == u {
-				ls[i].Lapsed = "" // as zed's, factory's and mimo's back do
-			}
-		}
-		return ls, u, err
-	}
-	loginsMu.Lock()
-	if err := writeLogins([]savedLogin{fakeLogin("a@fake", "r-a", true, true), fakeLogin("b@fake", "r-b", false, true)}); err != nil {
-		t.Fatal(err)
-	}
-	loginsMu.Unlock()
-	if err := Move(ctx, "fakeco"); err != nil {
-		t.Fatal(err)
-	}
-	m, _ := MigrationOf("fakeco")
-	for _, ma := range m.Accounts {
-		if ma.User == "b@fake" {
-			notePluginLapse(mustPlugin(t), ma.Key, http.StatusUnauthorized)
-		}
-	}
-	if err := MoveBack(ctx, "fakeco"); err != nil {
-		t.Fatal(err)
-	}
-	s := fakeSaved(t)
-	if s["b@fake"].Lapsed == "" || s["a@fake"].Lapsed != "" {
-		t.Fatalf("moved back: a lapsed %q, b lapsed %q", s["a@fake"].Lapsed, s["b@fake"].Lapsed)
-	}
-}
 
 // An account whose sign-in the vendor refuses while the move reads the
 // plugin's models (a models hook throwing signIn: expired, as Zed's does
@@ -87,8 +31,7 @@ func TestMoveRefusedWhileListing(t *testing.T) {
 	if _, err := plugin.Providers(ctx); err != nil {
 		t.Fatal(err)
 	}
-	inUse := []string{"fake-1"}
-	fakeMover(t, &inUse)
+	fakeMover(t)
 	movers["fakeco"].pkg = abs
 	loginsMu.Lock()
 	if err := writeLogins([]savedLogin{fakeLogin("a@fake", "r-a", true, true), fakeLogin("g@fake", "r-models-gone", false, true)}); err != nil {
@@ -131,8 +74,7 @@ func TestMoveExpiredInWords(t *testing.T) {
 	if _, err := plugin.Providers(ctx); err != nil {
 		t.Fatal(err)
 	}
-	inUse := []string{"fake-1"}
-	fakeMover(t, &inUse)
+	fakeMover(t)
 	movers["fakeco"].pkg = abs
 	loginsMu.Lock()
 	if err := writeLogins([]savedLogin{fakeLogin("a@fake", "r-a", true, true), fakeLogin("x@fake", "r-models-expired", false, true)}); err != nil {

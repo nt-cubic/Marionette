@@ -32,6 +32,7 @@ func sandbox(t *testing.T) string {
 	t.Setenv("HOME", h)
 	t.Setenv("USERPROFILE", h)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(h, ".config"))
+	t.Setenv("XDG_STATE_HOME", "")
 	// Gemini CLI is found by its binary alone
 	bin := filepath.Join(h, "bin")
 	testenv.Program(t, filepath.Join(bin, "gemini"), "#!/bin/sh\n")

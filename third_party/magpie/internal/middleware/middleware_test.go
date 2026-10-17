@@ -128,7 +128,6 @@ func TestReject(t *testing.T) {
 
 func TestFailOpen(t *testing.T) {
 	was := requestLimit
-	requestLimit = 50 * time.Millisecond
 	defer func() { requestLimit = was }()
 	e := file(t, `
 let n = 0;
@@ -143,6 +142,12 @@ export function onRequest(body) {
 	use(t, e)
 	for _, kind := range []string{"throw", "spin", "string"} {
 		in := `{"kind":"` + kind + `"}`
+		// Only the spin is cut short: under a full run's load a throw or a
+		// string can take longer than 50ms, and would fail for the limit.
+		requestLimit = was
+		if kind == "spin" {
+			requestLimit = 50 * time.Millisecond
+		}
 		r := Begin(info())
 		start := time.Now()
 		body, rej := r.Request([]byte(in))

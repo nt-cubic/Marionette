@@ -32,3 +32,6 @@ func registerScheme() error {
 	defer cmd.Close()
 	return cmd.SetStringValue("", `"`+exe+`" "%1"`)
 }
+
+// keepWebData: WebView2's data folder isn't named after the program.
+func keepWebData() {}

@@ -146,6 +146,9 @@ type Tool struct {
 type Request struct {
 	// clientCache is non-nil only for the Claude bridge's explicit opt-in.
 	clientCache *clientCache
+	// leanPrompt has the Claude bridge give the caller's instructions as
+	// the run's system prompt, in place of Claude Code's (ClaudeLeanPrompt).
+	leanPrompt bool
 
 	Model      string
 	System     string

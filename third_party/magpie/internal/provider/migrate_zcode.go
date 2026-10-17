@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -23,19 +22,6 @@ func init() {
 		pkg:    "@magpie-community/opencode-zcode-auth",
 		min:    "0.1.19", // the personal plan's resets, and the team's, carry each reset's end and window; a Start Plan refusal carries the built-in's hint; 0.1.18: the ZCode app's sign-in reads ZCode 3.15's GLM Coding Plan key from config.json (provider["builtin:*-coding-plan"].options.apiKey), so a valid plan no longer reads as "no plan", as the built-in does since 1d8e83a79 (#2130); 0.1.17: the ZCode app's sign-in reads credentials.json from the folder ZCode's data was moved to in its settings (数据存储路径, dataBaseDir in the home folder's setting.json), as the built-in does since 41972b25f (flower on Discord); 0.1.16's ZCode app's sign-in follows ZCode only while it is signed in to the same account, so an entry added for one account never sends with another's credentials after ZCode switched (LingYi_Stu on X); 0.1.15's Start Plan request says the agent's folder and git repository as magpie tells them, never magpie's own folder, and leaves out what it doesn't know (plugins #86); 0.1.14's gift-only account lists its gift's models by their own names, as ZCode does, so a Start Plan GLM-5.3 bucket's model is listed as GLM-5.3, not only GLM-5.3-Trial (#1261, plugins aca7c59); 0.1.13's claim line has one fixed name, which the GUI translates, so it no longer shares the "ZCode Trust Build" bucket window's name (plugins #43); 0.1.12's counted window carries its amount and limit, so the card's count follows used/left (#659, plugins #35); 0.1.11's gift plan ZCode holds but hasn't granted is named on the card, to claim in the ZCode app (plugins #30, #1001); 0.1.10's gift-only buckets and 0.1.9's trial entries (plugins #21) kept
 		agents: []string{"zcode"},
-		// the built-in never served GLM-5.3 to a Start Plan account, so
-		// its pick is no loss when the plugin doesn't list it (the plugin
-		// lists it, as ZCode does, only while a gift bucket serves it);
-		// its plan as its requests found it, else as it showed it, nothing
-		// asked of Z.ai
-		builtin: func(_ context.Context, a Moving, model string) bool {
-			for _, l := range zcodeLogins() {
-				if strings.EqualFold(l.User, a.User) {
-					return !zcodeOnStartAs(nil, l.key, l.Plan) || zcodeStartServes()(model)
-				}
-			}
-			return true
-		},
 		out: func() ([]Moving, error) {
 			var out []Moving
 			for _, l := range zcodeLogins() {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/yetone/magpie/internal/catalog"
@@ -165,5 +166,36 @@ func TestCodexCatalogServiceTiers(t *testing.T) {
 		if m.Tiers == nil || len(m.Tiers) != 0 {
 			t.Errorf("%s offers tiers: %+v", m.Slug, m.Tiers)
 		}
+	}
+}
+
+// Codex turns a pasted image away for a model without "image" itself, so
+// /model says such a model is text-only and where that is changed, and the
+// entry still reads as magpie's (KimYx0207 on X).
+func TestCodexCatalogSaysTextOnly(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	var got struct {
+		Models []struct {
+			Slug        string   `json:"slug"`
+			Description string   `json:"description"`
+			Modalities  []string `json:"input_modalities"`
+		} `json:"models"`
+	}
+	json.Unmarshal(Catalog([]catalog.Model{
+		{ID: "probe/text", Name: "Text"},
+		{ID: "probe/sees", Name: "Sees", Images: true},
+		{ID: "group/words", Name: "Words"},
+	}), &got)
+	if len(got.Models) != 3 {
+		t.Fatalf("%+v", got.Models)
+	}
+	text, sees, group := got.Models[0], got.Models[1], got.Models[2]
+	if !strings.Contains(text.Description, "text only") || !strings.Contains(text.Description, "Names & levels") || !catalog.MagpieAdded("", text.Slug, text.Description) {
+		t.Errorf("text-only model: %q", text.Description)
+	}
+	if sees.Description != "Sees via magpie" || group.Description != "Words via magpie" {
+		t.Errorf("a model that sees, and a group: %q, %q", sees.Description, group.Description)
 	}
 }

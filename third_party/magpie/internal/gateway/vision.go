@@ -143,6 +143,26 @@ func missingSeerNote() string {
 	return ""
 }
 
+// textOnlyNote is what a request turned away for its image says of why
+// magpie takes the model for text-only and where that is changed, so the
+// reader turns on the model's switch rather than trying another model or
+// reinstalling the agent (KimYx0207 on X, over mark_li21's Codex paste): the
+// user's own answer, else what the provider's list says; for a group, that
+// none of its members is marked as taking images.
+func textOnlyNote(p provider.Provider, model string, group string) string {
+	if group != "" {
+		return fmt.Sprintf("; no model in the group %s is marked as taking images: turn on Accepts images for one that does, in its provider's Names & levels in magpie", group)
+	}
+	name := p.Name
+	if name == "" {
+		name = p.ID
+	}
+	if v, ok := provider.ImageOverride(p.ID, model); ok && !v {
+		return fmt.Sprintf("; Accepts images is turned off for it in magpie, in Providers → %s → Names & levels", name)
+	}
+	return fmt.Sprintf("; %s's model list marks it as not taking images: if it does, turn on Accepts images for it in magpie, in Providers → %s → Names & levels", name, name)
+}
+
 // noSeerNote is what a request turned away for an image says of why no
 // model described it: the picked one is missing, Image recognition is
 // off, or none of the models the user enabled can see.

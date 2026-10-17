@@ -5,10 +5,12 @@ import (
 	"cmp"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"mime"
 	"net"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -72,6 +74,7 @@ type cRequest struct {
 
 func parseChat(body []byte) (*Request, error) {
 	body = liftMessageTools(body) // a request handle didn't see (#2322)
+	body = shapeChatTools(body)   // and its tools in another API's shape (#2622)
 	var c cRequest
 	if err := decodeJSON(body, &c); err != nil {
 		return nil, fmt.Errorf("invalid request: %v", err)
@@ -447,6 +450,7 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 		flush()
 	}
 	showSeen()
+	msgs, _ = withoutSilentAssistants(msgs)
 	msgs = pairToolMessages(msgs)
 	out := map[string]any{"model": model, "messages": msgs, "stream": r.Stream}
 	if r.CacheKey != "" {
@@ -550,9 +554,10 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 //     calls split over consecutive assistant messages were joined into
 //     one by joinSplitCalls before, so they are pending together (#1275);
 //   - an assistant message with nothing in it — no text, no calls, no
-//     reasoning, what a thinking-only turn becomes — is dropped inside a
-//     pending exchange, where it would sit between calls and their
-//     answers; outside an exchange it passes through, as on main.
+//     reasoning — is dropped inside a pending exchange, where it would
+//     sit between calls and their answers. One with neither text nor
+//     calls was taken out before, wherever it stood
+//     (withoutSilentAssistants, #2599).
 func pairToolMessages(msgs []map[string]any) []map[string]any {
 	out := make([]map[string]any, 0, len(msgs))
 	var pending []string          // calls of the last assistant message with tool_calls
@@ -660,6 +665,131 @@ func emptyAssistant(m map[string]any) bool {
 	}
 	s, _ := m["content"].(string)
 	return strings.TrimSpace(s) == ""
+}
+
+// silentAssistant reports whether a Chat message is an assistant turn
+// that says nothing: no content or only blank text, and no tool_calls or
+// function_call. It is what an agent keeps of a reply the user cut off
+// before it said anything — only its thinking, an empty text, nothing —
+// and DeepSeek, Kimi and the like turn the whole request away over it,
+// "Invalid assistant message: content or tool_calls must be set", on
+// every later turn of the conversation (#2599). reasoning_content is not
+// content to them. A prefill to go on from (prefix, partial), a refusal
+// and an audio reply say something and stay.
+func silentAssistant(m map[string]any) bool {
+	if m["role"] != "assistant" {
+		return false
+	}
+	if m["prefix"] == true || m["partial"] == true || m["function_call"] != nil || m["audio"] != nil {
+		return false
+	}
+	if s, _ := m["refusal"].(string); s != "" {
+		return false
+	}
+	switch c := m["tool_calls"].(type) {
+	case []map[string]any:
+		if len(c) > 0 {
+			return false
+		}
+	case []any:
+		if len(c) > 0 {
+			return false
+		}
+	case nil:
+	default:
+		return false
+	}
+	switch c := m["content"].(type) {
+	case nil:
+		return true
+	case string:
+		return strings.TrimSpace(c) == ""
+	case []any:
+		for _, p := range c {
+			pm, _ := p.(map[string]any)
+			if t, _ := pm["text"].(string); pm == nil || pm["type"] != "text" || strings.TrimSpace(t) != "" {
+				return false
+			}
+		}
+		return true
+	case []map[string]any:
+		for _, pm := range c {
+			if t, _ := pm["text"].(string); pm["type"] != "text" || strings.TrimSpace(t) != "" {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// withoutSilentAssistants leaves out of a Chat request's messages every
+// assistant turn that says nothing (silentAssistant), and joins the user
+// messages it stood between into one, as toolAsUser joins: some models'
+// chat templates turn away two user messages in a row. Nothing of the cut
+// turn reaches the model, as nothing of it reached the user. Every
+// strict-template rule stays kept: a tool message still follows the turn
+// with its call, and a tool message followed by the user's is what an
+// agent sends whenever the user writes after a tool result. It reports
+// whether it changed anything; the messages are edited in place.
+func withoutSilentAssistants(msgs []map[string]any) ([]map[string]any, bool) {
+	if !slices.ContainsFunc(msgs, silentAssistant) {
+		return msgs, false
+	}
+	out := make([]map[string]any, 0, len(msgs))
+	dropped := false
+	for _, m := range msgs {
+		if silentAssistant(m) {
+			dropped = true
+			continue
+		}
+		if n := len(out); dropped && n > 0 && m["role"] == "user" && out[n-1]["role"] == "user" {
+			if joined, ok := joinedUserContent(out[n-1]["content"], m["content"]); ok {
+				prev := maps.Clone(out[n-1])
+				prev["content"] = joined
+				out[n-1] = prev
+				continue
+			}
+		}
+		dropped = false
+		out = append(out, m)
+	}
+	return out, true
+}
+
+// joinedUserContent is two user messages' content as one: two texts with a
+// blank line between them, else the parts of the first and then the
+// second's, a text becoming a text part.
+func joinedUserContent(a, b any) (any, bool) {
+	as, aText := a.(string)
+	bs, bText := b.(string)
+	if aText && bText {
+		return as + "\n\n" + bs, true
+	}
+	parts := func(c any) ([]any, bool) {
+		switch c := c.(type) {
+		case string:
+			if strings.TrimSpace(c) == "" {
+				return nil, true
+			}
+			return []any{map[string]any{"type": "text", "text": c}}, true
+		case []any:
+			return c, true
+		case []map[string]any:
+			out := make([]any, len(c))
+			for i, p := range c {
+				out[i] = p
+			}
+			return out, true
+		}
+		return nil, false
+	}
+	ap, aok := parts(a)
+	bp, bok := parts(b)
+	if !aok || !bok {
+		return nil, false
+	}
+	return append(slices.Clip(ap), bp...), true
 }
 
 // aiStudioHost is Google AI Studio's Gemini API, whose OpenAI-compatible

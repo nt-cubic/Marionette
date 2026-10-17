@@ -106,7 +106,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.deepEqual(status, w.statuses);
         assert.deepEqual(await rows.evaluateAll((trs) => trs.map((tr) => tr.classList.contains("bad"))), [true, false, false, true, false]);
         // a session file's time for a call is about (told from its lines' stamps); with none, a dash, not 0 ms
-        const cell = (n) => rows.nth(n).locator("td").nth(12).textContent();
+        const cell = (n) => rows.nth(n).locator("td.duration").textContent();
         assert.equal(await cell(2), lang === "zh" ? "≈4.2 秒" : "≈4.2 s", "about, from the file's times");
         assert.equal(await cell(3), "—", "a call with no time is a dash");
         assert.notEqual(await cell(0), "—");

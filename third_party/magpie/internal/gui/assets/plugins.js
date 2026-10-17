@@ -14,6 +14,7 @@
   let mine = null;       // /api/plugins: what's installed
   let listings = null;   // /api/plugins/listings: the plugins suggested
   let tagged = null;     // /api/plugins/github: repositories their authors tagged magpie-plugin, as listings
+  let taggedErr = "";    // why they couldn't be asked for, while none were had
   let topic = "magpie-plugin";
   const npm = {};        // /api/plugins/npm: package → what npm says of it
   const heads = {};      // /api/plugins/git: a git plugin's spec → the commit its repository is at
@@ -171,8 +172,12 @@
     try {
       const r = await api("plugins/github");
       tagged = (r.repos || []).map(ghListing);
+      taggedErr = "";
       if (r.topic) topic = r.topic;
-    } catch { tagged = tagged || []; }
+    } catch (e) {
+      if (!tagged) taggedErr = e.message || String(e);
+      tagged = tagged || [];
+    }
   }
   async function loadListings() {
     try {
@@ -547,11 +552,22 @@
     return d;
   }
 
+  // cards still to come, drawn as a card is laid out (its picture, name
+  // and author, two lines of summary, its facts) for a light to pass over,
+  // one card after the other
   function skeleton(n) {
     const g = el("div", "pm-grid");
+    g.setAttribute("aria-hidden", "true");
+    const bar = (c) => el("div", "sk " + c);
     for (let i = 0; i < n; i++) {
       const c = el("div", "pm-card ghost");
-      c.append(el("div", "g1"), el("div", "g2"), el("div", "g3"));
+      c.style.setProperty("--i", i);
+      const top = el("div", "gtop"), who = el("div", "gwho");
+      who.append(bar("gname"), bar("gby"));
+      top.append(bar("glogo"), who, bar("gact"));
+      const meta = el("div", "gmeta");
+      meta.append(bar("gchip"), bar("gchip short"));
+      c.append(top, bar("gline"), bar("gline short"), meta);
       g.append(c);
     }
     return g;
@@ -603,11 +619,56 @@
     const f = ghQuery.trim().toLowerCase();
     return !f || [l.name, l.github.repo, l.github.owner, l.package, summary(l)].join(" ").toLowerCase().includes(f);
   };
+  const ghTitle = () => [el("h3", "", t("Unofficial, on GitHub")), el("span", "", t("repositories their authors tagged {topic} — nobody has reviewed them; read the code before you install one", { topic }))];
+  // GitHub answers after the rest, seconds after on a slow line, and a
+  // section that wasn't there read as there being no such plugins (the
+  // owner: 网慢的用户以为没有非官方插件). Until it answers the section
+  // stands in its place with its head, a word that it is looking and
+  // cards still to come; its cards then come in where those were.
+  let ghArrive = false;
+  function ghWaiting() {
+    const look = el("span", "pm-ghlook");
+    look.setAttribute("role", "status");
+    const dots = el("span", "dots");
+    dots.setAttribute("aria-hidden", "true");
+    dots.append(el("i"), el("i"), el("i"));
+    look.append(dots, el("span", "", t("Looking on GitHub")));
+    ghHead.replaceChildren(...ghTitle(), look);
+    ghSec.setAttribute("aria-busy", "true");
+    ghArrive = true;
+    replaceKeeping(ghSec, [ghHead, skeleton(3)]);
+    return ghSec;
+  }
+  // and one GitHub couldn't be asked of says so, with another go
+  function ghFailed() {
+    ghHead.replaceChildren(...ghTitle());
+    ghSec.removeAttribute("aria-busy");
+    const box = el("div", "pm-ghnone");
+    const again = el("button", "text", t("Try again"));
+    again.type = "button";
+    again.onclick = () => {
+      tagged = null;
+      taggedErr = "";
+      drawBody();
+      loadTagged().then(drawBody);
+    };
+    box.append(el("span", "", t("Couldn't ask GitHub: {error}", { error: taggedErr })), again);
+    replaceKeeping(ghSec, [ghHead, box]);
+    return ghSec;
+  }
   function ghSection(list) {
     ghList = list;
-    const h = [el("h3", "", t("Unofficial, on GitHub")), el("span", "", t("repositories their authors tagged {topic} — nobody has reviewed them; read the code before you install one", { topic }))];
-    ghHead.replaceChildren(...h);
+    ghHead.replaceChildren(...ghTitle());
+    ghSec.removeAttribute("aria-busy");
     drawGh();
+    // the first cards after the wait come in, one after the other; the
+    // grid drawn again for a pick doesn't
+    if (ghArrive) {
+      ghArrive = false;
+      ghSec.classList.add("pm-arrive");
+      [...ghGrid.children].forEach((c, i) => c.style.setProperty("--i", Math.min(i, 9)));
+      setTimeout(() => ghSec.classList.remove("pm-arrive"), 900);
+    }
     return ghSec;
   }
   function drawGh() {
@@ -817,12 +878,15 @@
       if (tls.length) out.push(section(t("Tools for agents"), t("tools every agent can call, through magpie's MCP server"), tls));
       if (pgs.length) out.push(section(t("Pages"), t("pages of their own in magpie's window, each shut off from the rest and reading only what it lists"), pgs));
       if (gh.length) out.push(ghSection(gh));
+      else if (!tagged) out.push(ghWaiting());
+      else if (taggedErr) out.push(ghFailed());
       out.push(manual());
       replaceKeeping(body, out);
       return;
     }
     if (ls.length) out.push(section(t("Suggested"), "", ls));
     if (gh.length) out.push(ghSection(gh));
+    else if (!tagged) out.push(ghWaiting());
     const known = new Set([...listings.map((l) => l.package), ...(tagged || []).map((l) => l.github.package).filter(Boolean)]);
     const box = el("section", "pm-sec");
     const h = el("div", "pm-sechead");
@@ -1039,8 +1103,9 @@
       c.title = (isGit(e.spec) ? t("{head} is the newest commit of {repo}", { head: ck.head || e.head || "", repo: e.spec }) : t("v{v} is the newest on npm", { v: e.version })) + "\n" + t("Last checked {time}", { time: checkedAt() });
       nm.append(c);
     }
-    // the built-in subscriptions moved onto it: taking it away moves them
-    // back, so the row says it carries them
+    // the built-in subscriptions moved onto it: taking it away or off
+    // stops them, as there is no built-in to go back to, so the row says
+    // it carries them
     const moved = (e.moved || []).map((id) => SUBS.find((x) => x.agent === id)?.name || id);
     const names = moved.join(t(", "));
     if (moved.length && !e.off) {
@@ -1081,7 +1146,7 @@
       sub.textContent = t("{names} can run on it again, with the same accounts.", { names: cands.map((c) => c.name).join(t(", ")) });
       sub.classList.add("ask");
     } else if (ask) {
-      sub.textContent = t(ask === "remove" ? "{names} goes back to the built-in, with its accounts, before the plugin is removed." : "{names} goes back to the built-in, with its accounts, before the plugin is switched off.", { names });
+      sub.textContent = t(ask === "remove" ? "{names} stops working until the plugin is installed again. Its accounts are kept." : "{names} stops working while the plugin is off. Its accounts are kept.", { names });
       sub.classList.add("ask");
     } else if (e.off) sub.textContent = t("Off");
     else if (e.error) { sub.textContent = t("Didn't load: {error}", { error: e.error }); sub.classList.add("bad"); sub.title = e.error; }
@@ -1149,12 +1214,11 @@
       s.onclick = () => pluginSignIn(out.id);
       val.append(s);
     }
-    const back = () => { if (moved.length) status(t("{names} is back on the built-in", { names }), "ok"); };
-    // switched on again: the built-ins that went back when it went off
-    // are offered its way again, in the row
+    // switched on again: a built-in it can carry is offered its way, in
+    // the row
     const again = () => { if (movableOf(pkg).length) { asking = { pkg, op: "move" }; draw(); } };
-    const off = () => act(pkg, "off", { spec: e.spec, off: !e.off }, e.off ? again : back);
-    const remove = () => act(pkg, "remove", { spec: e.spec }, () => { status(t("{name} removed", { name: l?.name || pkg }), "ok"); back(); });
+    const off = () => act(pkg, "off", { spec: e.spec, off: !e.off }, e.off ? again : null);
+    const remove = () => act(pkg, "remove", { spec: e.spec }, () => status(t("{name} removed", { name: l?.name || pkg }), "ok"));
     if (ask) {
       // asked in the row, not a dialog: the user sees which go back
       const yes = el("button", "text primary", t(ask === "move" ? "Move" : ask === "remove" ? "Remove" : "Switch off"));
@@ -1177,11 +1241,11 @@
       };
       val.append(o);
     }
-    const onoff = el("button", "text", b === "off" && !e.off && moved.length ? t("Moving back…") : t(e.off ? "Switch on" : "Switch off"));
+    const onoff = el("button", "text", t(e.off ? "Switch on" : "Switch off"));
     onoff.disabled = !!b;
     onoff.onclick = () => { if (!e.off && moved.length) { asking = { pkg, op: "off" }; draw(); } else off(); };
-    const rm = el("button", "text quiet", b === "remove" ? t(moved.length ? "Moving back…" : "Removing…") : t("Remove"));
-    rm.title = moved.length ? t("{names} goes back to the built-in first, then the plugin is removed", { names }) : t("Removes the plugin and what it installed; its sign-ins are kept until you sign out");
+    const rm = el("button", "text quiet", b === "remove" ? t("Removing…") : t("Remove"));
+    rm.title = moved.length ? t("{names} runs on this plugin: removed, it stops working until the plugin is installed again", { names }) : t("Removes the plugin and what it installed; its sign-ins are kept until you sign out");
     rm.disabled = busy.size > 0;
     rm.onclick = async () => {
       if (moved.length) {

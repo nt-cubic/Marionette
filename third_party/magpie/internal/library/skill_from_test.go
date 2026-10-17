@@ -24,6 +24,34 @@ func repoIn(t *testing.T) map[string]string {
 	return out
 }
 
+// npx skills add with $XDG_STATE_HOME set (@_yukirock on X): the skills
+// CLI keeps its lock at $XDG_STATE_HOME/skills/.skill-lock.json and the
+// skills in ~/.agents/skills, and each is grouped by the repository that
+// lock names. One the older ~/.agents lock alone names is grouped too.
+func TestSkillRepoFromXDGLock(t *testing.T) {
+	h := sandbox(t)
+	state := filepath.Join(h, "state")
+	t.Setenv("XDG_STATE_HOME", state)
+	for _, n := range []string{"grill-me", "tdd", "old"} {
+		skill(t, filepath.Join(h, ".agents/skills", n), n, n)
+		os.MkdirAll(filepath.Join(h, ".claude/skills"), 0o755)
+		dirLink(filepath.Join(h, ".agents/skills", n), filepath.Join(h, ".claude/skills", n))
+	}
+	write(t, filepath.Join(state, "skills/.skill-lock.json"), `{"version":3,"skills":{
+		"grill-me":{"source":"mattpocock/skills","sourceType":"github","sourceUrl":"https://github.com/mattpocock/skills.git"},
+		"tdd":{"source":"obra/superpowers","sourceType":"github","sourceUrl":"https://github.com/obra/superpowers.git"}}}`)
+	write(t, filepath.Join(h, ".agents/.skill-lock.json"), `{"version":3,"skills":{
+		"tdd":{"source":"stale/repo","sourceType":"github"},
+		"old":{"source":"me/old-skills","sourceType":"github"}}}`)
+	ok(t)(ImportSkills([]string{"grill-me", "tdd", "old"}))
+	got := repoIn(t)
+	for n, r := range map[string]string{"grill-me": "mattpocock/skills", "tdd": "obra/superpowers", "old": "me/old-skills"} {
+		if got[n] != r {
+			t.Errorf("%s: repo %q, want %q", n, got[n], r)
+		}
+	}
+}
+
 // A skill not installed from GitHub is grouped with the repository it
 // came from all the same (White Immortal on Discord): the skills CLI's
 // lock names it, or the git checkout it's in, whatever the remote's form,

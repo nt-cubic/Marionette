@@ -12,6 +12,7 @@ import (
 
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 func TestKnownTextOnlyModelRejectsImagesBeforeUpstream(t *testing.T) {
@@ -50,6 +51,11 @@ func TestKnownTextOnlyModelRejectsImagesBeforeUpstream(t *testing.T) {
 		s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", tc.path, strings.NewReader(tc.body)))
 		if rec.Code != 400 || !strings.Contains(rec.Body.String(), "does not support image input") {
 			t.Errorf("%s: %d %s", tc.path, rec.Code, rec.Body.String())
+		}
+		// it says why magpie takes it for text-only, and where that is
+		// changed (KimYx0207 on X)
+		if b := rec.Body.String(); !strings.Contains(b, "Probe's model list marks it as not taking images") || !strings.Contains(b, "Providers → Probe → Names & levels") {
+			t.Errorf("%s: doesn't say why or where: %s", tc.path, b)
 		}
 	}
 	if sent != 0 {
@@ -479,5 +485,46 @@ func TestGeminiNonImageFileTranslation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A model the user marked text-only themselves is turned away saying so,
+// and a group with no member that takes images says that, each with where
+// it is changed (KimYx0207 on X).
+func TestTextOnlyRefusalSaysWhyAndWhere(t *testing.T) {
+	fresh(t)
+	noVision(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("an image for a text-only model reached upstream: %s", r.URL)
+	}))
+	defer up.Close()
+	if err := provider.Save(provider.Provider{ID: "probe", Name: "Probe", Chat: up.URL + "/v1", Key: "key", Models: []string{"sol", "text"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.SaveLive("probe", up.URL+"/v1", []catalog.Model{
+		{ID: "sol", Images: true, ImageInput: imageInputBool(true)},
+		{ID: "text", ImageInput: imageInputBool(false)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s0 := settings.Load()
+	s0.ModelImages = map[string]bool{"probe/sol": false}
+	if err := settings.Save(s0); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.SaveGroup(provider.Group{Name: "Words", Members: []string{"probe/text", "probe/sol"}, Routing: provider.Ordered}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	body := `{"model":"MODEL","messages":[{"role":"user","content":[{"type":"text","text":"read"},{"type":"image_url","image_url":{"url":"data:image/png;base64,aGVsbG8="}}]}]}`
+	for model, want := range map[string]string{
+		"probe/sol":   "Accepts images is turned off for it in magpie, in Providers → Probe → Names & levels",
+		"group/words": "no model in the group Words is marked as taking images",
+	} {
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(strings.Replace(body, "MODEL", model, 1))))
+		if rec.Code != 400 || !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("%s: %d %s, want %q", model, rec.Code, rec.Body.String(), want)
+		}
 	}
 }

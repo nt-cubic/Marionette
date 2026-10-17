@@ -64,6 +64,7 @@ import (
 	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/wslrun"
 )
 
@@ -165,6 +166,7 @@ type subscriptionRun struct {
 	safeguards    json.RawMessage
 	safeguardBeta string
 	clientMarks   bool
+	lean          bool // started with leanSystem as its system prompt
 	cacheTail     string
 	cachePrefix   cachePrefix
 	timer         *time.Timer
@@ -535,6 +537,15 @@ func (c claudeCLI) env(env []string, configDir string) []string {
 	return c.wsl.Env(env, names...)
 }
 
+// file is where this Claude Code reads a file of magpie's at path: one in
+// WSL under the distro's mount of the drive.
+func (c claudeCLI) file(path string) string {
+	if c.wsl != nil {
+		return c.wsl.Linux(path)
+	}
+	return path
+}
+
 // exe is magpie's own executable, as this Claude Code starts it.
 func (c claudeCLI) exe() (string, error) {
 	if c.wsl != nil {
@@ -619,6 +630,16 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 		"magpie": map[string]any{"command": exe, "args": []string{"claude-mcp-helper", callbackPath, toolsPath}},
 	}})
 	args := claudeCLIArgs(model, string(mcpConfig), req.Effort, req.WebSearch)
+	if req.leanPrompt {
+		// in a file of the run's own: instructions can be longer than
+		// Windows lets a command line be
+		systemPath := filepath.Join(tmp, "system.md")
+		if err := os.WriteFile(systemPath, []byte(leanSystem(req)), 0o600); err != nil {
+			cleanup()
+			return nil, nil, err
+		}
+		args = append(args, "--system-prompt-file", binary.file(systemPath))
+	}
 	if req.ThinkOff {
 		// the client turned thinking off, as Claude Code's auto mode
 		// classifier and its small asks do: a run at Claude Code's own
@@ -708,6 +729,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	run := &subscriptionRun{bridge: b, token: token, model: model, cmd: cmd, tmp: tmp, schema: len(req.Format.schema()) > 0, pending: map[string]chan mcpToolResult{}, stdin: stdin, owner: owner, effort: req.Effort, sessions: sessions}
 	run.safeguardBeta = req.SafeguardBeta
 	run.clientMarks = req.clientCache != nil
+	run.lean = req.leanPrompt
 	run.cachePrefix = prefix
 	if user, _ := ownerAccount(owner); user != "" {
 		run.loginVersion = provider.ClaudeLoginVersion(user)
@@ -2539,7 +2561,8 @@ func (u cliUsage) gateway() Usage {
 func renderClaudePrompt(req *Request) ([]map[string]any, error) {
 	var blocks []map[string]any
 	var text strings.Builder
-	if req.System != "" || req.ToolChoice == "required" || strings.HasPrefix(req.ToolChoice, "name:") {
+	// a lean run has them as its system prompt (leanSystem)
+	if !req.leanPrompt && (req.System != "" || req.ToolChoice == "required" || strings.HasPrefix(req.ToolChoice, "name:")) {
 		text.WriteString("<external_system_instructions>\n")
 		system := withoutBillingHeader(req.System)
 		pos := 0
@@ -2558,12 +2581,7 @@ func renderClaudePrompt(req *Request) ([]map[string]any, error) {
 			}
 		}
 		text.WriteString(system[pos:])
-		switch {
-		case req.ToolChoice == "required":
-			text.WriteString("\nYou must call at least one available tool before answering.")
-		case strings.HasPrefix(req.ToolChoice, "name:"):
-			fmt.Fprintf(&text, "\nYou must call the %s tool.", bridgeName(strings.TrimPrefix(req.ToolChoice, "name:")))
-		}
+		text.WriteString(toolChoiceAsk(req))
 		text.WriteString("\n</external_system_instructions>\n\n")
 		// The caller's instructions are a block of their own, marked for the
 		// cache: Claude Code marks only the end of the message, so with them
@@ -2648,6 +2666,27 @@ func renderClaudePrompt(req *Request) ([]map[string]any, error) {
 		blocks[chunk]["cache_control"] = cacheMark1h()
 	}
 	return closeBlocks(blocks, &text), nil
+}
+
+// toolChoiceAsk is the client's tool choice in words, which Claude Code
+// takes no flag for.
+func toolChoiceAsk(req *Request) string {
+	switch {
+	case req.ToolChoice == "required":
+		return "\nYou must call at least one available tool before answering."
+	case strings.HasPrefix(req.ToolChoice, "name:"):
+		return fmt.Sprintf("\nYou must call the %s tool.", bridgeName(strings.TrimPrefix(req.ToolChoice, "name:")))
+	}
+	return ""
+}
+
+// leanSystem is a lean run's system prompt (ClaudeLeanPrompt): the
+// caller's instructions without the client Claude Code's billing line, as
+// renderClaudePrompt tells them to a run that keeps Claude Code's own,
+// with its tool choice. Claude Code still puts its billing line and its
+// identity line before it, and marks it for the cache itself.
+func leanSystem(req *Request) string {
+	return strings.TrimSpace(withoutBillingHeader(req.System) + toolChoiceAsk(req))
 }
 
 // historyChunk is how many messages of the history renderClaudePrompt puts
@@ -3951,6 +3990,9 @@ func (s *Server) serveSubscription(w http.ResponseWriter, r *http.Request, from 
 	if req.clientCache != nil {
 		req.clientCache.report = func() { cacheReportReady(w, req) }
 	}
+	// a client that places its own cache marks keeps Claude Code's prompt:
+	// its system marks are placed in the run's first message (#1717)
+	req.leanPrompt = name == "Claude Code" && req.clientCache == nil && settings.Load().ClaudeLeanPrompt
 	if req.Format != nil && req.Format.schema() == nil {
 		// --json-schema takes a schema only: any JSON object is asked for
 		// in words
@@ -3987,6 +4029,9 @@ func (s *Server) serveSubscription(w http.ResponseWriter, r *http.Request, from 
 	// and the fork died with it (ylorn on Discord).
 	if run != nil && run.clientMarks != (req.clientCache != nil) {
 		run, how = nil, "cache mode changed"
+	}
+	if run != nil && run.lean != req.leanPrompt {
+		run, how = nil, "system prompt mode changed"
 	}
 	if run != nil && !run.claimResume() {
 		run, how = nil, answeredElsewhere
