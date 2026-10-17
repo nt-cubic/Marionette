@@ -117,14 +117,18 @@ static PRESETS: [ProviderPreset; 6] = [
     // Anthropic 协议 https://open.bigmodel.cn/api/anthropic；OpenAI Chat
     // 协议 https://open.bigmodel.cn/api/coding/paas/v4。注意普通按量 key 用
     // /api/paas/v4（用户 ~/.grok 实配即此），coding 端点只吃套餐 key。
-    // models：官方页未给确切 id —— 留空，不拍脑袋。
+    // models：动态拉取（GET coding …/models，magpie model_names_test 同款）
+    // 为主；静态兜底取实测套餐主打两模型（2026-10-17 本机带 key 实测：
+    // chat 与 anthropic 两协议的 /models 目录完全一致，各 11 个 id，均含
+    // glm-5.3 / glm-5.3-flash；opencode 目录里的 glm-5.3-highspeed / glm-4.6v
+    // 两个端点都不认，不进静态表）。
     ProviderPreset {
         id: "glm",
         label: "智谱 GLM",
         anthropic_base: Some("https://open.bigmodel.cn/api/anthropic"),
         chat_base: Some("https://open.bigmodel.cn/api/coding/paas/v4"),
-        models: &[],
-        last_verified: "2026-10-16",
+        models: &["glm-5.3", "glm-5.3-flash"],
+        last_verified: "2026-10-17",
     },
     // platform.kimi.ai（官方 Claude Code 指南）：ANTHROPIC_BASE_URL=
     // https://api.moonshot.ai/anthropic（端点 …/anthropic/v1/messages）；
@@ -185,7 +189,11 @@ pub fn preset_for_opencode_provider(provider_id: &str) -> Option<&'static Provid
         "openrouter" => "openrouter",
         "deepseek" => "deepseek",
         "moonshot" | "kimi" => "kimi",
-        "glm" => "glm",
+        // 智谱 Coding Plan 在 opencode auth.json 里的键名是 `zhipuai-coding-plan`
+        // （`opencode auth login` → 智谱 AI Coding Plan；2026-10-17 本机实测），
+        // 与裸 `glm` 同走 open.bigmodel.cn 的 coding 端点族。按量的 `zhipuai`
+        // 仍不映射：coding 端点只吃套餐 key，按量 key 发过去就是 1113 余额不足。
+        "glm" | "zhipuai-coding-plan" => "glm",
         "xai" => "xai",
         // opencode 自己的 key（Zen/Go 平台）在 auth.json 里的键名是 "opencode"。
         // OAuth 订阅条目在扫描侧已分类成 subscription、进不了 reference，所以
@@ -194,6 +202,18 @@ pub fn preset_for_opencode_provider(provider_id: &str) -> Option<&'static Provid
         _ => return None,
     };
     find_preset(preset_id)
+}
+
+/// 引擎注册用的归一化：opencode 扫描出的 (provider-id, key) → (preset-id, key)。
+/// 未映射的 provider（anthropic / openai / zai …）过滤掉 —— 它们在
+/// `magpie_provider_for_preset` 里同样无门（registry 计划只吃 preset id）。
+pub fn reference_keys_as_presets(keys: Vec<(String, String)>) -> Vec<(String, String)> {
+    keys.into_iter()
+        .filter_map(|(provider, key)| {
+            let preset = preset_for_opencode_provider(&provider)?;
+            Some((preset.id.to_string(), key))
+        })
+        .collect()
 }
 
 /// 解析 reference 的 `文件路径#provider-id` → provider-id。
@@ -2587,8 +2607,8 @@ official_marketplace_auto_installed = true\n";
         // 去重；reference 并入由 list_models_merges_scanned_references 验。
         let scan = crate::credentials::scan_opencode_at(&dir);
 
-        // claude / grok：只看到 key-plan 的模型。glm 的默认模型列表为空
-        //（端点核实了但模型 id 没核实 —— 不拍脑袋），所以只剩 opencode-go 的。
+        // claude / grok：看到两个 key-plan 的模型。glm 的静态兜底是套餐主打
+        // 两模型（2026-10-17 端点实测；动态 /models 拉取为主、静态兜底）。
         for agent in ["claude-code", "grok-build", "grok"] {
             let result = list_models_at(&credentials, &scan, agent);
             // 测试态引擎未 Running → 引擎指引 note（2026-10-17 起：明说订阅族
@@ -2601,9 +2621,20 @@ official_marketplace_auto_installed = true\n";
             let models: Vec<&str> = result.models.iter().map(|m| m.model_id.as_str()).collect();
             assert_eq!(
                 models,
-                vec!["deepseek-v4.1-flash", "deepseek-v4-pro", "grok-4.7", "kimi-k3", "longcat-2.0"]
+                vec![
+                    "deepseek-v4.1-flash",
+                    "deepseek-v4-pro",
+                    "grok-4.7",
+                    "kimi-k3",
+                    "longcat-2.0",
+                    "glm-5.3",
+                    "glm-5.3-flash"
+                ]
             );
-            assert!(result.models.iter().all(|m| m.entry_id == "opencode-go"));
+            assert!(result
+                .models
+                .iter()
+                .all(|m| m.entry_id == "opencode-go" || m.entry_id == "glm"));
             // reference / subscription 一概不出现。
             assert!(result.models.iter().all(|m| m.entry_id != "opencode/deepseek"));
             assert!(result.models.iter().all(|m| m.entry_id != "grok/login"));
@@ -3179,6 +3210,9 @@ official_marketplace_auto_installed = true\n";
             ("moonshot", "kimi"),
             ("kimi", "kimi"),
             ("glm", "glm"),
+            // opencode auth login「智谱 AI Coding Plan」落在 auth.json 的键名
+            //（2026-10-17 本机实测）——claude 跨用菜单看不到 GLM 的直接根因。
+            ("zhipuai-coding-plan", "glm"),
             ("xai", "xai"),
             ("opencode", "opencode-go"),
             ("OPENCODE-GO", "opencode-go"),
@@ -3196,13 +3230,44 @@ official_marketplace_auto_installed = true\n";
         }
         // 未映射 → None：凭据页展示，但没有 L1 端点、不直连。zai 是 Z.ai
         // （api.z.ai）的键，与智谱 open.bigmodel.cn 不同 host，映射等于把别家
-        // 的 key 发错厂商（magpie 分列两个 preset，我们只展不连）。
-        for unknown in ["google", "anthropic", "openai", "vercel", "zai", ""] {
+        // 的 key 发错厂商（magpie 分列两个 preset，我们只展不连）；按量的
+        // zhipuai 同样不映射 —— coding 端点只吃套餐 key。
+        for unknown in [
+            "google",
+            "anthropic",
+            "openai",
+            "vercel",
+            "zai",
+            "zai-coding-plan",
+            "zhipuai",
+            "",
+        ] {
             assert!(
                 preset_for_opencode_provider(unknown).is_none(),
                 "`{unknown}` 不在映射表里，不该命中"
             );
         }
+    }
+
+    /// 引擎注册的引用归一化：原始 provider id → preset id；未映射过滤。
+    #[test]
+    fn reference_keys_as_presets_normalizes_for_registration() {
+        let out = reference_keys_as_presets(vec![
+            ("zhipuai-coding-plan".to_string(), "glm-key".to_string()),
+            ("deepseek".to_string(), "ds-key".to_string()),
+            ("moonshot".to_string(), "kimi-key".to_string()),
+            ("anthropic".to_string(), "oauth-key".to_string()),
+            ("zai".to_string(), "zai-key".to_string()),
+        ]);
+        assert_eq!(
+            out,
+            vec![
+                ("glm".to_string(), "glm-key".to_string()),
+                ("deepseek".to_string(), "ds-key".to_string()),
+                ("kimi".to_string(), "kimi-key".to_string()),
+            ]
+        );
+        assert!(reference_keys_as_presets(Vec::new()).is_empty());
     }
 
     /// 目录测试的串行锁：动态缓存与端点覆盖表是**模块级**全局（fn 内的
@@ -3388,6 +3453,42 @@ Connection: close
         assert_eq!(result.sources[0].preset, "openrouter");
 
         // 全局状态复位（死端口覆盖 / 失败缓存不能泄漏给并行的目录测试）。
+        clear_fetch_overrides_for_test();
+        clear_dynamic_cache_for_test();
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 2026-10-17 实修回归：opencode「智谱 Coding Plan」的 auth 键名是
+    /// `zhipuai-coding-plan`，此前映射表只认裸 `glm` —— claude 跨用菜单整个
+    /// 看不到 GLM（凭据页有、picker 无），引擎注册也整体跳过。
+    #[test]
+    fn zhipu_coding_plan_reference_reaches_claude_menu() {
+        let _fetch_guard = CATALOG_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = temp_dir("zhipu-ref");
+        let home = dir.join("opencode-home");
+        let auth = home.join(".local").join("share").join("opencode").join("auth.json");
+        fs::create_dir_all(auth.parent().unwrap()).unwrap();
+        fs::write(
+            &auth,
+            r#"{"zhipuai-coding-plan": {"type": "api", "key": "sk-fixture-glm-1a2b3c"}}"#,
+        )
+        .unwrap();
+        let scan = crate::credentials::scan_opencode_at(&home);
+        assert!(scan.error.is_none());
+        // 动态拉取指向必然拒连的本地端口 → 走静态兜底清单。
+        set_fetch_base_override_for_test("glm", "http://127.0.0.1:1");
+        clear_dynamic_cache_for_test();
+
+        let credentials = dir.join("credentials.json");
+        let result = list_models_at(&credentials, &scan, "claude-code");
+        assert_eq!(result.sources.len(), 1, "glm 来源要出现（现修前这里是 0）");
+        assert_eq!(result.sources[0].entry_id, "opencode/zhipuai-coding-plan");
+        assert_eq!(result.sources[0].preset, "glm");
+        assert!(result.sources[0].from_scan);
+        let models: Vec<&str> = result.models.iter().map(|m| m.model_id.as_str()).collect();
+        assert_eq!(models, vec!["glm-5.3", "glm-5.3-flash"]);
+        assert!(result.models.iter().all(|m| m.preset == "glm"));
+
         clear_fetch_overrides_for_test();
         clear_dynamic_cache_for_test();
         fs::remove_dir_all(&dir).ok();
