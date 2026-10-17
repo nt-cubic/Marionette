@@ -16,7 +16,7 @@ OpenCode、Claude Code、Grok Build、Codex、Pi、DeepSeek……把他们配进
 
 ![主界面](docs/screenshots/main.png)
 
-> 当前版本 **v0.3.0** · [Releases](https://github.com/nt-cubic/Marionette/releases/tag/v0.3.0)
+> 当前版本 **v0.3.1** · [Releases](https://github.com/nt-cubic/Marionette/releases/tag/v0.3.1)
 >
 > 普通版约 2 MB（引擎用时再下）· 内置引擎版约 16 MB（离线也能跨用）
 
