@@ -349,6 +349,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
                 });
                 await current.waitForTimeout(350);
               }
+              // Replies' Short Claude system prompt row is new: until BASE_REF
+              // has it, the page is compared with the row taken out;
+              // claude-lean-prompt-setting.test.cjs covers the row.
+              if (view === "settings" && !baselineFile("app.js").includes("claudeLeanRow")) {
+                await current.locator("#claudeLeanRow").evaluate((r) => r.remove());
+                await current.waitForTimeout(350);
+              }
               const before = PNG.sync.read(await still(original));
               const after = PNG.sync.read(await still(current));
               const sameSize = before.width === after.width && before.height === after.height;

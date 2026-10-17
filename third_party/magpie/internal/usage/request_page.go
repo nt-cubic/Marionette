@@ -1045,19 +1045,7 @@ func buildRequestBlocksWithCodex(p Period, f Filter, offset, limit int, now time
 			}
 		}
 		for _, d := range Dimensions {
-			g := f
-			if d == "provider" {
-				g.Provider = ""
-			}
-			if d == "agent" {
-				g.Agent = ""
-			}
-			if d == "model" || d == "modelAt" {
-				g.Model = ""
-			}
-			if d == "modelAt" {
-				g.Provider = ""
-			}
+			g := f.Without(d)
 			if f.Day != "" {
 				g.Day = ""
 				if g.keepsRow(r) {
@@ -1235,19 +1223,7 @@ func pageFromLedgerAt(p Period, f Filter, offset, limit int, all Ledgered, now t
 		})
 	}
 	for _, d := range Dimensions {
-		g := f
-		if d == "provider" {
-			g.Provider = ""
-		}
-		if d == "agent" {
-			g.Agent = ""
-		}
-		if d == "model" || d == "modelAt" {
-			g.Model = ""
-		}
-		if d == "modelAt" {
-			g.Provider = ""
-		}
+		g := f.Without(d)
 		out.By[d] = Breakdown(all.Filtered(g).Rows, d)
 		if f.Day != "" {
 			g.Day = ""

@@ -47,12 +47,7 @@ func (r *TraceReader) pollOpenCodeDB(path string, bodies bool, budget *int64) ([
 		}
 		files = append(files, ocDBRows(db, fmt.Sprintf(q, "session", where), "opencode", path, ocDB{db}, parent)...)
 	}
-	files = ocRoots(files, parent)
-	// Retain only the latest stores, as for JSONL discovery.
-	sortTraceOCFiles(files)
-	if len(files) > Limit {
-		files = files[:Limit]
-	}
+	files = traceOpenCodeWindow(ocRoots(files, parent))
 	var out []TraceSpan
 	pending := false
 	seen := map[string]bool{}

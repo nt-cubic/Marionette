@@ -229,6 +229,13 @@ type Settings struct {
 	// is stuck in a loop of the same few lines (#1359). Off, as by
 	// default, the gateway ends such a reply with an error.
 	NoLoopGuard bool `json:"noLoopGuard,omitempty"`
+	// ClaudeLeanPrompt starts a Claude subscription's Claude Code run with
+	// the caller's own instructions as its system prompt
+	// (--system-prompt-file), in place of Claude Code's (about 1.1K tokens
+	// a request on Sonnet 5.5), and not in its first message. Still the
+	// real Claude Code, its billing line and identity line kept; off, as by
+	// default, the run is the shape every Claude Code run has.
+	ClaudeLeanPrompt bool `json:"claudeLeanPrompt,omitempty"`
 	// RefusalRetries is how many more times a request the vendor's safety
 	// filter refused, with nothing said, is asked of another account or
 	// routing group member (#248), unset for every one left. 0 hands the
@@ -484,6 +491,17 @@ type Settings struct {
 	// off, in tokens: 0 is WorkingWindow (#876: 272K was the only one).
 	// A provider's or a model's own (ModelCompacts) comes before it.
 	CompactAt int `json:"compactAt,omitempty"`
+	// CodexAsyncCompact has Codex (0.163 on) compact a long conversation
+	// in the background, while its turn goes on, once it is past
+	// CodexAsyncCompactPercent of the model's window (#2490, lantern2077
+	// on Discord): [features.async_compaction] enabled in the config Codex
+	// is routed through, and capabilities.remote_compaction = "v2" on
+	// magpie's provider table, without which Codex never starts one on a
+	// provider other than OpenAI's. A value the user set there is theirs
+	// and stays (internal/agent/codex_async.go).
+	CodexAsyncCompact bool `json:"codexAsyncCompact,omitempty"`
+	// CodexAsyncCompactPercent is that share, 1–100; 0 is Codex's own, 65.
+	CodexAsyncCompactPercent int `json:"codexAsyncCompactPercent,omitempty"`
 	// ChinaMirror is the Plugins page's 「国内镜像」 switch: the plugin list,
 	// npm (the plugins' packages and what npm says of them) and Bun's
 	// downloads are asked of mirrors in China first, and of their official

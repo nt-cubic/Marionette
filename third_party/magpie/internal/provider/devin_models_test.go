@@ -204,32 +204,3 @@ func TestDevinTiers(t *testing.T) {
 		t.Errorf("offered to the agent: %s", got)
 	}
 }
-
-// The built-in's Devin picks from before the families were one model
-// (swe-2-high, claude-opus-5-5-low-fast) are variants of a model the plugin
-// lists, which it passes to Devin as they are: moving loses none of them,
-// nor Adaptive, which the built-in never served. A variant of a model the
-// plugin doesn't list, and a model of its own, are lost (moving Devin named every
-// level the user had picked was named as one the plugin doesn't serve).
-func TestDevinMoveKeepsVariants(t *testing.T) {
-	for id, want := range map[string]string{
-		"swe-2-high": "swe-2", "claude-opus-5-5-low-fast": "claude-opus-5-5", "swe-1-7-lightning-medium": "swe-1-7-lightning",
-		"GPT-6-Sol_HIGH": "GPT-6-Sol", "claude-fable-5-1-xhigh": "claude-fable-5-1", "swe-1-6-fast": "swe-1-6-fast", "glm-5-2-1m": "glm-5-2-1m", "swe-2": "swe-2",
-	} {
-		if got := devinBase(id); got != want {
-			t.Errorf("devinBase(%q) = %q, want %q", id, got, want)
-		}
-	}
-	served := movers["devin"].served
-	listed := []string{"swe-2", "claude-opus-5-5", "claude-opus-5-5-fast", "swe-1-7-lightning"}
-	for _, m := range []string{"swe-2-high", "swe-2-max", "claude-opus-5-5-medium-fast", "swe-1-7-lightning-medium", "Adaptive", "adaptive"} {
-		if !served(m, listed) {
-			t.Errorf("moving loses %s", m)
-		}
-	}
-	for _, m := range []string{"claude-fable-5-1-high", "gpt-6-luna", "swe-2"} {
-		if served(m, listed) {
-			t.Errorf("%s counts as served", m)
-		}
-	}
-}

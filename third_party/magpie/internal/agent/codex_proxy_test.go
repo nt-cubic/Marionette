@@ -106,6 +106,44 @@ func TestCodexProxyFor(t *testing.T) {
 	}
 }
 
+// ReneXiong (#2627): the detail named HTTP_PROXY for a value in
+// http_proxy, and ALL_PROXY for one in all_proxy, which sent the reader
+// looking for a variable that wasn't there. It names the one read.
+func TestCodexProxyNamesItsVariable(t *testing.T) {
+	const base = "http://127.0.0.1:3425/v1"
+	clash := "http://127.0.0.1:7890"
+	plain := filepath.Join(t.TempDir(), "config.toml")
+	os.WriteFile(plain, []byte("model = \"gpt-5.5\"\n"), 0o600)
+	respect := filepath.Join(t.TempDir(), "config.toml")
+	os.WriteFile(respect, []byte("model = \"gpt-5.5\"\n\n[features]\nrespect_system_proxy = true\n"), 0o600)
+	macSOCKS := netproxy.Proxy{URL: "socks5://127.0.0.1:7891", SOCKS: "socks5://127.0.0.1:7891"}
+	cases := []struct {
+		name string
+		cfg  string
+		env  map[string]string
+		sys  netproxy.Proxy
+		from string
+	}{
+		{"http_proxy", plain, map[string]string{"http_proxy": clash}, netproxy.Proxy{}, "http_proxy"},
+		{"HTTP_PROXY first", plain, map[string]string{"HTTP_PROXY": clash, "http_proxy": clash}, netproxy.Proxy{}, "HTTP_PROXY"},
+		{"all_proxy", plain, map[string]string{"all_proxy": "socks5://127.0.0.1:7890"}, netproxy.Proxy{}, "all_proxy"},
+		{"respect: http_proxy", respect, map[string]string{"http_proxy": clash}, macSOCKS, "http_proxy"},
+		{"respect: all_proxy", respect, map[string]string{"all_proxy": clash}, macSOCKS, "all_proxy"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			proxyAs(t, c.env, c.sys, "darwin", nil)
+			p, from := codexProxyFor(c.cfg, base)
+			if p == "" || from != c.from {
+				t.Fatalf("got %q from %q, want it from %s", p, from, c.from)
+			}
+			if d := codexProxiedDetail(base, p, from); !strings.Contains(d, "set in "+c.from+",") || !strings.Contains(d, "NO_PROXY where "+c.from+" is set") {
+				t.Fatalf("detail: %s", d)
+			}
+		})
+	}
+}
+
 // liu_dyj on X: magpie opened from the Dock lacks the NO_PROXY a shell
 // profile sets, which the Codex a terminal or the ChatGPT app runs has.
 // The login shell's value is Codex's; magpie's own only where the shell

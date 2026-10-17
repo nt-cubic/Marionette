@@ -917,35 +917,6 @@ func devinTierOf(id string) (tier, level string) {
 	return "", devinLevel(id)
 }
 
-// devinBase is the model a Devin variant id is a variant of: the id less
-// its tier and effort words (claude-opus-5-5-low-fast is claude-opus-5-5,
-// swe-2-high swe-2); an id at no effort is itself.
-func devinBase(id string) string {
-	tier, level := devinTierOf(id)
-	if level == "" {
-		return id
-	}
-	low := strings.ToLower(id)
-	cut := func(word string) bool {
-		for _, sep := range []string{"-", "_"} {
-			if strings.HasSuffix(low, sep+word) {
-				low, id = low[:len(low)-len(sep+word)], id[:len(low)-len(sep+word)]
-				return true
-			}
-		}
-		return false
-	}
-	if tier != "" {
-		cut(tier)
-	}
-	for _, l := range devinLevels {
-		if l.level == level && cut(l.word) {
-			break
-		}
-	}
-	return id
-}
-
 // devinEffortOf is the effort a Devin id runs at, in a tier or not.
 func devinEffortOf(id string) string {
 	_, l := devinTierOf(id)

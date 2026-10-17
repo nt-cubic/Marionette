@@ -1229,6 +1229,7 @@ func dshPutRoute(items []dshItem, on bool, models []catalog.Model, gw string) ([
 			// what dsh's Models page added to it (a default level, headers)
 			// stays; magpie's fields are put as they are now
 			if cur := yamlKey(providers, k.key); cur != nil && cur.Kind == yaml.MappingNode {
+				dshKeepCompat(cur, &route)
 				for j := 0; j+1 < len(route.Content); j += 2 {
 					yamlSetKey(cur, route.Content[j].Value, route.Content[j+1])
 				}
@@ -1257,6 +1258,45 @@ func dshPutRoute(items []dshItem, on bool, models []catalog.Model, gw string) ([
 	}
 	items[i] = dshItem{id: dshPiRow, magpie: items[i].magpie, lines: lines}
 	return items, nil
+}
+
+// dshKeepCompat carries the compat switches set by hand in dsh's Models page
+// (maxTokensField, say) from route cur, as it is in the file, into route,
+// as magpie writes it now (#2504, h4rk8s): a model that works only with
+// them would fail again after each sync. They stay on the same model of a
+// route still on the same protocol; a model new to the route, or a route
+// whose protocol changed, starts without them. A switch magpie sets itself
+// is put as magpie has it now.
+func dshKeepCompat(cur, route *yaml.Node) {
+	api := yamlKey(cur, "api")
+	if api == nil || yamlKey(route, "api") == nil || api.Value != yamlKey(route, "api").Value {
+		return
+	}
+	old := map[string]*yaml.Node{}
+	if ms := yamlKey(cur, "models"); ms != nil && ms.Kind == yaml.SequenceNode {
+		for _, m := range ms.Content {
+			c := yamlKey(m, "compat")
+			if id := yamlKey(m, "id"); id != nil && c != nil && c.Kind == yaml.MappingNode {
+				old[id.Value] = c
+			}
+		}
+	}
+	ms := yamlKey(route, "models")
+	if ms == nil || ms.Kind != yaml.SequenceNode {
+		return
+	}
+	for _, m := range ms.Content {
+		id := yamlKey(m, "id")
+		if id == nil || old[id.Value] == nil {
+			continue
+		}
+		c := yamlMapping(m, "compat")
+		for j := 0; j+1 < len(old[id.Value].Content); j += 2 {
+			if yamlKey(c, old[id.Value].Content[j].Value) == nil {
+				yamlSetKey(c, old[id.Value].Content[j].Value, old[id.Value].Content[j+1])
+			}
+		}
+	}
 }
 
 // dshPiRoute is magpie's route as llm-pi-ai takes a custom provider (the

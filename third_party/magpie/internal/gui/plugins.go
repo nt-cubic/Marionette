@@ -106,8 +106,8 @@ type pluginEntryJSON struct {
 	// differ, whatever the version in its package.json says
 	Commit string `json:"commit,omitempty"`
 	Head   string `json:"head,omitempty"`
-	// Moved are the built-in subscriptions moved onto it, which go back
-	// to themselves when it is removed or turned off
+	// Moved are the built-in subscriptions moved onto it, which stop
+	// with it when it is removed or turned off (no built-in to go back to)
 	Moved []string `json:"moved"`
 	// AutoUpdated is the update magpie made to it by itself lately
 	AutoUpdated *plugin.Updated `json:"autoUpdated,omitempty"`

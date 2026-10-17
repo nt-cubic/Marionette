@@ -75,13 +75,15 @@ func codexProxyFor(cfg, base string) (proxy, from string) {
 		return "", ""
 	}
 	host := u.Hostname()
-	env := func(keys ...string) string {
+	// env is the first of keys set, and which one it is: the detail names
+	// the variable the value is in, http_proxy or HTTP_PROXY (#2627)
+	env := func(keys ...string) (string, string) {
 		for _, k := range keys {
 			if v := strings.TrimSpace(codexProxyEnv(k)); v != "" {
-				return v
+				return v, k
 			}
 		}
-		return ""
+		return "", ""
 	}
 	httpKeys := []string{"HTTP_PROXY", "http_proxy"}
 	if u.Scheme == "https" {
@@ -109,11 +111,11 @@ func codexProxyFor(cfg, base string) (proxy, from string) {
 		case sys.SOCKS == "":
 			return "", ""
 		}
-		p, k := env(httpKeys...), httpKeys[0]
+		p, k := env(httpKeys...)
 		if p == "" {
-			p, k = env("ALL_PROXY", "all_proxy"), "ALL_PROXY"
+			p, k = env("ALL_PROXY", "all_proxy")
 		}
-		if p == "" || reqwestNoProxy(host, env("NO_PROXY", "no_proxy")) {
+		if no, _ := env("NO_PROXY", "no_proxy"); p == "" || reqwestNoProxy(host, no) {
 			return "", ""
 		}
 		return p, k
@@ -121,14 +123,14 @@ func codexProxyFor(cfg, base string) (proxy, from string) {
 	// reqwest's: each of the environment's first, the system's for
 	// http:// where it names none, then ALL_PROXY; NO_PROXY, or Windows'
 	// bypass list without it, goes around them
-	p, k := env(httpKeys...), httpKeys[0]
-	no := env("NO_PROXY", "no_proxy")
+	p, k := env(httpKeys...)
+	no, _ := env("NO_PROXY", "no_proxy")
 	sys := codexSystemProxy()
 	if p == "" && sys.HTTP != "" {
 		p, k = sys.HTTP, systemProxyName()
 	}
 	if p == "" {
-		p, k = env("ALL_PROXY", "all_proxy"), "ALL_PROXY"
+		p, k = env("ALL_PROXY", "all_proxy")
 	}
 	if no == "" && codexProxyOS == "windows" && sys.URL != "" {
 		no = strings.ReplaceAll(strings.Join(sys.Bypass, ","), "*.", "")
@@ -257,7 +259,7 @@ func codexProxiedDetail(base, proxy, from string) string {
 	d := "Codex sends its requests for magpie (" + host + ") through the proxy at " + netproxy.Redact(proxy) + ", set in " + from + ", and that proxy doesn't pass them on to magpie: every turn fails, with 502 Bad Gateway, whichever model it is on. " +
 		"Have the proxy send 127.0.0.1 direct (a DIRECT rule for 127.0.0.0/8, or rule mode rather than global), "
 	switch {
-	case strings.Contains(from, "PROXY"):
+	case strings.Contains(strings.ToUpper(from), "_PROXY"):
 		d += "or add 127.0.0.1 to NO_PROXY where " + from + " is set (your shell profile, such as ~/.zshrc, if it's there), "
 	case codexProxyOS == "windows":
 		d += "or add 127.0.0.1 to \"Don't use the proxy server for addresses beginning with\" in Windows' proxy settings (127.* there is not enough for Codex), "

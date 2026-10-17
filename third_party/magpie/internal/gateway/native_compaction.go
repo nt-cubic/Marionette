@@ -283,6 +283,26 @@ func checkpointReaders(cands []candidate, pl planned, who string) (_ []candidate
 	return keepCandidates(cands, pl, func(c candidate) bool { return c.who() == who })
 }
 
+// checkpointHeld is, of held, the key or account that sealed the native
+// compaction cp a request carries, when it is held there (in pl, which
+// checkpointReaders left only it in); nil when the request carries none.
+func checkpointHeld(cp *checkpointWriter, held []Weighed, pl planned) []Weighed {
+	if cp == nil {
+		return nil
+	}
+	ids := map[string]bool{}
+	for _, c := range append(slices.Clone(pl.capped), pl.held...) {
+		ids[c.rest] = true
+	}
+	var out []Weighed
+	for _, w := range held {
+		if w.Capped > 0 && ids[w.ID] {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
 // compactionCarriers keeps of cands those that can be asked Codex's own
 // compaction.
 func (s *Server) compactionCarriers(cands []candidate, pl planned) (_ []candidate, _ planned, left bool) {

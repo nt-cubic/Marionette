@@ -179,6 +179,7 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		NoAccountDiscovery:   true,
 	}
 	was.DesktopSubagentEffort = "high"
+	was.CodexAsyncCompact, was.CodexAsyncCompactPercent = true, 70
 	if err := settings.Save(was); err != nil {
 		t.Fatal(err)
 	}

@@ -150,7 +150,7 @@ func (f Filter) keepsRecord(r Record, codexIdentity bool, subagent, parentAgent 
 			return false
 		}
 	}
-	if f.CallerKey != "" && r.CallerKeyID != f.CallerKey {
+	if f.CallerKey != "" && r.CallerKeyID != f.CallerKey && (f.CallerKey != NoCallerKey || r.CallerKeyID != "") {
 		return false
 	}
 	if f.RouteID != 0 && r.RouteID != f.RouteID {
@@ -844,10 +844,34 @@ func (r Row) Floor() (tokens int, ms int64) {
 }
 
 // Dimensions are what calls are told apart by: the provider they went to,
-// the agent that made them, the model, and the model at the provider it
+// the agent that made them, the model, the model at the provider it
 // went to ("modelAt"), so one model's speed at each provider can be compared
-// (inaction on Discord).
-var Dimensions = []string{"provider", "agent", "model", "modelAt"}
+// (inaction on Discord), and the gateway key that made them ("callerKey"),
+// so the clients a shared gateway serves can be compared (#2521).
+var Dimensions = []string{"provider", "agent", "model", "modelAt", "callerKey"}
+
+// NoCallerKey is the "callerKey" of a call that carried no gateway key: one
+// that wasn't counted against any, as this computer's own agents' are, or
+// that came before keys were recorded. As a filter it keeps only those.
+const NoCallerKey = "none"
+
+// Without is f with the pick of dimension d cleared: what d's shares are
+// counted over, so that the others are still there to switch to.
+func (f Filter) Without(d string) Filter {
+	switch d {
+	case "provider":
+		f.Provider = ""
+	case "agent":
+		f.Agent = ""
+	case "model":
+		f.Model = ""
+	case "modelAt":
+		f.Model, f.Provider = "", ""
+	case "callerKey":
+		f.CallerKey = ""
+	}
+	return f
+}
 
 // ModelAtKey is a call's "modelAt": its provider's id and its model, as
 // "provider/model" (a provider's id has no "/").
@@ -862,6 +886,11 @@ func (r Row) key(by string) string {
 		return r.Agent
 	case "modelAt":
 		return ModelAtKey(r.Provider, r.Model)
+	case "callerKey":
+		if r.CallerKeyID == "" {
+			return NoCallerKey
+		}
+		return r.CallerKeyID
 	case "computer":
 		if r.Computer == "" {
 			return ThisComputer

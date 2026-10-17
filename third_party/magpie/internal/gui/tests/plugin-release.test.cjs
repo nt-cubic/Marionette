@@ -1,8 +1,9 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
 // A plugin a built-in subscription is moved onto says so in Installed, and
 // removing it or switching it off asks first, in the row, naming the
-// subscription that goes back to the built-in with its accounts; only a
-// yes sends the request. English and Chinese; the API is faked here.
+// subscription that stops working with it (there is no built-in to go
+// back to) and saying its accounts are kept; only a yes sends the request.
+// English and Chinese; the API is faked here.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -55,10 +56,10 @@ function server(lang, asked) {
 
 const L = {
   en: { installed: "Installed", serves: "Serves Zed", off: "Switch off", remove: "Remove", cancel: "Cancel",
-    askOff: "Zed goes back to the built-in, with its accounts, before the plugin is switched off.",
-    askRemove: "Zed goes back to the built-in, with its accounts, before the plugin is removed.", back: "Zed is back on the built-in" },
+    askOff: "Zed stops working while the plugin is off. Its accounts are kept.",
+    askRemove: "Zed stops working until the plugin is installed again. Its accounts are kept.", removed: "removed" },
   zh: { installed: "已安装", serves: "承载 Zed", off: "停用", remove: "移除", cancel: "取消",
-    askOff: "停用插件前，Zed 会带着它的账号回到内置的。", askRemove: "移除插件前，Zed 会带着它的账号回到内置的。", back: "Zed 已回到内置的" },
+    askOff: "插件停用期间，Zed 也会停用。它的账号会保留。", askRemove: "Zed 会停用，直到再次安装插件。它的账号会保留。", removed: "已移除" },
 };
 
 const shot = async (loc, name) => {
@@ -100,13 +101,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await zed.locator(".sub.ask").waitFor({ state: "detached" });
         assert.deepEqual(asked, [], "nothing sent before a yes");
 
-        // removing asks too; yes moves Zed back and removes the plugin
+        // removing asks too; yes removes the plugin, nothing moved back
         await zed.locator("button", { hasText: new RegExp("^" + w.remove + "$") }).click();
         await zed.locator(".sub.ask", { hasText: w.askRemove }).waitFor();
         await zed.locator("button.primary", { hasText: w.remove }).click();
         await page.waitForFunction(() => document.querySelectorAll("#view-plugins .pm-row").length === 1);
         assert.deepEqual(asked, [["remove", { spec: ZED + "@0.1.2" }]]);
-        await page.locator("#status", { hasText: w.back }).waitFor();
+        await page.locator("#status", { hasText: w.removed }).waitFor();
+        assert.doesNotMatch(await page.locator("#status").innerText(), /built-in|内置/);
         assert.equal(await view.evaluate((e) => e.scrollTop), top, "a click doesn't move the page");
         assert.deepEqual(asked.filter(([k]) => k === "fetched"), []);
         assert.deepEqual(errors, []);

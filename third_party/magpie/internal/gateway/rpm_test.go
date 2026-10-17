@@ -264,7 +264,10 @@ func TestMaxRPMCountsRetriesAndCounts(t *testing.T) {
 // member with room first, as it does one whose slots are all out, rather
 // than wait.
 func TestMaxRPMGroupPrefersMemberWithRoom(t *testing.T) {
-	shortMinute(t, 5*time.Second, time.Minute)
+	// A long minute: nothing waits for it when the routing is right, and
+	// half of it is far past a loaded machine's round trip (2.97s with
+	// B held 1.2s, at load 270).
+	shortMinute(t, 20*time.Second, time.Minute)
 	fresh(t)
 	a, b := &minuteVendor{}, &minuteVendor{}
 	ua, ub := httptest.NewServer(a), httptest.NewServer(b)
@@ -304,8 +307,28 @@ func TestMaxRPMGroupPrefersMemberWithRoom(t *testing.T) {
 	if len(a.times()) != 1 || len(b.times()) != 1 {
 		t.Fatalf("second: A saw %d, B %d; want B, A having no room", len(a.times()), len(b.times()))
 	}
-	if d := time.Since(began); d > time.Second {
-		t.Fatalf("the second waited %s", d)
+	// It went to B without standing in A's minute: its route has one
+	// try, B's, that queued for neither a slot nor room in a minute. This
+	// is the state the round trip's time stood in for; a fixed 1s bar on
+	// that time went red on a loaded machine with the routing right
+	// (#2520).
+	var r Route
+	for end := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		s.trace.mu.Lock()
+		r = *s.trace.routes[len(s.trace.routes)-1]
+		r.Tries = append([]Try{}, r.Tries...)
+		s.trace.mu.Unlock()
+		if r.Done || time.Now().After(end) {
+			break
+		}
+	}
+	if !r.Done || len(r.Tries) != 1 || r.Tries[0].ID != "pb" || r.Tries[0].Queued != 0 {
+		t.Fatalf("second: done %v, tries %+v; want one try to B that never queued", r.Done, r.Tries)
+	}
+	// A wait for A's minute would be the whole of it (20s): half of it
+	// leaves room on both sides.
+	if d := time.Since(began); d > rpmWindow/2 {
+		t.Fatalf("the second took %s, as long as a wait for A's %s minute", d, rpmWindow)
 	}
 }
 

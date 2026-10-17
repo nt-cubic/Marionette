@@ -5,7 +5,8 @@
 // is signed in to, not a sign-in page), and the waiting box of one with
 // ways besides the one under way and its key has "Other ways to sign in…",
 // which cancels that sign-in and shows the ways. Factory, with its real two
-// ways, still goes straight to its device code, its key the one link away.
+// ways, still goes straight to its device code, its key the one link away:
+// its key import, which sends the keys to its plugin, not a second link.
 // English and Chinese; the API is faked here.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
@@ -50,8 +51,8 @@ function server(lang, asked) {
 }
 
 const L = {
-  en: { anyway: "Sign in anyway", app: "ZCode app's sign-in", key: "GLM Coding Plan API key", other: "Other ways to sign in…", how: "How do you sign in to" },
-  zh: { anyway: "仍然登录", app: "使用 ZCode 应用已登录的账号", key: "GLM Coding Plan API Key", other: "其他登录方式…", how: "用哪种方式登录" },
+  en: { anyway: "Sign in anyway", app: "ZCode app's sign-in", key: "GLM Coding Plan API key", other: "Other ways to sign in…", how: "How do you sign in to", apiKey: "Use an API key instead" },
+  zh: { anyway: "仍然登录", app: "使用 ZCode 应用已登录的账号", key: "GLM Coding Plan API Key", other: "其他登录方式…", how: "用哪种方式登录", apiKey: "改用 API" },
 };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
@@ -102,8 +103,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(await box.locator(".choices").count(), 0);
         assert.equal(await box.locator("button.other-ways").count(), 0);
         if (process.env.ARTIFACT_DIR) await box.screenshot({ path: path.join(process.env.ARTIFACT_DIR, `plugin-other-ways-factory-${engine}-${lang}.png`) });
-        await box.locator(".acts button.link").last().click();
-        await box.locator('input[type="password"]').waitFor();
+        // one key link, not the plugin's beside the import's: the import
+        // sends its keys to the plugin (factory_key.go)
+        const keys = box.locator(".acts button.link", { hasText: w.apiKey });
+        assert.equal(await keys.count(), 1, "two API key links");
+        await keys.click();
+        await page.locator("#addSheet textarea").waitFor();
         assert.deepEqual(errors, []);
       });
     }

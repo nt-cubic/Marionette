@@ -1374,6 +1374,9 @@ func (s *Server) handle(from provider.Protocol) http.HandlerFunc {
 			// own: in the request's tools for every route, the relay's
 			// and every check that reads them (#2322)
 			body = liftMessageTools(body)
+			// a tool in MCP's, Anthropic's or Responses' shape, which
+			// no Chat API takes, in the Chat shape for every route (#2622)
+			body = shapeChatTools(body)
 		}
 		// Claude Code's headers, for a test asked as Claude Code to ask
 		// with (provider.TestAs), whatever serves this model: a
@@ -1906,7 +1909,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		}
 		if currentImage {
 			call.Status, call.Error = 400, "model does not support image input"
-			writeError(w, from, 400, fmt.Sprintf("model %q does not support image input%s", call.Model, noSeerNote()))
+			group := ""
+			if isGroup {
+				group = g.Name
+			}
+			writeError(w, from, 400, fmt.Sprintf("model %q does not support image input%s%s", call.Model, textOnlyNote(p, model, group), noSeerNote()))
 			turnedAway()
 			return
 		}
@@ -2016,14 +2023,25 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		if strictHeld != nil {
 			held = strictHeld
 		}
-		msg, back := cappedError(call.Model, held, time.Now())
-		if strictHeld != nil {
-			msg += ". The conversation stays strictly on that account (Stays: Strict), so magpie doesn't move it to another"
+		var msg, record string
+		var back time.Time
+		if sealer := checkpointHeld(checkpoint, held, pl); sealer != nil {
+			// only the account that sealed the conversation's native
+			// compaction was a candidate, and it is held: the others
+			// weren't tried for that, not for being held too (#2517)
+			msg, back = checkpointCappedError(call.Model, *checkpoint, sealer, time.Now())
+			record = checkpointCappedRecord(sealer)
+		} else {
+			msg, back = cappedError(call.Model, held, time.Now())
+			if strictHeld != nil {
+				msg += ". The conversation stays strictly on that account (Stays: Strict), so magpie doesn't move it to another"
+			}
+			record = cappedRecord(held)
 		}
 		if d := time.Until(back); d > 0 {
 			w.Header().Set("Retry-After", strconv.Itoa(int(d.Seconds())+1))
 		}
-		call.Status, call.Error = 429, cappedRecord(held)
+		call.Status, call.Error = 429, record
 		writeError(w, from, 429, msg)
 		turnedAway()
 		return
@@ -2143,7 +2161,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			}
 			if len(cands) == 0 {
 				call.Status, call.Error = 400, "model does not support image input"
-				writeError(w, from, 400, fmt.Sprintf("model %q does not support image input%s", call.Model, noSeerNote()))
+				writeError(w, from, 400, fmt.Sprintf("model %q does not support image input%s%s", call.Model, textOnlyNote(p, model, g.Name), noSeerNote()))
 				turnedAway()
 				return
 			}
@@ -3396,6 +3414,12 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.P
 		body = orphanedToolOutputs(body)
 		body = pairToolItems(body)
 	}
+	if from == provider.Chat {
+		// a call kept with an empty id, which a strict upstream turns
+		// the whole request away for (#2611); before the relay, the
+		// translation and a plugin's fetch alike
+		body = chatCallIDs(body)
+	}
 	// every request to the provider goes through its own proxy, if it has
 	// one (#237)
 	r = r.WithContext(p.Via(r.Context()))
@@ -4006,6 +4030,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		}
 	case provider.Chat:
 		body = developerAsSystem(body)
+		// a turn the client cut off before it said anything, which
+		// DeepSeek and Kimi turn every later request away for (#2599)
+		body = silentAssistantsOut(body)
 		if mistral := p.Preset == "mistral" || p.Host() == "api.mistral.ai"; !mistral && (chatReplaysReasoning(buildHost(p), model) || chatReplaysReasoning(buildHost(p), upstream)) {
 			// a tool call the client kept no thinking for, which DeepSeek
 			// turns the whole request away for (#1462)
@@ -6015,12 +6042,26 @@ func developerAsSystem(body []byte) []byte {
 }
 
 // sessionHeaders are where agents already name their conversation: OpenCode
-// (to its own gateway, and to everyone else), Pi, Codex, Claude Code and
-// WorkBuddy / CodeBuddy (X-Conversation-ID).
+// (to its own gateway, and to everyone else), Pi, Codex, Claude Code,
+// WorkBuddy / CodeBuddy (X-Conversation-ID) and DSH (#2505).
 var sessionHeaders = []string{
 	"x-opencode-session", "x-session-affinity", "x-session-id",
 	"session_id", "session-id", "x-claude-code-session-id",
-	"x-conversation-id",
+	"x-conversation-id", "x-deepseek-harness-session-id",
+}
+
+// dshCompactHeader is how DSH marks a request that compacts its context
+// (#2505). Only the mark says so: a request without it is never taken for
+// one by what its prompt says.
+const dshCompactHeader = "x-deepseek-harness-compact"
+
+// dshCompacts reports whether h carries DSH's compaction mark, set.
+func dshCompacts(h http.Header) bool {
+	switch strings.ToLower(strings.TrimSpace(h.Get(dshCompactHeader))) {
+	case "", "0", "false", "no", "off":
+		return false
+	}
+	return true
 }
 
 // SessionHeader names the session a call is part of, for the usage log to

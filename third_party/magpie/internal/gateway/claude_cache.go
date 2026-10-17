@@ -207,6 +207,12 @@ func cacheIdentity(h hash.Hash, req *Request) {
 	if c := req.clientCache; c != nil {
 		fmt.Fprintf(h, "\x00client-cache:%v", c.system)
 	}
+	// a run started with the caller's instructions as its system prompt
+	// was never told Claude Code's, and one started with Claude Code's has
+	// them in its first message: neither goes on with the other's turns
+	if req.leanPrompt {
+		fmt.Fprint(h, "\x00lean-prompt")
+	}
 }
 
 func cacheDropped(w http.ResponseWriter, req *Request) {

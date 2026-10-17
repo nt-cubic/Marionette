@@ -102,7 +102,6 @@ const usage = `magpie — one place to pick every agent's model
   magpie plugin [add <package>|rm|update|on|off|login <provider>|logout <provider>]
                                   OpenCode provider plugins and pi packages: subscriptions signed in to, and served, through a plugin
   magpie plugin move|migrate <subscription>   run a built-in subscription's accounts on its community plugin
-  magpie plugin move-back|unmigrate <subscription>   go back to the built-in, with its accounts
 
   magpie serve [--web[=host:port]] [--tls-cert <file> --tls-key <file>]
                                   run the gateway alone (the app runs it too); --web serves magpie web's page too, from the same process (127.0.0.1:3430 unless told);

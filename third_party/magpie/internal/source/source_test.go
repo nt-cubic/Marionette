@@ -2,12 +2,14 @@ package source
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -265,31 +267,90 @@ func TestDoKeepsCredentialsOfficial(t *testing.T) {
 	}
 }
 
-func TestDoLastSourceUsesRemainingBudget(t *testing.T) {
-	official := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(1100 * time.Millisecond)
-		http.Error(w, "slow official", http.StatusBadGateway)
-	}))
-	defer official.Close()
-	mirror := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(700 * time.Millisecond)
-		io.WriteString(w, "slow mirror")
-	}))
-	defer mirror.Close()
+// budgetTransport answers the first (official) address only when its
+// candidate context ends, and holds the last (mirror) address until its
+// context ends too, recording how each one ended. Nothing here depends on
+// how long a request takes to be scheduled: the assertions read which
+// context fired and when, not whether a sleep finished in time (#2608).
+type budgetTransport struct {
+	official, mirror string
+	beforeMirror     time.Duration
 
+	mu          sync.Mutex
+	officialErr error
+	mirrorErr   error
+	mirrorAt    time.Time
+	mirrorEnd   time.Time
+	mirrorDL    time.Time
+	mirrorHasDL bool
+}
+
+func (rt *budgetTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	ctx := req.Context()
+	switch req.URL.String() {
+	case rt.official:
+		<-ctx.Done()
+		rt.mu.Lock()
+		rt.officialErr = ctx.Err()
+		rt.mu.Unlock()
+		return nil, ctx.Err()
+	case rt.mirror:
+		if rt.beforeMirror > 0 {
+			time.Sleep(rt.beforeMirror)
+		}
+		at := time.Now()
+		dl, ok := ctx.Deadline()
+		<-ctx.Done()
+		rt.mu.Lock()
+		rt.mirrorAt, rt.mirrorEnd = at, time.Now()
+		rt.mirrorDL, rt.mirrorHasDL = dl, ok
+		rt.mirrorErr = ctx.Err()
+		rt.mu.Unlock()
+		return nil, ctx.Err()
+	}
+	return nil, fmt.Errorf("unexpected request %s", req.URL)
+}
+
+func checkLastSourceBudget(t *testing.T, beforeMirror time.Duration) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, "GET", official.URL+"/thing", nil)
-	resp, err := do(http.DefaultClient, req, []string{official.URL + "/thing", mirror.URL + "/thing"})
-	if err != nil {
-		t.Fatal(err)
+	deadline, _ := ctx.Deadline()
+	rt := &budgetTransport{
+		official:     "https://official.example/thing",
+		mirror:       "https://mirror.example/thing",
+		beforeMirror: beforeMirror,
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
+	req, _ := http.NewRequestWithContext(ctx, "GET", rt.official, nil)
+	resp, err := do(&http.Client{Transport: rt}, req, []string{rt.official, rt.mirror})
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("do answered although both candidates failed")
 	}
-	if string(body) != "slow mirror" {
-		t.Fatalf("body = %q", body)
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	// The first candidate is cut by its share of the budget, a second
+	// before the parent's deadline, not by the deadline itself.
+	if !errors.Is(rt.officialErr, context.Canceled) {
+		t.Fatalf("official request ended with %v, want its candidate budget (context.Canceled)", rt.officialErr)
 	}
+	// The last candidate keeps the parent's deadline: its context carries
+	// that deadline and ends only when the parent's does.
+	if !rt.mirrorHasDL || !rt.mirrorDL.Equal(deadline) {
+		t.Fatalf("mirror deadline = %v (set %v), want the parent's %v", rt.mirrorDL, rt.mirrorHasDL, deadline)
+	}
+	if !errors.Is(rt.mirrorErr, context.DeadlineExceeded) || rt.mirrorEnd.Before(deadline) {
+		t.Fatalf("mirror request ended with %v %v before the parent's deadline (started %v before it); the last source must get the remaining budget",
+			rt.mirrorErr, deadline.Sub(rt.mirrorEnd), deadline.Sub(rt.mirrorAt))
+	}
+}
+
+func TestDoLastSourceUsesRemainingBudget(t *testing.T) {
+	checkLastSourceBudget(t, 0)
+}
+
+// A runner that is slow to send the mirror request (the 350ms pause #2608
+// injected) still sees the mirror keep the parent's remaining deadline.
+func TestDoLastSourceUsesRemainingBudgetWhenLate(t *testing.T) {
+	checkLastSourceBudget(t, 350*time.Millisecond)
 }

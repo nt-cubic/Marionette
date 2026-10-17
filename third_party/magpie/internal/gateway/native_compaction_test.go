@@ -264,3 +264,49 @@ func TestNativeCompactionFallbackSealStaysWithItsWriter(t *testing.T) {
 		t.Errorf("fa, which can't read it, was sent it: %s", fa.got)
 	}
 }
+
+// #2517: a conversation compacted natively by an account goes only to it,
+// so when that account is held at its usage cap the request is refused
+// saying so, not as if every account that serves the model were held: the
+// other, with room, wasn't tried for the compaction, and routing can't
+// move it there.
+func TestNativeCompactionWriterAtItsCap(t *testing.T) {
+	codexSignedIn(t, "spare@example.com")
+	b := newResetBackend(t)
+	capUsage(t, map[string]float64{"me@example.com": 75, "spare@example.com": 20})
+	if err := provider.SetRouting("codex", provider.Ordered); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.SetAccountCap("codex", "me@example.com", 70); err != nil {
+		t.Fatal(err)
+	}
+	wroteCheckpoint("gAAAAB-sealed-by-me", candidate{p: provider.Provider{ID: "codex", Account: &provider.Account{User: "me@example.com"}}})
+	srv := New()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true,"input":[{"type":"compaction","encrypted_content":"gAAAAB-sealed-by-me"},{"type":"message","role":"user","content":[{"type":"input_text","text":"go on"}]}]}`))
+	req.Header.Set("Authorization", "Bearer chatgpt-token")
+	req.Header.Set("chatgpt-account-id", "acct-1")
+	srv.Handler().ServeHTTP(rec, req)
+	code, body := rec.Code, rec.Body.String()
+	if tried, _ := b.seen(); code != 429 || tried != "" {
+		t.Fatalf("%d tried %q: %s", code, tried, body)
+	}
+	for _, want := range []string{"rate_limit_error", "one account this conversation can go to", "me@example.com", "past its 70% cap", "compacted natively", "routing mode", "account-cap"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("no %q in %s", want, body)
+		}
+	}
+	for _, not := range []string{"every account", "spare@example.com"} {
+		if strings.Contains(body, not) {
+			t.Errorf("%q in %s", not, body)
+		}
+	}
+	if calls := srv.Recent(); len(calls) == 0 || calls[0].Status != 429 || calls[0].Error != "native compaction's account at its usage cap" {
+		t.Fatalf("request log %+v", calls)
+	}
+
+	// without the compaction, the account with room takes it
+	if code, body := resetPost(t, srv); code != 200 || !strings.Contains(body, "pong") {
+		t.Fatalf("no compaction: %d %s", code, body)
+	}
+}

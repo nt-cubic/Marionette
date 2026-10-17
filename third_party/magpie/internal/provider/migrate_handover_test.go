@@ -11,11 +11,11 @@ import (
 // (ARNO on Discord: Qoder CN listed twice, the built-in and the plugin's,
 // once the Qoder plugin served it): one with no accounts at once, one with
 // accounts only when asked to move them, through Move. One the plugin is
-// signed in to under its own id already stays as it is, as does one the
-// user moved back, and nothing happens while the plugin isn't installed.
+// signed in to under its own id already stays as it is; one moved whose
+// plugin the user removed is the plugin's again once it is installed, and
+// nothing happens while the plugin isn't installed.
 func TestHandOver(t *testing.T) {
-	inUse := []string{"fake-1"}
-	ctx, abs, installs := fakePlugin(t, &inUse)
+	ctx, abs, installs := fakePlugin(t)
 	reset := func(ls ...savedLogin) {
 		t.Helper()
 		_ = plugin.SignOut(ctx, "fakeco", "")
@@ -36,15 +36,19 @@ func TestHandOver(t *testing.T) {
 	if out := HandOver(ctx, false); out["fakeco"] != nil || !Moved("fakeco") {
 		t.Fatalf("no accounts: %v, moved %v", out, Moved("fakeco"))
 	}
-	// moved back by the user: it stays built-in
-	if err := MoveBack(ctx, "fakeco"); err != nil {
+	// the user removed the plugin: nothing moves or installs it until they
+	// install it again, and then it is the plugin's at once
+	if err := RemovePlugin(ctx, abs); err != nil {
 		t.Fatal(err)
 	}
-	if out := HandOver(ctx, true); len(out) != 0 || Moved("fakeco") {
-		t.Fatalf("moved back: %v, moved %v", out, Moved("fakeco"))
+	if out := HandOver(ctx, true); len(out) != 0 || Moved("fakeco") || pluginListed(abs) {
+		t.Fatalf("plugin removed: %v, moved %v, listed %v", out, Moved("fakeco"), pluginListed(abs))
 	}
-	if !pluginListed(abs) {
-		t.Fatal("moving back took away the plugin the user installed")
+	if _, err := plugin.Add(ctx, abs); err != nil {
+		t.Fatal(err)
+	}
+	if out := HandOver(ctx, false); out["fakeco"] != nil || !Moved("fakeco") {
+		t.Fatalf("installed again: %v, moved %v", out, Moved("fakeco"))
 	}
 
 	// the built-in has an account: moved only when accounts are asked for
@@ -58,9 +62,6 @@ func TestHandOver(t *testing.T) {
 
 	// the plugin signed in on its own, the built-in not moved: left as it
 	// is, its models in use under the plugin's own id
-	if err := MoveBack(ctx, "fakeco"); err != nil {
-		t.Fatal(err)
-	}
 	reset()
 	if _, err := plugin.Import(ctx, "fakeco", map[string]any{"type": "oauth", "refresh": "r-b", "access": "a", "expires": 9e15, "accountId": "b@fake"}); err != nil {
 		t.Fatal(err)

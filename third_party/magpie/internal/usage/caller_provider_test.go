@@ -3,6 +3,7 @@ package usage
 import (
 	"encoding/csv"
 	"encoding/json"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -175,6 +176,62 @@ func TestCallerPageKeepsUnattributedSessionsSeparate(t *testing.T) {
 			if filter.CallerKey != "" && row.Source == "log" {
 				t.Fatal("local session wrongly attributed to a gateway key", row)
 			}
+		}
+	}
+}
+
+// MauriceCarlo's #2521: a gateway with one key in use still has two kinds
+// of calls, that key's and those with none, and the Requests page splits
+// them as it splits agents or models. The split is counted without the
+// key's own pick, so the other choices stay there to switch to, and "none"
+// as a pick keeps only the calls with no key, a session file's among them.
+func TestCallerKeySplitAndNone(t *testing.T) {
+	pageHome(t)
+	now := holdClock(t, time.Date(2026, 9, 30, 12, 0, 0, 0, time.Local))
+	recs := []Record{
+		{Time: now, Agent: "codex", Provider: "relay", Model: "m", CallerKeyID: "desk", CallerKeyName: "Desk", Input: 10, Status: 200},
+		{Time: now, Agent: "codex", Provider: "relay", Model: "m", CallerKeyID: "desk", CallerKeyName: "Desk", Input: 5, Status: 200},
+		{Time: now, Agent: "codex", Provider: "relay", Model: "m", Input: 30, Status: 200},
+	}
+	for i := range recs {
+		recs[i].Time = now.Add(time.Duration(i) * time.Second)
+		Append(recs[i])
+	}
+	logs := []sessions.Call{{Time: now.Add(-time.Second), Agent: "claude", Session: "local", Model: "m", Tokens: sessions.Tokens{Input: 40}}}
+	rows, sum, agents, providers := ledgerWith(time.Time{}, Filter{}, recs, logs)
+	all := Ledgered{Rows: rows, Sum: sum, Agents: agents, Providers: providers}
+	gateway, local := &rowChunk{}, &rowChunk{Source: sessions.CallSource{Path: "/local"}}
+	for i, row := range rows {
+		if row.Source == "log" {
+			local.add(row, "local-message", int64(i), false)
+		} else {
+			gateway.add(row, "", int64(i), false)
+		}
+	}
+	for _, c := range []struct {
+		filter      Filter
+		calls, sent int
+	}{{Filter{}, 4, 85}, {Filter{CallerKey: "desk"}, 2, 15}, {Filter{CallerKey: NoCallerKey}, 2, 70}, {Filter{CallerKey: NoCallerKey, Agent: "codex"}, 1, 30}} {
+		page := buildRequestPage(All, c.filter, 0, 100, gateway, []*rowChunk{local})
+		equalPage(t, page, pageFromLedger(All, c.filter, 0, 100, all))
+		if page.Total != c.calls || page.Sum.Input != c.sent {
+			t.Fatalf("%+v: %d calls, %d in; want %d, %d", c.filter, page.Total, page.Sum.Input, c.calls, c.sent)
+		}
+		for _, r := range page.Rows {
+			if c.filter.CallerKey == NoCallerKey && r.CallerKeyID != "" {
+				t.Fatalf("none kept a key's call: %+v", r)
+			}
+		}
+		got := map[string]int{}
+		for _, s := range page.By["callerKey"] {
+			got[s.ID] = s.Input
+		}
+		want := map[string]int{"desk": 15, NoCallerKey: 70}
+		if c.filter.Agent == "codex" {
+			want = map[string]int{"desk": 15, NoCallerKey: 30}
+		}
+		if !maps.Equal(got, want) {
+			t.Fatalf("%+v: split by key = %v, want %v", c.filter, got, want)
 		}
 	}
 }

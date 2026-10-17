@@ -272,19 +272,24 @@ func TestChatThinkingOnlyAssistantDroppedInsideExchange(t *testing.T) {
 	}
 }
 
-// Outside an exchange a thinking-only turn passes through, as on main:
-// dropping it would leave two user messages in a row, which some models'
-// chat templates refuse.
-func TestChatThinkingOnlyAssistantKeptOutsideExchange(t *testing.T) {
+// Outside an exchange a thinking-only turn, one the user cut off before
+// it said anything, is left out too: DeepSeek and Kimi turn the request
+// away over an assistant message with neither content nor tool_calls
+// (#2599). The two user messages it stood between join into one, as some
+// models' chat templates turn away two in a row.
+func TestChatThinkingOnlyAssistantLeftOutOutsideExchange(t *testing.T) {
 	r := &Request{Messages: []Message{
 		{Role: "user", Parts: []Part{{Kind: Text, Text: "hi"}}},
 		{Role: "assistant", Parts: []Part{{Kind: Thinking, Text: "hmm", Signature: "sig"}}},
 		{Role: "user", Parts: []Part{{Kind: Text, Text: "继续"}}},
 	}}
-	trace, _ := chatTrace(t, r)
-	want := "user assistant user"
+	trace, msgs := chatTrace(t, r)
+	want := "user"
 	if trace != want {
 		t.Fatalf("trace = %q, want %q", trace, want)
+	}
+	if c, _ := msgs[0]["content"].(string); c != "hi\n\n继续" {
+		t.Fatalf("joined content = %q", c)
 	}
 }
 

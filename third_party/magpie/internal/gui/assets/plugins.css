@@ -136,13 +136,40 @@ button.pm-chip:disabled { cursor: default; opacity: .6; }
 .pm-act:disabled:not(.busy):not(.done) { opacity: .55; }
 .pm-act .spin { width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid currentColor; border-right-color: transparent; animation: spin .7s linear infinite; }
 
-/* loading: cards drawn as grey bars */
-.pm-card.ghost { gap: 10px; pointer-events: none; }
-.pm-card.ghost > div { border-radius: 6px; background: var(--pill); animation: pm-pulse 1.3s ease-in-out infinite; }
-.pm-card.ghost .g1 { height: 36px; width: 60%; }
-.pm-card.ghost .g2 { height: 11px; }
-.pm-card.ghost .g3 { height: 11px; width: 40%; }
+/* loading: cards laid out as a card is, in soft bars a light passes
+   over, one card a beat after the one before it */
+.pm-card.ghost { gap: 9px; pointer-events: none; border-color: color-mix(in srgb, var(--line) 70%, transparent); }
+.pm-card.ghost .sk {
+  border-radius: 5px;
+  background: linear-gradient(100deg, var(--pill) 30%, color-mix(in srgb, var(--pill-hover) 70%, var(--card)) 50%, var(--pill) 70%);
+  background-size: 300% 100%;
+  animation: pm-sheen 1.8s cubic-bezier(.45, 0, .25, 1) infinite;
+  animation-delay: calc(var(--i, 0) * 120ms);
+}
+.pm-card.ghost .gtop { display: flex; align-items: center; gap: 10px; }
+.pm-card.ghost .gwho { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+.pm-card.ghost .glogo { flex: none; width: 36px; height: 36px; border-radius: 10px; }
+.pm-card.ghost .gname { height: 11px; width: 52%; }
+.pm-card.ghost .gby { height: 8px; width: 30%; opacity: .7; }
+.pm-card.ghost .gact { flex: none; width: 56px; height: 26px; border-radius: 13px; opacity: .8; }
+.pm-card.ghost .gline { height: 8px; margin-top: 6px; }
+.pm-card.ghost .gline.short { width: 68%; margin-top: 0; }
+.pm-card.ghost .gmeta { display: flex; gap: 8px; margin-top: 7px; }
+.pm-card.ghost .gchip { height: 8px; width: 46px; opacity: .8; }
+.pm-card.ghost .gchip.short { width: 30px; }
 @keyframes pm-pulse { 50% { opacity: .5; } }
+@keyframes pm-sheen { from { background-position: 100% 0; } to { background-position: 0 0; } }
+/* the GitHub section looking: three dots breathing in turn, and the word */
+.pm-sechead .pm-ghlook { display: inline-flex; align-items: center; gap: 7px; margin-left: auto; font-size: 11px; color: var(--faint); animation: pm-fade .4s var(--ease) both .15s; }
+.pm-ghlook .dots { display: inline-flex; gap: 3px; }
+.pm-ghlook .dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--accent); opacity: .25; animation: pm-breathe 1.2s ease-in-out infinite; }
+.pm-ghlook .dots i:nth-child(2) { animation-delay: .16s; }
+.pm-ghlook .dots i:nth-child(3) { animation-delay: .32s; }
+@keyframes pm-breathe { 0%, 70%, 100% { opacity: .25; transform: none; } 35% { opacity: .9; transform: translateY(-1.5px); } }
+@keyframes pm-fade { from { opacity: 0; } }
+/* its cards when they come: in where the ghosts were, one after another */
+.pm-arrive .pm-card { animation: pm-arrive .42s cubic-bezier(.2, .7, .2, 1) both; animation-delay: calc(var(--i, 0) * 40ms); }
+@keyframes pm-arrive { from { opacity: 0; transform: translateY(4px); } }
 
 .pm-note { margin: 0; padding: 4px 2px; font-size: 12px; color: var(--muted); }
 .pm-note.bad { color: var(--red); }
@@ -246,5 +273,6 @@ button.pm-chip:disabled { cursor: default; opacity: .6; }
 }
 @media (prefers-reduced-motion: reduce) {
   .pm-card { transition: none; }
-  .pm-card.ghost > div, .pm-rskel { animation: none; }
+  .pm-card.ghost .sk, .pm-rskel, .pm-ghlook, .pm-ghlook .dots i, .pm-arrive .pm-card { animation: none; }
+  .pm-ghlook .dots i { opacity: .5; }
 }

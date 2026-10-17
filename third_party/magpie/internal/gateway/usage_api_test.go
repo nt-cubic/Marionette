@@ -81,6 +81,14 @@ func TestUsageOverGateway(t *testing.T) {
 	if subs != 1 {
 		t.Fatal("subagent rows:", subs, b)
 	}
+	// split by key, each named as the key filter names it (#2521)
+	split := map[string]string{}
+	for _, s := range page.By["callerKey"] {
+		split[s.ID] = s.Name
+	}
+	if len(split) != 2 || split[keys[0].ID] != "Laptop" || split[keys[1].ID] != "Held" {
+		t.Fatal("the split by key:", page.By["callerKey"])
+	}
 
 	if c, _ := do("GET", "/v1/magpie/usage", "192.168.1.9:5000", nil); c != http.StatusUnauthorized {
 		t.Fatal("another machine with no key got", c)
@@ -100,6 +108,10 @@ func TestUsageOverGateway(t *testing.T) {
 		c, b := do("GET", "/v1/magpie/usage/requests?period=all&callerKey="+keys[0].ID, from, nil, "x-api-key", secrets[1])
 		if c != 200 || json.Unmarshal([]byte(b), &page) != nil || page.Total != 1 || len(page.Rows) != 1 || page.Rows[0].CallerKeyID != keys[1].ID {
 			t.Fatal("held key's requests from", from, c, b)
+		}
+		// the split by key is counted without the key's pick: cut to its own
+		if len(page.By["callerKey"]) != 1 || page.By["callerKey"][0].ID != keys[1].ID {
+			t.Fatal("held key's split by key:", page.By["callerKey"])
 		}
 		if len(page.CallerKeys) != 1 || strings.Contains(b, "Laptop") || strings.Contains(b, keys[0].ID) || strings.Contains(b, "conv-1") {
 			t.Fatal("held key told of another key's calls:", b)

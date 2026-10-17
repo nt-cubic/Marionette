@@ -900,12 +900,15 @@ func failMove(rw http.ResponseWriter, err error) {
 	_ = json.NewEncoder(rw).Encode(map[string]any{"error": err.Error(), "why": provider.WhyOf(err)})
 }
 
-// moveProvider and moveBackProvider are provider.Move and MoveBack, for
-// tests to stand in for.
+// errRetired answers a move back to a built-in subscription, which magpie
+// no longer runs: its plugin does.
+var errRetired = errors.New("magpie's built-in subscriptions are retired: their community plugins run them")
+
+// moveProvider and adoptProvider are provider.Move and Adopt, for tests
+// to stand in for.
 var (
-	moveProvider     = provider.Move
-	moveBackProvider = provider.MoveBack
-	adoptProvider    = provider.Adopt
+	moveProvider  = provider.Move
+	adoptProvider = provider.Adopt
 )
 
 // moveContext keeps a move going though the page that asked for it goes
@@ -1241,12 +1244,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				return
 			}
 		case "moveback":
-			ctx, cancel := moveContext(r)
-			defer cancel()
-			if err := moveBackProvider(ctx, in.ID); err != nil {
-				fail(rw, err)
-				return
-			}
+			// the built-ins are retired: there is no going back to one
+			fail(rw, errRetired)
+			return
 		case "quiet":
 			// a removed account's "Add it back" line, dismissed (#116)
 			if err := provider.QuietAccount(in.ID); err != nil {

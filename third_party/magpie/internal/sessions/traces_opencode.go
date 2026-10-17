@@ -9,6 +9,26 @@ import (
 	"time"
 )
 
+// traceOpenCodeWindow keeps the latest main sessions, newest first.
+// A child is not exported (the poll skips it), so it takes no place:
+// Limit newer children would fill the window and the parent would not
+// be read. Claude's children are exported, which is why traceRecentFiles
+// gives them a quota of their own.
+func traceOpenCodeWindow(files []file) []file {
+	sortTraceOCFiles(files)
+	out := make([]file, 0, min(len(files), Limit))
+	for _, f := range files {
+		if !f.main {
+			continue
+		}
+		out = append(out, f)
+		if len(out) == Limit {
+			break
+		}
+	}
+	return out
+}
+
 func traceOCMessages(f file, budget *int64) [][]byte {
 	var out [][]byte
 	for _, b := range f.oc.messages(f.sid) {
@@ -77,10 +97,7 @@ func (r *TraceReader) pollOpenCode(bodies bool, budget *int64) []TraceSpan {
 			}
 		}
 	}
-	sort.Slice(files, func(i, j int) bool { return files[i].mod.After(files[j].mod) })
-	if len(files) > Limit {
-		files = files[:Limit]
-	}
+	files = traceOpenCodeWindow(files)
 	seen := map[string]bool{}
 	var out []TraceSpan
 	for _, f := range files {
