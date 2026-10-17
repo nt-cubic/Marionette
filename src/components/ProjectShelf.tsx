@@ -5,7 +5,7 @@ import { themeToggleTitle, type ThemeMode } from "../lib/theme";
 import { collapsedShelfSessions, pinStamp, sortSessionsNewestFirst } from "../lib/sessionOrder";
 import { suspendControl } from "../lib/sessionSuspend";
 import { loadCollapsedProjectIds, saveCollapsedProjectIds } from "../lib/uiRestore";
-import { engineEnable, engineStatus, type EngineStatus } from "../lib/api";
+import { engineEnable, engineStatus, engineStop, type EngineStatus } from "../lib/api";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { CredentialsDialog } from "./CredentialsDialog";
 
@@ -1272,9 +1272,27 @@ export function ProjectShelf({
             {engineStatusLine}
           </p>
           {engineRunning ? (
-            <div className="proxy-popover__hint">
-              Grok / Claude / ChatGPT 订阅与本机 key 已并入；各 agent 模型菜单的「跨用」组里直接选用。
-            </div>
+            <>
+              <div className="proxy-popover__hint">
+                Grok / Claude / ChatGPT 订阅与本机 key 已并入；各 agent 模型菜单的「跨用」组里直接选用。
+              </div>
+              {engineState?.reused ? (
+                <div className="proxy-popover__hint">
+                  复用的自装实例不由 Marionette 停止（在它自己的终端里管理）。
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="engine-popover__stop"
+                  title="停止网关进程；正在跨用的会话会断流，随时可从任何跨用入口再次唤醒"
+                  onClick={() => {
+                    void engineStop().then(() => refreshEngine());
+                  }}
+                >
+                  停止网关
+                </button>
+              )}
+            </>
           ) : (
             <button
               type="button"

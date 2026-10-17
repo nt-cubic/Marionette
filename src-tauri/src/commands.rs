@@ -2452,6 +2452,13 @@ pub fn engine_quota() -> Vec<crate::engine::EngineQuotaEntry> {
     crate::engine::quota()
 }
 
+/// 手动停止网关（浮层「停止网关」）：仅自拉实例；复用实例跳过并留痕。
+#[tauri::command(async)]
+pub fn engine_stop() {
+    let _trace = crate::debug_log::CmdTrace::new("engine_stop");
+    crate::engine::stop()
+}
+
 /// Read the agent proxy config (single exit address for spawned agents).
 #[tauri::command]
 pub fn get_proxy_config() -> crate::proxy::ProxyConfig {

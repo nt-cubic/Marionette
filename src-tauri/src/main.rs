@@ -457,6 +457,7 @@ fn main() {
             commands::engine_status,
             commands::engine_enable,
             commands::engine_quota,
+            commands::engine_stop,
             commands::get_proxy_config,
             commands::set_proxy_config,
             commands::test_proxy,
