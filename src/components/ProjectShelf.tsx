@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Bell, BellOff, ChevronDown, ChevronRight, CloudMoon, Folder, FolderOpen, Globe, GripVertical, KeyRound, MessageSquare, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, Save, Search, SunMedium, Trash2, X, Zap } from "lucide-react";
+import { Bell, BellOff, ChevronDown, ChevronRight, CloudMoon, Folder, FolderOpen, Globe, GripVertical, KeyRound, MessageSquare, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, SunMedium, Trash2, X, Zap } from "lucide-react";
+// Refresh on a project row folds CLI history into the normal session list.
 import type { AgentConfig, Project, ProxyConfig, ProxyTestResult, Session } from "../lib/types";
 import { themeToggleTitle, type ThemeMode } from "../lib/theme";
 import { collapsedShelfSessions, pinStamp, sortSessionsNewestFirst } from "../lib/sessionOrder";
@@ -112,6 +113,9 @@ type ProjectShelfProps = {
   onChatSessionSelect?: (session: Session) => void;
   /** Create a new chat session. */
   onNewChat?: () => void;
+  /** Scan this project's agent CLI stores into the normal session list. */
+  externalScanning?: boolean;
+  onRefreshExternal?: (projectId: string) => void;
 };
 
 type DropHint = { targetId: string; place: "before" | "after" };
@@ -155,6 +159,8 @@ export function ProjectShelf({
   chatSessions = [],
   onChatSessionSelect,
   onNewChat,
+  externalScanning = false,
+  onRefreshExternal,
 }: ProjectShelfProps) {
   const unreadDone = doneUnreadIds ?? EMPTY_DONE_UNREAD;
   /** Collapsed project ids (persisted). Default for unknown ids is expanded. */
@@ -768,6 +774,21 @@ export function ProjectShelf({
                   <button className="project-row__action" type="button" title="New session" onClick={() => onNewSession(project.id)}>
                     <Plus size={13} />
                   </button>
+                  {onRefreshExternal && (
+                    <button
+                      className="project-row__action"
+                      type="button"
+                      title="把这个目录在各 agent 命令行里的对话收进列表"
+                      aria-label={`Refresh conversations for ${project.name}`}
+                      disabled={externalScanning}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onRefreshExternal(project.id);
+                      }}
+                    >
+                      <RefreshCw size={12} className={externalScanning && project.id === currentProjectId ? "is-spinning" : undefined} />
+                    </button>
+                  )}
                   <button
                     className="project-row__action project-row__action--danger"
                     type="button"

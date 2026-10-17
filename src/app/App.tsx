@@ -18,7 +18,7 @@ import {
 } from "../lib/acpTranscript";
 import { engineQuota as fetchEngineQuota, type EngineQuotaEntry } from "../lib/api";
 import { invalidateBridgeModels } from "../lib/bridge";
-import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, CHAT_PROJECT_ID } from "../lib/api";
+import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, CHAT_PROJECT_ID } from "../lib/api";
 import {
   bindDetachedWindowReaper,
   DETACHED_HIDDEN_EVENT,
@@ -358,6 +358,7 @@ export function App() {
   const [availableSessions, setAvailableSessions] = useState<Session[]>(sessions);
   const [currentProjectId, setCurrentProjectId] = useState(projects[0]?.id ?? "");
   const [currentSessionId, setCurrentSessionId] = useState("");
+  const [externalScanning, setExternalScanning] = useState(false);
   const [openSessionIds, setOpenSessionIds] = useState<string[]>([]);
   /** Project opened via Explorer "在此处打开" / --open-path — pinned at shelf top. */
   const [openHereProjectId, setOpenHereProjectId] = useState<string | null>(null);
@@ -3563,6 +3564,41 @@ export function App() {
     setActiveModelId(null);
   };
 
+  const handleRefreshExternal = useCallback(async (projectId: string) => {
+    if (!isTauriRuntime() || !projectId) return;
+    setExternalScanning(true);
+    try {
+      const result = await refreshExternalSessions(projectId);
+      const importedIds = new Set(
+        result.sessions.filter((s) => s.id.startsWith("ext-")).map((s) => s.id),
+      );
+      for (const id of importedIds) transcriptLoadedRef.current.delete(id);
+      setLiveEvents((current) => {
+        const next = current.filter((e) => !importedIds.has(e.sessionId));
+        liveEventsRef.current = next;
+        return next;
+      });
+      setAvailableSessions((current) => [
+        ...current.filter((s) => s.projectId !== projectId),
+        ...result.sessions,
+      ]);
+      const activeId = currentSessionIdRef.current;
+      if (activeId && importedIds.has(activeId)) {
+        void loadSessionTranscriptRef.current(activeId);
+      }
+    } catch (error) {
+      pushDebug({
+        sessionId: "",
+        level: "warn",
+        source: "shelf",
+        summary: "refresh CLI sessions failed",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setExternalScanning(false);
+    }
+  }, [pushDebug]);
+
   const openSession = (nextSession: Session) => {
     setOpenSessionIds((current) => current.includes(nextSession.id) ? current : [...current, nextSession.id]);
     setCurrentProjectId(nextSession.projectId);
@@ -6166,6 +6202,8 @@ export function App() {
               }
             }}
             onSessionSelect={openSession}
+            externalScanning={externalScanning}
+            onRefreshExternal={handleRefreshExternal}
             onDeleteSession={deleteSession}
             onDeleteProject={handleDeleteProject}
             onRenameSession={handleRenameSession}

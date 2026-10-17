@@ -33,6 +33,8 @@ tiny_http = "0.12"
 toml = "0.8"
 # Native folder picker for "Add project" (no tauri dialog plugin).
 rfd = "0.15"
+# OpenCode / Hermes external session stores (read-only).
+rusqlite = { version = "0.32", features = ["bundled"] }
 base64 = "0.22"
 # Engine download SHA256 verification (already in the graph via tauri/tao — zero size cost).
 sha2 = "0.10"
