@@ -15,6 +15,7 @@ import {
   normalizeMarkdownFences,
   normalizeMarkdownTables,
   prepareMarkdownForRender,
+  stripClaudeUsagePanel,
   stripSectionMarkers,
   stripRuntimeMetadata,
 } from "../src/lib/markdownText.ts";
@@ -112,6 +113,87 @@ assert.equal(
   stripRuntimeMetadata("约 65% of your usage was at peak last week, so we should trim context."),
   "约 65% of your usage was at peak last week, so we should trim context.",
 );
+
+// Claude Code v2.1 usage footer — TUI reprints the cost/token table plus its
+// status bar at the end of every turn, now prefixed by `Reply` + a
+// locale-formatted clock (real transcript, 2026-10-17).
+const claudePanelOnly = [
+  "Reply",
+  "下午10:24",
+  "Usage",
+  "This session",
+  "Cost\tAPI time\tActive",
+  "$0.12\t4s\t9s",
+  "Breakdown\tTokens",
+  "Input\t29.4K",
+  "Output\t64",
+  "Cache read\t128",
+  "Cache write\t0",
+  "▣",
+  "Bypass permissions",
+  "Claude Code",
+  "grok/grok-4.5",
+  "Max",
+].join("\n");
+assert.equal(stripClaudeUsagePanel(claudePanelOnly), "");
+assert.equal(cleanAssistantText(claudePanelOnly), "");
+assert.equal(isRuntimeMetadataOnly(claudePanelOnly), true);
+assert.equal(cleanAssistantText("搞定了。\n\n" + claudePanelOnly), "搞定了。");
+// v2.0 shape (no Reply/clock prefix) still strips.
+const claudePanelV2 = claudePanelOnly.slice(claudePanelOnly.indexOf("Usage"));
+assert.equal(stripClaudeUsagePanel(claudePanelV2), "");
+// A Reply/clock pair without the panel is not a footer — keep it.
+assert.equal(stripClaudeUsagePanel("Reply\n下午10:24"), "Reply\n下午10:24");
+// Label and clock collapsed onto one line also belong to the panel.
+const claudePanelOneLine = claudePanelOnly.replace("Reply\n下午10:24", "Reply · 下午10:24");
+assert.equal(cleanAssistantText(claudePanelOneLine), "");
+// Prose clock lines must not be eaten by a stray panel anchor above them.
+assert.equal(
+  cleanAssistantText("Usage 说明\n会议在 10:24 开始。"),
+  "Usage 说明\n会议在 10:24 开始。",
+);
+
+// Claude Code ≥2.1 also emits the panel as Markdown in its own message
+// (real transcript, 2026-10-17 22:53): headings, hr, GFM tables.
+const claudeMdPanelOnly = [
+  "## Usage",
+  "",
+  "---",
+  "",
+  "### This session",
+  "",
+  "| Cost | API time | Active |",
+  "|:--|:--|:--|",
+  "| $0.12 | 12s | 16s |",
+  "",
+  "| Breakdown | Tokens |",
+  "|:--|--:|",
+  "| Input | 29.4K |",
+  "| Output | 235 |",
+  "| Cache read | 576 |",
+  "| Cache write | 0 |",
+].join("\n");
+assert.equal(stripClaudeUsagePanel(claudeMdPanelOnly), "");
+assert.equal(cleanAssistantText(claudeMdPanelOnly), "");
+assert.equal(isRuntimeMetadataOnly(claudeMdPanelOnly), true);
+assert.equal(cleanAssistantText("正常回复正文。\n\n" + claudeMdPanelOnly), "正常回复正文。");
+// A real `## Usage` docs heading with prose below must survive.
+assert.equal(
+  cleanAssistantText("## Usage\n\nCall the API like this:\n\n```bash\ncurl example.com\n```"),
+  "## Usage\n\nCall the API like this:\n\n```bash\ncurl example.com\n```",
+);
+// Plain-text form preceded by its own status bar leaves no orphan glyph.
+const claudePanelWithStatusBar = [
+  "正文完了。",
+  "",
+  "▣",
+  "Bypass permissions",
+  "Claude Code",
+  "glm-4.5-air",
+  "Max",
+  ...claudePanelOnly.split("\n").slice(2),
+].join("\n");
+assert.equal(cleanAssistantText(claudePanelWithStatusBar), "正文完了。");
 
 // Mimic transcript policy: user text never cleaned; assistant cleaned; empty assistant dropped.
 const userText = "保留我的 You 卡片\n\n" + statusOnlyMarkdown;

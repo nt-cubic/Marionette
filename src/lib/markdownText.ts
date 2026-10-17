@@ -21,7 +21,10 @@ const CLAUDE_USAGE_LINE =
  * the CLI emits it whether or not the user asked for usage, so it used to open
  * a Reply card after every single turn.
  *
- * Live shape (Claude Code v2, tabs between columns):
+ * Live shape (Claude Code v2.1, tabs between columns; the reply-time label is
+ * English but the clock is locale-formatted):
+ *   Reply
+ *   下午10:24
  *   Usage
  *   This session
  *   Cost	API time	Active
@@ -41,7 +44,15 @@ const CLAUDE_USAGE_LINE =
  * it — prose that follows the panel is never swallowed.
  */
 const CLAUDE_PANEL_ANCHOR_LINE =
-  /^(?:\*\*)?(?:Usage|This session|Cost|Breakdown|Cache read|Cache write|Bypass permissions)(?:\*\*)?[\t ]*[:：]?.*$/iu;
+  /^(?:\*\*)?(?:Reply|Usage|This session|Cost|Breakdown|Cache read|Cache write|Bypass permissions)(?:\*\*)?[\t ]*[:：]?.*$/iu;
+/** Lone `Reply` label of the TUI footer (the clock line follows it). */
+const CLAUDE_PANEL_REPLY_LINE = /^(?:\*\*)?Reply(?:\*\*)?[\t ]*[:：]?$/iu;
+/** Locale clock line under `Reply`: `下午10:24`, `10:24 PM`, `22:24`. */
+const CLAUDE_PANEL_TIME_LINE =
+  /^(?:\p{L}{1,4}\s*)?\d{1,2}:\d{2}(?::\d{2})?(?:\s*\p{L}{1,4})?$/u;
+/** Same label and clock collapsed onto one line: `Reply · 下午10:24`. */
+const CLAUDE_PANEL_REPLY_TIME_LINE =
+  /^(?:\*\*)?Reply(?:\*\*)?[\t :：·—-]*(?:\p{L}{1,4}\s*)?\d{1,2}:\d{2}(?::\d{2})?(?:\s*\p{L}{1,4})?$/u;
 /** Lines that cannot be a lone prose sentence — at least one is required. */
 const CLAUDE_PANEL_STRONG_LINE =
   /^(?:\*\*)?(?:Cost[\t ]+API time|Breakdown[\t ]+Tokens|Cache (?:read|write)[\t ]|Bypass permissions|This session)(?:\*\*)?[\t ]*[:：]?.*$/iu;
@@ -61,6 +72,50 @@ const CLAUDE_PANEL_STATUS_WORD =
   /^(?:Bypass permissions|Accept edits|Plan mode|Default mode|⏵⏵ bypass permissions on|Claude Code)$/iu;
 /** Model and effort chips trailing `Claude Code` (single token, no spaces). */
 const CLAUDE_PANEL_STATUS_CHIP = /^[A-Za-z0-9][\w.+@/-]*$/u;
+/**
+ * Claude Code ≥2.1 also delivers the same panel as Markdown in its own
+ * message (real transcript, 2026-10-17): `## Usage` / `---` / `### This
+ * session` / GFM tables for Cost·API time·Active and Breakdown·Tokens.
+ */
+const CLAUDE_PANEL_MD_USAGE_HEADING =
+  /^#{1,6}[\t ]+(?:\*\*)?Usage(?:\*\*)?[\t :：]*$/iu;
+const CLAUDE_PANEL_MD_SECTION_HEADING =
+  /^#{1,6}[\t ]+(?:\*\*)?(?:This session|This week|Last 7 days)(?:\*\*)?[\t :：]*$/iu;
+const CLAUDE_PANEL_MD_HR = /^(?:-{3,}|\*{3,}|_{3,})$/;
+/** Any panel table row starting with a metric label. */
+const CLAUDE_PANEL_MD_STRONG_ROW =
+  /^\|[\t ]*(?:\*\*)?(?:Breakdown|Cost|Cache read|Cache write|Total|Input|Output)(?:\*\*)?(?:[\t ]*\|)+/iu;
+
+const CLAUDE_MD_MONEY = /^\$[\d,]+(?:\.\d+)?$/;
+const CLAUDE_MD_NUMBER = /^[\d.,]+[KMB]?(?:\.\d+)?%?$/;
+const CLAUDE_MD_DURATION = /^(?:\d+[smhd][\t ]*)+$/;
+const CLAUDE_MD_WORD = /^(?:API time|Active|Tokens)$/i;
+const CLAUDE_MD_LABEL =
+  /^(?:Input|Output|Cache read|Cache write|Total|Total tokens|Cost \(USD\))$/i;
+
+/** GFM table row of the usage panel: `| Cost | API time | Active |` etc. */
+function isClaudePanelTableRow(line: string): boolean {
+  const trimmed = line.trim();
+  if (trimmed.length < 4 || !trimmed.startsWith("|") || !trimmed.endsWith("|")) return false;
+  const cells = trimmed
+    .slice(1, -1)
+    .split("|")
+    .map((cell) => cell.trim().replace(/^\*\*(.+)\*\*$/, "$1"));
+  if (cells.length < 2 || cells.some((cell) => !cell)) return false;
+  if (cells.every((cell) => /^:?-{2,}:?$/.test(cell))) return true;
+  const isValue = (cell: string) =>
+    CLAUDE_MD_MONEY.test(cell) ||
+    CLAUDE_MD_NUMBER.test(cell) ||
+    CLAUDE_MD_DURATION.test(cell) ||
+    CLAUDE_MD_WORD.test(cell) ||
+    cell === "-";
+  const [head, ...rest] = cells;
+  if (CLAUDE_MD_LABEL.test(head)) return rest.every(isValue);
+  if (/^Cost$/i.test(head)) return rest.every((cell) => CLAUDE_MD_WORD.test(cell));
+  if (/^Breakdown$/i.test(head)) return rest.every((cell) => /^Tokens$/i.test(cell));
+  if (CLAUDE_MD_MONEY.test(head)) return rest.every(isValue);
+  return false;
+}
 
 /** Walk the tail after an anchor: every line must belong to the panel. */
 function isClaudeUsagePanel(tail: string[]): boolean {
@@ -76,10 +131,17 @@ function isClaudeUsagePanel(tail: string[]): boolean {
       continue;
     }
     if (
+      CLAUDE_PANEL_REPLY_LINE.test(trimmed) ||
+      CLAUDE_PANEL_REPLY_TIME_LINE.test(trimmed) ||
+      CLAUDE_PANEL_TIME_LINE.test(trimmed) ||
       CLAUDE_PANEL_HEADING_LINE.test(trimmed) ||
       CLAUDE_PANEL_ROW_LINE.test(trimmed) ||
       CLAUDE_PANEL_COST_ROW.test(trimmed) ||
-      CLAUDE_PANEL_GLYPH.test(trimmed)
+      CLAUDE_PANEL_GLYPH.test(trimmed) ||
+      CLAUDE_PANEL_MD_USAGE_HEADING.test(trimmed) ||
+      CLAUDE_PANEL_MD_SECTION_HEADING.test(trimmed) ||
+      CLAUDE_PANEL_MD_HR.test(trimmed) ||
+      isClaudePanelTableRow(trimmed)
     ) {
       continue;
     }
@@ -102,14 +164,47 @@ export function stripClaudeUsagePanel(text: string): string {
   const lines = normalized.split("\n");
 
   for (let index = 0; index < lines.length; index += 1) {
-    if (!CLAUDE_PANEL_ANCHOR_LINE.test(lines[index].trim())) continue;
-    const tail = lines.slice(index).filter((line) => line.trim());
+    const line = lines[index].trim();
+    if (
+      !CLAUDE_PANEL_ANCHOR_LINE.test(line) &&
+      !CLAUDE_PANEL_MD_USAGE_HEADING.test(line)
+    ) {
+      continue;
+    }
+    const tail = lines.slice(index).filter((l) => l.trim());
     // A lone "Usage" / "This session" heading is prose, not the panel.
     if (tail.length < 3) continue;
-    if (!tail.some((line) => CLAUDE_PANEL_STRONG_LINE.test(line.trim()))) continue;
+    if (
+      !tail.some(
+        (l) =>
+          CLAUDE_PANEL_STRONG_LINE.test(l.trim()) ||
+          CLAUDE_PANEL_MD_STRONG_ROW.test(l.trim()),
+      )
+    ) {
+      continue;
+    }
     if (!isClaudeUsagePanel(tail)) continue;
 
-    const visible = lines.slice(0, index).join("\n").replace(/[ \t\r\n]+$/g, "");
+    // The plain-text form is preceded by its own status bar (`▣` /
+    // `Bypass permissions` / `Claude Code` / model / plan chips); pull those
+    // into the strip so no orphan glyph is left above the cut.
+    let start = index;
+    while (start > 0) {
+      const prev = lines[start - 1].trim();
+      if (
+        !prev ||
+        !(
+          CLAUDE_PANEL_GLYPH.test(prev) ||
+          CLAUDE_PANEL_STATUS_WORD.test(prev) ||
+          CLAUDE_PANEL_STATUS_CHIP.test(prev)
+        )
+      ) {
+        break;
+      }
+      start -= 1;
+    }
+
+    const visible = lines.slice(0, start).join("\n").replace(/[ \t\r\n]+$/g, "");
     return visible.trim() ? visible : "";
   }
 
