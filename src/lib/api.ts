@@ -1126,6 +1126,16 @@ export async function engineQuota(): Promise<EngineQuotaEntry[]> {
   }
 }
 
+/** Manually stop the gateway (self-spawned instances only; reused installs no-op). */
+export async function engineStop(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    await invoke("engine_stop");
+  } catch {
+    // stop is best-effort; the popover refreshes state right after anyway.
+  }
+}
+
 /** Agent proxy config: single exit address injected into spawned agents. */
 export async function getProxyConfig(): Promise<ProxyConfig> {
   if (!isTauriRuntime()) return { enabled: false, url: "" };

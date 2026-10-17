@@ -1207,6 +1207,42 @@ pub fn ensure_bridge_ready_if_installed(timeout: Duration) -> bool {
     }
 }
 
+/// 手动停止（网关浮层的「停止网关」，2026-10-17）：只停**我们拉起的**
+/// serve——复用实例不归 Marionette 管（warn 留痕、状态不动）。绑定不清：
+/// 引擎再起（按钮/菜单/启动）时一切照旧；正在用跨用模型的会话会随引擎
+/// 一起断流，这是用户显式停止的预期语义。
+pub fn stop() {
+    let mut state = lock_state();
+    match state.status {
+        EngineStatus::Running { reused: true, .. } => {
+            drop(state);
+            crate::debug_log::append(
+                "engine",
+                "warn",
+                "",
+                "engine stop skipped: reused user install",
+                None,
+            );
+            return;
+        }
+        EngineStatus::Running { .. } => {}
+        _ => return,
+    }
+    if let Some(child) = state.child.as_mut() {
+        child.kill();
+    }
+    state.child = None;
+    state.status = EngineStatus::Absent;
+    drop(state);
+    if let Some(cache) = CATALOG.get() {
+        if let Ok(mut guard) = cache.lock() {
+            *guard = None;
+        }
+    }
+    crate::debug_log::append("engine", "info", "", "engine stopped by user", None);
+    emit_event("engine-state-changed", &EngineStatus::Absent);
+}
+
 /// 等引擎就绪（跨用绑定的一键优雅路径，2026-10-17 用户反馈）：就绪立即真；
 /// 否则幂等 `enable` 后在窗口内轮询——已装引擎通常 2-5s（内嵌版首启含解压），
 /// 超时返回 false 由调用方走原有指引错误。
@@ -2460,6 +2496,17 @@ mod tests {
         assert_eq!(engine_binding_count_at(&path), 0, "坏文件 → 0（不误判有人在用）");
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 手动停止：自拉 Running → Absent；非 Running 时幂等 no-op。
+    #[test]
+    fn manual_stop_clears_running_state() {
+        let _engine = crate::engine::test_running(vec!["grok/grok-4.7".to_string()]);
+        assert!(matches!(crate::engine::status(), EngineStatus::Running { .. }));
+        stop();
+        assert!(matches!(crate::engine::status(), EngineStatus::Absent));
+        stop();
+        assert!(matches!(crate::engine::status(), EngineStatus::Absent));
     }
 
     // ─── codex 内建名 → 路由组别名（M2 收官；CLI 由测试缝记录）──────────────

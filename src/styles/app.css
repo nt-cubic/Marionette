@@ -8148,6 +8148,24 @@ body.is-composer-resizing .composer {
   cursor: default;
 }
 
+/* 手动停止（次要操作，弱化为描边按钮——用户日常不需要它）。 */
+.engine-popover__stop {
+  width: 100%;
+  margin-top: 2px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--text-faint);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.engine-popover__stop:hover {
+  color: #e25555;
+  border-color: color-mix(in srgb, #e25555 45%, var(--border));
+}
+
 .engine-popover__footer {
   margin-top: 8px;
   padding-top: 6px;
