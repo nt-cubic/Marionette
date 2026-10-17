@@ -930,7 +930,12 @@ fn register_key_providers(exe: &Path) {
             }
         }
     }
-    let references = crate::credentials::peek_opencode_api_keys();
+    // 引用侧是 opencode 的原始 provider id（zhipuai-coding-plan / moonshot…），
+    // 先归一化成 preset id —— registration_plan 只认 preset（同名巧合
+    // deepseek/opencode-go 之外，原名直查会整体漏注册）。
+    let references = crate::model_bridge::reference_keys_as_presets(
+        crate::credentials::peek_opencode_api_keys(),
+    );
     let plan = registration_plan(&key_plans, &references);
     let ledger_path = home.join(".marionette").join("engine").join("registered-providers.json");
     let ledger = load_registered_ledger(&ledger_path);
