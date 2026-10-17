@@ -38,8 +38,50 @@ fn strip_v(tag: &str) -> &str {
     tag.trim().trim_start_matches(['v', 'V'])
 }
 
-/// Prefer a Windows portable exe asset from the release.
+fn running_wants_engine() -> bool {
+    cfg!(feature = "embedded-engine")
+}
+
+/// Classify a release asset: `Some(true)` engine, `Some(false)` plain, `None` ignore.
+fn classify_portable_asset(name: &str) -> Option<bool> {
+    let lower = name.to_ascii_lowercase();
+    if !lower.ends_with(".exe") {
+        return None;
+    }
+    if lower.contains("uncompressed") {
+        return None;
+    }
+    if !lower.contains("marionette") {
+        return None;
+    }
+    Some(lower.contains("engine"))
+}
+
+fn asset_score(name: &str, want_engine: bool) -> i32 {
+    match classify_portable_asset(name) {
+        Some(is_engine) if is_engine == want_engine => {
+            let lower = name.to_ascii_lowercase();
+            if lower.contains("windows") {
+                100
+            } else if lower == "marionette.exe" || lower == "marionette-engine.exe" {
+                90
+            } else {
+                70
+            }
+        }
+        _ => -1,
+    }
+}
+
+/// Pick the portable exe that matches this binary's variant.
+/// A dual-asset release must not hand the engine build to a plain user
+/// (or the other way around) — that would silently drop or add the
+/// embedded magpie on the next relaunch.
 fn pick_asset(assets: &[Value]) -> Option<(&str, &str)> {
+    pick_asset_for(assets, running_wants_engine())
+}
+
+fn pick_asset_for(assets: &[Value], want_engine: bool) -> Option<(&str, &str)> {
     let mut best: Option<(&str, &str, i32)> = None;
     for a in assets {
         let name = a.get("name").and_then(Value::as_str).unwrap_or("");
@@ -50,20 +92,10 @@ fn pick_asset(assets: &[Value]) -> Option<(&str, &str)> {
         if name.is_empty() || url.is_empty() {
             continue;
         }
-        let lower = name.to_ascii_lowercase();
-        if !lower.ends_with(".exe") {
+        let score = asset_score(name, want_engine);
+        if score < 0 {
             continue;
         }
-        // Score: prefer plain Marionette.exe, then anything with marionette.
-        let score = if lower == "marionette.exe" {
-            100
-        } else if lower.starts_with("marionette") {
-            80
-        } else if lower.contains("marionette") {
-            60
-        } else {
-            10
-        };
         if best.map(|(_, _, s)| score > s).unwrap_or(true) {
             best = Some((name, url, score));
         }
@@ -206,7 +238,11 @@ pub fn check_for_update() -> AppUpdateInfo {
     } else if failed_note.is_some() {
         failed_note
     } else if asset_url.is_none() && !latest.is_empty() {
-        Some("Release has no .exe asset".into())
+        Some(if running_wants_engine() {
+            "Release has no matching Engine portable build".into()
+        } else {
+            "Release has no matching portable build".into()
+        })
     } else {
         None
     };
@@ -401,4 +437,82 @@ del "%~f0"
 
     // Leave quickly so the bat can replace the image.
     std::process::exit(0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn assets(names: &[&str]) -> Vec<Value> {
+        names
+            .iter()
+            .map(|n| {
+                json!({
+                    "name": n,
+                    "browser_download_url": format!("https://example.invalid/{n}")
+                })
+            })
+            .collect()
+    }
+
+    fn picked(names: &[&str], want_engine: bool) -> Option<String> {
+        pick_asset_for(&assets(names), want_engine).map(|(n, _)| n.to_string())
+    }
+
+    #[test]
+    fn dual_release_picks_matching_variant() {
+        let names = [
+            "Marionette-0.3.0-windows-x64.exe",
+            "Marionette-Engine-0.3.0-windows-x64.exe",
+        ];
+        assert_eq!(
+            picked(&names, false).as_deref(),
+            Some("Marionette-0.3.0-windows-x64.exe")
+        );
+        assert_eq!(
+            picked(&names, true).as_deref(),
+            Some("Marionette-Engine-0.3.0-windows-x64.exe")
+        );
+    }
+
+    #[test]
+    fn refuses_the_other_variant() {
+        assert_eq!(
+            picked(&["Marionette-0.3.0-windows-x64.exe"], true),
+            None
+        );
+        assert_eq!(
+            picked(&["Marionette-Engine-0.3.0-windows-x64.exe"], false),
+            None
+        );
+        assert_eq!(picked(&["Marionette.exe"], true), None);
+        assert_eq!(picked(&["Marionette-Engine.exe"], false), None);
+    }
+
+    #[test]
+    fn prefers_versioned_windows_asset() {
+        let names = [
+            "Marionette.exe",
+            "Marionette-0.3.0-windows-x64.exe",
+            "notes.md",
+            "Marionette-uncompressed.exe",
+        ];
+        assert_eq!(
+            picked(&names, false).as_deref(),
+            Some("Marionette-0.3.0-windows-x64.exe")
+        );
+    }
+
+    #[test]
+    fn legacy_unversioned_names_still_match() {
+        assert_eq!(
+            picked(&["Marionette.exe"], false).as_deref(),
+            Some("Marionette.exe")
+        );
+        assert_eq!(
+            picked(&["Marionette-Engine.exe"], true).as_deref(),
+            Some("Marionette-Engine.exe")
+        );
+    }
 }
