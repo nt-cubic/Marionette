@@ -324,6 +324,50 @@ fn current_exe_path() -> Result<PathBuf, String> {
     std::env::current_exe().map_err(|e| format!("current_exe failed: {e}"))
 }
 
+/// Build the helper bat body. MUST be CRLF throughout: cmd.exe scans for
+/// `\r\n` boundaries when it skips a false `(...)` block, so an LF-only bat
+/// makes execution jump past the `copy` straight to the self-delete — the
+/// update then "succeeds" silently without replacing the exe (no marker, bat
+/// gone, file untouched; reproduced 2026-10-18 on a ja-JP machine with a
+/// CJK exe path — the chcp fix was NOT at fault there).
+fn apply_bat_body(target: &str, new: &str, pid: u32) -> String {
+    let body = format!(
+        r#"@echo off
+chcp 65001 >NUL
+setlocal EnableDelayedExpansion
+set "TARGET={target}"
+set "NEW={new}"
+set "PID={pid}"
+set /a TRIES=0
+:wait
+tasklist /FI "PID eq %PID%" 2>NUL | find "%PID%" >NUL
+if not errorlevel 1 (
+  set /a TRIES+=1
+  if !TRIES! GEQ 180 (
+    echo timed out waiting for app exit > "%~dp0apply-result.txt"
+    exit /b 2
+  )
+  timeout /t 1 /nobreak >NUL
+  goto wait
+)
+copy /Y "%NEW%" "%TARGET%" > "%~dp0apply-result.txt" 2>&1
+if errorlevel 1 (
+  echo Update copy failed >> "%~dp0apply-result.txt"
+  exit /b 1
+)
+del "%~dp0apply-result.txt" 2>NUL
+start "" "%TARGET%"
+del "%~f0"
+"#,
+        target = target.replace('"', ""),
+        new = new.replace('"', ""),
+        pid = pid,
+    );
+    // Normalize LF (source formatting) to CRLF; the body never contains
+    // intentional bare LF or CR characters.
+    body.replace('\n', "\r\n")
+}
+
 /// Spawn a helper that replaces this exe after we exit, then exit.
 pub fn apply_and_relaunch() -> Result<(), String> {
     let dir = updates_dir()?;
@@ -358,38 +402,7 @@ pub fn apply_and_relaunch() -> Result<(), String> {
     // so the next check_for_update() can surface them — the app has already
     // exited by the time the bat runs, so nothing else can report them.
     let bat = dir.join("apply-update.bat");
-    let bat_body = format!(
-        r#"@echo off
-chcp 65001 >NUL
-setlocal EnableDelayedExpansion
-set "TARGET={target}"
-set "NEW={new}"
-set "PID={pid}"
-set /a TRIES=0
-:wait
-tasklist /FI "PID eq %PID%" 2>NUL | find "%PID%" >NUL
-if not errorlevel 1 (
-  set /a TRIES+=1
-  if !TRIES! GEQ 180 (
-    echo timed out waiting for app exit > "%~dp0apply-result.txt"
-    exit /b 2
-  )
-  timeout /t 1 /nobreak >NUL
-  goto wait
-)
-copy /Y "%NEW%" "%TARGET%" > "%~dp0apply-result.txt" 2>&1
-if errorlevel 1 (
-  echo Update copy failed >> "%~dp0apply-result.txt"
-  exit /b 1
-)
-del "%~dp0apply-result.txt" 2>NUL
-start "" "%TARGET%"
-del "%~f0"
-"#,
-        target = target_str.replace('"', ""),
-        new = new_str.replace('"', ""),
-        pid = pid,
-    );
+    let bat_body = apply_bat_body(&target_str, &new_str, pid);
     fs::write(&bat, bat_body).map_err(|e| format!("Write updater bat failed: {e}"))?;
 
     #[cfg(target_os = "windows")]
@@ -479,6 +492,25 @@ mod tests {
         assert_eq!(
             picked(&["Marionette-Engine.exe"]).as_deref(),
             Some("Marionette-Engine.exe")
+        );
+    }
+
+    #[test]
+    fn apply_bat_is_crlf_only() {
+        // cmd.exe skips false `(...)` blocks by scanning CRLF boundaries; an
+        // LF-only bat jumps past the copy to the self-delete and the update
+        // silently does nothing. Every newline must be a CRLF pair.
+        let body = apply_bat_body(
+            r"C:\Users\NT's Station\Desktop\工具\Marionette-Engine.exe",
+            r"C:\Users\NT's Station\.marionette\updates\Marionette-0.3.3.exe",
+            35844,
+        );
+        assert!(body.contains("chcp 65001"));
+        assert!(body.contains("\r\ncopy /Y "));
+        let bare = body.replace("\r\n", "");
+        assert!(
+            !bare.contains('\n') && !bare.contains('\r'),
+            "bat must not contain line endings other than CRLF"
         );
     }
 }
