@@ -105,6 +105,115 @@ pub fn get_file_diff(project_root: &Path, path: &str) -> Result<String, String> 
 }
 
 /// Largest `<= max` that is a UTF-8 character boundary (or 0).
+/// Per-file diff fingerprints from ONE whole-tree diff.
+///
+/// The pre-send snapshot used to request `get_file_diff` once per changed
+/// file — one `git diff` process each (two for untracked paths, both empty).
+/// A Unity-scale `-uall` status lists thousands of files, which stalled the
+/// composer for minutes before the prompt ever reached the agent
+/// (2026-10-18). This walks a single diff instead; files absent from the diff
+/// (e.g. untracked) keep the JS-side empty-string fingerprint.
+pub fn get_file_fingerprints(
+    project_root: &Path,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    if !project_root.is_dir() {
+        return Err(format!("Not a directory: {}", project_root.display()));
+    }
+    let mut output = run_git(project_root, &["diff", "--no-color", "--no-ext-diff", "HEAD"])?;
+    if output.status.code() == Some(128) {
+        // No HEAD yet (repo without commits): fall back to the index diff,
+        // mirroring `get_file_diff`.
+        output = run_git(project_root, &["diff", "--no-color", "--no-ext-diff"])?;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    Ok(parse_diff_fingerprints(&stdout))
+}
+
+/// Split a unified diff into per-file sections, hashing each incrementally
+/// (FNV-1a over UTF-8 bytes, `len:hash` like the JS `fingerprintDiff`) so the
+/// full text is never retained. Keys mirror `parse_porcelain` output: the
+/// `b/`-side path for modifications/additions, the `a/`-side for deletions,
+/// `rename to`/`copy to` for pure renames, quotes stripped and C-escape
+/// octets kept verbatim.
+fn parse_diff_fingerprints(stdout: &str) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let mut current: Option<String> = None;
+    let mut a_side: Option<String> = None;
+    let mut headers_done = false;
+    let mut len: usize = 0;
+    let mut hash: u32 = 216_613_6261;
+    for line in stdout.split_inclusive('\n') {
+        if line.starts_with("diff --git ") || line.starts_with("diff --cc ") {
+            if let Some(path) = current.take() {
+                map.insert(path, format!("{len}:{hash}"));
+            }
+            a_side = None;
+            headers_done = false;
+            len = 0;
+            hash = 216_613_6261;
+            continue;
+        }
+        if !headers_done {
+            if let Some(rest) = line.strip_prefix("--- ") {
+                if let Some(path) = diff_side_path(rest, 'a') {
+                    a_side = Some(path);
+                }
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("+++ ") {
+                current = diff_side_path(rest, 'b').or_else(|| a_side.take());
+                headers_done = true;
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("rename to ") {
+                current = Some(unquote_path(rest));
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("copy to ") {
+                current = Some(unquote_path(rest));
+                continue;
+            }
+            if line.starts_with("@@") || line.starts_with("@@@") {
+                headers_done = true;
+            }
+        }
+        for byte in line.as_bytes() {
+            hash ^= u32::from(*byte);
+            hash = hash.wrapping_mul(16_777_619);
+        }
+        len += line.len();
+    }
+    if let Some(path) = current.take() {
+        map.insert(path, format!("{len}:{hash}"));
+    }
+    map
+}
+
+/// Extract the path from a `--- a/…` / `+++ b/…` header value (rest of the
+/// line). `/dev/null` yields `None`.
+fn diff_side_path(rest: &str, side: char) -> Option<String> {
+    let rest = rest.trim_end_matches(['\n', '\r']);
+    if rest == "/dev/null" {
+        return None;
+    }
+    let prefix = format!("{side}/");
+    let body = rest.strip_prefix(&prefix).map(str::to_string).or_else(|| {
+        unquote_path(rest).strip_prefix(&prefix).map(str::to_string)
+    })?;
+    Some(body)
+}
+
+/// Strip git's optional C-style quoting. Escape octets stay verbatim so the
+/// result matches `parse_porcelain` keys.
+fn unquote_path(raw: &str) -> String {
+    let trimmed = raw.trim_end_matches(['\n', '\r']);
+    trimmed
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(trimmed)
+        .to_string()
+}
+
 fn floor_char_boundary(text: &str, max: usize) -> usize {
     if max >= text.len() {
         return text.len();
@@ -244,5 +353,56 @@ mod tests {
         assert_eq!(floor_char_boundary("abc", 3), 3);
         assert_eq!(floor_char_boundary("战", 1), 0);
         assert_eq!(floor_char_boundary("战", 3), 3);
+    }
+
+    #[test]
+    fn diff_fingerprints_split_by_file() {
+        let raw = "diff --git a/src/one.rs b/src/one.rs\nindex 111..222 100644\n--- a/src/one.rs\n+++ b/src/one.rs\n@@ -1 +1 @@\n-old\n+new\ndiff --git a/src/two.rs b/src/two.rs\n--- a/src/two.rs\n+++ b/src/two.rs\n@@ -1 +1 @@\n-x\n+y\n";
+        let map = parse_diff_fingerprints(raw);
+        assert_eq!(map.len(), 2);
+        assert!(map.contains_key("src/one.rs"));
+        assert!(map.contains_key("src/two.rs"));
+        // Different contents -> different fingerprints.
+        assert_ne!(map["src/one.rs"], map["src/two.rs"]);
+    }
+
+    #[test]
+    fn diff_fingerprints_key_like_porcelain() {
+        // CJK path: git quotes it and keeps octal escapes; parse_porcelain
+        // strips quotes but keeps the escapes verbatim — so must we.
+        let quoted = "diff --git \"a/src/\\346\\224\\271.rs\" \"b/src/\\346\\224\\271.rs\"\n--- \"a/src/\\346\\224\\271.rs\"\n+++ \"b/src/\\346\\224\\271.rs\"\n@@ -1 +1 @@\n-a\n+b\n";
+        let map = parse_diff_fingerprints(quoted);
+        let key = "src/\\346\\224\\271.rs";
+        assert_eq!(parse_porcelain(&format!("?? \"{key}\"\n"))[0].path, key);
+        assert!(map.contains_key(key), "got keys: {map:?}");
+
+        // Deleted file: keyed by the a/-side.
+        let deleted = "diff --git a/gone.rs b/gone.rs\ndeleted file mode 100644\n--- a/gone.rs\n+++ /dev/null\n@@ -1 +0,0 @@\n-bye\n";
+        assert!(parse_diff_fingerprints(deleted).contains_key("gone.rs"));
+
+        // Path with spaces: unquoted, rest-of-line is the path.
+        let spaced = "diff --git a/foo bar.txt b/foo bar.txt\n--- a/foo bar.txt\n+++ b/foo bar.txt\n@@ -1 +1 @@\n-a\n+b\n";
+        assert!(parse_diff_fingerprints(spaced).contains_key("foo bar.txt"));
+    }
+
+    #[test]
+    fn diff_fingerprints_rename_and_ignores_content_headers() {
+        // Pure rename has no ---/+++ pair; key comes from `rename to`.
+        let rename = "diff --git a/old.rs b/new.rs\nsimilarity index 98%\nrename from old.rs\nrename to new.rs\n@@ -1 +1 @@\n-a\n+b\n";
+        let map = parse_diff_fingerprints(rename);
+        assert!(map.contains_key("new.rs"), "got keys: {map:?}");
+
+        // A removed content line that looks like a header (`--- a/x`) after a
+        // hunk must not create a phantom key.
+        let tricky = "diff --git a/src/one.rs b/src/one.rs\n--- a/src/one.rs\n+++ b/src/one.rs\n@@ -1,2 +1,2 @@\n ctx\n--- a/trap.rs\n+++ b/trap.rs\n";
+        let map = parse_diff_fingerprints(tricky);
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key("src/one.rs"));
+    }
+
+    #[test]
+    fn diff_fingerprints_empty() {
+        assert!(parse_diff_fingerprints("").is_empty());
+        assert!(parse_diff_fingerprints("nothing to see here\n").is_empty());
     }
 }

@@ -78,6 +78,22 @@ export async function setDetachedSessionOwner(
   }
 }
 
+/**
+ * Report per-session stream interest so Rust can defer+coalesce text chunks
+ * for sessions the user is not looking at: 0 hidden, 1 visible but unfocused,
+ * 2 focused. Omitted ids keep their current level; Rust clamps >2 to 2.
+ */
+export async function setStreamInterests(
+  levels: Record<string, number>
+): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    await invoke("set_stream_interests", { levels });
+  } catch {
+    /* optional */
+  }
+}
+
 /** Parent @-delegate child → parent, else the session itself. */
 export function acpUiRootSessionId(
   sessionId: string,

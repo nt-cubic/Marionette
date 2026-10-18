@@ -26,7 +26,7 @@ import {
 } from "../lib/acpRenderBudget";
 import { engineQuota as fetchEngineQuota, type EngineQuotaEntry } from "../lib/api";
 import { invalidateBridgeModels } from "../lib/bridge";
-import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, CHAT_PROJECT_ID } from "../lib/api";
+import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getFileFingerprints, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, CHAT_PROJECT_ID } from "../lib/api";
 import {
   bindDetachedWindowReaper,
   DETACHED_HIDDEN_EVENT,
@@ -42,6 +42,7 @@ import {
   requestMergeBack,
   sessionIdFromDetachedLabel,
   setDetachedSessionOwner,
+  setStreamInterests,
   shouldHandleAcpSession,
   type DetachedReadyPayload,
 } from "../lib/detachedWindow";
@@ -619,6 +620,43 @@ export function App() {
    */
   const turnSlotWaitersRef = useRef<Map<string, Set<() => void>>>(new Map());
   /**
+   * 2026-10-18 B/C 实例「发消息石沉大海」:prompt 已写入、agent 一字不回,
+   * 既无错误也无状态变化,用户只能重启。发送后 60 秒内该会话没有任何
+   * acp-event 到达,就在 composer 上方放一条可见告警(不自动取消,停止
+   * 按钮仍可用)。任何事件到达即解除。
+   */
+  const sendSilenceTimersRef = useRef<Map<string, number>>(new Map());
+  const clearSendSilenceWatchdog = (sessionId: string) => {
+    const timer = sendSilenceTimersRef.current.get(sessionId);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      sendSilenceTimersRef.current.delete(sessionId);
+    }
+  };
+  const armSendSilenceWatchdog = (sessionId: string) => {
+    clearSendSilenceWatchdog(sessionId);
+    const timer = window.setTimeout(() => {
+      sendSilenceTimersRef.current.delete(sessionId);
+      pushDebug({
+        sessionId,
+        level: "warn",
+        source: "composer",
+        summary: "prompt sent but no acp events for 60s",
+      });
+      setSessionNotices((current) => ({
+        ...current,
+        [sessionId]: {
+          sessionId,
+          severity: "warning",
+          title: "Agent 已 60 秒无任何输出",
+          description:
+            "消息已发出,但没有收到任何回传事件。可先点停止再重发;若反复出现,重启该会话或 agent。",
+        },
+      }));
+    }, 60_000);
+    sendSilenceTimersRef.current.set(sessionId, timer);
+  };
+  /**
    * Sessions whose live turn is a silent prompt (`sendSilentPrompt`). Consumed
    * on turn/complete so that turn's invisible end stays quiet.
    */
@@ -900,6 +938,45 @@ export function App() {
     });
   };
 
+  // ── Stream interest reporting ──────────────────────────────────────────
+  // Rust defers+coalesces text chunks for low-interest sessions (hidden tab
+  // 1s, visible-unfocused 250ms), so one saturating stream can no longer take
+  // the shared main webview down with it. Levels: 0 hidden / 1 visible /
+  // 2 focused. Change-detected so it is safe to call from every flush.
+  const lastReportedInterestsRef = useRef<string>("");
+  const reportStreamInterestsRef = useRef<() => void>(() => undefined);
+  const reportStreamInterests = () => {
+    if (!isTauriRuntime()) return;
+    let next: Record<string, number>;
+    if (IS_DETACHED_WINDOW) {
+      if (!DETACHED_SESSION_ID) return;
+      next = {
+        [DETACHED_SESSION_ID]:
+          document.visibilityState === "visible" ? 2 : 0,
+      };
+    } else {
+      const paint = currentPaintSet();
+      const focused = currentSessionIdRef.current ?? "";
+      const docVisible = document.visibilityState === "visible";
+      next = {};
+      for (const s of sessionsRef.current) {
+        if (!s?.id) continue;
+        // Detached windows report their own session's level; writing 0 from
+        // here would fight the detached SPA's reports.
+        if (detachedOwnedIdsRef.current.has(s.id)) continue;
+        next[s.id] = s.id === focused && docVisible ? 2 : paint.has(s.id) ? 1 : 0;
+      }
+      if (focused && !(focused in next) && !detachedOwnedIdsRef.current.has(focused)) {
+        next[focused] = docVisible ? 2 : 1;
+      }
+    }
+    const key = JSON.stringify(next);
+    if (key === lastReportedInterestsRef.current) return;
+    lastReportedInterestsRef.current = key;
+    void setStreamInterests(next);
+  };
+  reportStreamInterestsRef.current = reportStreamInterests;
+
   const bumpEventsTick = (ids: string[]) => {
     if (ids.length === 0) return;
     setEventsTick((t) => {
@@ -1033,13 +1110,22 @@ export function App() {
 
   const captureProjectFileSnapshot = useCallback(async (projectId: string): Promise<ProjectFileSnapshot | null> => {
     if (!isTauriRuntime() || !projectId || projectId === CHAT_PROJECT_ID) return null;
-    const changedFiles = await getChangedFiles(projectId);
-    const entries = await Promise.all(
-      changedFiles.map(async (file) => {
-        const diff = await getFileDiff(projectId, file.path);
-        return [file.path, { changeType: file.changeType, fingerprint: fingerprintDiff(diff) }] as const;
-      }),
-    );
+    // Two IPC calls total (status + one whole-tree diff). The previous
+    // per-file `getFileDiff` loop spawned a `git diff` process per changed
+    // file (two for untracked entries) and stalled Unity-scale sends for
+    // minutes before the prompt reached the agent (2026-10-18).
+    const [changedFiles, fingerprints] = await Promise.all([
+      getChangedFiles(projectId),
+      getFileFingerprints(projectId),
+    ]);
+    const emptyFingerprint = fingerprintDiff("");
+    const entries = changedFiles.map((file) => [
+      file.path,
+      {
+        changeType: file.changeType,
+        fingerprint: fingerprints[file.path] ?? emptyFingerprint,
+      },
+    ] as const);
     return {
       projectId,
       changedFiles,
@@ -2748,6 +2834,9 @@ export function App() {
       livePaintSetRef.current = currentPaintSet();
       // One bad event must not drop the rest of the batch.
       for (const payload of batch) {
+        // Any event for a session proves its agent is alive — retire the
+        // send-silence watchdog before guards can skip the event.
+        if (payload.sessionId) clearSendSilenceWatchdog(payload.sessionId);
         try {
           // Guards run at processing time, exactly as they did pre-batching —
           // ownership / reload state may flip while events sit in the inbox.
@@ -2770,6 +2859,9 @@ export function App() {
         eventsBySessionRef.current,
       );
       if (flushed.length > 0) bumpEventsTick(flushed);
+      // Delegate children finishing / pane structure changed mid-stream both
+      // show up here; the reporter itself is change-detected.
+      reportStreamInterestsRef.current();
     };
     const scheduleAcpFlush = () => {
       if (acpFlushTimer === undefined) {
@@ -2811,6 +2903,16 @@ export function App() {
     };
   }, [applyAgentSessionTitle, pushDebug, touchActivity, clearAgentBanner, raiseClassifiedBanner]);
   // note: pushDebug is stable via useCallback
+
+  // Stream interest follows pane structure, the focused tab, the session list,
+  // and window visibility (detached hide/show, minimize/restore). Event-driven
+  // drift (delegate children finishing) is caught by the flush piggyback.
+  useEffect(() => {
+    reportStreamInterests();
+    const onVisibility = () => reportStreamInterests();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [splitState, currentSessionId, availableSessions]);
 
   // Detached close: flush JSONL then give the ACP stream back to main.
   useEffect(() => {
@@ -6481,14 +6583,22 @@ export function App() {
 
       setSessionStatusById(sid, "running");
       touchActivity(sid);
+      armSendSilenceWatchdog(sid);
       const imagePaths = imageAttachments.map((a) => a.path);
       const wireText = promptText;
       const projectId = sendRow?.projectId || currentProjectId;
-      const fileSnapshot = sendRow?.projectId === CHAT_PROJECT_ID
-        ? null
-        : await captureProjectFileSnapshot(projectId);
-      if (fileSnapshot) fileChangeSnapshotsRef.current[sid] = fileSnapshot;
+      // The snapshot only feeds turn-end change chips — it must never delay
+      // the prompt on the wire (Unity-scale repos took minutes, 2026-10-18).
+      // It lands within seconds, long before the agent's first file edit.
+      if (sendRow?.projectId !== CHAT_PROJECT_ID && projectId) {
+        void captureProjectFileSnapshot(projectId)
+          .then((fileSnapshot) => {
+            if (fileSnapshot) fileChangeSnapshotsRef.current[sid] = fileSnapshot;
+          })
+          .catch(() => {});
+      }
       await sendPromptWithTurnWait(sid, wireText, imagePaths);
+      clearSendSilenceWatchdog(sid);
       touchActivity(sid);
       pushDebug({
         sessionId: sid,
@@ -6497,6 +6607,7 @@ export function App() {
         summary: `session/prompt accepted (streaming…)${imagePaths.length ? ` images=${imagePaths.length}` : ""}`,
       });
     } catch (error) {
+      clearSendSilenceWatchdog(sid);
       flushingSendRef.current.delete(sid);
       delete fileChangeSnapshotsRef.current[sid];
       delete fileChangePublishedRef.current[sid];

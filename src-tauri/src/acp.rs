@@ -6,8 +6,8 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{channel, Sender};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -5382,6 +5382,73 @@ mod tests {
     }
 
     #[test]
+    fn chunk_defer_tiers() {
+        // Focused streams immediately; hidden defers longest; visible-unfocused
+        // sits between. Degradation raises every tier, focused included.
+        assert_eq!(chunk_defer_ms_for(2, false), 0);
+        assert_eq!(chunk_defer_ms_for(1, false), CHUNK_DEFER_VISIBLE_MS);
+        assert_eq!(chunk_defer_ms_for(0, false), CHUNK_DEFER_HIDDEN_MS);
+        assert_eq!(chunk_defer_ms_for(2, true), CHUNK_DEFER_DEGRADED_MS);
+        assert!(chunk_defer_ms_for(1, true) >= CHUNK_DEFER_DEGRADED_MS);
+        assert_eq!(chunk_defer_ms_for(0, true), CHUNK_DEFER_HIDDEN_MS.max(CHUNK_DEFER_DEGRADED_MS));
+    }
+
+    #[test]
+    fn stream_interest_roundtrip_and_clamp() {
+        let sid_hidden = "interest-test-hidden";
+        let sid_focus = "interest-test-focus";
+        let sid_over = "interest-test-over";
+        set_stream_interests(
+            &[
+                (sid_hidden.to_string(), 0u8),
+                (sid_focus.to_string(), 2u8),
+                (sid_over.to_string(), 9u8),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        assert_eq!(
+            stream_interest_of(sid_hidden).load(Ordering::Relaxed),
+            0,
+            "hidden level must persist"
+        );
+        assert_eq!(
+            stream_interest_of(sid_focus).load(Ordering::Relaxed),
+            2,
+            "focused level must persist"
+        );
+        assert_eq!(
+            stream_interest_of(sid_over).load(Ordering::Relaxed),
+            2,
+            "out-of-range levels clamp to focused"
+        );
+        // Unreported sessions keep today's behaviour: full rate.
+        assert_eq!(
+            stream_interest_of("interest-test-unknown").load(Ordering::Relaxed),
+            2
+        );
+    }
+
+    #[test]
+    fn hiding_detached_window_zeroes_stream_interest() {
+        set_detached_visible("interest-test-detach", true);
+        assert_eq!(
+            stream_interest_of("interest-test-detach").load(Ordering::Relaxed),
+            2,
+            "unreported defaults to focused"
+        );
+        set_stream_interests(&[("interest-test-detach".to_string(), 2u8)]
+            .into_iter()
+            .collect());
+        set_detached_visible("interest-test-detach", false);
+        assert_eq!(
+            stream_interest_of("interest-test-detach").load(Ordering::Relaxed),
+            0,
+            "hiding the detached window must drop interest to hidden"
+        );
+    }
+
+    #[test]
     fn acp_ui_target_child_follows_parent_window() {
         register_parent_session("s-child", "s-parent");
         set_detached_visible("s-parent", true);
@@ -5573,6 +5640,64 @@ fn unregister_emitter(session_id: &str) {
     if let Ok(mut map) = emitters().lock() {
         map.remove(session_id);
     }
+    if let Ok(mut interests) = stream_interests().lock() {
+        interests.remove(session_id);
+    }
+}
+
+// ── Stream interest (chunk deferral) ──────────────────────────────────────
+//
+// 2026-10-18 复发假死的补刀:分屏把多个会话的流全部送进主窗口同一个
+// WebView,一个 60–80 事件/秒的长回合就能打满渲染线程,连右上角自绘窗口
+// 按钮都点不动。UI 按可见性上报每个会话的兴趣等级,Rust 侧对低兴趣会话
+// 的文本块延迟合并派发(内容不丢,只降速率):后台标签 1s 一次、可见非
+// 聚焦 250ms 一次、聚焦即时。派发持续落后时(背压)对全部会话升格降频。
+static STREAM_INTEREST: OnceLock<Mutex<HashMap<String, Arc<AtomicU8>>>> = OnceLock::new();
+
+fn stream_interests() -> &'static Mutex<HashMap<String, Arc<AtomicU8>>> {
+    STREAM_INTEREST.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 0 = hidden, 1 = visible but unfocused, 2 = focused. Unknown sessions
+/// default to 2 so a UI that never reports keeps today's behaviour.
+fn stream_interest_of(session_id: &str) -> Arc<AtomicU8> {
+    let mut map = stream_interests().lock().expect("stream_interests poisoned");
+    map.entry(session_id.to_string())
+        .or_insert_with(|| Arc::new(AtomicU8::new(2)))
+        .clone()
+}
+
+/// UI-reported interest levels; values above 2 are clamped to 2.
+pub fn set_stream_interests(levels: &HashMap<String, u8>) {
+    let Ok(mut map) = stream_interests().lock() else {
+        return;
+    };
+    for (sid, level) in levels {
+        if sid.is_empty() {
+            continue;
+        }
+        let level = (*level).min(2);
+        match map.get_mut(sid) {
+            Some(slot) => slot.store(level, Ordering::Relaxed),
+            None => {
+                map.insert(sid.clone(), Arc::new(AtomicU8::new(level)));
+            }
+        }
+    }
+}
+
+/// Deferral window for text chunks, by interest level + degradation state.
+fn chunk_defer_ms_for(level: u8, degraded: bool) -> u64 {
+    let base = match level {
+        0 => CHUNK_DEFER_HIDDEN_MS,
+        1 => CHUNK_DEFER_VISIBLE_MS,
+        _ => 0,
+    };
+    if degraded {
+        base.max(CHUNK_DEFER_DEGRADED_MS)
+    } else {
+        base
+    }
 }
 
 // ── Which window owns a session's ACP stream ───────────────────────────────
@@ -5594,13 +5719,20 @@ fn parent_of() -> &'static Mutex<HashMap<String, String>> {
 }
 
 pub fn set_detached_visible(session_id: &str, visible: bool) {
-    let Ok(mut set) = detached_visible().lock() else {
-        return;
-    };
-    if visible {
-        set.insert(session_id.to_string());
-    } else {
-        set.remove(session_id);
+    {
+        let Ok(mut set) = detached_visible().lock() else {
+            return;
+        };
+        if visible {
+            set.insert(session_id.to_string());
+        } else {
+            set.remove(session_id);
+        }
+    }
+    if !visible {
+        // A hidden detached webview cannot re-report, so drop it to hidden
+        // interest here; the main window's next report re-establishes levels.
+        set_stream_interests(&[(session_id.to_string(), 0u8)].into_iter().collect());
     }
 }
 
@@ -5913,13 +6045,92 @@ const SLOW_DISPATCH: Duration = Duration::from_millis(250);
 /// Bounded so one merge cannot build an unbounded payload.
 const MAX_BATCH: usize = 256;
 const MAX_MERGED_TEXT: usize = 64 * 1024;
+/// Text-chunk deferral by stream interest (see `STREAM_INTEREST`): hidden
+/// session, visible-but-unfocused pane.
+const CHUNK_DEFER_HIDDEN_MS: u64 = 1000;
+const CHUNK_DEFER_VISIBLE_MS: u64 = 250;
+/// Backpressure tier: while dispatch keeps falling behind, defer every
+/// session's chunks (focused included) so the webview can catch up.
+const CHUNK_DEFER_DEGRADED_MS: u64 = 750;
+/// How long degraded mode lasts after the last "behind" signal.
+const DEGRADE_RECOVERY: Duration = Duration::from_secs(2);
+/// While chunks are deferred, re-check interest at least this often.
+const CHUNK_DEFER_RECHECK: Duration = Duration::from_millis(200);
 
 fn spawn_event_emitter(app: AppHandle, session_id: String) -> Sender<UiEvent> {
     let (tx, rx) = channel::<UiEvent>();
+    let interest = stream_interest_of(&session_id);
     thread::spawn(move || {
         let mut last_backlog_report: Option<Instant> = None;
-        // Ends when the sender is dropped, after draining what is queued.
-        while let Ok(first) = rx.recv() {
+        // Text chunks held back for a low-interest session. They are merged
+        // (never dropped) at flush, so transcripts stay complete — only the
+        // event rate to the webview drops.
+        let mut pending: Vec<UiEvent> = Vec::new();
+        let mut pending_deadline: Option<Instant> = None;
+        // Backpressure: while the webview keeps falling behind, every session
+        // (focused included) gets its chunks deferred, trading stream latency
+        // for a UI that still answers input.
+        let mut degraded_until: Option<Instant> = None;
+
+        // Emits one event, returning how long the webview emit took so the
+        // loop can enter backpressure mode; panics are contained and logged.
+        let emit_one = |event: UiEvent| -> Duration {
+            let label = event.method.clone().unwrap_or_else(|| event.kind.clone());
+            let app = &app;
+            let session = session_id.as_str();
+            // A panic here used to end the session's UI updates for good,
+            // with no error anywhere. Drop the offending event instead.
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                emit_now(app, session, event)
+            })) {
+                Ok(took) => took,
+                Err(_) => {
+                    crate::debug_log::append(
+                        "acp",
+                        "error",
+                        &session_id,
+                        "dropped an event that panicked during dispatch",
+                        Some(&label),
+                    );
+                    Duration::ZERO
+                }
+            }
+        };
+
+        loop {
+            // Wake on the next event, the pending deadline, or a recheck tick
+            // (interest may have risen with no traffic to signal it).
+            let first = if pending.is_empty() {
+                match rx.recv() {
+                    Ok(event) => event,
+                    Err(_) => break,
+                }
+            } else {
+                let timeout = pending_deadline
+                    .map(|d| d.saturating_duration_since(Instant::now()))
+                    .unwrap_or(Duration::from_millis(0))
+                    .min(CHUNK_DEFER_RECHECK);
+                match rx.recv_timeout(timeout) {
+                    Ok(event) => event,
+                    Err(RecvTimeoutError::Timeout) => {
+                        let now = Instant::now();
+                        let degraded = degraded_until.map(|t| now < t).unwrap_or(false);
+                        let due = pending_deadline.map(|d| now >= d).unwrap_or(true);
+                        let refocused = !degraded && interest.load(Ordering::Relaxed) >= 2;
+                        if due || refocused {
+                            for merged in coalesce_stream_chunks(std::mem::take(&mut pending)) {
+                                if emit_one(merged) > SLOW_DISPATCH {
+                                    degraded_until = Some(Instant::now() + DEGRADE_RECOVERY);
+                                }
+                            }
+                            pending_deadline = None;
+                        }
+                        continue;
+                    }
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
+            };
+
             let mut batch = vec![first];
             // Only ever batches what is *already* waiting. If the UI is keeping
             // up, `try_recv` is empty on the first poll and behaviour is
@@ -5930,6 +6141,9 @@ fn spawn_event_emitter(app: AppHandle, session_id: String) -> Sender<UiEvent> {
                     Err(_) => break,
                 }
             }
+            // Drained as far as the watchdog is concerned; deferred chunks sit
+            // in `pending` and flush within ≤1s, far inside its stall window.
+            QUEUE_DEPTH.fetch_sub(batch.len() as u64, Ordering::Relaxed);
 
             if batch.len() >= 32 {
                 let report = last_backlog_report
@@ -5945,30 +6159,43 @@ fn spawn_event_emitter(app: AppHandle, session_id: String) -> Sender<UiEvent> {
                         Some(&format!("batch={}", batch.len())),
                     );
                 }
+                degraded_until = Some(Instant::now() + DEGRADE_RECOVERY);
             }
 
-            let queued = batch.len() as u64;
-            for event in coalesce_stream_chunks(batch) {
-                // A panic here used to end the session's UI updates for good,
-                // with no error anywhere. Drop the offending event instead.
-                let label = event.method.clone().unwrap_or_else(|| event.kind.clone());
-                let app = &app;
-                let session = session_id.as_str();
-                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-                    emit_now(app, session, event)
-                }))
-                .is_err()
-                {
-                    crate::debug_log::append(
-                        "acp",
-                        "error",
-                        &session_id,
-                        "dropped an event that panicked during dispatch",
-                        Some(&label),
-                    );
+            let now = Instant::now();
+            let degraded = degraded_until.map(|t| now < t).unwrap_or(false);
+            let defer_ms = chunk_defer_ms_for(interest.load(Ordering::Relaxed), degraded);
+
+            for event in batch {
+                let defer = defer_ms > 0 && chunk_key(&event).is_some();
+                if defer {
+                    pending.push(event);
+                    let deadline = Instant::now() + Duration::from_millis(defer_ms);
+                    pending_deadline = Some(match pending_deadline {
+                        Some(existing) => existing.min(deadline),
+                        None => deadline,
+                    });
+                } else {
+                    // Ordering: a non-deferred event flushes everything older.
+                    if !pending.is_empty() {
+                        for merged in coalesce_stream_chunks(std::mem::take(&mut pending)) {
+                            if emit_one(merged) > SLOW_DISPATCH {
+                                degraded_until = Some(Instant::now() + DEGRADE_RECOVERY);
+                            }
+                        }
+                        pending_deadline = None;
+                    }
+                    if emit_one(event) > SLOW_DISPATCH {
+                        degraded_until = Some(Instant::now() + DEGRADE_RECOVERY);
+                    }
                 }
             }
-            QUEUE_DEPTH.fetch_sub(queued, Ordering::Relaxed);
+        }
+
+        // Channel closed (session stop / process end): flush the tail so
+        // teardown cannot swallow deferred chunks.
+        for merged in coalesce_stream_chunks(std::mem::take(&mut pending)) {
+            emit_one(merged);
         }
     });
     tx
@@ -6035,8 +6262,9 @@ fn set_chunk_text(event: &mut UiEvent, text: String) -> bool {
 }
 
 /// Takes the event by value: this runs once per streamed chunk, so the payload
-/// is moved into the emit rather than cloned.
-fn emit_now(app: &AppHandle, session_id: &str, event: UiEvent) {
+/// is moved into the emit rather than cloned. Returns how long the webview
+/// emit took so the dispatch loop can enter backpressure mode.
+fn emit_now(app: &AppHandle, session_id: &str, event: UiEvent) -> Duration {
     // Telegram 远程桥旁路：所有 UI 事件的唯一收口（含排队与直发两条路）。
     // 未启用时函数前两行即返回；绝不在此做网络 IO（推送走 mpsc 队列）。
     crate::telegram_remote::observe_ui_event(
@@ -6099,4 +6327,5 @@ fn emit_now(app: &AppHandle, session_id: &str, event: UiEvent) {
             )),
         );
     }
+    emit_took
 }

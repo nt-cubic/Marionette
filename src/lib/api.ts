@@ -711,6 +711,22 @@ export async function getFileDiff(projectId: string, path: string): Promise<stri
   }
 }
 
+/**
+ * Per-file diff fingerprints from one whole-tree `git diff` (two IPC calls per
+ * snapshot). Replaces the per-file `getFileDiff` loop that spawned a git
+ * process per changed file and stalled sends in Unity-scale repos for minutes.
+ */
+export async function getFileFingerprints(
+  projectId: string,
+): Promise<Record<string, string>> {
+  if (!isTauriRuntime()) return {};
+  try {
+    return await invoke<Record<string, string>>("get_file_fingerprints", { projectId });
+  } catch {
+    return {};
+  }
+}
+
 export async function respondAcpPermission(requestId: string, optionId: string): Promise<void> {
   if (!isTauriRuntime()) return;
   await invoke("respond_acp_permission", { requestId, optionId });

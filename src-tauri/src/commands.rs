@@ -1,6 +1,7 @@
 use crate::models::{AgentCommandStatus, AgentConfig, Project, Session};
 use crate::AppState;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -1042,6 +1043,14 @@ pub fn write_transcript(
 #[tauri::command(async)]
 pub fn set_detached_session_owner(session_id: String, visible: bool) {
     crate::acp::set_detached_visible(&session_id, visible);
+}
+
+/// UI reports per-session stream interest (0 hidden / 1 visible-unfocused /
+/// 2 focused) so Rust can defer+coalesce text chunks for sessions the user is
+/// not looking at. Full map semantics: omitted ids keep their current level.
+#[tauri::command(async)]
+pub fn set_stream_interests(levels: HashMap<String, u8>) {
+    crate::acp::set_stream_interests(&levels);
 }
 
 #[tauri::command(async)]
@@ -2309,6 +2318,26 @@ pub fn get_file_diff(
         .find(|p| p.id == project_id)
         .ok_or_else(|| format!("Unknown project: {project_id}"))?;
     crate::git_service::get_file_diff(Path::new(&project.root_path), &path)
+}
+
+/// Whole-tree per-file diff fingerprints in one `git diff` — see
+/// `git_service::get_file_fingerprints` for why the per-file command must not
+/// be used for snapshots.
+#[tauri::command(async)]
+pub fn get_file_fingerprints(
+    project_id: String,
+    state: State<'_, AppState>,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let storage = state
+        .storage
+        .lock()
+        .map_err(|_| "Storage lock poisoned".to_string())?;
+    let project = storage
+        .list_projects()?
+        .into_iter()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("Unknown project: {project_id}"))?;
+    crate::git_service::get_file_fingerprints(Path::new(&project.root_path))
 }
 
 /// Answer a pending ACP `session/request_permission` prompt.
