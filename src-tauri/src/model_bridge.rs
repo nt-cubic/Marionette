@@ -452,7 +452,7 @@ fn engine_bridge_source() -> BridgeSource {
     BridgeSource {
         entry_id: crate::engine::ENGINE_ENTRY_ID.to_string(),
         preset: crate::engine::ENGINE_PRESET_ID.to_string(),
-        label: "翻译引擎（订阅跨用）".to_string(),
+        label: "翻译引擎（订阅）".to_string(),
         from_scan: false,
     }
 }
@@ -503,7 +503,7 @@ pub fn opencode_engine_config_content(
     );
     provider.insert(
         "name".to_string(),
-        Value::String("Marionette 跨用引擎".to_string()),
+        Value::String("Marionette 模型共享".to_string()),
     );
     provider.insert(
         "options".to_string(),
@@ -554,7 +554,7 @@ fn list_models_at(
                     models: Vec::new(),
                     sources: Vec::new(),
                     note: Some(
-                        "跨用需要翻译引擎 — 请先在设置的凭据页启用（引擎运行中后重开此菜单）"
+                        "模型共享需要翻译引擎 — 请先在设置的凭据页启用（引擎运行中后重开此菜单）"
                             .to_string(),
                     ),
                 };
@@ -597,7 +597,7 @@ fn list_models_at(
                 None
             } else {
                 Some(
-                    "跨用引擎未运行 — Grok/GPT 等订阅模型暂不可见；点左下角跨用按钮启动（或稍候自动唤醒）后重开此菜单"
+                    "模型共享未运行 — Grok/GPT 等订阅模型暂不可见；点左下角模型共享按钮启动（或稍候自动唤醒）后重开此菜单"
                         .to_string(),
                 )
             };
@@ -620,7 +620,7 @@ fn list_models_at(
             models: Vec::new(),
             sources: Vec::new(),
             note: Some(
-                "该 agent 的跨用通道还没接（当前支持 Claude Code、Grok、Codex 与 OpenCode）"
+                "该 agent 的模型共享还没接（当前支持 Claude Code、Grok、Codex 与 OpenCode）"
                     .to_string(),
             ),
         },
@@ -698,9 +698,9 @@ fn list_models_at(
                 truncated |= push_engine_models(&mut models);
             }
             let mut note = if sources.is_empty() {
-                Some("还没有可跨用的 API Key，请先在设置的凭据页添加".to_string())
+                Some("还没有可共享的 API Key，请先在设置的凭据页添加".to_string())
             } else if models.is_empty() {
-                Some("当前凭证没有可用的跨用模型（拉取模型目录失败，可稍后重试或用自定义输入）".to_string())
+                Some("当前凭证没有可用的共享模型（拉取模型目录失败，可稍后重试或用自定义输入）".to_string())
             } else {
                 None
             };
@@ -708,7 +708,7 @@ fn list_models_at(
             // 缺席不是没有，是引擎未运行——给出动作指引。
             if !crate::engine::bridge_ready() && note.is_none() {
                 note = Some(
-                    "跨用引擎未运行 — Grok/GPT 等订阅模型暂不可见；点左下角跨用按钮启动（或稍候自动唤醒）后重开此菜单"
+                    "模型共享未运行 — Grok/GPT 等订阅模型暂不可见；点左下角模型共享按钮启动（或稍候自动唤醒）后重开此菜单"
                         .to_string(),
                 );
             }
@@ -2614,7 +2614,7 @@ official_marketplace_auto_installed = true\n";
             // 测试态引擎未 Running → 引擎指引 note（2026-10-17 起：明说订阅族
             // 缺席的原因，而不是静默少一组）。
             assert!(
-                result.note.as_deref().is_some_and(|n| n.contains("引擎未运行")),
+                result.note.as_deref().is_some_and(|n| n.contains("模型共享未运行")),
                 "agent {agent}: note = {:?}",
                 result.note
             );
@@ -2646,14 +2646,14 @@ official_marketplace_auto_installed = true\n";
             assert!(codex.models.is_empty());
             assert_eq!(
                 codex.note.as_deref(),
-                Some("跨用需要翻译引擎 — 请先在设置的凭据页启用（引擎运行中后重开此菜单）")
+                Some("模型共享需要翻译引擎 — 请先在设置的凭据页启用（引擎运行中后重开此菜单）")
             );
         }
         let opencode = list_models_at(&credentials, &scan, "opencode");
         assert!(opencode.models.is_empty());
         assert_eq!(
             opencode.note.as_deref(),
-            Some("跨用引擎未运行 — Grok/GPT 等订阅模型暂不可见；点左下角跨用按钮启动（或稍候自动唤醒）后重开此菜单")
+            Some("模型共享未运行 — Grok/GPT 等订阅模型暂不可见；点左下角模型共享按钮启动（或稍候自动唤醒）后重开此菜单")
         );
 
         // 其它 agent：没有注入通道，空 + 说明。
@@ -2809,7 +2809,7 @@ official_marketplace_auto_installed = true\n";
             .find(|s| s.entry_id == crate::engine::ENGINE_ENTRY_ID)
             .expect("引擎 Running 时 engine 源应出现");
         assert_eq!(engine_source.preset, crate::engine::ENGINE_PRESET_ID);
-        assert_eq!(engine_source.label, "翻译引擎（订阅跨用）");
+        assert_eq!(engine_source.label, "翻译引擎（订阅）");
         assert!(!engine_source.from_scan);
         let ids: Vec<&str> = result
             .models
@@ -3056,7 +3056,7 @@ official_marketplace_auto_installed = true\n";
         let source = BridgeSource {
             entry_id: "engine".to_string(),
             preset: "engine".to_string(),
-            label: "翻译引擎（订阅跨用）".to_string(),
+            label: "翻译引擎（订阅）".to_string(),
             from_scan: false,
         };
         let result_of = |ids: &[&str]| BridgeModelsResult {
@@ -3316,7 +3316,7 @@ Connection: close
         let result = list_models_at(&credentials, &scan, "grok-build");
         // 测试态引擎未 Running → 引擎指引 note（2026-10-17 起）。
         assert!(
-            result.note.as_deref().is_some_and(|n| n.contains("引擎未运行")),
+            result.note.as_deref().is_some_and(|n| n.contains("模型共享未运行")),
             "note = {:?}",
             result.note
         );
@@ -3372,7 +3372,7 @@ Connection: close
             let result = list_models_at(&credentials, &scan, agent);
             // 测试态引擎未 Running → 引擎指引 note（2026-10-17 起）。
             assert!(
-                result.note.as_deref().is_some_and(|n| n.contains("引擎未运行")),
+                result.note.as_deref().is_some_and(|n| n.contains("模型共享未运行")),
                 "{agent}: note = {:?}",
                 result.note
             );
@@ -3415,7 +3415,7 @@ Connection: close
         assert!(self_view.sources.is_empty());
         assert_eq!(
             self_view.note.as_deref(),
-            Some("跨用引擎未运行 — Grok/GPT 等订阅模型暂不可见；点左下角跨用按钮启动（或稍候自动唤醒）后重开此菜单")
+            Some("模型共享未运行 — Grok/GPT 等订阅模型暂不可见；点左下角模型共享按钮启动（或稍候自动唤醒）后重开此菜单")
         );
 
         // 扫描失败（auth.json 损坏）→ 静默跳过该家，store 条目照常。
@@ -3428,7 +3428,7 @@ Connection: close
         assert_eq!(source_ids, vec!["xai"], "扫描坏了不该连 store 条目也没了");
         assert!(result.models.iter().all(|m| m.entry_id == "xai"));
         // 测试态引擎未 Running → 引擎指引 note（2026-10-17 起）。
-        assert!(result.note.as_deref().is_some_and(|n| n.contains("引擎未运行")));
+        assert!(result.note.as_deref().is_some_and(|n| n.contains("模型共享未运行")));
 
         // 只有「模型列表为空」的来源时：models 空 + 说明，但来源在。
         let home_or = dir.join("opencode-or-only");
@@ -3445,7 +3445,7 @@ Connection: close
         assert!(result.models.is_empty());
         assert_eq!(
             result.note.as_deref(),
-            Some("当前凭证没有可用的跨用模型（拉取模型目录失败，可稍后重试或用自定义输入）")
+            Some("当前凭证没有可用的共享模型（拉取模型目录失败，可稍后重试或用自定义输入）")
         );
         assert_eq!(result.sources.len(), 1);
         assert_eq!(result.sources[0].entry_id, "opencode/openrouter");

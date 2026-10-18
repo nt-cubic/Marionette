@@ -3646,6 +3646,10 @@ fn handle_agent_request(
             let request_id = format!("{session_id}:perm:{seq}");
             let options = extract_permission_options(&params);
             let (title, detail) = permission_summary(&params);
+            let plan_markdown = extract_plan_markdown_from_permission(&params);
+            // Prefer the unwrapped plan as `detail` so Telegram / notify get
+            // readable markdown instead of a JSON dump of `{plan: "..."}`.
+            let detail = plan_markdown.clone().or(detail);
             if let Ok(mut map) = permissions.lock() {
                 map.insert(
                     request_id.clone(),
@@ -3666,6 +3670,7 @@ fn handle_agent_request(
                     "sessionId": session_id,
                     "title": title,
                     "detail": detail,
+                    "planMarkdown": plan_markdown,
                     "options": options,
                     "params": params,
                 }),
@@ -4194,36 +4199,91 @@ fn permission_summary(params: &Value) -> (String, Option<String>) {
             .or_else(|| tool.get("kind").and_then(Value::as_str))
             .unwrap_or("Tool permission required")
             .to_string();
-        let detail = tool
-            .get("rawInput")
-            .or_else(|| tool.get("raw_input"))
-            .map(|v| {
-                if let Some(s) = v.as_str() {
-                    s.to_string()
-                } else {
-                    v.to_string()
-                }
-            })
-            .or_else(|| {
-                tool.get("locations")
-                    .and_then(Value::as_array)
-                    .map(|locs| {
-                        locs.iter()
-                            .filter_map(|l| l.get("path").and_then(Value::as_str))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    })
-                    .filter(|s| !s.is_empty())
-            });
+        let detail = extract_plan_markdown_from_permission(params).or_else(|| {
+            tool.get("rawInput")
+                .or_else(|| tool.get("raw_input"))
+                .map(|v| {
+                    if let Some(s) = v.as_str() {
+                        s.to_string()
+                    } else {
+                        v.to_string()
+                    }
+                })
+                .or_else(|| {
+                    tool.get("locations")
+                        .and_then(Value::as_array)
+                        .map(|locs| {
+                            locs.iter()
+                                .filter_map(|l| l.get("path").and_then(Value::as_str))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .filter(|s| !s.is_empty())
+                })
+        });
         return (title, detail);
     }
     if let Some(title) = params.get("title").and_then(Value::as_str) {
-        return (title.to_string(), None);
+        return (title.to_string(), extract_plan_markdown_from_permission(params));
     }
     (
         "Permission required".to_string(),
         Some("The agent wants to run a tool or access a resource.".to_string()),
     )
+}
+
+/// Claude Code ExitPlanMode arrives as `session/request_permission` with
+/// `toolCall.rawInput = { "plan": "<markdown>" }` (title typically "Approve Plan").
+/// Pull the markdown out so the UI / Telegram can show a readable plan page.
+fn extract_plan_markdown_from_permission(params: &Value) -> Option<String> {
+    plan_string_from_value(params, 0)
+}
+
+fn plan_string_from_value(v: &Value, depth: u8) -> Option<String> {
+    if depth > 4 {
+        return None;
+    }
+    const KEYS: [&str; 5] = [
+        "plan",
+        "planMarkdown",
+        "planContent",
+        "plan_markdown",
+        "plan_content",
+    ];
+    if let Some(obj) = v.as_object() {
+        for key in KEYS {
+            if let Some(s) = obj.get(key).and_then(Value::as_str) {
+                let trimmed = s.trim();
+                if !trimmed.is_empty() {
+                    return Some(s.chars().take(MAX_PLAN_MARKDOWN_CHARS).collect());
+                }
+            }
+        }
+        for nested_key in [
+            "rawInput",
+            "raw_input",
+            "input",
+            "toolCall",
+            "tool_call",
+            "params",
+        ] {
+            if let Some(nested) = obj.get(nested_key) {
+                if let Some(found) = plan_string_from_value(nested, depth + 1) {
+                    return Some(found);
+                }
+            }
+        }
+        return None;
+    }
+    if let Some(s) = v.as_str() {
+        let trimmed = s.trim();
+        if trimmed.starts_with('{') {
+            if let Ok(parsed) = serde_json::from_str::<Value>(trimmed) {
+                return plan_string_from_value(&parsed, depth + 1);
+            }
+        }
+    }
+    None
 }
 
 fn pick_reject_option(options: &Value) -> Option<String> {
@@ -5401,6 +5461,77 @@ mod tests {
             }
         })));
     }
+
+    /// Claude Code ExitPlanMode is a permission request whose rawInput is
+    /// `{plan: "<markdown>"}`. The UI must receive the markdown, not the JSON dump.
+    #[test]
+    fn claude_code_approve_plan_unwraps_markdown() {
+        let params = json!({
+            "sessionId": "s1",
+            "toolCall": {
+                "toolCallId": "call-1",
+                "title": "Approve Plan",
+                "kind": "other",
+                "rawInput": {
+                    "plan": "# Chrome/Edge 式标签页\n\n## Context\n\n用户想要连着关。"
+                }
+            },
+            "options": [
+                { "optionId": "yes", "name": "Yes, manually approve edits", "kind": "allow_once" },
+                { "optionId": "no", "name": "No, keep planning", "kind": "reject_once" }
+            ]
+        });
+        let (title, detail) = permission_summary(&params);
+        assert_eq!(title, "Approve Plan");
+        let plan = extract_plan_markdown_from_permission(&params).expect("plan markdown");
+        assert!(plan.starts_with("# Chrome/Edge"));
+        assert!(plan.contains("## Context"));
+        assert!(!plan.starts_with('{'), "must not be a JSON dump: {plan}");
+        assert_eq!(detail.as_deref(), Some(plan.as_str()));
+
+        // Ordinary file-write permissions must not be treated as a plan.
+        let edit = json!({
+            "toolCall": {
+                "title": "Edit App.tsx",
+                "rawInput": { "path": "src/app/App.tsx", "content": "hello" }
+            }
+        });
+        assert!(extract_plan_markdown_from_permission(&edit).is_none());
+        let (edit_title, edit_detail) = permission_summary(&edit);
+        assert_eq!(edit_title, "Edit App.tsx");
+        assert!(
+            edit_detail
+                .as_deref()
+                .unwrap_or("")
+                .contains("App.tsx"),
+            "edit detail should still mention the path/input: {edit_detail:?}"
+        );
+    }
+
+    /// Codex PlanReviewReporter (codex-acp 2.2.2) maps `input: {plan}` to
+    /// `toolCall.rawInput` and titles the permission "Implement this plan?".
+    #[test]
+    fn codex_implement_plan_unwraps_markdown() {
+        let params = json!({
+            "sessionId": "s1",
+            "toolCall": {
+                "toolCallId": "plan-review:item-1",
+                "title": "Implement this plan?",
+                "kind": "switch_mode",
+                "status": "pending",
+                "rawInput": { "plan": "# Ship it\n\n- step" }
+            },
+            "options": [
+                { "optionId": "implement_plan", "name": "Yes, implement this plan", "kind": "allow_once" },
+                { "optionId": "revise_plan", "name": "No, and tell Codex what to do differently", "kind": "reject_once" }
+            ]
+        });
+        let plan = extract_plan_markdown_from_permission(&params).expect("codex plan");
+        assert_eq!(plan, "# Ship it\n\n- step");
+        let (title, detail) = permission_summary(&params);
+        assert_eq!(title, "Implement this plan?");
+        assert_eq!(detail.as_deref(), Some("# Ship it\n\n- step"));
+    }
 }
 
 // ── UI event dispatch ──────────────────────────────────────────────────────
@@ -5549,6 +5680,18 @@ fn emit_event(app: &AppHandle, session_id: &str, kind: &str, method: Option<&str
     if let Err(event) = queue_event(session_id, event) {
         emit_now(app, session_id, event);
     }
+}
+
+/// crate 内旁路出口（telegram 远程解答后的 UI 卡片清理事件）。
+/// 走与 UI 完全相同的投递路径（会话队列 → 直发兜底）。
+pub(crate) fn emit_ui_event(
+    app: &AppHandle,
+    session_id: &str,
+    kind: &str,
+    method: Option<&str>,
+    data: Value,
+) {
+    emit_event(app, session_id, kind, method, data)
 }
 
 /// `0` means idle. Atomically take the in-flight prompt id if any.
@@ -5894,6 +6037,14 @@ fn set_chunk_text(event: &mut UiEvent, text: String) -> bool {
 /// Takes the event by value: this runs once per streamed chunk, so the payload
 /// is moved into the emit rather than cloned.
 fn emit_now(app: &AppHandle, session_id: &str, event: UiEvent) {
+    // Telegram 远程桥旁路：所有 UI 事件的唯一收口（含排队与直发两条路）。
+    // 未启用时函数前两行即返回；绝不在此做网络 IO（推送走 mpsc 队列）。
+    crate::telegram_remote::observe_ui_event(
+        session_id,
+        &event.kind,
+        event.method.as_deref(),
+        &event.data,
+    );
     // Developer diary on disk — not a product UI surface.
     let summary = event
         .method

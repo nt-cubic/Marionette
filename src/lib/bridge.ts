@@ -60,14 +60,19 @@ export function bridgePresetLabel(preset: string): string {
   return BRIDGE_PRESETS.find((p) => p.id === preset)?.label ?? preset;
 }
 
-/** Cross-use group header in the model picker: 「跨用 · OPENCODE GO」. */
+/** Shared-model group header in the model picker: 「共享 · OPENCODE GO」. */
 export function bridgeGroupTitle(preset: string): string {
-  return `跨用 · ${bridgePresetLabel(preset).toUpperCase()}`;
+  return `共享 · ${bridgePresetLabel(preset).toUpperCase()}`;
 }
 
 /** Same header for a source descriptor (label comes from the entry itself). */
 export function bridgeSourceGroupTitle(label: string): string {
-  return `跨用 · ${label.toUpperCase()}`;
+  return `共享 · ${label.toUpperCase()}`;
+}
+
+/** Drop the group-title prefix so section headers show only the source name. */
+export function stripBridgeGroupPrefix(title: string): string {
+  return title.replace(/^(?:共享|跨用) · /, "");
 }
 
 /**

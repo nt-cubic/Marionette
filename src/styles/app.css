@@ -185,6 +185,186 @@ body.is-panel-resizing .context-panel {
   background: var(--workspace-bg);
 }
 
+.center-workspace.is-split {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.center-workspace.is-split > .split-workspace {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+/* Detached tab hovering the main window: whole conversation area is the drop target. */
+.center-workspace.is-merge-target {
+  outline: 1px dashed color-mix(in srgb, var(--accent) 65%, var(--border));
+  outline-offset: -2px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--workspace-bg));
+}
+
+.split-workspace {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.split-branch {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  width: 100%;
+  --split-ratio: 0.5;
+}
+
+.split-branch.is-vertical {
+  flex-direction: row;
+}
+
+.split-branch.is-horizontal {
+  flex-direction: column;
+}
+
+.split-branch > .split-a {
+  flex: var(--split-ratio) 1 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.split-branch > .split-b {
+  flex: calc(1 - var(--split-ratio)) 1 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.session-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 280px;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.session-pane.is-focused {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.session-pane__tabs {
+  display: flex;
+  flex: 0 0 34px;
+  align-items: stretch;
+  min-width: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--editor-toolbar-bg);
+}
+
+.session-pane__tabs .editor-tabs__tablist {
+  flex: 1;
+  min-width: 0;
+  padding: 0 4px 0 8px;
+}
+
+.session-pane__body {
+  display: grid;
+  flex: 1;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pane-splitter {
+  flex: 0 0 8px;
+  padding: 0;
+  border: 0;
+  background: color-mix(in srgb, var(--border) 42%, var(--workspace-bg));
+  z-index: 5;
+  position: relative;
+}
+
+.pane-splitter::before {
+  content: "";
+  position: absolute;
+  background: var(--border-strong);
+  pointer-events: none;
+}
+
+.pane-splitter--vertical {
+  cursor: col-resize;
+}
+
+.pane-splitter--vertical::before {
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 4px;
+}
+
+.pane-splitter--horizontal {
+  cursor: row-resize;
+}
+
+.pane-splitter--horizontal::before {
+  left: 0;
+  right: 0;
+  top: 2px;
+  height: 4px;
+}
+
+.pane-splitter:hover,
+.pane-splitter:focus-visible,
+.pane-splitter.is-dragging {
+  background: color-mix(in srgb, var(--accent) 22%, var(--workspace-bg));
+}
+
+.pane-splitter:hover::before,
+.pane-splitter:focus-visible::before,
+.pane-splitter.is-dragging::before {
+  background: color-mix(in srgb, var(--accent) 80%, var(--border-strong));
+}
+
+body.is-pane-splitting {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+body.is-pane-splitting-y {
+  cursor: row-resize !important;
+}
+
+body.is-pane-splitting * {
+  cursor: inherit !important;
+  user-select: none !important;
+}
+
+.split-drop-overlay {
+  position: fixed;
+  z-index: 9990;
+  pointer-events: none;
+  border-radius: 2px;
+}
+
+.split-drop-overlay--split {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.split-drop-overlay--activate {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.split-drop-overlay--insert {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  outline: 1px dashed color-mix(in srgb, var(--accent) 65%, var(--border));
+  outline-offset: -2px;
+}
+
 .section-heading,
 .composer,
 .composer__toolbar,
@@ -1996,8 +2176,11 @@ body.is-project-reordering .project-list {
 .editor-tab {
   display: inline-flex;
   align-items: center;
+  /* Equal-width tabs (Chrome-style): after a close, the next × lands under the cursor. */
+  flex: 1 1 0px;
   height: 28px;
-  max-width: 280px;
+  min-width: 104px;
+  max-width: 240px;
   padding: 0 3px 0 8px;
   overflow: hidden;
   border: 1px solid transparent;
@@ -2019,8 +2202,8 @@ body.is-project-reordering .project-list {
 }
 
 .editor-tab__select {
+  flex: 1 1 auto;
   min-width: 0;
-  max-width: 190px;
   padding: 0;
   overflow: hidden;
   color: inherit;
@@ -2054,6 +2237,7 @@ body.is-project-reordering .project-list {
 .editor-tab__close,
 .editor-tab__popout,
 .editor-tab__mergeback,
+.editor-tab__split,
 .editor-tab__new,
 .editor-tab__view-toggle {
   /* Visual base from .pill-action.pill-action--sm */
@@ -2062,13 +2246,48 @@ body.is-project-reordering .project-list {
 
 .editor-tab__close,
 .editor-tab__popout,
-.editor-tab__mergeback {
+.editor-tab__mergeback,
+.editor-tab__split {
   color: var(--text-faint);
 }
 
 .editor-tab__popout:hover,
-.editor-tab__mergeback:hover {
+.editor-tab__mergeback:hover,
+.editor-tab__split:hover {
   color: var(--text);
+}
+
+.split-beside-menu {
+  position: fixed;
+  z-index: 9995;
+  display: grid;
+  min-width: 168px;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--panel-raised);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.24);
+}
+
+.split-beside-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.split-beside-menu button:hover,
+.split-beside-menu button:focus-visible {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
 .editor-tab.is-dragging-out {
@@ -2084,6 +2303,30 @@ body.is-project-reordering .project-list {
   cursor: grabbing;
 }
 
+/* Closing ghost slot: placeholder at the removed tab's position collapsing to zero. */
+.editor-tab.is-closing {
+  flex: 0 0 auto;
+  min-width: 0;
+  pointer-events: none;
+}
+
+.editor-tab.is-closing > span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Rapid-close burst: freeze survivor width so the next × stays under the cursor. */
+.editor-tabs__tablist.is-closing-burst .editor-tab:not(.is-closing) {
+  flex: 0 0 var(--frozen-tab-w, auto);
+}
+
+/* Titlebar: tab strip stretches across the bar (empty strip area keeps dragging the window). */
+.workspace-titlebar .editor-tabs__tablist {
+  flex: 1 1 auto;
+}
+
 body.is-tab-detaching {
   cursor: grabbing !important;
   user-select: none;
@@ -2091,6 +2334,10 @@ body.is-tab-detaching {
 
 body.is-tab-detaching * {
   cursor: grabbing !important;
+}
+
+body.is-tab-detaching .floating-trigger {
+  pointer-events: none;
 }
 
 /* Ghost chip while tearing off — real WebView is created only on mouse-up. */
@@ -4783,6 +5030,18 @@ body.is-tab-detaching * {
   box-shadow: 0 20px 48px rgba(0, 0, 0, 0.35);
 }
 
+/* Claude Code ExitPlanMode: a readable plan page, not a 160px JSON dump. */
+.permission-dialog--plan {
+  width: min(960px, 96vw);
+  height: min(90vh, 960px);
+  max-height: min(90vh, 960px);
+  padding: 18px 20px 16px;
+  gap: 12px;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  align-content: stretch;
+  overflow: hidden;
+}
+
 .permission-dialog__header {
   display: flex;
   gap: 10px;
@@ -4821,6 +5080,46 @@ body.is-tab-detaching * {
   word-break: break-word;
 }
 
+.permission-dialog__plan {
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+}
+
+.permission-dialog__plan .md-body,
+.permission-dialog__md {
+  margin-top: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.permission-dialog__plan .md-body p,
+.permission-dialog__plan .md-body__p {
+  margin: 0.4em 0;
+}
+
+.permission-dialog__plan .md-body h1,
+.permission-dialog__plan .md-body h2,
+.permission-dialog__plan .md-body h3,
+.permission-dialog__plan .md-body h4 {
+  margin: 0.7em 0 0.3em;
+}
+
+.permission-dialog--plan .permission-dialog__header > svg {
+  color: var(--accent);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.permission-dialog--plan .permission-dialog__actions {
+  justify-content: flex-start;
+  flex-shrink: 0;
+}
+
 .permission-dialog__actions {
   display: flex;
   flex-wrap: wrap;
@@ -4849,23 +5148,21 @@ body.is-tab-detaching * {
   cursor: wait;
 }
 
-/* ── Plan approval (Grok exit_plan_mode) — above Composer ─────────────── */
+/* ── Plan approval (in conversation stream) ───────────────────────────── */
 .plan-approval-card {
   display: flex;
   flex-direction: column;
   gap: 12px;
   width: 100%;
-  /* Large enough to read a multi-section plan without feeling cramped. */
-  max-height: min(72vh, 720px);
   min-height: 0;
   margin: 0;
-  padding: 14px 16px 12px;
+  padding: 0;
   border: none;
-  border-top: 1px solid var(--border);
-  border-radius: 0;
-  background: var(--panel-raised);
-  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.12);
-  z-index: 2;
+  background: transparent;
+}
+
+.plan-approval-card--in-stream {
+  max-height: none;
 }
 
 .plan-approval-card__header {
@@ -4900,8 +5197,8 @@ body.is-tab-detaching * {
 
 .plan-approval-card__plan {
   flex: 1 1 auto;
-  min-height: 160px;
-  max-height: min(58vh, 560px);
+  min-height: 120px;
+  max-height: min(52vh, 520px);
   overflow: auto;
   padding: 12px 14px;
   border: 1px solid var(--border);
@@ -5027,7 +5324,87 @@ body.is-tab-detaching * {
   }
 }
 
-/* ── Ask-user-question (replaces Composer while active) ────────────────── */
+.event-card--plan_prompt,
+.event-card--ask_prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  grid-template-columns: none;
+  padding: 12px 14px;
+}
+
+.event-card--plan_prompt.is-pending,
+.event-card--ask_prompt.is-pending {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: color-mix(in srgb, var(--accent) 6%, var(--panel-raised));
+}
+
+.stream-prompt__head {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  color: var(--text);
+}
+
+.stream-prompt__head > svg {
+  margin-top: 2px;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.stream-prompt__head > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.stream-prompt__head strong {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.stream-prompt__chip {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.stream-prompt__body {
+  width: 100%;
+}
+
+.stream-prompt__qa {
+  display: grid;
+  gap: 8px;
+}
+
+.stream-prompt__qtext {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.stream-prompt__atext {
+  margin: 2px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.stream-prompt__feedback {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* ── Ask-user-question (in conversation stream) ───────────────────────── */
 /* Compact, todo-list density; all questions + options visible at once. */
 .ask-card {
   display: flex;
@@ -5036,19 +5413,14 @@ body.is-tab-detaching * {
   width: 100%;
   min-height: 0;
   margin: 0;
-  padding: 10px 12px 8px;
+  padding: 0;
   border: none;
-  border-top: 1px solid var(--border);
-  border-radius: 0;
-  background: var(--panel-raised);
-  box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.1);
-  z-index: 2;
+  background: transparent;
 }
 
-/* Occupies the composer dock: taller, full slot. */
+.ask-card--in-stream,
 .ask-card--composer-slot {
-  max-height: min(62vh, 560px);
-  flex: 0 0 auto;
+  max-height: none;
 }
 
 .ask-card__header {
@@ -5583,6 +5955,10 @@ body.is-tab-detaching * {
 .composer-slot {
   position: relative;
   min-width: 0;
+}
+
+.composer-slot__input.is-hidden {
+  display: none;
 }
 
 .composer.is-expanded {
@@ -6568,6 +6944,7 @@ body.is-composer-resizing .composer {
 
 .composer-menu__search {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   gap: 6px;
   padding: 4px 8px;
@@ -8194,6 +8571,14 @@ body.is-composer-resizing .composer {
   text-decoration: underline;
 }
 
+.engine-popover__credit {
+  margin: 6px 0 0;
+  text-align: right;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-faint);
+}
+
 .proxy-popover {
   position: fixed;
   z-index: 1200;
@@ -8347,3 +8732,19 @@ body.is-composer-resizing .composer {
     transform: rotate(360deg);
   }
 }
+
+/* ── Telegram 远程桥 popover（复用 proxy-popover 骨架）────────────── */
+
+.tg-popover__prefs {
+  display: grid;
+  gap: 2px;
+  margin-top: 2px;
+  padding-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--text-faint) 25%, transparent);
+}
+
+.tg-popover__pair {
+  justify-content: flex-start;
+  gap: 8px;
+}
+

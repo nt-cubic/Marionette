@@ -225,6 +225,17 @@ fn decrypt_stored(stored: &str) -> Result<String, String> {
     }
 }
 
+/// crate 内通用密文出口：Telegram bot token 等非模型桥凭据同样走 DPAPI
+/// （与 key-plan 同一套前缀格式；明文只存在于内存，绝不进日志）。
+pub(crate) fn encrypt_secret(plain: &str) -> Result<String, String> {
+    encrypt_stored(plain)
+}
+
+/// [`encrypt_secret`] 的逆操作。前缀不认识 / 解密失败一律报错。
+pub(crate) fn decrypt_secret(stored: &str) -> Result<String, String> {
+    decrypt_stored(stored)
+}
+
 // ─── DPAPI 存储：核心（路径由调用方注入，测试不碰真实用户目录）──────────────
 
 fn home_dir() -> Option<PathBuf> {

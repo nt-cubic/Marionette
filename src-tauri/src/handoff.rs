@@ -61,6 +61,8 @@ pub fn generate_handoff_with_storage(
     let user_msgs = recent_texts(&events, "user_message", 8);
     let assistant_msgs = recent_texts(&events, "assistant_message", 4);
     let tool_titles = recent_tool_titles(&events, 6);
+    let plans = recent_plans(&events, 3);
+    let asks = recent_asks(&events, 4);
 
     let created_at = iso_now();
     let safe_id = sanitize_session_id(session_id);
@@ -83,6 +85,8 @@ pub fn generate_handoff_with_storage(
         &user_msgs,
         &assistant_msgs,
         &tool_titles,
+        &plans,
+        &asks,
     );
     fs::write(&handoff_path, &body).map_err(|e| format!("Write session handoff failed: {e}"))?;
     // Latest pointer for humans / CLI (overwritten each switch).
@@ -127,7 +131,7 @@ fn has_transcript_content(events: &[Value]) -> bool {
                 .and_then(Value::as_str)
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false),
-            Some("tool_call") => true,
+            Some("tool_call" | "plan_prompt" | "ask_prompt") => true,
             _ => false,
         }
     })
@@ -180,6 +184,115 @@ fn recent_texts(events: &[Value], event_type: &str, limit: usize) -> Vec<String>
         .collect()
 }
 
+struct HandoffPlan {
+    title: String,
+    status: String,
+    decision: String,
+    markdown: String,
+}
+
+struct HandoffAsk {
+    status: String,
+    questions: Vec<(String, String)>,
+}
+
+fn recent_plans(events: &[Value], limit: usize) -> Vec<HandoffPlan> {
+    events
+        .iter()
+        .rev()
+        .filter(|e| e.get("type").and_then(Value::as_str) == Some("plan_prompt"))
+        .filter_map(|e| {
+            let markdown = e
+                .get("planMarkdown")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
+            let title = e
+                .get("title")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("Plan");
+            let status = e
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("pending");
+            let decision = e
+                .get("decisionLabel")
+                .and_then(Value::as_str)
+                .or_else(|| e.get("decision").and_then(Value::as_str))
+                .unwrap_or("")
+                .trim();
+            Some(HandoffPlan {
+                title: title.to_string(),
+                status: status.to_string(),
+                decision: decision.to_string(),
+                markdown: truncate(markdown, 4000),
+            })
+        })
+        .take(limit)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
+}
+
+fn recent_asks(events: &[Value], limit: usize) -> Vec<HandoffAsk> {
+    events
+        .iter()
+        .rev()
+        .filter(|e| e.get("type").and_then(Value::as_str) == Some("ask_prompt"))
+        .filter_map(|e| {
+            let status = e
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("pending")
+                .to_string();
+            let answers = e.get("answers").and_then(Value::as_array);
+            let questions = e
+                .get("questions")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, q)| {
+                            let question = q
+                                .get("question")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .trim();
+                            if question.is_empty() {
+                                return None;
+                            }
+                            let picked = answers
+                                .and_then(|rows| rows.get(i))
+                                .and_then(|row| row.get("selected"))
+                                .and_then(Value::as_array)
+                                .map(|sel| {
+                                    sel.iter()
+                                        .filter_map(Value::as_str)
+                                        .collect::<Vec<_>>()
+                                        .join("、")
+                                })
+                                .unwrap_or_default();
+                            Some((truncate(question, 240), truncate(&picked, 240)))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if questions.is_empty() && status == "pending" {
+                return None;
+            }
+            Some(HandoffAsk { status, questions })
+        })
+        .take(limit)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
+}
+
 fn recent_tool_titles(events: &[Value], limit: usize) -> Vec<String> {
     events
         .iter()
@@ -213,6 +326,8 @@ fn render_markdown(
     user_msgs: &[String],
     assistant_msgs: &[String],
     tool_titles: &[String],
+    plans: &[HandoffPlan],
+    asks: &[HandoffAsk],
 ) -> String {
     let mut out = String::new();
     out.push_str("# Marionette Handoff\n\n");
@@ -248,6 +363,38 @@ fn render_markdown(
             out.push_str(&format!("- `{t}`\n"));
         }
         out.push('\n');
+    }
+    if !plans.is_empty() {
+        out.push_str("## Recent plans\n\n");
+        for plan in plans {
+            let decision = if plan.decision.is_empty() {
+                plan.status.as_str()
+            } else {
+                plan.decision.as_str()
+            };
+            out.push_str(&format!("### {} ({decision})\n\n", plan.title));
+            if plan.markdown.is_empty() {
+                out.push_str("_Plan body was not attached to the request._\n\n");
+            } else {
+                out.push_str(&plan.markdown);
+                out.push_str("\n\n");
+            }
+        }
+    }
+    if !asks.is_empty() {
+        out.push_str("## Recent questions\n\n");
+        for ask in asks {
+            out.push_str(&format!("Status: `{}`\n\n", ask.status));
+            for (q, a) in &ask.questions {
+                out.push_str(&format!("- Q: {q}\n"));
+                if a.is_empty() {
+                    out.push_str("  A: _(unanswered)_\n");
+                } else {
+                    out.push_str(&format!("  A: {a}\n"));
+                }
+            }
+            out.push('\n');
+        }
     }
     out.push_str("## Instructions for next agent\n\n");
     out.push_str("Continue from the context above. Prefer reading project files over guessing.\n");
@@ -437,6 +584,53 @@ mod tests {
         let body = "{\"type\":\"user_message\",\"sessionId\":\"s-test\",\"text\":\"   \",\"createdAt\":\"2026-01-01T00:00:00.000Z\"}\n";
         let (root, transcript) = temp_project(Some(body));
         assert!(gen(&root, &transcript).expect("generate").is_none());
+        cleanup(&root);
+    }
+
+    #[test]
+    fn plan_and_ask_cards_land_in_handoff_markdown() {
+        let body = [
+            serde_json::json!({
+                "type": "user_message",
+                "sessionId": "s-test",
+                "text": "写个计划",
+                "createdAt": "2026-01-01T00:00:00.000Z"
+            }),
+            serde_json::json!({
+                "type": "plan_prompt",
+                "sessionId": "s-test",
+                "requestId": "p1",
+                "source": "permission",
+                "title": "Approve Plan",
+                "planMarkdown": "# Steps\n\n- one\n- two",
+                "status": "answered",
+                "decision": "allow",
+                "decisionLabel": "Yes, manually approve edits",
+                "createdAt": "2026-01-01T00:01:00.000Z"
+            }),
+            serde_json::json!({
+                "type": "ask_prompt",
+                "sessionId": "s-test",
+                "requestId": "q1",
+                "questions": [{"question": "用哪套样式?", "options": [{"label": "A"}]}],
+                "status": "answered",
+                "answers": [{"question": "用哪套样式?", "selected": ["A"]}],
+                "createdAt": "2026-01-01T00:02:00.000Z"
+            }),
+        ]
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+        let (root, transcript) = temp_project(Some(&body));
+        let res = gen(&root, &transcript).expect("generate").expect("handoff");
+        let md = fs::read_to_string(&res.handoff_path).expect("read handoff");
+        assert!(md.contains("## Recent plans"), "plans section: {md}");
+        assert!(md.contains("# Steps"), "plan markdown: {md}");
+        assert!(md.contains("Yes, manually approve edits"), "decision: {md}");
+        assert!(md.contains("## Recent questions"), "asks section: {md}");
+        assert!(md.contains("用哪套样式?"), "question: {md}");
+        assert!(md.contains("A"), "answer: {md}");
         cleanup(&root);
     }
 }

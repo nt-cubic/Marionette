@@ -297,6 +297,44 @@ export type SessionEvent =
       durationMs?: number;
       error?: string;
       createdAt: string;
+    }
+  | {
+      /**
+       * Plan waiting for (or already given) user approval.
+       * Grok uses `_x.ai/exit_plan_mode`; Claude Code / Codex stuff the
+       * markdown into `session/request_permission`.
+       */
+      type: "plan_prompt";
+      sessionId: string;
+      requestId: string;
+      source: "plan_approval" | "permission";
+      title?: string;
+      planMarkdown: string;
+      options?: Array<{ optionId: string; name: string; kind: string }>;
+      status: "pending" | "answered" | "declined" | "timeout";
+      /** optionId (permission) or approve / request_changes / abandon (Grok). */
+      decision?: string;
+      decisionLabel?: string;
+      feedback?: string;
+      createdAt: string;
+      answeredAt?: string;
+    }
+  | {
+      /** Agent question card (`question/prompt` / `_x.ai/ask_user_question`). */
+      type: "ask_prompt";
+      sessionId: string;
+      requestId: string;
+      mode?: string | null;
+      questions: Array<{
+        question: string;
+        header?: string;
+        multiSelect?: boolean;
+        options: Array<{ label: string; description?: string }>;
+      }>;
+      status: "pending" | "answered" | "declined" | "timeout";
+      answers?: Array<{ question: string; selected: string[] }>;
+      createdAt: string;
+      answeredAt?: string;
     };
 
 // ─── Project context (MCP servers + skills lent between agents) ─────────────

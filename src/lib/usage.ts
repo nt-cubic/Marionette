@@ -29,6 +29,18 @@ function engineQuotaRows(entries: EngineQuotaEntry[], agentId: string): UsageWin
   const rows: UsageWindow[] = [];
   for (const entry of entries) {
     if (entry.provider === ownFamily) continue;
+    if (entry.windows.length === 0) {
+      if (entry.balance) {
+        rows.push({
+          id: `engine:${entry.provider}:balance`,
+          label: entry.name || entry.provider,
+          percentage: null,
+          detail: `余额 ${entry.balance}`,
+          kind: "provider",
+        });
+      }
+      continue;
+    }
     for (const w of entry.windows) {
       if (w.used == null && w.remaining == null && w.resetsAt == null) continue;
       const parts: string[] = [];
@@ -1267,9 +1279,10 @@ export function buildUsageSnapshot(args: {
     windows.push(...extras);
   }
 
-  // 订阅配额（引擎 · `magpie quota`）：跨 agent 可见的订阅窗口合并进同一面板；
-  // 当前 agent 自己的家族由它自己的 rate-limit 行负责，这里跳过防重复。
-  windows.push(...engineQuotaRows(args.engineQuota ?? [], agentId));
+  // 订阅配额（引擎 · 网关 `/v1/magpie/quotas`）：跨 agent 可见的订阅窗口
+  // 合并进同一面板；当前 agent 自己的家族由它自己的 rate-limit 行负责。
+  const engineWindows = engineQuotaRows(args.engineQuota ?? [], agentId);
+  windows.push(...engineWindows);
 
   // Honest empty-state labels: never imply a live % when we only know plan ceilings.
   for (const w of windows) {
@@ -1294,12 +1307,13 @@ export function buildUsageSnapshot(args: {
    * "Source: manual refresh".
    */
   const hasUsageData =
-    state != null &&
-    (state.contextUsed != null ||
-      state.turnTokens != null ||
-      state.costAmount != null ||
-      Object.keys(state.windows).length > 0 ||
-      Object.keys(state.providerWindows).length > 0);
+    engineWindows.length > 0 ||
+    (state != null &&
+      (state.contextUsed != null ||
+        state.turnTokens != null ||
+        state.costAmount != null ||
+        Object.keys(state.windows).length > 0 ||
+        Object.keys(state.providerWindows).length > 0));
 
   // Footer: one short line. Never dump source chains or multi-sentence help.
   let note: string | null = null;

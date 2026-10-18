@@ -186,7 +186,7 @@ export function CredentialsDialog({ agents, onClose }: Props) {
   return (
     <div className="project-dialog-backdrop" onClick={busy ? undefined : onClose}>
       <div className="project-dialog provider-dialog credentials-dialog" onClick={(e) => e.stopPropagation()}>
-        <div className="project-dialog__header">凭据 · 跨用密钥与来源</div>
+        <div className="project-dialog__header">凭据 · 共享密钥与来源</div>
         <div className="project-dialog__body">
           <p className="provider-dialog__lead">
             密钥加密保存在本地（<code>~/.marionette</code>），可跨 agent 直连使用；扫描只读各家 CLI 已保存的登录态，不会复制或改写。
@@ -219,7 +219,7 @@ export function CredentialsDialog({ agents, onClose }: Props) {
           <div className="provider-dialog__section">
             <span className="provider-dialog__section-title">翻译引擎</span>
             <p className="provider-dialog__hint">
-              订阅型跨用（Grok / Claude / ChatGPT 登录态）经内嵌 magpie
+              订阅登录态（Grok / Claude / ChatGPT）经内嵌 magpie
               引擎翻译为标准协议；引擎按需下载（约 48 MB）、只在本机环回监听、随本应用退出。
             </p>
             <div className="credentials-dialog__scan">

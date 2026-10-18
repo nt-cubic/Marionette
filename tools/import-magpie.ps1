@@ -3,15 +3,14 @@
 # Vendoring model (product decision 2026-10-16): Marionette ships the engine
 # INSIDE the exe (compressed). This importer snapshots the build-relevant
 # subset of https://github.com/yetone/magpie (MIT) at a pinned tag; updating
-# the built-in engine = re-run with a newer tag + tools\build-portable.bat
-# (default builds both the plain and Engine portable exes).
+# the built-in engine = re-run with a newer tag + tools\build-portable.bat.
 #
 # Kept: main.go, go.mod, go.sum, internal/, plugins/, LICENSE, README.md.
 # Dropped: site/ (marketing, ~59MB), build/ (per-OS packaging assets),
 #          .github/, docs/ — none of them are needed by the nogui build.
 #
 # Usage:  powershell -File tools\import-magpie.ps1 [-Tag v0.1.1274]
-# After import, tools\build-portable.bat rebuilds both portable variants.
+# After import, tools\build-portable.bat rebuilds dist-portable\Marionette.exe.
 param(
     [string]$Tag = 'v0.1.1274'
 )

@@ -1,7 +1,9 @@
 import { ListTodo, Loader2 } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 import type { PlanApprovalDecision } from "../lib/api";
+import { permissionOptionTone } from "../lib/permissionPlan";
 import { MarkdownBody } from "./MarkdownBody";
+import type { PermissionOption } from "./PermissionDialog";
 
 export type PlanApprovalPrompt = {
   requestId: string;
@@ -9,19 +11,30 @@ export type PlanApprovalPrompt = {
   toolCallId?: string | null;
   /** Plan markdown from Grok (`planContent`). Often empty — Grok reads plan.md itself. */
   planMarkdown: string;
+  title?: string;
+  /** Claude Code / Codex: permission-shaped buttons instead of Grok's trio. */
+  permissionOptions?: PermissionOption[] | null;
 };
 
 type PlanApprovalCardProps = {
   prompt: PlanApprovalPrompt;
   busy?: boolean;
+  variant?: "dock" | "stream";
   onAnswer: (decision: PlanApprovalDecision, feedback?: string) => void | Promise<void>;
+  onPermissionChoose?: (optionId: string) => void;
 };
 
 /**
  * Grok plan-mode approval (mirrors Codeg `plan-approval-card`).
  * Agent calls `exit_plan_mode` and blocks until Approve / Request changes / Abandon.
  */
-export function PlanApprovalCard({ prompt, busy = false, onAnswer }: PlanApprovalCardProps) {
+export function PlanApprovalCard({
+  prompt,
+  busy = false,
+  variant = "stream",
+  onAnswer,
+  onPermissionChoose,
+}: PlanApprovalCardProps) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(false);
   const [changesOpen, setChangesOpen] = useState(false);
@@ -30,6 +43,8 @@ export function PlanApprovalCard({ prompt, busy = false, onAnswer }: PlanApprova
 
   const plan = prompt.planMarkdown.trim();
   const locked = busy || submitting;
+  const permissionOptions = prompt.permissionOptions ?? [];
+  const isPermission = permissionOptions.length > 0;
 
   const run = useCallback(
     async (decision: PlanApprovalDecision, fb?: string) => {
@@ -50,12 +65,24 @@ export function PlanApprovalCard({ prompt, busy = false, onAnswer }: PlanApprova
   );
 
   return (
-    <div className="plan-approval-card" role="region" aria-label="Plan approval">
+    <div
+      className={
+        variant === "stream"
+          ? "plan-approval-card plan-approval-card--in-stream"
+          : "plan-approval-card"
+      }
+      role="region"
+      aria-label="Plan approval"
+    >
       <div className="plan-approval-card__header">
         <ListTodo size={16} aria-hidden />
         <div>
-          <strong>计划待批准</strong>
-          <span>批准后离开 Plan 模式并开始执行；要求修改则继续规划</span>
+          <strong>{prompt.title?.trim() || "计划待批准"}</strong>
+          <span>
+            {isPermission
+              ? "在卡片上选择如何继续 · 输入框已收起"
+              : "批准后开始执行；要求修改则继续规划 · 输入框已收起"}
+          </span>
         </div>
       </div>
 
@@ -69,7 +96,24 @@ export function PlanApprovalCard({ prompt, busy = false, onAnswer }: PlanApprova
         </p>
       )}
 
-      {changesOpen ? (
+      {isPermission ? (
+        <div className="plan-approval-card__actions">
+          {permissionOptions.map((opt) => {
+            const tone = permissionOptionTone(opt.kind, opt.name);
+            return (
+              <button
+                key={opt.optionId}
+                type="button"
+                className={`plan-approval-card__btn plan-approval-card__btn--${tone === "allow" ? "primary" : tone === "deny" ? "danger" : "ghost"}`}
+                disabled={locked}
+                onClick={() => onPermissionChoose?.(opt.optionId)}
+              >
+                {opt.name || opt.optionId}
+              </button>
+            );
+          })}
+        </div>
+      ) : changesOpen ? (
         <div className="plan-approval-card__changes">
           <textarea
             className="plan-approval-card__textarea"

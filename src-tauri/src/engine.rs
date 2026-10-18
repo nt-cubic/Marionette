@@ -13,7 +13,8 @@
 //!   **embedded-engine 构建**（产品定稿 2026-10-16「单 exe 内置引擎」）：
 //!   nogui magpie 从 `third_party/magpie`（`tools\import-magpie.ps1` 吸纳）
 //!   编出后 **UPX 压缩直嵌**进 exe（47.9MB → ~13.6MB，自解压零解码），
-//!   安装期内嵌优先、离线落位，下载路径仅作无内嵌构建的回退。
+//!   安装期内嵌优先、离线落位；便携版打开即 serve，下载路径仅作无内嵌
+//!   开发构建的回退。
 //! - **拉起**：`magpie serve`，env `MAGPIE_ADDR=127.0.0.1:<port>` +
 //!   `MAGPIE_NO_STATS=1`；**不设** `MAGPIE_NO_ACCOUNTS`（订阅 discovery 要开）、
 //!   **保留** `USERPROFILE`/`APPDATA`（discovery 要读 `~/.grok` 等真实凭证）。
@@ -60,6 +61,10 @@ const HEALTH_TIMEOUT: Duration = Duration::from_secs(30);
 const HEALTH_POLL: Duration = Duration::from_millis(300);
 /// 环回请求（探测 / 健康 / 目录）的超时——引擎在本机，慢即异常。
 const LOOP_HTTP_TIMEOUT: Duration = Duration::from_secs(4);
+/// 用量面板点刷新时 magpie 会去问各家订阅，比目录查询慢一截。
+const QUOTA_LIVE_TIMEOUT: Duration = Duration::from_secs(20);
+/// 用量面板短缓存：回合结束和点刷新都会问，不该每次都打网关。
+const QUOTA_CACHE_TTL: Duration = Duration::from_secs(30);
 const REUSE_PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 /// 引擎目录缓存的 TTL；失败负缓存短一些（订阅登录进来后目录会变）。
 const CATALOG_TTL: Duration = Duration::from_secs(60);
@@ -1052,14 +1057,30 @@ pub struct EngineQuotaEntry {
     pub name: String,
     pub user: Option<String>,
     pub windows: Vec<EngineQuotaWindow>,
+    /// key 余额（DeepSeek 等没有窗口、只有一笔钱）。
+    pub balance: Option<String>,
 }
 
-/// 解析 `magpie quota --json` 的输出（坏形状 → 空表，绝不 panic）。
+fn quota_items(value: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
+    value
+        .as_array()
+        .or_else(|| value.get("data").and_then(serde_json::Value::as_array))
+}
+
+fn json_f64(value: &serde_json::Value, key: &str) -> Option<f64> {
+    let n = value.get(key)?;
+    n.as_f64()
+        .or_else(|| n.as_i64().map(|i| i as f64))
+        .or_else(|| n.as_u64().map(|i| i as f64))
+}
+
+/// 解析 `magpie quota --json` 或 `GET /v1/magpie/quotas` 的输出
+/// （CLI 是裸数组，网关是 `{object:"list",data:[…]}`；坏形状 → 空表，绝不 panic）。
 fn parse_quota_json(text: &str) -> Vec<EngineQuotaEntry> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
         return Vec::new();
     };
-    let Some(items) = value.as_array() else {
+    let Some(items) = quota_items(&value) else {
         return Vec::new();
     };
     let string = |v: &serde_json::Value, key: &str| {
@@ -1077,8 +1098,8 @@ fn parse_quota_json(text: &str) -> Vec<EngineQuotaEntry> {
                         let name = string(row, "name")?;
                         Some(EngineQuotaWindow {
                             name,
-                            used: row.get("used").and_then(serde_json::Value::as_f64),
-                            remaining: row.get("remaining").and_then(serde_json::Value::as_f64),
+                            used: json_f64(row, "used"),
+                            remaining: json_f64(row, "remaining"),
                             resets_at: string(row, "resetsAt"),
                         })
                     })
@@ -1090,36 +1111,111 @@ fn parse_quota_json(text: &str) -> Vec<EngineQuotaEntry> {
             name: string(item, "name").unwrap_or_default(),
             user: string(item, "user"),
             windows,
+            balance: string(item, "balance"),
         });
     }
     out
 }
 
-/// 拉订阅配额（仅自拉实例；复用实例的数据不在我们的 engine/data 里）。
-/// 30s 缓存——用量面板刷新与回合结束都会问，不该每次都跑 CLI。
-pub fn quota() -> Vec<EngineQuotaEntry> {
-    static CACHE: std::sync::Mutex<Option<(std::time::Instant, Vec<EngineQuotaEntry>)>> =
-        std::sync::Mutex::new(None);
-    if !matches!(status(), EngineStatus::Running { reused: false, .. }) {
-        return Vec::new();
+static QUOTA_CACHE: OnceLock<Mutex<Option<(Instant, Vec<EngineQuotaEntry>)>>> = OnceLock::new();
+
+fn quota_cache() -> &'static Mutex<Option<(Instant, Vec<EngineQuotaEntry>)>> {
+    QUOTA_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn fetch_quota_http(port: u16, force: bool) -> Result<String, String> {
+    #[cfg(test)]
+    if test_cli_capture_hook().is_some() {
+        return Err("test seam uses CLI".into());
     }
-    if let Ok(guard) = CACHE.lock() {
-        if let Some((at, cached)) = guard.as_ref() {
-            if at.elapsed() < Duration::from_secs(30) {
-                return cached.clone();
+    let agent = loopback_agent()?;
+    let url = if force {
+        format!("http://127.0.0.1:{port}/v1/magpie/quotas")
+    } else {
+        format!("http://127.0.0.1:{port}/v1/magpie/quotas?kept=1")
+    };
+    let timeout = if force {
+        QUOTA_LIVE_TIMEOUT
+    } else {
+        LOOP_HTTP_TIMEOUT
+    };
+    let response = agent
+        .get(&url)
+        .set("Accept", "application/json")
+        .set("Authorization", &format!("Bearer {ENGINE_TOKEN}"))
+        .timeout(timeout)
+        .call()
+        .map_err(|e| format!("GET quotas: {e}"))?;
+    if response.status() != 200 {
+        return Err(format!("GET quotas HTTP {}", response.status()));
+    }
+    response
+        .into_string()
+        .map_err(|e| format!("read quotas: {e}"))
+}
+
+fn fetch_quota_cli() -> Result<String, String> {
+    let dir = engine_dir()?;
+    let exe = exe_path(&dir);
+    if !exe.is_file() {
+        return Err("magpie.exe 不在引擎目录".into());
+    }
+    run_magpie_cli_capture(&exe, &["quota", "--json"])
+}
+
+/// 拉订阅配额。自拉 / 复用实例都走正在跑的网关
+/// `GET /v1/magpie/quotas`（`force` 时现场问供应商，否则 `?kept=1` 读缓存）。
+/// HTTP 失败才退回 `magpie quota --json`。点刷新传 `force=true` 跳过 30s 缓存。
+pub fn quota(force: bool) -> Vec<EngineQuotaEntry> {
+    let EngineStatus::Running { port, .. } = status() else {
+        return Vec::new();
+    };
+    if !force {
+        if let Ok(guard) = quota_cache().lock() {
+            if let Some((at, cached)) = guard.as_ref() {
+                if at.elapsed() < QUOTA_CACHE_TTL {
+                    return cached.clone();
+                }
             }
         }
     }
-    let Ok(dir) = engine_dir() else { return Vec::new() };
-    let exe = exe_path(&dir);
-    if !exe.is_file() {
-        return Vec::new();
-    }
-    let entries = run_magpie_cli_capture(&exe, &["quota", "--json"])
-        .map(|text| parse_quota_json(&text))
-        .unwrap_or_default();
-    if let Ok(mut guard) = CACHE.lock() {
-        *guard = Some((std::time::Instant::now(), entries.clone()));
+    let (source, text) = match fetch_quota_http(port, force) {
+        Ok(text) => ("http", text),
+        Err(http_err) => match fetch_quota_cli() {
+            Ok(text) => ("cli", text),
+            Err(cli_err) => {
+                crate::debug_log::append(
+                    "engine",
+                    "warn",
+                    "",
+                    "engine quota fetch failed",
+                    Some(&format!("http={http_err}; cli={cli_err}")),
+                );
+                if let Ok(guard) = quota_cache().lock() {
+                    if let Some((_, cached)) = guard.as_ref() {
+                        return cached.clone();
+                    }
+                }
+                return Vec::new();
+            }
+        },
+    };
+    let entries = parse_quota_json(&text);
+    crate::debug_log::append(
+        "engine",
+        "info",
+        "",
+        &format!("engine quota {source} n={}", entries.len()),
+        Some(
+            &entries
+                .iter()
+                .map(|e| e.provider.as_str())
+                .collect::<Vec<_>>()
+                .join(","),
+        ),
+    );
+    if let Ok(mut guard) = quota_cache().lock() {
+        *guard = Some((Instant::now(), entries.clone()));
     }
     entries
 }
@@ -1316,9 +1412,20 @@ fn run_magpie_cli_capture(exe: &Path, args: &[&str]) -> Result<String, String> {
     if let Some(hook) = test_cli_capture_hook() {
         return hook(args);
     }
-    let output = std::process::Command::new(exe)
+    let mut command = std::process::Command::new(exe);
+    command
         .args(args)
         .env("MAGPIE_NO_STATS", "1")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .current_dir(exe.parent().unwrap_or(Path::new(".")));
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = command
         .output()
         .map_err(|e| format!("启动 magpie CLI 失败: {e}"))?;
     if !output.status.success() {
@@ -1554,8 +1661,11 @@ fn drop_codex_alias_group(group_id: &str) {
 // ─── enable 流水线（后台线程）───────────────────────────────────────────────
 
 /// 幂等启用：Running / Downloading / Starting → 直接返回当前态；否则登记
-/// Downloading 并在后台线程跑完「（复用探测 →）下载校验 → serve → 健康 →
+/// 初始态并在后台线程跑完「（复用探测 →）内嵌落位或下载 → serve → 健康 →
 /// provider 注册 → Running」。失败落 `Failed{error}`（事件 + 日志留档）。
+///
+/// 便携版（`embedded-engine`）走 Starting：字节已在 exe 里，打开即拉起，
+/// 不经过下载态、也不打 GitHub。无内嵌的开发构建仍走 Downloading。
 pub fn enable() -> Result<EngineStatus, String> {
     let dir = engine_dir()?;
     let claimed = {
@@ -1565,8 +1675,16 @@ pub fn enable() -> Result<EngineStatus, String> {
             | EngineStatus::Downloading { .. }
             | EngineStatus::Starting => None,
             EngineStatus::Absent | EngineStatus::Failed { .. } => {
-                state.status = EngineStatus::Downloading { downloaded: 0, total: 0 };
-                Some(EngineStatus::Downloading { downloaded: 0, total: 0 })
+                let initial = if embedded_version().is_some() {
+                    EngineStatus::Starting
+                } else {
+                    EngineStatus::Downloading {
+                        downloaded: 0,
+                        total: 0,
+                    }
+                };
+                state.status = initial.clone();
+                Some(initial)
             }
         }
     };
@@ -1603,12 +1721,16 @@ fn enable_pipeline(dir: &Path) -> Result<(), String> {
         return Ok(());
     }
     // 2. 安装：**内嵌优先**（带引擎构建且版本不匹配/缺失 → 离线落位——
-    //    UPX 自解压字节直写，无解码），无内嵌/落位后仍不完整 → 原下载路径。
+    //    UPX 自解压字节直写，无解码）。便携版承诺离线，落位失败即停，
+    //    绝不回落到 GitHub。无内嵌的开发构建才走下载。
     if embedded_stale_at(dir) {
         let (bytes, version) = embedded_artifact();
         install_embedded_engine_at(bytes, version, dir)?;
     }
     if !is_installed_at(dir) {
+        if embedded_version().is_some() {
+            return Err("内嵌引擎落位后仍不完整".to_string());
+        }
         let plan = resolve_latest_release()?;
         download_and_install(&plan, dir)?;
     }
@@ -1872,6 +1994,11 @@ impl Drop for TestHandle {
         state.status = EngineStatus::Absent;
         state.child = None;
         if let Some(cache) = CATALOG.get() {
+            if let Ok(mut guard) = cache.lock() {
+                *guard = None;
+            }
+        }
+        if let Some(cache) = QUOTA_CACHE.get() {
             if let Ok(mut guard) = cache.lock() {
                 *guard = None;
             }
@@ -2475,6 +2602,21 @@ mod tests {
         assert!(parse_quota_json("not json").is_empty());
         assert!(parse_quota_json("{}").is_empty());
         assert!(parse_quota_json(r#"[{"windows":[]}]"#).is_empty(), "无 provider 的条目跳过");
+
+        // 网关 GET /v1/magpie/quotas 包一层 {object,data}（2026-10-18 实测）。
+        let wrapped = r#"{"object":"list","data":[
+          {"provider":"grok","name":"Grok (SuperGrok)","kind":"subscription",
+           "user":"ntcubic@yahoo.com",
+           "windows":[{"name":"7 days","used":0,"remaining":100,
+                       "resetsAt":"2026-10-24T12:09:03.306Z"}]},
+          {"provider":"deepseek","name":"DeepSeek","kind":"balance","balance":"12.50",
+           "windows":[]}
+        ]}"#;
+        let wrapped_entries = parse_quota_json(wrapped);
+        assert_eq!(wrapped_entries.len(), 2);
+        assert_eq!(wrapped_entries[0].windows[0].used, Some(0.0));
+        assert_eq!(wrapped_entries[1].balance.as_deref(), Some("12.50"));
+        assert!(wrapped_entries[1].windows.is_empty());
     }
 
     /// 引擎绑定计数（空闲回收的「有人在用」判据）：只数 entryId=engine 的；

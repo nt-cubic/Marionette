@@ -1,18 +1,26 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Bell, BellOff, ChevronDown, ChevronRight, CloudMoon, Folder, FolderOpen, Globe, GripVertical, KeyRound, MessageSquare, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, SunMedium, Trash2, X, Zap } from "lucide-react";
+import { Bell, BellOff, ChevronDown, ChevronRight, CloudMoon, Folder, FolderOpen, Globe, GripVertical, KeyRound, MessageSquare, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, SunMedium, Trash2, X, Zap } from "lucide-react";
 // Refresh on a project row folds CLI history into the normal session list.
 import type { AgentConfig, Project, ProxyConfig, ProxyTestResult, Session } from "../lib/types";
 import { themeToggleTitle, type ThemeMode } from "../lib/theme";
 import { collapsedShelfSessions, pinStamp, sortSessionsNewestFirst } from "../lib/sessionOrder";
 import { suspendControl } from "../lib/sessionSuspend";
 import { loadCollapsedProjectIds, saveCollapsedProjectIds } from "../lib/uiRestore";
-import { engineEnable, engineStatus, engineStop, type EngineStatus } from "../lib/api";
+import { engineEnable, engineStatus, engineStop, telegramAcceptPairing, telegramDismissPairing, telegramResetPairing, telegramSave, telegramStatus, type EngineStatus, type TelegramPrefs, type TelegramStatus } from "../lib/api";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { CredentialsDialog } from "./CredentialsDialog";
+import { SplitBesideMenu, type OpenBesideEdge } from "./SplitBesideMenu";
+import type { DropEdge } from "../lib/splitWorkspace";
 
 /** Visible sessions per project before "Show more". Projects always list fully. */
 const SESSION_LIST_PREVIEW = 5;
 const EMPTY_DONE_UNREAD: ReadonlySet<string> = new Set();
+
+function magpieCredit(version?: string | null): string {
+  const raw = version?.trim();
+  if (!raw) return "由 magpie 强力驱动";
+  return `由 magpie v${raw.replace(/^v/i, "")} 强力驱动`;
+}
 
 /** Pin toggle shared by project session rows and chat rows. */
 function SessionPinButton({
@@ -80,6 +88,8 @@ type ProjectShelfProps = {
   onNewSession: (projectId: string) => void;
   onProjectSelect: (projectId: string) => void;
   onSessionSelect: (session: Session) => void;
+  /** Split this session to the right or below the focused pane. */
+  onOpenBeside?: (session: Session, edge: DropEdge) => void;
   onDeleteSession: (sessionId: string) => void;
   /** Pin / unpin a dialog so it sorts to the top of its project. */
   onToggleSessionPin?: (sessionId: string, pinned: boolean) => void;
@@ -134,6 +144,7 @@ export function ProjectShelf({
   pinnedProjectId = null,
   onProjectSelect,
   onSessionSelect,
+  onOpenBeside,
   collapsed,
   onCollapse,
   onExpand,
@@ -177,6 +188,11 @@ export function ProjectShelf({
   const [proxyAnchor, setProxyAnchor] = useState<{ left: number; top: number } | null>(null);
   const proxyBtnRef = useRef<HTMLButtonElement | null>(null);
   const proxyPopRef = useRef<HTMLDivElement | null>(null);
+  const [besideMenu, setBesideMenu] = useState<{
+    session: Session;
+    x: number;
+    y: number;
+  } | null>(null);
 
   /** Keep the draft in sync when the persisted config changes externally. */
   useEffect(() => {
@@ -264,6 +280,132 @@ export function ProjectShelf({
   const [engineState, setEngineState] = useState<EngineStatus | null>(null);
   const engineBtnRef = useRef<HTMLButtonElement | null>(null);
   const enginePopRef = useRef<HTMLDivElement | null>(null);
+
+  /**
+   * Telegram 远程桥（docs/telegram-bridge.md）。按钮常显状态，浮层承担：
+   * token 粘贴（getMe 校验）→ 配对确认（bot 收到第一条私聊消息后挂起，
+   * 1Hz 轮询把它带进浮层）→ 通知偏好开关。所有动作直连 api，不经 App。
+   */
+  const [tgOpen, setTgOpen] = useState(false);
+  const [tgAnchor, setTgAnchor] = useState<{ left: number; top: number } | null>(null);
+  const [tgState, setTgState] = useState<TelegramStatus | null>(null);
+  const [tgTokenDraft, setTgTokenDraft] = useState("");
+  const [tgPrefsDraft, setTgPrefsDraft] = useState<TelegramPrefs | null>(null);
+  const [tgBusy, setTgBusy] = useState<"save" | "pair" | "prefs" | null>(null);
+  const [tgError, setTgError] = useState<string | null>(null);
+  const tgBtnRef = useRef<HTMLButtonElement | null>(null);
+  const tgPopRef = useRef<HTMLDivElement | null>(null);
+
+  const refreshTg = useCallback(() => {
+    void telegramStatus().then((next) => {
+      if (next) {
+        setTgState(next);
+        // 偏好草稿只在浮层关闭时跟随外部变化（和 proxy 草稿同款约定）。
+        setTgPrefsDraft((current) => current ?? { ...next.prefs });
+      }
+    });
+  }, []);
+  useEffect(refreshTg, [refreshTg]);
+
+  /** Open popover: anchor + 1Hz status polling（等待配对请求出现）。 */
+  useEffect(() => {
+    if (!tgOpen) {
+      setTgPrefsDraft(null);
+      return;
+    }
+    refreshTg();
+    const timer = window.setInterval(refreshTg, 1000);
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (tgPopRef.current?.contains(target) || tgBtnRef.current?.contains(target)) return;
+      setTgOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setTgOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [tgOpen, refreshTg]);
+
+  const tgSaveToken = async () => {
+    const token = tgTokenDraft.trim();
+    if (!token) {
+      setTgError("请先粘贴 bot token（找 @BotFather /newbot 要）");
+      return;
+    }
+    setTgBusy("save");
+    setTgError(null);
+    try {
+      const next = await telegramSave({ token });
+      setTgState(next);
+      setTgTokenDraft("");
+      setTgPrefsDraft({ ...next.prefs });
+    } catch (error) {
+      setTgError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setTgBusy(null);
+    }
+  };
+
+  const tgSetEnabled = async (enabled: boolean) => {
+    setTgBusy("save");
+    setTgError(null);
+    try {
+      const next = await telegramSave({ enabled });
+      setTgState(next);
+    } catch (error) {
+      setTgError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setTgBusy(null);
+    }
+  };
+
+  const tgSavePrefs = async (patch: Partial<TelegramPrefs>) => {
+    if (!tgPrefsDraft) return;
+    const prefs = { ...tgPrefsDraft, ...patch };
+    setTgPrefsDraft(prefs);
+    setTgBusy("prefs");
+    setTgError(null);
+    try {
+      const next = await telegramSave({ prefs });
+      setTgState(next);
+    } catch (error) {
+      setTgError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setTgBusy(null);
+    }
+  };
+
+  const tgPair = async (accept: boolean) => {
+    setTgBusy("pair");
+    setTgError(null);
+    try {
+      const next = accept ? await telegramAcceptPairing() : await telegramDismissPairing();
+      setTgState(next);
+    } catch (error) {
+      setTgError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setTgBusy(null);
+    }
+  };
+
+  const tgUnpair = async () => {
+    setTgBusy("pair");
+    setTgError(null);
+    try {
+      const next = await telegramResetPairing();
+      setTgState(next);
+    } catch (error) {
+      setTgError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setTgBusy(null);
+    }
+  };
 
   const refreshEngine = useCallback(() => {
     void engineStatus().then(setEngineState);
@@ -570,7 +712,7 @@ export function ProjectShelf({
     if (!engineState) return "状态未知";
     switch (engineState.state) {
       case "running":
-        return `运行中 · 127.0.0.1:${engineState.port}${engineState.reused ? " · 复用自装实例" : ""}${engineState.version ? ` · magpie ${engineState.version}` : ""}`;
+        return `运行中 · 127.0.0.1:${engineState.port}`;
       case "downloading": {
         const { downloaded, total } = engineState;
         const mb = (n: number) => `${(n / 1024 / 1024).toFixed(1)} MB`;
@@ -598,10 +740,10 @@ export function ProjectShelf({
       }
       title={
         engineRunning
-          ? `跨用网关 ${engineStatusLine} · 点此查看`
-          : "跨用网关未运行 · 点击启动并查看"
+          ? `模型共享 ${engineStatusLine} · 点此查看`
+          : "模型共享未运行 · 点击启动并查看"
       }
-      aria-label={engineRunning ? "跨用网关（运行中）" : "跨用网关（未运行）"}
+      aria-label={engineRunning ? "模型共享（运行中）" : "模型共享（未运行）"}
       aria-pressed={engineRunning}
       aria-haspopup="dialog"
       aria-expanded={engineOpen}
@@ -619,6 +761,36 @@ export function ProjectShelf({
       }}
     >
       <Network size={13} />
+    </button>
+  );
+
+  const tgActive = Boolean(tgState?.enabled);
+  const telegramButton = (
+    <button
+      ref={tgBtnRef}
+      type="button"
+      className={
+        tgActive
+          ? "pill-action pill-action--icon pill-action--sm sidebar-footer__button is-notify-on"
+          : "pill-action pill-action--icon pill-action--sm sidebar-footer__button is-notify-off"
+      }
+      title={
+        tgActive
+          ? `Telegram 远程已连接${tgState?.botUsername ? ` · @${tgState.botUsername}` : ""} · 点此设置`
+          : "Telegram 远程通知未启用 · 点此设置"
+      }
+      aria-label={tgActive ? "Telegram 远程（已连接）" : "Telegram 远程（未启用）"}
+      aria-pressed={tgActive}
+      aria-haspopup="dialog"
+      aria-expanded={tgOpen}
+      onClick={() => {
+        const rect = tgBtnRef.current?.getBoundingClientRect();
+        setTgAnchor(rect ? { left: rect.left, top: rect.top } : null);
+        setTgError(null);
+        setTgOpen((open) => !open);
+      }}
+    >
+      <Send size={13} />
     </button>
   );
 
@@ -869,6 +1041,12 @@ export function ProjectShelf({
                           .filter(Boolean)
                           .join(" ")}
                         key={session.id}
+                        onContextMenu={(event) => {
+                          if (!onOpenBeside) return;
+                          event.preventDefault();
+                          event.stopPropagation();
+                          setBesideMenu({ session, x: event.clientX, y: event.clientY });
+                        }}
                       >
                         {isRenaming ? (
                           <form
@@ -1080,6 +1258,12 @@ export function ProjectShelf({
                     doneUnread ? "is-done" : "",
                   ].filter(Boolean).join(" ")}
                   key={session.id}
+                  onContextMenu={(event) => {
+                    if (!onOpenBeside) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setBesideMenu({ session, x: event.clientX, y: event.clientY });
+                  }}
                 >
                   {isRenaming ? (
                     <form
@@ -1190,6 +1374,7 @@ export function ProjectShelf({
         {notifyButton}
         {proxyButton}
         {gatewayButton}
+        {telegramButton}
         <button className="pill-action pill-action--icon pill-action--sm sidebar-footer__button sidebar-footer__button--collapse" type="button" title={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} aria-label={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} onClick={collapsed ? onExpand : onCollapse}>
           {collapsed ? <PanelLeftOpen size={13} /> : <PanelLeftClose size={13} />}
         </button>
@@ -1275,11 +1460,11 @@ export function ProjectShelf({
           ref={enginePopRef}
           className="proxy-popover engine-popover"
           role="dialog"
-          aria-label="跨用网关"
+          aria-label="模型共享"
           style={{ left: engineAnchor.left, bottom: window.innerHeight - engineAnchor.top + 6 }}
         >
           <div className="proxy-popover__header">
-            <span className="proxy-popover__title">跨用网关</span>
+            <span className="proxy-popover__title">模型共享</span>
             <button
               type="button"
               className="pill-action pill-action--icon pill-action--sm"
@@ -1295,7 +1480,7 @@ export function ProjectShelf({
           {engineRunning ? (
             <>
               <div className="proxy-popover__hint">
-                Grok / Claude / ChatGPT 订阅与本机 key 已并入；各 agent 模型菜单的「跨用」组里直接选用。
+                当前所有的 Agent Harness 都能直接使用已登录的各家订阅与 API 了。
               </div>
               {engineState?.reused ? (
                 <div className="proxy-popover__hint">
@@ -1305,7 +1490,7 @@ export function ProjectShelf({
                 <button
                   type="button"
                   className="engine-popover__stop"
-                  title="停止网关进程；正在跨用的会话会断流，随时可从任何跨用入口再次唤醒"
+                  title="停止网关进程；正在用共享模型的会话会断流，随时可从左下角再次启动"
                   onClick={() => {
                     void engineStop().then(() => refreshEngine());
                   }}
@@ -1340,7 +1525,178 @@ export function ProjectShelf({
             >
               <KeyRound size={11} aria-hidden /> 管理密钥与来源…
             </button>
+            {engineRunning && (
+              <p className="engine-popover__credit">
+                {magpieCredit(engineState?.state === "running" ? engineState.version : undefined)}
+              </p>
+            )}
           </div>
+        </div>
+      )}
+      {tgOpen && tgAnchor && (
+        <div
+          ref={tgPopRef}
+          className="proxy-popover tg-popover"
+          role="dialog"
+          aria-label="Telegram 远程通知"
+          style={{ left: tgAnchor.left, bottom: window.innerHeight - tgAnchor.top + 6 }}
+        >
+          <div className="proxy-popover__header">
+            <span className="proxy-popover__title">Telegram 远程</span>
+            <button
+              type="button"
+              className="pill-action pill-action--icon pill-action--sm"
+              aria-label="关闭"
+              onClick={() => setTgOpen(false)}
+            >
+              <X size={12} />
+            </button>
+          </div>
+
+          {!tgState?.configured ? (
+            <>
+              <div className="proxy-popover__row">
+                <label className="proxy-popover__field">
+                  <span className="proxy-popover__field-label">Bot token</span>
+                  <input
+                    className="proxy-popover__input"
+                    type="text"
+                    spellCheck={false}
+                    placeholder="123456:ABC-DEF…（@BotFather /newbot）"
+                    value={tgTokenDraft}
+                    onChange={(event) => setTgTokenDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") void tgSaveToken();
+                    }}
+                  />
+                </label>
+              </div>
+              <div className="proxy-popover__hint">
+                在 @BotFather 里 /newbot 建个新 bot（一分钟），把 token 粘到这里。token
+                只加密存在本机；之后在 Telegram 里给这个 bot 发条消息即可配对。
+              </div>
+              <div className="proxy-popover__actions">
+                <button
+                  type="button"
+                  className="pill-action pill-action--icon pill-action--sm"
+                  title="校验并保存 token"
+                  aria-label="校验并保存 token"
+                  disabled={tgBusy !== null}
+                  onClick={() => void tgSaveToken()}
+                >
+                  {tgBusy === "save" ? (
+                    <span className="proxy-popover__spinner" aria-hidden />
+                  ) : (
+                    <Save size={13} />
+                  )}
+                </button>
+              </div>
+            </>
+          ) : !tgState.paired ? (
+            <>
+              <p className="engine-popover__status" data-state={tgState.pendingPairing ? "running" : "unknown"}>
+                {tgState.pendingPairing
+                  ? `配对请求：@${tgState.pendingPairing.username || tgState.pendingPairing.firstName}`
+                  : `已连接 @${tgState.botUsername ?? "bot"}，等你在 Telegram 里给它发第一条消息…`}
+              </p>
+              {tgState.pendingPairing && (
+                <div className="proxy-popover__actions tg-popover__pair">
+                  <button
+                    type="button"
+                    className="engine-popover__start"
+                    disabled={tgBusy !== null}
+                    onClick={() => void tgPair(true)}
+                  >
+                    接受
+                  </button>
+                  <button
+                    type="button"
+                    className="engine-popover__stop"
+                    disabled={tgBusy !== null}
+                    onClick={() => void tgPair(false)}
+                  >
+                    忽略
+                  </button>
+                </div>
+              )}
+              <div className="proxy-popover__hint">
+                bot 收到你的第一条私聊消息后会出现在这里；确认后它只认你这个账号。
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="proxy-popover__row">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={tgState.enabled}
+                  className={
+                    tgState.enabled ? "proxy-popover__switch is-on" : "proxy-popover__switch"
+                  }
+                  disabled={tgBusy !== null}
+                  onClick={() => void tgSetEnabled(!tgState.enabled)}
+                >
+                  <span className="proxy-popover__switch-track" />
+                  <span className="proxy-popover__switch-thumb" />
+                </button>
+                <span className="proxy-popover__row-label">
+                  {tgState.enabled ? "已启用" : "已暂停"}
+                  {tgState.pairedUsername ? ` · @${tgState.pairedUsername}` : ""}
+                </span>
+              </div>
+              {(tgPrefsDraft ?? tgState.prefs) && (
+                <div className="tg-popover__prefs">
+                  {(
+                    [
+                      ["notifyTurn", "跑完推送"],
+                      ["notifyWait", "等待推送（含按钮）"],
+                      ["notifyError", "出错推送"],
+                      ["contentPreview", "推送带回复内容"],
+                    ] as [keyof TelegramPrefs, string][]
+                  ).map(([key, label]) => {
+                    const prefs = tgPrefsDraft ?? tgState.prefs;
+                    return (
+                      <div className="proxy-popover__row" key={key}>
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={prefs[key]}
+                          className={
+                            prefs[key]
+                              ? "proxy-popover__switch is-on"
+                              : "proxy-popover__switch"
+                          }
+                          disabled={tgBusy !== null}
+                          onClick={() => void tgSavePrefs({ [key]: !prefs[key] })}
+                        >
+                          <span className="proxy-popover__switch-track" />
+                          <span className="proxy-popover__switch-thumb" />
+                        </button>
+                        <span className="proxy-popover__row-label">{label}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              <div className="proxy-popover__hint">
+                直接回复推送 = 继续那个会话；裸发文字 = 送进最近活跃的会话。
+              </div>
+              <div className="engine-popover__footer">
+                <button
+                  type="button"
+                  className="engine-popover__link"
+                  disabled={tgBusy !== null}
+                  onClick={() => void tgUnpair()}
+                >
+                  <Trash2 size={11} aria-hidden /> 解除配对（保留 token）
+                </button>
+              </div>
+            </>
+          )}
+          {tgError && <div className="proxy-popover__test is-err">{tgError}</div>}
+          {tgState?.lastError && !tgError && (
+            <div className="proxy-popover__test is-err">最近一次发送失败：{tgState.lastError}</div>
+          )}
         </div>
       )}
       </div>
@@ -1379,6 +1735,14 @@ export function ProjectShelf({
           if (target.kind === "project") onDeleteProject(target.id);
           else onDeleteSession(target.id);
         }}
+      />
+    )}
+    {besideMenu && onOpenBeside && (
+      <SplitBesideMenu
+        x={besideMenu.x}
+        y={besideMenu.y}
+        onPick={(edge: OpenBesideEdge) => onOpenBeside(besideMenu.session, edge)}
+        onClose={() => setBesideMenu(null)}
       />
     )}
     </>

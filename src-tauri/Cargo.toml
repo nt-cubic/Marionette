@@ -55,7 +55,7 @@ default = []
 # Enable with: cargo run --features devtools  /  tauri dev still works via debug asserts path if needed
 devtools = ["tauri/devtools"]
 # 单 exe 内置引擎（产品定稿 2026-10-16）：third_party/magpie 编出的 nogui
-# magpie 经 tools\build-portable.bat（默认含引擎变体）**UPX 压缩后**直嵌（~13.6MB，
+# magpie 经 tools\build-portable.bat **UPX 压缩后**直嵌（~13.6MB，
 # 自解压、运行时零解码），离线落位安装。构建前必须先由构建脚本生成
 # src-tauri/engine-embedded/magpie-windows-amd64.exe（UPX 后）与 VERSION
 # （gitignored 产物，见 tools/README.md）。

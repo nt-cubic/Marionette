@@ -1,5 +1,6 @@
-import { Check, ChevronDown, Copy, Eye, EyeOff, FileText, Globe, Merge, MessageSquareQuote, Pencil, Plus, Split, Square, SquareArrowOutUpRight, X } from "lucide-react";
+import { Check, ChevronDown, Columns2, Copy, Eye, EyeOff, FileText, Globe, Merge, MessageSquareQuote, Pencil, Plus, Split, Square, SquareArrowOutUpRight, X } from "lucide-react";
 import {
+  Fragment,
   memo,
   useCallback,
   useEffect,
@@ -7,6 +8,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
@@ -48,8 +50,11 @@ import {
 import { useVirtualWindow } from "../lib/useVirtualWindow";
 import { isCursorOverWindow, setMergeHighlight } from "../lib/detachedWindow";
 import { loadDetailsVisible, saveDetailsVisible } from "../lib/uiRestore";
+import { SplitBesideMenu, type OpenBesideEdge } from "./SplitBesideMenu";
+import type { DropEdge } from "../lib/splitWorkspace";
 import type { AgentConfig, Session, SessionEvent, SessionStatus, SessionViewMode } from "../lib/types";
 import { ActivityKindGroup, ActivityPanel } from "./ActivityPanel";
+import { StreamPromptCard, type StreamPromptHandlers } from "./StreamPromptCard";
 import { ClippedBody } from "./ClippedBody";
 import { LinkCwdContext, LinkedText } from "./LinkedText";
 import { MarkdownBody, MarkdownImageCwdContext, PreviewImage } from "./MarkdownBody";
@@ -83,10 +88,13 @@ type SessionViewProps = {
   /** Grok: open `grok update` in a console window. */
   onUpdate?: () => void | Promise<void>;
   updateBusy?: boolean;
-  onTabSelect: (session: Session) => void;
-  onTabClose: (sessionId: string) => void;
-  onNewTab: () => void;
+  onTabSelect?: (session: Session) => void;
+  onTabClose?: (sessionId: string) => void;
+  onNewTab?: () => void;
   onSessionStatusChange?: (status: SessionStatus) => void;
+  /** App-owned eye: both panes stay in sync. */
+  detailsVisible?: boolean;
+  onDetailsVisibleChange?: (visible: boolean) => void;
   onCapabilities?: (caps: import("../lib/types").CapabilitySnapshot | null) => void;
   /** P2-UX-4: edit You → truncate following + resend. */
   onEditResend?: (anchor: UserMessageAnchor, newText: string) => void | Promise<void>;
@@ -106,6 +114,8 @@ type SessionViewProps = {
   onSubtaskStop?: (childSessionId: string) => void;
   onSubtaskQuote?: (summary: string) => void;
   onSubtaskRetry?: (childSessionId: string) => void;
+  /** Live Plan / Ask waiter — interactive while pending, otherwise a settled card. */
+  streamPrompt?: StreamPromptHandlers;
 };
 
 /** Drag a tab far enough / off the strip → ghost chip; full window on release. */
@@ -119,6 +129,15 @@ type TearGhost = {
   session: Session;
   x: number;
   y: number;
+};
+
+/** Collapsing placeholder for a tab removed on the latest render (Chrome-style close). */
+type ClosingTab = {
+  key: string;
+  width: number;
+  label: string;
+  /** Old position among the pre-close tabs; ghost is spliced back there. */
+  index: number;
 };
 
 function pointerOutsideTabStrip(
@@ -154,6 +173,11 @@ export function SessionTabs({
   mergeDropActive = false,
   /** Detached window: single dialog, no new-tab / pop-out chrome. */
   detachedMode = false,
+  onTabDragPreview,
+  onTabDragEnd,
+  ghostHint,
+  onOpenBeside,
+  titlebarDragRegion = false,
 }: {
   openSessions: Session[];
   session: Session;
@@ -178,6 +202,28 @@ export function SessionTabs({
   /** Main window: a detached tab drag is hovering the strip (drop glow). */
   mergeDropActive?: boolean;
   detachedMode?: boolean;
+  /**
+   * Armed tab drag is moving. Parent hit-tests and paints a drop overlay.
+   * Not used in detachedMode.
+   */
+  onTabDragPreview?: (session: Session, clientX: number, clientY: number) => void;
+  /**
+   * Armed tab drag ended. `cancelled` covers Esc, pointercancel, and the
+   * parent treating the drop as a no-op. Parent hit-tests on pointerup and
+   * only then splits / inserts / tears off.
+   */
+  onTabDragEnd?: (
+    session: Session,
+    clientX: number,
+    clientY: number,
+    cancelled: boolean,
+  ) => void;
+  /** Hint under the ghost chip (split / insert / detach / cancel). */
+  ghostHint?: string;
+  /** Split this tab to the right or below its pane. Hidden in detachedMode. */
+  onOpenBeside?: (session: Session, edge: DropEdge) => void;
+  /** Titlebar mount: empty strip area drags the window (data-tauri-drag-region). */
+  titlebarDragRegion?: boolean;
 }) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
@@ -191,6 +237,11 @@ export function SessionTabs({
   /** Detached drag is currently over the main window → merge affordance. */
   const [mergeHover, setMergeHover] = useState(false);
   const mergeHoverRef = useRef(false);
+  const [besideMenu, setBesideMenu] = useState<{
+    session: Session;
+    x: number;
+    y: number;
+  } | null>(null);
   const tabDragRef = useRef<{
     session: Session;
     pointerId: number;
@@ -203,6 +254,74 @@ export function SessionTabs({
     inFlight: false,
   });
   const mergeHighlightSentRef = useRef(false);
+
+  /** Chrome-style close: removed tabs collapse in place, survivors slide in. */
+  const [closingTabs, setClosingTabs] = useState<ClosingTab[]>([]);
+  /** Survivor width frozen during a rapid-close burst (next × under the cursor). */
+  const [frozenTabWidth, setFrozenTabWidth] = useState<number | null>(null);
+  const tabMetaRef = useRef<Map<string, { width: number; label: string }>>(new Map());
+  const prevIdsRef = useRef<string[]>([]);
+  const settleTimerRef = useRef<number | null>(null);
+
+  // Diff the id set between renders; each removed tab gets a collapsing ghost
+  // spliced back at its old position (close / pop-out / merge-back all land here).
+  useLayoutEffect(() => {
+    const currentIds = openSessions.map((s) => s.id);
+    const prevIds = prevIdsRef.current;
+    const removed = prevIds.filter((id) => !currentIds.includes(id));
+
+    if (removed.length > 0) {
+      const widthOf = (id: string) => tabMetaRef.current.get(id)?.width;
+      // Equal-width tabs: any pre-close measurement is the frozen burst width.
+      const fallbackWidth =
+        currentIds.map(widthOf).find((w) => typeof w === "number" && w > 0) ??
+        removed.map(widthOf).find((w) => typeof w === "number" && w > 0) ??
+        undefined;
+      const now = Date.now();
+      const additions: ClosingTab[] = removed.map((id) => ({
+        key: `${id}:${now}`,
+        width: widthOf(id) ?? fallbackWidth ?? 0,
+        label: tabMetaRef.current.get(id)?.label ?? "",
+        index: Math.max(prevIds.indexOf(id), 0),
+      }));
+      setClosingTabs((current) => [...current, ...additions]);
+      setFrozenTabWidth(
+        (current) => current ?? additions.map((a) => a.width).find((w) => w > 0) ?? null,
+      );
+      if (settleTimerRef.current != null) window.clearTimeout(settleTimerRef.current);
+      settleTimerRef.current = window.setTimeout(() => {
+        settleTimerRef.current = null;
+        setClosingTabs([]);
+        setFrozenTabWidth(null);
+      }, 220);
+    }
+
+    // Re-measure live tabs (ghost slots and the + button are not .editor-tab).
+    // During a burst the frozen CSS keeps rects at the frozen width, so
+    // consecutive closes stay exact.
+    const listEl = tablistRef.current;
+    if (listEl) {
+      listEl
+        .querySelectorAll<HTMLElement>(":scope > .editor-tab:not(.is-closing)")
+        .forEach((el, i) => {
+          const s = openSessions[i];
+          if (!s) return;
+          tabMetaRef.current.set(s.id, {
+            width: el.getBoundingClientRect().width,
+            label: s.label,
+          });
+        });
+    }
+
+    prevIdsRef.current = currentIds;
+  }, [openSessions]);
+
+  useEffect(
+    () => () => {
+      if (settleTimerRef.current != null) window.clearTimeout(settleTimerRef.current);
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!renamingId) return;
@@ -266,7 +385,11 @@ export function SessionTabs({
 
   const onTabPointerDown = (openSession: Session, event: ReactPointerEvent<HTMLButtonElement>) => {
     if (renamingId || event.button !== 0) return;
-    if (detachedMode ? !onTabMergeBack : !onTabPopOut) return;
+    if (detachedMode) {
+      if (!onTabMergeBack) return;
+    } else if (!onTabPopOut && !onTabDragEnd) {
+      return;
+    }
     tabDragRef.current = {
       session: openSession,
       pointerId: event.pointerId,
@@ -298,6 +421,13 @@ export function SessionTabs({
     const strip = tablistRef.current?.getBoundingClientRect();
     const outside = pointerOutsideTabStrip(event.clientX, event.clientY, strip);
 
+    if (onTabDragPreview && !onTabMergeBack) {
+      // Split-workspace: ghost follows the pointer once armed, even inside the window.
+      placeGhost(drag.session, event.clientX, event.clientY);
+      onTabDragPreview(drag.session, event.clientX, event.clientY);
+      return;
+    }
+
     if (outside) {
       // Ghost only — real WebView (or merge) waits for mouse-up.
       placeGhost(drag.session, event.clientX, event.clientY);
@@ -328,16 +458,23 @@ export function SessionTabs({
     const target = drag.session;
     const liveGhost = ghostRef.current;
     const wasOverMain = mergeHoverRef.current;
+    const clientX = event.clientX;
+    const clientY = event.clientY;
     tabDragRef.current = null;
     clearTabDragUi();
 
+    if (onTabMergeBack) {
+      if (liveGhost && wasOverMain) void onTabMergeBack(target, true);
+      else if (!wasArmed) onTabSelect(target);
+      return;
+    }
+
+    if (onTabDragEnd && wasArmed) {
+      onTabDragEnd(target, clientX, clientY, false);
+      return;
+    }
+
     if (liveGhost) {
-      // Detached: dropping over the main window merges back; anywhere else cancels.
-      if (onTabMergeBack) {
-        if (wasOverMain) void onTabMergeBack(target, true);
-        return;
-      }
-      // Drop: create the real window at the cursor, then drop the tab.
       void onTabPopOut?.(target, true);
       return;
     }
@@ -349,19 +486,81 @@ export function SessionTabs({
   const onTabPointerCancel = (event: ReactPointerEvent<HTMLButtonElement>) => {
     const drag = tabDragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
+    const target = drag.session;
+    const wasArmed = drag.armed;
     tabDragRef.current = null;
     clearTabDragUi();
+    if (wasArmed) onTabDragEnd?.(target, event.clientX, event.clientY, true);
   };
+
+  useEffect(() => {
+    if (!draggingTabId || detachedMode) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      const drag = tabDragRef.current;
+      if (!drag?.armed) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const target = drag.session;
+      tabDragRef.current = null;
+      clearTabDragUi();
+      onTabDragEnd?.(target, 0, 0, true);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [draggingTabId, detachedMode, onTabDragEnd]);
+
+  // Ghosts spliced back at their old positions (clamped to the current tab count).
+  const ghostsByIndex = new Map<number, ClosingTab[]>();
+  for (const g of closingTabs) {
+    const idx = Math.min(Math.max(g.index, 0), openSessions.length);
+    const bucket = ghostsByIndex.get(idx);
+    if (bucket) bucket.push(g);
+    else ghostsByIndex.set(idx, [g]);
+  }
+
+  /** One-shot WAAPI collapse of a removed tab's slot; unmounted on settle. */
+  const renderClosingGhost = (g: ClosingTab) => (
+    <div
+      key={g.key}
+      className="editor-tab is-closing"
+      style={{ width: g.width }}
+      aria-hidden
+      ref={(el) => {
+        if (!el) return;
+        el.animate(
+          [
+            { width: `${g.width}px`, marginRight: "0px", opacity: 0.9 },
+            // -2px eats the flex gap so the collapse ends flush.
+            { width: "0px", marginRight: "-2px", opacity: 0 },
+          ],
+          {
+            duration: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 160,
+            easing: "ease",
+            fill: "forwards",
+          },
+        );
+      }}
+    >
+      <span>{g.label}</span>
+    </div>
+  );
 
   return (
     <>
     <div
-      className={`editor-tabs__tablist${mergeDropActive ? " is-merge-target" : ""}`}
+      className={`editor-tabs__tablist${mergeDropActive ? " is-merge-target" : ""}${frozenTabWidth != null ? " is-closing-burst" : ""}`}
       role="tablist"
       aria-label="Session tabs"
       ref={tablistRef}
+      data-tauri-drag-region={titlebarDragRegion || undefined}
+      style={
+        frozenTabWidth != null
+          ? ({ "--frozen-tab-w": `${frozenTabWidth}px` } as CSSProperties)
+          : undefined
+      }
     >
-      {openSessions.map((openSession) => {
+      {openSessions.map((openSession, tabIndex) => {
         const busy =
           openSession.status === "running" || openSession.status === "starting";
         const isRenaming = renamingId === openSession.id;
@@ -369,118 +568,153 @@ export function SessionTabs({
         const isGhostSource = ghost?.session.id === openSession.id;
         const doneUnread = doneUnreadIds?.has(openSession.id) ?? false;
         return (
-          <div
-            className={[
-              "editor-tab",
-              `is-${openSession.status}`,
-              openSession.id === session.id ? "is-active" : "",
-              isDragging ? "is-dragging-out" : "",
-              isGhostSource ? "is-tear-source" : "",
-              doneUnread ? "is-done" : "",
-            ]
-              .filter(Boolean)
-              .join(" ")}
-            key={openSession.id}
-            role="tab"
-            aria-selected={openSession.id === session.id}
-          >
-            {busy ? (
-              <span
-                className={`editor-tab__pulse is-${openSession.status}`}
-                aria-hidden
-              />
-            ) : doneUnread ? (
-              <span
-                className="editor-tab__done"
-                title="任务已完成"
-                aria-label="任务已完成"
-              />
-            ) : null}
-            {isRenaming ? (
-              <input
-                ref={renameInputRef}
-                className="editor-tab__rename"
-                value={renameDraft}
-                aria-label="Rename tab"
-                onChange={(e) => setRenameDraft(e.target.value)}
-                onBlur={() => commitRename()}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    commitRename();
-                  } else if (e.key === "Escape") {
-                    e.preventDefault();
-                    setRenamingId(null);
-                  }
-                }}
-                onClick={(e) => e.stopPropagation()}
-              />
-            ) : (
-              <button
-                className="editor-tab__select"
-                type="button"
-                title={
-                  doneUnread
-                    ? `${openSession.label} · 任务已完成`
-                    : onTabPopOut && !detachedMode
-                      ? `${openSession.label} · drag out to tear off · double-click to rename`
-                      : onTabMergeBack
-                        ? `${openSession.label} · drag out to merge back · double-click to rename`
-                        : `${openSession.cwd} · double-click to rename`
-                }
-                onPointerDown={(e) => onTabPointerDown(openSession, e)}
-                onPointerMove={onTabPointerMove}
-                onPointerUp={onTabPointerUp}
-                onPointerCancel={onTabPointerCancel}
-                onDoubleClick={(e) => {
-                  if (!onRenameSession) return;
+          <Fragment key={openSession.id}>
+            {ghostsByIndex.get(tabIndex)?.map(renderClosingGhost)}
+            <div
+              className={[
+                "editor-tab",
+                `is-${openSession.status}`,
+                openSession.id === session.id ? "is-active" : "",
+                isDragging ? "is-dragging-out" : "",
+                isGhostSource ? "is-tear-source" : "",
+                doneUnread ? "is-done" : "",
+              ]
+                .filter(Boolean)
+                .join(" ")}
+              role="tab"
+              aria-selected={openSession.id === session.id}
+              onContextMenu={(e) => {
+                if (detachedMode || !onOpenBeside || openSessions.length <= 1) return;
+                e.preventDefault();
+                e.stopPropagation();
+                tabDragRef.current = null;
+                clearTabDragUi();
+                setBesideMenu({ session: openSession, x: e.clientX, y: e.clientY });
+              }}
+              onMouseDown={(e) => {
+                // Middle-click autoscroll circle would eat the aux click.
+                if (e.button === 1) e.preventDefault();
+              }}
+              onAuxClick={(e) => {
+                if (e.button === 1 && !detachedMode) {
                   e.preventDefault();
-                  e.stopPropagation();
-                  tabDragRef.current = null;
-                  clearTabDragUi();
-                  setRenamingId(openSession.id);
-                  setRenameDraft(openSession.label);
-                }}
-              >
-                <span>{openSession.label}</span>
-              </button>
-            )}
-            {onTabMergeBack && (
-              <button
-                className="pill-action pill-action--icon pill-action--sm editor-tab__mergeback"
-                type="button"
-                title="Merge back to main window"
-                aria-label="Merge back to main window"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onTabMergeBack(openSession, false);
-                }}
-              >
-                <Merge size={11} />
-              </button>
-            )}
-            {onTabPopOut && !detachedMode && (
-              <button
-                className="pill-action pill-action--icon pill-action--sm editor-tab__popout"
-                type="button"
-                title={`Open ${openSession.label} in new window`}
-                aria-label={`Open ${openSession.label} in new window`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onTabPopOut(openSession, false);
-                }}
-              >
-                <SquareArrowOutUpRight size={11} />
-              </button>
-            )}
-            {!detachedMode && (
-              <button className="pill-action pill-action--icon pill-action--sm editor-tab__close" type="button" title={`Close ${openSession.label}`} aria-label={`Close ${openSession.label}`} onClick={() => onTabClose(openSession.id)}>
-                <X size={12} />
-              </button>
-            )}
-          </div>
+                  onTabClose(openSession.id);
+                }
+              }}
+            >
+              {busy ? (
+                <span
+                  className={`editor-tab__pulse is-${openSession.status}`}
+                  aria-hidden
+                />
+              ) : doneUnread ? (
+                <span
+                  className="editor-tab__done"
+                  title="任务已完成"
+                  aria-label="任务已完成"
+                />
+              ) : null}
+              {isRenaming ? (
+                <input
+                  ref={renameInputRef}
+                  className="editor-tab__rename"
+                  value={renameDraft}
+                  aria-label="Rename tab"
+                  onChange={(e) => setRenameDraft(e.target.value)}
+                  onBlur={() => commitRename()}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      commitRename();
+                    } else if (e.key === "Escape") {
+                      e.preventDefault();
+                      setRenamingId(null);
+                    }
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                />
+              ) : (
+                <button
+                  className="editor-tab__select"
+                  type="button"
+                  title={
+                    doneUnread
+                      ? `${openSession.label} · 任务已完成`
+                      : onTabPopOut && !detachedMode
+                        ? `${openSession.label} · drag out to tear off · double-click to rename`
+                        : onTabMergeBack
+                          ? `${openSession.label} · drag out to merge back · double-click to rename`
+                          : `${openSession.cwd} · double-click to rename`
+                  }
+                  onPointerDown={(e) => onTabPointerDown(openSession, e)}
+                  onPointerMove={onTabPointerMove}
+                  onPointerUp={onTabPointerUp}
+                  onPointerCancel={onTabPointerCancel}
+                  onDoubleClick={(e) => {
+                    if (!onRenameSession) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    tabDragRef.current = null;
+                    clearTabDragUi();
+                    setRenamingId(openSession.id);
+                    setRenameDraft(openSession.label);
+                  }}
+                >
+                  <span>{openSession.label}</span>
+                </button>
+              )}
+              {onTabMergeBack && (
+                <button
+                  className="pill-action pill-action--icon pill-action--sm editor-tab__mergeback"
+                  type="button"
+                  title="Merge back to main window"
+                  aria-label="Merge back to main window"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onTabMergeBack(openSession, false);
+                  }}
+                >
+                  <Merge size={11} />
+                </button>
+              )}
+              {onOpenBeside && !detachedMode && openSessions.length > 1 && (
+                <button
+                  className="pill-action pill-action--icon pill-action--sm editor-tab__split"
+                  type="button"
+                  title="在右侧打开"
+                  aria-label={`Open ${openSession.label} to the right`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onOpenBeside(openSession, "right");
+                  }}
+                >
+                  <Columns2 size={11} />
+                </button>
+              )}
+              {onTabPopOut && !detachedMode && (
+                <button
+                  className="pill-action pill-action--icon pill-action--sm editor-tab__popout"
+                  type="button"
+                  title={`Open ${openSession.label} in new window`}
+                  aria-label={`Open ${openSession.label} in new window`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onTabPopOut(openSession, false);
+                  }}
+                >
+                  <SquareArrowOutUpRight size={11} />
+                </button>
+              )}
+              {!detachedMode && (
+                <button className="pill-action pill-action--icon pill-action--sm editor-tab__close" type="button" title={`Close ${openSession.label}`} aria-label={`Close ${openSession.label}`} onClick={() => onTabClose(openSession.id)}>
+                  <X size={12} />
+                </button>
+              )}
+            </div>
+          </Fragment>
         );
       })}
+      {ghostsByIndex.get(openSessions.length)?.map(renderClosingGhost)}
       {!detachedMode && (
         <button className="pill-action pill-action--icon pill-action--sm editor-tab__new" type="button" title="New conversation" aria-label="New conversation" onClick={onNewTab}>
           <Plus size={13} />
@@ -500,11 +734,19 @@ export function SessionTabs({
               ? mergeHover
                 ? "松开以合并回主窗口"
                 : "拖到主窗口上方合并"
-              : "松开以打开新窗口"}
+              : ghostHint ?? "松开以打开新窗口"}
           </span>
         </div>,
         document.body
       )}
+    {besideMenu && onOpenBeside && (
+      <SplitBesideMenu
+        x={besideMenu.x}
+        y={besideMenu.y}
+        onPick={(edge: OpenBesideEdge) => onOpenBeside(besideMenu.session, edge)}
+        onClose={() => setBesideMenu(null)}
+      />
+    )}
     </>
   );
 }
@@ -521,11 +763,6 @@ export function SessionView({
   signInBusy = false,
   onUpdate,
   updateBusy = false,
-  onTabSelect,
-  onTabClose,
-  onNewTab,
-  onSessionStatusChange,
-  onCapabilities,
   onEditResend,
   onForkReply,
   lastActivityAt = null,
@@ -537,14 +774,26 @@ export function SessionView({
   onSubtaskStop,
   onSubtaskQuote,
   onSubtaskRetry,
+  streamPrompt,
+  detailsVisible: detailsVisibleProp,
+  onDetailsVisibleChange,
 }: SessionViewProps) {
   // Eye open: each thought/tool is its own card. Eye closed: consecutive
   // thought+tool runs collapse into nested activity folds (not hidden).
   // Default is closed (quiet). Open is remembered across launches.
-  const [detailsVisible, setDetailsVisible] = useState(() => loadDetailsVisible());
+  const [detailsVisibleLocal, setDetailsVisibleLocal] = useState(() => loadDetailsVisible());
+  const detailsControlled = detailsVisibleProp != null;
+  const detailsVisible = detailsControlled ? detailsVisibleProp : detailsVisibleLocal;
+  const setDetailsVisible = (next: boolean | ((prev: boolean) => boolean)) => {
+    const value = typeof next === "function" ? next(detailsVisible) : next;
+    if (!detailsControlled) setDetailsVisibleLocal(value);
+    onDetailsVisibleChange?.(value);
+    if (!detailsControlled) saveDetailsVisible(value);
+  };
   useEffect(() => {
-    saveDetailsVisible(detailsVisible);
-  }, [detailsVisible]);
+    if (detailsControlled) return;
+    saveDetailsVisible(detailsVisibleLocal);
+  }, [detailsControlled, detailsVisibleLocal]);
   const [expandedChildId, setExpandedChildId] = useState<string | null>(null);
 
   /** childSessionId → result event (latest wins). */
@@ -621,6 +870,7 @@ export function SessionView({
             onSubtaskStop={onSubtaskStop}
             onSubtaskQuote={onSubtaskQuote}
             onSubtaskRetry={onSubtaskRetry}
+            streamPrompt={streamPrompt}
           />
         </div>
         </MarkdownImageCwdContext.Provider>
@@ -1206,6 +1456,7 @@ function CleanPlaceholder({
   onSubtaskStop,
   onSubtaskQuote,
   onSubtaskRetry,
+  streamPrompt,
 }: {
   agent: AgentConfig;
   session: Session;
@@ -1232,6 +1483,7 @@ function CleanPlaceholder({
   onSubtaskStop?: (childSessionId: string) => void;
   onSubtaskQuote?: (summary: string) => void;
   onSubtaskRetry?: (childSessionId: string) => void;
+  streamPrompt?: StreamPromptHandlers;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   /** When true, new content may stick the viewport to the bottom. */
@@ -1874,6 +2126,16 @@ function CleanPlaceholder({
                   </div>
                 )}
               </div>
+            );
+          }
+
+          if (event.type === "plan_prompt" || event.type === "ask_prompt") {
+            return (
+              <StreamPromptCard
+                key={`${event.type}-${event.requestId}-${index}`}
+                event={event}
+                handlers={streamPrompt}
+              />
             );
           }
 

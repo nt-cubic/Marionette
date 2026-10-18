@@ -18,6 +18,7 @@ import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { cursorPosition, getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow, getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
 import { isTauriRuntime } from "./api";
+import { clientPointFromScreen } from "./splitWorkspace";
 import type { Session } from "./types";
 
 export type DetachWindowOpts = {
@@ -51,6 +52,8 @@ export type MergeBackPayload = {
   sessionId: string;
   /** Origin window label — main ignores echoes from itself. */
   origin?: string;
+  /** Optional; main prefers to read the cursor itself (DPI-safe). */
+  dropClient?: { x: number; y: number };
 };
 
 export type MergeHighlightPayload = {
@@ -124,6 +127,27 @@ export function readDetachedSessionId(): string | null {
     return id ? id : null;
   } catch {
     return null;
+  }
+}
+
+/** Session ids whose detached shells are currently visible (ACP owners). */
+export async function listVisibleDetachedSessionIds(): Promise<string[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    const all = await getAllWebviewWindows();
+    const ids: string[] = [];
+    for (const w of all) {
+      const id = sessionIdFromDetachedLabel(w.label);
+      if (!id) continue;
+      try {
+        if (await w.isVisible()) ids.push(id);
+      } catch {
+        /* skip unreadable hosts */
+      }
+    }
+    return ids;
+  } catch {
+    return [];
   }
 }
 
@@ -247,7 +271,7 @@ export async function requestMergeBack(sessionId: string): Promise<void> {
 
 /** Main window: handle merge-back requests from detached shells. */
 export async function listenMergeBackRequests(
-  onMerge: (sessionId: string) => void | Promise<void>
+  onMerge: (payload: MergeBackPayload) => void | Promise<void>
 ): Promise<UnlistenFn> {
   if (!isTauriRuntime()) return () => undefined;
   let origin: string | null = null;
@@ -260,8 +284,51 @@ export async function listenMergeBackRequests(
     const payload = event.payload;
     if (!payload?.sessionId) return;
     if (payload.origin && origin && payload.origin === origin) return;
-    void onMerge(payload.sessionId);
+    void onMerge(payload);
   });
+}
+
+/** Main window: CSS client point of the current pointer, or null if lookup fails. */
+export async function readMainDropClient(): Promise<{ x: number; y: number } | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    const win = getCurrentWindow();
+    const [phys, inner, scale] = await Promise.all([
+      cursorPosition(),
+      win.innerPosition(),
+      win.scaleFactor(),
+    ]);
+    return clientPointFromScreen(phys, inner, scale);
+  } catch {
+    return null;
+  }
+}
+
+/** Focus an existing detached shell. Returns false if it is not open. */
+export async function focusDetachedWindow(sessionId: string): Promise<boolean> {
+  if (!isTauriRuntime() || !sessionId) return false;
+  try {
+    const win = await WebviewWindow.getByLabel(detachedWindowLabel(sessionId));
+    if (!win) return false;
+    try {
+      await win.show();
+    } catch {
+      /* may already be visible */
+    }
+    try {
+      await win.unminimize();
+    } catch {
+      /* optional */
+    }
+    try {
+      await win.setFocus();
+    } catch {
+      /* optional */
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Detached window: tell main whether a drag is hovering over it (drop hint). */

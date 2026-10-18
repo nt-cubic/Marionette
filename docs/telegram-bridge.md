@@ -1,7 +1,10 @@
-# Telegram 远程桥（设计稿）
+# Telegram 远程桥
 
-> 状态：**设计定稿，未实现**（2026-10-17 调研 + 设计；实现排期见「分期」）。
-> 落地后现行行为并入 [`CURRENT.md`](./CURRENT.md)，本文件挪进 `archive/`。
+> 状态：**MVP + 总控面板 + 回复全文 Markdown 已实现（2026-10-18）**。通知四类
+> + 文本回复 + 权限/ask/plan 内联按钮 + 配对 + 到期前 30s 提醒 + **置顶总控面板
+> （多会话状态一目了然）/ `/status` / 远程 ⏹ / 面板点选切换绑定** + **跑完推送带
+> 全文正文（MarkdownV2，多消息分片，解析失败回退纯文本）** 已落地。
+> 实现与设计的差异见文末「实现差异记录」。
 
 ## 一句话
 
@@ -127,10 +130,11 @@ Bot: 已送进 [Marionette 主线] ✓
 6. 到期前 30s 提醒。
 
 **二期（按需）**
-- `/status` 活点单 + 置顶实时状态消息（学 grinev）。
-- 远程 ⏹ 停止按钮（复用 `stop_acp_session`，`commands.rs:1997`）。
-- `/sessions` `/switch` 多会话切换。
+- ~~`/status` 活点单 + 置顶实时状态消息~~ **已落地（2026-10-18，见下「总控面板」节）**。
+- ~~远程 ⏹ 停止按钮~~ **已落地**（走 `AcpService::cancel`，与 UI 停止键同一条 `session/cancel` 路，比原稿计划的 `stop_acp_session` 杀进程更轻）。
+- ~~`/sessions` 多会话切换~~ **已落地**（面板按钮点选即切换绑定）。
 - 通知去噪（仅窗口失焦时推 / 仅后台会话推）。
+- `/last`（拉最近一条回复全文）。
 
 **明确不做**
 - 常驻服务/开机自启的独立 notifier 进程；Telegram 端会话管理器（建会话、切模型——那是把 Marionette 搬进 Telegram，违背壳的定位）；ntfy/Bark 等第二通道；语音输入。
@@ -146,3 +150,122 @@ Bot: 已送进 [Marionette 主线] ✓
 
 `telegram_remote.rs` 400–600 行 + acp.rs 旁路钩子若干 + commands 内核提取 + 左下角浮层一小块 React；
 依赖零新增，便携包体积不变。
+
+## 实现差异记录（2026-10-18 MVP）
+
+按设计落地，四处偏差，都比原稿更省或更稳：
+
+1. **事件钩子收口到 `emit_now` 单点**（而非每类事件各挂一处）：`acp.rs` 所有 UI 事件
+   （排队与直发两条路）都经 `emit_now` 落地，telegram 侧 `observe_ui_event` 只观察这一个
+   点，按 `(kind, method)` 过滤五类事件。回合时长/末条回复摘要在观察侧从
+   `session/update` 流里自维护（`user_message_chunk` 钉回合起点、`agent_message*`
+   进尾部滚动缓冲，多字节安全截断），不动 acp.rs 的任何回合状态。
+2. **文本回复走前端管线而非 Rust 直发**：设计原稿计划把 `send_acp_prompt` 内核提为
+   普通函数，但「挂起重连 + 历史注入 + 排队 + 配置回推」整条管线住在 App.tsx 的
+   `performSend` 里（约 400 行 TS）。Rust 侧收到手机文本后 `emit("telegram-remote-inbound")`
+   → 前端切到目标会话并调 `performSend` → 完成后 `telegram_remote_ack` 回执（✓ 或错误
+   摘要推回手机）。本地打字与远程回复从此走同一条路，行为永远一致。
+3. **按钮解答在 Rust 直连 waiter map**（与设计一致），另补了 `permission/resolved` /
+   `question/resolved` / `plan/resolved` 三个事件：UI 与 Telegram 任一方解答后，
+   另一方的卡片（和提醒计时）立即收掉，先答先得不残留。
+4. **token 存 `~/.marionette/telegram.json`**（设计原稿是 credentials.json 新条目种类）：
+   复用 `credentials.rs` 的 DPAPI 加解密出口（同 `dpapi:` 前缀格式），但独立成文件——
+   避免给 `CredentialKind` 加变体而波及模型桥的凭据枚举/去重逻辑。明文红线不变：
+   落盘只密文，日志只记事件。
+
+其他实现要点：
+
+- 配对：保存 token 后 bot 的第一条私聊消息挂起为待配对请求（TTL 5 分钟），左下角浮层
+  1Hz 轮询展示并确认；轮询线程只要有 token 就跑（否则配对死锁），发送/通知额外要求
+  已配对且开关打开。
+- 引用回复路由靠 bot 自己发出的 message_id → session 表（FIFO 256 条）；裸文本去
+  最近收到 `user_message_chunk` 的会话。getUpdates 24h 保留：Marionette 重启后，
+  停机期间手机上发的消息照常送进会话。
+- ask 按钮：仅「单问题 + 单选」映射内联按钮（+「跳过」）；多问题/多选推送文本提示
+  回电脑答。应答按问题原文匹配 wire key，绝不截断。
+- 命令（`/` 开头）不进会话，MVP 没有命令面（`/status`、`/last` 属二期）。
+- 409（同 token 第二 poller）从 15s 起退避；断线 1s 起、60s 封顶。
+- 验证：`telegram_remote` 11 个单测（payload/路由纯函数、密文落盘不含明文、损坏
+  留档）+ 全套 280 过 + `npm run build`（tsc strict）；本机到 api.telegram.org 的
+  TLS 与 API 行为已用假 token 探活（401 予期）。真机端到端（真实 bot token 收发）
+  留给用户首次配对时按浮层指引完成。
+
+## 总控面板（2026-10-18 二期首批，已落地）
+
+多会话可见性是纯推送形态的最大短板（用户实测反馈：多开时不知道谁在跑）。调研
+grinev / artickc / RemoClaw 三个同类项目后收敛为共识形态，全部落进 Rust 侧：
+
+- **置顶面板**：一条 `pinChatMessage` 的消息，会话状态一变（开跑 / 跑完 / 等你 /
+  等待解除 / 绑定切换）就 `editMessageText` 原地重画——头部计数（▶N ⏸N）+ 每会话
+  一行（状态图标、标签、agent、时长 / 等待）+ `⏎ 当前绑定` 标记 + 未列出的空闲数。
+  面板被删会在下次 edit 失败时自动重建并重置顶；「message is not modified」视为成功。
+- **状态机**：`SessionTrack.waiting`（挂起的权限/ask/plan 计数，prompt 时 +1、六类
+  `*/resolved|*/timeout` 事件时 -1）+ `turn_started` 推导 Running / Waiting / Idle，
+  等待优先于跑着。与 `notify_wait` 偏好解耦——面板永远反映真实状态。
+- **行内按钮**：每个会话一行 `[标签][⏹]`——点标签 = 把裸发文字的默认去向切过去
+  （原来隐式的「最近活跃绑定」变成看得见点得动）；⏹ = `AcpService::cancel`（与 UI
+  停止键同路：`session/cancel` + in-flight 清理 + `turn/complete(cancelled)`）。
+  末行 🔄 刷新。面板消息的键盘不会被逐按钮摘除（由下一次整画重写），权限卡片的
+  摘按钮行为不变。
+- **`/status`（别名 `/sessions`）**：全量清单（含空闲，按最近动静排序，上限 20 行），
+  reply 到用户那条命令。
+- **心跳**：单独线程，忙时每 60s 重画一次面板（「跑了 N 分钟」保鲜）；全闲零流量。
+- **权限推送格式修复**：detail 里的工具入参原始 JSON（`{"file_path":…}`）渲染成
+  `key: value` 行（`render_tool_detail`）；非 JSON（plan markdown 等）原样保留。
+- 锁序红线：`inner`（telegram 可变态）与 storage/acp 的锁绝不嵌套——快照先取
+  inner 后查 storage，回调先摘动作再进 acp。
+- 验证：模块单测 11 → 17（面板/清单渲染、JSON 人话化、waiting 状态推导、六类
+  清理事件匹配），全套 289 过，`cargo check` 零警告。
+
+## 回复全文 + MarkdownV2（2026-10-18 二批，已落地）
+
+用户实测（11:02–11:28 的推送）暴露：跑完推送既无时长也无正文。根因两层——
+
+1. **Grok 不回显用户消息**（探针实测 2026-10-18：`session/update` 里只有
+   `agent_message_chunk` / `agent_thought_chunk`，没有 `user_message_chunk`），
+   而回合起点原本钉在用户回显上 → Grok 会话永远 `turn_started=None`。
+2. MVP 的取值链 `started.map(|t| (…, tail)).unwrap_or((None, ""))` 把正文缓冲的
+   存在性与回合起点焊死——起点是 None 时攒好的正文也被一起丢掉。
+
+修复与增强：
+
+- **回合起点改锚「首个活动」**（agent 文本 / 工具 / thought 首次出现时钉住，
+  仅当当前为 None）；首个活动同时赢得裸文本路由（Grok 会话从此也能当绑定目标）。
+  正文缓冲与起点彻底解耦。缓冲上限 8K → 32K（约等于全文）。
+- **MarkdownV2 全文推送**：回合回复以 `parse_mode: MarkdownV2` 发送，转换器
+  （`md_to_markdownv2`）处理围栏代码块（丢语言标记、内容仅转义反引号）、行内
+  code、**bold**、*italic*（CommonMark 词内下划线规则：`file_name_x` 字面量、
+  `2*3*4` 斜体）、[链接](url)（URL 只转义 `)` 与 `\`）、标题行加粗；其余保留字
+  逐字转义。**Telegram 拒绝解析时自动回退纯文本重发**——格式化是增益，投递是
+  底线。
+- **分片**：先在原文上按空行切块（围栏块原子、单块超限按换行硬切、多字节安全），
+  每片独立转换成文（无跨片实体），每条 ≤3300 字符，最多 4 条（约 13K 字符），
+  更长截断提示回电脑看。主消息带 `[会话] ✅ 跑完 · 时长` 头部，末条带页脚与
+  引用路由提示。
+- **settings 加固**：`telegram.json` 解析失败（截断/瞬态）改为原地保留 + 限频
+  告警（浮层 1Hz 轮询曾把归档告警刷成串，且归档会把 token 一起带走）；只有
+  「未来版本」才留档重置。
+- 验证：模块单测 17 → 22（转义、bold 闭合成对、词内下划线、围栏、链接、分片
+  原子性、settings 两分支），全套 294 过。
+
+## 面板 400 事故（2026-10-18 三批，已修）
+
+面板上线后一条都发不出去（`dashboard send failed | HTTP 400 · sendMessage` 反复刷，
+纯文本推送不受影响）。根因：`send_message_inner` / `edit_message` 里
+`reply_markup` 直接塞了**行数组的裸 JSON**，而 Bot API 要求对象壳
+`{"inline_keyboard": [[…]]}`——带键盘的消息（面板、权限卡片）全部被 400 拒。
+真实 bot 探针双向验证：裸数组 ok=false，包壳 ok=true。修复 `keyboard_json` →
+`reply_markup()`（返回对象壳），回归测试钉住形状。
+
+同批加固：
+
+- `tg_call` 的 `ureq::Error::Status` 分支原先丢弃响应体，只剩 `HTTP 400 · 方法名`
+  ——现在把错误体里的 `description`（400 的唯一线索）带进错误串与 `last_error`。
+- MarkdownV2 失败回退纯文本的条件从「仅 can't parse」放宽到**任何失败**
+  （转义后超长等）：投递优先，格式化是增益。
+- 分片加转义膨胀护栏 `fit_markdown_chunk`：片转 MarkdownV2 后超 3400 就在原文
+  上对半重切（换行优先），避免「原文 ≤3300、转义后 >4096」的静默降级。
+- `send_message_inner` 的 text 双闸：`clip`（3800 chars）后再按 UTF-16 码元闸
+  4000（emoji 占 2 码元，chars 计数会低估 4096 硬顶）。
+- 验证：模块单测 22 → 25（reply_markup 形状、膨胀重切、UTF-16 闸），全套 297 过；
+  真实 bot 端到端确认两种形态的接受/拒绝。
