@@ -1,7 +1,7 @@
-# Publish the portable exe to a GitHub Release.
+﻿# Publish the portable exe to a GitHub Release.
 #
 # Asset (produced by tools\build-portable.bat):
-#   dist-portable\Marionette.exe
+#   release\<version>\Marionette.exe
 #
 # Usage:
 #   tools\publish-release.bat
@@ -23,7 +23,7 @@ if ([string]::IsNullOrWhiteSpace($version)) { Write-Error 'package.json has no v
 if ($version.StartsWith('v') -or $version.StartsWith('V')) { $version = $version.Substring(1) }
 $tag = "v$version"
 
-$dist = Join-Path $root 'dist-portable'
+$dist = Join-Path $root ('release\' + $version)
 $asset = Join-Path $dist 'Marionette.exe'
 
 if (-not (Test-Path $asset)) {
@@ -44,7 +44,9 @@ Write-Host "  Marionette.exe  $([math]::Round($bytes / 1MB, 2)) MB  $sha"
 $gh = Get-Command gh -ErrorAction SilentlyContinue
 if (-not $gh) { Write-Error 'gh not on PATH — install GitHub CLI'; exit 1 }
 
-$existing = & gh release view $tag --json tagName 2>$null
+$ErrorActionPreference = 'Continue'
+    $existing = & gh release view $tag --json tagName 2>$null
+    $ErrorActionPreference = 'Stop'
 $hasRelease = $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existing)
 
 if ($hasRelease) {

@@ -120,12 +120,13 @@ if ($AgentConfig -eq "grok") {
 # --- pick a build -----------------------------------------------------------
 if (-not $Exe) {
   $found = @()
-  $portable = Join-Path $repo "dist-portable"
-  if (Test-Path $portable) {
-    $found += Get-ChildItem $portable -Filter "Marionette*.exe" |
-      Where-Object { $_.Name -notlike "*uncompressed*" } |
-      Sort-Object LastWriteTime -Descending
+  foreach ($dir in @((Join-Path $repo "release"), (Join-Path $repo "dist-portable"))) {
+    if (Test-Path $dir) {
+      $found += Get-ChildItem $dir -Filter "Marionette*.exe" -Recurse -Depth 1 |
+        Where-Object { $_.Name -notlike "*uncompressed*" }
+    }
   }
+  $found = $found | Sort-Object LastWriteTime -Descending
   foreach ($fallback in @("src-tauri\target\release\marionette.exe", "src-tauri\target\debug\marionette.exe")) {
     $p = Join-Path $repo $fallback
     if (Test-Path $p) { $found += Get-Item $p }

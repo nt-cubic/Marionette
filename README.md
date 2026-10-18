@@ -138,9 +138,9 @@ Marionette/
 ```
 
 约定：根目录只放工具链需要的文件（`package.json`、`vite.config.ts`、`index.html` 等）和那一个启动入口，
-其余按用途进 `docs/`、`scripts/`、`tools/`。运行期产物 `.marionette/`、`dist/`、`dist-portable/`、`node_modules/` 都已忽略。
+其余按用途进 `docs/`、`scripts/`、`tools/`。运行期产物 `.marionette/`、`dist/`、`release/`、`node_modules/` 都已忽略。
 
-便携构建：`tools\build-portable.bat` → `dist-portable\Marionette.exe`。发布：`tools\publish-release.bat`。
+便携构建：`tools\build-portable.bat` → `release\<版本号>\Marionette.exe`（按版本分目录）。发布：`tools\publish-release.bat`。
 
 ---
 
