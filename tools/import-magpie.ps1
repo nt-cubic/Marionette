@@ -10,7 +10,7 @@
 #          .github/, docs/ — none of them are needed by the nogui build.
 #
 # Usage:  powershell -File tools\import-magpie.ps1 [-Tag v0.1.1274]
-# After import, tools\build-portable.bat rebuilds dist-portable\Marionette.exe.
+# After import, tools\build-portable.bat rebuilds release\<version>\Marionette.exe.
 param(
     [string]$Tag = 'v0.1.1274'
 )

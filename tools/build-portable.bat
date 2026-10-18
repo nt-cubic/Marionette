@@ -8,7 +8,7 @@ if /I "%~1"=="--help" (
   echo.
   echo  Usage: tools\build-portable.bat
   echo.
-  echo  Writes dist-portable\Marionette.exe ^(embedded magpie, UPX^).
+  echo  Writes release\^<version^>\Marionette.exe ^(embedded magpie, UPX^).
   echo  Env: SKIP_UPX=1  REQUIRE_UPX=1  INSTALL_UPX=1  NOPAUSE=1
   echo.
   exit /b 0
@@ -125,7 +125,8 @@ call :prepare_embed
 if errorlevel 1 goto fail
 
 set "SRC=%~dp0..\src-tauri\target\release\marionette.exe"
-set "OUTDIR=%~dp0..\dist-portable"
+rem Per-version output dir: a running old build can never lock this one.
+set "OUTDIR=%~dp0..\release\%APP_VER%"
 if not exist "%OUTDIR%\" mkdir "%OUTDIR%"
 
 echo.

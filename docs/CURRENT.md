@@ -33,7 +33,7 @@ Windows 本地 **多 Agent CLI 图形壳**（Tauri + React）。不替代 OpenCo
 
 - **key 型直连**（OpenCode Go / DeepSeek / GLM / Kimi / OpenRouter / xAI）：claude-code 走 spawn env、grok 走 owned 配置表，不过网关；来源含凭据库手存的 key 和 opencode `auth.json` 的只读扫描引用（引用只在直连注入瞬间读钥匙，不复制）。
 - **订阅型 + codex 全场景**：经内嵌翻译引擎（[yetone/magpie](https://github.com/yetone/magpie)，MIT，Go）。**引擎随应用自动启动**；key-plan 与扫描引用的 api key 自动注册进引擎；Grok / ChatGPT 订阅由引擎 discovery 自己发现。codex 只接引擎源（协议约束），经 `providers/set` 改道 + 路由组把内建模型名别名到所选引擎模型。
-- **一种便携版**（`tools\build-portable.bat` → `dist-portable\Marionette.exe`，~16MB）：magpie 打进 exe，打开即拉起、离线落位。源码吸纳在 `third_party/magpie`（`tools\import-magpie.ps1 -Tag <v>` 换版）。发布用 `tools\publish-release.bat`。
+- **一种便携版**（`tools\build-portable.bat` → `release\<版本号>\Marionette.exe`，~16MB）：magpie 打进 exe，打开即拉起、离线落位。源码吸纳在 `third_party/magpie`（`tools\import-magpie.ps1 -Tag <v>` 换版）。发布用 `tools\publish-release.bat`。
 - **入口**：左下角互联图标 = 模型共享状态/一键启动；凭据管理退居其浮层底部链接。用量面板点刷新会拉网关 `/v1/magpie/quotas`（各家订阅额度）。
 - **模型菜单**：原生模型 + 按来源分组的共享段（每组右上角「共享」标记：Grok 订阅 / OpenCode Go / DeepSeek …）。
 - **卫生**：删除凭据条目会从引擎回收对应 provider（注册账本对账）；30 分钟无绑定且无需求的空闲引擎自动停 serve，任何跨用入口（菜单/绑定/按钮/启动）自动唤醒。
@@ -52,7 +52,7 @@ Windows 本地 **多 Agent CLI 图形壳**（Tauri + React）。不替代 OpenCo
 - 前端：`src/`
 - 后端：`src-tauri/src/`
 - 启动：`start-marionette.bat`（根目录唯一入口）/ `npm run tauri dev`
-- 便携构建：`tools/build-portable.bat` → `dist-portable/Marionette.exe`
+- 便携构建：`tools/build-portable.bat` → `release/<版本号>/Marionette.exe`
 - 引擎源码吸纳/升级：`tools\import-magpie.ps1 -Tag <上游tag>`
 - 验证脚本：`scripts/`；Windows 脚本：`tools/`（各目录索引见其中的 `README.md`）
 

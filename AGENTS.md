@@ -6,7 +6,7 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
 ## 常用命令
 
 - 启动开发版：`npm run tauri dev`（或 `start-marionette.bat`）
-- 构建便携版：`tools\build-portable.bat`（内置引擎，产物 `dist-portable\Marionette.exe`）。引擎源码在 `third_party/magpie`，升级用 `tools\import-magpie.ps1 -Tag <v>`。发布：`tools\publish-release.bat`
+- 构建便携版：`tools\build-portable.bat`（内置引擎，产物 `release\<版本号>\Marionette.exe`，按版本分目录，运行中的旧版不会挡住新构建）。引擎源码在 `third_party/magpie`，升级用 `tools\import-magpie.ps1 -Tag <v>`。发布：`tools\publish-release.bat`
 - 前端构建：`npm run build`（`tsc && vite build`）
 - Rust 检查：`cargo check`（在 `src-tauri/` 下）
 - 发布版本号：`tools\bump-version.ps1`（或 `tools\bump-version.bat`）
@@ -43,7 +43,7 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
 
 ## 排查「exe 双击没反应 / 构建报 esbuild Access is denied」—— 先查完整性标签
 
-**症状 1：** 双击 `dist-portable\Marionette.exe`（或 `target\release\marionette.exe`）完全没反应：没有窗口、没有日志、
+**症状 1：** 双击 `release\<版本号>\Marionette.exe`（或 `target\release\marionette.exe`）完全没反应：没有窗口、没有日志、
 退出码 0，`dev.log` 一行都不加。
 **症状 2：** `npm run build` / `build-portable.bat` 反复失败：
 `[vite:esbuild-transpile] remove C:\Users\...\AppData\Local\Temp\esbuild-<hex>: Access is denied.`，
@@ -63,7 +63,7 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
 
 ```powershell
 icacls D:\Apps\Marionette | Select-String 'Mandatory Label'
-icacls D:\Apps\Marionette\dist-portable\Marionette.exe | Select-String 'Mandatory Label'
+icacls D:\Apps\Marionette\Marionette.exe | Select-String 'Mandatory Label'
 ```
 
 **修复：** 跑 `scripts\fix-workspace-integrity.ps1`（等价于下面这条；只改完整性标签，不动文件内容、所有者或访问权限）：
@@ -72,7 +72,7 @@ icacls D:\Apps\Marionette\dist-portable\Marionette.exe | Select-String 'Mandator
 icacls D:\Apps\Marionette /setintegritylevel (OI)(CI)Medium
 ```
 
-改完 `npm run build` 与 `dist-portable\Marionette.exe` 立即恢复正常。**只要本工作区再被沙箱以 workspace-write
+改完 `npm run build` 与 `release\<版本号>\Marionette.exe` 立即恢复正常。**只要本工作区再被沙箱以 workspace-write
 限制跑过一次，标签就会再来一遍**，所以再次出现上述症状时先跑这个脚本。
 
 **产品侧兜底（已加）：** 启动时 `app_paths::ensure_global_dir_writable()` 会写探测文件，失败则走
