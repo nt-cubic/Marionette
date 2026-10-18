@@ -1,8 +1,7 @@
-# Publish both portable variants to a GitHub Release.
+# Publish the portable exe to a GitHub Release.
 #
-# Assets (produced by tools\build-portable.bat):
-#   dist-portable\Marionette-<ver>-windows-x64.exe
-#   dist-portable\Marionette-Engine-<ver>-windows-x64.exe
+# Asset (produced by tools\build-portable.bat):
+#   dist-portable\Marionette.exe
 #
 # Usage:
 #   tools\publish-release.bat
@@ -25,28 +24,22 @@ if ($version.StartsWith('v') -or $version.StartsWith('V')) { $version = $version
 $tag = "v$version"
 
 $dist = Join-Path $root 'dist-portable'
-$plain = Join-Path $dist "Marionette-$version-windows-x64.exe"
-$engine = Join-Path $dist "Marionette-Engine-$version-windows-x64.exe"
+$asset = Join-Path $dist 'Marionette.exe'
 
-foreach ($path in @($plain, $engine)) {
-    if (-not (Test-Path $path)) {
-        Write-Error "missing $path`nRun tools\build-portable.bat first (default builds both variants)."
-        exit 1
-    }
+if (-not (Test-Path $asset)) {
+    Write-Error "missing $asset`nRun tools\build-portable.bat first."
+    exit 1
 }
 
 function Get-Sha256([string]$path) {
     (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash
 }
 
-$plainBytes = (Get-Item $plain).Length
-$engineBytes = (Get-Item $engine).Length
-$plainSha = Get-Sha256 $plain
-$engineSha = Get-Sha256 $engine
+$bytes = (Get-Item $asset).Length
+$sha = Get-Sha256 $asset
 
 Write-Host "publishing $tag"
-Write-Host "  plain  $([math]::Round($plainBytes / 1MB, 2)) MB  $plainSha"
-Write-Host "  engine $([math]::Round($engineBytes / 1MB, 2)) MB  $engineSha"
+Write-Host "  Marionette.exe  $([math]::Round($bytes / 1MB, 2)) MB  $sha"
 
 $gh = Get-Command gh -ErrorAction SilentlyContinue
 if (-not $gh) { Write-Error 'gh not on PATH — install GitHub CLI'; exit 1 }
@@ -55,13 +48,13 @@ $existing = & gh release view $tag --json tagName 2>$null
 $hasRelease = $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existing)
 
 if ($hasRelease) {
-    Write-Host "release $tag already exists — uploading assets (--clobber)"
-    & gh release upload $tag $plain $engine --clobber
+    Write-Host "release $tag already exists — uploading asset (--clobber)"
+    & gh release upload $tag $asset --clobber
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 } else {
     $args = @(
         'release', 'create', $tag,
-        $plain, $engine,
+        $asset,
         '--title', "Marionette $tag",
         '--latest'
     )
@@ -73,14 +66,11 @@ if ($hasRelease) {
         $notes = @"
 ## Marionette $tag
 
-两种便携版，功能相同，差在引擎怎么带：
+便携版，内置跨用引擎。单文件，打开即用。
 
-| | 普通版 | 内置引擎版 |
-|---|---|---|
-| 文件 | Marionette-$version-windows-x64.exe | Marionette-Engine-$version-windows-x64.exe |
-| 体积 | $([math]::Round($plainBytes / 1MB, 1)) MB | $([math]::Round($engineBytes / 1MB, 1)) MB |
-| 引擎 | 第一次用再下载 | 打进 exe，离线也能开跨用 |
-| SHA-256 | ``$plainSha`` | ``$engineSha`` |
+- 文件：Marionette.exe
+- 体积：$([math]::Round($bytes / 1MB, 1)) MB
+- SHA-256：``$sha``
 
 需要 WebView2 Runtime。
 "@

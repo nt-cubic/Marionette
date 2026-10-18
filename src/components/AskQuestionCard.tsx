@@ -29,6 +29,7 @@ export type AskQuestionAnswer = {
 type AskQuestionCardProps = {
   prompt: AskQuestionPrompt;
   busy?: boolean;
+  variant?: "dock" | "stream";
   onSubmit: (answers: AskQuestionAnswer[]) => void;
   onDecline: () => void;
 };
@@ -54,7 +55,13 @@ function questionCanProceed(
  * Full-width composer replacement: all questions + options visible at once.
  * Compact rows (todo-list density) so many choices fit without a wizard.
  */
-export function AskQuestionCard({ prompt, busy = false, onSubmit, onDecline }: AskQuestionCardProps) {
+export function AskQuestionCard({
+  prompt,
+  busy = false,
+  variant = "stream",
+  onSubmit,
+  onDecline,
+}: AskQuestionCardProps) {
   const questions = prompt.questions;
   const total = questions.length;
   const [picks, setPicks] = useState<string[][]>(() => questions.map(() => []));
@@ -117,7 +124,11 @@ export function AskQuestionCard({ prompt, busy = false, onSubmit, onDecline }: A
 
   return (
     <section
-      className="ask-card ask-card--composer-slot"
+      className={
+        variant === "stream"
+          ? "ask-card ask-card--in-stream"
+          : "ask-card ask-card--composer-slot"
+      }
       role="region"
       aria-label="Agent 需要你选择"
       aria-labelledby="ask-card-title"
@@ -129,7 +140,7 @@ export function AskQuestionCard({ prompt, busy = false, onSubmit, onDecline }: A
           <span>
             {prompt.mode ? `模式 · ${prompt.mode}` : "选择题"}
             {total > 1 ? ` · ${total} 题` : ""}
-            {" · 替代输入框，全部选项同屏"}
+            {" · 在卡片上回复 · 输入框已收起"}
           </span>
         </div>
       </div>

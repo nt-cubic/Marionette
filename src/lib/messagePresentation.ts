@@ -62,7 +62,12 @@ function isTurnPart(event: SessionEvent): boolean {
 }
 
 function isReplyBoundary(event: SessionEvent): boolean {
-  return event.type === "user_message" || event.type === "handoff_prepared";
+  return (
+    event.type === "user_message" ||
+    event.type === "handoff_prepared" ||
+    event.type === "plan_prompt" ||
+    event.type === "ask_prompt"
+  );
 }
 
 function eventIdentity(event: SessionEvent, index: number): string {
@@ -71,6 +76,9 @@ function eventIdentity(event: SessionEvent, index: number): string {
   }
   if (event.type === "tool_call") {
     return event.toolCallId || event.createdAt || `index-${index}`;
+  }
+  if (event.type === "plan_prompt" || event.type === "ask_prompt") {
+    return event.requestId || event.createdAt || `index-${index}`;
   }
   return event.createdAt || `index-${index}`;
 }
@@ -93,6 +101,10 @@ function eventSnapshot(event: SessionEvent): string {
       return `${event.type}|${event.sessionId}|${event.childSessionId}|${event.createdAt}|${event.status}|${event.summary}`;
     case "handoff_prepared":
       return `${event.type}|${event.sessionId}|${event.createdAt}|${event.handoffPath}`;
+    case "plan_prompt":
+      return `${event.type}|${event.sessionId}|${event.requestId}|${event.status}|${event.decision ?? ""}|${event.planMarkdown.length}`;
+    case "ask_prompt":
+      return `${event.type}|${event.sessionId}|${event.requestId}|${event.status}|${(event.answers ?? []).length}`;
     default:
       return "";
   }

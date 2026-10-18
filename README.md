@@ -18,7 +18,7 @@ OpenCode、Claude Code、Grok Build、Codex、Pi、DeepSeek……把他们配进
 
 > 当前版本 **v0.3.1** · [Releases](https://github.com/nt-cubic/Marionette/releases/tag/v0.3.1)
 >
-> 普通版约 2 MB（引擎用时再下）· 内置引擎版约 16 MB（离线也能跨用）
+> 便携版约 16 MB，跨用引擎打在 exe 里，打开即用
 
 **现行状态说明：** [docs/CURRENT.md](docs/CURRENT.md)  
 （历史策划/路线图已挪到 [docs/archive/](docs/archive/)）
@@ -73,15 +73,9 @@ MCP、Skills —— 不需要每个 agent 都各自配置。
 左下角互联图标 = 网关状态 / 一键启动 / 停止。密钥管理在浮层底部。  
 模型菜单按来源分组；同一模型优先走直连。闲置会自己停，再点就会醒。
 
-### 轻，而且有两档
+### 轻
 
-打开就工作，关闭就消失。单文件免安装。
-
-| | 普通版 | 内置引擎版 |
-|---|---|---|
-| 体积 | 约 2 MB | 约 16 MB |
-| 引擎 | 第一次跨用再下载 | 打进 exe，离线也能开跨用 |
-| 适合 | 日常、磁盘紧 | 不想等下载、要随身带齐 |
+打开就工作，关闭就消失。单文件免安装，跨用引擎打在 exe 里。
 
 腾出更多的空间打开工作与娱乐，让本地模型跑的更轻松。
 
@@ -122,14 +116,10 @@ npm install && npm run tauri dev
 
 ### 直接下载
 
-[Releases](https://github.com/nt-cubic/Marionette/releases/latest) 里两个 exe，选一个双击即可：
+[Releases](https://github.com/nt-cubic/Marionette/releases/latest) 里的 `Marionette.exe`，双击即可。跨用引擎已经打在里面，打开就会拉起来。
 
 ```bash
-# 普通版（约 2 MB）
-gh release download --clobber -p "Marionette-[0-9]*-windows-x64.exe"
-
-# 内置引擎版（约 16 MB，离线也能跨用）
-gh release download --clobber -p "Marionette-Engine-*-windows-x64.exe"
+gh release download --clobber -p "Marionette.exe"
 ```
 
 ---
@@ -150,7 +140,7 @@ Marionette/
 约定：根目录只放工具链需要的文件（`package.json`、`vite.config.ts`、`index.html` 等）和那一个启动入口，
 其余按用途进 `docs/`、`scripts/`、`tools/`。运行期产物 `.marionette/`、`dist/`、`dist-portable/`、`node_modules/` 都已忽略。
 
-便携构建：`tools\build-portable.bat` 默认一次打出普通版和内置引擎版。发布：`tools\publish-release.bat`。
+便携构建：`tools\build-portable.bat` → `dist-portable\Marionette.exe`。发布：`tools\publish-release.bat`。
 
 ---
 

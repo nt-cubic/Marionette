@@ -45,6 +45,7 @@ import {
   engineProviderLabel,
   getBridgeModels,
   resolveBridgeSources,
+  stripBridgeGroupPrefix,
 } from "../lib/bridge";
 import {
   getCachedAgentVersions,
@@ -205,6 +206,11 @@ type ComposerProps = {
   availableCommands?: AvailableCommand[] | null;
   /** Focus the textarea on mount (after creating a Chat from an empty workspace). */
   autoFocus?: boolean;
+  /**
+   * This pane is the workspace focus. Unfocused composers keep their draft
+   * but skip extra capability fetches.
+   */
+  isFocused?: boolean;
   /**
    * Empty workspace: interacting with the composer should create a Chat.
    * Parent dedupes in-flight creates.
@@ -508,6 +514,7 @@ export function Composer({
   onAgentsReload,
   availableCommands = null,
   autoFocus = false,
+  isFocused = true,
   onEmptyActivate,
 }: ComposerProps) {
   /**
@@ -895,6 +902,7 @@ export function Composer({
 
   // ── Fetch capabilities when session is ready ────────────────────────────────
   useEffect(() => {
+    if (!isFocused) return;
     if (!sessionId || sessionId.startsWith("session-empty-")) {
       return;
     }
@@ -903,7 +911,7 @@ export function Composer({
     if (sessionStatus === "waiting" || sessionStatus === "running") {
       loadCapabilities(sessionId);
     }
-  }, [sessionId, sessionStatus, loadCapabilities]);
+  }, [sessionId, sessionStatus, loadCapabilities, isFocused]);
 
   // ── Apply caps from session/ready (primary path, avoids race with invoke) ──
   useEffect(() => {
@@ -994,7 +1002,7 @@ export function Composer({
           ) {
             onRestartAgentSession(
               sessionId,
-              `**已切换到跨用模型 ${model.label}。**\n\nagent 进程已用新模型重启，历史保留 —— 下一条消息直接生效。`,
+              `**已切换到共享模型 ${model.label}。**\n\nagent 进程已用新模型重启，历史保留 —— 下一条消息直接生效。`,
             );
             flash(`已切换到 ${model.label}，下一条消息即生效`);
           }
@@ -1003,7 +1011,7 @@ export function Composer({
           setBridgeSelection(prev);
           const msg =
             error instanceof Error ? error.message : typeof error === "string" ? error : "";
-          flash(msg.length > 140 ? `${msg.slice(0, 140)}…` : msg || "绑定跨用模型失败");
+          flash(msg.length > 140 ? `${msg.slice(0, 140)}…` : msg || "绑定共享模型失败");
         });
     },
     [agent.id, bridgeSelection, flash, onRestartAgentSession, persistPrefs, sessionId],
@@ -2032,10 +2040,10 @@ export function Composer({
     : (displayModelFull ?? "Choose model");
   /** Cross-use chip display — local state, independent of agent advertisement. */
   const bridgeChipLabel =
-    bridgeActive && bridgeSelection ? `跨用 · ${bridgeSelection.label}` : null;
+    bridgeActive && bridgeSelection ? `共享 · ${bridgeSelection.label}` : null;
   const bridgeChipTitle =
     bridgeActive && bridgeSelection
-      ? [`跨用 · ${bridgeSelection.label}`, bridgeSelection.preset, bridgeSelection.modelId].join("\n")
+      ? [`共享 · ${bridgeSelection.label}`, bridgeSelection.preset, bridgeSelection.modelId].join("\n")
       : null;
   const displayModeLabel =
     (displayMode && caps?.modes.find((m) => m.id === displayMode)?.label) || displayMode;
@@ -2212,7 +2220,7 @@ export function Composer({
       const preset = group.models[0]?.preset;
       sections.push({
         key: group.key,
-        title: preset ? bridgePresetLabel(preset) : group.title.replace(/^跨用 · /, ""),
+        title: preset ? bridgePresetLabel(preset) : stripBridgeGroupPrefix(group.title),
         models: group.models.slice().sort(byLabel),
       });
     }
@@ -2221,7 +2229,7 @@ export function Composer({
       entryId: group.entryId,
       sampleModelId: group.sampleModelId,
       hasPresetModels: group.hasPresetModels,
-      label: group.title.replace(/^跨用 · /, ""),
+      label: stripBridgeGroupPrefix(group.title),
     }));
     return { sections, customSources };
   }, [crossGroups]);
@@ -2246,9 +2254,10 @@ export function Composer({
     }
   }, [bridgeCustomEntryId]);
 
-  // Size the model menu to the space *above* the trigger, inside the workspace
-  // clip box. `.center-workspace { overflow: hidden }` will otherwise crop a
-  // too-tall popup, and a fixed 320px list cap leaves most of that space unused.
+  // Size the model menu to the space *above* the trigger, inside its real clip
+  // box. Sessions now live in `.session-pane__body { overflow: hidden }` (split
+  // workspace), so the box is the nearest ancestor that clips — measuring to
+  // `.center-workspace` overflowed the pane and cropped off the search box.
   useLayoutEffect(() => {
     if (menu !== "model") return;
     const menuEl = modelMenuRef.current;
@@ -2256,16 +2265,26 @@ export function Composer({
     if (!menuEl || !anchor) return;
 
     const apply = () => {
-      const clip = anchor.closest(".center-workspace");
-      const clipTop = clip?.getBoundingClientRect().top ?? 0;
+      let clip: HTMLElement | null = null;
+      for (let el = anchor.parentElement; el && !clip; el = el.parentElement) {
+        const s = window.getComputedStyle(el);
+        if (s.overflowY !== "visible" || s.overflowX !== "visible") clip = el;
+      }
+      const clipTop = Math.max(clip?.getBoundingClientRect().top ?? 0, 0);
       const available = Math.floor(anchor.getBoundingClientRect().top - clipTop - 8);
-      menuEl.style.maxHeight = `${Math.max(220, available)}px`;
+      // No floor: a floor above `available` would re-clip the search box in
+      // short panes. A tiny menu that still shows its search beats a cropped one.
+      menuEl.style.maxHeight = `${Math.max(available, 0)}px`;
     };
     apply();
     const ro = new ResizeObserver(apply);
     ro.observe(anchor);
     if (composerRef.current) ro.observe(composerRef.current);
-    const clipEl = anchor.closest(".center-workspace");
+    let clipEl: HTMLElement | null = null;
+    for (let el = anchor.parentElement; el && !clipEl; el = el.parentElement) {
+      const s = window.getComputedStyle(el);
+      if (s.overflowY !== "visible" || s.overflowX !== "visible") clipEl = el;
+    }
     if (clipEl) ro.observe(clipEl);
     window.addEventListener("resize", apply);
     return () => {
@@ -3153,9 +3172,9 @@ export function Composer({
                                     {section.title}
                                     <span
                                       className="composer-menu__cross-mark"
-                                      title="跨用来源 · 由 Marionette 桥接"
+                                      title="共享来源 · 由 Marionette 桥接"
                                     >
-                                      跨用
+                                      共享
                                     </span>
                                   </span>
                                   {section.models.map((m) => {
@@ -3170,7 +3189,7 @@ export function Composer({
                                         type="button"
                                         role="option"
                                         aria-selected={selected}
-                                        title={`${m.label}\n${m.modelId}（跨用）`}
+                                        title={`${m.label}\n${m.modelId}（共享）`}
                                         onClick={() => pickBridgeModel(m)}
                                       >
                                         <span className="composer-menu__model-name">

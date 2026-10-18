@@ -62,6 +62,21 @@ export function buildHistoryInjection(
     } else if (e.type === "tool_call") {
       const title = e.title || e.text.split("\n")[0] || "tool";
       lines.push(`Tool: ${clip(title, 200)}${e.status ? ` (${e.status})` : ""}`);
+    } else if (e.type === "plan_prompt") {
+      const decision = e.decisionLabel || e.status;
+      const body = e.planMarkdown.trim()
+        ? clip(e.planMarkdown, 1600)
+        : "(plan body not attached)";
+      lines.push(`Plan (${decision}):\n${body}`);
+    } else if (e.type === "ask_prompt") {
+      const answers = (e.answers ?? [])
+        .map((a) => {
+          const picked = a.selected.filter(Boolean).join(", ");
+          return picked ? `${a.question} → ${picked}` : a.question;
+        })
+        .join("; ");
+      const fallback = e.questions.map((q) => q.question).join("; ");
+      lines.push(`Question (${e.status}): ${clip(answers || fallback, 800)}`);
     }
     // Skip thought / handoff noise for context budget
     if (turns >= MAX_TURNS) break;

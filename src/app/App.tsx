@@ -15,19 +15,30 @@ import {
   sealOpenAssistantReplies,
   turnEndedSilently,
   userMessageEvent,
+  type AcpTextPart,
 } from "../lib/acpTranscript";
+import {
+  chunkKindFromRole,
+  flushShadowsIntoPaintSet,
+  paintSet,
+  shouldPublishChunk,
+  unfinishedDelegateChildrenFromMeta,
+} from "../lib/acpRenderBudget";
 import { engineQuota as fetchEngineQuota, type EngineQuotaEntry } from "../lib/api";
 import { invalidateBridgeModels } from "../lib/bridge";
-import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, CHAT_PROJECT_ID } from "../lib/api";
+import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, CHAT_PROJECT_ID } from "../lib/api";
 import {
   bindDetachedWindowReaper,
   DETACHED_HIDDEN_EVENT,
   DETACHED_READY_EVENT,
+  focusDetachedWindow,
   hideDetachedWindowForSession,
   listenMergeBackRequests,
   listenMergeHighlights,
+  listVisibleDetachedSessionIds,
   openDetachedSessionWindow,
   readDetachedSessionId,
+  readMainDropClient,
   requestMergeBack,
   sessionIdFromDetachedLabel,
   setDetachedSessionOwner,
@@ -36,9 +47,8 @@ import {
 } from "../lib/detachedWindow";
 import { broadcastSessionPatch, listenSessionPatches } from "../lib/sessionBus";
 import {
-  coldSessionIdsWithEvents,
+  coldSessionIdsFromMap,
   collectHotSessionIds,
-  dropEventsForSessions,
 } from "../lib/memoryHygiene";
 import { agentAuthSpec } from "../lib/agentAuth";
 import type { AcpEvent, AvailableCommand, CapabilitySnapshot, ChangedFile, HandoffResult, Project, ProjectContext, ProxyConfig, ProxyTestResult, Session, SessionComposerPrefs, SessionEvent, SessionViewMode, TurnStats, UsageSnapshot } from "../lib/types";
@@ -74,6 +84,16 @@ import {
 import { parseAvailableCommandsUpdate } from "../lib/slashCommands";
 import type { PlanEntry } from "../lib/acpPlan";
 import { parseAcpPlanUpdate } from "../lib/acpPlan";
+import { extractPermissionPlanMarkdown } from "../lib/permissionPlan";
+import {
+  askPromptEvent,
+  expirePendingPrompts,
+  patchPromptEvent,
+  planDecisionLabel,
+  planPromptEvent,
+  sessionHidesComposer,
+  upsertPromptEvent,
+} from "../lib/interactionEvents";
 import {
   absorbPlanIntoTodos,
   formatAiUpdatePrompt,
@@ -123,19 +143,55 @@ import {
 } from "../lib/errors";
 import { prettyEffortLabel } from "../lib/modelLabel";
 import { getLastUsedDefaults } from "../lib/recentModels";
-import { pickRestoredSession, saveUiRestore, saveQueuedSends, loadQueuedSends, saveClosedTabs, loadClosedTabs } from "../lib/uiRestore";
+import { pickRestoredSession, saveUiRestore, saveQueuedSends, loadQueuedSends, saveClosedTabs, loadClosedTabs, loadDetailsVisible, saveDetailsVisible } from "../lib/uiRestore";
+import {
+  MAX_PANES,
+  activateTab,
+  addTabToPane,
+  adoptExternalSession,
+  closeTab,
+  collectLeaves,
+  emptyWorkspace,
+  findPane,
+  focusPane,
+  focusSession,
+  focusedSessionId,
+  hitTestDropZone,
+  leafCount,
+  migrateFromFlat,
+  moveTab,
+  openSessionIds as tabIdsFromTree,
+  paneOfSession,
+  popOutTab,
+  resizeSplit,
+  serialize,
+  splitPane,
+  visibleSessionIds as visibleIdsFromTree,
+  type DropEdge,
+  type DropKind,
+  type HitTestInput,
+  type SplitWorkspaceState,
+} from "../lib/splitWorkspace";
+import type { QuotePin } from "../lib/quoteComment";
 import { canPark, shouldAutoSuspend } from "../lib/sessionSuspend";
 import { forkCopyEvents, forkCutIndex } from "../lib/sessionFork";
-import { AskQuestionCard, type AskQuestionPrompt } from "../components/AskQuestionCard";
+import { type AskQuestionPrompt } from "../components/AskQuestionCard";
 import { Composer, transferEmptyDraft } from "../components/Composer";
 import { ComposerErrorStrip, SessionNoticeStrip } from "../components/ComposerErrorStrip";
 import { isAcpTranscriptMethod, parseLiveNotice } from "../lib/acpMeta";
 import { ContextPanel } from "../components/ContextPanel";
 import { PermissionDialog, type PermissionPrompt } from "../components/PermissionDialog";
-import { PlanApprovalCard, type PlanApprovalPrompt } from "../components/PlanApprovalCard";
+import { type PlanApprovalPrompt } from "../components/PlanApprovalCard";
 import { UnifiedDiffView } from "../components/UnifiedDiffView";
 import { ProjectShelf } from "../components/ProjectShelf";
 import { SessionTabs, SessionView, type ForkAnchor, type UserMessageAnchor } from "../components/SessionView";
+import {
+  SplitWorkspace,
+  collectDropGeometry,
+  dropKindsEqual,
+  ghostHintForDrop,
+} from "../components/SplitWorkspace";
+import { SplitDropOverlay } from "../components/SplitDropOverlay";
 import { WindowControls } from "../components/WindowControls";
 import { parseAskQuestionPrompt } from "../lib/askQuestion";
 import { initScrollbarAutoHide } from "../lib/scrollbarAutoHide";
@@ -289,6 +345,8 @@ function turnStopReason(data: unknown): string {
  * too, but days later — stamping that as the tool's end would put a bogus
  * duration into the session statistics, so it stays unstamped.
  */
+const EMPTY_EVENTS: SessionEvent[] = [];
+
 function markOpenTools(
   events: SessionEvent[],
   sessionId: string,
@@ -360,6 +418,17 @@ export function App() {
   const [currentSessionId, setCurrentSessionId] = useState("");
   const [externalScanning, setExternalScanning] = useState(false);
   const [openSessionIds, setOpenSessionIds] = useState<string[]>([]);
+  const [splitState, setSplitState] = useState<SplitWorkspaceState>(() => emptyWorkspace());
+  const splitStateRef = useRef(splitState);
+  splitStateRef.current = splitState;
+  const [tabDropPreview, setTabDropPreview] = useState<DropKind | null>(null);
+  const tabDropPreviewRef = useRef<DropKind | null>(null);
+  const dropPanesRef = useRef<HitTestInput["panes"]>([]);
+  const [dropPanes, setDropPanes] = useState<HitTestInput["panes"]>([]);
+  const [capsById, setCapsById] = useState<Record<string, CapabilitySnapshot | null>>({});
+  const capsByIdRef = useRef(capsById);
+  capsByIdRef.current = capsById;
+  const [detailsVisible, setDetailsVisible] = useState(() => loadDetailsVisible());
   /** Project opened via Explorer "在此处打开" / --open-path — pinned at shelf top. */
   const [openHereProjectId, setOpenHereProjectId] = useState<string | null>(null);
   /** Default folder for the Chat section (from --open-path or CWD). */
@@ -415,8 +484,38 @@ export function App() {
   const [proxyConfig, setProxyConfigState] = useState<ProxyConfig | null>(null);
   /** Main window only: a detached tab drag is hovering the tab strip. */
   const [mergeTargetActive, setMergeTargetActive] = useState(false);
-  const [sessionCapabilities, setSessionCapabilities] = useState<CapabilitySnapshot | null>(null);
-  const [liveEvents, setLiveEvents] = useState<SessionEvent[]>([]);
+  // TEMP-VERIFY: fake caps so the Composer model menu renders in the plain
+  // browser harness. Revert before commit.
+  const [sessionCapabilities, setSessionCapabilities] = useState<CapabilitySnapshot | null>(() => {
+    if (isTauriRuntime()) return null;
+    const providers = ["DeepSeek", "Local", "OpenCode", "xAI", "Z.AI", "ChatGPT", "GLM"];
+    const models = [] as import("../lib/types").ModelDef[];
+    for (const p of providers) {
+      for (let i = 1; i <= 6; i++) models.push({ id: `${p.toLowerCase()}-m${i}`, label: `${p} Model ${i}` });
+    }
+    return {
+      modes: [],
+      models,
+      thinkingEffort: null,
+      effortOptions: [
+        { id: "low", label: "Low" },
+        { id: "high", label: "High" },
+        { id: "max", label: "Max" },
+      ],
+      supportsCancel: true,
+      currentMode: null,
+      currentModel: "deepseek-m1",
+      currentEffort: null,
+      currentEffortId: "high",
+      modelConfigId: "model",
+      modeConfigId: null,
+      effortConfigId: "effort",
+    } as unknown as CapabilitySnapshot;
+  });
+  const eventsBySessionRef = useRef(new Map<string, SessionEvent[]>());
+  const shadowBySessionRef = useRef(new Map<string, SessionEvent[]>());
+  const livePaintSetRef = useRef<Set<string>>(new Set());
+  const [eventsTick, setEventsTick] = useState<Record<string, number>>({});
   /** Per-session usage from ACP `usage_update` + opportunistic rate-limit text. */
   const [sessionUsageById, setSessionUsageById] = useState<Record<string, SessionUsageState>>({});
   /** Per-session ACP-advertised slash commands (`available_commands_update`). */
@@ -628,9 +727,13 @@ export function App() {
     },
     [setAuthHintFor]
   );
-  const [composerPrefill, setComposerPrefill] = useState<{ text: string; token: number } | null>(null);
-  /** Inline Clean quote-comments (numbered pins) for the active dialog. */
-  const [quotePins, setQuotePins] = useState<import("../lib/quoteComment").QuotePin[]>([]);
+  const [composerPrefill, setComposerPrefill] = useState<{
+    sessionId?: string;
+    text: string;
+    token: number;
+  } | null>(null);
+  /** Inline Clean quote-comments (numbered pins) per dialog. */
+  const [quotePinsById, setQuotePinsById] = useState<Record<string, QuotePin[]>>({});
   const [lastHandoff, setLastHandoff] = useState<HandoffResult | null>(null);
   const [changedFiles, setChangedFiles] = useState<ChangedFile[]>([]);
   const [changedFilesNote, setChangedFilesNote] = useState<string | null>(null);
@@ -671,16 +774,78 @@ export function App() {
   const currentSessionIdRef = useRef(currentSessionId);
   const currentProjectIdRef = useRef(currentProjectId);
   const openSessionIdsRef = useRef(openSessionIds);
-  const liveEventsRef = useRef(liveEvents);
   const openSessionRef = useRef<(s: Session) => void>(() => undefined);
   const loadSessionTranscriptRef = useRef<(id: string) => Promise<void>>(async () => undefined);
+  const pushDebugRef = useRef<(entry: {
+    sessionId?: string;
+    level?: "info" | "warn" | "error";
+    source: string;
+    summary: string;
+    detail?: string;
+  }) => void>(() => undefined);
   sessionsRef.current = availableSessions;
   agentsRef.current = availableAgents;
   projectsRef.current = availableProjects;
   currentSessionIdRef.current = currentSessionId;
   currentProjectIdRef.current = currentProjectId;
   openSessionIdsRef.current = openSessionIds;
-  liveEventsRef.current = liveEvents;
+
+  const workspaceSplit = !IS_DETACHED_WINDOW && leafCount(splitState) > 1;
+
+  const commitSplit = (next: SplitWorkspaceState) => {
+    splitStateRef.current = next;
+    setSplitState(next);
+    const ids = tabIdsFromTree(next);
+    setOpenSessionIds(ids);
+    openSessionIdsRef.current = ids;
+    const focused = focusedSessionId(next);
+    if (focused && focused !== currentSessionIdRef.current) {
+      currentSessionIdRef.current = focused;
+      setCurrentSessionId(focused);
+      const sess = sessionsRef.current.find((s) => s.id === focused);
+      if (sess) setCurrentProjectId(sess.projectId);
+      setSessionCapabilities(capsByIdRef.current[focused] ?? null);
+    }
+  };
+
+  /** Permission / ask / plan steal pane focus; never wait for that to paint the dialog. */
+  const stealFocusForPrompt = (sessionId: string) => {
+    if (!sessionId || IS_DETACHED_WINDOW) return;
+    if (detachedOwnedIdsRef.current.has(sessionId)) return;
+    const sess = sessionsRef.current.find((s) => s.id === sessionId);
+    if (!sess) return;
+    openSessionRef.current(sess);
+  };
+
+  const hitTestTabDrop = (session: Session, x: number, y: number): DropKind => {
+    const tree =
+      leafCount(splitStateRef.current) > 1
+        ? splitStateRef.current
+        : migrateFromFlat(openSessionIdsRef.current, currentSessionIdRef.current);
+    const leaves = collectLeaves(tree.root);
+    const geometry: HitTestInput["geometry"] =
+      leafCount(tree) > 1 ? "per-pane" : "titlebar-plus-center";
+    const panes = collectDropGeometry(geometry, leaves);
+    dropPanesRef.current = panes;
+    const sourcePane = paneOfSession(tree, session.id);
+    return hitTestDropZone({
+      x,
+      y,
+      windowW: window.innerWidth,
+      windowH: window.innerHeight,
+      geometry,
+      panes,
+      root: tree.root,
+      source: {
+        sessionId: session.id,
+        paneId: sourcePane?.id ?? null,
+        tabCountInSource: sourcePane?.tabIds.length ?? 1,
+      },
+      leafCount: leafCount(tree),
+      allowHorizontal: true,
+      maxLeaves: MAX_PANES,
+    });
+  };
 
   // Opening a dialog means the user has seen it — drop the "just finished" mark.
   useEffect(() => {
@@ -720,6 +885,140 @@ export function App() {
       detachedOwnedIds: detachedOwnedIdsRef.current,
       parentIdOf: parentIdOfSession,
     });
+
+  const currentPaintSet = (): Set<string> => {
+    const tree = splitStateRef.current;
+    const visible =
+      !IS_DETACHED_WINDOW && leafCount(tree) > 1
+        ? visibleIdsFromTree(tree)
+        : currentSessionIdRef.current
+          ? [currentSessionIdRef.current]
+          : [];
+    return paintSet({
+      visibleSessionIds: visible,
+      unfinishedDelegateChildren: unfinishedDelegateChildrenFromMeta(delegateMetaRef.current),
+    });
+  };
+
+  const bumpEventsTick = (ids: string[]) => {
+    if (ids.length === 0) return;
+    setEventsTick((t) => {
+      const next = { ...t };
+      for (const id of ids) next[id] = (next[id] ?? 0) + 1;
+      return next;
+    });
+  };
+
+  const armTranscriptTimer = (sessionId: string) => {
+    if (!isTauriRuntime()) return;
+    if (!ownsAcpSession(sessionId)) return;
+    if (reloadingSessionsRef.current.has(sessionId)) return;
+    const prev = transcriptSaveTimers.current.get(sessionId);
+    if (prev) clearTimeout(prev);
+    const timer = setTimeout(() => {
+      transcriptSaveTimers.current.delete(sessionId);
+      if (!ownsAcpSession(sessionId)) return;
+      if (reloadingSessionsRef.current.has(sessionId)) return;
+      const events = persistableEventsForSession(
+        shadowBySessionRef.current.get(sessionId) ?? EMPTY_EVENTS,
+        sessionId,
+      );
+      void writeTranscript(sessionId, events).catch((error) => {
+        pushDebugRef.current({
+          sessionId,
+          level: "warn",
+          source: "transcript",
+          summary: "write transcript failed",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }, 450);
+    transcriptSaveTimers.current.set(sessionId, timer);
+  };
+
+  const updateSessionEvents = (
+    sessionId: string,
+    fn: (current: SessionEvent[]) => SessionEvent[],
+    opts?: { publish?: boolean },
+  ): SessionEvent[] => {
+    const prev = shadowBySessionRef.current.get(sessionId) ?? EMPTY_EVENTS;
+    const next = fn(prev);
+    if (next === prev) return prev;
+    shadowBySessionRef.current.set(sessionId, next);
+    armTranscriptTimer(sessionId);
+    const publish = opts?.publish ?? livePaintSetRef.current.has(sessionId);
+    if (publish) {
+      eventsBySessionRef.current.set(sessionId, next);
+      bumpEventsTick([sessionId]);
+    }
+    return next;
+  };
+
+  const dropSessionRails = (ids: Iterable<string>) => {
+    const bumped: string[] = [];
+    for (const id of ids) {
+      if (shadowBySessionRef.current.has(id) || eventsBySessionRef.current.has(id)) {
+        shadowBySessionRef.current.delete(id);
+        eventsBySessionRef.current.delete(id);
+        bumped.push(id);
+      }
+    }
+    bumpEventsTick(bumped);
+  };
+
+  const applyStreamPart = (
+    current: SessionEvent[],
+    sid: string,
+    extracted: AcpTextPart,
+  ): SessionEvent[] => {
+    const prevIdx = findLastIndexForSession(current, sid);
+    const prevLast = prevIdx >= 0 ? current[prevIdx] : undefined;
+    const prevLen = current.length;
+    let next = applyAcpPartToEvents(current, sid, extracted);
+    if (extracted.role === "assistant") {
+      const newIdx = findLastIndexForSession(next, sid);
+      const newLast = newIdx >= 0 ? next[newIdx] : undefined;
+      if (
+        newLast?.type === "assistant_message" &&
+        newLast.sessionId === sid &&
+        (prevLast?.type !== "assistant_message" || prevLast.sessionId !== sid) &&
+        !turnStartedAtRef.current[sid]
+      ) {
+        turnStartedAtRef.current[sid] = Date.now();
+        sendMetaRef.current = null;
+      }
+    }
+    if (
+      next.length > prevLen &&
+      (extracted.role === "thought" || extracted.role === "assistant")
+    ) {
+      next = coalesceAdjacentThoughts(next, sid);
+      if (extracted.role === "assistant") {
+        next = coalesceAdjacentAssistantFragments(next, sid);
+      }
+    }
+    return next;
+  };
+
+  const publishedEventsForView = (sessionId: string): SessionEvent[] => {
+    const parent = eventsBySessionRef.current.get(sessionId) ?? EMPTY_EVENTS;
+    const childIds = new Set<string>();
+    for (const [childId, meta] of delegateMetaRef.current) {
+      if (meta.parentId === sessionId) childIds.add(childId);
+    }
+    for (const e of parent) {
+      if (e.type === "subtask_started" || e.type === "subtask_result") {
+        childIds.add(e.childSessionId);
+      }
+    }
+    if (childIds.size === 0) return parent;
+    const out = parent.slice();
+    for (const id of childIds) {
+      const rail = eventsBySessionRef.current.get(id);
+      if (rail?.length) out.push(...rail);
+    }
+    return out;
+  };
 
   /** One workspace snapshot per prompt; used to turn real edits into timeline cards. */
   const fileChangeSnapshotsRef = useRef<Record<string, ProjectFileSnapshot>>({});
@@ -789,7 +1088,7 @@ export function App() {
         return [{ file, publication }];
       });
       if (changedDuringTurn.length > 0) {
-        setLiveEvents((current) => {
+        updateSessionEvents(sessionId, (current) => {
           let next = [...current];
           for (const { file, publication } of changedDuringTurn) {
             const index = next.findIndex(
@@ -810,7 +1109,7 @@ export function App() {
             else next = [...next, updated];
           }
           return next;
-        });
+        }, { publish: true });
       }
       if (currentProjectIdRef.current === before.projectId) {
         setChangedFiles(after.changedFiles);
@@ -864,6 +1163,7 @@ export function App() {
       detail: entry.detail,
     });
   }, []);
+  pushDebugRef.current = pushDebug;
 
   /** Apply an ACP-provided conversation title without overriding a manual rename. */
   const applyAgentSessionTitle = useCallback((sessionId: string, rawTitle: string) => {
@@ -897,9 +1197,19 @@ export function App() {
 
   /** Engine subscription quotas (`magpie quota`) merged into the Usage panel. */
   const [engineQuotaRows, setEngineQuotaRows] = useState<EngineQuotaEntry[]>([]);
-  const refreshEngineQuota = useCallback(() => {
-    void fetchEngineQuota()
-      .then((rows) => setEngineQuotaRows(rows ?? []))
+  const refreshEngineQuota = useCallback((force = false) => {
+    const apply = (rows: EngineQuotaEntry[] | null | undefined, replaceEmpty: boolean) => {
+      if (rows && rows.length > 0) setEngineQuotaRows(rows);
+      else if (replaceEmpty) setEngineQuotaRows([]);
+    };
+    // kept=1 几乎立刻从网关缓存刷出 Grok / Codex / Go 等行；点刷新再跟一发现场查询。
+    void fetchEngineQuota(false)
+      .then((rows) => apply(rows, !force))
+      .catch(() => undefined)
+      .then(() => {
+        if (!force) return;
+        return fetchEngineQuota(true).then((rows) => apply(rows, true));
+      })
       .catch(() => undefined);
   }, []);
   useEffect(() => {
@@ -911,12 +1221,19 @@ export function App() {
    * cache is otherwise forever, so a menu queried while the engine slept
    * (before startup / after idle reclaim) would keep serving the stale
    * engine-less result even after the user woke the gateway (2026-10-17).
+   * Reaching running also pulls subscription quotas into Usage (the first
+   * fetch on mount often races the engine still starting).
    */
   useEffect(() => {
     if (!isTauriRuntime()) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    void listen("engine-state-changed", () => invalidateBridgeModels()).then((fn) => {
+    void listen<{ state?: string }>("engine-state-changed", (event) => {
+      invalidateBridgeModels();
+      const state = event.payload?.state;
+      if (state === "running") refreshEngineQuota();
+      else if (state === "absent" || state === "failed") setEngineQuotaRows([]);
+    }).then((fn) => {
       if (disposed) fn();
       else unlisten = fn;
     });
@@ -924,7 +1241,7 @@ export function App() {
       disposed = true;
       unlisten?.();
     };
-  }, []);
+  }, [refreshEngineQuota]);
 
   const usage = useMemo<UsageSnapshot>(() => {
     const activeSession = availableSessions.find((session) => session.id === currentSessionId);
@@ -1260,16 +1577,36 @@ export function App() {
         const startupChat = startupCreatedChatsRef.current.find((session) =>
           effectiveSessions.some((candidate) => candidate.id === session.id),
         );
+        const excludeSessionIds = new Set<string>();
+        if (!IS_DETACHED_WINDOW && isTauriRuntime()) {
+          const visibleDetached = await listVisibleDetachedSessionIds();
+          for (const id of visibleDetached) {
+            excludeSessionIds.add(id);
+            detachedOwnedIdsRef.current.add(id);
+          }
+        }
         const restored = startupChat
-          ? { session: startupChat, openSessionIds: [startupChat.id] }
+          ? {
+              session: startupChat,
+              openSessionIds: [startupChat.id],
+              splitState: migrateFromFlat([startupChat.id], startupChat.id),
+            }
           : pickRestoredSession(effectiveSessions, {
               detachedSessionId: DETACHED_SESSION_ID,
+              excludeSessionIds,
+              maxLeaves: MAX_PANES,
             });
         if (restored) {
           const preferred = restored.session;
           setCurrentProjectId(preferred.projectId);
+          currentSessionIdRef.current = preferred.id;
           setCurrentSessionId(preferred.id);
+          openSessionIdsRef.current = restored.openSessionIds;
           setOpenSessionIds(restored.openSessionIds);
+          if (!IS_DETACHED_WINDOW) {
+            splitStateRef.current = restored.splitState;
+            setSplitState(restored.splitState);
+          }
           setViewMode("clean");
           if (IS_DETACHED_WINDOW) {
             setLeftCollapsed(true);
@@ -1312,8 +1649,9 @@ export function App() {
       sessionId: currentSessionId,
       projectId: currentProjectId,
       openSessionIds,
+      splitLayout: serialize(splitState),
     });
-  }, [currentSessionId, currentProjectId, openSessionIds]);
+  }, [currentSessionId, currentProjectId, openSessionIds, splitState]);
 
   useEffect(() => {
     if (!composerAutoFocus) return;
@@ -1346,11 +1684,7 @@ export function App() {
         clearTimeout(pending);
         transcriptSaveTimers.current.delete(sessionId);
       }
-      setLiveEvents((current) => {
-        const next = dropEventsForSessions(current, new Set([sessionId]));
-        liveEventsRef.current = next;
-        return next;
-      });
+      dropSessionRails([sessionId]);
       transcriptLoadedRef.current.delete(sessionId);
     }).then((fn) => {
       unlistenReady = fn;
@@ -1367,14 +1701,17 @@ export function App() {
         transcriptSaveTimers.current.delete(sessionId);
       }
       transcriptLoadedRef.current.delete(sessionId);
-      setLiveEvents((current) => {
-        const next = dropEventsForSessions(current, new Set([sessionId]));
-        liveEventsRef.current = next;
-        return next;
-      });
+      dropSessionRails([sessionId]);
       void loadSessionTranscriptRef.current(sessionId).finally(() => {
         reloadingSessionsRef.current.delete(sessionId);
       });
+      const session = sessionsRef.current.find((s) => s.id === sessionId);
+      const alreadyOpen =
+        Boolean(paneOfSession(splitStateRef.current, sessionId)) ||
+        openSessionIdsRef.current.includes(sessionId);
+      if (session && !alreadyOpen) {
+        openSessionRef.current(session);
+      }
     }).then((fn) => {
       unlistenHidden = fn;
     });
@@ -1390,19 +1727,38 @@ export function App() {
     if (IS_DETACHED_WINDOW) return;
     let unlistenMerge: (() => void) | undefined;
     let unlistenGlow: (() => void) | undefined;
-    void listenMergeBackRequests(async (sessionId) => {
+    void listenMergeBackRequests(async (payload) => {
+      const sessionId = payload.sessionId;
       detachedOwnedIdsRef.current.delete(sessionId);
       const session = sessionsRef.current.find((s) => s.id === sessionId);
+      const dropClient = payload.dropClient ?? (await readMainDropClient());
+      let drop: DropKind = {
+        kind: "activate",
+        paneId: splitStateRef.current.focusedPaneId,
+      };
+      if (dropClient && session) {
+        const hit = hitTestTabDrop(session, dropClient.x, dropClient.y);
+        if (hit.kind === "split" || hit.kind === "activate" || hit.kind === "insert-tab") {
+          drop = hit;
+        }
+      }
       if (session) {
-        setOpenSessionIds((current) =>
-          current.includes(session.id) ? current : [...current, session.id]
-        );
+        const tree =
+          leafCount(splitStateRef.current) > 1
+            ? splitStateRef.current
+            : migrateFromFlat(openSessionIdsRef.current, currentSessionIdRef.current);
+        commitSplit(adoptExternalSession(tree, session.id, drop, { maxLeaves: MAX_PANES }));
         openSessionRef.current(session);
-        // Re-push status/label so the restored tab matches the live turn.
         void broadcastSessionPatch({
           sessionId: session.id,
           status: session.status,
           label: session.label,
+        });
+        pushDebugRef.current({
+          sessionId: session.id,
+          level: "info",
+          source: "split",
+          summary: `merge-back drop kind=${drop.kind}${drop.kind === "split" ? ` edge=${drop.edge}` : ""} pane=${"paneId" in drop ? drop.paneId : ""}`,
         });
       }
       await hideDetachedWindowForSession(sessionId);
@@ -1439,7 +1795,7 @@ export function App() {
       sessions: sessionsRef.current,
       delegateMeta: delegateMetaRef.current,
     });
-    const cold = coldSessionIdsWithEvents(liveEventsRef.current, hot);
+    const cold = coldSessionIdsFromMap(shadowBySessionRef.current, hot);
     if (cold.length === 0) return;
 
     const flushed: string[] = [];
@@ -1450,7 +1806,10 @@ export function App() {
         clearTimeout(pending);
         transcriptSaveTimers.current.delete(sessionId);
       }
-      const events = persistableEventsForSession(liveEventsRef.current, sessionId);
+      const events = persistableEventsForSession(
+        shadowBySessionRef.current.get(sessionId) ?? EMPTY_EVENTS,
+        sessionId,
+      );
       try {
         if (isTauriRuntime() && events.length > 0) {
           await writeTranscript(sessionId, events);
@@ -1466,11 +1825,7 @@ export function App() {
     for (const id of drop) {
       transcriptLoadedRef.current.delete(id);
     }
-    setLiveEvents((current) => {
-      const next = dropEventsForSessions(current, drop);
-      liveEventsRef.current = next;
-      return next;
-    });
+    dropSessionRails(drop);
     setSessionUsageById((current) => {
       let changed = false;
       const next = { ...current };
@@ -1742,45 +2097,15 @@ export function App() {
                 (/^\s*\*{0,2}Model\*{0,2}:/i.test(extracted.text) &&
                   /\n\s*\*{0,2}Directory\*{0,2}:/i.test(extracted.text));
               if (!isRuntimeStatusOnly) {
-                setLiveEvents((current) => {
-                  const sid = payload.sessionId;
-                  const prevIdx = findLastIndexForSession(current, sid);
-                  const prevLast = prevIdx >= 0 ? current[prevIdx] : undefined;
-                  const prevLen = current.length;
-                  let next = applyAcpPartToEvents(current, sid, extracted);
-                  // Track turn start for duration: first new assistant_message card
-                  // for *this* session (other sessions may sit at the rail tail).
-                  if (extracted.role === "assistant") {
-                    const newIdx = findLastIndexForSession(next, sid);
-                    const newLast = newIdx >= 0 ? next[newIdx] : undefined;
-                    if (
-                      newLast?.type === "assistant_message" &&
-                      newLast.sessionId === sid &&
-                      (prevLast?.type !== "assistant_message" ||
-                        prevLast.sessionId !== sid) &&
-                      !turnStartedAtRef.current[sid]
-                    ) {
-                      turnStartedAtRef.current[sid] = Date.now();
-                      // Clear sendMetaRef — snapshot consumed by the first assistant chunk
-                      sendMetaRef.current = null;
-                    }
-                  }
-                  // Glue fragment thoughts / token-split Replies only when a new
-                  // card appeared. applyAcpPartToEvents already appends onto an
-                  // open Thought/Reply (including Grok messageId churn); running
-                  // full-rail coalesce on every token was O(n) per chunk and
-                  // helped freeze the window during long Grok streams.
-                  if (
-                    next.length > prevLen &&
-                    (extracted.role === "thought" || extracted.role === "assistant")
-                  ) {
-                    next = coalesceAdjacentThoughts(next, sid);
-                    if (extracted.role === "assistant") {
-                      next = coalesceAdjacentAssistantFragments(next, sid);
-                    }
-                  }
-                  return next;
-                });
+                const sid = payload.sessionId;
+                const kind = chunkKindFromRole(extracted.role);
+                const publish =
+                  shouldPublishChunk(sid, kind, livePaintSetRef.current) === "now";
+                updateSessionEvents(
+                  sid,
+                  (rail) => applyStreamPart(rail, sid, extracted),
+                  { publish },
+                );
               }
             }
           }
@@ -1858,7 +2183,7 @@ export function App() {
         if (startedAt) {
           const durationMs = Date.now() - startedAt;
           delete turnStartedAtRef.current[payload.sessionId];
-          setLiveEvents((current) => {
+          updateSessionEvents(payload.sessionId, (current) => {
             const sid = payload.sessionId;
             let next = current;
             if (toolClose) next = markOpenTools(next, sid, toolClose, endedAt);
@@ -1885,20 +2210,17 @@ export function App() {
             } else {
               next = collapseIntermediateAssistantAsThought(next, sid);
             }
-            liveEventsRef.current = next;
             return next;
-          });
+          }, { publish: true });
         } else {
-          setLiveEvents((current) => {
-            const next = collapseIntermediateAssistantAsThought(
+          updateSessionEvents(payload.sessionId, (current) => {
+            return collapseIntermediateAssistantAsThought(
               toolClose
                 ? markOpenTools(current, payload.sessionId, toolClose)
                 : current,
               payload.sessionId,
             );
-            liveEventsRef.current = next;
-            return next;
-          });
+          }, { publish: true });
         }
 
         setSessionUsageById((current) => {
@@ -1966,7 +2288,7 @@ export function App() {
           // anything to read (empty turn, or tools and then silence). That stop is
           // invisible on screen, so its chime also plays while the window is focused.
           const stoppedSilently = turnEndedSilently(
-            liveEventsRef.current,
+            shadowBySessionRef.current.get(payload.sessionId) ?? EMPTY_EVENTS,
             payload.sessionId,
           );
           if (!isDelegateChild) {
@@ -2042,9 +2364,16 @@ export function App() {
         setPlanApproval((cur) => (cur?.sessionId === payload.sessionId ? null : cur));
         setPlanApprovalBusy(false);
         setPermissionPrompt((cur) => (cur?.sessionId === payload.sessionId ? null : cur));
+        updateSessionEvents(
+          payload.sessionId,
+          (current) => expirePendingPrompts(current, payload.sessionId, "timeout"),
+          { publish: true },
+        );
         if (endedHard) {
           const sid = payload.sessionId;
-          setLiveEvents((current) => markOpenTools(current, sid, "failed"));
+          updateSessionEvents(sid, (current) => markOpenTools(current, sid, "failed"), {
+            publish: true,
+          });
           setSessionNotices((current) => ({
             ...current,
             [sid]: {
@@ -2119,7 +2448,7 @@ export function App() {
           // Auth and “CLI too old” both arrive as Internal error + data.message.
           // The banner is the Claude/Codex-style prompt; the strip is the button.
           raiseClassifiedBanner(sessAgentId, classified);
-          setLiveEvents((current) => {
+          updateSessionEvents(payload.sessionId, (current) => {
             // Avoid spamming the same auth error on every retry.
             // Session-scoped: another window's event may own the absolute tail.
             const lastIdx = findLastIndexForSession(current, payload.sessionId);
@@ -2140,7 +2469,7 @@ export function App() {
                 createdAt: new Date().toISOString(),
               },
             ];
-          });
+          }, { publish: true });
           pushDebug({
             sessionId: payload.sessionId,
             level: "error",
@@ -2179,27 +2508,83 @@ export function App() {
             .filter((o): o is NonNullable<typeof o> => o != null);
           const title = typeof data.title === "string" ? data.title : "Permission required";
           const detail = typeof data.detail === "string" ? data.detail : null;
-          setPermissionPrompt({
-            requestId,
-            sessionId: payload.sessionId,
+          const planMarkdown = extractPermissionPlanMarkdown({
             title,
             detail,
             options,
+            params: data.params,
+            planMarkdown: data.planMarkdown ?? data.plan_markdown,
           });
+          if (planMarkdown) {
+            setPlanApproval({
+              requestId,
+              sessionId: payload.sessionId,
+              planMarkdown,
+              title,
+              permissionOptions: options,
+            });
+            updateSessionEvents(
+              payload.sessionId,
+              (current) =>
+                upsertPromptEvent(
+                  current,
+                  planPromptEvent({
+                    sessionId: payload.sessionId,
+                    requestId,
+                    source: "permission",
+                    title,
+                    planMarkdown,
+                    options,
+                  }),
+                ),
+              { publish: true },
+            );
+          } else {
+            setPermissionPrompt({
+              requestId,
+              sessionId: payload.sessionId,
+              title,
+              detail,
+              planMarkdown,
+              options,
+            });
+          }
+          stealFocusForPrompt(payload.sessionId);
           cancelScheduledDesktopNotify(payload.sessionId);
           void raiseDesktopNotify(
-            "permission",
-            compactNotifyDetail(detail ? `${title}: ${detail}` : title),
+            planMarkdown ? "plan" : "permission",
+            planMarkdown
+              ? "Plan ready for review"
+              : compactNotifyDetail(detail ? `${title}: ${detail}` : title),
           );
         }
       }
-      if (payload.method === "permission/timeout") {
+      // resolved = 另一个面（Telegram 按钮）已解答；与本窗口的点击、超时一样收卡片。
+      if (payload.method === "permission/timeout" || payload.method === "permission/resolved") {
+        const data = payload.data as { requestId?: string } | null;
+        const requestId = data?.requestId;
+        const timedOut = payload.method === "permission/timeout";
         setPermissionPrompt((current) => {
           if (!current) return current;
-          const data = payload.data as { requestId?: string } | null;
-          if (data?.requestId && data.requestId === current.requestId) return null;
+          if (requestId && requestId === current.requestId) return null;
           return current;
         });
+        setPlanApproval((current) => {
+          if (!current) return current;
+          if (requestId && requestId === current.requestId) return null;
+          return current;
+        });
+        if (requestId) {
+          updateSessionEvents(
+            payload.sessionId,
+            (current) =>
+              patchPromptEvent(current, requestId, {
+                status: timedOut ? "timeout" : "answered",
+                decisionLabel: timedOut ? "已超时" : "已在其他窗口回复",
+              }),
+            { publish: true },
+          );
+        }
       }
 
       // Grok `_x.ai/ask_user_question` → interactive choice card
@@ -2207,6 +2592,12 @@ export function App() {
         const parsed = parseAskQuestionPrompt(payload.sessionId, payload.data);
         if (parsed) {
           setAskPrompt(parsed);
+          updateSessionEvents(
+            payload.sessionId,
+            (current) => upsertPromptEvent(current, askPromptEvent(parsed)),
+            { publish: true },
+          );
+          stealFocusForPrompt(payload.sessionId);
           // Receipt on disk: an ask that never reaches the screen is otherwise
           // invisible in dev.log (Rust only logs that it emitted the request).
           pushDebug({
@@ -2232,13 +2623,26 @@ export function App() {
           });
         }
       }
-      if (payload.method === "question/timeout") {
+      if (payload.method === "question/timeout" || payload.method === "question/resolved") {
+        const data = payload.data as { requestId?: string } | null;
+        const requestId = data?.requestId;
+        const timedOut = payload.method === "question/timeout";
         setAskPrompt((current) => {
           if (!current) return current;
-          const data = payload.data as { requestId?: string } | null;
-          if (data?.requestId && data.requestId === current.requestId) return null;
+          if (requestId && requestId === current.requestId) return null;
           return current;
         });
+        if (requestId) {
+          updateSessionEvents(
+            payload.sessionId,
+            (current) =>
+              patchPromptEvent(current, requestId, {
+                status: timedOut ? "timeout" : "answered",
+                decisionLabel: timedOut ? "已超时" : "已在其他窗口回复",
+              }),
+            { publish: true },
+          );
+        }
       }
 
       // Grok `_x.ai/exit_plan_mode` → plan approval card (Codeg wire format)
@@ -2263,17 +2667,45 @@ export function App() {
                   : null,
             planMarkdown,
           });
+          updateSessionEvents(
+            payload.sessionId,
+            (current) =>
+              upsertPromptEvent(
+                current,
+                planPromptEvent({
+                  sessionId: payload.sessionId,
+                  requestId,
+                  source: "plan_approval",
+                  planMarkdown,
+                }),
+              ),
+            { publish: true },
+          );
+          stealFocusForPrompt(payload.sessionId);
           cancelScheduledDesktopNotify(payload.sessionId);
           void raiseDesktopNotify("plan", "Plan ready for review");
         }
       }
-      if (payload.method === "plan/timeout") {
+      if (payload.method === "plan/timeout" || payload.method === "plan/resolved") {
+        const data = payload.data as { requestId?: string } | null;
+        const requestId = data?.requestId;
+        const timedOut = payload.method === "plan/timeout";
         setPlanApproval((current) => {
           if (!current) return current;
-          const data = payload.data as { requestId?: string } | null;
-          if (data?.requestId && data.requestId === current.requestId) return null;
+          if (requestId && requestId === current.requestId) return null;
           return current;
         });
+        if (requestId) {
+          updateSessionEvents(
+            payload.sessionId,
+            (current) =>
+              patchPromptEvent(current, requestId, {
+                status: timedOut ? "timeout" : "answered",
+                decisionLabel: timedOut ? "已超时" : "已在其他窗口回复",
+              }),
+            { publish: true },
+          );
+        }
       }
 
       // Live mode chip: Grok emits current_mode_update after session/set_mode
@@ -2313,6 +2745,7 @@ export function App() {
       }
       if (acpInbox.length === 0) return;
       const batch = acpInbox.splice(0, acpInbox.length);
+      livePaintSetRef.current = currentPaintSet();
       // One bad event must not drop the rest of the batch.
       for (const payload of batch) {
         try {
@@ -2330,6 +2763,13 @@ export function App() {
           });
         }
       }
+      livePaintSetRef.current = currentPaintSet();
+      const flushed = flushShadowsIntoPaintSet(
+        livePaintSetRef.current,
+        shadowBySessionRef.current,
+        eventsBySessionRef.current,
+      );
+      if (flushed.length > 0) bumpEventsTick(flushed);
     };
     const scheduleAcpFlush = () => {
       if (acpFlushTimer === undefined) {
@@ -2380,7 +2820,7 @@ export function App() {
       const label = typeof event.payload === "string" ? event.payload : "";
       if (sessionIdFromDetachedLabel(label) !== DETACHED_SESSION_ID) return;
       const events = persistableEventsForSession(
-        liveEventsRef.current,
+        shadowBySessionRef.current.get(DETACHED_SESSION_ID) ?? EMPTY_EVENTS,
         DETACHED_SESSION_ID,
       );
       const release = () => {
@@ -2396,32 +2836,6 @@ export function App() {
     });
     return () => unlisten?.();
   }, []);
-
-  /** Debounced rewrite of Clean transcript JSONL per session. */
-  useEffect(() => {
-    if (!isTauriRuntime()) return;
-    const sessionIds = new Set(liveEvents.map((e) => e.sessionId));
-    for (const sessionId of sessionIds) {
-      if (!ownsAcpSession(sessionId)) continue;
-      if (reloadingSessionsRef.current.has(sessionId)) continue;
-      const prev = transcriptSaveTimers.current.get(sessionId);
-      if (prev) clearTimeout(prev);
-      const timer = setTimeout(() => {
-        transcriptSaveTimers.current.delete(sessionId);
-        const events = persistableEventsForSession(liveEventsRef.current, sessionId);
-        void writeTranscript(sessionId, events).catch((error) => {
-          pushDebug({
-            sessionId,
-            level: "warn",
-            source: "transcript",
-            summary: "write transcript failed",
-            detail: error instanceof Error ? error.message : String(error),
-          });
-        });
-      }, 450);
-      transcriptSaveTimers.current.set(sessionId, timer);
-    }
-  }, [liveEvents, pushDebug]);
 
   const renameSessionFromText = useCallback((sessionId: string, text: string) => {
     const session = sessionsRef.current.find((s) => s.id === sessionId);
@@ -2483,7 +2897,7 @@ export function App() {
           setSessionStatusById(sessionId, "exited");
           if (sessionId === currentSessionIdRef.current) setSessionCapabilities(null);
           if (midTurn) {
-            setLiveEvents((current) => [
+            updateSessionEvents(sessionId, (current) => [
               ...current,
               {
                 type: "assistant_message" as const,
@@ -2492,7 +2906,7 @@ export function App() {
                 createdAt: new Date().toISOString(),
                 durationMs: 0,
               },
-            ]);
+            ], { publish: true });
           }
           pushDebug({
             sessionId,
@@ -2516,9 +2930,9 @@ export function App() {
 
       if (midTurn) {
         streamSuppressedRef.current.add(sessionId);
-        setLiveEvents((current) =>
+        updateSessionEvents(sessionId, (current) =>
           sealOpenAssistantReplies(markOpenTools(current, sessionId, "cancelled"), sessionId),
-        );
+        { publish: true });
       }
 
       parkSessionProcess(sessionId, {
@@ -2543,9 +2957,9 @@ export function App() {
       const midTurn = session.status === "running" || session.status === "starting";
       if (midTurn) {
         streamSuppressedRef.current.add(sessionId);
-        setLiveEvents((current) =>
+        updateSessionEvents(sessionId, (current) =>
           sealOpenAssistantReplies(markOpenTools(current, sessionId, "cancelled"), sessionId),
-        );
+        { publish: true });
       }
       parkSessionProcess(sessionId, {
         midTurnBanner: midTurn ? banner : undefined,
@@ -2595,7 +3009,7 @@ export function App() {
     async (sessionId: string, anchor: ForkAnchor) => {
       const source = sessionsRef.current.find((s) => s.id === sessionId);
       if (!source) return;
-      const events = liveEventsRef.current.filter((e) => e.sessionId === sessionId);
+      const events = shadowBySessionRef.current.get(sessionId) ?? EMPTY_EVENTS;
       // Nothing to copy means the anchor is gone (the reply was truncated or
       // the transcript reloaded) — bail before creating a dialog.
       if (forkCutIndex(events, anchor) < 0) return;
@@ -2621,21 +3035,27 @@ export function App() {
         forked,
         ...current.filter((s) => s.id !== forked.id),
       ]);
-      setOpenSessionIds((current) => [
-        forked.id,
-        ...current.filter((id) => id !== forked.id),
-      ]);
+      const tree = splitStateRef.current;
+      if (!IS_DETACHED_WINDOW && leafCount(tree) > 1) {
+        const sourcePane = paneOfSession(tree, sessionId);
+        commitSplit(addTabToPane(tree, sourcePane?.id ?? tree.focusedPaneId, forked.id));
+      } else {
+        setOpenSessionIds((current) => [
+          forked.id,
+          ...current.filter((id) => id !== forked.id),
+        ]);
+        setCurrentSessionId(forked.id);
+      }
       setCurrentProjectId(forked.projectId);
-      setCurrentSessionId(forked.id);
       setViewMode("clean");
-      setSessionCapabilities(null);
+      setSessionCapabilities(capsByIdRef.current[forked.id] ?? null);
       setActiveModelId(null);
 
       // Subtask cards and handoffs point at the old dialog's children and
       // paths, so the copy drops them.
       const copied = forkCopyEvents(events, anchor, forked.id);
       if (!copied) return;
-      setLiveEvents((current) => [...current, ...copied]);
+      updateSessionEvents(forked.id, () => copied, { publish: true });
       // The agent starts empty; the first send carries this transcript.
       acpNeedsHistoryRef.current.add(forked.id);
 
@@ -2757,13 +3177,10 @@ export function App() {
         persistableEventsForSession(parsed, sessionId),
       ).catch(() => undefined);
     }
-    setLiveEvents((current) => {
-      const hasLive = current.some((e) => e.sessionId === sessionId);
-      if (hasLive) return current;
-      const next = [...current.filter((e) => e.sessionId !== sessionId), ...parsed];
-      liveEventsRef.current = next;
-      return next;
-    });
+    const existing = shadowBySessionRef.current.get(sessionId);
+    if (!existing || existing.length === 0) {
+      updateSessionEvents(sessionId, () => parsed, { publish: true });
+    }
     // Seed lastTurnStats from persisted transcript so a restored dialog
     // still has per-turn token splits in memory (the Usage panel no longer
     // renders those rows).
@@ -2806,16 +3223,54 @@ export function App() {
   }, []);
   loadSessionTranscriptRef.current = loadSessionTranscript;
 
-  // Restore Clean history whenever the active dialog changes.
+  // Restore Clean history for every visible pane (and the focused tab when unsplit).
   useEffect(() => {
-    if (!currentSessionId || currentSessionId.startsWith("session-empty-")) return;
-    void loadSessionTranscript(currentSessionId);
-  }, [currentSessionId, loadSessionTranscript]);
+    const nextPaint = currentPaintSet();
+    livePaintSetRef.current = nextPaint;
+    const flushed = flushShadowsIntoPaintSet(
+      nextPaint,
+      shadowBySessionRef.current,
+      eventsBySessionRef.current,
+    );
+    if (flushed.length > 0) bumpEventsTick(flushed);
+    const visibles =
+      workspaceSplit
+        ? visibleIdsFromTree(splitState)
+        : currentSessionId
+          ? [currentSessionId]
+          : [];
+    for (const id of visibles) {
+      if (id && !id.startsWith("session-empty-")) void loadSessionTranscript(id);
+    }
+  }, [currentSessionId, loadSessionTranscript, splitState, workspaceSplit]);
 
-  // Quote pins belong to one dialog only.
   useEffect(() => {
-    setQuotePins([]);
-  }, [currentSessionId]);
+    saveDetailsVisible(detailsVisible);
+  }, [detailsVisible]);
+
+  // Keep the one-leaf tree in sync with the flat tab list. Once split, the tree is source.
+  useEffect(() => {
+    if (IS_DETACHED_WINDOW) return;
+    setSplitState((cur) => {
+      if (leafCount(cur) > 1) return cur;
+      const next = migrateFromFlat(openSessionIds, currentSessionId);
+      if (cur.root.type === "leaf" && next.root.type === "leaf") {
+        const curTabs = cur.root.tabIds;
+        const nextTabs = next.root.tabIds;
+        if (
+          cur.root.id === next.root.id &&
+          cur.root.activeTabId === next.root.activeTabId &&
+          cur.focusedPaneId === next.focusedPaneId &&
+          curTabs.length === nextTabs.length &&
+          curTabs.every((id, i) => id === nextTabs[i])
+        ) {
+          return cur;
+        }
+      }
+      splitStateRef.current = next;
+      return next;
+    });
+  }, [openSessionIds, currentSessionId]);
 
   const handleShelfSearch = useCallback(async (query: string) => {
     const q = query.trim();
@@ -2834,7 +3289,8 @@ export function App() {
     // turn as well. This makes a just-sent phrase searchable immediately.
     const needle = q.toLowerCase();
     const liveHits = new Set<string>();
-    for (const event of liveEventsRef.current) {
+    for (const rail of shadowBySessionRef.current.values()) {
+    for (const event of rail) {
       let searchable = "";
       switch (event.type) {
         case "user_message":
@@ -2855,10 +3311,20 @@ export function App() {
         case "subtask_result":
           searchable = `${event.summary} ${event.error ?? ""}`;
           break;
+        case "plan_prompt":
+          searchable = `${event.title ?? ""} ${event.planMarkdown} ${event.decisionLabel ?? ""}`;
+          break;
+        case "ask_prompt":
+          searchable = event.questions
+            .map((q) => q.question)
+            .concat((event.answers ?? []).flatMap((a) => a.selected))
+            .join(" ");
+          break;
         default:
           break;
       }
       if (searchable.toLowerCase().includes(needle)) liveHits.add(event.sessionId);
+    }
     }
     setSearchHitIds([...new Set([...hits, ...liveHits])]);
   }, []);
@@ -3161,7 +3627,7 @@ export function App() {
   // Manual refresh should re-hit the network even if model unchanged.
   const handleUsageRefreshForce = useCallback(() => {
     lastProviderProbeKey.current = "";
-    refreshEngineQuota();
+    refreshEngineQuota(true);
     handleUsageRefresh();
   }, [handleUsageRefresh, refreshEngineQuota]);
 
@@ -3224,10 +3690,9 @@ export function App() {
         // Nested OpenCode/Claude task tools emit no parent stream — use the
         // longer subagent fuse so we don't desktop-notify at 1–2m of silence.
         let openSubagent = false;
-        const evs = liveEventsRef.current;
+        const evs = shadowBySessionRef.current.get(session.id) ?? EMPTY_EVENTS;
         for (let i = evs.length - 1; i >= 0; i -= 1) {
           const e = evs[i];
-          if (e.sessionId !== session.id) continue;
           if (
             e.type === "tool_call" &&
             isToolInProgress(e.status) &&
@@ -3399,8 +3864,14 @@ export function App() {
   );
 
   const currentEvents = useMemo(() => {
-    return liveEvents.filter((event) => event.sessionId === displaySession.id);
-  }, [liveEvents, displaySession.id]);
+    void eventsTick[displaySession.id];
+    return eventsBySessionRef.current.get(displaySession.id) ?? EMPTY_EVENTS;
+  }, [eventsTick, displaySession.id]);
+
+  const viewAllEvents = useMemo(() => {
+    void eventsTick[displaySession.id];
+    return publishedEventsForView(displaySession.id);
+  }, [eventsTick, displaySession.id]);
 
   const sessionRunning =
     displaySession.status === "running" || displaySession.status === "starting";
@@ -3552,15 +4023,19 @@ export function App() {
       sessionWithPrefs,
       ...current.filter((s) => s.id !== sessionWithPrefs.id),
     ]);
-    setOpenSessionIds((current) => [
-      sessionWithPrefs.id,
-      ...current.filter((id) => id !== sessionWithPrefs.id),
-    ]);
+    const tree = splitStateRef.current;
+    if (!IS_DETACHED_WINDOW && leafCount(tree) > 1) {
+      commitSplit(addTabToPane(tree, tree.focusedPaneId, sessionWithPrefs.id));
+    } else {
+      setOpenSessionIds((current) => [
+        sessionWithPrefs.id,
+        ...current.filter((id) => id !== sessionWithPrefs.id),
+      ]);
+      setCurrentSessionId(sessionWithPrefs.id);
+    }
     setCurrentProjectId(projectId);
-    setCurrentSessionId(sessionWithPrefs.id);
-    // Product default is always Clean View — transport is an implementation detail.
     setViewMode("clean");
-    setSessionCapabilities(null);
+    setSessionCapabilities(capsByIdRef.current[sessionWithPrefs.id] ?? null);
     setActiveModelId(null);
   };
 
@@ -3575,11 +4050,7 @@ export function App() {
       const redirectTo = new Map(result.redirected.map((item) => [item.from, item.to]));
       for (const id of importedIds) transcriptLoadedRef.current.delete(id);
       for (const from of redirectTo.keys()) transcriptLoadedRef.current.delete(from);
-      setLiveEvents((current) => {
-        const next = current.filter((e) => !importedIds.has(e.sessionId) && !redirectTo.has(e.sessionId));
-        liveEventsRef.current = next;
-        return next;
-      });
+      dropSessionRails([...importedIds, ...redirectTo.keys()]);
       setAvailableSessions((current) => [
         ...current.filter((s) => s.projectId !== projectId),
         ...result.sessions,
@@ -3613,21 +4084,29 @@ export function App() {
     }
   }, [pushDebug]);
 
-  const openSession = (nextSession: Session) => {
-    setOpenSessionIds((current) => current.includes(nextSession.id) ? current : [...current, nextSession.id]);
+  const applyFocusedSession = (nextSession: Session) => {
     setCurrentProjectId(nextSession.projectId);
     setCurrentSessionId(nextSession.id);
-    // Product primary is always Clean when opening a dialog (Raw is one click away).
     setViewMode("clean");
-    // HARD RULE: caps belong to (sessionId, agentId). Never leak previous dialog's models.
-    setSessionCapabilities(null);
+    setSessionCapabilities(capsByIdRef.current[nextSession.id] ?? null);
     setActiveModelId(null);
-    // Pending Ask / Plan / Permission cards stay: every one of them is gated by
-    // session id at render time, so they cannot leak into another dialog — and
-    // dropping them here lost asks the agent was still blocked on (switch away
-    // and back, and the card never returned until its timeout declined it).
     lastProviderProbeKey.current = "";
     void loadSessionTranscript(nextSession.id);
+  };
+
+  const openSession = (nextSession: Session) => {
+    if (!IS_DETACHED_WINDOW && detachedOwnedIdsRef.current.has(nextSession.id)) {
+      void focusDetachedWindow(nextSession.id);
+      return;
+    }
+    const tree = splitStateRef.current;
+    if (!IS_DETACHED_WINDOW && leafCount(tree) > 1) {
+      commitSplit(focusSession(tree, nextSession.id));
+      applyFocusedSession(nextSession);
+      return;
+    }
+    setOpenSessionIds((current) => current.includes(nextSession.id) ? current : [...current, nextSession.id]);
+    applyFocusedSession(nextSession);
   };
   openSessionRef.current = openSession;
 
@@ -3635,6 +4114,30 @@ export function App() {
   const openChatSession = useCallback((session: Session) => {
     openSessionRef.current(session);
   }, []);
+
+  /** Tab / shelf 「在右侧打开」/「在下方打开」. Only-tab of the target pane is a no-op. */
+  const handleOpenBeside = (session: Session, edge: DropEdge) => {
+    if (IS_DETACHED_WINDOW) return;
+    if (detachedOwnedIdsRef.current.has(session.id)) {
+      void focusDetachedWindow(session.id);
+      return;
+    }
+    const tree =
+      leafCount(splitStateRef.current) > 1
+        ? splitStateRef.current
+        : migrateFromFlat(openSessionIdsRef.current, currentSessionIdRef.current);
+    const source = paneOfSession(tree, session.id);
+    const targetId = source?.id ?? tree.focusedPaneId;
+    const next = splitPane(tree, targetId, edge, session.id, { maxLeaves: MAX_PANES });
+    if (next === tree) return;
+    commitSplit(next);
+    pushDebug({
+      sessionId: session.id,
+      level: "info",
+      source: "split",
+      summary: `open-beside edge=${edge} pane=${targetId}`,
+    });
+  };
 
   /** Create a new Chat session in the current/default working folder. */
   const handleCreateChatSession = useCallback(async (agentId?: string) => {
@@ -3782,6 +4285,7 @@ export function App() {
       const existing = await getSessionCapabilities(sessionId);
       if (existing) {
         const merged = mergeAcpCapabilities(agent.id, existing) ?? existing;
+        setCapsById((current) => ({ ...current, [sessionId]: merged }));
         if (sessionId === currentSessionIdRef.current) {
           setSessionCapabilities(merged);
         }
@@ -3814,6 +4318,7 @@ export function App() {
             session.cwd
           );
           const merged = mergeAcpCapabilities(agent.id, caps) ?? caps;
+          setCapsById((current) => ({ ...current, [sessionId]: merged }));
           if (sessionId === currentSessionIdRef.current) {
             setSessionCapabilities(merged);
           }
@@ -3851,14 +4356,15 @@ export function App() {
     [pushDebug, setSessionStatusById, touchActivity]
   );
 
-  const warmActiveAcp = useCallback(() => {
-    const sid = currentSessionIdRef.current;
+  const warmAcp = useCallback((sessionId?: string) => {
+    const sid = sessionId ?? currentSessionIdRef.current;
     if (!sid) return;
     const session = sessionsRef.current.find((s) => s.id === sid);
     const agent = agentsRef.current.find((a) => a.id === session?.agentId);
     if (agent?.transport !== "acp") return;
     void ensureAcpReady(sid).catch(() => undefined);
   }, [ensureAcpReady]);
+  const warmActiveAcp = useCallback(() => warmAcp(), [warmAcp]);
 
   /**
    * Hidden turn: an agent-side slash replay (Grok `/always-approve`) still needs
@@ -3900,6 +4406,23 @@ export function App() {
       ...lastClosedTabsRef.current.filter((id) => id !== sessionId),
     ].slice(0, 20);
     saveClosedTabs(lastClosedTabsRef.current);
+    const tree = splitStateRef.current;
+    if (!IS_DETACHED_WINDOW && leafCount(tree) > 1) {
+      const result = closeTab(tree, sessionId);
+      if (result.needPlaceholderChat) {
+        commitSplit(result.state);
+        const closing = availableSessions.find((session) => session.id === sessionId);
+        if (closing?.projectId === CHAT_PROJECT_ID || currentProjectId === CHAT_PROJECT_ID) {
+          void handleCreateChatSession();
+        } else {
+          void createSessionForProject(currentProject?.id ?? availableProjects[0]?.id ?? "");
+        }
+        return;
+      }
+      commitSplit(result.state);
+      void pruneColdSessionMemory();
+      return;
+    }
     const nextOpenIds = openSessionIds.filter((id) => id !== sessionId);
     if (nextOpenIds.length === 0) {
       const closing = availableSessions.find((session) => session.id === sessionId);
@@ -3959,7 +4482,10 @@ export function App() {
     if (!isTauriRuntime() || IS_DETACHED_WINDOW) return;
     // Flush before the detached SPA loads from disk, so tokens already in
     // this window are not missing for the gap until it claims ownership.
-    const pending = persistableEventsForSession(liveEventsRef.current, session.id);
+    const pending = persistableEventsForSession(
+      shadowBySessionRef.current.get(session.id) ?? EMPTY_EVENTS,
+      session.id,
+    );
     if (pending.length > 0) {
       void writeTranscript(session.id, pending).catch(() => undefined);
     }
@@ -3982,6 +4508,23 @@ export function App() {
         label: again.label,
       });
     }, 400);
+    const tree = splitStateRef.current;
+    if (!IS_DETACHED_WINDOW && leafCount(tree) > 1) {
+      const result = popOutTab(tree, session.id);
+      if (result.needPlaceholderChat) {
+        commitSplit(result.state);
+        if (session.projectId === CHAT_PROJECT_ID) {
+          void handleCreateChatSession();
+        } else {
+          void createSessionForProject(
+            session.projectId || currentProject?.id || availableProjects[0]?.id || "",
+          );
+        }
+        return;
+      }
+      commitSplit(result.state);
+      return;
+    }
     const nextOpenIds = openSessionIds.filter((id) => id !== session.id);
     if (nextOpenIds.length === 0) {
       setOpenSessionIds([]);
@@ -4012,7 +4555,10 @@ export function App() {
   const handleMergeBack = async (session: Session, viaDrag = false) => {
     if (!isTauriRuntime() || !IS_DETACHED_WINDOW) return;
     void viaDrag;
-    const events = persistableEventsForSession(liveEventsRef.current, session.id);
+    const events = persistableEventsForSession(
+      shadowBySessionRef.current.get(session.id) ?? EMPTY_EVENTS,
+      session.id,
+    );
     if (events.length > 0) {
       await writeTranscript(session.id, events).catch(() => undefined);
     }
@@ -4041,7 +4587,7 @@ export function App() {
     const remainingSessions = availableSessions.filter((session) => session.id !== sessionId);
     setAvailableSessions(remainingSessions);
     setOpenSessionIds((current) => current.filter((id) => id !== sessionId));
-    setLiveEvents((current) => dropEventsForSessions(current, new Set([sessionId])));
+    dropSessionRails([sessionId]);
     transcriptLoadedRef.current.delete(sessionId);
     acpNeedsHistoryRef.current.delete(sessionId);
     pendingSendsRef.current.delete(sessionId);
@@ -4197,7 +4743,9 @@ export function App() {
       return previewMergeFromAi(todoItems, planToProposed(plan));
     }
     // Prefer fenced block from last assistant message in this session.
-    const events = liveEventsRef.current.filter((e) => e.sessionId === sid);
+    const events = sid
+      ? (shadowBySessionRef.current.get(sid) ?? EMPTY_EVENTS)
+      : EMPTY_EVENTS;
     for (let i = events.length - 1; i >= 0; i--) {
       const e = events[i];
       if (e.type !== "assistant_message") continue;
@@ -4249,18 +4797,21 @@ export function App() {
   const handlePermissionChoose = useCallback(async (optionId: string) => {
     if (!permissionPrompt) return;
     setPermissionBusy(true);
+    const requestId = permissionPrompt.requestId;
+    const sessionId = permissionPrompt.sessionId;
     try {
-      await respondAcpPermission(permissionPrompt.requestId, optionId);
+      await respondAcpPermission(requestId, optionId);
       pushDebug({
-        sessionId: permissionPrompt.sessionId,
+        sessionId,
         level: "info",
         source: "permission",
         summary: `permission ${optionId}`,
         detail: permissionPrompt.title,
       });
+      setPermissionPrompt(null);
     } catch (error) {
       pushDebug({
-        sessionId: permissionPrompt.sessionId,
+        sessionId,
         level: "error",
         source: "permission",
         summary: "respond permission failed",
@@ -4268,7 +4819,6 @@ export function App() {
       });
     } finally {
       setPermissionBusy(false);
-      setPermissionPrompt(null);
     }
   }, [permissionPrompt, pushDebug]);
 
@@ -4276,17 +4826,29 @@ export function App() {
     async (answers: { question: string; selected: string[] }[]) => {
       if (!askPrompt) return;
       setAskBusy(true);
+      const requestId = askPrompt.requestId;
+      const sessionId = askPrompt.sessionId;
       try {
-        await respondAcpQuestion(askPrompt.requestId, answers, false);
+        await respondAcpQuestion(requestId, answers, false);
+        updateSessionEvents(
+          sessionId,
+          (current) =>
+            patchPromptEvent(current, requestId, {
+              status: "answered",
+              answers,
+            }),
+          { publish: true },
+        );
+        setAskPrompt(null);
         pushDebug({
-          sessionId: askPrompt.sessionId,
+          sessionId,
           level: "info",
           source: "question",
           summary: `answered ${answers.length} question(s)`,
         });
       } catch (error) {
         pushDebug({
-          sessionId: askPrompt.sessionId,
+          sessionId,
           level: "error",
           source: "question",
           summary: "respond question failed",
@@ -4294,7 +4856,6 @@ export function App() {
         });
       } finally {
         setAskBusy(false);
-        setAskPrompt(null);
       }
     },
     [askPrompt, pushDebug],
@@ -4303,11 +4864,22 @@ export function App() {
   const handleAskDecline = useCallback(async () => {
     if (!askPrompt) return;
     setAskBusy(true);
+    const requestId = askPrompt.requestId;
+    const sessionId = askPrompt.sessionId;
     try {
-      await respondAcpQuestion(askPrompt.requestId, [], true);
+      await respondAcpQuestion(requestId, [], true);
+      updateSessionEvents(
+        sessionId,
+        (current) =>
+          patchPromptEvent(current, requestId, {
+            status: "declined",
+          }),
+        { publish: true },
+      );
+      setAskPrompt(null);
     } catch (error) {
       pushDebug({
-        sessionId: askPrompt.sessionId,
+        sessionId,
         level: "error",
         source: "question",
         summary: "decline question failed",
@@ -4315,7 +4887,6 @@ export function App() {
       });
     } finally {
       setAskBusy(false);
-      setAskPrompt(null);
     }
   }, [askPrompt, pushDebug]);
 
@@ -4328,14 +4899,27 @@ export function App() {
     async (decision: PlanApprovalDecision, feedback?: string) => {
       if (!planApproval) return;
       setPlanApprovalBusy(true);
+      const requestId = planApproval.requestId;
+      const sessionId = planApproval.sessionId;
       try {
         await respondAcpPlanApproval(
-          planApproval.requestId,
+          requestId,
           decision,
           feedback ?? null,
         );
+        updateSessionEvents(
+          sessionId,
+          (current) =>
+            patchPromptEvent(current, requestId, {
+              status: decision === "abandon" ? "declined" : "answered",
+              decision,
+              decisionLabel: planDecisionLabel(decision),
+              ...(feedback?.trim() ? { feedback: feedback.trim() } : {}),
+            }),
+          { publish: true },
+        );
         pushDebug({
-          sessionId: planApproval.sessionId,
+          sessionId,
           level: "info",
           source: "plan",
           summary: `plan approval: ${decision}`,
@@ -4344,7 +4928,7 @@ export function App() {
         setPlanApproval(null);
 
         if (decision === "request_changes" && feedback?.trim()) {
-          const sid = planApproval.sessionId;
+          const sid = sessionId;
           const notes = feedback.trim();
           // Small delay so the keep_planning turn can settle before the next prompt.
           window.setTimeout(() => {
@@ -4384,9 +4968,53 @@ export function App() {
     [planApproval, pushDebug],
   );
 
-  const handleAgentChange = async (agentId: string) => {
+  const handlePlanPermissionChoose = useCallback(
+    async (optionId: string) => {
+      if (!planApproval) return;
+      setPlanApprovalBusy(true);
+      const requestId = planApproval.requestId;
+      const sessionId = planApproval.sessionId;
+      const option = (planApproval.permissionOptions ?? []).find((o) => o.optionId === optionId);
+      try {
+        await respondAcpPermission(requestId, optionId);
+        updateSessionEvents(
+          sessionId,
+          (current) =>
+            patchPromptEvent(current, requestId, {
+              status: "answered",
+              decision: optionId,
+              decisionLabel: planDecisionLabel(optionId, planApproval.permissionOptions),
+            }),
+          { publish: true },
+        );
+        setPlanApproval(null);
+        pushDebug({
+          sessionId,
+          level: "info",
+          source: "permission",
+          summary: `plan permission ${optionId}`,
+          detail: option?.name || planApproval.title,
+        });
+      } catch (error) {
+        pushDebug({
+          sessionId,
+          level: "error",
+          source: "permission",
+          summary: "respond plan permission failed",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        setPlanApprovalBusy(false);
+      }
+    },
+    [planApproval, pushDebug],
+  );
+
+  const handleAgentChange = async (agentId: string, sessionId?: string) => {
+    const sid = sessionId ?? currentSessionId;
+    const target = sessionsRef.current.find((s) => s.id === sid);
     // If no current session, create one bound to this agent
-    if (!currentSession || !currentSessionId || currentSessionId.startsWith("session-empty-")) {
+    if (!target || !sid || sid.startsWith("session-empty-")) {
       if (currentProject) {
         void createSessionForProject(currentProject.id, agentId);
       } else {
@@ -4396,19 +5024,18 @@ export function App() {
       return;
     }
 
-    if (currentSession.agentId === agentId) return;
+    if (target.agentId === agentId) return;
 
     // HARD RULE: session.agentId is the only source of truth for which agent
     // owns this dialog. Persist it so reopening the tab cannot show OpenCode
     // while still listing Claude models.
-    const sid = currentSessionId;
-    const sourceAgentId = currentSession.agentId;
+    const sourceAgentId = target.agentId;
     const oldAgent = availableAgents.find((a) => a.id === sourceAgentId);
 
     // Mid-turn switch: cancel the open prompt first so the old process does
     // not keep running after we tear it down (and so turn/complete frees UI).
     const midTurn =
-      currentSession.status === "running" || currentSession.status === "starting";
+      target.status === "running" || target.status === "starting";
     if (midTurn) {
       try {
         await cancelAcpSession(sid);
@@ -4420,11 +5047,11 @@ export function App() {
 
     // Seal the previous agent's last Reply so the next harness's tools / CoT
     // stream cannot demote it to Thinking (same dialog, shared transcript).
-    setLiveEvents((current) => sealOpenAssistantReplies(current, sid));
-    // liveEventsRef may lag one frame behind setState — seal the snapshot we
-    // are about to flush too.
-    const sealedLive = sealOpenAssistantReplies(liveEventsRef.current, sid);
-    liveEventsRef.current = sealedLive;
+    const sealedLive = updateSessionEvents(
+      sid,
+      (current) => sealOpenAssistantReplies(current, sid),
+      { publish: true },
+    );
 
     // Flush transcript so handoff can read the latest Clean history.
     try {
@@ -4437,7 +5064,7 @@ export function App() {
     // P1-B: handoff.md + composer prefill (never auto-send).
     try {
       const handoff = await generateHandoff({
-        projectId: currentSession.projectId,
+        projectId: target.projectId,
         sessionId: sid,
         targetAgentId: agentId,
         sourceAgentId,
@@ -4446,7 +5073,7 @@ export function App() {
         setLastHandoff(handoff);
         // Never prefill the composer: the notes ride along with the next message
         // the user actually sends (see pendingHandoffPrompt in handleSend).
-        setLiveEvents((current) => [
+        updateSessionEvents(sid, (current) => [
           ...sealOpenAssistantReplies(current, sid),
           {
             type: "handoff_prepared" as const,
@@ -4456,7 +5083,7 @@ export function App() {
             prompt: handoff.prompt,
             createdAt: new Date().toISOString(),
           },
-        ]);
+        ], { publish: true });
         pushDebug({
           sessionId: sid,
           level: "info",
@@ -4487,6 +5114,11 @@ export function App() {
     setPlanApproval((cur) => (cur?.sessionId === sid ? null : cur));
     setPlanApprovalBusy(false);
     setPermissionPrompt((cur) => (cur?.sessionId === sid ? null : cur));
+    updateSessionEvents(
+      sid,
+      (current) => expirePendingPrompts(current, sid, "timeout"),
+      { publish: true },
+    );
     // Keep Clean history for this dialog; only the agent process is replaced.
     setSessionUsageById((current) => ({ ...current, [sid]: emptySessionUsage() }));
     acpBootstrapRef.current.delete(sid);
@@ -4581,7 +5213,7 @@ export function App() {
       await refreshProjectContext(currentProjectId);
       await restartAcpProcess(sid);
       await ensureAcpReady(sid);
-      setLiveEvents((current) => [
+      updateSessionEvents(sid, (current) => [
         ...current,
         {
           type: "assistant_message" as const,
@@ -4590,7 +5222,7 @@ export function App() {
             "**Reconnected.**\n\nMCP servers were re-negotiated for this session, so anything that started after the agent (Unity, UE, …) should be attached now. Your conversation is kept — it is replayed to the new session with your next message.",
           createdAt: new Date().toISOString(),
         },
-      ]);
+      ], { publish: true });
       pushDebug({
         sessionId: sid,
         level: "info",
@@ -4771,7 +5403,7 @@ export function App() {
         source: "interrupt",
         summary: "cancel unacknowledged — agent silent, will restart on next send",
       });
-      setLiveEvents((current) => [
+      updateSessionEvents(sid, (current) => [
         ...current,
         {
           type: "assistant_message" as const,
@@ -4780,7 +5412,7 @@ export function App() {
             "**The agent did not answer the cancel.**\n\nIt has stayed silent since the interrupt, so the turn is stuck inside the agent process — a hung tool or model call, which nothing on this side can reach.\n\nSend your next message as usual: Marionette will replace the agent process first and replay this conversation to the new one.",
           createdAt: new Date().toISOString(),
         },
-      ]);
+      ], { publish: true });
     }, CANCEL_ACK_GRACE_MS);
     cancelWatchdogsRef.current.set(sid, timer);
   }, [pushDebug]);
@@ -4803,9 +5435,9 @@ export function App() {
       let cancelNote = "Cancel request sent to the agent.";
 
       streamSuppressedRef.current.add(sid);
-      setLiveEvents((current) =>
+      updateSessionEvents(sid, (current) =>
         sealOpenAssistantReplies(markOpenTools(current, sid, "cancelled"), sid),
-      );
+      { publish: true });
 
       try {
         await cancelAcpSession(sid);
@@ -4827,7 +5459,7 @@ export function App() {
       setSessionStatusById(sid, "waiting");
       touchActivity(sid);
       if (announce) {
-        setLiveEvents((current) => [
+        updateSessionEvents(sid, (current) => [
           ...current,
           {
             type: "assistant_message" as const,
@@ -4836,7 +5468,7 @@ export function App() {
             createdAt: new Date().toISOString(),
             durationMs: 0,
           },
-        ]);
+        ], { publish: true });
       }
       pushDebug({
         sessionId: sid,
@@ -4913,7 +5545,17 @@ export function App() {
         return;
       }
       if (planApproval) {
-        void handlePlanApproval("abandon");
+        const reject = (planApproval.permissionOptions ?? []).find((o) =>
+          /reject|deny|cancel|no[, ]|keep planning/i.test(`${o.kind} ${o.name} ${o.optionId}`),
+        );
+        if (reject) {
+          void handlePlanPermissionChoose(reject.optionId);
+        } else if (planApproval.permissionOptions?.length) {
+          const last = planApproval.permissionOptions[planApproval.permissionOptions.length - 1];
+          void handlePlanPermissionChoose(last.optionId);
+        } else {
+          void handlePlanApproval("abandon");
+        }
         lastEscAtRef.current = 0;
         return;
       }
@@ -4950,6 +5592,7 @@ export function App() {
     handlePermissionChoose,
     handleAskDecline,
     handlePlanApproval,
+    handlePlanPermissionChoose,
   ]);
 
   // Ctrl/Cmd+1..9 jumps to a tab; Ctrl/Cmd+Shift+T reopens the last closed one.
@@ -4958,7 +5601,10 @@ export function App() {
       if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
       if (event.key >= "1" && event.key <= "9" && !event.shiftKey) {
         const idx = Number(event.key) - 1;
-        const tabs = openSessionIds
+        const tree = splitStateRef.current;
+        const paneTabs = findPane(tree, tree.focusedPaneId)?.tabIds ?? [];
+        const tabIds = paneTabs.length > 0 ? paneTabs : openSessionIds;
+        const tabs = tabIds
           .map((id) => availableSessions.find((s) => s.id === id))
           .filter((s): s is Session => Boolean(s));
         const target = tabs[idx];
@@ -5018,7 +5664,7 @@ export function App() {
         );
       };
 
-      const current = liveEventsRef.current;
+      const current = shadowBySessionRef.current.get(sid) ?? EMPTY_EVENTS;
       const cut = findCutIndex(current);
       if (cut < 0) {
         pushDebug({
@@ -5029,13 +5675,9 @@ export function App() {
         });
         return;
       }
-      const kept = current.filter((e, i) => {
-        if (e.sessionId !== sid) return true;
-        return i < cut;
-      });
+      const kept = current.slice(0, cut);
       const nextEvents = [...kept, userMessageEvent(sid, newText.trim(), sendMetaRef.current ?? undefined)];
-      setLiveEvents(nextEvents);
-      liveEventsRef.current = nextEvents;
+      updateSessionEvents(sid, () => nextEvents, { publish: true });
 
       // Persist truncated transcript immediately.
       try {
@@ -5086,7 +5728,7 @@ export function App() {
         });
         raiseClassifiedBanner(sess?.agentId, classified);
         setComposerFailure({ sessionId: sid, error: classified });
-        setLiveEvents((events) => [
+        updateSessionEvents(sid, (events) => [
           ...events,
           {
             type: "assistant_message" as const,
@@ -5094,7 +5736,7 @@ export function App() {
             text: formatClassifiedError(classified),
             createdAt: new Date().toISOString(),
           },
-        ]);
+        ], { publish: true });
       }
     },
     [ensureAcpReady, pushDebug, raiseClassifiedBanner, renameSessionFromText, setSessionStatusById]
@@ -5121,7 +5763,7 @@ export function App() {
       meta.finished = true;
       if (meta.idleTimer) clearTimeout(meta.idleTimer);
 
-      const events = liveEventsRef.current.filter((e) => e.sessionId === childId);
+      const events = shadowBySessionRef.current.get(childId) ?? EMPTY_EVENTS;
       let summary = "";
       for (let i = events.length - 1; i >= 0; i--) {
         const e = events[i];
@@ -5146,11 +5788,7 @@ export function App() {
         error,
         createdAt: new Date().toISOString(),
       };
-      setLiveEvents((current) => {
-        const next = [...current, result];
-        liveEventsRef.current = next;
-        return next;
-      });
+      updateSessionEvents(meta.parentId, (current) => [...current, result], { publish: true });
 
       const subagentLabel = `${meta.agentLabel || "Subagent"} subagent`;
       if (status === "done") {
@@ -5203,7 +5841,7 @@ export function App() {
         availableAgents.find((a) => a.id === agentId) ??
         agents.find((a) => a.id === agentId);
       if (!agent || agent.transport !== "acp") {
-        setLiveEvents((current) => [
+        updateSessionEvents(parentId, (current) => [
           ...current,
           {
             type: "subtask_result" as const,
@@ -5215,7 +5853,7 @@ export function App() {
             error: `Agent ${agentId} 不可用或非 ACP`,
             createdAt: new Date().toISOString(),
           },
-        ]);
+        ], { publish: true });
         return;
       }
 
@@ -5224,7 +5862,7 @@ export function App() {
         const statuses = await listAgentCommands();
         const st = statuses.find((s) => s.id === agentId);
         if (st && st.status !== "installed") {
-          setLiveEvents((current) => [
+          updateSessionEvents(parentId, (current) => [
             ...current,
             {
               type: "subtask_started" as const,
@@ -5246,7 +5884,7 @@ export function App() {
               error: "agent 未安装",
               createdAt: new Date().toISOString(),
             },
-          ]);
+          ], { publish: true });
           return;
         }
       } catch {
@@ -5258,7 +5896,7 @@ export function App() {
       try {
         child = await createChildSession(projectId, parentId, agentId, label);
       } catch (error) {
-        setLiveEvents((current) => [
+        updateSessionEvents(parentId, (current) => [
           ...current,
           {
             type: "subtask_result" as const,
@@ -5270,7 +5908,7 @@ export function App() {
             error: error instanceof Error ? error.message : String(error),
             createdAt: new Date().toISOString(),
           },
-        ]);
+        ], { publish: true });
         return;
       }
       if (!child) return;
@@ -5296,11 +5934,7 @@ export function App() {
         prompt,
         createdAt: new Date().toISOString(),
       };
-      setLiveEvents((current) => {
-        const next = [...current, started];
-        liveEventsRef.current = next;
-        return next;
-      });
+      updateSessionEvents(parentId, (current) => [...current, started], { publish: true });
 
       armDelegateIdleTimer(child.id);
 
@@ -5375,7 +6009,7 @@ export function App() {
         });
         delegateQueueRef.current.set(parentId, q);
         // Placeholder card so the user sees "排队中"
-        setLiveEvents((current) => [
+        updateSessionEvents(parentId, (current) => [
           ...current,
           {
             type: "subtask_started" as const,
@@ -5387,7 +6021,7 @@ export function App() {
             prompt: `（排队中）${parsed.prompt}`,
             createdAt: new Date().toISOString(),
           },
-        ]);
+        ], { publish: true });
         return;
       }
 
@@ -5416,28 +6050,37 @@ export function App() {
     droppedPaths: string[] = [],
     imageAttachments: ImageAttachment[] = [],
     opts?: ComposerChipSnapshot,
+    sessionId?: string,
   ) => {
-    let sid = currentSessionId;
+    let sid = sessionId ?? currentSessionId;
+    const row = sessionsRef.current.find((s) => s.id === sid);
     if (!sid || sid.startsWith("session-empty-")) {
       setComposerAutoFocus(true);
-      const created = await handleCreateChatSession(displaySession.agentId);
+      const created = await handleCreateChatSession(row?.agentId ?? displaySession.agentId);
       if (!created) return;
       sid = created.id;
     }
+
+    const sess = sessionsRef.current.find((s) => s.id === sid) ?? row;
+    const projectId = sess?.projectId || currentProjectId;
 
     // @-delegate: line-start @agent task — does not block the parent dialog.
     // Images on a delegate line are ignored for now (depth=1, simple task text).
     const knownIds = availableAgents.map((a) => a.id);
     const delegated = parseDelegateLine(text, knownIds);
     if (delegated) {
-      const projectId = displaySession.projectId || currentProjectId;
-      setQuotePins([]);
+      setQuotePinsById((current) => {
+        if (!(sid in current)) return current;
+        const next = { ...current };
+        delete next[sid];
+        return next;
+      });
       await handleDelegate(sid, projectId, delegated);
       return;
     }
 
     // Merge quote pins + image mark text + free Composer text.
-    const pins = quotePins;
+    const pins = quotePinsById[sid] ?? [];
     let composed = pins.length > 0 ? formatPinsForSend(pins, text) : text;
     const markBlock = formatImageMarksForSend(imageAttachments);
     if (markBlock) {
@@ -5446,8 +6089,6 @@ export function App() {
         : markBlock;
     }
     if (!composed.trim() && imageAttachments.length === 0) return;
-
-    const projectId = displaySession.projectId || currentProjectId;
     // Image attachments are inlined as ACP `ContentBlock::Image` (base64);
     // the agent never reads those files from disk, so their folders must
     // not trigger a workspace grant / session/new. DSH rejects a non-empty
@@ -5462,7 +6103,7 @@ export function App() {
     ];
     // Chat has a real cwd but no project-level `.marionette` scope. Its agent
     // is already started in that cwd, so do not ask to persist a project grant.
-    const outside = displaySession.projectId === CHAT_PROJECT_ID
+    const outside = (sess?.projectId ?? displaySession.projectId) === CHAT_PROJECT_ID
       ? []
       : await checkOutsideProjectPaths(projectId, candidates).catch(() => []);
     if (outside.length > 0) {
@@ -5476,7 +6117,12 @@ export function App() {
       return;
     }
 
-    setQuotePins([]);
+    setQuotePinsById((current) => {
+      if (!(sid in current)) return current;
+      const next = { ...current };
+      delete next[sid];
+      return next;
+    });
     await performSend(sid, composed, imageAttachments, opts);
   };
 
@@ -5554,26 +6200,34 @@ export function App() {
     try {
       // An agent switch leaves handoff notes waiting — attach them to this send
       // (the composer stays clean; only the wire payload carries them).
-      const handoff = pendingHandoff(liveEventsRef.current, sid);
+      const handoff = pendingHandoff(
+        shadowBySessionRef.current.get(sid) ?? EMPTY_EVENTS,
+        sid,
+      );
 
+      const sendRow = sessionsRef.current.find((s) => s.id === sid);
+      const sendAgent =
+        agentsRef.current.find((a) => a.id === sendRow?.agentId) ??
+        agentsRef.current[0] ??
+        agents[0];
       // Prefer Composer chip snapshot (what the user saw at send). Caps.currentMode
       // lags on purpose after a mode switch — agent often still echoes the old mode.
-      const caps = sessionCapabilities;
+      const caps = capsByIdRef.current[sid] ?? (sid === currentSessionIdRef.current ? sessionCapabilities : null);
       const modeIdRaw =
         composerSnap?.modeId?.trim() ||
-        displaySession.preferredMode?.trim() ||
+        sendRow?.preferredMode?.trim() ||
         caps?.currentMode ||
         null;
       const modeId = modeIdRaw
-        ? normalizeAgentModeId(currentAgent.id, modeIdRaw)
+        ? normalizeAgentModeId(sendAgent.id, modeIdRaw)
         : null;
       const modeLabel =
         composerSnap?.modeLabel?.trim() ||
         (modeId ? caps?.modes.find((m) => m.id === modeId)?.label ?? modeId : undefined);
       const modelId =
         composerSnap?.modelId?.trim() ||
-        activeModelId ||
-        displaySession.preferredModel?.trim() ||
+        (sid === currentSessionIdRef.current ? activeModelId : null) ||
+        sendRow?.preferredModel?.trim() ||
         caps?.currentModel ||
         null;
       const modelLabel =
@@ -5584,13 +6238,13 @@ export function App() {
       // the agent default while the chip showed something else.
       const effortId =
         composerSnap?.effortId?.trim() ||
-        displaySession.preferredEffortId?.trim() ||
+        sendRow?.preferredEffortId?.trim() ||
         null;
       const sendEffort =
         typeof composerSnap?.effort === "number" && Number.isFinite(composerSnap.effort)
           ? composerSnap.effort
-          : typeof displaySession.preferredEffort === "number"
-            ? displaySession.preferredEffort
+          : typeof sendRow?.preferredEffort === "number"
+            ? sendRow.preferredEffort
             : null;
       const effortLabelVal =
         composerSnap?.effortLabel?.trim() ||
@@ -5603,8 +6257,8 @@ export function App() {
             ? effortLabel(sendEffort)
             : undefined);
       sendMetaRef.current = {
-        agentId: currentAgent.id,
-        agentLabel: currentAgent.label,
+        agentId: sendAgent.id,
+        agentLabel: sendAgent.label,
         modelId: modelId ?? undefined,
         modelLabel: modelLabel ?? undefined,
         modeLabel: modeLabel ?? undefined,
@@ -5614,7 +6268,7 @@ export function App() {
 
       // Show the user message immediately; wait for ACP only after that.
       // History injection uses events *before* this message.
-      const priorForInject = liveEventsRef.current.filter((e) => e.sessionId === sid);
+      const priorForInject = shadowBySessionRef.current.get(sid) ?? EMPTY_EVENTS;
       const liveStatus = sessionsRef.current.find((s) => s.id === sid)?.status;
       const pendingQueue = pendingSendsRef.current.get(sid) ?? [];
       const flushing = flushingSendRef.current.has(sid);
@@ -5688,7 +6342,7 @@ export function App() {
         attachments: imageAttachments.length > 0 ? imageAttachments : undefined,
         sentAt: new Date(turnSentAtRef.current[sid] ?? Date.now()).toISOString(),
       });
-      setLiveEvents((current) => [...current, um]);
+      updateSessionEvents(sid, (current) => [...current, um], { publish: true });
       // Shelf order is recency-only: bump lastActiveAt only when the user sends
       // (selecting a dialog must not jump it to the top).
       const activeAt = new Date().toISOString();
@@ -5727,7 +6381,7 @@ export function App() {
       // while Codex still asks for every shell/edit. Same pattern as child
       // delegates: start → set config → prompt.
       {
-        const agentId = currentAgent.id;
+        const agentId = sendAgent.id;
         const live = await getSessionCapabilities(sid).catch(() => null);
         const liveCaps = mergeAcpCapabilities(agentId, live) ?? live;
         const pushConfig = async (patch: Record<string, unknown>) => {
@@ -5796,11 +6450,11 @@ export function App() {
         acpNeedsHistoryRef.current.delete(sid);
         // Skills this agent does not ship with — a pointer list, once per
         // connection, so it can read the SKILL.md itself when relevant.
-        const skillsPrefix = displaySession.projectId === CHAT_PROJECT_ID
+        const skillsPrefix = sendRow?.projectId === CHAT_PROJECT_ID
           ? null
           : await projectContextPrompt(
-              displaySession.projectId || currentProjectId,
-              currentAgent.id,
+              sendRow?.projectId || currentProjectId,
+              sendAgent.id,
             ).catch(() => null);
         if (skillsPrefix) {
           promptText = `${skillsPrefix}${promptText}`;
@@ -5829,8 +6483,8 @@ export function App() {
       touchActivity(sid);
       const imagePaths = imageAttachments.map((a) => a.path);
       const wireText = promptText;
-      const projectId = displaySession.projectId || currentProjectId;
-      const fileSnapshot = displaySession.projectId === CHAT_PROJECT_ID
+      const projectId = sendRow?.projectId || currentProjectId;
+      const fileSnapshot = sendRow?.projectId === CHAT_PROJECT_ID
         ? null
         : await captureProjectFileSnapshot(projectId);
       if (fileSnapshot) fileChangeSnapshotsRef.current[sid] = fileSnapshot;
@@ -5863,15 +6517,15 @@ export function App() {
       // an error card + toast + "error" status, which historically dropped the
       // message AND un-gated every following send into the same refusal.
       if (classified.kind === "busy") {
-        setLiveEvents((current) => {
+        updateSessionEvents(sid, (current) => {
           for (let i = current.length - 1; i >= 0; i -= 1) {
             const e = current[i];
-            if (e.sessionId === sid && e.type === "user_message" && e.text === composed) {
+            if (e.type === "user_message" && e.text === composed) {
               return [...current.slice(0, i), ...current.slice(i + 1)];
             }
           }
           return current;
-        });
+        }, { publish: true });
         const queue = pendingSendsRef.current.get(sid) ?? [];
         queue.push({ composed, imageAttachments, composerSnap });
         pendingSendsRef.current.set(sid, queue);
@@ -5896,7 +6550,7 @@ export function App() {
       );
       raiseClassifiedBanner(sess?.agentId, classified);
       setComposerFailure({ sessionId: sid, error: classified });
-      setLiveEvents((current) => [
+      updateSessionEvents(sid, (current) => [
         ...current,
         {
           type: "assistant_message" as const,
@@ -5904,7 +6558,7 @@ export function App() {
           text: formatClassifiedError(classified),
           createdAt: new Date().toISOString(),
         },
-      ]);
+      ], { publish: true });
       pushDebug({
         sessionId: sid,
         level: "error",
@@ -5914,6 +6568,58 @@ export function App() {
       });
     }
   };
+
+  // Telegram 入站（手机发来的文字）：先切到目标会话再走与本地 Composer 完全
+  // 相同的 performSend 管线（挂起重连、历史注入、排队、配置回推），完成后
+  // 回执给 bot。performSend 内部吞错，所以按会话状态判定成败。
+  const telegramPerformSendRef = useRef(performSend);
+  telegramPerformSendRef.current = performSend;
+  useEffect(() => {
+    if (!isTauriRuntime() || IS_DETACHED_WINDOW) return;
+    let unlisten: (() => void) | undefined;
+    void listen<TelegramInbound>(TELEGRAM_INBOUND_EVENT, (event) => {
+      const payload = event.payload;
+      if (!payload?.sessionId) return;
+      const text = typeof payload.text === "string" ? payload.text.trim() : "";
+      if (!text) return;
+      const sid = payload.sessionId;
+      const messageId = typeof payload.messageId === "number" ? payload.messageId : null;
+      const session = sessionsRef.current.find((s) => s.id === sid);
+      if (!session) {
+        void telegramAck(false, "会话不存在（可能已被删除）", messageId, sid);
+        return;
+      }
+      // performSend 的模式/模型回推依赖当前 tab 的会话态：先把目标切到前台。
+      openSessionRef.current(session);
+      pushDebug({
+        sessionId: sid,
+        level: "info",
+        source: "telegram",
+        summary: `inbound text from telegram · ${text.length} chars`,
+      });
+      void telegramPerformSendRef
+        .current(sid, text)
+        .then(() => {
+          const failed =
+            sessionsRef.current.find((s) => s.id === sid)?.status === "error";
+          void telegramAck(
+            !failed,
+            failed ? "发送失败，详情在电脑上看" : null,
+            messageId,
+            sid,
+          );
+        })
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          void telegramAck(false, message, messageId, sid);
+        });
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => unlisten?.();
+    // 只订阅一次；回调和会话查找全部走 ref。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Drain follow-ups when a turn frees the session (natural end or cancel).
   drainQueuedSendRef.current = (sessionId: string) => {
@@ -5984,7 +6690,9 @@ export function App() {
       setPathGrantBusy(true);
       try {
         let mustRestart = false;
-        const projectId = displaySession.projectId || currentProjectId;
+        const projectId =
+          sessionsRef.current.find((s) => s.id === prompt.sessionId)?.projectId ||
+          currentProjectId;
         for (const item of prompt.paths) {
           try {
             const result = await grantWorkspaceRoot(projectId, item.dir, prompt.sessionId);
@@ -6014,7 +6722,13 @@ export function App() {
           });
         }
         void refreshProjectContext(projectId);
-        setQuotePins([]);
+        setQuotePinsById((current) => {
+          const sid = prompt.sessionId;
+          if (!(sid in current)) return current;
+          const next = { ...current };
+          delete next[sid];
+          return next;
+        });
         setPathGrantPrompt(null);
         await performSend(
           prompt.sessionId,
@@ -6028,7 +6742,7 @@ export function App() {
     },
     // performSend is defined below in the same component scope
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [pathGrantPrompt, pathGrantBusy, displaySession.projectId, currentProjectId, pushDebug, refreshProjectContext, setSessionStatusById]
+    [pathGrantPrompt, pathGrantBusy, currentProjectId, pushDebug, refreshProjectContext, setSessionStatusById]
   );
 
   const handleAddProject = async () => {
@@ -6158,6 +6872,330 @@ export function App() {
     edgeHoverTimers.current.right = setTimeout(() => setRightEdgeHover(false), 600);
   }, []);
 
+  const tabGhostHint = ghostHintForDrop(tabDropPreview, {
+    atMax: leafCount(splitState) >= MAX_PANES,
+  });
+
+  const handleTabDragPreview = (session: Session, clientX: number, clientY: number) => {
+    const drop = hitTestTabDrop(session, clientX, clientY);
+    if (dropKindsEqual(tabDropPreviewRef.current, drop)) return;
+    tabDropPreviewRef.current = drop;
+    setTabDropPreview(drop);
+    setDropPanes(dropPanesRef.current);
+  };
+
+  const handleTabDragEnd = (session: Session, clientX: number, clientY: number, cancelled: boolean) => {
+    const drop = cancelled
+      ? ({ kind: "cancel", reason: "miss" } as const)
+      : hitTestTabDrop(session, clientX, clientY);
+    tabDropPreviewRef.current = null;
+    setTabDropPreview(null);
+    setDropPanes([]);
+    if (cancelled || drop.kind === "cancel") return;
+    if (drop.kind === "detach") {
+      void handleTabPopOut(session, true);
+      return;
+    }
+    const tree =
+      leafCount(splitStateRef.current) > 1
+        ? splitStateRef.current
+        : migrateFromFlat(openSessionIdsRef.current, currentSessionIdRef.current);
+    if (drop.kind === "split") {
+      commitSplit(splitPane(tree, drop.paneId, drop.edge, session.id, { maxLeaves: MAX_PANES }));
+      return;
+    }
+    if (drop.kind === "activate") {
+      commitSplit(moveTab(tree, session.id, { kind: "activate", paneId: drop.paneId }));
+      return;
+    }
+    if (drop.kind === "insert-tab") {
+      commitSplit(moveTab(tree, session.id, { kind: "insert-tab", paneId: drop.paneId, index: drop.index }));
+    }
+  };
+
+  const newTabForSession = (session: Session) => {
+    if (!currentSession || session.projectId === CHAT_PROJECT_ID) {
+      void handleCreateChatSession();
+    } else {
+      void createSessionForProject(session.projectId || currentProject?.id || "");
+    }
+  };
+
+  const renderConversation = (session: Session) => {
+    void eventsTick[session.id];
+    const events = eventsBySessionRef.current.get(session.id) ?? EMPTY_EVENTS;
+    const allEvents = publishedEventsForView(session.id);
+    const agent =
+      availableAgents.find((item) => item.id === session.agentId) ??
+      availableAgents[0] ??
+      agents[0];
+    const caps = capsById[session.id] ?? (session.id === currentSessionId ? sessionCapabilities : null);
+    const queuedSends = pendingSendsRef.current.get(session.id) ?? [];
+    const prefill =
+      composerPrefill &&
+      (composerPrefill.sessionId
+        ? composerPrefill.sessionId === session.id
+        : session.id === currentSessionId)
+        ? composerPrefill
+        : null;
+    return (
+      <>
+        <SessionView
+          agent={agent}
+          events={events}
+          session={session}
+          viewMode={viewMode}
+          openSessions={openSessions}
+          lastActivityAt={lastActivityById[session.id] ?? null}
+          authBanner={agentBanner[agent.id]?.message ?? null}
+          bannerKind={agentBanner[agent.id]?.kind ?? "auth"}
+          onSignIn={
+            agentAuthSpec(agent.id)?.login
+              ? () => void handleAgentSignIn(agent.id)
+              : undefined
+          }
+          signInBusy={signInBusy}
+          onUpdate={
+            agent.id === "grok-build" || agent.id === "grok"
+              ? () => void handleGrokUpdate(agent.id)
+              : undefined
+          }
+          updateBusy={updateBusy}
+          onSessionStatusChange={handleSessionStatusChange}
+          onEditResend={(anchor, text) => void handleEditResend(anchor, text)}
+          onForkReply={(anchor) => void handleForkFromReply(session.id, anchor)}
+          quotePins={quotePinsById[session.id] ?? []}
+          onQuotePinsChange={(pins) => {
+            setQuotePinsById((current) => ({ ...current, [session.id]: pins }));
+          }}
+          onInterrupt={() => void cancelLiveTurn(session.id, { announce: true })}
+          projectId={session.projectId || currentProjectId}
+          allEvents={allEvents}
+          detailsVisible={detailsVisible}
+          onDetailsVisibleChange={setDetailsVisible}
+          onSubtaskStop={(childId) => {
+            void cancelAcpSession(childId).catch(() => undefined);
+            finalizeDelegateChildRef.current(childId, "cancelled", "用户停止");
+          }}
+          onSubtaskQuote={(summary) => {
+            const block = `> ${summary.replace(/\n/g, "\n> ").slice(0, 2000)}\n\n`;
+            setComposerPrefill({ sessionId: session.id, text: block, token: Date.now() });
+          }}
+          onSubtaskRetry={(childId) => {
+            const startEv = (
+              eventsBySessionRef.current.get(session.id) ?? EMPTY_EVENTS
+            ).find(
+              (e) =>
+                e.type === "subtask_started" &&
+                e.childSessionId === childId &&
+                e.sessionId === session.id,
+            );
+            if (!startEv || startEv.type !== "subtask_started") return;
+            const projectId = session.projectId || currentProjectId;
+            void handleDelegate(session.id, projectId, {
+              agentId: startEv.agentId,
+              modelId: startEv.modelId,
+              prompt: startEv.prompt.replace(/^（排队中）/, ""),
+            });
+          }}
+          streamPrompt={{
+            liveAsk: askPrompt?.sessionId === session.id ? askPrompt : null,
+            livePlan:
+              planApproval?.sessionId === session.id
+                ? {
+                    ...planApproval,
+                    planMarkdown:
+                      planApproval.planMarkdown.trim() ||
+                      (planBySessionId[planApproval.sessionId] ?? [])
+                        .map((e, i) => {
+                          const status = e.status ? ` [${e.status}]` : "";
+                          return `${i + 1}. ${e.content}${status}`;
+                        })
+                        .join("\n"),
+                  }
+                : null,
+            askBusy,
+            planBusy: planApprovalBusy,
+            onAskSubmit: (answers) => void handleAskSubmit(answers),
+            onAskDecline: () => void handleAskDecline(),
+            onPlanAnswer: (decision, feedback) => handlePlanApproval(decision, feedback),
+            onPlanPermissionChoose: (optionId) => void handlePlanPermissionChoose(optionId),
+          }}
+        />
+        <div className="composer-slot">
+        <div className="composer-slot__notices">
+        {sessionNotices[session.id] && (
+          <SessionNoticeStrip
+            notice={sessionNotices[session.id]}
+            onDismiss={() => {
+              setSessionNotices((current) => {
+                const next = { ...current };
+                delete next[session.id];
+                return next;
+              });
+            }}
+          />
+        )}
+        {composerFailure && composerFailure.sessionId === session.id && (
+          <ComposerErrorStrip
+            error={composerFailure.error}
+            canSignIn={Boolean(agentAuthSpec(agent.id)?.login)}
+            onUpdate={
+              agent.id === "grok-build" || agent.id === "grok"
+                ? () => void handleGrokUpdate(agent.id)
+                : undefined
+            }
+            onRetry={() => {
+              const last = lastSendBySessionRef.current.get(session.id);
+              if (!last) return;
+              setComposerFailure(null);
+              void performSend(
+                session.id,
+                last.composed,
+                last.imageAttachments,
+                last.composerSnap,
+              );
+            }}
+            onSignIn={() => void handleAgentSignIn(agent.id)}
+            onNewSession={() => {
+              setComposerFailure(null);
+              void createSessionForProject(session.projectId, session.agentId);
+            }}
+            onDismiss={() => setComposerFailure(null)}
+          />
+        )}
+        {queuedSends.length > 0 && (() => {
+          const preview = queuedSends
+            .map((q) => (q.composed.length > 36 ? `${q.composed.slice(0, 36)}…` : q.composed))
+            .join("、");
+          return (
+            <div className="queued-strip" title="插话 — 打断当前回合后立即发送">
+              <span className="queued-strip__badge">插话 ×{queuedSends.length}</span>
+              <span className="queued-strip__text">{preview}</span>
+              <button
+                type="button"
+                className="queued-strip__dismiss"
+                title="取消插话"
+                onClick={() => {
+                  pendingSendsRef.current.delete(session.id);
+                  setQueuedStripTick((t) => t + 1);
+                }}
+              >
+                取消
+              </button>
+            </div>
+          );
+        })()}
+        </div>
+        <div
+          className={
+            sessionHidesComposer(session.id, askPrompt, planApproval)
+              ? "composer-slot__input is-hidden"
+              : "composer-slot__input"
+          }
+          aria-hidden={sessionHidesComposer(session.id, askPrompt, planApproval)}
+        >
+        <Composer
+          key={`${session.id}:${session.agentId}`}
+          agent={agent}
+          agents={availableAgents}
+          currentAgentId={session.agentId}
+          sessionId={session.id}
+          sessionStatus={session.status}
+          onRestartAgentSession={handleRestartAgentSession}
+          autoFocus={
+            composerAutoFocus &&
+            session.id === currentSessionId &&
+            !sessionHidesComposer(session.id, askPrompt, planApproval)
+          }
+          isFocused={session.id === currentSessionId}
+          onEmptyActivate={() => {
+            if (session.id.startsWith("session-empty-") || !session.id) {
+              setComposerAutoFocus(true);
+              void handleCreateChatSession(session.agentId);
+            }
+          }}
+          lastActivityAt={lastActivityById[session.id] ?? null}
+          onProviderKeysChanged={handleProviderKeysChanged}
+          onAgentBinaryUpdated={handleAgentBinaryUpdated}
+          onAgentsReload={async () => {
+            try {
+              const next = await listAgents();
+              if (next.length > 0) setAvailableAgents(next);
+            } catch {
+              /* ignore */
+            }
+          }}
+          capabilities={caps}
+          prefillText={prefill?.text ?? null}
+          prefillToken={prefill?.token ?? 0}
+          sessionPrefs={{
+            preferredModel: session.preferredModel,
+            preferredMode: session.preferredMode,
+            preferredEffort: session.preferredEffort,
+            preferredEffortId: session.preferredEffortId,
+            preferredAlwaysApprove: session.preferredAlwaysApprove,
+          }}
+          onSessionPrefsChange={(patch: SessionComposerPrefs) => {
+            persistComposerPrefs(session.id, patch);
+          }}
+          onAgentChange={(id) => void handleAgentChange(id, session.id)}
+          onInterrupt={() => void cancelLiveTurn(session.id, { announce: true })}
+          onSend={(text, droppedPaths, imageAttachments, opts) =>
+            void handleSend(text, droppedPaths, imageAttachments, opts, session.id)
+          }
+          onActiveModelChange={session.id === currentSessionId ? setActiveModelId : undefined}
+          sessionEvents={events}
+          availableCommands={slashCommandsById[session.id] ?? null}
+          onWarmAgent={() => warmAcp(session.id)}
+          onEnsureAgentReady={async () => {
+            if (agent.transport !== "acp") return true;
+            try {
+              await ensureAcpReady(session.id);
+              return true;
+            } catch {
+              return false;
+            }
+          }}
+          onSilentPrompt={(text) => sendSilentPrompt(session.id, text)}
+        />
+        </div>
+        </div>
+      </>
+    );
+  };
+
+  const renderPaneTabs = (leaf: import("../lib/splitWorkspace").PaneLeaf, session: Session) => {
+    const tabs = leaf.tabIds
+      .map((id) => availableSessions.find((item) => item.id === id))
+      .filter((item): item is Session => Boolean(item));
+    return (
+      <SessionTabs
+        openSessions={tabs}
+        session={session}
+        doneUnreadIds={doneUnreadIds}
+        onTabSelect={(s) => {
+          commitSplit(activateTab(splitStateRef.current, leaf.id, s.id));
+          applyFocusedSession(s);
+        }}
+        onTabClose={closeSessionTab}
+        onNewTab={() => {
+          commitSplit(focusPane(splitStateRef.current, leaf.id));
+          newTabForSession(session);
+        }}
+        onRenameSession={handleRenameSession}
+        onTabPopOut={
+          IS_DETACHED_WINDOW ? undefined : (s, viaDrag) => void handleTabPopOut(s, viaDrag)
+        }
+        mergeDropActive={mergeTargetActive}
+        onTabDragPreview={IS_DETACHED_WINDOW ? undefined : handleTabDragPreview}
+        onTabDragEnd={IS_DETACHED_WINDOW ? undefined : handleTabDragEnd}
+        ghostHint={tabGhostHint}
+        onOpenBeside={IS_DETACHED_WINDOW ? undefined : handleOpenBeside}
+      />
+    );
+  };
+
   return (
     <main className="app-shell">
       <div
@@ -6216,6 +7254,7 @@ export function App() {
               }
             }}
             onSessionSelect={openSession}
+            onOpenBeside={handleOpenBeside}
             externalScanning={externalScanning}
             onRefreshExternal={handleRefreshExternal}
             onDeleteSession={deleteSession}
@@ -6251,19 +7290,14 @@ export function App() {
 
         {/* Shared titlebar across center + right columns */}
         <div className="workspace-titlebar">
+          {!workspaceSplit && (
           <SessionTabs
             openSessions={openSessions}
             session={displaySession}
             doneUnreadIds={doneUnreadIds}
             onTabSelect={openSession}
             onTabClose={closeSessionTab}
-            onNewTab={() => {
-              if (!currentSession || displaySession.projectId === CHAT_PROJECT_ID) {
-                void handleCreateChatSession();
-              } else {
-                void createSessionForProject(currentProject?.id ?? "");
-              }
-            }}
+            onNewTab={() => newTabForSession(displaySession)}
             onRenameSession={handleRenameSession}
             onTabPopOut={
               IS_DETACHED_WINDOW
@@ -6277,14 +7311,20 @@ export function App() {
             }
             mergeDropActive={IS_DETACHED_WINDOW ? false : mergeTargetActive}
             detachedMode={IS_DETACHED_WINDOW}
+            onTabDragPreview={IS_DETACHED_WINDOW ? undefined : handleTabDragPreview}
+            onTabDragEnd={IS_DETACHED_WINDOW ? undefined : handleTabDragEnd}
+            ghostHint={tabGhostHint}
+            onOpenBeside={IS_DETACHED_WINDOW ? undefined : handleOpenBeside}
+            titlebarDragRegion
           />
+          )}
           <div className="workspace-titlebar__spacer" data-tauri-drag-region />
           <WindowControls />
         </div>
 
         {/* Center workspace — hover edges to reveal sidebar toggle buttons */}
         <section
-          className="center-workspace"
+          className={`center-workspace${workspaceSplit ? " is-split" : ""}${mergeTargetActive ? " is-merge-target" : ""}`}
           aria-label="Active workspace"
           onMouseMove={handleCenterMove}
           onMouseLeave={handleCenterLeave}
@@ -6318,236 +7358,41 @@ export function App() {
               {rightCollapsed ? <ChevronLeft size={12} /> : <ChevronRight size={12} />}
             </button>
           )}
-          <SessionView
-            agent={currentAgent}
-            events={currentEvents}
-            session={displaySession}
-            viewMode={viewMode}
-            openSessions={openSessions}
-            lastActivityAt={lastActivityById[displaySession.id] ?? null}
-            authBanner={agentBanner[currentAgent.id]?.message ?? null}
-            bannerKind={agentBanner[currentAgent.id]?.kind ?? "auth"}
-            onSignIn={
-              agentAuthSpec(currentAgent.id)?.login
-                ? () => void handleAgentSignIn(currentAgent.id)
-                : undefined
-            }
-            signInBusy={signInBusy}
-            onUpdate={
-              currentAgent.id === "grok-build" || currentAgent.id === "grok"
-                ? () => void handleGrokUpdate(currentAgent.id)
-                : undefined
-            }
-            updateBusy={updateBusy}
-            onTabSelect={openSession}
-            onTabClose={closeSessionTab}
-            onNewTab={() => {
-              if (!currentSession || displaySession.projectId === CHAT_PROJECT_ID) {
-                void handleCreateChatSession();
-              } else {
-                void createSessionForProject(currentProject?.id ?? "");
-              }
-            }}
-            onSessionStatusChange={handleSessionStatusChange}
-            onCapabilities={setSessionCapabilities}
-            onEditResend={(anchor, text) => void handleEditResend(anchor, text)}
-            onForkReply={(anchor) => void handleForkFromReply(displaySession.id, anchor)}
-            quotePins={quotePins}
-            onQuotePinsChange={setQuotePins}
-            onInterrupt={() => void handleInterrupt()}
-            projectId={currentProjectId || displaySession.projectId}
-            allEvents={liveEvents}
-            onSubtaskStop={(childId) => {
-              void cancelAcpSession(childId).catch(() => undefined);
-              finalizeDelegateChildRef.current(childId, "cancelled", "用户停止");
-            }}
-            onSubtaskQuote={(summary) => {
-              const block = `> ${summary.replace(/\n/g, "\n> ").slice(0, 2000)}\n\n`;
-              setComposerPrefill({ text: block, token: Date.now() });
-            }}
-            onSubtaskRetry={(childId) => {
-              const meta = delegateMetaRef.current.get(childId);
-              const startEv = liveEventsRef.current.find(
-                (e) =>
-                  e.type === "subtask_started" &&
-                  e.childSessionId === childId &&
-                  e.sessionId === displaySession.id,
-              );
-              if (!startEv || startEv.type !== "subtask_started") return;
-              const projectId = displaySession.projectId || currentProjectId;
-              void handleDelegate(displaySession.id, projectId, {
-                agentId: startEv.agentId,
-                modelId: startEv.modelId,
-                prompt: startEv.prompt.replace(/^（排队中）/, ""),
-              });
-              void meta;
-            }}
-          />
-          {/* Only the active dialog's pending cards — never leak from another session. */}
-          {askPrompt && askPrompt.sessionId === displaySession.id && (
-            <AskQuestionCard
-              key={askPrompt.requestId}
-              prompt={askPrompt}
-              busy={askBusy}
-              onSubmit={(answers) => void handleAskSubmit(answers)}
-              onDecline={() => void handleAskDecline()}
-            />
-          )}
-          {planApproval &&
-            planApproval.sessionId === displaySession.id &&
-            !(askPrompt && askPrompt.sessionId === displaySession.id) && (
-            <PlanApprovalCard
-              key={planApproval.requestId}
-              prompt={{
-                ...planApproval,
-                // Grok often omits planContent; fall back to live plan entries.
-                planMarkdown:
-                  planApproval.planMarkdown.trim() ||
-                  (planBySessionId[planApproval.sessionId] ?? [])
-                    .map((e, i) => {
-                      const status = e.status ? ` [${e.status}]` : "";
-                      return `${i + 1}. ${e.content}${status}`;
-                    })
-                    .join("\n"),
+          {workspaceSplit ? (
+            <SplitWorkspace
+              state={splitState}
+              dropPreview={tabDropPreview}
+              dropPanes={dropPanes}
+              geometry="per-pane"
+              onFocusPane={(paneId) => {
+                const next = focusPane(splitStateRef.current, paneId);
+                commitSplit(next);
+                const sess = sessionsRef.current.find((s) => s.id === focusedSessionId(next));
+                if (sess) applyFocusedSession(sess);
               }}
-              busy={planApprovalBusy}
-              onAnswer={(decision, feedback) => handlePlanApproval(decision, feedback)}
-            />
-          )}
-          <div className="composer-slot">
-          <div className="composer-slot__notices">
-          {sessionNotices[displaySession.id] && (
-            <SessionNoticeStrip
-              notice={sessionNotices[displaySession.id]}
-              onDismiss={() => {
-                setSessionNotices((current) => {
-                  const next = { ...current };
-                  delete next[displaySession.id];
-                  return next;
-                });
+              onResize={(splitId, ratio) => {
+                commitSplit(resizeSplit(splitStateRef.current, splitId, ratio));
+              }}
+              renderLeaf={(leaf) => {
+                const session =
+                  availableSessions.find((s) => s.id === leaf.activeTabId) ?? displaySession;
+                return {
+                  tabs: renderPaneTabs(leaf, session),
+                  body: renderConversation(session),
+                };
               }}
             />
+          ) : (
+            <>
+              {renderConversation(displaySession)}
+              <SplitDropOverlay
+                preview={tabDropPreview}
+                panes={dropPanes}
+                geometry="titlebar-plus-center"
+                root={splitState.root}
+              />
+            </>
           )}
-          {composerFailure && composerFailure.sessionId === displaySession.id && (
-            <ComposerErrorStrip
-              error={composerFailure.error}
-              canSignIn={Boolean(agentAuthSpec(currentAgent.id)?.login)}
-              onUpdate={
-                currentAgent.id === "grok-build" || currentAgent.id === "grok"
-                  ? () => void handleGrokUpdate(currentAgent.id)
-                  : undefined
-              }
-              onRetry={() => {
-                const last = lastSendBySessionRef.current.get(displaySession.id);
-                if (!last) return;
-                setComposerFailure(null);
-                void performSend(
-                  displaySession.id,
-                  last.composed,
-                  last.imageAttachments,
-                  last.composerSnap,
-                );
-              }}
-              onSignIn={() => void handleAgentSignIn(currentAgent.id)}
-              onNewSession={() => {
-                setComposerFailure(null);
-                void createSessionForProject(displaySession.projectId, displaySession.agentId);
-              }}
-              onDismiss={() => setComposerFailure(null)}
-            />
-          )}
-          {/* Mid-turn follow-ups wait here until cancel frees the prompt slot.
-              Never a timeline card — that would split the running reply. */}
-          {(() => {
-            const queuedSends = pendingSendsRef.current.get(displaySession.id) ?? [];
-            if (queuedSends.length === 0) return null;
-            const preview = queuedSends
-              .map((q) => (q.composed.length > 36 ? `${q.composed.slice(0, 36)}…` : q.composed))
-              .join("、");
-            return (
-              <div className="queued-strip" title="插话 — 打断当前回合后立即发送">
-                <span className="queued-strip__badge">插话 ×{queuedSends.length}</span>
-                <span className="queued-strip__text">{preview}</span>
-                <button
-                  type="button"
-                  className="queued-strip__dismiss"
-                  title="取消插话"
-                  onClick={() => {
-                    pendingSendsRef.current.delete(displaySession.id);
-                    setQueuedStripTick((t) => t + 1);
-                  }}
-                >
-                  取消
-                </button>
-              </div>
-            );
-          })()}
-          </div>
-          {/* Ask fully occupies the composer slot so all options can show. */}
-          {!(askPrompt && askPrompt.sessionId === displaySession.id) && (
-          <Composer
-            // Remount when dialog identity changes so model/mode state cannot leak.
-            key={`${displaySession.id}:${displaySession.agentId}`}
-            agent={currentAgent}
-            agents={availableAgents}
-            currentAgentId={displaySession.agentId}
-            sessionId={displaySession.id}
-            sessionStatus={displaySession.status}
-            onRestartAgentSession={handleRestartAgentSession}
-            autoFocus={composerAutoFocus}
-            onEmptyActivate={() => {
-              if (displaySession.id.startsWith("session-empty-") || !currentSessionId) {
-                setComposerAutoFocus(true);
-                void handleCreateChatSession(displaySession.agentId);
-              }
-            }}
-            lastActivityAt={lastActivityById[displaySession.id] ?? null}
-            onProviderKeysChanged={handleProviderKeysChanged}
-            onAgentBinaryUpdated={handleAgentBinaryUpdated}
-            onAgentsReload={async () => {
-              try {
-                const next = await listAgents();
-                if (next.length > 0) setAvailableAgents(next);
-              } catch {
-                /* ignore */
-              }
-            }}
-            capabilities={sessionCapabilities}
-            prefillText={composerPrefill?.text ?? null}
-            prefillToken={composerPrefill?.token ?? 0}
-            sessionPrefs={{
-              preferredModel: displaySession.preferredModel,
-              preferredMode: displaySession.preferredMode,
-              preferredEffort: displaySession.preferredEffort,
-              preferredEffortId: displaySession.preferredEffortId,
-              preferredAlwaysApprove: displaySession.preferredAlwaysApprove,
-            }}
-            onSessionPrefsChange={(patch: SessionComposerPrefs) => {
-              persistComposerPrefs(displaySession.id, patch);
-            }}
-            onAgentChange={(id) => void handleAgentChange(id)}
-            onInterrupt={() => void handleInterrupt()}
-            onSend={(text, droppedPaths, imageAttachments, opts) =>
-              void handleSend(text, droppedPaths, imageAttachments, opts)
-            }
-            onActiveModelChange={setActiveModelId}
-            sessionEvents={currentEvents}
-            availableCommands={slashCommandsById[displaySession.id] ?? null}
-            onWarmAgent={warmActiveAcp}
-            onEnsureAgentReady={async () => {
-              if (!currentSessionId) return false;
-              if (currentAgent.transport !== "acp") return true;
-              try {
-                await ensureAcpReady(currentSessionId);
-                return true;
-              } catch {
-                return false;
-              }
-            }}
-            onSilentPrompt={(text) => sendSilentPrompt(displaySession.id, text)}
-          />
-          )}
-          </div>
         </section>
 
         <ContextPanel
@@ -6592,9 +7437,8 @@ export function App() {
           onResizeStart={() => setResizingSide("right")}
         />
       </div>
-      {permissionPrompt &&
-        currentSessionId &&
-        permissionPrompt.sessionId === currentSessionId && (
+      {/* Window-level: draw as soon as the prompt exists. Do not wait for pane focus. */}
+      {permissionPrompt && (
         <PermissionDialog
           prompt={permissionPrompt}
           busy={permissionBusy}

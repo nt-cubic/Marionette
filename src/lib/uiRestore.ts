@@ -1,4 +1,13 @@
 import type { Session } from "./types";
+import {
+  deserialize,
+  emptyWorkspace,
+  focusedSessionId,
+  migrateFromFlat,
+  openSessionIds as tabIdsFromTree,
+  type SplitLayoutV1,
+  type SplitWorkspaceState,
+} from "./splitWorkspace";
 
 const STORAGE_KEY = "marionette-ui-restore";
 const SHELF_COLLAPSE_KEY = "marionette-project-shelf-collapsed";
@@ -10,6 +19,14 @@ export type UiRestoreSnapshot = {
   projectId: string;
   openSessionIds: string[];
   updatedAt: number;
+  /** Optional pane tree. Missing = pre-split snapshot; restore via migrateFromFlat. */
+  splitLayout?: SplitLayoutV1;
+};
+
+export type RestoredWorkspace = {
+  session: Session;
+  openSessionIds: string[];
+  splitState: SplitWorkspaceState;
 };
 
 /**
@@ -70,6 +87,7 @@ export function saveUiRestore(snap: {
   sessionId: string;
   projectId: string;
   openSessionIds: string[];
+  splitLayout?: SplitLayoutV1;
 }): void {
   const sessionId = snap.sessionId?.trim() ?? "";
   if (!sessionId || sessionId.startsWith("session-empty-")) return;
@@ -85,6 +103,7 @@ export function saveUiRestore(snap: {
         : [sessionId, ...openSessionIds],
       updatedAt: Date.now(),
     };
+    if (snap.splitLayout?.version === 1) payload.splitLayout = snap.splitLayout;
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
   } catch {
     // localStorage might be disabled or full
@@ -160,63 +179,110 @@ export function loadClosedTabs(): string[] {
   }
 }
 
+export function parseUiRestore(raw: unknown): UiRestoreSnapshot | null {
+  if (!raw || typeof raw !== "object") return null;
+  const rec = raw as Record<string, unknown>;
+  if (typeof rec.sessionId !== "string" || !rec.sessionId.trim()) return null;
+  const openSessionIds = Array.isArray(rec.openSessionIds)
+    ? rec.openSessionIds.filter((id): id is string => typeof id === "string" && id.trim() !== "")
+    : [];
+  const snap: UiRestoreSnapshot = {
+    sessionId: rec.sessionId.trim(),
+    projectId: typeof rec.projectId === "string" ? rec.projectId.trim() : "",
+    openSessionIds,
+    updatedAt: typeof rec.updatedAt === "number" ? rec.updatedAt : 0,
+  };
+  if (rec.splitLayout && typeof rec.splitLayout === "object") {
+    const layout = rec.splitLayout as Record<string, unknown>;
+    if (layout.version === 1) snap.splitLayout = rec.splitLayout as SplitLayoutV1;
+  }
+  return snap;
+}
+
 export function loadUiRestore(): UiRestoreSnapshot | null {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return null;
-    const rec = parsed as Record<string, unknown>;
-    if (typeof rec.sessionId !== "string" || !rec.sessionId.trim()) return null;
-    const openSessionIds = Array.isArray(rec.openSessionIds)
-      ? rec.openSessionIds.filter((id): id is string => typeof id === "string" && id.trim() !== "")
-      : [];
-    return {
-      sessionId: rec.sessionId.trim(),
-      projectId: typeof rec.projectId === "string" ? rec.projectId.trim() : "",
-      openSessionIds,
-      updatedAt: typeof rec.updatedAt === "number" ? rec.updatedAt : 0,
-    };
+    return parseUiRestore(JSON.parse(raw));
   } catch {
     return null;
   }
 }
 
 /**
+ * Rebuild the pane tree from a snapshot. Detached URL wins and ignores the
+ * saved tree. Bad / empty trees fall back to the flat tab list.
+ */
+export function restoreSplitFromSnapshot(
+  saved: UiRestoreSnapshot | null,
+  knownSessionIds: ReadonlySet<string>,
+  opts?: {
+    maxLeaves?: number;
+    excludeSessionIds?: ReadonlySet<string>;
+    detachedSessionId?: string | null;
+  },
+): SplitWorkspaceState {
+  const detachedId = opts?.detachedSessionId?.trim();
+  if (detachedId && knownSessionIds.has(detachedId)) {
+    return migrateFromFlat([detachedId], detachedId);
+  }
+  if (!saved) return emptyWorkspace();
+  const exclude = opts?.excludeSessionIds ?? new Set<string>();
+  const maxLeaves = opts?.maxLeaves;
+  if (saved.splitLayout) {
+    const tree = deserialize(saved.splitLayout, knownSessionIds, {
+      maxLeaves,
+      excludeSessionIds: exclude,
+    });
+    if (tabIdsFromTree(tree).length > 0) return tree;
+  }
+  const tabs = saved.openSessionIds.filter((id) => knownSessionIds.has(id) && !exclude.has(id));
+  const focus =
+    knownSessionIds.has(saved.sessionId) && !exclude.has(saved.sessionId)
+      ? saved.sessionId
+      : (tabs[0] ?? "");
+  return migrateFromFlat(tabs, focus);
+}
+
+/**
  * Choose the session to focus after loading all project sessions.
- * Priority: detached URL → last UI focus. No snapshot (first launch /
- * cleared storage / stale ids) leaves the workspace empty.
+ * Priority: detached URL → last UI focus (pane tree if present). No snapshot
+ * (first launch / cleared storage / stale ids) leaves the workspace empty.
  */
 export function pickRestoredSession(
   loaded: Session[],
-  opts?: { detachedSessionId?: string | null },
-): { session: Session; openSessionIds: string[] } | null {
+  opts?: {
+    detachedSessionId?: string | null;
+    excludeSessionIds?: ReadonlySet<string>;
+    maxLeaves?: number;
+    snapshot?: UiRestoreSnapshot | null;
+  },
+): RestoredWorkspace | null {
   if (loaded.length === 0) return null;
   const byId = new Map(loaded.map((s) => [s.id, s]));
+  const known = new Set(byId.keys());
 
   const detachedId = opts?.detachedSessionId?.trim();
   if (detachedId) {
     const det = byId.get(detachedId);
-    if (det) return { session: det, openSessionIds: [det.id] };
-  }
-
-  const saved = loadUiRestore();
-  if (saved) {
-    const session = byId.get(saved.sessionId);
-    if (session) {
-      const open = saved.openSessionIds.filter((id) => byId.has(id));
-      if (!open.includes(session.id)) open.unshift(session.id);
+    if (det) {
       return {
-        session,
-        openSessionIds: open.length > 0 ? open : [session.id],
+        session: det,
+        openSessionIds: [det.id],
+        splitState: migrateFromFlat([det.id], det.id),
       };
     }
-    const open = saved.openSessionIds.filter((id) => byId.has(id));
-    if (open.length > 0) {
-      const fallback = byId.get(open[0]);
-      if (fallback) return { session: fallback, openSessionIds: open };
-    }
   }
 
-  return null;
+  const saved =
+    opts && Object.prototype.hasOwnProperty.call(opts, "snapshot")
+      ? (opts.snapshot ?? null)
+      : loadUiRestore();
+  const tree = restoreSplitFromSnapshot(saved, known, opts);
+  const ids = tabIdsFromTree(tree);
+  if (ids.length === 0) return null;
+  const focusId = focusedSessionId(tree) || ids[0];
+  const session = byId.get(focusId) ?? byId.get(ids[0]);
+  if (!session) return null;
+  return { session, openSessionIds: ids, splitState: tree };
 }

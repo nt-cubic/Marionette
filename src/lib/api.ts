@@ -1139,13 +1139,15 @@ export type EngineQuotaEntry = {
   name: string;
   user?: string | null;
   windows: EngineQuotaWindow[];
+  /** Key balance when the vendor reports money instead of windows. */
+  balance?: string | null;
 };
 
 /** Subscription quotas from the engine; empty when the engine is not running. */
-export async function engineQuota(): Promise<EngineQuotaEntry[]> {
+export async function engineQuota(force = false): Promise<EngineQuotaEntry[]> {
   if (!isTauriRuntime()) return [];
   try {
-    return await invoke<EngineQuotaEntry[]>("engine_quota");
+    return await invoke<EngineQuotaEntry[]>("engine_quota", { force });
   } catch {
     return [];
   }
@@ -1175,4 +1177,94 @@ export async function setProxyConfig(config: ProxyConfig): Promise<void> {
 /** Round-trip through `url` to OpenAI's API; reports latency or failure. */
 export async function testProxy(url: string): Promise<ProxyTestResult> {
   return await invoke<ProxyTestResult>("test_proxy", { url });
+}
+
+// ── Telegram 远程桥（docs/telegram-bridge.md）──────────────────────────────
+
+/** 通知偏好（落 ~/.marionette/telegram.json）。 */
+export type TelegramPrefs = {
+  notifyTurn: boolean;
+  notifyWait: boolean;
+  notifyError: boolean;
+  contentPreview: boolean;
+};
+
+/** 配对请求（bot 收到第一条私聊消息后挂起，等这里确认）。 */
+export type TelegramPendingPairing = {
+  username: string;
+  firstName: string;
+  chatId: number;
+  receivedAtMs: number;
+};
+
+export type TelegramStatus = {
+  configured: boolean;
+  enabled: boolean;
+  botUsername: string | null;
+  paired: boolean;
+  pairedUsername: string | null;
+  pendingPairing: TelegramPendingPairing | null;
+  prefs: TelegramPrefs;
+  lastError: string | null;
+};
+
+export type TelegramSave = {
+  enabled?: boolean;
+  /** 空串 = 清除 token；不传 = 不动。 */
+  token?: string;
+  prefs?: TelegramPrefs;
+};
+
+/** `telegram-remote-inbound` 事件载荷（手机发来的文字 → performSend）。 */
+export type TelegramInbound = {
+  sessionId: string;
+  text: string;
+  messageId: number | null;
+};
+
+export const TELEGRAM_INBOUND_EVENT = "telegram-remote-inbound";
+
+export async function telegramStatus(): Promise<TelegramStatus | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await invoke<TelegramStatus>("telegram_remote_status");
+  } catch {
+    return null;
+  }
+}
+
+/** 保存设置。带新 token 时后端先 getMe 校验，失败会 throw（错误给浮层显示）。 */
+export async function telegramSave(config: TelegramSave): Promise<TelegramStatus> {
+  return await invoke<TelegramStatus>("telegram_remote_save", { config });
+}
+
+export async function telegramAcceptPairing(): Promise<TelegramStatus> {
+  return await invoke<TelegramStatus>("telegram_remote_accept_pairing");
+}
+
+export async function telegramDismissPairing(): Promise<TelegramStatus> {
+  return await invoke<TelegramStatus>("telegram_remote_dismiss_pairing");
+}
+
+export async function telegramResetPairing(): Promise<TelegramStatus> {
+  return await invoke<TelegramStatus>("telegram_remote_reset_pairing");
+}
+
+/** performSend 之后的回执：ok=false 带错误摘要，后端把它推回手机。 */
+export async function telegramAck(
+  ok: boolean,
+  error: string | null,
+  messageId: number | null,
+  sessionId: string,
+): Promise<void> {
+  try {
+    await invoke("telegram_remote_ack", {
+      ok,
+      error: error ?? null,
+      messageId,
+      sessionId,
+    });
+  } catch {
+    // ack 是尽力而为；失败只影响手机上少一条 ✓。
+  }
 }

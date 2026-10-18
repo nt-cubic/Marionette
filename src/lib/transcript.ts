@@ -10,6 +10,8 @@ const PERSISTABLE = new Set([
   "file_change",
   "subtask_started",
   "subtask_result",
+  "plan_prompt",
+  "ask_prompt",
 ]);
 
 export function isPersistableEvent(event: SessionEvent): boolean {
@@ -196,6 +198,104 @@ export function parseTranscriptEvents(raw: unknown[]): SessionEvent[] {
         durationMs: typeof e.durationMs === "number" ? e.durationMs : undefined,
         error: typeof e.error === "string" ? e.error : undefined,
         createdAt,
+      });
+      continue;
+    }
+    if (type === "plan_prompt") {
+      const source = e.source === "permission" ? "permission" : "plan_approval";
+      const st = e.status;
+      const status =
+        st === "answered" || st === "declined" || st === "timeout" ? st : "pending";
+      const options = Array.isArray(e.options)
+        ? e.options.flatMap((row) => {
+            if (!row || typeof row !== "object") return [];
+            const o = row as Record<string, unknown>;
+            const optionId = typeof o.optionId === "string" ? o.optionId : "";
+            if (!optionId) return [];
+            return [
+              {
+                optionId,
+                name: typeof o.name === "string" ? o.name : optionId,
+                kind: typeof o.kind === "string" ? o.kind : "",
+              },
+            ];
+          })
+        : undefined;
+      out.push({
+        type: "plan_prompt",
+        sessionId,
+        requestId: typeof e.requestId === "string" ? e.requestId : "",
+        source,
+        ...(typeof e.title === "string" && e.title ? { title: e.title } : {}),
+        planMarkdown: typeof e.planMarkdown === "string" ? e.planMarkdown : "",
+        ...(options && options.length > 0 ? { options } : {}),
+        status,
+        ...(typeof e.decision === "string" ? { decision: e.decision } : {}),
+        ...(typeof e.decisionLabel === "string" ? { decisionLabel: e.decisionLabel } : {}),
+        ...(typeof e.feedback === "string" ? { feedback: e.feedback } : {}),
+        createdAt,
+        ...(typeof e.answeredAt === "string" ? { answeredAt: e.answeredAt } : {}),
+      });
+      continue;
+    }
+    if (type === "ask_prompt") {
+      const st = e.status;
+      const status =
+        st === "answered" || st === "declined" || st === "timeout" ? st : "pending";
+      const questions = Array.isArray(e.questions)
+        ? e.questions.flatMap((row) => {
+            if (!row || typeof row !== "object") return [];
+            const q = row as Record<string, unknown>;
+            const question = typeof q.question === "string" ? q.question : "";
+            const optionsRaw = Array.isArray(q.options) ? q.options : [];
+            const options = optionsRaw.flatMap((opt) => {
+              if (!opt || typeof opt !== "object") return [];
+              const o = opt as Record<string, unknown>;
+              const label = typeof o.label === "string" ? o.label : "";
+              if (!label) return [];
+              return [
+                {
+                  label,
+                  ...(typeof o.description === "string" && o.description
+                    ? { description: o.description }
+                    : {}),
+                },
+              ];
+            });
+            if (!question && options.length === 0) return [];
+            return [
+              {
+                question: question || "请选择",
+                ...(typeof q.header === "string" && q.header ? { header: q.header } : {}),
+                ...(q.multiSelect === true || q.multi_select === true
+                  ? { multiSelect: true }
+                  : {}),
+                options,
+              },
+            ];
+          })
+        : [];
+      const answers = Array.isArray(e.answers)
+        ? e.answers.flatMap((row) => {
+            if (!row || typeof row !== "object") return [];
+            const a = row as Record<string, unknown>;
+            const question = typeof a.question === "string" ? a.question : "";
+            const selected = Array.isArray(a.selected)
+              ? a.selected.filter((s): s is string => typeof s === "string")
+              : [];
+            return [{ question, selected }];
+          })
+        : undefined;
+      out.push({
+        type: "ask_prompt",
+        sessionId,
+        requestId: typeof e.requestId === "string" ? e.requestId : "",
+        ...(typeof e.mode === "string" ? { mode: e.mode } : {}),
+        questions,
+        status,
+        ...(answers && answers.length > 0 ? { answers } : {}),
+        createdAt,
+        ...(typeof e.answeredAt === "string" ? { answeredAt: e.answeredAt } : {}),
       });
     }
   }

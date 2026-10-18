@@ -30,6 +30,7 @@ mod proxy;
 mod session_manager;
 mod shell_integration;
 mod storage;
+mod telegram_remote;
 mod terminal_runtime;
 mod webview2_gate;
 
@@ -270,11 +271,25 @@ fn main() {
 
     tauri::Builder::default()
         .setup(|app| {
+            use tauri::Manager;
             spawn_main_thread_watchdog(app.handle().clone());
             acp::spawn_pipeline_watchdog();
             // Engine progress/state events are emitted from its background
             // threads — they need an app handle kept for the process lifetime.
             engine::set_app_handle(app.handle().clone());
+            // Telegram 远程桥：只读配置 + 起 worker 线程（无 token 时全空转）。
+            // try_state：状态缺失时跳过（不 panic——release 是 panic=abort）。
+            if let Some(state) = app.try_state::<AppState>() {
+                telegram_remote::start(app.handle().clone(), state.acp.clone());
+            } else {
+                crate::debug_log::append(
+                    "telegram",
+                    "warn",
+                    "",
+                    "AppState missing at setup — telegram remote not started",
+                    None,
+                );
+            }
             // Keep Explorer menu pointing at this portable exe (moves / rebuilds).
             if let Err(err) = shell_integration::register_context_menu() {
                 debug_log::append(
@@ -289,9 +304,9 @@ fn main() {
             // Startup is the only safe moment: no session exists yet, so an
             // upgrade cannot replace a binary an agent is mid-turn on.
             commands::auto_update_agents_in_background();
-            // 无脑可用（2026-10-16 产品定稿）：翻译引擎随应用启动自动拉起——
-            // 已装则 serve + provider 注册，未装则后台下载（进度在凭据页）。
-            // enable 幂等；失败只落 Failed 状态（凭据页可见/可重试），不阻塞启动。
+            // 无脑可用：翻译引擎随应用启动自动拉起。便携版（embedded-engine）
+            // 离线落位内嵌 magpie 再 serve；开发构建未装则后台下载。
+            // enable 幂等；失败只落 Failed 状态（左下角可见/可重试），不阻塞启动。
             if let Err(error) = engine::enable() {
                 debug_log::append(
                     "engine",
@@ -463,6 +478,12 @@ fn main() {
             commands::get_proxy_config,
             commands::set_proxy_config,
             commands::test_proxy,
+            commands::telegram_remote_status,
+            commands::telegram_remote_save,
+            commands::telegram_remote_accept_pairing,
+            commands::telegram_remote_dismiss_pairing,
+            commands::telegram_remote_reset_pairing,
+            commands::telegram_remote_ack,
             open_target::resolve_link_target,
             open_target::open_external,
             open_target::reveal_in_file_manager

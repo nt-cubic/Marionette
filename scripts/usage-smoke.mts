@@ -593,4 +593,43 @@ check("a reported limit still renders", () => {
   assert.equal(weekly?.percentage, 12);
 });
 
+check("engine quota rows merge into Usage and skip the active agent's family", () => {
+  const snap = buildUsageSnapshot({
+    agentId: "claude-code",
+    agentLabel: "Claude Code",
+    state: emptySessionUsage(),
+    connected: true,
+    engineQuota: [
+      {
+        provider: "grok",
+        name: "Grok (SuperGrok)",
+        windows: [
+          {
+            name: "7 days",
+            used: 15,
+            remaining: 85,
+            resetsAt: "2026-10-24T12:09:03.306Z",
+          },
+        ],
+      },
+      {
+        provider: "claude",
+        name: "Claude",
+        windows: [{ name: "5 hours", used: 10, remaining: 90 }],
+      },
+      { provider: "deepseek", name: "DeepSeek", windows: [], balance: "12.50" },
+    ],
+  });
+  const grok = snap.windows.find((w) => w.id === "engine:grok:7 days");
+  assert.equal(grok?.percentage, 15);
+  assert.match(grok?.detail ?? "", /剩 85%/);
+  assert.ok(
+    !snap.windows.some((w) => w.id.startsWith("engine:claude")),
+    "active Claude family must not duplicate its own rate-limit rows",
+  );
+  const balance = snap.windows.find((w) => w.id === "engine:deepseek:balance");
+  assert.equal(balance?.detail, "余额 12.50");
+  assert.doesNotMatch(snap.note ?? "", /Send a message/);
+});
+
 console.log(`\n${passed} checks passed.`);

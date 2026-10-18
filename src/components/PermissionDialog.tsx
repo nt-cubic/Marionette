@@ -1,4 +1,5 @@
 import { ShieldAlert } from "lucide-react";
+import { permissionOptionTone } from "../lib/permissionPlan";
 
 export type PermissionOption = {
   optionId: string;
@@ -11,6 +12,8 @@ export type PermissionPrompt = {
   sessionId: string;
   title: string;
   detail?: string | null;
+  /** Unwrapped ExitPlanMode markdown (Claude Code "Approve Plan"). */
+  planMarkdown?: string | null;
   options: PermissionOption[];
 };
 
@@ -19,15 +22,6 @@ type PermissionDialogProps = {
   busy?: boolean;
   onChoose: (optionId: string) => void;
 };
-
-function optionTone(kind: string, name: string): "allow" | "deny" | "neutral" {
-  const k = `${kind} ${name}`.toLowerCase();
-  if (k.includes("allow") || k.includes("accept") || k.includes("yes")) return "allow";
-  if (k.includes("reject") || k.includes("deny") || k.includes("cancel") || k.includes("no")) {
-    return "deny";
-  }
-  return "neutral";
-}
 
 export function PermissionDialog({ prompt, busy = false, onChoose }: PermissionDialogProps) {
   const options =
@@ -59,7 +53,7 @@ export function PermissionDialog({ prompt, busy = false, onChoose }: PermissionD
         )}
         <div className="permission-dialog__actions">
           {options.map((opt) => {
-            const tone = optionTone(opt.kind, opt.name);
+            const tone = permissionOptionTone(opt.kind, opt.name);
             return (
               <button
                 key={opt.optionId}

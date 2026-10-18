@@ -2316,9 +2316,13 @@ pub fn get_file_diff(
 pub fn respond_acp_permission(
     request_id: String,
     option_id: String,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    state.acp.respond_permission(&request_id, &option_id)
+    state
+        .acp
+        .respond_permission(&request_id, &option_id)
+        .map(|()| emit_resolved(&app, &request_id, "permission/resolved"))
 }
 
 /// Answer a pending `_x.ai/ask_user_question` multi-choice prompt.
@@ -2327,9 +2331,13 @@ pub fn respond_acp_question(
     request_id: String,
     answers: serde_json::Value,
     declined: bool,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    state.acp.respond_question(&request_id, answers, declined)
+    state
+        .acp
+        .respond_question(&request_id, answers, declined)
+        .map(|()| emit_resolved(&app, &request_id, "question/resolved"))
 }
 
 /// Answer a pending Grok `_x.ai/exit_plan_mode` plan-approval prompt.
@@ -2341,11 +2349,79 @@ pub fn respond_acp_plan_approval(
     request_id: String,
     decision: String,
     feedback: Option<String>,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     state
         .acp
         .respond_plan_approval(&request_id, &decision, feedback)
+        .map(|()| emit_resolved(&app, &request_id, "plan/resolved"))
+}
+
+/// Broadcast a `*/resolved` UI event after any successful waiter resolve so
+/// every surface (UI cards, telegram tracker) drops the request. request_id
+/// embeds the session (`<session>:<kind>:<seq>`); unknown shapes are skipped.
+fn emit_resolved(app: &tauri::AppHandle, request_id: &str, method: &str) {
+    let session_id = request_id
+        .rsplit_once(":perm:")
+        .or_else(|| request_id.rsplit_once(":ask:"))
+        .or_else(|| request_id.rsplit_once(":plan:"))
+        .or_else(|| request_id.rsplit_once(":elic:"))
+        .map(|(session, _)| session.to_string())
+        .unwrap_or_default();
+    if session_id.is_empty() {
+        return;
+    }
+    crate::acp::emit_ui_event(
+        app,
+        &session_id,
+        "system",
+        Some(method),
+        serde_json::json!({ "requestId": request_id }),
+    );
+}
+
+// ── Telegram 远程桥（docs/telegram-bridge.md）──────────────────────────────
+
+#[tauri::command(async)]
+pub fn telegram_remote_status() -> Result<crate::telegram_remote::TelegramStatus, String> {
+    Ok(crate::telegram_remote::status())
+}
+
+#[tauri::command(async)]
+pub fn telegram_remote_save(
+    config: crate::telegram_remote::TelegramSave,
+) -> Result<crate::telegram_remote::TelegramStatus, String> {
+    crate::telegram_remote::save(config)
+}
+
+#[tauri::command(async)]
+pub fn telegram_remote_accept_pairing(
+) -> Result<crate::telegram_remote::TelegramStatus, String> {
+    crate::telegram_remote::accept_pairing()
+}
+
+#[tauri::command(async)]
+pub fn telegram_remote_dismiss_pairing() -> Result<crate::telegram_remote::TelegramStatus, String> {
+    Ok(crate::telegram_remote::dismiss_pairing())
+}
+
+#[tauri::command(async)]
+pub fn telegram_remote_reset_pairing(
+) -> Result<crate::telegram_remote::TelegramStatus, String> {
+    crate::telegram_remote::reset_pairing()
+}
+
+/// 前端 performSend 的回执：ok=false 时带错误摘要回给手机。
+#[tauri::command(async)]
+pub fn telegram_remote_ack(
+    ok: bool,
+    error: Option<String>,
+    message_id: Option<i64>,
+    session_id: Option<String>,
+) -> Result<(), String> {
+    crate::telegram_remote::ack(ok, error, message_id, session_id);
+    Ok(())
 }
 
 /// Check GitHub Releases for a newer Marionette portable build.
@@ -2757,11 +2833,12 @@ pub fn engine_enable() -> Result<crate::engine::EngineStatus, String> {
     crate::engine::enable()
 }
 
-/// 订阅配额（`magpie quota`）→ 用量面板合并展示；引擎没跑返回空表。
+/// 订阅配额（网关 `/v1/magpie/quotas`，失败再 `magpie quota --json`）。
+/// `force=true` 跳过短缓存、现场问供应商；引擎没跑返回空表。
 #[tauri::command(async)]
-pub fn engine_quota() -> Vec<crate::engine::EngineQuotaEntry> {
+pub fn engine_quota(force: Option<bool>) -> Vec<crate::engine::EngineQuotaEntry> {
     let _trace = crate::debug_log::CmdTrace::new("engine_quota");
-    crate::engine::quota()
+    crate::engine::quota(force.unwrap_or(false))
 }
 
 /// 手动停止网关（浮层「停止网关」）：仅自拉实例；复用实例跳过并留痕。

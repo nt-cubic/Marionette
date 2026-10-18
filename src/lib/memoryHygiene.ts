@@ -62,6 +62,18 @@ export function coldSessionIdsWithEvents(
   return [...present].filter((id) => !hot.has(id));
 }
 
+/** Same as `coldSessionIdsWithEvents` for the per-session rail map. */
+export function coldSessionIdsFromMap(
+  rails: Map<string, SessionEvent[]>,
+  hot: Set<string>,
+): string[] {
+  const present: string[] = [];
+  for (const [id, rail] of rails) {
+    if (id && rail.length > 0 && !hot.has(id)) present.push(id);
+  }
+  return present;
+}
+
 export function dropEventsForSessions(
   events: SessionEvent[],
   dropIds: Set<string>
