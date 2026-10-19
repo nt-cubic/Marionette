@@ -1081,7 +1081,10 @@ pub fn search_sessions(
 /// files / env vars otherwise. Every built-in agent is probed so the Clean
 /// banner can offer a per-agent Sign in.
 #[tauri::command(async)]
-pub fn probe_agent_auth(agent_id: String) -> Result<serde_json::Value, String> {
+pub fn probe_agent_auth(
+    agent_id: String,
+    model_id: Option<String>,
+) -> Result<serde_json::Value, String> {
     match agent_id.as_str() {
         "claude-code" | "claude" => probe_claude_auth(),
         "codex" | "codex-acp" => probe_codex_auth(),
@@ -1094,7 +1097,7 @@ pub fn probe_agent_auth(agent_id: String) -> Result<serde_json::Value, String> {
         "pi" => probe_pi_auth(),
         "hermes" => probe_hermes_auth(),
         "codebuddy" => probe_codebuddy_auth(),
-        "opencode" => probe_opencode_auth(),
+        "opencode" => probe_opencode_auth(model_id.as_deref()),
         "deepseek" | "deepseek-acp" => probe_deepseek_auth(),
         _ => Ok(auth_result(
             &agent_id,
@@ -1111,6 +1114,23 @@ fn auth_result(agent_id: &str, status: &str, message: impl AsRef<str>) -> serde_
         "loggedIn": status == "logged_in",
         "message": message.as_ref(),
     })
+}
+
+fn with_stamp(mut value: serde_json::Value, stamp: Option<u64>) -> serde_json::Value {
+    if let Some(stamp) = stamp {
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert("stamp".into(), serde_json::json!(stamp));
+        }
+    }
+    value
+}
+
+fn file_mtime_stamp(path: &Path) -> Option<u64> {
+    fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -1273,31 +1293,41 @@ fn probe_cursor_auth() -> Result<serde_json::Value, String> {
 }
 
 fn probe_grok_auth() -> Result<serde_json::Value, String> {
+    let auth_json = home_dir().map(|h| h.join(".grok").join("auth.json"));
+    let stamp = auth_json.as_ref().and_then(|p| file_mtime_stamp(p));
     if env_var_set("XAI_API_KEY") {
-        return Ok(auth_result(
-            "grok-build",
-            "logged_in",
-            "Grok API key set via XAI_API_KEY",
+        return Ok(with_stamp(
+            auth_result(
+                "grok-build",
+                "logged_in",
+                "Grok API key set via XAI_API_KEY",
+            ),
+            stamp,
         ));
     }
     // A stub or empty auth.json is not a login. Claude/Codex only raise the
     // Sign in banner when the probe says logged_out — existence alone hid it.
-    let auth_json = home_dir().map(|h| h.join(".grok").join("auth.json"));
     if let Some(path) = auth_json {
         if let Ok(text) = fs::read_to_string(&path) {
             if grok_auth_has_credential(&text) {
-                return Ok(auth_result(
-                    "grok-build",
-                    "logged_in",
-                    "Grok credentials found (~/.grok/auth.json) — tokens expire after ~7 days",
+                return Ok(with_stamp(
+                    auth_result(
+                        "grok-build",
+                        "logged_in",
+                        "Grok credentials found (~/.grok/auth.json) — tokens expire after ~7 days",
+                    ),
+                    stamp,
                 ));
             }
         }
     }
-    Ok(auth_result(
-        "grok-build",
-        "logged_out",
-        "Grok is not logged in (run `grok login`)",
+    Ok(with_stamp(
+        auth_result(
+            "grok-build",
+            "logged_out",
+            "Grok is not logged in (run `grok login`)",
+        ),
+        stamp,
     ))
 }
 
@@ -1614,7 +1644,7 @@ fn probe_openclaw_auth() -> Result<serde_json::Value, String> {
     }
 }
 
-fn probe_opencode_auth() -> Result<serde_json::Value, String> {
+fn probe_opencode_auth(model_id: Option<&str>) -> Result<serde_json::Value, String> {
     // OpenCode runs fine without login (local / free models), so absence of
     // credentials is "unknown", never "logged_out": the banner only appears
     // when an actual turn fails with an auth error.
@@ -1627,19 +1657,69 @@ fn probe_opencode_auth() -> Result<serde_json::Value, String> {
             "OpenCode has no saved login — auth optional for local/free models",
         ));
     };
+    let stamp = file_mtime_stamp(&path);
     let text = fs::read_to_string(&path).unwrap_or_default();
-    if json_has_credential_markers(&text) {
-        Ok(auth_result(
-            "opencode",
-            "logged_in",
-            "OpenCode credentials found (auth.json)",
+    if let Some(provider) = opencode_model_provider(model_id) {
+        if opencode_auth_has_provider(&text, provider) {
+            Ok(with_stamp(
+                auth_result(
+                    "opencode",
+                    "logged_in",
+                    format!("OpenCode credentials found for {provider}"),
+                ),
+                stamp,
+            ))
+        } else {
+            Ok(with_stamp(
+                auth_result(
+                    "opencode",
+                    "unknown",
+                    format!(
+                        "OpenCode has no saved login for {provider} — auth optional for local/free models"
+                    ),
+                ),
+                stamp,
+            ))
+        }
+    } else if json_has_credential_markers(&text) {
+        Ok(with_stamp(
+            auth_result(
+                "opencode",
+                "logged_in",
+                "OpenCode credentials found (auth.json)",
+            ),
+            stamp,
         ))
     } else {
-        Ok(auth_result(
-            "opencode",
-            "unknown",
-            "OpenCode has no saved login — auth optional for local/free models",
+        Ok(with_stamp(
+            auth_result(
+                "opencode",
+                "unknown",
+                "OpenCode has no saved login — auth optional for local/free models",
+            ),
+            stamp,
         ))
+    }
+}
+
+/// OpenCode model ids are `provider/model` (e.g. `opencode-go/deepseek-v4.1-flash`).
+fn opencode_model_provider(model_id: Option<&str>) -> Option<&str> {
+    let model = model_id?.trim();
+    let (provider, rest) = model.split_once('/')?;
+    if provider.is_empty() || rest.trim().is_empty() {
+        return None;
+    }
+    Some(provider)
+}
+
+fn opencode_auth_has_provider(text: &str, provider: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return false;
+    };
+    match value.get(provider) {
+        Some(entry) if !entry.is_null() => grok_auth_has_credential(&entry.to_string())
+            || json_has_credential_markers(&entry.to_string()),
+        _ => false,
     }
 }
 
@@ -2942,6 +3022,46 @@ mod tests {
         ));
         assert!(grok_auth_has_credential(r#"{"access_token":"eyJabc"}"#));
         assert!(!grok_auth_has_credential(r#"{"access_token":"  "}"#));
+    }
+
+    #[test]
+    fn opencode_probe_follows_current_model_provider() {
+        use super::{opencode_auth_has_provider, opencode_model_provider};
+        assert_eq!(
+            opencode_model_provider(Some("opencode-go/deepseek-v4.1-flash")),
+            Some("opencode-go")
+        );
+        assert_eq!(
+            opencode_model_provider(Some("opencode/deepseek-v4.1-flash-free")),
+            Some("opencode")
+        );
+        assert_eq!(opencode_model_provider(Some("grok-4.6")), None);
+        assert_eq!(opencode_model_provider(Some("")), None);
+        assert_eq!(opencode_model_provider(None), None);
+
+        let auth = r#"{"opencode-go":{"type":"api","key":"sk-abc"},"deepseek":{"type":"api","key":"sk-ds"}}"#;
+        assert!(opencode_auth_has_provider(auth, "opencode-go"));
+        assert!(opencode_auth_has_provider(auth, "deepseek"));
+        assert!(!opencode_auth_has_provider(auth, "opencode"));
+        assert!(!opencode_auth_has_provider("{}", "opencode-go"));
+    }
+
+    #[test]
+    fn file_mtime_stamp_reads_existing_file() {
+        use super::file_mtime_stamp;
+        use std::fs;
+        let path = std::env::temp_dir().join(format!(
+            "marionette-stamp-{}.txt",
+            std::process::id()
+        ));
+        fs::write(&path, "ok").unwrap();
+        let stamp = file_mtime_stamp(&path);
+        let _ = fs::remove_file(&path);
+        assert!(stamp.is_some() && stamp.unwrap() > 0);
+        assert!(file_mtime_stamp(std::path::Path::new(
+            "C:\\this-path-should-not-exist-marionette-stamp"
+        ))
+        .is_none());
     }
 
     #[test]

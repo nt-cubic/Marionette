@@ -35,7 +35,7 @@ export const AGENT_AUTH: Record<string, AgentAuthSpec> = {
     login: true,
     loginCommand: "grok login",
     errorHint:
-      "Grok 未登录时可点横幅 Sign in，或终端执行 `grok login` 后新建会话（令牌约 7 天过期）。",
+      "Grok 未登录时可点横幅 Sign in，完成后会自动重连；也可终端执行 `grok login`。令牌约 7 天过期。",
   },
   "kimi-code": {
     probe: true,
@@ -97,7 +97,7 @@ export const AGENT_AUTH: Record<string, AgentAuthSpec> = {
     login: true,
     loginCommand: "opencode auth login",
     errorHint:
-      "OpenCode 未登录时可点横幅 Sign in，或终端执行 `opencode auth login` 后新建会话。",
+      "OpenCode Zen（opencode/…）要单独登录；已有 Key 的模型用 opencode-go/… 或 deepseek/…。点 Sign in 后会自动重连。",
   },
   deepseek: {
     probe: true,
