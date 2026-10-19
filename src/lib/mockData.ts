@@ -79,7 +79,7 @@ export const agents: AgentConfig[] = [
   {
     id: "deepseek",
     label: "DeepSeek Harness",
-    command: "deepseek-acp",
+    command: "dsh-acp",
     args: [],
     cwdMode: "project-root",
     launchMode: "pty",
@@ -87,7 +87,7 @@ export const agents: AgentConfig[] = [
     parser: "ansi-raw",
     transport: "acp",
     enabled: true,
-    install: mockInstall("deepseek-acp")
+    install: mockInstall("@openma/deepseek-harness-acp")
   }
 ];
 
@@ -215,5 +215,50 @@ export const sessionEvents: SessionEvent[] = [
     prompt: "Continue from the static shell and inspect M2 scope before adding backend commands.",
     createdAt: "2026-07-09T09:14:00.000Z"
   }
+];
+
+/** Browser mock for the shared-memory card (desktop reads ~/.marionette/memory.json). */
+export const memoryStore: import("./api").MemoryStore = {
+  version: 1,
+  enabled: true,
+  entries: [
+    {
+      id: "mem-prefs",
+      source: "claude",
+      title: "偏好与习惯",
+      text: "回复用中文，代码注释可中英混用。优先 PowerShell 7。改动前先看 AGENTS.md。",
+      enabled: true,
+      createdAtMs: Date.parse("2026-10-18T09:00:00Z"),
+      updatedAtMs: Date.parse("2026-10-19T14:30:00Z"),
+      originPath: "C:\\Users\\NT\\.claude\\CLAUDE.md",
+      originMtimeMs: Date.parse("2026-10-19T14:30:00Z")
+    },
+    {
+      id: "mem-project",
+      source: "manual",
+      title: "Marionette 约定",
+      text: "壳只管启动/展示/切换/记录，不实现 agent runtime。发布产物按版本分目录，运行中的旧版不挡新构建。\n排崩溃先看 dev.log 的 [panic] 行。",
+      enabled: true,
+      createdAtMs: Date.parse("2026-10-17T11:00:00Z"),
+      updatedAtMs: Date.parse("2026-10-17T11:00:00Z")
+    },
+    {
+      id: "mem-off",
+      source: "session",
+      title: "会话要点 2026-10-16（停用示例）",
+      text: "这条被手动停用，不会注入新会话，用来验证停用态的视觉。",
+      enabled: false,
+      createdAtMs: Date.parse("2026-10-16T18:00:00Z"),
+      updatedAtMs: Date.parse("2026-10-16T18:00:00Z")
+    }
+  ]
+};
+
+/** Browser mock for the DSH plugins card (desktop runs `dsh plugin --profile acp list`). */
+export const dshPlugins: import("./api").DshPlugin[] = [
+  { name: "dsh-pet", version: "0.3.1" },
+  { name: "billion-context", version: "1.9.0" },
+  { name: "dsh-context", version: "0.6.2" },
+  { name: "dsh-better-sidebar", version: "2.1.4" }
 ];
 

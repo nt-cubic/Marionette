@@ -4710,6 +4710,214 @@ body.is-tab-detaching .floating-trigger {
   line-height: 1.4;
 }
 
+/* ── Shared memory & DSH plugins cards (narrow context column) ───────
+   Entry cards, forms and sub-panels for MemorySection / PluginsSection.
+   Text buttons use .pill-action (24px pill); --sm stays icon-only. */
+
+.panel-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  cursor: pointer;
+  user-select: none;
+}
+
+.panel-entry-list {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.panel-entry {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+}
+
+.panel-entry.is-off {
+  opacity: 0.55;
+}
+
+.panel-entry__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.panel-entry__title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.panel-entry__chip {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-faint);
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.panel-entry__version {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.panel-entry__badge {
+  flex: 0 0 auto;
+  padding: 1.5px 7px;
+  border-radius: 999px;
+  color: #fff;
+  font-size: 10px;
+  line-height: 1.45;
+  white-space: nowrap;
+}
+
+.panel-entry__text {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.panel-entry__foot {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.panel-entry__date {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.panel-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.panel-form {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.panel-form__input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--workspace-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.panel-form__input::placeholder {
+  color: var(--text-faint);
+}
+
+.panel-form__input--area {
+  min-height: 64px;
+  resize: vertical;
+}
+
+.panel-form__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.panel-install {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.panel-install .panel-form__input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.panel-sub {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+}
+
+.panel-sub__title {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.panel-sub__row {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.panel-sub__hint {
+  color: var(--text-faint);
+  font-size: 10px;
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.panel-note {
+  margin: 8px 0 0;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
 /* ACP plan (session-scoped, read-only) — 5th context card when present */
 .plan-block {
   display: grid;

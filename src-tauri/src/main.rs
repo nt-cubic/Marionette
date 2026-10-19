@@ -13,12 +13,13 @@ mod credentials;
 mod custom_agents;
 mod data_dir_gate;
 mod debug_log;
-mod dsh_settings;
+mod dsh_plugins;
 mod engine;
 mod git_service;
 mod grok_dialect;
 mod handoff;
 mod http_client;
+mod memory;
 mod models;
 mod model_bridge;
 mod open_target;
@@ -428,6 +429,18 @@ fn main() {
             commands::load_transcript,
             commands::search_sessions,
             commands::probe_agent_auth,
+            commands::memory_get,
+            commands::memory_set_enabled,
+            commands::memory_add,
+            commands::memory_update,
+            commands::memory_delete,
+            commands::memory_set_entry_enabled,
+            commands::memory_import_preview,
+            commands::memory_import_run,
+            commands::memory_distill,
+            commands::dsh_plugins_list,
+            commands::dsh_plugin_add,
+            commands::dsh_plugin_remove,
             commands::start_agent_login,
             commands::start_grok_update,
             commands::start_acp_session,

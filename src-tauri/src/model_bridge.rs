@@ -16,7 +16,7 @@
 //! - **grok owned 表写入器**：往真实 `~/.grok/config.toml` 写
 //!   `[model."marionette/<model>"]`，api_key 用 `$MARIONETTE_PROVIDER_KEY`
 //!   env 展开（S3 实测有效），**绝不设 `[models] default`**（会让 Grok 退出
-//!   自身登录）。原则照抄 dsh_settings.rs：原文搬运、带所有权头注释、幂等
+//! 自身登录）。原则与所有权文件搬运一致：原文搬运、带所有权头注释、幂等
 //!   （一致则零写入）、写前重读容忍 grok 并发自改写、解析失败不写半截。
 //! - **去重规则**（§4.8 / 产品定稿）：key-plan → claude-code / grok-build 可
 //!   见；reference → 宿主 agent 自己不可见；subscription → M2 前不可见。

@@ -310,9 +310,11 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
             requires_commands: &[],
             launch_env: &[],
         },
-        // Community editor bridge (`deepseek-acp`), not the automation-only
-        // `@deepseek-ai/dsh-acp`. Speaks full ACP (streaming, tools, MCP over
-        // session/new). Auth is `DEEPSEEK_API_KEY` / `~/.dsh/.credentials.yaml`.
+        // @openma/deepseek-harness-acp (bin `dsh-acp`) — full-editor ACP over the
+        // DSH composition (streaming, tools, MCP, permission presets, plans,
+        // skills). The `dsh` engine CLI rides along as an install dependency and
+        // is selected at spawn via DSH_ACP_HOST. Auth is `DEEPSEEK_API_KEY` /
+        // `~/.dsh/.credentials.yaml` / `dsh-acp login`.
         "deepseek" | "deepseek-acp" => AgentHarnessMeta {
             id: "deepseek",
             label: "DeepSeek Harness",
@@ -321,12 +323,12 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
             mcp_wire_label: mcp_label(McpWirePolicy::Forward),
             distribution: DistributionKind::Npx,
             distribution_label: dist_label(DistributionKind::Npx),
-            cmd: "deepseek-acp",
+            cmd: "dsh-acp",
             args: &[],
-            node_required: Some("22.0.0"),
+            node_required: Some("22.15.0"),
             uv_required: None,
             python_pin: None,
-            requires_commands: &[],
+            requires_commands: &["dsh"],
             launch_env: &[],
         },
         _ => AgentHarnessMeta {
@@ -461,7 +463,7 @@ mod tests {
     #[test]
     fn launch_metadata_still_names_the_binaries() {
         assert_eq!(harness_meta("hermes").python_pin, Some("3.13"));
-        assert_eq!(harness_meta("deepseek").cmd, "deepseek-acp");
+        assert_eq!(harness_meta("deepseek").cmd, "dsh-acp");
         assert_eq!(harness_meta("openclaw").node_required, Some("24.16.0"));
         assert_eq!(harness_meta("codex").cmd, "codex-acp");
     }

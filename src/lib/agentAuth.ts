@@ -102,9 +102,9 @@ export const AGENT_AUTH: Record<string, AgentAuthSpec> = {
   deepseek: {
     probe: true,
     login: true,
-    loginCommand: "deepseek-acp --setup",
+    loginCommand: "dsh-acp login",
     errorHint:
-      "DeepSeek 未配置时可点横幅 Sign in，或在 Provider keys 里填 DEEPSEEK_API_KEY，或终端执行 `deepseek-acp --setup`。",
+      "DeepSeek 未配置时可点横幅 Sign in，或在 Provider keys 里填 DEEPSEEK_API_KEY，或终端执行 `dsh-acp login`。",
   },
 };
 
