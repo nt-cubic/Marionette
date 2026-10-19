@@ -530,6 +530,8 @@ export function App() {
   const [todoItems, setTodoItems] = useState<TodoItem[]>([]);
   /** Active model id from Composer (`provider/model` for OpenCode). */
   const [activeModelId, setActiveModelId] = useState<string | null>(null);
+  const activeModelIdRef = useRef(activeModelId);
+  activeModelIdRef.current = activeModelId;
   const providerProbeInflight = useRef(false);
   const lastProviderProbeKey = useRef("");
   /** Throttle auto usage refresh after each turn end. */
@@ -2521,13 +2523,23 @@ export function App() {
         // { error: { message: "Authentication required" } } with no message chunks).
         const errText = formatAcpRpcError(payload.data);
         if (errText) {
-          const sessAgentId = sessionsRef.current.find((s) => s.id === payload.sessionId)?.agentId;
+          const sess = sessionsRef.current.find((s) => s.id === payload.sessionId);
+          const sessAgentId = sess?.agentId;
           const sessAgent = sessAgentId
             ? agentsRef.current.find((a) => a.id === sessAgentId)
             : undefined;
+          const caps = capsByIdRef.current[payload.sessionId];
+          const currentModel =
+            (payload.sessionId === currentSessionIdRef.current
+              ? activeModelIdRef.current
+              : null) ||
+            sess?.preferredModel ||
+            caps?.currentModel ||
+            undefined;
           const classified = classifyAgentError(errText, {
             agentId: sessAgentId,
             agentLabel: sessAgent?.label,
+            currentModel,
           });
           let body = formatClassifiedError(classified);
           setComposerFailure({ sessionId: payload.sessionId, error: classified });
@@ -3431,19 +3443,36 @@ export function App() {
     setSearchHitIds([...new Set([...hits, ...liveHits])]);
   }, []);
 
+  const modelIdForAgentProbe = useCallback((agentId: string): string | undefined => {
+    const sid = currentSessionIdRef.current;
+    const sess = sid ? sessionsRef.current.find((s) => s.id === sid) : undefined;
+    if (sess?.agentId === agentId) {
+      const model = (
+        activeModelIdRef.current ||
+        sess.preferredModel ||
+        capsByIdRef.current[sess.id]?.currentModel ||
+        ""
+      ).trim();
+      return model || undefined;
+    }
+    const other = sessionsRef.current.find((s) => s.agentId === agentId);
+    if (!other) return undefined;
+    const model = (
+      other.preferredModel ||
+      capsByIdRef.current[other.id]?.currentModel ||
+      ""
+    ).trim();
+    return model || undefined;
+  }, []);
+
   const refreshAgentAuth = useCallback(
     async (agentId: string) => {
       const spec = agentAuthSpec(agentId);
-      if (!spec?.probe) return;
-      const probe = await probeAgentAuth(agentId);
-      if (!probe) return;
+      if (!spec?.probe) return null;
+      const probe = await probeAgentAuth(agentId, modelIdForAgentProbe(agentId));
+      if (!probe) return null;
       if (probe.status === "logged_in") {
         setAuthHintFor(agentId, null);
-        if (authPollRef.current) {
-          clearInterval(authPollRef.current);
-          authPollRef.current = null;
-        }
-        setSignInBusy(false);
       } else if (probe.status === "logged_out") {
         setAuthHintFor(
           agentId,
@@ -3454,8 +3483,9 @@ export function App() {
         );
       }
       // "unknown" (e.g. CodeBuddy OS-keyring) keeps whatever banner is up.
+      return probe;
     },
-    [setAuthHintFor]
+    [modelIdForAgentProbe, setAuthHintFor]
   );
 
   const probedAgentId =
@@ -3485,48 +3515,6 @@ export function App() {
       }
     };
   }, [probedAgentId, refreshAgentAuth, setAuthHintFor]);
-
-  const handleAgentSignIn = useCallback(
-    async (agentId: string) => {
-      const spec = agentAuthSpec(agentId);
-      if (!spec?.login) return;
-      setSignInBusy(true);
-      pushDebug({
-        level: "info",
-        source: "auth",
-        summary: `start ${agentId} login`,
-      });
-      const result = await startAgentLogin(agentId);
-      if (!result?.started) {
-        setSignInBusy(false);
-        setAuthHintFor(
-          agentId,
-          result?.message ||
-            `无法启动登录。请在终端执行 \`${spec.loginCommand}\`。`
-        );
-        return;
-      }
-      setAuthHintFor(
-        agentId,
-        result.message || "请在浏览器/终端完成登录，然后回到这里（会自动检测）。"
-      );
-      // Poll until logged in or timeout (~2 min).
-      if (authPollRef.current) clearInterval(authPollRef.current);
-      let ticks = 0;
-      authPollRef.current = setInterval(() => {
-        ticks += 1;
-        void refreshAgentAuth(agentId);
-        if (ticks >= 40) {
-          if (authPollRef.current) {
-            clearInterval(authPollRef.current);
-            authPollRef.current = null;
-          }
-          setSignInBusy(false);
-        }
-      }, 3000);
-    },
-    [pushDebug, refreshAgentAuth, setAuthHintFor]
-  );
 
   const handleGrokUpdate = useCallback(
     async (agentId: string) => {
@@ -5382,6 +5370,143 @@ export function App() {
   }, [ensureAcpReady, pushDebug, restartAcpProcess]);
 
   /**
+   * After native login, the live ACP child still holds the old auth. Current
+   * session gets a fresh `session/new`; other same-agent sessions stop so the
+   * next send respawns. Do not clear current-session caps for those others.
+   */
+  const reconnectSessionsAfterLogin = useCallback(
+    async (agentId: string) => {
+      const currentSid = currentSessionIdRef.current;
+      const rows = sessionsRef.current.filter(
+        (s) => s.agentId === agentId && !s.id.startsWith("session-empty-")
+      );
+      const current = rows.find((s) => s.id === currentSid);
+      const others = rows.filter((s) => s.id !== currentSid);
+      for (const s of others) {
+        disarmCancelWatchdog(s.id);
+        cancelIgnoredRef.current.delete(s.id);
+        await stopAcpSession(s.id).catch(() => undefined);
+        acpBootstrapRef.current.delete(s.id);
+        setSessionStatusById(s.id, "exited");
+        acpNeedsHistoryRef.current.add(s.id);
+      }
+      if (current) {
+        await restartAcpProcess(current.id);
+        await ensureAcpReady(current.id);
+      }
+      pushDebug({
+        sessionId: current?.id,
+        level: "info",
+        source: "auth",
+        summary: `reconnected ${agentId} after login`,
+      });
+    },
+    [disarmCancelWatchdog, ensureAcpReady, pushDebug, restartAcpProcess, setSessionStatusById]
+  );
+
+  const handleAgentSignIn = useCallback(
+    async (agentId: string) => {
+      const spec = agentAuthSpec(agentId);
+      if (!spec?.login) return;
+      setSignInBusy(true);
+      pushDebug({
+        level: "info",
+        source: "auth",
+        summary: `start ${agentId} login`,
+      });
+      const baseline = await probeAgentAuth(agentId, modelIdForAgentProbe(agentId));
+      const result = await startAgentLogin(agentId);
+      if (!result?.started) {
+        setSignInBusy(false);
+        setAuthHintFor(
+          agentId,
+          result?.message ||
+            `无法启动登录。请在终端执行 \`${spec.loginCommand}\`。`
+        );
+        return;
+      }
+      setAuthHintFor(
+        agentId,
+        result.message || "请在浏览器/终端完成登录，然后回到这里（会自动检测并重连）。"
+      );
+      if (authPollRef.current) {
+        clearInterval(authPollRef.current);
+        authPollRef.current = null;
+      }
+      let ticks = 0;
+      let inFlight = false;
+      let settled = false;
+      const loginSucceeded = (probe: { status: string; stamp?: number }) => {
+        const becameIn =
+          probe.status === "logged_in" && baseline?.status !== "logged_in";
+        const stampChanged =
+          probe.stamp != null && probe.stamp !== baseline?.stamp;
+        return becameIn || stampChanged;
+      };
+      const finish = async (reconnect: boolean) => {
+        if (settled) return;
+        settled = true;
+        if (authPollRef.current) {
+          clearInterval(authPollRef.current);
+          authPollRef.current = null;
+        }
+        if (reconnect) {
+          try {
+            await reconnectSessionsAfterLogin(agentId);
+          } catch (error) {
+            pushDebug({
+              level: "warn",
+              source: "auth",
+              summary: `reconnect after ${agentId} login failed`,
+              detail: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        await refreshAgentAuth(agentId);
+        setSignInBusy(false);
+      };
+      const tick = () => {
+        if (inFlight || settled) return;
+        inFlight = true;
+        void (async () => {
+          try {
+            const probe = await probeAgentAuth(
+              agentId,
+              modelIdForAgentProbe(agentId)
+            );
+            if (settled) return;
+            if (!probe) {
+              if (ticks >= 40) await finish(false);
+              return;
+            }
+            if (loginSucceeded(probe)) {
+              await finish(true);
+              return;
+            }
+            if (ticks >= 40) {
+              await finish(probe.status === "logged_in");
+            }
+          } finally {
+            inFlight = false;
+          }
+        })();
+      };
+      tick();
+      authPollRef.current = setInterval(() => {
+        ticks += 1;
+        tick();
+      }, 3000);
+    },
+    [
+      modelIdForAgentProbe,
+      pushDebug,
+      reconnectSessionsAfterLogin,
+      refreshAgentAuth,
+      setAuthHintFor,
+    ]
+  );
+
+  /**
    * Persist the proxy config, then restart the live agent so the new env vars
    * (HTTPS_PROXY / NO_PROXY) actually apply to its next spawned processes.
    */
@@ -5827,6 +5952,13 @@ export function App() {
         const classified = classifyAgentError(error, {
           agentId: sess?.agentId,
           agentLabel: agent?.label,
+          currentModel:
+            (sid === currentSessionIdRef.current
+              ? activeModelIdRef.current
+              : null) ||
+            sess?.preferredModel ||
+            capsByIdRef.current[sid]?.currentModel ||
+            undefined,
         });
         raiseClassifiedBanner(sess?.agentId, classified);
         setComposerFailure({ sessionId: sid, error: classified });
@@ -6619,6 +6751,14 @@ export function App() {
       const classified = classifyAgentError(error, {
         agentId: sess?.agentId,
         agentLabel: agent?.label,
+        currentModel:
+          composerSnap?.modelId?.trim() ||
+          (sid === currentSessionIdRef.current
+            ? activeModelIdRef.current
+            : null) ||
+          sess?.preferredModel ||
+          capsByIdRef.current[sid]?.currentModel ||
+          undefined,
       });
       // The one-turn gate refused us: a live turn this side failed to bookkeep
       // as "running" (missed boundary, reconnect window) still owns the

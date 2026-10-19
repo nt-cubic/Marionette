@@ -487,13 +487,21 @@ export type AgentAuthProbe = {
   status: "logged_in" | "logged_out" | "unknown";
   loggedIn?: boolean;
   message?: string;
+  /** Credential-file mtime (ms since epoch). Detects `grok login` rewriting an already-present auth.json. */
+  stamp?: number;
   raw?: unknown;
 };
 
-export async function probeAgentAuth(agentId: string): Promise<AgentAuthProbe | null> {
+export async function probeAgentAuth(
+  agentId: string,
+  modelId?: string | null
+): Promise<AgentAuthProbe | null> {
   if (!isTauriRuntime()) return null;
   try {
-    return await invoke<AgentAuthProbe>("probe_agent_auth", { agentId });
+    return await invoke<AgentAuthProbe>("probe_agent_auth", {
+      agentId,
+      modelId: modelId ?? null,
+    });
   } catch {
     return null;
   }

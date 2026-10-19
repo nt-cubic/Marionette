@@ -2,6 +2,7 @@ import { agentAuthSpec } from "./agentAuth";
 
 export type AgentErrorKind =
   | "auth"
+  | "auth_transient"
   | "upgrade"
   | "command_missing"
   | "timeout"
@@ -25,6 +26,8 @@ export type ClassifyAgentErrorOpts = {
   /** When set, auth errors use that agent’s Sign in / login-command hint. */
   agentId?: string | null;
   agentLabel?: string | null;
+  /** Current model id (`provider/model` for OpenCode) so auth hints match the live channel. */
+  currentModel?: string | null;
 };
 
 /**
@@ -116,16 +119,33 @@ export function classifyAgentError(
     };
   }
 
+  // Grok (and similar) 401s that say the session is still signed in. Must run
+  // before the auth regex — the body contains `auth` / `login`.
+  if (isAuthTransientMessage(message)) {
+    return {
+      kind: "auth_transient",
+      title: "认证暂时不可用",
+      message,
+      actionHint: "账号仍在登录。点重试，或稍后再发；不必重新 Sign in。",
+    };
+  }
+
   if (
     /auth|login|unauthorized|401|not logged|authentication required|sign.?in|oauth|api.?key|missing.?key|credentials|not authenticated|token expired|re-?auth/i.test(
       message
     )
   ) {
+    let hint = authHint;
+    if (opts?.agentId === "opencode") {
+      hint = openCodeAuthHint(opts.currentModel, authHint);
+    } else if (isGrok) {
+      hint = grokApiKeySpawnHint(message) ?? authHint;
+    }
     return {
       kind: "auth",
       title: "需要登录",
       message,
-      actionHint: authHint,
+      actionHint: hint,
     };
   }
 
@@ -244,4 +264,36 @@ export function formatClassifiedError(err: ClassifiedError): string {
   const lines = [`**${err.title}:** ${err.message}`];
   if (err.actionHint) lines.push(`\n${err.actionHint}`);
   return lines.join("");
+}
+
+/** Grok `error_type: auth_transient` plus “still signed in… no need to /login”. */
+export function isAuthTransientMessage(message: string): boolean {
+  if (/auth[_\s-]?transient/i.test(message)) return true;
+  return (
+    /still signed in/i.test(message) &&
+    /no need to[\s\S]{0,80}\/?login/i.test(message)
+  );
+}
+
+function openCodeAuthHint(
+  currentModel: string | null | undefined,
+  fallback: string
+): string {
+  const model = currentModel?.trim() ?? "";
+  const slash = model.indexOf("/");
+  const provider = slash > 0 ? model.slice(0, slash) : "";
+  if (provider === "opencode") {
+    return "当前模型是 OpenCode Zen（opencode/…）。点 Sign in 登录 Zen，或把模型换成 opencode-go/…、deepseek/… 这类已有 Key 的渠道。登录完成后会自动重连。";
+  }
+  if (provider) {
+    return `当前模型走 ${provider}。点 Sign in 登录该渠道，或在 Provider keys 里填 Key。登录完成后会自动重连。`;
+  }
+  return fallback;
+}
+
+function grokApiKeySpawnHint(message: string): string | null {
+  if (/auth:\s*apikey/i.test(message) && /auth_kind\s*=\s*none/i.test(message)) {
+    return "当前会话按 API Key 启动但没有可用的 Key。点 Sign in 登录 grok.com（完成后会自动重连），或换一个走 API 的模型。";
+  }
+  return null;
 }
