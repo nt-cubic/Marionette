@@ -173,6 +173,10 @@ mod tests {
         );
         assert_eq!(unpinned_package("deepseek-acp@0.9.0"), "deepseek-acp");
         assert_eq!(
+            unpinned_package("@openma/deepseek-harness-acp@0.4.39"),
+            "@openma/deepseek-harness-acp"
+        );
+        assert_eq!(
             unpinned_package("hermes-agent[acp,mcp]==0.21.1"),
             "hermes-agent"
         );

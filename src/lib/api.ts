@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { agents as mockAgents, projects as mockProjects, sessions as mockSessions } from "./mockData";
+import { agents as mockAgents, projects as mockProjects, sessions as mockSessions, memoryStore as mockMemoryStore, dshPlugins as mockDshPlugins } from "./mockData";
 import type { AgentConfig, AgentCommandStatus, CapabilitySnapshot, Project, ProviderInfo, ProxyConfig, ProxyTestResult, Session, SessionLabelSource } from "./types";
 
 export function isTauriRuntime() {
@@ -1291,4 +1291,113 @@ export async function telegramAck(
   } catch {
     // ack 是尽力而为；失败只影响手机上少一条 ✓。
   }
+}
+
+// ── 跨 agent 共享记忆（memory.rs） ──────────────────────────────────────
+
+export type MemoryEntry = {
+  id: string;
+  source: string;
+  title: string;
+  text: string;
+  enabled: boolean;
+  createdAtMs: number;
+  updatedAtMs: number;
+  originPath?: string | null;
+  originMtimeMs?: number | null;
+};
+
+export type MemoryStore = {
+  version: number;
+  enabled: boolean;
+  entries: MemoryEntry[];
+};
+
+export type MemoryImportSource = {
+  source: string;
+  title: string;
+  path: string;
+  exists: boolean;
+  bytes: number;
+  mtimeMs: number;
+  excerpt: string;
+};
+
+export type MemoryImportResult = {
+  imported: string[];
+  updated: string[];
+  unchanged: string[];
+  sources: MemoryImportSource[];
+};
+
+export async function memoryGet(): Promise<MemoryStore> {
+  if (!isTauriRuntime()) return mockMemoryStore;
+  return await invoke<MemoryStore>("memory_get");
+}
+
+export async function memorySetEnabled(enabled: boolean): Promise<void> {
+  await invoke("memory_set_enabled", { enabled });
+}
+
+export async function memoryAdd(
+  title: string,
+  text: string,
+  source?: string,
+): Promise<MemoryEntry> {
+  return await invoke<MemoryEntry>("memory_add", {
+    title,
+    text,
+    source: source ?? null,
+  });
+}
+
+export async function memoryUpdate(id: string, title: string, text: string): Promise<void> {
+  await invoke("memory_update", { id, title, text });
+}
+
+export async function memoryDelete(id: string): Promise<void> {
+  await invoke("memory_delete", { id });
+}
+
+export async function memorySetEntryEnabled(
+  id: string,
+  enabled: boolean,
+): Promise<void> {
+  await invoke("memory_set_entry_enabled", { id, enabled });
+}
+
+export async function memoryImportPreview(): Promise<{
+  sources: MemoryImportSource[];
+}> {
+  return await invoke("memory_import_preview");
+}
+
+export async function memoryImportRun(): Promise<MemoryImportResult> {
+  return await invoke("memory_import_run");
+}
+
+export async function memoryDistill(sessionId: string): Promise<{ draft: string }> {
+  return await invoke("memory_distill", { sessionId });
+}
+
+// ── DSH 插件面板（dsh_plugins.rs） ──────────────────────────────────────
+
+export type DshPlugin = {
+  name: string;
+  version: string;
+};
+
+export async function dshPluginsList(): Promise<DshPlugin[]> {
+  if (!isTauriRuntime()) return mockDshPlugins;
+  // 防御：后端形状异常时给空清单，不让面板整页崩掉。
+  const list = await invoke<unknown>("dsh_plugins_list");
+  return Array.isArray(list) ? (list as DshPlugin[]) : [];
+}
+
+export async function dshPluginAdd(spec: string): Promise<{ summary: string }> {
+  return await invoke("dsh_plugin_add", { spec });
+}
+
+export async function dshPluginRemove(name: string): Promise<void> {
+  await invoke("dsh_plugin_remove", { name });
 }

@@ -217,6 +217,8 @@ struct AcpProcess {
     /// `set_config_option` / model / mode / effort / probes must never clear
     /// the UI "Working" state — that was the false "turn complete" bug.
     in_flight_prompt_id: Arc<AtomicU64>,
+    /// 跨 agent 记忆卡只在该进程的首条 prompt 注入一次（见 memory.rs）。
+    memory_card_sent: AtomicBool,
 }
 
 struct PendingPermission {
@@ -462,24 +464,41 @@ impl AcpService {
             for (k, v) in crate::agent_registry::launch_env_for(id) {
                 child_command.env(*k, *v);
             }
-            // DSH 0.2.0-rc.2 moved its settings into profile patches and renamed
-            // the flat document the ACP adapter still resolves, which silently
-            // hid every routed provider (opencode-go, …) behind the two built-in
-            // DeepSeek models. Put the routes back before the agent boots.
-            if matches!(id, "deepseek" | "deepseek-acp") {
-                let bridged = crate::dsh_settings::ensure_settings_bridge();
-                let failed = matches!(
-                    bridged,
-                    crate::dsh_settings::BridgeAction::Failed { .. }
-                );
-                if bridged.changed() || failed {
-                    crate::debug_log::append(
+            // DeepSeek Harness (`dsh-acp`): compose the ambient `@deepseek-ai/dsh`
+            // engine instead of the adapter's bundled runtime. The bundled path
+            // unpacks a tar with symlinks into %LOCALAPPDATA%\dsh-acp and dies
+            // with EPERM on Windows without Developer Mode (probed 2026-10-19,
+            // dsh-acp 0.4.39); the ambient engine also loads $DSH_HOME profiles
+            // and plugins natively, which retired the old settings.yaml bridge.
+            if matches!(id, "deepseek" | "deepseek-acp")
+                && std::env::var_os("DSH_ACP_HOST")
+                    .or_else(|| std::env::var_os("DSH_PATH"))
+                    .is_none()
+            {
+                match dsh_runtime_dir() {
+                    Some(dir) => {
+                        child_command.env("DSH_ACP_HOST", &dir);
+                        crate::debug_log::append(
+                            "acp",
+                            "info",
+                            &session_id,
+                            "dsh-acp uses the ambient engine install",
+                            Some(&dir.display().to_string()),
+                        );
+                    }
+                    None => crate::debug_log::append(
                         "acp",
-                        if failed { "warn" } else { "info" },
+                        "warn",
                         &session_id,
-                        &format!("DSH settings bridge: {}", bridged.describe()),
+                        "ambient @deepseek-ai/dsh not found; dsh-acp falls back to its bundled runtime",
                         None,
-                    );
+                    ),
+                }
+                // One session store for everyone: dsh web, Marionette's importer
+                // (parsers/deepseek.rs) and the adapter. The adapter's standalone
+                // default (~/.dsh-acp/sessions) would fork the history.
+                if let Some(root) = dsh_home().map(|home| home.join("sessions")) {
+                    child_command.env("DSH_SESSION_ROOT", root);
                 }
             }
             // DeepSeek Harness reads DEEPSEEK_API_KEY (or ~/.dsh/.credentials.yaml).
@@ -706,6 +725,7 @@ impl AcpService {
             quiet_ids: Arc::new(Mutex::new(HashSet::new())),
             config_option_unsupported: AtomicBool::new(false),
             in_flight_prompt_id,
+            memory_card_sent: AtomicBool::new(false),
         });
         sessions.insert(session_id.clone(), Arc::clone(&process));
         drop(sessions);
@@ -1599,6 +1619,13 @@ impl AcpService {
 
         let mut prompt_blocks: Vec<Value> = Vec::new();
         let mut image_count = 0usize;
+        // 跨 agent 共享记忆：每个会话进程的首条 prompt 前注入一次记忆卡。
+        // 放在最前，阅读顺序是「记忆 → 图片 → 用户的话」。
+        if !process.memory_card_sent.swap(true, Ordering::Relaxed) {
+            if let Some(card) = crate::memory::compose_card() {
+                prompt_blocks.push(json!({ "type": "text", "text": card }));
+            }
+        }
         if !image_paths.is_empty() {
             if images_ok {
                 for path in &image_paths {
@@ -6013,6 +6040,45 @@ pub fn spawn_pipeline_watchdog() {
             );
         }
     });
+}
+
+/// Locate the globally installed `@deepseek-ai/dsh` package dir: npm layouts
+/// keep `<prefix>/dsh.cmd` and `<prefix>/node_modules/@deepseek-ai/dsh` side by
+/// side, so walk from the `dsh` launcher on PATH, with the default Windows npm
+/// prefix as fallback.
+fn dsh_runtime_dir() -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(resolved) = crate::process_util::resolve_spawn_command("dsh") {
+        if let Some(bin_dir) = PathBuf::from(&resolved.resolved_path).parent() {
+            candidates.push(
+                bin_dir
+                    .join("node_modules")
+                    .join("@deepseek-ai")
+                    .join("dsh"),
+            );
+        }
+    }
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        candidates.push(
+            PathBuf::from(appdata)
+                .join("npm")
+                .join("node_modules")
+                .join("@deepseek-ai")
+                .join("dsh"),
+        );
+    }
+    candidates.into_iter().find(|dir| dir.is_dir())
+}
+
+/// DSH's own resolution: a non-blank `$DSH_HOME` wins, then `~/.dsh`.
+fn dsh_home() -> Option<PathBuf> {
+    if let Some(raw) = std::env::var_os("DSH_HOME") {
+        if !raw.to_string_lossy().trim().is_empty() {
+            return Some(PathBuf::from(raw));
+        }
+    }
+    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
+    Some(PathBuf::from(home).join(".dsh"))
 }
 
 /// `Marionette_RAW_LOG=1` mirrors every stdout line the reader yields to

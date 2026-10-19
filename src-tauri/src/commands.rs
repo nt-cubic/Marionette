@@ -1753,7 +1753,7 @@ fn probe_deepseek_auth() -> Result<serde_json::Value, String> {
     Ok(auth_result(
         "deepseek",
         "logged_out",
-        "DeepSeek has no API key (set DEEPSEEK_API_KEY, add it in Provider keys, or run `deepseek-acp --setup`)",
+        "DeepSeek has no API key (set DEEPSEEK_API_KEY, add it in Provider keys, or run `dsh-acp login`)",
     ))
 }
 
@@ -1847,10 +1847,10 @@ pub fn start_agent_login(agent_id: String) -> Result<serde_json::Value, String> 
             "Opened OpenCode login — complete sign-in in the terminal window, then return here.",
         ),
         "deepseek" | "deepseek-acp" => (
-            "deepseek-acp",
-            &["--setup"][..],
+            "dsh-acp",
+            &["login"][..],
             "deepseek",
-            "Opened DeepSeek Harness setup — store an API key (or set DEEPSEEK_API_KEY), then return here.",
+            "Opened dsh-acp login — store an API key (or set DEEPSEEK_API_KEY), then return here.",
         ),
         _ => return Err(format!("No in-app login flow for agent `{agent_id}`")),
     };
@@ -2973,6 +2973,126 @@ pub fn set_proxy_config(config: crate::proxy::ProxyConfig) -> Result<(), String>
 #[tauri::command]
 pub fn test_proxy(url: String) -> Result<crate::proxy::ProxyTestResult, String> {
     crate::proxy::test_proxy(&url)
+}
+
+// ── 跨 agent 共享记忆（memory.rs） ──────────────────────────────────────
+
+#[tauri::command(async)]
+pub fn memory_get() -> Result<serde_json::Value, String> {
+    serde_json::to_value(crate::memory::load()).map_err(|e| e.to_string())
+}
+
+#[tauri::command(async)]
+pub fn memory_set_enabled(enabled: bool) -> Result<(), String> {
+    let mut store = crate::memory::load();
+    store.enabled = enabled;
+    crate::memory::save(&store)
+}
+
+#[tauri::command(async)]
+pub fn memory_add(
+    title: String,
+    text: String,
+    source: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let mut store = crate::memory::load();
+    let entry = crate::memory::new_entry(
+        source.as_deref().unwrap_or("manual"),
+        &title,
+        &text,
+        None,
+        None,
+    );
+    store.entries.push(entry.clone());
+    crate::memory::save(&store)?;
+    serde_json::to_value(&entry).map_err(|e| e.to_string())
+}
+
+#[tauri::command(async)]
+pub fn memory_update(id: String, title: String, text: String) -> Result<(), String> {
+    let mut store = crate::memory::load();
+    let entry = store
+        .entries
+        .iter_mut()
+        .find(|e| e.id == id)
+        .ok_or_else(|| format!("Memory entry not found: {id}"))?;
+    entry.title = title.trim().to_string();
+    entry.text = text.trim_end().to_string();
+    crate::memory::mark_updated(entry);
+    crate::memory::save(&store)
+}
+
+#[tauri::command(async)]
+pub fn memory_delete(id: String) -> Result<(), String> {
+    let mut store = crate::memory::load();
+    let before = store.entries.len();
+    store.entries.retain(|e| e.id != id);
+    if store.entries.len() == before {
+        return Err(format!("Memory entry not found: {id}"));
+    }
+    crate::memory::save(&store)
+}
+
+#[tauri::command(async)]
+pub fn memory_set_entry_enabled(id: String, enabled: bool) -> Result<(), String> {
+    let mut store = crate::memory::load();
+    let entry = store
+        .entries
+        .iter_mut()
+        .find(|e| e.id == id)
+        .ok_or_else(|| format!("Memory entry not found: {id}"))?;
+    entry.enabled = enabled;
+    crate::memory::mark_updated(entry);
+    crate::memory::save(&store)
+}
+
+#[tauri::command(async)]
+pub fn memory_import_preview() -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({ "sources": crate::memory::import_sources() }))
+}
+
+#[tauri::command(async)]
+pub fn memory_import_run() -> Result<serde_json::Value, String> {
+    crate::memory::import_run()
+}
+
+/// 把会话尾部发给 DeepSeek 提炼记忆草稿；用户确认后走 `memory_add` 落库。
+#[tauri::command(async)]
+pub fn memory_distill(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let path = {
+        let storage = state
+            .storage
+            .lock()
+            .map_err(|_| "Storage lock poisoned".to_string())?;
+        storage.transcript_path_for(&session_id)?
+    };
+    let digest = crate::memory::transcript_digest(&path)
+        .ok_or_else(|| "会话记录里没有可提炼的文本".to_string())?;
+    let draft = crate::memory::distill_with_deepseek(&digest)?;
+    Ok(serde_json::json!({ "draft": draft }))
+}
+
+// ── DSH 插件面板（dsh_plugins.rs） ─────────────────────────────────────
+
+#[tauri::command(async)]
+pub fn dsh_plugins_list() -> Result<Vec<crate::dsh_plugins::DshPlugin>, String> {
+    // 直接返回 Vec：别再套 serde_json::to_value —— 那会把 Ok(vec) 变成
+    // {"Ok": [...]} 对象，前端 .map 直接崩（2026-10-20 实测）。
+    crate::dsh_plugins::list()
+}
+
+#[tauri::command(async)]
+pub fn dsh_plugin_add(spec: String) -> Result<serde_json::Value, String> {
+    let summary = crate::dsh_plugins::add(&spec)?;
+    Ok(serde_json::json!({ "summary": summary }))
+}
+
+#[tauri::command(async)]
+pub fn dsh_plugin_remove(name: String) -> Result<(), String> {
+    crate::dsh_plugins::remove(&name).map(|_| ())
 }
 
 #[cfg(test)]

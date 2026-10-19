@@ -12,6 +12,8 @@ import {
 import { useState } from "react";
 import { openExternal, revealInFileManager } from "../lib/api";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { MemorySection } from "./MemorySection";
+import { PluginsSection } from "./PluginsSection";
 import { SessionStatsSection } from "./SessionStatsSection";
 import type { PlanEntry } from "../lib/acpPlan";
 import type { SessionStats } from "../lib/sessionStats";
@@ -76,6 +78,8 @@ type ContextPanelProps = {
   checkAppUpdateBusy?: boolean;
   /** Dot badge when a downloadable update is already known. */
   appUpdateAvailable?: boolean;
+  /** Active session id — 会话蒸馏（memory_distill）用。 */
+  activeSessionId?: string | null;
 };
 
 function planStatusGlyph(status: PlanEntry["status"]): string {
@@ -274,6 +278,7 @@ export function ContextPanel({
   onCheckAppUpdate,
   checkAppUpdateBusy = false,
   appUpdateAvailable = false,
+  activeSessionId = null,
 }: ContextPanelProps) {
   const planList = planEntries && planEntries.length > 0 ? planEntries : null;
   const [draftTodo, setDraftTodo] = useState("");
@@ -576,6 +581,10 @@ export function ContextPanel({
         </small>
         {sessionStats && <SessionStatsSection stats={sessionStats} />}
       </section>
+
+      <MemorySection activeSessionId={activeSessionId} />
+
+      {(activeAgentId ?? "").startsWith("deepseek") && <PluginsSection />}
 
       <section className="context-card">
         <div className="context-card__heading">

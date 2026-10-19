@@ -7684,6 +7684,7 @@ export function App() {
           onCheckAppUpdate={handleCheckAppUpdate}
           checkAppUpdateBusy={appUpdateBusy}
           appUpdateAvailable={Boolean(appUpdate?.updateAvailable)}
+          activeSessionId={currentSessionId}
           resizeDragging={resizingSide === "right"}
           onResizeStart={() => setResizingSide("right")}
         />
