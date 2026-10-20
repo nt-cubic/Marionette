@@ -63,7 +63,7 @@ pub fn refresh_marionette_route() -> Result<bool, String> {
     let credentials = dsh_credentials_path().ok_or_else(|| "无法定位用户目录".to_string())?;
     match crate::engine::status() {
         crate::engine::EngineStatus::Running { port, .. } => {
-            let models = crate::engine::catalog_direct();
+            let models = crate::engine::catalog_direct_entries();
             if models.is_empty() {
                 return Ok(false);
             }
@@ -86,7 +86,7 @@ fn ensure_route_at(
     patch_path: &Path,
     credentials_path: &Path,
     port: u16,
-    models: &[String],
+    models: &[crate::model_bridge::CatalogModelRow],
 ) -> Result<(), String> {
     if models.is_empty() {
         return Err("引擎目录为空，拒绝写 dsh 路由".to_string());
@@ -182,10 +182,19 @@ fn token_ref_line(indent: usize) -> String {
 }
 
 /// marionette 路由子块（`indent` = providers 子键的缩进列）。
-fn marionette_lines(indent: usize, port: u16, models: &[String]) -> Vec<String> {
+///
+/// 每个模型带 `contextWindow`/`maxTokens`（引擎说了才写）：dsh 的 llm-pi-ai
+/// 对缺声明的模型一律落 256K 兜底——1M 的 DeepSeek 会被当成 256K 显示，
+/// 自动压缩阈值也跟着错。
+fn marionette_lines(
+    indent: usize,
+    port: u16,
+    models: &[crate::model_bridge::CatalogModelRow],
+) -> Vec<String> {
     let pad = " ".repeat(indent);
     let pad2 = " ".repeat(indent + 2);
     let pad4 = " ".repeat(indent + 4);
+    let pad5 = " ".repeat(indent + 6);
     let mut block = vec![
         format!("{pad}{MARIONETTE_PROVIDER}:"),
         format!("{pad2}displayName: Marionette 模型共享"),
@@ -195,13 +204,22 @@ fn marionette_lines(indent: usize, port: u16, models: &[String]) -> Vec<String> 
         format!("{pad2}models:"),
     ];
     for model in models {
-        block.push(format!("{pad4}- id: \"{}\"", escape_double_quoted(model)));
+        block.push(format!("{pad4}- id: \"{}\"", escape_double_quoted(&model.id)));
+        if model.context_window > 0 {
+            block.push(format!("{pad5}contextWindow: {}", model.context_window));
+        }
+        if model.max_output > 0 {
+            block.push(format!("{pad5}maxTokens: {}", model.max_output));
+        }
     }
     block
 }
 
 /// 我们整段新建的 llm-pi-ai entry（挂在 MANAGED_MARKER 之后）。
-fn managed_entry_lines(port: u16, models: &[String]) -> Vec<String> {
+fn managed_entry_lines(
+    port: u16,
+    models: &[crate::model_bridge::CatalogModelRow],
+) -> Vec<String> {
     let mut entry = vec![
         "- id: llm-pi-ai".to_string(),
         "  name: \"@deepseek-ai/dsh-llm-pi-ai\"".to_string(),
@@ -304,7 +322,11 @@ fn first_child_indent(lines: &[String], from: usize, end: usize) -> Option<usize
 
 // ─── home patch 合并 ─────────────────────────────────────────────────────────
 
-fn merge_home_patch(original: &str, port: u16, models: &[String]) -> Result<String, String> {
+fn merge_home_patch(
+    original: &str,
+    port: u16,
+    models: &[crate::model_bridge::CatalogModelRow],
+) -> Result<String, String> {
     let trimmed = original.trim();
     if trimmed.is_empty() || trimmed == "[]" {
         let mut fresh = vec![
@@ -534,10 +556,25 @@ mod tests {
         dir
     }
 
-    fn models() -> Vec<String> {
+    fn models() -> Vec<crate::model_bridge::CatalogModelRow> {
+        use crate::model_bridge::CatalogModelRow;
         vec![
-            "group/auto-claude-haiku-5-5".to_string(),
-            "opencode-go/grok-4.7".to_string(),
+            CatalogModelRow {
+                id: "group/auto-claude-haiku-5-5".to_string(),
+                context_window: 0,
+                max_output: 0,
+            },
+            CatalogModelRow {
+                id: "opencode-go/grok-4.7".to_string(),
+                context_window: 500_000,
+                max_output: 250_000,
+            },
+            CatalogModelRow {
+                id: "deepseek/deepseek-flash".to_string(),
+                // 引擎没说窗口（0）→ 不写 contextWindow，dsh 落自己的兜底。
+                context_window: 0,
+                max_output: 0,
+            },
         ]
     }
 
@@ -554,6 +591,14 @@ mod tests {
         assert!(text.contains("baseURL: http://127.0.0.1:3425/v1"));
         assert!(text.contains("- id: \"group/auto-claude-haiku-5-5\""));
         assert!(text.contains("apiKeyEnv: MARIONETTE_API_KEY"));
+        // 窗口/输出上限跟着模型走：引擎说了的写、没说的不写（llm-pi-ai 兜底 256K）。
+        assert!(text.contains("contextWindow: 500000"));
+        assert!(text.contains("maxTokens: 250000"));
+        assert_eq!(
+            text.matches("contextWindow:").count(),
+            1,
+            "只有引擎披露窗口的模型才写 contextWindow"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
