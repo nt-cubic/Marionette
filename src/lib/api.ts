@@ -1248,6 +1248,43 @@ export type TelegramInbound = {
 
 export const TELEGRAM_INBOUND_EVENT = "telegram-remote-inbound";
 
+/** `telegram-remote-command` 事件载荷（Rust 命令面 → 前端执行 → result 回执）。 */
+export type TelegramCommand =
+  | {
+      kind: "newSession";
+      /** true = 建在聊天区（projectId 为 null）。 */
+      chat: boolean;
+      projectId: string | null;
+      agentId: string;
+      modelId?: string | null;
+      modelLabel?: string | null;
+      modeId?: string | null;
+      modeLabel?: string | null;
+    }
+  | {
+      kind: "setModel";
+      sessionId: string;
+      modelId: string;
+      modelLabel?: string | null;
+    };
+
+export const TELEGRAM_COMMAND_EVENT = "telegram-remote-command";
+
+/** 远程命令（/new、/model）执行完的回执；bindSessionId 同时切换裸文本绑定。 */
+export async function telegramRemoteResult(
+  text: string,
+  bindSessionId?: string | null,
+): Promise<void> {
+  try {
+    await invoke("telegram_remote_result", {
+      text,
+      bindSessionId: bindSessionId ?? null,
+    });
+  } catch {
+    // 回执是尽力而为；失败只影响手机上少一条确认。
+  }
+}
+
 export async function telegramStatus(): Promise<TelegramStatus | null> {
   if (!isTauriRuntime()) return null;
   try {
