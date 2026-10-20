@@ -135,14 +135,19 @@ function trailingTag(label: string): string | null {
 const BACKEND_TAGS: Array<{ match: RegExp; group: string }> = [
   { match: /^teamo\b/i, group: "Team Router" },
   { match: /^local\b/i, group: "Local" },
+  // DSH (pi-ai) composes native labels as `model (provider-name)`; the
+  // bridge provider's tag routes those rows under the same group as the
+  // grok/opencode `marionette/<id>` path prefix.
+  { match: /^marionette\b/i, group: "Marionette" },
 ];
 
 /** Backend words the group header already prints, matched inside a tag. */
-const REDUNDANT_TAG_PARTS = /^(teamo|local|official)\b/i;
+const REDUNDANT_TAG_PARTS = /^(teamo|local|official|marionette)\b/i;
 
 /** Family / vendor prefixes, checked against the catalog key, then the label. */
 const FAMILY_GROUPS: Array<{ match: RegExp; group: string }> = [
   { match: /^teamo\b/i, group: "Team Router" },
+  { match: /^marionette\b/i, group: "Marionette" },
   { match: /^opencode\b/i, group: "OpenCode" },
   { match: /^openrouter\b/i, group: "OpenRouter" },
   { match: /^deepseek\b/i, group: "DeepSeek" },
@@ -170,10 +175,16 @@ function familyGroup(text: string): string | null {
   return hit ? hit.group : null;
 }
 
-/** Provider path prefix of `provider/model` ids and labels. */
+/** Provider path prefix of `provider/model` (and pi-ai `provider::model`) ids
+ *  and labels. The `::` form is DSH's native bridge id (`marionette::<id>`). */
 function pathPrefix(model: Pick<ModelDef, "id" | "label">): string | null {
-  const idPart = model.id.includes("/") ? model.id.split("/")[0] : "";
-  const labelPart = model.label.includes("/") ? model.label.split("/")[0] : "";
+  const leading = (text: string): string => {
+    const trimmed = text.trim();
+    if (trimmed.includes("::")) return trimmed.split("::")[0];
+    return trimmed.includes("/") ? trimmed.split("/")[0] : "";
+  };
+  const idPart = leading(model.id);
+  const labelPart = leading(model.label);
   return (labelPart || idPart).trim() || null;
 }
 

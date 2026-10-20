@@ -13,6 +13,7 @@ mod credentials;
 mod custom_agents;
 mod data_dir_gate;
 mod debug_log;
+mod dsh_bridge;
 mod dsh_plugins;
 mod engine;
 mod git_service;

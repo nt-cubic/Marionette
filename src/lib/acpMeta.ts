@@ -323,15 +323,6 @@ export function parseSessionFailureUpdate(update: Record<string, unknown>): Sess
   return { title, details, category, actions };
 }
 
-/** CodeBuddy marks subagent chunks — we do not suppress, but can parent if id known. */
-export function codebuddyIsSubagent(update: Record<string, unknown>): boolean {
-  const meta = getMeta(update);
-  if (!meta) return false;
-  if (meta["codebuddy.ai/isSubagent"] === true) return true;
-  const cb = asRecord(meta["codebuddy.ai"]);
-  return cb?.isSubagent === true;
-}
-
 /**
  * Pull nested agent transcript text from tool content blocks (if any).
  * Codeg: `ContentBlock.tool_result.agent_transcript`.
