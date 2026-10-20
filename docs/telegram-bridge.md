@@ -139,7 +139,11 @@ Bot: 已送进 [Marionette 主线] ✓
 - `/last`（拉最近一条回复全文）。
 
 **明确不做**
-- 常驻服务/开机自启的独立 notifier 进程；Telegram 端会话管理器（建会话、切模型——那是把 Marionette 搬进 Telegram，违背壳的定位）；ntfy/Bark 等第二通道；语音输入。
+- 常驻服务/开机自启的独立 notifier 进程；ntfy/Bark 等第二通道；语音输入。
+- ~~Telegram 端会话管理器（建会话、切模型——那是把 Marionette 搬进 Telegram，违背壳的定位）~~
+  **2026-10-21 用户拍板推翻**：`/new` 向导 + `/model` 菜单已落地（见下「命令面」节）——
+  定位修正为「远程驱动入口与本地同构」：命令只做选择与路由，会话的创建/偏好仍走
+  前端原管线（createSessionForProject / persistComposerPrefs），Rust 不私自建会话。
 
 ## 验证
 
@@ -185,12 +189,46 @@ Bot: 已送进 [Marionette 主线] ✓
   停机期间手机上发的消息照常送进会话。
 - ask 按钮：仅「单问题 + 单选」映射内联按钮（+「跳过」）；多问题/多选推送文本提示
   回电脑答。应答按问题原文匹配 wire key，绝不截断。
-- 命令（`/` 开头）不进会话，MVP 没有命令面（`/status`、`/last` 属二期）。
+- 命令（`/` 开头）不进会话。命令面见下节（/new、/model、/status、/help，2026-10-21）。
 - 409（同 token 第二 poller）从 15s 起退避；断线 1s 起、60s 封顶。
 - 验证：`telegram_remote` 11 个单测（payload/路由纯函数、密文落盘不含明文、损坏
   留档）+ 全套 280 过 + `npm run build`（tsc strict）；本机到 api.telegram.org 的
   TLS 与 API 行为已用假 token 探活（401 予期）。真机端到端（真实 bot token 收发）
   留给用户首次配对时按浮层指引完成。
+
+## 命令面（2026-10-21：/new 向导 + /model 菜单 + 回复模型串台修复）
+
+### 模型串台 bug（根因与修复）
+Telegram 入站文本先 `openSession(目标)` 再同步调 `performSend`；分屏下 `openSession →
+commitSplit` 会**同步**改写 `currentSessionIdRef`，而闭包里的 `activeModelId` 还是
+上一个 tab 的 Composer 选择——模型解析链 `composerSnap → activeModelId →
+preferredModel → caps` 便拿到**别的会话的模型**，再经 `persistComposerPrefs` 固化 +
+`set_config` 回推，把所有被回复的会话都串成同一个模型。修复：`performSend` 增加
+`remote` 标记（telegram 入站与队列 flush 全程携带），远程发送**不读主窗口 Composer
+瞬态**，模型只从会话自身偏好（`preferredModel` → caps）解析。
+
+### /new（向导）
+`/new` → ①在哪建（💬 聊天 / 📁 项目，storage 顺序取前 7）→ ②agent（启用的 ACP agent
+前 10）→ ③模型（该 agent 任一活跃会话的 caps 清单，8 个/页可翻页，● 标当前，
+「↩ 默认」= 继承最近；无活跃会话则跳过并说明）→ ④编辑模式（caps.modes，无则跳过）
+→ Rust `emit("telegram-remote-command")` → 前端 `createSessionForProject` /
+`handleCreateChatSession` 建行+打开+偏好落盘 → `telegram_remote_result` 回执
+（顺带把裸文本绑定切到新会话，回执消息本身也注册进引用路由）。向导状态存
+`Inner.wizard`（单实例，重新 /new 覆盖；旧按钮按下按过期回答）；每步消息按下后自动
+摘键盘，翻页菜单原地 `editMessageText` 重画（翻页动作不触发摘键盘）。
+
+### /model（切模型）
+回复某条通知 = 切那个会话；裸发 = 切 ⏎ 绑定的会话。清单优先本会话 caps，退到同
+agent 任一活跃会话（`AcpService::agent_capability_snapshot`，新增）；选择经
+`telegram-remote-command { kind:"setModel" }` → 前端 `persistComposerPrefs` 落盘 +
+（会话活着且空闲时）直接 `updateAcpSession` 推给 agent → 回执确认。会话挂起时
+清单拿不到，提示先发一条消息唤醒。
+
+### 其他
+- 配对/启用成功后 `setMyCommands` 注册 /new /model /status /help（进程内一次，
+  失败只记日志）——手机输入框有命令自动补全。
+- `/help`（与未知命令共用文案）列出全部命令。
+- 约束保持：Rust 侧绝不持有 telegram `inner` 锁时碰 storage/acp（锁序红线沿用）。
 
 ## 总控面板（2026-10-18 二期首批，已落地）
 

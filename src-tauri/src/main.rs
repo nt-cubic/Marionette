@@ -500,6 +500,7 @@ fn main() {
             commands::telegram_remote_dismiss_pairing,
             commands::telegram_remote_reset_pairing,
             commands::telegram_remote_ack,
+            commands::telegram_remote_result,
             open_target::resolve_link_target,
             open_target::open_external,
             open_target::reveal_in_file_manager

@@ -1143,6 +1143,17 @@ impl AcpService {
             .and_then(|map| map.get(session_id).cloned())
     }
 
+    /// 该 agent 任一活跃会话的能力快照（模型/模式目录随 agent，不随会话）。
+    /// Telegram 远程命令用它在不新建会话的前提下枚举某个 agent 的模型清单。
+    pub fn agent_capability_snapshot(&self, agent_id: &str) -> Option<CapabilitySnapshot> {
+        let agents = self.session_agents.lock().ok()?;
+        let caps = self.capabilities.lock().ok()?;
+        agents
+            .iter()
+            .filter(|(_, id)| id.as_str() == agent_id)
+            .find_map(|(session_id, _)| caps.get(session_id).cloned())
+    }
+
     /// Apply a session config change via ACP `session/set_config_option`.
     ///
     /// Accepted shapes:

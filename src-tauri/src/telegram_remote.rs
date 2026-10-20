@@ -88,6 +88,10 @@ const BACKOFF_409_START: Duration = Duration::from_secs(15);
 /// 前端收文本路由的事件名（App.tsx 监听 → performSend → ack）。
 pub const INBOUND_EVENT: &str = "telegram-remote-inbound";
 
+/// 前端收远程命令的事件名（/new 建会话、/model 切模型 → App.tsx 执行 →
+/// `telegram_remote_result` 回执）。
+pub const COMMAND_EVENT: &str = "telegram-remote-command";
+
 // ─── 设置（~/.marionette/telegram.json）────────────────────────────────────
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -370,6 +374,47 @@ enum CallbackAction {
     PanelBack,
     /// 总控面板：手动刷新面板文本。
     RefreshDashboard,
+    // ─── /new 向导（每个步骤的回答；向导本体存在 Inner.wizard）──────────
+    /// /new 第 1 步：建在聊天区。
+    NewDestChat,
+    /// /new 第 1 步：建在某个项目下。
+    NewDestProject {
+        project_id: String,
+        project_name: String,
+    },
+    /// /new 第 2 步：选 agent。
+    NewAgent {
+        agent_id: String,
+        agent_label: String,
+    },
+    /// /new 第 3 步：选模型（model_id 空 = 用默认/最近一次）。
+    NewModel {
+        model_id: String,
+        model_label: String,
+    },
+    /// /new 第 4 步：选编辑模式（mode_id 空 = 不指定）。
+    NewMode {
+        mode_id: String,
+        mode_label: String,
+    },
+    /// /new 任意步骤：取消。
+    NewCancel,
+    // ─── 模型菜单（/model 与 /new 第 3 步共用）──────────────────────────
+    /// /new 第 3 步模型清单翻页（菜单原地重画）。
+    WizardModelPage { offset: usize },
+    /// /model 菜单翻页（菜单原地重画）。
+    ModelPage {
+        session_id: String,
+        offset: usize,
+    },
+    /// /model：把这个会话切到该模型。
+    SetModel {
+        session_id: String,
+        model_id: String,
+        model_label: String,
+    },
+    /// 菜单类消息的「关闭」：只摘按钮，无事发生。
+    DismissMenu,
 }
 
 impl CallbackAction {
@@ -384,6 +429,16 @@ impl CallbackAction {
             | CallbackAction::ViewSession { session_id, .. } => session_id,
             // 无会话上下文的动作：日志里给个可读名。
             CallbackAction::PanelBack | CallbackAction::RefreshDashboard => "dashboard",
+            CallbackAction::NewDestChat
+            | CallbackAction::NewDestProject { .. }
+            | CallbackAction::NewAgent { .. }
+            | CallbackAction::NewModel { .. }
+            | CallbackAction::NewMode { .. }
+            | CallbackAction::NewCancel
+            | CallbackAction::WizardModelPage { .. } => "new-session",
+            CallbackAction::ModelPage { session_id, .. }
+            | CallbackAction::SetModel { session_id, .. } => session_id,
+            CallbackAction::DismissMenu => "menu",
         }
     }
 }
@@ -418,6 +473,25 @@ struct Inner {
     view: PanelView,
     pending_pairing: Option<PairingRequest>,
     last_error: Option<String>,
+    /// 进行中的 /new 向导。重新 /new 直接覆盖旧的（旧按钮全部失效）。
+    wizard: Option<NewSessionWizard>,
+}
+
+/// /new 向导的累积选择。步骤线性推进：目的地 → agent → 模型 → 模式 → 创建。
+#[derive(Clone, Debug)]
+struct NewSessionWizard {
+    dest: Option<WizardDest>,
+    agent_id: String,
+    agent_label: String,
+    /// None = 模型步骤还没答（也没法答 → 跳过）；Some(None) = 用户选「默认」；
+    /// Some(Some((id, label))) = 指定了模型。
+    model: Option<Option<(String, String)>>,
+}
+
+#[derive(Clone, Debug)]
+enum WizardDest {
+    Chat,
+    Project { id: String, name: String },
 }
 
 /// 置顶面板的当前视图。
@@ -454,6 +528,7 @@ impl Inner {
             view: PanelView::Dashboard,
             pending_pairing: None,
             last_error: None,
+            wizard: None,
         }
     }
 
@@ -566,6 +641,8 @@ struct Telegram {
     callback_seq: AtomicU64,
     /// 线程只拉一次（start 与 apply_live 两条路都可能触发）。
     threads_started: AtomicBool,
+    /// setMyCommands 只需成功一次（进程生命周期内）。
+    commands_synced: AtomicBool,
 }
 
 static TELEGRAM: OnceLock<Telegram> = OnceLock::new();
@@ -610,6 +687,7 @@ pub fn start(app: AppHandle, acp: AcpService) {
         live: Mutex::new(live),
         callback_seq: AtomicU64::new(1),
         threads_started: AtomicBool::new(false),
+        commands_synced: AtomicBool::new(false),
     };
     if TELEGRAM.set(telegram).is_ok() {
         if let Some(slot) = TELEGRAM.get() {
@@ -2211,13 +2289,15 @@ fn handle_incoming_message(slot: &'static Telegram, live: &LiveConfig, message: 
     }
     let message_id = message.get("message_id").and_then(Value::as_i64);
 
-    // 命令面：/status 拉全量清单；其余命令回用法提示。
+    // 命令面：/status 全量清单、/new 向导、/model 切模型；其余命令回用法提示。
     if text.starts_with('/') {
         let command = text
             .split_whitespace()
             .next()
             .unwrap_or("")
             .to_ascii_lowercase();
+        // BotFather 注册的命令可能带 @botname 后缀。
+        let command = command.split('@').next().unwrap_or("").to_string();
         match command.as_str() {
             "/status" | "/sessions" => {
                 let (rows, _) = dashboard_snapshot(slot, STATUS_MAX_ROWS, true);
@@ -2237,15 +2317,44 @@ fn handle_incoming_message(slot: &'static Telegram, live: &LiveConfig, message: 
                 );
                 schedule_dashboard(slot);
             }
+            "/new" => {
+                start_new_session_wizard(slot, live, message_id);
+            }
+            "/model" => {
+                // 目标：引用回复的通知所属会话，否则裸文本绑定的会话。
+                let target = message
+                    .pointer("/reply_to_message/message_id")
+                    .and_then(Value::as_i64)
+                    .and_then(|replied| {
+                        slot.inner
+                            .lock()
+                            .ok()
+                            .and_then(|inner| inner.routes.get(&replied).cloned())
+                    })
+                    .or_else(|| {
+                        slot.inner
+                            .lock()
+                            .ok()
+                            .and_then(|inner| inner.last_user_session.clone())
+                    });
+                let Some(session_id) = target else {
+                    let _ = send_message(
+                        live,
+                        "还不知道要切哪个会话——回复它的某条通知再发 /model，或先在总控面板点它的名字绑定。",
+                        &[],
+                        message_id,
+                        None,
+                        None,
+                    );
+                    return;
+                };
+                send_model_menu(slot, live, &session_id, 0, message_id, None);
+            }
+            "/help" | "/start" => {
+                let _ = send_message(live, HELP_TEXT, &[], message_id, None, None);
+            }
             _ => {
-                let _ = send_message(
-                    live,
-                    "用法：直接发文字 → 送进 ⏎ 当前绑定的会话；回复某条通知 → 定到那个会话；\n/status → 全部会话的状态清单。顶部的「总控」面板实时显示谁在跑、谁在等你，点会话名切换绑定、点 📄 看会话详情。",
-                    &[],
-                    message_id,
-                    None,
-                    None,
-                );
+                let _ = send_message(live, HELP_TEXT, &[], message_id, None, None);
             }
         }
         return;
@@ -2294,6 +2403,461 @@ fn handle_incoming_message(slot: &'static Telegram, live: &LiveConfig, message: 
             "messageId": message_id,
         }),
     );
+}
+
+// ─── /new 向导 + 模型菜单 ──────────────────────────────────────────────────
+
+/// 模型菜单每页条数（Telegram 按钮行太多会把聊天顶飞）。
+const MODEL_PAGE_SIZE: usize = 8;
+/// /new 第 1 步最多列出的项目数（storage 顺序 = 用户在侧栏的顺序）。
+const WIZARD_MAX_PROJECTS: usize = 7;
+/// /new 第 2 步最多列出的 agent 数。
+const WIZARD_MAX_AGENTS: usize = 10;
+
+const HELP_TEXT: &str = "命令：
+/new — 新建对话（在哪建 → agent → 模型 → 编辑模式，一步步选）
+/model — 切换模型（回复某条通知 = 切那个会话；裸发 = 切 ⏎ 绑定的会话）
+/status — 全部会话的状态清单
+/help — 本说明
+
+直接发文字 → 送进 ⏎ 当前绑定的会话（总控面板上点会话名切换绑定）；
+回复某条通知 → 定向送达那个会话；点 📄 看会话详情、⏹ 远程停止。";
+
+/// storage 的项目清单（侧栏顺序）。绝不能持有 telegram inner 锁时调用。
+fn live_projects(slot: &'static Telegram) -> Vec<(String, String)> {
+    let Some(state) = slot.app.try_state::<crate::AppState>() else {
+        return Vec::new();
+    };
+    let Ok(storage) = state.storage.lock() else {
+        return Vec::new();
+    };
+    storage
+        .list_projects()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|project| project.id != crate::app_paths::CHAT_PROJECT_ID)
+        .map(|project| (project.id, project.name))
+        .collect()
+}
+
+/// 组键盘：分配按钮 id、拼行、登记回调。返回 (键盘, 待登记动作)。
+fn assemble_keyboard(
+    slot: &'static Telegram,
+    rows: Vec<Vec<(CallbackAction, String)>>,
+) -> (Vec<Vec<TgButton>>, Vec<(u64, CallbackAction)>) {
+    let mut keyboard = Vec::new();
+    let mut pending = Vec::new();
+    for row in rows {
+        let mut line = Vec::new();
+        for (action, label) in row {
+            let (button, id, action) = make_button(slot, action, &label);
+            line.push(button);
+            pending.push((id, action));
+        }
+        keyboard.push(line);
+    }
+    (keyboard, pending)
+}
+
+fn register_callbacks(slot: &'static Telegram, pending: Vec<(u64, CallbackAction)>) {
+    if let Ok(mut inner) = slot.inner.lock() {
+        for (id, action) in pending {
+            inner.remember_callback(id, action);
+        }
+    }
+}
+
+/// /new 第 1 步：在哪建。
+fn start_new_session_wizard(slot: &'static Telegram, live: &LiveConfig, reply_to: Option<i64>) {
+    let projects = live_projects(slot);
+    let total = projects.len();
+    let projects: Vec<_> = projects.into_iter().take(WIZARD_MAX_PROJECTS).collect();
+
+    let mut rows: Vec<Vec<(CallbackAction, String)>> = vec![vec![(CallbackAction::NewDestChat, "💬 聊天".into())]];
+    for (id, name) in &projects {
+        rows.push(vec![(
+            CallbackAction::NewDestProject {
+                project_id: id.clone(),
+                project_name: name.clone(),
+            },
+            format!("📁 {}", clip(name, 40)),
+        )]);
+    }
+    rows.push(vec![(CallbackAction::NewCancel, "✖ 取消".into())]);
+    let (keyboard, pending) = assemble_keyboard(slot, rows);
+
+    // 新 /new 覆盖旧向导（旧按钮按下时按过期处理）。
+    if let Ok(mut inner) = slot.inner.lock() {
+        inner.wizard = Some(NewSessionWizard {
+            dest: None,
+            agent_id: String::new(),
+            agent_label: String::new(),
+            model: None,
+        });
+        for (id, action) in pending {
+            inner.remember_callback(id, action);
+        }
+    }
+
+    let overflow = total.saturating_sub(projects.len());
+    let note = if overflow > 0 {
+        format!("\n（还有 {overflow} 个项目没列出——先在电脑上切过去再 /new，或在聊天区建）")
+    } else {
+        String::new()
+    };
+    let text = format!("🆕 新建对话 · 1/4 在哪建？{note}");
+    let _ = send_message(live, &text, &keyboard, reply_to, None, None);
+}
+
+/// /new 第 2 步：agent 清单（只列启用的 ACP agent）。
+fn send_wizard_agent_step(slot: &'static Telegram, live: &LiveConfig, reply_to: Option<i64>) {
+    let agents: Vec<(String, String)> = crate::custom_agents::all_agents_merged()
+        .into_iter()
+        .filter(|agent| agent.enabled && agent.transport == "acp")
+        .map(|agent| (agent.id, agent.label))
+        .take(WIZARD_MAX_AGENTS)
+        .collect();
+    let mut rows: Vec<Vec<(CallbackAction, String)>> = Vec::new();
+    for (id, label) in &agents {
+        rows.push(vec![(
+            CallbackAction::NewAgent {
+                agent_id: id.clone(),
+                agent_label: label.clone(),
+            },
+            clip(label, 48),
+        )]);
+    }
+    rows.push(vec![(CallbackAction::NewCancel, "✖ 取消".into())]);
+    let (keyboard, pending) = assemble_keyboard(slot, rows);
+    register_callbacks(slot, pending);
+    let _ = send_message(live, "🆕 新建对话 · 2/4 用哪个 agent？", &keyboard, reply_to, None, None);
+}
+
+/// 当前向导快照（dest + agent 都已就绪才返回）。
+fn wizard_ready(slot: &'static Telegram) -> Option<(WizardDest, String, String)> {
+    let wizard = slot.inner.lock().ok().and_then(|inner| inner.wizard.clone())?;
+    let dest = wizard.dest?;
+    if wizard.agent_id.is_empty() {
+        return None;
+    }
+    Some((dest, wizard.agent_id, wizard.agent_label))
+}
+
+/// /new 第 3 步：模型清单（agent 任一活跃会话的 caps；没有就跳过）。
+fn send_wizard_model_step(slot: &'static Telegram, live: &LiveConfig, reply_to: Option<i64>) {
+    let Some((_dest, agent_id, agent_label)) = wizard_ready(slot) else {
+        let _ = send_message(live, "向导已过期——重新发 /new 开始。", &[], reply_to, None, None);
+        return;
+    };
+    let caps = slot.acp.agent_capability_snapshot(&agent_id);
+    let Some(caps) = caps.filter(|caps| !caps.models.is_empty()) else {
+        // 无活跃会话拿不到目录：跳过模型与模式，直接创建（前端继承该 agent 最近的选择）。
+        let _ = send_message(
+            live,
+            &format!(
+                "🆕 {agent_label}：现在没有活跃会话，模型清单拿不到——先沿用默认，建好后可用 /model 切。"
+            ),
+            &[],
+            reply_to,
+            None,
+            None,
+        );
+        wizard_finalize(slot, live, reply_to, None);
+        return;
+    };
+    send_wizard_model_page(slot, live, &agent_label, &caps, 0, reply_to, None);
+}
+
+/// 向导模型菜单的一页。host_message 有值 = 原地 edit（翻页），否则发新消息。
+fn send_wizard_model_page(
+    slot: &'static Telegram,
+    live: &LiveConfig,
+    agent_label: &str,
+    caps: &crate::acp::CapabilitySnapshot,
+    offset: usize,
+    reply_to: Option<i64>,
+    host_message: Option<i64>,
+) {
+    let (text, range) = model_page_parts(
+        &format!("🆕 新建对话 · 3/4 {agent_label} 用哪个模型？"),
+        &caps.models,
+        offset,
+    );
+    let mut rows: Vec<Vec<(CallbackAction, String)>> = Vec::new();
+    let in_range = &caps.models[range.clone()];
+    for model in in_range {
+        rows.push(vec![(
+            CallbackAction::NewModel {
+                model_id: model.id.clone(),
+                model_label: model.label.clone(),
+            },
+            format!("{}{}", if caps.current_model.as_deref() == Some(model.id.as_str()) { "● " } else { "" }, clip(&model.label, 48)),
+        )]);
+    }
+    let (prev, next) = page_nav(range.end < caps.models.len(), offset > 0, CallbackAction::WizardModelPage { offset: offset.saturating_sub(MODEL_PAGE_SIZE) }, CallbackAction::WizardModelPage { offset: range.end });
+    match (prev, next) {
+        (Some(prev), Some(next)) => rows.push(vec![(prev.0, prev.1), (next.0, next.1)]),
+        (Some(nav), None) | (None, Some(nav)) => rows.push(vec![nav]),
+        (None, None) => {}
+    }
+    rows.push(vec![
+        (CallbackAction::NewModel { model_id: String::new(), model_label: "默认".into() }, "↩ 默认（沿用最近）".into()),
+        (CallbackAction::NewCancel, "✖ 取消".into()),
+    ]);
+    let (keyboard, pending) = assemble_keyboard(slot, rows);
+    register_callbacks(slot, pending);
+    deliver_menu(live, &text, &keyboard, reply_to, host_message);
+}
+
+/// /new 第 4 步：编辑模式（caps 无模式就直接创建）。
+fn send_wizard_mode_step(
+    slot: &'static Telegram,
+    live: &LiveConfig,
+    reply_to: Option<i64>,
+    model: Option<(String, String)>,
+) {
+    let Some((_, agent_id, agent_label)) = wizard_ready(slot) else {
+        let _ = send_message(live, "向导已过期——重新发 /new 开始。", &[], reply_to, None, None);
+        return;
+    };
+    // 把模型选择记进向导。
+    if let Ok(mut inner) = slot.inner.lock() {
+        if let Some(wizard) = inner.wizard.as_mut() {
+            wizard.model = Some(model);
+        }
+    }
+    let caps = slot.acp.agent_capability_snapshot(&agent_id);
+    let modes = caps.map(|caps| caps.modes).unwrap_or_default();
+    if modes.is_empty() {
+        wizard_finalize(slot, live, reply_to, None);
+        return;
+    }
+    let mut rows: Vec<Vec<(CallbackAction, String)>> = Vec::new();
+    for mode in &modes {
+        rows.push(vec![(
+            CallbackAction::NewMode {
+                mode_id: mode.id.clone(),
+                mode_label: mode.label.clone(),
+            },
+            clip(&mode.label, 48),
+        )]);
+    }
+    rows.push(vec![
+        (CallbackAction::NewMode { mode_id: String::new(), mode_label: "默认".into() }, "↩ 不指定".into()),
+        (CallbackAction::NewCancel, "✖ 取消".into()),
+    ]);
+    let (keyboard, pending) = assemble_keyboard(slot, rows);
+    register_callbacks(slot, pending);
+    let _ = send_message(
+        live,
+        &format!("🆕 新建对话 · 4/4 {agent_label} 用什么编辑模式？"),
+        &keyboard,
+        reply_to,
+        None,
+        None,
+    );
+}
+
+/// 向导收尾：把完整选择交给前端建会话（前端经 telegram_remote_result 回执）。
+fn wizard_finalize(
+    slot: &'static Telegram,
+    live: &LiveConfig,
+    reply_to: Option<i64>,
+    mode: Option<(String, String)>,
+) {
+    let wizard = slot
+        .inner
+        .lock()
+        .ok()
+        .and_then(|mut inner| inner.wizard.take());
+    let Some(wizard) = wizard else {
+        let _ = send_message(live, "向导已过期——重新发 /new 开始。", &[], reply_to, None, None);
+        return;
+    };
+    let Some(dest) = wizard.dest else {
+        let _ = send_message(live, "向导状态不完整——重新发 /new 开始。", &[], reply_to, None, None);
+        return;
+    };
+    if wizard.agent_id.is_empty() {
+        let _ = send_message(live, "向导状态不完整——重新发 /new 开始。", &[], reply_to, None, None);
+        return;
+    }
+    let (chat, project_id) = match &dest {
+        WizardDest::Chat => (true, None),
+        WizardDest::Project { id, .. } => (false, Some(id.clone())),
+    };
+    let model = wizard.model.flatten();
+    let summary = format!(
+        "🛠 正在创建：{} · {} · 模型 {} · 模式 {}",
+        match &dest {
+            WizardDest::Chat => "聊天".to_string(),
+            WizardDest::Project { name, .. } => name.clone(),
+        },
+        wizard.agent_label,
+        model.as_ref().map(|(_, label)| label.clone()).unwrap_or_else(|| "默认".into()),
+        mode.as_ref().map(|(_, label)| label.clone()).unwrap_or_else(|| "默认".into()),
+    );
+    let _ = send_message(live, &summary, &[], reply_to, None, None);
+    let payload_model_id = model.as_ref().map(|(id, _)| id.clone());
+    let payload_model_label = model.map(|(_, label)| label);
+    let payload_mode_id = mode.as_ref().map(|(id, _)| id.clone());
+    let payload_mode_label = mode.map(|(_, label)| label);
+    let _ = slot.app.emit_to(
+        "main",
+        COMMAND_EVENT,
+        json!({
+            "kind": "newSession",
+            "chat": chat,
+            "projectId": project_id,
+            "agentId": wizard.agent_id,
+            "modelId": payload_model_id,
+            "modelLabel": payload_model_label,
+            "modeId": payload_mode_id,
+            "modeLabel": payload_mode_label,
+        }),
+    );
+}
+
+/// 纯分页：标题行 + 本页范围（起始会对齐到页边界）。
+fn model_page_parts(
+    title: &str,
+    models: &[crate::acp::ModelDef],
+    offset: usize,
+) -> (String, std::ops::Range<usize>) {
+    let total = models.len();
+    let start = offset.min(total.saturating_sub(1));
+    let start = start - (start % MODEL_PAGE_SIZE);
+    let end = (start + MODEL_PAGE_SIZE).min(total);
+    let page_no = start / MODEL_PAGE_SIZE + 1;
+    let pages = total.div_ceil(MODEL_PAGE_SIZE);
+    let text = format!("{title}\n第 {page_no}/{pages} 页 · 共 {total} 个");
+    (text, start..end)
+}
+
+/// 翻页行的两个按钮（到边就没有）。返回 (上一页, 下一页)。
+fn page_nav(
+    has_next: bool,
+    has_prev: bool,
+    prev_action: CallbackAction,
+    next_action: CallbackAction,
+) -> (
+    Option<(CallbackAction, String)>,
+    Option<(CallbackAction, String)>,
+) {
+    (
+        has_prev.then(|| (prev_action, "◀ 上一页".into())),
+        has_next.then(|| (next_action, "下一页 ▶".into())),
+    )
+}
+
+/// /model：会话的模型菜单（优先本会话 caps，退到同 agent 任一活跃会话）。
+fn send_model_menu(
+    slot: &'static Telegram,
+    live: &LiveConfig,
+    session_id: &str,
+    offset: usize,
+    reply_to: Option<i64>,
+    host_message: Option<i64>,
+) {
+    let meta = session_meta(session_id);
+    let caps = slot.acp.get_capabilities(session_id).or_else(|| {
+        let agent_id = session_agent_id(slot, session_id)?;
+        slot.acp.agent_capability_snapshot(&agent_id)
+    });
+    let Some(caps) = caps.filter(|caps| !caps.models.is_empty()) else {
+        let _ = send_message(
+            live,
+            &format!(
+                "[{}] 这个 agent 现在没有活跃会话，拿不到模型清单——先发一条消息把它唤醒，再 /model。",
+                meta.label
+            ),
+            &[],
+            reply_to,
+            None,
+            None,
+        );
+        return;
+    };
+    let (text, range) = model_page_parts(
+        &format!("🔀 [{}] 切到哪个模型？", meta.label),
+        &caps.models,
+        offset,
+    );
+    let mut rows: Vec<Vec<(CallbackAction, String)>> = Vec::new();
+    let in_range = &caps.models[range.clone()];
+    for model in in_range {
+        rows.push(vec![(
+            CallbackAction::SetModel {
+                session_id: session_id.to_string(),
+                model_id: model.id.clone(),
+                model_label: model.label.clone(),
+            },
+            format!(
+                "{}{}",
+                if caps.current_model.as_deref() == Some(model.id.as_str()) { "● " } else { "" },
+                clip(&model.label, 48)
+            ),
+        )]);
+    }
+    let (prev, next) = page_nav(
+        range.end < caps.models.len(),
+        offset > 0,
+        CallbackAction::ModelPage {
+            session_id: session_id.to_string(),
+            offset: offset.saturating_sub(MODEL_PAGE_SIZE),
+        },
+        CallbackAction::ModelPage {
+            session_id: session_id.to_string(),
+            offset: range.end,
+        },
+    );
+    if let (Some(prev), Some(next)) = (&prev, &next) {
+        rows.push(vec![prev.clone(), next.clone()]);
+    } else if let Some(nav) = prev.or(next) {
+        rows.push(vec![nav]);
+    }
+    rows.push(vec![(CallbackAction::DismissMenu, "✖ 关闭".into())]);
+    let (keyboard, pending) = assemble_keyboard(slot, rows);
+    register_callbacks(slot, pending);
+    deliver_menu(live, &text, &keyboard, reply_to, host_message);
+}
+
+/// 会话的 agent id（storage 直查；Telegram 侧不持有 inner 锁时调用）。
+fn session_agent_id(slot: &'static Telegram, session_id: &str) -> Option<String> {
+    let state = slot.app.try_state::<crate::AppState>()?;
+    let storage = state.storage.lock().ok()?;
+    storage.find_session(session_id).ok()??.agent_id.into()
+}
+
+/// 菜单投递：有 host_message 就原地 edit（翻页），否则新发。
+fn deliver_menu(
+    live: &LiveConfig,
+    text: &str,
+    keyboard: &[Vec<TgButton>],
+    reply_to: Option<i64>,
+    host_message: Option<i64>,
+) {
+    if let (Some(message_id), Some(chat_id)) = (host_message, live.chat_id) {
+        if let Some(token) = live.token.as_deref() {
+            let markup = reply_markup(keyboard);
+            let ok = tg_call(
+                token,
+                "editMessageText",
+                &json!({
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": clip(text, 3800),
+                    "reply_markup": markup,
+                }),
+                Duration::from_secs(SEND_HTTP_TIMEOUT_SECS),
+            )
+            .is_ok();
+            if ok {
+                return;
+            }
+        }
+    }
+    let _ = send_message(live, text, keyboard, reply_to, None, None);
 }
 
 fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: Value) {
@@ -2407,33 +2971,191 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
             schedule_dashboard(slot);
             Ok("已刷新".to_string())
         }
+        // ─── /new 向导 ───────────────────────────────────────────────
+        CallbackAction::NewDestChat => {
+            let fresh = slot.inner.lock().map(|mut inner| {
+                match inner.wizard.as_mut() {
+                    Some(wizard) if wizard.dest.is_none() => {
+                        wizard.dest = Some(WizardDest::Chat);
+                        true
+                    }
+                    _ => false,
+                }
+            });
+            match fresh {
+                Ok(true) => {
+                    send_wizard_agent_step(slot, live, None);
+                    Ok("目的地：聊天".into())
+                }
+                _ => Err("已过期——重新发 /new 开始".into()),
+            }
+        }
+        CallbackAction::NewDestProject { project_id, project_name } => {
+            let fresh = slot.inner.lock().map(|mut inner| {
+                match inner.wizard.as_mut() {
+                    Some(wizard) if wizard.dest.is_none() => {
+                        wizard.dest = Some(WizardDest::Project {
+                            id: project_id.clone(),
+                            name: project_name.clone(),
+                        });
+                        true
+                    }
+                    _ => false,
+                }
+            });
+            match fresh {
+                Ok(true) => {
+                    send_wizard_agent_step(slot, live, None);
+                    Ok(format!("目的地：{project_name}"))
+                }
+                _ => Err("已过期——重新发 /new 开始".into()),
+            }
+        }
+        CallbackAction::NewAgent { agent_id, agent_label } => {
+            let fresh = slot.inner.lock().map(|mut inner| {
+                match inner.wizard.as_mut() {
+                    Some(wizard) if wizard.dest.is_some() && wizard.agent_id.is_empty() => {
+                        wizard.agent_id = agent_id.clone();
+                        wizard.agent_label = agent_label.clone();
+                        wizard.model = None;
+                        true
+                    }
+                    _ => false,
+                }
+            });
+            match fresh {
+                Ok(true) => {
+                    send_wizard_model_step(slot, live, None);
+                    Ok(format!("agent：{agent_label}"))
+                }
+                _ => Err("已过期——重新发 /new 开始".into()),
+            }
+        }
+        CallbackAction::NewModel { model_id, model_label } => {
+            let fresh = slot.inner.lock().map(|inner| {
+                matches!(
+                    inner.wizard.as_ref(),
+                    Some(wizard) if !wizard.agent_id.is_empty()
+                )
+            });
+            match fresh {
+                Ok(true) => {
+                    let pick = if model_id.is_empty() {
+                        None
+                    } else {
+                        Some((model_id.clone(), model_label.clone()))
+                    };
+                    send_wizard_mode_step(slot, live, None, pick);
+                    if model_id.is_empty() {
+                        Ok("模型：默认".into())
+                    } else {
+                        Ok(format!("模型：{model_label}"))
+                    }
+                }
+                _ => Err("已过期——重新发 /new 开始".into()),
+            }
+        }
+        CallbackAction::NewMode { mode_id, mode_label } => {
+            let fresh = slot.inner.lock().map(|inner| inner.wizard.is_some());
+            match fresh {
+                Ok(true) => {
+                    let pick = if mode_id.is_empty() {
+                        None
+                    } else {
+                        Some((mode_id.clone(), mode_label.clone()))
+                    };
+                    wizard_finalize(slot, live, None, pick);
+                    if mode_id.is_empty() {
+                        Ok("模式：默认 · 正在创建…".into())
+                    } else {
+                        Ok(format!("模式：{mode_label} · 正在创建…"))
+                    }
+                }
+                _ => Err("已过期——重新发 /new 开始".into()),
+            }
+        }
+        CallbackAction::NewCancel => {
+            if let Ok(mut inner) = slot.inner.lock() {
+                inner.wizard = None;
+            }
+            Ok("已取消".into())
+        }
+        CallbackAction::WizardModelPage { offset } => {
+            // 翻页 = 原地重画按下的那条菜单消息。
+            match wizard_ready(slot) {
+                Some((_, agent_id, agent_label)) => {
+                    let caps = slot
+                        .acp
+                        .agent_capability_snapshot(&agent_id)
+                        .filter(|caps| !caps.models.is_empty());
+                    match caps {
+                        Some(caps) => {
+                            let host =
+                                callback.pointer("/message/message_id").and_then(Value::as_i64);
+                            send_wizard_model_page(
+                                slot, live, &agent_label, &caps, *offset, None, host,
+                            );
+                            Ok(format!("第 {} 项起", offset + 1))
+                        }
+                        None => Err("模型清单已不可用——重新发 /new 开始".into()),
+                    }
+                }
+                None => Err("已过期——重新发 /new 开始".into()),
+            }
+        }
+        CallbackAction::ModelPage { session_id, offset } => {
+            let host = callback.pointer("/message/message_id").and_then(Value::as_i64);
+            send_model_menu(slot, live, &session_id, *offset, None, host);
+            Ok(format!("第 {} 项起", offset + 1))
+        }
+        CallbackAction::SetModel { session_id, model_id, model_label } => {
+            let _ = slot.app.emit_to(
+                "main",
+                COMMAND_EVENT,
+                json!({
+                    "kind": "setModel",
+                    "sessionId": session_id,
+                    "modelId": model_id,
+                    "modelLabel": model_label,
+                }),
+            );
+            Ok(format!("已请求切换 → {model_label}"))
+        }
+        CallbackAction::DismissMenu => Ok("已关闭".into()),
     };
 
     match result {
         Ok(label) => {
             answer(&label);
-            // 摘掉按钮，防止重复点击。面板消息除外：它的键盘由下一次
-            // 面板编辑整体重画，就地摘除会把整块面板按钮抹掉。
+            // 摘掉按钮，防止重复点击。两类例外：面板消息的键盘由下一次
+            // 面板编辑整体重画；翻页菜单刚被 edit 成下一页，就地摘除会把
+            // 新一页的按钮抹掉。
+            let is_page_action = matches!(
+                action,
+                CallbackAction::WizardModelPage { .. } | CallbackAction::ModelPage { .. }
+            );
             let dashboard_message = slot
                 .inner
                 .lock()
                 .ok()
                 .and_then(|inner| inner.dashboard.map(|handle| handle.message_id));
             let pressed_message = callback.pointer("/message/message_id").and_then(Value::as_i64);
-            if let Some(message_id) = pressed_message {
-                if Some(message_id) != dashboard_message {
-                    if let Some(chat_id) = live.chat_id {
-                        if let Some(token) = live.token.as_deref() {
-                            let _ = tg_call(
-                                token,
-                                "editMessageReplyMarkup",
-                                &json!({
-                                    "chat_id": chat_id,
-                                    "message_id": message_id,
-                                    "reply_markup": { "inline_keyboard": [] },
-                                }),
-                                Duration::from_secs(SEND_HTTP_TIMEOUT_SECS),
-                            );
+            if !is_page_action {
+                if let Some(message_id) = pressed_message {
+                    if Some(message_id) != dashboard_message {
+                        if let Some(chat_id) = live.chat_id {
+                            if let Some(token) = live.token.as_deref() {
+                                let _ = tg_call(
+                                    token,
+                                    "editMessageReplyMarkup",
+                                    &json!({
+                                        "chat_id": chat_id,
+                                        "message_id": message_id,
+                                        "reply_markup": { "inline_keyboard": [] },
+                                    }),
+                                    Duration::from_secs(SEND_HTTP_TIMEOUT_SECS),
+                                );
+                            }
                         }
                     }
                 }
@@ -3290,6 +4012,26 @@ pub fn ack(ok: bool, error: Option<String>, reply_to: Option<i64>, session_id: O
     });
 }
 
+/// 前端执行完远程命令（/new 建会话、/model 切模型）的回执。
+/// `bind_session_id` 有值 = 同时把裸文本的默认去向切到这个会话（新建后立即生效）。
+pub fn result(text: String, bind_session_id: Option<String>) {
+    let Some(slot) = TELEGRAM.get() else { return };
+    if let Some(session_id) = bind_session_id.as_deref() {
+        if let Ok(mut inner) = slot.inner.lock() {
+            inner.last_user_session = Some(session_id.to_string());
+        }
+        schedule_dashboard(slot);
+    }
+    let _ = slot.outbound.send(Outbound::Send {
+        text,
+        buttons: Vec::new(),
+        route_for_session: bind_session_id,
+        reply_to: None,
+        md: false,
+        plain: None,
+    });
+}
+
 /// 把盘上设置刷进活配置（线程下一轮就跟随）。token 存在时确保线程已拉起
 /// （首次保存 token 的路径也走这里——见 `ensure_threads`）。
 fn apply_live(settings: &TelegramSettings) {
@@ -3307,7 +4049,47 @@ fn apply_live(settings: &TelegramSettings) {
     }
     if token.is_some() {
         ensure_threads(slot);
+        sync_bot_commands(slot);
     }
+}
+
+/// 给 BotFather 注册命令清单（手机输入框 / 自动补全）。成功一次即够；
+/// 失败只记日志——补全缺席不影响功能。
+fn sync_bot_commands(slot: &'static Telegram) {
+    if slot.commands_synced.load(Ordering::Relaxed) {
+        return;
+    }
+    let active = slot
+        .live
+        .lock()
+        .map(|live| live.enabled && live.chat_id.is_some())
+        .unwrap_or(false);
+    if !active {
+        return;
+    }
+    let Some(token) = slot.live.lock().ok().and_then(|live| live.token.clone()) else {
+        return;
+    };
+    slot.commands_synced.store(true, Ordering::Relaxed);
+    std::thread::spawn(move || {
+        let commands = json!([
+            { "command": "new", "description": "新建对话（项目/聊天 → agent → 模型 → 模式）" },
+            { "command": "model", "description": "切换模型（回复通知=切那个会话）" },
+            { "command": "status", "description": "全部会话的状态清单" },
+            { "command": "help", "description": "命令说明" },
+        ]);
+        match tg_call(
+            &token,
+            "setMyCommands",
+            &json!({ "commands": commands }),
+            Duration::from_secs(SEND_HTTP_TIMEOUT_SECS),
+        ) {
+            Ok(_) => log("info", "bot command menu registered", None),
+            Err(error) => {
+                log("warn", "setMyCommands failed", Some(&error));
+            }
+        }
+    });
 }
 
 // ─── 单测（纯函数；绝不碰网络与真实目录）──────────────────────────────────
@@ -3664,6 +4446,36 @@ mod tests {
         for chunk in split_markdown_paragraphs(&long, 40) {
             assert!(chunk.chars().count() <= 40);
         }
+    }
+
+    #[test]
+    fn model_page_parts_aligns_and_clamps() {
+        let models: Vec<crate::acp::ModelDef> = (0..19)
+            .map(|i| crate::acp::ModelDef {
+                id: format!("m{i}"),
+                label: format!("模型 {i}"),
+                description: None,
+            })
+            .collect();
+        // offset 越界时夹回最后一页；起始对齐页边界。
+        let (text, range) = model_page_parts("标题", &models, 999);
+        assert!(text.contains("第 3/3 页"), "{text}");
+        assert_eq!(range, 16..19);
+        let (text, range) = model_page_parts("标题", &models, 9);
+        assert!(text.contains("第 2/3 页"), "{text}");
+        assert_eq!(range, 8..16);
+    }
+
+    #[test]
+    fn page_nav_bounds() {
+        let (prev, next) = page_nav(true, false, CallbackAction::NewCancel, CallbackAction::NewCancel);
+        assert!(prev.is_none());
+        assert!(next.is_some());
+        let (prev, next) = page_nav(false, true, CallbackAction::NewCancel, CallbackAction::NewCancel);
+        assert!(prev.is_some());
+        assert!(next.is_none());
+        let (prev, next) = page_nav(false, false, CallbackAction::NewCancel, CallbackAction::NewCancel);
+        assert!(prev.is_none() && next.is_none());
     }
 
     #[test]

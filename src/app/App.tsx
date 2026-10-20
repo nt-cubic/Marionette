@@ -25,6 +25,7 @@ import {
   unfinishedDelegateChildrenFromMeta,
 } from "../lib/acpRenderBudget";
 import { engineQuota as fetchEngineQuota, type EngineQuotaEntry } from "../lib/api";
+import { TELEGRAM_COMMAND_EVENT, telegramRemoteResult, type TelegramCommand } from "../lib/api";
 import { invalidateBridgeModels } from "../lib/bridge";
 import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getFileFingerprints, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, CHAT_PROJECT_ID } from "../lib/api";
 import {
@@ -591,6 +592,8 @@ export function App() {
         composed: string;
         imageAttachments: import("../lib/imageAttachments").ImageAttachment[];
         composerSnap?: ComposerChipSnapshot;
+        /** true = Telegram 入站（无 Composer 快照）：flush 时继续走会话自身偏好，不读主窗口 Composer 态。 */
+        remote?: boolean;
       }>
     >
   >(new Map());
@@ -4127,6 +4130,7 @@ export function App() {
     setViewMode("clean");
     setSessionCapabilities(capsByIdRef.current[sessionWithPrefs.id] ?? null);
     setActiveModelId(null);
+    return sessionWithPrefs;
   };
 
   const handleRefreshExternal = useCallback(async (projectId: string) => {
@@ -5864,8 +5868,10 @@ export function App() {
       const agent = agentsRef.current.find((a) => a.id === session?.agentId);
       if (!session || !agent) return;
 
-      // Cancel in-flight turn first.
+      // Cancel in-flight turn first. Suppress late chunks until the new prompt
+      // goes out, or they would land after the resent You card.
       if (session.status === "running") {
+        streamSuppressedRef.current.add(sid);
         try {
           await cancelAcpSession(sid);
         } catch {
@@ -5894,6 +5900,7 @@ export function App() {
       const current = shadowBySessionRef.current.get(sid) ?? EMPTY_EVENTS;
       const cut = findCutIndex(current);
       if (cut < 0) {
+        streamSuppressedRef.current.delete(sid);
         pushDebug({
           sessionId: sid,
           level: "warn",
@@ -5903,7 +5910,41 @@ export function App() {
         return;
       }
       const kept = current.slice(0, cut);
-      const nextEvents = [...kept, userMessageEvent(sid, newText.trim(), sendMetaRef.current ?? undefined)];
+      const original = current[cut];
+      const fromOriginal =
+        original?.type === "user_message"
+          ? {
+              agentId: original.agentId,
+              agentLabel: original.agentLabel,
+              modelId: original.modelId,
+              modelLabel: original.modelLabel,
+              modeLabel: original.modeLabel,
+              effortLabel: original.effortLabel,
+            }
+          : {};
+      const sendMeta = {
+        agentId: fromOriginal.agentId || session.agentId,
+        agentLabel: fromOriginal.agentLabel || agent.label,
+        modelId: fromOriginal.modelId || session.preferredModel || undefined,
+        modelLabel: fromOriginal.modelLabel,
+        modeLabel: fromOriginal.modeLabel,
+        effortLabel: fromOriginal.effortLabel,
+      };
+      // sendMetaRef is cleared on the first assistant chunk of a turn, so the
+      // resend path must not read it — that is how later Replies lost agentId
+      // and rendered as Notification.
+      sendMetaRef.current = sendMeta;
+      delete turnStartedAtRef.current[sid];
+      turnSentAtRef.current[sid] = Date.now();
+      grokTurnUsageRef.current[sid] = emptyGrokTurnUsage();
+      cancelScheduledDesktopNotify(sid);
+      const nextEvents = [
+        ...kept,
+        userMessageEvent(sid, newText.trim(), {
+          ...sendMeta,
+          sentAt: new Date(turnSentAtRef.current[sid]).toISOString(),
+        }),
+      ];
       updateSessionEvents(sid, () => nextEvents, { publish: true });
 
       // Persist truncated transcript immediately.
@@ -5942,8 +5983,10 @@ export function App() {
           promptText = withHistoryInjection(prefix, promptText);
         }
         setSessionStatusById(sid, "running");
+        streamSuppressedRef.current.delete(sid);
         await sendAcpPrompt(sid, promptText);
       } catch (error) {
+        streamSuppressedRef.current.delete(sid);
         setSessionStatusById(sid, "error");
         const sess = sessionsRef.current.find((s) => s.id === sid);
         const agent = sess
@@ -6429,6 +6472,11 @@ export function App() {
       /** Flushing a queued follow-up: no card exists yet — create it now,
        *  right after the reply that just freed the slot. */
       flushQueued?: boolean;
+      /** 远程发送（Telegram 入站）：没有 Composer 快照，也绝不能读主窗口
+       *  Composer 的瞬态模型——分屏下 openSession 同步改写 currentSessionIdRef
+       *  而 activeModelId 还是上一个 tab 的值，会把所有会话的模型串成一个
+       *  并经 persistComposerPrefs 固化。模型只从会话自身偏好解析。 */
+      remote?: boolean;
     },
   ) => {
     try {
@@ -6460,7 +6508,7 @@ export function App() {
         (modeId ? caps?.modes.find((m) => m.id === modeId)?.label ?? modeId : undefined);
       const modelId =
         composerSnap?.modelId?.trim() ||
-        (sid === currentSessionIdRef.current ? activeModelId : null) ||
+        (!options?.remote && sid === currentSessionIdRef.current ? activeModelId : null) ||
         sendRow?.preferredModel?.trim() ||
         caps?.currentModel ||
         null;
@@ -6519,7 +6567,7 @@ export function App() {
       // The card is created when the flush happens, right after cancel.
       if (shouldQueue) {
         const queue = pendingSendsRef.current.get(sid) ?? [];
-        queue.push({ composed, imageAttachments, composerSnap });
+        queue.push({ composed, imageAttachments, composerSnap, remote: options?.remote });
         pendingSendsRef.current.set(sid, queue);
         // Shelf order is recency-only: bump lastActiveAt only when the user sends.
         const activeAt = new Date().toISOString();
@@ -6753,7 +6801,7 @@ export function App() {
         agentLabel: agent?.label,
         currentModel:
           composerSnap?.modelId?.trim() ||
-          (sid === currentSessionIdRef.current
+          (!options?.remote && sid === currentSessionIdRef.current
             ? activeModelIdRef.current
             : null) ||
           sess?.preferredModel ||
@@ -6778,7 +6826,7 @@ export function App() {
           return current;
         }, { publish: true });
         const queue = pendingSendsRef.current.get(sid) ?? [];
-        queue.push({ composed, imageAttachments, composerSnap });
+        queue.push({ composed, imageAttachments, composerSnap, remote: options?.remote });
         pendingSendsRef.current.set(sid, queue);
         setQueuedStripTick((t) => t + 1);
         pushDebug({
@@ -6820,9 +6868,12 @@ export function App() {
     }
   };
 
-  // Telegram 入站（手机发来的文字）：先切到目标会话再走与本地 Composer 完全
-  // 相同的 performSend 管线（挂起重连、历史注入、排队、配置回推），完成后
-  // 回执给 bot。performSend 内部吞错，所以按会话状态判定成败。
+  // Telegram 入站（手机发来的文字）：先把目标会话切到前台（回来电脑时看得见
+  // 刚才在手机上驱动的对话），再走与本地 Composer 相同的 performSend 管线
+  // （挂起重连、历史注入、排队、配置回推），完成后回执给 bot。
+  // 注意传 remote: true——远程发送没有 Composer 快照，模型必须取会话自身
+  // 偏好，不能读主窗口 Composer 的瞬态选择（否则会把别的 tab 的模型串进
+  // 本会话并固化）。performSend 内部吞错，所以按会话状态判定成败。
   const telegramPerformSendRef = useRef(performSend);
   telegramPerformSendRef.current = performSend;
   useEffect(() => {
@@ -6840,7 +6891,8 @@ export function App() {
         void telegramAck(false, "会话不存在（可能已被删除）", messageId, sid);
         return;
       }
-      // performSend 的模式/模型回推依赖当前 tab 的会话态：先把目标切到前台。
+      // 先把目标切到前台是给用户看的（电脑端能看到手机驱动的对话）；
+      // 模型/模式解析走 remote 标记，与会话自身偏好走，不依赖这次切换。
       openSessionRef.current(session);
       pushDebug({
         sessionId: sid,
@@ -6849,7 +6901,7 @@ export function App() {
         summary: `inbound text from telegram · ${text.length} chars`,
       });
       void telegramPerformSendRef
-        .current(sid, text)
+        .current(sid, text, [], undefined, { remote: true })
         .then(() => {
           const failed =
             sessionsRef.current.find((s) => s.id === sid)?.status === "error";
@@ -6864,6 +6916,114 @@ export function App() {
           const message = error instanceof Error ? error.message : String(error);
           void telegramAck(false, message, messageId, sid);
         });
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => unlisten?.();
+    // 只订阅一次；回调和会话查找全部走 ref。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Telegram 远程命令（/new 建会话、/model 切模型）：Rust 侧向导/菜单选完后
+  // 发事件过来，前端走与本地完全相同的创建/偏好管线执行，再回执给 bot。
+  const telegramCreateProjectSessionRef = useRef(createSessionForProject);
+  telegramCreateProjectSessionRef.current = createSessionForProject;
+  const telegramCreateChatSessionRef = useRef(handleCreateChatSession);
+  telegramCreateChatSessionRef.current = handleCreateChatSession;
+  const telegramPersistPrefsRef = useRef(persistComposerPrefs);
+  telegramPersistPrefsRef.current = persistComposerPrefs;
+  useEffect(() => {
+    if (!isTauriRuntime() || IS_DETACHED_WINDOW) return;
+    let unlisten: (() => void) | undefined;
+    void listen<TelegramCommand>(TELEGRAM_COMMAND_EVENT, (event) => {
+      const payload = event.payload;
+      if (!payload?.kind) return;
+      void (async () => {
+        if (payload.kind === "newSession") {
+          const modelId = typeof payload.modelId === "string" && payload.modelId ? payload.modelId : null;
+          const modeId = typeof payload.modeId === "string" && payload.modeId ? payload.modeId : null;
+          try {
+            if (payload.chat) {
+              // 聊天区：createChatSession 建行+打开（自动继承该 agent 最近
+              // 的模型/档位），远程选中的项在返回的会话上覆盖落盘。
+              const session = await telegramCreateChatSessionRef.current(payload.agentId);
+              if (!session) {
+                await telegramRemoteResult("没建成——聊天会话创建失败，详情在电脑上看");
+                return;
+              }
+              if (modelId || modeId) {
+                const merged = {
+                  preferredModel: modelId ?? session.preferredModel ?? null,
+                  preferredMode: modeId ?? session.preferredMode ?? null,
+                  preferredEffort: session.preferredEffort ?? null,
+                  preferredEffortId: session.preferredEffortId ?? null,
+                  preferredAlwaysApprove: session.preferredAlwaysApprove ?? null,
+                };
+                setAvailableSessions((current) =>
+                  current.map((s) =>
+                    s.id === session.id
+                      ? {
+                          ...s,
+                          preferredModel: merged.preferredModel,
+                          preferredMode: merged.preferredMode,
+                        }
+                      : s,
+                  ),
+                );
+                void updateSessionPrefs(session.id, merged).catch(() => undefined);
+              }
+              await telegramRemoteResult(`✅ 已新建 · ${session.label}`, session.id);
+            } else {
+              const session = await telegramCreateProjectSessionRef.current(
+                payload.projectId || "",
+                payload.agentId,
+                undefined,
+                modelId || modeId
+                  ? {
+                      preferredModel: modelId,
+                      preferredMode: modeId,
+                      preferredEffort: null,
+                      preferredEffortId: null,
+                      preferredAlwaysApprove: null,
+                    }
+                  : null,
+              );
+              if (!session) {
+                await telegramRemoteResult("没建成——会话创建失败，详情在电脑上看");
+                return;
+              }
+              await telegramRemoteResult(`✅ 已新建 · ${session.label}`, session.id);
+            }
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            await telegramRemoteResult(`没建成：${message}`);
+          }
+          return;
+        }
+        if (payload.kind === "setModel") {
+          const sid = payload.sessionId;
+          const row = sessionsRef.current.find((s) => s.id === sid);
+          if (!row) {
+            await telegramRemoteResult("会话不存在（可能已被删除）");
+            return;
+          }
+          // 偏好先落盘：下一次 performSend 的配置回推会带上它。
+          telegramPersistPrefsRef.current(sid, { preferredModel: payload.modelId });
+          // 会话活着且空闲就直接推给 agent，不等下一条消息。
+          const caps = capsByIdRef.current[sid];
+          const status = sessionsRef.current.find((s) => s.id === sid)?.status;
+          if (caps && status !== "running" && status !== "starting") {
+            try {
+              await updateAcpSession(sid, { model: payload.modelId });
+            } catch {
+              // 推不动就留给发送前的配置回推。
+            }
+          }
+          await telegramRemoteResult(
+            `✅ [${row.label}] 模型已切换 · ${payload.modelLabel || payload.modelId}`,
+          );
+        }
+      })();
     }).then((fn) => {
       unlisten = fn;
     });
@@ -6892,7 +7052,7 @@ export function App() {
           next.composed,
           next.imageAttachments,
           next.composerSnap,
-          { flushQueued: true },
+          { flushQueued: true, remote: next.remote },
         );
       } finally {
         flushingSendRef.current.delete(sessionId);

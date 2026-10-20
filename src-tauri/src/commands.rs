@@ -2533,6 +2533,16 @@ pub fn telegram_remote_ack(
     Ok(())
 }
 
+/// 前端执行远程命令（/new、/model）后的回执；bind_session_id 同时切换裸文本绑定。
+#[tauri::command(async)]
+pub fn telegram_remote_result(
+    text: String,
+    bind_session_id: Option<String>,
+) -> Result<(), String> {
+    crate::telegram_remote::result(text, bind_session_id);
+    Ok(())
+}
+
 /// Check GitHub Releases for a newer Marionette portable build.
 #[tauri::command(async)]
 pub fn check_app_update() -> Result<crate::app_update::AppUpdateInfo, String> {
