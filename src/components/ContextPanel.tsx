@@ -584,7 +584,7 @@ export function ContextPanel({
 
       <MemorySection activeSessionId={activeSessionId} />
 
-      {(activeAgentId ?? "").startsWith("deepseek") && <PluginsSection />}
+      <PluginsSection activeAgentId={activeAgentId} />
 
       <section className="context-card">
         <div className="context-card__heading">

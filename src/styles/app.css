@@ -4082,6 +4082,7 @@ body.is-tab-detaching .floating-trigger {
 .event-card--user_message[data-mode-tone="ask"]::before     { background: #60a5fa; }
 .event-card--user_message[data-mode-tone="debug"]::before   { background: var(--orange); }
 .event-card--user_message[data-mode-tone="build"]::before   { background: var(--accent); }
+.event-card--user_message[data-mode-tone="minimal"]::before { background: #2dd4bf; }
 .event-card--user_message[data-mode-tone="default"]::before { background: var(--text-faint); }
 
 /* Timestamp — top-right of the type row */
@@ -4168,11 +4169,11 @@ body.is-tab-detaching .floating-trigger {
   margin-left: 0;
 }
 
-/* Mode tag — colored text only, no background */
+/* Mode tag — colored text only, no background. Labels are display-ready. */
 .meta-tag--mode {
   color: var(--mode-chip, var(--text-faint));
   background: none;
-  text-transform: capitalize;
+  text-transform: none;
 }
 
 .meta-tag--mode[data-mode-tone="plan"],
@@ -4183,6 +4184,8 @@ body.is-tab-detaching .floating-trigger {
 .meta-tag__symbol[data-mode-tone="debug"]   { --mode-chip: var(--orange); }
 .meta-tag--mode[data-mode-tone="build"],
 .meta-tag__symbol[data-mode-tone="build"]   { --mode-chip: var(--accent); }
+.meta-tag--mode[data-mode-tone="minimal"],
+.meta-tag__symbol[data-mode-tone="minimal"] { --mode-chip: #2dd4bf; }
 .meta-tag--mode[data-mode-tone="default"],
 .meta-tag__symbol[data-mode-tone="default"] { --mode-chip: var(--text-faint); }
 
@@ -6813,6 +6816,10 @@ body.is-composer-resizing .composer {
   --mode-chip: var(--accent);
 }
 
+.composer[data-mode-tone="minimal"] {
+  --mode-chip: #2dd4bf;
+}
+
 .composer[data-mode-tone="default"] {
   --mode-chip: var(--text-faint);
 }
@@ -6850,7 +6857,9 @@ body.is-composer-resizing .composer {
   font-weight: 500;
   white-space: nowrap;
   cursor: pointer;
-  text-transform: capitalize;
+  /* Labels arrive display-ready (Standard / PTC / Minimal / Creator); do not
+     force capitalize — it turns PTC into Ptc. */
+  text-transform: none;
   transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
 }
 
@@ -6907,10 +6916,9 @@ body.is-composer-resizing .composer {
   min-width: 150px;
 }
 
-/* `button` resets text-transform in the UA stylesheet, so it must be set here
-   directly rather than inherited from the menu container. */
+/* Labels are display-ready from the agent (incl. PTC); keep as-is. */
 .composer-menu--mode button {
-  text-transform: capitalize;
+  text-transform: none;
 }
 
 /* ── File permission menu (DeepSeek Harness `sandbox`) ──────────────── */
@@ -6952,6 +6960,10 @@ body.is-composer-resizing .composer {
 
 .composer-menu button[data-mode-tone="build"] .composer-menu__mode-dot {
   background: var(--accent);
+}
+
+.composer-menu button[data-mode-tone="minimal"] .composer-menu__mode-dot {
+  background: #2dd4bf;
 }
 
 .composer-menu button[data-mode-tone="default"] .composer-menu__mode-dot {

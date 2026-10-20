@@ -29,6 +29,7 @@ import { cleanAssistantText } from "../lib/markdownText";
 import { type ForkAnchor } from "../lib/sessionFork";
 import { newQuotePinId, type QuotePin } from "../lib/quoteComment";
 import { buildMessagePresentation } from "../lib/messagePresentation";
+import { modeTone } from "../lib/modeTone";
 import { diffTargetPath, isWorkspaceDiffPath, splitToolBody } from "../lib/toolBody";
 import {
   classifyToolCall,
@@ -3194,22 +3195,4 @@ function StallBanner({
   );
 }
 
-/** Map a mode id to a tone category for colored accent. */
-function modeTone(modeId: string | null | undefined): string {
-  const id = (modeId ?? "").toLowerCase();
-  if (!id) return "default";
-  if (id.includes("plan")) return "plan";
-  if (id.includes("ask") || id.includes("chat") || id.includes("talk")) return "ask";
-  if (id.includes("debug") || id.includes("review")) return "debug";
-  if (
-    id.includes("build") ||
-    id.includes("agent") ||
-    id.includes("code") ||
-    id.includes("edit") ||
-    id.includes("default") ||
-    id.includes("auto")
-  ) {
-    return "build";
-  }
-  return "default";
-}
+
