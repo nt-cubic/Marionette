@@ -1860,16 +1860,24 @@ pub fn kill_engine() {
 
 struct CatalogEntry {
     fetched_at: Instant,
-    models: Vec<String>,
+    models: Vec<crate::model_bridge::CatalogModelRow>,
 }
 
 static CATALOG: OnceLock<Mutex<Option<CatalogEntry>>> = OnceLock::new();
 
-/// 引擎 `/v1/models` 全量（带 TTL 缓存）。引擎不在 Running → 空。
-pub fn catalog() -> Vec<String> {
+/// 引擎 `/v1/models` 全量（带 TTL 缓存，含每模型窗口/输出上限）。
+/// 引擎不在 Running → 空。
+pub fn catalog_entries() -> Vec<crate::model_bridge::CatalogModelRow> {
     #[cfg(test)]
     if let Some(models) = test_catalog() {
-        return models;
+        return models
+            .into_iter()
+            .map(|id| crate::model_bridge::CatalogModelRow {
+                id,
+                context_window: 0,
+                max_output: 0,
+            })
+            .collect();
     }
     note_engine_needed();
     let cache = CATALOG.get_or_init(|| Mutex::new(None));
@@ -1895,6 +1903,14 @@ pub fn catalog() -> Vec<String> {
     models
 }
 
+/// 引擎 `/v1/models` 全量（带 TTL 缓存），只要 id。引擎不在 Running → 空。
+pub fn catalog() -> Vec<String> {
+    catalog_entries()
+        .into_iter()
+        .map(|row| row.id)
+        .collect()
+}
+
 /// 面向用户/agent 的引擎目录：剥掉 `group/` 自动路由组（magpie 的跨来源
 /// 路由入口，目录里自标 "routing group"）。2026-10-20 产品决定：菜单只列
 /// 具体来源的模型，人直接选 `grok/grok-4.7` 这类；路由组是给程序用的抽象，
@@ -1908,7 +1924,17 @@ pub fn catalog_direct() -> Vec<String> {
         .collect()
 }
 
-fn fetch_catalog() -> Vec<String> {
+/// 同 `catalog_direct`，但带窗口/输出上限——dsh 桥写 `contextWindow`/
+/// `maxTokens` 用（llm-pi-ai 对缺声明的模型落 256K 兜底，见
+/// model_bridge::CatalogModelRow）。
+pub fn catalog_direct_entries() -> Vec<crate::model_bridge::CatalogModelRow> {
+    catalog_entries()
+        .into_iter()
+        .filter(|row| !row.id.starts_with("group/"))
+        .collect()
+}
+
+fn fetch_catalog() -> Vec<crate::model_bridge::CatalogModelRow> {
     let Some(port) = running_base().map(|(port, _)| port) else {
         return Vec::new();
     };
@@ -1926,7 +1952,7 @@ fn fetch_catalog() -> Vec<String> {
     let Ok(body) = response.into_string() else {
         return Vec::new();
     };
-    crate::model_bridge::parse_models_catalog(&body)
+    crate::model_bridge::parse_models_catalog_rows(&body)
 }
 
 // ─── 测试缝（全部 #[cfg(test)]；全局状态 → 用串行锁防并行测试互踩）──────────

@@ -1077,8 +1077,20 @@ fn fetch_models_from_endpoint(chat_base: &str, key: &str) -> Vec<String> {
     parse_models_catalog(&text)
 }
 
-/// 目录 JSON → 模型 id 列表（保序去重）。engine.rs 的引擎目录共用。
-pub(crate) fn parse_models_catalog(text: &str) -> Vec<String> {
+/// 引擎 `/v1/models` 的一条模型（magpie 网关形态）。窗口/输出为 0 = 引擎没说。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CatalogModelRow {
+    pub id: String,
+    /// `context_window`（magpie 同时写 `context_length` / `max_input_tokens`，
+    /// 同值）。dsh 的 llm-pi-ai 对没声明 `contextWindow` 的模型一律落到
+    /// 256K 兜底——DeepSeek 实际 1M 的窗口就是这么被显示成 256K 的。
+    pub context_window: u64,
+    /// `max_output_tokens`（回复上限）。
+    pub max_output: u64,
+}
+
+/// 目录 JSON → 模型行（保序去重，带窗口/输出上限）。engine.rs 的引擎目录共用。
+pub(crate) fn parse_models_catalog_rows(text: &str) -> Vec<CatalogModelRow> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
         return Vec::new();
     };
@@ -1089,17 +1101,39 @@ pub(crate) fn parse_models_catalog(text: &str) -> Vec<String> {
     let Some(items) = items else {
         return Vec::new();
     };
-    let mut out: Vec<String> = Vec::new();
+    let positive = |item: &serde_json::Value, keys: &[&str]| -> u64 {
+        keys.iter()
+            .find_map(|key| {
+                item.get(*key)
+                    .and_then(|v| v.as_u64())
+                    .filter(|v| *v > 0)
+            })
+            .unwrap_or(0)
+    };
+    let mut out: Vec<CatalogModelRow> = Vec::new();
     for item in items {
         let Some(id) = item.get("id").and_then(|id| id.as_str()) else {
             continue;
         };
         let id = id.trim();
-        if !id.is_empty() && !out.iter().any(|existing| existing == id) {
-            out.push(id.to_string());
+        if id.is_empty() || out.iter().any(|existing| existing.id == id) {
+            continue;
         }
+        out.push(CatalogModelRow {
+            id: id.to_string(),
+            context_window: positive(item, &["context_window", "context_length", "max_input_tokens"]),
+            max_output: positive(item, &["max_output_tokens", "max_tokens"]),
+        });
     }
     out
+}
+
+/// 目录 JSON → 模型 id 列表（保序去重）。engine.rs 的引擎目录共用。
+pub(crate) fn parse_models_catalog(text: &str) -> Vec<String> {
+    parse_models_catalog_rows(text)
+        .into_iter()
+        .map(|row| row.id)
+        .collect()
 }
 
 /// 装配每个来源的最终模型清单（动态 ∪ 静态），并驱动缓存预热。
@@ -3637,6 +3671,33 @@ Connection: close
             vec!["deepseek-chat".to_string()]
         );
         assert!(parse_models_catalog("not json").is_empty());
+    }
+
+    /// magpie 网关 /v1/models 的行带窗口/输出上限（gateway.go modelObject：
+    /// context_window + context_length + max_input_tokens 同值、max_output_tokens）。
+    /// dsh 桥靠它写 contextWindow，否则 llm-pi-ai 把一切当 256K。
+    #[test]
+    fn parse_rows_carries_window_and_output() {
+        let rows = parse_models_catalog_rows(
+            r#"{"data":[
+                {"id":"deepseek/deepseek-flash","context_window":1000000,"context_length":1000000,"max_input_tokens":1000000,"max_output_tokens":384000},
+                {"id":"relay/mystery"},
+                {"id":"grok/grok-4.7@500k","context_window":500000,"max_output_tokens":0}
+            ]}"#,
+        );
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            rows[0],
+            CatalogModelRow {
+                id: "deepseek/deepseek-flash".into(),
+                context_window: 1_000_000,
+                max_output: 384_000,
+            }
+        );
+        assert_eq!(rows[1].context_window, 0, "没说的窗口是 0（不写 contextWindow）");
+        assert_eq!(rows[1].max_output, 0);
+        assert_eq!(rows[2].context_window, 500_000);
+        assert_eq!(rows[2].max_output, 0, "max_output_tokens 0 = 未披露");
     }
     /// reference 并入 list_models：grok / claude 看到 opencode auth.json 里映射
     /// 得到 preset 的条目（模型列表为空的来源也要出现）；宿主 opencode 自己

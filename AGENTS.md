@@ -107,6 +107,10 @@ Marionette 的 DSH agent 走 `@openma/deepseek-harness-acp`（bin `dsh-acp`）�
   home 层；settings.yaml / `profiles/acp/` 它**都不加载**——`settings` 行在无 profileContext 时
   disabled），令牌常量 `magpie` 同步进 `.credentials.yaml` refs + spawn env（解析顺序 env → 文件）。
   文本外科手术合并（home patch 允许 `!!js`，禁 serde_yaml 整档重写）、幂等、引擎停用即移除。
+  每个模型带引擎目录的 `contextWindow`/`maxTokens`（`engine::catalog_direct_entries()`，引擎
+  `/v1/models` 的 `context_window`/`max_output_tokens`）——**不写的话 dsh-llm-pi-ai 对所有
+  marionette 路由模型落 `DEFAULT_CONTEXT_WINDOW = 262144`（256K）兜底**，1M 的 DeepSeek 会
+  被显示成 256K、自动压缩阈值跟着错（2026-10-21 实测修复）。
   模型 id 广告为 `marionette::provider/model`（首个 `::` 切分，斜杠安全）。定稿与探针记录：
   `docs/research-dsh-cross-use.md` §8。
 
