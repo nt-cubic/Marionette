@@ -12,8 +12,6 @@ use serde_json::{json, Value};
 pub enum McpWirePolicy {
     /// Inject project-lent servers (default).
     Forward,
-    /// Agent rejects non-empty mcpServers (OpenClaw).
-    Never,
     /// Accepts field but does not use it (Pi) — skip inject to avoid noise.
     SkipForward,
 }
@@ -68,7 +66,6 @@ impl Serialize for McpWirePolicy {
     {
         serializer.serialize_str(match self {
             McpWirePolicy::Forward => "forward",
-            McpWirePolicy::Never => "never",
             McpWirePolicy::SkipForward => "skip",
         })
     }
@@ -77,7 +74,6 @@ impl Serialize for McpWirePolicy {
 fn mcp_label(p: McpWirePolicy) -> &'static str {
     match p {
         McpWirePolicy::Forward => "forward",
-        McpWirePolicy::Never => "never",
         McpWirePolicy::SkipForward => "skip",
     }
 }
@@ -159,22 +155,6 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
             requires_commands: &[],
             launch_env: &[],
         },
-        "openclaw" | "openclaw-acp" => AgentHarnessMeta {
-            id: "openclaw",
-            label: "OpenClaw",
-            subagent_transcript: false,
-            mcp_wire: McpWirePolicy::Never,
-            mcp_wire_label: mcp_label(McpWirePolicy::Never),
-            distribution: DistributionKind::Npx,
-            distribution_label: dist_label(DistributionKind::Npx),
-            cmd: "openclaw",
-            args: &["acp"],
-            node_required: Some("24.16.0"),
-            uv_required: None,
-            python_pin: None,
-            requires_commands: &[],
-            launch_env: &[],
-        },
         "pi" | "pi-acp" => AgentHarnessMeta {
             id: "pi",
             label: "Pi",
@@ -191,70 +171,6 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
             requires_commands: &["pi"],
             launch_env: &[("PI_ACP_ENABLE_EMBEDDED_CONTEXT", "true")],
         },
-        "cline" => AgentHarnessMeta {
-            id: "cline",
-            label: "Cline",
-            subagent_transcript: false,
-            mcp_wire: McpWirePolicy::Forward,
-            mcp_wire_label: mcp_label(McpWirePolicy::Forward),
-            distribution: DistributionKind::Npx,
-            distribution_label: dist_label(DistributionKind::Npx),
-            cmd: "cline",
-            args: &["--acp"],
-            node_required: None,
-            uv_required: None,
-            python_pin: None,
-            requires_commands: &[],
-            launch_env: &[],
-        },
-        "gemini" => AgentHarnessMeta {
-            id: "gemini",
-            label: "Gemini CLI",
-            subagent_transcript: false,
-            mcp_wire: McpWirePolicy::Forward,
-            mcp_wire_label: mcp_label(McpWirePolicy::Forward),
-            distribution: DistributionKind::Npx,
-            distribution_label: dist_label(DistributionKind::Npx),
-            cmd: "gemini",
-            args: &["--acp", "--skip-trust"],
-            node_required: Some("20.0.0"),
-            uv_required: None,
-            python_pin: None,
-            requires_commands: &[],
-            launch_env: &[],
-        },
-        "kimi-code" | "kimi" => AgentHarnessMeta {
-            id: "kimi-code",
-            label: "Kimi Code",
-            subagent_transcript: false,
-            mcp_wire: McpWirePolicy::Forward,
-            mcp_wire_label: mcp_label(McpWirePolicy::Forward),
-            distribution: DistributionKind::Npx,
-            distribution_label: dist_label(DistributionKind::Npx),
-            cmd: "kimi",
-            args: &["acp"],
-            node_required: Some("22.19.0"),
-            uv_required: None,
-            python_pin: None,
-            requires_commands: &[],
-            launch_env: &[],
-        },
-        "codebuddy" | "codebuddy-code" => AgentHarnessMeta {
-            id: "codebuddy",
-            label: "CodeBuddy",
-            subagent_transcript: false,
-            mcp_wire: McpWirePolicy::Forward,
-            mcp_wire_label: mcp_label(McpWirePolicy::Forward),
-            distribution: DistributionKind::Npx,
-            distribution_label: dist_label(DistributionKind::Npx),
-            cmd: "codebuddy",
-            args: &["--acp"],
-            node_required: Some("22.0.0"),
-            uv_required: None,
-            python_pin: None,
-            requires_commands: &[],
-            launch_env: &[],
-        },
         "hermes" => AgentHarnessMeta {
             id: "hermes",
             label: "Hermes Agent",
@@ -269,44 +185,6 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
             node_required: None,
             uv_required: Some("0.5.0"),
             python_pin: Some("3.13"),
-            requires_commands: &[],
-            launch_env: &[],
-        },
-        "cursor" => AgentHarnessMeta {
-            id: "cursor",
-            label: "Cursor",
-            subagent_transcript: false,
-            mcp_wire: McpWirePolicy::Forward,
-            mcp_wire_label: mcp_label(McpWirePolicy::Forward),
-            distribution: DistributionKind::Manual,
-            distribution_label: dist_label(DistributionKind::Manual),
-            // Must not install a global `agent` that collides with Grok.
-            cmd: "cursor-agent",
-            args: &["acp"],
-            node_required: None,
-            uv_required: None,
-            python_pin: None,
-            requires_commands: &[],
-            launch_env: &[],
-        },
-        // `omp acp` — native ACP server. MCP Forward verified live: omp expects
-        // `session/new.mcpServers` as an array of {name, command, args, env}
-        // entries (env/headers as {name, value} arrays) — exactly what
-        // `mcp_payload_for_agent` emits, and acp.rs always sends the key.
-        // omp routes generic approval prompts through `elicitation.form`.
-        "omp" => AgentHarnessMeta {
-            id: "omp",
-            label: "OMP",
-            subagent_transcript: false,
-            mcp_wire: McpWirePolicy::Forward,
-            mcp_wire_label: mcp_label(McpWirePolicy::Forward),
-            distribution: DistributionKind::Manual,
-            distribution_label: dist_label(DistributionKind::Manual),
-            cmd: "omp",
-            args: &["acp"],
-            node_required: None,
-            uv_required: None,
-            python_pin: None,
             requires_commands: &[],
             launch_env: &[],
         },
@@ -408,7 +286,7 @@ pub fn build_client_capabilities_json(agent_id: Option<&str>) -> Value {
 /// Whether to call `mcp_payload_for_agent` for this agent.
 pub fn should_inject_mcp(agent_id: Option<&str>) -> bool {
     match agent_id.map(harness_meta).map(|m| m.mcp_wire) {
-        Some(McpWirePolicy::Never) | Some(McpWirePolicy::SkipForward) => false,
+        Some(McpWirePolicy::SkipForward) => false,
         _ => true,
     }
 }
@@ -430,7 +308,7 @@ mod tests {
             Some("opencode"),
             Some("claude-code"),
             Some("codex"),
-            Some("omp"),
+            Some("pi"),
         ] {
             let caps = build_client_capabilities_json(agent);
             assert_eq!(
@@ -452,10 +330,8 @@ mod tests {
     }
 
     #[test]
-    fn openclaw_never_pi_skip_mcp() {
-        assert_eq!(harness_meta("openclaw").mcp_wire, McpWirePolicy::Never);
+    fn pi_skips_mcp_inject() {
         assert_eq!(harness_meta("pi").mcp_wire, McpWirePolicy::SkipForward);
-        assert!(!should_inject_mcp(Some("openclaw")));
         assert!(!should_inject_mcp(Some("pi")));
         assert!(should_inject_mcp(Some("codex")));
     }
@@ -464,7 +340,7 @@ mod tests {
     fn launch_metadata_still_names_the_binaries() {
         assert_eq!(harness_meta("hermes").python_pin, Some("3.13"));
         assert_eq!(harness_meta("deepseek").cmd, "dsh-acp");
-        assert_eq!(harness_meta("openclaw").node_required, Some("24.16.0"));
+        assert_eq!(harness_meta("pi").node_required, Some("22.0.0"));
         assert_eq!(harness_meta("codex").cmd, "codex-acp");
     }
 
@@ -509,22 +385,5 @@ mod tests {
         }
     }
 
-    #[test]
-    fn cursor_does_not_claim_agent_binary() {
-        assert_eq!(harness_meta("cursor").cmd, "cursor-agent");
-    }
 
-    #[test]
-    fn omp_uses_acp_launch_with_form_elicitation_and_mcp() {
-        let meta = harness_meta("omp");
-        assert_eq!(
-            build_client_capabilities_json(Some("omp"))["elicitation"]["form"],
-            json!({})
-        );
-        assert_eq!(meta.mcp_wire, McpWirePolicy::Forward);
-        assert!(should_inject_mcp(Some("omp")));
-        assert_eq!(meta.cmd, "omp");
-        assert_eq!(meta.args, &["acp"]);
-        assert_eq!(meta.distribution, DistributionKind::Manual);
-    }
 }

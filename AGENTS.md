@@ -102,6 +102,13 @@ Marionette 的 DSH agent 走 `@openma/deepseek-harness-acp`（bin `dsh-acp`）�
   旧的「settings.yaml 桥接」hack（`dsh_settings.rs`，724 行）已整体删除；「pi-ai 路由模型丢失」
   「无推理档位」两个老问题随换适配器消失——DSH 0.2.x 把设置搬进 profile patch 的历史背景
   见 git 历史（本次提交前的 AGENTS.md）。
+- **跨用桥（2026-10-20，`dsh_bridge.rs`）**：spawn 时把 llm-pi-ai 托管路由 `marionette`
+  （openai-completions → 引擎 `/v1`）写进 **`~/.dsh/cordis.patch.yml`**（standalone dsh-acp 组装的
+  home 层；settings.yaml / `profiles/acp/` 它**都不加载**——`settings` 行在无 profileContext 时
+  disabled），令牌常量 `magpie` 同步进 `.credentials.yaml` refs + spawn env（解析顺序 env → 文件）。
+  文本外科手术合并（home patch 允许 `!!js`，禁 serde_yaml 整档重写）、幂等、引擎停用即移除。
+  模型 id 广告为 `marionette::provider/model`（首个 `::` 切分，斜杠安全）。定稿与探针记录：
+  `docs/research-dsh-cross-use.md` §8。
 
 **NDJSON 探针**（不起 GUI 直接问适配器）：`spawn dsh-acp`（记得设 `DSH_ACP_HOST` 或会踩上面的
 符号链接坑），stdin 依次发 `initialize`（`protocolVersion: 1`）和 `session/new`（`cwd` 必须是

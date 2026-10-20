@@ -60,6 +60,7 @@ import {
   invalidateCapsIfAgentUpdated,
 } from "../lib/capabilityCache";
 import { detectCapabilityDrift } from "../lib/capabilityDrift";
+import { modeTone } from "../lib/modeTone";
 import {
   groupModelsByProvider,
   modelProviderGroup,
@@ -224,6 +225,16 @@ type ComposerProps = {
  */
 const OPENCODE_AUTH_AGENTS = new Set(["opencode"]);
 
+/**
+ * Native model ids the bridge injects into an agent's own catalog —
+ * grok/opencode/pi `marionette/<id>`, DSH `marionette::<id>`. They must exist
+ * in the agent's native list (that is how a pinned cross-use preference keeps
+ * working after a restart), but the picker never shows them there: the
+ * cross-use sections are the single entry point for shared models.
+ */
+const isBridgeNativeModel = (id: string) =>
+  id.startsWith("marionette/") || id.startsWith("marionette::");
+
 function formatRecentTime(timestamp: number): string {
   const diff = Date.now() - timestamp;
   if (diff < 60_000) return "刚刚";
@@ -247,29 +258,7 @@ function displayModeSafe(caps: CapabilitySnapshot): string | null {
   return caps.currentMode ?? (caps.modes.length > 0 ? caps.modes[0].id : null);
 }
 
-/** Soft visual family for the mode rail (muted, not rainbow). */
-function modeTone(modeId: string | null | undefined): string {
-  const id = (modeId ?? "").toLowerCase();
-  if (!id) return "default";
-  if (id.includes("plan")) return "plan";
-  if (id.includes("ask") || id.includes("chat") || id.includes("talk")) return "ask";
-  if (id.includes("debug") || id.includes("review")) return "debug";
-  // Full access / unrestricted: distinct from normal agent (workspace sandbox).
-  if (id.includes("full-access") || id.includes("full_access") || id.includes("bypass") || id.includes("yolo")) {
-    return "build";
-  }
-  if (
-    id.includes("build") ||
-    id.includes("agent") ||
-    id.includes("code") ||
-    id.includes("edit") ||
-    id.includes("default") ||
-    id.includes("auto")
-  ) {
-    return "build";
-  }
-  return "default";
-}
+
 
 const COMPOSER_HEIGHT_MIN = 100;
 const COMPOSER_HEIGHT_MAX = 480;
@@ -955,12 +944,16 @@ export function Composer({
   );
 
   /**
-   * The cross-use chip wins over the native model until grok re-exposes the
-   * binding as a native `marionette/<modelId>` option after a restart — from
-   * that point the normal model preference channel takes over.
+   * The cross-use chip wins over the native model until the agent re-exposes
+   * the binding as a native option after a restart — from that point the
+   * normal model preference channel takes over. Native id shape per agent:
+   * grok/opencode/pi advertise `marionette/<modelId>`, DSH advertises
+   * `marionette::<modelId>` (pi-ai `provider::model`, split on first `::`).
    */
+  const nativeBridgeModelId = (modelId: string) =>
+    agent.id === "deepseek" ? `marionette::${modelId}` : `marionette/${modelId}`;
   const bridgeActive =
-    bridgeSelection != null && currentModel !== `marionette/${bridgeSelection.modelId}`;
+    bridgeSelection != null && currentModel !== nativeBridgeModelId(bridgeSelection.modelId);
 
   /**
    * Cross-use pick (§4.8): never sends session/set_model from here — the
@@ -984,11 +977,17 @@ export function Composer({
       setBridgeSelection(model);
       void bridgeBind(sessionId, { entryId: model.entryId, modelId: model.modelId })
         .then(() => {
-          // grok / opencode：注入是 spawn 级的（owned 表 / OPENCODE_CONFIG
-          // provider），把 `marionette/<modelId>` 钉成原生偏好，重启后原生
+          // grok / opencode / dsh / pi：注入是 spawn 级的（owned 表 /
+          // OPENCODE_CONFIG provider / dsh llm-pi-ai 路由 / pi models.json
+          // provider），把原生形态的 marionette id 钉成偏好，重启后原生
           // 目录接管、跨用 chip 退位。
-          if (agent.id === "grok-build" || agent.id === "opencode") {
-            persistPrefs({ preferredModel: `marionette/${model.modelId}` });
+          if (
+            agent.id === "grok-build" ||
+            agent.id === "opencode" ||
+            agent.id === "deepseek" ||
+            agent.id === "pi"
+          ) {
+            persistPrefs({ preferredModel: nativeBridgeModelId(model.modelId) });
           }
           // 注入是 spawn 级的（env / 配置表）：活进程当场换血，历史保留，
           // 下一条消息即以新模型继续 —— 不等「下次打开会话」。
@@ -1025,10 +1024,10 @@ export function Composer({
     if (sessionId && !sessionId.startsWith("session-empty-")) {
       void bridgeBind(sessionId, null)
         .then(() => {
-          // opencode：跨用 provider 是 spawn 注入的常驻目录——解绑后它仍在
-          // 菜单里，钉着的 marionette/<id> 偏好会把会话又拉回去；清掉偏好
-          // 让重启落回原生默认。grok 无此问题（owned 表随解绑移除）。
-          if (agentId === "opencode") {
+          // opencode / dsh / pi：跨用 provider 是 spawn 级刷新的常驻目录——
+          // 解绑后它仍在菜单里，钉着的 marionette 偏好会把会话又拉回去；清掉
+          // 偏好让重启落回原生默认。grok 无此问题（owned 表随解绑移除）。
+          if (agentId === "opencode" || agentId === "deepseek" || agentId === "pi") {
             persistPrefs({ preferredModel: null });
           }
           // 活进程的 env 还指着跨用端点 —— 同样当场换血，切回原生立即生效。
@@ -2081,22 +2080,27 @@ export function Composer({
 
   const modelGroups = useMemo(() => {
     if (!caps?.models?.length) return [];
+    // Bridge-injected natives stay out of the native list — cross-use sections
+    // own their presentation (and highlight the pinned one).
+    const native = caps.models.filter((m) => !isBridgeNativeModel(m.id));
     const q = modelQuery.trim().toLowerCase();
     const filtered = q
-      ? caps.models.filter(
+      ? native.filter(
           (m) =>
             m.id.toLowerCase().includes(q) ||
             m.label.toLowerCase().includes(q) ||
             (m.description ?? "").toLowerCase().includes(q) ||
             modelProviderGroup(m).toLowerCase().includes(q),
         )
-      : caps.models;
+      : native;
     return groupModelsByProvider(filtered);
   }, [caps?.models, modelQuery]);
 
   const recentModels = useMemo(() => {
     if (!caps?.models?.length) return [];
-    const validIds = new Set(caps.models.map((m) => m.id));
+    const validIds = new Set(
+      caps.models.filter((m) => !isBridgeNativeModel(m.id)).map((m) => m.id),
+    );
     return getRecentModels(validIds);
   }, [caps?.models]);
 
@@ -3178,10 +3182,15 @@ export function Composer({
                                     </span>
                                   </span>
                                   {section.models.map((m) => {
+                                    // Highlight the picked row even after the
+                                    // native pin took over (bridgeActive then
+                                    // yields — the native row is hidden, so
+                                    // this section must carry the selection).
                                     const selected =
-                                      bridgeActive &&
-                                      bridgeSelection?.entryId === m.entryId &&
-                                      bridgeSelection?.modelId === m.modelId;
+                                      (bridgeActive &&
+                                        bridgeSelection?.entryId === m.entryId &&
+                                        bridgeSelection?.modelId === m.modelId) ||
+                                      currentModel === nativeBridgeModelId(m.modelId);
                                     return (
                                       <button
                                         key={`${m.entryId}:${m.modelId}`}

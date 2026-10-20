@@ -519,6 +519,70 @@ impl AcpService {
                     );
                 }
             }
+            // ── DSH 原生跨用（2026-10-20，docs/research-dsh-cross-use.md §8）：
+            //    与 opencode 的 OPENCODE_CONFIG_CONTENT 同款姿势——不看绑定，
+            //    引擎在跑就把 provider「marionette」（openai-completions → 引擎
+            //    /v1）刷新进 dsh 的 home patch（~/.dsh/cordis.patch.yml，standalone
+            //    dsh-acp 与 dsh Web 共享的唯一用户层），令牌同步进
+            //    ~/.dsh/.credentials.yaml refs。模型经 dsh-acp 原生目录广告（id
+            //    形如 marionette::provider/model，首个 :: 切分，斜杠安全——实测），
+            //    前端把该 id 钉成原生偏好。引擎停用则移除路由（不留连不上的
+            //    死条目）；过渡态（Starting/Downloading）文件不动。
+            if matches!(id, "deepseek" | "deepseek-acp") {
+                crate::engine::wake_if_installed();
+                match crate::dsh_bridge::refresh_marionette_route() {
+                    Ok(true) => {
+                        child_command
+                            .env(crate::dsh_bridge::MARIONETTE_TOKEN_ENV, crate::engine::ENGINE_TOKEN);
+                        crate::debug_log::append(
+                            "bridge",
+                            "info",
+                            &session_id,
+                            "dsh session bridged via cordis.patch llm-pi-ai route",
+                            Some("provider=marionette"),
+                        );
+                    }
+                    Ok(false) => {}
+                    Err(error) => crate::debug_log::append(
+                        "bridge",
+                        "warn",
+                        &session_id,
+                        "dsh marionette route refresh failed; bridge skipped",
+                        Some(&error),
+                    ),
+                }
+            }
+            // ── pi 原生跨用（2026-10-20）：与 dsh 同款姿势——引擎在跑就把
+            //    provider「marionette」（openai-completions → 引擎 /v1）合并进
+            //    ~/.pi/agent/models.json（pi 官方兼容端点机制；apiKey 用
+            //    $MARIONETTE_API_KEY env 插值，凭据不落盘），spawn 注入
+            //    同名 env。模型经 pi-acp 原生目录广告，id 形如
+            //    marionette/<engineId>（首个 / 切分，与 grok/opencode 前缀同形）。
+            //    引擎停用则移除托管段（菜单不留死条目）；过渡态不动文件。
+            if matches!(id, "pi" | "pi-acp") {
+                crate::engine::wake_if_installed();
+                match crate::model_bridge::refresh_pi_marionette_route() {
+                    Ok(true) => {
+                        child_command
+                            .env(crate::dsh_bridge::MARIONETTE_TOKEN_ENV, crate::engine::ENGINE_TOKEN);
+                        crate::debug_log::append(
+                            "bridge",
+                            "info",
+                            &session_id,
+                            "pi session bridged via models.json provider",
+                            Some("provider=marionette"),
+                        );
+                    }
+                    Ok(false) => {}
+                    Err(error) => crate::debug_log::append(
+                        "bridge",
+                        "warn",
+                        &session_id,
+                        "pi marionette route refresh failed; bridge skipped",
+                        Some(&error),
+                    ),
+                }
+            }
         }
         // ── opencode 原生跨用（2026-10-17 定稿）：不经绑定——引擎在跑就把
         //    整个引擎目录作为 provider「marionette」写进子进程的
@@ -2352,11 +2416,21 @@ fn parse_session_capabilities_after(
 ) -> CapabilitySnapshot {
     // The pre-v2 `modes` field is the session-mode list, and it keeps a
     // *different* `category: "mode"` option from replacing it.
+    // Exception: @openma/deepseek-harness-acp puts *sandbox levels* in
+    // `modes.availableModes` (read-only / workspace-write / full access) and
+    // the real agent presets (standard / ptc / minimal / cordis) under
+    // configOption id `agent`. Sandbox-shaped legacy lists must not claim the
+    // mode knob, or the Composer Mode chip shows permissions instead of
+    // Standard / Minimal / Creator.
     let legacy_modes = legacy_modes_from_json(session_response);
+    let legacy_is_sandbox = legacy_modes
+        .as_ref()
+        .is_some_and(|(list, _)| looks_like_sandbox_modes(list));
     let held = KnobClaims {
         model: previous.is_some_and(|caps| caps.model_config_id.is_some()),
         effort: previous.is_some_and(|caps| caps.effort_config_id.is_some()),
-        mode: legacy_modes.is_some() || previous.is_some_and(|caps| !caps.modes.is_empty()),
+        mode: (!legacy_is_sandbox && legacy_modes.is_some())
+            || previous.is_some_and(|caps| !caps.modes.is_empty()),
     };
     let mut caps = if let Ok(response) =
         serde_json::from_value::<acp_schema::NewSessionResponse>(session_response.clone())
@@ -2371,6 +2445,47 @@ fn parse_session_capabilities_after(
     };
     merge_legacy_models_field(session_response, &mut caps);
     caps
+}
+
+/// Sandbox / file-permission levels DSH (and Codex-shaped agents) advertise.
+fn looks_like_sandbox_modes(modes: &[ModeDef]) -> bool {
+    if modes.is_empty() {
+        return false;
+    }
+    modes.iter().all(|m| {
+        matches!(
+            m.id.trim().to_ascii_lowercase().as_str(),
+            "read-only"
+                | "readonly"
+                | "workspace-write"
+                | "workspace_write"
+                | "danger-full-access"
+                | "danger_full_access"
+                | "full-access"
+                | "full_access"
+        )
+    })
+}
+
+/// Pretty labels for DSH agent-preset ids when the wire name is the raw id.
+fn pretty_agent_preset_label(id: &str, name: &str) -> String {
+    let trimmed = name.trim();
+    if !trimmed.is_empty() && !trimmed.eq_ignore_ascii_case(id) {
+        return trimmed.to_string();
+    }
+    match id.trim().to_ascii_lowercase().as_str() {
+        "standard" => "Standard".to_string(),
+        "ptc" => "PTC".to_string(),
+        "minimal" => "Minimal".to_string(),
+        "cordis" | "creator" | "creation" => "Creator".to_string(),
+        _ => {
+            if trimmed.is_empty() {
+                id.to_string()
+            } else {
+                trimmed.to_string()
+            }
+        }
+    }
 }
 
 /// The pre-v2 `modes` field of `session/new`: `{ availableModes, currentModeId }`.
@@ -2445,6 +2560,10 @@ fn knob_by_id(id: &str) -> Option<ConfigKnob> {
     let lower = id.trim().to_ascii_lowercase();
     match lower.as_str() {
         "model" | "model_id" | "modelid" => return Some(ConfigKnob::Model),
+        // DSH agent presets (standard / ptc / minimal / cordis) — the Mode chip.
+        "agent" | "agent_preset" | "agent-preset" | "preset" => {
+            return Some(ConfigKnob::Mode);
+        }
         "mode" | "mode_id" | "modeid" | "approval-policy" | "approvalpolicy" => {
             return Some(ConfigKnob::Mode);
         }
@@ -2461,6 +2580,43 @@ fn knob_by_id(id: &str) -> Option<ConfigKnob> {
         return Some(ConfigKnob::Effort);
     }
     None
+}
+
+/// Reclassify a Mode-claimed option as Permission when its values are sandbox
+/// levels. openma dsh-acp names the permission select `id: "mode"` /
+/// `name: "Permissions"` while the real presets live under `id: "agent"`.
+fn reclassify_mode_if_sandbox(
+    id: &str,
+    knob: Option<ConfigKnob>,
+    option_ids: &[String],
+) -> Option<ConfigKnob> {
+    if knob != Some(ConfigKnob::Mode) {
+        return knob;
+    }
+    let lower = id.trim().to_ascii_lowercase();
+    let sandbox_shaped = !option_ids.is_empty()
+        && option_ids.iter().all(|oid| {
+            matches!(
+                oid.trim().to_ascii_lowercase().as_str(),
+                "read-only"
+                    | "readonly"
+                    | "workspace-write"
+                    | "workspace_write"
+                    | "danger-full-access"
+                    | "danger_full_access"
+                    | "full-access"
+                    | "full_access"
+            )
+        });
+    if sandbox_shaped
+        && matches!(
+            lower.as_str(),
+            "mode" | "mode_id" | "modeid" | "sandbox" | "sandbox_mode" | "sandbox-mode"
+        )
+    {
+        return Some(ConfigKnob::Permission);
+    }
+    knob
 }
 
 /// The knob an option's category claims when its id names none.
@@ -2783,27 +2939,57 @@ fn parse_capabilities_from_typed(
     let mut held = held;
     if let Some((legacy, current)) = legacy_modes {
         if !legacy.is_empty() {
-            modes = legacy;
+            if looks_like_sandbox_modes(&legacy) {
+                // openma dsh-acp: sandbox levels in the pre-v2 modes field.
+                if permission_options.is_empty() {
+                    permission_options = legacy;
+                    current_permission = current;
+                }
+            } else {
+                modes = legacy;
+                current_mode = current;
+            }
+        } else {
+            current_mode = current;
         }
-        current_mode = current;
     }
 
     if let Some(config_options) = &response.config_options {
         for opt in config_options {
             let id_str = opt.id.0.to_string();
             let category = opt.category.as_ref().and_then(category_name);
-            match config_option_knob(&id_str, category.as_deref(), held) {
+            let select_ids: Vec<String> = match &opt.kind {
+                Kind::Select(select) => extract_typed_options(&select.options)
+                    .into_iter()
+                    .map(|(id, _, _)| id)
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let knob = reclassify_mode_if_sandbox(
+                &id_str,
+                config_option_knob(&id_str, category.as_deref(), held),
+                &select_ids,
+            );
+            match knob {
                 Some(ConfigKnob::Mode) => {
                     held.mode = true;
                     mode_config_id = Some(id_str.clone());
                     if let Kind::Select(select) = &opt.kind {
                         let extracted = extract_typed_options(&select.options);
                         if !extracted.is_empty() {
+                            let agent_preset = matches!(
+                                id_str.trim().to_ascii_lowercase().as_str(),
+                                "agent" | "agent_preset" | "agent-preset" | "preset"
+                            );
                             modes = extracted
                                 .into_iter()
                                 .map(|(id, name, description)| ModeDef {
+                                    label: if agent_preset {
+                                        pretty_agent_preset_label(&id, &name)
+                                    } else {
+                                        name
+                                    },
                                     id,
-                                    label: name,
                                     description,
                                 })
                                 .collect();
@@ -2946,9 +3132,18 @@ fn parse_capabilities_fallback(
     let mut held = held;
     if let Some((legacy, current)) = legacy_modes {
         if !legacy.is_empty() {
-            modes = legacy;
+            if looks_like_sandbox_modes(&legacy) {
+                if permission_options.is_empty() {
+                    permission_options = legacy;
+                    current_permission = current;
+                }
+            } else {
+                modes = legacy;
+                current_mode = current;
+            }
+        } else {
+            current_mode = current;
         }
-        current_mode = current;
     }
 
     if let Some(options) = config_options {
@@ -2967,17 +3162,31 @@ fn parse_capabilities_fallback(
                 .and_then(|o| o.as_array())
                 .map(|arr| json_select_options(arr))
                 .unwrap_or_default();
+            let select_ids: Vec<String> = select_options.iter().map(|(oid, _, _)| oid.clone()).collect();
+            let knob = reclassify_mode_if_sandbox(
+                &id,
+                config_option_knob(&id, Some(category.as_str()), held),
+                &select_ids,
+            );
 
-            match config_option_knob(&id, Some(category.as_str()), held) {
+            match knob {
                 Some(ConfigKnob::Mode) => {
                     held.mode = true;
+                    let agent_preset = matches!(
+                        id.trim().to_ascii_lowercase().as_str(),
+                        "agent" | "agent_preset" | "agent-preset" | "preset"
+                    );
                     mode_config_id = Some(id);
                     if !select_options.is_empty() {
                         modes = select_options
                             .into_iter()
-                            .map(|(id, name, description)| ModeDef {
-                                id,
-                                label: name,
+                            .map(|(oid, name, description)| ModeDef {
+                                label: if agent_preset {
+                                    pretty_agent_preset_label(&oid, &name)
+                                } else {
+                                    name
+                                },
+                                id: oid,
                                 description,
                             })
                             .collect();
@@ -4839,6 +5048,122 @@ mod tests {
         assert!(caps.effort_options.iter().any(|o| o.id == "low"));
     }
 
+    /// `@openma/deepseek-harness-acp` 0.4.x session/new: sandbox levels live in
+    /// both `modes` and configOption `mode` (Permissions); agent presets live
+    /// under configOption `agent` (Standard / PTC / Minimal / Creator).
+    fn openma_dsh_session_new() -> Value {
+        json!({
+            "sessionId": "s-dsh",
+            "modes": {
+                "currentModeId": "workspace-write",
+                "availableModes": [
+                    { "id": "read-only", "name": "Read-only",
+                      "description": "Bash and file mutations are denied by the sandbox" },
+                    { "id": "workspace-write", "name": "Workspace write",
+                      "description": "Writes are confined to the session workspace" },
+                    { "id": "danger-full-access", "name": "Full access",
+                      "description": "No sandbox confinement" }
+                ]
+            },
+            "configOptions": [
+                {
+                    "type": "select", "id": "mode", "name": "Permissions",
+                    "category": "mode", "currentValue": "workspace-write",
+                    "options": [
+                        { "value": "read-only", "name": "Read-only" },
+                        { "value": "workspace-write", "name": "Workspace write" },
+                        { "value": "danger-full-access", "name": "Full access" }
+                    ]
+                },
+                {
+                    "type": "select", "id": "collaboration_mode",
+                    "name": "Collaboration mode", "currentValue": "default",
+                    "options": [
+                        { "value": "default", "name": "Default" },
+                        { "value": "plan", "name": "Plan" }
+                    ]
+                },
+                {
+                    "type": "select", "id": "model", "name": "Model",
+                    "category": "model",
+                    "currentValue": "deepseek-official::deepseek-flash",
+                    "options": [
+                        { "value": "deepseek-official::deepseek-flash",
+                          "name": "DeepSeek-V41-Flash (DeepSeek)" },
+                        { "value": "deepseek-official::deepseek-v4-pro",
+                          "name": "DeepSeek-V4-Pro (DeepSeek)" }
+                    ]
+                },
+                {
+                    "type": "select", "id": "effort", "name": "Reasoning",
+                    "category": "thought_level", "currentValue": "high",
+                    "options": [
+                        { "value": "off", "name": "Off" },
+                        { "value": "low", "name": "Low" },
+                        { "value": "high", "name": "High" },
+                        { "value": "max", "name": "Max" }
+                    ]
+                },
+                {
+                    "type": "select", "id": "agent", "name": "Agent",
+                    "currentValue": "standard",
+                    "options": [
+                        { "value": "standard", "name": "Standard",
+                          "description": "Agent preset \"standard\"" },
+                        { "value": "ptc", "name": "ptc",
+                          "description": "Agent preset \"ptc\"" },
+                        { "value": "minimal", "name": "Minimal",
+                          "description": "Agent preset \"minimal\"" },
+                        { "value": "cordis", "name": "Creator",
+                          "description": "Agent preset \"cordis\"" }
+                    ]
+                }
+            ]
+        })
+    }
+
+    #[test]
+    fn openma_dsh_agent_presets_are_the_mode_chip() {
+        let caps = parse_session_capabilities(&openma_dsh_session_new());
+        assert_eq!(
+            caps.modes.iter().map(|m| m.id.clone()).collect::<Vec<_>>(),
+            vec!["standard", "ptc", "minimal", "cordis"]
+        );
+        assert_eq!(
+            caps.modes.iter().map(|m| m.label.clone()).collect::<Vec<_>>(),
+            vec!["Standard", "PTC", "Minimal", "Creator"]
+        );
+        assert_eq!(caps.current_mode.as_deref(), Some("standard"));
+        assert_eq!(caps.mode_config_id.as_deref(), Some("agent"));
+
+        assert_eq!(caps.permission_config_id.as_deref(), Some("mode"));
+        assert_eq!(caps.permission_label.as_deref(), Some("Permissions"));
+        assert_eq!(
+            caps.permission_options
+                .iter()
+                .map(|m| m.id.clone())
+                .collect::<Vec<_>>(),
+            vec!["read-only", "workspace-write", "danger-full-access"]
+        );
+        assert_eq!(caps.current_permission.as_deref(), Some("workspace-write"));
+
+        assert_eq!(caps.model_config_id.as_deref(), Some("model"));
+        assert_eq!(caps.models.len(), 2);
+        assert_eq!(caps.effort_config_id.as_deref(), Some("effort"));
+        assert_eq!(
+            caps.effort_options
+                .iter()
+                .map(|o| o.id.clone())
+                .collect::<Vec<_>>(),
+            vec!["off", "low", "high", "max"]
+        );
+
+        let updates =
+            expand_config_updates(&json!({ "mode": "minimal" }), Some(&caps)).unwrap();
+        assert_eq!(updates[0].config_id.as_deref(), Some("agent"));
+        assert_eq!(updates[0].value, json!("minimal"));
+    }
+
     /// The three `configOptions` DeepSeek Harness returns, with `current` on the
     /// model select. `reasoning` is the effort knob (as 推理档位) and `sandbox`
     /// (文件权限) is not a Composer knob at all.
@@ -6071,7 +6396,8 @@ fn dsh_runtime_dir() -> Option<PathBuf> {
 }
 
 /// DSH's own resolution: a non-blank `$DSH_HOME` wins, then `~/.dsh`.
-fn dsh_home() -> Option<PathBuf> {
+/// DSH 的 home 目录（$DSH_HOME 或 ~/.dsh）。dsh_bridge 的托管路由也写这里。
+pub(crate) fn dsh_home() -> Option<PathBuf> {
     if let Some(raw) = std::env::var_os("DSH_HOME") {
         if !raw.to_string_lossy().trim().is_empty() {
             return Some(PathBuf::from(raw));

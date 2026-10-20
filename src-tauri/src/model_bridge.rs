@@ -233,7 +233,14 @@ pub enum BridgeAgent {
     GrokBuild,
     Codex,
     Opencode,
-    /// M1 未接线的其余 agent（DSH、gemini…）：没有注入通道，列表为空。
+    /// DeepSeek Harness（@openma/deepseek-harness-acp，2026-10-20 接入）：
+    /// 注入通道 = llm-pi-ai 托管路由（crate::dsh_bridge），不走 SpawnInjection。
+    Deepseek,
+    /// Pi（pi-acp，2026-10-20 接入）：注入通道 = `~/.pi/agent/models.json` 的
+    /// providers.marionette（官方兼容端点机制，见 pi docs/models.md），
+    /// 不走 SpawnInjection。
+    Pi,
+    /// M1 未接线的其余 agent：没有注入通道，列表为空。
     Other,
 }
 
@@ -245,6 +252,8 @@ pub fn classify_agent(agent_id: &str) -> BridgeAgent {
         "grok-build" | "grok" => BridgeAgent::GrokBuild,
         "codex" | "codex-acp" => BridgeAgent::Codex,
         "opencode" => BridgeAgent::Opencode,
+        "deepseek" | "deepseek-acp" => BridgeAgent::Deepseek,
+        "pi" | "pi-acp" => BridgeAgent::Pi,
         _ => BridgeAgent::Other,
     }
 }
@@ -457,25 +466,38 @@ fn engine_bridge_source() -> BridgeSource {
     }
 }
 
-/// 引擎目录装进 models（只在引擎可见时调用；DYNAMIC_CAP 截断与动态目录一致）。
+/// 引擎目录装进 models（只在引擎可见时调用）。截断按**提供商**计——引擎 id
+/// 是 `provider/model` 形态，一家超过 [`ENGINE_PROVIDER_CAP`] 才砍它自家的
+/// 尾部。2026-10-20 的教训：按全局总数砍平铺清单的尾巴，别家目录一膨胀
+/// （OpenRouter 一家 ~20 条把总量顶过 60）就会把恰好排在 magpie 返回序
+/// 末尾的 provider（当时的 grok 4.5/4.6）整组砍穿，而那家在菜单里明明
+/// 排得靠前——前端分组排序与引擎清单顺序无关，用户完全无法理解谁被砍了。
 /// 返回是否截断。
 fn push_engine_models(models: &mut Vec<BridgeModel>) -> bool {
-    let mut engine_ids = crate::engine::catalog();
+    let engine_ids = crate::engine::catalog_direct();
+    let mut counts: HashMap<&str, usize> = HashMap::new();
     let mut truncated = false;
-    if engine_ids.len() > DYNAMIC_CAP {
-        engine_ids.truncate(DYNAMIC_CAP);
-        truncated = true;
-    }
-    for model_id in engine_ids {
+    for model_id in &engine_ids {
+        let provider = model_id.split('/').next().unwrap_or(model_id);
+        let count = counts.entry(provider).or_insert(0);
+        if *count >= ENGINE_PROVIDER_CAP {
+            truncated = true;
+            continue;
+        }
+        *count += 1;
         models.push(BridgeModel {
             entry_id: crate::engine::ENGINE_ENTRY_ID.to_string(),
             preset: crate::engine::ENGINE_PRESET_ID.to_string(),
             label: model_id.clone(),
-            model_id,
+            model_id: model_id.clone(),
         });
     }
     truncated
 }
+
+/// 跨用菜单里**单一引擎 provider** 的条目上限（组内太长才砍组内尾部；
+/// 全局无上限——菜单有搜索框，多 provider 全量列出也不影响可用性）。
+const ENGINE_PROVIDER_CAP: usize = 60;
 
 // ─── opencode 原生跨用（provider「marionette」→ 引擎 /v1）───────────────────
 
@@ -531,11 +553,143 @@ pub fn opencode_engine_config_content(
 /// spawn 时刻的真实参数版（引擎没跑或目录为空 → None，不注入）。
 pub fn opencode_engine_config(existing: Option<&str>) -> Option<String> {
     let (port, _) = crate::engine::running_base()?;
-    let models = crate::engine::catalog();
+    let models = crate::engine::catalog_direct();
     if models.is_empty() {
         return None;
     }
     Some(opencode_engine_config_content(port, &models, existing))
+}
+
+// ─── pi 原生跨用（~/.pi/agent/models.json 的 providers.marionette）──────────
+
+/// pi 的 agent 目录：`PI_CODING_AGENT_DIR` > `~/.pi/agent`（与 parsers/pi.rs
+/// 的会话目录解析同一套约定，见 pi docs/configuration.md）。
+fn pi_agent_dir() -> Option<std::path::PathBuf> {
+    if let Some(raw) = std::env::var_os("PI_CODING_AGENT_DIR") {
+        if !raw.to_string_lossy().trim().is_empty() {
+            return Some(PathBuf::from(raw));
+        }
+    }
+    Some(home_dir()?.join(".pi").join("agent"))
+}
+
+pub fn pi_models_path() -> Option<std::path::PathBuf> {
+    Some(pi_agent_dir()?.join("models.json"))
+}
+
+/// providers.marionette 的内容（pi docs/models.md「Configure a compatible
+/// endpoint」形态）。`apiKey` 用官方 `$NAME` env 插值 —— 令牌不落盘，spawn
+/// 注入 `MARIONETTE_API_KEY`（与 dsh 桥同一个 env 名）。
+fn pi_marionette_provider(port: u16, models: &[String]) -> serde_json::Value {
+    serde_json::json!({
+        "baseUrl": format!("http://127.0.0.1:{port}/v1"),
+        "api": "openai-completions",
+        "apiKey": format!("${}", crate::dsh_bridge::MARIONETTE_TOKEN_ENV),
+        "models": models
+            .iter()
+            .map(|id| serde_json::json!({ "id": id }))
+            .collect::<Vec<_>>(),
+    })
+}
+
+/// 纯合并体（测试直接喂夹具）：只增改 `providers.marionette`，用户的其它
+/// provider / 顶层键原样保留；原文不是合法 JSON object 就整体替换（pi 对
+/// models.json 无注释语法，serde_json 往返安全）。返回 (文本, 是否语义变更)。
+fn pi_merge_models_json(
+    existing: Option<&str>,
+    port: u16,
+    models: &[String],
+) -> (String, bool) {
+    use serde_json::Value;
+    let parsed = existing.and_then(|text| serde_json::from_str::<Value>(text).ok());
+    let mut root = parsed
+        .as_ref()
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    let before = serde_json::to_value(&root).ok();
+    let mut providers = root
+        .remove("providers")
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    providers.insert(
+        crate::dsh_bridge::MARIONETTE_PROVIDER.to_string(),
+        pi_marionette_provider(port, models),
+    );
+    root.insert(
+        "providers".to_string(),
+        Value::Object(providers),
+    );
+    let changed = before != serde_json::to_value(&root).ok();
+    let text = serde_json::to_string_pretty(&Value::Object(root)).unwrap_or_default();
+    (format!("{text}\n"), changed)
+}
+
+/// 移除托管 provider（引擎停用时调用，pi 的 /model 菜单不留连不上的死条目）。
+/// 返回 (是否动了文件)。providers 只剩我们一个 → 连 providers 键一起收。
+fn pi_remove_marionette_at(path: &Path) -> Result<bool, String> {
+    use serde_json::Value;
+    let original = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("读取 models.json 失败: {error}")),
+    };
+    if original.trim().is_empty() {
+        return Ok(false);
+    }
+    let mut root = serde_json::from_str::<Value>(&original)
+        .map_err(|e| format!("models.json 解析失败（{e}）— 拒绝写入半截"))?;
+    let Some(root_obj) = root.as_object_mut() else {
+        return Err("models.json 不是 JSON object — 拒绝写入".to_string());
+    };
+    let mut providers = root_obj
+        .remove("providers")
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    if providers
+        .remove(crate::dsh_bridge::MARIONETTE_PROVIDER)
+        .is_none()
+    {
+        // 没有托管段：把 providers 原样放回，零写入。
+        root_obj.insert("providers".to_string(), Value::Object(providers));
+        return Ok(false);
+    }
+    if !providers.is_empty() {
+        root_obj.insert("providers".to_string(), Value::Object(providers));
+    }
+    let text = serde_json::to_string_pretty(&root).unwrap_or_default();
+    write_text_atomic(path, &format!("{text}\n"))?;
+    Ok(true)
+}
+
+/// spawn 时刻入口（acp.rs 的 pi 分支），语义与 dsh_bridge::refresh 对齐：
+/// Running 且目录非空 → 写/刷（语义幂等，格式化不 churn）→ Ok(true)；
+/// Absent/Failed → 移除托管段 → Ok(false)；Starting/Downloading → 不动。
+pub fn refresh_pi_marionette_route() -> Result<bool, String> {
+    let path = pi_models_path().ok_or_else(|| "无法定位用户目录".to_string())?;
+    match crate::engine::status() {
+        crate::engine::EngineStatus::Running { port, .. } => {
+            let models = crate::engine::catalog_direct();
+            if models.is_empty() {
+                return Ok(false);
+            }
+            let existing = match fs::read_to_string(&path) {
+                Ok(text) => Some(text),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(format!("读取 models.json 失败: {error}")),
+            };
+            let (next, changed) = pi_merge_models_json(existing.as_deref(), port, &models);
+            if changed {
+                write_text_atomic(&path, &next)?;
+            }
+            Ok(true)
+        }
+        crate::engine::EngineStatus::Starting
+        | crate::engine::EngineStatus::Downloading { .. } => Ok(false),
+        crate::engine::EngineStatus::Absent | crate::engine::EngineStatus::Failed { .. } => {
+            pi_remove_marionette_at(&path)?;
+            Ok(false)
+        }
+    }
 }
 
 fn list_models_at(
@@ -585,7 +739,16 @@ fn list_models_at(
         // provider「marionette」注入 OPENCODE_CONFIG_CONTENT（acp.rs），前端
         // 把 `marionette/<id>` 钉成原生偏好，重启后原生菜单接管。「reference
         // 对宿主自己不可见」的去重规则照旧（key 型来源不列）。
-        BridgeAgent::Opencode => {
+        //
+        // dsh（2026-10-20）：同一引擎源姿势，注入面换成 llm-pi-ai 托管路由
+        // （crate::dsh_bridge 写 ~/.dsh/cordis.patch.yml）。模型经 dsh-acp 原生
+        // 目录广告，id 是 `marionette::<engineId>`（前端钉偏好用这个前缀）。
+        //
+        // pi（2026-10-20）：同一引擎源姿势，注入面换成本模块的
+        // `~/.pi/agent/models.json` providers.marionette。原生 id 是
+        // `marionette/<engineId>`（pi-acp 按 provider/id 拼、首个 `/` 切分），
+        // 与 grok/opencode 的原生前缀同形。
+        BridgeAgent::Opencode | BridgeAgent::Deepseek | BridgeAgent::Pi => {
             let mut models = Vec::new();
             let mut truncated = false;
             let mut sources = Vec::new();
@@ -620,7 +783,7 @@ fn list_models_at(
             models: Vec::new(),
             sources: Vec::new(),
             note: Some(
-                "该 agent 的模型共享还没接（当前支持 Claude Code、Grok、Codex 与 OpenCode）"
+                "该 agent 的模型共享还没接（当前支持 Claude Code、Grok、Codex、OpenCode、DeepSeek 与 Pi）"
                     .to_string(),
             ),
         },
@@ -1066,6 +1229,11 @@ fn write_text_atomic(path: &Path, body: &str) -> Result<(), String> {
         return Err(format!("重命名临时文件失败: {error}"));
     }
     Ok(())
+}
+
+/// dsh_bridge 复用的原子写（同一套临时兄弟文件 + rename 纪律）。
+pub(crate) fn write_text_atomic_pub(path: &Path, body: &str) -> Result<(), String> {
+    write_text_atomic(path, body)
 }
 
 // ─── 绑定存储 `~/.marionette/bridge-bindings.json`（B）───────────────────────
@@ -2656,8 +2824,23 @@ official_marketplace_auto_installed = true\n";
             Some("模型共享未运行 — Grok/GPT 等订阅模型暂不可见；点左下角模型共享按钮启动（或稍候自动唤醒）后重开此菜单")
         );
 
+        // dsh（2026-10-20）：与 opencode 同一引擎源通道（注入面在
+        // dsh_bridge 的 llm-pi-ai 托管路由，不走 SpawnInjection）。
+        assert_eq!(classify_agent("deepseek"), BridgeAgent::Deepseek);
+        assert_eq!(classify_agent("deepseek-acp"), BridgeAgent::Deepseek);
+        let dsh = list_models_at(&credentials, &scan, "deepseek");
+        assert!(dsh.models.is_empty());
+        assert_eq!(dsh.note.as_deref(), opencode.note.as_deref());
+
+        // pi（2026-10-20）：同一引擎源通道（注入面 = models.json 托管 provider）。
+        assert_eq!(classify_agent("pi"), BridgeAgent::Pi);
+        assert_eq!(classify_agent("pi-acp"), BridgeAgent::Pi);
+        let pi = list_models_at(&credentials, &scan, "pi");
+        assert!(pi.models.is_empty());
+        assert_eq!(pi.note.as_deref(), opencode.note.as_deref());
+
         // 其它 agent：没有注入通道，空 + 说明。
-        let other = list_models_at(&credentials, &scan, "deepseek");
+        let other = list_models_at(&credentials, &scan, "gemini");
         assert!(other.models.is_empty());
         assert!(other.note.unwrap().contains("还没接"));
 
@@ -2839,6 +3022,29 @@ official_marketplace_auto_installed = true\n";
             60
         );
         assert!(result.note.as_deref().unwrap_or_default().contains("截断"));
+
+        // 截断按 provider 计：一家 70 条保 60，但排在清单**末尾**的另一家
+        // （2026-10-20 的实际事故形态：grok 4.5/4.6 被 OpenRouter 的体量
+        // 顶出全局前 60）一条不少；`group/` 路由组不进菜单。
+        drop(_engine_many);
+        let mut mixed: Vec<String> = (0..70).map(|i| format!("p/model-{i}")).collect();
+        mixed.push("grok/grok-4.5".to_string());
+        mixed.push("grok/grok-4.6".to_string());
+        mixed.push("group/auto-grok-4-7".to_string());
+        let _engine_mixed = crate::engine::test_running(mixed);
+        let result = list_models_at(&credentials, &scan, "grok-build");
+        let engine_models: Vec<_> = result
+            .models
+            .iter()
+            .filter(|m| m.entry_id == crate::engine::ENGINE_ENTRY_ID)
+            .collect();
+        assert_eq!(engine_models.len(), 62, "尾部 provider 不被别家体量砍穿");
+        assert!(engine_models.iter().any(|m| m.model_id == "grok/grok-4.5"));
+        assert!(engine_models.iter().any(|m| m.model_id == "grok/grok-4.6"));
+        assert!(
+            engine_models.iter().all(|m| !m.model_id.starts_with("group/")),
+            "路由组不进跨用菜单"
+        );
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -3200,6 +3406,91 @@ official_marketplace_auto_installed = true\n";
         let parsed: serde_json::Value = serde_json::from_str(&replaced).unwrap();
         assert!(parsed.get("autoupdate").is_none());
         assert!(parsed["provider"]["marionette"]["models"]["grok/grok-4.7"].is_object());
+    }
+
+    // ─── pi models.json 托管写入器 ───────────────────────────────────────────
+
+    /// 用户已有 ollama provider：只增改 marionette，别家与顶层键原样保留。
+    #[test]
+    fn pi_merge_preserves_user_providers() {
+        let existing = r#"{
+  "$schema": "https://pi.dev/schemas/models.schema.json",
+  "providers": {
+    "ollama": {
+      "baseUrl": "http://localhost:11434/v1",
+      "api": "openai-completions",
+      "apiKey": "ollama",
+      "models": [{ "id": "qwen2.5-coder:7b" }]
+    }
+  }
+}"#;
+        let models = vec!["group/auto-grok-4-7".to_string()];
+        let (merged, changed) = pi_merge_models_json(Some(existing), 3425, &models);
+        assert!(changed);
+        let parsed: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(
+            parsed["$schema"],
+            "https://pi.dev/schemas/models.schema.json"
+        );
+        assert_eq!(
+            parsed["providers"]["ollama"]["baseUrl"],
+            "http://localhost:11434/v1"
+        );
+        assert_eq!(
+            parsed["providers"]["marionette"]["baseUrl"],
+            "http://127.0.0.1:3425/v1"
+        );
+        assert_eq!(
+            parsed["providers"]["marionette"]["apiKey"],
+            "$MARIONETTE_API_KEY"
+        );
+        assert_eq!(
+            parsed["providers"]["marionette"]["models"][0]["id"],
+            "group/auto-grok-4-7"
+        );
+        // 语义幂等：同参数再合 → 不再标记变更（不 churn 用户格式）。
+        let (_, again) = pi_merge_models_json(Some(&merged), 3425, &models);
+        assert!(!again);
+        // 端口变了 → 变更标记 + 新 URL。
+        let (next, port_changed) = pi_merge_models_json(Some(&merged), 3499, &models);
+        assert!(port_changed);
+        assert!(next.contains("3499"));
+    }
+
+    /// 空文件/缺文件 → 全新文档；移除时保用户 provider、收空 providers。
+    #[test]
+    fn pi_remove_strips_managed_and_keeps_user_providers() {
+        let dir = temp_dir("pi_remove");
+        let path = dir.join("models.json");
+        // 没有文件 → 移除是 no-op。
+        assert!(!pi_remove_marionette_at(&path).unwrap());
+
+        let existing = r#"{
+  "providers": {
+    "ollama": { "baseUrl": "http://localhost:11434/v1" },
+    "marionette": { "baseUrl": "http://127.0.0.1:3425/v1" }
+  }
+}"#;
+        fs::write(&path, existing).unwrap();
+        assert!(pi_remove_marionette_at(&path).unwrap());
+        let after: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(after["providers"].get("marionette").is_none());
+        assert_eq!(
+            after["providers"]["ollama"]["baseUrl"],
+            "http://localhost:11434/v1"
+        );
+
+        // 只剩托管段 → providers 键整个收掉。
+        let only = r#"{ "providers": { "marionette": { "baseUrl": "http://x" } } }"#;
+        fs::write(&path, only).unwrap();
+        assert!(pi_remove_marionette_at(&path).unwrap());
+        let after: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(after.get("providers").is_none());
+        // 再删一次 → no-op（字节稳定）。
+        assert!(!pi_remove_marionette_at(&path).unwrap());
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -37,40 +37,6 @@ export const AGENT_AUTH: Record<string, AgentAuthSpec> = {
     errorHint:
       "Grok 未登录时可点横幅 Sign in，完成后会自动重连；也可终端执行 `grok login`。令牌约 7 天过期。",
   },
-  "kimi-code": {
-    probe: true,
-    login: true,
-    loginCommand: "kimi login",
-    errorHint:
-      "Kimi 未登录时可点横幅 Sign in，或终端执行 `kimi login` 完成设备码登录后新建会话。",
-  },
-  cursor: {
-    probe: true,
-    login: true,
-    loginCommand: "cursor-agent login",
-    errorHint:
-      "Cursor 未登录时可点横幅 Sign in，或终端执行 `cursor-agent login` 后新建会话。",
-  },
-  openclaw: {
-    probe: true,
-    login: true,
-    loginCommand: "openclaw models auth login",
-    errorHint:
-      "OpenClaw 未登录时可点横幅 Sign in，或终端执行 `openclaw models auth login --provider <id>` 后新建会话。",
-  },
-  cline: {
-    probe: true,
-    login: true,
-    loginCommand: "cline auth",
-    errorHint: "Cline 未登录时可点横幅 Sign in，或终端执行 `cline auth` 后新建会话。",
-  },
-  gemini: {
-    probe: true,
-    login: true,
-    loginCommand: "gemini",
-    errorHint:
-      "Gemini 未登录时可点横幅 Sign in，或启动 `gemini` 选择「Login with Google」后新建会话。",
-  },
   pi: {
     probe: true,
     login: true,
@@ -84,13 +50,6 @@ export const AGENT_AUTH: Record<string, AgentAuthSpec> = {
     loginCommand: "hermes acp --setup",
     errorHint:
       "Hermes 未登录时可点横幅 Sign in，或终端执行 `hermes acp --setup` 配置凭证后新建会话。",
-  },
-  codebuddy: {
-    probe: true,
-    login: true,
-    loginCommand: "codebuddy",
-    errorHint:
-      "CodeBuddy 未登录时可点横幅 Sign in，或启动 `codebuddy` 后在会话内运行 `/login` 后新建会话。",
   },
   opencode: {
     probe: true,

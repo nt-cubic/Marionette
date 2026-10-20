@@ -1895,6 +1895,19 @@ pub fn catalog() -> Vec<String> {
     models
 }
 
+/// 面向用户/agent 的引擎目录：剥掉 `group/` 自动路由组（magpie 的跨来源
+/// 路由入口，目录里自标 "routing group"）。2026-10-20 产品决定：菜单只列
+/// 具体来源的模型，人直接选 `grok/grok-4.7` 这类；路由组是给程序用的抽象，
+/// 进菜单只有困惑（「auto-grok-4-7 完全不懂」）。想要时仍可用自定义模型
+/// 输入 `group/…` id。桥的所有消费点（跨用菜单 / opencode 配置 / dsh 路由 /
+/// pi models.json）统一走这里。
+pub fn catalog_direct() -> Vec<String> {
+    catalog()
+        .into_iter()
+        .filter(|id| !id.starts_with("group/"))
+        .collect()
+}
+
 fn fetch_catalog() -> Vec<String> {
     let Some(port) = running_base().map(|(port, _)| port) else {
         return Vec::new();

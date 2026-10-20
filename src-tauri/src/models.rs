@@ -196,42 +196,11 @@ impl AgentConfig {
                 ),
             ),
             // ── Expanded harness (PATH cold start + npm install/auto-update) ──
-            Self::new(
-                "cline",
-                "Cline",
-                "cline",
-                vec!["--acp".to_string()],
-                "acp",
-                "stdin",
-                AgentInstallSpec::npm("cline", Vec::new()),
-            ),
-            Self::new(
-                "gemini",
-                "Gemini CLI",
-                "gemini",
-                vec!["--acp".to_string(), "--skip-trust".to_string()],
-                "acp",
-                "stdin",
-                AgentInstallSpec::npm("@google/gemini-cli", Vec::new()),
-            ),
-            Self::new(
-                "kimi-code",
-                "Kimi Code",
-                "kimi",
-                vec!["acp".to_string()],
-                "acp",
-                "stdin",
-                AgentInstallSpec::npm("@moonshot-ai/kimi-code", Vec::new()),
-            ),
-            Self::new(
-                "codebuddy",
-                "CodeBuddy",
-                "codebuddy",
-                vec!["--acp".to_string()],
-                "acp",
-                "stdin",
-                AgentInstallSpec::npm("@tencent-ai/codebuddy-code", Vec::new()),
-            ),
+            // 2026-10-20 roster cut (docs/research-acp-cross-use-matrix.md):
+            // cline / gemini / kimi-code / codebuddy / openclaw / cursor / omp
+            // 退出内置名单 —— 无跨用面或用户面小，装不上的条目比没有更伤。
+            // 要用随时可经「自定义 agent」加回（custom_agents.rs）；历史会话
+            // 导入的 parsers 保留未动。
             Self::new(
                 "pi",
                 "Pi",
@@ -257,40 +226,6 @@ impl AgentConfig {
                 "stdin",
                 AgentInstallSpec::manual(
                     "Install via uv: uvx --python 3.13 --from 'hermes-agent[acp,mcp]' hermes-acp  (or official Hermes installer). Put `hermes` on PATH. Requires uv ≥0.5.",
-                ),
-            ),
-            Self::new(
-                "openclaw",
-                "OpenClaw",
-                "openclaw",
-                vec!["acp".to_string()],
-                "acp",
-                "stdin",
-                AgentInstallSpec::npm("openclaw", Vec::new()),
-            ),
-            Self::new(
-                "cursor",
-                "Cursor",
-                "cursor-agent",
-                vec!["acp".to_string()],
-                "acp",
-                "stdin",
-                AgentInstallSpec::manual(
-                    "Install Cursor agent CLI as `cursor-agent` only (do not install a global `agent` binary — collides with Grok). Put `cursor-agent` on PATH.",
-                ),
-            ),
-            // `omp acp` — native ACP server (verified 17.x: initialize,
-            // session/new with injected MCP, session/update set_config_option/
-            // set_mode/set_model all work on the generic ACP path).
-            Self::new(
-                "omp",
-                "OMP",
-                "omp",
-                vec!["acp".to_string()],
-                "acp",
-                "stdin",
-                AgentInstallSpec::manual(
-                    "OMP (Oh My Pi) ships its own installer / mise — no npm package. Install the CLI, then make sure `omp` is on PATH.",
                 ),
             ),
             // DeepSeek Harness over @openma/deepseek-harness-acp (bin `dsh-acp`).
