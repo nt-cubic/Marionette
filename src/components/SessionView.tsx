@@ -1,6 +1,5 @@
 import { Check, ChevronDown, Columns2, Copy, Eye, EyeOff, FileText, Globe, Merge, MessageSquareQuote, Pencil, Plus, Split, Square, SquareArrowOutUpRight, X } from "lucide-react";
 import {
-  Fragment,
   memo,
   useCallback,
   useEffect,
@@ -13,12 +12,20 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import { extractAcpUpdateText, mergeStreamText, userMessageAnchorId } from "../lib/acpTranscript";
+import {
+  compactGrokWaitDetail,
+  extractAcpUpdateText,
+  isAssistantNotice,
+  mergeStreamText,
+  parseBackgroundSubagentStart,
+  userMessageAnchorId,
+} from "../lib/acpTranscript";
 import {
   ACTIVITY_THRESHOLDS,
   activityHealth,
   formatAgo,
   isSubagentTool,
+  isSubagentWaitTool,
   isToolInProgress,
   stallBannerCopy,
 } from "../lib/activityHealth";
@@ -36,11 +43,13 @@ import {
   clusterActivityRuns,
   extractDiffStats,
   groupConsecutiveByKind,
+  groupSubagentRuns,
   summarizeActivity,
   summarizeKindGroup,
   toolKindVerb,
   toolMainText,
   type ActivityClusterUnit,
+  type ActivityDetailItem,
 } from "../lib/turnActivity";
 import {
   applyScrollSnap,
@@ -130,15 +139,6 @@ type TearGhost = {
   session: Session;
   x: number;
   y: number;
-};
-
-/** Collapsing placeholder for a tab removed on the latest render (Chrome-style close). */
-type ClosingTab = {
-  key: string;
-  width: number;
-  label: string;
-  /** Old position among the pre-close tabs; ghost is spliced back there. */
-  index: number;
 };
 
 function pointerOutsideTabStrip(
@@ -256,73 +256,46 @@ export function SessionTabs({
   });
   const mergeHighlightSentRef = useRef(false);
 
-  /** Chrome-style close: removed tabs collapse in place, survivors slide in. */
-  const [closingTabs, setClosingTabs] = useState<ClosingTab[]>([]);
-  /** Survivor width frozen during a rapid-close burst (next × under the cursor). */
+  /** Survivor width frozen while the pointer stays on the strip (next × under the cursor). */
   const [frozenTabWidth, setFrozenTabWidth] = useState<number | null>(null);
+  const frozenTabWidthRef = useRef<number | null>(null);
+  frozenTabWidthRef.current = frozenTabWidth;
   const tabMetaRef = useRef<Map<string, { width: number; label: string }>>(new Map());
   const prevIdsRef = useRef<string[]>([]);
-  const settleTimerRef = useRef<number | null>(null);
 
-  // Diff the id set between renders; each removed tab gets a collapsing ghost
-  // spliced back at its old position (close / pop-out / merge-back all land here).
+  // A removed tab leaves a hole of the same width: freeze survivors so they
+  // cannot grow into it until the pointer leaves the strip (Chrome-style).
   useLayoutEffect(() => {
     const currentIds = openSessions.map((s) => s.id);
     const prevIds = prevIdsRef.current;
     const removed = prevIds.filter((id) => !currentIds.includes(id));
+    const widthOf = (id: string) => tabMetaRef.current.get(id)?.width;
 
     if (removed.length > 0) {
-      const widthOf = (id: string) => tabMetaRef.current.get(id)?.width;
-      // Equal-width tabs: any pre-close measurement is the frozen burst width.
       const fallbackWidth =
         currentIds.map(widthOf).find((w) => typeof w === "number" && w > 0) ??
         removed.map(widthOf).find((w) => typeof w === "number" && w > 0) ??
         undefined;
-      const now = Date.now();
-      const additions: ClosingTab[] = removed.map((id) => ({
-        key: `${id}:${now}`,
-        width: widthOf(id) ?? fallbackWidth ?? 0,
-        label: tabMetaRef.current.get(id)?.label ?? "",
-        index: Math.max(prevIds.indexOf(id), 0),
-      }));
-      setClosingTabs((current) => [...current, ...additions]);
-      setFrozenTabWidth(
-        (current) => current ?? additions.map((a) => a.width).find((w) => w > 0) ?? null,
-      );
-      if (settleTimerRef.current != null) window.clearTimeout(settleTimerRef.current);
-      settleTimerRef.current = window.setTimeout(() => {
-        settleTimerRef.current = null;
-        setClosingTabs([]);
-        setFrozenTabWidth(null);
-      }, 220);
-    }
-
-    // Re-measure live tabs (ghost slots and the + button are not .editor-tab).
-    // During a burst the frozen CSS keeps rects at the frozen width, so
-    // consecutive closes stay exact.
-    const listEl = tablistRef.current;
-    if (listEl) {
-      listEl
-        .querySelectorAll<HTMLElement>(":scope > .editor-tab:not(.is-closing)")
-        .forEach((el, i) => {
-          const s = openSessions[i];
-          if (!s) return;
-          tabMetaRef.current.set(s.id, {
-            width: el.getBoundingClientRect().width,
-            label: s.label,
-          });
-        });
+      setFrozenTabWidth((current) => current ?? fallbackWidth ?? null);
     }
 
     prevIdsRef.current = currentIds;
-  }, [openSessions]);
 
-  useEffect(
-    () => () => {
-      if (settleTimerRef.current != null) window.clearTimeout(settleTimerRef.current);
-    },
-    [],
-  );
+    // The frame that just lost a tab still has unfrozen flex layout; measuring
+    // it would bake the grown width in and the next × would miss the cursor.
+    if (removed.length > 0 || frozenTabWidth != null) return;
+
+    const listEl = tablistRef.current;
+    if (!listEl) return;
+    listEl.querySelectorAll<HTMLElement>(":scope > .editor-tab").forEach((el, i) => {
+      const s = openSessions[i];
+      if (!s) return;
+      tabMetaRef.current.set(s.id, {
+        width: el.getBoundingClientRect().width,
+        label: s.label,
+      });
+    });
+  }, [openSessions, frozenTabWidth]);
 
   useEffect(() => {
     if (!renamingId) return;
@@ -511,41 +484,10 @@ export function SessionTabs({
     return () => window.removeEventListener("keydown", onKey, true);
   }, [draggingTabId, detachedMode, onTabDragEnd]);
 
-  // Ghosts spliced back at their old positions (clamped to the current tab count).
-  const ghostsByIndex = new Map<number, ClosingTab[]>();
-  for (const g of closingTabs) {
-    const idx = Math.min(Math.max(g.index, 0), openSessions.length);
-    const bucket = ghostsByIndex.get(idx);
-    if (bucket) bucket.push(g);
-    else ghostsByIndex.set(idx, [g]);
-  }
-
-  /** One-shot WAAPI collapse of a removed tab's slot; unmounted on settle. */
-  const renderClosingGhost = (g: ClosingTab) => (
-    <div
-      key={g.key}
-      className="editor-tab is-closing"
-      style={{ width: g.width }}
-      aria-hidden
-      ref={(el) => {
-        if (!el) return;
-        el.animate(
-          [
-            { width: `${g.width}px`, marginRight: "0px", opacity: 0.9 },
-            // -2px eats the flex gap so the collapse ends flush.
-            { width: "0px", marginRight: "-2px", opacity: 0 },
-          ],
-          {
-            duration: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 160,
-            easing: "ease",
-            fill: "forwards",
-          },
-        );
-      }}
-    >
-      <span>{g.label}</span>
-    </div>
-  );
+  const releaseCloseFreeze = () => {
+    if (frozenTabWidthRef.current == null) return;
+    setFrozenTabWidth(null);
+  };
 
   return (
     <>
@@ -554,14 +496,17 @@ export function SessionTabs({
       role="tablist"
       aria-label="Session tabs"
       ref={tablistRef}
-      data-tauri-drag-region={titlebarDragRegion || undefined}
+      onPointerLeave={releaseCloseFreeze}
       style={
         frozenTabWidth != null
           ? ({ "--frozen-tab-w": `${frozenTabWidth}px` } as CSSProperties)
           : undefined
       }
     >
-      {openSessions.map((openSession, tabIndex) => {
+      {titlebarDragRegion && (
+        <div className="titlebar-drag-layer" data-tauri-drag-region aria-hidden />
+      )}
+      {openSessions.map((openSession) => {
         const busy =
           openSession.status === "running" || openSession.status === "starting";
         const isRenaming = renamingId === openSession.id;
@@ -569,9 +514,8 @@ export function SessionTabs({
         const isGhostSource = ghost?.session.id === openSession.id;
         const doneUnread = doneUnreadIds?.has(openSession.id) ?? false;
         return (
-          <Fragment key={openSession.id}>
-            {ghostsByIndex.get(tabIndex)?.map(renderClosingGhost)}
             <div
+              key={openSession.id}
               className={[
                 "editor-tab",
                 `is-${openSession.status}`,
@@ -584,6 +528,7 @@ export function SessionTabs({
                 .join(" ")}
               role="tab"
               aria-selected={openSession.id === session.id}
+              data-tauri-drag-region="false"
               onContextMenu={(e) => {
                 if (detachedMode || !onOpenBeside || openSessions.length <= 1) return;
                 e.preventDefault();
@@ -678,12 +623,15 @@ export function SessionTabs({
                   <Merge size={11} />
                 </button>
               )}
-              {onOpenBeside && !detachedMode && openSessions.length > 1 && (
+              {onOpenBeside && !detachedMode && (openSessions.length > 1 || frozenTabWidth != null) && (
                 <button
                   className="pill-action pill-action--icon pill-action--sm editor-tab__split"
                   type="button"
                   title="在右侧打开"
                   aria-label={`Open ${openSession.label} to the right`}
+                  disabled={openSessions.length <= 1}
+                  style={openSessions.length <= 1 ? { visibility: "hidden" } : undefined}
+                  data-tauri-drag-region="false"
                   onClick={(e) => {
                     e.stopPropagation();
                     onOpenBeside(openSession, "right");
@@ -707,17 +655,15 @@ export function SessionTabs({
                 </button>
               )}
               {!detachedMode && (
-                <button className="pill-action pill-action--icon pill-action--sm editor-tab__close" type="button" title={`Close ${openSession.label}`} aria-label={`Close ${openSession.label}`} onClick={() => onTabClose(openSession.id)}>
+                <button className="pill-action pill-action--icon pill-action--sm editor-tab__close" type="button" title={`Close ${openSession.label}`} aria-label={`Close ${openSession.label}`} data-tauri-drag-region="false" onClick={() => onTabClose(openSession.id)}>
                   <X size={12} />
                 </button>
               )}
             </div>
-          </Fragment>
         );
       })}
-      {ghostsByIndex.get(openSessions.length)?.map(renderClosingGhost)}
       {!detachedMode && (
-        <button className="pill-action pill-action--icon pill-action--sm editor-tab__new" type="button" title="New conversation" aria-label="New conversation" onClick={onNewTab}>
+        <button className="pill-action pill-action--icon pill-action--sm editor-tab__new" type="button" title="New conversation" aria-label="New conversation" data-tauri-drag-region="false" onClick={onNewTab}>
           <Plus size={13} />
         </button>
       )}
@@ -1337,13 +1283,18 @@ function ToolCallBody({
     };
   }, [event.path, getFileDiff, needsWorkspaceDiff, open, projectId, requested]);
 
+  const waitCompact = isSubagentWaitTool(event.toolName, event.title)
+    ? compactGrokWaitDetail(event.detail ?? body)
+    : null;
   const displayBody = hasUnifiedDiff(body)
     ? body
-    : workspaceDiff
-      ? `${body}\n\n${workspaceDiff}`
-      : diffError
-        ? `${body}\n\n[full diff unavailable] ${diffError}`
-        : body;
+    : waitCompact
+      ? waitCompact
+      : workspaceDiff
+        ? `${body}\n\n${workspaceDiff}`
+        : diffError
+          ? `${body}\n\n[full diff unavailable] ${diffError}`
+          : body;
   // Images and the diff are pulled out of the text blob: a read card shows the
   // image the model saw, an edit card shows a numbered diff instead of prose.
   const parts = useMemo(
@@ -1355,7 +1306,19 @@ function ToolCallBody({
   const imageSrcs = collectToolImageSrcs(event);
   const textBody = imageSrcs.length > 0 ? stripImagePlaceholders(parts.text) : parts.text;
   const remoteImageSrcs = imageSrcs.filter((src) => /^https?:\/\//i.test(src));
-  const hasImages = parts.images.length > 0 || imageSrcs.length > 0;
+  const localImageSrcs = imageSrcs.filter((src) => !/^https?:\/\//i.test(src) && !/^data:/i.test(src));
+  const stripImages = useMemo(() => {
+    const seen = new Set(
+      parts.images.map((image) =>
+        image.kind === "data" ? image.dataUrl : image.path.replace(/\\/g, "/").toLowerCase(),
+      ),
+    );
+    const extra = localImageSrcs
+      .filter((src) => !seen.has(src.replace(/\\/g, "/").toLowerCase()))
+      .map((src) => ({ kind: "path" as const, path: src, label: fileNameFromPath(src) }));
+    return extra.length > 0 ? [...parts.images, ...extra] : parts.images;
+  }, [parts.images, localImageSrcs]);
+  const hasImages = stripImages.length > 0 || remoteImageSrcs.length > 0;
   const hideText =
     hasImages && !isDiff && looksLikeNonTextPayload(event.detail ?? "");
   const hasBody = Boolean(textBody.trim()) || hasImages || Boolean(parts.diff);
@@ -1394,7 +1357,7 @@ function ToolCallBody({
           />
         </div>
       )}
-      {parts.images.length > 0 && <ToolImageStrip images={parts.images} cwd={cwd} />}
+      {stripImages.length > 0 && <ToolImageStrip images={stripImages} cwd={cwd} />}
       {remoteImageSrcs.length > 0 && (
         <div className="tool-read-images">
           {remoteImageSrcs.map((src) => (
@@ -1407,10 +1370,14 @@ function ToolCallBody({
           className={`event-card__clip${running ? " is-tool-running-tall" : ""}`}
           maxHeight={maxHeight}
         >
-          <pre className="event-card__body event-card__body--tool">
-            <LinkedText text={textBody} />
-            {open && needsWorkspaceDiff && !workspaceDiff && !diffError && "\n\nLoading full diff…"}
-          </pre>
+          {isSubagent ? (
+            <MarkdownBody text={textBody} className="event-card__body" />
+          ) : (
+            <pre className="event-card__body event-card__body--tool">
+              <LinkedText text={textBody} />
+              {open && needsWorkspaceDiff && !workspaceDiff && !diffError && "\n\nLoading full diff…"}
+            </pre>
+          )}
         </ClippedBody>
       )}
       {parts.diff && (
@@ -1427,6 +1394,92 @@ function ToolCallBody({
           />
         </div>
       )}
+    </div>
+  );
+}
+
+function subagentBoxMeta(event: ToolCallEvent): string {
+  const bits: string[] = [];
+  if (event.status && !/^(pending|updated)$/i.test(event.status)) {
+    bits.push(isToolInProgress(event.status) ? "进行中" : event.status);
+  }
+  const hay = `${event.input ?? ""}\n${event.detail ?? ""}`;
+  const model = hay.match(/(?:^|\n)(?:Explore|Task|Plan|General)\s*·\s*(\S+)/)?.[1];
+  if (model) bits.push(model);
+  const id = hay.match(/subagent_id:\s*(\S+)/i)?.[1];
+  if (id) bits.push(id.slice(0, 8));
+  return bits.join(" · ");
+}
+
+function SubagentGroupPanel({
+  items,
+  cwd,
+  projectId,
+  running,
+}: {
+  items: ActivityDetailItem[];
+  cwd?: string | null;
+  projectId?: string;
+  running: boolean;
+}) {
+  const [openKeys, setOpenKeys] = useState<Set<string>>(() => new Set());
+  return (
+    <div className="subagent-grid" role="group" aria-label={`${items.length} 个并行子代理`}>
+      {items.map(({ event, index }) => {
+        if (event.type !== "tool_call") return null;
+        const key = toolExpandKey(event, index);
+        const live = running && isToolInProgress(event.status);
+        const open = live || openKeys.has(key);
+        const body = event.detail || event.text || "";
+        const stub = Boolean(parseBackgroundSubagentStart(body));
+        const title = event.title || event.toolName || "Subagent";
+        return (
+          <article
+            key={key}
+            className={`subagent-box${live ? " is-running" : ""}${
+              /fail|error|cancel/i.test(event.status ?? "") ? " is-failed" : ""
+            }`}
+          >
+            <button
+              type="button"
+              className="subagent-box__head"
+              onClick={() => toggleSetKey(setOpenKeys, key, !openKeys.has(key))}
+              title={title}
+            >
+              {live ? (
+                <NineDotSpinner compact />
+              ) : (
+                <span className="subagent-box__glyph" aria-hidden>
+                  {/fail|error|cancel/i.test(event.status ?? "") ? "✕" : "✓"}
+                </span>
+              )}
+              <span className="subagent-box__title">{title}</span>
+              <span className="subagent-box__meta">{subagentBoxMeta(event) || (live ? "进行中" : "")}</span>
+            </button>
+            {open && (
+              <div className="subagent-box__body">
+                {live && stub ? (
+                  <div className="tool-running-panel tool-running-panel--subtask">
+                    <NineDotSpinner label="Subagent working…" />
+                    <p className="tool-running-panel__hint">
+                      Nested agent is running. Its report lands in this box when it finishes.
+                    </p>
+                  </div>
+                ) : (
+                  <ToolCallBody
+                    event={event}
+                    body={body}
+                    projectId={projectId}
+                    cwd={cwd}
+                    open
+                    running={live}
+                  />
+                )}
+              </div>
+            )}
+          </article>
+        );
+      })}
     </div>
   );
 }
@@ -1554,7 +1607,7 @@ function CleanPlaceholder({
       }
     }
     if (detailsVisible) {
-      return flat.map((unit): TranscriptUnit => ({ kind: "row", ...unit }));
+      return groupSubagentRuns(flat);
     }
     return clusterActivityRuns(flat);
   }, [presentationItems, detailsVisible]);
@@ -2217,7 +2270,7 @@ function CleanPlaceholder({
             ) : event.type === "user_message" ? (
               "You"
             ) : event.type === "assistant_message" ? (
-              event.agentId ? "Reply" : "Notification"
+              isAssistantNotice(event.text) ? "Notification" : "Reply"
             ) : event.type === "handoff_prepared" ? (
               "Handoff"
             ) : (
@@ -2688,6 +2741,17 @@ function CleanPlaceholder({
           );
         };
 
+          const renderSubagentGroup = (
+            unit: Extract<TranscriptUnit, { kind: "subagent_group" }>,
+          ) => (
+            <SubagentGroupPanel
+              items={unit.items}
+              cwd={session.cwd}
+              projectId={projectId}
+              running={isRunning}
+            />
+          );
+
           const renderActivity = (unit: TranscriptActivity) => {
             const liveItem = findLiveDetail(
               unit.items,
@@ -2755,7 +2819,9 @@ function CleanPlaceholder({
             const node =
               unit.kind === "activity"
                 ? renderActivity(unit)
-                : renderEvent(unit.event, unit.index);
+                : unit.kind === "subagent_group"
+                  ? renderSubagentGroup(unit)
+                  : renderEvent(unit.event, unit.index);
             if (!node || !useVirtual) return node;
             return (
               <VirtItem

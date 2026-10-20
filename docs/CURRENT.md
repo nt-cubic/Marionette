@@ -19,7 +19,7 @@ Windows 本地 **多 Agent CLI 图形壳**（Tauri + React）。不替代 OpenCo
 | 项目 / 会话 | 项目 CRUD、搜索 threads、项目拖拽排序、会话按发送 recency 排序；空闲 30 分钟的会话自动「挂起」（结束 agent 进程，下次发消息自动接上历史）；行内 ⏸ 只在进程还活着时画（starting / running / waiting / error），按下去就是停——正在跑的直接中断并结束进程，说出口的半截回复留着并标「已挂起」；已挂起的会话不画按钮；冷启动恢复上次焦点和分屏（无存档则不打开对话，点底部输入框会在 Chat 新建） |
 | Chat 对话 | 侧栏项目列表下的独立对话列表；使用进程默认工作目录，不创建项目或工作区 `.marionette`；资源管理器「在此处打开」遇到已有 `.marionette` 才按项目打开 |
 | 多 Agent | 内置 + custom ACP agents；懒启动、能力协商、model/mode/effort/文件权限（agent 自己 advertise 的旋钮才出现，按 option id 判定，category 只当提示） |
-| Clean 对话 | transcript JSONL、edit&resend、普通权限弹窗、Ask/Plan 进对话流（卡片上回复，输入框收起，写入 handoff.md）、@ 派任务、从任意一条回复分叉出新会话（复制到该条为止，首次发送自动带上这段历史）、回复里的图片按会话工作目录解析（文件名差一个字符时找同目录里唯一近似的那张）；默认闭眼折叠 tool/thinking，开眼状态会记住 |
+| Clean 对话 | transcript JSONL、edit&resend（重发会带上原来的 agent/模型标记，后面的回复仍是 Reply 而不是 Notification）、普通权限弹窗、Ask/Plan 进对话流（卡片上回复，输入框收起，写入 handoff.md）、@ 派任务、从任意一条回复分叉出新会话（复制到该条为止，首次发送自动带上这段历史）、回复里的图片按会话工作目录解析（文件名差一个字符时找同目录里唯一近似的那张）；Agent 读到的图片在工具卡里直接出预览；输入框贴图带缩略图；点图片开四周发黑的灯箱（拖动平移、滚轮缩放）；并行子代理（Grok `spawn_subagent` / Claude parentToolUseId / OpenCode Task）收进专用格子而不是刷满主消息流；Markdown 走主流 GFM（react-markdown + remark-gfm，编号列表 10/1000、重复字不再被流合并吃掉）；默认闭眼折叠 tool/thinking，进行中显示当前步骤，结束后摘要为 `1 think, 2 read, 3 edit`，开眼状态会记住 |
 | Handoff / Git | handoff.md、changed files、只读 diff |
 | 多窗口 | Tab 幽灵撕出 → 松手开 detached 窗；关窗 hide 防 tao 闪退；隐藏壳 LRU 回收。主窗对话区最多 4 格分屏（拖标签到中区/格的左、右、上、下约 1/4；可 1\|1\|1、1\|2 或 2×2；同一方向再拆会均分整行/整列）；每格自己的标签、转写、输入框；标签 Columns2 / 右键「在右侧打开」「在下方打开」；重启恢复分屏。撕出去的窗口拖回主窗：边缘拆格、中间并入、坐标失败进焦点格；关撕窗也插回焦点格。侧栏点已撕开的对话只聚焦那个窗口。权限/提问/计划卡片会把焦点切到当事格；权限框一到就画 |
 | Usage | 上下文、OpenCode 余额探测、Claude/Codex/Grok 限流类数据、**订阅配额（引擎 `magpie quota`，跨 agent 可见的订阅窗口并入同一面板）** |

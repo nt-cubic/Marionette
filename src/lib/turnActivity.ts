@@ -1,4 +1,5 @@
 import type { SessionEvent } from "./types";
+import { isSubagentTool } from "./activityHealth";
 import { normalizeToolName } from "./toolCallNormalize";
 
 /**
@@ -225,7 +226,12 @@ export function isActivityEvent(event: SessionEvent): boolean {
 
 export type ActivityClusterUnit =
   | { kind: "row"; key: string; event: SessionEvent; index: number }
-  | { kind: "activity"; key: string; items: ActivityDetailItem[] };
+  | { kind: "activity"; key: string; items: ActivityDetailItem[] }
+  | { kind: "subagent_group"; key: string; items: ActivityDetailItem[] };
+
+export function isSubagentEvent(event: SessionEvent): boolean {
+  return event.type === "tool_call" && isSubagentTool(event.toolName, event.title);
+}
 
 /**
  * Consecutive thought + tool_call runs become one activity fold.
@@ -238,6 +244,22 @@ export function clusterActivityRuns(
   let i = 0;
   while (i < units.length) {
     const unit = units[i];
+    if (isSubagentEvent(unit.event)) {
+      const start = i;
+      i += 1;
+      while (i < units.length && isSubagentEvent(units[i].event)) i += 1;
+      const slice = units.slice(start, i);
+      if (slice.length >= 2) {
+        clustered.push({
+          kind: "subagent_group",
+          key: `subg-${slice[0].index}`,
+          items: slice.map(({ event, index }) => ({ event, index })),
+        });
+      } else {
+        clustered.push({ kind: "row", ...slice[0] });
+      }
+      continue;
+    }
     if (!isActivityEvent(unit.event)) {
       clustered.push({ kind: "row", ...unit });
       i += 1;
@@ -245,7 +267,13 @@ export function clusterActivityRuns(
     }
     const start = i;
     i += 1;
-    while (i < units.length && isActivityEvent(units[i].event)) i += 1;
+    while (
+      i < units.length &&
+      isActivityEvent(units[i].event) &&
+      !isSubagentEvent(units[i].event)
+    ) {
+      i += 1;
+    }
     const slice = units.slice(start, i);
     if (slice.length === 1) {
       clustered.push({ kind: "row", ...slice[0] });
@@ -260,6 +288,35 @@ export function clusterActivityRuns(
     }
   }
   return clustered;
+}
+
+/** Consecutive nested-agent tools become a parallel grid, even with details open. */
+export function groupSubagentRuns(
+  units: { key: string; event: SessionEvent; index: number }[],
+): ActivityClusterUnit[] {
+  const grouped: ActivityClusterUnit[] = [];
+  let i = 0;
+  while (i < units.length) {
+    if (!isSubagentEvent(units[i].event)) {
+      grouped.push({ kind: "row", ...units[i] });
+      i += 1;
+      continue;
+    }
+    const start = i;
+    i += 1;
+    while (i < units.length && isSubagentEvent(units[i].event)) i += 1;
+    const slice = units.slice(start, i);
+    if (slice.length >= 2) {
+      grouped.push({
+        kind: "subagent_group",
+        key: `subg-${slice[0].index}`,
+        items: slice.map(({ event, index }) => ({ event, index })),
+      });
+    } else {
+      grouped.push({ kind: "row", ...slice[0] });
+    }
+  }
+  return grouped;
 }
 
 /** Consecutive same-kind runs (Read, Read, Edit → two groups). */
@@ -288,15 +345,6 @@ export function sumDiffStats(items: ActivityDetailItem[]): { add: number; del: n
     del += stats.del;
   }
   return any ? { add, del } : null;
-}
-
-function uncapitalize(s: string): string {
-  if (!s) return s;
-  return s.charAt(0).toLowerCase() + s.slice(1);
-}
-
-function joinHeadlines(parts: string[]): string {
-  return parts.map((part, i) => (i === 0 ? part : uncapitalize(part))).join(", ");
 }
 
 function kindCountPhrase(bucket: ActivityKindBucket, count: number): string {
@@ -354,10 +402,50 @@ export function summarizeKindGroup(group: ActivityKindGroup): ActivitySummary {
   };
 }
 
+/** Short type word for the closed activity tally (`1 think, 2 read`). */
+export function tallyWord(bucket: ActivityKindBucket): string {
+  switch (bucket) {
+    case "thought":
+      return "think";
+    case "read":
+      return "read";
+    case "edit":
+      return "edit";
+    case "write":
+      return "write";
+    case "command":
+      return "command";
+    case "search":
+      return "search";
+    case "web":
+      return "web";
+    case "agent":
+      return "agent";
+    default:
+      return "other";
+  }
+}
+
+/**
+ * Closed-fold tally: how many times each kind ran, in first-seen order.
+ * `1 think, 2 read, 3 edit`
+ */
+export function formatActivityTally(items: ActivityDetailItem[]): string {
+  const order: ActivityKindBucket[] = [];
+  const counts = new Map<ActivityKindBucket, number>();
+  for (const item of items) {
+    const bucket = activityBucket(item.event);
+    if (!bucket) continue;
+    if (!counts.has(bucket)) order.push(bucket);
+    counts.set(bucket, (counts.get(bucket) ?? 0) + 1);
+  }
+  return order.map((bucket) => `${counts.get(bucket)} ${tallyWord(bucket)}`).join(", ");
+}
+
 /**
  * Headline for a consecutive thought/tool run.
- * Mixed: "Wrote HudGammaBlend.cs, ran 3 commands".
- * Live: current tool's own headline so the closed row tracks the work.
+ * Live: current step so the closed row tracks the work.
+ * Done: count + type tally (`1 think, 2 read, 3 edit`).
  */
 export function summarizeActivity(
   items: ActivityDetailItem[],
@@ -376,13 +464,9 @@ export function summarizeActivity(
       diff: sumDiffStats(items),
     };
   }
-  const groups = groupConsecutiveByKind(items);
-  if (groups.length === 0) {
-    return { title: "Activity", preview: "", diff: null };
-  }
-  const title = clipTeaser(joinHeadlines(groups.map(kindGroupTitle)), 96);
+  const tally = formatActivityTally(items);
   return {
-    title,
+    title: tally || "Activity",
     preview: "",
     diff: sumDiffStats(items),
   };

@@ -56,8 +56,8 @@ body.is-panel-resizing .workspace-grid {
 }
 
 .workspace-titlebar__spacer {
-  flex: 1;
-  min-width: 24px;
+  flex: 0 0 8px;
+  min-width: 8px;
   align-self: stretch;
   height: 100%;
 }
@@ -2151,6 +2151,7 @@ body.is-project-reordering .project-list {
 }
 
 .editor-tabs__tablist {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 2px;
@@ -2176,6 +2177,7 @@ body.is-project-reordering .project-list {
 .editor-tab {
   display: inline-flex;
   align-items: center;
+  box-sizing: border-box;
   /* Equal-width tabs (Chrome-style): after a close, the next × lands under the cursor. */
   flex: 1 1 0px;
   height: 28px;
@@ -2190,6 +2192,11 @@ body.is-project-reordering .project-list {
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* Sit above the titlebar drag layer so × / split / pop-out stay clickable. */
+  position: relative;
+  z-index: 1;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
 }
 
 .editor-tab__select,
@@ -2303,28 +2310,15 @@ body.is-project-reordering .project-list {
   cursor: grabbing;
 }
 
-/* Closing ghost slot: placeholder at the removed tab's position collapsing to zero. */
-.editor-tab.is-closing {
-  flex: 0 0 auto;
-  min-width: 0;
-  pointer-events: none;
-}
-
-.editor-tab.is-closing > span {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 /* Rapid-close burst: freeze survivor width so the next × stays under the cursor. */
-.editor-tabs__tablist.is-closing-burst .editor-tab:not(.is-closing) {
+.editor-tabs__tablist.is-closing-burst .editor-tab {
   flex: 0 0 var(--frozen-tab-w, auto);
 }
 
-/* Titlebar: tab strip stretches across the bar (empty strip area keeps dragging the window). */
+/* Titlebar: tab strip takes the bar; empty area over the drag layer still moves the window. */
 .workspace-titlebar .editor-tabs__tablist {
-  flex: 1 1 auto;
+  flex: 1 1 0%;
+  min-width: 0;
 }
 
 body.is-tab-detaching {
@@ -2854,6 +2848,10 @@ body.is-tab-detaching .floating-trigger {
   flex: 0 0 auto;
   margin-left: 2px;
   color: var(--text-muted);
+  position: relative;
+  z-index: 1;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
 }
 
 .editor-tab.is-active {
@@ -3856,11 +3854,6 @@ body.is-tab-detaching .floating-trigger {
   background: var(--panel-soft);
 }
 
-.tool-read-images .md-body__img--zoomed {
-  max-width: none;
-  max-height: none;
-}
-
 /*
  * Tool body: NO wrap. Natural width may exceed the card; the *parent*
  * `.clipped-body__content` is the clip box (overflow:hidden).
@@ -4217,7 +4210,7 @@ body.is-tab-detaching .floating-trigger {
   min-width: 0;
   max-width: 100%;
   margin-top: 6px;
-  overflow-x: hidden;
+  overflow-x: auto;
   color: var(--text);
   font-size: 13.5px;
   line-height: 1.55;
@@ -4264,9 +4257,21 @@ body.is-tab-detaching .floating-trigger {
 .md-body h4 { font-size: 1em; }
 
 .md-body ul,
-.md-body ol {
+.md-body ol,
+.md-body__ol {
   margin: 0.4em 0;
-  padding-left: 1.35em;
+  padding-left: 2.25em;
+  list-style-position: outside;
+}
+
+.md-body ol,
+.md-body__ol {
+  list-style-type: decimal;
+}
+
+.md-body ol > li::marker,
+.md-body__ol > li::marker {
+  font-variant-numeric: tabular-nums;
 }
 
 .md-body li {
@@ -4372,12 +4377,6 @@ body.is-tab-detaching .floating-trigger {
   margin: 0.5em 0;
   border-radius: var(--radius-sm);
   cursor: zoom-in;
-}
-
-.md-body__img--zoomed {
-  max-width: none;
-  max-height: none;
-  cursor: zoom-out;
 }
 
 /* A local image whose bytes have not arrived (or never will): show its name
@@ -4505,6 +4504,94 @@ body.is-tab-detaching .floating-trigger {
   color: var(--text-faint);
   font-size: 10px;
   text-transform: uppercase;
+}
+
+.subagent-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px 10px;
+}
+
+.subagent-box {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.subagent-box.is-running {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+
+.subagent-box.is-failed {
+  border-color: color-mix(in srgb, #e25555 35%, var(--border));
+}
+
+.subagent-box__head {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+  padding: 8px 8px 7px;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.subagent-box__head:hover {
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+
+.subagent-box__glyph {
+  flex: 0 0 auto;
+  color: #3d9a5f;
+  font-size: 12px;
+}
+
+.subagent-box.is-failed .subagent-box__glyph {
+  color: #e25555;
+}
+
+.subagent-box__title {
+  flex: 1 1 80px;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subagent-box__meta {
+  flex: 0 1 auto;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subagent-box__body {
+  min-width: 0;
+  max-height: 280px;
+  overflow: auto;
+  padding: 0 8px 8px;
+  border-top: 1px solid var(--border);
+}
+
+.subagent-box__body .tool-body,
+.subagent-box__body .event-card__clip,
+.subagent-box__body .md-body {
+  margin-top: 6px;
 }
 
 .context-card {
@@ -8205,23 +8292,23 @@ body.is-composer-resizing .composer {
   background: var(--hover);
 }
 
-/* ── Image attachment pills — inside the text field (Codex-style) ──────── */
+/* ── Image attachment chips — thumbnail + name inside the text field ──── */
 .composer__attachments {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: 6px;
   min-width: 0;
-  padding: 0 28px 2px 0; /* leave room for expand button */
+  padding: 0 28px 4px 0; /* leave room for expand button */
 }
 
 .composer__attachment-pill {
   display: inline-flex;
   align-items: stretch;
-  max-width: min(220px, 100%);
-  min-height: 22px;
+  max-width: min(240px, 100%);
+  min-height: 40px;
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: 8px;
   background: var(--panel-soft);
   font-size: 11px;
 }
@@ -8231,12 +8318,32 @@ body.is-composer-resizing .composer {
   background: color-mix(in srgb, var(--accent-soft) 35%, var(--panel-soft));
 }
 
+.composer__attachment-thumb {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  object-fit: cover;
+  background: var(--panel);
+}
+
+.composer__attachment-thumb-fallback {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text) 8%, var(--panel-soft));
+  font-size: 10px;
+  font-weight: 600;
+}
+
 .composer__attachment-main {
   display: inline-flex;
   gap: 5px;
   align-items: center;
   min-width: 0;
-  padding: 1px 4px 1px 8px;
+  padding: 4px 6px 4px 8px;
   border: 0;
   color: var(--text);
   background: transparent;
@@ -8282,6 +8389,93 @@ body.is-composer-resizing .composer {
 .composer__attachment-x:hover {
   color: var(--text);
   background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+/* ── Image lightbox (Weibo / Twitter-style viewer) ────────────────────── */
+.image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.88);
+  cursor: zoom-out;
+  overscroll-behavior: none;
+}
+
+.image-lightbox__stage {
+  position: relative;
+  display: inline-block;
+  max-width: 92vw;
+  max-height: 92vh;
+  line-height: 0;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  transform-origin: center center;
+  will-change: transform;
+}
+
+.image-lightbox__stage.is-dragging {
+  cursor: grabbing;
+}
+
+.image-lightbox__img {
+  display: block;
+  max-width: 92vw;
+  max-height: 92vh;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  pointer-events: none;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.45);
+}
+
+.image-lightbox__close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  cursor: pointer;
+}
+
+.image-lightbox__close:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.image-lightbox__hint {
+  position: absolute;
+  bottom: 18px;
+  left: 50%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: center;
+  margin: 0;
+  transform: translateX(-50%);
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 12px;
+  line-height: 1.3;
+  pointer-events: none;
+  text-align: center;
+}
+
+.image-lightbox__caption {
+  max-width: 80vw;
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.72);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ── Image annotator ───────────────────────────────────────────────────── */
@@ -8640,8 +8834,7 @@ body.is-composer-resizing .composer {
   line-height: 1.3;
 }
 
-/* Images a tool looked at (read card). Same interaction as the You card:
-   click to zoom, caption keeps the file name reachable. */
+/* Images a tool looked at (read card). Click opens the lightbox. */
 .tool-images {
   display: flex;
   flex-wrap: wrap;
@@ -8671,11 +8864,6 @@ body.is-composer-resizing .composer {
   max-width: 260px;
   max-height: 180px;
   object-fit: contain;
-}
-
-.tool-image-card__img.is-expanded {
-  max-width: min(720px, 70vw);
-  max-height: 70vh;
 }
 
 .tool-image-card__caption {

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { isTauriRuntime, readImageDataUrl } from "../lib/api";
 import { resolveToolImagePath, type ToolImageRef } from "../lib/toolBody";
+import { ImageLightbox } from "./ImageLightbox";
 
 type ToolImageStripProps = {
   images: ToolImageRef[];
@@ -30,7 +31,7 @@ export function ToolImageStrip({ images, cwd }: ToolImageStripProps) {
 function ToolImageThumb({ image, cwd }: { image: ToolImageRef; cwd?: string | null }) {
   const [dataUrl, setDataUrl] = useState<string | null>(image.kind === "data" ? image.dataUrl : null);
   const [error, setError] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState(false);
+  const [open, setOpen] = useState(false);
 
   useEffect(() => {
     if (image.kind === "data") {
@@ -64,16 +65,16 @@ function ToolImageThumb({ image, cwd }: { image: ToolImageRef; cwd?: string | nu
       <button
         type="button"
         className="tool-image-card__frame"
-        onClick={() => setExpanded((value) => !value)}
+        onClick={() => {
+          if (dataUrl) setOpen(true);
+        }}
         title={title}
       >
         {dataUrl && (
           <img
             src={dataUrl}
             alt={image.label}
-            className={
-              expanded ? "tool-image-card__img is-expanded" : "tool-image-card__img"
-            }
+            className="tool-image-card__img"
           />
         )}
         {!dataUrl && !error && <span className="tool-image-card__muted">…</span>}
@@ -82,6 +83,14 @@ function ToolImageThumb({ image, cwd }: { image: ToolImageRef; cwd?: string | nu
       <span className="tool-image-card__caption" title={title}>
         {image.label}
       </span>
+      {open && dataUrl ? (
+        <ImageLightbox
+          src={dataUrl}
+          alt={image.label}
+          caption={title}
+          onClose={() => setOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }

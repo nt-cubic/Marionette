@@ -28,6 +28,7 @@ import {
   listAgentCommands,
   listCustomAgents,
   pickFiles,
+  readImageDataUrl,
   removeCustomAgent,
   savePastedImage,
   sendAcpPrompt,
@@ -2610,6 +2611,7 @@ export function Composer({
           <div className="composer__attachments" aria-label="Image attachments">
             {imageAttachments.map((att) => (
               <span key={att.id} className="composer__attachment-pill">
+                <ComposerAttachmentThumb path={att.path} name={att.name} />
                 <button
                   type="button"
                   className="composer__attachment-main"
@@ -3771,4 +3773,31 @@ export function Composer({
       )}
     </footer>
   );
+}
+
+function ComposerAttachmentThumb({ path, name }: { path: string; name: string }) {
+  const [dataUrl, setDataUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    if (!isTauriRuntime()) return;
+    void readImageDataUrl(path)
+      .then((res) => {
+        if (!cancelled) setDataUrl(res.dataUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setDataUrl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [path]);
+  if (!dataUrl) {
+    const initial = (name.replace(/\.[^.]+$/, "").trim()[0] || "?").toUpperCase();
+    return (
+      <span className="composer__attachment-thumb-fallback" aria-hidden>
+        {initial}
+      </span>
+    );
+  }
+  return <img className="composer__attachment-thumb" src={dataUrl} alt="" />;
 }

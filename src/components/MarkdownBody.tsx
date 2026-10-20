@@ -7,6 +7,7 @@ import { isTauriRuntime, readImageDataUrl } from "../lib/api";
 import { stripFileUri } from "../lib/imageAttachments";
 import { prepareMarkdownForRender } from "../lib/markdownText";
 import { resolveToolImagePath } from "../lib/toolBody";
+import { ImageLightbox } from "./ImageLightbox";
 import { linkifyChildren, useLinkMenu } from "./LinkedText";
 import type { LinkTarget } from "../lib/linkTargets";
 
@@ -105,11 +106,10 @@ function isAbsolutePath(value: string): boolean {
 }
 
 /**
- * Inline image — single click toggles zoom (600px cap ↔ natural size),
- * right-click opens the menu (Open with system viewer / Show in Explorer /
- * Copy path). No delay: there is no double-click action to disambiguate.
- * stopPropagation so a click inside a markdown link (`[![alt](img)](url)`)
- * doesn't fire twice.
+ * Inline image — click opens a dark lightbox (drag to pan, wheel to zoom).
+ * Right-click opens the menu (Open with system viewer / Show in Explorer /
+ * Copy path). stopPropagation so a click inside a markdown link
+ * (`[![alt](img)](url)`) doesn't fire twice.
  *
  * Display src: http(s) loads natively; a local file cannot be loaded by the
  * webview by URL, so its bytes come through the same reader the tool cards
@@ -119,7 +119,7 @@ function isAbsolutePath(value: string): boolean {
 export function PreviewImage({ src, alt }: { src?: string; alt?: string }) {
   const cwd = useContext(MarkdownImageCwdContext);
   const { openMenu, primaryAction, renderMenu } = useLinkMenu();
-  const [zoomed, setZoomed] = useState(false);
+  const [open, setOpen] = useState(false);
   const [loaded, setLoaded] = useState<LoadedImage | null>(null);
   const [failed, setFailed] = useState(false);
   const remote = Boolean(
@@ -137,7 +137,7 @@ export function PreviewImage({ src, alt }: { src?: string; alt?: string }) {
     : null;
 
   useEffect(() => {
-    setZoomed(false);
+    setOpen(false);
     if (!src || remote) {
       setLoaded(null);
       setFailed(false);
@@ -182,13 +182,12 @@ export function PreviewImage({ src, alt }: { src?: string; alt?: string }) {
           src={displaySrc}
           alt={alt ?? ""}
           loading="lazy"
-          className={zoomed ? "md-body__img md-body__img--zoomed" : "md-body__img"}
+          className="md-body__img"
           title={shownPath}
           onClick={(event) => {
-            if (!target) return;
             event.preventDefault();
             event.stopPropagation();
-            setZoomed((z) => !z);
+            setOpen(true);
           }}
           onContextMenu={(event) => {
             if (!target) return;
@@ -221,17 +220,34 @@ export function PreviewImage({ src, alt }: { src?: string; alt?: string }) {
           </span>
         </button>
       )}
+      {open && displaySrc ? (
+        <ImageLightbox
+          src={displaySrc}
+          alt={alt}
+          caption={shownPath ?? undefined}
+          onClose={() => setOpen(false)}
+          onContextMenu={(event) => {
+            if (!target) return;
+            event.preventDefault();
+            event.stopPropagation();
+            void openMenu(event, target);
+          }}
+        />
+      ) : null}
       {renderMenu()}
     </>
   );
 }
 
 /**
- * Renders assistant/user transcript as Markdown (GFM + soft line breaks).
+ * Renders assistant/user transcript as GitHub Flavored Markdown.
+ * Stack is the usual one: react-markdown + remark-gfm. remark-breaks turns
+ * single newlines into <br>, which chat UIs expect (GFM itself does not).
  * Streaming-friendly: incomplete markdown still shows until closed.
  *
- * Pre-pass (prepareMarkdownForRender) repairs model quirks: fences glued to
- * Chinese prose, section headers stuck to prior sentences, short table rows.
+ * Pre-pass (prepareMarkdownForRender) only repairs invalid model output so GFM
+ * can parse it (fences glued to Chinese, short table delimiter rows). It does
+ * not invent a dialect.
  *
  * Memoized on text/className: parent stream ticks must not rebuild the markdown
  * tree for unchanged cards — that remounts text nodes and wipes browser selection.
@@ -253,6 +269,17 @@ export const MarkdownBody = memo(function MarkdownBody({ text, className }: Mark
           // Never let a link navigate the app window — hand it to the OS.
           a: MdLink,
           img: PreviewImage,
+          // GFM `start` must survive so lists that begin at 10 / 100 keep their
+          // markers. Default padding used to clip two-digit numbers.
+          ol: ({ node: _olNode, start, children, className, ...props }) => (
+            <ol
+              {...props}
+              className={className ? `md-body__ol ${className}` : "md-body__ol"}
+              start={typeof start === "number" ? start : undefined}
+            >
+              {children}
+            </ol>
+          ),
           // Paths / URLs written as prose become clickable too.
           p: ({ children }) => <p className="md-body__p">{linkifyChildren(children)}</p>,
           li: ({ children }) => <li className="md-body__li">{linkifyChildren(children)}</li>,
