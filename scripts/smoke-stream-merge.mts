@@ -11,11 +11,14 @@ import {
   coalesceAdjacentAssistantFragments,
   coalesceAdjacentThoughts,
   extractAcpUpdateText,
+  isAssistantNotice,
+  mergeStreamText,
   userMessageEvent,
   type SessionEvent,
 } from "../src/lib/acpTranscript.ts";
+import { isAcpTranscriptMethod } from "../src/lib/acpMeta.ts";
 import { isWorkspaceDiffPath, looksLikeUnifiedDiff } from "../src/lib/toolBody.ts";
-import { extractDiffStats } from "../src/lib/turnActivity.ts";
+import { clusterActivityRuns, extractDiffStats } from "../src/lib/turnActivity.ts";
 
 let events: SessionEvent[] = [
   userMessageEvent("s1", "hi", {
@@ -42,6 +45,39 @@ assert.equal(replies.length, 1, `expected 1 Reply, got ${replies.length}`);
 assert.equal(replies[0].text, chunks.join(""));
 // Header meta only on the single card
 assert.equal(replies[0].agentLabel, "Grok Build");
+assert.equal(replies[0].agentId, "grok-build");
+
+// Edit&resend used to mint a You card with no agentId (sendMetaRef already
+// cleared). Later Replies inherited nothing and the UI called them Notification.
+{
+  let resent: SessionEvent[] = [userMessageEvent("s1", "重发", { agentId: "grok-build", agentLabel: "Grok Build" })];
+  resent = applyAcpPartToEvents(resent, "s1", {
+    role: "assistant",
+    text: "收到，继续",
+    isDelta: true,
+    sessionUpdate: "agent_message_chunk",
+    messageId: "r1",
+  });
+  const reply = resent.find((e) => e.type === "assistant_message");
+  assert.equal(reply && reply.type === "assistant_message" && reply.agentId, "grok-build");
+  assert.equal(isAssistantNotice("收到，继续"), false);
+  assert.equal(isAssistantNotice("**Interrupted.**\n\nCancel request sent."), true);
+  assert.equal(isAssistantNotice("**Retrying** in 2s"), true);
+  assert.equal(isAssistantNotice("**上下文压缩（自动）**\n\n摘要"), true);
+}
+
+{
+  let bare: SessionEvent[] = [userMessageEvent("s1", "重发")];
+  bare = applyAcpPartToEvents(bare, "s1", {
+    role: "assistant",
+    text: "没有 agentId 也是回复",
+    isDelta: true,
+    sessionUpdate: "agent_message_chunk",
+  });
+  const reply = bare.find((e) => e.type === "assistant_message");
+  assert.equal(reply && reply.type === "assistant_message" && reply.agentId, undefined);
+  assert.equal(isAssistantNotice("没有 agentId 也是回复"), false);
+}
 
 // Already-split fragments (mid-turn mess) still glue
 let broken: SessionEvent[] = [
@@ -693,6 +729,179 @@ console.log("OpenCode v2 child-session streams stay off the parent Reply");
     false,
   );
   assert.equal(isWorkspaceDiffPath("C:\\Users\\c_huang\\AppData\\Local\\Temp\\x.cs", null), false);
+}
+
+{
+  // Digit-by-digit streaming used to eat "1000" down to "10" because
+  // previous.endsWith("0") treated the extra zeros as already-applied.
+  let n = "";
+  for (const ch of ["1", "0", "0", "0"]) n = mergeStreamText(n, ch, true);
+  assert.equal(n, "1000", `digit stream should keep every zero, got ${JSON.stringify(n)}`);
+  assert.equal(mergeStreamText("想", "想", true), "想想", "1-char repeats must stay");
+  assert.equal(mergeStreamText("hello", "hello", true), "hello");
+  assert.equal(mergeStreamText("hello world", "world", true), "hello world");
+}
+
+{
+  assert.equal(isAcpTranscriptMethod("_x.ai/session/update"), true);
+  assert.equal(isAcpTranscriptMethod("session/update"), true);
+
+  let rail: SessionEvent[] = [userMessageEvent("s1", "审计")];
+  const spawnIds = [
+    ["call_a", "01childA", "审计 BattleModeB 模块"],
+    ["call_b", "01childB", "审计 Level 模块"],
+    ["call_c", "01childC", "热路径扫描"],
+  ] as const;
+  for (const [toolCallId, childId, description] of spawnIds) {
+    rail = applyAcpPartToEvents(
+      rail,
+      "s1",
+      extractAcpUpdateText({
+        params: {
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId,
+            title: "spawn_subagent",
+            rawInput: { description, prompt: "audit" },
+          },
+        },
+      })!,
+    );
+    rail = applyAcpPartToEvents(
+      rail,
+      "s1",
+      extractAcpUpdateText({
+        params: {
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId,
+            title: description,
+            status: "completed",
+            content: [
+              {
+                type: "content",
+                content: {
+                  type: "text",
+                  text: `Subagent started in background.\nsubagent_id: ${childId}\ndescription: ${description}\n\nWhen you need its result, use get_command_or_subagent_output.`,
+                },
+              },
+            ],
+          },
+        },
+      })!,
+    );
+    rail = applyAcpPartToEvents(
+      rail,
+      "s1",
+      extractAcpUpdateText({
+        params: {
+          sessionId: "s1",
+          update: {
+            sessionUpdate: "subagent_spawned",
+            subagent_id: childId,
+            child_session_id: childId,
+            subagent_type: "Explore",
+            description,
+            model: "zai-glm-5.3",
+          },
+        },
+      })!,
+    );
+  }
+  const spawnCards = rail.filter((e) => e.type === "tool_call");
+  assert.equal(spawnCards.length, 3, "three parallel spawn cards");
+  for (const card of spawnCards) {
+    assert.equal(card.type, "tool_call");
+    assert.equal(card.status, "in_progress", `${card.title} must stay open after background start`);
+    assert.match(card.input ?? card.detail ?? "", /subagent_id:/);
+  }
+
+  rail = applyAcpPartToEvents(
+    rail,
+    "s1",
+    extractAcpUpdateText({
+      params: {
+        update: {
+          sessionUpdate: "subagent_finished",
+          subagent_id: "01childB",
+          child_session_id: "01childB",
+          status: "completed",
+          description: "审计 Level 模块",
+          output: "# Level 报告\n\n224 个文件。",
+          duration_ms: 12000,
+          tool_calls: 40,
+        },
+      },
+    })!,
+  );
+  const level = rail.find((e) => e.type === "tool_call" && e.title === "审计 Level 模块");
+  assert.ok(level && level.type === "tool_call");
+  assert.equal(level.status, "completed");
+  assert.match(level.detail ?? "", /224 个文件/);
+  assert.equal(
+    rail.filter((e) => e.type === "tool_call" && e.status === "in_progress").length,
+    2,
+    "the other two stay in flight",
+  );
+
+  rail = applyAcpPartToEvents(
+    rail,
+    "s1",
+    extractAcpUpdateText({
+      params: {
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "call_wait",
+          title: "get_command_or_subagent_output",
+          status: "completed",
+          rawOutput: {
+            type: "TaskOutput",
+            MultiResult: {
+              mode: "wait_all",
+              results: [
+                {
+                  task_id: "01childA",
+                  command: "[subagent:Explore] 审计 BattleModeB 模块",
+                  status: "completed",
+                  output: "# BattleModeB 报告\n干净。",
+                },
+                {
+                  task_id: "01childC",
+                  command: "[subagent:Explore] 热路径扫描",
+                  status: "completed",
+                  output: "# 热路径\n85 个 Update。",
+                },
+              ],
+            },
+          },
+        },
+      },
+    })!,
+  );
+  const wait = rail.find((e) => e.type === "tool_call" && /get_command_or_subagent_output|Wait/i.test(e.title ?? e.toolName ?? ""));
+  assert.ok(wait && wait.type === "tool_call");
+  assert.equal((wait.detail ?? "").includes("# BattleModeB"), false, "wait card must not dump every report");
+  const a = rail.find((e) => e.type === "tool_call" && e.title === "审计 BattleModeB 模块");
+  const c = rail.find((e) => e.type === "tool_call" && e.title === "热路径扫描");
+  assert.ok(a && a.type === "tool_call");
+  assert.ok(c && c.type === "tool_call");
+  assert.match(a.detail ?? "", /BattleModeB 报告/);
+  assert.match(c.detail ?? "", /85 个 Update/);
+  assert.equal(a.status, "completed");
+  assert.equal(c.status, "completed");
+
+  const clustered = clusterActivityRuns(
+    spawnCards.map((event, index) => ({
+      key: `t-${index}`,
+      event,
+      index,
+    })),
+  );
+  assert.equal(clustered.length, 1);
+  assert.equal(clustered[0].kind, "subagent_group");
+  if (clustered[0].kind === "subagent_group") {
+    assert.equal(clustered[0].items.length, 3);
+  }
 }
 
 console.log("smoke-stream-merge: ok");

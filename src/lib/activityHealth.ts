@@ -125,17 +125,31 @@ export function activityBarLabel(
  * `title` matters: OpenCode often renames the card to the agent/prompt while
  * the stable tool name is still `task` (or arrives late).
  */
+/** Parent wait / harvest tools — not a nested agent card of their own. */
+export function isSubagentWaitTool(
+  toolName: string | null | undefined,
+  title?: string | null,
+): boolean {
+  const hay = `${toolName ?? ""} ${title ?? ""}`;
+  return /get_command_or_subagent_output|wait_agent|close_agent|background_task_action|multi-wait|wait_all|task output/i.test(
+    hay,
+  );
+}
+
 export function isSubagentTool(
   toolName: string | null | undefined,
   title?: string | null,
 ): boolean {
+  if (isSubagentWaitTool(toolName, title)) return false;
   const name = (toolName ?? "").trim();
   if (
-    /^(task|agent|subagent|delegate|dispatch_agent|spawn_agent|call_omo_agent)$/i.test(name)
+    /^(task|agent|subagent|delegate|dispatch_agent|spawn_agent|spawn_subagent|call_omo_agent)$/i.test(
+      name,
+    )
   ) {
     return true;
   }
-  // Normalized aliases / partial names (not todowrite).
+  // Normalized aliases / partial names (not todowrite / wait harvest).
   if (name && /task|subagent|spawn_agent|dispatch_agent/i.test(name) && !/todo/i.test(name)) {
     return true;
   }

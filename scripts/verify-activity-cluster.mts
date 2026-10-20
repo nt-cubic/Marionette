@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import type { SessionEvent } from "../src/lib/types.ts";
 import {
   clusterActivityRuns,
+  formatActivityTally,
   groupConsecutiveByKind,
   summarizeActivity,
   kindGroupTitle,
@@ -55,9 +56,9 @@ check("groups write then 3 commands", () => {
   assert.equal(kindGroupTitle(groups[1]), "Ran 3 commands");
 });
 
-check("mixed headline joins like Claude/Codex", () => {
+check("done headline is a count+type tally", () => {
   const summary = summarizeActivity(items);
-  assert.equal(summary.title, "Wrote HudGammaBlend.cs, ran 3 commands");
+  assert.equal(summary.title, "1 write, 3 command");
   assert.ok(summary.diff);
   assert.equal(summary.diff?.add, 2);
 });
@@ -75,7 +76,7 @@ check("same-kind run uses a count phrase", () => {
   const groups = groupConsecutiveByKind(reads);
   assert.equal(groups.length, 1);
   assert.equal(kindGroupTitle(groups[0]), "Read 3 files");
-  assert.equal(summarizeActivity(reads).title, "Read 3 files");
+  assert.equal(summarizeActivity(reads).title, "3 read");
 });
 
 const thought = {
@@ -84,6 +85,25 @@ const thought = {
   text: "planning the edit",
   createdAt: "t0",
 };
+
+check("parallel spawn_subagent tools become a dedicated grid", () => {
+  const units = [0, 1, 2, 3, 4, 5, 6].map((index) => ({
+    key: `spawn-${index}`,
+    event: tool({
+      toolName: "spawn_subagent",
+      title: `审计模块 ${index}`,
+      status: "in_progress",
+      toolCallId: `call_${index}`,
+    }),
+    index,
+  }));
+  const clustered = clusterActivityRuns(units);
+  assert.equal(clustered.length, 1);
+  assert.equal(clustered[0].kind, "subagent_group");
+  if (clustered[0].kind === "subagent_group") {
+    assert.equal(clustered[0].items.length, 7);
+  }
+});
 
 check("thought sits in the same cluster as following tools", () => {
   const units = [
@@ -120,7 +140,20 @@ check("mixed headline includes thought", () => {
   const groups = groupConsecutiveByKind(withThought);
   assert.equal(groups[0].bucket, "thought");
   const summary = summarizeActivity(withThought);
-  assert.equal(summary.title, "Thought, wrote HudGammaBlend.cs, ran 3 commands");
+  assert.equal(summary.title, "1 think, 1 write, 3 command");
+});
+
+check("tally merges the same kind across the fold", () => {
+  const mixed = [
+    { event: thought, index: 0 },
+    { event: tool({ toolName: "read", path: "a.ts" }), index: 1 },
+    { event: tool({ toolName: "read", path: "b.ts" }), index: 2 },
+    { event: tool({ toolName: "edit", path: "a.ts" }), index: 3 },
+    { event: tool({ toolName: "edit", path: "b.ts" }), index: 4 },
+    { event: tool({ toolName: "edit", path: "c.ts" }), index: 5 },
+  ];
+  assert.equal(formatActivityTally(mixed), "1 think, 2 read, 3 edit");
+  assert.equal(summarizeActivity(mixed).title, "1 think, 2 read, 3 edit");
 });
 
 check("live thought headline is Thinking…", () => {

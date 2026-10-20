@@ -6,13 +6,14 @@ import {
   opencodeChildToolStatus,
   parseCodexGoalUpdate,
   parseCompactionUpdate,
+  parseGrokSubagentUpdate,
   parseLiveNotice,
 } from "./acpMeta";
 import { ansiToPlainText } from "./ansi";
 import { isSubagentTool, isToolInProgress } from "./activityHealth";
 import { stripSectionMarkers } from "./markdownText";
 import { looksLikeUnifiedDiff } from "./toolBody";
-import { stripFileUri } from "./imageAttachments";
+import { isImagePath, stripFileUri } from "./imageAttachments";
 import { inferToolNameFromMeta } from "./toolCallNormalize";
 
 export type AcpTextPart = {
@@ -42,6 +43,17 @@ export type AcpTextPart = {
   parentToolCallId?: string;
   /** Append toolDetail instead of replace (subagent stream). */
   toolDetailAppend?: boolean;
+  /** Replace the parent card body (Grok subagent_finished / wait MultiResult). */
+  toolDetailReplace?: boolean;
+  /** Split wait-tool MultiResult onto the matching spawn cards. */
+  subagentResults?: SubagentResultPatch[];
+};
+
+export type SubagentResultPatch = {
+  id: string;
+  title?: string;
+  status: string;
+  output: string;
 };
 
 type UpdateObj = Record<string, unknown>;
@@ -63,6 +75,74 @@ export function getSessionUpdate(data: unknown): UpdateObj | null {
 
 export function getSessionUpdateKind(update: UpdateObj): string {
   return String(update.sessionUpdate ?? update.type ?? update.kind ?? "");
+}
+
+/** Grok spawn_subagent completes immediately with this stub while the child still runs. */
+export function parseBackgroundSubagentStart(
+  text: string | null | undefined,
+): { id: string; description: string } | null {
+  const raw = (text ?? "").trim();
+  if (!raw || !/Subagent started in background/i.test(raw)) return null;
+  const id = raw.match(/subagent_id:\s*(\S+)/i)?.[1]?.trim() ?? "";
+  if (!id) return null;
+  const description =
+    raw.match(/description:\s*(.+)/i)?.[1]?.trim().split(/\n/)[0]?.trim() ?? "";
+  return { id, description };
+}
+
+function grokSubagentMetaLine(info: {
+  subagentType?: string;
+  model?: string;
+  durationMs?: number;
+  toolCalls?: number;
+}): string {
+  const bits: string[] = [];
+  if (info.subagentType) bits.push(info.subagentType);
+  if (info.model) bits.push(info.model);
+  if (info.toolCalls != null) bits.push(`${info.toolCalls} tools`);
+  if (info.durationMs != null && info.durationMs > 0) {
+    const sec = Math.round(info.durationMs / 1000);
+    bits.push(sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m${sec % 60}s`);
+  }
+  return bits.join(" · ");
+}
+
+/** Collapse a persisted Grok wait-tool JSON dump so old transcripts stay readable. */
+export function compactGrokWaitDetail(detail: string): string | null {
+  const start = detail.indexOf("{");
+  if (start < 0) return null;
+  try {
+    const rows = parseGrokTaskOutputResults(JSON.parse(detail.slice(start)) as unknown);
+    if (!rows) return null;
+    return rows.map((row) => `${row.status}: ${row.title || row.id}`).join("\n");
+  } catch {
+    return null;
+  }
+}
+
+function parseGrokTaskOutputResults(rawOutput: unknown): SubagentResultPatch[] | null {
+  const rec = asRecord(rawOutput);
+  if (!rec) return null;
+  const multi = asRecord(rec.MultiResult) ?? (String(rec.type ?? "") === "TaskOutput" ? rec : null);
+  const resultsRaw = multi && Array.isArray(multi.results) ? multi.results : null;
+  if (!resultsRaw || resultsRaw.length === 0) return null;
+  const out: SubagentResultPatch[] = [];
+  for (const item of resultsRaw) {
+    const row = asRecord(item);
+    if (!row) continue;
+    const id =
+      (typeof row.task_id === "string" && row.task_id.trim()) ||
+      (typeof row.taskId === "string" && row.taskId.trim()) ||
+      (typeof row.subagent_id === "string" && row.subagent_id.trim()) ||
+      "";
+    if (!id) continue;
+    const command = typeof row.command === "string" ? row.command.trim() : "";
+    const title = command.replace(/^\[subagent:[^\]]*]\s*/i, "").trim() || undefined;
+    const status = typeof row.status === "string" && row.status.trim() ? row.status.trim() : "completed";
+    const output = typeof row.output === "string" ? row.output : "";
+    out.push({ id, title, status, output });
+  }
+  return out.length > 0 ? out : null;
 }
 
 /**
@@ -527,6 +607,49 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
   // transcript — App shows them above the composer.
   if (parseLiveNotice(update)) return null;
 
+  // Grok `_x.ai/session/update` subagent envelopes. Child tokens never share
+  // this channel; map spawn/finish onto the parent spawn_subagent card.
+  const grokSub = parseGrokSubagentUpdate(update);
+  if (grokSub) {
+    const title = grokSub.description || "Subagent";
+    const meta = grokSubagentMetaLine(grokSub);
+    if (grokSub.kind === "spawned") {
+      const detail = meta ? `subagent_id: ${grokSub.subagentId}\n${meta}` : `subagent_id: ${grokSub.subagentId}`;
+      return {
+        role: "tool",
+        text: renderToolText({ title, status: "in_progress", detail }),
+        isDelta: false,
+        sessionUpdate,
+        messageId,
+        toolCallId: grokSub.childSessionId,
+        toolStatus: "in_progress",
+        toolTitle: title,
+        toolName: "spawn_subagent",
+        toolInput: `subagent_id: ${grokSub.subagentId}`,
+        toolDetailAppend: true,
+      };
+    }
+    const failed = FAILED_TOOL_STATUS.test(grokSub.status ?? "");
+    const status = failed ? (grokSub.status ?? "failed") : "completed";
+    const output = (grokSub.output ?? "").trim();
+    const detail = [meta, output].filter(Boolean).join("\n\n");
+    return {
+      role: "tool",
+      text: renderToolText({ title, status, detail }),
+      isDelta: false,
+      sessionUpdate,
+      messageId,
+      toolCallId: grokSub.childSessionId,
+      toolStatus: status,
+      toolTitle: title,
+      toolName: "spawn_subagent",
+      toolDetail: detail || title,
+      toolInput: `subagent_id: ${grokSub.subagentId}`,
+      toolDetailAppend: true,
+      toolDetailReplace: true,
+    };
+  }
+
   // ── Codex session_info_update: goal (retry/failure are notices above) ──
   if (
     sessionUpdate === "session_info_update" ||
@@ -659,11 +782,19 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
       firstToolLocation(update) ||
       pathFromRawInput(rawInput) ||
       imageSrcs[0];
+    if (toolPath && isImagePath(toolPath) && !imageSrcs.some((src) => samePath(src, toolPath))) {
+      imageSrcs.push(stripFileUri(toolPath));
+    }
     const agentTx = extractAgentTranscript(update);
+    const grokWaitResults = parseGrokTaskOutputResults(update.rawOutput ?? update.raw_output);
     let toolDetail =
       agentTx ||
       renderToolContent(update.content) ||
-      renderToolRawOutput(update.rawOutput ?? update.raw_output);
+      (grokWaitResults
+        ? grokWaitResults
+            .map((row) => `${row.status}: ${row.title || row.id}`)
+            .join("\n")
+        : renderToolRawOutput(update.rawOutput ?? update.raw_output));
     if (/list_agents/i.test(normalized || title || "")) {
       toolDetail = formatListAgentsRoster(toolDetail);
     }
@@ -683,21 +814,37 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
     const toolInput =
       synthesized || inputIsOnlyPath(rawInput, toolPath) ? "" : clippedInput;
 
+    const bgStart = parseBackgroundSubagentStart(toolDetail);
+    const toolStatus = bgStart ? "in_progress" : status;
+    const spawnInput = bgStart ? `subagent_id: ${bgStart.id}` : toolInput;
+    const spawnTitle = bgStart?.description || title;
+    const spawnName =
+      bgStart || /spawn_subagent/i.test(normalized || title || "")
+        ? "spawn_subagent"
+        : normalized || title;
+
     return {
       role: "tool",
-      text: renderToolText({ title, status, path: toolPath, input: toolInput, detail: toolDetail }),
+      text: renderToolText({
+        title: spawnTitle,
+        status: toolStatus,
+        path: toolPath,
+        input: spawnInput,
+        detail: toolDetail,
+      }),
       isDelta: false,
       sessionUpdate,
       messageId,
       toolCallId,
-      toolStatus: status,
-      toolTitle: title,
+      toolStatus,
+      toolTitle: spawnTitle,
       // Stable classification key (aliases applied) for UI/side panels.
-      toolName: normalized || title,
+      toolName: spawnName,
       toolPath,
       toolDetail,
-      toolInput,
+      toolInput: spawnInput,
       ...(imageSrcs.length > 0 ? { toolImages: imageSrcs } : {}),
+      ...(grokWaitResults ? { subagentResults: grokWaitResults } : {}),
     };
   }
 
@@ -831,8 +978,6 @@ export function isThoughtNoiseToken(text: string): boolean {
   // OpenCode / model section markers between reasoning steps
   if (/^§+\d*§*$/u.test(t)) return true;
   if (/^§+$/u.test(t)) return true;
-  // Lone tiny numeric tokens sometimes emitted mid-CoT
-  if (/^\d{1,3}$/.test(t)) return true;
   return false;
 }
 
@@ -848,14 +993,20 @@ export function isThoughtFragment(text: string): boolean {
 export function mergeStreamText(previous: string, incoming: string, isDelta: boolean): string {
   if (!incoming) return previous;
   if (!previous) return incoming;
-  if (incoming === previous) return previous;
+  // Same payload twice is a snapshot resend — except a 1-char token, which is
+  // how "1000" and doubled CJK characters actually stream.
+  if (incoming === previous && incoming.length >= 2) return previous;
 
-  // Cumulative snapshot
-  if (incoming.startsWith(previous)) return incoming;
+  // Cumulative snapshot (strictly longer — equal strings fall through so a
+  // 1-char delta can repeat).
+  if (incoming.length > previous.length && incoming.startsWith(previous)) return incoming;
   // Stale shorter snapshot
   if (previous.startsWith(incoming) && incoming.length < previous.length) return previous;
-  // Exact tail already applied
-  if (previous.endsWith(incoming)) return previous;
+  // Exact tail already applied — only for 2+ code units. A 1-char delta that
+  // happens to equal the last character is a real repeat ("0" after "10" is
+  // how "1000" streams; "想"+"想" is a doubled character). Dropping those
+  // ate numbers and legitimate duplicates.
+  if (incoming.length >= 2 && previous.endsWith(incoming)) return previous;
 
   // Overlap (shared suffix/prefix) — only when substantial to avoid eating "。"
   const maxOverlap = Math.min(previous.length, incoming.length, 64);
@@ -1102,23 +1253,67 @@ function findNestedSubagentCard(
   events: SessionEvent[],
   sessionId: string,
   childId: string,
+  titleHint?: string,
+  fallbackSingle = true,
 ): number {
   let lastUser = -1;
   for (let i = 0; i < events.length; i += 1) {
     if (events[i].sessionId === sessionId && events[i].type === "user_message") lastUser = i;
   }
-  const candidates: number[] = [];
+  const open: number[] = [];
+  let titled = -1;
   for (let i = lastUser + 1; i < events.length; i += 1) {
     const e = events[i];
     if (e.sessionId !== sessionId || e.type !== "tool_call") continue;
-    if (!isToolInProgress(e.status)) continue;
     if (!isSubagentTool(e.toolName, e.title)) continue;
-    const hay = `${e.input ?? ""}\n${e.detail ?? ""}\n${e.toolCallId ?? ""}`;
+    const hay = `${e.input ?? ""}\n${e.detail ?? ""}\n${e.toolCallId ?? ""}\n${e.title ?? ""}`;
     if (childId && hay.includes(childId)) return i;
-    candidates.push(i);
+    if (titleHint && e.title === titleHint && titled < 0) titled = i;
+    if (isToolInProgress(e.status)) open.push(i);
   }
-  if (candidates.length === 1) return candidates[0];
+  if (titled >= 0) return titled;
+  if (fallbackSingle && open.length === 1) return open[0];
   return -1;
+}
+
+function applySubagentResultPatches(
+  events: SessionEvent[],
+  sessionId: string,
+  results: SubagentResultPatch[],
+): SessionEvent[] {
+  let next = events;
+  for (const row of results) {
+    if (!row.output.trim()) continue;
+    const idx = findNestedSubagentCard(next, sessionId, row.id, row.title);
+    if (idx < 0) continue;
+    const prev = next[idx];
+    if (prev.type !== "tool_call") continue;
+    if (
+      prev.detail &&
+      prev.detail.length > row.output.length &&
+      !parseBackgroundSubagentStart(prev.detail)
+    ) {
+      continue;
+    }
+    const failed = FAILED_TOOL_STATUS.test(row.status);
+    const status = failed ? row.status : "completed";
+    const merged = {
+      title: prev.title ?? row.title,
+      status,
+      path: prev.path,
+      detail: row.output,
+      input: prev.input || `subagent_id: ${row.id}`,
+    };
+    const copy = [...next];
+    copy[idx] = {
+      ...prev,
+      ...merged,
+      ...(prev.completedAt == null ? { completedAt: new Date().toISOString() } : {}),
+      text: renderToolText(merged),
+    };
+    next = copy;
+  }
+  return next;
 }
 
 function sameStreamTarget(
@@ -1170,6 +1365,22 @@ export function turnEndedSilently(
  * mint a fresh `messageId` per token — if we honor that, each char becomes its
  * own Reply card with a full Build / model header. Unsealed → always append.
  */
+/**
+ * Shell-written assistant cards (interrupt, retry, compaction, hang).
+ * These are the only rows that should read as "Notification" — a live agent
+ * reply missing `agentId` (edit&resend used to drop it) is still a Reply.
+ */
+export function isAssistantNotice(text: string): boolean {
+  const t = text.trim();
+  return (
+    /^\*\*Interrupted\.\*\*/i.test(t) ||
+    /^\*\*Retrying/i.test(t) ||
+    /^\*\*上下文压缩/u.test(t) ||
+    /^\*\*已挂起。\*\*/.test(t) ||
+    /^\*\*The agent did not answer the cancel\.\*\*/i.test(t)
+  );
+}
+
 function isOpenAssistantStream(last: SessionEvent, sessionId: string): boolean {
   if (
     last.type !== "assistant_message" ||
@@ -1179,7 +1390,7 @@ function isOpenAssistantStream(last: SessionEvent, sessionId: string): boolean {
     return false;
   }
   // Local interrupt/system notes must never absorb late Thinking/Reply tokens.
-  if (/^\*\*Interrupted\.\*\*/i.test(last.text) || /^\*\*Retrying/i.test(last.text)) {
+  if (isAssistantNotice(last.text)) {
     return false;
   }
   return true;
@@ -1371,18 +1582,25 @@ export function applyAcpPartToEvents(
         (e) => e.type === "tool_call" && e.sessionId === sessionId && e.toolCallId === part.toolCallId,
       );
       // OpenCode child streams use the child session id, not the parent Task
-      // toolCallId. Attach to the in-progress Task when we can tell them apart.
-      if (idx < 0 && part.toolDetailAppend) {
-        idx = findNestedSubagentCard(base, sessionId, part.toolCallId);
+      // toolCallId. Grok `_x.ai/session/update` uses child_session_id the same way.
+      const nestTitleHint =
+        part.toolTitle && !/^(spawn_subagent|task|agent|subagent)$/i.test(part.toolTitle)
+          ? part.toolTitle
+          : undefined;
+      if (idx < 0 && (part.toolDetailAppend || part.toolDetailReplace)) {
+        idx = findNestedSubagentCard(base, sessionId, part.toolCallId, nestTitleHint);
       }
       if (idx >= 0) {
         const prev = base[idx];
         if (prev.type !== "tool_call") return base;
-        // Subagent stream: append; normal updates: replace empty/keep prior.
+        // Subagent stream: append; Grok finish / wait MultiResult: replace;
+        // normal updates: replace empty/keep prior.
         let detail = prev.detail;
         if (part.toolDetail) {
           const plainDetail = ansiToPlainText(part.toolDetail);
-          if (part.toolDetailAppend && prev.detail) {
+          if (part.toolDetailReplace) {
+            detail = clipToolDetail(plainDetail);
+          } else if (part.toolDetailAppend && prev.detail) {
             // Token deltas must concatenate like Reply — a newline per chunk
             // turns OpenCode child streams into one character per line.
             detail = mergeStreamText(prev.detail, plainDetail, true);
@@ -1398,8 +1616,9 @@ export function applyAcpPartToEvents(
             detail = plainDetail;
           }
         }
+        const keepTitle = Boolean(part.toolDetailAppend || part.toolDetailReplace);
         const merged = {
-          title: part.toolDetailAppend ? (prev.title ?? part.toolTitle) : (part.toolTitle ?? prev.title),
+          title: keepTitle ? (prev.title ?? part.toolTitle) : (part.toolTitle ?? prev.title),
           status: part.toolStatus ?? prev.status,
           path: part.toolPath ?? prev.path,
           detail: detail || prev.detail,
@@ -1407,7 +1626,7 @@ export function applyAcpPartToEvents(
         };
         const images =
           part.toolImages && part.toolImages.length > 0 ? part.toolImages : prev.images;
-        const next = [...base];
+        let next = [...base];
         next[idx] = {
           ...prev,
           ...merged,
@@ -1421,11 +1640,14 @@ export function applyAcpPartToEvents(
           text: renderToolText(merged),
           ...(images && images.length > 0 ? { images } : {}),
         };
+        if (part.subagentResults && part.subagentResults.length > 0) {
+          next = applySubagentResultPatches(next, sessionId, part.subagentResults);
+        }
         return next;
       }
       // Parented subagent chunk arrived before parent tool card — open a shell card.
-      if (part.toolDetailAppend) {
-        return [
+      if (part.toolDetailAppend || part.toolDetailReplace) {
+        const minted = [
           ...base,
           toolCallEvent(
             sessionId,
@@ -1435,18 +1657,29 @@ export function applyAcpPartToEvents(
             part.toolTitle ?? "Agent",
             {
               detail: part.toolDetail,
+              input: part.toolInput,
               toolName: part.toolName ?? "agent",
             },
           ),
         ];
+        return part.subagentResults && part.subagentResults.length > 0
+          ? applySubagentResultPatches(minted, sessionId, part.subagentResults)
+          : minted;
       }
       // Child status for a stream already nested in the parent Task: don't
-      // mint a second card or complete the Task early.
-      if (isSubagentTool(part.toolName, part.toolTitle)) {
-        if (findNestedSubagentCard(base, sessionId, part.toolCallId) >= 0) return base;
+      // mint a second card or complete the Task early. Parallel Grok
+      // spawn_subagent calls each have their own toolCallId — the single-open
+      // fallback would swallow the 2nd…Nth spawn into the first card.
+      if (isSubagentTool(part.toolName, part.toolTitle) && part.toolCallId) {
+        const allowFallback = !/spawn_subagent/i.test(`${part.toolName ?? ""} ${part.toolTitle ?? ""}`);
+        if (
+          findNestedSubagentCard(base, sessionId, part.toolCallId, nestTitleHint, allowFallback) >= 0
+        ) {
+          return base;
+        }
       }
     }
-    return [
+    const created = [
       ...base,
       toolCallEvent(
         sessionId,
@@ -1463,6 +1696,9 @@ export function applyAcpPartToEvents(
         },
       ),
     ];
+    return part.subagentResults && part.subagentResults.length > 0
+      ? applySubagentResultPatches(created, sessionId, part.subagentResults)
+      : created;
   }
 
   return current;
@@ -1588,8 +1824,9 @@ export function sealOpenAssistantReplies(
   const next = events.map((e) => {
     if (e.sessionId !== sessionId || e.type !== "assistant_message") return e;
     if (e.durationMs != null) return e;
-    // System notifications (no agentId) are not CoT either — leave type, but
-    // stamp duration so collapse/tool paths treat them as sealed.
+    // Notices and open Replies both get a duration so later streams cannot
+    // fold them. Missing agentId is not the notice signal (edit&resend used
+    // to drop it on the next You card).
     const started = Date.parse(e.createdAt);
     const durationMs =
       Number.isFinite(started) && started > 0

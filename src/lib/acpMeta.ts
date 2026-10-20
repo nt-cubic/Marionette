@@ -11,9 +11,15 @@
 export const OPENCODE_CHILD_UPDATE_METHOD = "opencode/session/child_update";
 /** Client capability OpenCode v2 checks before using the custom child method. */
 export const OPENCODE_CHILD_SESSION_UPDATES = "opencode/child-session-updates";
+/** Grok Build custom session channel (subagent_spawned / subagent_finished / turn_completed). */
+export const GROK_SESSION_UPDATE_METHOD = "_x.ai/session/update";
 
 export function isAcpTranscriptMethod(method: string | null | undefined): boolean {
-  return method === "session/update" || method === OPENCODE_CHILD_UPDATE_METHOD;
+  return (
+    method === "session/update" ||
+    method === OPENCODE_CHILD_UPDATE_METHOD ||
+    method === GROK_SESSION_UPDATE_METHOD
+  );
 }
 
 export type CodexGoalMarker = {
@@ -166,6 +172,79 @@ export function opencodeChildSession(update: Record<string, unknown>): OpenCodeC
  */
 export function nestedSubagentParentId(update: Record<string, unknown>): string | null {
   return claudeParentToolUseId(update) ?? opencodeChildSession(update)?.id ?? null;
+}
+
+export type GrokSubagentUpdate = {
+  kind: "spawned" | "finished";
+  subagentId: string;
+  childSessionId: string;
+  description: string;
+  subagentType?: string;
+  model?: string;
+  status?: string;
+  output?: string;
+  durationMs?: number;
+  toolCalls?: number;
+};
+
+/**
+ * Grok Build `_x.ai/session/update` with sessionUpdate `subagent_spawned` /
+ * `subagent_finished`. Child tokens stay in the child session; the parent
+ * only gets these two envelopes plus a later wait-tool MultiResult.
+ */
+export function parseGrokSubagentUpdate(
+  update: Record<string, unknown>,
+): GrokSubagentUpdate | null {
+  const kindRaw = String(update.sessionUpdate ?? update.type ?? "").trim().toLowerCase();
+  const kind: GrokSubagentUpdate["kind"] | null =
+    kindRaw === "subagent_spawned" || kindRaw === "subagent-spawned"
+      ? "spawned"
+      : kindRaw === "subagent_finished" || kindRaw === "subagent-finished"
+        ? "finished"
+        : null;
+  if (!kind) return null;
+  const subagentId =
+    (typeof update.subagent_id === "string" && update.subagent_id.trim()) ||
+    (typeof update.subagentId === "string" && update.subagentId.trim()) ||
+    "";
+  const childSessionId =
+    (typeof update.child_session_id === "string" && update.child_session_id.trim()) ||
+    (typeof update.childSessionId === "string" && update.childSessionId.trim()) ||
+    subagentId;
+  const id = subagentId || childSessionId;
+  if (!id) return null;
+  const description =
+    (typeof update.description === "string" && update.description.trim()) ||
+    (typeof update.title === "string" && update.title.trim()) ||
+    "";
+  const subagentType =
+    (typeof update.subagent_type === "string" && update.subagent_type.trim()) ||
+    (typeof update.subagentType === "string" && update.subagentType.trim()) ||
+    undefined;
+  const model = typeof update.model === "string" && update.model.trim() ? update.model.trim() : undefined;
+  const status = typeof update.status === "string" && update.status.trim() ? update.status.trim() : undefined;
+  const output =
+    (typeof update.output === "string" && update.output) ||
+    (typeof update.result === "string" && update.result) ||
+    undefined;
+  const durationRaw = update.duration_ms ?? update.durationMs;
+  const durationMs =
+    typeof durationRaw === "number" && Number.isFinite(durationRaw) ? durationRaw : undefined;
+  const toolCallsRaw = update.tool_calls ?? update.toolCalls;
+  const toolCalls =
+    typeof toolCallsRaw === "number" && Number.isFinite(toolCallsRaw) ? toolCallsRaw : undefined;
+  return {
+    kind,
+    subagentId: id,
+    childSessionId: childSessionId || id,
+    description,
+    subagentType,
+    model,
+    status,
+    output,
+    durationMs,
+    toolCalls,
+  };
 }
 
 /** `opencode/session/child_update` status → ACP tool status. */
