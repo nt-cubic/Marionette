@@ -2863,12 +2863,16 @@ pub fn bridge_list_models(agent_id: String) -> crate::model_bridge::BridgeModels
     // 空闲回收后的一键优雅（2026-10-17）：菜单打开 = 有人要跨用。对引擎相关
     // agent 先短暂等引擎醒来（已安装才等，绝不惊喜下载），这一次响应就能
     // 带上引擎源；睡过头（>5s）就按当前状态答（note 有指引）。
+    // 2026-10-20 补课：dsh / pi 接入当天漏把这两家加进唤醒名单——DSH 菜单
+    // 打开引擎纹丝不动，直接按「未运行」回答（用户实测踩坑）。
     if matches!(
         crate::model_bridge::classify_agent(&agent_id),
         crate::model_bridge::BridgeAgent::ClaudeCode
             | crate::model_bridge::BridgeAgent::GrokBuild
             | crate::model_bridge::BridgeAgent::Codex
             | crate::model_bridge::BridgeAgent::Opencode
+            | crate::model_bridge::BridgeAgent::Deepseek
+            | crate::model_bridge::BridgeAgent::Pi
     ) {
         crate::engine::ensure_bridge_ready_if_installed(std::time::Duration::from_secs(5));
     }
@@ -2979,7 +2983,8 @@ pub fn test_proxy(url: String) -> Result<crate::proxy::ProxyTestResult, String> 
 
 #[tauri::command(async)]
 pub fn memory_get() -> Result<serde_json::Value, String> {
-    serde_json::to_value(crate::memory::load()).map_err(|e| e.to_string())
+    // 打开面板即同步各家全局记忆（Claude/Codex/OpenCode/Gemini…）。
+    serde_json::to_value(crate::memory::load_synced()).map_err(|e| e.to_string())
 }
 
 #[tauri::command(async)]

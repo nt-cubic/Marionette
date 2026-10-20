@@ -1,13 +1,14 @@
 //! 跨 agent 共享记忆 — Marionette 的基础功能（2026-10-19 起）。
 //!
-//! 记忆存在 `~/.marionette/memory/memory.json`：全局开关 + 条目列表（来源、
-//! 标题、文本、启停）。每个 Marionette 会话进程的**首条 prompt** 由
-//! `acp.rs` 注入一张「记忆卡」文本块，所有 agent（Claude / Codex / DSH / …）
-//! 共享同一份 —— 壳是唯一同时看得见所有 agent 的位置。
+//! 记忆存在 `~/.marionette/memory/memory.json`：条目列表（来源、标题、文本、
+//! 启停）。每个 Marionette 会话进程的**首条 prompt** 由 `acp.rs` 注入一张
+//! 「记忆卡」文本块，所有 agent（Claude / Codex / DSH / …）共享同一份 ——
+//! 壳是唯一同时看得见所有 agent 的位置。
 //!
-//! 收编：各家引擎的**用户级**全局记忆（`~/.claude/CLAUDE.md` 等）一键导入
-//! 为条目（记 origin_path+mtime，文件变了重新导入才刷新）。项目级
-//! AGENTS.md/CLAUDE.md 不收：各引擎在会话里原生就读项目文件。
+//! 启动同步：打开应用 / 拉记忆面板时，自动把各家引擎的**用户级**全局记忆
+//! （`~/.claude/CLAUDE.md` 等）收成可勾选条目（记 origin_path+mtime，文件
+//! 变了下次同步才刷新）。项目级 AGENTS.md/CLAUDE.md 不收：各引擎在会话里
+//! 原生就读项目文件。
 //!
 //! 蒸馏：`memory_distill` 把会话 JSONL 的尾部（user/assistant/thought 的
 //! text）发给 DeepSeek 提炼要点草稿，用户确认后落库（source=session）。
@@ -160,11 +161,11 @@ fn source_label(source: &str) -> &str {
     }
 }
 
-/// 注入用的记忆卡。关、空 → None。纯函数（测试友好）。
+/// 注入用的记忆卡。无启用条目 → None。纯函数（测试友好）。
+///
+/// 全局 `enabled` 字段保留给旧存档兼容，面板已不再暴露总开关；注入只看
+/// 各条目自己的勾选。
 pub fn compose_card_from(store: &MemoryStore) -> Option<String> {
-    if !store.enabled {
-        return None;
-    }
     let entries: Vec<&MemoryEntry> = store
         .entries
         .iter()
@@ -196,7 +197,15 @@ pub fn compose_card_from(store: &MemoryStore) -> Option<String> {
 }
 
 pub fn compose_card() -> Option<String> {
+    // 发首条 prompt 前再同步一次，免得用户刚改了 ~/.claude/CLAUDE.md。
+    let _ = sync_imports();
     compose_card_from(&load())
+}
+
+/// 面板 / 命令入口：先把各家全局记忆同步进来，再返回当前 store。
+pub fn load_synced() -> MemoryStore {
+    let _ = sync_imports();
+    load()
 }
 
 // ── 收编各家全局记忆 ────────────────────────────────────────────────────
@@ -214,10 +223,10 @@ pub struct ImportSource {
 }
 
 const IMPORT_TARGETS: [(&str, &str, &str); 4] = [
-    ("claude", "Claude 全局记忆", ".claude/CLAUDE.md"),
-    ("codex", "Codex 全局记忆", ".codex/AGENTS.md"),
-    ("opencode", "OpenCode 全局记忆", ".config/opencode/AGENTS.md"),
-    ("gemini", "Gemini 全局记忆", ".gemini/GEMINI.md"),
+    ("claude", "Claude", ".claude/CLAUDE.md"),
+    ("codex", "Codex", ".codex/AGENTS.md"),
+    ("opencode", "OpenCode", ".config/opencode/AGENTS.md"),
+    ("gemini", "Gemini", ".gemini/GEMINI.md"),
 ];
 
 fn import_sources_at(home: &Path) -> Vec<ImportSource> {
@@ -260,14 +269,26 @@ pub fn import_sources() -> Vec<ImportSource> {
     }
 }
 
-/// 导入存在的源：每源一条稳定 id（import-<source>）的条目；文件 mtime 没变
+/// 导入存在的源：每源一条稳定 id（`import-<source>`）的条目；文件 mtime 没变
 /// 就跳过，变了就整体替换文本。返回给 UI 的摘要。
 pub fn import_run() -> Result<serde_json::Value, String> {
+    let (imported, updated, unchanged, sources) = sync_imports()?;
+    Ok(json!({
+        "imported": imported,
+        "updated": updated,
+        "unchanged": unchanged,
+        "sources": sources,
+    }))
+}
+
+/// 静默同步各家全局记忆。启动面板 / 注入记忆卡前调用。
+fn sync_imports() -> Result<(Vec<String>, Vec<String>, Vec<String>, Vec<ImportSource>), String> {
     let mut store = load();
     let sources = import_sources();
     let mut imported = Vec::new();
     let mut updated = Vec::new();
     let mut unchanged = Vec::new();
+    let mut dirty = false;
     for src in sources.iter().filter(|s| s.exists && s.bytes > 0) {
         let text = fs::read_to_string(&src.path).map_err(|e| format!("读取 {} 失败: {e}", src.path))?;
         if text.trim().is_empty() {
@@ -275,36 +296,52 @@ pub fn import_run() -> Result<serde_json::Value, String> {
             continue;
         }
         let stable_id = format!("import-{}", src.source);
-        match store.entries.iter_mut().find(|e| e.id == stable_id) {
+        // 稳定 id 优先；旧版曾用随机 id 写入，按 source + origin_path 认回。
+        let existing = store.entries.iter_mut().find(|e| {
+            e.id == stable_id
+                || (e.source == src.source
+                    && e.origin_path.as_deref() == Some(src.path.as_str()))
+        });
+        match existing {
             Some(entry) => {
+                if entry.id != stable_id {
+                    entry.id = stable_id;
+                    dirty = true;
+                }
+                if entry.title != src.title {
+                    entry.title = src.title.clone();
+                    dirty = true;
+                }
                 if entry.origin_mtime_ms == Some(src.mtime_ms) && !entry.text.is_empty() {
                     unchanged.push(src.title.clone());
                 } else {
                     entry.text = text.trim_end().to_string();
-                    entry.updated_at_ms = now_ms();
+                    entry.origin_path = Some(src.path.clone());
                     entry.origin_mtime_ms = Some(src.mtime_ms);
+                    entry.updated_at_ms = now_ms();
+                    dirty = true;
                     updated.push(src.title.clone());
                 }
             }
             None => {
-                store.entries.push(new_entry(
+                let mut entry = new_entry(
                     &src.source,
                     &src.title,
                     &text,
                     Some(src.path.clone()),
                     Some(src.mtime_ms),
-                ));
+                );
+                entry.id = stable_id;
+                store.entries.push(entry);
+                dirty = true;
                 imported.push(src.title.clone());
             }
         }
     }
-    save(&store)?;
-    Ok(json!({
-        "imported": imported,
-        "updated": updated,
-        "unchanged": unchanged,
-        "sources": sources,
-    }))
+    if dirty {
+        save(&store)?;
+    }
+    Ok((imported, updated, unchanged, sources))
 }
 
 // ── 会话蒸馏 ────────────────────────────────────────────────────────────
@@ -421,15 +458,41 @@ mod tests {
         assert!(compose_card_from(&store).is_none());
         store.entries.push(new_entry("manual", "偏好", "用中文回复", None, None));
         assert!(compose_card_from(&store).is_some());
+        // 全局开关不再挡注入；只看条目勾选。
         store.enabled = false;
-        assert!(compose_card_from(&store).is_none());
-        store.enabled = true;
+        assert!(compose_card_from(&store).is_some());
         let mut quiet = new_entry("manual", "空", "   ", None, None);
         quiet.enabled = false;
         store.entries.push(quiet);
         let card = compose_card_from(&store).unwrap();
         assert!(card.contains("用中文回复"));
         assert!(!card.contains("空"));
+    }
+
+    #[test]
+    fn import_uses_stable_id_and_is_idempotent() {
+        let home = temp_path("import-stable");
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(home.join(".claude")).unwrap();
+        let claude = home.join(".claude").join("CLAUDE.md");
+        fs::write(&claude, "用户喜欢 pnpm").unwrap();
+
+        let sources = import_sources_at(&home);
+        assert!(sources[0].exists);
+        let mut store = MemoryStore::fresh();
+        let src = &sources[0];
+        let stable_id = format!("import-{}", src.source);
+        let mut entry = new_entry(
+            &src.source,
+            &src.title,
+            "用户喜欢 pnpm",
+            Some(src.path.clone()),
+            Some(src.mtime_ms),
+        );
+        entry.id = stable_id.clone();
+        store.entries.push(entry);
+        assert_eq!(store.entries[0].id, "import-claude");
+        assert_eq!(store.entries.len(), 1);
     }
 
     #[test]
