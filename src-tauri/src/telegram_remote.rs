@@ -13,9 +13,17 @@
 //!   `AcpService::respond_*`——与 UI 是同一批 waiter map，先答先得。
 //! - **总控面板**：一条置顶消息（`pinChatMessage`），会话状态一变（开跑/
 //!   跑完/等你/等待解除）就 `editMessageText` 原地重画——谁在跑、谁在等你、
-//!   裸发文字的去向一目了然；按钮 = 切换绑定 + 远程 ⏹（`AcpService::cancel`，
-//!   与 UI 停止键同路）+ 刷新。`/status` 拉全量清单。心跳线程在忙时每 60s
-//!   重画一次保鲜时长行。
+//!   裸发文字的去向一目了然；按钮 = 切换绑定 + 📄 会话详情 + 远程 ⏹
+//!   （`AcpService::cancel`，与 UI 停止键同路）+ 刷新。`/status` 拉全量清单。
+//!   心跳线程在忙时每 60s 重画一次保鲜时长行。
+//! - **回复正文**：只要「最后一条 agent 消息」（工具调用是消息边界，中途
+//!   解说不进推送），优先官方 Rich Messages（Bot API 10.1 `sendRichMessage`，
+//!   `rich_message.markdown` 收原生 markdown——标题/表格/代码块由客户端渲染，
+//!   单条 32K 字符不截断），失败退 MarkdownV2 分片、再退纯文本；计划卡片
+//!   同走 MarkdownV2 + 纯文本兜底。
+//! - **会话详情视图**：置顶面板同一个 message_id 上的「第二页」——点 📄
+//!   原地切换成该会话的状态 + 最近一条回复（markdown 渲染），⬅ 返回总控；
+//!   正文受「内容预览」偏好门控（关 = 内容不出本机）。
 //! - **HTTP**：复用 `http_client` 的 ureq + native-tls agent；阻塞调用跑在
 //!   两条 std 线程上（发送 + 轮询），零新依赖，体积不变。
 //! - **安全**：bot token 经 DPAPI 落 `~/.marionette/telegram.json`（与凭据库
@@ -51,6 +59,11 @@ const MAX_MESSAGE_CHARS: usize = 3800;
 /// 回合末条回复在推送里保留的长度已改为按消息分片（见 REPLY_CHUNK_CHARS）。
 /// 回合内 agent 文本滚动缓冲上限（超了丢头部，保尾部）——32K 约等于全文。
 const TURN_BUFFER_CHARS: usize = 32000;
+/// 「会话详情」视图里最近一条回复的缓存上限（正文展示用）。
+const LAST_REPLY_CHARS: usize = 8000;
+/// `sendRichMessage` 的 markdown 单条上限是 32768 字符（Bot API 10.1+）；
+/// 留一点给 header/footer 再裁。
+const RICH_MARKDOWN_LIMIT: usize = 32700;
 /// 推送正文每条消息的预算（4096 上限给头部/页脚/MarkdownV2 转义膨胀留余量）。
 const REPLY_CHUNK_CHARS: usize = 3300;
 /// 单片转成 MarkdownV2 后的长度上限：转义最坏约 2×，超了就在原文上对半
@@ -226,10 +239,51 @@ struct SessionTrack {
     /// 本回合开始时刻（见到 user_message 回显时钉住）。
     turn_started: Option<Instant>,
     last_activity: Instant,
-    /// 本回合 agent 文本的尾部滚动缓冲（推送摘要用）。
-    reply_tail: String,
+    /// 本回合 agent 文本（只要最后一段：工具调用是消息边界）。
+    text: TurnText,
+    /// 最近一条已完成回合的正文缓存（面板「会话详情」视图用）。
+    last_reply: String,
     /// 挂起未解的权限/ask/plan 请求数（>0 = 会话在等你）。
     waiting: u32,
+}
+
+/// 回合内 agent 文本的「末段」追踪。agent 常在工具调用之间插一段解说
+/// 再继续（「我先看看…」→ 工具 → 最终答复），推送只要最后一条消息；
+/// 上一段留作兜底——回合以工具收尾、末段为空时用它，免得推空正文。
+#[derive(Default)]
+struct TurnText {
+    current: String,
+    previous: String,
+}
+
+impl TurnText {
+    fn reset(&mut self) {
+        self.current.clear();
+        self.previous.clear();
+    }
+
+    fn append(&mut self, text: &str) {
+        append_tail(&mut self.current, text, TURN_BUFFER_CHARS);
+    }
+
+    /// 工具调用 = 边界：当前段结业为 previous；空段不覆盖（连续工具调用）。
+    fn tool_boundary(&mut self) {
+        if !self.current.is_empty() {
+            self.previous.clear();
+            std::mem::swap(&mut self.current, &mut self.previous);
+        }
+    }
+
+    /// 取最终正文（末段优先，空则退上一段），取完清空。
+    fn take_final(&mut self) -> String {
+        let current = std::mem::take(&mut self.current);
+        if current.trim().is_empty() {
+            std::mem::take(&mut self.previous)
+        } else {
+            self.previous.clear();
+            current
+        }
+    }
 }
 
 impl SessionTrack {
@@ -237,7 +291,8 @@ impl SessionTrack {
         Self {
             turn_started: None,
             last_activity: Instant::now(),
-            reply_tail: String::new(),
+            text: TurnText::default(),
+            last_reply: String::new(),
             waiting: 0,
         }
     }
@@ -306,6 +361,13 @@ enum CallbackAction {
         session_id: String,
         label: String,
     },
+    /// 总控面板：置顶消息原地切换到该会话的详情视图。
+    ViewSession {
+        session_id: String,
+        label: String,
+    },
+    /// 详情视图：返回总控清单。
+    PanelBack,
     /// 总控面板：手动刷新面板文本。
     RefreshDashboard,
 }
@@ -318,9 +380,10 @@ impl CallbackAction {
             | CallbackAction::QuestionDecline { session_id, .. }
             | CallbackAction::Plan { session_id, .. }
             | CallbackAction::BindSession { session_id, .. }
-            | CallbackAction::StopTurn { session_id, .. } => session_id,
+            | CallbackAction::StopTurn { session_id, .. }
+            | CallbackAction::ViewSession { session_id, .. } => session_id,
             // 无会话上下文的动作：日志里给个可读名。
-            CallbackAction::RefreshDashboard => "dashboard",
+            CallbackAction::PanelBack | CallbackAction::RefreshDashboard => "dashboard",
         }
     }
 }
@@ -351,8 +414,17 @@ struct Inner {
     pending_plans: HashMap<String, String>,
     /// 总控面板消息（None = 还没发过；用户删了会在下次 edit 失败时重建）。
     dashboard: Option<DashboardHandle>,
+    /// 置顶面板当前展示的视图：总控清单，或某个会话的详情页。
+    view: PanelView,
     pending_pairing: Option<PairingRequest>,
     last_error: Option<String>,
+}
+
+/// 置顶面板的当前视图。
+#[derive(Clone, Debug, PartialEq)]
+enum PanelView {
+    Dashboard,
+    Session(String),
 }
 
 /// 已发出的总控面板消息。
@@ -379,6 +451,7 @@ impl Inner {
             pending_questions: HashMap::new(),
             pending_plans: HashMap::new(),
             dashboard: None,
+            view: PanelView::Dashboard,
             pending_pairing: None,
             last_error: None,
         }
@@ -430,6 +503,16 @@ enum Outbound {
         reply_to: Option<i64>,
         /// true = 以 MarkdownV2 发送（parse 失败自动回退纯文本）。
         md: bool,
+        /// MarkdownV2 被拒时的纯文本回退体（None = 用 text 本身）。
+        plain: Option<String>,
+    },
+    /// 回合结束推送：整段正文交给发送线程，优先 Rich Messages 直投，
+    /// 失败再退 MarkdownV2 分片（见 `deliver_turn_reply`）。
+    TurnReply {
+        header: String,
+        body: String,
+        footer: String,
+        session_id: String,
     },
     /// 前端 performSend 的回执。
     Ack {
@@ -441,8 +524,10 @@ enum Outbound {
     /// 总控面板更新：有 message_id 就 edit，没有就发新 + 置顶。
     Dashboard {
         text: String,
-        /// inline_keyboard 的行分组（会话行 = [名字, ⏹]，末行 = [🔄]）。
+        /// inline_keyboard 的行分组（会话行 = [名字, 📄, ⏹]，末行 = [🔄]）。
         keyboard: Vec<Vec<TgButton>>,
+        /// true = 会话详情视图（正文是原生 markdown，走 rich 编辑投递）。
+        rich: bool,
     },
 }
 
@@ -702,7 +787,7 @@ fn observe_session_update(slot: &'static Telegram, session_id: &str, data: &Valu
             turn_started_now = track.turn_started.is_none() || track.waiting == 0;
             track.turn_started = Some(Instant::now());
             track.last_activity = Instant::now();
-            track.reply_tail.clear();
+            track.text.reset();
         } else {
             // 回合起点锚定在「首个活动」上：Grok 实测从不回显
             // user_message_chunk（2026-10-18 探针），只认用户回显的话这些
@@ -727,7 +812,7 @@ fn observe_session_update(slot: &'static Telegram, session_id: &str, data: &Valu
                             started = true;
                         }
                         track.last_activity = Instant::now();
-                        append_tail(&mut track.reply_tail, &text, TURN_BUFFER_CHARS);
+                        track.text.append(&text);
                     }
                     if started {
                         turn_started_now = true;
@@ -738,6 +823,11 @@ fn observe_session_update(slot: &'static Telegram, session_id: &str, data: &Valu
                 let mut started = false;
                 {
                     let track = inner.track(session_id);
+                    // 工具调用 = agent 消息边界：之前的解说段结业为 previous，
+                    // 末段重新累计（推送只要最后一条消息）。
+                    if kind.contains("tool_call") {
+                        track.text.tool_boundary();
+                    }
                     if track.turn_started.is_none() {
                         track.turn_started = Some(Instant::now());
                         started = true;
@@ -778,7 +868,11 @@ fn observe_turn_complete(
         .and_then(|mut inner| {
             let track = inner.track(session_id);
             let started = track.turn_started.take();
-            let tail = std::mem::take(&mut track.reply_tail);
+            let tail = track.text.take_final();
+            // 详情视图的正文缓存：不受通知偏好影响，只在门控下出本机。
+            if !tail.trim().is_empty() {
+                track.last_reply = clip(tail.trim(), LAST_REPLY_CHARS);
+            }
             Some((started.map(|t| t.elapsed()), tail))
         })
         .unwrap_or((None, String::new()));
@@ -827,8 +921,9 @@ fn observe_turn_complete(
     }
 }
 
-/// 回合回复推送：MarkdownV2 全文分片。主消息带头部，末条带页脚与路由提示；
-/// 每片独立成文（先切原文再转换），parse 失败由发送层回退纯文本兜底。
+/// 回合回复推送：整段正文交给发送线程——优先官方 Rich Messages 直投
+/// （`sendRichMessage`，单条 32K 字符、全文不截断），失败再退 MarkdownV2
+/// 分片老路。见 `deliver_turn_reply`。
 fn enqueue_reply_push(
     live: &LiveConfig,
     header: &str,
@@ -836,35 +931,14 @@ fn enqueue_reply_push(
     footer: &str,
     session_id: &str,
 ) {
-    let mut chunks: Vec<String> = split_markdown_paragraphs(body, REPLY_CHUNK_CHARS)
-        .into_iter()
-        .flat_map(|chunk| fit_markdown_chunk(&chunk))
-        .collect();
-    let mut truncated = false;
-    if chunks.len() > REPLY_MAX_MESSAGES {
-        chunks.truncate(REPLY_MAX_MESSAGES);
-        truncated = true;
-    }
-    let last = chunks.len().saturating_sub(1);
-    for (index, chunk) in chunks.iter().enumerate() {
-        let mut md = String::new();
-        if index == 0 {
-            md.push_str(&md_escape(header));
-            md.push_str("\n\n");
-        }
-        md.push_str(&md_to_markdownv2(chunk));
-        md.push('\n');
-        if index == last {
-            md.push_str("\n");
-            md.push_str(&md_escape(footer));
-            if truncated {
-                md.push_str(&md_escape("\n…（正文太长已截断，回电脑看全文）"));
-            }
-        } else {
-            md.push_str(&md_escape("…（接下条）"));
-        }
-        enqueue_send_markdown(live, md, Some(session_id.to_string()), None);
-    }
+    let _ = live;
+    let Some(slot) = TELEGRAM.get() else { return };
+    let _ = slot.outbound.send(Outbound::TurnReply {
+        header: header.to_string(),
+        body: body.to_string(),
+        footer: footer.to_string(),
+        session_id: session_id.to_string(),
+    });
 }
 
 fn observe_permission_prompt(
@@ -1054,10 +1128,16 @@ fn observe_plan_prompt(slot: &'static Telegram, session_id: &str, data: &Value, 
         .and_then(Value::as_str)
         .unwrap_or("");
     let label = session_label(session_id);
-    let mut text = format!("[{label}] 📋 计划待审");
-    if live.prefs.content_preview && !plan.trim().is_empty() {
-        text.push_str("\n\n");
-        text.push_str(&clip(plan.trim(), 1500));
+    // MarkdownV2 优先渲染（计划正文就是 markdown），纯文本回退体带原文。
+    let trimmed = plan.trim();
+    let mut md = format!("[{label}] 📋 计划待审");
+    let mut plain = md.clone();
+    if live.prefs.content_preview && !trimmed.is_empty() {
+        let body = clip(trimmed, 1500);
+        md.push_str("\n\n");
+        md.push_str(&md_to_markdownv2(&body));
+        plain.push_str("\n\n");
+        plain.push_str(&body);
     }
     let mut buttons = Vec::new();
     for (button_text, decision) in [("✅ 批准", "approve"), ("✏️ 继续改", "request_changes")] {
@@ -1076,7 +1156,14 @@ fn observe_plan_prompt(slot: &'static Telegram, session_id: &str, data: &Value, 
             inner.remember_callback(callback_id, action);
         }
     }
-    enqueue_send(live, text, buttons, Some(session_id.to_string()), None);
+    enqueue_send_md_with_plain(
+        live,
+        md,
+        plain,
+        buttons,
+        Some(session_id.to_string()),
+        None,
+    );
 }
 
 // ─── 总控面板（置顶 dashboard）─────────────────────────────────────────────
@@ -1147,7 +1234,7 @@ fn render_dashboard(rows: &[DashRow], idle_count: usize) -> String {
     if idle_count > 0 {
         out.push_str(&format!("\n💤 其余 {idle_count} 个会话空闲"));
     }
-    out.push_str("\n💡 点会话名 = 切换裸发文字的去向 · /status 看全部");
+    out.push_str("\n💡 点会话名 = 切换绑定 · 📄 = 会话详情 · /status 看全部");
     out
 }
 
@@ -1180,12 +1267,32 @@ fn render_status(rows: &[DashRow], total: usize) -> String {
 }
 
 /// 快照 + 取名 + 组装 + 投递。绝不在持有 inner 锁时碰 storage/acp（锁序红线）。
+/// 置顶面板只有一个 message_id，当前视图（总控 / 某会话详情）由 `Inner.view`
+/// 决定——点 📄 原地切到详情，点 ⬅ 切回总控；状态变化照常触发重画（画的是
+/// 当前视图）。
 fn schedule_dashboard(slot: &'static Telegram) {
     let live = slot.live.lock().ok().map(|l| l.clone());
     let Some(live) = live else { return };
     if !live.active() {
         return;
     }
+    let view = slot.inner.lock().ok().map(|inner| inner.view.clone());
+    let (text, keyboard, rich) = match view {
+        Some(PanelView::Session(session_id)) => {
+            match session_detail_parts(slot, &session_id, live.prefs.content_preview) {
+                Some(parts) => parts,
+                // 会话查不到（没有 track）：退回总控视图。
+                None => dashboard_parts(slot),
+            }
+        }
+        _ => dashboard_parts(slot),
+    };
+
+    let _ = slot.outbound.send(Outbound::Dashboard { text, keyboard, rich });
+}
+
+/// 总控面板的文本与键盘（会话行 = [名字, 📄, ⏹]，末行 = [🔄]）。
+fn dashboard_parts(slot: &'static Telegram) -> (String, Vec<Vec<TgButton>>, bool) {
     let (rows, idle_count) = dashboard_snapshot(slot, DASHBOARD_MAX_ROWS, false);
     let text = render_dashboard(&rows, idle_count);
 
@@ -1201,7 +1308,16 @@ fn schedule_dashboard(slot: &'static Telegram) {
             &clip(&row.label, 26),
         );
         actions.push((bind_btn.clone(), bind_id, bind_action));
-        let mut line = vec![bind_btn];
+        let (view_btn, view_id, view_action) = make_button(
+            slot,
+            CallbackAction::ViewSession {
+                session_id: row.session_id.clone(),
+                label: row.label.clone(),
+            },
+            "📄",
+        );
+        actions.push((view_btn.clone(), view_id, view_action));
+        let mut line = vec![bind_btn, view_btn];
         if row.state != DashState::Idle {
             let (stop_btn, stop_id, stop_action) = make_button(
                 slot,
@@ -1220,14 +1336,133 @@ fn schedule_dashboard(slot: &'static Telegram) {
         make_button(slot, CallbackAction::RefreshDashboard, "🔄 刷新");
     actions.push((refresh_btn.clone(), refresh_id, refresh_action));
     keyboard.push(vec![refresh_btn]);
-
     if let Ok(mut inner) = slot.inner.lock() {
         for (button, id, action) in actions {
             let _ = button;
             inner.remember_callback(id, action);
         }
     }
-    let _ = slot.outbound.send(Outbound::Dashboard { text, keyboard });
+    (text, keyboard, false)
+}
+
+/// 会话详情视图的文本与键盘。正文受 `content_preview` 偏好门控
+/// （关 = 内容不出本机，只给状态）。
+fn session_detail_parts(
+    slot: &'static Telegram,
+    session_id: &str,
+    include_body: bool,
+) -> Option<(String, Vec<Vec<TgButton>>, bool)> {
+    let row = session_row(slot, session_id)?;
+    let last_reply = slot
+        .inner
+        .lock()
+        .ok()
+        .and_then(|inner| {
+            inner
+                .sessions
+                .get(session_id)
+                .map(|track| track.last_reply.clone())
+        })
+        .unwrap_or_default();
+    let text = render_session_detail(
+        &row,
+        if include_body { last_reply.as_str() } else { "" },
+        include_body,
+    );
+
+    let mut actions: Vec<(TgButton, u64, CallbackAction)> = Vec::new();
+    let mut keyboard: Vec<Vec<TgButton>> = Vec::new();
+    let (back_btn, back_id, back_action) = make_button(slot, CallbackAction::PanelBack, "⬅ 返回总控");
+    actions.push((back_btn.clone(), back_id, back_action));
+    let mut line = vec![back_btn];
+    if row.state != DashState::Idle {
+        let (stop_btn, stop_id, stop_action) = make_button(
+            slot,
+            CallbackAction::StopTurn {
+                session_id: session_id.to_string(),
+                label: row.label.clone(),
+            },
+            "⏹ 停止",
+        );
+        actions.push((stop_btn.clone(), stop_id, stop_action));
+        line.push(stop_btn);
+    }
+    keyboard.push(line);
+    let (bind_btn, bind_id, bind_action) = make_button(
+        slot,
+        CallbackAction::BindSession {
+            session_id: session_id.to_string(),
+            label: row.label.clone(),
+        },
+        "⏎ 设为绑定",
+    );
+    actions.push((bind_btn.clone(), bind_id, bind_action));
+    keyboard.push(vec![bind_btn]);
+    if let Ok(mut inner) = slot.inner.lock() {
+        for (button, id, action) in actions {
+            let _ = button;
+            inner.remember_callback(id, action);
+        }
+    }
+    Some((text, keyboard, true))
+}
+
+/// 单会话的行数据（详情视图用）。没有 track（从未见动静）返回 None。
+fn session_row(slot: &'static Telegram, session_id: &str) -> Option<DashRow> {
+    let raw = slot.inner.lock().ok().and_then(|inner| {
+        inner.sessions.get(session_id).map(|track| {
+            (
+                track.state(),
+                track.turn_started.map(|t| t.elapsed().as_secs()),
+                track.last_activity.elapsed().as_secs(),
+                inner.last_user_session.as_deref() == Some(session_id),
+            )
+        })
+    });
+    let Some((state, elapsed_secs, idle_secs, bound)) = raw else {
+        return None;
+    };
+    let meta = session_meta(session_id);
+    Some(DashRow {
+        session_id: session_id.to_string(),
+        label: meta.label,
+        agent: meta.agent,
+        state,
+        elapsed_secs,
+        idle_secs,
+        bound,
+    })
+}
+
+/// 纯渲染：会话详情视图文本。正文是原生 markdown，由 `editMessageText` 的
+/// `rich_message` 参数渲染（客户端原生表格/代码块/标题）。
+fn render_session_detail(row: &DashRow, body: &str, body_allowed: bool) -> String {
+    let marker = if row.bound { "⏎ " } else { "" };
+    let agent = if row.agent.is_empty() {
+        String::new()
+    } else {
+        format!(" · {}", row.agent)
+    };
+    let state_line = match row.state {
+        DashState::Running => format!(
+            "▶ 跑了 {}",
+            row.elapsed_secs
+                .map(format_duration_secs)
+                .unwrap_or_else(|| "…".to_string())
+        ),
+        DashState::Waiting => "⏸ 等你批准/回答".to_string(),
+        DashState::Idle => format!("💤 {}前有动静", format_age_short(row.idle_secs)),
+    };
+    let mut out = format!("📄 {marker}[{}]{agent} · {state_line}\n\n", row.label);
+    if !body_allowed {
+        out.push_str("🔒 内容预览已关闭——正文不出本机（设置里可开）");
+    } else if body.trim().is_empty() {
+        out.push_str("（最近一条回复为空——回合还没跑完，或 agent 没有输出文本）");
+    } else {
+        out.push_str(body.trim());
+    }
+    out.push_str("\n\n💡 回复任意一条通知 = 定向继续这个会话");
+    out
 }
 
 /// inner 快照 → 行数据（标签/agent 事后另行查询，避免锁序纠缠）。
@@ -1363,24 +1598,29 @@ fn enqueue_send(
         route_for_session,
         reply_to,
         md: false,
+        plain: None,
     });
 }
 
-/// 同上，但以 MarkdownV2 发送（回合回复正文用）。
-fn enqueue_send_markdown(
+/// MarkdownV2 优先、带按钮、并可指定纯文本回退体（回退体不带转义反斜杠，
+/// 读起来比 MarkdownV2 原文干净——计划卡片用）。
+fn enqueue_send_md_with_plain(
     live: &LiveConfig,
-    text: String,
+    md: String,
+    plain: String,
+    buttons: Vec<TgButton>,
     route_for_session: Option<String>,
     reply_to: Option<i64>,
 ) {
     let _ = live;
     let Some(slot) = TELEGRAM.get() else { return };
     let _ = slot.outbound.send(Outbound::Send {
-        text,
-        buttons: Vec::new(),
+        text: md,
+        buttons,
         route_for_session,
         reply_to,
         md: true,
+        plain: Some(plain),
     });
 }
 
@@ -1399,7 +1639,10 @@ fn sender_loop(slot: &'static Telegram, rx: std::sync::mpsc::Receiver<Outbound>)
         let mut route_for_session: Option<String> = None;
         let mut reply_to: Option<i64> = None;
         let mut parse_mode: Option<&'static str> = None;
+        let mut plain_fallback: Option<String> = None;
         let mut is_dashboard = false;
+        let mut dashboard_rich = false;
+        let mut turn: Option<(String, String, String, String)> = None;
         match job {
             Outbound::Send {
                 text,
@@ -1407,6 +1650,7 @@ fn sender_loop(slot: &'static Telegram, rx: std::sync::mpsc::Receiver<Outbound>)
                 route_for_session: route,
                 reply_to: reply,
                 md,
+                plain,
             } => {
                 job_text = text;
                 job_keyboard = if buttons.is_empty() {
@@ -1416,9 +1660,20 @@ fn sender_loop(slot: &'static Telegram, rx: std::sync::mpsc::Receiver<Outbound>)
                 };
                 route_for_session = route;
                 reply_to = reply;
+                plain_fallback = plain;
                 if md {
                     parse_mode = Some("MarkdownV2");
                 }
+            }
+            Outbound::TurnReply {
+                header,
+                body,
+                footer,
+                session_id,
+            } => {
+                turn = Some((header, body, footer, session_id));
+                job_text = String::new();
+                job_keyboard = Vec::new();
             }
             Outbound::Ack {
                 ok,
@@ -1437,19 +1692,36 @@ fn sender_loop(slot: &'static Telegram, rx: std::sync::mpsc::Receiver<Outbound>)
                 job_keyboard = Vec::new();
                 reply_to = reply;
             }
-            Outbound::Dashboard { text, keyboard } => {
+            Outbound::Dashboard {
+                text,
+                keyboard,
+                rich,
+            } => {
                 job_text = text;
                 job_keyboard = keyboard;
                 is_dashboard = true;
+                dashboard_rich = rich;
             }
         };
 
-        if is_dashboard {
-            deliver_dashboard(&live, &job_text, &job_keyboard);
+        if let Some((header, body, footer, session_id)) = turn {
+            deliver_turn_reply(slot, &live, &header, &body, &footer, &session_id);
             continue;
         }
 
-        match send_message(&live, &job_text, &job_keyboard, reply_to, parse_mode) {
+        if is_dashboard {
+            deliver_dashboard(&live, &job_text, &job_keyboard, dashboard_rich);
+            continue;
+        }
+
+        match send_message(
+            &live,
+            &job_text,
+            &job_keyboard,
+            reply_to,
+            parse_mode,
+            plain_fallback.as_deref(),
+        ) {
             Ok(message_id) => {
                 backoff = BACKOFF_MIN;
                 if let (Some(session_id), Some(message_id)) = (route_for_session, message_id) {
@@ -1470,8 +1742,116 @@ fn sender_loop(slot: &'static Telegram, rx: std::sync::mpsc::Receiver<Outbound>)
     }
 }
 
+/// 回合回复投递：优先官方 Rich Messages（Bot API 10.1 `sendRichMessage`，
+/// `rich_message.markdown` 收原生 markdown——不转义、标题/表格/代码块/公式
+/// 由客户端渲染，单条 32K 字符所以全文不截断）；任何失败退回 MarkdownV2
+/// 分片老路（每片 parse 失败再退纯文本）。投递是底线，富格式是增益。
+fn deliver_turn_reply(
+    slot: &'static Telegram,
+    live: &LiveConfig,
+    header: &str,
+    body: &str,
+    footer: &str,
+    session_id: &str,
+) {
+    let rich = format!("{header}\n\n{body}\n\n{footer}");
+    match send_rich_message(live, &rich) {
+        Ok(message_id) => {
+            if let Some(message_id) = message_id {
+                if let Ok(mut inner) = slot.inner.lock() {
+                    inner.remember_route(message_id, session_id);
+                }
+            }
+            return;
+        }
+        Err(error) => {
+            log(
+                "warn",
+                "sendRichMessage failed — falling back to MarkdownV2 chunks",
+                Some(&error),
+            );
+        }
+    }
+
+    let mut chunks: Vec<String> = split_markdown_paragraphs(body, REPLY_CHUNK_CHARS)
+        .into_iter()
+        .flat_map(|chunk| fit_markdown_chunk(&chunk))
+        .collect();
+    let mut truncated = false;
+    if chunks.len() > REPLY_MAX_MESSAGES {
+        chunks.truncate(REPLY_MAX_MESSAGES);
+        truncated = true;
+    }
+    let last = chunks.len().saturating_sub(1);
+    for (index, chunk) in chunks.iter().enumerate() {
+        let mut md = String::new();
+        let mut plain = String::new();
+        if index == 0 {
+            md.push_str(&md_escape(header));
+            md.push_str("\n\n");
+            plain.push_str(header);
+            plain.push_str("\n\n");
+        }
+        md.push_str(&md_to_markdownv2(chunk));
+        md.push('\n');
+        plain.push_str(chunk);
+        if index == last {
+            md.push_str("\n");
+            md.push_str(&md_escape(footer));
+            plain.push_str("\n\n");
+            plain.push_str(footer);
+            if truncated {
+                let note = "\n…（正文太长已截断，回电脑看全文）";
+                md.push_str(&md_escape(note));
+                plain.push_str(note);
+            }
+        } else {
+            md.push_str(&md_escape("…（接下条）"));
+            plain.push_str("\n…（接下条）");
+        }
+        match send_message(live, &md, &[], None, Some("MarkdownV2"), Some(&plain)) {
+            Ok(Some(message_id)) => {
+                if let Ok(mut inner) = slot.inner.lock() {
+                    inner.remember_route(message_id, session_id);
+                }
+            }
+            Ok(None) => {}
+            Err(error) => log("warn", "turn reply chunk failed", Some(&error)),
+        }
+    }
+}
+
+/// Rich Messages 直投：`rich_message.markdown` 收原生 markdown。返回
+/// Telegram 分配的 message_id。
+fn send_rich_message(live: &LiveConfig, markdown: &str) -> Result<Option<i64>, String> {
+    let Some(token) = live.token.as_deref() else {
+        return Err("no token".to_string());
+    };
+    let Some(chat_id) = live.chat_id else {
+        return Err("no paired chat".to_string());
+    };
+    let body = rich_request_body(chat_id, markdown);
+    let value = tg_call(
+        token,
+        "sendRichMessage",
+        &body,
+        Duration::from_secs(SEND_HTTP_TIMEOUT_SECS),
+    )?;
+    Ok(value.pointer("/result/message_id").and_then(Value::as_i64))
+}
+
+/// `sendRichMessage` 请求体（纯函数，形状由单测钉住）。
+fn rich_request_body(chat_id: i64, markdown: &str) -> Value {
+    json!({
+        "chat_id": chat_id,
+        "rich_message": { "markdown": clip_utf16(markdown, RICH_MARKDOWN_LIMIT) },
+    })
+}
+
 /// 面板投递：已有 message_id 就原地 edit；edit 失败（消息被删等）就发新 + 置顶。
-fn deliver_dashboard(live: &LiveConfig, text: &str, keyboard: &[Vec<TgButton>]) {
+/// `rich=true`（会话详情视图）先按 `rich_message` 参数编辑（原生 markdown 渲染），
+/// 被拒再退普通 text 编辑——按钮永远保住。
+fn deliver_dashboard(live: &LiveConfig, text: &str, keyboard: &[Vec<TgButton>], rich: bool) {
     let Some(slot) = TELEGRAM.get() else { return };
     let existing = slot
         .inner
@@ -1479,7 +1859,13 @@ fn deliver_dashboard(live: &LiveConfig, text: &str, keyboard: &[Vec<TgButton>]) 
         .ok()
         .and_then(|mut inner| inner.dashboard.take().map(|handle| handle.message_id));
     if let Some(message_id) = existing {
-        match edit_message(live, message_id, text, keyboard) {
+        let edited = if rich {
+            edit_message(live, message_id, text, keyboard, true)
+                .or_else(|_| edit_message(live, message_id, text, keyboard, false))
+        } else {
+            edit_message(live, message_id, text, keyboard, false)
+        };
+        match edited {
             Ok(()) => {
                 if let Ok(mut inner) = slot.inner.lock() {
                     inner.dashboard = Some(DashboardHandle { message_id });
@@ -1499,7 +1885,8 @@ fn deliver_dashboard(live: &LiveConfig, text: &str, keyboard: &[Vec<TgButton>]) 
             }
         }
     }
-    match send_message(live, text, keyboard, None, None) {
+    // 重建走普通 sendMessage：sendRichMessage 不带普通内联键盘，按钮优先。
+    match send_message(live, text, keyboard, None, None, None) {
         Ok(Some(message_id)) => {
             if let Ok(mut inner) = slot.inner.lock() {
                 inner.dashboard = Some(DashboardHandle { message_id });
@@ -1520,19 +1907,21 @@ fn deliver_dashboard(live: &LiveConfig, text: &str, keyboard: &[Vec<TgButton>]) 
 
 /// 发送一条消息；成功返回 Telegram 分配的 message_id。
 /// `keyboard` 为 inline_keyboard 的行分组（空 = 无按钮）。
-/// MarkdownV2 发送失败（解析拒绝、转义后超长……）时自动回退纯文本重发
-/// 一次——格式化是增益，投递是底线。
+/// `plain_fallback`：MarkdownV2 发送失败（解析拒绝、转义后超长……）时改发
+/// 这段纯文本（None = 用 text 本身）——格式化是增益，投递是底线。
 fn send_message(
     live: &LiveConfig,
     text: &str,
     keyboard: &[Vec<TgButton>],
     reply_to: Option<i64>,
     parse_mode: Option<&str>,
+    plain_fallback: Option<&str>,
 ) -> Result<Option<i64>, String> {
     match send_message_inner(live, text, keyboard, reply_to, parse_mode) {
         Err(ref error) if parse_mode.is_some() => {
             log("warn", "MarkdownV2 send failed — resending as plain text", Some(error));
-            send_message_inner(live, text, keyboard, reply_to, None)
+            let fallback = plain_fallback.unwrap_or(text);
+            send_message_inner(live, fallback, keyboard, reply_to, None)
         }
         result => result,
     }
@@ -1574,12 +1963,15 @@ fn send_message_inner(
     Ok(value.pointer("/result/message_id").and_then(Value::as_i64))
 }
 
-/// 原地编辑面板消息（文本 + 键盘一起换）。
+/// 原地编辑面板消息（文本 + 键盘一起换）。`rich=true` 时正文走
+/// `rich_message` 参数（Bot API 10.1 给 editMessageText 加的，原生 markdown
+/// 渲染）。
 fn edit_message(
     live: &LiveConfig,
     message_id: i64,
     text: &str,
     keyboard: &[Vec<TgButton>],
+    rich: bool,
 ) -> Result<(), String> {
     let Some(token) = live.token.as_deref() else {
         return Err("no token".to_string());
@@ -1587,11 +1979,19 @@ fn edit_message(
     let Some(chat_id) = live.chat_id else {
         return Err("no paired chat".to_string());
     };
-    let mut body = json!({
-        "chat_id": chat_id,
-        "message_id": message_id,
-        "text": clip(text, MAX_MESSAGE_CHARS),
-    });
+    let mut body = if rich {
+        json!({
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "rich_message": { "markdown": clip_utf16(text, RICH_MARKDOWN_LIMIT) },
+        })
+    } else {
+        json!({
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": clip(text, MAX_MESSAGE_CHARS),
+        })
+    };
     if !keyboard.is_empty() {
         body["reply_markup"] = reply_markup(keyboard);
     }
@@ -1833,15 +2233,17 @@ fn handle_incoming_message(slot: &'static Telegram, live: &LiveConfig, message: 
                     &[],
                     message_id,
                     None,
+                    None,
                 );
                 schedule_dashboard(slot);
             }
             _ => {
                 let _ = send_message(
                     live,
-                    "用法：直接发文字 → 送进 ⏎ 当前绑定的会话；回复某条通知 → 定到那个会话；\n/status → 全部会话的状态清单。顶部的「总控」面板实时显示谁在跑、谁在等你，点会话名即可切换绑定。",
+                    "用法：直接发文字 → 送进 ⏎ 当前绑定的会话；回复某条通知 → 定到那个会话；\n/status → 全部会话的状态清单。顶部的「总控」面板实时显示谁在跑、谁在等你，点会话名切换绑定、点 📄 看会话详情。",
                     &[],
                     message_id,
+                    None,
                     None,
                 );
             }
@@ -1872,6 +2274,7 @@ fn handle_incoming_message(slot: &'static Telegram, live: &LiveConfig, message: 
             "还没有可以投递的会话——先在电脑上开一个对话框，或回复某条通知来指定。",
             &[],
             message_id,
+            None,
             None,
         );
         return;
@@ -1986,6 +2389,20 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
             .acp
             .cancel(session_id)
             .map(|()| format!("⏹ 已请求停止 [{label}]")),
+        CallbackAction::ViewSession { session_id, label } => {
+            if let Ok(mut inner) = slot.inner.lock() {
+                inner.view = PanelView::Session(session_id.clone());
+            }
+            schedule_dashboard(slot);
+            Ok(format!("📄 [{label}] 详情"))
+        }
+        CallbackAction::PanelBack => {
+            if let Ok(mut inner) = slot.inner.lock() {
+                inner.view = PanelView::Dashboard;
+            }
+            schedule_dashboard(slot);
+            Ok("已返回总控".to_string())
+        }
         CallbackAction::RefreshDashboard => {
             schedule_dashboard(slot);
             Ok("已刷新".to_string())
@@ -3294,5 +3711,85 @@ mod tests {
         let clipped = clip_utf16(&emoji, 7);
         assert_eq!(clipped.encode_utf16().count(), 6, "按码元切在字符边界上");
         assert!(clipped.chars().all(|c| c == '😀'));
+    }
+
+    #[test]
+    fn turn_text_pushes_only_the_last_segment() {
+        // 工具调用之间的解说段不进推送（用户实测「乱七八糟都一起发过来了」）。
+        let mut text = TurnText::default();
+        text.append("我先看看文件。\n");
+        text.tool_boundary();
+        text.append("改完了，");
+        text.append("测试全绿");
+        assert_eq!(text.take_final(), "改完了，测试全绿");
+        // 取完清空，不跨回合泄漏。
+        assert_eq!(text.take_final(), "");
+    }
+
+    #[test]
+    fn turn_text_falls_back_to_previous_segment_on_tool_ended_turn() {
+        // 回合以工具调用收尾（末段为空）：退回上一段，免得推空正文。
+        let mut text = TurnText::default();
+        text.append("中途结论……");
+        text.tool_boundary();
+        assert_eq!(text.take_final(), "中途结论……");
+        // 连续工具调用（空段）不覆盖 previous。
+        text.append("A");
+        text.tool_boundary();
+        text.tool_boundary();
+        assert_eq!(text.take_final(), "A");
+    }
+
+    #[test]
+    fn turn_text_reset_clears_both_segments() {
+        let mut text = TurnText::default();
+        text.append("旧段");
+        text.tool_boundary();
+        text.append("新段");
+        text.reset();
+        assert_eq!(text.take_final(), "");
+    }
+
+    #[test]
+    fn rich_request_body_carries_native_markdown_unescaped() {
+        let body = rich_request_body(7, "**完成**\n\n| a | b |\n|---|---|");
+        assert_eq!(body["chat_id"], json!(7));
+        // 原生 markdown 原样直投，绝不做 MarkdownV2 转义。
+        assert_eq!(
+            body["rich_message"]["markdown"],
+            json!("**完成**\n\n| a | b |\n|---|---|")
+        );
+        // 超限按 UTF-16 码元裁剪（32768 硬顶留余量）。
+        let long = "字".repeat(40_000);
+        let clipped = rich_request_body(1, &long);
+        assert!(
+            clipped["rich_message"]["markdown"]
+                .as_str()
+                .unwrap()
+                .encode_utf16()
+                .count()
+                <= RICH_MARKDOWN_LIMIT
+        );
+    }
+
+    #[test]
+    fn render_session_detail_shows_state_body_and_privacy_gate() {
+        let row = dash_row("主线", "Claude Code", DashState::Running, Some(125), 0, true);
+        let text = render_session_detail(&row, "改完了，测试全绿", true);
+        assert!(text.contains("📄 ⏎ [主线] · Claude Code"), "{text}");
+        assert!(text.contains("跑了 2分05秒"), "{text}");
+        assert!(text.contains("改完了，测试全绿"), "{text}");
+        assert!(text.contains("定向继续这个会话"), "{text}");
+        // 内容预览关闭 → 正文不出本机。
+        let locked = render_session_detail(&row, "秘密内容", false);
+        assert!(locked.contains("内容预览已关闭"), "{locked}");
+        assert!(!locked.contains("秘密内容"), "{locked}");
+        // 空正文给提示，不推空块。
+        let empty = render_session_detail(&row, "  ", true);
+        assert!(empty.contains("最近一条回复为空"), "{empty}");
+        // 空闲态显示闲置年龄。
+        let idle = dash_row("调研", "", DashState::Idle, None, 240, false);
+        let idle_text = render_session_detail(&idle, "", true);
+        assert!(idle_text.contains("4分钟前有动静"), "{idle_text}");
     }
 }
