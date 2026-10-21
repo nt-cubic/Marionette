@@ -231,3 +231,46 @@ session/new → set_config → **真实 turn**（经引擎/订阅回 "ok"）。
    只有真请求能暴露。
 2. 给 dsh 挂自定义 provider 的凭据 ref，**永远用 `<provider>_API_KEY` 形态**；
    web Models 页手配的第三方 provider 也是这么存名的。
+
+### 8.6 上线后补课二：定制路由的模型默认「看不见图」（2026-10-21）
+
+**症状**：DSH 里给 `marionette` 路由的 `opencode-go/deepseek-v4.1-flash` 附图，
+模型回一句「图被省略」；DSH 会话/请求里的用户消息变成
+
+```
+[image omitted because this model accepts text only; attachment sha256:25c19047]
+```
+
+——图根本没出 Marionette，也没到引擎。
+
+**根因（全在 DSH 侧，与引擎无关）**：`dsh-llm` 在发请求前按
+`modelInfo.inputModalities` 投影内容，**不含 `"image"` 就把 image block 换成上面
+那段占位文本**（`projectImagesForTextModel` / `textOnlyImageText`，dsh 0.2.1-rc.2
+`dsh-llm/lib/index.js` 的 `adapterStream`）。而 `inputModalities` 来自
+`dsh-llm-pi-ai` 解析出的模型描述符：`input = entry.input ?? base?.input ??
+request.defaultInput`（`DEFAULT_INPUT = ["text"]`）。`marionette` 是**目录外的
+自定义路由**，`base` 不存在；桥此前每条模型只写 `- id:`，于是所有模型（包括
+引擎目录明明标了 `modalities.input: ["text","image"]` 的）都被 DSH 当成盲模型。
+
+**A/B 实弹（临时 `DSH_HOME` + 假 OpenAI 端点抓请求体）**：
+
+| 路由里的模型条目 | 主请求里有什么 |
+|---|---|
+| `- id: "…"` | `[image omitted because this model accepts text only; …]`，无 image block |
+| `- id: "…"` + `input: [text, image]` | `image_url: "data:image/png;base64,…"`，无占位文本 |
+
+**修复**：`dsh_bridge.rs` 生成 `models:` 时按引擎 `/v1/models` 的
+`modalities.input` 给模型补 `input: [text, image]`（`model_bridge::CatalogModelRow.images`
+→ `parse_models_catalog_rows` 解析，`engine::catalog_direct_entries` 原样带出）。
+没标图能力的模型不写 `input`，保持 pi-ai 默认 `[text]`：DSH 就地省略图片，而不是
+把图打到上游换一个 400（magpie 对文本模型收图正是 400
+`model "…" does not support image input`）。
+
+**上线复验（真 ACP 链路，非探针假端点）**：`initialize` → `session/new` →
+`set_config_option(model=marionette::opencode-go/deepseek-v4.1-flash)` →
+`session/prompt`（内容块数组：文字 + `{"type":"image","mimeType":"image/png",data}`），
+一张写着 `MARIONETTE-7421` 的 PNG 被原样读出，`stopReason: end_turn`，无占位文本。
+
+**教训**：给 pi-ai 自定义路由广告模型，**`id` 不是全部**——`input`（以及
+`contextWindow`/`maxTokens`）不写就是 pi-ai 的默认值，DSH 会按默认值做内容投影。
+桥目录以后加能力位，先看 pi-ai `modelProfile` 有哪些字段。

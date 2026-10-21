@@ -111,6 +111,9 @@ Marionette 的 DSH agent 走 `@openma/deepseek-harness-acp`（bin `dsh-acp`）�
   `/v1/models` 的 `context_window`/`max_output_tokens`）——**不写的话 dsh-llm-pi-ai 对所有
   marionette 路由模型落 `DEFAULT_CONTEXT_WINDOW = 262144`（256K）兜底**，1M 的 DeepSeek 会
   被显示成 256K、自动压缩阈值跟着错（2026-10-21 实测修复）。
+  能看图的模型再补 `input: [text, image]`（`CatalogModelRow.images`，引擎 `modalities.input`）：
+  **不写就是 pi-ai 默认 `[text]`，DSH 会把附图换成「image omitted because this model accepts
+  text only」占位文本**，图根本不出适配器（2026-10-21 实弹复验，见 §8.6）。
   模型 id 广告为 `marionette::provider/model`（首个 `::` 切分，斜杠安全）。定稿与探针记录：
   `docs/research-dsh-cross-use.md` §8。
 

@@ -1087,6 +1087,10 @@ pub(crate) struct CatalogModelRow {
     pub context_window: u64,
     /// `max_output_tokens`（回复上限）。
     pub max_output: u64,
+    /// 接受图片输入（`modalities.input` 含 "image"）。dsh 的 llm-pi-ai 对
+    /// 没声明 `input` 的模型一律按 `[text]` 处理，DSH 会把用户附图换成
+    /// 「image omitted because this model accepts text only」占位文本。
+    pub images: bool,
 }
 
 /// 目录 JSON → 模型行（保序去重，带窗口/输出上限）。engine.rs 的引擎目录共用。
@@ -1123,9 +1127,27 @@ pub(crate) fn parse_models_catalog_rows(text: &str) -> Vec<CatalogModelRow> {
             id: id.to_string(),
             context_window: positive(item, &["context_window", "context_length", "max_input_tokens"]),
             max_output: positive(item, &["max_output_tokens", "max_tokens"]),
+            images: catalog_item_takes_images(item),
         });
     }
     out
+}
+
+/// 目录条目的图片输入能力：`modalities.input` 含 "image"（`modalities` 本身
+/// 就是模态数组的来源按输入模态读）。没声明按文本模型处理——DSH 桥对未知
+/// 保持保守结论，图在适配器就地省略，而不是打到上游换 400。
+fn catalog_item_takes_images(item: &serde_json::Value) -> bool {
+    let Some(modalities) = item.get("modalities") else {
+        return false;
+    };
+    let input = if modalities.is_array() {
+        Some(modalities)
+    } else {
+        modalities.get("input")
+    };
+    input
+        .and_then(|value| value.as_array())
+        .is_some_and(|kinds| kinds.iter().any(|kind| kind.as_str() == Some("image")))
 }
 
 /// 目录 JSON → 模型 id 列表（保序去重）。engine.rs 的引擎目录共用。
@@ -3692,12 +3714,38 @@ Connection: close
                 id: "deepseek/deepseek-flash".into(),
                 context_window: 1_000_000,
                 max_output: 384_000,
+                images: false,
             }
         );
         assert_eq!(rows[1].context_window, 0, "没说的窗口是 0（不写 contextWindow）");
         assert_eq!(rows[1].max_output, 0);
         assert_eq!(rows[2].context_window, 500_000);
         assert_eq!(rows[2].max_output, 0, "max_output_tokens 0 = 未披露");
+    }
+
+    /// 图片能力来自 `modalities.input`（magpie `/v1/models` 的形状）：DSH 桥
+    /// 靠它决定是否给模型条目写 `input: [text, image]`。没声明（或只列 text）
+    /// 的来源按文本模型处理。
+    #[test]
+    fn parses_image_capability_from_modalities() {
+        let rows = parse_models_catalog_rows(
+            r#"{"data":[
+                {"id":"opencode-go/deepseek-v4.1-flash","modalities":{"input":["text","image"],"output":["text"]}},
+                {"id":"opencode-go/deepseek-v4-pro","modalities":{"input":["text"],"output":["text"]}},
+                {"id":"plain/m1"},
+                {"id":"array/m1","modalities":["text","image"]}
+            ]}"#,
+        );
+        let images: Vec<(String, bool)> = rows.into_iter().map(|row| (row.id, row.images)).collect();
+        assert_eq!(
+            images,
+            vec![
+                ("opencode-go/deepseek-v4.1-flash".to_string(), true),
+                ("opencode-go/deepseek-v4-pro".to_string(), false),
+                ("plain/m1".to_string(), false),
+                ("array/m1".to_string(), true),
+            ]
+        );
     }
     /// reference 并入 list_models：grok / claude 看到 opencode auth.json 里映射
     /// 得到 preset 的条目（模型列表为空的来源也要出现）；宿主 opencode 自己
