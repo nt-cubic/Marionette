@@ -1876,6 +1876,7 @@ pub fn catalog_entries() -> Vec<crate::model_bridge::CatalogModelRow> {
                 id,
                 context_window: 0,
                 max_output: 0,
+                images: false,
             })
             .collect();
     }

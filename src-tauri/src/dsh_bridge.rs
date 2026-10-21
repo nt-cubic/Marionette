@@ -205,6 +205,9 @@ fn marionette_lines(
     ];
     for model in models {
         block.push(format!("{pad4}- id: \"{}\"", escape_double_quoted(&model.id)));
+        if model.images {
+            block.push(format!("{pad5}input: [text, image]"));
+        }
         if model.context_window > 0 {
             block.push(format!("{pad5}contextWindow: {}", model.context_window));
         }
@@ -563,17 +566,20 @@ mod tests {
                 id: "group/auto-claude-haiku-5-5".to_string(),
                 context_window: 0,
                 max_output: 0,
+                images: false,
             },
             CatalogModelRow {
                 id: "opencode-go/grok-4.7".to_string(),
                 context_window: 500_000,
                 max_output: 250_000,
+                images: true,
             },
             CatalogModelRow {
                 id: "deepseek/deepseek-flash".to_string(),
                 // 引擎没说窗口（0）→ 不写 contextWindow，dsh 落自己的兜底。
                 context_window: 0,
                 max_output: 0,
+                images: false,
             },
         ]
     }
@@ -598,6 +604,30 @@ mod tests {
             text.matches("contextWindow:").count(),
             1,
             "只有引擎披露窗口的模型才写 contextWindow"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 引擎目录标了 text+image 的模型必须带 `input: [text, image]`——pi-ai 对
+    /// 自定义路由默认 `input: [text]`，DSH 会据此把附图换成
+    /// 「image omitted because this model accepts text only」占位文本；纯文本
+    /// 模型不写（否则图会打到上游换回 400，而不是被 DSH 就地省略）。
+    #[test]
+    fn writes_image_capability_only_for_vision_models() {
+        let dir = temp_dir("vision");
+        let patch = dir.join("cordis.patch.yml");
+        ensure_route_at(&patch, &dir.join(".credentials.yaml"), 3425, &models()).unwrap();
+        let text = fs::read_to_string(&patch).unwrap();
+        assert_eq!(
+            text.matches("input: [text, image]").count(),
+            1,
+            "只有引擎标了 image 的模型才写 input"
+        );
+        assert!(
+            text.contains(
+                "          - id: \"opencode-go/grok-4.7\"\n            input: [text, image]\n"
+            ),
+            "vision model 要声明 input 且与 id 同列缩进:\n{text}"
         );
         fs::remove_dir_all(&dir).ok();
     }
