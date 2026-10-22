@@ -3,9 +3,9 @@
 // the gateway for other computers' agents. boot.js says so and the page
 // opens on Providers with no Agents or Library tab, an address
 // kept for one of them opening Providers; Settings leaves out what is
-// written into this computer's agents' files (provider in model names,
-// Codex subagents, long conversations, Codex thread titles) and the
-// desktop's alerts, and General has the switch — Automatic, On, Off —
+// written into this computer's agents' files (provider in model names;
+// the Codex and Claude Code settings live on the Agents page, which is
+// gone) and the desktop's alerts, and General has the switch — Automatic, On, Off —
 // saying why it is on. Off brings the tabs and the rows back at once, the
 // Agents page opening again; Automatic takes them away again. magpie web
 // not in gateway mode keeps every tab, and the switch is magpie web's
@@ -16,6 +16,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { watchSettingsReads, agentRow, openAgentSettings } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 
@@ -34,7 +35,7 @@ function settingsPayload(over) {
 }
 
 // agents says whether magpie found agents here: Automatic is on without
-// notice is Settings' warning for the Codex subagents row, when the answer
+// notice is the warning on Codex's subagents row, when the answer
 // carries one
 function server(lang, posts, { web = true, gateway = true, agents = false, notice } = {}) {
   const why = (mode) => (mode === "on" || mode === "off" ? mode : agents ? "" : "no-agents");
@@ -45,7 +46,7 @@ function server(lang, posts, { web = true, gateway = true, agents = false, notic
     const json = (data) => route.fulfill({ json: data });
     if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:${web}${web && gateway ? ",gateway:true" : ""}};` });
     if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
-    if (url.pathname === "/api/state") return json({ agents: [], profiles: [], settings: { lang, theme: "light" }, fx: cur.fx });
+    if (url.pathname === "/api/state") return json({ agents: agents ? [agentRow("codex", "Codex")] : [], profiles: [], settings: { lang, theme: "light" }, fx: cur.fx });
     if (url.pathname === "/api/settings/gateway-mode") {
       const { mode } = req.postDataJSON();
       posts.push(["gateway-mode", mode]);
@@ -72,7 +73,8 @@ function server(lang, posts, { web = true, gateway = true, agents = false, notic
     if (url.pathname.startsWith("/api/")) return json({});
     const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
     const contentType = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png" }[path.extname(file)];
-    await route.fulfill({ body: await fs.readFile(file), contentType });
+    try { await route.fulfill({ body: await fs.readFile(file), contentType }); }
+    catch { await route.fulfill({ status: 404, body: "" }); }
   };
 }
 
@@ -88,7 +90,7 @@ const KEPT = ["sessions", "providers", "routing", "gateway", "usage", "plugins"]
 const tabs = (page) => page.evaluate(() => [...document.querySelectorAll("#nav button[data-view]")].filter((b) => !b.hidden && b.offsetParent).map((b) => b.dataset.view));
 const viewShown = (page) => page.evaluate(() => [...document.querySelectorAll("main.view")].filter((v) => !v.hidden).map((v) => v.id));
 // the rows gateway mode leaves out of Settings, each shown or not
-const agentRows = (page) => page.evaluate(() => ["#plainNamesSegs", "#codexAgentsV1Segs", "#fullContextSegs", "#codexTitlesPick", "#codexAutoReviewPick", "#usageAlertSegs", "#balanceAlertSegs", "#resetReminderSegs", "#turnDoneSegs"]
+const agentRows = (page) => page.evaluate(() => ["#plainNamesSegs", "#usageAlertSegs", "#balanceAlertSegs", "#resetReminderSegs", "#turnDoneSegs"]
   .map((s) => !document.querySelector(s).closest(".row").hidden));
 
 async function noSelectNoBorder(page, where) {
@@ -145,7 +147,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal((await page.locator("#gatewayModeRow .name").textContent()).trim(), L[lang].mode, where);
       assert.match(await page.locator("#gatewayModeSub").textContent(), new RegExp(L[lang].noAgents), where);
       assert.equal(await page.locator("#gatewayModeSegs .opt.on").evaluate((b) => [...b.parentElement.children].filter((x) => x.matches(".opt")).indexOf(b)), 0, `${where}: Automatic picked`);
-      assert.deepEqual(await agentRows(page), [false, false, false, false, false, false, false, false, false], `${where}: agents' rows in gateway mode`);
+      assert.deepEqual(await agentRows(page), [false, false, false, false, false], `${where}: agents' rows in gateway mode`);
       await noSelectNoBorder(page, where);
 
       // Off: the tabs and the rows are back, Settings stays open
@@ -154,7 +156,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.deepEqual(posts.filter((p) => p[0] === "gateway-mode"), [["gateway-mode", "off"]], where);
       assert.deepEqual(await tabs(page), ["agents", "sessions", "library", "providers", "routing", "gateway", "usage", "plugins"], `${where}: off`);
       assert.deepEqual(await viewShown(page), ["view-settings"], `${where}: Settings stays`);
-      assert.deepEqual(await agentRows(page), [true, true, true, true, true, true, true, true, true], `${where}: rows back`);
+      assert.deepEqual(await agentRows(page), [true, true, true, true, true], `${where}: rows back`);
       assert.doesNotMatch(await page.locator("#gatewayModeSub").textContent(), new RegExp(L[lang].noAgents), where);
       await clickStill(page, '#nav button[data-view="agents"]', `${where}: Agents`);
       assert.deepEqual(await viewShown(page), ["view-agents"], `${where}: the Agents page opens`);
@@ -165,7 +167,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.waitForFunction(() => document.querySelector('#nav button[data-view="agents"]').hidden);
       assert.deepEqual(posts.filter((p) => p[0] === "gateway-mode").at(-1), ["gateway-mode", ""], where);
       assert.deepEqual(await tabs(page), KEPT, `${where}: automatic`);
-      assert.deepEqual(await agentRows(page), [false, false, false, false, false, false, false, false, false], where);
+      assert.deepEqual(await agentRows(page), [false, false, false, false, false], where);
       // the Settings page's own saves never send it
       assert.ok(posts.filter((p) => p[0] === "settings").every((p) => !("gatewayMode" in p[1])), where);
       assert.deepEqual(errors, [], where);
@@ -198,7 +200,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
   });
 }
 
-// Settings' Codex subagents row carries the warning element
+// Codex's settings (its opened row on the Agents page) carry the subagents
+// row's the warning element
 // #codexAgentsV1Warn: with `notice` in the settings answer it shows the text
 // (translated), without one it stays hidden. magpie writes nothing here — the
 // user turns Codex's own multi_agent_v2 off themselves (#141, #1028 review).
@@ -218,9 +221,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // window mode: the gateway switch is the web's alone, so the agents' rows
       // are shown and the warning row is rendered here
       await page.route("**/*", server("en", posts, { web: false, gateway: false, agents: true, notice: withNotice ? notice : undefined }));
-      await page.goto("http://magpie.test/");
-      await page.waitForSelector("#nav button.on");
-      await page.locator("#prefs").click();
+      await watchSettingsReads(page);
+      await page.goto("http://magpie.test/?view=agents");
+      await openAgentSettings(page);
       await page.locator("#codexAgentsV1Segs .opt").first().waitFor();
       const warn = page.locator("#codexAgentsV1Warn");
       assert.equal(await warn.isVisible(), withNotice, `${where}: the warning row`);
@@ -241,9 +244,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await on.click();
         await page.waitForFunction(() => !document.querySelector("#codexAgentsV1Warn").hidden);
         assert.deepEqual(posts.filter((p) => p[0] === "codex-agents-v1").slice(-1), [["codex-agents-v1", true]], `${where}: the on post`);
-        // a reload restores the Settings view from the URL, and the settings
-        // answer still carries the warning
+        // after a reload Codex's settings, opened again, still carry the
+        // warning
         await page.reload();
+        await openAgentSettings(page);
         await page.locator("#codexAgentsV1Segs .opt").first().waitFor();
         assert.equal(await page.locator("#codexAgentsV1Warn").isVisible(), true, `${where}: back after a reload`);
       }
@@ -267,9 +271,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", server(lang, [], { web: false, gateway: false, agents: true, notice: warning + " " + restart }));
-      await page.goto("http://magpie.test/");
-      await page.waitForSelector("#nav button.on");
-      await page.locator("#prefs").click();
+      await watchSettingsReads(page);
+      await page.goto("http://magpie.test/?view=agents");
+      await openAgentSettings(page);
       await page.locator("#codexAgentsV1Segs .opt").first().waitFor();
       const warn = page.locator("#codexAgentsV1Warn");
       assert.equal(await warn.isVisible(), true, `${engine} ${lang}: the warning row`);

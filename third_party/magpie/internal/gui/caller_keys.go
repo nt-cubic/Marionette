@@ -66,7 +66,10 @@ func callerKeyRoutes(mux *http.ServeMux) {
 		accounts := []keyModelJSON{}
 		for _, e := range provider.Catalog() {
 			if e.Group != "" {
-				out = append(out, keyModelJSON{ID: e.ID, Name: cmp.Or(e.Name, e.Group), Group: true})
+				// by the id magpie keeps it by, group/<id>, as a key held to it
+				// before names it: a found group's auto/<model> passes for it
+				// (gateway's allows), and its name is what the picker shows
+				out = append(out, keyModelJSON{ID: provider.GroupPrefix + e.Group, Name: cmp.Or(e.Name, e.Group), Group: true})
 				continue
 			}
 			out = append(out, keyModelJSON{ID: e.Provider.ID + "/" + e.Model, Name: cmp.Or(e.Name, e.Model), Provider: e.Provider.ID, ProviderName: cmp.Or(e.Provider.Name, e.Provider.ID)})

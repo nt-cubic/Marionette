@@ -87,14 +87,14 @@ func readKiroRow(t *testing.T, key string) map[string]any {
 
 func TestKiroReadsKiroCLIsSignIn(t *testing.T) {
 	kiroSandbox(t)
-	if _, ok := readKiro(""); ok {
+	if _, ok := readKiroAt("", ""); ok {
 		t.Fatal("signed in with nothing there")
 	}
 	exp := time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
 	// the shape kiro-cli 2.24 keeps a Google sign-in in
 	writeKiroCLI(t, map[string]any{"kirocli:social:token": map[string]any{"access_token": "at", "refresh_token": "rt",
 		"expires_at": exp, "provider": "google", "profile_arn": "arn:aws:codewhisperer:us-east-1:1:profile/P"}})
-	c, ok := readKiro("")
+	c, ok := readKiroAt("", "")
 	if !ok || c.method != "social" || c.access != "at" || c.refresh != "rt" || c.region != "us-east-1" || !c.fresh() || c.dbKey != "kirocli:social:token" {
 		t.Fatalf("social = %+v %v", c, ok)
 	}
@@ -103,7 +103,7 @@ func TestKiroReadsKiroCLIsSignIn(t *testing.T) {
 		t.Fatalf("auth = %+v %v", a, err)
 	}
 	// a key saved on the provider comes before any sign-in
-	c, _ = readKiro("ksk_x")
+	c, _ = readKiroAt("ksk_x", "")
 	if c.method != "apikey" || c.access != "ksk_x" {
 		t.Fatalf("key = %+v", c)
 	}
@@ -115,7 +115,7 @@ func TestKiroReadsAnAWSSignInAndItsClient(t *testing.T) {
 		"kirocli:odic:token":               map[string]any{"access_token": "at", "refresh_token": "rt", "expires_at": "2020-01-01T00:00:00Z", "region": "eu-west-1"},
 		"kirocli:odic:device-registration": map[string]any{"client_id": "cid", "client_secret": "sec"},
 	})
-	c, ok := readKiro("")
+	c, ok := readKiroAt("", "")
 	if !ok || c.method != "idc" || c.clientID != "cid" || c.clientSecret != "sec" || c.region != "eu-west-1" || c.fresh() {
 		t.Fatalf("idc = %+v", c)
 	}
@@ -130,12 +130,12 @@ func TestKiroReadsTheIDEsSignIn(t *testing.T) {
 	os.MkdirAll(dir, 0o755)
 	os.WriteFile(filepath.Join(dir, "kiro-auth-token.json"), []byte(`{"accessToken":"at","refreshToken":"rt","expiresAt":"2099-01-01T00:00:00Z","clientIdHash":"h","region":"us-east-1"}`), 0o600)
 	os.WriteFile(filepath.Join(dir, "h.json"), []byte(`{"clientId":"cid","clientSecret":"sec"}`), 0o600)
-	c, ok := readKiro("")
+	c, ok := readKiroAt("", "")
 	if !ok || c.method != "idc" || c.clientID != "cid" || c.idePath == "" {
 		t.Fatalf("ide = %+v", c)
 	}
 	os.WriteFile(filepath.Join(dir, "kiro-auth-token.json"), []byte(`{"accessToken":"at","refreshToken":"rt","expiresAt":"2099-01-01T00:00:00Z","authMethod":"social","provider":"Github"}`), 0o600)
-	if c, _ := readKiro(""); c.method != "social" {
+	if c, _ := readKiroAt("", ""); c.method != "social" {
 		t.Fatalf("ide social = %+v", c)
 	}
 }
@@ -198,22 +198,6 @@ func TestKiroRegion(t *testing.T) {
 	}
 }
 
-func TestKiroModelList(t *testing.T) {
-	// the shape List-Available-Models answered with
-	var l kiroModelList
-	json.Unmarshal([]byte(`{"models":[
-		{"modelId":"claude-sonnet-4.5","modelName":"Claude Sonnet 4.5","supportedInputTypes":["TEXT","IMAGE"],"tokenLimits":{"maxInputTokens":200000,"maxOutputTokens":64000}},
-		{"modelId":"auto","modelName":"auto","supportedInputTypes":["TEXT"],"tokenLimits":{"maxInputTokens":200000}},
-		{"modelId":""}],"defaultModel":{"modelId":"auto"}}`), &l)
-	ms := l.models()
-	if len(ms) != 2 || ms[0].ID != "auto" || ms[0].Name != "Auto" || ms[0].Images {
-		t.Fatalf("models = %+v", ms)
-	}
-	if m := ms[1]; m.Name != "Claude Sonnet 4.5" || m.Context != 200000 || m.Output != 64000 || !m.Images || m.Provider != "kiro" {
-		t.Fatalf("sonnet = %+v", m)
-	}
-}
-
 func TestKiroLimits(t *testing.T) {
 	// the shape Get-Usage-Limits answered with, on a free account
 	var l kiroLimits
@@ -222,24 +206,6 @@ func TestKiroLimits(t *testing.T) {
 		"freeTrialInfo":{"freeTrialStatus":"ACTIVE","currentUsageWithPrecision":100,"usageLimitWithPrecision":500,"freeTrialExpiry":1791000000}}]}`), &l)
 	if l.plan() != "Kiro Free" || l.UserInfo.Email != "me@example.com" {
 		t.Fatalf("plan = %q", l.plan())
-	}
-	ws := l.windows()
-	if len(ws) != 2 || ws[0].Name != "Free trial" || ws[0].Used != 20 || ws[1].Name != "Credits" || ws[1].Used != 25 ||
-		ws[1].Display != "12.5 / 50" || ws[1].ResetsAt == nil || ws[1].ResetsAt.Unix() != 1790000000 {
-		t.Fatalf("windows = %+v", ws)
-	}
-}
-
-// Kiro is an account once there is a sign-in to use, and not before.
-func TestKiroAccount(t *testing.T) {
-	kiroSandbox(t)
-	if _, ok := kiroAccount(); ok {
-		t.Fatal("an account with no sign-in")
-	}
-	writeKiroCLI(t, map[string]any{"kirocli:social:token": map[string]any{"access_token": "at", "expires_at": "2099-01-01T00:00:00Z"}})
-	p, ok := kiroAccount()
-	if !ok || p.Account == nil || p.Account.Agent != "kiro" || p.Account.User != "Kiro account" || p.Icon != "kiro-color" {
-		t.Fatalf("account = %+v", p)
 	}
 }
 
@@ -257,9 +223,6 @@ func TestSaveKeepsKirosKey(t *testing.T) {
 		if p.ID == "kiro" && (p.Chat != "" || p.Name != "") {
 			t.Fatalf("kept more than the key: %+v", p)
 		}
-	}
-	if p, ok := kiroAccount(); !ok || p.Account.User != "Kiro API key" || p.Account.Plan != "API key" {
-		t.Fatalf("account = %+v", p)
 	}
 	// once saved, Kiro's record stays the account's: it never turns into
 	// an HTTP provider that would hide the subscription

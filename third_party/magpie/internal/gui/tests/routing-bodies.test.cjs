@@ -4,7 +4,8 @@
 // and what came back). Its story's head has "Request and response": the
 // gateway's recent calls' copy by the route's id, read when asked; once
 // they have let it go, the request archive's copy when it was on, and
-// otherwise how to keep them. Another request picked closes it. Both
+// otherwise how to keep them. A masked request's head has its count of
+// masked values. Another request picked closes it. Both
 // engines, a narrow window, every language; nothing runs out of the story,
 // no left-border accent. The API is faked.
 const assert = require("node:assert/strict");
@@ -12,6 +13,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { reach } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const now = new Date();
@@ -22,7 +24,8 @@ const done = (id, i, extra) => ({ id, seq: id, time: at(i), agent: "codex", kind
   tries: [{ id: key.id, model: "deepseek-chat", start: at(i), done: true, status: 200, ms: 900 }],
   done: true, status: 200, ms: 900, tokens: 300, served: "deepseek-chat", ...extra });
 // 101 still in the recent calls, 100 only in the archive, 99 in neither
-const routes = [done(101, 0), done(100, 1, { archive: day + "/abc100" }), done(99, 2)];
+// and 101 had three values masked: its story's head says so
+const routes = [done(101, 0, { masked: { n: 3, distinct: 2, kinds: { API_KEY: 2, EMAIL: 1 }, by: { rule: 2 }, key: 5005 } }), done(100, 1, { archive: day + "/abc100" }), done(99, 2)];
 let seenCalls = [];
 
 function serve(lang) {
@@ -105,9 +108,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       });
       // a click at the middle of what is shown: with the page scrolled down
       // to the story, Playwright's WebKit places what sits in a scroller
-      // ~700px lower than it shows, and clicks the footer instead
+      // ~700px lower than it shows, and clicks the footer instead. The
+      // reader wheels it into sight first (reach): the page puts back any
+      // scroll that isn't the reader's, and Playwright's
+      // scrollIntoViewIfNeeded is code, so the row it scrolled to was put
+      // back under the footer or out of the window before the click (#2559).
       const tap = async (loc) => {
-        await loc.scrollIntoViewIfNeeded();
+        await reach(page, loc);
         const [x, y] = await loc.evaluate((e) => { const r = e.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; });
         await page.mouse.click(x, y);
       };
@@ -122,6 +129,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const b = page.locator(".rt-log-head .rt-bodies-b");
       await b.waitFor();
       assert.equal(await b.textContent(), w.open);
+      assert.equal(await page.locator(".rt-log-head .mask-badge").textContent(), "3", "the masked count in the head");
+      assert.match(await page.locator(".rt-log-head .mask-badge").getAttribute("aria-label"), /3/);
       assert.equal(await b.getAttribute("aria-expanded"), "false");
       assert.equal(await page.locator(".rt-bodies").isVisible(), false);
       assert.deepEqual(seenCalls, [], "bodies read before they were asked for");
@@ -148,6 +157,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.locator(".rt-req").nth(1).and(page.locator('[aria-pressed="true"]')).waitFor();
       await page.locator(".rt-bodies").waitFor({ state: "hidden" });
       assert.equal(await page.locator(".rt-log-head .rt-bodies-b").textContent(), w.open);
+      assert.equal(await page.locator(".rt-log-head .mask-badge").count(), 0, "nothing masked, no badge");
 
       // gone from the recent calls, kept by the archive: read back from it
       await tap(page.locator(".rt-log-head .rt-bodies-b"));

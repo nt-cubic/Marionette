@@ -6,7 +6,7 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
 ## 常用命令
 
 - 启动开发版：`npm run tauri dev`（或 `start-marionette.bat`）
-- 构建便携版：`tools\build-portable.bat`（内置引擎，产物 `release\<版本号>\Marionette.exe`，按版本分目录，运行中的旧版不会挡住新构建）。引擎源码在 `third_party/magpie`，升级用 `tools\import-magpie.ps1 -Tag <v>`。发布：`tools\publish-release.bat`
+- 构建便携版：`tools\build-portable.bat`（内置引擎，产物 `release\<版本号>\Marionette.exe`，按版本分目录，运行中的旧版不会挡住新构建）。默认会先 `import-magpie.ps1` 拉上游 latest 稳定版进 `third_party/magpie`（`SKIP_MAGPIE_IMPORT=1` 跳过；`MAGPIE_TAG=v…` 钉版本）。用户侧也可在「模型共享」里单独更新 magpie。发布：`tools\publish-release.bat`
 - 前端构建：`npm run build`（`tsc && vite build`）
 - Rust 检查：`cargo check`（在 `src-tauri/` 下）
 - 发布版本号：`tools\bump-version.ps1`（或 `tools\bump-version.bat`）

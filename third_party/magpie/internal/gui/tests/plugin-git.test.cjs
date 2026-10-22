@@ -133,9 +133,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.match(await row.locator(".pm-ver", { hasText: HAVE }).getAttribute("title"), /github:owner\/repo/);
         const up = row.locator(".val button", { hasText: new RegExp("^" + w.update + "$") });
         const foot = view.locator(".pm-foot");
+        // Update all is with the plugins it names, above the list
+        const bar = view.locator(".pm-updates");
         assert.equal(await up.count(), 0, "at its repository's commit, a git plugin has no Update");
         assert.equal(await row.locator(".pm-chip", { hasText: w.fresh }).count(), 0);
-        assert.equal(await foot.locator("button", { hasText: w.all }).count(), 0, "nor is it in Update all");
+        assert.equal(await bar.locator("button", { hasText: w.all }).count(), 0, "nor is it in Update all");
         await shot(view, `plugins-git-current-${engine}-${lang}`);
 
         // the repository moves on, its package.json's version the same:
@@ -146,7 +148,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.match(await row.locator(".pm-chip", { hasText: w.fresh }).getAttribute("title"), new RegExp(HAVE + ".*github:owner/repo.*" + NEXT));
         assert.equal(await up.count(), 1, "a git plugin behind its repository can be updated");
         assert.match(await up.getAttribute("title"), /github:owner\/repo/);
-        assert.match(await foot.locator("button", { hasText: w.all }).innerText(), /1/);
+        assert.match(await bar.locator("button", { hasText: w.all }).innerText(), /1/);
         await shot(view, `plugins-git-installed-${engine}-${lang}`);
         const before2 = await scrolls(page);
         await up.click();
@@ -158,7 +160,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.deepEqual(await vers(), ["v1.0.0", NEXT]);
         assert.equal(await up.count(), 0, "updated, there is nothing to update");
         assert.equal(await row.locator(".pm-chip", { hasText: w.fresh }).count(), 0);
-        assert.equal(await foot.locator("button", { hasText: w.all }).count(), 0);
+        assert.equal(await bar.locator("button", { hasText: w.all }).count(), 0);
 
         // its page: the README it came with, no npm link, the repository as Source
         await row.locator(".who").click();

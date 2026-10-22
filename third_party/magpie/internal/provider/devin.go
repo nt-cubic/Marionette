@@ -1,21 +1,22 @@
 package provider
 
-// PLUGIN-SERVED (see AGENTS.md): Devin ("devin") is a deprecated built-in
-// subscription served by its plugin, @magpie-community/opencode-devin-auth,
-// once moved onto it (provider.Moved; the default for a new sign-in). A
-// moved one's sign-ins, models, requests and usage are all the plugin's,
-// never this code's (only the move, in migrate*.go, still reads its
-// accounts). A fix here alone doesn't reach those users; fix the plugin
-// (github.com/magpie-community/plugins, packages/devin) and raise the
-// mover's min in internal/provider/migrate_side.go.
+// PLUGIN-SERVED (see AGENTS.md): Devin ("devin") is a retired built-in
+// subscription, served by its plugin alone,
+// @magpie-community/opencode-devin-auth (provider.BuiltinRetired). Its
+// sign-in, requests and usage are the plugin's; what is left here reads
+// the accounts signed in to the built-in for the move onto the plugin
+// (migrate_side.go), installs and runs the Devin CLI the plugin and the
+// devin agent use, and shapes the models listed under "devin" (families,
+// variants, contexts, images). A fix belongs in the plugin
+// (github.com/magpie-community/plugins, packages/devin), with the mover's
+// min raised in internal/provider/migrate_side.go.
 
-// A Devin subscription is served through the API the devin CLI talks to
-// (gateway/devin.go), with the key the CLI signed in with; here is who that
-// account is, the models it offers, and the sign-in, which is `devin auth
-// login`'s.
+// Here is who the devin CLI's account is and the models it offers.
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -65,7 +66,21 @@ func DevinCredentialsPath() string {
 	return filepath.Join(base, "devin", "credentials.toml")
 }
 
-var devinStatus = &cliIdentity{name: "devin", exe: func() string { return DevinExecutable() }, ask: askDevinStatus}
+var devinStatus = &cliIdentity{name: "devin", exe: func() string { return DevinExecutable() }, ask: askDevinStatus, mark: devinSignInMark}
+
+// devinSignInMark is the key credentials.toml keeps, hashed, as the mark
+// cliIdentity asks again on a change of; "" when it can't be read.
+func devinSignInMark() string {
+	b, err := readAccountFile(DevinCredentialsPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return "none"
+	}
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:8])
+}
 
 // devinIdentity is who Devin's CLI says is signed in; see cliIdentity.
 func devinIdentity() (user, plan string, ok bool) {
@@ -74,8 +89,6 @@ func devinIdentity() (user, plan string, ok bool) {
 	}
 	return devinStatus.get()
 }
-
-func forgetDevinStatus() { devinStatus.forget() }
 
 // devinIdentityTimeout is how long `devin auth status` is given: it asks
 // Devin's servers, and on a real one took 3 to 11 seconds — the 10 seconds
@@ -89,14 +102,6 @@ const devinIdentityTimeout = 30 * time.Second
 // sure of nobody.
 func askDevinStatus() (user, plan string, ok bool, err error) {
 	return askDevinStatusAt(context.Background(), "")
-}
-
-// askDevinIdentityAt is who the CLI says is signed in in home ("" for its
-// own), sure or not: a sign-in has just written the credentials and has to
-// name the account.
-func askDevinIdentityAt(ctx context.Context, home string) (user, plan string, ok bool) {
-	u, p, ok, _ := askDevinStatusAt(ctx, home)
-	return u, p, ok
 }
 
 // askDevinStatusAt asks the CLI who is signed in in home ("" for its own),
@@ -183,42 +188,6 @@ func parseDevinStatus(out string) (user, plan string, ok bool) {
 		plan = field("Plan")
 	}
 	return user, plan, true
-}
-
-// devinAccount is the Devin account in use first.
-func devinAccount() (Provider, bool) {
-	ls := devinLogins()
-	if len(ls) == 0 {
-		return Provider{}, false
-	}
-	return devinProvider(ls[0]), true
-}
-
-// devinProvider is one of the Devin accounts; the CLI's own has the plan
-// the CLI says now.
-func devinProvider(l devinLogin) Provider {
-	home, plan := l.Home, l.Plan
-	if home == "" {
-		if _, p, ok := devinIdentity(); ok {
-			plan = p
-		}
-	}
-	acct := &Account{Agent: "devin", User: l.User, Plan: plan, Home: home}
-	acct.models = func() []catalog.Model {
-		// what a fetch or a picker visit last asked the CLI — never spawn
-		// one here: Available() runs on every gateway request
-		return devinModels(devinCached())
-	}
-	acct.fetch = func(ctx context.Context) ([]catalog.Model, error) {
-		families, err := askDevinFamiliesAt(ctx, home)
-		if err != nil {
-			return nil, err
-		}
-		ms := devinModels(families)
-		devinFamiliesCached(families)
-		return ms, catalog.SaveLive("devin", "", ms)
-	}
-	return Provider{ID: "devin", Name: "Devin", Icon: "devin", Website: "https://devin.ai", Account: acct}
 }
 
 // DevinFamily is one entry of `devin models list`: a name that follows the
@@ -512,13 +481,6 @@ func devinCached() []DevinFamily {
 	return devinFamiliesCache.families
 }
 
-func devinFamiliesCached(families []DevinFamily) {
-	devinFamiliesCache.Lock()
-	devinFamiliesCache.families, devinFamiliesCache.at = families, time.Now()
-	devinFamiliesCache.failed, devinFamiliesCache.err = time.Time{}, nil
-	devinFamiliesCache.Unlock()
-}
-
 // askDevinFamilies is the model list as the accounts signed in give it, the
 // one in use first: an account magpie signed in is asked in its own home,
 // not the CLI's, which may be signed out (蓝猫 on Discord: with only a
@@ -622,67 +584,6 @@ func parseDevinModels(b []byte) []DevinFamily {
 // where the callback's code trades for the credentials `devin auth login`
 // would write — a var so tests can point it elsewhere.
 const devinAPIServer = "https://server.codeium.com"
-
-var devinExchangeURL = devinAPIServer + "/exa.seat_management_pb.SeatManagementService/ExchangeDevinCLIPKCECode"
-
-// devinExchange trades the code for the credentials file `devin auth login`
-// writes, then asks the CLI who signed in. The CLI's own login makes the same
-// Connect call: the answer's sessionToken — already shaped
-// "devin-session-token$<jwt>" — is the windsurf_api_key the file wants.
-func devinExchange(ctx context.Context, code, verifier, redirect string) (savedLogin, error) {
-	body, _ := json.Marshal(map[string]string{"code": code,
-		"code_verifier": verifier, "redirect_uri": redirect})
-	var res struct {
-		SessionToken    string `json:"sessionToken"`
-		SessionTokenAlt string `json:"session_token"`
-		DevinWebappHost string `json:"devinWebappHost"`
-		DevinAPIURL     string `json:"devinApiUrl"`
-	}
-	if err := postToken(ctx, devinExchangeURL, "application/json", body, &res); err != nil {
-		return savedLogin{}, err
-	}
-	key := res.SessionToken
-	if key == "" {
-		key = res.SessionTokenAlt
-	}
-	if key == "" {
-		return savedLogin{}, errors.New("Devin's exchange returned no session token")
-	}
-	creds := devinCredentials(key, devinAPIServer, res.DevinWebappHost, res.DevinAPIURL)
-	if _, _, err := DevinAuth(); err == nil {
-		// the CLI is signed in already: this account signs in in a home of
-		// magpie's, beside it
-		home, err := newDevinHome()
-		if err != nil {
-			return savedLogin{}, err
-		}
-		if err := writePrivate(devinCredentialsAt(home), creds); err != nil {
-			removeDevinHome(home)
-			return savedLogin{}, err
-		}
-		user, plan, err := addDevinLogin(ctx, home)
-		if err != nil {
-			removeDevinHome(home)
-			return savedLogin{}, err
-		}
-		forgetAccountCaches()
-		return savedLogin{Agent: "devin", User: user, Plan: plan, Home: home}, nil
-	}
-	// the CLI has no account: writing its file is signing it in, and puts
-	// the file where `devin auth status` reads it
-	if err := keepLogin(ctx, func() error { return writePrivate(DevinCredentialsPath(), creds) }); err != nil {
-		return savedLogin{}, err
-	}
-	forgetDevinStatus()
-	forgetAccountCaches()
-	user, plan, ok := askDevinIdentityAt(ctx, "")
-	if !ok {
-		// the account is only ever seen through the CLI: without it
-		// answering, magpie has nothing to show and nothing to run
-		return savedLogin{}, errors.New("signed in, but `devin auth status` doesn't show the account; run it in a terminal to see why")
-	}
-	return savedLogin{Agent: "devin", User: user, Plan: plan}, nil
-}
 
 // devinCredentials formats credentials.toml the way `devin auth login`
 // writes it, with the hosts the exchange left out defaulted.

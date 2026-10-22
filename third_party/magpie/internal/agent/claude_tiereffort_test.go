@@ -82,9 +82,10 @@ func TestClaudeTierEffort(t *testing.T) {
 	if env(claudeContextEnv) != "200000" {
 		t.Fatalf("window: %s", env(claudeContextEnv))
 	}
-	// the effort stays with the tier through a new model, and back to the
-	// main model's
-	set("haiku", "v/glm")
+	// the effort stays with the tier through a new model, and back to
+	// following the main model ("Same as main model"; the main model
+	// picked by name is the tier's own, #2654)
+	set("haiku", "")
 	if env("ANTHROPIC_DEFAULT_HAIKU_MODEL") != "v/glm:low" || a.Field("haiku").Get() != "" {
 		t.Fatalf("haiku on the main model: %v", a.Values())
 	}

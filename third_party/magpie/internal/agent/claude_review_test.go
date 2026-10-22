@@ -205,3 +205,42 @@ func TestT3CodeAutoModeReview(t *testing.T) {
 		t.Fatalf("with a/claude-sonnet-5 listed: %q, want none", v)
 	}
 }
+
+// TestClaudeReviewedJudgesTheSetModelWhereItGoes: a model Claude Code is
+// set to is judged on the provider it resolves to, as the gateway judges
+// its requests, not by its name alone. A Claude name on a provider that
+// falls back to Anthropic, or a group with a Claude member, keeps the
+// review on; a name magpie doesn't know is judged by the name.
+func TestClaudeReviewedJudgesTheSetModelWhereItGoes(t *testing.T) {
+	syncHome(t)
+	if err := provider.Save(provider.Provider{ID: "a", Name: "A", Anthropic: "http://127.0.0.1:1", Key: "k", Models: []string{"claude-sonnet-5"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.Save(provider.Provider{ID: "v", Name: "V", Chat: "http://127.0.0.1:1/v1", Key: "k", Models: []string{"gpt-x"}}); err != nil {
+		t.Fatal(err)
+	}
+	if claudeReviewed(nil, "v/gpt-x") {
+		t.Fatal("v/gpt-x alone counted as reviewed")
+	}
+	if !claudeReviewed(nil, "a/claude-sonnet-5") || !claudeReviewed(nil, "claude-opus-4-8") {
+		t.Fatal("a Claude model not reviewed")
+	}
+	if err := provider.Save(provider.Provider{ID: "v", Name: "V", Chat: "http://127.0.0.1:1/v1", Key: "k", Models: []string{"gpt-x"}, Fallback: []string{"a/claude-sonnet-5"}}); err != nil {
+		t.Fatal(err)
+	}
+	if !claudeReviewed(nil, "v/gpt-x") {
+		t.Fatal("v/gpt-x falling back to a/claude-sonnet-5 not reviewed")
+	}
+	if err := provider.Save(provider.Provider{ID: "v", Name: "V", Chat: "http://127.0.0.1:1/v1", Key: "k", Models: []string{"gpt-x"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.SaveGroup(provider.Group{Name: "mix", Members: []string{"v/gpt-x", "a/claude-sonnet-5"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := provider.FindGroup(provider.GroupPrefix + "mix"); !ok {
+		t.Fatal("group mix not found")
+	}
+	if !claudeReviewed(nil, provider.GroupPrefix+"mix") {
+		t.Fatal("group mix with a Claude member not reviewed")
+	}
+}

@@ -6,11 +6,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
-	"os"
-	"path/filepath"
-	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -79,42 +74,23 @@ const wbGPTImageModels = `[{"id":"gpt-5.5","name":"GPT-5.5"},
 	{"id":"gpt-image-2.5-sunburst","name":"GPT-Image-2.5-Sunburst","tags":["text-to-image","image-to-image"]},
 	{"id":"seedance-2.5","name":"Seedance-2.5","tags":["text-to-video","image-to-video"]}]`
 
-// wbSignedIn signs WorkBuddy's desktop app in to the build authID names
-// ("workbuddy-desktop", "workbuddy-desktop-ai"), its API at the studio, and
-// gives magpie's provider for it.
-func wbSignedIn(t *testing.T, id, authID string, st http.Handler) provider.Provider {
+// wbSignedIn installs the fake plugin as WorkBuddy's (id), signed in, its
+// API at the studio, and gives magpie's provider for it: the retired
+// built-in's id is the plugin's.
+func wbSignedIn(t *testing.T, id string, st http.Handler) provider.Provider {
 	t.Helper()
-	fresh(t)
 	wbImages.Lock()
 	wbImages.m = map[string]*wbImageList{}
 	wbImages.Unlock()
-	home := os.Getenv("HOME")
-	base := filepath.Join(home, ".local", "share")
-	switch runtime.GOOS {
-	case "darwin":
-		base = filepath.Join(home, "Library", "Application Support")
-	case "windows":
-		base = filepath.Join(home, "AppData", "Local")
+	pid := besideFake(t, id, st)
+	if pid != id {
+		t.Fatalf("WorkBuddy's plugin under %q, not %q", pid, id)
 	}
-	future := strconv.FormatInt(time.Now().Add(24*time.Hour).UnixMilli(), 10)
-	info := `{"account":{"uid":"u1","nickname":"me"},"auth":{"accessToken":"tok","refreshToken":"r","expiresAt":` + future + `,"refreshExpiresAt":` + future + `}}`
-	auth := filepath.Join(base, "CodeBuddyExtension", "Data", "Public", "auth", authID+".info")
-	if err := os.MkdirAll(filepath.Dir(auth), 0o755); err != nil {
+	p, err := provider.Find(pid)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(auth, []byte(info), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	up := httptest.NewServer(st)
-	t.Cleanup(up.Close)
-	t.Cleanup(provider.WorkBuddyBaseForTest(up.URL, up.URL))
-	for _, p := range provider.All() {
-		if p.ID == id {
-			return p
-		}
-	}
-	t.Fatalf("%s isn't signed in", id)
-	return provider.Provider{}
+	return *p
 }
 
 // A WorkBuddy plan's image models are those its config tags as drawing, not
@@ -124,12 +100,12 @@ func wbSignedIn(t *testing.T, id, authID string, st http.Handler) provider.Provi
 func TestWorkBuddyDrawsWithItsConfigsModels(t *testing.T) {
 	const kept = "https://cos.example/img-1.png?sign=x"
 	st := &wbStudio{models: wbHunyuanModels, answer: func(path string, body map[string]any) string {
-		if path == "/v2/images/edits" {
+		if path == "/v1/images/edits" {
 			return `{"code":0,"msg":"OK","data":{"created":1,"data":[{"b64_json":"` + base64.StdEncoding.EncodeToString(pngBytes) + `"}],"usage":{"input_tokens":3,"output_tokens":7}}}`
 		}
 		return `{"code":0,"msg":"OK","requestId":"r1","data":{"created":1,"data":[{"url":"` + kept + `"}],"usage":{"input_tokens":333,"output_tokens":612,"credit":5.71}}}`
 	}}
-	p := wbSignedIn(t, "workbuddy", "workbuddy-desktop", st)
+	p := wbSignedIn(t, "workbuddy", st)
 
 	// the first look asks the config in the background; the next has it
 	Drawers(p)
@@ -166,7 +142,7 @@ func TestWorkBuddyDrawsWithItsConfigsModels(t *testing.T) {
 	if code != 200 || !strings.Contains(raw, `"url":"`+kept+`"`) {
 		t.Fatalf("%d %s", code, raw)
 	}
-	body, h := st.got("/v2/images/generations")
+	body, _ := st.got("/v1/images/generations")
 	if body["model"] != "hunyuan-image-v3.0-art" || body["size"] != "1024x1024" || body["n"] != 1.0 || body["prompt"] != "a magpie" {
 		t.Fatalf("sent %v", body)
 	}
@@ -176,16 +152,13 @@ func TestWorkBuddyDrawsWithItsConfigsModels(t *testing.T) {
 	if _, ok := body["quality"]; ok {
 		t.Fatalf("Hunyuan was sent OpenAI's fields: %v", body)
 	}
-	if h.Get("Authorization") != "Bearer tok" || !strings.HasPrefix(h.Get("User-Agent"), "WorkBuddy/") || h.Get("X-User-Id") != "u1" {
-		t.Fatalf("signed %v", h)
-	}
 
 	png := "data:image/png;base64," + base64.StdEncoding.EncodeToString(pngBytes)
 	code, a, raw := postImages(t, s, "/v1/images/edits", "application/json", `{"model":"workbuddy/hunyuan-image-alpha","prompt":"make it blue","image":"`+png+`"}`)
 	if code != 200 || len(a.Data) != 1 || a.Data[0].B64 == "" || a.Usage.Output != 7 {
 		t.Fatalf("%d %s", code, raw)
 	}
-	body, _ = st.got("/v2/images/edits")
+	body, _ = st.got("/v1/images/edits")
 	imgs, _ := body["image"].([]any)
 	if body["model"] != "hunyuan-image-alpha-edit" || len(imgs) != 1 || imgs[0] != png {
 		t.Fatalf("edit sent %v", body)
@@ -208,7 +181,7 @@ func TestWorkBuddyAIDrawsGPTImage(t *testing.T) {
 		}
 		return `{"code":0,"msg":"OK","data":{"created":1,"data":[{"b64_json":"` + base64.StdEncoding.EncodeToString(pngBytes) + `","revised_prompt":"a magpie, painted"}]}}`
 	}}
-	p := wbSignedIn(t, provider.WorkBuddyAIID, "workbuddy-desktop-ai", st)
+	p := wbSignedIn(t, provider.WorkBuddyAIID, st)
 	if _, err := wbImageModelsOf(context.Background(), wbConfigClient, p, true); err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +194,7 @@ func TestWorkBuddyAIDrawsGPTImage(t *testing.T) {
 	if code != 200 || len(a.Data) != 1 || a.Data[0].B64 == "" || !strings.Contains(raw, "a magpie, painted") {
 		t.Fatalf("%d %s", code, raw)
 	}
-	body, _ := st.got("/v2/images/generations")
+	body, _ := st.got("/v1/images/generations")
 	if body["response_format"] != "b64_json" || body["quality"] != "low" || body["model"] != "gpt-image-2.5-sunburst" {
 		t.Fatalf("sent %v", body)
 	}
@@ -230,7 +203,7 @@ func TestWorkBuddyAIDrawsGPTImage(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("%d %s", code, raw)
 	}
-	if body, _ = st.got("/v2/images/edits"); body["model"] != "gpt-image-2.5-sunburst" || body["response_format"] != "b64_json" {
+	if body, _ = st.got("/v1/images/edits"); body["model"] != "gpt-image-2.5-sunburst" || body["response_format"] != "b64_json" {
 		t.Fatalf("edit sent %v", body)
 	}
 	refuse.Store(true)

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -46,9 +47,11 @@ var visionTimeout, visionWaitMost = 3 * time.Minute, 10 * time.Minute
 // visionParallel is how many images of a request are described at once.
 const visionParallel = 4
 
-// sightsKept is how many descriptions are kept: an agent sends a
-// conversation's images again every turn.
-const sightsKept = 256
+// sightsKept is how many descriptions are kept, the least recently used
+// dropped first: an agent sends a conversation's images again every turn,
+// and a long Computer Use one holds hundreds of screenshots (fflake33).
+// A description is a few kilobytes.
+const sightsKept = 2048
 
 const visionSystem = `You describe images for an AI model that cannot see them. It will answer the user from your description alone, so leave nothing out that it may need.
 - Transcribe all text exactly as written, keeping its layout: code, terminal output, error messages, logs, UI labels, menus, file names, numbers.
@@ -225,7 +228,7 @@ func autoVision() (string, bool) {
 		if bestReady && t > bestTier {
 			continue
 		}
-		m, cost, ready := smallModelWhere(p, sees)
+		m, cost, ready := smallModelWhere(p, "sees", sees)
 		if m == "" {
 			continue
 		}
@@ -292,6 +295,12 @@ func (s *Server) describe(ctx context.Context, model, src string) (string, error
 	key := hex.EncodeToString(sum[:])
 	s.sightMu.Lock()
 	if e, ok := s.sights[key]; ok {
+		// used again, so the last to go: a long conversation's first
+		// images, still sent every turn, outlast those of conversations
+		// that have ended
+		if i := slices.Index(s.sightOrder, key); i >= 0 {
+			s.sightOrder = append(append(s.sightOrder[:i:i], s.sightOrder[i+1:]...), key)
+		}
 		s.sightMu.Unlock()
 		select {
 		case <-e.done:
@@ -459,16 +468,11 @@ func (s *Server) seenBody(ctx context.Context, proto provider.Protocol, body []b
 
 // smallModelWhere is smallModel among the provider's models that keep
 // holds, what it costs, and whether it has allowance left (smallReady);
-// "" when there is none.
-func smallModelWhere(p provider.Provider, keep func(catalog.Model) bool) (string, float64, bool) {
-	id, ready := smallReady(p, keep, provider.Chat)
-	if id == "" {
+// "" when there is none. kind names keep (keptSmallCands).
+func smallModelWhere(p provider.Provider, kind string, keep func(catalog.Model) bool) (string, float64, bool) {
+	c, ready := smallReadyOf(p, keptSmallCands(p, kind, keep), provider.Chat)
+	if c.id == "" {
 		return "", 0, false
 	}
-	for _, m := range p.Exposed() {
-		if m.ID == id && m.Price != nil {
-			return id, m.Price.Input + m.Price.Output, ready
-		}
-	}
-	return id, 1e9, ready
+	return c.id, c.cost, ready
 }

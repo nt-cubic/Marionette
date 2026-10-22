@@ -74,7 +74,9 @@ const pastedImage = `{"model":"probe/text","messages":[{"role":"user","content":
 // what the queue left of it, and the image's turn failed. Queued for twice
 // the limit, it is still described.
 func TestVisionWaitIsntTheDescribersTime(t *testing.T) {
-	visionLimits(t, 300*time.Millisecond, 10*time.Second)
+	// 300ms left the describer no room once the lane opened under a loaded
+	// run (#2444); queued for twice a 2s limit it still proves the point.
+	visionLimits(t, 2*time.Second, 10*time.Second)
 	s, u := slowEyed(t, 0)
 	held := make(chan int, 1)
 	go func() {

@@ -129,3 +129,66 @@ func TestModelSameAsMergesFoundGroup(t *testing.T) {
 		t.Fatal("a name of no model was taken")
 	}
 }
+
+// A provider added "Only through routing groups" whose relay lists a
+// model by its display name ("GPT-6 Sol") joins the group magpie found
+// for gpt-6-sol, as a tidy Claude id joins its own (Chill on Discord).
+// Spaces, "_" and "-" are one gap; the words in them still count, so
+// gpt-6 and its -mini or -sol stay apart, and so does OpenAI's dated
+// snapshot from the alias.
+func TestSameModelDisplayNameAsID(t *testing.T) {
+	for in, want := range map[string]string{
+		"GPT-6 Sol":          "gpt-6-sol",
+		"GPT 6 Sol":          "gpt-6-sol",
+		"gpt-6  sol":         "gpt-6-sol",
+		"GPT_6 - Sol":        "gpt-6-sol",
+		"\tGPT-6 Sol ":       "gpt-6-sol",
+		"relay/GPT-6.1 Sol":  "gpt-6-1-sol",
+		"GPT-6 Sol 20260901": "gpt-6-sol",
+		"Claude Opus 5.5":    "claude-opus-5-5",
+		"gpt-4o-2024-08-06":  "gpt-4o-2024-08-06",
+	} {
+		if got := sameModel(in); got != want {
+			t.Errorf("sameModel(%q) = %q, want %q", in, got, want)
+		}
+	}
+	for _, pair := range [][2]string{
+		{"GPT-6 Sol", "gpt-6"},
+		{"GPT-6", "gpt-6-sol"},
+		{"GPT-6 Mini", "gpt-6"},
+		{"GPT-6 Sol Mini", "gpt-6-sol"},
+		{"GPT-6 Sol", "gpt-6-sol:batch"},
+		{"gpt-4o-2024-08-06", "gpt-4o"},
+	} {
+		if sameModel(pair[0]) == sameModel(pair[1]) {
+			t.Errorf("%s and %s merged as %s", pair[0], pair[1], sameModel(pair[0]))
+		}
+	}
+
+	prefsHome(t)
+	if err := Save(Provider{ID: "x", Name: "X", Key: "k", Chat: "http://127.0.0.1:1/v1", Models: []string{"gpt-6-sol", "gpt-6-mini"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(Provider{ID: "y", Name: "Y", Key: "k", Chat: "http://127.0.0.1:1/v1", Models: []string{"GPT-6 Sol", "GPT 6", "GPT-6 Sol Mini"}, Unlisted: true}); err != nil {
+		t.Fatal(err)
+	}
+	_, ms, ok := FindGroup(GroupPrefix + "auto-gpt-6-sol")
+	var got []string
+	for _, m := range ms {
+		got = append(got, m.ID)
+	}
+	if !ok || !slices.Equal(got, []string{"x/gpt-6-sol", "y/GPT-6 Sol"}) {
+		t.Fatalf("auto-gpt-6-sol: %v %v", got, ok)
+	}
+	if g := AutoGroupOf("y", "GPT-6 Sol"); g != "auto-gpt-6-sol" {
+		t.Fatalf("AutoGroupOf: %s", g)
+	}
+	if g, ok := GroupFor("GPT-6 Sol"); !ok || g != GroupPrefix+"auto-gpt-6-sol" {
+		t.Fatalf("GroupFor: %s %v", g, ok)
+	}
+	for _, g := range Groups() {
+		if g.Auto && g.ID != "auto-gpt-6-sol" && g.ID != "auto-sol" {
+			t.Errorf("a different model merged: %s %v", g.ID, g.Members)
+		}
+	}
+}

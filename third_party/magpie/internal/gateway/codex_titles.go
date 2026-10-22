@@ -278,11 +278,7 @@ func noPrediction(said string) string {
 // or unusable answer is no prediction.
 func predictionJSON(said string) (string, bool) {
 	t := strings.TrimSpace(said)
-	if rest, ok := strings.CutPrefix(t, "<think>"); ok {
-		if _, after, ok := strings.Cut(rest, "</think>"); ok {
-			t = strings.TrimSpace(after)
-		}
-	}
+	t = afterThought(t)
 	if strings.HasPrefix(t, "```") {
 		t = strings.TrimPrefix(t, "```")
 		if i := strings.IndexByte(t, '\n'); i >= 0 && !strings.Contains(t[:i], "{") {
@@ -324,11 +320,7 @@ func noDescription(said string) string {
 // object Codex asks for. An unusable answer returns an empty string.
 func descriptionJSON(said string) string {
 	t := strings.TrimSpace(said)
-	if rest, ok := strings.CutPrefix(t, "<think>"); ok {
-		if _, after, ok := strings.Cut(rest, "</think>"); ok {
-			t = strings.TrimSpace(after)
-		}
-	}
+	t = afterThought(t)
 	if strings.HasPrefix(t, "```") {
 		t = strings.TrimPrefix(t, "```")
 		if i := strings.IndexByte(t, '\n'); i >= 0 && !strings.Contains(t[:i], "{") {
@@ -492,11 +484,7 @@ func titleShapeOf(body []byte) titleShape {
 func titleJSON(said string, shape titleShape) string {
 	t := strings.TrimSpace(said)
 	// a reasoning model's thoughts, where its API leaves them in the text
-	if rest, ok := strings.CutPrefix(t, "<think>"); ok {
-		if _, after, ok := strings.Cut(rest, "</think>"); ok {
-			t = strings.TrimSpace(after)
-		}
-	}
+	t = afterThought(t)
 	if strings.HasPrefix(t, "```") {
 		t = strings.TrimPrefix(t, "```")
 		if i := strings.IndexByte(t, '\n'); i >= 0 && !strings.Contains(t[:i], "{") {

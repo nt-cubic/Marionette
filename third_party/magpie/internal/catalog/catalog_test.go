@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -437,5 +438,43 @@ func TestFetchedModalitiesKeepEveryKind(t *testing.T) {
 	if !reflect.DeepEqual(got[1].InputModalities, []string{"text", "pdf"}) ||
 		!reflect.DeepEqual(got[1].OutputModalities, []string{"text"}) {
 		t.Errorf("unknown: in %v out %v", got[1].InputModalities, got[1].OutputModalities)
+	}
+}
+
+// Finding a model's kin doesn't copy each model of its provider to the
+// heap: Provider ran once a round of dsh's wiring, and a pointer to the
+// loop's copy made its allocations grow with the square of a provider's
+// models (~6 GB in 48 minutes of a user's magpie). 200 models of one
+// family ask a few allocations each, not 200. And a provider's list is
+// built once a load: asked again, it is a copy of the one built.
+func TestProviderAllocsGrowWithModels(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`{"openai": {"models": {`)
+	const n = 200
+	for i := range n {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `"m-%03d": {"id":"m-%03d","family":"m","reasoning":true,"release_date":"2026-01-%02d"}`, i, i, i%28+1)
+	}
+	b.WriteString(`}}}`)
+	writeCatalog(t, b.String())
+	if len(Provider("openai")) != n {
+		t.Fatalf("Provider(openai) has %d models, want %d", len(Provider("openai")), n)
+	}
+	if a := testing.AllocsPerRun(5, func() { provider(load(), "openai") }); a > 10*n {
+		t.Errorf("building openai's %d models: %.0f allocations, want at most %d", n, a, 10*n)
+	}
+	if a := testing.AllocsPerRun(5, func() { Provider("openai") }); a > 2 {
+		t.Errorf("Provider(openai) asked again: %.0f allocations, want a copy (1)", a)
+	}
+	ms := Provider("openai")
+	ms[0].ID = "changed"
+	if Provider("openai")[0].ID == "changed" {
+		t.Error("a caller's change to Provider's list reached the next caller")
+	}
+	writeCatalog(t, `{"openai": {"models": {"m-new": {"id":"m-new"}}}}`)
+	if ms := Provider("openai"); len(ms) != 1 || ms[0].ID != "m-new" {
+		t.Errorf("after Reset, Provider(openai) = %v, want the new load's m-new", ms)
 	}
 }

@@ -14,12 +14,15 @@ import (
 
 const ruleUsage = `usage:
   magpie group rule <group>               the group's rules
-  magpie group rule add <group> use=<model> [tokens=<n>] [images] [effort=on|low|medium|high|xhigh|max] [agents=a,b…]
+  magpie group rule add <group> use=<model> [use-effort=low|medium|high|xhigh|max] [tokens=<n>] [images] [effort=on|low|medium|high|xhigh|max] [agents=a,b…]
                         [intent="<what the message asks for>"] [compact] [time=HH:MM-HH:MM] [days=mon-fri]
                         [folders=<folder>,…] [except-folders=<folder>,…] [classifier=<model>] [at=<n>]
                                           a rule: a turn that matches it goes to <model>, one of the group's
                                           (or group/<id>, a group in it), first; a model in the group at an
-                                          effort of its own is named with it (use=glm/glm-5.3-flash:high)
+                                          effort of its own is named with it (use=glm/glm-5.3-flash:high).
+                                          use-effort= is the reasoning <model> is asked for on the requests
+                                          the rule sends it, whatever the agent asked: at the model's nearest
+                                          level, or as the agent asked when its levels aren't known
   magpie group rule add <group> pause=<model> [time=HH:MM-HH:MM] [days=mon-fri] [agents=a,b…]
                         [folders=<folder>,…] [except-folders=<folder>,…] [at=<n>]
                                           a pause: while it holds, <model> is left out of the group — sent
@@ -72,7 +75,8 @@ const ruleUsage = `usage:
        magpie group rule add cheap pause=glm/glm-5.3 time=14:00-18:00 days=mon-fri
        magpie group rule add opus-anywhere use=kimi/kimi-k2.6 folders=~/oss
        magpie group rule add auto-claude-opus-5-5 pause=claude/claude-opus-5-5 except-folders=~/big-task
-       magpie group rule add opus-anywhere use=deepseek/deepseek-v4-flash intent="a quick question" classifier=groq/llama-3.1-8b-instant`
+       magpie group rule add opus-anywhere use=deepseek/deepseek-v4-flash intent="a quick question" classifier=groq/llama-3.1-8b-instant
+       magpie group rule add fast use=codex/gpt-5.6-sol use-effort=low intent="a quick question"`
 
 // parseTokens reads 200000, 200k, 1.5m.
 func parseTokens(v string) (int, error) { return provider.ParseTokens(v) }
@@ -188,6 +192,9 @@ func ruleCmd(args []string) error {
 func ruleLine(r provider.Rule) string {
 	if r.Pause {
 		return strings.Join(r.Conditions(), " · ") + muted.Render(" → pause ") + r.Use
+	}
+	if r.UseEffort != "" {
+		return strings.Join(r.Conditions(), " · ") + muted.Render(" → ") + r.Use + muted.Render(" at ") + r.UseEffort
 	}
 	return strings.Join(r.Conditions(), " · ") + muted.Render(" → ") + r.Use
 }

@@ -1,22 +1,50 @@
 # Import the magpie engine source into third_party/magpie (build-only subset).
 #
-# Vendoring model (product decision 2026-10-16): Marionette ships the engine
-# INSIDE the exe (compressed). This importer snapshots the build-relevant
-# subset of https://github.com/yetone/magpie (MIT) at a pinned tag; updating
-# the built-in engine = re-run with a newer tag + tools\build-portable.bat.
+# Vendoring model (product decision 2026-10-16, updated 2026-10): Marionette ships
+# the engine INSIDE the exe (compressed) as a factory seed. This importer snapshots
+# the build-relevant subset of https://github.com/yetone/magpie (MIT) at a tag;
+# updating the baked-in seed = re-run + tools\build-portable.bat.
+#
+# Default Tag is the latest *stable* GitHub release (non-prerelease). Pin with
+# -Tag v0.1.xxxx or env MAGPIE_TAG. build-portable.bat calls this unless
+# SKIP_MAGPIE_IMPORT=1.
 #
 # Kept: main.go, go.mod, go.sum, internal/, plugins/, LICENSE, README.md.
 # Dropped: site/ (marketing, ~59MB), build/ (per-OS packaging assets),
 #          .github/, docs/ — none of them are needed by the nogui build.
 #
-# Usage:  powershell -File tools\import-magpie.ps1 [-Tag v0.1.1274]
-# After import, tools\build-portable.bat rebuilds release\<version>\Marionette.exe.
+# Usage:
+#   powershell -File tools\import-magpie.ps1
+#   powershell -File tools\import-magpie.ps1 -Tag v0.1.1319
 param(
-    [string]$Tag = 'v0.1.1274'
+    [string]$Tag = ''
 )
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $dest = Join-Path $repoRoot 'third_party\magpie'
+
+if (-not $Tag) {
+    if ($env:MAGPIE_TAG -and $env:MAGPIE_TAG.Trim()) {
+        $Tag = $env:MAGPIE_TAG.Trim()
+    }
+}
+
+if (-not $Tag) {
+    Write-Output "[import] resolving latest stable release from yetone/magpie ..."
+    $headers = @{
+        'Accept'     = 'application/vnd.github+json'
+        'User-Agent' = 'Marionette-import-magpie'
+    }
+    try {
+        $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/yetone/magpie/releases/latest' -Headers $headers
+    } catch {
+        throw "failed to query GitHub releases/latest: $_"
+    }
+    $Tag = [string]$release.tag_name
+    if (-not $Tag) { throw 'GitHub releases/latest returned no tag_name' }
+    Write-Output "[import] latest stable: $Tag"
+}
+
 $tmp = Join-Path $env:TEMP "marionette-import-magpie-$Tag"
 
 if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
@@ -39,11 +67,11 @@ foreach ($item in @('main.go', 'go.mod', 'go.sum', 'internal', 'plugins', 'LICEN
 
 @(
     "Vendored from https://github.com/yetone/magpie (MIT) at tag $Tag on $(Get-Date -Format yyyy-MM-dd).",
-    "Imported by tools\import-magpie.ps1 — regenerate this folder with a newer tag to update the built-in engine.",
+    "Imported by tools\import-magpie.ps1 — default Tag is GitHub latest stable; pass -Tag or MAGPIE_TAG to pin.",
     "Subset only: build inputs for the nogui CLI. Upstream site/, build/, .github/, docs/ are intentionally absent.",
     "License: LICENSE (MIT) in this folder."
 ) | Set-Content (Join-Path $dest 'MARIONETTE-VENDOR.md')
 
 Remove-Item -Recurse -Force $tmp
 $size = (Get-ChildItem $dest -Recurse -File | Measure-Object Length -Sum).Sum / 1MB
-Write-Output ("[import] done: {0}  ({1:N1} MB)" -f $dest, $size)
+Write-Output ("[import] done: {0}  ({1:N1} MB)  tag={2}" -f $dest, $size, $Tag)

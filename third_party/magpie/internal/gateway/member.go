@@ -66,7 +66,7 @@ func namesMember(r *http.Request, agent string) bool {
 	case "vendor":
 		return false
 	}
-	if !settings.Load().MemberModel {
+	if !settings.Shared().MemberModel {
 		return false
 	}
 	for _, a := range vendorNamed {

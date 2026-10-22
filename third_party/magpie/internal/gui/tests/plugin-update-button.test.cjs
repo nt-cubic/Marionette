@@ -106,7 +106,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const r = await look(rowUp);
         sameSize(r, install, "row");
         assert.equal(r.bg, card.bg, "the row's Update looks as the card's does");
-        const all = view.locator(".pm-foot button.pm-act.pm-up");
+        const all = view.locator(".pm-updates button.pm-act.pm-up");
         await all.waitFor();
         assert.equal((await all.textContent()).trim(), w.all);
         const a = await look(all);

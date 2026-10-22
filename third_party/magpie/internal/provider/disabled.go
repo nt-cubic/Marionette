@@ -34,6 +34,22 @@ var lastDisabled struct {
 // disabledList is the patterns in force, and unknown when settings.json
 // couldn't be read and none was read before.
 func disabledList() (list []string, unknown bool) {
+	// read once while a request holds the catalog: each group's members
+	// (membersIn) asked for it, and parsed settings.json each time
+	r := heldOf("disabled", func() disabledRead {
+		list, unknown := readDisabled()
+		return disabledRead{slices.Clip(list), unknown}
+	})
+	return r.list, r.unknown
+}
+
+type disabledRead struct {
+	list    []string
+	unknown bool
+}
+
+// readDisabled is disabledList read from settings.json now.
+func readDisabled() (list []string, unknown bool) {
 	s, err := settings.LoadChecked()
 	lastDisabled.Lock()
 	defer lastDisabled.Unlock()

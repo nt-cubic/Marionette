@@ -105,7 +105,15 @@ func TestRevisionEntryBudget(t *testing.T) {
 	now := time.Now()
 	candidates := []revisionCandidate{{path: "large", mod: now.UnixNano(), weight: revisionEntries + 1}, {path: "one", mod: now.UnixNano(), weight: revisionEntries / 2}, {path: "two", mod: now.UnixNano(), weight: revisionEntries / 2}, {path: "three", mod: now.UnixNano(), weight: revisionEntries / 2}}
 	keep := retainedRevisions(candidates, now)
-	if keep["large"] || len(keep) != 2 {
+	// an active Codex session past the shared budget keeps its own window
+	// (yetone/magpie-releases#24); the rest still share the budget
+	if !keep["large"] || len(keep) != 3 {
+		t.Fatal(keep)
+	}
+	// at most revisionActiveFiles of them, each up to revisionActiveEntries
+	candidates = []revisionCandidate{{path: "a", mod: now.UnixNano(), weight: revisionEntries + 3}, {path: "b", mod: now.UnixNano(), weight: revisionEntries + 2}, {path: "c", mod: now.UnixNano(), weight: revisionEntries + 1}, {path: "huge", mod: now.UnixNano(), weight: revisionActiveEntries + 1}, {path: "idle", mod: now.Add(-revisionIdle - time.Minute).UnixNano(), weight: revisionEntries + 4}}
+	keep = retainedRevisions(candidates, now)
+	if !keep["a"] || !keep["b"] || len(keep) != revisionActiveFiles {
 		t.Fatal(keep)
 	}
 }

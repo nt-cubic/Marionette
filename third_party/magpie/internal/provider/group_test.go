@@ -57,8 +57,8 @@ func TestGroupImages(t *testing.T) {
 		got[g.ID] = g.Images
 	}
 	want := map[string]bool{
-		GroupPrefix + "auto-kimi-k3": true, GroupPrefix + "auto-glm-5-3": true,
-		GroupPrefix + "auto-deepseek-v4-1-flash": true, GroupPrefix + "auto-glm-5-2": false,
+		AutoPrefix + "kimi-k3": true, AutoPrefix + "glm-5.3": true,
+		AutoPrefix + "deepseek-v4.1-flash": true, AutoPrefix + "glm-5.2": false,
 	}
 	if !maps.Equal(got, want) {
 		t.Errorf("%v", got)

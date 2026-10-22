@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -222,5 +223,258 @@ func TestPluginCheckinTakesOverTheVendors(t *testing.T) {
 		if got := PluginCheckinOn(c.s, c.id); got != c.want {
 			t.Errorf("PluginCheckinOn(%+v, %s) = %v, want %v", c.s, c.id, got, c.want)
 		}
+	}
+}
+
+// pluginCheckinTeams is the fake plugin with its own check-in, signed in
+// through its browser sign-in as each team (name/uid): the reporter's case
+// in plugins#254 is two AutoClaw display names with two sign-ins each,
+// told apart only by their uid. It says the file each press is written to,
+// as name@fake/uid, and each team's sign-in key.
+func pluginCheckinTeams(t *testing.T, teams ...string) (string, map[string]string) {
+	t.Helper()
+	presses := pluginCheckinSandbox(t)
+	for _, team := range teams {
+		st, err := StartPluginSignIn("fakeco", 1, map[string]string{"where": "work", "team": team})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := SubmitSignInCallback(st.ID, "good"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if _, err := plugin.Providers(ctx); err != nil {
+		t.Fatal(err)
+	}
+	keys := map[string]string{} // name@fake/uid → its sign-in's key
+	for k, a := range plugin.Auths("fakeco") {
+		id, _ := a["accountId"].(string)
+		uid, _ := a["uid"].(string)
+		keys[id+"/"+uid] = k
+	}
+	if len(keys) != len(teams) {
+		t.Fatalf("signed in as %v, want %d sign-ins", keys, len(teams))
+	}
+	return presses, keys
+}
+
+// pluginCheckinOn turns fakeco's daily check-in on.
+func pluginCheckinOn(t *testing.T) {
+	t.Helper()
+	s := settings.Load()
+	s.PluginCheckins = map[string]bool{"fakeco": true}
+	if err := settings.Save(s); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// pluginCards are a card for each of p's accounts, as the Usage page has.
+func pluginCards(p pluginCheckinProvider) []SubscriptionQuota {
+	var qs []SubscriptionQuota
+	for _, a := range p.accounts {
+		qs = append(qs, SubscriptionQuota{Provider: PluginID(p.ID), User: a.User})
+	}
+	return qs
+}
+
+// Two sign-ins of one plugin that share a display name are two accounts
+// to check in (plugins#254: four AutoClaw sign-ins under two default
+// names, which AutoClaw doesn't let the user change, and only the first of
+// each name was ever checked in, by the loop or Check in now). Each is
+// checked in once a day, kept, carded and switched off on its own.
+func TestPluginCheckinTellsSignInsOfOneNameApart(t *testing.T) {
+	presses, keys := pluginCheckinTeams(t, "A/u1", "A/u2", "B/u3", "B/u4")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pluginCheckinOn(t)
+	ps := pluginCheckinProviders()
+	if len(ps) != 1 || len(ps[0].accounts) != 4 {
+		t.Fatalf("the plugins that check in: %+v", ps)
+	}
+	now := time.Date(2026, 10, 6, 10, 0, 0, 0, beijing)
+	loop := pluginCheckiner{now: func() time.Time { return now }, only: func(id string) bool { return PluginCheckinOn(settings.Load(), id) }}
+	all := "A@fake/u1,A@fake/u2,B@fake/u3,B@fake/u4"
+	sorted := func(p []string) string { return strings.Join(slices.Sorted(slices.Values(p)), ",") }
+
+	if rs := loop.checkinNow(ctx, false); len(rs) != 4 || sorted(pressed(t, presses)) != all {
+		t.Fatalf("the loop: %+v, pressed %q", rs, pressed(t, presses))
+	}
+	// kept for each: nothing asked again that day
+	now = now.Add(time.Minute)
+	if rs := loop.checkinNow(ctx, false); len(rs) != 4 || len(pressed(t, presses)) != 4 {
+		t.Fatalf("a minute on: %+v, pressed %q", rs, pressed(t, presses))
+	}
+	st := shownCheckins(pluginCheckinPath())
+	for who, k := range keys {
+		if r, ok := st[pluginCheckinKey("fakeco", k)]; !ok || r.Day != "2026-10-06" || r.Outcome != CheckinInactive {
+			t.Errorf("%s (%s) kept as %+v, ok %v; file %+v", who, k, r, ok, st)
+		}
+	}
+	if len(st) != 4 {
+		t.Errorf("plugin-checkin.json holds %d entries, want 4: %+v", len(st), st)
+	}
+	// Settings lists each, and each card says today's
+	if pcs := PluginCheckins(); len(pcs) != 1 || len(pcs[0].Checkins) != 4 {
+		t.Fatalf("PluginCheckins = %+v", pcs)
+	}
+	for i, q := range WithCheckins(pluginCards(ps[0])) {
+		if !q.Checkins || q.Checkin == nil || q.Checkin.Day != "2026-10-06" {
+			t.Fatalf("card %d (%s): %+v", i, q.User, q.Checkin)
+		}
+	}
+	// each its own row in Settings, and one switched off is left out
+	var rows []string
+	for _, a := range CheckinAccounts() {
+		if a.By == "plugin:fakeco" {
+			rows = append(rows, a.Key)
+		}
+	}
+	if len(rows) != 4 {
+		t.Fatalf("Settings' rows: %q", rows)
+	}
+	s := settings.Load()
+	s.CheckinOff = []string{pluginCheckinKey("fakeco", keys["A@fake/u2"])}
+	if err := settings.Save(s); err != nil {
+		t.Fatal(err)
+	}
+	// Check in now, the next day: each but the one switched off
+	now = time.Date(2026, 10, 7, 9, 0, 0, 0, beijing)
+	press := pluginCheckiner{now: func() time.Time { return now }, only: func(id string) bool { return id == "fakeco" }}
+	press.checkinNow(ctx, true)
+	if p := sorted(pressed(t, presses)[4:]); p != "A@fake/u1,B@fake/u3,B@fake/u4" {
+		t.Fatalf("Check in now with A@fake/u2 off pressed %q", p)
+	}
+	for _, q := range WithCheckins(pluginCards(ps[0])) {
+		if q.CheckinOff != (q.User == userOf(ps[0], keys["A@fake/u2"])) {
+			t.Fatalf("card %s: off %v", q.User, q.CheckinOff)
+		}
+	}
+}
+
+// userOf is the name the account signed in under key is shown by.
+func userOf(p pluginCheckinProvider, key string) string {
+	for _, a := range p.accounts {
+		if a.key == pluginCheckinKey(p.ID, key) {
+			return a.User
+		}
+	}
+	return ""
+}
+
+// An upgrade from a plugin-checkin.json kept by display name (before
+// plugins#254) checks no account in twice and keeps the user's own Off: a
+// name checked in today is carried to the one sign-in the old key asked,
+// the first in use, so only its namesake is asked; a name switched off
+// stays off for each sign-in of it; another vendor's Off is left alone.
+func TestPluginCheckinCarriesOverDisplayNameEntries(t *testing.T) {
+	presses, keys := pluginCheckinTeams(t, "A/u1", "A/u2", "B/u3", "B/u4")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	now := time.Date(2026, 10, 6, 10, 0, 0, 0, beijing)
+	legacy := map[string]WorkBuddyCheckin{
+		"fakeco|A@fake": {Day: "2026-10-06", At: now.Add(-time.Hour), Outcome: CheckinClaimed, Credit: 400},
+		"fakeco|B@fake": {Day: "2026-10-06", At: now.Add(-time.Hour), Outcome: CheckinClaimed, Credit: 400},
+		// another plugin's, whose accounts aren't signed in: left as kept
+		"other|C": {Day: "2026-10-05", At: now.Add(-25 * time.Hour), Outcome: CheckinDone},
+	}
+	b, _ := json.Marshal(legacy)
+	if err := os.WriteFile(pluginCheckinPath(), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := settings.Load()
+	s.PluginCheckins = map[string]bool{"fakeco": true}
+	s.CheckinOff = []string{"workbuddy|123", "fakeco|B@fake"}
+	if err := settings.Save(s); err != nil {
+		t.Fatal(err)
+	}
+
+	ps := pluginCheckinProviders()
+	if len(ps) != 1 || len(ps[0].accounts) != 4 {
+		t.Fatalf("the plugins that check in: %+v", ps)
+	}
+	// the sign-in of A the old key asked: the first of A's in use
+	var heir, namesake string
+	for _, a := range ps[0].accounts {
+		if a.legacy == "fakeco|A@fake" && a.On {
+			if heir == "" {
+				heir = a.key
+			} else if namesake == "" {
+				namesake = a.key
+			}
+		}
+	}
+	if heir == "" || namesake == "" {
+		t.Fatalf("A's sign-ins: %+v", ps[0].accounts)
+	}
+	st := shownCheckins(pluginCheckinPath())
+	if r, ok := st[heir]; !ok || r.Outcome != CheckinClaimed || r.Credit != 400 || r.Day != "2026-10-06" {
+		t.Fatalf("A's check-in went to %s as %+v (ok %v): %+v", heir, r, ok, st)
+	}
+	if _, ok := st[namesake]; ok {
+		t.Fatalf("A's check-in was carried to both its sign-ins: %+v", st)
+	}
+	if _, ok := st["fakeco|A@fake"]; ok {
+		t.Fatalf("A's old entry was kept: %+v", st)
+	}
+	if _, ok := st["other|C"]; !ok {
+		t.Fatalf("another plugin's entry went: %+v", st)
+	}
+	off := settings.Load().CheckinOff
+	want := []string{"workbuddy|123", pluginCheckinKey("fakeco", keys["B@fake/u3"]), pluginCheckinKey("fakeco", keys["B@fake/u4"])}
+	if !slices.Equal(slices.Sorted(slices.Values(off)), slices.Sorted(slices.Values(want))) {
+		t.Fatalf("CheckinOff = %q, want %q", off, want)
+	}
+
+	// the loop asks only A's namesake: the heir is in, B's are off
+	loop := pluginCheckiner{now: func() time.Time { return now }, only: func(id string) bool { return PluginCheckinOn(settings.Load(), id) }}
+	loop.checkinNow(ctx, false)
+	var who string
+	for w, k := range keys {
+		if pluginCheckinKey("fakeco", k) == namesake {
+			who = w
+		}
+	}
+	if p := pressed(t, presses); len(p) != 1 || p[0] != who {
+		t.Fatalf("after the upgrade pressed %q, want only %s", p, who)
+	}
+	// and nothing is carried again, or asked again, on the next look
+	pluginCheckinProviders()
+	loop.checkinNow(ctx, false)
+	if p := pressed(t, presses); len(p) != 1 {
+		t.Fatalf("a second look pressed %q", p)
+	}
+	for _, a := range CheckinAccounts() {
+		if a.By == "plugin:fakeco" && a.On == strings.HasPrefix(a.User, "B@fake") {
+			t.Fatalf("Settings' row %+v: B's should be off, A's on", a)
+		}
+	}
+}
+
+// A plugin-checkin.json that doesn't parse is unknown: nothing is carried
+// over or written over, and it is carried once it reads.
+func TestPluginCheckinCarriesNothingOverAnUnreadableFile(t *testing.T) {
+	path := filepath.Join(claudeHome(t), "plugin-checkin.json")
+	order, heirs := []string{"fakeco|A"}, map[string][]string{"fakeco|A": {"fakeco|fakeco", "fakeco|fakeco#x1"}}
+	bad := []byte(`{"fakeco|A": {"day": "2026-10-06",`)
+	if err := os.WriteFile(path, bad, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if adoptLegacyCheckinFile(path, order, heirs) {
+		t.Fatal("a file that doesn't parse was taken as carried over")
+	}
+	if b, _ := os.ReadFile(path); string(b) != string(bad) {
+		t.Fatalf("the file was written over: %s", b)
+	}
+	if err := os.WriteFile(path, []byte(`{"fakeco|A": {"day": "2026-10-06", "outcome": "claimed"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !adoptLegacyCheckinFile(path, order, heirs) {
+		t.Fatal("not carried once the file reads")
+	}
+	st := shownCheckins(path)
+	if _, ok := st["fakeco|fakeco"]; !ok || len(st) != 1 {
+		t.Fatalf("carried as %+v", st)
 	}
 }

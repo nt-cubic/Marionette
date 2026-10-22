@@ -132,15 +132,6 @@ func TestEmptyGeminiAllowlistRejectedBySubscriptionPaths(t *testing.T) {
 		name string
 		call func(*Server, http.ResponseWriter, *http.Request, *Usage) (int, string)
 	}{
-		{"Kiro", func(s *Server, w http.ResponseWriter, r *http.Request, u *Usage) (int, string) {
-			return s.serveKiro(w, r, provider.Gemini, provider.Provider{ID: "kiro"}, "m", []byte(body), u)
-		}},
-		{"Cursor", func(s *Server, w http.ResponseWriter, r *http.Request, u *Usage) (int, string) {
-			return s.serveCursor(w, r, provider.Gemini, "m", []byte(body), u)
-		}},
-		{"Devin", func(s *Server, w http.ResponseWriter, r *http.Request, u *Usage) (int, string) {
-			return s.serveDevin(w, r, provider.Gemini, "", "m", []byte(body), u)
-		}},
 		{"Claude subscription", func(s *Server, w http.ResponseWriter, r *http.Request, u *Usage) (int, string) {
 			return s.serveClaudeSubscription(w, r, provider.Gemini, provider.Provider{ID: "claude"}, "m", []byte(body), u)
 		}},

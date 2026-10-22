@@ -4,8 +4,36 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
+
+// ZCodeHome is the home folder ZCode (Zhipu's desktop app) reads, given
+// home, the user's home as Go reads it (os.UserHomeDir). ZCode, a Node
+// app, takes $HOME before os.homedir() on every OS: its data folder
+// (getDataBaseDir: process.env.HOME?.trim() || homedir()), its settings
+// (resolveUserHomeDir: HOME, then USERPROFILE) and the skills and MCP
+// servers it reads. On a Mac or Linux that is Go's home too. On Windows
+// Go's is USERPROFILE and HOME is mostly unset, but one the user set (for
+// Git Bash, MSYS2 or Emacs) is where ZCode keeps everything, and magpie
+// wrote its provider under USERPROFILE, where ZCode never looked
+// (Gearclickist on Discord: connected, no error, and no magpie in ZCode).
+func ZCodeHome(home string) string { return ZCodeHomeOn(runtime.GOOS, home) }
+
+// ZCodeHomeOn is ZCodeHome on goos, so a test can ask for Windows'. A
+// HOME that isn't rooted is left out. Only the user's own home is moved:
+// a folder that isn't USERPROFILE (a test's, a WSL distro's) is ZCode's
+// as given.
+func ZCodeHomeOn(goos, home string) string {
+	if goos != "windows" {
+		return home
+	}
+	h := strings.TrimSpace(os.Getenv("HOME"))
+	if h == "" || !rooted(h) || !strings.EqualFold(filepath.Clean(home), filepath.Clean(os.Getenv("USERPROFILE"))) {
+		return home
+	}
+	return h
+}
 
 // ZCodeDataIn is the folder ZCode (Zhipu's desktop app) keeps its .zcode
 // data in, with home as the user's home folder: the home folder, unless the

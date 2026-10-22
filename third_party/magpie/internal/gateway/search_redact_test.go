@@ -77,14 +77,11 @@ func TestSearchQueryMasked(t *testing.T) {
 
 	// WorkBuddy's search
 	site := &wbSearchSite{}
-	p := wbSignedIn(t, "workbuddy", "workbuddy-desktop", site)
+	p := wbSignedIn(t, "workbuddy", site)
 	if err := settings.Save(settings.Settings{RedactPersonal: true}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Fetch(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := New().wbSearch(context.Background(), p, query); err != nil {
+	if _, _, err := New().ownSearch(searchingOn(context.Background(), p), p, query); err != nil {
 		t.Fatal(err)
 	}
 	site.mu.Lock()

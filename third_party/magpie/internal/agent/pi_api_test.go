@@ -62,7 +62,7 @@ func TestPiModelsAskedOnTheirNativeAPI(t *testing.T) {
 		"relay/glm-4.6":        nil,
 		"anth/claude-sonnet-5": "anthropic-messages",
 		"anth/kimi-k3":         "anthropic-messages",
-		"group/auto-gpt-5-5":   "openai-responses",
+		"auto/gpt-5.5":         "openai-responses",
 		"group/gpts":           "openai-responses",
 		"group/outer":          "openai-responses",
 		"group/mixed":          nil,

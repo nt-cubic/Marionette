@@ -67,3 +67,32 @@ func TestLockAcrossProcesses(t *testing.T) {
 	}
 	unlock()
 }
+
+// #1665: each take asked the system to make the lock file's folder before
+// it opened the file, ~190 times in a Windows start's first 25s, each one
+// work an antivirus filter driver adds its own to. The folder is made only
+// when it is missing.
+func TestLockMakesFolderOnlyWhenMissing(t *testing.T) {
+	made := 0
+	was := mkdirAll
+	mkdirAll = func(p string, m os.FileMode) error { made++; return was(p, m) }
+	t.Cleanup(func() { mkdirAll = was })
+
+	path := filepath.Join(t.TempDir(), "new", "f.json.lock")
+	unlock, held := Lock(path, time.Second)
+	if !held {
+		t.Fatal("not held in a folder not there yet")
+	}
+	unlock()
+	if made != 1 {
+		t.Fatalf("missing folder made %d times, want 1", made)
+	}
+	m := Mutex{Path: func() string { return path }}
+	for range 20 {
+		m.Lock()
+		m.Unlock()
+	}
+	if made != 1 {
+		t.Fatalf("20 takes in a folder that is there made it %d more times", made-1)
+	}
+}

@@ -24,7 +24,7 @@ func TestRowKeepsArchive(t *testing.T) {
 			if r := chunk.row(i); r.Archive != fmt.Sprintf("2026-10-02/1010%02d-00000000000000aa", i) || r.Input != i {
 				t.Fatalf("row %d: archive %q", i, r.Archive)
 			}
-			if msg := chunk.Strings[chunk.Rows[i].Text[rowMsg]]; msg != fmt.Sprint("msg", i) {
+			if msg := chunk.Strings[chunk.text(&chunk.Rows[i], rowMsg)]; msg != fmt.Sprint("msg", i) {
 				t.Fatalf("row %d: message %q", i, msg)
 			}
 		}

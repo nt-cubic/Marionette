@@ -90,12 +90,16 @@ func TestCodexDisconnect(t *testing.T) {
 // The tier and subagent models the user set for their relay come back with
 // it (#1050), whether magpie steps out by Disconnect or by Claude Code's
 // own model. So does the main model set for the relay in the env
-// (ANTHROPIC_MODEL), which magpie takes out while wired in.
+// (ANTHROPIC_MODEL), which magpie takes out while wired in, and the auto
+// mode classifier's model (CLAUDE_CODE_AUTO_MODE_MODEL).
 func TestClaudeDisconnect(t *testing.T) {
 	for name, before := range map[string]string{
 		"own relay":   `{"theme":"dark","model":"opus","env":{"ANTHROPIC_BASE_URL":"https://relay.example","ANTHROPIC_AUTH_TOKEN":"sk-relay","DISABLE_TELEMETRY":"1"}}`,
 		"own tiers":   `{"model":"sonnet","env":{"ANTHROPIC_BASE_URL":"https://relay.example","ANTHROPIC_AUTH_TOKEN":"sk-relay","ANTHROPIC_DEFAULT_OPUS_MODEL":"relay-opus","ANTHROPIC_DEFAULT_SONNET_MODEL":"relay-sonnet","ANTHROPIC_DEFAULT_HAIKU_MODEL":"relay-haiku","ANTHROPIC_SMALL_FAST_MODEL":"relay-haiku","CLAUDE_CODE_SUBAGENT_MODEL":"relay-sonnet"}}`,
 		"nothing set": `{"theme":"dark"}`,
+		// the auto mode classifier's model the user set themselves, which
+		// magpie takes out while wired in and puts back
+		"own auto mode": `{"env":{"ANTHROPIC_BASE_URL":"https://relay.example","ANTHROPIC_AUTH_TOKEN":"sk-relay","CLAUDE_CODE_AUTO_MODE_MODEL":"relay-haiku"}}`,
 		// the main model set for the relay in the env (with no settings
 		// model, and beside one), which magpie takes out while wired in:
 		// it outranks a pick in /model
@@ -148,6 +152,9 @@ func TestClaudeDisconnect(t *testing.T) {
 					t.Fatal(err)
 				}
 				if err := a.Apply("subagent", "deepseek/flash"); err != nil {
+					t.Fatal(err)
+				}
+				if err := a.Apply("auto_mode", "deepseek/flash"); err != nil {
 					t.Fatal(err)
 				}
 				if !a.Wired() {

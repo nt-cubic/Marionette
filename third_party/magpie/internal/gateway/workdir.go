@@ -80,11 +80,8 @@ func workPlace(req *Request) (dir, git string) {
 func tellWorkPlace(h http.Header, to provider.Protocol, body []byte) {
 	h.Del(provider.WorkDirHeader)
 	h.Del(provider.WorkGitHeader)
-	req, err := parse(to, body)
-	if err != nil {
-		return
-	}
-	dir, git := workPlace(req)
+	f := factsOf(to, body)
+	dir, git := f.dir, f.git
 	if dir == "" {
 		return
 	}

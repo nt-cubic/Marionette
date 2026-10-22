@@ -592,6 +592,8 @@ function renderActivity() {
     r.append(el("span", "a", c.agent || "—"));
     r.append(el("span", "m", c.model));
     r.append(el("span", "p", c.from === c.to ? c.from : `${c.from} → ${c.to}`));
+    // what masking kept from the vendor, its record a click away
+    if (c.masked?.n || c.masked?.warned) r.append(maskedBadge(c.masked));
     r.append(el("span", "grow"));
     r.append(el("span", "st", c.error ? `${c.status} ${c.error}` : `${c.status} · ${ledTook(c.ms)}` + (c.ttft ? " · " + t("TTFT {ms}", { ms: ledTook(c.ttft) }) : "")));
     r.title = open ? t("Hide request and response bodies") : t("Show request and response bodies");

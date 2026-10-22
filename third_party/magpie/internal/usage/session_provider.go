@@ -160,19 +160,33 @@ func (r *sessionResolver) officialLogin(c sessions.Call, account string) bool {
 	return false
 }
 
+// desktopAgentSessions is the folder of a desktop root that holds Claude
+// desktop's agent-mode sessions, each beside the metadata naming its
+// account.
+const desktopAgentSessions = "local-agent-mode-sessions"
+
 func (r *sessionResolver) desktopIdentity(c sessions.Call) (desktopSessionIdentity, bool) {
 	if c.Agent != "claude" && c.Agent != "claude-desktop" {
 		return desktopSessionIdentity{}, false
 	}
 	var id desktopSessionIdentity
 	found := false
-	for _, root := range r.roots {
+	// Only a file under a desktop root's local-agent-mode-sessions can
+	// name one: the rest (every Claude Code session, ~380k calls in a
+	// long history, asked twice each) skip the Rel and the Split, which
+	// were a fifth of what a started magpie's first Requests read
+	// allocated.
+	roots := r.roots
+	if !strings.Contains(c.File, desktopAgentSessions) {
+		roots = nil
+	}
+	for _, root := range roots {
 		rel, err := filepath.Rel(root, c.File)
 		if err != nil {
 			continue
 		}
 		parts := strings.Split(rel, string(filepath.Separator))
-		if len(parts) > 4 && parts[0] == "local-agent-mode-sessions" && strings.HasPrefix(parts[3], "local_") && parts[4] == ".claude" {
+		if len(parts) > 4 && parts[0] == desktopAgentSessions && strings.HasPrefix(parts[3], "local_") && parts[4] == ".claude" {
 			path := filepath.Join(root, filepath.Join(parts[:4]...)) + ".json"
 			id, found = r.desktop[path]
 			break

@@ -28,7 +28,28 @@ import (
 // codexZstd is level 3 (klauspost's SpeedDefault, "roughly equivalent to
 // the default Zstandard mode (level 3)"), without the frame checksum,
 // which libzstd leaves off by default. EncodeAll is safe to share.
-var codexZstd, _ = zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault), zstd.WithEncoderCRC(false))
+// Codex's codex-rs/http-client/src/request.rs uses
+// zstd::stream::encode_all(.., 3), whose unknown-size stream has a 2 MiB
+// window. Keep turns within that client envelope too.
+//
+// The encoder keeps one coder per concurrent EncodeAll, GOMAXPROCS by
+// default, and each keeps its history (4 MiB at a 2 MiB window) for the
+// life of the process: 74 MB of a live gateway's 288 MB heap on a 14-core
+// Mac. A 1 MiB turn encodes in about half a millisecond, so two coders in
+// low-memory mode keep up with dozens of agents and hold ~9 MB. Neither
+// option changes the bytes sent.
+var codexZstd = newCodexZstd()
+
+func newCodexZstd() *zstd.Encoder {
+	z, _ := zstd.NewWriter(nil,
+		zstd.WithEncoderLevel(zstd.SpeedDefault),
+		zstd.WithEncoderCRC(false),
+		zstd.WithWindowSize(2<<20),
+		zstd.WithEncoderConcurrency(2),
+		zstd.WithLowerEncoderMem(true),
+	)
+	return z
+}
 
 // codexZstdOff leaves turns plain, for tests alone: the fake backends of
 // most of the gateway's and provider's tests read the body as it comes, so

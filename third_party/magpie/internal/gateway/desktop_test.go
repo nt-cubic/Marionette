@@ -143,3 +143,30 @@ type desktopRow struct {
 	DisplayName string `json:"display_name"`
 	Description string `json:"description"`
 }
+
+// DesktopNumber is the number Claude Desktop's menu says beside a model:
+// only one it names after its own catalog, a Claude model with reasoning
+// levels (magpie-<n>.anthropic.<model>), so the Providers page says it
+// there alone (#2578). A row Desktop names by display_name, which says the
+// provider, or by the model's own id, gets none.
+func TestDesktopNumber(t *testing.T) {
+	opus := provider.Entry{ID: "a/claude-opus-5-5", Model: "claude-opus-5-5", Efforts: []string{"low"}}
+	n := DesktopNumber(opus)
+	if n != aliasNumber(opus.ID) || claudeLooking(opus) != "magpie-"+n+".anthropic.claude-opus-5-5" {
+		t.Errorf("an effort Claude model: DesktopNumber = %q, listed as %s", n, claudeLooking(opus))
+	}
+	for _, e := range []provider.Entry{
+		// mythos-magpie-<n>, named by display_name
+		{ID: "a/glm-5.3", Model: "glm-5.3", Efforts: []string{"low"}},
+		// anthropic/magpie-<n>, named by display_name
+		{ID: "a/glm-5.3", Model: "glm-5.3"},
+		// its own id, which carries no number
+		{ID: "a/claude-opus-5-5", Model: "claude-opus-5-5"},
+		// a group led by a Claude model keeps its own name (mythos-magpie-<n>)
+		{ID: "group/opus", Model: "claude-opus-5-5", Group: "opus", Efforts: []string{"low"}},
+	} {
+		if got := DesktopNumber(e); got != "" {
+			t.Errorf("%s (listed as %s): DesktopNumber = %q, want none", e.ID, claudeLooking(e), got)
+		}
+	}
+}

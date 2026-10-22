@@ -25,8 +25,11 @@ const searchedHistory = `{"type":"message","role":"user","content":[{"type":"inp
 // history on 2026-10-09: replayed without the web_search tool declared,
 // HTTP 200 and only this error event; declared (in the tools, or in an
 // additional_tools item), a reply. A Lite request with web_search among
-// its top-level tools is refused 400, as the backend refused it. It keeps
-// the bodies it was sent.
+// its top-level tools is refused 400, as the backend refused it. A request
+// declaring both Codex's web.run and the hosted web_search is refused as
+// Savin was (Discord, Codex 0.163.0-alpha); web.run alone is taken as the
+// conversation's search, as Codex sends it so to the backend itself. It
+// keeps the bodies it was sent.
 func protectedSearch(t *testing.T) *[][]byte {
 	t.Helper()
 	var mu sync.Mutex
@@ -44,13 +47,20 @@ func protectedSearch(t *testing.T) *[][]byte {
 			Tools []map[string]any `json:"tools"`
 		}
 		json.Unmarshal(b, &q)
-		searched, declared, compact := false, false, false
+		searched, declared, compact, webRun := false, false, false, false
+		isWebRun := func(tl map[string]any) bool {
+			return tl["type"] == "namespace" && tl["name"] == "web"
+		}
 		for _, it := range q.Input {
 			searched = searched || it.Type == "web_search_call"
 			compact = compact || it.Type == "compaction_trigger"
 			for _, tl := range it.Tools {
 				declared = declared || tl["type"] == "web_search"
+				webRun = webRun || isWebRun(tl)
 			}
+		}
+		for _, tl := range q.Tools {
+			webRun = webRun || isWebRun(tl)
 		}
 		for _, tl := range q.Tools {
 			if tl["type"] == "web_search" && strings.EqualFold(r.Header.Get("X-OpenAI-Internal-Codex-Responses-Lite"), "true") {
@@ -60,7 +70,12 @@ func protectedSearch(t *testing.T) *[][]byte {
 			}
 			declared = declared || tl["type"] == "web_search"
 		}
-		if searched && !declared {
+		if webRun && declared {
+			w.WriteHeader(400)
+			io.WriteString(w, `{"error":{"message":"The native ChatGPT backend does not allow a single request to contain both the client-declared function web.run and the hosted tool web_search.","type":"invalid_request_error","param":"tools","code":null}}`)
+			return
+		}
+		if searched && !declared && !webRun {
 			io.WriteString(w, "event: error\ndata: {\"type\":\"error\",\"error\":{\"message\":\"response protection is unavailable\",\"type\":\"internal_error\",\"param\":null,\"code\":null}}\n\n")
 			return
 		}
@@ -192,6 +207,52 @@ func TestSearchedConversationOnCodexSignIn(t *testing.T) {
 	tools, additional, choice, last := sentTools(t, (*got)[1])
 	if len(tools) != 0 || strings.Join(additional, ",") != "web_search" || choice != "none" || last != "compaction_trigger" {
 		t.Errorf("Lite sent tools %v, additional %v, tool_choice %v, last item %s", tools, additional, choice, last)
+	}
+}
+
+// webRunTool is Codex's web.run as it declares it (codex-rs/ext/web-search
+// tool.rs): a function in the "web" namespace, which Codex offers in place
+// of the hosted web_search on a Responses Lite model or with its standalone
+// web search on, and runs through /alpha/search.
+const webRunTool = `{"type":"namespace","name":"web","description":"Tools in the web namespace.","tools":[{"type":"function","name":"run","description":"Search the web.","strict":false,"parameters":{"type":"object","properties":{"search_query":{"type":"array"}}}}]}`
+
+// Savin on Discord (Codex 0.163.0-alpha.10.2, signed in with ChatGPT):
+// a conversation that had searched with the hosted tool went on under
+// Codex's web.run, and magpie declared the hosted web_search for the
+// replayed search (#1270) beside it, which the backend refuses. web.run is
+// the conversation's search: the turn goes as Codex sent it, on Codex's
+// own sign-in and on a ChatGPT account in magpie, Lite or not.
+func TestSearchedConversationUnderWebRun(t *testing.T) {
+	codexSignedIn(t)
+	got := protectedSearch(t)
+	lite := `{"model":"gpt-6.1-sol","stream":true,"store":false,"parallel_tool_calls":false,"reasoning":{"effort":"medium","context":"all_turns"},"input":[{"type":"additional_tools","role":"developer","tools":[` + webRunTool + `]},` + searchedHistory + `]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(lite))
+	req.Header.Set("Authorization", "Bearer chatgpt-token")
+	req.Header.Set("chatgpt-account-id", "acct-1")
+	req.Header.Set("X-OpenAI-Internal-Codex-Responses-Lite", "true")
+	New().Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "response.completed") {
+		t.Fatalf("Lite on Codex's sign-in: status %d: %s", rec.Code, rec.Body.String())
+	}
+	if sent := (*got)[len(*got)-1]; string(sent) != lite {
+		t.Errorf("Lite on Codex's sign-in relayed changed:\n%s\n%s", lite, sent)
+	}
+
+	for _, in := range []string{
+		`{"model":"codex/gpt-6.1-sol","stream":true,"reasoning":{"effort":"medium","context":"all_turns"},"input":[{"type":"additional_tools","role":"developer","tools":[` + webRunTool + `]},` + searchedHistory + `]}`,
+		`{"model":"codex/gpt-5.5","stream":true,"tools":[{"type":"function","name":"shell","parameters":{"type":"object","properties":{}}},` + webRunTool + `],"tool_choice":"auto","input":[` + searchedHistory + `]}`,
+	} {
+		code, body := post(t, "/v1/responses", in)
+		if code != 200 || !strings.Contains(body, "response.completed") {
+			t.Fatalf("on an account: status %d: %s", code, body)
+		}
+		tools, additional, _, _ := sentTools(t, (*got)[len(*got)-1])
+		for _, typ := range append(tools, additional...) {
+			if typ == "web_search" {
+				t.Errorf("web_search declared beside web.run: tools %v, additional %v", tools, additional)
+			}
+		}
 	}
 }
 

@@ -139,10 +139,11 @@ func TestCrushModelsCarryMaxTokens(t *testing.T) {
 // output. ZCode and WorkBuddy cap it at zcodeMaxOutput besides, Crush falls
 // back to 16384 without a known output, OpenCode is handed no limit without
 // a window, and AtomCode and Snow CLI, each told a window of its own when
-// the model's isn't known, are cut to that.
+// the model's isn't known, are cut to that. dsh is held to a quarter of
+// a known window (dshMaxTokens, #2823).
 func TestMaxTokensWithinContextWindow(t *testing.T) {
 	home := syncHome(t)
-	check := func(limit string, want int) {
+	check := func(limit string, want, window int) {
 		t.Helper()
 		os.WriteFile(catalog.CachePath(), []byte(`{"zai":{"models":{"glm-4.6":{"id":"glm-4.6","name":"GLM-4.6","limit":{`+limit+`}}}}}`), 0o644)
 		catalog.Reset()
@@ -179,6 +180,12 @@ func TestMaxTokensWithinContextWindow(t *testing.T) {
 		if !strings.Contains(limit, "context") {
 			told = strconv.Itoa(min(want, atomcodeContext))
 		}
+		// dsh reserves maxTokens out of its window before compacting, so a
+		// known window holds it to a quarter (dshMaxTokens, #2823).
+		dshTold := n
+		if strings.Contains(limit, "context") {
+			dshTold = strconv.Itoa(min(want, window/4))
+		}
 		snowTold := n
 		if !strings.Contains(limit, "context") {
 			snowTold = strconv.Itoa(min(want, snowContext))
@@ -187,7 +194,7 @@ func TestMaxTokensWithinContextWindow(t *testing.T) {
 			"pi":          {string(pi), `"maxTokens":` + n},
 			"cline":       {string(cline), `"maxTokens":` + n},
 			"omp":         {string(omp), "maxTokens: " + n},
-			"dsh":         {string(dshRoute), "maxTokens: " + n},
+			"dsh":         {string(dshRoute), "maxTokens: " + dshTold},
 			"droid":       {string(droid), `"maxOutputTokens":` + n},
 			"qoder":       {string(qoder), `"maxOutputTokens":` + n},
 			"hanako":      {string(hanako), `"maxOutput":` + n},
@@ -207,10 +214,10 @@ func TestMaxTokensWithinContextWindow(t *testing.T) {
 			}
 		}
 	}
-	check(`"context":128000,"output":384000`, 128000)
-	check(`"output":384000`, 384000)
-	check(`"context":204800,"output":131072`, 131072)
-	check(`"context":64000,"output":384000`, 64000)
+	check(`"context":128000,"output":384000`, 128000, 128000)
+	check(`"output":384000`, 384000, 0)
+	check(`"context":204800,"output":131072`, 131072, 204800)
+	check(`"context":64000,"output":384000`, 64000, 64000)
 }
 
 // A provider added after a magpie model was picked reaches the lists agents

@@ -42,8 +42,8 @@ async function serve(route) {
   if (url.pathname === "/api/usage/quotas" || url.pathname === "/api/usage/quotas/history" || url.pathname === "/api/agents/install") return json([]);
   if (url.pathname === "/api/whatsnew") return json({});
   if (url.pathname === "/api/upstream") return json({ vendors: [], providers: {} });
-  // the sidebar's plugin pages: none
-  if (url.pathname === "/api/plugin-pages") return json([]);
+  // the sidebar's plugin pages, and plugin panels in magpie's pages: none
+  if (url.pathname === "/api/plugin-pages" || url.pathname === "/api/plugin-panels") return json([]);
   // the sidebar's gateway line, when no page has read the providers
   if (url.pathname === "/api/providers") return json({ providers: [], gateway: { url: "http://127.0.0.1:3425", running: true } });
   assert(!url.pathname.startsWith("/api/"), "Unexpected API: " + url.pathname);

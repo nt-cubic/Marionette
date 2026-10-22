@@ -75,7 +75,7 @@ func TestUsageViasSkipsOldHistory(t *testing.T) {
 	settleLogClock(t)
 	historyLog(t, 4000)
 	since := time.Now().Add(-time.Hour)
-	if v := Vias(since); len(v) != 1 || v["codex|s"][0].Calls != 1 {
+	if v := Vias(since); v.Len() != 1 || v.Of("codex|s")[0].Calls != 1 {
 		t.Fatal(v)
 	}
 	if n := testing.AllocsPerRun(2, func() { Vias(since) }); n > 1500 {

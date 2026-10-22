@@ -241,9 +241,12 @@ func fetchJSONFrom(ctx context.Context, u string, limit int64, do func(*http.Cli
 	req.Header.Set("Accept", "application/json")
 	// GitHub's API is asked with the user's GitHub token, as the
 	// library's skills are: without one it answers an address 60
-	// requests an hour, which a few git plugins' checks use up (#1942)
-	token := ghtoken.Authorize(req, githubAPI)
-	res, err := do(http.DefaultClient, req)
+	// requests an hour, which a few git plugins' checks use up (#1942);
+	// an environment token GitHub refuses is dropped for an anonymous
+	// request (till on Discord)
+	res, token, err := ghtoken.Do(req, githubAPI, func(r *http.Request) (*http.Response, error) {
+		return do(http.DefaultClient, r)
+	})
 	if err != nil {
 		return nil, err
 	}

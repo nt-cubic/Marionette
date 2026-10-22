@@ -2158,8 +2158,9 @@ WebKit, in English and Chinese:
 node --test internal/gui/tests/plugin-progressive.test.cjs
 
 `lightweight.test.cjs` checks Settings → General's Lightweight mode row
-(#580): off by default, On and Off saved as `lightweight` true and false
-without the page moving, another setting's save keeping it, no left-border
+(#580): off for a user who never chose, On and Off saved as `lightweight`
+true and false without the page moving, another setting's save keeping the
+choice or leaving it unchosen (no `lightweight` posted), no left-border
 accent, and no such row on a browser's page (`web`). English and Chinese,
 Chromium and WebKit, with `/api/settings` faked:
 node --test internal/gui/tests/lightweight.test.cjs
@@ -2348,8 +2349,9 @@ node --test internal/gui/tests/ledger-protocol.test.cjs
 
 `library-rtk-nohook.test.cjs` checks that an agent RTK has no hook for
 (DeepSeek Harness) is listed in Library › RTK with a No RTK hook tag saying
-why, and that its switch can't be turned on, while Pi's can. English and
-Chinese, Chromium and WebKit.
+why, and that its switch can't be turned on, while Pi's can. Grok Build's
+tag gives its own reason and rtk-ai/rtk#2136, never dsh's #3847. English
+and Chinese, Chromium and WebKit.
 
 ```sh
 node --test internal/gui/tests/library-rtk-nohook.test.cjs

@@ -115,29 +115,40 @@ func (b *blockPricer) block(packed *rowChunk) *rowChunk {
 		added[s] = id
 		return id
 	}
+	// a shape's names are priced once, and the row takes the shape they
+	// make: the agent, the client and the provider are all a shape's
+	c.Shapes, c.shapeIDs = slices.Clip(c.Shapes), nil
 	type ids struct {
-		provider uint32
-		flags    uint16
-		price    *catalog.Price
+		id    uint32 // the provider's string, or the row's shape
+		flags uint16
+		price *catalog.Price
 	}
 	names := map[[4]uint32]ids{}
 	agents := map[uint32][2]uint32{}
+	shapes := map[uint32]ids{}
 	for i := range c.Rows {
 		p := &c.Rows[i]
-		k := [4]uint32{p.Text[1], p.Text[5], p.Text[7], p.Text[8]}
-		got, ok := names[k]
+		got, ok := shapes[p.Shape]
 		if !ok {
-			a := b.as(c.Strings[k[0]], c.Strings[k[1]], c.Strings[k[2]], c.Strings[k[3]])
-			got = ids{intern(a.provider, k[0]), a.flags, a.price}
-			names[k] = got
+			t := c.Shapes[p.Shape]
+			k := [4]uint32{t[1], t[5], t[7], t[8]}
+			named, ok := names[k]
+			if !ok {
+				a := b.as(c.Strings[k[0]], c.Strings[k[1]], c.Strings[k[2]], c.Strings[k[3]])
+				named = ids{intern(a.provider, k[0]), a.flags, a.price}
+				names[k] = named
+			}
+			agent, ok := agents[t[0]]
+			if !ok {
+				a, client := b.agent(c.Strings[t[0]])
+				agent = [2]uint32{intern(a, t[0]), intern(client, t[rowClient])}
+				agents[t[0]] = agent
+			}
+			t[0], t[1], t[rowClient] = agent[0], named.id, agent[1]
+			got = ids{c.shape(t), named.flags, named.price}
+			shapes[p.Shape] = got
 		}
-		agent, ok := agents[p.Text[0]]
-		if !ok {
-			a, client := b.agent(c.Strings[p.Text[0]])
-			agent = [2]uint32{intern(a, p.Text[0]), intern(client, p.Text[rowClient])}
-			agents[p.Text[0]] = agent
-		}
-		p.Text[0], p.Text[1], p.Text[rowClient] = agent[0], got.provider, agent[1]
+		p.Shape = got.id
 		p.Flags = p.Flags&^(1|2|32) | got.flags
 		if p.Flags&rowOwnCost != 0 {
 			// a reported call that said what it cost costs that (#1874)

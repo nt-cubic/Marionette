@@ -83,7 +83,7 @@ func TestDevinOwnMovesWithPlan(t *testing.T) {
 	devinStatus.Lock()
 	devinStatus.user, devinStatus.plan, devinStatus.ok, devinStatus.at = "dev@example.com", "Devin Pro", true, time.Now()
 	devinStatus.Unlock()
-	t.Cleanup(forgetDevinStatus)
+	t.Cleanup(devinStatus.forget)
 	own := movingOf(t, "devin")["dev@example.com"]
 	md, _ := own.Auth["metadata"].(map[string]any)
 	if !own.Own || own.Plan != "Devin Pro" || md["plan"] != "Devin Pro" {

@@ -36,8 +36,8 @@ const route = {
 };
 
 const words = {
-  en: { aside: "a/glm is paused by rule 1 (14:00–18:00 Mon–Fri), so it is left out until that ends.", title: "1. 14:00–18:00 Mon–Fri → pause A · glm", pause: "pause", send: "send to", edit: "Edit", add: "Add a rule", save: "Save", bare: "Rule 2: a pause needs hours, days, agents or folders", warn: "left out of the group then: not tried, not a fallback", length: "Conversation length", hours: "Hours and days", toPause: "Pause the model instead" },
-  zh: { aside: "a/glm 被规则 1（周一–周五 14:00–18:00）暂停，在此之前不会被调用。", title: "1. 周一–周五 14:00–18:00 → 暂停 A · glm", pause: "暂停", send: "先发给", edit: "编辑", add: "添加规则", save: "保存", bare: "第 2 条规则：暂停需要设时段、星期、Agent 或文件夹", warn: "这段时间移出分组：不会被调用，也不做备用", length: "对话长度", hours: "时段", toPause: "改为暂停该模型" },
+  en: { aside: "a/glm is paused by rule 1 (14:00–18:00 Mon–Fri), so it is left out until that ends.", title: "1. 14:00–18:00 Mon–Fri → pause A · glm", pause: "pause", send: "send to", edit: "Edit", add: "Add a rule", save: "Save", bare: "Rule 2: a pause needs hours, days, agents or folders. Add one with its +, or remove the rule from its ⋯ menu", warn: "left out of the group then: not tried, not a fallback", length: "Conversation length", hours: "Hours and days", toPause: "Pause the model instead" },
+  zh: { aside: "a/glm 被规则 1（周一–周五 14:00–18:00）暂停，在此之前不会被调用。", title: "1. 周一–周五 14:00–18:00 → 暂停 A · glm", pause: "暂停", send: "先发给", edit: "编辑", add: "添加规则", save: "保存", bare: "第 2 条规则：暂停需要设时段、星期、Agent 或文件夹。用它的 + 添加，或在它的 ⋯ 菜单里删除这条规则", warn: "这段时间移出分组：不会被调用，也不做备用", length: "对话长度", hours: "时段", toPause: "改为暂停该模型" },
   "zh-TW": { pause: "暫停", send: "先發給", edit: "編輯", add: "新增規則", save: "儲存" },
   ja: { pause: "一時停止", send: "送信先" },
   de: { pause: "pausieren", send: "senden an" },

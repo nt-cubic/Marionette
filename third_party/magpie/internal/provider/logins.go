@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yetone/magpie/internal/appdir"
@@ -130,8 +131,18 @@ var (
 		Path:   func() string { return loginsPath() + ".lock" },
 		Locked: func() { filememo.Look(loginsPath()) },
 	}
-	loginsSeenAt time.Time
+	// loginsSeenAt is when rememberLogins last looked at the agents'
+	// sign-ins (UnixNano), 0 for not since this magpie started or since
+	// a change made the next look due at once. It is read without
+	// loginsMu, so a look not yet due takes no lock (#1665).
+	loginsSeenAt atomic.Int64
 )
+
+// loginsLookDue says the 30 seconds since the last look are up.
+func loginsLookDue() bool {
+	at := loginsSeenAt.Load()
+	return at == 0 || time.Since(time.Unix(0, at)) >= 30*time.Second
+}
 
 // switchable agents: those whose sign-in magpie can save and put back.
 var loginAgents = []string{"claude", "codex"}
@@ -720,12 +731,20 @@ func rememberLogins(force bool) {
 	if settings.AccountDiscoveryOff() {
 		return
 	}
-	loginsMu.Lock()
-	defer loginsMu.Unlock()
-	if !force && time.Since(loginsSeenAt) < 30*time.Second {
+	// the time first, and the lock only for a look that is due: taken
+	// first, every ask (each list of accounts, each page's read) made and
+	// locked logins.json.lock, ~370 times in a start's first 25s on
+	// Windows, where an antivirus' filter driver works on each (#1665)
+	if !force && !loginsLookDue() {
 		return
 	}
-	loginsSeenAt = time.Now()
+	loginsMu.Lock()
+	defer loginsMu.Unlock()
+	// another ask may have looked while this one waited for the lock
+	if !force && !loginsLookDue() {
+		return
+	}
+	loginsSeenAt.Store(time.Now().UnixNano())
 	was := readLogins()
 	ls := slices.Clone(was)
 	now := time.Now().UTC().Truncate(time.Second)
@@ -794,6 +813,33 @@ func onlySeenMoved(was, next []savedLogin, now time.Time) bool {
 	return err1 == nil && err2 == nil && bytes.Equal(ja, jb)
 }
 
+// SignedOut says that p is a signed-in account whose every account in use
+// (on, or the one the agent is signed in to) has had its sign-in refused:
+// listed, so it can be signed in again, but not "signed in". It is what
+// the app's Providers row says as "{user} is signed out", for magpie
+// providers and the TUI to say the same (LeeHom on Discord: Claude Code
+// listed on two lapsed accounts).
+func (p Provider) SignedOut() bool {
+	if p.Account == nil {
+		return false
+	}
+	ls := Logins(p.Account.Agent)
+	if _, ok := PluginOf(p.ID); ok && p.IsPlugin() {
+		ls = Logins(p.ID)
+	}
+	n := 0
+	for _, l := range ls {
+		if !l.On && !l.Active {
+			continue
+		}
+		if l.Lapsed == "" {
+			return false
+		}
+		n++
+	}
+	return n > 0
+}
+
 // Logins lists the remembered accounts of an agent ("" for every one),
 // the active one flagged.
 func Logins(agent string) []Login {
@@ -805,28 +851,8 @@ func Logins(agent string) []Login {
 	}
 	var side []Login
 	switch agent {
-	case "grok":
-		return grokLoginList()
 	case "copilot":
 		return copilotLoginList()
-	case "zcode":
-		return zcodeLoginList()
-	case "kiro":
-		return kiroLoginList()
-	case "devin":
-		return devinLoginList()
-	case "workbuddy", WorkBuddyAIID:
-		return wbLoginList(wbSiteOf(agent))
-	case CommandCodePlanID:
-		return cmdLoginList()
-	case "qoder", QoderCNID:
-		return loginsOf(qoderLoginsOf(agent))
-	case "zed":
-		return zedLoginList()
-	case "factory":
-		return factoryLoginList()
-	case MiMoID:
-		return mimoLoginList()
 	case ChatGPTAPIID:
 		return siwcLoginList()
 	case "gemini", "antigravity":
@@ -843,20 +869,19 @@ func Logins(agent string) []Login {
 			}
 		}
 		// a built-in moved onto its plugin lists its accounts there (an
-		// agent's own sign-in, which the built-in still finds, too)
+		// agent's own sign-in, which the built-in still finds, too); a
+		// retired one (no list) keeps its place, its plugin serving it
 		for _, b := range []struct {
 			id   string
 			list func() []Login
 		}{
-			{"grok", grokLoginList}, {"copilot", copilotLoginList}, {"zcode", zcodeLoginList}, {"kiro", kiroLoginList},
-			{"devin", devinLoginList}, {"workbuddy", func() []Login { return wbLoginList(wbCN) }},
-			{WorkBuddyAIID, func() []Login { return wbLoginList(wbAI) }}, {CommandCodePlanID, cmdLoginList},
-			{"qoder", func() []Login { return loginsOf(qoderLogins()) }},
-			{QoderCNID, func() []Login { return loginsOf(qoderLoginsOf(QoderCNID)) }}, {"zed", zedLoginList}, {"factory", factoryLoginList},
-			{MiMoID, mimoLoginList}, {ChatGPTAPIID, siwcLoginList}, {"gemini", func() []Login { return googleLoginList("gemini") }},
+			{"grok", nil}, {"copilot", copilotLoginList}, {"zcode", nil}, {"kiro", nil},
+			{"devin", nil}, {"workbuddy", nil}, {WorkBuddyAIID, nil}, {CommandCodePlanID, nil},
+			{"qoder", nil}, {QoderCNID, nil}, {"zed", nil}, {"factory", nil},
+			{MiMoID, nil}, {ChatGPTAPIID, siwcLoginList}, {"gemini", func() []Login { return googleLoginList("gemini") }},
 			{"antigravity", func() []Login { return googleLoginList("antigravity") }},
 		} {
-			if !Moved(b.id) {
+			if !PluginServes(b.id) {
 				side = append(side, b.list()...)
 				continue
 			}
@@ -883,7 +908,9 @@ func Logins(agent string) []Login {
 	ls := readLogins()
 	standIn := ""
 	if _, ok := active["claude"]; !ok {
-		standIn = claudeStandIn(ls)
+		// the one the provider is listed on (claudeStandInAccount), a
+		// signed-out one too, which the row then says is signed out
+		standIn = claudeListed(ls)
 	}
 	back := map[string]string{}
 	for a, user := range active {
@@ -1047,28 +1074,8 @@ func switchLogin(agent, user string) error {
 		return switchPluginLogin(pp, user)
 	}
 	switch agent {
-	case "grok":
-		return switchGrokLogin(user)
 	case "copilot":
 		return switchCopilotLogin(user)
-	case "zcode":
-		return switchZCodeLogin(user)
-	case "kiro":
-		return switchKiroLogin(user)
-	case "devin":
-		return switchDevinLogin(user)
-	case "workbuddy", WorkBuddyAIID:
-		return switchWorkBuddyLogin(wbSiteOf(agent), user)
-	case CommandCodePlanID:
-		return switchCommandCodeLogin(user)
-	case "qoder", QoderCNID:
-		return switchSideLogin(agent, user, qoderLoginsOf(agent))
-	case "zed":
-		return switchZedLogin(user)
-	case "factory":
-		return switchFactoryLogin(user)
-	case MiMoID:
-		return switchMiMoLogin(user)
 	case ChatGPTAPIID:
 		return switchSIWCLogin(user)
 	case "gemini", "antigravity":
@@ -1178,7 +1185,7 @@ func switchSavedLogin(agent, user string) (from string, _ error) {
 	if err != nil {
 		return "", err
 	}
-	loginsSeenAt = time.Time{}
+	loginsSeenAt.Store(0)
 	forgetAccountCaches()
 	return from, nil
 }
@@ -1241,28 +1248,8 @@ func ForgetLogin(agent, user string) error {
 		return forgetPluginLogin(pp, user)
 	}
 	switch agent {
-	case "grok":
-		return forgetGrokLogin(user)
 	case "copilot":
 		return forgetCopilotLogin(user)
-	case "zcode":
-		return forgetZCodeLogin(user)
-	case "kiro":
-		return forgetKiroLogin(user)
-	case "devin":
-		return forgetDevinLogin(user)
-	case "workbuddy", WorkBuddyAIID:
-		return forgetWorkBuddyLogin(wbSiteOf(agent), user)
-	case CommandCodePlanID:
-		return forgetCommandCodeLogin(user)
-	case "qoder", QoderCNID:
-		return forgetQoderLogin(agent, user)
-	case "zed":
-		return forgetZedLogin(user)
-	case "factory":
-		return forgetFactoryLogin(user)
-	case MiMoID:
-		return forgetMiMoLogin(user)
 	case ChatGPTAPIID:
 		return forgetSIWCLogin(user)
 	case "gemini", "antigravity":
@@ -1373,7 +1360,7 @@ func loginAgentName(agent string) string {
 // a caller that changed a sign-in behind magpie's back (a test's home).
 func ForgetAccounts() {
 	loginsMu.Lock()
-	loginsSeenAt = time.Time{}
+	loginsSeenAt.Store(0)
 	loginsMu.Unlock()
 	// an account asked for its list a moment ago is asked again: the
 	// accounts read afresh may be others under the same id

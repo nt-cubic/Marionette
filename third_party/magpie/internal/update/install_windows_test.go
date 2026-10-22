@@ -80,6 +80,9 @@ func TestInstallBinaryHeldOpen(t *testing.T) {
 	}
 
 	os.WriteFile(staged, []byte("newer version"), 0o755)
+	held := heldFor
+	heldFor = 0 // held for good: no use waiting it out
+	t.Cleanup(func() { heldFor = held })
 	h = holdOpen(t, exe)
 	defer syscall.CloseHandle(h)
 	err := InstallBinary(staged, exe)

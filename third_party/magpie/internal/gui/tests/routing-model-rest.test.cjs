@@ -14,6 +14,8 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+// a reader wheels down to it, and it is the button under the pointer
+const { reach } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const now = new Date();
@@ -78,21 +80,6 @@ const posted = async (lifted) => {
   for (let i = 0; i < 60 && !lifted.length; i++) await new Promise((r) => setTimeout(r, 50));
   return lifted;
 };
-// a reader wheels down to it, over what scrolls it, and it is the
-// button under the pointer
-async function reach(page, btn) {
-  const at = await btn.evaluate((e) => {
-    let p = e.parentElement;
-    while (p && !(p.scrollHeight > p.clientHeight + 1 && /auto|scroll/.test(getComputedStyle(p).overflowY))) p = p.parentElement;
-    const l = (p || document.documentElement).getBoundingClientRect();
-    const top = Math.max(l.top, 0), bottom = Math.min(l.bottom, innerHeight);
-    return { x: l.left + Math.min(l.width / 2, 100), y: (top + bottom) / 2 };
-  });
-  await page.mouse.move(at.x, at.y);
-  for (let i = 0; i < 30 && !(await btn.evaluate((e) => e.getBoundingClientRect().bottom < innerHeight - 80)); i++) await page.mouse.wheel(0, 200);
-  await page.waitForTimeout(200);
-  assert(await btn.evaluate((e) => { const r = e.getBoundingClientRect(); return e.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); }), "the button can't be reached");
-}
 const sideways = (page) => page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {

@@ -26,6 +26,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -440,9 +441,15 @@ func InstallBinary(staged, exe string) error {
 func InstallBinaryAside(staged, exe string) (string, error) {
 	var old string
 	if runtime.GOOS == "windows" {
-		if err := canStart(staged); err != nil {
-			os.Remove(staged)
-			return "", &BlockedError{Err: err}
+		// tried once per download: a restart clicked again after a failed
+		// one doesn't start it again, which would have an antivirus that
+		// checks a program as it starts hold it again for the move below
+		if !trialled.passed(staged) {
+			if err := canStart(staged); err != nil {
+				os.Remove(staged)
+				return "", &BlockedError{Err: err}
+			}
+			trialled.note(staged)
 		}
 		// A running .exe cannot be overwritten, but it can be moved aside.
 		// What the last update moved aside may still be running too (a
@@ -456,6 +463,11 @@ func InstallBinaryAside(staged, exe string) (string, error) {
 		}
 	}
 	if err := moveIn(staged, exe); err != nil {
+		if heldOpen(err) {
+			// the reason and what to do, shown as is in the version row
+			// and the Update pill's tooltip, without the paths
+			err = &saidError{fmt.Sprintf("couldn't put the new version in place of %s: another program still has the download open (often an antivirus checking it): let magpie through it and restart to update again, or download the new version and put it in place of this one", filepath.Base(exe)), err}
+		}
 		if old != "" {
 			if restoreErr := moveIn(old, exe); restoreErr != nil {
 				return "", errors.Join(err, fmt.Errorf("couldn't restore %s from %s: %w", filepath.Base(exe), old, restoreErr))
@@ -468,6 +480,16 @@ func InstallBinaryAside(staged, exe string) (string, error) {
 	return old, nil
 }
 
+// saidError is err said in other words: what is shown, err what
+// errors.Is and errors.As find.
+type saidError struct {
+	said string
+	err  error
+}
+
+func (e *saidError) Error() string { return e.said }
+func (e *saidError) Unwrap() error { return e.err }
+
 // renameFile is os.Rename; tests make it fail.
 var renameFile = os.Rename
 
@@ -475,6 +497,69 @@ var renameFile = os.Rename
 // an antivirus scanning it or a sync client (OneDrive) reading it holds it
 // open, which Windows won't rename under, for a moment, and lets go.
 var asideWaits = []time.Duration{100 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond, 800 * time.Millisecond, 1500 * time.Millisecond}
+
+// heldFor is how long a file Windows says another program holds open is
+// waited for, past asideWaits, the last pause repeated: an antivirus that
+// checks a new program as it starts may hold a 50 MB download longer than
+// asideWaits' three seconds, and a restart that gave up then would fail
+// the same way on every click, each click's trial start having it checked
+// again (白菜 on Discord). The user clicked restart and sees "Restarting…"
+// meanwhile. A var for tests.
+var heldFor = 30 * time.Second
+
+// waitHeld is whether to try again after try i (from 0) failed with err,
+// begun at start, sleeping first when so: through asideWaits for any error
+// retry allows, then on while err is a file held open, up to heldFor.
+func waitHeld(i int, err error, start time.Time, retry bool) bool {
+	if !retry {
+		return false
+	}
+	if i < len(asideWaits) {
+		time.Sleep(asideWaits[i])
+		return true
+	}
+	if !heldOpen(err) || len(asideWaits) == 0 {
+		return false
+	}
+	pause := asideWaits[len(asideWaits)-1]
+	if time.Since(start)+pause > heldFor {
+		return false
+	}
+	time.Sleep(pause)
+	return true
+}
+
+// trialled is the download canStart last let through, by path, size and
+// time written, so a restart tried again on it doesn't start it again.
+var trialled trialNote
+
+type trialNote struct {
+	mu   sync.Mutex
+	path string
+	size int64
+	mod  time.Time
+}
+
+func (n *trialNote) passed(path string) bool {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.path == path && n.size == fi.Size() && n.mod.Equal(fi.ModTime())
+}
+
+func (n *trialNote) note(path string) {
+	fi, err := os.Stat(path)
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if err != nil {
+		n.path = ""
+		return
+	}
+	n.path, n.size, n.mod = path, fi.Size(), fi.ModTime()
+}
 
 // Windows' errors for a file another program holds open without letting
 // it be renamed.
@@ -490,12 +575,12 @@ const (
 // after the process has ended, and a move made at once failed the first
 // install of every update (#2272). Any other failure is returned at once.
 func moveIn(from, exe string) error {
-	var err error
+	start := time.Now()
 	for i := 0; ; i++ {
-		if err = os.Rename(from, exe); err == nil || i == len(asideWaits) || !heldOpen(err) {
+		err := os.Rename(from, exe)
+		if err == nil || !waitHeld(i, err, start, heldOpen(err)) {
 			return err
 		}
-		time.Sleep(asideWaits[i])
 	}
 }
 
@@ -512,18 +597,18 @@ func heldOpen(err error) bool {
 // so a failed installation can put the running exe back.
 func moveAside(exe string) (string, error) {
 	var err error
+	start := time.Now()
 	for i := 0; ; i++ {
 		old := oldName(exe)
 		if err = renameFile(exe, old); err == nil {
 			return old, nil
 		}
-		if errors.Is(err, fs.ErrNotExist) || i == len(asideWaits) {
-			break
-		}
 		if i == 0 {
 			os.Chmod(exe, 0o755) // a read-only exe: the attribute off
 		}
-		time.Sleep(asideWaits[i])
+		if !waitHeld(i, err, start, !errors.Is(err, fs.ErrNotExist)) {
+			break
+		}
 	}
 	why := err.Error()
 	var le *os.LinkError

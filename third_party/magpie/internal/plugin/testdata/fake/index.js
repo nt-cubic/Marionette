@@ -87,6 +87,12 @@ export const FakePlugin = async ({ client }) => ({
     if (process.env.FAKE_GROK) cfg.provider[ID].models["grok-4.7"] = { name: "Grok 4.7", provider: { npm: "@ai-sdk/openai" }, limit: { context: 4000, output: 400 } }
     // $FAKE_DEEPSEEK: a DeepSeek model, as Cline's cline-pass/deepseek-v4-pro
     if (process.env.FAKE_DEEPSEEK) cfg.provider[ID].models["deepseek-v4-pro"] = { name: "DeepSeek V4 Pro", limit: { context: 1000, output: 100 } }
+    // $FAKE_GLM: a GLM model, as Cline's cline-pass/glm-5.3
+    if (process.env.FAKE_GLM) {
+      cfg.provider[ID].models["glm-5.3"] = { name: "GLM 5.3", limit: { context: 1000, output: 100 } }
+      // Cline sends glm-5.3-flash through OpenRouter, not Vercel's gateway
+      cfg.provider[ID].models["glm-5.3-flash"] = { name: "GLM 5.3 Flash", limit: { context: 1000, output: 100 } }
+    }
     // $FAKE_SEARCHES: the provider's upstream searches by itself (#2027),
     // as a plugin in front of Claude's API says
     if (process.env.FAKE_SEARCHES) cfg.provider[ID].searches = true
@@ -132,6 +138,9 @@ export const FakePlugin = async ({ client }) => ({
           url: "https://fake.invalid/auth?where=" + inputs.where,
           instructions: "Paste the code",
           method: "code",
+          // team "cli-opened": the page is open already, as Grok Build's
+          // `grok login` opens its own on macOS and Windows
+          opened: inputs.team === "cli-opened",
           callback: async (code) =>
             (process.env.FAKE_SIGNIN && (await fetch(process.env.FAKE_SIGNIN + "/token").catch(() => {})), code === "good")
               ? { type: "success", refresh: "r-" + (inputs.team ?? "none"), access: "stale", expires: 0, ...fakeWho(inputs.team) }
@@ -208,7 +217,8 @@ export const FakePlugin = async ({ client }) => ({
       }
     },
     // $FAKE_CHECKIN: the plugin presses the daily check-in itself, each
-    // press written as a line of the account's key to that file, and the
+    // press written as a line of the account's key to that file (a signed-in
+    // account's name/uid, so two of one name tell apart), and the
     // answer said by the key: ck-claim gives 50 on a 3-day streak, ck-done
     // is in already, ck-captcha is asked a captcha, ck-throw can't reach
     // the vendor, ck-odd answers no outcome magpie knows
@@ -217,7 +227,7 @@ export const FakePlugin = async ({ client }) => ({
           checkin: async (getAuth) => {
             const a = await getAuth()
             const fs = await import("node:fs")
-            fs.appendFileSync(process.env.FAKE_CHECKIN, (a.key ?? a.accountId ?? "") + "\n")
+            fs.appendFileSync(process.env.FAKE_CHECKIN, (a.key ?? (a.uid ? a.accountId + "/" + a.uid : a.accountId) ?? "") + "\n")
             switch (a.key) {
               case "ck-claim":
                 return { outcome: "claimed", credit: 50, streak: 3 }
@@ -240,6 +250,8 @@ export const FakePlugin = async ({ client }) => ({
   provider: {
     id: ID,
     models: async (p, { auth }) => {
+      // $FAKE_MODELS_LOG: each time the hook is asked is a line there
+      if (process.env.FAKE_MODELS_LOG) (await import("node:fs")).appendFileSync(process.env.FAKE_MODELS_LOG, "asked\n")
       if (auth?.refresh === "r-dead" || auth?.key === "dead") throw new Error("the vendor refused the sign-in")
       if (auth?.refresh === "r-models-gone") throw Object.assign(new Error("the vendor refused the sign-in"), { signIn: "expired" })
       // a sign-in past its time, said in words only, as Grok's plugin says it
@@ -263,6 +275,10 @@ export const FakePlugin = async ({ client }) => ({
         p.models["mimo-v2.6-flash-free"] = { ...p.models["fake-1"], id: "mimo-v2.6-flash-free", name: "MiMo V2.6 Flash Free", api: { ...p.models["fake-1"].api, id: "mimo-v2.6-flash-free" }, free: true, variants: {},
           capabilities: {"temperature":true,"reasoning":true,"attachment":true,"toolcall":true,"input":{"text":true,"image":true,"audio":true,"video":true,"pdf":false},"output":{"text":true,"image":false,"audio":false,"video":false,"pdf":false},"interleaved":{"field":"reasoning_content"}} }
       }
+      // $FAKE_SEARCHER: one more model, that searches the web by itself
+      // when asked in plain words, marked on the list the hook gives, as
+      // Trae CN's search_agent ("Search") is listed beside its chat models
+      if (process.env.FAKE_SEARCHER) p.models["fake-search"] = { ...p.models["fake-1"], id: "fake-search", name: "Fake Search", api: { ...p.models["fake-1"].api, id: "fake-search" }, free: false, searches: true }
       // $FAKE_DECIDE: one more decision model, marked on the list the hook
       // gives, as a plugin that reads its vendor's list marks one
       if (process.env.FAKE_DECIDE) p.models["fake-judge"] = { ...p.models["fake-1"], id: "fake-judge", name: "Fake Judge", api: { ...p.models["fake-1"].api, id: "fake-judge" }, free: false, decides: true }

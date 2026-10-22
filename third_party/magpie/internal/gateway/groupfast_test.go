@@ -106,7 +106,7 @@ func fasted(t *testing.T) (*Server, *fastUp) {
 		}
 	}
 	s := New()
-	s.client = &http.Client{Transport: qoderRoundTrip(func(r *http.Request) (*http.Response, error) {
+	s.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		up.mu.Lock()
 		up.host = r.URL.Host
 		up.mu.Unlock()

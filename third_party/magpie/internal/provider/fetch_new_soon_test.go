@@ -23,9 +23,6 @@ func TestFetchNewRetriedSoon(t *testing.T) {
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
-	wbTokens.Lock()
-	wbTokens.m = map[string]wbCreds{}
-	wbTokens.Unlock()
 	newFetches.Lock()
 	newFetches.m = map[string]time.Time{}
 	newFetches.Unlock()
@@ -36,9 +33,6 @@ func TestFetchNewRetriedSoon(t *testing.T) {
 		newFetches.m = map[string]time.Time{}
 		newFetches.Unlock()
 		newSoonAt.Store(0)
-		wbTokens.Lock()
-		wbTokens.m = map[string]wbCreds{}
-		wbTokens.Unlock()
 		forgetAccountCaches()
 	})
 
@@ -46,7 +40,7 @@ func TestFetchNewRetriedSoon(t *testing.T) {
 	var down atomic.Bool
 	down.Store(true)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v3/config" {
+		if r.URL.Path != "/backend-api/codex/models" {
 			w.WriteHeader(404)
 			return
 		}
@@ -55,27 +49,18 @@ func TestFetchNewRetriedSoon(t *testing.T) {
 			w.WriteHeader(502)
 			return
 		}
-		w.Write([]byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["hy4-preview","glm-5.3"]}],
-			"models":[{"id":"hy4-preview","name":"Hy4 preview"},{"id":"glm-5.3","name":"GLM-5.3"}]}}`))
+		w.Write(codexListOf("gpt-6-luna", "gpt-6-sol"))
 	}))
 	defer srv.Close()
-	old := wbEndpoint
-	wbEndpoint = srv.URL
-	defer func() { wbEndpoint = old }()
-	future := time.Now().Add(24 * time.Hour).UnixMilli()
-	writeFile(t, wbAuthFile(home), map[string]any{
-		"account": map[string]any{"uid": "u1", "nickname": "旅行者"},
-		"auth": map[string]any{"accessToken": "a", "refreshToken": "r",
-			"expiresAt": future, "refreshExpiresAt": future, "domain": "www.codebuddy.cn"},
-	})
-	forgetAccountCaches()
+	codexListedAt(t, srv.URL)
+	codexSignedIn(t, home)
 	listed := func() bool {
-		p, err := Find("workbuddy")
+		p, err := Find("codex")
 		if err != nil {
 			t.Fatal(err)
 		}
 		for _, m := range p.Available() {
-			if m.ID == "hy4-preview" {
+			if m.ID == "gpt-6-luna" {
 				return true
 			}
 		}
@@ -104,7 +89,7 @@ func TestFetchNewRetriedSoon(t *testing.T) {
 	// a minute and a bit later the panel is opened: asked again, without
 	// the page waiting for it
 	newFetches.Lock()
-	newFetches.m["workbuddy"] = time.Now().Add(-61 * time.Second)
+	newFetches.m["codex"] = time.Now().Add(-61 * time.Second)
 	newFetches.Unlock()
 	FetchNewSoon(5 * time.Second)
 	waitNewSoon()
@@ -113,7 +98,7 @@ func TestFetchNewRetriedSoon(t *testing.T) {
 	}
 
 	// and the panel opened again within newSoonEvery starts nothing
-	if err := catalog.SaveLive("workbuddy", "", nil); err != nil {
+	if err := catalog.SaveLive("codex", "", nil); err != nil {
 		t.Fatal(err)
 	}
 	newFetches.Lock()

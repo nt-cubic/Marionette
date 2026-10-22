@@ -1187,6 +1187,41 @@ export async function engineStop(): Promise<void> {
   }
 }
 
+/** Result of comparing local magpie with GitHub latest stable. */
+export type EngineUpdateInfo = {
+  currentVersion?: string | null;
+  embeddedVersion?: string | null;
+  latestVersion?: string | null;
+  updateAvailable: boolean;
+  canRestoreFactory: boolean;
+  note?: string | null;
+};
+
+/** Check whether a newer stable magpie is on GitHub. */
+export async function engineCheckUpdate(): Promise<EngineUpdateInfo | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await invoke<EngineUpdateInfo>("engine_check_update");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Download GitHub latest stable CLI into ~/.marionette/engine (local authority)
+ * and restart the gateway. UI follows download/state events.
+ */
+export async function engineUpdate(): Promise<EngineStatus | null> {
+  if (!isTauriRuntime()) return null;
+  return await invoke<EngineStatus>("engine_update");
+}
+
+/** Re-extract the factory seed baked into the exe, then restart the gateway. */
+export async function engineRestoreFactory(): Promise<EngineStatus | null> {
+  if (!isTauriRuntime()) return null;
+  return await invoke<EngineStatus>("engine_restore_factory");
+}
+
 /** Agent proxy config: single exit address injected into spawned agents. */
 export async function getProxyConfig(): Promise<ProxyConfig> {
   if (!isTauriRuntime()) return { enabled: false, url: "" };

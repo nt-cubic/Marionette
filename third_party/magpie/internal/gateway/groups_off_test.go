@@ -26,7 +26,7 @@ func TestGroupsOnAndOff(t *testing.T) {
 		rec := httptest.NewRecorder()
 		s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/v1/models", nil))
 		list := rec.Body.String()
-		if strings.Contains(list, `"group/mine"`) != mine || !strings.Contains(list, `"group/auto-m"`) {
+		if strings.Contains(list, `"group/mine"`) != mine || !strings.Contains(list, `"auto/m"`) {
 			t.Fatalf("%s: models %s", when, list)
 		}
 		code, body := postAs(t, s, "", `{"model":"group/mine","messages":[{"role":"user","content":"hi"}]}`)

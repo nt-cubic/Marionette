@@ -52,9 +52,8 @@ func desktopWindowSandbox(t *testing.T) (home, path string) {
 // least held a 1M model to 256K (#2025, 6.1sol), so while Desktop is on
 // magpie it is the largest window of Desktop's and Claude Code's models,
 // and each model below it runs at its own through
-// modelSettings.<id>.autoCompactWindow. A model Claude Code knows, and one
-// listed by its 1M id, are left out of the largest; the user's own value
-// is theirs.
+// modelSettings.<id>.autoCompactWindow. A model Claude Code knows is left
+// out of the largest; the user's own value is theirs.
 func TestClaudeDesktopContextWindow(t *testing.T) {
 	home, path := desktopWindowSandbox(t)
 	a := claude(home)
@@ -326,9 +325,12 @@ func TestClaudeDesktopExploreKeepsUserValue(t *testing.T) {
 }
 
 // TestClaudeDesktopContextWindow1M: a model Desktop lists by its 1M id
-// (settings.DesktopLongest) runs at 1M whatever the value says, so it adds
-// nothing to it; listed plain too, it runs at the value, its own 1M when it
-// is the only one.
+// (settings.DesktopLongest) is told by its 1M too, as one listed plain is,
+// so it runs to its own should Claude Code stop taking the id for 1M (the
+// 1M beta turned away once, CLAUDE_CODE_DISABLE_1M_CONTEXT), and a smaller
+// model beside it is held to its own. dumplings (Discord, v0.1.1295, Full
+// window): Desktop's 1M model beside a 272K GPT showed 272K, the value
+// magpie told, as the 1M id didn't count toward it.
 func TestClaudeDesktopContextWindow1M(t *testing.T) {
 	home, path := desktopWindowSandbox(t)
 	// Desktop is shown glm alone (the Agents page's model list)
@@ -348,11 +350,29 @@ func TestClaudeDesktopContextWindow1M(t *testing.T) {
 	}
 	s := settings.Load()
 	s.DesktopLongest = true
+	s.FullContext = true
 	if err := settings.Save(s); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.Sync(); err != nil || window() != "" {
+	if err := a.Sync(); err != nil || window() != "1000000" {
 		t.Fatalf("glm listed by its 1M id alone: %q %v", window(), err)
+	}
+	// GPT 272K shown beside it: glm's 1M is still the one told, GPT held
+	// to its own
+	if err := provider.SetHiddenModels("claude-desktop", []string{"v/grok", "v/plain", "v/claude-opus-4-6"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]string{}
+	for _, e := range provider.Catalog() {
+		ids[e.ID] = gateway.DesktopID(e)
+	}
+	gpt, _ := edit.GetJSON(path, budgetPath(ids["v/gpt"]))
+	glm, _ := edit.GetJSON(path, budgetPath(ids["v/glm"]))
+	if window() != "1000000" || gpt != "272000" || glm != "" {
+		t.Fatalf("glm by its 1M id beside GPT: window %q, gpt %q, glm %q: %s", window(), gpt, glm, readFile(path))
 	}
 }
 

@@ -122,6 +122,19 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         return ["zh", "zh-TW", "ja", "de"].flatMap((l) => keys.filter((k) => !I18N[l][k]).map((k) => l + ": " + k));
       });
       assert.deepEqual(missing, [], "every string has its translations");
+
+      // "an error that may pass" is the plain term 暂时性错误 / 暫時性錯誤
+      // in Chinese, not a literal 会过去的错误 (Outvi V on Discord).
+      const unplain = await page.evaluate(() => {
+        const keys = [
+          "When every member has failed with an error that may pass — overloaded, unavailable, rate limited for a moment — and nothing of the reply has reached the agent, each is asked again after a pause, longer each time and never shorter than the vendor asks, for up to {n} more. A streaming agent is kept waiting meanwhile.",
+          "{who} answered {status} · {fail}, and every member had failed with an error that may pass, so after {d} the {n} of them are asked again, in turn, before any of the reply reaches {agent}. The group waits up to {p} for one to answer.",
+          "{who} answered {status} · {fail}, and nobody else is left to ask — a failure that may pass, so it is tried again in {d}, before any of the reply reaches {agent}.",
+        ];
+        const term = { zh: "暂时性错误", "zh-TW": "暫時性錯誤" };
+        return Object.entries(term).flatMap(([l, w]) => keys.filter((k) => !(I18N[l][k] || "").includes(w)).map((k) => l + ": " + I18N[l][k]));
+      });
+      assert.deepEqual(unplain, [], "a passing error is named 暂时性错误 in Chinese");
       assert.deepEqual(errors, []);
     });
   }

@@ -159,3 +159,81 @@ func TestSmallestMemberTypedWindow(t *testing.T) {
 		}
 	}
 }
+
+// Osal on Discord: a routing group that names no size of its own is told
+// its largest member's window, and when the user typed that one (872K on
+// the provider for GPT-6 Astra, its most) Codex and Claude run to it
+// whole, as for a group following its smallest member (#2224), not to
+// magpie's default 272K (Codex showed "258k", 95% of it). A group whose
+// largest member's window nobody typed keeps the default, even with a
+// typed member smaller than it.
+func TestLargestMemberTypedWindow(t *testing.T) {
+	home, path := desktopWindowSandbox(t)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(provider.Save(provider.Provider{ID: "w", Name: "W", Key: "k", Chat: "http://127.0.0.1:1/v1",
+		Models: []string{"astra"}, Contexts: map[string]int{"astra": 872000}}))
+	must(catalog.SaveLive("w", "http://127.0.0.1:1/v1", []catalog.Model{{ID: "astra", Context: 272000}}))
+	must(provider.SaveGroup(provider.Group{ID: "ultra", Name: "Ultra", Members: []string{"w/astra", "v/gpt"}}))
+	must(provider.SaveGroup(provider.Group{ID: "loose", Name: "Loose", Members: []string{"w/astra", "v/glm"}}))
+
+	// Codex: the gateway's list, and its context_window on disk
+	must(codex(home).Fields[0].Set("group/ultra"))
+	compacts := map[string]int{}
+	for _, m := range provider.CodexListed() {
+		compacts[m.ID] = m.Compact
+	}
+	for id, want := range map[string]int{"group/ultra": 872000, "group/loose": 0} {
+		if compacts[id] != want {
+			t.Errorf("Codex: the gateway's list compacts %s at %d; want %d", id, compacts[id], want)
+		}
+	}
+	var disk struct {
+		Models []struct {
+			Slug    string `json:"slug"`
+			Context int    `json:"context_window"`
+			Max     int    `json:"max_context_window"`
+		} `json:"models"`
+	}
+	raw := readFile(filepath.Join(home, ".codex", "magpie-models.json"))
+	must(json.Unmarshal([]byte(raw), &disk))
+	for _, m := range disk.Models {
+		want := map[string][2]int{"group/ultra": {872000, 0}, "group/loose": {272000, 1000000}}
+		if w, ok := want[m.Slug]; ok && [2]int{m.Context, m.Max} != w {
+			t.Errorf("Codex: on disk %s is told %d (max %d); want %v", m.Slug, m.Context, m.Max, w)
+		}
+	}
+
+	// Claude Code: no compaction window for the typed one
+	cpath := filepath.Join(home, ".claude", "settings.json")
+	a := claude(home)
+	env := func(k string) string { v, _ := edit.GetJSON(cpath, "env."+k); return v }
+	must(a.Field("model").Set("group/ultra"))
+	if c, w := env(claudeCompactEnv), env(claudeContextEnv); c != "" || w != "872000" {
+		t.Errorf("Claude Code on the group: compact %q, window %q; want none and 872000", c, w)
+	}
+	must(a.Field("model").Set("group/loose"))
+	if c := env(claudeCompactEnv); c != "272000" {
+		t.Errorf("Claude Code on the loose group: compact %q; want the default 272000", c)
+	}
+
+	// Claude Desktop: the typed group's own autoCompactWindow; the
+	// other is left to the top-level one, the default
+	must(claudeDesktop(home).Field("provider").Set("magpie"))
+	ids := map[string]string{}
+	for _, e := range provider.Catalog() {
+		ids[e.ID] = gateway.DesktopID(e)
+	}
+	if v, _ := edit.GetJSON(path, "autoCompactWindow"); v != "272000" {
+		t.Errorf("Claude Desktop: top-level autoCompactWindow %q; want 272000", v)
+	}
+	for id, want := range map[string]string{"group/ultra": "872000", "group/loose": ""} {
+		if v, _ := edit.GetJSON(path, budgetPath(ids[id])); v != want {
+			t.Errorf("Claude Desktop: %s (%s) compacts at %q; want %q", id, ids[id], v, want)
+		}
+	}
+}

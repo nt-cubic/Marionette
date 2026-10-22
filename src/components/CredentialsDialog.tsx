@@ -219,8 +219,8 @@ export function CredentialsDialog({ agents, onClose }: Props) {
           <div className="provider-dialog__section">
             <span className="provider-dialog__section-title">翻译引擎</span>
             <p className="provider-dialog__hint">
-              订阅登录态（Grok / Claude / ChatGPT）经内嵌 magpie
-              引擎翻译为标准协议；引擎按需下载（约 48 MB）、只在本机环回监听、随本应用退出。
+              订阅登录态（Grok / Claude / ChatGPT）经 magpie
+              引擎翻译为标准协议；出厂种子随应用内嵌，本机落位后可在左下角「模型共享」里检查/更新到上游稳定版。只在环回监听，随本应用退出。
             </p>
             <div className="credentials-dialog__scan">
               <div

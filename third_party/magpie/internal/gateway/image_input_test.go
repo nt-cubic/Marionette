@@ -1,12 +1,14 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -357,7 +359,7 @@ func TestGroupWithUnknownImageCapabilityReachesUpstream(t *testing.T) {
 		}
 	}
 	for _, e := range provider.Catalog() {
-		if e.ID == "group/auto-claude-sonnet-4-5" {
+		if e.ID == "auto/claude-sonnet-4-5" {
 			if !e.Images || e.ImageInput == nil || !*e.ImageInput {
 				t.Fatalf("group image capability: %+v", e)
 			}
@@ -525,6 +527,61 @@ func TestTextOnlyRefusalSaysWhyAndWhere(t *testing.T) {
 		s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(strings.Replace(body, "MODEL", model, 1))))
 		if rec.Code != 400 || !strings.Contains(rec.Body.String(), want) {
 			t.Errorf("%s: %d %s, want %q", model, rec.Code, rec.Body.String(), want)
+		}
+	}
+}
+
+// Every request's images are looked for several times (hasImage,
+// textOnlyBody, the vision checks), and its conversation's id hashed:
+// without an image, the turns are read where they are, not decoded turn by
+// turn and block by block. A 1.5 MB conversation cost ~2.6 MB a walk and
+// ~2.8 MB an id (yg6888 on X). An image is still found where it hides:
+// last, in a tool's output, under an escaped key, under a key given twice.
+func TestImageWalkReadsTextOnlyTurnsInPlace(t *testing.T) {
+	var turns []string
+	for i := range 200 {
+		turns = append(turns, `{"role":"user","content":[{"type":"text","text":"`+strings.Repeat("read this file ", 300)+`"}]}`,
+			`{"role":"assistant","content":"ok `+strings.Repeat("x", i)+`"}`)
+	}
+	body := []byte(`{"model":"m","messages":[` + strings.Join(turns, ",") + `]}`)
+	ctx, done := context.WithCancel(context.Background())
+	defer done()
+	holdBody(ctx, body) // as readRequestBody holds a request's
+	id := conversationID(http.Header{}, body)
+	if hasImage(provider.Chat, body) {
+		t.Fatal("an image found in a text-only body")
+	}
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	const n = 5
+	for range n {
+		hasImage(provider.Chat, body)
+		textOnlyBody(provider.Chat, body)
+		if conversationID(http.Header{}, body) != id {
+			t.Fatal("the conversation's id changed")
+		}
+	}
+	runtime.ReadMemStats(&after)
+	if per := (after.TotalAlloc - before.TotalAlloc) / n; per > uint64(len(body))/8 {
+		t.Fatalf("two image walks and an id of a %d-byte text-only body allocated %d bytes", len(body), per)
+	}
+
+	head := `{"model":"m","messages":[` + strings.Join(turns[:4], ",") + ","
+	for i, c := range []struct {
+		proto provider.Protocol
+		body  string
+	}{
+		{provider.Chat, head + `{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://x/a.png"}}]}]}`},
+		{provider.Chat, head + `{"role":"user","content":[{"%u0074ype":"%u0069mage_url","image_url":{"url":"https://x/a.png"}}]}]}`},
+		{provider.Chat, head + `{"role":"user","content":"hi","content":[{"type":"text","type":"image_url","image_url":"https://x/a.png"}]}]}`},
+		{provider.Chat, head + `{"role":"tool","tool_call_id":"c","content":[{"type":"image_url","image_url":{"url":"https://x/a.png"}}]},{"role":"user","content":"go"}]}`},
+		{provider.Responses, `{"input":[{"type":"function_call_output","call_id":"c","output":[{"type":"input_image","image_url":"https://x/a.png"}]},{"role":"user","content":"go"}]}`},
+		{provider.Anthropic, `{"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":[{"type":"image","source":{"type":"url","url":"https://x/a.png"}}]}]}]}`},
+		{provider.Gemini, `{"contents":[{"role":"user","parts":[{"functionResponse":{"name":"f","parts":[{"inlineData":{"mimeType":"image/png","data":"AAAA"}}]}}]}]}`},
+		{provider.Gemini, `{"contents":[{"role":"user","parts":[{"inlineData":{"mimeType":"image/png","data":"AAAA"}}]}]}`},
+	} {
+		if !hasImage(c.proto, []byte(strings.ReplaceAll(c.body, "%u", "\x5cu"))) {
+			t.Errorf("case %d (%v): its image was not found", i, c.proto)
 		}
 	}
 }

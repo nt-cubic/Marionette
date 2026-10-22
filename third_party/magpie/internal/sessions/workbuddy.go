@@ -40,6 +40,14 @@ func WorkBuddyDir() string {
 // a session's own <id>.jsonl, and a subagent's under <id>/subagents/.
 func workbuddyFiles() []file { return buddyFiles("workbuddy", WorkBuddyDir()) }
 
+// codebuddyFiles are the same under CodeBuddy Code's projects/: the CLI keeps
+// them as its desktop sibling does, one agent's folder apart (#1779).
+func codebuddyFiles() []file { return buddyFiles("codebuddy", CodeBuddyDir()) }
+
+// isBuddy is whether agent keeps its sessions the way WorkBuddy does: its
+// own, or CodeBuddy Code's.
+func isBuddy(agent string) bool { return agent == "workbuddy" || agent == "codebuddy" }
+
 // buddyFiles are the sessions under projects/ in dir, as agent's: WorkBuddy's,
 // or CodeBuddy Code's, which keeps them the same way.
 func buddyFiles(agent, dir string) []file {

@@ -1,11 +1,13 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
-// Settings › Gateway port (Magic_zero on Discord: 3425 was taken by another
+// Settings › Gateway address (Magic_zero on Discord: 3425 was taken by another
 // program, and a port of one's own is easier to tell apart): any port from
 // 1024 to 65535 can be typed and applied. One out of range is refused in the
 // page; one another program has is refused with the gateway's reason, in the
 // page's language, what was typed kept; a free one moves the gateway and
 // says how many agents moved with it, and the row then says the new URL.
-// With MAGPIE_ADDR set the field is off and says why. The field is an
+// With MAGPIE_ADDR set the field is off, shows its host:port and says why;
+// the row is titled an address, not a port, since it shows one there
+// (Chicring on Discord), and says only the port is typed. The field is an
 // input, not a native <select>; applying never scrolls the page; no
 // coloured left border. English and Chinese, Chromium and WebKit; no
 // backend, the API is faked here.
@@ -62,20 +64,20 @@ function server(lang, over, posts) {
 
 const words = {
   en: {
-    name: "Gateway port", apply: "Apply",
-    now: (u) => "Agents magpie connected move with it. Now " + u,
+    name: "Gateway address", apply: "Apply",
+    now: (u) => "Only the port is set here, 1024 to 65535; MAGPIE_ADDR=host:port sets the whole address instead. Agents magpie connected move with it. Now " + u,
     range: "A port is a number from 1024 to 65535",
     taken: "Port 3500 is in use by another program: pick another one",
     moved: "Gateway on port 3591; 2 agents moved with it",
-    env: "MAGPIE_ADDR=127.0.0.1:3426 sets the gateway’s address: unset it to set the port here",
+    env: "MAGPIE_ADDR=127.0.0.1:3426 sets the gateway’s whole address, host:port: unset it to set the port here",
   },
   zh: {
-    name: "网关端口", apply: "应用",
-    now: (u) => "改了之后，已接入 magpie 的 Agent 会一起换过去。当前 " + u,
+    name: "网关地址", apply: "应用",
+    now: (u) => "这里只设端口（1024 到 65535）；MAGPIE_ADDR=主机:端口 可指定完整地址。改了之后，已接入 magpie 的 Agent 会一起换过去。当前 " + u,
     range: "端口是 1024 到 65535 之间的数字",
     taken: "端口 3500 已被其他程序占用，请换一个",
     moved: "网关已换到端口 3591，2 个 Agent 已跟着换过去",
-    env: "MAGPIE_ADDR=127.0.0.1:3426 已指定网关地址：去掉这个环境变量后才能在这里设端口",
+    env: "MAGPIE_ADDR=127.0.0.1:3426 已指定网关的完整地址（主机:端口）：去掉这个环境变量后才能在这里设端口",
   },
 };
 
@@ -178,6 +180,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           const { page, errors, posts } = await open(lang, { addrEnv: "127.0.0.1:3426", gateway: "http://127.0.0.1:3426" });
           const row = page.locator("#portList .port-row");
           assert(await row.locator("input.gateway-port").isDisabled());
+          assert.equal(await row.locator("input.gateway-port").inputValue(), "127.0.0.1:3426");
+          assert.equal((await row.locator(".name").textContent()).trim(), w.name);
+          assert.equal(await row.locator("input.gateway-port").getAttribute("aria-label"), w.name);
           assert(await row.getByRole("button", { name: w.apply }).isDisabled());
           assert.equal((await row.locator(".sub").textContent()).trim(), w.env);
           assert.deepEqual(posts, []);

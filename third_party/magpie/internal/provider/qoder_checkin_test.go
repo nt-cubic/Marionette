@@ -346,7 +346,7 @@ func TestQoderCheckinCampaignCache(t *testing.T) {
 				if len(rs) != 1 || rs[0].Outcome != CheckinDone || rs[0].Day != wbCheckinDay(now) || !rs[0].Asked || gets != 4 || posts != claims {
 					t.Fatalf("midnight kept yesterday's result: %+v, reads %d, claims %d", rs, gets, posts)
 				}
-				if saved := readCheckins(c.path)[qoderCheckinKey(a)]; saved.Day != wbCheckinDay(now) {
+				if saved := shownCheckins(c.path)[qoderCheckinKey(a)]; saved.Day != wbCheckinDay(now) {
 					t.Fatalf("midnight didn't update the saved day: %+v", saved)
 				}
 				// A restart reads the same recent result from disk.

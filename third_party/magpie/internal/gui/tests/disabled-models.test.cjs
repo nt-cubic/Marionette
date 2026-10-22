@@ -11,7 +11,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
-const { watchSettingsReads, settingsDrawn } = require("./reader.cjs");
+const { watchSettingsReads, settingsDrawn, reach } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const words = {
@@ -112,13 +112,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // Enable takes one off, the rest kept
       const en = fable.locator("button", { hasText: w.enable });
       // wheeled down to it as a reader does: the row *opus* adds, under
-      // Replies' rows, puts it past the window's foot at 420 in German
-      for (let i = 0; i < 20; i++) {
-        const box = await en.boundingBox();
-        if (box && box.y >= 0 && box.y + box.height <= 900) break;
-        await page.mouse.wheel(0, 120);
-        await page.waitForTimeout(50);
-      }
+      // Replies' rows, puts it past the window's foot at 420 in German, and
+      // under it at 1100 in Chinese with Image generation timeout drawn
+      // above: reach wheels until nothing is over it
+      await reach(page, en);
       const eb = await en.boundingBox();
       const at = await page.evaluate(() => [scrollX, scrollY, document.scrollingElement.scrollTop]);
       await page.mouse.click(eb.x + eb.width / 2, eb.y + eb.height / 2);

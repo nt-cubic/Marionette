@@ -1,164 +1,18 @@
 package provider
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"maps"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/yetone/magpie/internal/testenv"
 )
-
-func TestParseGrokModels(t *testing.T) {
-	b := []byte(`{"object":"list","data":[
-		{"id":"grok-4.7","name":"Grok 4.7","context_window":500000,"api_backend":"responses","reasoning_efforts":[{"value":"xhigh"},{"value":"high"},{"value":"medium"},{"value":"low"}]},
-		{"id":"grok-4.7-build-fast","context_window":256000,"api_backend":"responses"},
-		{"id":"grok-old","api_backend":"chat_completions"}]}`)
-	ms := parseGrokModels(b)
-	if len(ms) != 2 || ms[0].ID != "grok-4.7" || ms[0].Name != "Grok 4.7" || ms[0].Context != 500000 ||
-		strings.Join(ms[0].Efforts, ",") != "low,medium,high,xhigh" || ms[1].Name != "grok-4.7-build-fast" || ms[1].Efforts != nil {
-		t.Fatalf("models = %+v", ms)
-	}
-}
-
-// A model Grok lists at more than one context window is offered at each,
-// as the CLI's /context-window offers it (#1608): the default keeps the
-// plain id, 500K is grok-4.7@500k. The literal list is Grok 1.0.50's
-// models_cache.json from the report.
-func TestParseGrokModelsWindows(t *testing.T) {
-	b := []byte(`{"object":"list","data":[
-		{"id":"grok-4.7","name":"Grok 4.7","context_window":256000,"context_windows":[256000,500000],"api_backend":"responses","reasoning_efforts":[{"value":"high"},{"value":"low"}]},
-		{"id":"grok-4.5","context_window":256000,"context_windows":[256000],"api_backend":"responses"},
-		{"id":"grok-odd","context_window":100000,"context_windows":[200000,400000,400000],"api_backend":"responses"}]}`)
-	var got []string
-	for _, m := range parseGrokModels(b) {
-		got = append(got, fmt.Sprintf("%s|%s|%d|%s", m.ID, m.Name, m.Context, strings.Join(m.Efforts, ",")))
-	}
-	want := []string{
-		"grok-4.7|Grok 4.7|256000|low,high", "grok-4.7@500k|Grok 4.7 @ 500k|500000|low,high",
-		"grok-4.5|grok-4.5|256000|",
-		// a default the list doesn't hold goes to the list's first
-		"grok-odd|grok-odd|200000|", "grok-odd@400k|grok-odd @ 400k|400000|"}
-	if !slices.Equal(got, want) {
-		t.Fatalf("models =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
-	}
-}
-
-// A model at a window of its own goes to Grok as the model it lists, with
-// the window in x-grok-context-window, as the CLI sends it (#1608); the
-// plain id goes as it is, with no window.
-func TestGrokSignsWindow(t *testing.T) {
-	home := t.TempDir()
-	grokSignedIn(t, home, "me@x.ai")
-	acct := &Account{Agent: "grok"}
-	grokSigned(acct, home)
-	for _, c := range []struct{ model, sent, window string }{
-		{"grok-4.7@500k", "grok-4.7", "500000"},
-		{"grok-4.7", "grok-4.7", ""},
-		{"grok-4.7@big", "grok-4.7@big", ""},
-	} {
-		body := []byte(`{"model":"` + c.model + `","input":"hi","prompt_cache_key":"c1"}`)
-		req, _ := http.NewRequest("POST", "http://grok.invalid/responses", strings.NewReader(string(body)))
-		if err := acct.sign(context.Background(), req, body); err != nil {
-			t.Fatal(err)
-		}
-		b, _ := io.ReadAll(req.Body)
-		var v map[string]any
-		if err := json.Unmarshal(b, &v); err != nil || v["model"] != c.sent || v["input"] != "hi" || req.ContentLength != int64(len(b)) {
-			t.Errorf("%s: body = %s (%d)", c.model, b, req.ContentLength)
-		}
-		if req.Header.Get("x-grok-model-override") != c.sent || req.Header.Get("x-grok-context-window") != c.window ||
-			req.Header.Get("x-grok-conv-id") != "c1" {
-			t.Errorf("%s: headers = %v", c.model, req.Header)
-		}
-	}
-}
-
-// A window the id names without a k (131072: grokWindowLabel writes a
-// window that no multiple of 1000 is as bare digits) is signed as that
-// window at the model Grok lists, not sent as an id of its own.
-func TestGrokSignsWindowWithoutK(t *testing.T) {
-	home := t.TempDir()
-	grokSignedIn(t, home, "me@x.ai")
-	acct := &Account{Agent: "grok"}
-	grokSigned(acct, home)
-	for _, c := range []struct{ model, sent, window string }{
-		{"grok-4.7@131072", "grok-4.7", "131072"},
-		{"grok-4.7@500k", "grok-4.7", "500000"},
-	} {
-		body := []byte(`{"model":"` + c.model + `","input":"hi"}`)
-		req, _ := http.NewRequest("POST", "http://grok.invalid/responses", strings.NewReader(string(body)))
-		if err := acct.sign(context.Background(), req, body); err != nil {
-			t.Fatal(err)
-		}
-		if req.Header.Get("x-grok-model-override") != c.sent || req.Header.Get("x-grok-context-window") != c.window {
-			t.Errorf("%s: headers = %v, want %s at window %s", c.model, req.Header, c.sent, c.window)
-		}
-	}
-}
-
-// A request is signed with the sign-in of its account's home, as the CLI
-// signs its own.
-func TestGrokSigns(t *testing.T) {
-	var got http.Header
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got = r.Header.Clone()
-		w.Write([]byte(`{"data":[{"id":"grok-4.7","api_backend":"responses"}]}`))
-	}))
-	defer up.Close()
-	base := GrokBase
-	GrokBase = up.URL
-	defer func() { GrokBase = base }()
-	home := t.TempDir()
-	grokSignedIn(t, home, "me@x.ai")
-	acct := &Account{Agent: "grok"}
-	grokSigned(acct, home)
-	req, _ := http.NewRequest("POST", up.URL+"/responses", nil)
-	if err := acct.sign(context.Background(), req, []byte(`{"model":"grok-4.7","prompt_cache_key":"c1"}`)); err != nil {
-		t.Fatal(err)
-	}
-	if req.Header.Get("Authorization") != "Bearer k-me@x.ai" || req.Header.Get("x-grok-client-version") == "" ||
-		req.Header.Get("x-grok-model-override") != "grok-4.7" || req.Header.Get("x-grok-conv-id") != "c1" ||
-		!strings.HasPrefix(req.Header.Get("User-Agent"), "grok-shell/") {
-		t.Fatalf("headers = %v", req.Header)
-	}
-	ms, err := grokModels(context.Background(), acct.sign)
-	if err != nil || len(ms) != 1 || got.Get("Authorization") != "Bearer k-me@x.ai" {
-		t.Fatalf("%v %+v %v", err, ms, got)
-	}
-}
-
-func TestGrokTokenReadsTheCLIsSignIn(t *testing.T) {
-	home := t.TempDir()
-	exp := time.Now().Add(2 * time.Hour).UTC()
-	auth := map[string]any{"https://auth.x.ai::u1": map[string]any{
-		"key": "tok", "email": "me@example.com", "auth_mode": "oidc", "refresh_token": "r",
-		"expires_at": exp.Format(time.RFC3339Nano), "oidc_issuer": "https://auth.x.ai"}}
-	b, _ := json.Marshal(auth)
-	if err := os.WriteFile(filepath.Join(home, "auth.json"), b, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if u, ok := GrokUser(home); !ok || u != "me@example.com" {
-		t.Fatalf("user = %q %v", u, ok)
-	}
-	c, err := grokAccessToken(home, "", false)
-	if err != nil || c.Key != "tok" {
-		t.Fatalf("%+v %v", c, err)
-	}
-	if _, err := grokAccessToken(t.TempDir(), "", false); err == nil {
-		t.Fatal("no sign-in, yet a token")
-	}
-}
 
 // Codex's freeform apply_patch is left out: Grok's backend turns away a
 // request with a tool type it doesn't know, a namespace among them. A
@@ -235,6 +89,33 @@ func TestGrokBodyDropsLoneToolChoice(t *testing.T) {
 	same := []byte(`{"tools":[{"type":"function","name":"x"}],"tool_choice":"required","reasoning":{"effort":"low"}}`)
 	if string(grokBody(same)) != string(same) {
 		t.Fatal("a tool_choice with tools was changed")
+	}
+}
+
+// The Grok plugin is handed a lone tool_choice "none" (#3110): it reads it
+// before adding x_search, and leaves it out before Grok. Any other lone
+// tool_choice still goes, and the built-in, which is Grok's last stop,
+// sends no lone "none" either.
+func TestGrokPluginBodyKeepsLoneNone(t *testing.T) {
+	for _, in := range []string{
+		`{"model":"grok-4.7","tool_choice":"none","input":[]}`,
+		`{"model":"grok-4.7","tools":[],"tool_choice":"none","input":[]}`,
+		`{"model":"grok-4.7","tools":[{"type":"custom","name":"apply_patch"}],"tool_choice":"none","input":[]}`,
+	} {
+		if got := string(grokPluginBody([]byte(in))); !strings.Contains(got, `"tool_choice":"none"`) {
+			t.Errorf("plugin: %s\n-> %s", in, got)
+		}
+		if got := string(grokBody([]byte(in))); strings.Contains(got, "tool_choice") {
+			t.Errorf("built-in: %s\n-> %s", in, got)
+		}
+	}
+	for _, in := range []string{
+		`{"model":"grok-4.7","tool_choice":"auto","input":[]}`,
+		`{"model":"grok-4.7","tool_choice":{"type":"none"},"input":[]}`,
+	} {
+		if got := string(grokPluginBody([]byte(in))); strings.Contains(got, "tool_choice") {
+			t.Errorf("plugin: %s\n-> %s", in, got)
+		}
 	}
 }
 

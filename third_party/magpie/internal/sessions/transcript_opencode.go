@@ -8,10 +8,20 @@ import (
 // openCodeTranscript reads the conversation in message order from the same
 // store the listing chose, including while a v1 to v2 migration is underway.
 func openCodeTranscript(s Session, add func(bool, Part) bool) error {
-	dbReadMu.Lock()
-	defer dbReadMu.Unlock()
-	defer closeDBs()
-	for _, f := range openCodeFiles() {
+	storeMu.RLock()
+	defer storeMu.RUnlock()
+	// the store handles are shared with the reads that hold mu: they are
+	// opened and given back under it, and read from without it
+	mu.Lock()
+	release := useDBs()
+	files := openCodeFiles()
+	mu.Unlock()
+	defer func() {
+		mu.Lock()
+		release()
+		mu.Unlock()
+	}()
+	for _, f := range files {
 		if f.sid != s.ID {
 			continue
 		}

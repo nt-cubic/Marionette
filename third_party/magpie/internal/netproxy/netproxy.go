@@ -25,12 +25,33 @@ import (
 
 // Install routes http.DefaultTransport (and so http.DefaultClient) through
 // Func, and http.DefaultClient's requests made on a provider's behalf
-// (With) through a transport of that provider's proxy (Dispatch).
+// (With) through a transport of that provider's proxy (Dispatch). Its
+// HTTP/2 connections are checked as the gateway's are (HTTP2Health).
 func Install() {
 	if t, ok := http.DefaultTransport.(*http.Transport); ok {
 		t.Proxy = Func
+		if t.HTTP2 == nil {
+			t.HTTP2 = HTTP2Health()
+		}
 		http.DefaultClient.Transport = Dispatch(t)
 	}
+}
+
+// PingAfter and PingWait: an HTTP/2 connection that has had no frame for
+// PingAfter is pinged, and dropped when no answer comes within PingWait.
+var PingAfter, PingWait = 20 * time.Second, 10 * time.Second
+
+// HTTP2Health is the HTTP/2 setting of a transport to the vendors. Every
+// request to one host shares one HTTP/2 connection, and one gone silent
+// without closing (a proxy's way out died, a NAT forgot the flow) was
+// given every new request, each waiting for its transport's
+// ResponseHeaderTimeout while the kernel took the writes, until a restart
+// (#2843). A ping finds it, and the requests on it fail, so a group moves
+// on and the next request dials anew. A live vendor answers a ping
+// whatever its streams are doing, so a long wait for a first byte is
+// never cut by it.
+func HTTP2Health() *http.HTTP2Config {
+	return &http.HTTP2Config{SendPingTimeout: PingAfter, PingTimeout: PingWait}
 }
 
 // Func is an http.Transport Proxy function: the proxy the request's

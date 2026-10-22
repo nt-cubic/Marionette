@@ -1,13 +1,15 @@
 package provider
 
-// PLUGIN-SERVED (see AGENTS.md): Devin ("devin") is a deprecated built-in
-// subscription served by its plugin, @magpie-community/opencode-devin-auth,
-// once moved onto it (provider.Moved; the default for a new sign-in). A
-// moved one's sign-ins, models, requests and usage are all the plugin's,
-// never this code's (only the move, in migrate*.go, still reads its
-// accounts). A fix here alone doesn't reach those users; fix the plugin
-// (github.com/magpie-community/plugins, packages/devin) and raise the
-// mover's min in internal/provider/migrate_side.go.
+// PLUGIN-SERVED (see AGENTS.md): Devin ("devin") is a retired built-in
+// subscription, served by its plugin alone,
+// @magpie-community/opencode-devin-auth (provider.BuiltinRetired). Its
+// sign-in, requests and usage are the plugin's; what is left here reads
+// the accounts signed in to the built-in for the move onto the plugin
+// (migrate_side.go), installs and runs the Devin CLI the plugin and the
+// devin agent use, and shapes the models listed under "devin" (families,
+// variants, contexts, images). A fix belongs in the plugin
+// (github.com/magpie-community/plugins, packages/devin), with the mover's
+// min raised in internal/provider/migrate_side.go.
 
 // Which of Devin's models take images, as Devin tells its CLI: `devin models
 // list` leaves it out, and models.dev doesn't know Devin's own ids (swe-2,
@@ -25,6 +27,9 @@ import (
 	"time"
 )
 
+// devinUsageVersion is the CLI version Devin's API is asked as.
+const devinUsageVersion = "3000.11.3"
+
 var devinImagesClient = &http.Client{Timeout: 15 * time.Second}
 
 const devinModelConfigsRPC = "/exa.api_server_pb.ApiServerService/GetCliModelConfigs"
@@ -39,7 +44,7 @@ var devinImagesAt = func(ctx context.Context, home string) map[string]bool {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	// the metadata the gateway's chats send (gateway/devin.go), which the
+	// the metadata the retired built-in's chats sent, which the
 	// CLI's own requests carry: with the CLI's ide and extension names
 	// alone Devin lists one model
 	meta := devinPB{}.str(1, "devin-cli").str(2, devinUsageVersion).str(3, key).str(4, "en").

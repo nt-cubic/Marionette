@@ -94,7 +94,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // personal data on turns it on
       const settings = { ...base(), redactPersonal: false }, saved = [];
       page = await open(settings, null, "http://magpie.test/?view=settings&tab=privacy", saved);
-      const row = (name) => page.locator("#redactList .row", { has: page.locator(".name", { hasText: new RegExp("^" + name + "$") }) });
+      const row = (name) => page.locator("#setPage-privacy .list .row", { has: page.locator(".name", { hasText: new RegExp("^" + name + "$") }) });
       await row(w.hide).waitFor();
       const top = () => page.evaluate(() => document.querySelector("#view-settings").scrollTop);
       const y0 = await top();
@@ -103,7 +103,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.waitForFunction(() => document.querySelector("#usageMask")?.getAttribute("aria-pressed") === "true");
       assert.ok(saved.some((b) => b.redactPersonal === true), JSON.stringify(saved));
       // the switch here says so, and turns it off again
-      await page.waitForFunction((on) => [...document.querySelectorAll("#redactList .row")].some((r) => r.querySelector(".name")?.textContent === on.hide && r.querySelector(".opt.on")?.textContent === on.on), w);
+      await page.waitForFunction((on) => [...document.querySelectorAll("#setPage-privacy .list .row")].some((r) => r.querySelector(".name")?.textContent === on.hide && r.querySelector(".opt.on")?.textContent === on.on), w);
       assert.equal(await top(), y0, "a click never scrolls");
       // since Settings' search box (51042630e) the row sits under the
       // window's foot at this size, and the reader scrolls to it with the

@@ -68,7 +68,7 @@ func TestOmpModelsAskedOnTheirNativeAPI(t *testing.T) {
 		"anth/claude-sonnet-5":   "anthropic-messages",
 		"anth/claude-sonnet-4-5": "anthropic-messages",
 		"anth/kimi-k3":           "anthropic-messages",
-		"group/auto-gpt-5-5":     "openai-responses",
+		"auto/gpt-5.5":           "openai-responses",
 		"group/mixed":            nil,
 	} {
 		e, ok := entries[id]

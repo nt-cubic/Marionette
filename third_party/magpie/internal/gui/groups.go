@@ -58,6 +58,9 @@ type groupJSON struct {
 	// Decides: it is a group of decision models, asked at /v1/systemone
 	// and by a group's classifier, never by an agent
 	Decides bool `json:"decides,omitempty"`
+	// Ref: the id agents pick it by (provider.Group.Ref): auto/<model> for
+	// a group magpie found, group/<id> for any other
+	Ref string `json:"ref"`
 	// ClassifierFailed: its classifier couldn't say the last time it was
 	// asked, and why (gateway.ClassifierFailure), which its card says
 	// (#1929): otherwise only each request's details did
@@ -256,13 +259,14 @@ func groupsState() groupsJSON {
 		}
 		gj.Patterns = append(gj.Patterns, provider.PatternHits(g)...)
 		gj.Decides = g.Decides()
+		gj.Ref = g.Ref()
 		if g.Classifier != "" {
 			if why, at, ok := classifierFailure(g.Classifier); ok {
 				gj.ClassifierFailed = &classifierFailedJSON{Error: why, At: at}
 			}
 		}
 		for _, e := range served {
-			if e.ID == provider.GroupPrefix+g.ID {
+			if e.Group == g.ID {
 				gj.Offers, gj.Shared = append(gj.Offers, e.Efforts...), append(gj.Shared, e.Shared...)
 				break
 			}
@@ -282,7 +286,7 @@ func groupsState() groupsJSON {
 				// a group in the group: what agents see of it
 				m.Group = true
 				for _, e := range served {
-					if e.ID == id {
+					if e.Group == gid {
 						_, ms, _ := find(id)
 						m.Ready, m.Name, m.Icon, m.On = true, e.Name, e.Provider.Icon, len(ms)
 						m.Context, m.Images, m.ImagesUnknown = e.Context, seesImages(e), imagesUnknown(e)

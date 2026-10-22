@@ -61,8 +61,11 @@ type RequestPage struct {
 }
 
 type packedRow struct {
-	Time                           time.Time
-	Text                           [35]uint32
+	Time time.Time
+	// Varied are the strings of rowVaried, and Shape the chunk's Shapes
+	// entry that holds the row's other strings
+	Varied                         [len(rowVaried)]uint32
+	Shape                          uint32
 	Tokens                         [6]int64
 	Millis, TTFT, FirstText, Order int64
 	Sent, Flow, FirstReasoning     int64
@@ -94,10 +97,15 @@ const rowOwnCost = 256
 const rowCredits = 4096
 
 type rowChunk struct {
-	Archive          []byte
-	Locations        []*time.Location
-	Rows             []packedRow
-	Strings          []string
+	Archive   []byte
+	Locations []*time.Location
+	Rows      []packedRow
+	Strings   []string
+	// Shapes are the rows' strings but rowVaried's, each set kept once:
+	// in every row they were 140 of its 328 bytes, and the page holds every
+	// row of the period at once. 364k calls had 7300 shapes.
+	Shapes           [][rowTexts]uint32
+	shapeIDs         map[[rowTexts]uint32]uint32
 	codexActors      []string
 	codexCompactions map[int]*bool
 	codexIdentities  map[string]sessions.CodexIdentity
@@ -119,7 +127,68 @@ const (
 	// rowClient is the Text of the client's own name, when the user counts
 	// it as another agent (Row.Client, #1958)
 	rowClient = 33
+	// rowTexts is how many strings a row has: rowText's and the message id
+	rowTexts = 35
 )
+
+// rowVaried are the strings that differ call by call: the error, the
+// request and response ids, the archive and the message id. A row keeps
+// them itself; every other string is the same for most of a chunk's rows.
+var rowVaried = [...]int{rowError, 11, 22, 25, rowMsg}
+
+// rowVariedAt is each Text slot's place in Varied, or -1
+var rowVariedAt = func() (at [rowTexts]int8) {
+	for i := range at {
+		at[i] = -1
+	}
+	for k, slot := range rowVaried {
+		at[slot] = int8(k)
+	}
+	return at
+}()
+
+// text is the string id of p's Text slot
+func (c *rowChunk) text(p *packedRow, slot int) uint32 {
+	if k := rowVariedAt[slot]; k >= 0 {
+		return p.Varied[k]
+	}
+	return c.Shapes[p.Shape][slot]
+}
+
+// texts is every string id of p, by Text slot
+func (c *rowChunk) texts(p *packedRow) [rowTexts]uint32 {
+	t := c.Shapes[p.Shape]
+	for k, slot := range rowVaried {
+		t[slot] = p.Varied[k]
+	}
+	return t
+}
+
+// setTexts keeps t, every string id of p by Text slot, in p and Shapes
+func (c *rowChunk) setTexts(p *packedRow, t [rowTexts]uint32) {
+	for k, slot := range rowVaried {
+		p.Varied[k], t[slot] = t[slot], 0
+	}
+	p.Shape = c.shape(t)
+}
+
+// shape is the Shapes entry of t, which is added when there is none
+func (c *rowChunk) shape(t [rowTexts]uint32) uint32 {
+	if c.shapeIDs == nil {
+		c.shapeIDs = make(map[[rowTexts]uint32]uint32, len(c.Shapes))
+		for i, s := range c.Shapes {
+			c.shapeIDs[s] = uint32(i)
+		}
+	}
+	id, ok := c.shapeIDs[t]
+	if !ok {
+		id = uint32(len(c.Shapes))
+		c.Shapes = append(c.Shapes, t)
+		c.shapeIDs[t] = id
+		c.Bytes += int64(unsafe.Sizeof(t))
+	}
+	return id
+}
 
 // rowText is every string of a row's record, the upstream's own stop
 // reason ("Upstream stop reason", #1927) and the service tiers (#1784)
@@ -144,10 +213,12 @@ func (c *rowChunk) add(r Row, msg string, order int64, failed bool) {
 		return id
 	}
 	p := packedRow{Time: r.Time, Tokens: [6]int64{int64(r.Input), int64(r.Output), int64(r.CacheRead), int64(r.CacheWrite), int64(r.Reasoning), int64(r.CacheWrite1h)}, Millis: r.Millis, TTFT: r.TTFT, FirstText: r.FirstText, FirstReasoning: r.FirstReasoning, Sent: r.Sent, Flow: r.Flow, Own: r.Own, Retried: r.Retried, Queued: r.Queued, Order: order, RouteID: r.RouteID, Cost: r.Cost, Status: int32(r.Status), Tries: int32(r.Tries)}
+	var t [rowTexts]uint32
 	for i, s := range rowText(&r) {
-		p.Text[i] = intern(*s)
+		t[i] = intern(*s)
 	}
-	p.Text[rowMsg] = intern(msg)
+	t[rowMsg] = intern(msg)
+	c.setTexts(&p, t)
 	if r.Priced {
 		p.Flags |= 1
 	}
@@ -222,8 +293,9 @@ func (c *rowChunk) row(i int) Row {
 			r.Compaction = &value
 		}
 	}
+	t := c.texts(p)
 	for i, s := range rowText(&r) {
-		*s = c.Strings[p.Text[i]]
+		*s = c.Strings[t[i]]
 	}
 	if r.Swapped && p.Flags&swapKnown == 0 && (SameSpelled(r.Model, r.Served) || ServingName(r.Model, r.Served) || RelayRenamed(r.Model, r.Served)) {
 		r.Swapped = false // kept before a name spelled otherwise, a vendor's serving name or a relay's rename was the same
@@ -528,7 +600,7 @@ func queryPage(p Period, f Filter, offset, limit int, readSource func(sessions.C
 				c.add(row, call.Msg, call.To, call.Error != "")
 			}
 			c.Bytes -= int64(32 * len(c.Strings))
-			c.dict = nil // local chunks are immutable until the source changes
+			c.dict, c.shapeIDs = nil, nil // local chunks are immutable until the source changes
 			idx.chunks[s.Path] = c
 		}
 		next := *c
@@ -574,7 +646,7 @@ func queryPage(p Period, f Filter, offset, limit int, readSource func(sessions.C
 				c.add(priceRow(r, call.Source), "", int64(i), false)
 			}
 			c.Bytes -= int64(32 * len(c.Strings))
-			c.dict = nil
+			c.dict, c.shapeIDs = nil, nil
 		}
 		next := *c
 		c = &next
@@ -661,7 +733,7 @@ func visibleLocal(chunks []*rowChunk) map[rowRef]bool {
 	for _, c := range chunks {
 		for i := range c.Rows {
 			p := &c.Rows[i]
-			msg := c.Strings[p.Text[rowMsg]]
+			msg := c.Strings[c.text(p, rowMsg)]
 			if msg == "" {
 				continue
 			}
@@ -738,10 +810,10 @@ func matchedBlocks(gateways []*rowChunk, chunks []*rowChunk, skip map[rowRef]boo
 				continue
 			}
 			p := &gateway.Rows[i]
-			if (p.Flags&4 != 0 || p.Text[1] == 0 && p.Status >= 400) || p.Time.Before(gatewaySince) {
+			if (p.Flags&4 != 0 || gateway.text(p, 1) == 0 && p.Status >= 400) || p.Time.Before(gatewaySince) {
 				continue
 			}
-			if id := gateway.Strings[p.Text[11]]; id != "" {
+			if id := gateway.Strings[gateway.text(p, 11)]; id != "" {
 				byID[id] = append(byID[id], rowRef{gateway, i})
 			}
 		}
@@ -754,7 +826,7 @@ func matchedBlocks(gateways []*rowChunk, chunks []*rowChunk, skip map[rowRef]boo
 			if skip[ref] || reserved[ref] || p.Time.Before(since) {
 				continue
 			}
-			if id := c.Strings[p.Text[11]]; len(byID[id]) > 0 {
+			if id := c.Strings[c.text(p, 11)]; len(byID[id]) > 0 {
 				byRequest[id] = append(byRequest[id], ref)
 			}
 		}
@@ -787,20 +859,20 @@ func matchedBlocks(gateways []*rowChunk, chunks []*rowChunk, skip map[rowRef]boo
 				continue
 			}
 			p := &gateway.Rows[i]
-			if used[ref] || (p.Flags&4 != 0 || p.Text[1] == 0 && p.Status >= 400) || p.Time.Before(gatewaySince) {
+			if used[ref] || (p.Flags&4 != 0 || gateway.text(p, 1) == 0 && p.Status >= 400) || p.Time.Before(gatewaySince) {
 				continue
 			}
-			session := gateway.Strings[p.Text[14]]
+			session := gateway.Strings[gateway.text(p, 14)]
 			if session == "" {
-				session = gateway.Strings[p.Text[13]]
+				session = gateway.Strings[gateway.text(p, 13)]
 			}
-			if session == "" && gateway.Strings[p.Text[0]] == "agy" {
+			if session == "" && gateway.Strings[gateway.text(p, 0)] == "agy" {
 				session = agyMatchSession
 			}
 			if session == "" {
 				continue
 			}
-			key := matchKey{session, matchTokens(p.Tokens), p.Status >= 400 || p.Text[9] != 0, p.Text[11] != 0}
+			key := matchKey{session, matchTokens(p.Tokens), p.Status >= 400 || gateway.text(p, 9) != 0, gateway.text(p, 11) != 0}
 			g := groups[key]
 			if g == nil {
 				g = &matchGroup{}
@@ -825,16 +897,16 @@ func matchedBlocks(gateways []*rowChunk, chunks []*rowChunk, skip map[rowRef]boo
 			if p.Tokens[0]+p.Tokens[1]+p.Tokens[2]+p.Tokens[3] == 0 && !failed {
 				continue
 			}
-			key := matchKey{session: c.Strings[p.Text[13]], tokens: matchTokens(p.Tokens), failed: failed}
+			key := matchKey{session: c.Strings[c.text(p, 13)], tokens: matchTokens(p.Tokens), failed: failed}
 			from, to := p.Time.Add(-2*time.Second), p.Time.Add(2*time.Second)
-			if c.Strings[p.Text[0]] == "agy" {
+			if c.Strings[c.text(p, 0)] == "agy" {
 				key.session, to = agyMatchSession, p.Time.Add(agyStepLongest)
 			}
 			count, candidate := 0, (rowRef{})
 			// Without a local ID either gateway partition can match. With an ID,
 			// only an unnamed gateway call can match (different IDs stay distinct).
 			for _, hasID := range []bool{false, true} {
-				if hasID && p.Text[11] != 0 {
+				if hasID && c.text(p, 11) != 0 {
 					continue
 				}
 				key.hasID = hasID
@@ -929,7 +1001,7 @@ func buildRequestBlocksWithCodex(p Period, f Filter, offset, limit int, now time
 	visit := func(fn func(rowRef, Row)) {
 		for _, c := range all {
 			for i := range c.Rows {
-				pr := &c.Rows[i] // not a copy: a row is 264 bytes
+				pr := &c.Rows[i] // not a copy: a row is 216 bytes
 				ref := rowRef{c, i}
 				if pr.Time.Before(since) || after(until, pr.Time) || len(skip) > 0 && skip[ref] || len(matched) > 0 && matched[ref] {
 					continue

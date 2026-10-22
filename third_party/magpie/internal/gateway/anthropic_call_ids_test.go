@@ -5,12 +5,21 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/yetone/magpie/internal/provider"
 )
+
+// devinRawID is the call id Devin's SWE-2 gave in #1304 (StarMoonCity's
+// capture). Claude Code takes a tool_use id only of [A-Za-z0-9_-] and
+// dropped the call: "The model's tool call could not be parsed (retry also
+// failed)".
+const devinRawID = "Bash:0#a65b6a5e02194b87bbc796c4428c946d"
+
+var anthropicSafeID = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // chatCallUpstream is a Chat upstream (a plugin's provider, a relay) that
 // answers every request with one Bash call under id, and keeps the bodies
@@ -156,7 +165,7 @@ func TestAnthropicCallIDsSafeBothWays(t *testing.T) {
 // prompt caching and every upstream that works today see no change;
 // Devin's "dv_…" ids are not encoded a second time.
 func TestAnthropicSafeCallIDsUnchanged(t *testing.T) {
-	for _, id := range []string{"toolu_01A09q90qw90lq917835lq9", "call_abc-123", "dv_QmFzaDowI2E2NWI2YTVl", devinOutID(devinRawID)} {
+	for _, id := range []string{"toolu_01A09q90qw90lq917835lq9", "call_abc-123", "dv_QmFzaDowI2E2NWI2YTVl", safeCallID("dv_", devinRawID)} {
 		if got := anthropicOutID(id); got != id {
 			t.Errorf("anthropicOutID(%q) = %q, want it as it came", id, got)
 		}

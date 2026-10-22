@@ -149,6 +149,46 @@ func (r *Run) Request(body []byte) ([]byte, *Reject) {
 	return body, nil
 }
 
+// Tried runs each onProvider on body as it goes to one provider, in turn,
+// with ctx.provider saying which (gwmw.To): what one returns is the body
+// the next is given and that try is sent, and undefined leaves it as it
+// was. Another try, on another provider or the same one, starts again from
+// the body onRequest left. A hook that throws, takes too long or returns
+// null leaves it as it was; ctx.reject turns nothing away here.
+func (r *Run) Tried(body []byte, to gwmw.To) []byte {
+	if r == nil {
+		return body
+	}
+	b, _ := json.Marshal(to)
+	for i, m := range r.set.list {
+		if !m.hasProv {
+			continue
+		}
+		in, ctx, err := r.acquire(i)
+		if err == nil {
+			var v moejs.Value
+			if v, err = in.rt.ParseJSON(b); err == nil {
+				realm := in.rt.Realm()
+				err = realm.SetV(ctx, realm.KeyFromGoString("provider"), v)
+			}
+		}
+		if err != nil {
+			m.fail("onProvider", err)
+			continue
+		}
+		out, err := r.apply(i, m.onProv, requestLimit, body, nil)
+		switch {
+		case errors.Is(err, errDropped):
+			m.fail("onProvider", errors.New("returned null; a request can't be dropped"))
+		case err != nil:
+			m.fail("onProvider", err)
+		case out != nil:
+			body = out
+		}
+	}
+	return body
+}
+
 var errDropped = errors.New("dropped")
 
 // apply calls h on the JSON in data; the JSON it returned, nil for

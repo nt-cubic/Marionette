@@ -291,3 +291,15 @@ func TestOpenCodeSessionCallIsWhatItAskedFor(t *testing.T) {
 		t.Fatalf("an OpenCode call: requested %q model %q served %q effort %q", r.Requested, r.Model, r.Served, r.Effort)
 	}
 }
+
+// A Claude Code call outside every desktop root costs nothing to place:
+// a started magpie's first Requests read asks this of every call twice,
+// and the path arithmetic it skipped was a fifth of what that read
+// allocated.
+func TestDesktopIdentityOfCLICallAllocatesNothing(t *testing.T) {
+	r := &sessionResolver{roots: []string{"/Users/u/Library/Application Support/Claude", "/Users/u/Library/Application Support/Claude-3p"}}
+	call := sessions.Call{Agent: "claude", Session: "s", File: "/Users/u/.claude/projects/-Users-u-src-app/0b9c2f6e-1d3a-4e8f-9a7b-5c6d7e8f9a0b.jsonl"}
+	if n := testing.AllocsPerRun(100, func() { r.desktopIdentity(call) }); n != 0 {
+		t.Fatalf("a CLI call's desktop identity allocated %v times", n)
+	}
+}

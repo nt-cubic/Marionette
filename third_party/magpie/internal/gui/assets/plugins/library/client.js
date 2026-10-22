@@ -754,16 +754,21 @@ magpie.plugin("library", (ctx) => {
       });
       go.append(glyph(GLYPH.search, "lib-mini"), el("span", "", t("Discover")));
       go.title = tab === "mcp" ? t("Go to the MCP servers you can add, under the list") : t("Go to the skills you can add, under the list");
+      // a narrow window's title bar shows the icon alone (app.css
+      // .tools-tight): the name stays the button's, not only its tooltip's
+      go.setAttribute("aria-label", t("Discover"));
       acts.append(go);
     }
     const more = button("", "lib-more", () => lib && reveal(lib.dir));
     more.append(glyph(GLYPH.folder, "lib-mini"), el("span", "", t("Library folder")));
+    more.setAttribute("aria-label", t("Library folder"));
     if (lib) more.title = tilde(lib.dir);
     else more.disabled = true;
     // magpie's backups beside it, on every tab: at the foot of a long
     // page they were hard to find (Dade on Discord: 备份在最底部)
     const back = button("", "lib-backups", () => lib && reveal(lib.backups));
     back.append(glyph(GLYPH.backup, "lib-mini"), el("span", "", t("Backups")));
+    back.setAttribute("aria-label", t("Backups"));
     if (lib) back.title = t("magpie keeps a copy of every file before it writes it.") + "\n" + tilde(lib.backups);
     else back.disabled = true;
     acts.append(more, back);
@@ -942,8 +947,8 @@ magpie.plugin("library", (ctx) => {
       if (a.on && !rtk.path) row.append(tag(t("RTK missing"), "warn", t("{agent}'s hook calls rtk, which isn't installed, so its shell commands fail. Install RTK, or switch this off.", { agent: a.name })));
       // …or one that is, off the PATH the agent gets
       else if (a.on && rtk.offPath) row.append(tag(t("Not on PATH"), "warn", t("{agent}'s hook runs rtk by name and can't find it, so RTK does nothing for it. Put RTK on PATH above.", { agent: a.name })));
-      // an agent RTK has no hook for (DeepSeek Harness): listed, with why
-      if (a.noHook) row.append(tag(t("No RTK hook"), "warn", t("RTK can't be given to {agent} yet: RTK works by rewriting the shell command an agent is about to run, and {agent}'s hooks can only allow or deny a command, not change it. RTK's installer has no option for it either (github.com/rtk-ai/rtk/issues/3847).", { agent: a.name })));
+      // an agent RTK has no hook for (rtkNoHook in rtk.go): listed, with its own why
+      if (a.noHook) row.append(tag(t("No RTK hook"), "warn", rtkNoHookWhy(a)));
       // RTK before 0.51 installs Antigravity's hook only per project
       else if (a.blocked && a.id === "agy") row.append(tag(t("Update RTK"), "warn", t("{agent}'s hook needs RTK 0.51 or newer: older ones install it only per project. Update RTK (brew upgrade rtk, or its installer again), then switch it on.", { agent: a.name })));
       else if (a.blocked && a.id !== "opencode") row.append(tag(t("Update RTK"), "warn", t("{agent}'s hook needs RTK 0.50 or newer: older ones only add @RTK.md to AGENTS.md, which rewrites no command. Update RTK (brew upgrade rtk, or its installer again), then switch it on.", { agent: a.name })));
@@ -959,6 +964,20 @@ magpie.plugin("library", (ctx) => {
     }
     if (!rows.length) list.append(el("div", "lib-none", t("None of your agents is one RTK has a hook for.")));
     body.append(list);
+  }
+  // Why RTK has no hook for an agent: each agent's own reason and its own
+  // rtk-ai/rtk issue, never another agent's (新v学员 on Discord: Grok Build's
+  // said DeepSeek Harness's hooks can't rewrite and linked dsh's issue).
+  // Keyed as rtkNoHook in rtk.go; TestRTKNoHookIssuesAreEachAgents holds the
+  // two together. An agent with no entry gets no reason and no link.
+  function rtkNoHookWhy(a) {
+    const agent = a.name;
+    switch (a.id) {
+      case "dsh": return t("RTK can't be given to {agent} yet: RTK works by rewriting the shell command an agent is about to run, and {agent}'s hooks can only allow or deny a command, not change it. RTK's installer has no option for it either (github.com/rtk-ai/rtk/issues/3847).", { agent });
+      case "grok": return t("RTK can't be given to {agent} yet: RTK's installer has no option for Grok Build (github.com/rtk-ai/rtk/issues/2136).", { agent });
+      case "grok-app": return t("RTK can't be given to {agent} yet: {agent} runs Grok Build, and RTK's installer has no option for Grok Build (github.com/rtk-ai/rtk/issues/2136).", { agent });
+      default: return t("RTK can't be given to {agent} yet: RTK has no hook for it.", { agent });
+    }
   }
   async function setRTK(a, on) {
     rtkBusy.add(a.id);
@@ -1097,8 +1116,19 @@ magpie.plugin("library", (ctx) => {
 
   // ---------- instructions ----------
 
+  // Measured at height auto, the textarea is short for a moment. What holds
+  // it is held at its height meanwhile, so the page never is: a page gone
+  // short has its view's scroll clamped by the browser, which no height put
+  // back undoes, and an input method's every keystroke is an input (#2636:
+  // the page jumped while a word was composed).
   function autosize(ta, min) {
-    const fit = () => { ta.style.height = "auto"; ta.style.height = Math.max(min, ta.scrollHeight + 2) + "px"; };
+    const fit = () => {
+      const box = ta.parentElement, was = box?.style.minHeight;
+      if (box) box.style.minHeight = box.offsetHeight + "px";
+      ta.style.height = "auto";
+      ta.style.height = Math.max(min, ta.scrollHeight + 2) + "px";
+      if (box) box.style.minHeight = was;
+    };
     ta.addEventListener("input", fit);
     // fitted once it's on the page, before it's painted, so what's under it
     // doesn't move a frame later
@@ -2624,7 +2654,7 @@ magpie.plugin("library", (ctx) => {
       rh.append(el("span", "label", t("In the library")));
       const box = el("div", "lib-groups");
       if (lib.skills.length > 8) rh.append(skillFilter(box, all));
-      const fresh = lib.skills.filter((s) => s.kind === "github" || s.origin);
+      const fresh = lib.skills.filter((s) => s.kind === "github" || s.kind === "git" || s.origin);
       rh.append(el("span", "grow"));
       if (lib.skills.length > 1) rh.append(sortBy("libSkills", SKILL_SORTS(), () => { if (box.isConnected) drawSkills(box, all); }));
       if (lib.skills.length > 1) rh.append(foldAllButton(box, all));
@@ -2640,9 +2670,11 @@ magpie.plugin("library", (ctx) => {
       if (lib.skills.length > 1 && all.length) rh.append(pickButton("skills"), ...everyButtons("skills", all));
       if (byAgentRows("skills").length) rh.append(byAgentButton("skills"));
       if (lib.skills.length > 1) rh.append(removeEveryButton("skills"));
-      if (lib.skills.some((s) => s.kind === "github")) {
+      if (lib.skills.some((s) => s.kind === "github" || s.kind === "git")) {
         const c = button(checking ? t("Checking…") : t("Check for updates"), "lib-updall", () => checkSkills());
-        c.title = t("Ask GitHub which skills changed since they were installed");
+        c.title = lib.skills.some((s) => s.kind === "git")
+          ? t("Ask the repositories your skills came from which skills changed since they were installed")
+          : t("Ask GitHub which skills changed since they were installed");
         c.disabled = checking;
         if (checking) c.classList.add("busy");
         rh.append(c);
@@ -2813,6 +2845,9 @@ magpie.plugin("library", (ctx) => {
   try { folds = JSON.parse(localStorage.getItem("magpie.libSkillFolds") || "{}") || {}; } catch {}
   function saveFolds() { try { localStorage.setItem("magpie.libSkillFolds", JSON.stringify(folds)); } catch {} }
   const repoOf = (u) => (u || "").replace(/^https:\/\/github\.com\//, "").split("/").slice(0, 2).join("/");
+  // the repository a skill from another git host (kind "git") came from,
+  // as the page names it: its address, without https:// or a folder in it
+  const gitRepoOf = (s) => (s.kind === "git" ? (s.source || "").replace(/^https?:\/\//, "").replace(/\/-\/tree\/.*$/, "") : "");
   // the repository a skill came from, however it came in: magpie traces
   // one not installed from GitHub too (the skills CLI's lock, the git
   // checkout it's in), so a repository's skills are one group (White
@@ -2918,6 +2953,11 @@ magpie.plugin("library", (ctx) => {
         const m = /^https:\/\/github\.com\/[^/]+\/[^/]+\/tree\/[^/]+\/(.+)$/.exec(s.source || "");
         return m ? m[1].split("/").slice(0, -1).join("/") : "";
       }
+      if (s.kind === "git") {
+        // GitLab's …/-/tree/<ref>/<path to the folder>/<skill>
+        const m = /\/-\/tree\/[^/]+\/(.+)$/.exec(s.source || "");
+        return m ? m[1].split("/").slice(0, -1).join("/") : "";
+      }
       if (s.kind === "folder") return tilde((s.source || "").replace(/[\\/][^\\/]+[\\/]?$/, ""));
       return "";
     };
@@ -2941,7 +2981,7 @@ magpie.plugin("library", (ctx) => {
     if (g.repo) {
       // the folder in the repository is known of those installed from it
       // only: one traced to it goes by its name with the rest
-      let m = g.skills.every((s) => s.kind === "github") ? split(g.skills, folderIn) : null, mono = true;
+      let m = g.skills.every((s) => s.kind === "github" || s.kind === "git") ? split(g.skills, folderIn) : null, mono = true;
       if (!m) { mono = false; m = byStart(); }
       if (!m) return null;
       return [...m].map(([key, skills]) => ({ key, skills, mono, label: label(key, mono) })).sort(order);
@@ -4386,7 +4426,7 @@ magpie.plugin("library", (ctx) => {
     const inp = el("input");
     inp.type = "text";
     inp.dataset.lib = "source";
-    inp.placeholder = t("owner/repo, a GitHub link, or a folder on this computer");
+    inp.placeholder = t("owner/repo, a GitHub or GitLab link, any git repository's address, or a folder on this computer");
     inp.spellcheck = false;
     inp.autocomplete = "off";
     inp.value = probe?.source || "";
@@ -4426,7 +4466,8 @@ magpie.plugin("library", (ctx) => {
     const left = (p.found.left || []).map((x) => el("div", "lib-none lib-left", t("{name} is too big to install: {size}, over the {limit} a skill may be", { name: x.path.split("/").pop() || p.found.source, size: Math.round(x.size / 1048576) + " MB", limit: "200 MB" })));
     if (!c.length) { box.append(...(left.length ? left : [el("div", "lib-none", t("No skills there — a skill is a folder with a SKILL.md in it."))])); return box; }
     const head = el("div", "lib-probehead");
-    const src = p.found.kind === "github" ? "github.com/" + p.found.source.replace(/^https?:\/\/github\.com\//, "") : tilde(p.found.source);
+    const src = p.found.kind === "github" ? "github.com/" + p.found.source.replace(/^https?:\/\/github\.com\//, "")
+      : p.found.kind === "git" ? p.found.source.replace(/^https:\/\//, "") : tilde(p.found.source);
     head.append(el("span", "note", c.length === 1 ? t("1 skill in {src}", { src }) : t("{n} skills in {src}", { n: c.length, src })));
     head.append(el("span", "grow"));
     const fresh = c.filter((x) => !x.have);
@@ -4503,7 +4544,9 @@ magpie.plugin("library", (ctx) => {
     }
     // changed here since it was fetched from GitHub (#1449): an update asks
     // before it replaces that
-    if (s.edited) nm.append(tag(t("Changed here"), "warn lib-edited", t("You changed it since it was fetched from GitHub. Updating asks before it replaces your changes.")));
+    if (s.edited) nm.append(tag(t("Changed here"), "warn lib-edited", gitRepoOf(s)
+      ? t("You changed it since it was fetched from {repo}. Updating asks before it replaces your changes.", { repo: gitRepoOf(s) })
+      : t("You changed it since it was fetched from GitHub. Updating asks before it replaces your changes.")));
     // a copy in an agent that differs from the library's skill (#896): a
     // sync makes it again
     if (s.behind?.length) {
@@ -4528,13 +4571,23 @@ magpie.plugin("library", (ctx) => {
         a.href = s.source;
         a.onclick = (e) => { e.preventDefault(); e.stopPropagation(); browse(s.source); };
         src.append(a);
+      } else if (s.kind === "git" && /^https?:\/\//.test(s.source)) {
+        const a = el("a", "lib-srclink", s.source.replace(/^https:\/\//, ""));
+        a.href = s.source;
+        a.onclick = (e) => { e.preventDefault(); e.stopPropagation(); browse(s.source); };
+        src.append(a);
+      } else if (s.kind === "git") {
+        // an SSH address (git@host:path) or a file:// one: no page to open
+        const a = el("span", "lib-srclink", s.source);
+        a.title = s.source;
+        src.append(a);
       } else {
         src.append(el("span", "", t("linked from")), pathLink(s.source));
       }
       who.append(src);
     }
     const acts = el("div", "lib-rowacts");
-    if (s.kind === "github" || s.origin) {
+    if (s.kind === "github" || s.kind === "git" || s.origin) {
       const u = button("", "lib-icon", async (e, b) => {
         if (s.edited) return confirmUpdateEdited(s);
         b.classList.add("busy");
@@ -4542,8 +4595,10 @@ magpie.plugin("library", (ctx) => {
         b.classList.remove("busy");
       });
       u.append(svg(GLYPH.up, 13, 1.5));
-      u.title = s.origin ? t("Update from GitHub ({repo}, as CC Switch installed it)", { repo: s.origin.replace(/^https:\/\/github\.com\//, "") }) : t("Update from GitHub");
-      if (c?.status === "current") u.title += "\n" + t("Up to date with GitHub") + "\n" + checkLine(c);
+      const gitRepo = gitRepoOf(s);
+      u.title = s.origin ? t("Update from GitHub ({repo}, as CC Switch installed it)", { repo: s.origin.replace(/^https:\/\/github\.com\//, "") })
+        : gitRepo ? t("Update from {repo}", { repo: gitRepo }) : t("Update from GitHub");
+      if (c?.status === "current") u.title += "\n" + (gitRepo ? t("Up to date with {repo}", { repo: gitRepo }) : t("Up to date with GitHub")) + "\n" + checkLine(c);
       else if (c?.status === "update") u.title += "\n" + checkLine(c);
       if (s.edited) u.title += "\n" + t("Changed here: asks before it replaces your changes");
       acts.append(u);
@@ -4564,9 +4619,12 @@ magpie.plugin("library", (ctx) => {
   function confirmUpdateEdited(s) {
     const ed = el("div", "editor lib-editor lib-update-edited");
     const head = el("div", "ehead");
-    head.append(glyph(GLYPH.up), el("b", "", t("Replace your changes to {name}?", { name: s.name })));
+    const repo = gitRepoOf(s);
+    head.append(glyph(GLYPH.up), el("b", "", repo ? t("Replace your changes to {name} with the version in {repo}?", { name: s.name, repo }) : t("Replace your changes to {name}?", { name: s.name })));
     ed.append(head);
-    ed.append(el("p", "lib-confirm", t("You changed {name} here since it was fetched from GitHub. Updating puts GitHub's version in its place. Yours is kept in magpie's backups (Backups, at the top of the Library).", { name: s.name })));
+    ed.append(el("p", "lib-confirm", repo
+      ? t("You changed {name} here since it was fetched from {repo}. Updating puts the version there in its place. Yours is kept in magpie's backups (Backups, at the top of the Library).", { name: s.name, repo })
+      : t("You changed {name} here since it was fetched from GitHub. Updating puts GitHub's version in its place. Yours is kept in magpie's backups (Backups, at the top of the Library).", { name: s.name })));
     const bar = el("div", "bar");
     const go = button(t("Update"), "primary", async () => {
       go.disabled = true;

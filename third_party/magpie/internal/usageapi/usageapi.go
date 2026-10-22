@@ -281,9 +281,18 @@ func LedgerPage(p usage.Period, f usage.Filter, offset, limit int) Ledger {
 	for _, g := range out.CallerKeys {
 		callerLabels[g.CallerKeyID] = g.Name
 	}
+	// a group magpie found is named as agents pick it, auto/<model>; the
+	// ledger keeps group/auto-<slug> (provider.CanonicalRef)
+	pub := map[string]string{}
 	for _, r := range page {
 		a := who(r.Agent)
 		lr := Row{Row: r, AgentName: a.Name, Icon: a.Icon, ProviderName: which(r.Provider).Name}
+		if req := r.Requested; strings.HasPrefix(req, provider.GroupPrefix) {
+			if _, ok := pub[req]; !ok {
+				pub[req] = provider.PublicRef(req)
+			}
+			lr.Requested = pub[req]
+		}
 		if r.Source != "log" && r.Source != usage.SourceReported {
 			lr.Access = access[r.Provider]
 		}

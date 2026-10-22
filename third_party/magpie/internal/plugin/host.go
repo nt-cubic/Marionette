@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	_ "embed"
@@ -1033,8 +1034,9 @@ func (h *host) read(out io.Reader) {
 	for {
 		line, err := readLine(r, h.lineLimit())
 		if len(line) > 0 {
-			var m message
-			if json.Unmarshal(line, &m) == nil {
+			if m, ok := chunkFrame(line); ok {
+				h.dispatch(m)
+			} else if json.Unmarshal(line, &m) == nil {
 				h.dispatch(m)
 			}
 		}
@@ -1055,6 +1057,45 @@ func (h *host) read(out io.Reader) {
 		err = errors.New("the plugin host quit")
 	}
 	h.fail(fmt.Errorf("the plugin host quit: %v", err))
+}
+
+var (
+	chunkHead = []byte(`{"id":`)
+	chunkMid  = []byte(`,"event":"chunk","data":"`)
+)
+
+// chunkFrame is the chunk frame in line when it has exactly the shape
+// host.js's chunkLine writes, {"id":N,"event":"chunk","data":"…"}, with
+// nothing in the data JSON would escape: the reply's bytes come in these,
+// and encoding/json scanned every base64 byte of each, several times what
+// decoding them costs. Any other line is not one, and is unmarshalled; push
+// checks the data is base64 of a frame's size either way.
+func chunkFrame(line []byte) (message, bool) {
+	line = bytes.TrimSuffix(bytes.TrimSuffix(line, []byte("\n")), []byte("\r"))
+	rest, ok := bytes.CutPrefix(line, chunkHead)
+	if !ok {
+		return message{}, false
+	}
+	i := bytes.IndexByte(rest, ',')
+	if i <= 0 || i > 18 {
+		return message{}, false
+	}
+	var id int64
+	for _, c := range rest[:i] {
+		if c < '0' || c > '9' {
+			return message{}, false
+		}
+		id = id*10 + int64(c-'0')
+	}
+	data, ok := bytes.CutPrefix(rest[i:], chunkMid)
+	if !ok {
+		return message{}, false
+	}
+	data, ok = bytes.CutSuffix(data, []byte(`"}`))
+	if !ok || bytes.IndexByte(data, '"') >= 0 || bytes.IndexByte(data, '\\') >= 0 {
+		return message{}, false
+	}
+	return message{ID: id, Event: "chunk", Data: string(data)}, true
 }
 
 // readLine reads one '\n'-terminated line, at most max bytes, so a child that

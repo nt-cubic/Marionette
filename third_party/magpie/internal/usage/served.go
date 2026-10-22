@@ -149,5 +149,11 @@ func SameSpelled(sent, served string) bool {
 // serving another model than asked (莫 on Discord: group/auto-… answered
 // by deepseek/deepseek-v4.1-flash, marked a swap).
 func GroupRouted(sent, served string) bool {
-	return strings.TrimSpace(served) != "" && strings.HasPrefix(strings.TrimSpace(sent), provider.GroupPrefix)
+	return strings.TrimSpace(served) != "" && remoteGroup(strings.TrimSpace(sent))
+}
+
+// remoteGroup reports whether id is a routing group's id as a magpie
+// gives it: group/<id>, or auto/<model> for a group it found.
+func remoteGroup(id string) bool {
+	return strings.HasPrefix(id, provider.GroupPrefix) || strings.HasPrefix(id, provider.AutoPrefix)
 }

@@ -13,6 +13,7 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { reach } = require("./reader.cjs");
 const { PNG } = require("playwright-core/lib/utilsBundle");
 
 const assets = path.resolve(__dirname, "../assets");
@@ -183,7 +184,10 @@ async function agentsFit(page) {
   for (const agent of agentRows) {
     const row = page.locator(`.row.agent[data-id="${agent.id}"]`);
     await row.waitFor();
-    // opened, its pickers in the row
+    // opened, its pickers in the row; the last row opened can push this one
+    // out of sight, so it is wheeled to once that one has slid open
+    await page.waitForFunction(() => !document.getAnimations().length);
+    await reach(page, row.locator(".ag-link"));
     await row.locator(".ag-link").click();
     await row.locator(".ag-exp").waitFor();
     const bad = await row.evaluate(row => {
@@ -201,11 +205,21 @@ async function agentsFit(page) {
     // Code's tiers do (#1397, fc5dfa3c): it opens their menu
     const keys = [...new Set(agent.fields.map((f) => agent.id === "omp" && OMP_ROLES.includes(f.label) ? "tiers" : f.key))];
     for (const key of keys) {
-      await row.locator(`.field[data-key="${key}"]`).click();
-      await page.locator("#pop").waitFor();
+      try {
+        const field = row.locator(`.field[data-key="${key}"]`);
+        await page.waitForFunction(() => !document.getAnimations().length);
+        await reach(page, field);
+        await field.click();
+        await page.locator("#pop").waitFor();
+      } catch (e) { throw new Error(`${agent.id} ${key} open: ${e.message.split("\n")[0]}`); }
       assert.equal(await page.locator("#pop").isVisible(), true, agent.name + ": " + key + " opens");
-      await page.locator('#nav [data-view="agents"]').click();
-      await page.locator("#pop").waitFor({ state: "hidden" });
+      // shut by a tap on the header's name: a picker opened low in a tall
+      // row (Codex's holds its own settings) can cover the phone's tab bar,
+      // and the page's lead line can be scrolled under the header's tabs
+      const brand = await page.locator("header.top .brand").boundingBox();
+      await page.mouse.click(brand.x + brand.width / 2, brand.y + brand.height / 2);
+      try { await page.locator("#pop").waitFor({ state: "hidden" }); }
+      catch (e) { throw new Error(`${agent.id} ${key} shut: ${e.message.split("\n")[0]}`); }
     }
   }
 }

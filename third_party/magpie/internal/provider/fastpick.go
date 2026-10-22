@@ -45,14 +45,24 @@ func UltraPicks(agent string) []string {
 
 // CanUltra reports whether a fast pick of model on p can be sent as
 // Ultrafast: a ChatGPT model that one of Codex's accounts lists the tier
-// on (Account.Tiers). A list that doesn't say tiers offers none.
+// on (Account.Tiers), or a plugin's model, with fast mode, that the plugin
+// says its vendor serves at ultrafast (serviceTiers, #2514). A list that
+// doesn't say tiers offers none.
 func CanUltra(p Provider, model string) bool {
 	return UltraOn(p, model, UltraModels())
 }
 
 // UltraOn is CanUltra with UltraModels read once, for a list of them all.
 func UltraOn(p Provider, model string, ultra map[string]bool) bool {
-	return !p.IsPlugin() && p.Account != nil && p.Account.Agent == "codex" && CanFast(p, model) && ultra[model]
+	if p.IsPlugin() {
+		pp, ok := PluginOf(p.ID)
+		if !ok {
+			return false
+		}
+		m, listed := pluginModel(pp, model)
+		return listed && CanFast(p, model) && pluginTierOn(pp.ID, m, "ultrafast")
+	}
+	return p.Account != nil && p.Account.Agent == "codex" && CanFast(p, model) && ultra[model]
 }
 
 // UltraModels are the models one of Codex's accounts offers Ultrafast on.
@@ -96,7 +106,7 @@ func SetFastTier(agent, id, tier string) error {
 		return fmt.Errorf("magpie knows no tier %q", tier)
 	}
 	if tier != "" {
-		if strings.HasPrefix(id, GroupPrefix) {
+		if IsGroupRef(id) {
 			return fmt.Errorf("%s is a routing group: its members are sent fast as it says, on the Routing page", id)
 		}
 		p, model, ok := Resolve(id)

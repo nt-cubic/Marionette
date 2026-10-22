@@ -4,7 +4,8 @@
 // editor has Compact at beside Context window and Max output, in the same
 // form: one size for all its models, model=size for one, shown as set,
 // sent with the Save, a value that isn't a number of tokens refused before
-// anything is sent. Settings → Long conversations takes a size of its own
+// anything is sent. Long conversations, in Codex's and Claude Code's
+// settings on their opened rows (here Claude Code's), takes a size of its own
 // beside Compact at / Full window; a typed size posts settings/full-context
 // with it, and no click or typing scrolls the page.
 // English and Chinese, Chromium and WebKit; no backend, the API is faked here.
@@ -13,6 +14,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { watchSettingsReads, agentRow, openAgentSettings } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 
@@ -26,7 +28,7 @@ function serve(lang, posts) {
     const json = (data) => route.fulfill({ json: data });
     if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:${JSON.stringify(lang)},theme:"light",web:true};` });
     if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
-    if (url.pathname === "/api/state") return json({ agents: [], profiles: [], settings: { lang, theme: "light" } });
+    if (url.pathname === "/api/state") return json({ agents: [agentRow("claude", "Claude Code")], profiles: [], settings: { lang, theme: "light" } });
     if (url.pathname === "/api/providers") return json(providers);
     if (url.pathname === "/api/groups") return json({ groups: [], models: [] });
     if (url.pathname.startsWith("/api/provider/")) {
@@ -71,6 +73,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const errors = [], posts = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", serve(lang, posts));
+      await watchSettingsReads(page);
       await page.goto(`http://magpie.test/?view=${view}`);
       return { page, errors, posts };
     };
@@ -103,7 +106,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     });
 
     test(`${engine} ${lang}: Long conversations compacts at a size the user types`, async (t) => {
-      const { page, errors, posts } = await open(t, "settings");
+      const { page, errors, posts } = await open(t, "agents");
+      await openAgentSettings(page, "claude");
       const row = page.locator("#fullContextSegs");
       const num = row.locator("input.compact-num");
       await num.waitFor();
@@ -111,7 +115,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await row.locator("select").count(), 0, "no native select");
       assert(await row.getByText(w.at("272K"), { exact: true }).isVisible(), "272K by default");
       assert.equal(await num.inputValue(), "");
-      const view = () => page.locator("#view-settings").evaluate((v) => v.scrollTop);
+      const view = () => page.locator("#view-agents").evaluate((v) => v.scrollTop);
       const before = await view();
       await num.fill("lots");
       await num.press("Enter");

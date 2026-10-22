@@ -239,3 +239,52 @@ func TestCLIIdentityNotKeptInATestBinary(t *testing.T) {
 		t.Fatalf("written in a test binary: %v", es)
 	}
 }
+
+// A CLI whose sign-in reads the same isn't started every minute: asked
+// every minute, cursor-agent took ~0.5s of CPU and 200 MB each time for as
+// long as magpie ran (#3185). A sign-in or sign-out in it is asked at the
+// next look a minute on, and the same one again after unchangedAsk.
+func TestCLIIdentityAskedOnASignInChange(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var asked atomic.Int32
+	var mark atomic.Value
+	mark.Store("a")
+	c := &cliIdentity{name: "x", exe: func() string { return "/bin/sh" },
+		ask:  func() (string, string, bool, error) { asked.Add(1); return "me@example.com", "Pro", true, nil },
+		mark: func() string { return mark.Load().(string) }}
+	look := func(ago time.Duration) int32 {
+		c.Lock()
+		c.at = time.Now().Add(-ago)
+		c.Unlock()
+		c.get()
+		c.Lock()
+		done, busy := c.done, c.refreshing
+		c.Unlock()
+		if busy {
+			<-done
+		}
+		return asked.Load()
+	}
+	if c.get(); asked.Load() != 1 {
+		t.Fatalf("first look asked %d times", asked.Load())
+	}
+	for i := 0; i < 5; i++ {
+		if n := look(61 * time.Second); n != 1 {
+			t.Fatalf("sign-in unchanged, a minute on: asked %d times", n)
+		}
+	}
+	mark.Store("b") // signed in as someone else
+	if n := look(61 * time.Second); n != 2 {
+		t.Fatalf("after a sign-in: asked %d times", n)
+	}
+	if n := look(61 * time.Second); n != 2 {
+		t.Fatal("asked again with the new sign-in unchanged")
+	}
+	if n := look(unchangedAsk + time.Second); n != 3 {
+		t.Fatalf("after %v: asked %d times", unchangedAsk, n)
+	}
+	mark.Store("") // unreadable: asked as before
+	if n := look(61 * time.Second); n != 4 {
+		t.Fatalf("mark unreadable: asked %d times", n)
+	}
+}

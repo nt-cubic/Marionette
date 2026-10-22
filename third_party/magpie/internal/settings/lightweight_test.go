@@ -2,30 +2,47 @@ package settings
 
 import "testing"
 
-// Lightweight mode (#580) is saved and read back, off by default, and is
+// Lightweight mode (#580) is off for a user who never chose (the owner,
+// 10-21: too slow to have by default), on for one who turned it on, and
+// kept off for one who turned it off; it is saved and read back, and is
 // this computer's own: a sync or a restored backup keeps it as it is here.
 func TestLightweightKeptAndOwn(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	if Load().Lightweight {
-		t.Fatal("on by default")
+	if Load().LightweightOn() {
+		t.Fatal("on for a user who never chose")
 	}
+	off, on := false, true
 	s := Load()
-	s.Lightweight = true
+	s.Lightweight = &on
 	if err := Save(s); err != nil {
 		t.Fatal(err)
 	}
-	if !Load().Lightweight {
-		t.Fatal("not kept")
+	if !Load().LightweightOn() {
+		t.Fatal("turned on, but read back off")
 	}
-	from := Settings{Theme: "dark"}
+	s.Lightweight = &off
+	if err := Save(s); err != nil {
+		t.Fatal(err)
+	}
+	if Load().LightweightOn() {
+		t.Fatal("turned off, but read back on")
+	}
+	s.Theme = "dark" // another setting saved keeps it off
+	if err := Save(s); err != nil {
+		t.Fatal(err)
+	}
+	if Load().LightweightOn() {
+		t.Fatal("another setting's save turned it on")
+	}
+	from := Settings{Theme: "dark", Lightweight: &on}
 	from.KeepOwn(Load())
-	if !from.Lightweight || from.Theme != "dark" {
+	if from.LightweightOn() || from.Theme != "dark" {
 		t.Fatalf("KeepOwn: %+v", from)
 	}
-	from = Settings{Lightweight: true}
+	from = Settings{Lightweight: &off}
 	from.KeepOwn(Settings{})
-	if from.Lightweight {
-		t.Fatal("another computer's turned on here")
+	if from.Lightweight != nil {
+		t.Fatal("another computer's choice taken here")
 	}
 }
 

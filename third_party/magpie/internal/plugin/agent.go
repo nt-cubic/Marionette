@@ -42,15 +42,15 @@ func Agent(target string) (file string, only bool) {
 }
 
 // InMagpieOnly is whether everything a plugin at target has runs in
-// magpie's own process, its gateway middleware, its agent and its page,
-// so the host has nothing of it to load.
+// magpie's own process, its gateway middleware, its agent and what it adds
+// to the window, so the host has nothing of it to load.
 func InMagpieOnly(target string) bool {
 	if Gateway(target) != "" {
 		return false
 	}
 	mw, mwOnly := Middleware(target)
 	ag, agOnly := Agent(target)
-	pg, pgOnly := WindowPage(target)
+	pg, pgOnly := Window(target)
 	if mw == "" && ag == "" && pg == nil {
 		return false
 	}

@@ -5,12 +5,14 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/sessions"
 	"github.com/yetone/magpie/internal/usage"
 )
@@ -18,7 +20,7 @@ import (
 // traceJSON is the gateway's routing trace since the page last asked.
 type traceJSON struct {
 	gateway.TraceState
-	Mine   bool        `json:"mine"` // this magpie serves the gateway: another's trace isn't here
+	Mine   bool        `json:"mine"` // the trace here is live: this magpie serves the gateway, or this console reads the magpie that does (#2606)
 	Now    time.Time   `json:"now"`
 	Routes []routeJSON `json:"routes"`
 }
@@ -94,7 +96,9 @@ func pricedRoutes(routes []gateway.Route) []routeJSON {
 		}
 	}
 	titles := sessions.CodexTitles(ids)
+	pub := publicRefs()
 	for _, r := range routes {
+		r = publicRoute(r, pub)
 		recs := make([]usage.Record, len(r.Usage))
 		for i, u := range r.Usage {
 			recs[i] = u.PricingRecord()
@@ -113,6 +117,58 @@ func pricedRoutes(routes []gateway.Route) []routeJSON {
 		out = append(out, routeJSON{Route: r, SessionTitle: name, Cost: sum.Cost, Priced: priced, Unpriced: sum.Unpriced})
 	}
 	return out
+}
+
+// publicRefs is provider.PublicRef, each ref looked up once: a page of
+// routes names a few models many times over.
+func publicRefs() func(string) string {
+	seen := map[string]string{}
+	return func(ref string) string {
+		if ref == "" {
+			return ref
+		}
+		out, ok := seen[ref]
+		if !ok {
+			out = provider.PublicRef(ref)
+			seen[ref] = out
+		}
+		return out
+	}
+}
+
+// publicRoute is r as the Routing page names it: a group magpie found by
+// the id agents pick it by, auto/<model>, wherever r names one — the
+// model asked for, the request a search or an image was for, a subagent's
+// pick, the group and the groups in it (未寒 on Discord: the live view
+// still said group/auto-<model>). The gateway keeps group/auto-<slug> in
+// the trace and its history (provider.CanonicalRef); r's own pointers are
+// the trace's, so what changes is copied first.
+func publicRoute(r gateway.Route, pub func(string) string) gateway.Route {
+	r.Model = pub(r.Model)
+	if r.For != nil {
+		f := *r.For
+		f.Model = pub(f.Model)
+		r.For = &f
+	}
+	if r.Subagent != nil {
+		s := *r.Subagent
+		s.Asked, s.To = pub(s.Asked), pub(s.To)
+		r.Subagent = &s
+	}
+	if g := r.Group; g != nil {
+		c := *g
+		if c.Ref == "" { // history written before the trace kept it
+			c.Ref = pub(provider.GroupPrefix + c.ID)
+		}
+		c.Subs = slices.Clone(c.Subs)
+		for i, sub := range c.Subs {
+			if sub.Ref == "" {
+				c.Subs[i].Ref = pub(provider.GroupPrefix + sub.ID)
+			}
+		}
+		r.Group = &c
+	}
+	return r
 }
 
 // mainView is the tab the window is asked to open on, as the page's view
@@ -272,13 +328,19 @@ func traceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/gateway/trace", func(rw http.ResponseWriter, r *http.Request) {
 		gw := served.Load()
 		out := traceJSON{TraceState: gateway.TraceState{Routes: []gateway.Route{}}, Mine: gw != nil}
+		after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+		var wait time.Duration
+		if r.URL.Query().Get("wait") != "" {
+			wait = 25 * time.Second
+		}
 		if gw != nil {
-			after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
-			var wait time.Duration
-			if r.URL.Query().Get("wait") != "" {
-				wait = 25 * time.Second
-			}
 			out.TraceState = gw.Trace(r.Context(), after, wait)
+		} else if st, ok := gateway.OwnerTrace(r.Context(), after, wait); ok {
+			// another magpie on this computer serves the gateway: show the
+			// routing it decides here too, live, and let the page name the
+			// process that is routing (#2606)
+			out.TraceState = st
+			out.Mine = true
 		}
 		out.Now = time.Now()
 		out.Routes = pricedRoutes(out.TraceState.Routes)

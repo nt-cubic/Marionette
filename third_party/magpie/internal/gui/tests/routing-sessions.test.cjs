@@ -455,12 +455,25 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.locator(".rt-group-by button").nth(1).click();
         // openRoute loads the full day, then appends a row outside its 2,000-row page.
         await page.evaluate(({ id, time }) => window.openRoute(id, time), extra);
-        await page.locator(".rt-req").nth(2000).waitFor();
+        // the list draws the rows in sight only (#2524): the day's 2,001 are
+        // counted in its note, and a session far down is scrolled to
+        await page.waitForFunction(() => /2001/.test(document.querySelector(".rt-req-head .note")?.textContent || ""));
         await page.evaluate(() => window.dispatchEvent(new Event("focus")));
         await page.waitForFunction(() => [...document.querySelectorAll(".rt-session .nm")].some((e) => e.textContent === "Codex · Applied opened-chat"));
         const group = (id) => page.locator(`button.rt-session:has(.nm[title$="${id}"])`);
-        assert.equal(await group("chat-2000").locator(".nm").textContent(), "Codex · Applied chat-2000");
-        assert.equal(await group(mixed ? "chat-801" : "chat-1").locator(".nm").textContent(), `Codex · Applied chat-${mixed ? 801 : 1}`);
+        const scrolledTo = async (id) => {
+          await page.evaluate(() => { document.querySelector(".rt-reqs").scrollTop = 0; });
+          // a list's height at a time, each drawn, down to its foot
+          for (let moved = true; moved && !await group(id).count();) {
+            moved = await page.evaluate(() => { const l = document.querySelector(".rt-reqs"), was = l.scrollTop; l.scrollTop += l.clientHeight; return l.scrollTop > was; });
+            await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+          }
+          return group(id);
+        };
+        assert.equal(await (await scrolledTo("chat-2000")).locator(".nm").textContent(), "Codex · Applied chat-2000");
+        assert.equal(await (await scrolledTo(mixed ? "chat-801" : "chat-1")).locator(".nm").textContent(), `Codex · Applied chat-${mixed ? 801 : 1}`);
+        await page.evaluate(() => { document.querySelector(".rt-reqs").scrollTop = 0; });
+        await page.waitForFunction(() => [...document.querySelectorAll(".rt-session .nm")].some((e) => e.textContent === "Codex · Applied opened-chat"));
         assert.equal(await group("opened-chat").locator(".cost").textContent(), "≈$0.010");
         const batches = titleRequests.filter((input) => input.day === day);
         assert(batches.length > 0, "history refresh never ran");

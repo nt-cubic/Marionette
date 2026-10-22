@@ -201,8 +201,11 @@ func TestGitHubRateLimitSaid(t *testing.T) {
 		t.Errorf("secondary limit: %+v %+v", c, c.Limited)
 	}
 
-	// a token GitHub refuses says which one
+	// a token GitHub refuses says which one when it is Settings'
 	g.answer = func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Header.Get("Authorization") == "" {
+			return false
+		}
 		w.WriteHeader(401)
 		fmt.Fprint(w, `{"message":"Bad credentials"}`)
 		return true
@@ -211,11 +214,35 @@ func TestGitHubRateLimitSaid(t *testing.T) {
 	if c.Limited != nil || c.Error != "GitHub refused the GitHub token in Settings → Network and sharing: it may have expired or been revoked" {
 		t.Errorf("refused: %+v", c)
 	}
+	// one from the environment (till on Discord: a stale GITHUB_TOKEN)
+	// is dropped: the check is asked again without it, and isn't sent
+	// again
 	setGitHubToken(t, "")
-	t.Setenv("GH_TOKEN", "bad")
+	t.Setenv("GH_TOKEN", "bad-env-skills")
+	g.mu.Lock()
+	n := len(g.apiAuth)
+	g.mu.Unlock()
 	c = check(t)["pdf"]
-	if !strings.Contains(c.Error, "GitHub refused GH_TOKEN") || strings.Contains(c.Error, "bad") {
+	if c.Error != "" || c.Limited != nil || c.Commit == "" {
 		t.Errorf("refused from the environment: %+v", c)
+	}
+	g.mu.Lock()
+	if a := g.apiAuth[n:]; len(a) < 2 || a[0] != "Bearer bad-env-skills" || a[1] != "" {
+		t.Errorf("refused from the environment: GitHub was asked with %q, want the token then none", a)
+	}
+	n = len(g.apiAuth)
+	g.mu.Unlock()
+	c = check(t)["pdf"]
+	if c.Error != "" || c.Commit == "" {
+		t.Errorf("refused from the environment, checked again: %+v", c)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, a := range g.apiAuth[n:] {
+		if a != "" {
+			t.Errorf("the refused GH_TOKEN was sent again: %q", g.apiAuth[n:])
+			break
+		}
 	}
 }
 

@@ -240,8 +240,13 @@ func listPlugins(ctx context.Context, asJSON bool) error {
 		if ts := toolsLine(toolNames[e.Spec]); ts != "" {
 			fmt.Printf("  %s  %s\n", muted.Render("tools"), ts)
 		}
-		if pg, _ := plugin.WindowPage(plugin.Target(e.Spec)); pg != nil {
-			fmt.Printf("  %s  %s\n", muted.Render("page"), pageLine(pg))
+		if w, _ := plugin.Window(plugin.Target(e.Spec)); w != nil {
+			if w.Page != nil {
+				fmt.Printf("  %s  %s\n", muted.Render("page"), pageLine(w, w.Page))
+			}
+			if len(w.Panels) > 0 {
+				fmt.Printf("  %s  %s\n", muted.Render("panels"), panelsLine(w))
+			}
 		}
 		for _, p := range ps {
 			if p.Spec != e.Spec {
@@ -475,7 +480,9 @@ func pluginLogin(ctx context.Context, name, method string) error {
 		if a.URL != "" {
 			fmt.Println("Sign in in your browser. If it didn't open, go to:")
 			fmt.Println(faint.Render(a.URL))
-			openInBrowser(a.URL)
+			if !a.Opened {
+				openInBrowser(a.URL)
+			}
 		}
 		if a.Instructions != "" {
 			fmt.Println(a.Instructions)
@@ -616,11 +623,33 @@ func toolsLine(names map[string]string) string {
 	return strings.Join(out, ", ")
 }
 
-// pageLine is a plugin's page: its title and what it may read of magpie's.
-func pageLine(pg *plugin.PageSpec) string {
-	reads := "reads nothing"
-	if len(pg.Reads) > 0 {
-		reads = "reads " + strings.Join(pg.Reads, ", ")
+// pageLine is a plugin's page: its title, the built-in page it takes the
+// place of, and what it may read of magpie's.
+func pageLine(w *plugin.WindowSpec, pg *plugin.PageSpec) string {
+	s := pg.Title
+	if pg.Replaces != "" {
+		s += " " + muted.Render("in place of "+pg.Replaces)
 	}
-	return pg.Title + " " + muted.Render("("+reads+")")
+	return s + " " + muted.Render("("+readsText(w.Reads)+")")
+}
+
+// panelsLine is the panels a plugin adds to magpie's own pages: the page
+// each is in, and what they may read of magpie's.
+func panelsLine(w *plugin.WindowSpec) string {
+	var at []string
+	for _, p := range w.Panels {
+		s := p.Slot
+		if p.Title != "" {
+			s = p.Title + " on " + p.Slot
+		}
+		at = append(at, s)
+	}
+	return strings.Join(at, ", ") + " " + muted.Render("("+readsText(w.Reads)+")")
+}
+
+func readsText(reads []string) string {
+	if len(reads) == 0 {
+		return "reads nothing"
+	}
+	return "reads " + strings.Join(reads, ", ")
 }

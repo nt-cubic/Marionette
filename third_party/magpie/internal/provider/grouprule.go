@@ -40,6 +40,13 @@ var Efforts = []string{"low", "medium", "high", "xhigh", "max"}
 // Every condition set must hold; a rule sets at least one.
 type Rule struct {
 	Use string `json:"use"` // the member, as the group names it: "provider/model"
+	// UseEffort: the reasoning the member is asked for on the requests the
+	// rule sends it (one of Efforts), in place of what the agent asked —
+	// an intent picks the model and its effort as a pair (#2633). Like a
+	// member fixed at an effort, it is fitted to the model's own levels,
+	// and a model whose levels aren't known is asked as the agent asked.
+	// It is an output, as Use is; Effort below is a condition.
+	UseEffort string `json:"useEffort,omitempty"`
 	// Tokens: the request is at least this long, in tokens — the larger of
 	// an estimate from its size and what the vendor counted for the
 	// conversation's last request.
@@ -271,6 +278,7 @@ func cleanRules(rules []Rule, members []string) ([]Rule, error) {
 	for i, r := range rules {
 		r.Use = strings.TrimSpace(r.Use)
 		r.Effort = strings.ToLower(strings.TrimSpace(r.Effort))
+		r.UseEffort = strings.ToLower(strings.TrimSpace(r.UseEffort))
 		r.Agents = cleanList(r.Agents)
 		r.Intent = strings.Join(strings.Fields(r.Intent), " ")
 		for j := range r.Agents {
@@ -303,6 +311,10 @@ func cleanRules(rules []Rule, members []string) ([]Rule, error) {
 			return nil, fmt.Errorf("rule %d: tokens can't be negative", n)
 		case r.Effort != "" && r.Effort != "on" && !slices.Contains(Efforts, r.Effort):
 			return nil, fmt.Errorf("rule %d: effort is on or one of %s, not %q", n, strings.Join(Efforts, ", "), r.Effort)
+		case r.UseEffort != "" && !slices.Contains(Efforts, r.UseEffort):
+			return nil, fmt.Errorf("rule %d: the reasoning it asks its model for is one of %s, not %q", n, strings.Join(Efforts, ", "), r.UseEffort)
+		case r.Pause && r.UseEffort != "":
+			return nil, fmt.Errorf("rule %d: a pause sends nothing, so it asks for no reasoning", n)
 		case len([]rune(r.Intent)) > MaxIntent:
 			return nil, fmt.Errorf("rule %d: an intent is at most %d characters", n, MaxIntent)
 		case len(r.Conditions()) == 0:

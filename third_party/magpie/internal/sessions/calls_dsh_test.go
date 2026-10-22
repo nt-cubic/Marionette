@@ -1,8 +1,16 @@
 package sessions
 
 import (
+	"bytes"
+	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 // dshCalls are the DeepSeek Harness calls Calls gives.
@@ -127,5 +135,159 @@ func TestDshGatewayProviderTakesEveryRouteOfMagpies(t *testing.T) {
 		if got := dshGatewayProvider(dshSource{Provider: p}); got != want {
 			t.Errorf("%q: %v, want %v", p, got, want)
 		}
+	}
+}
+
+// dshCallReader reads the calls of the dsh session file at path as the
+// ledger does, and says where each scan of it started.
+func dshCallReader(t *testing.T, path string) func() ([]int, []int64) {
+	var mu sync.Mutex
+	var starts []int64
+	scanHook = func(p string, off int64) {
+		if p == path {
+			mu.Lock()
+			starts = append(starts, off)
+			mu.Unlock()
+		}
+	}
+	t.Cleanup(func() { scanHook = nil })
+	return func() ([]int, []int64) {
+		t.Helper()
+		mu.Lock()
+		starts = nil
+		mu.Unlock()
+		var in []int
+		found := false
+		for _, s := range CallSources() {
+			if s.Path == path {
+				found = true
+				for _, c := range ReadCallSource(s) {
+					in = append(in, c.Input)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("%s is no call source", path)
+		}
+		slices.Sort(in)
+		mu.Lock()
+		defer mu.Unlock()
+		return in, append([]int64(nil), starts...)
+	}
+}
+
+// A dsh session read for calls before is read on from where it was left,
+// packed or not: a frame appended is read alone, a frame or line not yet
+// written whole waits, the read goes on from the disk shard after the
+// in-memory one is let go, and a file cut short is read whole again.
+func TestDshCallsReadOnlyWhatWasAppended(t *testing.T) {
+	inZone(t, 0)
+	home := setupAgents(t)
+	plain := filepath.Join(home, ".dsh", "sessions", "work-dsh-3f2a", "dsh-a", "session.v3.jsonl")
+	b, err := os.ReadFile(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(plain)
+	enc, _ := zstd.NewWriter(nil)
+	defer enc.Close()
+	frame := func(s string) string { return string(enc.EncodeAll([]byte(s), nil)) }
+	p := plain + ".zstd"
+	half := bytes.IndexByte(b[len(b)/2:], '\n') + len(b)/2 + 1
+	orig := frame(string(b[:half])) + frame(string(b[half:]))
+	if err := os.WriteFile(p, []byte(orig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reply := func(n int) string {
+		return fmt.Sprintf(`{"type":"assistant/message","seq":%d,"time":%d,"data":{"message":{"source":{"model":"deepseek-v4-flash"}},"usage":{"inputTokens":%d,"outputTokens":1,"cacheReadTokens":0}}}`+"\n", n, 1790503290000+int64(n)*1000, n)
+	}
+	size := func() int64 {
+		t.Helper()
+		fi, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fi.Size()
+	}
+	read := dshCallReader(t, p)
+	check := func(what string, from int64, want ...int) {
+		t.Helper()
+		in, starts := read()
+		if len(starts) == 0 {
+			t.Fatalf("%s: not read", what)
+		}
+		for _, at := range starts {
+			if at != from {
+				t.Fatalf("%s: read from %d, want %d (%v)", what, at, from, starts)
+			}
+		}
+		if !slices.Equal(in, want) {
+			t.Fatalf("%s: calls %v, want %v", what, in, want)
+		}
+	}
+	check("first read", 0, 10, 100)
+
+	was := size()
+	appendText(t, p, frame(reply(6)))
+	check("a frame appended", was, 6, 10, 100)
+
+	was = size()
+	f := frame(reply(7))
+	appendText(t, p, f[:len(f)/2])
+	check("half a frame", was, 6, 10, 100)
+	appendText(t, p, f[len(f)/2:])
+	check("the half frame finished", was, 6, 7, 10, 100)
+
+	// a frame ending inside a line: the line is read once whole, from
+	// the frame it starts in
+	was = size()
+	r9 := reply(9)
+	appendText(t, p, frame(reply(8)+r9[:20]))
+	check("a frame ending in a line", was, 6, 7, 8, 10, 100)
+	appendText(t, p, frame(r9[20:]))
+	check("the line finished in the next frame", was, 6, 7, 8, 9, 10, 100)
+
+	resetCalls()
+	was = size()
+	appendText(t, p, frame(reply(11)))
+	check("from the disk shard", was, 6, 7, 8, 9, 10, 11, 100)
+
+	if err := os.WriteFile(p, []byte(orig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	check("cut short", 0, 10, 100)
+}
+
+// A fork's end-seed that comes in a later read still ends what it was
+// seeded with: what was counted before it is its source's, in memory and
+// in the disk shard.
+func TestDshCallsEndSeedAcrossReads(t *testing.T) {
+	inZone(t, 0)
+	home := setupAgents(t)
+	p := filepath.Join(home, ".dsh", "sessions", "work-dsh-3f2a", "dsh-c", "session.v3.jsonl")
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cut := bytes.Index(b, []byte(`{"type":"session/end-seed"`))
+	rest := bytes.IndexByte(b[cut:], '\n') + cut + 1
+	if err := os.WriteFile(p, b[:cut], 0o644); err != nil {
+		t.Fatal(err)
+	}
+	read := dshCallReader(t, p)
+	if in, _ := read(); !slices.Equal(in, []int{100}) {
+		t.Fatalf("before its end-seed: %v", in)
+	}
+	appendText(t, p, string(b[cut:rest]))
+	if in, starts := read(); len(in) != 0 || !slices.Equal(starts, []int64{int64(cut)}) {
+		t.Fatalf("its end-seed read on from %v: %v, want none", starts, in)
+	}
+	appendText(t, p, string(b[rest:]))
+	if in, starts := read(); !slices.Equal(in, []int{50}) || !slices.Equal(starts, []int64{int64(rest)}) {
+		t.Fatalf("the fork's own, read on from %v: %v", starts, in)
+	}
+	resetCalls()
+	if in, starts := read(); !slices.Equal(in, []int{50}) || len(starts) != 0 {
+		t.Fatalf("from the disk shard (read from %v): %v", starts, in)
 	}
 }

@@ -36,6 +36,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -56,6 +57,11 @@ type desktopPaths struct {
 	dir, dir3p          string // Claude, Claude-3p
 	config, config3p    string // their claude_desktop_config.json
 	library, meta, prof string // configLibrary, its _meta.json, magpie's profile
+	// Desktop's own settings (config.json, its "locale" among them) in its
+	// userData signed in with Anthropic (desktopdir's Data: Claude, or
+	// %APPDATA%\Claude on Windows) and in Claude-3p, its userData in 3p
+	// mode. magpie only ever adds the language to the second.
+	app, app3p string
 }
 
 func desktopPathsOf(dir, dir3p string) desktopPaths {
@@ -65,6 +71,7 @@ func desktopPathsOf(dir, dir3p string) desktopPaths {
 		config:   filepath.Join(dir, "claude_desktop_config.json"),
 		config3p: filepath.Join(dir3p, "claude_desktop_config.json"),
 		library:  lib, meta: filepath.Join(lib, "_meta.json"), prof: filepath.Join(lib, desktopProfileID+".json"),
+		app: filepath.Join(dir, "config.json"), app3p: filepath.Join(dir3p, "config.json"),
 	}
 }
 
@@ -82,6 +89,7 @@ func desktopSets(goos, home string, getenv func(string) string) []desktopPaths {
 	var out []desktopPaths
 	for _, d := range desktopdir.Sets(goos, home, getenv) {
 		p := desktopPathsOf(d.Mode, d.ThreeP)
+		p.app = filepath.Join(d.Data, "config.json")
 		if d.Package != "" {
 			p.key = ".package"
 		}
@@ -156,7 +164,11 @@ func claudeDesktop(home string) *Agent {
 					on = desktopOff
 				}
 				desktopAdoptStash(ps)
+				src := desktopLocaleFrom(ps)
 				for _, p := range ps {
+					if src != "" {
+						p.app = src
+					}
 					if err := on(p); err != nil {
 						return err
 					}
@@ -373,9 +385,10 @@ const (
 	desktopApplied = "claude-desktop.applied"
 	desktopMade    = "claude-desktop.made"
 	desktopProfile = "claude-desktop.profile"
+	desktopLocale  = "claude-desktop.locale"
 )
 
-var desktopStashKeys = []string{desktopStashed, desktopMode, desktopMode3p, desktopApplied, desktopMade, desktopProfile}
+var desktopStashKeys = []string{desktopStashed, desktopMode, desktopMode3p, desktopApplied, desktopMade, desktopProfile, desktopLocale}
 
 // desktopAdoptStash moves the stash a packaged Desktop's folders got
 // before they had keys of their own (when magpie wrote only one set) onto
@@ -421,7 +434,7 @@ func desktopOn(p desktopPaths) error {
 	wired := slices.ContainsFunc(entries, desktopOurs)
 	if !wired {
 		var made []string
-		for _, f := range []string{p.dir, p.config, p.dir3p, p.config3p, p.library, p.meta} {
+		for _, f := range []string{p.dir, p.config, p.dir3p, p.config3p, p.library, p.meta, p.app3p} {
 			if _, err := os.Stat(f); err != nil {
 				made = append(made, f)
 			}
@@ -430,7 +443,7 @@ func desktopOn(p desktopPaths) error {
 		mode3p, _ := edit.GetJSON(p.config3p, "deploymentMode")
 		applied, _ := edit.GetJSON(p.meta, "appliedId")
 		k := p.key
-		forget(desktopMode+k, desktopMode3p+k, desktopApplied+k, desktopMade+k)
+		forget(desktopMode+k, desktopMode3p+k, desktopApplied+k, desktopMade+k, desktopLocale+k)
 		stash(map[string]string{desktopStashed + k: "1", desktopMode + k: mode, desktopMode3p + k: mode3p,
 			desktopApplied + k: applied, desktopMade + k: strings.Join(made, "\n")})
 	}
@@ -481,6 +494,8 @@ func desktopOn(p desktopPaths) error {
 		return err
 	}
 
+	desktopCarryLocale(p)
+
 	// the mode last: until here Desktop still starts as it did
 	for _, f := range []string{p.config3p, p.config} {
 		if err := edit.SetJSON(f, edit.KV{Path: "deploymentMode", Value: "3p"}); err != nil {
@@ -488,6 +503,55 @@ func desktopOn(p desktopPaths) error {
 		}
 	}
 	return nil
+}
+
+// desktopLocaleName is a language Desktop takes for its "locale": the
+// names of its catalogs (lit in Desktop 2.7032's main process,
+// /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*\.json$/).
+var desktopLocaleName = regexp.MustCompile(`^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$`)
+
+// desktopLocaleFrom is the config.json, of every set's signed-in
+// userData, that names a language: the first set's (where Desktop runs)
+// before the others, so a packaged Desktop's language reaches the real
+// Claude-3p too, which 2.31226 reads. "" for none.
+func desktopLocaleFrom(ps []desktopPaths) string {
+	for _, p := range ps {
+		if loc, ok := edit.GetJSON(p.app, "locale"); ok && desktopLocaleName.MatchString(loc) {
+			return p.app
+		}
+	}
+	return ""
+}
+
+// desktopCarryLocale gives Desktop's 3p mode the language the user picked
+// signed in with Anthropic. Claude-3p is a userData of its own, so its
+// config.json starts with no "locale" and Desktop falls back to the
+// system's languages: the user's Chinese was gone once magpie turned 3p
+// on (memory and Osal on Discord). Only "locale" is written, only into a
+// config.json that is missing or a JSON object without one: a language
+// set in 3p mode, by Desktop or by hand, is the user's and stays. What
+// can't be read is left alone. The value written is stashed, so switching
+// off can take a config.json magpie made for it away again.
+func desktopCarryLocale(p desktopPaths) {
+	if p.app == "" || p.app3p == "" || p.app == p.app3p {
+		return
+	}
+	loc, ok := edit.GetJSON(p.app, "locale")
+	if !ok || !desktopLocaleName.MatchString(loc) {
+		return
+	}
+	if desktopObject(p.app3p) != nil {
+		return
+	}
+	if _, has := edit.GetJSON(p.app3p, "locale"); has {
+		return
+	}
+	if err := os.MkdirAll(p.dir3p, 0o755); err != nil {
+		return
+	}
+	if edit.SetJSON(p.app3p, edit.KV{Path: "locale", Value: loc}) == nil {
+		stash(map[string]string{desktopLocale + p.key: loc})
+	}
 }
 
 // desktopOff puts Claude Desktop back as it was before magpie: each
@@ -563,6 +627,18 @@ func desktopOff(p desktopPaths) error {
 	}
 	if err := os.Remove(p.prof); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
+	}
+
+	// Claude-3p's config.json magpie made only to carry the language:
+	// gone again when it still holds nothing but that language
+	if loc := unstash(desktopLocale + k); loc != "" && slices.Contains(made, p.app3p) {
+		if b, err := os.ReadFile(p.app3p); err == nil {
+			var m map[string]json.RawMessage
+			var only string
+			if json.Unmarshal(b, &m) == nil && len(m) == 1 && json.Unmarshal(m["locale"], &only) == nil && only == loc {
+				os.Remove(p.app3p)
+			}
+		}
 	}
 
 	// what magpie made, deepest first: a file only if it is an empty

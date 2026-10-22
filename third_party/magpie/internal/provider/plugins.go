@@ -45,13 +45,14 @@ const (
 // PluginID is the id magpie gives the provider OpenCode calls id: the same,
 // unless a preset or a built-in subscription has it (google, openai,
 // anthropic), or a provider of the user's own made before the plugin was
-// installed (zenmux, #867), when it is id-plugin — but for a built-in moved
+// installed (zenmux, #867), or "auto" or "group", which start the ids of
+// routing groups, when it is id-plugin — but for a built-in moved
 // onto the plugin, whose id the plugin has now.
 func PluginID(id string) string {
-	if Moved(id) {
+	if PluginServes(id) {
 		return id
 	}
-	if slices.Contains(accountIDs, id) || Preset(id) != nil || id == "magpie" || customIDs()[id] {
+	if slices.Contains(accountIDs, id) || Preset(id) != nil || id == "magpie" || id == autoID || id == strings.TrimSuffix(GroupPrefix, "/") || customIDs()[id] {
 		return id + "-plugin"
 	}
 	return id
@@ -190,6 +191,14 @@ func PluginTiers(p Provider, model string) []string {
 	return m.ServiceTiers
 }
 
+// pluginTierOn reports whether the plugin says its vendor serves m at tier,
+// on a Chat or Responses API, where the gateway sends it as service_tier
+// (forwardTranslated); a model on another API is sent no tier.
+func pluginTierOn(provider string, m plugin.Model, tier string) bool {
+	to := pluginProtocol(provider, m)
+	return (to == Chat || to == Responses) && slices.Contains(m.ServiceTiers, tier)
+}
+
 func pluginCatalog(pp plugin.Provider) []catalog.Model {
 	out := make([]catalog.Model, 0, len(pp.Models))
 	for _, m := range pp.Models {
@@ -225,6 +234,10 @@ func pluginCatalog(pp plugin.Provider) []catalog.Model {
 		if c.Name == "" {
 			c.Name = m.ID
 		}
+		// a model that searches the web by itself, asked in plain words
+		if m.Searches {
+			c.WebSearch = "native"
+		}
 		if m.Reasoning {
 			c.Efforts, c.Reasoning = m.Variants, true
 		}
@@ -233,7 +246,7 @@ func pluginCatalog(pp plugin.Provider) []catalog.Model {
 		// So does Cline's plugin, which resells others' models as the
 		// ClinePass built-in does and gives no levels of its own: signed in
 		// through it, ClinePass showed none where its API key showed them
-		if len(c.Efforts) == 0 && (Moved(pp.ID) || pp.ID == "cline") {
+		if len(c.Efforts) == 0 && (PluginServes(pp.ID) || pp.ID == "cline") {
 			c.Efforts = borrowedEfforts(m.ID)
 		}
 		// OpenCode's price of a model it has none for is 0, as the
@@ -333,8 +346,9 @@ func pluginProvider(pp plugin.Provider, l pluginLogin) Provider {
 		// Codex's namespaced tools go to Grok flat, as the built-in sends
 		// them (#404): the plugin's own rewrite would leave them out; and
 		// a plain agent_message goes as the user's message, as the plugin
-		// itself sends it from 0.1.11
-		a.body = grokBody
+		// itself sends it from 0.1.11. A lone tool_choice "none" stays,
+		// for the plugin to read (grokPluginBody, #3110)
+		a.body = grokPluginBody
 	}
 	if pp.ID == "zed" {
 		// an OpenAI model's request as Zed's cloud reads it: Codex's
@@ -368,7 +382,7 @@ func pluginProvider(pp plugin.Provider, l pluginLogin) Provider {
 	a.sign = func(ctx context.Context, req *http.Request, body []byte) error { return nil }
 	a.transport = func(req *http.Request) (*http.Response, error) { return pluginFetch(pp, acct.Key, req) }
 	p := Provider{ID: id, Name: name, Icon: PluginIcon(pp), Account: a}
-	if c, ok := movedCards[pp.ID]; ok && Moved(pp.ID) {
+	if c, ok := movedCards[pp.ID]; ok && PluginServes(pp.ID) {
 		p.Name, p.Icon, p.Website = c.name, c.icon, c.site // as the built-in was
 		m, _ := MigrationOf(pp.ID)
 		a.moved, a.wasHost = true, m.Host

@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -13,10 +12,11 @@ import (
 // and what to do, not with the dial error alone (#322).
 func TestCodexOwnModelUnreached(t *testing.T) {
 	setup(t, provider.Chat, &fake{t: t})
-	up := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	up.Close()
+	// port 1: refused at once, and no test can listen on it. A closed
+	// server's port was handed to another test's server on Linux CI, whose
+	// fake answered "pong" with 200.
 	was := codexAPIBase
-	codexAPIBase = up.URL
+	codexAPIBase = "http://127.0.0.1:1"
 	t.Cleanup(func() { codexAPIBase = was })
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(`{"model":"gpt-5.5","input":"hi","stream":true}`))

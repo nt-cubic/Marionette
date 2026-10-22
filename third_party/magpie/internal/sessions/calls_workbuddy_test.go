@@ -3,6 +3,7 @@ package sessions
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -165,5 +166,44 @@ func TestWorkBuddyGatewayFollowsModelsJSON(t *testing.T) {
 	}
 	if !workbuddyGateway("custom-local:group/auto-deepseek-v4-1-flash") {
 		t.Fatal("a routing group's name stopped being the gateway's")
+	}
+}
+
+// A reply whose first usage line spent nothing, before any call of the
+// session's, is one call when its next line spends: there is no call
+// before it to stand for, and reading it must not take one that isn't
+// there.
+func TestWorkBuddyCallsReplyStartingAtZero(t *testing.T) {
+	home := setupAgents(t)
+	p := filepath.Join(home, ".workbuddy", "projects", "Users-me-zero", "44444444-aaaa-4bbb-8ccc-000000000009.jsonl")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	line := func(msg string, in, out int) string {
+		return `{"id":"a9","timestamp":1790503210000,"type":"message","role":"assistant","providerData":{"messageId":"` + msg + `","model":"hy3","requestModelId":"hy3","usage":{"inputTokens":` + strconv.Itoa(in) + `,"outputTokens":` + strconv.Itoa(out) + `}},"sessionId":"44444444-aaaa-4bbb-8ccc-000000000009","cwd":"/work/zero"}` + "\n"
+	}
+	read := func() []Call {
+		resetCalls()
+		for _, s := range CallSources() {
+			if s.Path == p {
+				return ReadCallSource(s)
+			}
+		}
+		t.Fatal("no call source for the session")
+		return nil
+	}
+	if err := os.WriteFile(p, []byte(line("m9", 0, 0)+line("m9", 300, 20)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); len(got) != 1 || got[0].Tokens != (Tokens{Input: 300, Output: 20}) {
+		t.Fatalf("calls %+v, want the reply's one", got)
+	}
+	// after another reply's call: that call is not this reply's to replace
+	if err := os.WriteFile(p, []byte(line("m8", 50, 5)+line("m9", 0, 0)+line("m9", 300, 20)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := read()
+	if len(got) != 2 || got[0].Msg != "m8" || got[0].Tokens != (Tokens{Input: 50, Output: 5}) || got[1].Msg != "m9" || got[1].Tokens != (Tokens{Input: 300, Output: 20}) {
+		t.Fatalf("calls %+v, want m8's and m9's", got)
 	}
 }

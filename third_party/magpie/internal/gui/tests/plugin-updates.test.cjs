@@ -1,8 +1,11 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
 // Plugin updates: a plugin whose update waits for the reader (someone
 // else's, or one pinned) puts a dot on Plugins, which goes once it's
-// updated; a plugin magpie updated by itself says so on its row. English
-// and Chinese; the API is faked here.
+// updated; a plugin magpie updated by itself says so on its row. The dot
+// says itself in the sidebar: under Plugins, Installed reads "1 update" in
+// its count's place while it waits, and Plugins opens on Installed, where
+// the plugins with an update are named above the list. Every language, wide and narrow; the
+// API is faked here.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -40,18 +43,21 @@ function server(lang) {
 }
 
 const L = {
-  en: { installed: "Installed", update: "Update", auto: "Auto-updated", out: "An update for opencode-copilot-auth is out", from: /from v0\.1\.3 to v0\.1\.4/ },
-  zh: { installed: "已安装", update: "更新", auto: "已自动更新", out: "opencode-copilot-auth 有新版本", from: /从 v0\.1\.3 更新到 v0\.1\.4/ },
+  en: { bar: "A newer version of opencode-copilot-auth is out", installed: "Installed", update: "Update", auto: "Auto-updated", out: "An update for opencode-copilot-auth is out", from: /from v0\.1\.3 to v0\.1\.4/, one: "1 update" },
+  zh: { bar: "opencode-copilot-auth 有新版本", installed: "已安装", update: "更新", auto: "已自动更新", out: "opencode-copilot-auth 有新版本", from: /从 v0\.1\.3 更新到 v0\.1\.4/, one: "1 个更新" },
+  "zh-TW": { bar: "opencode-copilot-auth 有新版本", out: "opencode-copilot-auth 有新版本", installed: "已安裝", one: "1 個更新" },
+  ja: { bar: "opencode-copilot-auth の新しいバージョンがあります", out: "opencode-copilot-auth のアップデートが公開されました", installed: "インストール済み", one: "1 件のアップデート" },
+  de: { bar: "Eine neue Version von opencode-copilot-auth ist da", out: "Ein Update für opencode-copilot-auth ist da", installed: "Installiert", one: "1 Update" },
 };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
   test(engine + ": plugin updates", async (t) => {
     const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
     t.after(() => browser.close());
-    for (const lang of ["en", "zh"]) {
-      await t.test(lang, async () => {
+    for (const lang of Object.keys(L)) for (const width of [1024, 600]) {
+      await t.test(lang + " " + width, async () => {
         const w = L[lang];
-        const page = await (await browser.newContext({ viewport: { width: 980, height: 820 } })).newPage();
+        const page = await (await browser.newContext({ viewport: { width, height: 820 } })).newPage();
         page.setDefaultTimeout(5000);
         const errors = [];
         page.on("pageerror", (e) => errors.push(e.message));
@@ -67,8 +73,28 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.deepEqual(dot, { w: await page.evaluate(() => document.body.classList.contains("side-nav")) ? "6px" : "5px", pos: "absolute" });
 
         await nav.click();
+        // in the sidebar, the row the reader acts on says what the dot is
+        const side = await page.evaluate(() => document.body.classList.contains("side-nav"));
+        const up = page.locator(".nav-s em.up");
+        assert.equal(side, width >= 1024, "a sidebar at " + width);
+        if (side) {
+          await up.waitFor();
+          assert.equal(await up.textContent(), w.one);
+          assert.match(await up.evaluate((e) => e.parentElement.textContent), new RegExp("^" + w.installed));
+          assert.equal(await up.evaluate((e) => getComputedStyle(e).color), await page.evaluate(() => { const p = document.createElement("i"); p.style.color = "var(--accent)"; document.body.append(p); const c = getComputedStyle(p).color; p.remove(); return c; }), "in the dot's colour");
+          const box = await up.evaluate((e) => { const r = e.getBoundingClientRect(), b = e.parentElement.getBoundingClientRect(); return r.right <= b.right + 0.5 && r.left >= b.left; });
+          assert.ok(box, "the label fits its row");
+        }
+        // the dot, followed, lands on Installed (the page was last on
+        // Discover), which names the plugins with an update first
         const view = page.locator("#view-plugins");
-        await view.page().locator(":is(.lib-tabs .opt, .nav-s):visible", { hasText: w.installed }).click();
+        const bar = view.locator(".pm-updates");
+        await bar.waitFor();
+        assert.equal(await bar.locator(".grow").textContent(), w.bar);
+        assert.equal(await view.locator(".lib-tabs .opt.on").getAttribute("data-sub"), "installed");
+        assert.ok(await bar.evaluate((b) => b.getBoundingClientRect().right <= b.closest("#view-plugins").getBoundingClientRect().right + 0.5), "the bar fits");
+        assert.ok(await bar.evaluate((b) => b.compareDocumentPosition(b.parentElement.querySelector(".pm-list")) & Node.DOCUMENT_POSITION_FOLLOWING), "above the list");
+        if (!w.update) { assert.deepEqual(errors, []); return; }
         const chip = view.locator(".pm-chip.soft", { hasText: w.auto });
         await chip.waitFor();
         assert.match(await chip.getAttribute("title"), w.from);
@@ -77,6 +103,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await view.getByRole("button", { name: w.update, exact: true }).first().click();
         await page.waitForFunction(() => !document.querySelector('#nav button[data-view="plugins"]').classList.contains("has-dot"));
         assert.equal(await nav.getAttribute("title"), null);
+        if (side) await page.locator(".nav-s", { hasText: w.installed }).locator("em:not(.up)").waitFor();
+        assert.equal(await up.count(), 0);
+        assert.equal(await bar.count(), 0);
         assert.deepEqual(errors, []);
       });
     }

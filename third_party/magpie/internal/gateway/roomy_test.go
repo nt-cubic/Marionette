@@ -66,6 +66,43 @@ func TestMemberTooSmallIsNotAsked(t *testing.T) {
 	}
 }
 
+// A member left out as too small is the last resort: asked after all
+// once every member with room is out of its allowance, for the agent to
+// be told to compact (Kai on Discord: both Claude accounts spent until
+// the next day, the Claude provider's Fallback a Codex model of 272K),
+// but not for a failure of another kind, whose error the agent is told
+// as before.
+func TestMemberTooSmallIsTheLastResort(t *testing.T) {
+	fresh(t)
+	free := &scripted{replies: []reply{{200, "", chatOK}}}
+	paid := &scripted{replies: []reply{{401, "", `{"error":{"message":"Invalid API key"}}`}}}
+	roomyMember(t, "free", 2000, free)
+	roomyMember(t, "paid", 10000, paid)
+	if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"paid/m", "free/m"}, Routing: provider.Ordered}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	past := strings.Repeat("word ", 1760) // about 2200 tokens as estimated
+	code, body := postAs(t, s, "", `{"model":"group/g","messages":[{"role":"user","content":"`+past+`"}]}`)
+	if code != 401 || free.n != 0 || paid.n != 1 {
+		t.Fatalf("paid's key refused: %d %s (free %d, paid %d)", code, body, free.n, paid.n)
+	}
+
+	paid.replies = []reply{{429, "", `{"error":{"code":"insufficient_quota","message":"You exceeded your current quota, please check your plan and billing details."}}`}}
+	paid.n = 0
+	code, body = postAs(t, s, "", `{"model":"group/g","messages":[{"role":"user","content":"`+past+`"}]}`)
+	r := lastRoute(s)
+	if code != 200 || free.n != 1 || paid.n != 1 {
+		t.Fatalf("paid out of its allowance: %d %s (free %d, paid %d)", code, body, free.n, paid.n)
+	}
+	if len(r.Tries) != 2 || r.Tries[0].ID != "paid" || r.Tries[0].Rest == nil || r.Tries[1].ID != "free" {
+		t.Fatalf("tries %+v", r.Tries)
+	}
+	if !slices.ContainsFunc(r.Order, func(w Weighed) bool { return w.Provider == "free" }) {
+		t.Fatalf("the free member asked isn't in the order: %+v", r.Order)
+	}
+}
+
 // A conversation that began on the free member, and is kept there by
 // affinity, moves once it has grown past that member's window.
 func TestConversationOutgrowingItsMemberMoves(t *testing.T) {
@@ -125,13 +162,17 @@ func TestRoomyLeavesWhatItCantJudge(t *testing.T) {
 		{p: provider.Provider{ID: "big", Contexts: map[string]int{"m": 10000}}, model: "m", rest: "big"},
 	}
 	pl := planned{order: []Weighed{{ID: "small"}, {ID: "big"}}}
-	got, gotPl := roomy(cs, pl, provider.Chat, []byte(`{"messages":[`+strings.Repeat(`"word `, 4000)))
-	if len(got) != 2 || len(gotPl.order) != 2 {
+	got, gotPl, out, outW := roomy(cs, pl, provider.Chat, []byte(`{"messages":[`+strings.Repeat(`"word `, 4000)))
+	if len(got) != 2 || len(gotPl.order) != 2 || out != nil || outW != nil {
 		t.Fatalf("unparsed: %d candidates, order %+v", len(got), gotPl.order)
 	}
-	// and one that does leaves the small one out, its order with it
-	got, gotPl = roomy(cs, pl, provider.Chat, []byte(`{"model":"g","messages":[{"role":"user","content":"`+big+`"}]}`))
+	// and one that does leaves the small one out, its order with it,
+	// both handed back for the last resort
+	got, gotPl, out, outW = roomy(cs, pl, provider.Chat, []byte(`{"model":"g","messages":[{"role":"user","content":"`+big+`"}]}`))
 	if len(got) != 1 || got[0].rest != "big" || len(gotPl.order) != 1 || gotPl.order[0].ID != "big" {
 		t.Fatalf("parsed: %+v, order %+v", got, gotPl.order)
+	}
+	if len(out) != 1 || out[0].rest != "small" || len(outW) != 1 || outW[0].ID != "small" {
+		t.Fatalf("left out: %+v, rows %+v", out, outW)
 	}
 }

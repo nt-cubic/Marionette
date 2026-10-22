@@ -16,6 +16,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { reach } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const levels = ["minimal", "low", "medium", "high", "xhigh", "max"].map((value) => ({ value }));
@@ -136,8 +137,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       for (const id of ids) {
         // Hermes picks no model once started: its pickers stay in the row
         const more = page.locator(`${row(id)} .ag-link`);
-        // the one open slides shut before this one opens
-        if (await more.count()) { await more.click(); await page.locator(`${row(id)} .ag-exp`).waitFor(); }
+        // the one open slides shut before this one opens; Codex's opened row
+        // holds its own settings, so the next row is wheeled into sight once
+        // it has slid open
+        if (await more.count()) {
+          await page.waitForFunction(() => !document.getAnimations().length);
+          await reach(page, more);
+          await more.click();
+          await page.locator(`${row(id)} .ag-exp`).waitFor();
+        }
         icons.push(await lit(page, id));
       }
       const panel = await load("en", [], "http://magpie.test/?mode=panel");

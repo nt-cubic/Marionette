@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
@@ -48,6 +49,7 @@ func (s *Server) readRequestBody(w http.ResponseWriter, r *http.Request, from pr
 		writeError(w, from, status, err.Error())
 		return nil, false
 	}
+	holdBody(r.Context(), body)
 	return body, true
 }
 
@@ -81,11 +83,13 @@ func decodedBody(r *http.Request) (io.ReadCloser, error) {
 	switch enc := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Encoding"))); enc {
 	case "", "identity":
 	case "zstd":
-		d, err := zstd.NewReader(r.Body, zstd.WithDecoderMaxMemory(defaultBodyLimit))
-		if err != nil {
+		d := bodyDecoders.Get().(*zstd.Decoder)
+		if err := d.Reset(r.Body); err != nil {
+			d.Reset(nil)
+			bodyDecoders.Put(d)
 			return nil, err
 		}
-		rd = d.IOReadCloser()
+		rd = &pooledZstd{d}
 	case "gzip", "x-gzip":
 		g, err := gzip.NewReader(r.Body)
 		if err != nil {
@@ -97,6 +101,40 @@ func decodedBody(r *http.Request) (io.ReadCloser, error) {
 	}
 	r.Header.Del("Content-Encoding")
 	return rd, nil
+}
+
+// bodyDecoders keeps zstd decoders between requests' bodies. One made for
+// each body (concurrent, the package's default) allocated its window and
+// block buffers again every time: 1.7 GB of 9.8 GB allocated in 10 minutes
+// of three Codex sessions' turns (procmem heap profile). One decodes in
+// step with its reader, as the body is read through to its end anyway, and
+// is let go with the pool's other idle ones by the garbage collector.
+var bodyDecoders = sync.Pool{New: func() any {
+	d, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxMemory(defaultBodyLimit))
+	if err != nil {
+		panic(err) // only for options it doesn't know
+	}
+	return d
+}}
+
+// pooledZstd is a body read through a pooled decoder, which goes back to
+// the pool at Close; a read after it can't reach the decoder.
+type pooledZstd struct{ d *zstd.Decoder }
+
+func (z *pooledZstd) Read(p []byte) (int, error) {
+	if z.d == nil {
+		return 0, net.ErrClosed
+	}
+	return z.d.Read(p)
+}
+
+func (z *pooledZstd) Close() error {
+	if z.d != nil {
+		z.d.Reset(nil)
+		bodyDecoders.Put(z.d)
+		z.d = nil
+	}
+	return nil
 }
 
 // Read one bounded body, decoded; callers choose their protocol's error
@@ -133,6 +171,11 @@ func readBoundedRequestBody(w http.ResponseWriter, r *http.Request, limits reque
 		}
 		return reject(http.StatusBadRequest, err)
 	}
+	// the wire length is the body's length only when it is sent as it is
+	declared := r.ContentLength
+	if enc := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Encoding"))); enc != "" && enc != "identity" {
+		declared = -1
+	}
 	original := r.Body
 	r.Body = &idleBody{original, controller, limits.readTimeout}
 	defer func() { r.Body = original }()
@@ -144,8 +187,8 @@ func readBoundedRequestBody(w http.ResponseWriter, r *http.Request, limits reque
 		return readFailure(err)
 	}
 	defer rd.Close()
-	// Limit decoded bytes as well, without allocating from Content-Length.
-	body, err := io.ReadAll(io.LimitReader(rd, limits.body+1))
+	// Limit decoded bytes as well.
+	body, err := readSized(io.LimitReader(rd, limits.body+1), declared)
 	if int64(len(body)) > limits.body {
 		return reject(http.StatusRequestEntityTooLarge, overLimit(limits.body))
 	}
@@ -153,6 +196,56 @@ func readBoundedRequestBody(w http.ResponseWriter, r *http.Request, limits reque
 		return readFailure(err)
 	}
 	return body, 0, nil
+}
+
+// sizedReadFirst is the most readSized sets aside before a byte has come:
+// a client that says more than it sends makes magpie hold no more than
+// this, or twice what it sent.
+const sizedReadFirst = 1 << 20
+
+// readSized reads r to its end into a slice the size the client declared,
+// when it declared one (declared > 0): io.ReadAll reads into chunks and
+// copies them into a slice of their sum, two copies of every body, and an
+// agent sends its whole conversation, ~1 MB, on every turn (yg6888 on X:
+// ~1 GB). Content-Length is not trusted for the allocation: room grows by
+// doubling, from sizedReadFirst, up to what was declared, so an honest body
+// of 1 MB or less is read into one slice of its own size, a larger one into
+// a final slice of its own size, and a body shorter than it said costs at
+// most about twice what it sent. A body longer than it said reads on, as
+// io.ReadAll would. The error is io.ReadAll's: nil at io.EOF.
+func readSized(r io.Reader, declared int64) ([]byte, error) {
+	if declared <= 0 {
+		return io.ReadAll(r)
+	}
+	b := make([]byte, 0, min(declared, sizedReadFirst))
+	for {
+		if len(b) == cap(b) {
+			if int64(len(b)) >= declared {
+				// all it said has come: look for its end before growing
+				var probe [512]byte
+				n, err := r.Read(probe[:])
+				if n > 0 {
+					b = append(b, probe[:n]...)
+				}
+				if err == io.EOF {
+					return b, nil
+				}
+				if err != nil {
+					return b, err
+				}
+				continue
+			}
+			b = append(make([]byte, 0, min(int64(cap(b))*2, declared)), b...)
+		}
+		n, err := r.Read(b[len(b):cap(b)])
+		b = b[:len(b)+n]
+		if err == io.EOF {
+			return b, nil
+		}
+		if err != nil {
+			return b, err
+		}
+	}
 }
 
 // overLimit says a body is over magpie's own limit, and that it is

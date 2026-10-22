@@ -241,7 +241,7 @@ func CheckInMiniMax(ctx context.Context) []WorkBuddyCheckin {
 // MiniMaxCheckins is each MiniMax Code account's last check-in, as kept,
 // by its name now; asks nothing.
 func MiniMaxCheckins() []WorkBuddyCheckin {
-	st := readCheckins(miniMaxCheckinPath())
+	st := shownCheckins(miniMaxCheckinPath())
 	var out []WorkBuddyCheckin
 	listed := map[string]bool{}
 	for _, a := range miniMaxCheckinAccounts() {

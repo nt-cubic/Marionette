@@ -199,7 +199,7 @@ func TestReportedTouchesNothingLive(t *testing.T) {
 			t.Fatalf("a reported session is a gateway session: %+v", g)
 		}
 	}
-	if v := Vias(time.Time{})["claude|s-rep"]; len(v) != 0 {
+	if v := Vias(time.Time{}).Of("claude|s-rep"); len(v) != 0 {
 		t.Fatalf("a reported session was routed: %+v", v)
 	}
 	if !(Record{Source: SourceReported}).IsReported() || (Record{}).IsReported() {

@@ -75,7 +75,7 @@ func TestClaudeDesktopPickedModels(t *testing.T) {
 	// its provider after it
 	hide := []string{"relay/deepseek-v4.1-flash", "opencode-go/glm-5"}
 	for id := range all {
-		if strings.HasPrefix(id, provider.GroupPrefix) {
+		if provider.IsGroupRef(id) {
 			hide = append(hide, id)
 		}
 	}

@@ -6,5 +6,10 @@ import (
 	"github.com/yetone/magpie/internal/testenv"
 )
 
-// The tests run in a home of their own, never the user's real files.
-func TestMain(m *testing.M) { testenv.Main(m) }
+// The tests run in a home of their own, never the user's real files, and
+// a scan's buffer given back is filled with garbage, so a reader that kept
+// a line past its scan fails here rather than for a user.
+func TestMain(m *testing.M) {
+	poisonReleased = true
+	testenv.Main(m)
+}

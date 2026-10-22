@@ -197,7 +197,7 @@ func TestDshModelLimits(t *testing.T) {
 	want := `    - id: v/see
       name: see · V
       contextWindow: 400000
-      maxTokens: 128000
+      maxTokens: 100000
       input: [text, image]
     - id: v/plain
       name: plain · V

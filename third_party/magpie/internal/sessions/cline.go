@@ -95,38 +95,87 @@ type clineMessage struct {
 	} `json:"metrics"`
 }
 
-// parseCline reads a session's messages whole, as they are written.
-func parseCline(f file) *state {
-	s := &state{Size: f.size, Mod: f.mod.UnixNano()}
-	var since time.Time
+// clineCarry is what a read of a session's messages.json keeps, to know
+// whether it can stand for the next: the file as it was read, and what of
+// the manifest its counts were made under. Prompt is the first prompt in
+// it that names the session, for when the manifest's doesn't.
+type clineCarry struct {
+	Size   int64     `json:"size"`
+	Mod    int64     `json:"mod"`
+	Since  time.Time `json:"since,omitzero"`
+	Start  time.Time `json:"start,omitzero"`
+	Prompt string    `json:"prompt,omitempty"`
+}
+
+// parseCline reads a session's messages whole, as they are written, with
+// its manifest. Cline rewrites the manifest on its own (a title given, the
+// session touched), so when only that changed and it still says the same
+// start and fork, what the messages were counted as stands and only the
+// manifest is read again.
+func parseCline(f file, old *state) *state {
+	var since, start time.Time
+	var m clineManifest
+	hasM := false
 	if f.manifest != "" {
-		var m clineManifest
 		if b, err := os.ReadFile(f.manifest); err == nil && json.Unmarshal(b, &m) == nil {
-			s.ID, s.Cwd = m.SessionID, m.Cwd
-			s.Named = title(m.Metadata.Title)
+			hasM = true
 			if m.Metadata.Fork != nil {
 				since, _ = time.Parse(time.RFC3339Nano, m.Metadata.Fork.ForkedAt)
 			}
-			start, _ := time.Parse(time.RFC3339Nano, m.StartedAt)
-			if since.IsZero() || !start.Before(since) {
-				s.saw(start, f.main)
+			at, _ := time.Parse(time.RFC3339Nano, m.StartedAt)
+			if since.IsZero() || !at.Before(since) {
+				start = at
 			}
+		}
+	}
+	name := func(s *state, prompt string) *state {
+		s.Size, s.Mod = f.size, f.mod.UnixNano()
+		s.ID, s.Cwd, s.Named, s.Title, s.First = "", "", "", "", ""
+		if hasM {
+			s.ID, s.Cwd = m.SessionID, m.Cwd
+			s.Named = title(m.Metadata.Title)
 			clineTitle(s, m.Prompt)
 		}
+		if f.main {
+			clineTitle(s, prompt)
+		}
+		return s
+	}
+	fi, err := os.Stat(f.path)
+	if err != nil {
+		return name(&state{}, "")
+	}
+	if o := old; o != nil && o.Cline != nil && o.Cline.Size == fi.Size() && o.Cline.Mod == fi.ModTime().UnixNano() && o.Cline.Since.Equal(since) && o.Cline.Start.Equal(start) {
+		s := o.clone()
+		return name(s, o.Cline.Prompt) // the title its messages gave, when the manifest gives none
+
+	}
+	s := &state{}
+	s.saw(start, f.main)
+	c := &clineCarry{Size: fi.Size(), Mod: fi.ModTime().UnixNano(), Since: since, Start: start}
+	if clineHook != nil {
+		clineHook(f.path)
 	}
 	b, err := os.ReadFile(f.path)
 	if err != nil {
-		return s
+		return name(s, "")
 	}
 	var doc struct {
 		Messages []clineMessage `json:"messages"`
 	}
 	if json.Unmarshal(b, &doc) != nil {
-		return s
+		// half written, or not Cline's: read again when it changes
+		return name(s, "")
 	}
+	named := false
 	for _, m := range doc.Messages {
-		if f.main && m.Role == "user" && s.Title == "" && s.First == "" {
-			clineTitle(s, ccText(m.Content))
+		if !named && m.Role == "user" {
+			// the first prompt that names the session by itself
+			var t state
+			text := ccText(m.Content)
+			if clineTitle(&t, text); t.Title != "" || t.First != "" {
+				c.Prompt, named = text, true
+			}
 		}
 		at := ms(m.TS)
 		if !since.IsZero() && at.Before(since) {
@@ -137,8 +186,13 @@ func parseCline(f file) *state {
 			s.use(dateOf(at), m.ModelInfo.ID, Tokens{Input: max(0, u.Input-u.CacheRead-u.CacheWrite), Output: u.Output, CacheRead: u.CacheRead, CacheWrite: u.CacheWrite})
 		}
 	}
-	return s
+	s.Cline = c
+	return name(s, c.Prompt)
 }
+
+// clineHook, when a test sets it, is told each time a messages file is
+// read.
+var clineHook func(path string)
 
 var (
 	clineNotice = regexp.MustCompile(`(?s)<mode_notice\b[^>]*>.*?</mode_notice>`)

@@ -3,7 +3,8 @@
 // (ARNO on Discord: 路由组详情现在可以单击展开，是否可以再加上单击收起):
 // a click, or Enter on it, closes the editor while nothing was changed;
 // with a change it stays open and says to Save or Cancel, so no edit is
-// lost. Nothing is saved by folding. English and Chinese.
+// lost. Nothing is saved by folding. The heading looks as every editor's
+// does: not the Models head's fold chip. English and Chinese.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -82,6 +83,20 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await head.waitFor();
       assert.equal(await head.getAttribute("title"), w.fold);
       assert.equal(await head.getAttribute("aria-expanded"), "true");
+      // laid out as every editor's heading (the owner, 10-21: the space
+      // above it differed from below, and its line curved at the ends):
+      // no padding above, square corners on its line, its name in the
+      // page's colour, and no box drawn over it on hover
+      await head.hover();
+      const look = await head.evaluate((h) => {
+        const s = getComputedStyle(h), b = getComputedStyle(h.querySelector("b"));
+        return { top: s.paddingTop, left: s.paddingLeft, radius: s.borderBottomLeftRadius, bg: s.backgroundColor,
+          name: b.color, fg: getComputedStyle(document.body).color, display: s.display };
+      });
+      assert.deepEqual({ top: look.top, left: look.left, radius: look.radius, display: look.display },
+        { top: "0px", left: "0px", radius: "0px", display: "flex" }, JSON.stringify(look));
+      assert.match(look.bg, /^(transparent|rgba\(0, 0, 0, 0\))$/, "no box on hover");
+      assert.equal(look.name, look.fg, "the name is in the page's colour");
       await head.click();
       await closed();
 

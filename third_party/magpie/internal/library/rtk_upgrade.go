@@ -284,9 +284,8 @@ func latestRTK() (string, error) {
 	}
 	req, _ = http.NewRequest("GET", rtkReleasesAPI, nil)
 	req.Header.Set("User-Agent", "magpie")
-	withGitHubToken(req)
 	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := source.Do(c, req)
+	resp, _, err := doGitHub(req, func(r *http.Request) (*http.Response, error) { return source.Do(c, r) })
 	if err != nil {
 		return "", err
 	}

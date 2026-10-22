@@ -14,7 +14,8 @@
   let mine = null;       // /api/plugins: what's installed
   let listings = null;   // /api/plugins/listings: the plugins suggested
   let tagged = null;     // /api/plugins/github: repositories their authors tagged magpie-plugin, as listings
-  let taggedErr = "";    // why they couldn't be asked for, while none were had
+  let taggedErr = "";    // why the list isn't GitHub's whole answer: it couldn't be asked, or...
+  let taggedMissing = 0; // ...this many repositories it named couldn't be read
   let topic = "magpie-plugin";
   const npm = {};        // /api/plugins/npm: package → what npm says of it
   const heads = {};      // /api/plugins/git: a git plugin's spec → the commit its repository is at
@@ -117,13 +118,15 @@
   // an agent ("ag") is one magpie has no wiring of its own for, which it
   // then connects as it does its own; tools ("tl") are given to every
   // agent through magpie's plugin tools MCP server; a page ("pg") is a
-  // page of its own in the window's sidebar (pluginpages.js)
+  // page of its own in the window's sidebar (pluginpages.js); panels
+  // ("pn") are its parts in magpie's own pages
   const KINDS = {
     pv: [PLUG, "Provider", "Signs in to a subscription and serves its models"],
     mw: [PIPE, "Middleware", "Runs in magpie's gateway on the requests your agents send and on the replies"],
     ag: [TERM, "Agent", "Adds an agent magpie has no setup of its own for: pick its model on the Agents page and it goes through magpie"],
     tl: [TOOL, "Tools", "Gives every agent tools of its own, through magpie's MCP server"],
     pg: [PAGE, "Page", "Adds a page of its own to the sidebar. It runs shut off from the rest of magpie and can read only what its row lists"],
+    pn: [PAGE, "Panels", "Adds panels to magpie's own pages. They run shut off from the rest of magpie and can read only what its row lists"],
   };
   const kindOf = (l) => ({ middleware: "mw", agent: "ag", tools: "tl", page: "pg" })[l.kind] || "pv";
   function kindChip(kind) {
@@ -168,14 +171,22 @@
     summary: r.description ? { en: r.description } : undefined,
     npm: { version: r.version || "", publisher: r.owner, repository: r.url, license: r.license, weekly: 0 },
   });
-  async function loadTagged() {
+  // A failed ask is said, with why, whether or not a list was had before:
+  // an empty list was read as there being no unofficial plugins (till on
+  // Discord: GitHub unreachable from their desktop, the section gone).
+  // A list had before stands through a failed ask that brings none.
+  // again: Try again, which has magpie ask GitHub at once.
+  async function loadTagged(again) {
     try {
-      const r = await api("plugins/github");
-      tagged = (r.repos || []).map(ghListing);
-      taggedErr = "";
+      const r = await api("plugins/github" + (again ? "?again=1" : ""));
+      const got = (r.repos || []).map(ghListing);
+      if (!(r.error && !got.length && tagged?.length)) tagged = got;
+      taggedErr = r.error || "";
+      taggedMissing = r.missing || 0;
       if (r.topic) topic = r.topic;
     } catch (e) {
-      if (!tagged) taggedErr = e.message || String(e);
+      taggedErr = e.message || String(e);
+      taggedMissing = 0;
       tagged = tagged || [];
     }
   }
@@ -231,6 +242,9 @@
     askGit();
   }
   window.loadPlugins = load;
+  // the sidebar's dot, followed: Plugins opens on Installed, where the
+  // plugins with an update are named at the top
+  window.pluginTabTo = (id) => { tab = id; };
   // pluginQuery: Discover, looking for q (the add sheet found nothing by it)
   window.pluginQuery = (q) => {
     if (q === query && !q) return;
@@ -465,7 +479,7 @@
       b.classList.add("go");
       b.textContent = t("Sign in");
       b.title = subs.length > 1 ? t("Sign in to {name}", { name: out.name }) : "";
-      b.onclick = (ev) => { ev.stopPropagation(); pluginSignIn(out.id); };
+      b.onclick = (ev) => { ev.stopPropagation(); pluginSignIn(out.id, ev); };
       return b;
     }
     // an update out: the one button says so in place of Signed in or
@@ -639,6 +653,10 @@
     replaceKeeping(ghSec, [ghHead, skeleton(3)]);
     return ghSec;
   }
+  // why the list isn't GitHub's whole answer; kept: cards are shown
+  const ghWhy = (kept) => taggedMissing
+    ? t(kept ? "{n} more on GitHub couldn't be read: {error}" : "GitHub found {n} repositories, but none of them could be read: {error}", { n: taggedMissing, error: taggedErr })
+    : t(kept ? "Couldn't ask GitHub, so these are from before: {error}" : "Couldn't ask GitHub: {error}", { error: taggedErr });
   // and one GitHub couldn't be asked of says so, with another go
   function ghFailed() {
     ghHead.replaceChildren(...ghTitle());
@@ -649,12 +667,27 @@
     again.onclick = () => {
       tagged = null;
       taggedErr = "";
+      taggedMissing = 0;
       drawBody();
-      loadTagged().then(drawBody);
+      loadTagged(true).then(drawBody);
     };
-    box.append(el("span", "", t("Couldn't ask GitHub: {error}", { error: taggedErr })), again);
+    box.append(el("span", "", ghWhy(false)), again);
     replaceKeeping(ghSec, [ghHead, box]);
     return ghSec;
+  }
+  // the cards GitHub could give, and a line saying what it couldn't, with
+  // another go that keeps them until it answers
+  function ghNote() {
+    const note = el("div", "pm-ghwarn");
+    note.setAttribute("role", "status");
+    const again = el("button", "text", t("Try again"));
+    again.type = "button";
+    again.onclick = () => {
+      again.disabled = true;
+      loadTagged(true).then(drawBody);
+    };
+    note.append(el("span", "", ghWhy(true)), again);
+    return note;
   }
   function ghSection(list) {
     ghList = list;
@@ -672,9 +705,10 @@
     return ghSec;
   }
   function drawGh() {
+    const head = taggedErr ? [ghHead, ghNote()] : [ghHead];
     if ((tagged || []).length <= 6) {
       ghGrid.replaceChildren(...ghList.map(card));
-      replaceKeeping(ghSec, [ghHead, ghGrid]);
+      replaceKeeping(ghSec, [...head, ghGrid]);
       return;
     }
     // the kinds there are, in the market's order, each with how many the
@@ -719,7 +753,7 @@
     const shown = found.filter((l) => (!ghKind || kindOf(l) === ghKind) && (!ghHave || have(l) === (ghHave === "have")));
     if (shown.length) {
       ghGrid.replaceChildren(...shown.map(card));
-      replaceKeeping(ghSec, [ghHead, ghBar, ghGrid]);
+      replaceKeeping(ghSec, [...head, ghBar, ghGrid]);
       return;
     }
     const none = el("div", "pm-ghnone");
@@ -727,7 +761,7 @@
     all.type = "button";
     all.onclick = () => { ghKind = ""; ghHave = ""; ghQuery = ""; drawGh(); ghQ.focus(); };
     none.append(el("span", "", t("No plugin on GitHub matches")), all);
-    replaceKeeping(ghSec, [ghHead, ghBar, none]);
+    replaceKeeping(ghSec, [...head, ghBar, none]);
   }
 
   // the head and its search field are made once and drawn again in
@@ -763,6 +797,7 @@
       drawBody();
     });
     tabs.classList.add("lib-tabs");
+    tabs.querySelectorAll(".opt")[2].dataset.sub = "installed";
     q.placeholder = t("Search plugins and npm…");
     if (q.value !== query) q.value = query;
     q.setAttribute("aria-label", t("Search plugins"));
@@ -792,6 +827,7 @@
     b.disabled = mirrorSaving;
     b.setAttribute("role", "switch");
     b.setAttribute("aria-checked", on ? "true" : "false");
+    b.setAttribute("aria-label", t("Mirrors in China"));
     b.title = t("Download the plugin list, plugins and Bun from mirrors in China first (npmmirror, jsDelivr), their official addresses after. Each is a copy of the very file, checked as the original is");
     const sw = el("span", "lib-switch" + (on ? " on" : ""));
     sw.append(el("i"));
@@ -879,7 +915,7 @@
       if (pgs.length) out.push(section(t("Pages"), t("pages of their own in magpie's window, each shut off from the rest and reading only what it lists"), pgs));
       if (gh.length) out.push(ghSection(gh));
       else if (!tagged) out.push(ghWaiting());
-      else if (taggedErr) out.push(ghFailed());
+      else if (taggedErr && !tagged.length) out.push(ghFailed());
       out.push(manual());
       replaceKeeping(body, out);
       return;
@@ -887,6 +923,7 @@
     if (ls.length) out.push(section(t("Suggested"), "", ls));
     if (gh.length) out.push(ghSection(gh));
     else if (!tagged) out.push(ghWaiting());
+    else if (taggedErr && !tagged.length) out.push(ghFailed());
     const known = new Set([...listings.map((l) => l.package), ...(tagged || []).map((l) => l.github.package).filter(Boolean)]);
     const box = el("section", "pm-sec");
     const h = el("div", "pm-sechead");
@@ -1022,6 +1059,22 @@
       body.append(none);
       return;
     }
+    // what the sidebar's dot is about, said where it's acted on: which
+    // plugins have a newer version, and one press to update them all
+    const outdated = es.filter((e) => (e.latest && e.version && newer(e.latest, e.version)) || (gitBehind(e) && !e.off));
+    if (outdated.length) {
+      const bar = el("div", "pm-updates");
+      const names = outdated.map(shownName).join(t(", "));
+      bar.append(el("span", "pm-dot"), el("span", "grow", outdated.length === 1
+        ? t("A newer version of {name} is out", { name: names })
+        : t("Newer versions of {n} plugins are out: {names}", { n: outdated.length, names })));
+      const up = el("button", "pm-act pm-up", busy.has("*") ? t("Updating…") : t("Update all ({n})", { n: outdated.length }));
+      up.type = "button";
+      up.disabled = busy.size > 0 || checking;
+      up.onclick = () => act("*", "update", {}, () => status(t("Plugins updated"), "ok"));
+      bar.append(up);
+      body.append(bar);
+    }
     // by name, in the order the reader picked (#481), not the order they
     // were installed in
     const list = el("div", "list pm-list");
@@ -1034,7 +1087,6 @@
     fill();
     body.append(list);
     const foot = el("div", "pm-foot");
-    const outdated = es.filter((e) => (e.latest && e.version && newer(e.latest, e.version)) || (gitBehind(e) && !e.off));
     foot.append(el("span", "", mine.bun ? t("Plugins run on Bun {v}", { v: mine.bunVersion }) : ""), el("span", "grow"));
     // npm has versions to ask for, and a git one's repository commits; a
     // folder has none
@@ -1046,13 +1098,6 @@
       c.disabled = checking || busy.size > 0;
       c.onclick = () => checkUpdates();
       foot.append(c);
-    }
-    if (outdated.length) {
-      const up = el("button", "pm-act pm-up", busy.has("*") ? t("Updating…") : t("Update all ({n})", { n: outdated.length }));
-      up.type = "button";
-      up.disabled = busy.size > 0 || checking;
-      up.onclick = () => act("*", "update", {}, () => status(t("Plugins updated"), "ok"));
-      foot.append(up);
     }
     body.append(foot);
   }
@@ -1130,6 +1175,7 @@
     const toolsOnly = !!e.tools?.length && !e.providers?.length;
     if (e.tools?.length) nm.append(kindChip("tl"));
     if (e.page) nm.append(kindChip("pg"));
+    if (e.panels?.length) nm.append(kindChip("pn"));
     if (e.providers?.length || !(e.gatewayOnly || e.middlewareOnly || e.inMagpieOnly || toolsOnly || (mw && !e.isMiddleware) || (ag && !e.isAgent))) nm.append(kindChip("pv"));
     who.append(nm);
     const subs = subsOf(pkg);
@@ -1161,8 +1207,8 @@
         else if (!x.signedIn && subs.some((y) => y.signedIn)) s.title = t("{name} is a subscription of its own; {other} works without it", { name: x.name, other: subs.find((y) => y.signedIn).name });
         sub.append(s);
       }
-    } else if ((mw || ag || gw || e.isGateway || toolsOnly || e.page && e.inMagpieOnly) && !e.providers.length) {
-      // only middleware, a request hook, an agent, tools or a page: its own line says what it does
+    } else if ((mw || ag || gw || e.isGateway || toolsOnly || (e.page || e.panels?.length) && e.inMagpieOnly) && !e.providers.length) {
+      // only middleware, a request hook, an agent, tools, a page or panels: its own line says what it does
     } else if (clashes.length && !e.providers.length) {
       // its own line below says whose it is
     } else if (e.providers.length) sub.textContent = t("Signs in to {names}", { names: e.providers.join(t(", ")) });
@@ -1179,10 +1225,12 @@
     if (e.tools?.length && !e.off && !ask) who.append(toolsLine(e.tools));
     // off too: what its page may read is said before it is turned on
     if (e.page && !ask) who.append(pageLine(e.page));
+    if (e.panels?.length && !ask) who.append(panelsLine(e.panels, e.panelReads));
+    if (e.actions?.length && !ask) who.append(actionsLine(e.actions));
     if ((mw || e.isGateway) && !e.off && !ask && editing?.pkg === pkg) who.append(optionsEditor(e));
     // the plugin's own picture (package.json's magpie.icon) before its
     // first provider's, which a plugin of several gives each its own (#1775)
-    r.append(logo(l?.icon || l?.npm?.icon || e.icon || subs[0]?.icon || ag?.icon, false, e.middlewareOnly ? "mw" : e.inMagpieOnly && e.isAgent && !e.isMiddleware ? "ag" : e.inMagpieOnly && e.page && !e.isAgent && !e.isMiddleware ? "pg" : toolsOnly && !e.page && !mw && !ag ? "tl" : ""), who);
+    r.append(logo(l?.icon || l?.npm?.icon || e.icon || subs[0]?.icon || ag?.icon, false, e.middlewareOnly ? "mw" : e.inMagpieOnly && e.isAgent && !e.isMiddleware ? "ag" : e.inMagpieOnly && (e.page || e.panels?.length) && !e.isAgent && !e.isMiddleware ? "pg" : toolsOnly && !e.page && !mw && !ag ? "tl" : ""), who);
     const val = el("div", "val");
     const b = busy.get(pkg) || busy.get(e.spec);
     // npm's newer version, or a git one's repository at a newer commit
@@ -1211,7 +1259,7 @@
       // button names the one it signs in to and stays quiet
       const out = subs.find((x) => !x.signedIn), some = subs.some((x) => x.signedIn);
       const s = el("button", "text" + (here || some ? "" : " primary"), some ? t("Sign in to {name}", { name: out.name }) : t("Sign in"));
-      s.onclick = () => pluginSignIn(out.id);
+      s.onclick = (ev) => pluginSignIn(out.id, ev);
       val.append(s);
     }
     // switched on again: a built-in it can carry is offered its way, in
@@ -1359,13 +1407,40 @@
   // what a plugin's page may read of magpie's: what its package.json's
   // magpie.permissions declares, each a read with no secret in it
   const READS = { "usage:summary": "your usage totals, by model", "providers:list": "your providers' names" };
+  const PAGES = { sessions: "Sessions", library: "Library", routing: "Routing", usage: "Usage" };
   function pageLine(p) {
     const d = el("div", "sub pm-mw pm-page");
     const reads = (p.reads || []).map((r) => t(READS[r] || r));
-    d.textContent = d.title = reads.length
-      ? t("Adds a page to the sidebar, which can read {reads}", { reads: reads.join(t(", ")) })
-      : t("Adds a page to the sidebar, which reads nothing of magpie's");
+    const page = p.replaces && t(PAGES[p.replaces] || p.replaces);
+    d.textContent = d.title = page
+      ? reads.length
+        ? t("Takes the place of the {page} page, and can read {reads}", { page, reads: reads.join(t(", ")) })
+        : t("Takes the place of the {page} page, and reads nothing of magpie's", { page })
+      : reads.length
+        ? t("Adds a page to the sidebar, which can read {reads}", { reads: reads.join(t(", ")) })
+        : t("Adds a page to the sidebar, which reads nothing of magpie's");
     return d;
+  }
+
+  // where a plugin's panels go in magpie's own pages (magpie.panels), and
+  // the row menus its page adds items to (magpie.actions), titled with
+  // their titles; picking an item tells the page the row's name only
+  const SLOTS = { agents: "the Agents page", usage: "the Usage page", settings: "Settings", provider: "each provider's editor" };
+  const MENUS = { provider: "providers' menus", agent: "agents' menus" };
+  function whereLine(xs, key, names, text) {
+    const d = el("div", "sub pm-mw pm-page");
+    d.textContent = text([...new Set(xs.map((x) => x[key]))].map((s) => t(names[s] || s)).join(t(", ")));
+    d.title = xs.map((x) => x.title).filter(Boolean).join("\n") || d.textContent;
+    return d;
+  }
+  function panelsLine(panels, panelReads) {
+    const reads = (panelReads || []).map((r) => t(READS[r] || r)).join(t(", "));
+    return whereLine(panels, "slot", SLOTS, (where) => reads
+      ? t("Adds panels to {where}, which can read {reads}", { where, reads })
+      : t("Adds panels to {where}, which read nothing of magpie's", { where }));
+  }
+  function actionsLine(actions) {
+    return whereLine(actions, "menu", MENUS, (where) => t("Adds items to {where}, which open its page", { where }));
   }
 
   function mwLine(m) {

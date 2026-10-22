@@ -26,9 +26,9 @@ func rollbackFiles(t *testing.T) (string, string) {
 // shortWaits has moveIn and moveAside give up on a file held for good
 // at once.
 func shortWaits(t *testing.T) {
-	was := asideWaits
-	asideWaits = []time.Duration{time.Millisecond}
-	t.Cleanup(func() { asideWaits = was })
+	was, held := asideWaits, heldFor
+	asideWaits, heldFor = []time.Duration{time.Millisecond}, 0
+	t.Cleanup(func() { asideWaits, heldFor = was, held })
 }
 
 func holdForRollbackTest(t *testing.T, path string) func() {

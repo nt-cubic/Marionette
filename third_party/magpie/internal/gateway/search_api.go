@@ -224,6 +224,11 @@ func (s *Server) askSearchAPI(ctx context.Context, a provider.SearchAPI, query s
 			"contents": map[string]any{"text": map[string]any{"maxCharacters": pageText}}})
 	case "firecrawl":
 		post("/v2/search", map[string]any{"query": query, "limit": searchHits})
+	case "deepseek":
+		// DeepSeek's Search API takes a query of 1 to 128 characters
+		// (api-docs.deepseek.com/guides/search); its page text is its
+		// summary, so need_content is left false
+		post("/v1/tools/search", map[string]any{"query": firstRunes(query, deepseekQueryMax), "count": searchHits})
 	case "searxng":
 		get("/search", url.Values{"q": {query}, "format": {"json"}})
 	case "you":
@@ -327,9 +332,12 @@ func readSearchAPI(vendor string, b []byte) ([]foundPage, error) {
 		Description string `json:"description"`
 		Text        string `json:"text"`
 		Markdown    string `json:"markdown"`
+		Summary     string `json:"summary"` // deepseek: its longer text for a model
+		Snippet     string `json:"snippet"` // deepseek: its short one
+		Date        string `json:"date"`    // deepseek: RFC 3339, or null
 	}
 	var out struct {
-		Results []result `json:"results"` // tavily, exa, searxng
+		Results []result `json:"results"` // tavily, exa, searxng, deepseek
 		Web     struct {
 			Results []result `json:"results"`
 		} `json:"web"` // brave
@@ -358,7 +366,7 @@ func readSearchAPI(vendor string, b []byte) ([]foundPage, error) {
 			continue
 		}
 		text := r.Content
-		for _, t := range []string{r.Text, r.Description, r.Markdown} {
+		for _, t := range []string{r.Summary, r.Text, r.Description, r.Markdown, r.Snippet} {
 			if text == "" {
 				text = t
 			}
@@ -367,9 +375,25 @@ func readSearchAPI(vendor string, b []byte) ([]foundPage, error) {
 		if title == "" {
 			title = r.URL
 		}
-		pages = append(pages, foundPage{Title: title, URL: r.URL, Text: clipText(searchPlain(text), pageText)})
+		pages = append(pages, foundPage{Title: title, URL: r.URL, Text: clipText(searchPlain(text), pageText), Age: r.Date})
 	}
 	return pages, nil
+}
+
+// deepseekQueryMax is the most characters DeepSeek's Search API takes in a
+// query; a longer one is turned away with 400.
+const deepseekQueryMax = 128
+
+// firstRunes is s cut to at most n characters, with nothing added.
+func firstRunes(s string, n int) string {
+	i := 0
+	for at := range s {
+		if i == n {
+			return s[:at]
+		}
+		i++
+	}
+	return s
 }
 
 // readYouSearch reads You.com's reply, free or keyed alike: its pages

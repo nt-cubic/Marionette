@@ -13,6 +13,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { reach } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const models = [{ value: "gpt-6.1-sol", label: "GPT-6.1 Sol", ref: "openai/gpt-6.1-sol" }, { value: "gpt-6-astra", label: "GPT-6 Astra", ref: "openai/gpt-6-astra" }];
@@ -105,11 +106,19 @@ for (const engine of engines) {
           await browser.close();
         });
         await page.goto("http://magpie.test/");
-        // a row's squares are in the row opened, one row open at a time
+        // a row's squares are in the row opened, one row open at a time; an
+        // opened Codex row holds Codex's own settings and is tall, so the link
+        // and the square are wheeled into sight
         const open = async (id) => {
-          const row = `.row.agent[data-id="${id}"]`;
-          if (await page.locator(`${row} .ag-link`).getAttribute("aria-expanded") !== "true") await page.locator(`${row} .ag-link`).click();
+          const link = page.locator(`.row.agent[data-id="${id}"] .ag-link`);
+          if (await link.getAttribute("aria-expanded") !== "true") {
+            await page.waitForFunction(() => !document.getAnimations().length);
+            await reach(page, link);
+            await link.click();
+          }
           await page.locator(square(id)).waitFor();
+          await page.waitForFunction(() => !document.getAnimations().length);
+          await reach(page, page.locator(square(id)));
         };
         await open("codex@wsl:Ubuntu");
         assert.equal(await page.locator(square("codex@wsl:Ubuntu")).getAttribute("aria-label"), w.lead + "\n" + w.hint);

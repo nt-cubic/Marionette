@@ -30,7 +30,7 @@ func TestProviderSaveLocalPresetAtItsURLs(t *testing.T) {
 		}
 	}
 	for _, c := range []struct{ id, name, chat, responses, anthropic, decide string }{
-		{"ollama", "Ollama", "http://127.0.0.1:1/v1", "", "http://127.0.0.1:1", ""},
+		{"ollama", "Ollama", "http://127.0.0.1:1/v1", "", "http://127.0.0.1:1", "http://127.0.0.1:1/v1"},
 		{"omlx", "oMLX", "http://127.0.0.1:2/v1", "http://127.0.0.1:2/v1", "http://127.0.0.1:2", "http://127.0.0.1:2/v1"},
 		{"lmstudio", "LM Studio", "http://127.0.0.1:3/v1", "", "", ""},
 	} {
@@ -48,7 +48,8 @@ func TestProviderSaveLocalPresetAtItsURLs(t *testing.T) {
 		if moved.Chat != c.chat || moved.Responses != c.responses || moved.Anthropic != c.anthropic {
 			t.Fatalf("%s at %q %q %q", c.id, moved.Chat, moved.Responses, moved.Anthropic)
 		}
-		// oMLX's decision API is the same server's, so it moves too (#1641)
+		// oMLX's and Ollama's decision API is the same server's, so it moves
+		// too (#1641; Nanka on Discord)
 		if moved.Decide != c.decide {
 			t.Fatalf("%s decides at %q, want %q", c.id, moved.Decide, c.decide)
 		}

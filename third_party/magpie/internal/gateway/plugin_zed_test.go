@@ -137,25 +137,3 @@ func TestZedPluginGetsNoDeveloperRole(t *testing.T) {
 		t.Fatalf("Zed was offered %s", got)
 	}
 }
-
-// The built-in Zed account's OpenAI request is fitted the same way: a web
-// search offered (no search API set up) leaves no web_search tool, nor
-// include's web_search_call.action.sources, for Zed's cloud to turn away.
-func TestZedBuiltInResponsesParse(t *testing.T) {
-	req, err := parseResponses([]byte(`{"model":"m","stream":true,"include":["reasoning.encrypted_content"],"reasoning":{"effort":"high"},
-		"tools":[{"type":"function","name":"exec_command","parameters":{"type":"object"}},{"type":"web_search"}],"input":[
-		{"type":"message","role":"developer","content":[{"type":"input_text","text":"rules"}]},
-		{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, _, err := zedRequest(req, "open_ai", "gpt-5.5")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var q map[string]any
-	json.Unmarshal(raw, &q)
-	if why := zedParses(q); why != "" {
-		t.Fatalf("%s: %s", why, raw)
-	}
-}

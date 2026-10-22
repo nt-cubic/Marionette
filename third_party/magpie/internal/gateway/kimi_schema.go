@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"bytes"
+	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -16,9 +18,10 @@ import (
 // defined" (#886, cua-driver's parse_visual_regions, whose kinds' items are
 // {"enum":["text","icon"]}), and the whole request fails though the tool is
 // never called. The type is the one every value has — string, integer,
-// number or boolean; values of mixed types, or a null among them, are left
-// as they were. It is written in place, after the schema's brace, so the
-// rest of the body and a cache's prefix stay as they were.
+// number or boolean, or that type and "null" when a null is among them, the
+// one type array Kimi takes beside an enum; values of other mixed types are
+// left as they were. It is written in place, after the schema's brace, so
+// the rest of the body and a cache's prefix stay as they were.
 func kimiToolEnumTypes(p provider.Provider, to provider.Protocol, body []byte) []byte {
 	if !isKimi(p, to) {
 		return body
@@ -32,19 +35,29 @@ func kimiToolEnumTypes(p provider.Provider, to provider.Protocol, body []byte) [
 	}
 	var ins []typeInsert
 	collectUntypedEnums(body, tools, false, &ins)
+	return withTypes(body, ins)
+}
+
+// withTypes is body with each insert's type written after its schema's
+// opening brace; a brace named twice gets it once.
+func withTypes(body []byte, ins []typeInsert) []byte {
 	if len(ins) == 0 {
 		return body
 	}
-	// the walk goes through the body in order, so the inserts ascend
+	sort.SliceStable(ins, func(i, j int) bool { return ins[i].at < ins[j].at })
 	var out bytes.Buffer
-	out.Grow(len(body) + len(ins)*20)
-	last := 0
+	out.Grow(len(body) + len(ins)*24)
+	last := -1
 	for _, in := range ins {
-		out.Write(body[last : in.at+1])
-		out.WriteString(`"type":"` + in.typ + `",`)
-		last = in.at + 1
+		if in.at == last {
+			continue
+		}
+		start := last + 1
+		out.Write(body[start : in.at+1])
+		out.WriteString(`"type":` + in.typ + `,`)
+		last = in.at
 	}
-	out.Write(body[last:])
+	out.Write(body[last+1:])
 	return out.Bytes()
 }
 
@@ -59,8 +72,8 @@ func isKimi(p provider.Provider, to provider.Protocol) bool {
 }
 
 type typeInsert struct {
-	at  int // the schema's opening brace
-	typ string
+	at  int    // the schema's opening brace
+	typ string // the type as JSON: "string", or ["string","null"]
 }
 
 // collectUntypedEnums adds, for each schema under node with an enum or a
@@ -80,7 +93,7 @@ func collectUntypedEnums(body []byte, node gjson.Result, inSchema bool, ins *[]t
 			} else if c := node.Get("const"); c.Exists() {
 				vals = []gjson.Result{c}
 			}
-			if t := valuesType(vals); t != "" {
+			if t := enumType(vals); t != "" {
 				*ins = append(*ins, typeInsert{node.Index, t})
 			}
 		}
@@ -107,6 +120,29 @@ func collectUntypedEnums(body []byte, node gjson.Result, inSchema bool, ins *[]t
 			return true
 		})
 	}
+}
+
+// enumType is the type, as JSON, an enum or const of vals is written with
+// for Kimi: the one all of them have, or it and "null" when a null is among
+// them; "" when there are none or other types are mixed.
+func enumType(vals []gjson.Result) string {
+	var rest []gjson.Result
+	null := false
+	for _, v := range vals {
+		if v.Type == gjson.Null {
+			null = true
+			continue
+		}
+		rest = append(rest, v)
+	}
+	t := valuesType(rest)
+	switch {
+	case t == "":
+		return ""
+	case null:
+		return `["` + t + `","null"]`
+	}
+	return `"` + t + `"`
 }
 
 // valuesType is the JSON Schema type all of vals have, "" when there are
@@ -209,4 +245,257 @@ func leadingInt(s string) (int, string) {
 		return -1, s
 	}
 	return n, s[i:]
+}
+
+// kimiToolRefTypes is body with a type written into each schema its tools'
+// $refs reach that has none, for Kimi and Moonshot. Their validator expands
+// a $ref and refuses a target with no type — 400 "not a valid moonshot
+// flavored json schema … At path 'properties.b': detected infinite
+// recursion without termination condition" — and the whole request fails,
+// though the same schema written inline passes. Codex sends such targets:
+// its MCP and Codex App tools come as zod's $defs (__schema0, __schema1 …),
+// and it types a def with properties or an enum but leaves a oneOf or an
+// allOf one as it was (chaosy on Discord, Codex on k3). The type is the
+// one the target's keywords or branches say, a type array when they differ,
+// and every type when nothing does, which Kimi takes as "any". A target
+// that is {}, an anyOf (Kimi refuses a type beside one: "type should be
+// defined in anyOf items instead of the parent schema") or only another
+// $ref is left as Kimi takes it, as is an enum whose values no one type
+// array can hold. Written in place, like kimiToolEnumTypes', after which it
+// runs.
+func kimiToolRefTypes(p provider.Provider, to provider.Protocol, body []byte) []byte {
+	if !isKimi(p, to) || !bytes.Contains(body, []byte(`"$ref"`)) {
+		return body
+	}
+	tools := gjson.GetBytes(body, "tools")
+	if !tools.IsArray() || tools.Index <= 0 {
+		return body
+	}
+	var ins []typeInsert
+	tools.ForEach(func(_, tool gjson.Result) bool {
+		for _, at := range []string{"function.parameters", "parameters", "input_schema"} {
+			if root := tool.Get(at); root.IsObject() {
+				collectRefTargets(body, root, root, &ins)
+			}
+		}
+		return true
+	})
+	return withTypes(body, ins)
+}
+
+// collectRefTargets adds, for each local $ref under node (a schema of the
+// tool schema root) whose target Kimi would refuse untyped, where the
+// target opens and the type it is given.
+func collectRefTargets(body []byte, root, node gjson.Result, ins *[]typeInsert) {
+	walkSchema(node, func(s gjson.Result) {
+		ref := s.Get(`\$ref`)
+		if ref.Type != gjson.String {
+			return
+		}
+		t, ok := refTarget(root, ref.String())
+		if !ok || !t.IsObject() || t.Index <= 0 || t.Index >= len(body) || body[t.Index] != '{' || !untypedForKimi(t) {
+			return
+		}
+		if typ := kimiSchemaType(root, t); typ != "" {
+			*ins = append(*ins, typeInsert{t.Index, typ})
+		}
+	})
+}
+
+// walkSchema calls f with node and every schema under it, through the
+// keywords that hold schemas.
+func walkSchema(node gjson.Result, f func(gjson.Result)) {
+	switch {
+	case node.IsArray():
+		node.ForEach(func(_, v gjson.Result) bool {
+			walkSchema(v, f)
+			return true
+		})
+	case node.IsObject():
+		f(node)
+		node.ForEach(func(key, v gjson.Result) bool {
+			switch key.String() {
+			case "properties", "$defs", "definitions", "dependentSchemas", "patternProperties":
+				v.ForEach(func(_, s gjson.Result) bool {
+					walkSchema(s, f)
+					return true
+				})
+			case "items", "additionalProperties", "contains", "propertyNames", "not", "if", "then", "else", "allOf", "anyOf", "oneOf", "prefixItems", "unevaluatedProperties", "unevaluatedItems", "contentSchema":
+				walkSchema(v, f)
+			}
+			return true
+		})
+	}
+}
+
+// refTarget is the schema a local $ref ("#", "#/$defs/x") names in root.
+func refTarget(root gjson.Result, ref string) (gjson.Result, bool) {
+	if ref != "#" && !strings.HasPrefix(ref, "#/") {
+		return gjson.Result{}, false
+	}
+	cur := root
+	for _, tok := range strings.Split(ref, "/")[1:] {
+		tok = strings.ReplaceAll(strings.ReplaceAll(tok, "~1", "/"), "~0", "~")
+		if u, err := url.PathUnescape(tok); err == nil {
+			tok = u
+		}
+		if !cur.IsObject() && !cur.IsArray() {
+			return gjson.Result{}, false
+		}
+		cur = cur.Get(gjson.Escape(tok))
+		if !cur.Exists() {
+			return gjson.Result{}, false
+		}
+	}
+	return cur, true
+}
+
+// untypedForKimi is whether Kimi refuses s as a $ref's target: it has no
+// type, isn't {}, an anyOf, or a $ref with nothing but notes beside it.
+func untypedForKimi(s gjson.Result) bool {
+	if s.Get("type").Exists() || s.Get("anyOf").Exists() {
+		return false
+	}
+	only := true
+	n := 0
+	s.ForEach(func(k, _ gjson.Result) bool {
+		n++
+		switch k.String() {
+		case "$ref", "description", "title", "default", "examples", "$comment":
+		default:
+			only = false
+		}
+		return true
+	})
+	if n == 0 {
+		return false
+	}
+	return !(only && s.Get(`\$ref`).Exists())
+}
+
+// allKimiTypes is every JSON Schema type, which Kimi takes for a schema
+// that may be anything.
+const allKimiTypes = `["string","number","integer","boolean","object","array","null"]`
+
+// kimiSchemaType is the type, as JSON, an untyped schema s is given: the
+// one (or the ones) its keywords and branches say, every type when they
+// say nothing, and "" for an enum no type Kimi takes beside one can hold.
+func kimiSchemaType(root, s gjson.Result) string {
+	if e := s.Get("enum"); e.IsArray() {
+		return enumType(e.Array())
+	}
+	if c := s.Get("const"); c.Exists() {
+		return enumType([]gjson.Result{c})
+	}
+	ts := schemaTypes(root, s, 0)
+	if len(ts) == 0 {
+		return allKimiTypes
+	}
+	if ts["integer"] && ts["number"] {
+		delete(ts, "integer")
+	}
+	var names []string
+	for _, t := range []string{"string", "number", "integer", "boolean", "object", "array", "null"} {
+		if ts[t] {
+			names = append(names, `"`+t+`"`)
+		}
+	}
+	if len(names) == 1 {
+		return names[0]
+	}
+	return "[" + strings.Join(names, ",") + "]"
+}
+
+// schemaTypes is the set of types s can have, as its type, its keywords,
+// its values or its branches (through their $refs) say; nil when they
+// don't say.
+func schemaTypes(root, s gjson.Result, depth int) map[string]bool {
+	if depth > 16 || !s.IsObject() {
+		return nil
+	}
+	ts := map[string]bool{}
+	if t := s.Get("type"); t.Exists() {
+		for _, v := range t.Array() {
+			ts[v.String()] = true
+		}
+		return ts
+	}
+	if ref := s.Get(`\$ref`); ref.Type == gjson.String {
+		if t, ok := refTarget(root, ref.String()); ok {
+			return schemaTypes(root, t, depth+1)
+		}
+		return nil
+	}
+	if e := s.Get("enum"); e.IsArray() || s.Get("const").Exists() {
+		vals := e.Array()
+		if c := s.Get("const"); c.Exists() {
+			vals = []gjson.Result{c}
+		}
+		for _, v := range vals {
+			switch v.Type {
+			case gjson.String:
+				ts["string"] = true
+			case gjson.True, gjson.False:
+				ts["boolean"] = true
+			case gjson.Null:
+				ts["null"] = true
+			case gjson.Number:
+				if strings.ContainsAny(v.Raw, ".eE") {
+					ts["number"] = true
+				} else {
+					ts["integer"] = true
+				}
+			default:
+				if v.IsArray() {
+					ts["array"] = true
+				} else {
+					ts["object"] = true
+				}
+			}
+		}
+		return ts
+	}
+	// a branch that says nothing makes oneOf and anyOf anything; allOf
+	// is what its branches that do say
+	for _, k := range []string{"oneOf", "anyOf", "allOf"} {
+		bs := s.Get(k)
+		if !bs.IsArray() {
+			continue
+		}
+		known := false
+		for _, b := range bs.Array() {
+			bt := schemaTypes(root, b, depth+1)
+			if len(bt) == 0 && k != "allOf" {
+				return nil
+			}
+			for t := range bt {
+				ts[t] = true
+				known = true
+			}
+		}
+		if known {
+			return ts
+		}
+	}
+	has := func(keys ...string) bool {
+		for _, k := range keys {
+			if s.Get(k).Exists() {
+				return true
+			}
+		}
+		return false
+	}
+	switch {
+	case has("properties", "required", "additionalProperties", "patternProperties", "minProperties", "maxProperties", "propertyNames", "dependentRequired", "dependentSchemas", "unevaluatedProperties"):
+		ts["object"] = true
+	case has("items", "prefixItems", "minItems", "maxItems", "uniqueItems", "contains", "unevaluatedItems"):
+		ts["array"] = true
+	case has("minLength", "maxLength", "pattern", "format", "contentEncoding", "contentMediaType"):
+		ts["string"] = true
+	case has("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"):
+		ts["number"] = true
+	default:
+		return nil
+	}
+	return ts
 }

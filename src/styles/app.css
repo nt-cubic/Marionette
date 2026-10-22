@@ -8905,6 +8905,10 @@ body.is-composer-resizing .composer {
   opacity: 0.55;
 }
 
+.engine-popover {
+  width: 300px;
+}
+
 .engine-popover__status {
   margin: 2px 0 8px;
   font-family: var(--font-mono, ui-monospace, monospace);
@@ -8954,6 +8958,38 @@ body.is-composer-resizing .composer {
 .engine-popover__stop:hover {
   color: #e25555;
   border-color: color-mix(in srgb, #e25555 45%, var(--border));
+}
+
+.engine-popover__update {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.engine-popover__update-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.engine-popover__update-meta {
+  flex: 1;
+  min-width: 0;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-faint);
+}
+
+.engine-popover__update-error {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.4;
+  color: #e25555;
+  word-break: break-word;
 }
 
 .engine-popover__footer {

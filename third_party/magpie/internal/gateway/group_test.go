@@ -240,7 +240,7 @@ func TestRoutingGroups(t *testing.T) {
 			ids = append(ids, e.ID)
 		}
 	}
-	if got := strings.Join(ids, " "); got != "group/auto-m a/m a/only-a b/vendor/m" {
+	if got := strings.Join(ids, " "); got != "auto/m a/m a/only-a b/vendor/m" {
 		t.Fatalf("catalog: %s", got)
 	}
 	if err := provider.SaveGroup(provider.Group{Name: "Mine", Members: []string{"b/vendor/m", "a/only-a"}, Routing: provider.Ordered}); err != nil {

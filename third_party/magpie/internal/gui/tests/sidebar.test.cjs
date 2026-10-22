@@ -151,7 +151,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await context.close();
     });
 
-    await t.test("narrow from the start: the gateway is not read for a sidebar", async () => {
+    await t.test("narrow from the start: the gateway is not read again for a sidebar", async () => {
       const reads = [];
       const context = await browser.newContext({ viewport: { width: 900, height: 700 }, reducedMotion: "reduce" });
       const page = await context.newPage();
@@ -159,11 +159,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.goto("http://magpie.test/");
       await page.waitForSelector("#nav button.on");
       await page.waitForTimeout(2000);
-      assert.equal(reads.length, 0, "no read with no sidebar to show it");
-      // and read when the window is made wide
+      // the providers list is read once after the start, for the
+      // Providers page to open on it (#1519), and nothing more with no
+      // sidebar to show its gateway
+      assert.equal(reads.length, 1, "read once, for the Providers page");
+      // made wide, the sidebar shows the gateway from that read
       await page.setViewportSize({ width: 1200, height: 700 });
       await page.locator("#sideGw").waitFor();
-      assert.equal(reads.length, 1);
+      await page.waitForTimeout(500);
+      assert.equal(reads.length, 1, "the sidebar reads nothing more");
       await context.close();
     });
 

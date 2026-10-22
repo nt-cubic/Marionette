@@ -73,9 +73,17 @@ func (s *Server) serverReview(p provider.Provider, asked []string, body []byte) 
 // a Claude model (Anthropic's API, a relay in front of it, Bedrock's or
 // Vertex's names for it), or anything on Anthropic's own API. No other
 // vendor runs Anthropic's classifier, and magpie answers none on its
-// behalf.
+// behalf: another subscription's or a plugin's Claude model (Copilot,
+// Kiro, Cursor…) is that vendor's service, which turns the safeguards
+// away (#1756) or drops them, so it isn't reviewed by its name alone.
 func AutoModeReviewed(p provider.Provider, model string) bool {
-	return p.Account != nil && p.Account.Agent == "claude" || anthropicModel.MatchString(model) || provider.HostOf(p.Base(provider.Anthropic)) == "api.anthropic.com"
+	if provider.HostOf(p.Base(provider.Anthropic)) == "api.anthropic.com" {
+		return true
+	}
+	if p.Account != nil {
+		return p.Account.Agent == "claude"
+	}
+	return anthropicModel.MatchString(model)
 }
 
 // classifierRoom is what a model that reasons is given on top of the

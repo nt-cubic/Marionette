@@ -732,3 +732,92 @@ func TestAntigravityRetiredModelNamedForItself(t *testing.T) {
 		}
 	}
 }
+
+// Antigravity's list as it came on 2026-10-20 (testdata, fetchAvailableModels
+// on a free-tier account, MIME types and experiments left out): the
+// retired gemini-2.5-flash and gemini-2.5-flash-lite are still "Gemini 3.5
+// Flash Lite", but with no tagDescription, so naming them by their tag
+// left two chips of that name in 新v学员's editor (Discord, 10-20). Each
+// is named for its own id with gemini-3.5-flash-lite in the list, and
+// without it (an account Antigravity doesn't give it), where only their
+// enums, MODEL_GOOGLE_GEMINI_2_5_FLASH…, say what they are, and with their
+// enums placeholders, where only gemini-3.5-flash-lite's id spelling the
+// name does; no two models read the same, and the names Antigravity gives
+// the rest stay.
+func TestAntigravityRetiredModelNamedWithoutTag(t *testing.T) {
+	raw, err := os.ReadFile("testdata/antigravity-models-2026-10-20.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name              string
+		withLite, noEnums bool
+	}{{"as listed", true, false}, {"no gemini-3.5-flash-lite", false, false}, {"placeholder enums", true, true}} {
+		withLite := c.withLite
+		t.Run(c.name, func(t *testing.T) {
+			var list map[string]any
+			if err := json.Unmarshal(raw, &list); err != nil {
+				t.Fatal(err)
+			}
+			models := list["models"].(map[string]any)
+			if !withLite {
+				delete(models, "gemini-3.5-flash-lite")
+			}
+			if c.noEnums {
+				for _, id := range []string{"gemini-2.5-flash", "gemini-2.5-flash-lite"} {
+					models[id].(map[string]any)["model"] = "MODEL_PLACEHOLDER_M" + id
+				}
+			}
+			body, _ := json.Marshal(list)
+			f := &fakeGoogle{
+				load:    `{"allowedTiers":[{"id":"free-tier","name":"Antigravity","isDefault":true}]}`,
+				onboard: `{"done":true,"response":{"cloudaicompanionProject":"ag-proj"}}`,
+				models:  string(body),
+			}
+			googleSandbox(t, f)
+			auth := googleAuth{AccessToken: "tok", RefreshToken: "rt-ag", Expiry: time.Now().Add(time.Hour).UnixMilli()}
+			if err := addGoogleLogin("antigravity", "ag@example.com", "", auth); err != nil {
+				t.Fatal(err)
+			}
+			acct := googleLogins("antigravity")[0].acct
+			ms, err := acct.models(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			names, seen := map[string]string{}, map[string]string{}
+			for _, m := range collapseAntigravityModels(catalog.Decorate(ms, nil)) {
+				names[m.ID] = m.Name
+				if other, ok := seen[m.Name]; ok {
+					t.Errorf("%s and %s both read %q", other, m.ID, m.Name)
+				}
+				seen[m.Name] = m.ID
+			}
+			for _, id := range []string{"gemini-2.5-flash", "gemini-2.5-flash-lite"} {
+				if n := names[id]; n == "" || strings.Contains(n, "3.5") {
+					t.Errorf("%s is named %q, not for itself", id, n)
+				}
+			}
+			want := map[string]string{
+				"gemini-3-flash":         "Gemini 3 Flash",
+				"gemini-3-flash-agent":   "Gemini 3.5 Flash (High)",
+				"gemini-3.1-flash-lite":  "Gemini 3.1 Flash Lite",
+				"gemini-3.1-flash-image": "Gemini 3.1 Flash Image",
+				"gpt-oss-120b-medium":    "GPT-OSS 120B (Medium)",
+				"gemini-3.8-flash":       "Gemini 3.8 Flash",
+			}
+			if withLite {
+				want["gemini-3.5-flash-lite"] = "Gemini 3.5 Flash Lite"
+			}
+			for id, w := range want {
+				if names[id] != w {
+					t.Errorf("%s is named %q, want %q", id, names[id], w)
+				}
+			}
+			for _, w := range acct.quota(context.Background(), "").Windows {
+				if strings.HasPrefix(w.Model, "gemini-2.5") && strings.Contains(w.Name, "3.5") {
+					t.Errorf("Usage's window for %s is named %q", w.Model, w.Name)
+				}
+			}
+		})
+	}
+}

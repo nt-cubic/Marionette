@@ -127,8 +127,9 @@ func TestThinkingStreamsThroughGroup(t *testing.T) {
 	}
 }
 
-// Claude's reasoning is still held for a refusal after it (#248), and so
-// are OpenAI's and Gemini's; anybody else's is let through.
+// Claude's reasoning is still held for a refusal after it (#248) while
+// another candidate could answer, and so are OpenAI's and Gemini's;
+// anybody else's is let through.
 func TestThinkingHeldFor(t *testing.T) {
 	for model, held := range map[string]bool{
 		"claude-opus-5-5": true, "anthropic/claude-sonnet-4.5": true, "gpt-5.2-codex": true, "o3": true,
@@ -146,8 +147,17 @@ func TestThinkingHeldFor(t *testing.T) {
 // agent anyway, as the last candidate's does, a relay's Claude showed
 // Claude Code its thinking all at once with the text, and Codex none until
 // then (iTianbao on X). Each of the relay's APIs, to Claude Code and
-// Codex.
+// Codex. Gemini's too, which a reply that only reasoned no longer needs
+// held for (it is asked again in place, #667): held, Codex on a Gemini
+// model had nothing, not even response.created, until the text began
+// (LuckymanJC on Discord).
 func TestThinkingStreamsWithNoOneElse(t *testing.T) {
+	geminiThinks := []string{
+		`data: {"candidates":[{"content":{"role":"model","parts":[{"text":"first thought","thought":true}]}}],"modelVersion":"gemini-3-pro"}`,
+		`data: {"candidates":[{"content":{"role":"model","parts":[{"text":" second thought","thought":true}]}}],"modelVersion":"gemini-3-pro"}`,
+		`data: {"candidates":[{"content":{"role":"model","parts":[{"text":" third thought","thought":true}]}}],"modelVersion":"gemini-3-pro"}`,
+		`data: {"candidates":[{"content":{"role":"model","parts":[{"text":"done"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"thoughtsTokenCount":8},"modelVersion":"gemini-3-pro"}`,
+	}
 	responsesThinks := []string{
 		`event: response.created` + "\n" + `data: {"type":"response.created","response":{"id":"resp_1","status":"in_progress","output":[]}}`,
 		`event: response.output_item.added` + "\n" + `data: {"type":"response.output_item.added","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[]}}`,
@@ -171,6 +181,8 @@ func TestThinkingStreamsWithNoOneElse(t *testing.T) {
 		{"chat", provider.Chat, glmChatThinksSlowly, "claude-opus-5-5"},
 		{"chat gpt", provider.Chat, glmChatThinksSlowly, "gpt-5.2"},
 		{"responses", provider.Responses, responsesThinks, "gpt-5.2"},
+		{"gemini", provider.Gemini, geminiThinks, "gemini-3-pro"},
+		{"chat gemini", provider.Chat, glmChatThinksSlowly, "gemini-3-pro"},
 	} {
 		for _, ask := range []struct{ path, body, thought, text string }{
 			{"/v1/messages", claudeAsks, `"thinking_delta"`, `"text_delta"`},
@@ -187,6 +199,8 @@ func TestThinkingStreamsWithNoOneElse(t *testing.T) {
 					p.Anthropic = vendor.URL
 				case provider.Chat:
 					p.Chat = vendor.URL + "/v1"
+				case provider.Gemini:
+					p.Gemini = vendor.URL + "/v1beta"
 				default:
 					p.Responses = vendor.URL + "/v1"
 				}

@@ -206,7 +206,7 @@ function renderUsageLoading() {
   for (const id of ["usageAgents", "usageAgentsHid", "usageModels", "usageKeys"]) $("#" + id).hidden = true;
   // the allowances' head is renderQuotas' alone: the quotas it heads are
   // still there while the period loads (#809, Hu9956: 用量界面红框这行会延迟几秒才会出现)
-  for (const h of $$("#view-usage .row-head:not(#quotaHead)")) h.hidden = true;
+  for (const h of $$("#view-usage .row-head:not(#quotaHead, .plugin-panel > .row-head)")) h.hidden = true;
   $("#usageNote").textContent = "";
 }
 
@@ -384,7 +384,7 @@ function renderUsage() {
   $("#chart").hidden = empty;
   for (const id of ["usageAgents", "usageModels"]) $("#" + id).hidden = empty;
   if (empty) $("#usageAgentsHid").hidden = true;
-  for (const h of $$("#view-usage .row-head:not(#quotaHead)")) h.hidden = empty;
+  for (const h of $$("#view-usage .row-head:not(#quotaHead, .plugin-panel > .row-head)")) h.hidden = empty;
   $("#usageKeysHead").hidden = $("#usageKeys").hidden = empty || !u.callerKeys?.length;
   // each subscription account's share, by the account that answered (#557)
   $("#usageAccountsHead").hidden = $("#usageAccounts").hidden = empty || !u.accounts?.length;
@@ -631,19 +631,65 @@ try {
   if (["tokens", "cost", "calls", "speed"].includes(m)) ledMetric = m;
 } catch {}
 
+// The filters a click set for the reader rather than one they picked in a
+// filter's menu: someone in the chart's ranking or a day of its columns
+// ("a click lists only theirs"), or a way in from elsewhere (the tray
+// panel's Open Usage, a route Routing sent here). They last while the
+// Requests are looked at, and go when the reader leaves them, for another
+// tab or page (TJHHHH on Discord: a click on Codex in the ranking had
+// every later visit list only Codex's requests). A filter picked in its
+// menu stays, as one picked in a Mac app's does.
+const ledLent = new Set();
+const LED_UNLEND = {
+  agent: () => { ledAgent = ""; },
+  provider: () => { ledProvider = ""; },
+  model: () => { ledModel = ""; ledQuery = ""; $("#ledQ").value = ""; },
+  callerKey: () => { ledCallerKey = ""; },
+  day: () => { ledDay = ""; },
+  purpose: () => { ledPurpose = ""; },
+  computer: () => { ledComputer = ""; },
+  via: () => { ledVia = ""; },
+};
+// the reader picked this filter themselves: it stays
+const ledOwn = (k) => ledLent.delete(k);
+
 let ledRouteInfo = null, ledBeforeRoute = null;
 window.openUsageRoute = (route) => {
-  if (!ledBeforeRoute) ledBeforeRoute = { period, ledOffset, ledPurpose, ledAgent, ledProvider, ledAccount, ledCallerKey, ledFailed, ledRetried, ledQuery, ledModel, ledComputer, ledDay, ledVia };
+  if (!ledBeforeRoute) ledBeforeRoute = { period, ledOffset, ledPurpose, ledAgent, ledProvider, ledAccount, ledCallerKey, ledFailed, ledRetried, ledQuery, ledModel, ledComputer, ledDay, ledVia, lent: [...ledLent] };
   ledRoute = route.id;
   ledRouteInfo = route;
   ledOffset = 0; ledPurpose = ""; ledAgent = ""; ledProvider = ""; ledAccount = ""; ledCallerKey = ""; ledFailed = false; ledRetried = false; ledQuery = ""; ledModel = ""; ledComputer = ""; ledVia = "";
   ledDay = "";
+  ledLent.clear();
   $("#ledQ").value = "";
   period = "all";
   usageTab = "requests";
   ledger = null;
   show("usage");
 };
+// the one request a route from Routing listed gives way to the list as it
+// was before it
+function ledRouteOff() {
+  ledRoute = 0; ledRouteInfo = null;
+  if (ledBeforeRoute) {
+    ({ period, ledOffset, ledPurpose = "", ledAgent, ledProvider, ledAccount = "", ledCallerKey, ledFailed, ledRetried = false, ledQuery, ledModel, ledComputer = "", ledDay = "", ledVia = "" } = ledBeforeRoute);
+    ledLent.clear();
+    for (const k of ledBeforeRoute.lent || []) ledLent.add(k);
+  }
+  ledBeforeRoute = null;
+  $("#ledQ").value = ledQuery;
+}
+// ledLeave: the reader leaves the Requests; what a click lent them goes
+// (the rows drawn for them aren't shown again on the way back)
+function ledLeave() {
+  const routed = !!ledRoute;
+  if (routed) ledRouteOff();
+  if (!ledLent.size && !routed) return;
+  for (const k of ledLent) LED_UNLEND[k]();
+  ledLent.clear();
+  ledOffset = 0;
+  ledger = null;
+}
 
 function ledParams(extra) {
   const q = new URLSearchParams({ period });
@@ -1094,6 +1140,7 @@ function drawLedTrend() {
   const chart = $("#ledChart"), rank = $("#ledRank");
   drawLedColumns(chart, l, ledSplit, ledMetric, false, (day) => {
     ledDay = ledDay === day ? "" : day;
+    ledLent.add("day");
     ledOffset = 0;
     loadLedger().catch((e) => status(e.message, "err"));
   });
@@ -1109,10 +1156,11 @@ function drawLedTrend() {
       ledProvider = off ? "" : x.id.slice(0, cut);
       ledModel = off ? "" : x.id.slice(cut + 1);
       ledQuery = ledModel; q.value = ledQuery;
-    } else if (ledSplit === "provider") ledProvider = ledProvider === x.id ? "" : x.id;
-    else if (ledSplit === "agent") ledAgent = ledAgent === x.id ? "" : x.id;
-    else if (ledSplit === "callerKey") ledCallerKey = ledCallerKey === x.id ? "" : x.id;
-    else { const q = $("#ledQ"); ledModel = ledModel === x.id ? "" : x.id; ledQuery = ledModel; q.value = ledQuery; }
+      ledLent.add("provider").add("model");
+    } else if (ledSplit === "provider") { ledProvider = ledProvider === x.id ? "" : x.id; ledLent.add("provider"); }
+    else if (ledSplit === "agent") { ledAgent = ledAgent === x.id ? "" : x.id; ledLent.add("agent"); }
+    else if (ledSplit === "callerKey") { ledCallerKey = ledCallerKey === x.id ? "" : x.id; ledLent.add("callerKey"); }
+    else { const q = $("#ledQ"); ledModel = ledModel === x.id ? "" : x.id; ledQuery = ledModel; q.value = ledQuery; ledLent.add("model"); }
     ledOffset = 0;
     loadLedger().catch((e) => status(e.message, "err"));
   }, false);
@@ -1463,15 +1511,15 @@ function renderLedger() {
   costHead(fmtCost(l), l.unpriced ? unpricedCalls(l.unpriced) : "", unpricedCallsWhy(l.unpriced));
 
   // the filters: choices seen in the period, and failures alone
-  sessPick($("#ledPurpose"), "All purposes", ledPurpose, purposeOptions(l.purposes || [], ledPurpose), "Purpose", (v) => { ledPurpose = v; ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
+  sessPick($("#ledPurpose"), "All purposes", ledPurpose, purposeOptions(l.purposes || [], ledPurpose), "Purpose", (v) => { ledPurpose = v; ledOwn("purpose"); ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
   $("#ledPurpose").title = t("Purpose");
-  sessPick($("#ledComputer"), "All computers", ledComputer, computers, "Computer", (v) => { ledComputer = v; ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
-  sessPick($("#ledAgent"), "All agents", ledAgent, l.agents.map((a) => ({ v: a.id, name: a.name, note: "" })), "Agent", (v) => { ledAgent = v; ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
-  sessPick($("#ledProvider"), "All providers", ledProvider, providers.map((p) => ({ v: p.id, name: t(p.name), note: "" })), "Provider", (v) => { ledProvider = v; ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
+  sessPick($("#ledComputer"), "All computers", ledComputer, computers, "Computer", (v) => { ledComputer = v; ledOwn("computer"); ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
+  sessPick($("#ledAgent"), "All agents", ledAgent, l.agents.map((a) => ({ v: a.id, name: a.name, note: "" })), "Agent", (v) => { ledAgent = v; ledOwn("agent"); ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
+  sessPick($("#ledProvider"), "All providers", ledProvider, providers.map((p) => ({ v: p.id, name: t(p.name), note: "" })), "Provider", (v) => { ledProvider = v; ledOwn("provider"); ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
   sessPick($("#ledAccount"), "All accounts", ledAccount, accounts.map((a) => ({ v: a.id, name: a.id, note: (a.providers || []).map((p) => t(p)).join(" · ") })), "Account", (v) => { ledAccount = v; ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
   sessPick($("#ledKey"), "All gateway keys", ledCallerKey, callers.map((k) => ({
     v: k.id, name: k.name, note: "",
-  })).concat(noKey ? [{ v: "none", name: t("No gateway key"), note: "" }] : []), "Gateway keys", (v) => { ledCallerKey = v; ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
+  })).concat(noKey ? [{ v: "none", name: t("No gateway key"), note: "" }] : []), "Gateway keys", (v) => { ledCallerKey = v; ledOwn("callerKey"); ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
   const seg = $("#ledStatus");
   seg.replaceChildren();
   // every request, those the agent got an error for, and those answered
@@ -1529,6 +1577,7 @@ function renderLedger() {
         const next = ledVia === pick ? "" : pick;
         if (next === ledVia) return;
         ledVia = next;
+        ledOwn("via");
         ledOffset = 0;
         loadLedger().catch((e) => status(e.message, "err"));
       };
@@ -1561,10 +1610,7 @@ function renderLedger() {
   $("#ledRouteClear").title = t("Clear filter");
   $("#ledRouteClear").setAttribute("aria-label", t("Clear filter"));
   $("#ledRouteClear").onclick = () => {
-    ledRoute = 0; ledRouteInfo = null;
-    if (ledBeforeRoute) ({ period, ledOffset, ledPurpose = "", ledAgent, ledProvider, ledAccount = "", ledCallerKey, ledFailed, ledRetried = false, ledQuery, ledModel, ledComputer = "", ledDay = "", ledVia = "" } = ledBeforeRoute);
-    ledBeforeRoute = null;
-    $("#ledQ").value = ledQuery;
+    ledRouteOff();
     loadLedger().catch((e) => status(e.message, "err"));
   };
   renderLedgerDash(l);
@@ -1754,11 +1800,12 @@ function renderLedger() {
   $("#ledQ").oninput = (e) => {
     ledQuery = e.target.value;
     ledModel = "";
+    ledOwn("model");
     clearTimeout(typing);
     typing = setTimeout(() => { ledOffset = 0; loadLedger().catch((err) => status(err.message, "err")); }, 250);
   };
   $("#ledQ").onkeydown = (e) => {
-    if (e.key === "Escape" && e.target.value) { e.stopPropagation(); e.target.value = ""; ledQuery = ""; ledModel = ""; ledOffset = 0; loadLedger().catch((err) => status(err.message, "err")); }
+    if (e.key === "Escape" && e.target.value) { e.stopPropagation(); e.target.value = ""; ledQuery = ""; ledModel = ""; ledOwn("model"); ledOffset = 0; loadLedger().catch((err) => status(err.message, "err")); }
   };
   $("#ledExport").onclick = async () => {
     const b = $("#ledExport");
@@ -1846,6 +1893,7 @@ function renderUsageTab() {
     const b = el("button", "opt" + (id === usageTab ? " on" : ""), t(name));
     b.onclick = () => {
       if (id === usageTab) return;
+      if (usageTab === "requests") ledLeave();
       usageTab = id;
       try { localStorage.setItem("magpie.usageTab", id); } catch {}
       $("#usageCost").replaceChildren();
@@ -3218,6 +3266,8 @@ if (mode === "window" && params.get("view") === "usage") {
   ledComputer = params.get("computer") || "";
   const v = params.get("via") || "";
   ledVia = v === "through" || v === "direct" || v === "reported" ? v : "";
+  // a way in, not the reader's pick: they go once the Requests are left
+  for (const [k, x] of [["provider", ledProvider], ["agent", ledAgent], ["purpose", ledPurpose], ["computer", ledComputer], ["via", ledVia]]) if (x) ledLent.add(k);
   const u = new URL(location.href);
   for (const k of ["tab", "provider", "agent", "computer", "card", "purpose", "via", "period"]) u.searchParams.delete(k);
   history.replaceState(null, "", u);

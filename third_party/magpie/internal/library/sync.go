@@ -326,7 +326,7 @@ type SkillView struct {
 	Name        string            `json:"name"`
 	Description string            `json:"description"`
 	Source      string            `json:"source,omitempty"`
-	Kind        string            `json:"kind"`             // github, folder, or "" for one kept in the library
+	Kind        string            `json:"kind"`             // github, git, folder, or "" for one kept in the library
 	Origin      string            `json:"origin,omitempty"` // on GitHub, as CC Switch installed it: it can be updated from there
 	Repo        string            `json:"repo,omitempty"`   // the repository it came from, however it came in, for the page to group by
 	Icon        string            `json:"icon,omitempty"`

@@ -256,15 +256,6 @@ func TestHermesOlderSchemaAndNullFields(t *testing.T) {
 func TestHermesStatsIncludesRecentUsageForOldTranscript(t *testing.T) {
 	setup(t)
 	inZone(t, 0)
-	// The background cache writer reads time.Local; drain it before inZone
-	// restores the zone. Cleanups run LIFO, so this runs before inZone's.
-	t.Cleanup(func() {
-		saving.Lock()
-		for saving.running {
-			saving.Wait()
-		}
-		saving.Unlock()
-	})
 	root := filepath.Join(t.TempDir(), "hermes")
 	t.Setenv("HERMES_HOME", root)
 	path := hermesFixture(t, root, "", "old-transcript", true)

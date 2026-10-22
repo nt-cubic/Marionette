@@ -1,8 +1,11 @@
 package redact
 
 import (
+	"crypto/sha256"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 )
 
 // Scrubbing is for what is kept rather than sent — the request archive: a
@@ -28,8 +31,107 @@ func SecretName(name string) bool {
 
 // Scrub takes the secrets Mask finds out of s.
 func Scrub(s string) string {
+	if len(s) < scrubMemoMin {
+		return scrub(s)
+	}
+	// What Scrub makes of s depends on s and on the values known (known.go)
+	// alone: a result is kept under the knownGen it was made at, and none
+	// made before a value became known is used again.
+	gen := knownGen.Load()
+	k := sha256.Sum256([]byte(s))
+	if out, ok := scrubMemo.get(k, gen, s); ok {
+		return out
+	}
+	out := scrub(s)
+	scrubMemo.put(k, gen, s, out)
+	return out
+}
+
+func scrub(s string) string {
+	if len(s) >= 256 {
+		scrubRuns.Add(1)
+	}
 	out, _ := mask(s, Options{Secrets: true}, scrubbed)
 	return out
+}
+
+// scrubRuns counts the strings of 256 bytes or more the rules have run
+// over (a test reads it).
+var scrubRuns atomic.Uint64
+
+// Scrub remembers what it made of a long string. An agent sends its whole
+// history on every turn (Codex: every item of a session, each turn), and
+// what is kept of each request (the request archive, a gateway
+// conversation) is scrubbed whole, so without it every turn ran each rule
+// over the whole history again: a core's worth while Codex ran
+// (yetone/magpie-releases#24). A short string costs less to scrub than to
+// look up. Only a hash of a string is kept, and what it became when that
+// is not the string itself.
+const (
+	scrubMemoMin     = 256
+	scrubMemoEntries = 1 << 15
+	scrubMemoBytes   = 32 << 20
+)
+
+type scrubEntry struct {
+	gen  uint64
+	same bool   // s came back as it was
+	out  string // else what it became
+}
+
+// scrubMemo holds two generations of results: when the newer is full, it
+// becomes the older and the older goes, so what is in use stays and at
+// most twice the bounds are held.
+var scrubMemo memo
+
+type memo struct {
+	sync.Mutex
+	cur, old map[[32]byte]scrubEntry
+	bytes    int
+}
+
+func (m *memo) get(k [32]byte, gen uint64, s string) (string, bool) {
+	m.Lock()
+	defer m.Unlock()
+	e, ok := m.cur[k]
+	if !ok {
+		if e, ok = m.old[k]; ok && e.gen == gen {
+			m.add(k, e)
+		}
+	}
+	if !ok || e.gen != gen {
+		return "", false
+	}
+	if e.same {
+		return s, true
+	}
+	return e.out, true
+}
+
+func (m *memo) put(k [32]byte, gen uint64, s, out string) {
+	e := scrubEntry{gen: gen, same: out == s}
+	if !e.same {
+		e.out = strings.Clone(out)
+	}
+	m.Lock()
+	defer m.Unlock()
+	m.add(k, e)
+}
+
+// reset forgets everything (a test starts from nothing).
+func (m *memo) reset() {
+	m.Lock()
+	defer m.Unlock()
+	m.cur, m.old, m.bytes = nil, nil, 0
+}
+
+// add is called with m held.
+func (m *memo) add(k [32]byte, e scrubEntry) {
+	if m.cur == nil || len(m.cur) >= scrubMemoEntries || m.bytes+len(e.out) > scrubMemoBytes {
+		m.old, m.cur, m.bytes = m.cur, make(map[[32]byte]scrubEntry), 0
+	}
+	m.bytes += len(e.out) - len(m.cur[k].out)
+	m.cur[k] = e
 }
 
 // ScrubHeader is a header's value with its secrets taken out: all of it

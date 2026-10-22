@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -148,5 +149,54 @@ func TestStartCheckedPutsBackForReal(t *testing.T) {
 				t.Errorf("old left: %v", err)
 			}
 		})
+	}
+}
+
+// 白菜 on Discord: a download an antivirus holds longer than the short
+// pauses after the trial start goes in once it is let go, and a restart
+// that failed anyway, tried again, doesn't start the same download again
+// (which had the antivirus hold it again) but does a new one.
+func TestInstallBinaryWaitsOutALongHold(t *testing.T) {
+	waits, held := asideWaits, heldFor
+	asideWaits, heldFor = []time.Duration{time.Millisecond, 20 * time.Millisecond}, 5*time.Second
+	t.Cleanup(func() { asideWaits, heldFor = waits, held })
+	exe, staged := rollbackFiles(t)
+	release := holdForRollbackTest(t, staged)
+	go func() { time.Sleep(600 * time.Millisecond); release() }()
+	if _, err := InstallBinaryAside(staged, exe); err != nil {
+		t.Fatal("install while the download is held past the short pauses:", err)
+	}
+	wantInstallFile(t, exe, "new version")
+}
+
+func TestInstallBinaryTrialsADownloadOnce(t *testing.T) {
+	waits, held, was := asideWaits, heldFor, canStart
+	asideWaits, heldFor = []time.Duration{time.Millisecond}, 0
+	trials := 0
+	canStart = func(string) error { trials++; return nil }
+	t.Cleanup(func() { asideWaits, heldFor, canStart = waits, held, was })
+	exe, staged := rollbackFiles(t)
+	release := holdForRollbackTest(t, staged)
+	_, err := InstallBinaryAside(staged, exe)
+	if err == nil || !strings.Contains(err.Error(), "another program still has the download open") {
+		t.Fatalf("held for good: %v", err)
+	}
+	wantInstallFile(t, exe, "old version")
+	release()
+	if _, err := InstallBinaryAside(staged, exe); err != nil {
+		t.Fatal("tried again:", err)
+	}
+	wantInstallFile(t, exe, "new version")
+	if trials != 1 {
+		t.Fatalf("%d trial starts of one download, want 1", trials)
+	}
+
+	// a new download is tried
+	os.WriteFile(staged, []byte("newer version"), 0o755)
+	if _, err := InstallBinaryAside(staged, exe); err != nil {
+		t.Fatal(err)
+	}
+	if trials != 2 {
+		t.Fatalf("%d trial starts after a new download, want 2", trials)
 	}
 }

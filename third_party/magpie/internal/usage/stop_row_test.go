@@ -50,8 +50,8 @@ func TestRequestPageKeepsUpstreamStop(t *testing.T) {
 	c := &rowChunk{}
 	c.add(Row{Record: Record{Time: now, Stop: "tool_calls", ParentAgent: "a0"}}, "msg", 1, false)
 	for _, chunk := range []*rowChunk{c, c.pack().unpack()} {
-		if r := chunk.row(0); r.Stop != "tool_calls" || r.ParentAgent != "a0" || chunk.Strings[chunk.Rows[0].Text[rowMsg]] != "msg" {
-			t.Fatalf("packed and read back: stop %q, parent %q, msg %q", r.Stop, r.ParentAgent, chunk.Strings[chunk.Rows[0].Text[rowMsg]])
+		if r := chunk.row(0); r.Stop != "tool_calls" || r.ParentAgent != "a0" || chunk.Strings[chunk.text(&chunk.Rows[0], rowMsg)] != "msg" {
+			t.Fatalf("packed and read back: stop %q, parent %q, msg %q", r.Stop, r.ParentAgent, chunk.Strings[chunk.text(&chunk.Rows[0], rowMsg)])
 		}
 	}
 }
