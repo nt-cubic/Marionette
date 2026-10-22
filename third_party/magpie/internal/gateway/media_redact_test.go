@@ -5,8 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"maps"
 	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -229,6 +231,9 @@ func TestVideosRedacted(t *testing.T) {
 				s := New()
 				sent := make(chan mediaSent, 1)
 				s.client = mediaEchoClient(t, sent, false)
+				if !remote {
+					grokEcho(t, s.client)
+				}
 				ct, body, image := mediaInput(t, model, "input_reference", form)
 				code, obj, raw, _ := request(t, s, "POST", "/v1/videos", ct, body)
 				if code != 200 || obj["prompt"] != mediaPrompt {
@@ -295,6 +300,9 @@ func TestMediaRedactedErrors(t *testing.T) {
 			mediaRedactionOn(t)
 			sent := make(chan mediaSent, 1)
 			s.client = mediaEchoClient(t, sent, true)
+			if video {
+				grokEcho(t, s.client)
+			}
 			ct, body, _ := mediaInput(t, model, "", false)
 			code, obj, raw, _ := request(t, s, "POST", path, ct, body)
 			if code != 400 || !strings.Contains(errorOf(obj), mediaPrompt) || strings.Contains(string(raw), "{{") {
@@ -303,6 +311,28 @@ func TestMediaRedactedErrors(t *testing.T) {
 			assertMediaMasked(t, (<-sent).prompt)
 		})
 	}
+}
+
+// grokEcho points provider.GrokBase at a server that hands each request to
+// c, as s.client took the retired built-in's: the Grok plugin (grokSignedIn)
+// sends its requests through Bun, not through the gateway's client.
+func grokEcho(t *testing.T, c *http.Client) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		res, err := c.Transport.RoundTrip(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer res.Body.Close()
+		maps.Copy(w.Header(), res.Header)
+		w.WriteHeader(res.StatusCode)
+		io.Copy(w, res.Body)
+	}))
+	t.Cleanup(srv.Close)
+	was := provider.GrokBase
+	provider.GrokBase = srv.URL + "/v1"
+	t.Cleanup(func() { provider.GrokBase = was })
 }
 
 func TestGrokVideoPollRedacted(t *testing.T) {

@@ -8,7 +8,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -169,6 +171,7 @@ func (r *TraceReader) Poll(bodies bool) []TraceSpan {
 	var result []TraceSpan
 	budget := int64(8 << 20)
 	seen := map[string]bool{}
+	var long []byte // nextTraceLine's buffer for a line longer than its reader's
 	for _, f := range files {
 		seen[f.path] = true
 		// Filesystem timestamps can be coarse or lag the write (Linux VFS).
@@ -226,11 +229,12 @@ func (r *TraceReader) Poll(bodies bool) []TraceSpan {
 			h.Close()
 			continue
 		}
-		b := bufio.NewReader(h)
+		b, release := lineReader(h, scanBuffer(h, c.offset))
 		// A large file is processed in bounded slices so one session cannot monopolize polling.
 		read := int64(0)
 		for read < budget {
-			line, err := b.ReadBytes('\n')
+			var line []byte
+			line, long, err = nextTraceLine(b, h, c.offset, long)
 			if err != nil {
 				break
 			}
@@ -243,6 +247,7 @@ func (r *TraceReader) Poll(bodies bool) []TraceSpan {
 				}
 			}
 		}
+		release()
 		h.Close()
 		budget -= read
 		if c.offset == f.size {
@@ -269,6 +274,44 @@ func (r *TraceReader) Poll(bodies bool) []TraceSpan {
 	}
 	return result
 }
+
+// nextTraceLine is the next line of f, at off, read through b: the line with
+// its newline, as b.ReadBytes would give it, or an error when it has no
+// end yet (read again once it has). A line b's buffer holds is handed over
+// in it, good until the next read of b. A longer one (a pasted image in a
+// Codex rollout) is gathered into long, made once at the line's own length
+// read ahead in f, and long is given back to be used for the next one.
+// Through ReadBytes every line was a copy of its own, and a long one cost
+// about twice its size, gathered in 4 KiB pieces and then copied whole.
+func nextTraceLine(b *bufio.Reader, f *os.File, off int64, long []byte) (line, kept []byte, err error) {
+	long = long[:0]
+	for {
+		chunk, err := b.ReadSlice('\n')
+		if errors.Is(err, bufio.ErrBufferFull) {
+			if len(long) == 0 {
+				l := lineLen(f, off, math.MaxInt)
+				if l == 0 {
+					return nil, long, io.ErrUnexpectedEOF // no end yet
+				}
+				if l > cap(long) {
+					long = make([]byte, 0, l)
+				}
+			}
+			// a file rewritten since the read ahead only grows long again
+			long = append(long, chunk...)
+			continue
+		}
+		if err != nil {
+			return nil, long, err
+		}
+		if len(long) == 0 {
+			return chunk, long, nil
+		}
+		long = append(long, chunk...)
+		return long, long, nil
+	}
+}
+
 func newTraceCursor(f file) *traceCursor {
 	c := &traceCursor{agent: f.agent, turns: map[string]*traceTurn{}, tools: map[string]TraceSpan{}, parents: map[string]string{}}
 	if f.agent == "claude" || f.agent == "claude-desktop" {

@@ -36,6 +36,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/yetone/magpie/internal/edit"
@@ -141,6 +142,69 @@ var sticks = struct {
 // sticksSaving keeps one write of the file at a time, the latest last.
 var sticksSaving sync.Mutex
 
+// sticksFlushAfter is how long a conversation answered waits before the
+// file is written: what is answered meanwhile goes in the same write, so a
+// gateway answering many requests a second writes it once in a while, not
+// once a request (up to 512 conversations marshalled, written and renamed
+// on every answer, each after the last). A crash loses the last moment's;
+// flushSticks, as the gateway ends, loses nothing. In a test binary it is
+// 0, the file written at once, as it was: a write left waiting would
+// outlive the test and write into its temp folder as it is removed.
+var sticksFlushAfter = func() time.Duration {
+	if testing.Testing() {
+		return 0
+	}
+	return 2 * time.Second
+}()
+
+// sticksFlush is the write noteSticks has waiting, for the file at path.
+var sticksFlush struct {
+	sync.Mutex
+	pending bool
+	path    string
+}
+
+// noteSticks has the file written within sticksFlushAfter: what this
+// magpie answered is in memory at once.
+func noteSticks() {
+	if sticksFlushAfter <= 0 {
+		saveSticks()
+		return
+	}
+	path := sticksPath()
+	sticksFlush.Lock()
+	if sticksFlush.pending && sticksFlush.path == path {
+		sticksFlush.Unlock()
+		return
+	}
+	sticksFlush.pending, sticksFlush.path = true, path
+	sticksFlush.Unlock()
+	time.AfterFunc(sticksFlushAfter, func() { flushSticksAt(path) })
+}
+
+// flushSticks writes what noteSticks has waiting: the gateway calls it as
+// it ends, so the magpie it hands over to, or the next start, reads it.
+func flushSticks() { flushSticksAt(sticksPath()) }
+
+// FlushSticks is flushSticks, for magpie ending on a signal before the
+// gateway's own end.
+func FlushSticks() { flushSticks() }
+
+// flushSticksAt writes the file at path when a write for it is waiting:
+// one waiting for another (a test's HOME before this one's) is dropped.
+func flushSticksAt(path string) {
+	sticksFlush.Lock()
+	if !sticksFlush.pending || sticksFlush.path != path {
+		sticksFlush.Unlock()
+		return
+	}
+	sticksFlush.pending = false
+	sticksFlush.Unlock()
+	if path == sticksPath() {
+		saveSticks()
+	}
+}
+
 // savedStick is a stick as the file has it.
 type savedStick struct {
 	Rest      string    `json:"rest"`
@@ -201,6 +265,11 @@ func stickOf(key string) (stick, bool) {
 func saveSticks() {
 	sticksSaving.Lock()
 	defer sticksSaving.Unlock()
+	sticksFlush.Lock()
+	if sticksFlush.path == sticksPath() {
+		sticksFlush.pending = false // this write is the one waiting
+	}
+	sticksFlush.Unlock()
 	now := time.Now()
 	type kept struct {
 		k string
@@ -251,11 +320,8 @@ func saveSticks() {
 // turnOf counts the user's turns in a request's conversation, and says
 // whether it is the agent handing tool results back within one.
 func turnOf(from provider.Protocol, body []byte) (turn int, within bool) {
-	req, err := parse(from, body)
-	if err != nil {
-		return 0, false
-	}
-	return turnIn(req)
+	f := factsOf(from, body)
+	return f.turn, f.within
 }
 
 // turnIn is turnOf for a request already parsed. The last of the user's
@@ -600,7 +666,7 @@ func answered(key string, c candidate, turn int, u Usage) {
 		}
 	}
 	sticks.Unlock()
-	saveSticks()
+	noteSticks()
 }
 
 // unanswered forgets that c answered a conversation, when its reply to it
@@ -626,7 +692,7 @@ func unanswered(key string, c candidate) {
 	}
 	sticks.Unlock()
 	if ok {
-		saveSticks()
+		noteSticks()
 	}
 }
 

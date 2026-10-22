@@ -47,6 +47,8 @@ func Rename(from, to string) error {
 		return errors.New(`"magpie" is what agents call the gateway itself; pick another id`)
 	case to == strings.TrimSuffix(GroupPrefix, "/"):
 		return errors.New(`"group" starts the ids of routing groups; pick another id`)
+	case to == autoID:
+		return errAutoID
 	case subscriptionID(to):
 		return fmt.Errorf("%q is the id of the %s subscription; pick another", to, to)
 	}

@@ -212,7 +212,7 @@ func (o routeRows) handedOn(c *rowChunk, r *Record) {
 		return
 	}
 	p := &c.Rows[j]
-	if p.Flags&rowHandedOn != 0 || p.Flags&4 != 0 || !(p.Status >= 400 || p.Text[rowError] != 0) {
+	if p.Flags&rowHandedOn != 0 || p.Flags&4 != 0 || !(p.Status >= 400 || c.text(p, rowError) != 0) {
 		return
 	}
 	p.Flags |= rowHandedOn
@@ -243,7 +243,8 @@ func (c *rowChunk) writable() *rowChunk {
 		return &rowChunk{}
 	}
 	next := *d
-	next.Rows, next.Strings = slices.Clone(d.Rows), slices.Clone(d.Strings)
+	next.Rows, next.Strings, next.Shapes = slices.Clone(d.Rows), slices.Clone(d.Strings), slices.Clone(d.Shapes)
+	next.shapeIDs = nil
 	next.dict = make(map[string]uint32, len(next.Strings))
 	for i, s := range next.Strings {
 		next.dict[s] = uint32(i)
@@ -257,6 +258,7 @@ func (c *rowChunk) freeze() *rowChunk {
 		c.dict = nil
 		c.Bytes -= int64(32 * len(c.Strings))
 	}
+	c.shapeIDs = nil
 	return c.pack()
 }
 

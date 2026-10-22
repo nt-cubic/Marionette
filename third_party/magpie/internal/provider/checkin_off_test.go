@@ -51,14 +51,8 @@ func TestCheckinAccountLeftOut(t *testing.T) {
 // Settings lists each account a check-in reaches with its own switch, and
 // the account's Usage card says it is left out.
 func TestCheckinAccountsListed(t *testing.T) {
-	home := signIn(t)
-	wbTokens.Lock()
-	wbTokens.m = map[string]wbCreds{}
-	wbTokens.Unlock()
-	future := time.Now().Add(24 * time.Hour).UnixMilli()
-	writeFile(t, wbAuthFile(home), map[string]any{
-		"account": map[string]any{"uid": "u1", "nickname": "旅行者"},
-		"auth":    map[string]any{"accessToken": "wb-access", "refreshToken": "r", "expiresAt": future, "domain": "www.codebuddy.cn"},
+	movedPlugin(t, "workbuddy", map[string]map[string]any{
+		"workbuddy": {"type": "oauth", "access": "wb-access", "refresh": "r", "expires": 0, "accountId": "旅行者", "uid": "u1"},
 	})
 	var mine []CheckinAccount
 	for _, a := range CheckinAccounts() {

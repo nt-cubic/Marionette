@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"slices"
-	"strings"
 	"testing"
 )
 
@@ -40,7 +39,7 @@ func TestGroupOrder(t *testing.T) {
 	catalogGroups := func() []string {
 		var out []string
 		for _, e := range Catalog() {
-			if id, ok := strings.CutPrefix(e.ID, GroupPrefix); ok {
+			if id := e.Group; id != "" {
 				out = append(out, id)
 			}
 		}
@@ -59,7 +58,7 @@ func TestGroupOrder(t *testing.T) {
 	if got := catalogGroups(); !slices.Equal(got, want) {
 		t.Fatalf("catalog after SetGroupOrder(%s, two): %v", found, got)
 	}
-	if e := Catalog(); len(e) == 0 || e[0].ID != GroupPrefix+found {
+	if e := Catalog(); len(e) == 0 || e[0].Group != found {
 		t.Fatalf("the catalog's first model isn't %s", GroupPrefix+found)
 	}
 	b, err := os.ReadFile(Path())

@@ -160,7 +160,7 @@ func TestClaudeOwnLoginLapsesOnlyForWhatHappened(t *testing.T) {
 	look := func() {
 		forgetClaudeCredential()
 		loginsMu.Lock()
-		loginsSeenAt = time.Time{}
+		loginsSeenAt.Store(0)
 		loginsMu.Unlock()
 		rememberLogins(true)
 	}

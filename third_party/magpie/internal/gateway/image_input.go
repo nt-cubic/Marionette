@@ -78,6 +78,12 @@ func walkImages(proto provider.Protocol, body []byte, swap func(imageAt) (json.R
 	case provider.Gemini:
 		turnsKey, contentKey = "contents", "parts"
 	}
+	if raw := request[turnsKey]; len(raw) > 0 && raw[0] == '[' && !anyImageBlock(proto, raw, contentKey) {
+		// Most requests have no image, and this walk runs several times
+		// on each: decoding every turn and block cost ~2.6 MB for each
+		// 1.5 MB conversation (yg6888 on X).
+		return body, nil
+	}
 	var turns []json.RawMessage
 	if decodeJSON(request[turnsKey], &turns) != nil {
 		return body, nil
@@ -117,6 +123,58 @@ func walkImages(proto provider.Protocol, body []byte, swap func(imageAt) (json.R
 	}
 	request[turnsKey], _ = json.Marshal(turns)
 	return json.Marshal(request)
+}
+
+// anyImageBlock is whether turns, a valid JSON array, may hold a block
+// walkImages gives to swap, read in place without decoding: a turn's
+// contentKey (or a Responses function_call_output's output) that is a list
+// with a block among it of an image's type, an Anthropic tool_result, or
+// a Gemini part with inlineData, fileData or a functionResponse. It errs
+// toward yes, as for a key spelled twice.
+func anyImageBlock(proto provider.Protocol, turns []byte, contentKey string) bool {
+	found := false
+	eachElement(turns, func(turn []byte) bool {
+		if turn[0] != '{' {
+			return true
+		}
+		eachMember(turn, func(key, val []byte) bool {
+			if val[0] == '[' && (jsonStringIs(key, contentKey) || (proto == provider.Responses && jsonStringIs(key, "output"))) {
+				found = anyImageIn(proto, val)
+			}
+			return !found
+		})
+		return !found
+	})
+	return found
+}
+
+// anyImageIn is whether blocks, a valid JSON array, has a block
+// swapImageBlocks would look into (anyImageBlock).
+func anyImageIn(proto provider.Protocol, blocks []byte) bool {
+	kind := "image" // Anthropic's
+	switch proto {
+	case provider.Chat:
+		kind = "image_url"
+	case provider.Responses:
+		kind = "input_image"
+	}
+	found := false
+	eachElement(blocks, func(block []byte) bool {
+		if block[0] != '{' {
+			return true
+		}
+		eachMember(block, func(key, val []byte) bool {
+			switch {
+			case proto == provider.Gemini:
+				found = jsonStringIs(key, "inlineData") || jsonStringIs(key, "fileData") || jsonStringIs(key, "functionResponse")
+			case jsonStringIs(key, "type"):
+				found = jsonStringIs(val, kind) || (proto == provider.Anthropic && jsonStringIs(val, "tool_result"))
+			}
+			return !found
+		})
+		return !found
+	})
+	return found
 }
 
 // swapImageBlocks swaps the images among a turn's blocks, and those in an

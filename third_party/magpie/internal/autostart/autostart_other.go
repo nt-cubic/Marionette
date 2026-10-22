@@ -58,3 +58,6 @@ func disable() error {
 
 // refresh: nothing an older magpie wrote here needs writing again
 func refresh() error { return nil }
+
+// heldBack: nothing here is switched off apart from the record itself
+func heldBack() bool { return false }

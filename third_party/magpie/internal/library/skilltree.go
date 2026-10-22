@@ -253,8 +253,9 @@ func fetchBlob(c *http.Client, src Source, path, sha, dst string, exec bool) err
 		if accept != "" {
 			req.Header.Set("Accept", accept)
 		}
-		token = withGitHubToken(req)
-		return source.DoOfficial(c, req)
+		resp, t, err := doGitHub(req, func(r *http.Request) (*http.Response, error) { return source.DoOfficial(c, r) })
+		token = t
+		return resp, err
 	}
 	resp, err := get(rawURL(src.Repo, src.Ref, path), "")
 	if err != nil {

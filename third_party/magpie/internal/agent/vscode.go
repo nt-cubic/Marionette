@@ -122,6 +122,15 @@ func vscodeInsidersAgent(home, cfg string) *Agent { return vscodeOf(vscodeInside
 func vscodium(home, cfg string) *Agent { return vscodeOf(vscodiumKind, home, cfg) }
 
 func vscodeOf(k vscodeKind, home, cfg string) *Agent {
+	if k.exts != "" {
+		k.extDir = filepath.Join(home, k.exts, "extensions")
+	}
+	return vscodeKindAt(k, vscodeUserDir(k, home, cfg))
+}
+
+// vscodeUserDir is the User folder of the VS Code k, where its settings.json
+// is: its extensions' (Zoo Code's) settings too.
+func vscodeUserDir(k vscodeKind, home, cfg string) string {
 	switch runtime.GOOS {
 	case "darwin":
 		cfg = filepath.Join(home, "Library", "Application Support")
@@ -131,10 +140,7 @@ func vscodeOf(k vscodeKind, home, cfg string) *Agent {
 			cfg = filepath.Join(home, "AppData", "Roaming")
 		}
 	}
-	if k.exts != "" {
-		k.extDir = filepath.Join(home, k.exts, "extensions")
-	}
-	return vscodeKindAt(k, filepath.Join(cfg, k.folder, "User"))
+	return filepath.Join(cfg, k.folder, "User")
 }
 
 func vscodeAt(dir string) *Agent { return vscodeKindAt(vscodeStable, dir) }

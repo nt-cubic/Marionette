@@ -174,16 +174,44 @@ func (p Provider) ClinePinnable() bool {
 	return p.IsCline() || p.PluginProvider() == "cline"
 }
 
+// clineMakers maps a model name to its maker's own upstream on the
+// router Cline sends it through. Most go through Vercel's AI Gateway,
+// pinned by providerOptions.gateway.only with Vercel's provider slug
+// (ai-gateway.vercel.sh/v1/models/<model>/endpoints lists "deepseek" for
+// deepseek/deepseek-v4-pro and "zai" for zai/glm-5.3). Some go through
+// OpenRouter directly, which reads only a top-level provider.only with
+// OpenRouter's slug (openrouter.ai/api/v1/providers: Z.AI is "z-ai"):
+// sdytman (#feedback, 10-20) found glm-5.3-flash among them, and
+// deepseek-v4.1-flash and deepseek-v4.1-flash-1017 going through Vercel.
+// An exact entry is a model name; the others match a name's start, the
+// first match winning.
+var clineMakers = []struct {
+	name       string
+	exact      bool
+	upstream   string
+	openRouter bool
+}{
+	{name: "glm-5.3-flash", exact: true, upstream: "z-ai", openRouter: true},
+	{name: "deepseek", upstream: "deepseek"},
+	{name: "glm", upstream: "zai"}, // sdytman on Discord: GLM only through Z.ai
+}
+
 // ClinePin is the upstream a request for model is pinned to on p
-// (PinUpstream): "deepseek" for a DeepSeek model of the Cline API, ""
-// for anything else. Cline's free models are served where Cline puts
-// them, so they never are.
-func (p Provider) ClinePin(model string) string {
+// (PinUpstream), and whether Cline sends the model through OpenRouter
+// (pinned by provider.only) rather than Vercel's AI Gateway (pinned by
+// providerOptions.gateway.only): "deepseek" for a DeepSeek model of the
+// Cline API, "zai" for a GLM one, "z-ai" through OpenRouter for
+// glm-5.3-flash, "" for anything else. Cline's free models are served
+// where Cline puts them, so they never are.
+func (p Provider) ClinePin(model string) (upstream string, openRouter bool) {
 	if !p.PinUpstream || !p.ClinePinnable() || strings.HasPrefix(model, clineFreePrefix) {
-		return ""
+		return "", false
 	}
-	if name := model[strings.LastIndex(model, "/")+1:]; strings.HasPrefix(strings.ToLower(name), "deepseek") {
-		return "deepseek"
+	name := strings.ToLower(model[strings.LastIndex(model, "/")+1:])
+	for _, m := range clineMakers {
+		if m.exact && name == m.name || !m.exact && strings.HasPrefix(name, m.name) {
+			return m.upstream, m.openRouter
+		}
 	}
-	return ""
+	return "", false
 }

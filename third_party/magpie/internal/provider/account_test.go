@@ -66,19 +66,19 @@ func signIn(t *testing.T) string {
 	return home
 }
 
-// isolate keeps tests off the machine's own Claude Code and Cursor Keychain
+// isolate keeps tests off the machine's own Claude Code Keychain
 // logins and forgets anything a previous test cached.
-func isolate(t *testing.T) {
+func isolate(t testing.TB) {
 	t.Helper()
 	oldKeychain, oldBase, oldExe := claudeKeychain, claudeBase, claudeExecutable
-	oldCursor, oldDevin := cursorKeychain, DevinExecutable
-	claudeKeychain, cursorKeychain = false, false
+	oldDevin := DevinExecutable
+	claudeKeychain = false
 	claudeExecutable = func() string { return "" }
 	// the machine's own devin, if it has one, is no test's
 	DevinExecutable = func() string { return "" }
 	forgetClaudeCredential()
 	forgetClaudeStatus()
-	forgetDevinStatus()
+	devinStatus.forget()
 	// nor Codex's keychain item (#2367): a test's has nothing in it,
 	// whatever the system
 	oldCodexKeychain, oldCodexHere := codexKeychain, codexKeychainHere
@@ -103,13 +103,13 @@ func isolate(t *testing.T) {
 	ForgetBalances()
 	t.Cleanup(func() {
 		claudeKeychain, claudeBase, claudeExecutable = oldKeychain, oldBase, oldExe
-		cursorKeychain, DevinExecutable = oldCursor, oldDevin
+		DevinExecutable = oldDevin
 		codexKeychain, codexKeychainHere = oldCodexKeychain, oldCodexHere
 		keychainHold = oldHold
 		resetCodexKeychain()
 		forgetClaudeCredential()
 		forgetClaudeStatus()
-		forgetDevinStatus()
+		devinStatus.forget()
 	})
 }
 

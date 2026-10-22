@@ -136,6 +136,14 @@ func (c claudeCLI) env(env []string) []string {
 	return c.wsl.Env(env, "CLAUDE_CONFIG_DIR/p", "BROWSER/p", openedURLEnv+"/p")
 }
 
+// proxied is env told the proxy choice names (netproxy.With), a SOCKS
+// one bridged: Claude Code is built with Bun, which takes only http:// and
+// https:// proxies (#2651). One in a WSL distro reaches the bridge only
+// when the distro shares Windows' loopback.
+func (c claudeCLI) proxied(choice string, env []string) ([]string, error) {
+	return netproxy.EnvForBunWith(choice, env, c.wsl == nil || c.wsl.Host == "")
+}
+
 // startClaudeSignIn runs `claude auth login` and gives the window the page
 // to open: the one Claude Code would have opened, which comes back to it on
 // this machine, or, when it opened none, the one it prints, whose page
@@ -162,7 +170,13 @@ func startClaudeSignIn(s *signInFlow) error {
 	cmd := cli.command(ctx, "auth", "login", "--claudeai")
 	cmd.Dir = dir
 	// through the proxy the account's requests will go through (#1663)
-	cmd.Env = cli.env(netproxy.EnvWith(s.proxy, env))
+	env, err = cli.proxied(s.proxy, env)
+	if err != nil {
+		cancel()
+		cleanup()
+		return err
+	}
+	cmd.Env = cli.env(env)
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		cancel()
@@ -334,7 +348,11 @@ func claudeSignedIn(cli claudeCLI, dir, proxy string) (savedLogin, error) {
 	defer cancel()
 	cmd := cli.probe(ctx, "auth", "status", "--json")
 	cmd.Dir = dir
-	cmd.Env = cli.env(netproxy.EnvWith(proxy, claudeSignInEnv(os.Environ(), dir)))
+	env, err := cli.proxied(proxy, claudeSignInEnv(os.Environ(), dir))
+	if err != nil {
+		return savedLogin{}, err
+	}
+	cmd.Env = cli.env(env)
 	b, _ := cmd.Output()
 	var status struct {
 		Email            string `json:"email"`

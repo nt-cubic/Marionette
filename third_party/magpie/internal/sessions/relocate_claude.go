@@ -39,8 +39,8 @@ type ClaudeRelocationResult struct {
 // session-ID-keyed files (file-history, todos and session-env). IDs stay intact.
 // Clients must be closed: the in-process lock cannot exclude Claude itself.
 func RelocateClaudeProject(in ClaudeRelocation) (ClaudeRelocationResult, error) {
-	dbReadMu.Lock()
-	defer dbReadMu.Unlock()
+	storeMu.Lock()
+	defer storeMu.Unlock()
 	mu.Lock()
 	defer mu.Unlock()
 	root, target, err := claudeRelocationRoot(in)

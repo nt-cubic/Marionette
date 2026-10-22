@@ -17,7 +17,7 @@ package provider
 // turned off.
 
 import (
-	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -101,33 +101,6 @@ var kiroAdopt struct {
 	tried time.Time
 }
 
-func kiroSide() []sideLogin {
-	var out []sideLogin
-	for _, k := range kiroLogins() {
-		out = append(out, sideLogin{Login: k.Login})
-	}
-	return out
-}
-
-// kiroLoginList is the Kiro accounts as Logins lists them.
-func kiroLoginList() []Login { return loginsOf(kiroSide()) }
-
-// switchKiroLogin puts a Kiro account first. kiro-cli's and the IDE's
-// sign-in stay as they are: magpie only changes which account its gateway
-// uses first.
-func switchKiroLogin(user string) error { return switchSideLogin("kiro", user, kiroSide()) }
-
-func setKiroLoginOn(user string, on bool) error {
-	return setSideLoginOn("kiro", user, on, kiroSide())
-}
-
-// forgetKiroLogin drops an account magpie signed in, with its home.
-// kiro-cli's or the IDE's own is only hidden (forgetSideLogin).
-func forgetKiroLogin(user string) error {
-	return forgetSideLogin("kiro", user, kiroSide(),
-		func(l savedLogin) { removeKiroHome(l.Home) })
-}
-
 // newKiroHome makes the home a further Kiro account is signed in in.
 func newKiroHome() (string, error) {
 	home := filepath.Join(kiroAccountsDir(), strings.ToLower(strings.NewReplacer("-", "", "_", "").Replace(randomToken(9))))
@@ -154,28 +127,40 @@ func addKiroLogin(home string) (string, error) {
 		func(l savedLogin) { removeKiroHome(l.Home) })
 }
 
-// kiroAlsoOn is the Kiro accounts in use behind the first; with a key
-// saved on the provider, that key is all there is.
-func kiroAlsoOn(p Provider) []Provider {
-	if p.Key != "" {
-		return nil
-	}
-	var out []Provider
-	for _, k := range kiroLogins() {
-		if k.Active || !k.On {
-			continue
-		}
-		out = append(out, kiroProvider("", kiroAcct(k)))
-	}
-	return out
+// kiroSaved is a Kiro sign-in of magpie's as it is kept: the IDE's shape, with
+// an AWS sign-in's client beside it.
+type kiroSaved struct {
+	AccessToken  string `json:"accessToken"`
+	RefreshToken string `json:"refreshToken"`
+	ExpiresAt    string `json:"expiresAt"`
+	AuthMethod   string `json:"authMethod"` // social | IdC
+	Provider     string `json:"provider"`   // Google, Github, BuilderId, Enterprise
+	Region       string `json:"region,omitempty"`
+	ProfileArn   string `json:"profileArn,omitempty"`
+	ClientID     string `json:"clientId,omitempty"`
+	ClientSecret string `json:"clientSecret,omitempty"`
 }
 
-// kiroLoginQuota is the allowance of one of the Kiro accounts.
-func kiroLoginQuota(ctx context.Context, l Login) SubscriptionQuota {
-	for _, k := range kiroLogins() {
-		if strings.EqualFold(k.User, l.User) {
-			return kiroQuotaAt(ctx, "", k.Home)
-		}
+// readKiroFile reads a sign-in made in magpie.
+func readKiroFile(path string) (kiroCred, bool) {
+	b, err := readAccountFile(path)
+	if err != nil {
+		return kiroCred{}, false
 	}
-	return SubscriptionQuota{Provider: "kiro", Plan: l.Plan, Windows: []QuotaWindow{}, Error: "not signed in"}
+	var t kiroSaved
+	if json.Unmarshal(b, &t) != nil || t.AccessToken == "" {
+		return kiroCred{}, false
+	}
+	c := kiroCred{access: t.AccessToken, refresh: t.RefreshToken, region: t.Region, profile: t.ProfileArn,
+		clientID: t.ClientID, clientSecret: t.ClientSecret, idePath: path, builderID: strings.EqualFold(t.Provider, "BuilderId")}
+	c.expires, _ = time.Parse(time.RFC3339Nano, t.ExpiresAt)
+	if c.region == "" {
+		c.region = "us-east-1"
+	}
+	if strings.EqualFold(t.AuthMethod, "IdC") && c.clientID != "" {
+		c.method = "idc"
+	} else {
+		c.method, c.social = "social", true
+	}
+	return c, true
 }

@@ -48,7 +48,7 @@ func TestHistoryWriteHoldsNoReadingWaiter(t *testing.T) {
 	t.Cleanup(func() { CodexBase = old })
 
 	loginsMu.Lock()
-	loginsSeenAt = time.Time{}
+	loginsSeenAt.Store(0)
 	loginsMu.Unlock()
 
 	noteEntered := make(chan struct{})
@@ -133,7 +133,7 @@ func TestCachedBatchNoteSkipsTheRead(t *testing.T) {
 	t.Cleanup(func() { CodexBase = old })
 
 	loginsMu.Lock()
-	loginsSeenAt = time.Time{}
+	loginsSeenAt.Store(0)
 	loginsMu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

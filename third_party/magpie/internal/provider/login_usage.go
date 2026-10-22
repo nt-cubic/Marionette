@@ -85,11 +85,6 @@ func loginUsageAt(ctx context.Context, agent string) (map[string]SubscriptionQuo
 		return out, asked
 	}
 	out := map[string]SubscriptionQuota{}
-	if agent == "grok" {
-		if _, ok := pluginOfAgent(agent); !ok {
-			return grokLoginUsage(ctx), asked
-		}
-	}
 	logins, ok := usageLogins(agent)
 	if !ok {
 		return out, asked
@@ -268,32 +263,10 @@ func builtinLogins(agent string) (logins []Login, ok bool) {
 		logins = Logins(agent)
 	case "copilot":
 		logins = copilotLoginList()
-	case "zcode":
-		logins = zcodeLoginList()
-	case "kiro":
-		logins = kiroLoginList()
-	case "workbuddy", WorkBuddyAIID:
-		logins = wbLoginList(wbSiteOf(agent))
-	case CommandCodePlanID:
-		logins = cmdLoginList()
-	case "qoder", QoderCNID:
-		logins = loginsOf(qoderLoginsOf(agent))
-	case "zed":
-		logins = zedLoginList()
-	case "devin":
-		logins = devinLoginList()
-	case "factory":
-		logins = factoryLoginList()
-	case MiMoID:
-		logins = mimoLoginList()
 	case ChatGPTAPIID:
 		logins = siwcLoginList()
 	case "gemini", "antigravity":
 		logins = googleLoginList(agent)
-	case "cursor": // one account, the one cursor-agent is signed in to
-		if user, plan, ok := cursorIdentity(); ok {
-			logins = []Login{{Agent: agent, User: user, Plan: plan, Active: true, On: true}}
-		}
 	default:
 		return nil, false
 	}
@@ -315,38 +288,8 @@ func loginQuota(ctx context.Context, l Login) SubscriptionQuota {
 	if strings.HasPrefix(l.Agent, "plugin:") {
 		return pluginLoginQuota(ctx, l)
 	}
-	if l.Agent == "qoder" || l.Agent == QoderCNID {
-		return qoderLoginQuota(ctx, l)
-	}
-	if l.Agent == "zed" {
-		return zedLoginQuota(ctx, l)
-	}
-	if l.Agent == "devin" {
-		return devinLoginQuota(ctx, l)
-	}
-	if l.Agent == "factory" {
-		return factoryLoginQuota(ctx, l)
-	}
-	if l.Agent == MiMoID {
-		return mimoLoginQuota(ctx, l)
-	}
-	if l.Agent == "cursor" {
-		return cursorSubscriptionUsage(ctx, l.Plan)
-	}
 	if l.Agent == "gemini" || l.Agent == "antigravity" {
 		return googleLoginQuota(ctx, l)
-	}
-	if l.Agent == "zcode" {
-		return zcodeLoginQuota(ctx, l)
-	}
-	if l.Agent == "kiro" {
-		return kiroLoginQuota(ctx, l)
-	}
-	if w := wbSiteOf(l.Agent); w != nil {
-		return wbLoginQuota(ctx, w, l)
-	}
-	if l.Agent == CommandCodePlanID {
-		return cmdLoginQuota(ctx, l)
 	}
 	if l.Agent == "copilot" {
 		for _, c := range copilotLogins(copilotConfigDir()) {

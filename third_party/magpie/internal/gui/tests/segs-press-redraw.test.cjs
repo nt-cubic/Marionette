@@ -14,7 +14,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
-const { watchSettingsReads, settingsDrawn } = require("./reader.cjs");
+const { watchSettingsReads, settingsDrawn, reach } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const words = { en: { on: "On", off: "Off" }, zh: { on: "开启", off: "关闭" }, ja: { on: "オン", off: "オフ" }, de: { on: "An", off: "Aus" } };
@@ -84,7 +84,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     for (const width of [900, 440]) {
       const w = words[lang];
       test(`${engine} ${lang} ${width}px: an option pressed while Settings is redrawn is picked once, and nothing when dragged off`, async (t) => {
-        const posted = [], st = {};
+        // Lightweight mode turned off by the user, so On is a pick away
+        const posted = [], st = { lightweight: false };
         const { page, errors } = await open(engine, lang, width, "general", posted, st, t);
         const opt = (id, name) => page.locator(`#${id} .opt`, { hasText: new RegExp(`^${name}$`) });
         const on = () => page.locator("#lightweightSegs .opt.on").innerText();
@@ -153,7 +154,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // as it lifts, the new On, and that is the only pick. Playwright can't
       // hold a tap in WebKit, so it is Chromium's, through its DevTools.
       if (engine === "chromium") test(`${engine} ${lang} ${width}px: an option tapped while Settings is redrawn is picked once, not twice`, async (t) => {
-        const posted = [], st = {};
+        const posted = [], st = { lightweight: false };
         const { page, errors } = await open(engine, lang, width, "general", posted, st, t, true);
         const opt = page.locator("#lightweightSegs .opt", { hasText: new RegExp(`^${w.on}$`) });
         const [x, y] = mid(await reveal(page, opt));
@@ -228,7 +229,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await settle(page);
           if (tab === "usage") {
             for (const id of ["codex", "claude", "wb", "trae", "minimax", "qoder", "plugins"]) {
-              await page.locator("#warmTab-" + id).click();
+              // the last sweep can leave the tabs above or below the view (a
+              // narrow window scrolls them sideways, which the click does)
+              const warm = page.locator("#warmTab-" + id);
+              const away = await warm.evaluate((e) => {
+                const b = e.getBoundingClientRect(), v = e.closest(".view").getBoundingClientRect();
+                return b.top < v.top || b.bottom > v.bottom;
+              });
+              if (away) await reach(page, page.locator("#warmTabs"));
+              await warm.click();
               await sweep(tab);
             }
           } else if (tab === "sync") {

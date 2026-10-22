@@ -38,7 +38,7 @@ function serve(lang, feed) {
       const trace = (routes) => json({ mine: true, now: new Date().toISOString(), seq: routes.length ? routes[routes.length - 1].seq : Number(url.searchParams.get("after")), totals: { requests: 0, rerouted: 0, errors: 0 }, routes });
       if (!url.searchParams.get("wait")) return trace(first);
       while (!feed.q.length && !feed.closed) await new Promise((r) => setTimeout(r, 20));
-      return trace(feed.q.length ? [feed.q.shift()] : []).catch(() => {});
+      return trace(feed.q.splice(0)).catch(() => {}); // every change since, as the gateway answers
     }
     if (url.pathname === "/api/gateway/history") return json({ cut: false, days: [], routes: [] });
     if (url.pathname === "/api/groups") return json({ models: [], groups: [], pools: [] });

@@ -23,13 +23,16 @@ func keepFast(t *testing.T, gap, every, longest time.Duration) {
 }
 
 // TestTranslatedStreamKeepsClientAlive: a provider that says "progress",
-// then only ": keepalive" every 20ms for half a second, then finishes,
-// translated for a client whose idle timeout is 150ms (#436, congee949's
-// repro). The client must hear something it counts all along: Codex's
+// then only ": keepalive" every 20ms for 1.5s, then finishes, translated
+// for a client whose idle timeout is 500ms (#436, congee949's repro).
+// Without magpie's keepalives the client hears nothing for three of its
+// timeouts; 500ms, not 150ms, is room for a loaded machine's scheduler
+// (#2169, #2711, #2737). The client must hear something it counts all along: Codex's
 // timeout counts events, never a comment, so a Responses or Anthropic
 // client is kept alive with events, a Chat one with comments.
 func TestTranslatedStreamKeepsClientAlive(t *testing.T) {
 	keepFast(t, 10*time.Millisecond, keepaliveEvery, keepaliveLongest)
+	const quietFor, idleFor = 1500 * time.Millisecond, 500 * time.Millisecond
 	for _, c := range []struct {
 		name, path, body, done, ping string // done: the reply's last event
 		upChat                       bool
@@ -58,7 +61,7 @@ func TestTranslatedStreamKeepsClientAlive(t *testing.T) {
 				f.Flush()
 				tick := time.NewTicker(20 * time.Millisecond)
 				defer tick.Stop()
-				end := time.NewTimer(500 * time.Millisecond)
+				end := time.NewTimer(quietFor)
 				defer end.Stop()
 				for {
 					select {
@@ -110,13 +113,13 @@ func TestTranslatedStreamKeepsClientAlive(t *testing.T) {
 					lines <- sc.Text()
 				}
 			}()
-			idle := time.NewTimer(150 * time.Millisecond)
+			idle := time.NewTimer(idleFor)
 			defer idle.Stop()
 			// the client's idle timeout, until it has the whole reply. What
 			// the gateway does after that before the stream closes (the
 			// usage ledger, affinity, served) is no wait a client's idle
 			// timeout counts: Codex hangs up on response.completed, and the
-			// clients that read on to the close wait minutes, not 150ms.
+			// clients that read on to the close wait minutes, not idleFor.
 			// Then the stream closes within closeAfterLast, or the test
 			// fails rather than hangs.
 			const closeAfterLast = 5 * time.Second
@@ -148,7 +151,7 @@ func TestTranslatedStreamKeepsClientAlive(t *testing.T) {
 					}
 					// what the client's idle timeout counts
 					if strings.HasPrefix(line, "data:") || (c.comments && strings.HasPrefix(line, ":")) {
-						idle.Reset(150 * time.Millisecond)
+						idle.Reset(idleFor)
 					}
 				case <-wait:
 					timedOut, unclosed = !completed, completed

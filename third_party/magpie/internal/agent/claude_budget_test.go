@@ -19,14 +19,14 @@ func TestClaudePlan(t *testing.T) {
 		{id: "magpie/v/gpt-6.1-sol", window: 400000, compact: -1},
 	}
 	top, entries := claudePlan(models, 272000, nil)
-	want := map[string]int{"mythos-magpie-2": 131000, "anthropic/magpie-4": 500000, "magpie/v/gpt-6.1-sol": 400000}
-	if top != 500000 || !reflect.DeepEqual(entries, want) {
+	want := map[string]int{"mythos-magpie-2": 131000, "anthropic/magpie-4": 1000000, "magpie/v/gpt-6.1-sol": 400000}
+	if top != 1000000 || !reflect.DeepEqual(entries, want) {
 		t.Fatalf("magpie's default: %d %v", top, entries)
 	}
-	// no top-level window: every model runs at the largest, a [1m] one at 1M
+	// no top-level window: every model runs at the largest, the [1m] one's 1M
 	top, entries = claudePlan(models, 0, nil)
 	want = map[string]int{"mythos-magpie-1": 272000, "mythos-magpie-2": 131000, "anthropic/magpie-3": 272000, "magpie/v/gpt-6.1-sol": 400000}
-	if top != 500000 || !reflect.DeepEqual(entries, want) {
+	if top != 1000000 || !reflect.DeepEqual(entries, want) {
 		t.Fatalf("no default: %d %v", top, entries)
 	}
 	// the user's own entries are theirs; "auto" on the 131K one holds the
@@ -40,7 +40,7 @@ func TestClaudePlan(t *testing.T) {
 	// the largest
 	top, entries = claudePlan(models, 0, map[string]string{"mythos-magpie-2": "50000"})
 	want = map[string]int{"mythos-magpie-1": 272000, "anthropic/magpie-3": 272000, "magpie/v/gpt-6.1-sol": 400000}
-	if top != 500000 || !reflect.DeepEqual(entries, want) {
+	if top != 1000000 || !reflect.DeepEqual(entries, want) {
 		t.Fatalf("the user's 50000: %d %v", top, entries)
 	}
 	// the user's top-level window is the one a model without a threshold of
@@ -50,9 +50,16 @@ func TestClaudePlan(t *testing.T) {
 	if top != 1000000 || !reflect.DeepEqual(entries, map[string]int{"b": 128000}) {
 		t.Fatalf("the user's top-level: %d %v", top, entries)
 	}
-	// only 1M ones, or no window known: nothing to tell
-	if top, entries = claudePlan([]claudeBudget{{id: "x[1m]", window: 1000000, long: true}, {id: "y"}}, 0, nil); top != 0 || entries != nil {
+	// no window known: nothing to tell
+	if top, entries = claudePlan([]claudeBudget{{id: "y"}}, 0, nil); top != 0 || entries != nil {
 		t.Fatalf("nothing known: %d %v", top, entries)
+	}
+	// a [1m] one is told by its own 1M too, not the next one's (dumplings
+	// on Discord), so it runs to it should Claude Code stop taking it for
+	// 1M; the smaller one is held to its own
+	top, entries = claudePlan([]claudeBudget{{id: "x[1m]", window: 1000000, long: true, compact: -1}, {id: "g", window: 272000, compact: -1}}, 0, nil)
+	if top != 1000000 || !reflect.DeepEqual(entries, map[string]int{"g": 272000}) {
+		t.Fatalf("[1m] beside 272K: %d %v", top, entries)
 	}
 	// an id magpie's editor can't put in a key path gets no entry
 	if _, entries = claudePlan([]claudeBudget{{id: "a", window: 400000}, {id: "b*", window: 100000}}, 0, nil); len(entries) != 0 {

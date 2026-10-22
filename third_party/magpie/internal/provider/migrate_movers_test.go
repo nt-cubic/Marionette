@@ -2,6 +2,8 @@ package provider
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -95,6 +97,22 @@ func TestQoderMover(t *testing.T) {
 			t.Fatalf("qoder %s: %+v, want %+v", a.User, cb, ca)
 		}
 	})
+}
+
+// A Qoder account still in the single-account qoder.json of before
+// logins.json moves too: the move reads it into logins.json first, with a
+// machine id of its own, and the old file is gone.
+func TestQoderLegacyFileMoves(t *testing.T) {
+	claudeHome(t)
+	legacy := filepath.Join(filepath.Dir(Path()), "qoder.json")
+	writeFile(t, legacy, qoder.Credential{UID: "u1", Email: "one@q.com", Token: "t1", RefreshToken: "r1"})
+	accts, err := movers["qoder"].out()
+	if err != nil || len(accts) != 1 || accts[0].User != "one@q.com" || !accts[0].First || accts[0].Auth["machineId"] == "" {
+		t.Fatalf("the legacy account didn't move: %+v %v", accts, err)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatalf("qoder.json is still there: %v", err)
+	}
 }
 
 // A Qoder CN account keeps its site, and one that chats on its device

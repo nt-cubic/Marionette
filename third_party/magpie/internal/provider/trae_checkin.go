@@ -201,7 +201,7 @@ func CheckInTrae(ctx context.Context) []WorkBuddyCheckin {
 // TraeCheckins is each Trae CN account's last check-in, as kept, by its
 // name now; asks nothing.
 func TraeCheckins() []WorkBuddyCheckin {
-	st := readCheckins(traeCheckinPath())
+	st := shownCheckins(traeCheckinPath())
 	var out []WorkBuddyCheckin
 	listed := map[string]bool{}
 	for _, a := range traeCheckinAccounts() {

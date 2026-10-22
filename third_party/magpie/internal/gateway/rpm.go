@@ -58,6 +58,17 @@ func rpmSpan() time.Duration { return rpmWindow + rpmSlack }
 // the provider's QueueWait isn't shorter; tests shorten it.
 var rpmLongest = 2 * time.Minute
 
+// rpmNow is the clock the minute is read on, and rpmTimer the timer a
+// request waits for room on; tests hold both, so what they check doesn't
+// rest on how fast a loaded machine gets to it (#1791).
+var (
+	rpmNow   = time.Now
+	rpmTimer = func(d time.Duration) (<-chan time.Time, func() bool) {
+		t := time.NewTimer(d)
+		return t.C, t.Stop
+	}
+)
+
 // rpms are the times of the requests of each key or account with a MaxRPM.
 type rpms struct {
 	mu sync.Mutex
@@ -150,7 +161,7 @@ func (l *rpms) wait(ctx context.Context, who string, limit int, longest time.Dur
 	if limit <= 0 {
 		return 0, nil
 	}
-	now := time.Now()
+	now := rpmNow()
 	at, err := l.reserve(who, limit, longest, now)
 	if err != nil {
 		return 0, err
@@ -160,14 +171,17 @@ func (l *rpms) wait(ctx context.Context, who string, limit int, longest time.Dur
 		return 0, nil
 	}
 	defer notePhase(ctx, "rpm")()
-	t := time.NewTimer(d)
-	defer t.Stop()
+	c, stop := rpmTimer(d)
+	defer stop()
 	select {
-	case <-t.C:
+	case <-c:
 		return d, nil
 	case <-ctx.Done():
+		// the wait ends before its place is given back, so once the place
+		// is back nothing is left to send it
+		stop()
 		l.giveBack(who, at)
-		return time.Since(now), ctx.Err()
+		return rpmNow().Sub(now), ctx.Err()
 	}
 }
 
@@ -182,7 +196,7 @@ func (l *rpms) free(who string, limit int) bool {
 	if l.m == nil {
 		return true
 	}
-	return len(l.prune(who, time.Now())) < limit
+	return len(l.prune(who, rpmNow())) < limit
 }
 
 // used is how many requests of who's are counted in its minute now, to go
@@ -193,7 +207,7 @@ func (l *rpms) used(who string) int {
 	if l.m == nil {
 		return 0
 	}
-	return len(l.prune(who, time.Now()))
+	return len(l.prune(who, rpmNow()))
 }
 
 // rpmTicket, on a request's context, counts each request made with it

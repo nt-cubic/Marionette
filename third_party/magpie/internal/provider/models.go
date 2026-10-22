@@ -257,8 +257,17 @@ func (p Provider) refetch(ctx context.Context) ([]catalog.Model, []string, map[s
 			log.Println(p.ID + ": " + derr.Error())
 		}
 	}
-	if err != nil || len(before) == 0 {
+	if err != nil {
 		return ms, nil, before, err
+	}
+	if len(before) == 0 {
+		// nothing to drop against, but a pick set aside comes back
+		if now := liveIDs(p.ID); len(now) > 0 && len(p.Delisted) > 0 {
+			if _, derr := dropGonePicks(p.ID, nil, now); derr != nil {
+				log.Println(p.ID + ": " + derr.Error())
+			}
+		}
+		return ms, nil, before, nil
 	}
 	now := liveIDs(p.ID)
 	if len(now) == 0 {
@@ -284,7 +293,9 @@ func liveIDs(id string) map[string]bool {
 }
 
 // dropGonePicks takes out of the saved provider's picks those before had
-// and now doesn't, and answers them.
+// and now doesn't, and answers them. They are set aside in its Delisted,
+// not forgotten, and those of its Delisted now has go back among the picks
+// (relistPicks): a list that shrank for a while gives back what it took.
 func dropGonePicks(id string, before, now map[string]bool) ([]string, error) {
 	f, err := read()
 	if err != nil {
@@ -294,19 +305,54 @@ func dropGonePicks(id string, before, now map[string]bool) ([]string, error) {
 	if i < 0 {
 		return nil, nil
 	}
+	q := &f.Providers[i]
 	var kept, dropped []string
-	for _, m := range f.Providers[i].Models {
+	for _, m := range q.Models {
 		if before[m] && !now[m] {
 			dropped = append(dropped, m)
 		} else {
 			kept = append(kept, m)
 		}
 	}
-	if len(dropped) == 0 {
+	back := relistPicks(q, now)
+	if len(dropped) == 0 && !back {
 		return nil, nil
 	}
-	f.Providers[i].Models = kept
+	if len(dropped) > 0 {
+		q.Models = kept
+		for _, m := range dropped {
+			if !slices.Contains(q.Delisted, m) {
+				q.Delisted = append(q.Delisted, m)
+			}
+		}
+	}
 	return dropped, store(f)
+}
+
+// relistPicks puts back among q's picks those of its Delisted the list now
+// has, and says whether it put any back.
+func relistPicks(q *Provider, now map[string]bool) bool {
+	if len(q.Delisted) == 0 || len(now) == 0 {
+		return false
+	}
+	var still, back []string
+	for _, m := range q.Delisted {
+		if now[m] {
+			back = append(back, m)
+		} else {
+			still = append(still, m)
+		}
+	}
+	if len(back) == 0 {
+		return false
+	}
+	for _, m := range back {
+		if !slices.Contains(q.Models, m) {
+			q.Models = append(q.Models, m)
+		}
+	}
+	q.Delisted = still
+	return true
 }
 
 // fetch is Fetch without the picks looked after.
@@ -445,11 +491,9 @@ func FetchNewBehind(timeout time.Duration) {
 // fetchNewGo is FetchNew in the background, counted in newRunning before
 // it returns when there is work, so a page reading FetchingNew straight
 // after is told; with none nothing is started or counted. Which accounts
-// are due is known at once unless a CLI is still asked who is signed in:
-// then the fetch is counted and waits for it in its goroutine, as the page
-// doesn't wait on a CLI (#541), and isn't told nothing is coming before
-// that account's list does (#1789). The accounts are listed here only once
-// no CLI is left to wait on.
+// are due is known at once: no CLI is asked who is signed in for a list
+// FetchNew fetches, since every built-in that asked one is retired and its
+// plugin lists its own accounts.
 func fetchNewGo(timeout time.Duration) {
 	run := func(fetch func()) {
 		newRunning.Add(1)
@@ -464,24 +508,7 @@ func fetchNewGo(timeout time.Duration) {
 		run(func() { FetchNew(timeout) })
 		return
 	}
-	behind := func() {
-		run(func() {
-			defer newFetches.Unlock()
-			fetchNewHeld(timeout)
-		})
-	}
-	if identitiesUnsettled() {
-		behind()
-		return
-	}
-	// no CLI left to ask, unless one was forgotten while they were listed
-	// (a sign-in just finished): asked behind the page, as left out
-	ps := All()
-	if identitiesUnsettled() {
-		behind()
-		return
-	}
-	due, _ := newDue(ps)
+	due, _ := newDue(All())
 	if len(due) == 0 {
 		newFetches.Unlock()
 		fetchingNew.Store(false)
@@ -523,18 +550,7 @@ func FetchNew(timeout time.Duration) (missing bool) {
 
 // fetchNewHeld is FetchNew with newFetches held.
 func fetchNewHeld(timeout time.Duration) (missing bool) {
-	// listing them asks a CLI who is signed in, if never asked: one that
-	// hasn't answered yet is waited for, and they are listed again
-	answered := identitiesAnswered()
-	ps := All()
-	// one answered since, while they were listed (its look gave up
-	// waiting) or after: an account it says is signed in was left out
-	if waited, unknown := awaitIdentities(timeout); unknown {
-		missing = true
-	} else if waited || answered != identitiesAnswered() {
-		ps = All()
-	}
-	due, skipped := newDue(ps)
+	due, skipped := newDue(All())
 	if fetchDue(due, timeout) {
 		missing = true
 	}
@@ -1412,11 +1428,16 @@ func (p Provider) keyLists() (*keyLists, bool) {
 // none of its models are served, its balance and usage still read.
 func (p Provider) ServesNone() bool { return p.NoModels && len(p.Models) == 0 }
 
+// waitsForPicks is a provider whose every pick its list stopped listing
+// (Delisted, none left in Models): none are served until one comes back,
+// not the vendor's whole list as for a provider nothing was picked of.
+func (p Provider) waitsForPicks() bool { return len(p.Models) == 0 && len(p.Delisted) > 0 }
+
 // Exposed lists the models magpie offers to agents for this provider: the
 // user's picks; else the preset's; else everything, when that is few; none
 // after Select none (ServesNone).
 func (p Provider) Exposed() []catalog.Model {
-	if p.ServesNone() {
+	if p.ServesNone() || p.waitsForPicks() {
 		return nil
 	}
 	avail := p.Available()
@@ -1581,7 +1602,7 @@ func (p Provider) Efforts(model string) []string {
 	if all := p.Known(model); len(all) > 0 {
 		return all
 	}
-	return effortsKept(nil, settings.Load().ModelEfforts[p.ID+"/"+model])
+	return effortsKept(nil, settings.Shared().ModelEfforts[p.ID+"/"+model])
 }
 
 // Thinks reports whether the model reasons: it has levels, its list says
@@ -1617,6 +1638,30 @@ func (p Provider) PaidBesideFree(model string) bool {
 		free = free || m.Free
 	}
 	return listed && paid && free
+}
+
+// FreeModel says model costs nothing on p: its vendor serves it at no cost
+// to the subscription's allowance or credits (catalog.Model's Free:
+// WorkBuddy's "x0.00", Qoder's is_free, Cline's free models, an OpenCode Zen
+// free one), or, with no such word from the vendor, it is listed at $0 on
+// every count — a vendor's free model a catalog prices at 0, as
+// mimo-v2.6-flash-free is, and a key's free model, which has no allowance
+// to draw on and so is judged by its price alone.
+//
+// A model neither listed free nor priced is not free: nothing says it costs
+// nothing, and the routes that go by this put it with the paid ones, so a
+// pool without free models behaves as In order.
+func (p Provider) FreeModel(model string) bool {
+	for _, m := range p.Available() {
+		if strings.EqualFold(m.ID, model) {
+			if m.Free {
+				return true
+			}
+			break
+		}
+	}
+	pr, ok := p.ListPrice(model)
+	return ok && pr.Input == 0 && pr.Output == 0 && pr.CacheRead == 0 && pr.CacheWrite == 0
 }
 
 // Known are the model's own reasoning levels, when known.
@@ -2169,9 +2214,9 @@ func byIDOrWas(id string) (Provider, bool) {
 var grokEffort = regexp.MustCompile(`^((?:.*/)?grok-[0-9][^/]*?)-(?:minimal|low|medium|high|xhigh|extra-high)$`)
 
 // grokWindow is a Grok id offered at a context window of its own
-// ("grok-4.7@500k", grokContextModels and the grok plugin's windowsOf): the
-// same model, asked for at a longer window. A window no multiple of 1000
-// the id names without the k (grokWindowLabel, grokWindowed).
+// ("grok-4.7@500k", the grok plugin's windowsOf): the same model, asked for
+// at a longer window. A window no multiple of 1000 the id names without the
+// k.
 var grokWindow = regexp.MustCompile(`^((?:.*/)?grok-[0-9][^/@]*)@[0-9]+k?$`)
 
 // pricedNames are the ids a model is priced by, in order: its own, then,
@@ -2312,7 +2357,7 @@ type Entry struct {
 // provider not kept unlisted. A provider switched off has none in it.
 func Catalog() []Entry {
 	entries := providerEntries()
-	out := groupEntries(entries)
+	out := slices.Clone(groupEntries(entries)) // held: the caller's to change
 	kept := unlistedByGroups(entries)
 	for _, e := range entries {
 		if !e.Provider.Unlisted && !kept[e.ID] {
@@ -2351,7 +2396,7 @@ func unlistedByGroups(entries []Entry) map[string]bool {
 // model a routing group can be made of, or a request can name.
 func Served() []Entry {
 	entries := providerEntries()
-	return append(groupEntries(entries), entries...)
+	return append(slices.Clone(groupEntries(entries)), entries...)
 }
 
 // Unlisted are the models Served has and Catalog doesn't: those of the
@@ -2378,11 +2423,27 @@ func buildEntries() []Entry { return entriesOff(disabledNow()) }
 
 // entriesOff is the providers' catalog less the models off reports.
 func entriesOff(off func(pid, model string) bool) []Entry {
+	return entriesOf(Provider.On, off)
+}
+
+// heldOffEntries are the models of the providers the user switched off,
+// which the groups magpie finds keep (foundFrom). One without a key, a
+// plugin not signed in, finds no group.
+func heldOffEntries() []Entry {
+	return heldOf("off entries", func() []Entry {
+		return keptOf("off entries", func() []Entry {
+			return slices.Clip(entriesOf(func(p Provider) bool { return p.Ready() && p.Off }, disabledNow()))
+		})
+	})
+}
+
+// entriesOf is the catalog of the providers of, less the models off reports.
+func entriesOf(of func(Provider) bool, off func(pid, model string) bool) []Entry {
 	var out []Entry
 	s := settings.Load()
 	gone := retiredNow() // its vendor said it is retired (retired.go)
 	for _, p := range All() {
-		if !p.On() || p.DecideOnly() { // a dedicated decision API only routes
+		if !of(p) || p.DecideOnly() { // a dedicated decision API only routes
 			continue
 		}
 		for _, m := range p.Exposed() {
@@ -2510,6 +2571,13 @@ func entryIn(entries []Entry, id string) (Entry, bool) {
 			return e, true
 		}
 	}
+	if gid, ok := GroupIDOf(id); ok { // a found group by either of its ids
+		for _, e := range entries {
+			if e.Group == gid {
+				return e, true
+			}
+		}
+	}
 	return Entry{}, false
 }
 
@@ -2526,11 +2594,9 @@ func Resolve(id string) (Provider, string, bool) {
 	// Claude Code's mark for a model with a 1M window; it drops it before
 	// asking, but a value in its settings still has it
 	id = strings.TrimSuffix(strings.TrimSpace(id), "[1m]")
-	if strings.HasPrefix(id, GroupPrefix) {
-		for _, e := range Catalog() {
-			if e.ID == id {
-				return e.Provider, e.Model, true
-			}
+	if IsGroupRef(id) {
+		if e, ok := entryIn(Catalog(), id); ok {
+			return e.Provider, e.Model, true
 		}
 		return Provider{}, "", false
 	}
@@ -2538,8 +2604,10 @@ func Resolve(id string) (Provider, string, bool) {
 }
 
 func resolveIn(entries []Entry, id string) (Provider, string, bool) {
-	for _, e := range entries {
-		if e.ID == id {
+	// by index: an Entry, its Provider in it, is large, and a copy of each
+	// one looked past was most of a group's members resolved (membersIn)
+	for i := range entries {
+		if e := &entries[i]; e.ID == id {
 			return e.Provider, e.Model, true
 		}
 	}
@@ -2550,14 +2618,10 @@ func resolveIn(entries []Entry, id string) (Provider, string, bool) {
 			return *p, model, true
 		}
 	}
-	var hits []Entry
-	for _, e := range entries {
-		if e.Model == id {
-			hits = append(hits, e)
+	for i := range entries {
+		if e := &entries[i]; e.Model == id {
+			return e.Provider, e.Model, true // the first that serves it
 		}
-	}
-	if len(hits) >= 1 {
-		return hits[0].Provider, hits[0].Model, true
 	}
 	// not exposed, but some provider lists it
 	var found []Provider
@@ -2886,7 +2950,7 @@ func DropModelOutput(id string) (string, bool, error) {
 // display name, and the same resolution outputOf reads it back under.
 func outputKeyOf(id string) (string, error) {
 	r := strings.TrimPrefix(strings.TrimSpace(id), "magpie/")
-	if strings.HasPrefix(r, GroupPrefix) {
+	if IsGroupRef(r) {
 		return "", errorf("that is a routing group, not a provider's model")
 	}
 	pid, model, ok := strings.Cut(r, "/")

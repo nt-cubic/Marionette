@@ -27,6 +27,14 @@ func TestPlanQuotaSource(t *testing.T) {
 		{Provider{Chat: "https://opencode.ai/zen/go/v1", Anthropic: "https://opencode.ai/zen/go"}, "https://opencode.ai/zen/go/v1/usage", true, true},
 		{Provider{Anthropic: "https://opencode.ai/zen/go"}, "https://opencode.ai/zen/go/v1/usage", true, true},
 		{Provider{Chat: "https://opencode.ai/zen/v1"}, "", false, false}, // Zen is pay as you go
+		// Go at the inference API, as models.dev and Go's docs give it
+		// since October 2026 (ttmrmx on X: no card)
+		{Provider{Chat: "https://opencode.ai/inference/go/openai/v1"}, "https://opencode.ai/zen/go/v1/usage", true, true},
+		{Provider{Chat: "https://opencode.ai/inference/go/v1", Anthropic: "https://opencode.ai/inference/go"}, "https://opencode.ai/zen/go/v1/usage", true, true},
+		{Provider{Anthropic: "https://opencode.ai/inference/go/anthropic"}, "https://opencode.ai/zen/go/v1/usage", true, true},
+		{Provider{Chat: "https://opencode.ai/inference/openai/v1"}, "", false, false},      // Zen's
+		{Provider{Chat: "https://opencode.ai/inference/custom/acme/v1"}, "", false, false}, // the user's own provider
+		{Provider{Chat: "https://example.com/zen/go/v1"}, "", false, false},
 		{Provider{Chat: "https://api.kimi.com/coding/v1", Anthropic: "https://api.kimi.com/coding"}, "https://api.kimi.com/coding/v1/usages", true, true},
 		{Provider{Anthropic: "https://api.kimi.ai/coding/"}, "https://api.kimi.ai/coding/v1/usages", true, true},
 		{Provider{Chat: "https://api.commandcode.ai/provider/v1", Anthropic: "https://api.commandcode.ai/provider"}, "https://api.commandcode.ai/alpha/billing/credits", true, false},
@@ -335,6 +343,8 @@ func TestPlanQuotas(t *testing.T) {
 			Keys: []KeyAccount{{Key: "glm-a"}, {Key: "glm-b", Name: "home"}, {Key: "glm-off", Off: true}}},
 		{ID: "glm-api", Name: "GLM API", Chat: "https://open.bigmodel.cn/api/paas/v4", Key: "glm-payg"},
 		{ID: "go", Name: "OpenCode Go", Chat: "https://opencode.ai/zen/go/v1", Key: "go-k"},
+		// Go at models.dev's URL for it: the same card (ttmrmx on X)
+		{ID: "go-inference", Name: "OpenCode Go", Chat: "https://opencode.ai/inference/go/openai/v1", Key: "go-k"},
 		{ID: "zen", Name: "Zen", Chat: "https://opencode.ai/zen/v1", Key: "zen-k"},
 		{ID: "minimax-cn", Name: "MiniMax (China)", Chat: "https://api.minimaxi.com/v1", Anthropic: "https://api.minimaxi.com/anthropic", Key: "sk-cp-k"},
 		{ID: "minimax-payg", Name: "MiniMax API", Anthropic: "https://api.minimaxi.com/anthropic", Key: "sk-api-k"},
@@ -347,7 +357,7 @@ func TestPlanQuotas(t *testing.T) {
 	for _, q := range PlanQuotas(context.Background()) {
 		got[q.Provider+"/"+q.User] = q
 	}
-	if len(got) != 4 {
+	if len(got) != 5 {
 		t.Fatalf("cards: %+v", got)
 	}
 	if q := got["minimax-cn/"]; len(q.Windows) != 2 || q.Windows[0].Name != "5 hours" && q.Windows[0].Name != "Allowance" || q.Windows[0].Used != 25 || q.Windows[1].Name != "7 days" || q.Windows[1].Used != 4 {
@@ -370,6 +380,9 @@ func TestPlanQuotas(t *testing.T) {
 	if q := got["go/"]; q.Name != "OpenCode Go" || len(q.Windows) != 1 || q.Windows[0].Name != "5 hours" {
 		t.Errorf("go: %+v", q)
 	}
+	if q := got["go-inference/"]; len(q.Windows) != 1 || q.Windows[0].Name != "5 hours" || q.Error != "" {
+		t.Errorf("go at the inference API: %+v", q)
+	}
 	// The custom GLM provider is recognized by its endpoint, not its id
 	// or key labels, and the provenance survives PlanQuotas' cache.
 	reset := time.UnixMilli(4102444800000)
@@ -380,7 +393,7 @@ func TestPlanQuotas(t *testing.T) {
 			t.Errorf("%s/%s: hidden=%v", q.Provider, q.User, hidden)
 		}
 	}
-	if qs := notShown(PlanQuotas(context.Background()), []SubscriptionQuota{sub}); len(qs) != 2 {
+	if qs := notShown(PlanQuotas(context.Background()), []SubscriptionQuota{sub}); len(qs) != 3 {
 		t.Fatalf("cached plans after deduplication: %+v", qs)
 	}
 	// A restart loses the in-memory provenance; a failed read restores
@@ -393,10 +406,10 @@ func TestPlanQuotas(t *testing.T) {
 	lastQuotas.m, lastQuotas.loaded = nil, false
 	lastQuotas.Unlock()
 	qs := PlanQuotas(context.Background())
-	if len(qs) != 4 {
+	if len(qs) != 5 {
 		t.Fatalf("restored plans: %+v", qs)
 	}
-	if kept := notShown(qs, []SubscriptionQuota{sub}); len(kept) != 2 {
+	if kept := notShown(qs, []SubscriptionQuota{sub}); len(kept) != 3 {
 		t.Fatalf("restored plans after deduplication: %+v", kept)
 	}
 }

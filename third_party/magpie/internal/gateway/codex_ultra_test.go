@@ -25,6 +25,7 @@ import (
 type copilotUp struct {
 	mu     sync.Mutex
 	bodies []map[string]any
+	reply  string // a stream to answer with, in place of the made one
 }
 
 func (c *copilotUp) last(t *testing.T) map[string]any {
@@ -59,7 +60,13 @@ func copilotSol(t *testing.T) *copilotUp {
 		json.Unmarshal(b, &body)
 		c.mu.Lock()
 		c.bodies = append(c.bodies, body)
+		reply := c.reply
 		c.mu.Unlock()
+		if reply != "" {
+			w.Header().Set("Content-Type", "text/event-stream")
+			io.WriteString(w, reply)
+			return
+		}
 		message := "Find the release date of Codex 0.159 and report it."
 		if strings.Contains(string(b), `"encrypted"`) {
 			message = "gAAAAAsealed=="
@@ -177,12 +184,13 @@ func TestCopilotSolOffersUltra(t *testing.T) {
 	}
 }
 
-// Ultra's subagents with Codex's web_search kept (#656): a request offering
-// the search is made again for Copilot rather than relayed, and on that
-// path a Copilot lead's spawn_agent comes back to Codex unsealed, with the
-// task as written (Copilot not asked to seal it), and the subagent's
-// request — the task as MultiAgentV2's agent_message — reaches Copilot as
-// the task's text.
+// Ultra's subagents with Codex's web_search kept (#656): a lead whose
+// spawn_agent marks its message "encrypted" is made again for Copilot
+// rather than relayed, as Copilot can't open what it seals, and on that
+// path its spawn_agent comes back to Codex unsealed, with the task as
+// written (Copilot not asked to seal it). The subagent's request, which
+// marks nothing, is relayed with the search (Copilot runs web_search
+// itself), the task as MultiAgentV2's agent_message as Codex sent it.
 func TestCopilotUltraSubagentWithWebSearch(t *testing.T) {
 	c := copilotSol(t)
 	s := New()
@@ -240,9 +248,51 @@ func TestCopilotUltraSubagentWithWebSearch(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("subagent: %d %s", code, out)
 	}
-	sent, _ := json.Marshal(c.last(t)["input"])
-	if !strings.Contains(string(sent), task) || strings.Contains(string(sent), "encrypted_content") {
+	sub := c.last(t)
+	sent, _ := json.Marshal(sub["input"])
+	if !strings.Contains(string(sent), task) || !strings.Contains(string(sent), `"agent_message"`) || strings.Contains(string(sent), "encrypted_content") {
 		t.Fatalf("subagent's input to Copilot: %s", sent)
+	}
+	if offered, _ := json.Marshal(sub["tools"]); string(offered) != `[{"type":"web_search"}]` {
+		t.Fatalf("subagent's tools to Copilot: %s", offered)
+	}
+}
+
+// A Codex turn on Copilot offering web_search is relayed as Codex sent it,
+// as Copilot runs the search itself (echo_ts on Discord: translated for
+// magpie's search, every turn lost the relay); one whose tools mark an
+// argument "encrypted" is made again unmarked, with the search or without,
+// since Copilot seals that argument and can't open it on the next turn.
+func TestCopilotRelayedUnlessAskedToSeal(t *testing.T) {
+	c := copilotSol(t)
+	s := New()
+	spawn := `{"type":"namespace","name":"collaboration","description":"Sub-agents.","tools":[
+		{"type":"function","name":"spawn_agent","strict":false,"description":"Spawns an agent.",
+		 "parameters":{"type":"object","properties":{"message":{"type":"string","encrypted":true}},"required":["message"]}}]}`
+	exec := `{"type":"function","name":"exec_command","description":"Runs a command, \"encrypted\" or not.","strict":false,
+		 "parameters":{"type":"object","properties":{"cmd":{"type":"string"},"encrypted":{"type":"boolean"}},"required":["cmd"]}}`
+	for _, tc := range []struct {
+		name, tools string
+		relayed     bool
+	}{
+		{"search", exec + `,{"type":"web_search"}`, true},
+		{"search and a sealed argument", spawn + `,` + exec + `,{"type":"web_search"}`, false},
+		{"a sealed argument alone", spawn, false},
+	} {
+		code, out := postTo(t, s, "/v1/responses", `{"model":"copilot/gpt-6-luna","stream":true,"input":[{"role":"user","content":"hi"}],"probe":"as sent","tools":[`+tc.tools+`]}`)
+		if code != 200 {
+			t.Fatalf("%s: %d %s", tc.name, code, out)
+		}
+		// a field magpie doesn't know goes on only as Codex sent it
+		body := c.last(t)
+		sent, _ := json.Marshal(body["tools"])
+		relayed := body["probe"] == "as sent"
+		if relayed != tc.relayed {
+			t.Errorf("%s: relayed %v, tools to Copilot %s", tc.name, relayed, sent)
+		}
+		if !tc.relayed && strings.Contains(string(sent), `"encrypted":true`) {
+			t.Errorf("%s: Copilot was asked to seal: %s", tc.name, sent)
+		}
 	}
 }
 

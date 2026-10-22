@@ -13,10 +13,24 @@ import (
 // OpenRouter names it in a top-level "provider" — a Chat body and every
 // chunk of its stream, an Anthropic Messages body — and in a Messages
 // stream's message_start, as message.provider (seen 2026-10-05: DeepInfra,
-// StreamLake). Its Responses replies name none.
+// StreamLake). Its Responses replies name none. ClinePass (api.cline.bot)
+// names it in a Chat choice's provider_metadata, as
+// gateway.routing.finalProvider: under delta in a stream's chunk, under
+// message in one body (#2847, smart-lty). Only those places count: a
+// choice's content is the model's, and providerAttempts inside routing
+// lists every provider tried, not the one that answered.
 func upstreamOf(b []byte) string {
-	if !bytes.Contains(b, []byte(`"provider"`)) {
+	if !bytes.Contains(b, []byte(`"provider"`)) && !bytes.Contains(b, []byte(`"finalProvider"`)) {
 		return ""
+	}
+	type routed struct {
+		ProviderMetadata struct {
+			Gateway struct {
+				Routing struct {
+					FinalProvider json.RawMessage `json:"finalProvider"`
+				} `json:"routing"`
+			} `json:"gateway"`
+		} `json:"provider_metadata"`
 	}
 	var v struct {
 		Provider json.RawMessage `json:"provider"`
@@ -26,11 +40,19 @@ func upstreamOf(b []byte) string {
 		Response struct {
 			Provider json.RawMessage `json:"provider"`
 		} `json:"response"`
+		Choices []struct {
+			Delta   routed `json:"delta"`
+			Message routed `json:"message"`
+		} `json:"choices"`
 	}
 	if json.Unmarshal(b, &v) != nil {
 		return ""
 	}
-	for _, raw := range []json.RawMessage{v.Provider, v.Message.Provider, v.Response.Provider} {
+	raws := []json.RawMessage{v.Provider, v.Message.Provider, v.Response.Provider}
+	for _, c := range v.Choices {
+		raws = append(raws, c.Delta.ProviderMetadata.Gateway.Routing.FinalProvider, c.Message.ProviderMetadata.Gateway.Routing.FinalProvider)
+	}
+	for _, raw := range raws {
 		var s string // a request's provider options echoed back are an object
 		if json.Unmarshal(raw, &s) == nil {
 			if s = strings.TrimSpace(s); s != "" && len(s) <= 64 {

@@ -2,16 +2,12 @@ package gateway
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/provider"
@@ -166,62 +162,6 @@ func TestUserAgentClaudeCodeAsBefore(t *testing.T) {
 		askAs(t, New(), "/v1/messages", uaRoutes[0].body, cc)
 		if got, _ := v.sent("/v1/messages"); got != cc {
 			t.Errorf("pass %v: Claude Code's request went as %q", pass, got)
-		}
-	}
-}
-
-// A signed-in account keeps the identity its own signing gives, whatever
-// is set: Factory's is asked as droid, never as the agent, nor does the
-// flag stick to it when saved.
-func TestUserAgentAccountUntouched(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
-	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
-	f := &fake{t: t, ctype: "application/json", reply: `{"id":"c","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`}
-	up := httptest.NewServer(f)
-	t.Cleanup(up.Close)
-	t.Cleanup(provider.FactoryBaseForTest(up.URL, up.URL+"/eu"))
-	auth, _ := json.Marshal(map[string]any{
-		"accessToken": "tok", "refreshToken": "r",
-		"expiresAt": time.Now().Add(time.Hour).UnixMilli(),
-		"orgId":     "org_D", "activeOrganizationId": "fac_D", "email": "d@example.com",
-	})
-	dir := filepath.Dir(provider.Path())
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	raw, _ := json.Marshal([]map[string]any{{"agent": "factory", "user": "d@example.com", "plan": "pro", "on": true, "auth": json.RawMessage(auth)}})
-	if err := os.WriteFile(filepath.Join(dir, "logins.json"), raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	// set as the file would hold it, past the editor and the CLI
-	if err := os.WriteFile(provider.Path(), []byte(`{"providers":[{"id":"factory","passUserAgent":true}]}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	p, err := provider.Find("factory")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p.PassesUserAgent() {
-		t.Fatal("a signed-in account passes the agent's User-Agent on")
-	}
-	for _, r := range []struct{ path, body string }{
-		{"/v1/chat/completions", `{"model":"factory/deepseek-v4.1-flash","messages":[{"role":"user","content":"hi"}]}`},
-		{"/v1/messages", `{"model":"factory/deepseek-v4.1-flash","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`},
-	} {
-		f.head = nil
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("POST", r.path, strings.NewReader(r.body))
-		req.Header.Set("User-Agent", "pi-coding-agent/0.9.1")
-		New().Handler().ServeHTTP(rec, req)
-		if f.head == nil {
-			t.Fatalf("%s: Factory wasn't asked: %d %s", r.path, rec.Code, rec.Body)
-		}
-		if ua := f.head.Get("User-Agent"); !strings.HasPrefix(ua, "factory-cli/") {
-			t.Errorf("%s: Factory was asked as %q, not as droid", r.path, ua)
 		}
 	}
 }

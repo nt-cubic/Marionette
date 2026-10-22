@@ -1,7 +1,7 @@
 // Package middleware runs the gateway middleware plugins declare: a
-// module with onRequest, onEvent and onResponse hooks that the gateway
-// calls on every request an agent sends it, every event of the reply's
-// stream and every whole reply.
+// module with onRequest, onProvider, onEvent and onResponse hooks that the
+// gateway calls on every request an agent sends it, each provider it tries
+// the request on, every event of the reply's stream and every whole reply.
 //
 // It runs in the gateway's own process, in moejs, a JavaScript engine
 // written in Go: a hook on one streamed event costs about a microsecond,
@@ -44,9 +44,11 @@ type mw struct {
 	spec, name string
 	mod        *moejs.Module
 	onReq      moejs.Hook
+	onProv     moejs.Hook
 	onEv       moejs.Hook
 	onResp     moejs.Hook
 	hasReq     bool
+	hasProv    bool
 	hasEv      bool
 	hasResp    bool
 	// events are the stream events onEvent is called for, by name; nil
@@ -72,7 +74,8 @@ type set struct {
 	stamp string
 	list  []*mw
 	errs  map[string]string // by spec: why it didn't load
-	// hooked: some module of list has onRequest, onEvent or onResponse
+	// hooked: some module of list has onRequest, onProvider, onEvent or
+	// onResponse
 	hooked      bool
 	droppedSaid atomic.Int64
 }
@@ -154,7 +157,7 @@ func load(st string) *set {
 			continue
 		}
 		s.list = append(s.list, m)
-		s.hooked = s.hooked || m.hasReq || m.hasEv || m.hasResp
+		s.hooked = s.hooked || m.hasReq || m.hasProv || m.hasEv || m.hasResp
 	}
 	return s
 }
@@ -183,13 +186,14 @@ func compile(e plugin.Entry, file string) (*mw, error) {
 		return nil, err
 	}
 	m.onReq, m.hasReq = in.hook("onRequest")
+	m.onProv, m.hasProv = in.hook("onProvider")
 	m.onEv, m.hasEv = in.hook("onEvent")
 	m.onResp, m.hasResp = in.hook("onResponse")
 	if err := m.discover(in); err != nil {
 		return nil, err
 	}
-	if !m.hasReq && !m.hasEv && !m.hasResp && len(m.strats) == 0 && !m.hasUse {
-		return nil, errors.New("exports none of onRequest, onEvent, onResponse, strategies and onUsage")
+	if !m.hasReq && !m.hasProv && !m.hasEv && !m.hasResp && len(m.strats) == 0 && !m.hasUse {
+		return nil, errors.New("exports none of onRequest, onProvider, onEvent, onResponse, strategies and onUsage")
 	}
 	if names, ok := in.strings("events"); ok {
 		m.events = map[string]bool{}
@@ -441,7 +445,7 @@ func States() map[string]State {
 		for _, h := range []struct {
 			ok   bool
 			name string
-		}{{m.hasReq, "onRequest"}, {m.hasEv, "onEvent"}, {m.hasResp, "onResponse"}} {
+		}{{m.hasReq, "onRequest"}, {m.hasProv, "onProvider"}, {m.hasEv, "onEvent"}, {m.hasResp, "onResponse"}} {
 			if h.ok {
 				st.Hooks = append(st.Hooks, h.name)
 			}

@@ -79,6 +79,68 @@ func servedCandidate(c candidate, tokens int) {
 	}
 }
 
+// forbidden is a plain 403 one request was given, and the rest it took:
+// what forbiddenAlike and unforbid read.
+type forbidden struct {
+	c    candidate
+	rest Rest
+	try  int // its index in the route's Tries, -1 untraced
+}
+
+// plainForbidden says a reply is a 403 that says nothing of why: no
+// quota, credit, rate, verification, restriction, a model not served.
+// Such a 403 may be the key's or the request's.
+func plainForbidden(c candidate, status int, body []byte) bool {
+	return status == http.StatusForbidden && failureOf(c, status, body) == failOther &&
+		!modelRefused(status, body) && !codeAssistModelMissing(c.p, status, body)
+}
+
+// forbiddenAlike is the plain 403s of c's mates earlier in the request:
+// another key or account of its provider, asked the same model at the
+// same reasoning. Two of them refusing one request alike, it is the
+// request that is refused, not each account (plugins#243,
+// zygs1083-dotcom: Factory's 403 for a Claude Code wrapper it refused
+// rested every account in turn, and the next requests found them all in
+// backoff).
+// The rest of seen is returned beside them, for the request to keep.
+func forbiddenAlike(seen []forbidden, c candidate) (alike, others []forbidden) {
+	for _, f := range seen {
+		if f.c.p.ID == c.p.ID && f.c.model == c.model && f.c.effort == c.effort && f.c.who() != c.who() {
+			alike = append(alike, f)
+		} else {
+			others = append(others, f)
+		}
+	}
+	return alike, others
+}
+
+// unforbid takes back the rest a plain 403 took and the failures it
+// counted, when a mate's alike 403 said the request was what was refused.
+// A rest taken since, which isn't this one, stays.
+func unforbid(f forbidden) {
+	if f.rest.By == "off" || f.rest.Key == "" {
+		return // it neither rested nor counted
+	}
+	routed.Lock()
+	for _, k := range []string{f.c.restKey(), f.c.restID()} {
+		if n := routed.failures[k]; n > 1 {
+			routed.failures[k] = n - 1
+		} else {
+			delete(routed.failures, k)
+		}
+		if f.c.model == "" {
+			break // restID is restKey: counted once
+		}
+	}
+	routed.Unlock()
+	restingUntil.Lock()
+	if until, ok := restingUntil.m[f.rest.Key]; ok && until.Equal(f.rest.Until) {
+		delete(restingUntil.m, f.rest.Key)
+		delete(restingUntil.note, f.rest.Key)
+	}
+	restingUntil.Unlock()
+}
+
 // clearRest wakes a candidate that just answered, whether it was tried after
 // a provider rest or after a model-specific rest.
 func clearRest(key string) {
@@ -221,6 +283,10 @@ const (
 	// failOverflow: the conversation is too long for the member's model
 	// (#700) — another member, with room for it, is asked, and nobody rests
 	failOverflow = "overflow"
+	// failRoom: the window held the prompt but not the reply asked for
+	// with it — the same one is asked again for the reply the window has
+	// left, and nobody rests
+	failRoom = "room"
 	// failSlow: the member hadn't begun its reply when its group's
 	// FirstToken ran out, nothing of it sent — the next is asked, and
 	// nobody rests, as a long prompt is slow anywhere
@@ -297,14 +363,14 @@ func failure(status int, body []byte) string {
 		// Kimi's "exceeded model token limit" is the conversation's
 		// length, not the plan's
 		return failOther
-	case status == 402 && usedUpWords.Match(body) && !creditWords.Match(body) && !strings.Contains(string(body), "insufficient_quota"):
+	case status == 402 && usedUpWords.Match(body) && !creditWords.Match(body) && !bytes.Contains(body, []byte("insufficient_quota")):
 		// a 402 that says a usage limit and nothing of money is out of
 		// quota, not of credit: Factory's "You've reached your weekly
 		// standard usage limit (resets in …). Switch to Droid Core …" is
 		// Standard's pool, which counts some models only, and read as the
 		// account out of credit it rested Droid Core with it (#1979)
 		return failQuota
-	case status == 402, creditWords.Match(body) && (status != 429 || brokeWords.Match(body)) || strings.Contains(string(body), "insufficient_quota"):
+	case status == 402, creditWords.Match(body) && (status != 429 || brokeWords.Match(body)) || bytes.Contains(body, []byte("insufficient_quota")):
 		return failCredit
 	case status == 429 && resetsWhen.Match(body):
 		// out until the time it names, in whichever language it said so:
@@ -598,8 +664,11 @@ var zhipuResets = regexp.MustCompile(`(?:\bYour limit will reset at|您的限额
 // offset goes with it: "20:12 UTC+8" today, else "Oct 16 09:00 UTC+8".
 // Without it a magpie on UTC+8 said "not asked again before 17:12" to a
 // user who couldn't tell whose 17:12 it was (Player on Discord).
-func heldClock(t, now time.Time) string {
-	t, now = t.Local(), now.Local()
+func heldClock(t, now time.Time) string { return heldClockIn(t, now, time.Local) }
+
+// heldClockIn is heldClock on the clock of loc.
+func heldClockIn(t, now time.Time, loc *time.Location) string {
+	t, now = t.In(loc), now.In(loc)
 	s := t.Format("Jan 2 15:04")
 	if y, m, d := t.Date(); now.Year() == y && now.Month() == m && now.Day() == d {
 		s = t.Format("15:04")
@@ -745,6 +814,12 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	now := time.Now()
 	d := fallbackCooldown
 	why := failureOf(c, status, body)
+	if header.Get(zdrHeader) != "" || zdrRefused(status, body) {
+		// Command Code's Zero Data Retention setting refused the request:
+		// the model and the account are as good as they were, and answer
+		// as soon as the switch is off
+		return Rest{Why: why, Status: status, By: "off", Until: now}
+	}
 	// read before the allowance is asked again below: out of a pool that
 	// counts some models only, the account's others are still in theirs
 	// (Cursor's Auto with Other Models used up)
@@ -858,8 +933,12 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 		// everyone (sub2api's 503) says nothing of the key's own windows.
 		// Held to the longest an account out of quota sits out: the window
 		// is the vendor's reading, and one read a year off (a /usage date
-		// with no year) would bench the account until someone noticed
-		if t := c.full(now); !t.IsZero() && c.p.Account != nil && !unserved {
+		// with no year) would bench the account until someone noticed.
+		// Not a refusal (401, 403) that names no quota: one that did is
+		// failQuota already, and a plain 403 is about the key or the
+		// request, so a cached reading of 98% benched a working account
+		// until its window reset (plugins#243, zygs1083-dotcom)
+		if t := c.full(now); !t.IsZero() && c.p.Account != nil && !unserved && status != http.StatusUnauthorized && status != http.StatusForbidden {
 			d, r.By, modelBackoff = min(t.Sub(now), longestQuota), "window", false
 		}
 	}
@@ -1039,6 +1118,11 @@ func keepRetry(dst, src http.Header, body []byte) {
 		// it, for settle to try the next account (#248)
 		dst.Set(refusedHeader, note)
 	}
+	if zdrCoded.Match(body) {
+		// the error the agent gets may lose Command Code's code: that it
+		// was its Zero Data Retention setting goes on beside it
+		dst.Set(zdrHeader, "1")
+	}
 }
 
 // refusedHeader carries, from keepRetry to settle, that an error status
@@ -1112,6 +1196,10 @@ type weighing struct {
 	lefts map[allowanceKey]left // the allowance of each account and model
 
 	tokens map[string]float64 // least used: tokens each served lately
+
+	// free is each seat's model costing nothing there, by rest key: filled
+	// only when the routing weighs by it (routes.Strategy.ByFree)
+	free map[string]bool
 }
 
 type allowanceKey struct {
@@ -1240,6 +1328,15 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 		wg.tokens = map[string]float64{}
 		for i, c := range cs {
 			wg.tokens[c.rest] = seats[i].Tokens
+		}
+	}
+	if st.ByFree {
+		// only a routing that weighs by it pays for working it out: it
+		// reads each candidate's provider list (provider.FreeModel)
+		wg.free = map[string]bool{}
+		for i, c := range cs {
+			free := c.p.FreeModel(c.model)
+			seats[i].Free, wg.free[c.rest] = free, free
 		}
 	}
 	order := routes.Apply(st, p.ID, seats)

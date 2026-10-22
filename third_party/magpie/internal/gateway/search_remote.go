@@ -51,14 +51,18 @@ func remoteSearchesAny(p provider.Provider) bool {
 }
 
 // searchableModel is a model of p that magpie may search with: a Gemini
-// on a Google sign-in, one a Remote magpie searches natively for, any
-// other provider's.
+// on a Google sign-in, one a Remote magpie searches natively for, one of
+// searchModels or a plugin marks that searches by itself (partSearcher),
+// any other
+// provider's.
 func searchableModel(p provider.Provider, model string) bool {
 	switch {
 	case googleAccount(p):
 		return searchModel(model)
 	case p.IsRemoteMagpie():
 		return remoteSearch(p, model) == searchNative
+	case partSearcher(p):
+		return searchesAlone(p, model)
 	}
 	return true
 }

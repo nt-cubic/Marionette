@@ -2,6 +2,7 @@ package usage
 
 import (
 	"github.com/yetone/magpie/internal/settings"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -39,10 +40,19 @@ func TestGatewaySessionsCacheRefreshAndOwnership(t *testing.T) {
 	if len(first) != 1 {
 		t.Fatalf("first: %+v", first)
 	}
-	first[0].Models[0].Model = "changed by caller"
-	first[0].Daily[0].Input = 999
+	// the lists are the kept projection's, read only; an append is the
+	// caller's own (#2776)
 	again := GatewaySessions(time.Time{}, nil)
-	if again[0].Models[0].Model != "m" || again[0].Daily[0].Input != 10 {
+	if &again[0].Daily[0] != &first[0].Daily[0] {
+		t.Fatal("each ask has a copy of the days of its own")
+	}
+	mine := append(first[0].Daily, GatewayDayUsage{Date: "mine"})
+	theirs := append(again[0].Daily, GatewayDayUsage{Date: "theirs"})
+	models := append(first[0].Models, GatewayModel{Model: "mine"})
+	if mine[1].Date != "mine" || theirs[1].Date != "theirs" || &mine[0] == &first[0].Daily[0] || &models[0] == &first[0].Models[0] {
+		t.Fatalf("two callers' appends share the kept lists: %+v %+v", mine, theirs)
+	}
+	if again := GatewaySessions(time.Time{}, nil); len(again[0].Models) != 1 || len(again[0].Daily) != 1 || again[0].Models[0].Model != "m" || again[0].Daily[0].Input != 10 {
 		t.Fatalf("caller changed cache: %+v", again)
 	}
 	if got := GatewaySessions(time.Time{}, map[string]bool{"pi|native": true}); len(got) != 0 {
@@ -63,7 +73,7 @@ func TestClientRequestPrefixedSessionsCount(t *testing.T) {
 	if len(summary.Sessions) != 1 || summary.Sessions[0].ID != "request-mine" {
 		t.Fatalf("the client's session is missing from Usage: %+v", summary.Sessions)
 	}
-	if got := Vias(time.Time{}); len(got["pi|request-mine"]) != 1 {
+	if got := Vias(time.Time{}); len(got.Of("pi|request-mine")) != 1 {
 		t.Fatalf("the client's session is missing from Routing: %+v", got)
 	}
 	if _, ok := GatewaySessionByID("pi", "request-mine", nil); !ok {
@@ -99,11 +109,11 @@ func TestGatewaySessionsCachePricesWindowsAndRewrite(t *testing.T) {
 		}
 	}
 	vias := Vias(time.Time{})
-	vias["pi|native"][0].Calls = 999
-	if got := Vias(time.Time{})["pi|native"][0].Calls; got != 2 {
+	vias.Of("pi|native")[0].Calls = 999
+	if got := Vias(time.Time{}).Of("pi|native")[0].Calls; got != 2 {
 		t.Fatalf("caller mutated routing cache: %d", got)
 	}
-	if got := Vias(at.Add(-time.Minute))["pi|native"][0].Calls; got != 1 {
+	if got := Vias(at.Add(-time.Minute)).Of("pi|native")[0].Calls; got != 1 {
 		t.Fatalf("routing window: %d", got)
 	}
 	if err := os.WriteFile(Path(), nil, 0600); err != nil {
@@ -112,7 +122,74 @@ func TestGatewaySessionsCachePricesWindowsAndRewrite(t *testing.T) {
 	if got := GatewaySessions(time.Time{}, nil); len(got) != 0 {
 		t.Fatalf("rewrite retained sessions: %+v", got)
 	}
-	if got := Vias(time.Time{}); len(got) != 0 {
+	if got := Vias(time.Time{}); got.Len() != 0 {
 		t.Fatalf("rewrite retained routing: %+v", got)
+	}
+}
+
+// A range of whole days is read out of the one all-time projection: no
+// second copy is built or kept for it, and what it reads equals a direct
+// build from that midnight (#2776).
+func TestGatewayWindowsShareOneProjection(t *testing.T) {
+	resetUsageTest(t)
+	price := 3.0
+	cfg := settings.Load()
+	cfg.ModelPrices = map[string]settings.ModelPrice{"*/priced": {Input: &price, Output: &price, CacheRead: new(0.0), CacheWrite: new(0.0)}}
+	if err := settings.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	today := time.Now()
+	day := func(back int) time.Time {
+		y, m, d := today.AddDate(0, 0, -back).Date()
+		return time.Date(y, m, d, 0, 0, 0, 0, time.Local)
+	}
+	for back := 5; back >= 0; back-- {
+		at := day(back).Add(10 * time.Hour)
+		Append(Record{Time: at, Agent: "pi", Session: "long", Provider: "p", Model: "priced", Input: 1000 * (back + 1), Output: 7, Millis: 1500, Status: 200})
+		Append(Record{Time: at.Add(time.Minute), Agent: "pi", Session: "long", Provider: "p", Model: "free", Input: 11, Output: 3, CacheRead: 5, Status: 200})
+		if back%2 == 0 {
+			Append(Record{Time: at.Add(2 * time.Minute), Agent: "codex", Session: "even", Provider: "p", Model: "priced", Input: 300, Output: 9, Millis: 250, Status: 200})
+		}
+	}
+	Append(Record{Time: day(5).Add(time.Hour), Agent: "pi", Session: "old", Provider: "p", Model: "priced", Input: 9, Status: 200})
+
+	key := func(ss []GatewaySession) map[string]GatewaySession {
+		m := map[string]GatewaySession{}
+		for _, s := range ss {
+			m[s.Agent+"|"+s.ID] = s
+		}
+		return m
+	}
+	backs := []int{0, 1, 2, 3, 7}
+	base := gatewayBuilds.Load()
+	GatewaySessions(time.Time{}, nil)
+	got := map[int][]GatewaySession{}
+	for _, back := range backs {
+		got[back] = GatewaySessions(day(back), nil)
+	}
+	if built := gatewayBuilds.Load() - base; built != 1 {
+		t.Fatalf("built %d projections for one log and %d ranges, want 1 kept and shared by them all", built, len(backs))
+	}
+	for _, back := range backs {
+		want, _ := buildGatewaySessions(readLogSnapshot(), day(back), nil)
+		g, w := key(got[back]), key(want)
+		if len(g) != len(w) {
+			t.Fatalf("from %d days back: %d sessions, want %d: %+v", back, len(g), len(w), got[back])
+		}
+		for k, ws := range w {
+			gs, ok := g[k]
+			if !ok {
+				t.Fatalf("from %d days back: %s missing", back, k)
+			}
+			if !gs.Start.Equal(ws.Start) || !gs.Last.Equal(ws.Last) || gs.Tokens != ws.Tokens || gs.Unpriced != ws.Unpriced || math.Abs(gs.Cost-ws.Cost) > 1e-9 || len(gs.Models) != len(ws.Models) || len(gs.Daily) != len(ws.Daily) {
+				t.Fatalf("from %d days back, %s:\n got %+v\nwant %+v", back, k, gs, ws)
+			}
+			for i := range ws.Models {
+				a, b := gs.Models[i], ws.Models[i]
+				if a.Model != b.Model || a.Tokens != b.Tokens || a.Priced != b.Priced || math.Abs(a.Cost-b.Cost) > 1e-9 {
+					t.Fatalf("from %d days back, %s model %d: got %+v want %+v", back, k, i, a, b)
+				}
+			}
+		}
 	}
 }

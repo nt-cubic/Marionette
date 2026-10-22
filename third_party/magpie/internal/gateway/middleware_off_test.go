@@ -54,10 +54,14 @@ func (e *echoing) last() string {
 	return e.sent[len(e.sent)-1]
 }
 
-// panicky is a masker that fails.
+// panicky is a masker that fails, on each way the gateway asks it to
+// mask (a Teller is asked through JSONHits and TextHits).
 type panicky struct{ masking.Masker }
 
-func (panicky) JSON([]byte) ([]byte, int) { panic("masker broke") }
+func (panicky) JSON([]byte) ([]byte, int)            { panic("masker broke") }
+func (panicky) JSONHits([]byte) ([]byte, []gwmw.Hit) { panic("masker broke") }
+func (panicky) Text(string) (string, int)            { panic("masker broke") }
+func (panicky) TextHits(string) (string, []gwmw.Hit) { panic("masker broke") }
 
 // The middleware point's masker with plugins/redact on and off. On, a
 // secret goes to the vendor as a placeholder and comes back as it was.

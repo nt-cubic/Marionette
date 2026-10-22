@@ -40,8 +40,43 @@ import (
 const DrawAgent = "magpie-image/1"
 
 // drawTimeout is how long a vendor is given to draw: to answer, and to send
-// all of its answer.
-var drawTimeout = 5 * time.Minute
+// all of its answer. It is Settings' Image generation timeout (neighbads on
+// X: a slow image endpoint needs more than the 5 minutes it was fixed at),
+// read as each request comes, in drawUnits.
+func drawTimeout() time.Duration {
+	return settings.Load().ImageWait() / time.Minute * drawUnit
+}
+
+// drawUnit is a minute of drawTimeout: a test makes it shorter, rather than
+// wait the minutes out.
+var drawUnit = time.Minute
+
+// drawWaitKey marks a request's context as a drawing's (or a video's),
+// given the time it holds: the vendor is waited on for that long, past the
+// 10 minutes upstreamTransport gives any other request to begin answering
+// (an images API answers only once it has drawn), and what ran out of time
+// says how long it was given.
+type drawWaitKey struct{}
+
+// drawWithin is ctx with d to draw in: its deadline, and the mark.
+func drawWithin(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithValue(ctx, drawWaitKey{}, d), d)
+}
+
+// drawWaitOf is the time ctx was given to draw in, if it was.
+func drawWaitOf(ctx context.Context) (time.Duration, bool) {
+	d, ok := ctx.Value(drawWaitKey{}).(time.Duration)
+	return d, ok
+}
+
+// givenTo says how long the drawing in ctx was given, or, for a request
+// that isn't one, how long it ran since start.
+func givenTo(ctx context.Context, start time.Time) time.Duration {
+	if d, ok := drawWaitOf(ctx); ok {
+		return d
+	}
+	return time.Since(start).Round(time.Second)
+}
 
 // maxDrawings is how many images one request may ask for.
 const maxDrawings = 4
@@ -153,6 +188,15 @@ func ListedDrawer(ref string) string {
 		return ref
 	}
 	return pid + "/" + codexDrawer
+}
+
+// listsCantName is whether p's image models are ones magpie names itself
+// (a ChatGPT account's GPT Image, a Grok subscription's Grok Imagine, a
+// WorkBuddy plan's those its config lists), apart from its chat models:
+// an account's own list of models (#474), picked in the editor from the
+// chat models, can't name them, so it never bars one (heyiwei5 on X).
+func listsCantName(p provider.Provider) bool {
+	return drawsCodex(p) || drawsGrok(p) || drawsWorkBuddy(p)
 }
 
 // codexDrawer is the image model Codex CLI asks a ChatGPT account for, the
@@ -424,14 +468,16 @@ func (s *Server) images(edit bool) http.HandlerFunc {
 			}
 		}
 		var unmask func()
-		w, d.Prompt, unmask, err = redactedPrompt(w, d.Prompt)
+		var hits maskHits
+		w, d.Prompt, unmask, hits, err = redactedPromptHits(w, d.Prompt)
 		defer unmask()
 		if err != nil {
-			fail(http.StatusServiceUnavailable, err.Error())
+			fail(maskStatus(err), err.Error())
 			return
 		}
+		noteMasked(r, "image", hits, d.Prompt, 0, p.ID, call.Model)
 		call.Provider, call.To = p.ID, provider.Chat
-		ctx, cancel := context.WithTimeout(r.Context(), drawTimeout)
+		ctx, cancel := drawWithin(r.Context(), drawTimeout())
 		defer cancel()
 		// the account that drew, or refused last, is the one recorded
 		var (
@@ -523,7 +569,7 @@ func (s *Server) images(edit bool) http.HandlerFunc {
 // other names a model on its own.
 func drawingGroup(asked string, p provider.Provider, model string) (provider.Group, []provider.Member, bool) {
 	ref := asked
-	if !strings.HasPrefix(ref, provider.GroupPrefix) {
+	if !provider.IsGroupRef(ref) {
 		gid, ok := provider.GroupFor(ref)
 		if !ok {
 			return provider.Group{}, nil, false
@@ -803,6 +849,17 @@ func (s *Server) drawOnAccounts(ctx context.Context, r *http.Request, p provider
 	// an account whose list lacks the image model is put aside for text
 	// when another's list is unknown; for drawing it is asked last
 	_, _, left, barred := perKeyBarred(q, model, provider.Chat)
+	if listsCantName(q) {
+		// its accounts' own lists of models are picked from its chat
+		// models, which its image models are never among: a list keeps
+		// an account from no drawing, as it couldn't name one
+		for _, c := range barred {
+			if c.capped == nil {
+				left = append(left, c)
+			}
+		}
+		barred = slices.DeleteFunc(barred, func(c candidate) bool { return c.capped == nil })
+	}
 	for _, c := range left {
 		if !slices.ContainsFunc(cs, func(o candidate) bool { return o.p.AccountID() == c.p.AccountID() }) {
 			cs = append(cs, c)
@@ -971,7 +1028,7 @@ func (s *Server) sendWith(ctx context.Context, p provider.Provider, method, url,
 	res, err := p.Do(s.client, req) // a plugin's through the plugin
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil, 504, fmt.Errorf("%s didn't answer in %s", p.Name, drawTimeout)
+			return nil, 504, fmt.Errorf("%s didn't answer in %s", p.Name, givenTo(ctx, asked))
 		}
 		return nil, 502, err
 	}
@@ -983,7 +1040,7 @@ func (s *Server) sendWith(ctx context.Context, p provider.Provider, method, url,
 		if ctx.Err() != nil {
 			// not a bare "context deadline exceeded" (#1576): the vendor
 			// began answering, and its answer is what ran out of time
-			return nil, 504, fmt.Errorf("%s began answering after %s (%d %s) but hadn't sent all of its answer in %s: %s", p.Name, answered.Round(time.Second), res.StatusCode, http.StatusText(res.StatusCode), drawTimeout, stalledAt(b, time.Since(rb.last)))
+			return nil, 504, fmt.Errorf("%s began answering after %s (%d %s) but hadn't sent all of its answer in %s: %s", p.Name, answered.Round(time.Second), res.StatusCode, http.StatusText(res.StatusCode), givenTo(ctx, asked), stalledAt(b, time.Since(rb.last)))
 		}
 		return nil, 502, err
 	}
@@ -1292,14 +1349,20 @@ func (s *Server) fetchPicture(ctx context.Context, url string) ([]byte, string, 
 func inline(format string) bool { return strings.EqualFold(format, "b64_json") }
 
 // ImageStall is how long an image being downloaded may send nothing before
-// the download is given up, and ImageLongest how long it may take in all.
-// A slow download goes on while it moves: a 4K PNG is 10 MB and more, and
-// a cap on the whole of it (generate_image's was 2 minutes) lost one that
-// was still coming (#1576).
+// the download is given up, and ImageLongest how long it may take in all
+// at the least: as long as drawTimeout where Settings gives drawing longer,
+// as a vendor slow to draw can be as slow to hand the image over. A slow
+// download goes on while it moves: a 4K PNG is 10 MB and more, and a cap
+// on the whole of it (generate_image's was 2 minutes) lost one that was
+// still coming (#1576).
 var (
 	ImageStall   = time.Minute
 	ImageLongest = 5 * time.Minute
 )
+
+// imageLongest is how long a download may take in all: ImageLongest, or
+// drawTimeout where that is longer.
+func imageLongest() time.Duration { return max(ImageLongest, drawTimeout()) }
 
 // maxImageBytes is the most of an image a download reads.
 const maxImageBytes = 64 << 20
@@ -1308,13 +1371,14 @@ var errImageStalled = errors.New("the download stalled")
 
 // FetchImage downloads the image at url with c: its bytes, and its type —
 // what the bytes are, over what the server says. It gives up when nothing
-// comes for ImageStall or it has taken ImageLongest, and says which, and
+// comes for ImageStall or it has taken imageLongest, and says which, and
 // how much had come.
 func FetchImage(ctx context.Context, c *http.Client, url string) ([]byte, string, error) {
 	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
 		return nil, "", fmt.Errorf("%q isn't an http(s) URL", url)
 	}
-	ctx, cancel := context.WithTimeout(ctx, ImageLongest)
+	longest := imageLongest()
+	ctx, cancel := context.WithTimeout(ctx, longest)
 	defer cancel()
 	ctx, stop := context.WithCancelCause(ctx)
 	defer stop(nil)
@@ -1329,7 +1393,7 @@ func FetchImage(ctx context.Context, c *http.Client, url string) ([]byte, string
 		case errImageStalled:
 			return fmt.Errorf("nothing came for %s, after %s", ImageStall, mb(got))
 		case context.DeadlineExceeded:
-			return fmt.Errorf("only %s came in %s", mb(got), ImageLongest)
+			return fmt.Errorf("only %s came in %s", mb(got), longest)
 		}
 		return err
 	}

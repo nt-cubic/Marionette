@@ -223,7 +223,7 @@ func CheckInQoder(ctx context.Context) []WorkBuddyCheckin {
 // QoderCheckins is each Qoder account's last check-in, as kept, by its
 // name now; asks nothing.
 func QoderCheckins() []WorkBuddyCheckin {
-	st := readCheckins(qoderCheckinPath())
+	st := shownCheckins(qoderCheckinPath())
 	var out []WorkBuddyCheckin
 	listed := map[string]bool{}
 	for _, a := range qoderCheckinAccounts() {

@@ -486,6 +486,11 @@ func contextRoutes(r *http.Request, days int) []gateway.Route {
 			}
 		}
 	}
+	// a group magpie found by the id agents pick it by (publicRoute)
+	pub := publicRefs()
+	for i := range out {
+		out[i].Model = pub(out[i].Model)
+	}
 	return out
 }
 

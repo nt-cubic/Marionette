@@ -1,8 +1,9 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
 // somls on #580: GUI版可否增加轻量模式，关闭面板退出webview，减少资源占用.
-// Settings → General has a Lightweight mode row, off by default: On and Off
-// are saved as lightweight true and false, the click moving nothing; the
-// page saved again elsewhere keeps it; a browser's page (web) has no window
+// Settings → General has a Lightweight mode row, off for a user who never
+// chose (the owner, 10-21: "太卡" on by default): On and Off are saved as lightweight false and true, the click
+// moving nothing; the page saved again elsewhere keeps the choice, or
+// leaves it unchosen; a browser's page (web) has no window
 // to let go and shows no such row. In English and Chinese, with the API faked.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
@@ -48,7 +49,7 @@ async function open(engine, lang, web, posted, st, t) {
   const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
   t.after(() => browser.close());
   // tall enough that Lightweight mode is over the window's foot: rows were added above it
-  const page = await (await browser.newContext({ viewport: { width: 900, height: 1000 } })).newPage();
+  const page = await (await browser.newContext({ viewport: { width: 900, height: 1200 } })).newPage();
   page.setDefaultTimeout(5000);
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
@@ -71,7 +72,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await row.locator(".name").innerText(), w.name);
       assert.equal(await row.locator(".sub").innerText(), w.sub);
       const opt = (name) => row.locator("#lightweightSegs .opt", { hasText: name });
-      assert.equal(await row.locator("#lightweightSegs .opt.on").innerText(), w.off, "off by default");
+      assert.equal(await row.locator("#lightweightSegs .opt.on").innerText(), w.off, "off for a user who never chose");
       const where = () => page.evaluate(() => [scrollX, scrollY, document.scrollingElement.scrollTop, ...[...document.querySelectorAll("*")].filter((e) => e.scrollTop).map((e) => e.scrollTop)]);
       const before = await where();
       const click = async (loc) => {
@@ -81,14 +82,20 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const b = await loc.boundingBox();
         await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2);
       };
+      // another setting saved while it was never chosen leaves it unchosen,
+      // so the default goes on applying
+      let n = posted.length;
+      await click(page.locator("#dockSegs .opt").first()).catch(() => {});
+      for (let i = 0; i < 20 && posted.length === n; i++) await page.waitForTimeout(50);
+      if (posted.length > n) assert.equal("lightweight" in posted.at(-1), false, `another setting's save chose it: ${JSON.stringify(posted.at(-1))}`);
       await click(opt(w.on));
-      for (let i = 0; i < 50 && !posted.length; i++) await page.waitForTimeout(50);
+      for (let i = 0; i < 50 && posted.at(-1)?.lightweight !== true; i++) await page.waitForTimeout(50);
       assert.equal(posted.at(-1)?.lightweight, true, `posted ${JSON.stringify(posted)}`);
       assert.equal(st.lightweight, true);
       assert.equal(await row.locator("#lightweightSegs .opt.on").innerText(), w.on);
       // another setting saved keeps it on
-      const n = posted.length;
-      await click(page.locator("#dockSegs .opt").first()).catch(() => {});
+      n = posted.length;
+      await click(page.locator("#dockSegs .opt").last()).catch(() => {});
       for (let i = 0; i < 20 && posted.length === n; i++) await page.waitForTimeout(50);
       if (posted.length > n) assert.equal(posted.at(-1).lightweight, true, "another setting's save turned it off");
       await click(opt(w.off));

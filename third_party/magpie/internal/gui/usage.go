@@ -187,7 +187,7 @@ func usageRoutes(mux *http.ServeMux, w Windows) {
 		defer cancel()
 		// a WorkBuddy (China) account's card says how its daily check-in
 		// went (#694)
-		qs := provider.WithCheckins(provider.Quotas(ctx))
+		qs := provider.InProviderOrder(provider.WithCheckins(provider.Quotas(ctx)))
 		// and what each window holds whole, by what magpie routed in it
 		qs = usage.WithWindowHolds(qs, usage.Clock())
 		// and when each began, for its Pace number (fflake33)
@@ -211,7 +211,7 @@ func usageRoutes(mux *http.ServeMux, w Windows) {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 		provider.RefreshUsage(ctx, id, r.URL.Query().Get("user"))
-		writeJSON(rw, provider.WithWindowStarts(usage.WithWindowHolds(provider.WithCheckins(provider.Quotas(ctx)), usage.Clock()), usage.Clock()))
+		writeJSON(rw, provider.WithWindowStarts(usage.WithWindowHolds(provider.InProviderOrder(provider.WithCheckins(provider.Quotas(ctx))), usage.Clock()), usage.Clock()))
 	})
 	// WorkBuddy's daily check-in pressed now, from the Usage card, for
 	// each account not in yet today, as `magpie accounts checkin` does; the

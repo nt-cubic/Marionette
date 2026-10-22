@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -131,7 +132,17 @@ func TestIntentRoutesATurn(t *testing.T) {
 	if r.Rule.N != 0 || r.Rule.Classified == nil || r.Rule.Classified.Intent != "" || c.n() != 2 {
 		t.Fatalf("turn 2: %+v %d", r.Rule, c.n())
 	}
-	if !strings.Contains(c.last(), "what does this function return?") || strings.Contains(c.last(), "add a unit test") {
+	// about the new message; the one before is there only as what came
+	// before it, the agent's context still left out
+	var asked2 struct {
+		Messages []struct{ Content string } `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(c.last()), &asked2); err != nil || len(asked2.Messages) != 2 {
+		t.Fatalf("turn 2 asked %v %s", err, c.last())
+	}
+	if q := asked2.Messages[1].Content; !strings.Contains(q, "<message>\nwhat does this function return?\n</message>") ||
+		!strings.Contains(q, "<previous_user_message>\nadd a unit test for the parser\n</previous_user_message>") ||
+		strings.Contains(q, "secret agent context") {
 		t.Fatalf("turn 2 asked about %s", c.last())
 	}
 	// it was told what the turn before was, for a message that only

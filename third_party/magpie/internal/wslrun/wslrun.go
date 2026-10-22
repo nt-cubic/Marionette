@@ -299,9 +299,12 @@ func (t Tool) cancelable(cmd *exec.Cmd) *exec.Cmd {
 			mark = v
 		}
 	}
+	// then proc's own kill: wsl.exe with what it started on Windows (the
+	// Store's second wsl.exe), and a probe's group (#2341)
+	kill := cmd.Cancel
 	cmd.Cancel = func() error {
 		t.Stop(mark)
-		return cmd.Process.Kill()
+		return kill()
 	}
 	return cmd
 }

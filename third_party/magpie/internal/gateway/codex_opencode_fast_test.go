@@ -23,7 +23,7 @@ func TestOpenCodeFastVariantReachesCodex(t *testing.T) {
 	to, _ := url.Parse(provider.CodexBase)
 	provider.CodexBase = "https://chatgpt.com/backend-api/codex"
 	s := New()
-	s.client = &http.Client{Transport: qoderRoundTrip(func(r *http.Request) (*http.Response, error) {
+	s.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		r.URL.Scheme, r.URL.Host = to.Scheme, to.Host
 		return http.DefaultTransport.RoundTrip(r)
 	})}

@@ -13,8 +13,9 @@
 //!   **embedded-engine 构建**（产品定稿 2026-10-16「单 exe 内置引擎」）：
 //!   nogui magpie 从 `third_party/magpie`（`tools\import-magpie.ps1` 吸纳）
 //!   编出后 **UPX 压缩直嵌**进 exe（47.9MB → ~13.6MB，自解压零解码），
-//!   安装期内嵌优先、离线落位；便携版打开即 serve，下载路径仅作无内嵌
-//!   开发构建的回退。
+//!   **出厂种子**：本机 `~/.marionette/engine/` 尚无完整安装时离线落位。
+//!   用户经 UI「更新引擎」从 GitHub 装上的版本成为本机权威，启动不再用内嵌
+//!   盖回；「恢复出厂」才再解内嵌。无内嵌的开发构建仍走下载路径。
 //! - **拉起**：`magpie serve`，env `MAGPIE_ADDR=127.0.0.1:<port>` +
 //!   `MAGPIE_NO_STATS=1`；**不设** `MAGPIE_NO_ACCOUNTS`（订阅 discovery 要开）、
 //!   **保留** `USERPROFILE`/`APPDATA`（discovery 要读 `~/.grok` 等真实凭证）。
@@ -579,10 +580,11 @@ fn now_epoch_millis() -> String {
 // 产品定稿（2026-10-16）：带引擎版把 nogui magpie（third_party/magpie，
 // `tools\import-magpie.ps1` 吸纳的上游子集）压进二进制。压缩层 2026-10-17
 // 从 gzip 换成 **UPX**（实测 47.9MB → ~13.6MB，比 gzip 的 18.5MB 小 5MB，
-// 且免掉运行时解码——UPX exe 启动时自解压）。安装顺序：**内嵌优先** ——
-// manifest 版本与内嵌版本不一致（或缺失）→ 就地写盘落位，离线、零下载；
-// 无内嵌的构建或落位后仍不完整 → 原下载路径不变。升级 = `import-magpie.ps1
-// -Tag 新tag` 重编。
+// 且免掉运行时解码——UPX exe 启动时自解压）。
+//
+// 本机权威 = `~/.marionette/engine/`（manifest + exe）。内嵌只作出厂种子：
+// 未安装/损坏时落位；用户「更新引擎」装上的版本粘住，启动不再按内嵌版本
+// 强行覆盖。打包升内嵌 = import-magpie（默认同 latest 稳定 tag）+ 重编。
 
 /// 内嵌引擎版本（下载路径存的是去 v 形态，这里同规矩归一后比较）。
 #[cfg(feature = "embedded-engine")]
@@ -613,14 +615,10 @@ fn embedded_artifact() -> (&'static [u8], &'static str) {
     }
 }
 
-/// 内嵌版本与在位 manifest 不一致（或引擎缺失）→ 需要重新落位。
-/// 无内嵌的构建恒 false（走下载路径）。
-fn embedded_stale_at(dir: &Path) -> bool {
-    match (embedded_version(), load_manifest_at(dir)) {
-        (Some(embedded), Some(manifest)) => manifest.version != embedded,
-        (Some(_), None) => true,
-        (None, _) => false,
-    }
+/// 需要用内嵌种子落位：有内嵌构建，且本机还没有完整可用的引擎。
+/// 已装好的用户版（含主动从 GitHub 更新的）一律保留。
+fn needs_embedded_seed(dir: &Path) -> bool {
+    embedded_version().is_some() && !is_installed_at(dir)
 }
 
 /// 把内嵌的（UPX 自解压）magpie 字节落位安装：临时文件 + rename 原子写 +
@@ -1344,6 +1342,195 @@ pub fn stop() {
     emit_event("engine-state-changed", &EngineStatus::Absent);
 }
 
+/// 引擎更新检查结果（浮层「检查更新」）。
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineUpdateInfo {
+    pub current_version: Option<String>,
+    pub embedded_version: Option<String>,
+    pub latest_version: Option<String>,
+    pub update_available: bool,
+    /// 有内嵌种子，且与本机当前版本不同（或尚未安装）时可恢复出厂。
+    pub can_restore_factory: bool,
+    pub note: Option<String>,
+}
+
+fn installed_version_at(dir: &Path) -> Option<String> {
+    load_manifest_at(dir).map(|manifest| manifest.version)
+}
+
+fn clear_catalog_cache() {
+    if let Some(cache) = CATALOG.get() {
+        if let Ok(mut guard) = cache.lock() {
+            *guard = None;
+        }
+    }
+}
+
+/// 停掉我们拉起的 serve，好替换磁盘上的 magpie.exe。复用实例 / 安装中拒绝。
+fn stop_owned_for_replace() -> Result<(), String> {
+    let mut state = lock_state();
+    match &state.status {
+        EngineStatus::Running { reused: true, .. } => {
+            return Err(
+                "当前复用本机自装的 magpie，无法替换。请先关掉它，再更新本应用引擎。"
+                    .to_string(),
+            );
+        }
+        EngineStatus::Downloading { .. } | EngineStatus::Starting => {
+            return Err("引擎正在安装或启动，请稍后再试".to_string());
+        }
+        EngineStatus::Running { .. } => {
+            if let Some(child) = state.child.as_mut() {
+                child.kill();
+            }
+            state.child = None;
+            state.status = EngineStatus::Absent;
+            drop(state);
+            clear_catalog_cache();
+            emit_event("engine-state-changed", &EngineStatus::Absent);
+            crate::debug_log::append(
+                "engine",
+                "info",
+                "",
+                "engine stopped for binary replace",
+                None,
+            );
+            Ok(())
+        }
+        EngineStatus::Absent | EngineStatus::Failed { .. } => Ok(()),
+    }
+}
+
+/// 查 GitHub latest（稳定版）与本机 / 出厂版本对比。网络失败时仍返回本机信息，`note` 带原因。
+pub fn check_update() -> EngineUpdateInfo {
+    let dir = engine_dir().ok();
+    let current_version = dir.as_ref().and_then(|d| installed_version_at(d));
+    let embedded = embedded_version().map(|v| v.to_string());
+    let can_restore_factory = match (&embedded, &current_version) {
+        (Some(seed), Some(cur)) => seed != cur,
+        (Some(_), None) => true,
+        (None, _) => false,
+    };
+    match resolve_latest_release() {
+        Ok(plan) => {
+            let latest_version = plan.version;
+            let update_available = match &current_version {
+                Some(cur) => crate::agent_update::is_newer(&latest_version, cur),
+                None => true,
+            };
+            EngineUpdateInfo {
+                current_version,
+                embedded_version: embedded,
+                latest_version: Some(latest_version),
+                update_available,
+                can_restore_factory,
+                note: None,
+            }
+        }
+        Err(error) => EngineUpdateInfo {
+            current_version,
+            embedded_version: embedded,
+            latest_version: None,
+            update_available: false,
+            can_restore_factory,
+            note: Some(error),
+        },
+    }
+}
+
+/// 显式更新：停自拉实例 → 下 latest 稳定 CLI → 落位为新的本机权威 → 再拉起。
+/// 后台线程执行；返回 kick-off 快照，UI 跟 `engine-download-progress` / `engine-state-changed`。
+pub fn update() -> Result<EngineStatus, String> {
+    stop_owned_for_replace()?;
+    let dir = engine_dir()?;
+    let initial = {
+        let mut state = lock_state();
+        match state.status {
+            EngineStatus::Downloading { .. } | EngineStatus::Starting => {
+                return Err("引擎正在安装或启动，请稍后再试".to_string());
+            }
+            _ => {
+                let initial = EngineStatus::Downloading {
+                    downloaded: 0,
+                    total: 0,
+                };
+                state.status = initial.clone();
+                initial
+            }
+        }
+    };
+    emit_event("engine-state-changed", &initial);
+    std::thread::Builder::new()
+        .name("engine-update".into())
+        .spawn(move || {
+            if let Err(error) = update_pipeline(&dir) {
+                set_status(EngineStatus::Failed { error });
+            }
+        })
+        .map_err(|e| format!("启动引擎更新线程失败: {e}"))?;
+    Ok(initial)
+}
+
+fn update_pipeline(dir: &Path) -> Result<(), String> {
+    let plan = resolve_latest_release()?;
+    download_and_install(&plan, dir)?;
+    crate::debug_log::append(
+        "engine",
+        "info",
+        "",
+        &format!("engine updated to local authority version={}", plan.version),
+        None,
+    );
+    enable_pipeline(dir)
+}
+
+/// 恢复出厂：用 exe 内嵌种子覆盖本机引擎，再拉起。无内嵌构建不可用。
+pub fn restore_factory() -> Result<EngineStatus, String> {
+    let (bytes, version) = embedded_artifact();
+    if bytes.is_empty() || version.is_empty() {
+        return Err("当前构建没有内嵌引擎，无法恢复出厂".to_string());
+    }
+    let version = version.to_string();
+    stop_owned_for_replace()?;
+    let dir = engine_dir()?;
+    let initial = {
+        let mut state = lock_state();
+        match state.status {
+            EngineStatus::Downloading { .. } | EngineStatus::Starting => {
+                return Err("引擎正在安装或启动，请稍后再试".to_string());
+            }
+            _ => {
+                let initial = EngineStatus::Starting;
+                state.status = initial.clone();
+                initial
+            }
+        }
+    };
+    emit_event("engine-state-changed", &initial);
+    std::thread::Builder::new()
+        .name("engine-restore".into())
+        .spawn(move || {
+            if let Err(error) = restore_factory_pipeline(bytes, &version, &dir) {
+                set_status(EngineStatus::Failed { error });
+            }
+        })
+        .map_err(|e| format!("启动引擎恢复线程失败: {e}"))?;
+    Ok(initial)
+}
+
+fn restore_factory_pipeline(bytes: &[u8], version: &str, dir: &Path) -> Result<(), String> {
+    install_embedded_engine_at(bytes, version, dir)?;
+    crate::debug_log::append(
+        "engine",
+        "info",
+        "",
+        &format!("engine restored to factory seed version={version}"),
+        None,
+    );
+    enable_pipeline(dir)
+}
+
 /// 等引擎就绪（跨用绑定的一键优雅路径，2026-10-17 用户反馈）：就绪立即真；
 /// 否则幂等 `enable` 后在窗口内轮询——已装引擎通常 2-5s（内嵌版首启含解压），
 /// 超时返回 false 由调用方走原有指引错误。
@@ -1720,10 +1907,10 @@ fn enable_pipeline(dir: &Path) -> Result<(), String> {
         });
         return Ok(());
     }
-    // 2. 安装：**内嵌优先**（带引擎构建且版本不匹配/缺失 → 离线落位——
-    //    UPX 自解压字节直写，无解码）。便携版承诺离线，落位失败即停，
-    //    绝不回落到 GitHub。无内嵌的开发构建才走下载。
-    if embedded_stale_at(dir) {
+    // 2. 安装：本机权威在 `engine/`。仅当尚未完整安装时用内嵌种子离线落位；
+    //    用户已更新过的版本粘住。便携版种子落位失败即停（不偷偷上网）。
+    //    无内嵌的开发构建才走 GitHub 下载。
+    if needs_embedded_seed(dir) {
         let (bytes, version) = embedded_artifact();
         install_embedded_engine_at(bytes, version, dir)?;
     }
@@ -2284,19 +2471,21 @@ mod tests {
         assert_eq!(manifest.sha256, sha256_hex(payload));
         assert!(is_installed_at(&dir), "sha 对上 → 已安装（与下载路径同语义）");
 
-        // stale 判定语义（按构建形态分开断言）：
-        // - 无内嵌构建：恒不 stale（下载路径做安装）；
-        // - 内嵌构建：manifest 与当前内嵌版本一致才免重落位。
-        #[cfg(not(feature = "embedded-engine"))]
-        assert!(!embedded_stale_at(&dir));
-        #[cfg(feature = "embedded-engine")]
-        assert_eq!(embedded_stale_at(&dir), embedded_version() != Some("0.1.9999"));
+        // 种子判定：已完整安装 → 不重落位（即使用户版版本号 ≠ 内嵌）。
+        assert!(
+            !needs_embedded_seed(&dir),
+            "已装好的本机引擎是权威，内嵌不得盖回"
+        );
 
-        // 篡改一个字节 → 校验失败（触发下一次启用重装，含内嵌路径）。
+        // 篡改一个字节 → 校验失败 → 需要种子（有内嵌时）或下载路径。
         let mut tampered = payload.to_vec();
         tampered[0] ^= 0xff;
         fs::write(exe_path(&dir), tampered).unwrap();
         assert!(!is_installed_at(&dir));
+        #[cfg(feature = "embedded-engine")]
+        assert!(needs_embedded_seed(&dir), "损坏后才允许内嵌种子重落位");
+        #[cfg(not(feature = "embedded-engine"))]
+        assert!(!needs_embedded_seed(&dir), "无内嵌构建不走种子");
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -2307,7 +2496,21 @@ mod tests {
     fn default_build_has_no_embedded_engine() {
         assert_eq!(embedded_version(), None);
         let dir = temp_dir("noembed");
-        assert!(!embedded_stale_at(&dir), "无内嵌构建恒不触发解压");
+        assert!(!needs_embedded_seed(&dir), "无内嵌构建恒不触发解压");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn needs_embedded_seed_only_when_missing_or_corrupt() {
+        let dir = temp_dir("seed-policy");
+        #[cfg(feature = "embedded-engine")]
+        assert!(needs_embedded_seed(&dir), "空目录需要种子");
+        #[cfg(not(feature = "embedded-engine"))]
+        assert!(!needs_embedded_seed(&dir));
+
+        let payload = b"sticky user-updated magpie binary";
+        install_embedded_engine_at(payload, "9.9.9", &dir).unwrap();
+        assert!(!needs_embedded_seed(&dir), "用户版粘住");
         fs::remove_dir_all(&dir).ok();
     }
 

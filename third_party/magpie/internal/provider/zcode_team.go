@@ -1,13 +1,12 @@
 package provider
 
-// PLUGIN-SERVED (see AGENTS.md): ZCode ("zcode") is a deprecated built-in
-// subscription served by its plugin, @magpie-community/opencode-zcode-auth,
-// once moved onto it (provider.Moved; the default for a new sign-in). A
-// moved one's sign-ins, models, requests and usage are all the plugin's,
-// never this code's (only the move, in migrate*.go, still reads its
-// accounts). A fix here alone doesn't reach those users; fix the plugin
-// (github.com/magpie-community/plugins, packages/zcode) and raise the
-// mover's min in internal/provider/migrate_zcode.go.
+// PLUGIN-SERVED (see AGENTS.md): ZCode ("zcode") is a retired built-in
+// subscription, served by its plugin alone,
+// @magpie-community/opencode-zcode-auth (provider.BuiltinRetired). What is
+// left here are the readers of a team's seat that zcodeOwn and the Zhipu
+// plan card (planquota.go) still use. A fix belongs in the plugin
+// (github.com/magpie-community/plugins, packages/zcode), with the mover's
+// min raised in internal/provider/migrate_zcode.go.
 
 // A team's GLM Coding Plan (团队套餐), bought by an organization on Z.ai or
 // BigModel (智谱) and handed out as seats to its members, is served where a
@@ -43,15 +42,15 @@ package provider
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
-	"sync"
 	"time"
+
+	"github.com/yetone/magpie/internal/appdir"
 )
 
 func (k zcodeKey) team() bool { return k.Org != "" && k.Project != "" }
@@ -79,44 +78,6 @@ func zcodeTeamHeaders(base, org, project string) map[string]string {
 	}
 }
 
-// zcodeTeamRefusal is why a sign-in found a team but no seat on its plan.
-type zcodeTeamRefusal string
-
-type zcodeTeamProject struct{ org, project string }
-
-// teamProjects are the account's team coding plan projects.
-func (c zcodeCustomer) teamProjects() []zcodeTeamProject {
-	var out []zcodeTeamProject
-	for _, o := range c.Orgs {
-		for _, p := range o.Projects {
-			if o.ID != "" && p.ID != "" && fmt.Sprint(p.Type) == "2" {
-				out = append(out, zcodeTeamProject{o.ID, p.ID})
-			}
-		}
-	}
-	return out
-}
-
-// zcodeTeamDetail is a team seat, as querySubscribeDetail tells it.
-type zcodeTeamDetail struct {
-	Has     *bool  `json:"hasSubscription"`
-	Status  string `json:"status"`
-	Grant   string `json:"memberGrantStatus"`
-	Product string `json:"productName"`
-	ID      any    `json:"productId"`
-	End     any    `json:"subscribeEndTime"`
-}
-
-func (d zcodeTeamDetail) usable() bool {
-	return (d.Has == nil || *d.Has) && strings.EqualFold(d.Status, "EFFECTIVE") && strings.EqualFold(d.Grant, "VALID")
-}
-
-// end is when the team's plan runs out: a time in Beijing, or a Unix time
-// in seconds or milliseconds.
-func (d zcodeTeamDetail) end() *time.Time {
-	return zcodeWhen(d.End)
-}
-
 func zcodeWhen(v any) *time.Time {
 	if s, ok := v.(string); ok {
 		if t := zhipuTime(s); t != nil {
@@ -135,55 +96,6 @@ func zcodeWhen(v any) *time.Time {
 	return nil
 }
 
-func zcodeTeamDetailOf(ctx context.Context, root, auth, base, org, project string) (zcodeTeamDetail, error) {
-	var d zcodeTeamDetail
-	err := zcodeCallH(ctx, http.MethodGet, root+"/api/biz/team/subscribe/product/querySubscribeDetail", auth, zcodeTeamHeaders(base, org, project), nil, &d)
-	return d, err
-}
-
-// zcodeTeamSignIn is the account's seat on a team's plan: the first team
-// project whose plan is in force and gives it a seat, and that project's
-// key. When there is none, why says what there was.
-func zcodeTeamSignIn(ctx context.Context, site, root, auth string, info zcodeCustomer) (k zcodeKey, plan string, why zcodeTeamRefusal, err error) {
-	base := zcodeSiteBase(site)
-	ps := info.teamProjects()
-	if len(ps) == 0 {
-		return zcodeKey{}, "", "", errors.New("no team plan")
-	}
-	var last error
-	for _, p := range ps {
-		d, err := zcodeTeamDetailOf(ctx, root, auth, base, p.org, p.project)
-		switch {
-		case err != nil:
-			last = err
-			continue
-		case d.usable():
-		case strings.EqualFold(d.Status, "EFFECTIVE") && strings.EqualFold(d.Grant, "UNASSIGNED"):
-			if why == "" {
-				why = zcodeTeamRefusal(fmt.Sprintf("this %s account is in a team with a GLM Coding Plan but has no seat on it yet — ask the team's admin to give it one, then add it again", zcodeSiteName(site)))
-			}
-			continue
-		case strings.EqualFold(d.Status, "EXPIRED"):
-			if why == "" {
-				why = zcodeTeamRefusal(fmt.Sprintf("the %s team's GLM Coding Plan this account is in has expired", zcodeSiteName(site)))
-			}
-			continue
-		default:
-			continue
-		}
-		keys := root + "/api/biz/v1/organization/" + url.PathEscape(p.org) + "/projects/" + url.PathEscape(p.project) + "/api_keys"
-		key, err := zcodeProjectKey(ctx, site, keys, auth, zcodeTeamHeaders(base, p.org, p.project), map[string]any{"name": "zcode-team-api-key", "keyType": 2})
-		if err != nil {
-			return zcodeKey{}, "", "", fmt.Errorf("the team's GLM Coding Plan: %w", err)
-		}
-		return zcodeKey{Key: key, Base: base, Token: auth, Org: p.org, Project: p.project}, firstNonEmpty(d.Product, "GLM Coding Team"), "", nil
-	}
-	if why != "" {
-		return zcodeKey{}, "", why, errors.New(string(why))
-	}
-	return zcodeKey{}, "", "", fmt.Errorf("the team's GLM Coding Plan: %v", firstErr(last, "no seat on it"))
-}
-
 // ---- ZCode's own account on a team's plan -------------------------------------
 
 // zcodeOwnTeam is ZCode's own account when ZCode is switched to a team's
@@ -199,7 +111,7 @@ func zcodeOwnTeam(store map[string]string, secret []byte) (zcodeKey, bool) {
 		} `json:"providerFamilyConnectionSelections"`
 		Legacy map[string]string `json:"modelProviderFamilySelectedKeys"` // before providerFamilyConnectionSelections (migrateLegacyAccountConnectionSettings)
 	}
-	if !readJSON(filepath.Join(home, ".zcode", "v2", "setting.json"), &set) {
+	if !readJSON(filepath.Join(appdir.ZCodeHome(home), ".zcode", "v2", "setting.json"), &set) {
 		return zcodeKey{}, false
 	}
 	families := []string{"zai", "bigmodel"}
@@ -243,109 +155,7 @@ func zcodeOwnTeam(store map[string]string, secret []byte) (zcodeKey, bool) {
 	return zcodeKey{}, false
 }
 
-// zcodeTeamKeys are the team keys found for accounts that keep none,
-// ZCode's own: asked again after a failure a minute later.
-var zcodeTeamKeys = struct {
-	sync.Mutex
-	m map[string]zcodeTeamKeyAt
-}{m: map[string]zcodeTeamKeyAt{}}
-
-type zcodeTeamKeyAt struct {
-	key string
-	err error
-	at  time.Time
-}
-
-// zcodeTeamKeyOf is the team project's key for an account that keeps none.
-func zcodeTeamKeyOf(ctx context.Context, k zcodeKey) (string, error) {
-	if k.Key != "" {
-		return k.Key, nil
-	}
-	id := k.Token + "\x00" + k.Org + "\x00" + k.Project
-	zcodeTeamKeys.Lock()
-	got, ok := zcodeTeamKeys.m[id]
-	zcodeTeamKeys.Unlock()
-	if ok && (got.err == nil || time.Since(got.at) < time.Minute) {
-		return got.key, got.err
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	site := "zai"
-	if zcodeBizRoot(k.Base) == zcodeBigModelAPI {
-		site = "bigmodel"
-	}
-	root := zcodeBizRoot(k.Base)
-	keys := root + "/api/biz/v1/organization/" + url.PathEscape(k.Org) + "/projects/" + url.PathEscape(k.Project) + "/api_keys"
-	key, err := zcodeProjectKey(ctx, site, keys, k.Token, zcodeTeamHeaders(k.Base, k.Org, k.Project), map[string]any{"name": "zcode-team-api-key", "keyType": 2})
-	if err != nil {
-		err = fmt.Errorf("ZCode's team plan: %w — sign in to ZCode again", err)
-	}
-	zcodeTeamKeys.Lock()
-	zcodeTeamKeys.m[id] = zcodeTeamKeyAt{key, err, time.Now()}
-	zcodeTeamKeys.Unlock()
-	return key, err
-}
-
 // ---- allowance ------------------------------------------------------------------
-
-// zcodeTeamQuota is a team seat's allowance: the team plan's five hours
-// and week, what is left of its resets, and the plan's name and end.
-func zcodeTeamQuota(ctx context.Context, l Login, k zcodeKey) SubscriptionQuota {
-	q := SubscriptionQuota{Provider: "zcode", Name: "ZCode", Icon: "zcode", Plan: l.Plan, User: l.User, Windows: []QuotaWindow{}}
-	key, err := zcodeTeamKeyOf(ctx, k)
-	if err != nil {
-		q.Error = err.Error()
-		return q
-	}
-	ws, err := zhipuTeamWindows(ctx, zcodeBizRoot(k.Base), key, k.Base, k.Org, k.Project)
-	if err != nil {
-		q.Error = err.Error()
-		return q
-	}
-	q.Windows = ws
-	if k.Token == "" {
-		return q
-	}
-	root := zcodeBizRoot(k.Base)
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		q.Resets = zhipuTeamResets(ctx, root, k.Token, k.Base, k.Org, k.Project)
-	}()
-	if d, err := zcodeTeamDetailOf(ctx, root, k.Token, k.Base, k.Org, k.Project); err == nil && d.usable() {
-		if d.Product != "" {
-			q.Plan = d.Product
-		}
-		if t := d.end(); t != nil {
-			q.Until, q.Renew = t, "off"
-		}
-	}
-	wg.Wait()
-	return q
-}
-
-// zhipuTeamWindows asks a team's windows: the quota with type=2, the key
-// in Authorization and the project in the headers.
-func zhipuTeamWindows(ctx context.Context, root, key, base, org, project string) ([]QuotaWindow, error) {
-	var data zhipuLimits
-	if err := zcodeCallH(ctx, http.MethodGet, root+"/api/monitor/usage/quota/limit?type=2", key, zcodeTeamHeaders(base, org, project), nil, &data); err != nil {
-		return nil, err
-	}
-	return data.windows(), nil
-}
-
-// zhipuTeamResets is how many resets a team member may spend, of the five
-// hours and of the week: those of customer-package-reset/list still
-// available. nil when it can't be told or there are none.
-func zhipuTeamResets(ctx context.Context, root, auth, base, org, project string) *ResetCredits {
-	r := zhipuResets(ctx, root+"/api/biz/customer-package-reset/list?targetType=TEAM", auth, zcodeTeamHeaders(base, org, project))
-	if r != nil {
-		r.Team = true
-	}
-	return r
-}
 
 // zhipuPersonalResets is how many resets a GLM Coding Plan of a person's
 // own holds, as bigmodel.cn's usage page lists them (#1191), asked with
@@ -405,4 +215,16 @@ func zhipuTeamOf(key string) (org, project string) {
 		}
 	}
 	return "", ""
+}
+
+// zcodeNum reads a number the API gives as a number or a string.
+func zcodeNum(v any) (float64, bool) {
+	switch x := v.(type) {
+	case float64:
+		return x, true
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(x), 64)
+		return f, err == nil
+	}
+	return 0, false
 }

@@ -10,7 +10,8 @@ import (
 
 // A provider switched off (#163) is kept, but agents are given none of its
 // models, no request, group or fallback goes to it, and one naming it is
-// told it is switched off; switched on, all of it comes back.
+// told it is switched off; switched on, all of it comes back. A group
+// magpie found with it stays, served by the providers still on.
 func TestProviderOff(t *testing.T) {
 	fresh(t)
 	a, b := &keyed{}, &keyed{}
@@ -33,7 +34,7 @@ func TestProviderOff(t *testing.T) {
 		}
 		return strings.Join(ids, " ")
 	}
-	const all = "group/mine group/auto-m a/m a/only-a b/vendor/m b/only-b"
+	const all = "group/mine auto/m a/m a/only-a b/vendor/m b/only-b"
 	if got := catalog(); got != all {
 		t.Fatalf("catalog: %s", got)
 	}
@@ -45,7 +46,7 @@ func TestProviderOff(t *testing.T) {
 	if err != nil || !pb.Off || pb.Key != "kb" {
 		t.Fatalf("switched off, b is kept with its key: %+v %v", pb, err)
 	}
-	if got := catalog(); got != "group/mine a/m a/only-a" {
+	if got := catalog(); got != "group/mine auto/m a/m a/only-a" {
 		t.Fatalf("catalog with b off: %s", got)
 	}
 	if _, _, ok := provider.Resolve("b/vendor/m"); ok {
@@ -73,6 +74,10 @@ func TestProviderOff(t *testing.T) {
 	code, body = postAs(t, s, "", `{"model":"group/mine","messages":[{"role":"user","content":"hi"}]}`)
 	if code != 200 || !strings.Contains(body, "from ka") || len(b.tried) != 0 {
 		t.Fatalf("group/mine with b off: %d %s, b tried %v", code, body, b.tried)
+	}
+	code, body = postAs(t, s, "", `{"model":"group/auto-m","messages":[{"role":"user","content":"found"}]}`)
+	if code != 200 || !strings.Contains(body, "from ka") || len(b.tried) != 0 {
+		t.Fatalf("group/auto-m with b off: %d %s, b tried %v", code, body, b.tried)
 	}
 	// a's fallback is b's: with b off there is none to go to
 	a.fail = map[string]int{"ka": 429}

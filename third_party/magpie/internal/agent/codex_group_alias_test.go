@@ -38,11 +38,11 @@ func TestCodexGroupByItsModelName(t *testing.T) {
 		}
 		path := filepath.Join(home, ".codex", "config.toml")
 		cfg := read()
-		if !strings.Contains(cfg, `model = "group/auto-gpt-6-1-sol"`) {
+		if !strings.Contains(cfg, `model = "auto/gpt-6.1-sol"`) {
 			t.Fatalf("set:\n%s", cfg)
 		}
 		// Codex names the group's model by its own name, nothing else changed
-		os.WriteFile(path, []byte(strings.Replace(cfg, `model = "group/auto-gpt-6-1-sol"`, `model = "gpt-6.1-sol"`, 1)), 0o644)
+		os.WriteFile(path, []byte(strings.Replace(cfg, `model = "auto/gpt-6.1-sol"`, `model = "gpt-6.1-sol"`, 1)), 0o644)
 		if !cx.Wired() {
 			t.Errorf("auth %q: not wired on gpt-6.1-sol:\n%s", auth, read())
 		}
@@ -58,7 +58,7 @@ func TestCodexGroupByItsModelName(t *testing.T) {
 		// has; beside the ChatGPT sign-in either is a pick in Codex's /model
 		// that still goes through magpie, not a change from outside (#2424)
 		for _, m := range []string{"gpt-6.1", "gpt-5.5"} {
-			os.WriteFile(path, []byte(strings.Replace(cfg, `model = "group/auto-gpt-6-1-sol"`, `model = "`+m+`"`, 1)), 0o644)
+			os.WriteFile(path, []byte(strings.Replace(cfg, `model = "auto/gpt-6.1-sol"`, `model = "`+m+`"`, 1)), 0o644)
 			d := cx.Drift()
 			if auth != "" && d != nil {
 				t.Errorf("auth %q: %s beside the sign-in: %+v", auth, m, d)
@@ -84,7 +84,7 @@ func TestCodexGroupByItsModelNameDisconnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(home, ".codex", "config.toml")
-	os.WriteFile(path, []byte(strings.Replace(read(), `model = "group/auto-gpt-6-1-sol"`, `model = "gpt-6.1-sol"`, 1)), 0o644)
+	os.WriteFile(path, []byte(strings.Replace(read(), `model = "auto/gpt-6.1-sol"`, `model = "gpt-6.1-sol"`, 1)), 0o644)
 	if err := cx.Disconnect(); err != nil {
 		t.Fatal(err)
 	}

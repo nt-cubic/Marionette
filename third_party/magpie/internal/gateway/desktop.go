@@ -177,6 +177,28 @@ func claudeLooking(e provider.Entry) string {
 // Claude Code (claudeLooking).
 func DesktopID(e provider.Entry) string { return claudeLooking(e) }
 
+// DesktopNumber is the number Claude Desktop's menu says beside e, so
+// the Providers page can say it too and a row of that menu be matched to
+// its provider (#2578): "" for every model Desktop names by our
+// display_name, which carries the provider already. Only a Claude model
+// with reasoning levels, listed as magpie-<number>.anthropic.<model>
+// (claudeLooking), is named after Desktop's own catalog ("Opus 5.5"), so
+// two providers' rows read alike and the menu tells them apart by that id.
+// Every other id is the model's own (no number) or an alias Desktop
+// doesn't know (mythos-magpie-<n>, anthropic/magpie-<n>), named by
+// display_name.
+func DesktopNumber(e provider.Entry) string {
+	rest, ok := strings.CutPrefix(claudeLooking(e), "magpie-")
+	if !ok {
+		return ""
+	}
+	n, _, ok := strings.Cut(rest, desktopClaudeInfix)
+	if !ok {
+		return ""
+	}
+	return n
+}
+
 // desktopModels is /v1/models as Claude Desktop is shown it: every model
 // picked for it (provider.CatalogFor, the Agents page's model list) by an id
 // it keeps (claudeLooking), named as the agents' lists name models

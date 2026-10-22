@@ -171,17 +171,49 @@ func ccTools(s *state, m *claudeContribution, at time.Time, b []byte) {
 			ID, Name string
 			Input    struct{ Skill any }
 		}
-		dec := json.NewDecoder(bytes.NewReader(rest[i:]))
-		if dec.Decode(&tool) != nil {
+		end := objectEnd(rest[i:])
+		if end < 0 || json.Unmarshal(rest[i:i+end], &tool) != nil {
 			return
 		}
-		rest = rest[i+int(dec.InputOffset()):]
+		rest = rest[i+end:]
 		skill, _ := tool.Input.Skill.(string)
 		if tool.Name != "Skill" {
 			skill = ""
 		}
 		ccTool(s, m, at, tool.ID, tool.Name, skill)
 	}
+}
+
+// objectEnd is the length of the JSON object b starts with, or -1 when
+// it doesn't close. It only matches brackets outside strings; the object
+// is checked when it is decoded. A json.Decoder over the rest of the line
+// copied all of it, for each tool block and each usage: the most a cold
+// start allocated (1.6 GB of 11.6 GB in its first 2 minutes).
+func objectEnd(b []byte) int {
+	if len(b) == 0 || b[0] != '{' {
+		return -1
+	}
+	depth, in := 0, false
+	for i := 0; i < len(b); i++ {
+		c := b[i]
+		switch {
+		case in:
+			if c == '\\' {
+				i++
+			} else if c == '"' {
+				in = false
+			}
+		case c == '"':
+			in = true
+		case c == '{' || c == '[':
+			depth++
+		case c == '}' || c == ']':
+			if depth--; depth == 0 {
+				return i + 1
+			}
+		}
+	}
+	return -1
 }
 
 // ccReply counts a reply's usage: its model and id lead the message, its
@@ -213,7 +245,8 @@ func ccReply(s *state, at time.Time, msg, b []byte, main bool) {
 		CacheWrite int              `json:"cache_creation_input_tokens"`
 		Creation   *ccCacheCreation `json:"cache_creation"`
 	}
-	if json.NewDecoder(bytes.NewReader(b[i+len(ccUsage)-1:])).Decode(&u) != nil {
+	usage := b[i+len(ccUsage)-1:]
+	if end := objectEnd(usage); end < 0 || json.Unmarshal(usage[:end], &u) != nil {
 		return
 	}
 	ccCount(s, m, at, model, ccTokens(u.Input, u.Output, u.CacheRead, u.CacheWrite, u.Creation), main)

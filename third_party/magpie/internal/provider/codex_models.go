@@ -494,7 +494,8 @@ func CodexListTag() string { return codexListTag("") }
 // moves from one list to the other; a V1 list's mark stays in front.
 func CodexOwnListTag() string { return codexListTag("own") }
 
-func codexListTag(kind string) string {
+// buildCodexListTag is codexListTag built afresh from the catalog.
+func buildCodexListTag(kind string) string {
 	ms := CodexListed()
 	off := slices.Sorted(maps.Keys(CodexNativeHidden()))
 	for _, slug := range off {
@@ -584,6 +585,40 @@ func CodexNativeWindow(restore bool) func(slug string) (n, most int, ok bool) {
 		}
 		return 0, 0, false
 	}
+}
+
+// CodexWindow is the context window Codex works in for one of its own
+// models, by the backend's slug, for a request to the ChatGPT backend or
+// OpenAI's API that Codex sent through magpie: the window the user set on
+// the codex provider, else the one the account's own list gives (user, ""
+// for any), else magpie's Codex subscription's, else Codex CLI's
+// models_cache.json's; 0 when none says. models.dev's input limit for the
+// same id is OpenAI's API's (gpt-5.5's 922K), not the window Codex holds
+// a conversation to (272K): netube on Discord saw Routing say 922K for a
+// Codex Plus account.
+func CodexWindow(user, slug string) int {
+	p, _ := find(All(), "codex")
+	if n := p.ContextOf(slug); n > 0 {
+		return n
+	}
+	var lists [][]catalog.Model
+	if user != "" {
+		if live, _, ok := catalog.Live(accountModels("codex", user)); ok {
+			lists = append(lists, live)
+		}
+	}
+	if live, _, ok := catalog.Live("codex"); ok {
+		lists = append(lists, live)
+	}
+	lists = append(lists, catalog.Codex())
+	for _, ms := range lists {
+		for _, m := range ms {
+			if n := catalog.Window(m.Context); m.ID == slug && n > 0 {
+				return n
+			}
+		}
+	}
+	return 0
 }
 
 // codexWindowsTag is the windows the user set on the codex provider, for

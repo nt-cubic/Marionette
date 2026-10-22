@@ -40,10 +40,17 @@ const streamRetries = 2
 // again on the same account before it fails: once while its stream is
 // held, which the request then asks again, or of another account — or the
 // group of its next member — and as often as a cut reply once the client
-// has the stream, when nobody asks again after it.
+// has the stream, when nobody asks again after it. A held try whose
+// reasoning went through as it came (Gemini's on the last candidate,
+// LuckymanJC on Discord) is past the request's asking again, so it is
+// asked once more here in its place.
 func emptyRetries(w http.ResponseWriter, ctx context.Context) int {
-	if h, ok := w.(*holdWriter); ok && h.mayAskAgain() || inGroupTry(ctx) {
+	h, ok := w.(*holdWriter)
+	if ok && h.mayAskAgain() || inGroupTry(ctx) {
 		return 1
+	}
+	if ok && h.thoughtOnly() {
+		return streamRetries + 1
 	}
 	return streamRetries
 }
@@ -518,12 +525,12 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 				// one event stream would be wrong, so give up cleanly
 				b, _ := io.ReadAll(io.LimitReader(rd, 1<<20))
 				res.Body.Close()
-				failed = p.Name + " did not stream: " + provider.APIError(b, "unexpected reply")
+				failed = p.Name + " " + didNotStream + ": " + provider.APIError(b, "unexpected reply")
 				if !cont.resume {
 					return writeError(w, from, 502, failed), failed
 				}
 			} else {
-				dec := decoder(actual)
+				dec := decoderFor(p, actual)
 				attemptSee := see
 				if names := textCallNames(request.Tools); names != nil {
 					t := &textCallSee{names: names, see: see}

@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // Folder is where images go in the project when no path is given, and
@@ -209,6 +210,18 @@ func stillGoing(j *job) string {
 // (Codex, Goose) are still given it, as a call's ceiling.
 func ToolTimeout() time.Duration { return videoWait + time.Minute }
 
+// callLongest is the most a call of this server to the gateway may take,
+// and how long a job left running is waited for once the agent has gone.
+// The gateway gives a vendor up to Settings' Image generation timeout to
+// draw (settings.ImageTimeoutMost minutes at the most), and may then fetch
+// what it drew for as long again (gateway.FetchImage): a call is cut only
+// past both. The gateway ends it at the user's own timeout; this server
+// may run where the settings aren't (an agent in WSL), so it never cuts a
+// drawing the setting allows (neighbads on X).
+func callLongest() time.Duration {
+	return max(ToolTimeout(), 2*settings.ImageTimeoutMost*time.Minute+time.Minute)
+}
+
 // Run serves MCP on stdin/stdout until stdin closes.
 func Run(args []string) error {
 	if len(args) > 0 && args[0] != "image" {
@@ -225,17 +238,14 @@ func Run(args []string) error {
 	if base == "" {
 		base = gateway.URL()
 	}
-	// the gateway draws for up to 5 minutes and may then fetch what the
-	// vendor drew for up to 5 more (gateway.ImageLongest): a call to it
-	// is cut only past both
-	s := &server{gateway: base, client: &http.Client{Timeout: ToolTimeout()}, enc: json.NewEncoder(os.Stdout), agent: gateway.DrawAgent, pending: map[string]chan rpc{}}
+	s := &server{gateway: base, client: &http.Client{Timeout: callLongest()}, enc: json.NewEncoder(os.Stdout), agent: gateway.DrawAgent, pending: map[string]chan rpc{}}
 	err := s.serve(os.Stdin)
 	// what is still being made is saved, though the agent has gone
 	done := make(chan struct{})
 	go func() { s.running.Wait(); close(done) }()
 	select {
 	case <-done:
-	case <-time.After(ToolTimeout()):
+	case <-time.After(callLongest()):
 	}
 	return err
 }

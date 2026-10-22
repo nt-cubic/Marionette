@@ -30,7 +30,7 @@ func TestRowKeepsSubagent(t *testing.T) {
 	c := &rowChunk{}
 	c.add(Row{Record: Record{Time: time.Now(), Agent: "claude", Session: "conv-1", Subagent: "a1", ParentAgent: "a0"}}, "msg", 1, false)
 	for _, chunk := range []*rowChunk{c, c.pack().unpack()} {
-		if r := chunk.row(0); r.Subagent != "a1" || r.ParentAgent != "a0" || r.Session != "conv-1" || chunk.Strings[chunk.Rows[0].Text[rowMsg]] != "msg" {
+		if r := chunk.row(0); r.Subagent != "a1" || r.ParentAgent != "a0" || r.Session != "conv-1" || chunk.Strings[chunk.text(&chunk.Rows[0], rowMsg)] != "msg" {
 			t.Fatalf("read back: %+v", r)
 		}
 	}

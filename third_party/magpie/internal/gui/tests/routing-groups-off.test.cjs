@@ -1,5 +1,5 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
-// bigbenniu on X: a new install's Essentials leaves routing groups off, and
+// bigbenniu on X: the Essentials preset leaves routing groups off, and
 // the Routing page then had nothing past its requests: no New group, no
 // groups, and no word of why. With them off, where they were the page says
 // so and has a button that turns them on (plugins/builtin {id:"groups"}),

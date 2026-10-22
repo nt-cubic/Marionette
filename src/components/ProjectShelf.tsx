@@ -6,7 +6,23 @@ import { themeToggleTitle, type ThemeMode } from "../lib/theme";
 import { collapsedShelfSessions, pinStamp, sortSessionsNewestFirst } from "../lib/sessionOrder";
 import { suspendControl } from "../lib/sessionSuspend";
 import { loadCollapsedProjectIds, saveCollapsedProjectIds } from "../lib/uiRestore";
-import { engineEnable, engineStatus, engineStop, telegramAcceptPairing, telegramDismissPairing, telegramResetPairing, telegramSave, telegramStatus, type EngineStatus, type TelegramPrefs, type TelegramStatus } from "../lib/api";
+import {
+  engineCheckUpdate,
+  engineEnable,
+  engineRestoreFactory,
+  engineStatus,
+  engineStop,
+  engineUpdate,
+  telegramAcceptPairing,
+  telegramDismissPairing,
+  telegramResetPairing,
+  telegramSave,
+  telegramStatus,
+  type EngineStatus,
+  type EngineUpdateInfo,
+  type TelegramPrefs,
+  type TelegramStatus,
+} from "../lib/api";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { CredentialsDialog } from "./CredentialsDialog";
 import { SplitBesideMenu, type OpenBesideEdge } from "./SplitBesideMenu";
@@ -276,6 +292,11 @@ export function ProjectShelf({
    * key management stays one hop deeper (footer link → CredentialsDialog).
    */
   const [engineOpen, setEngineOpen] = useState(false);
+  const [engineUpdateInfo, setEngineUpdateInfo] = useState<EngineUpdateInfo | null>(null);
+  const [engineUpdateBusy, setEngineUpdateBusy] = useState<"check" | "update" | "restore" | null>(
+    null,
+  );
+  const [engineUpdateError, setEngineUpdateError] = useState("");
   const [engineAnchor, setEngineAnchor] = useState<{ left: number; top: number } | null>(null);
   const [engineState, setEngineState] = useState<EngineStatus | null>(null);
   const engineBtnRef = useRef<HTMLButtonElement | null>(null);
@@ -411,6 +432,75 @@ export function ProjectShelf({
     void engineStatus().then(setEngineState);
   }, []);
   useEffect(refreshEngine, [refreshEngine]);
+
+  const handleEngineCheckUpdate = useCallback(async () => {
+    setEngineUpdateBusy("check");
+    setEngineUpdateError("");
+    try {
+      const info = await engineCheckUpdate();
+      if (!info) {
+        setEngineUpdateError("无法检查更新（非桌面运行时）");
+        return;
+      }
+      setEngineUpdateInfo(info);
+      if (info.note) setEngineUpdateError(info.note);
+    } catch (error) {
+      setEngineUpdateError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setEngineUpdateBusy(null);
+    }
+  }, []);
+
+  const handleEngineUpdate = useCallback(async () => {
+    setEngineUpdateBusy("update");
+    setEngineUpdateError("");
+    try {
+      const snapshot = await engineUpdate();
+      if (snapshot) setEngineState(snapshot);
+      setEngineUpdateInfo((prev) =>
+        prev
+          ? {
+              ...prev,
+              updateAvailable: false,
+              currentVersion: prev.latestVersion ?? prev.currentVersion,
+            }
+          : prev,
+      );
+      refreshEngine();
+    } catch (error) {
+      setEngineUpdateError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setEngineUpdateBusy(null);
+    }
+  }, [refreshEngine]);
+
+  const handleEngineRestoreFactory = useCallback(async () => {
+    setEngineUpdateBusy("restore");
+    setEngineUpdateError("");
+    try {
+      const snapshot = await engineRestoreFactory();
+      if (snapshot) setEngineState(snapshot);
+      setEngineUpdateInfo((prev) =>
+        prev
+          ? {
+              ...prev,
+              canRestoreFactory: false,
+              currentVersion: prev.embeddedVersion ?? prev.currentVersion,
+              updateAvailable: Boolean(
+                prev.latestVersion &&
+                  prev.embeddedVersion &&
+                  prev.latestVersion !== prev.embeddedVersion,
+              ),
+            }
+          : prev,
+      );
+      refreshEngine();
+    } catch (error) {
+      setEngineUpdateError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setEngineUpdateBusy(null);
+    }
+  }, [refreshEngine]);
 
   /** Open popover: anchor + 1 Hz status polling (catches download/start transitions). */
   useEffect(() => {
@@ -1514,6 +1604,61 @@ export function ProjectShelf({
               {engineBusyTransient ? "准备中…" : engineState?.state === "failed" ? "重试启动" : "启动网关"}
             </button>
           )}
+          <div className="engine-popover__update">
+            <div className="engine-popover__update-row">
+              <span className="engine-popover__update-meta">
+                {engineUpdateInfo
+                  ? `本机 ${engineUpdateInfo.currentVersion ?? "未安装"}${
+                      engineUpdateInfo.latestVersion
+                        ? ` · 最新 ${engineUpdateInfo.latestVersion}`
+                        : ""
+                    }${
+                      engineUpdateInfo.embeddedVersion
+                        ? ` · 出厂 ${engineUpdateInfo.embeddedVersion}`
+                        : ""
+                    }`
+                  : "可检查 magpie 稳定版更新（约 48 MB）"}
+              </span>
+              <button
+                type="button"
+                className="engine-popover__link"
+                disabled={engineUpdateBusy !== null || engineBusyTransient}
+                onClick={() => void handleEngineCheckUpdate()}
+              >
+                <RefreshCw size={11} aria-hidden />
+                {engineUpdateBusy === "check" ? "检查中…" : "检查更新"}
+              </button>
+            </div>
+            {engineUpdateInfo?.updateAvailable && (
+              <button
+                type="button"
+                className="engine-popover__start"
+                disabled={engineUpdateBusy !== null || engineBusyTransient}
+                title="从 GitHub 下载最新稳定版，成为本机权威引擎"
+                onClick={() => void handleEngineUpdate()}
+              >
+                {engineUpdateBusy === "update"
+                  ? "更新中…"
+                  : `更新到 ${engineUpdateInfo.latestVersion}`}
+              </button>
+            )}
+            {engineUpdateInfo?.canRestoreFactory && (
+              <button
+                type="button"
+                className="engine-popover__stop"
+                disabled={engineUpdateBusy !== null || engineBusyTransient}
+                title="用本应用内嵌的出厂 magpie 覆盖本机引擎"
+                onClick={() => void handleEngineRestoreFactory()}
+              >
+                {engineUpdateBusy === "restore" ? "恢复中…" : "恢复出厂引擎"}
+              </button>
+            )}
+            {engineUpdateError && (
+              <p className="engine-popover__update-error" role="status">
+                {engineUpdateError}
+              </p>
+            )}
+          </div>
           <div className="engine-popover__footer">
             <button
               type="button"

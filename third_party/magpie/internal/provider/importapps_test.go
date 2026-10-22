@@ -60,7 +60,8 @@ func TestImportCCSwitch(t *testing.T) {
 		`INSERT INTO providers VALUES ('relay','codex','Some Relay','{"auth":{"OPENAI_API_KEY":"sk-relay"},"config":"model_provider = \"relay\"\nmodel = \"gpt-5.5\"\n\n[model_providers.relay]\nname = \"relay\"\nbase_url = \"https://relay.example.com/v1\"\nwire_api = \"responses\"\n"}','','custom',3,0)`,
 		`INSERT INTO providers VALUES ('ds','claude','DeepSeek','{"env":{"ANTHROPIC_BASE_URL":"https://api.deepseek.com/anthropic","ANTHROPIC_AUTH_TOKEN":"sk-ds"}}','','cn_official',4,2)`,
 		`INSERT INTO providers VALUES ('dial','pi','dial','{"api":"openai-completions","apiKey":"magpie","baseUrl":"http://127.0.0.1:3425/v1"}','','custom',5,0)`,
-		`INSERT INTO providers VALUES ('g','gemini','Gemini relay','{"env":{"GOOGLE_GEMINI_BASE_URL":"https://g.example.com","GEMINI_API_KEY":"k"}}','','custom',6,0)`,
+		`INSERT INTO providers VALUES ('g','gemini','Gemini relay','{"env":{"GOOGLE_GEMINI_BASE_URL":"https://g.example.com","GEMINI_API_KEY":"k","GEMINI_MODEL":"gemini-3.8-flash"}}','','custom',6,0)`,
+		`INSERT INTO providers VALUES ('g2','gemini','Gemini relay under a path','{"env":{"GOOGLE_GEMINI_BASE_URL":"https://g2.example.com/gemini/","GEMINI_API_KEY":"k2"}}','','custom',7,0)`,
 	)
 	// DeepSeek is already here under its preset id, with another key
 	if err := Save(FromPresetKey(t, "deepseek", "sk-other")); err != nil {
@@ -74,8 +75,16 @@ func TestImportCCSwitch(t *testing.T) {
 	if it := items["pi/dial"]; it.Skip == "" {
 		t.Fatalf("magpie itself offered: %+v", it)
 	}
-	if it := items["gemini/g"]; it.Skip == "" {
-		t.Fatalf("gemini relay offered: %+v", it)
+	g := items["gemini/g"]
+	// a Gemini-protocol relay (#1346): the base goes to the provider's own
+	// Gemini endpoint, as the editor, the TUI and import links take one
+	// Gemini CLI puts v1beta after GOOGLE_GEMINI_BASE_URL on every request,
+	// so the base magpie asks at is that one with v1beta, under a path too
+	if g.Skip != "" || g.Provider.Gemini != "https://g.example.com/v1beta" || g.Provider.Key != "k" || !slices.Equal(g.Provider.Models, []string{"gemini-3.8-flash"}) {
+		t.Fatalf("gemini relay: %+v", g)
+	}
+	if g2 := items["gemini/g2"]; g2.Skip != "" || g2.Provider.Gemini != "https://g2.example.com/gemini/v1beta" || g2.Provider.Key != "k2" {
+		t.Fatalf("gemini relay under a path: %+v", g2)
 	}
 	relay := items["claude/relay"]
 	if relay.Skip != "" || relay.Status != "new" || relay.Provider.Anthropic != "https://relay.example.com" || relay.Provider.Responses != "https://relay.example.com/v1" || relay.From != "Claude Code, Codex" {
@@ -122,6 +131,8 @@ func TestImportAlma(t *testing.T) {
 		`INSERT INTO providers VALUES ('a2','My Proxy','custom','sk-p','[]','https://proxy.example.com/v1',0,'2','openai-chat',0,'{"X-Team":"a"}')`,
 		`INSERT INTO providers VALUES ('a3','Copilot','copilot','','[]',NULL,1,'3',NULL,0,NULL)`,
 		`INSERT INTO providers VALUES ('a4','junk','custom','x','[]','bbb',0,'4',NULL,0,NULL)`,
+		`INSERT INTO providers VALUES ('a5','Gemini relay','custom','sk-g','["gemini-3.8-flash"]','https://ag.example.com/v1beta',1,'5','gemini',0,NULL)`,
+		`INSERT INTO providers VALUES ('a6','Google here','google','sk-gg','[]','https://gg.example.com/api/v1beta',1,'6',NULL,0,NULL)`,
 	)
 	items := itemsOf(t, "alma")
 	if it := items["a1"]; it.Provider.Preset != "openrouter" || it.Provider.Key != "sk-or" || len(it.Provider.Models) != 1 {
@@ -132,6 +143,14 @@ func TestImportAlma(t *testing.T) {
 	}
 	if items["a3"].Skip == "" || items["a4"].Skip == "" {
 		t.Fatalf("sign-in or junk offered: %+v %+v", items["a3"], items["a4"])
+	}
+	// a Gemini-protocol relay (#2413): Alma asks at its base_url with the
+	// version in it, as magpie's Gemini base is
+	if it := items["a5"]; it.Skip != "" || it.Provider.Gemini != "https://ag.example.com/v1beta" || it.Provider.Key != "sk-g" || it.Provider.Chat != "" {
+		t.Fatalf("alma gemini relay: %+v", it)
+	}
+	if it := items["a6"]; it.Skip != "" || it.Provider.Gemini != "https://gg.example.com/api/v1beta" || it.Provider.Key != "sk-gg" {
+		t.Fatalf("alma google type at a base: %+v", it)
 	}
 }
 

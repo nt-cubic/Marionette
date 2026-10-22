@@ -221,7 +221,7 @@ func TestTraceRecordsTheEffortSent(t *testing.T) {
 	if strings.Join(got, ",") != "high,xhigh,high,max," {
 		t.Errorf("usage efforts %q", got)
 	}
-	vs := usage.Vias(time.Time{})[usage.AgentOf("")+"|sess-1"]
+	vs := usage.Vias(time.Time{}).Of(usage.AgentOf("") + "|sess-1")
 	if len(vs) != 4 || vs[0].Model != "glm-5.3-flash" || vs[0].Effort != "high" || vs[0].Calls != 2 {
 		t.Errorf("vias %+v", vs)
 	}

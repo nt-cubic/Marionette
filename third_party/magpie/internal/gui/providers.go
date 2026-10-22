@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/agent"
+	"github.com/yetone/magpie/internal/autostart"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/provider"
@@ -54,6 +55,11 @@ type modelJSON struct {
 	Same       string   `json:"same,omitempty"`      // the model the user said it is the same as, for the groups magpie finds (#583)
 	Merge      string   `json:"merge,omitempty"`     // what those groups merge it by when the user says nothing
 	Kind       string   `json:"kind,omitempty"`      // what the user said it makes: image or video (#1399)
+	// Desktop is the number Claude Desktop's menu says beside this model
+	// (gateway.DesktopNumber), so a row of that menu can be matched to its
+	// provider (#2578): only for a model Claude Desktop, installed here,
+	// is shown and names after its own catalog, "" for every other.
+	Desktop string `json:"desktop,omitempty"`
 	// what it costs, USD per million tokens (#819): the price the user set
 	// for it, and its list price, its vendor's else its maker's, before the
 	// provider's price rate
@@ -86,7 +92,8 @@ type providerJSON struct {
 	// the vendor searches the web by itself (provider.Searches)
 	Searches bool `json:"searches"`
 	// on the Cline API: its DeepSeek models are served by DeepSeek's own
-	// API alone (provider.PinUpstream), which only it offers
+	// API alone and its GLM models by Z.ai's (provider.PinUpstream), which
+	// only it offers
 	Cline       bool `json:"cline,omitempty"`
 	PinUpstream bool `json:"pinUpstream"`
 	// on this machine or the local network, set to go unmasked by
@@ -256,7 +263,8 @@ type providerJSON struct {
 
 type moveJSON struct {
 	Package string `json:"package"`
-	// State is "" (built-in, never moved), "plugin", "back" or "failed"
+	// State is "" (built-in, never moved), "plugin", "back" or "failed";
+	// a retired built-in's row is its plugin's, "plugin"
 	State string `json:"state"`
 	Error string `json:"error,omitempty"`
 	// Why is a failed move's reason, which the page says in its language
@@ -361,7 +369,7 @@ func accountLabel(p provider.Provider) (name, icon string) {
 		if name == "" {
 			name = p.Name
 		}
-		if provider.Moved(pp.ID) {
+		if provider.PluginServes(pp.ID) {
 			icon = p.Icon // the built-in's, as it was
 		}
 		return name, icon
@@ -427,10 +435,15 @@ type gatewayJSON struct {
 	// Version is another magpie's, serving it, and Older says it is older
 	// than this one: agents' requests are then sent as that version sends
 	// them, without this one's fixes (#506)
-	Version string         `json:"version,omitempty"`
-	Older   bool           `json:"older,omitempty"`
-	Models  int            `json:"models"`
-	Calls   []gateway.Call `json:"calls"`
+	Version string `json:"version,omitempty"`
+	Older   bool   `json:"older,omitempty"`
+	// Pid and Serves are the serving magpie's own: which process it is and
+	// how it was started, for the Routing page to name the one that is
+	// routing (#2606)
+	Pid    int            `json:"pid,omitempty"`
+	Serves string         `json:"serves,omitempty"`
+	Models int            `json:"models"`
+	Calls  []gateway.Call `json:"calls"`
 	// Lanes are the keys and accounts with requests out or waiting under
 	// a limit on requests at once (#892), by provider#keyid or
 	// provider@account
@@ -485,6 +498,9 @@ type providersJSON struct {
 	// MovesTo is the plugin each of them goes to, for the add sheet's
 	// offer to install it before signing in
 	MovesTo map[string]string `json:"movesTo,omitempty"`
+	// Unmoved are the retired built-ins whose accounts haven't moved onto
+	// their plugins yet, served by nothing until they do, with why
+	Unmoved []provider.MoveCandidate `json:"unmoved,omitempty"`
 	// Moved is the agents the change moved off models it stopped serving
 	// (agent.Reseat), for the page to say so.
 	Moved []agent.Move `json:"moved,omitempty"`
@@ -526,7 +542,7 @@ func agentUses(agents []*agent.Agent, findGroup func(string) (provider.Group, []
 	for _, a := range agents {
 		u := agentUse{Agent: a}
 		v := agentModel(a)
-		if strings.HasPrefix(v, provider.GroupPrefix) {
+		if provider.IsGroupRef(v) {
 			u.group, u.members, u.inGroup = findGroup(v)
 		} else if pid, model, ok := strings.Cut(v, "/"); ok {
 			if _, err := provider.Find(pid); err == nil {
@@ -545,7 +561,32 @@ func presetOwnClient(pr provider.PresetDef) bool {
 	return provider.Provider{Preset: pr.ID, Chat: pr.Chat, Responses: pr.Responses, Anthropic: pr.Anthropic}.OwnClient()
 }
 
+// desktopNumbers are the numbers Claude Desktop's menu says beside the
+// models it names after its own catalog (gateway.DesktopNumber), by
+// "provider/model": none when Claude Desktop isn't installed, and only for
+// the models it is shown (provider.CatalogFor), so no other chip carries
+// a number nothing shows (#2578).
+func desktopNumbers(agents []agentUse) map[string]string {
+	if !slices.ContainsFunc(agents, func(u agentUse) bool { return u.Agent != nil && u.ID == "claude-desktop" }) {
+		return nil
+	}
+	shown, _ := provider.CatalogFor("claude-desktop")
+	out := map[string]string{}
+	for _, e := range shown {
+		if n := gateway.DesktopNumber(e); n != "" {
+			out[e.ID] = n
+		}
+	}
+	return out
+}
+
 func providerInfo(p provider.Provider, agents []agentUse) providerJSON {
+	return providerInfoWith(p, agents, desktopNumbers(agents))
+}
+
+// providerInfoWith is providerInfo with the Claude Desktop numbers read
+// once for the whole list (desktopNumbers).
+func providerInfoWith(p provider.Provider, agents []agentUse, desktop map[string]string) providerJSON {
 	out := providerJSON{
 		ID: p.ID, Name: p.Name, Icon: p.Icon, Preset: p.Preset, Host: p.Host(),
 		Chat: p.Chat, Responses: p.Responses, Anthropic: p.Anthropic, Gemini: p.Gemini, Decide: p.Decide, BaseAPI: p.BaseAPI, ModelTest: p.ModelTest(), TestsAs: p.TestClients(), DecideTest: p.AsksDecideModels(), MarksKinds: p.MarksKinds(),
@@ -609,7 +650,11 @@ func providerInfo(p provider.Provider, agents []agentUse) providerJSON {
 	}
 	out.Key.Set = p.Key != ""
 	out.Key.Masked = provider.Mask(p.Key)
-	if provider.Movable(p.ID) {
+	if provider.BuiltinRetired(p.ID) {
+		// only its plugin's row is listed now: built-in accounts not moved
+		// yet are providersJSON.Unmoved's
+		out.Move = &moveJSON{Package: provider.MovePackage(p.ID), State: provider.MovePlugin}
+	} else if provider.Movable(p.ID) {
 		m, _ := provider.MigrationOf(p.ID)
 		out.Move = &moveJSON{Package: provider.MovePackage(p.ID), State: m.State, Error: m.Err, Why: m.Why}
 		if m.State == provider.MoveMoving {
@@ -712,6 +757,7 @@ func providerInfo(p provider.Provider, agents []agentUse) providerJSON {
 		j.Same = sames[p.ID+"/"+m.ID]
 		j.Kind = p.ModelKind(m.ID)
 		j.Merge = provider.MergeName(m.ID)
+		j.Desktop = desktop[p.ID+"/"+m.ID]
 		if mp, ok := held.ModelPrices[p.ID+"/"+m.ID]; ok {
 			if pr, bad := mp.Price(); bad == "" {
 				j.Price = &pr
@@ -800,11 +846,23 @@ func providersState() providersJSON {
 	s := providersJSON{Providers: []providerJSON{}, Presets: []presetJSON{}, Excluded: []excludedJSON{}}
 	s.OnPlugins = provider.OnPlugins()
 	s.Movable = provider.MovableIDs()
+	// a retired built-in whose plugin is installed is the plugin's, moved
+	// or not: the add sheet signs in to it through the plugin alone
+	for _, id := range s.Movable {
+		if _, ok := provider.PluginOf(id); ok && provider.BuiltinRetired(id) && !slices.Contains(s.OnPlugins, id) {
+			s.OnPlugins = append(s.OnPlugins, id)
+		}
+	}
 	for _, id := range s.Movable {
 		if s.MovesTo == nil {
 			s.MovesTo = map[string]string{}
 		}
 		s.MovesTo[id] = provider.MovePackage(id)
+	}
+	for _, c := range provider.MoveCandidates() {
+		if provider.BuiltinRetired(c.ID) {
+			s.Unmoved = append(s.Unmoved, c)
+		}
 	}
 	if err := provider.FileError(); err != nil {
 		s.FileError = err.Error()
@@ -826,11 +884,12 @@ func providersState() providersJSON {
 	}
 	findGroup := provider.GroupFinder()
 	uses := agentUses(agents, findGroup)
+	desktop := desktopNumbers(uses)
 	have := map[string]bool{}
 	for _, p := range provider.All() {
 		// a preset is added once any provider is its, whatever its id
 		have[p.ID], have[p.Preset] = true, true
-		s.Providers = append(s.Providers, providerInfo(p, uses))
+		s.Providers = append(s.Providers, providerInfoWith(p, uses, desktop))
 	}
 	// partners first, as the add sheet lists them
 	for _, pa := range provider.Partners() {
@@ -883,6 +942,15 @@ func providersState() providersJSON {
 		o := gateway.ServedBy()
 		s.Gateway.Running, s.Gateway.Window, s.Gateway.Version = o.Running, o.Window, o.Version
 		s.Gateway.Older = o.Running && update.Newer(gateway.Version, o.Version)
+		// the process that is routing, for the Routing page to name it
+		// (#2606): another magpie on this computer, whose routing this
+		// console shows through OwnerTrace, and its lanes for the rows
+		s.Gateway.Pid, s.Gateway.Serves = o.Pid, o.Serves
+		if o.Running {
+			if l, ok := gateway.OwnerLanes(); ok {
+				s.Gateway.Lanes = l
+			}
+		}
 	}
 	s.Gateway.Archive = archiveState()
 	s.CodexDaemon = provider.CodexDaemonStale()
@@ -932,6 +1000,10 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		lanes := map[string]gateway.Lane{}
 		if gw := served.Load(); gw != nil {
 			lanes = gw.Lanes()
+		} else if l, ok := gateway.OwnerLanes(); ok {
+			// another magpie on this computer serves the gateway: its lanes
+			// are the ones to show (the rows read the same wherever it runs)
+			lanes = l
 		}
 		writeJSON(rw, lanes)
 	})
@@ -958,7 +1030,20 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		if r.URL.Query().Has("wait") {
 			provider.FetchNew(8 * time.Second)
 		}
-		writeJSON(rw, providersState())
+		// ?last=1: the list kept from the last read, at once (#1519);
+		// null when none is kept
+		if r.URL.Query().Get("last") == "1" {
+			if b, ok := lastKnownProviders(); ok {
+				rw.Header().Set("Content-Type", "application/json")
+				rw.Write(b)
+			} else {
+				writeJSON(rw, nil)
+			}
+			return
+		}
+		s := providersState()
+		writeJSON(rw, s)
+		keepProviders(s)
 	})
 	// Recent-call bodies are read only when their row is opened, not with
 	// every Providers or Gateway refresh (#1521): forty calls' bodies made
@@ -1454,6 +1539,11 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				// set <id> codex=as-sent` (#1758)
 				if !in.CodexAsSent && old != nil {
 					in.CodexAsSent = old.CodexAsSent
+				}
+				// and additional_tools taken, set with `magpie provider
+				// set <id> additional-tools=on` (#2660)
+				if !in.AdditionalTools && old != nil {
+					in.AdditionalTools = old.AdditionalTools
 				}
 				// each account's own proxy likewise: {} clears them
 				if in.AccountProxies == nil && old != nil {
@@ -2205,7 +2295,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 	mux.HandleFunc("POST /api/open", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct{ URL string }
 		_ = json.NewDecoder(r.Body).Decode(&in)
-		if strings.HasPrefix(in.URL, "https://") || strings.HasPrefix(in.URL, "http://") || strings.HasPrefix(in.URL, agent.CindyScheme) || strings.HasPrefix(in.URL, agent.LodyScheme) {
+		// and System Settings' Login Items, where Open at login is allowed
+		// again: that one pane, not System Settings' scheme at large
+		if strings.HasPrefix(in.URL, "https://") || strings.HasPrefix(in.URL, "http://") || strings.HasPrefix(in.URL, agent.CindyScheme) || strings.HasPrefix(in.URL, agent.LodyScheme) || in.URL == autostart.LoginItemsURL {
 			// Open again on a sign-in says why it didn't open (#2043)
 			if err := w.OpenURL(in.URL); err != nil {
 				fail(rw, err)

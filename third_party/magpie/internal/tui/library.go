@@ -340,12 +340,12 @@ func (m *model) openLibAdd() {
 		input:  newInput("filter"),
 		items: []agent.Option{
 			{Value: "mcp server", Note: "a URL, or a command it runs"},
-			{Value: "skills", Note: "from a GitHub repository, or a folder on this machine"},
+			{Value: "skills", Note: "from GitHub, GitLab or any git repository, or a folder on this machine"},
 		},
 		onPick: func(v string) tea.Cmd {
 			return func() tea.Msg {
 				if v == "skills" {
-					in := newInput("a GitHub link (owner/repo, or a folder in one) or a folder's full path")
+					in := newInput("owner/repo, a GitHub or GitLab link, a git address (git@host:group/repo.git), or a folder's full path")
 					in.CharLimit = 400
 					return askMsg{ask{crumbs: []string{"library", "add", "skills"}, input: in,
 						hint:    "magpie looks there for skills, then you pick one",

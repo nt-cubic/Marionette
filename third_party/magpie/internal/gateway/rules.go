@@ -69,6 +69,12 @@ type RuleHit struct {
 	Small   []string `json:"small,omitempty"`
 	// Bare: the group has no rules, only its effort picked
 	Bare bool `json:"bare,omitempty"`
+	// UseEffort: the reasoning the rule asks the member it names for
+	// (provider.Rule.UseEffort, #2633), in place of the agent's
+	UseEffort string `json:"useEffort,omitempty"`
+	// members are the models of the member the rule names, as the group
+	// whose rule it is has them (ruleOver): who UseEffort is for
+	members []provider.Member
 }
 
 // Classified is what the classifier was asked as a turn began, and said.
@@ -195,6 +201,9 @@ func ruleFor(key string, g provider.Group, ms []provider.Member, req *Request, a
 		// say who comes next
 		if hit != nil && hit.Use != "" && hit.N >= 1 {
 			hit.Then = provider.ThenUses(g.Rules, q, hit.N, hit.Use)
+			if hit.N <= len(g.Rules) {
+				hit.UseEffort = g.Rules[hit.N-1].UseEffort // and how hard it asks it to think
+			}
 		}
 	}()
 	if hit.Effort == "" && q.Thinking {
@@ -273,6 +282,9 @@ func ruleFor(key string, g provider.Group, ms []provider.Member, req *Request, a
 			c.AfterEffort = tr.effort
 		}
 		text := userText(req)
+		// what was said before it, for a follow-up that says little of
+		// its own (@HirotaNagai on X): from the same parsed, masked request
+		prev.User, prev.Reply = turnBefore(req)
 		switch {
 		case g.Classifier == "":
 			c.Error = "the group has no classifier"
@@ -639,6 +651,9 @@ func ruleFirst(ms []provider.Member, cs []candidate, pl planned, own int, home m
 // is ready again, its rest over.
 func ruleOver(hit *RuleHit, ms []provider.Member, cs []candidate, pl planned, aff *Affinity) (out []candidate, _ planned) {
 	defer func() { homeCands(out, ruleMembers(hit, ms)) }()
+	if hit.UseEffort != "" {
+		hit.members = ruleMembers(hit, ms)
+	}
 	kept := aff != nil && aff.Kept
 	if hit.Held && kept && len(cs) > 1 {
 		ordered := ruleOrder(hit, ms)
@@ -686,6 +701,30 @@ func ruleOver(hit *RuleHit, ms []provider.Member, cs []candidate, pl planned, af
 		aff.Kept, aff.Why = false, "rule"
 	}
 	return cs, pl
+}
+
+// ruleEffort is the reasoning a rule asks its member for (#2633), when c
+// is one of that member's keys or accounts — the outermost group's rule
+// that names one, as the turn's pick is the outermost group's — fitted to
+// the levels c's model has. A model whose levels aren't known is asked as
+// it would be without the rule: magpie can't tell it thinks. "" for none.
+// A rule after it that only fails over (Then) asks nothing of its member.
+func ruleEffort(c candidate, hit *RuleHit, nested []NestedRule) string {
+	hits := []*RuleHit{hit}
+	for _, n := range nested {
+		hits = append(hits, n.Rule)
+	}
+	for _, h := range hits {
+		if h == nil || h.UseEffort == "" || !slices.ContainsFunc(h.members, func(m provider.Member) bool { return ofMember(c, m) }) {
+			continue
+		}
+		levels := c.p.Efforts(c.model)
+		if len(levels) == 0 {
+			return ""
+		}
+		return fitLevel(h.UseEffort, levels)
+	}
+	return ""
 }
 
 // homeCands sends the keys or accounts of the rule's members as the

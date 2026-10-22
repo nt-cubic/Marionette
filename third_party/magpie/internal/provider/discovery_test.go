@@ -118,9 +118,9 @@ func TestAccountDiscoveryOffReadsNoSignIn(t *testing.T) {
 	limitsHome(t)
 	home, _ := os.UserHomeDir()
 	cfg := os.Getenv("XDG_CONFIG_HOME")
-	oldClaude, oldCursor := claudeKeychain, cursorKeychain
-	claudeKeychain, cursorKeychain = true, true // every OS: the Keychain is asked, by the fake
-	t.Cleanup(func() { claudeKeychain, cursorKeychain = oldClaude, oldCursor; ForgetAccounts() })
+	oldClaude := claudeKeychain
+	claudeKeychain = true // every OS: the Keychain is asked, by the fake
+	t.Cleanup(func() { claudeKeychain = oldClaude; ForgetAccounts() })
 	ForgetAccounts()
 
 	if err := settings.Save(settings.Settings{NoAccountDiscovery: true}); err != nil {

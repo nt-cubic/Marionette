@@ -31,7 +31,7 @@ func testResponseIdentityStorageRoundTrip(t *testing.T, location *time.Location)
 	for _, c := range []*rowChunk{chunk, packed.unpack()} {
 		for i := range c.Rows {
 			r := c.row(i)
-			if r.ResponseID != fmt.Sprint("resp", i) || r.RequestID != fmt.Sprint("req", i) || c.Strings[c.Rows[i].Text[rowMsg]] != fmt.Sprint("msg", i) {
+			if r.ResponseID != fmt.Sprint("resp", i) || r.RequestID != fmt.Sprint("req", i) || c.Strings[c.text(&c.Rows[i], rowMsg)] != fmt.Sprint("msg", i) {
 				t.Fatalf("packed identity changed %+v", r)
 			}
 		}

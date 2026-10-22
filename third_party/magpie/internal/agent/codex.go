@@ -13,10 +13,13 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	satomic "sync/atomic"
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
 
+	"github.com/yetone/magpie/internal/access"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/codexcat"
 	"github.com/yetone/magpie/internal/edit"
@@ -392,12 +395,28 @@ func codexIn(at place) *Agent {
 		s := settings.Load()
 		return codexAsyncSync(path, at.key("codex.async"), routed, s.CodexAsyncCompact, s.CodexAsyncCompactPercent)
 	}
+	// keptBearerToken is the table's bearer token when it is one the
+	// gateway takes: a caller key of the gateway's own the user put in
+	// magpie's token's place goes through magpie all the same, so theirs
+	// stays, as a sync keeps one (keyHolds); only a value the gateway would
+	// refuse is wired over (#2545). The sharing key magpie made is magpie's
+	// own, however much Authenticate takes it, so it never counts as theirs
+	// (Default): sharing going off brings gateway.Token back
+	keptBearerToken := func(table string) string {
+		tok := at.gwKey()
+		if t, err := edit.GetTOMLTable(path, table); err == nil {
+			if v := t["experimental_bearer_token"]; v != tok && keyHolds(v, tok) && !access.Default(v) {
+				return v
+			}
+		}
+		return tok
+	}
 	putProvider := func() error {
 		kvs := []edit.KV{
 			{Path: "name", Value: "magpie"},
 			{Path: "base_url", Value: at.v1()},
 			{Path: "wire_api", Value: "responses"},
-			{Path: "experimental_bearer_token", Value: at.gwKey()},
+			{Path: "experimental_bearer_token", Value: keptBearerToken("model_providers." + magpieID)},
 			// Codex offers its built-in image tool (image_gen.imagegen) and
 			// the other OpenAI-provider tools only to a provider it reads as
 			// the OpenAI actor: one that does not require OpenAI auth but
@@ -548,7 +567,7 @@ func codexIn(at place) *Agent {
 				edit.KV{Path: "name", Value: id},
 				edit.KV{Path: "base_url", Value: at.v1()},
 				edit.KV{Path: "wire_api", Value: "responses"},
-				edit.KV{Path: "experimental_bearer_token", Value: at.gwKey()},
+				edit.KV{Path: "experimental_bearer_token", Value: keptBearerToken("model_providers." + id)},
 			); err != nil {
 				return err
 			}
@@ -1097,6 +1116,12 @@ func codexIn(at place) *Agent {
 			}
 			dropList()
 			forget(at.key("codex.model"), at.key("codex.effort"), at.key("codex.provider"), at.key("codex.catalog"))
+			// its threads go on without magpie: the compactions magpie made
+			// in them written as Codex's own (a distro's Codex locks its
+			// files where this machine's locks can't reach)
+			if at.spell == nil {
+				portCodexHome(dir, codexPortUnwire)
+			}
 			return settle()
 		},
 		// signed in with ChatGPT, Codex reaches magpie by the base URL with
@@ -1648,7 +1673,7 @@ func codexOwnViaMagpie(model string) string {
 // codexOwnOf is the model of Codex's own a catalog id serves on a ChatGPT
 // account (codexOwnViaMagpie's way back); "" for any other.
 func codexOwnOf(id string) string {
-	if !isMagpie(id) || strings.HasPrefix(id, provider.GroupPrefix) {
+	if !isMagpie(id) || provider.IsGroupRef(id) {
 		return ""
 	}
 	p, model, ok := provider.Resolve(id)
@@ -1852,13 +1877,72 @@ func codexChatGPT(dir string) bool {
 // newest day of it at most — from the log database the Codex app and the
 // TUI share: the address it opened, and whether that was refused (nothing
 // listening there). Zero when none is logged.
+//
+// Every Drift asks it, so it is read again only when the database or its
+// -wal changed, or the day it covers moved past what it found (#1665: a
+// read per ask was ~2,500 opens of logs_2.sqlite in 25s of a start, each
+// one file system work a Windows filter driver adds its own to).
 func codexReached(dir string, since time.Time) (at time.Time, to string, refused bool) {
 	logs, _ := filepath.Glob(filepath.Join(dir, "logs_*.sqlite"))
 	if len(logs) == 0 {
 		return
 	}
 	slices.Sort(logs)
-	db, err := provider.OpenReadOnly(logs[len(logs)-1])
+	path := logs[len(logs)-1]
+	key := reachedKey{path: path, since: since.Unix(), db: stampOf(path), wal: stampOf(path + "-wal")}
+	reachedMu.Lock()
+	if c, ok := reachedMemo[dir]; ok && c.key == key && time.Since(c.read) < reachedFor &&
+		(c.at.IsZero() || time.Since(c.at) < 24*time.Hour) {
+		reachedMu.Unlock()
+		return c.at, c.to, c.refused
+	}
+	reachedMu.Unlock()
+	at, to, refused = codexReachedRead(path, since)
+	reachedMu.Lock()
+	reachedMemo[dir] = reachedRead{key: key, read: time.Now(), at: at, to: to, refused: refused}
+	reachedMu.Unlock()
+	return
+}
+
+// reachedFor is how long a read of Codex's log stands while its files say
+// nothing changed: a file system whose times are coarse can miss a write
+// that kept the size.
+const reachedFor = 15 * time.Second
+
+type reachedKey struct {
+	path    string
+	since   int64
+	db, wal fileStamp
+}
+
+type fileStamp struct{ size, mod int64 }
+
+func stampOf(path string) fileStamp {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return fileStamp{size: -1}
+	}
+	return fileStamp{size: fi.Size(), mod: fi.ModTime().UnixNano()}
+}
+
+type reachedRead struct {
+	key     reachedKey
+	read    time.Time
+	at      time.Time
+	to      string
+	refused bool
+}
+
+var (
+	reachedMu   sync.Mutex
+	reachedMemo = map[string]reachedRead{}
+	// reachedOpens counts the reads of the database, for the tests
+	reachedOpens satomic.Int64
+)
+
+func codexReachedRead(path string, since time.Time) (at time.Time, to string, refused bool) {
+	reachedOpens.Add(1)
+	db, err := provider.OpenReadOnly(path)
 	if err != nil {
 		return
 	}

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"regexp"
 	"slices"
 	"strconv"
@@ -85,6 +86,7 @@ type aRequest struct {
 		Description  string          `json:"description,omitempty"`
 		InputSchema  json.RawMessage `json:"input_schema,omitempty"`
 		CacheControl json.RawMessage `json:"cache_control,omitempty"`
+		DeferLoading bool            `json:"defer_loading,omitempty"`
 	} `json:"tools,omitempty"`
 	ToolChoice *struct {
 		Type                   string `json:"type"`
@@ -166,7 +168,7 @@ func parseAnthropicRequest(body []byte, clientMarks bool) (*Request, error) {
 					msg.Parts = append(msg.Parts, Part{Kind: ToolCall, ID: anthropicInID(b.ID), Name: b.Name, Args: b.Input})
 				case "tool_result":
 					out, images := toolOutput(b.Content)
-					msg.Parts = append(msg.Parts, Part{Kind: ToolResult, CallID: anthropicInID(b.ToolUseID), Text: out, Images: images, IsError: b.IsError})
+					msg.Parts = append(msg.Parts, Part{Kind: ToolResult, CallID: anthropicInID(b.ToolUseID), Text: out, Images: images, IsError: b.IsError, Loads: toolRefs(b.Content)})
 				case "thinking":
 					msg.Parts = append(msg.Parts, Part{Kind: Thinking, Text: b.Thinking, Signature: b.Signature})
 				case "redacted_thinking":
@@ -217,7 +219,7 @@ func parseAnthropicRequest(body []byte, clientMarks bool) (*Request, error) {
 			// only keeps Anthropic's deferred loading on; never to be called
 			continue
 		}
-		r.Tools = append(r.Tools, Tool{Name: t.Name, Description: t.Description, Schema: t.InputSchema})
+		r.Tools = append(r.Tools, Tool{Name: t.Name, Description: t.Description, Schema: t.InputSchema, Deferred: t.DeferLoading})
 	}
 	if tc := a.ToolChoice; tc != nil {
 		switch tc.Type {
@@ -1522,7 +1524,12 @@ func (e *anthropicEncoder) event(ev Event) {
 		e.index++
 	case KError:
 		e.close()
-		failed := map[string]any{"type": "api_error", "message": ev.Text}
+		typ := "api_error"
+		if ev.Status == http.StatusRequestEntityTooLarge && ev.Code != "context_length_exceeded" {
+			// the same type a 413 JSON body carries (writeErrorSaid)
+			typ = "request_too_large"
+		}
+		failed := map[string]any{"type": typ, "message": ev.Text}
 		if ev.Code != "" {
 			failed["code"] = ev.Code // preserve the upstream error type, including refusals
 		}

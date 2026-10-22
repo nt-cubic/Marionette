@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -8,7 +9,9 @@ import (
 	"testing"
 
 	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 func TestGrok(t *testing.T) {
@@ -208,6 +211,23 @@ func TestGrokFoldsItsOwnAccount(t *testing.T) {
 	t.Cleanup(provider.ForgetAccounts)
 	os.MkdirAll(filepath.Join(home, "grok"), 0o755)
 	os.WriteFile(filepath.Join(home, "grok", "auth.json"), []byte(`{"x":{"key":"k","email":"me@x.ai"}}`), 0o600)
+	// the Grok plugin serves the account, taken from Grok Build's own
+	spec := "@magpie-community/opencode-grok-auth"
+	write := func(name string, v any) {
+		t.Helper()
+		b, _ := json.Marshal(v)
+		if err := os.MkdirAll(settings.Dir(), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(settings.Dir(), name), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("plugins.json", map[string]any{"plugins": []map[string]any{{"spec": spec}}})
+	write("plugin-auth.json", map[string]map[string]any{"grok": {"type": "oauth", "refresh": filepath.Join(home, "grok")}})
+	plugin.UseCached([]plugin.Provider{{ID: "grok", Spec: spec, Name: "Grok",
+		Models: []plugin.Model{{ID: "grok-4.3", Name: "Grok 4.3"}}, Accounts: []plugin.Account{{Key: "grok", Type: "oauth"}}}})
+	t.Cleanup(plugin.Settle)
 	if err := provider.Save(provider.Provider{ID: "deepseek", Name: "DeepSeek", Chat: "https://api.deepseek.com/v1", Key: "k", Models: []string{"pro"}}); err != nil {
 		t.Fatal(err)
 	}

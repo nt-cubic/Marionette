@@ -61,7 +61,7 @@ func TestClaudePickerListsRoutingGroups(t *testing.T) {
 		t.Fatal(err)
 	}
 	main, _ := edit.GetJSON(path, "model")
-	if !strings.HasPrefix(main, "group/auto-deepseek-v4-1-flash") {
+	if !strings.HasPrefix(main, "auto/deepseek-v4.1-flash") {
 		t.Fatalf("model: %q\n%s", main, readFile(path))
 	}
 	opts := picker()

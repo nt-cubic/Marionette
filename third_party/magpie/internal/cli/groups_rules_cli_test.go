@@ -144,7 +144,7 @@ func TestGroupRuleIntentCmd(t *testing.T) {
 		t.Fatalf("%+v", g)
 	}
 	// a second needs no classifier again
-	if err := ruleCmd([]string{"add", "opus", "use=claude-opus-5-5", "intent=planning", "agents=codex"}); err != nil {
+	if err := ruleCmd([]string{"add", "opus", "use=claude-opus-5-5", "use-effort=high", "intent=planning", "agents=codex"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := ruleCmd([]string{"classifier", "opus", "b/gpt-5.5"}); err != nil || group().Classifier != "b/gpt-5.5" {
@@ -153,7 +153,7 @@ func TestGroupRuleIntentCmd(t *testing.T) {
 	if err := ruleCmd([]string{"opus"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := ruleLine(group().Rules[1]); !strings.Contains(got, `agent codex · intent "planning"`) {
+	if got := ruleLine(group().Rules[1]); !strings.Contains(got, `agent codex · intent "planning"`) || !strings.HasSuffix(got, "high") || group().Rules[1].UseEffort != "high" {
 		t.Fatalf("%q", got)
 	}
 	// with the intents gone, so is the classifier

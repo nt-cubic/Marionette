@@ -1,13 +1,9 @@
 package sessions
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
-	"errors"
-	"io"
 	"math"
-	"os"
 	"strings"
 	"time"
 )
@@ -73,59 +69,65 @@ type piCallLine struct {
 	} `json:"message"`
 }
 
-// readPiCalls reads one Pi or omp session file whole.
-func readPiCalls(f file) (*callFile, bool) {
-	r, err := os.Open(f.path)
-	if err != nil {
-		return &callFile{Path: f.path, Agent: f.agent}, false
+// piCarry is what a Pi or omp session file's lines have said so far that a
+// later line's call is read with: the header's cwd and, for a fork, when it
+// began (what was written before is its parent's), and the provider and
+// model in use. Pi and omp only append to the file, a line an entry, so a
+// file that grew is read on from where the last read left off with it
+// (lineCallReaders).
+type piCarry struct {
+	Header          bool
+	Cwd             string
+	Since           time.Time
+	Provider, Model string
+}
+
+// piCallsBegin starts a session file read from its start.
+func piCallsBegin(st *callFile, f file) {
+	st.Session = strings.TrimPrefix(f.key, f.agent+":")
+	st.Pi = &piCarry{}
+}
+
+// piCallsKept is whether st holds what reading on needs: a disk shard
+// written before the carry was kept there does not, and its file is read
+// whole again once it changes.
+func piCallsKept(st *callFile) bool { return st.Pi != nil }
+
+// readPiCallLine reads one line of a Pi or omp session file.
+func readPiCallLine(st *callFile, b []byte) {
+	if len(b) == 0 || len(b) > maxLine || !(bytes.Contains(b, piUsed) || bytes.Contains(b, piHeader) || bytes.Contains(b, piModel)) {
+		return
 	}
-	defer r.Close()
-	st := &callFile{Agent: f.agent, Path: f.path, Session: strings.TrimPrefix(f.key, f.agent+":")}
-	var cwd, provider, model string
-	var header bool
-	var since time.Time // a fork's: what was written before it is its parent's
-	br := bufio.NewReaderSize(r, 1<<20)
-	for {
-		b, err := br.ReadBytes('\n')
-		if err != nil && (!errors.Is(err, io.EOF) || len(bytes.TrimSpace(b)) == 0) {
-			break
-		}
-		b = bytes.TrimSpace(b)
-		if len(b) > 0 && len(b) <= maxLine && (bytes.Contains(b, piUsed) || bytes.Contains(b, piHeader) || bytes.Contains(b, piModel)) {
-			var l piCallLine
-			if json.Unmarshal(b, &l) == nil {
-				switch l.Type {
-				case "session":
-					if !header {
-						header, cwd = true, l.Cwd
-						if l.Parent != "" {
-							since, _ = time.Parse(time.RFC3339Nano, l.Timestamp)
-						}
-					}
-				case "model_change":
-					p, id := l.Provider, l.ModelID
-					if id == "" {
-						p, id, _ = strings.Cut(l.Model, "/")
-					}
-					if id != "" {
-						provider, model = p, id
-					}
-				case "message":
-					if m := l.Message; m != nil && m.Role == "assistant" && m.Model != "" {
-						provider, model = m.Provider, m.Model
-					}
-				}
-				if c, ok := piCall(st, f.agent, l, provider, model); ok && !c.Time.Before(since) {
-					c.Cwd = st.str(cwd)
-					st.Calls = append(st.Calls, c)
-				}
+	var l piCallLine
+	if json.Unmarshal(b, &l) != nil {
+		return
+	}
+	p := st.Pi
+	switch l.Type {
+	case "session":
+		if !p.Header {
+			p.Header, p.Cwd = true, l.Cwd
+			if l.Parent != "" {
+				p.Since, _ = time.Parse(time.RFC3339Nano, l.Timestamp)
 			}
 		}
-		if err != nil {
-			break
+	case "model_change":
+		prov, id := l.Provider, l.ModelID
+		if id == "" {
+			prov, id, _ = strings.Cut(l.Model, "/")
+		}
+		if id != "" {
+			p.Provider, p.Model = prov, id
+		}
+	case "message":
+		if m := l.Message; m != nil && m.Role == "assistant" && m.Model != "" {
+			p.Provider, p.Model = m.Provider, m.Model
 		}
 	}
-	return st, true
+	if c, ok := piCall(st, st.Agent, l, p.Provider, p.Model); ok && !c.Time.Before(p.Since) {
+		c.Cwd = st.str(p.Cwd)
+		st.Calls = append(st.Calls, c)
+	}
 }
 
 // piCall is an entry as a call, on the provider and model in use for the

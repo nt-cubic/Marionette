@@ -16,8 +16,37 @@ import (
 // Arg is what magpie is started with at login: the tray, no window.
 const Arg = "tray"
 
-// Enabled reports whether magpie opens at login.
-func Enabled() bool { return enabled() }
+// State is whether magpie opens at login, as the system will act on it.
+type State string
+
+const (
+	// Off: no record, so nothing opens magpie at login.
+	Off State = "off"
+	// On: the record is there, and nothing the system says holds it back.
+	On State = "on"
+	// NeedsAllowing: the record is there, but the user switched it off in
+	// the system's own settings (on the Mac, System Settings › General ›
+	// Login Items › Allow in the Background), so it opens nothing until
+	// it is allowed there again; writing the record anew doesn't do that.
+	NeedsAllowing State = "allow"
+)
+
+// LoginItemsURL opens System Settings' Login Items pane, where a record
+// that NeedsAllowing is allowed again.
+const LoginItemsURL = "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"
+
+// Enabled reports whether magpie opens at login. A system that can't be
+// asked, or that answers something else, is not taken for a no: the
+// record's own word stands (On).
+func Enabled() State {
+	if !enabled() {
+		return Off
+	}
+	if heldBack() {
+		return NeedsAllowing
+	}
+	return On
+}
 
 // Set has magpie open at login, or not, as this copy of it.
 func Set(on bool) error {

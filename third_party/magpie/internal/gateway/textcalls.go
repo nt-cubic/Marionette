@@ -24,8 +24,76 @@ import (
 // real tool call, and the reply ends as one that called tools. Held text
 // that isn't all such blocks goes on as the text it was.
 
-// textCallMarks are what a call written into the text opens with.
-var textCallMarks = []string{"<tool_call>", "<｜DSML｜", "<|DSML|"}
+// textCallMarks are what a call written into the text opens with, beside
+// DeepSeek's DSML tags, which dsmlMark reads.
+var textCallMarks = []string{"<tool_call>"}
+
+// dsmlMark tells whether s begins with a DSML tag's mark, read as the
+// parse regexes read one (dsmlTag): <, spaces, / and spaces for a close
+// when closing is true, a pipe, then a run of pipes and spaces, DSML and
+// another run, which may be empty. A pipe is ASCII | or full-width ｜, in
+// any number and any mix of widths: DeepSeek writes one or two
+// (#2623, OKURBITO: <｜｜DSML｜｜invoke went out as text), and its widths
+// don't always agree within a tag, so no spelling is listed. n is the
+// mark's length when s begins with one; more is whether s, too short for
+// one, could be one's beginning still being written, down to a full-width
+// pipe's first bytes.
+func dsmlMark(s string, closing bool) (n int, more bool) {
+	if !strings.HasPrefix(s, "<") {
+		return 0, false
+	}
+	i := 1
+	space := func() {
+		for i < len(s) && strings.ContainsRune(" \t\r\n", rune(s[i])) {
+			i++
+		}
+	}
+	// pipe steps over one pipe at i; part is whether s ends in the first
+	// bytes of a full-width one
+	pipe := func() (ok, part bool) {
+		switch {
+		case i < len(s) && s[i] == '|':
+			i++
+			return true, false
+		case strings.HasPrefix(s[i:], "｜"):
+			i += len("｜")
+			return true, false
+		}
+		return false, i < len(s) && strings.HasPrefix("｜", s[i:])
+	}
+	// run reads pipes and spaces from i; part as for pipe
+	run := func() (part bool) {
+		for {
+			space()
+			if ok, part := pipe(); !ok {
+				return part
+			}
+		}
+	}
+	space()
+	if closing && i < len(s) && s[i] == '/' {
+		i++
+		space()
+	}
+	if i == len(s) {
+		return 0, true
+	}
+	if ok, part := pipe(); !ok {
+		return 0, part
+	}
+	if run() || i == len(s) {
+		return 0, true
+	}
+	if rest := s[i:]; !strings.HasPrefix(rest, "DSML") {
+		return 0, strings.HasPrefix("DSML", rest)
+	}
+	i += len("DSML")
+	if run() || i == len(s) {
+		// the run after DSML may go on in the next chunk
+		return 0, true
+	}
+	return i, false
+}
 
 // writtenCall is one call read out of the text.
 type writtenCall struct {
@@ -84,13 +152,31 @@ func chatToolNames(body []byte) map[string]bool {
 
 // textCallAt is where in s a call written into the text begins, -1 for
 // nowhere; and, when it doesn't, how much of s's end could be one's
-// beginning still being written.
+// beginning still being written. A DSML close begins one too: DeepSeek
+// writes its calls wrapper's close however it likes (</｜｜DSML｜｜ calls>,
+// 喜欢一个人 on Discord), and one left behind with nothing before it, after
+// calls an upstream made of the invokes, is held to be dropped, not shown.
 func textCallAt(s string) (at, tail int) {
 	at = -1
 	for _, m := range textCallMarks {
 		if i := strings.Index(s, m); i >= 0 && (at < 0 || i < at) {
 			at = i
 		}
+	}
+	for i := strings.IndexByte(s, '<'); i >= 0 && (at < 0 || i < at); {
+		n, more := dsmlMark(s[i:], true)
+		if n > 0 {
+			at = i
+			break
+		}
+		if more && tail == 0 {
+			tail = len(s) - i
+		}
+		j := strings.IndexByte(s[i+1:], '<')
+		if j < 0 {
+			break
+		}
+		i += 1 + j
 	}
 	if at >= 0 {
 		return at, 0
@@ -159,14 +245,55 @@ func parseTextCalls(s string, names map[string]bool) (calls []writtenCall, rest 
 	return calls, rest, len(calls) > 0 || rest == ""
 }
 
+// tagsOnly reports whether held text is the tags of calls and nothing
+// else: no call read out of it, and no text left once they go.
+func tagsOnly(s string) bool {
+	calls, rest, ok := parseTextCalls(s, nil)
+	return ok && len(calls) == 0 && rest == ""
+}
+
+// spaceBack keeps s, the text about to be handed on, back with what is
+// held or pending when it is only spaces after a call the reply made
+// itself (native).
+func spaceBack(native, holding bool, pending, held, s string) (string, string, string) {
+	if !native || s == "" || strings.TrimSpace(s) != "" {
+		return pending, held, s
+	}
+	if holding {
+		return pending, s + held, ""
+	}
+	return s + pending, held, ""
+}
+
+// settled is what is held and pending once the reply ends or makes a
+// call: held tags and nothing else go, and so does what is only spaces
+// after a call the reply made itself.
+func settled(native, holding bool, pending, held string) (string, string, bool) {
+	if holding && tagsOnly(held) {
+		held, holding = "", false
+	}
+	if native && strings.TrimSpace(pending+held) == "" {
+		pending, held, holding = "", "", false
+	}
+	return pending, held, holding
+}
+
 // cutMark is the end of s that is a mark's beginning cut short (</ of
 // </tool_call>), "" when there's none; a lone < may be text.
 func cutMark(s string) string {
-	for _, m := range append([]string{"</tool_call>", "</parameter>", "</｜DSML｜", "</|DSML|"}, textCallMarks...) {
+	for _, m := range append([]string{"</tool_call>", "</parameter>"}, textCallMarks...) {
 		for n := len(m) - 1; n >= 2; n-- {
 			if strings.HasSuffix(s, m[:n]) {
 				return m[:n]
 			}
+		}
+	}
+	// a DSML tag's, open or close, however many its pipes; a run of
+	// them holds no <, so only the last can be one cut short. It has
+	// begun its pipes (a full-width one's first bytes too): "x < " is text
+	if i := strings.LastIndexByte(s, '<'); i >= 0 && strings.IndexAny(s[i:], "|｜\xef") >= 0 {
+		if _, more := dsmlMark(s[i:], true); more {
+			return s[i:]
 		}
 	}
 	return ""
@@ -440,15 +567,15 @@ type textCallSee struct {
 	pending string // the text's end, which may be a mark begun
 	held    string
 	holding bool
-	native  bool // the reply made a call itself: nothing is read out of its text
+	// the reply made a call itself: no call is read out of its text, but
+	// tags left in it (an upstream that made calls of DeepSeek's invokes
+	// left the wrapper's </｜｜DSML｜｜ calls>) are still dropped
+	native bool
 }
 
 func (t *textCallSee) event(ev Event) {
 	switch ev.Kind {
 	case KText:
-		if t.native {
-			break
-		}
 		s := t.pending + ev.Text
 		t.pending = ""
 		if t.holding {
@@ -461,14 +588,18 @@ func (t *textCallSee) event(ev Event) {
 		} else {
 			t.pending, s = s[len(s)-tail:], s[:len(s)-tail]
 		}
+		s = t.keepSpace(s)
 		if s != "" {
 			t.see(Event{Kind: KText, Text: s})
 		}
 		return
 	case KToolStart:
-		t.release()
+		t.settle()
 		t.native = true
 	case KStop:
+		if t.native {
+			t.settle()
+		}
 		if t.holding && !t.native {
 			if calls, rest, ok := parseTextCalls(t.held, t.names); ok {
 				t.holding, t.held = false, ""
@@ -489,6 +620,21 @@ func (t *textCallSee) event(ev Event) {
 		t.release()
 	}
 	t.see(ev)
+}
+
+// keepSpace keeps back text that is only spaces after a call the reply
+// made itself: the line break before tags left after the calls goes with
+// them. What it gives is the text to hand on now.
+func (t *textCallSee) keepSpace(s string) string {
+	t.pending, t.held, s = spaceBack(t.native, t.holding, t.pending, t.held, s)
+	return s
+}
+
+// settle drops what is held when it is tags and nothing else, or after a
+// call the reply made only spaces, and hands it on as text when it isn't.
+func (t *textCallSee) settle() {
+	t.pending, t.held, t.holding = settled(t.native, t.holding, t.pending, t.held)
+	t.release()
 }
 
 // release hands on as text what is held.
@@ -546,6 +692,13 @@ func (t *textCallTidy) chunk(delta map[string]any, finish any) []byte {
 	return append(append([]byte("data: "), b...), '\n', '\n')
 }
 
+// settle is release, but what is held goes as textCallSee's settle has
+// it go.
+func (t *textCallTidy) settle() []byte {
+	t.pending, t.held, t.holding = settled(t.native, t.holding, t.pending, t.held)
+	return t.release()
+}
+
 func (t *textCallTidy) release() []byte {
 	s := t.pending + t.held
 	t.pending, t.held, t.holding = "", "", false
@@ -584,9 +737,9 @@ func (t *textCallTidy) line(line []byte) []byte {
 	var pre []byte
 	changed := false
 	if calls, _ := delta["tool_calls"].([]any); len(calls) > 0 && !t.native {
-		pre, t.native = t.release(), true
+		pre, t.native = t.settle(), true
 	}
-	if s, isStr := delta["content"].(string); isStr && s != "" && !t.native {
+	if s, isStr := delta["content"].(string); isStr && s != "" {
 		s = t.pending + s
 		t.pending = ""
 		if t.holding {
@@ -597,6 +750,7 @@ func (t *textCallTidy) line(line []byte) []byte {
 		} else {
 			t.pending, s = s[len(s)-tail:], s[:len(s)-tail]
 		}
+		t.pending, t.held, s = spaceBack(t.native, t.holding, t.pending, t.held, s)
 		if s == "" {
 			delete(delta, "content")
 		} else {
@@ -622,7 +776,7 @@ func (t *textCallTidy) line(line []byte) []byte {
 				changed = true
 			}
 		} else {
-			pre = append(pre, t.release()...)
+			pre = append(pre, t.settle()...)
 		}
 	}
 	if !changed {
@@ -657,9 +811,7 @@ func wholeTextCalls(msg map[string]json.RawMessage, names map[string]bool) (wrot
 		return false, false
 	}
 	var native []json.RawMessage
-	if decodeJSON(msg["tool_calls"], &native) == nil && len(native) > 0 {
-		return false, false
-	}
+	made := decodeJSON(msg["tool_calls"], &native) == nil && len(native) > 0
 	var s string
 	if decodeJSON(msg["content"], &s) != nil {
 		return false, false
@@ -667,6 +819,19 @@ func wholeTextCalls(msg map[string]json.RawMessage, names map[string]bool) (wrot
 	at, _ := textCallAt(s)
 	if at < 0 {
 		return false, false
+	}
+	if made {
+		// the upstream made the calls itself: only tags left in its
+		// text go (</｜｜DSML｜｜ calls>, 喜欢一个人 on Discord)
+		if !tagsOnly(s[at:]) {
+			return false, false
+		}
+		if text := strings.TrimRight(s[:at], " \t\r\n"); text != "" {
+			msg["content"], _ = marshalPlain(text)
+		} else {
+			msg["content"] = json.RawMessage("null")
+		}
+		return true, true
 	}
 	calls, rest, ok := parseTextCalls(s[at:], names)
 	if !ok {

@@ -11,8 +11,9 @@ import (
 // fakeRename has renameFile fail with err the first n times, then rename.
 func fakeRename(t *testing.T, n int, err error) *int {
 	calls := 0
-	waits, rename := asideWaits, renameFile
+	waits, rename, held := asideWaits, renameFile, heldFor
 	asideWaits = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
+	heldFor = 0
 	renameFile = func(from, to string) error {
 		calls++
 		if calls <= n {
@@ -20,7 +21,7 @@ func fakeRename(t *testing.T, n int, err error) *int {
 		}
 		return os.Rename(from, to)
 	}
-	t.Cleanup(func() { asideWaits, renameFile = waits, rename })
+	t.Cleanup(func() { asideWaits, renameFile, heldFor = waits, rename, held })
 	return &calls
 }
 
@@ -76,5 +77,33 @@ func TestMoveAsideSaysWhy(t *testing.T) {
 	moveAside(exe)
 	if *calls != 1 {
 		t.Fatalf("%d tries of a missing exe", *calls)
+	}
+}
+
+// An antivirus checking a new program can hold a file longer than the
+// short pauses (白菜 on Discord: every restart failed the same way): a
+// file held open is waited for on, up to heldFor, rather than given up on
+// after three seconds.
+func TestMoveAsideWaitsOutALongHold(t *testing.T) {
+	exe := filepath.Join(t.TempDir(), "magpie-windows-amd64.exe")
+	os.WriteFile(exe, []byte("v1"), 0o755)
+	calls := fakeRename(t, 10, errSharingViolation)
+	heldFor = 5 * time.Second
+	if _, err := moveAside(exe); err != nil {
+		t.Fatal(err)
+	}
+	if *calls != 11 {
+		t.Fatalf("%d tries, want 11", *calls)
+	}
+
+	// what isn't a file held open isn't waited for past the short pauses
+	os.WriteFile(exe, []byte("v2"), 0o755)
+	calls = fakeRename(t, 100, os.ErrPermission)
+	heldFor = 5 * time.Second
+	if _, err := moveAside(exe); err == nil {
+		t.Fatal("moved")
+	}
+	if *calls != 4 {
+		t.Fatalf("%d tries of a refused move, want 4", *calls)
 	}
 }

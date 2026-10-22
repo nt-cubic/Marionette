@@ -1209,6 +1209,45 @@ command = "gh-mcp"
 	}
 }
 
+// Another app's server in Codex's config, run from inside that app's
+// bundle, is one to bring in, its empty args and inline env table read as
+// they are (iomect's #2635, the TOML as the report gave it). Only the
+// agent's own app's servers are its own.
+func TestFoundServerFromAnotherApp(t *testing.T) {
+	h := sandbox(t)
+	write(t, filepath.Join(h, ".codex/config.toml"), `[mcp_servers.netcatty-external]
+command = "/Applications/Netcatty.app/Contents/Resources/app.asar.unpacked/electron/cli/netcatty-external-mcp"
+args = []
+env = { NETCATTY_EXTERNAL_MCP_DISCOVERY_FILE = "/Users/****/Library/Application Support/netcatty/external-mcp/discovery.json" }
+
+[mcp_servers.computer-use]
+command = "/Applications/Codex.app/Contents/Resources/SkyComputerUseClient"
+`)
+	v, err := Read(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got *Found
+	own := map[string]bool{}
+	for i, f := range v.FoundServers {
+		own[f.Server.Name] = f.Own
+		if f.Server.Name == "netcatty-external" {
+			got = &v.FoundServers[i]
+		}
+	}
+	if got == nil || got.Own {
+		t.Fatalf("netcatty-external found as %+v; own %v", got, own)
+	}
+	s := got.Server
+	if s.Command != "/Applications/Netcatty.app/Contents/Resources/app.asar.unpacked/electron/cli/netcatty-external-mcp" || len(s.Args) != 0 ||
+		s.Env["NETCATTY_EXTERNAL_MCP_DISCOVERY_FILE"] != "/Users/****/Library/Application Support/netcatty/external-mcp/discovery.json" || !slices.Contains(s.Agents, "codex") {
+		t.Errorf("netcatty-external read as %+v", s)
+	}
+	if !own["computer-use"] {
+		t.Errorf("the Codex app's own server isn't its own: %v", own)
+	}
+}
+
 // TestInstructionSets: several sets are kept, one is on, and the agents
 // read that one; switching rewrites their files (#106).
 func TestInstructionSets(t *testing.T) {

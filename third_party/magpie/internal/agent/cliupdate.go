@@ -82,6 +82,17 @@ type cliSpec struct {
 	// latest is the newest version its own updater would install, for one
 	// not published on npm
 	latest func() string
+	// target: its own updater takes the version to install (opencode
+	// upgrade 1.19.3), so magpie gives it the one it already knows, as the
+	// row promised, when that updater is what runs (via "self"): npm's,
+	// bun's, pnpm's and brew's commands take no version after them. An opencode 1.19.0 from its own installer (method curl)
+	// asks GitHub's API for the newest release, which answers an address 60
+	// times an hour without a token and 403s once that is spent; opencode's
+	// current source asks opencode.ai instead, but only an update gets
+	// there (#2837, ggbdpq:
+	// "opencode upgrade: ... 403 GET https://api.github.com/repos/
+	// anomalyco/opencode/releases/latest")
+	target bool
 	// only are the systems (GOOS) its vendor builds it for, when not all:
 	// on any other its package installs nothing that runs
 	only []string
@@ -121,7 +132,7 @@ var cliSpecs = map[string]cliSpec{
 			}
 			return nil
 		}},
-	"opencode": {npm: []string{"opencode-ai"}, brew: []string{"opencode"},
+	"opencode": {npm: []string{"opencode-ai"}, brew: []string{"opencode"}, target: true,
 		self: func(bin, real string) []string {
 			if strings.Contains(real, "/.opencode/bin/") {
 				return []string{bin, "upgrade"}
@@ -948,6 +959,14 @@ func (a *Agent) UpdateCLI() (CLI, error) {
 	}
 	defer updating.Delete(a.ID)
 	before := installedVersion(real)
+	if spec.target && u.via == "self" {
+		// the version the row promised, so its own updater needn't ask
+		// GitHub's API for the newest (see cliSpec.target); npm, bun,
+		// pnpm and brew take no version after their command
+		if v := latestVersion(u); Newer(v, before) {
+			u.cmd = append(u.cmd, v)
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), updateTimeout)
 	defer cancel()
 	run := runUpdate

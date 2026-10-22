@@ -86,7 +86,7 @@ var cardAgents = []string{"claude", "codex", "copilot", "kiro", "zcode", "workbu
 func cardLogins() []Login {
 	agents := []string{}
 	for _, id := range cardAgents {
-		if Moved(id) || id == "kiro" && kiroKey() != "" {
+		if PluginServes(id) || id == "kiro" && kiroKey() != "" {
 			continue
 		}
 		agents = append(agents, id)

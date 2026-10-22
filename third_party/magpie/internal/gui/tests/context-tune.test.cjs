@@ -444,3 +444,98 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     assert.deepEqual(errors, []);
   });
 }
+
+// A window the reader picked past the leanest band (yapechan on Discord:
+// "Other window…" to a larger one). With compactions timed, tune's advice
+// never waits longer than the window now, so the picked window comes back
+// as its own advice; the row said "Already the leanest" at +52% tokens.
+// It now says it isn't, names the band (the windows within 3% of the
+// cheapest), and offers the band's largest window, which compacts least of
+// them; a pick inside the band still says it is the leanest and offers
+// nothing. In both engines, every language, a phone's width and a desk's.
+const bandCurve = () => {
+  const pts = [];
+  for (let v = 100000; v <= 500000; v += 10000) {
+    const compacts = Math.round(9e6 / v);
+    pts.push({ value: v, cost: 1e9 + Math.max(0, Math.abs(v - 250000) - 20000) * 4000, compacts, wait: compacts * 61 });
+  }
+  return pts;
+};
+const bandTune = (value) => {
+  const pts = bandCurve(), at = pts.find((p) => p.value === value);
+  return {
+    days: 7,
+    agents: [{ agent: "claude", calls: 4300, advice: [
+      { knob: "compact", model: "claude-opus-5-5", setting: { value: String(value), source: "model", ours: true },
+        compact: { model: "claude-opus-5-5", current: value, window: 1000000, best: value, cost: at.cost, low: at.cost, curve: pts, wait: at.wait, wait_best: at.wait, cheapest: 250000, wait_cheapest: 2196, facts: { ...facts, took: 61, timed: 9 } } },
+    ] }],
+  };
+};
+const notLeanest = {
+  en: "Not the leanest: 230K–270K spends the fewest tokens",
+  zh: "当前不是最省：230K–270K 最省 Token",
+  "zh-TW": "目前不是最省：230K–270K 最省 Token",
+  ja: "最少ではありません：230K–270K でトークンが最も少なくなります",
+  de: "Nicht am sparsamsten: 230K–270K verbraucht die wenigsten Tokens",
+};
+const leanest = { en: "Already the leanest for how you work", zh: "已是最适合你用法的最省配置", "zh-TW": "已是最適合你用法的最省配置", ja: "すでにあなたの使い方で最も省トークン", de: "Schon am sparsamsten für deine Arbeitsweise" };
+const use270 = { en: "Use 270K", zh: "使用 270K", "zh-TW": "使用 270K", ja: "270K にする", de: "270K verwenden" };
+for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
+  test(`${engine}: a window picked past the leanest band isn't called the leanest`, async (t) => {
+    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
+    const errors = [];
+    t.after(() => browser.close());
+    for (const lang of Object.keys(heading)) for (const [width, height] of [[360, 760], [1100, 760]]) {
+      await t.test(`${lang}, ${width}x${height}`, async () => {
+        const ctx = await browser.newContext({ viewport: { width, height }, reducedMotion: "reduce" });
+        await ctx.addInitScript(() => { try { localStorage.setItem("magpie.usageTab", "context"); } catch {} });
+        const page = await ctx.newPage();
+        page.setDefaultTimeout(5000);
+        page.on("pageerror", (e) => errors.push(e.message));
+        const posts = [];
+        let value = 400000;
+        const base = serve(lang, posts);
+        await page.route("**/*", (r) => {
+          const p = new URL(r.request().url()).pathname;
+          if (p === "/api/tune") return r.fulfill({ json: bandTune(value) });
+          if (p === "/api/tune/apply") {
+            const b = JSON.parse(r.request().postData());
+            posts.push(b);
+            value = +b.value;
+            return r.fulfill({ json: { value: b.value, source: "model", ours: true } });
+          }
+          return base(r);
+        });
+        await page.goto("http://magpie.test/?view=usage");
+        const row = page.locator(".ctx-tune-row").nth(0);
+        await row.locator(".ctx-tune-pick").waitFor();
+        const chip = row.locator(".ctx-tune-foot .ctx-chip");
+        assert.equal(await chip.innerText(), notLeanest[lang]);
+        assert.equal(await chip.getAttribute("class"), "ctx-chip info");
+        const use = row.locator(".ctx-tune-foot button.primary");
+        assert.equal(await use.count(), 1);
+        assert.equal(await use.innerText(), use270[lang]);
+        const over = await page.evaluate(() => {
+          const view = document.querySelector("#view-usage");
+          const out = view.scrollWidth > view.clientWidth + 1 ? ["page " + view.scrollWidth + ">" + view.clientWidth] : [];
+          const b = document.querySelector(".ctx-tune").getBoundingClientRect();
+          for (const e of document.querySelectorAll(".ctx-tune-foot *")) {
+            const r = e.getBoundingClientRect();
+            if (r.width && (r.right > b.right + 1 || r.left < b.left - 1)) out.push(e.className + " " + Math.round(r.left) + "–" + Math.round(r.right));
+          }
+          return out;
+        });
+        assert.deepEqual(over, []);
+        await use.evaluate((b) => b.click());
+        await row.locator(".ctx-tune-foot .ctx-chip.good").waitFor();
+        assert.deepEqual(posts.map((p) => [p.agent, p.knob, p.model, p.value]), [["claude", "compact", "claude-opus-5-5", "270000"]]);
+        // inside the band: the leanest, and no button to change it
+        const row2 = page.locator(".ctx-tune-row").nth(0);
+        assert.equal(await row2.locator(".ctx-tune-foot .ctx-chip").innerText(), leanest[lang]);
+        assert.equal(await row2.locator(".ctx-tune-foot button.primary").count(), 0);
+        await ctx.close();
+      });
+    }
+    assert.deepEqual(errors, []);
+  });
+}

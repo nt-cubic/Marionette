@@ -1,6 +1,6 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
 // ClinePass's DeepSeek models pinned to DeepSeek's own API (White Immortal
-// on Discord): the editor of a Cline provider has the tick, as saved; Save
+// on Discord), and its GLM models to Z.ai's (sdytman): the editor of a Cline provider has the tick, as saved; Save
 // posts pinUpstream as ticked. The Cline plugin's provider, an account's
 // editor, has it too (ARNO on Discord). Another provider's editor has no
 // such tick. In English and Chinese.
@@ -54,7 +54,7 @@ function serve(lang, posts) {
   };
 }
 
-const words = { en: { tick: "DeepSeek models only from DeepSeek's own API", save: "Save" }, zh: { save: "保存" } };
+const words = { en: { tick: "DeepSeek and GLM models only from their makers' own APIs", save: "Save" }, zh: { save: "保存" } };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
   for (const lang of ["en", "zh"]) {
@@ -70,8 +70,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.route("**/*", serve(lang, posts));
       await page.goto("http://magpie.test/?view=providers");
       const zh = await page.evaluate(() => [
-        "DeepSeek models only from DeepSeek's own API", "Upstream",
-        "Cline serves a model from any host its gateway picks; pinned, a request for a DeepSeek model goes only to DeepSeek, which keeps its prompt cache, and fails when DeepSeek can't take it",
+        "DeepSeek and GLM models only from their makers' own APIs", "Upstream",
+        "Cline serves a model from any host its gateway picks; pinned, a request for a DeepSeek model goes only to DeepSeek and one for a GLM model only to Z.ai, which keeps its prompt cache, and fails when that API can't take it",
       ].map((k) => I18N.zh[k]));
       assert(zh.every(Boolean), "every string has its Chinese");
       if (lang === "zh") w.tick = zh[0];

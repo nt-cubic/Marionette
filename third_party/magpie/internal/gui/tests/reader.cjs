@@ -41,18 +41,27 @@ async function inView(page, locator) {
 // was on a control out of sight (#2370).
 async function reach(page, locator) {
   await locator.waitFor({ state: "visible" });
-  const id = await locator.evaluate((e) => e.closest(".view")?.id || "");
+  const id = await viewOf(page, locator);
   if (!id) return;
   const v = await page.locator("#" + id).boundingBox();
   await page.mouse.move(v.x + v.width / 2, v.y + v.height / 2);
   let stalls = 0;
   for (let i = 0; i < 120; i++) {
-    const at = await locator.evaluate((e) => {
-      const b = e.getBoundingClientRect(), v = e.closest(".view").getBoundingClientRect();
+    // found and read in one call (evaluateAll): locator.evaluate finds the
+    // control in one call and reads it in the next, and a part the page
+    // draws again in between (Routing's account rows, a row whose numbers
+    // moved) hands it the element just replaced, out of the page, a box of
+    // zeros at the window's top that reads as in sight (#2658)
+    const at = await locator.evaluateAll((es) => {
+      const e = es.length === 1 ? es[0] : null, view = e?.closest(".view");
+      if (!view) return null;
+      const b = e.getBoundingClientRect(), v = view.getBoundingClientRect();
       const x = b.left + b.width / 2, y = b.top + b.height / 2;
       const inside = b.top >= v.top && b.bottom <= v.bottom, hit = document.elementFromPoint(x, y);
       return { clear: inside && !!hit && (e === hit || e.contains(hit)), down: y > v.top + v.height / 2 };
     });
+    // drawn again between two looks, or not drawn yet: look again
+    if (!at) { await page.waitForTimeout(40); continue; }
     if (at.clear) { await page.waitForTimeout(300); return; }
     // landed, or the view is at its end and the wheel moves nothing: three
     // of those in turn and the control can't be brought clear
@@ -60,6 +69,18 @@ async function reach(page, locator) {
     if (stalls >= 3) break;
   }
   throw new Error("control did not come clear into sight: " + JSON.stringify({ view: v, target: await locator.boundingBox() }));
+}
+
+// viewOf: the id of the view the control is in ("" for none), read once
+// it is in the page: an element just drawn again over is out of it, and in
+// no view (#2658)
+async function viewOf(page, locator) {
+  for (let i = 0; i < 50; i++) {
+    const id = await locator.evaluateAll((es) => es.length === 1 ? es[0].closest(".view")?.id || "" : null);
+    if (id != null) return id;
+    await page.waitForTimeout(40);
+  }
+  throw new Error("control not in the page: " + locator);
 }
 
 // wheeled sends one wheel over the view and waits for its scroll to land;
@@ -76,11 +97,13 @@ async function wheeled(page, id, dy) {
 // control is looked at again (#2370).
 async function wheelTo(page, locator, y) {
   await locator.waitFor({ state: "visible" });
-  const id = await locator.evaluate((e) => e.closest(".view")?.id || "");
+  const id = await viewOf(page, locator);
   const v = await page.locator("#" + id).boundingBox();
   await page.mouse.move(v.x + v.width / 2, v.y + v.height / 2);
   for (let i = 0; i < 80; i++) {
-    if ((await locator.evaluate((e) => e.getBoundingClientRect().top)) <= y) break;
+    const top = await locator.evaluateAll((es) => es.length === 1 && es[0].closest(".view") ? es[0].getBoundingClientRect().top : null);
+    if (top == null) { await page.waitForTimeout(40); continue; }
+    if (top <= y) break;
     if (!(await wheeled(page, id, 50))) break;
   }
   await reach(page, locator);
@@ -137,4 +160,17 @@ async function openPart(page, id) {
   await page.locator(`:is(#setTab-${id}, .nav-s[data-of=setTab-${id}]):visible`).press("Enter");
 }
 
-module.exports = { inView, reach, wheelTo, click, openPart, watchSettingsReads, settingsDrawn };
+// agentRow is a connected agent as /api/state lists it, opened by its
+// Details; openAgentSettings opens it on the Agents page, where its own
+// settings are (Settings had them till the owner, 10-20), and waits till
+// they are read and drawn. Watch the settings reads first.
+const agentRow = (id, name) => ({ id, name, icon: id, wired: true, fields: [{ key: "model", label: "model", value: "relay/m1", options: [{ value: "relay/m1", label: "m1", ref: "relay/m1" }] }] });
+async function openAgentSettings(page, id = "codex") {
+  const link = page.locator(`.row.agent[data-id="${id}"] .ag-link`);
+  await reach(page, link);
+  await link.click();
+  await page.locator(`.row.agent[data-id="${id}"] .ag-prefs`).waitFor();
+  await page.waitForFunction(() => __settingsReads.asked > 0 && __settingsReads.asked === __settingsReads.drawn);
+}
+
+module.exports = { inView, reach, wheelTo, click, openPart, watchSettingsReads, settingsDrawn, agentRow, openAgentSettings };

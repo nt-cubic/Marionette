@@ -269,3 +269,50 @@ func TestClaudeGroupCompactWindow(t *testing.T) {
 		t.Fatalf("autoCompactWindow changed: %q", v)
 	}
 }
+
+// A Claude model runs to its whole window whatever name its provider gives
+// it: Amazon Bedrock names Claude Opus us.anthropic.claude-…, which
+// magpie's [1m] Claude Opus there was not taken for, so Claude Code was
+// held to 272K on a 1M Claude model (划船不靠桨 on Discord), while a group
+// of the same model ran to 1M (provider.ClaudeGroup). Another vendor's 1M
+// model on the same provider is still compacted at the working window.
+func TestClaudeCompactWindowBedrockClaude(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	const opus, nova = "us.anthropic.claude-opus-5-5-v1", "us.amazon.nova-premier-v1"
+	if err := provider.Save(provider.Provider{ID: "br", Name: "Bedrock", Chat: "https://example.test/v1", Key: "k",
+		Models: []string{opus, nova}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.SaveLive("br", "https://example.test/v1", []catalog.Model{{ID: opus, Context: 1000000}, {ID: nova, Context: 1000000}}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, ".claude", "settings.json")
+	writeFile(t, path, `{}`)
+	a := claude(home)
+	compact := func() string { v, _ := edit.GetJSON(path, "env."+claudeCompactEnv); return v }
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(a.Field("model").Set("br/" + opus + "[1m]"))
+	if compact() != "" {
+		t.Fatalf("a 1M Claude model on Bedrock is compacted at %q", compact())
+	}
+	must(a.Sync())
+	if compact() != "" {
+		t.Fatalf("a 1M Claude model on Bedrock, synced: %q", compact())
+	}
+	if top, _ := edit.GetJSON(path, "autoCompactWindow"); top != "" {
+		t.Fatalf("a 1M Claude model on Bedrock got autoCompactWindow %q", top)
+	}
+	must(a.Field("model").Set("br/" + nova + "[1m]"))
+	if compact() != "272000" {
+		t.Fatalf("another vendor's 1M model on Bedrock: %q", compact())
+	}
+}

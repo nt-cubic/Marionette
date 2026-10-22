@@ -13,6 +13,17 @@ const revisionIdle = 5 * time.Minute
 const revisionFiles = 8
 const revisionEntries = 8192
 
+// A Codex session being written keeps its window even past the shared
+// budget. Its index holds every call (about six entries each), so a session
+// over ~1,400 calls lost it, and every append (each turn, each poll that
+// read it) parsed the whole rollout again from its first line: a full core
+// while Codex ran (yetone/magpie-releases#24). The full parse built the same
+// index each time anyway, so keeping it costs no more at its peak. At most
+// revisionActiveFiles such windows, each up to revisionActiveEntries, and
+// only while the file changed in the last revisionIdle.
+const revisionActiveFiles = 2
+const revisionActiveEntries = 16 * revisionEntries
+
 // A pause longer than five minutes must not demote a large working session
 // behind tiny subagent logs. After an hour, recent work takes priority; idle
 // Claude windows are not discarded unless that capacity is actually needed.
@@ -23,7 +34,7 @@ func workingRevision(mod int64, now time.Time) bool {
 }
 
 func recentRevision(mod int64, weight int, now time.Time) bool {
-	return weight > 0 && weight <= revisionEntries && mod >= now.Add(-revisionIdle).UnixNano()
+	return weight > 0 && weight <= revisionActiveEntries && mod >= now.Add(-revisionIdle).UnixNano()
 }
 
 func (s *codexUsageState) weight() int {
@@ -126,9 +137,20 @@ func retainedRevisions(candidates []revisionCandidate, now time.Time) map[string
 		return candidates[i].path < candidates[j].path
 	})
 	keep := map[string]bool{}
-	used := 0
+	used, active := 0, 0
 	for _, c := range candidates {
-		if !c.eligible(now) || len(keep) == revisionFiles || used+c.weight > revisionEntries {
+		if !c.eligible(now) || len(keep) == revisionFiles {
+			continue
+		}
+		if !c.bounded && c.weight > revisionEntries {
+			// an active Codex session past the shared budget: outside it
+			if active < revisionActiveFiles {
+				keep[c.path] = true
+				active++
+			}
+			continue
+		}
+		if used+c.weight > revisionEntries {
 			continue
 		}
 		keep[c.path] = true

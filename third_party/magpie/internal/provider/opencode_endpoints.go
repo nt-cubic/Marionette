@@ -29,6 +29,32 @@ func openCodeRoot(base string) (root, catalogID string) {
 	return "", ""
 }
 
+// openCodeGateway says which of OpenCode's gateways base is at: "go" for
+// Go's (…/zen/go, or the inference API's …/inference/go, whatever follows:
+// /v1, or /openai/v1 and /anthropic, the URLs models.dev and Go's docs
+// give since October 2026), "zen" for Zen's (…/zen, …/inference: the
+// workspace's pay-as-you-go credits), "" for any other, a provider of the
+// user's own at …/inference/custom among them, which its vendor bills.
+func openCodeGateway(base string) string {
+	u, err := url.Parse(strings.TrimSpace(base))
+	if err != nil || !openCodeHost(u.Hostname()) {
+		return ""
+	}
+	seg := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if seg[0] != "zen" && seg[0] != "inference" {
+		return ""
+	}
+	if len(seg) > 1 {
+		switch seg[1] {
+		case "go":
+			return "go"
+		case "custom":
+			return ""
+		}
+	}
+	return "zen"
+}
+
 // openCodeGemini is the base of Gemini's generateContent at the gateway
 // root is: models/{model}:streamGenerateContent is asked under it. Zen's
 // /zen/v1 relays it to the inference API's Google route, reading the key

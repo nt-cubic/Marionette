@@ -106,6 +106,9 @@ func undefer(tm map[string]any) {
 
 // marshalPlain is json.Marshal leaving <, > and & as they are.
 func marshalPlain(v any) ([]byte, error) {
+	if b, ok := marshalRaw(v, false); ok {
+		return b, nil
+	}
 	var b bytes.Buffer
 	enc := json.NewEncoder(&b)
 	enc.SetEscapeHTML(false)

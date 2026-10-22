@@ -21,7 +21,7 @@ import (
 func init() {
 	movers["kiro"] = &mover{
 		pkg:    "@magpie-community/opencode-kiro-auth",
-		min:    "0.1.12", // a request for JSON output (output_config.format) answers in JSON, its schema in the system prompt as the built-in; 0.1.11: a thinking model offers xhigh as its own level (50k), so Claude Code's xhigh isn't routed as max (plugins#120); 0.1.10: the caller's prompt-cache marks reach Kiro as cachePoints (plugins#110)
+		min:    "0.1.14", // each account is named by its email and the way it was signed in to, "email (Google)", "email (GitHub)", not "email (slot)" (plugins#309); 0.1.13: two sign-ins of one email through different login providers (Google, GitHub, Builder ID) stay two accounts (plugins#309); 0.1.12: a request for JSON output (output_config.format) answers in JSON, its schema in the system prompt as the built-in; 0.1.11: a thinking model offers xhigh as its own level (50k), so Claude Code's xhigh isn't routed as max (plugins#120); 0.1.10: the caller's prompt-cache marks reach Kiro as cachePoints (plugins#110)
 		agents: []string{"kiro"},
 		out: func() ([]Moving, error) {
 			var out []Moving

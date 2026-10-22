@@ -146,3 +146,35 @@ func TestGroupLevelsWithFixedMembers(t *testing.T) {
 		}
 	}
 }
+
+// While a request holds the providers, whether a member at an effort is a
+// model's own id is looked up among them once, not at each of the
+// group's expansions (XcodeFish, #2502: a third of /v1/models' CPU was
+// Find and Available again for every such member); a provider saved
+// meanwhile is looked at anew, and with nothing held every look is fresh.
+func TestMemberEffortLooksOncePerHold(t *testing.T) {
+	effortHome(t)
+	looks := func(id string, n int) int64 {
+		was := providersLooked.Load()
+		for range n {
+			if m, e := MemberEffort(id); m+":"+e != id {
+				t.Fatalf("MemberEffort(%q) = %q %q", id, m, e)
+			}
+		}
+		return providersLooked.Load() - was
+	}
+	release := Hold()
+	if got := looks("a/m:low", 5); got != 1 {
+		t.Fatalf("held: looked %d times, want 1", got)
+	}
+	if err := Save(Provider{ID: "a", Name: "A", Key: "k", Chat: "http://127.0.0.1:1/v1", Models: []string{"m", "m:low"}}); err != nil {
+		t.Fatal(err)
+	}
+	if m, e := MemberEffort("a/m:low"); m != "a/m:low" || e != "" {
+		t.Fatalf("saved while held: %q %q, want the model's own id", m, e)
+	}
+	release()
+	if got := looks("a/n:high", 3); got != 3 {
+		t.Fatalf("not held: looked %d times, want 3", got)
+	}
+}

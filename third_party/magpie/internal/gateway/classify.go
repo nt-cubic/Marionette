@@ -44,10 +44,14 @@ var (
 // carries on from it is the same.
 type classifier func(model string, intents []string, prev before, effort bool, text string) (verdict, error)
 
-// before is what the classifier said of a conversation's turn before.
+// before is what the classifier said of a conversation's turn before, and
+// what was said in it (turnBefore): a short follow-up (继续, fix that) says
+// little of its own, and is judged with what it follows.
 type before struct {
 	Intent string // one of the intents asked about now, or ""
 	Effort string // the reasoning picked for it, or ""
+	User   string // the user's message before this one (userSaid), cut to priorCap; "" for none
+	Reply  string // the assistant's last words before this message, its text alone, cut to priorCap; "" for none
 }
 
 // verdict is what a classifier said.
@@ -101,7 +105,7 @@ type answerError struct{ error }
 // same question share the answer in flight.
 func classify(ask classifier, model string, intents []string, prev before, effort bool, text string) (v verdict, cached bool, err error) {
 	h := sha256.New()
-	h.Write([]byte(model + "\x00" + strings.ToLower(strings.Join(intents, "\x00")) + "\x00" + prev.Intent + "\x00" + prev.Effort + "\x00" + strconv.FormatBool(effort) + "\x00" + text))
+	h.Write([]byte(model + "\x00" + strings.ToLower(strings.Join(intents, "\x00")) + "\x00" + prev.Intent + "\x00" + prev.Effort + "\x00" + prev.User + "\x00" + prev.Reply + "\x00" + strconv.FormatBool(effort) + "\x00" + text))
 	key := hex.EncodeToString(h.Sum(nil))
 	now := time.Now()
 	classified.Lock()
@@ -176,17 +180,76 @@ func ClassifierFailure(model string) (why string, at time.Time, ok bool) {
 // put in after it, for the model (<system-reminder>…, a task
 // notification, an agent list) — its middle left out when long.
 func userText(req *Request) string {
-	text := ""
-	for i := len(req.Messages) - 1; i >= 0 && text == ""; i-- {
+	_, text := lastSaid(req, len(req.Messages))
+	const head, tail = 3000, 1000
+	return cutMiddle(text, head, tail)
+}
+
+// lastSaid is the last user message before index end that has words of
+// the user's (userSaid): its index and those words, or -1 and "".
+func lastSaid(req *Request, end int) (int, string) {
+	for i := min(end, len(req.Messages)) - 1; i >= 0; i-- {
 		if m := req.Messages[i]; m.Role == "user" {
-			text = userSaid(m)
+			if text := userSaid(m); text != "" {
+				return i, text
+			}
 		}
 	}
-	const head, tail = 3000, 1000
+	return -1, ""
+}
+
+// cutMiddle is text with its middle left out when it is longer than
+// head+tail runes.
+func cutMiddle(text string, head, tail int) string {
 	if r := []rune(text); len(r) > head+tail {
-		text = string(r[:head]) + "\n…\n" + string(r[len(r)-tail:])
+		return string(r[:head]) + "\n…\n" + string(r[len(r)-tail:])
 	}
 	return text
+}
+
+// priorCap is how much of each of the turn before's two texts the
+// classifier is told (turnBefore), in runes: a quarter of the message's
+// own 4000 (userText), so the two together add at most half of what the
+// message may, and room for a request or an answer's last paragraph.
+const priorCap = 1000
+
+// turnBefore is what was said in the conversation before the user's
+// message the classifier is asked about (userText's): the user's message
+// before it (userSaid, its middle left out past priorCap, as the
+// message's is) and the assistant's last reply between the two — its
+// text alone, its end kept past priorCap, where an answer sums up or
+// asks. A tool call's arguments, a tool's result, thinking, a search's
+// hits and the system prompt are never in either; a reply of only tool
+// calls is none.
+func turnBefore(req *Request) (user, reply string) {
+	at, _ := lastSaid(req, len(req.Messages))
+	if at < 0 {
+		return "", ""
+	}
+	from, user := lastSaid(req, at)
+	for i := at - 1; i > from && reply == ""; i-- {
+		if m := req.Messages[i]; m.Role == "assistant" {
+			reply = assistantSaid(m)
+		}
+	}
+	if r := []rune(reply); len(r) > priorCap {
+		reply = "…" + string(r[len(r)-priorCap:])
+	}
+	return cutMiddle(user, priorCap*3/4, priorCap/4), reply
+}
+
+// assistantSaid is the text an assistant message holds: no tool call,
+// thinking or search in it.
+func assistantSaid(m Message) string {
+	var said []string
+	for _, p := range m.Parts {
+		if p.Kind == Text {
+			if t := strings.TrimSpace(p.Text); t != "" {
+				said = append(said, t)
+			}
+		}
+	}
+	return strings.Join(said, "\n")
 }
 
 const classifyPrompt = "You route a user's message to a coding assistant. " +
@@ -200,13 +263,16 @@ const classifyPrompt = "You route a user's message to a coding assistant. " +
 // answers, and how long varies: 2048 leaves room for that and the number.
 // When the turn before was one of intents (prev), it is told so: "go on"
 // says nothing of its own, and is of the kind of what it goes on with.
-func classifyBody(model, effort string, intents []string, prev, text string) []byte {
+// What was said before the message (prev.User, prev.Reply) goes with it,
+// as Jev's state carries it (jevState).
+func classifyBody(model, effort string, intents []string, prev before, text string) []byte {
 	var b strings.Builder
 	b.WriteString("Kinds:\n")
 	for i, in := range intents {
 		fmt.Fprintf(&b, "%d. %s\n", i+1, in)
 	}
-	if i := slices.Index(intents, prev); i >= 0 {
+	writePrior(&b, prev)
+	if i := slices.Index(intents, prev.Intent); i >= 0 {
 		fmt.Fprintf(&b, "\nThe user's message before this one, in the same conversation, was of kind %d. "+
 			"A message that only carries on from it — go on, yes, do it, fix that — is of kind %d too; "+
 			"one that asks for something of its own is of the kind that fits it.\n", i+1, i+1)
@@ -229,6 +295,22 @@ func classifyBody(model, effort string, intents []string, prev, text string) []b
 	}
 	body, _ := json.Marshal(req)
 	return body
+}
+
+// writePrior tells a classifier asked in words what was said before the
+// message (turnBefore), when anything was: a short follow-up is judged
+// with what it follows.
+func writePrior(b *strings.Builder, prev before) {
+	if prev.User == "" && prev.Reply == "" {
+		return
+	}
+	b.WriteString("\nWhat came before the user's message, in the same conversation, to judge a short follow-up (go on, yes, fix that) by:\n")
+	if prev.User != "" {
+		b.WriteString("<previous_user_message>\n" + prev.User + "\n</previous_user_message>\n")
+	}
+	if prev.Reply != "" {
+		b.WriteString("<previous_assistant_reply>\n" + prev.Reply + "\n</previous_assistant_reply>\n")
+	}
 }
 
 var firstNumber = regexp.MustCompile(`\d+`)
@@ -285,7 +367,7 @@ func (s *Server) askClassifier(model string, intents []string, prev before, effo
 		go func() {
 			defer wg.Done()
 			var a string
-			if a, ierr = s.askChat(model, classifyBody(model, classifyEffort(model), intents, prev.Intent, text)); ierr == nil {
+			if a, ierr = s.askChat(model, classifyBody(model, classifyEffort(model), intents, prev, text)); ierr == nil {
 				v.Intent, ierr = readIntent(a, intents)
 			}
 		}()
@@ -295,7 +377,7 @@ func (s *Server) askClassifier(model string, intents []string, prev before, effo
 		go func() {
 			defer wg.Done()
 			var a string
-			if a, eerr = s.askChat(model, effortBody(model, classifyEffort(model), prev.Effort, text)); eerr == nil {
+			if a, eerr = s.askChat(model, effortBody(model, classifyEffort(model), prev, text)); eerr == nil {
 				v.Effort, v.Score, eerr = readEffort(a)
 			}
 		}()
@@ -313,16 +395,17 @@ const effortPrompt = "You judge how much reasoning a coding assistant needs to h
 // effortBody is the Chat request asking model how hard text is to think
 // about, one of jevLevels by number. When the turn before was given a
 // level (prev), a message that only carries on from it needs that one.
-func effortBody(model, effort, prev, text string) []byte {
+func effortBody(model, effort string, prev before, text string) []byte {
 	var b strings.Builder
 	b.WriteString("Levels:\n")
 	was := 0
 	for i, l := range jevLevels {
 		fmt.Fprintf(&b, "%d. %s: %s\n", i+1, l.effort, l.what)
-		if l.effort == prev {
+		if l.effort == prev.Effort {
 			was = i + 1
 		}
 	}
+	writePrior(&b, prev)
 	if was > 0 {
 		fmt.Fprintf(&b, "\nThe user's message before this one, in the same conversation, needed level %d. "+
 			"A message that only carries on from it — go on, yes, do it — needs level %d too.\n", was, was)

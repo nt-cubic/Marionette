@@ -44,13 +44,13 @@ func TestEnabledUnreadableKeyIsNotOff(t *testing.T) {
 	openRunKey = func(registry.Key, string, uint32) (registry.Key, error) {
 		return 0, windows.ERROR_ACCESS_DENIED
 	}
-	if !Enabled() {
+	if Enabled() == Off {
 		t.Fatal("a Run key that cannot be read reads as off")
 	}
 	openRunKey = func(registry.Key, string, uint32) (registry.Key, error) {
 		return 0, registry.ErrNotExist
 	}
-	if Enabled() {
+	if Enabled() != Off {
 		t.Fatal("no Run key reads as on")
 	}
 }
@@ -121,7 +121,7 @@ func TestEnabledWithNoMarkerIsOn(t *testing.T) {
 	openApprovedKey = func(registry.Key, string, uint32) (registry.Key, error) {
 		return 0, registry.ErrNotExist
 	}
-	if !Enabled() {
+	if Enabled() == Off {
 		t.Fatal("a Run value with no Startup apps marker reads as off")
 	}
 }

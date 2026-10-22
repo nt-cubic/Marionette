@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"github.com/yetone/magpie/internal/catalog"
 )
@@ -63,6 +64,20 @@ func isModel(entries []Entry, id string) bool {
 	if slices.ContainsFunc(entries, func(e Entry) bool { return e.ID == id || e.Model == id }) {
 		return true
 	}
+	// what the providers have, looked at once while a request holds them
+	// (XcodeFish, #2502): a group's members are expanded several times a
+	// request, and each member at an effort found every provider again
+	// (Find) and read its whole model list (Available), a third of
+	// /v1/models' CPU
+	return heldOf("has-model\x00"+id, func() bool { return providersHave(id) })
+}
+
+// providersLooked counts providersHave's looks, for tests.
+var providersLooked atomic.Int64
+
+// providersHave is isModel's look at the providers, past the catalog.
+func providersHave(id string) bool {
+	providersLooked.Add(1)
 	pid, model, ok := strings.Cut(id, "/")
 	var ps []Provider
 	if ok {
@@ -89,8 +104,10 @@ func WithMemberEffort(model, effort string) string {
 	return model + ":" + effort
 }
 
-// cleanMember spells a member as it is kept: its effort lowercase.
+// cleanMember spells a member as it is kept: its effort lowercase, a found
+// group by group/auto-<slug> (CanonicalRef).
 func cleanMember(entries []Entry, id string) string {
+	id = CanonicalRef(id) // a found group by the id magpie keeps it by
 	m, e := memberEffortIn(entries, id)
 	return WithMemberEffort(m, e)
 }

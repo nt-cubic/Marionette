@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -92,6 +93,11 @@ func fakeGitHub(t *testing.T, up *atomic.Bool, asked *atomic.Int32) {
 		if h := holding.Load(); h != nil && q.URL.Path == h.path {
 			<-h.go_
 		}
+		if q.Header.Get("Authorization") == "Bearer "+staleToken {
+			w.WriteHeader(401)
+			w.Write([]byte(`{"message":"Bad credentials"}`))
+			return
+		}
 		if !up.Load() || q.URL.Path == "/raw/someone/flaky-entry/main/index.js" {
 			http.Error(w, "down", 503)
 			return
@@ -142,6 +148,11 @@ func fakeGitHub(t *testing.T, up *atomic.Bool, asked *atomic.Int32) {
 // Every page of the search is read: with a page short of what is tagged,
 // the list is the same as from one page, in GitHub's order (HoGee_xxl on X:
 // 59 tagged, and the 9 past GitHub's first page of 50 never showed).
+func taggedList(ctx context.Context) []Tagged {
+	l, _ := TaggedRepos(ctx)
+	return l
+}
+
 func TestTaggedReposEveryPage(t *testing.T) {
 	var up atomic.Bool
 	var asked atomic.Int32
@@ -152,7 +163,7 @@ func TestTaggedReposEveryPage(t *testing.T) {
 	t.Cleanup(func() { taggedPage = was })
 
 	var repos []string
-	for _, x := range TaggedRepos(context.Background()) {
+	for _, x := range taggedList(context.Background()) {
 		repos = append(repos, x.Repo)
 	}
 	want := "rynfar/meridian griffinmartin/opencode-claude-auth slkiser/opencode-quota someone/word-guard someone/agent-aider someone/page-glance someone/flaky-entry"
@@ -172,7 +183,7 @@ func TestTaggedRepos(t *testing.T) {
 	fakeGitHub(t, &up, &asked)
 	ctx := context.Background()
 
-	l := TaggedRepos(ctx)
+	l := taggedList(ctx)
 	var repos []string
 	for _, x := range l {
 		repos = append(repos, x.Repo)
@@ -231,7 +242,7 @@ func TestTaggedRepos(t *testing.T) {
 		t.Fatalf("%s isn't a spec Add installs from git", x.Spec)
 	}
 
-	TaggedRepos(ctx)
+	taggedList(ctx)
 	if n := asked.Load(); n != 1 {
 		t.Fatalf("asked %d times in ten minutes", n)
 	}
@@ -243,7 +254,7 @@ func TestTaggedRepos(t *testing.T) {
 	taggedAt = time.Now().Add(-taggedTTL - time.Second)
 	taggedMu.Unlock()
 	before := reads.Load()
-	if l := TaggedRepos(ctx); len(l) != 7 || asked.Load() != 2 {
+	if l := taggedList(ctx); len(l) != 7 || asked.Load() != 2 {
 		t.Fatalf("ten minutes on: asked %d times, %d repos", asked.Load(), len(l))
 	}
 	if n := reads.Load() - before; n != 3 {
@@ -258,7 +269,7 @@ func TestTaggedRepos(t *testing.T) {
 	if err := os.Chtimes(taggedCache(), time.Now(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if l := TaggedRepos(ctx); len(l) != 7 || asked.Load() != 1 {
+	if l := taggedList(ctx); len(l) != 7 || asked.Load() != 1 {
 		t.Fatalf("restarted: asked %d times, %d repos", asked.Load(), len(l))
 	}
 
@@ -269,17 +280,36 @@ func TestTaggedRepos(t *testing.T) {
 	}
 	up.Store(false)
 	forget()
-	if l := TaggedRepos(ctx); len(l) != 7 || l[1].Package != "opencode-claude-auth" || asked.Load() != 1 {
-		t.Fatalf("down: %+v", l)
+	// what GitHub said before, and that it couldn't be asked now
+	if l, err := TaggedRepos(ctx); len(l) != 7 || l[1].Package != "opencode-claude-auth" || asked.Load() != 1 || err == nil || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("down: %v %+v", err, l)
+	}
+	// the minute it is held, still said
+	if _, err := TaggedRepos(ctx); err == nil {
+		t.Fatal("down, held: no error")
 	}
 
-	// nothing ever kept, GitHub down: none, not an error
+	// nothing ever kept, GitHub down: none, and an error, never none
+	// passed off as GitHub's answer (till on Discord: the section just
+	// wasn't there)
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	taggedMu.Lock()
 	taggedL = nil
 	taggedMu.Unlock()
-	if l := TaggedRepos(ctx); l == nil || len(l) != 0 {
-		t.Fatalf("down, nothing kept: %#v", l)
+	if l, err := TaggedRepos(ctx); l == nil || len(l) != 0 || err == nil {
+		t.Fatalf("down, nothing kept: %v %#v", err, l)
+	}
+	// Try again asks GitHub at once, up again: its answer, no error
+	up.Store(true)
+	TaggedAskAgain()
+	if l, err := TaggedRepos(ctx); len(l) != 7 || err != nil {
+		t.Fatalf("again: %v, %d repos", err, len(l))
+	}
+	// a whole answer stands its ten minutes: Try again doesn't ask
+	before = asked.Load()
+	TaggedAskAgain()
+	if _, err := TaggedRepos(ctx); err != nil || asked.Load() != before {
+		t.Fatalf("again on a whole answer: %v, asked %d", err, asked.Load()-before)
 	}
 
 	// off: GitHub never asked
@@ -289,7 +319,7 @@ func TestTaggedRepos(t *testing.T) {
 	taggedL = nil
 	taggedMu.Unlock()
 	before = asked.Load()
-	if l := TaggedRepos(ctx); len(l) != 0 || asked.Load() != before {
+	if l := taggedList(ctx); len(l) != 0 || asked.Load() != before {
 		t.Fatalf("off: %+v", l)
 	}
 }
@@ -304,7 +334,7 @@ func TestTaggedReposSlowRead(t *testing.T) {
 	up.Store(true)
 	fakeGitHub(t, &up, &asked)
 	ctx := context.Background()
-	if l := TaggedRepos(ctx); len(l) != 7 {
+	if l := taggedList(ctx); len(l) != 7 {
 		t.Fatalf("%d repos", len(l))
 	}
 
@@ -336,7 +366,7 @@ func TestTaggedReposSlowRead(t *testing.T) {
 		return nil
 	}
 	cutAsked := time.Now()
-	l := TaggedRepos(ctx)
+	l := taggedList(ctx)
 	cutDone := time.Now()
 	if x := has(l, "someone/word-guard"); len(l) != 7 || x == nil || x.Kind != "middleware" {
 		t.Fatalf("slow package.json: %d repos, word-guard %+v", len(l), x)
@@ -388,13 +418,13 @@ func TestTaggedReposSlowRead(t *testing.T) {
 	taggedMu.Lock()
 	taggedAt = time.Now().Add(-taggedTTL + taggedRetry)
 	taggedMu.Unlock()
-	TaggedRepos(ctx)
+	taggedList(ctx)
 	if n := asked.Load(); n != 2 {
 		t.Fatalf("asked again at once: %d", n)
 	}
 	time.Sleep(taggedRetry + 100*time.Millisecond)
 	before := reads.Load()
-	l = TaggedRepos(ctx)
+	l = taggedList(ctx)
 	if n := asked.Load(); n != 3 {
 		t.Fatalf("a list cut short kept: asked %d times", n)
 	}
@@ -452,5 +482,67 @@ func TestPkgEntry(t *testing.T) {
 		if got := pkgEntry(json.RawMessage(c.exports), c.main); got != c.want {
 			t.Errorf("pkgEntry(%s, %q) = %q, want %q", c.exports, c.main, got, c.want)
 		}
+	}
+}
+
+// GitHub's search answers but raw.githubusercontent.com doesn't (blocked
+// on the reader's line, as it is in places where api.github.com isn't),
+// and nothing was kept: the list is empty, and the error says how many
+// couldn't be read and why, not that none are tagged (till on Discord:
+// on their desktop the section wasn't there, on their server it had many).
+// One read before is kept and isn't counted.
+// staleToken is a token fakeGitHub answers 401, as GitHub does an
+// expired one.
+const staleToken = "stale-till"
+
+// till on Discord: a stale GITHUB_TOKEN in the environment, which GitHub
+// refuses, left the Plugins page's GitHub section saying "GitHub refused
+// GITHUB_TOKEN" while GitHub answered fine without it. The search is
+// asked again without the token, and the list is GitHub's.
+func TestTaggedReposStaleEnvTokenDropped(t *testing.T) {
+	var up atomic.Bool
+	var asked atomic.Int32
+	up.Store(true)
+	fakeGitHub(t, &up, &asked)
+	t.Setenv("GITHUB_TOKEN", staleToken)
+	t.Setenv("GH_TOKEN", "")
+	l, err := TaggedRepos(context.Background())
+	if err != nil || len(l) != 7 {
+		t.Fatalf("with a stale GITHUB_TOKEN: %v, %d repos", err, len(l))
+	}
+}
+
+func TestTaggedReposUnreadable(t *testing.T) {
+	var up atomic.Bool
+	var asked atomic.Int32
+	up.Store(true)
+	fakeGitHub(t, &up, &asked)
+	ctx := context.Background()
+	rawWas := githubRaw
+	githubRaw = "http://127.0.0.1:1/raw" // nothing listens: refused at once
+	t.Cleanup(func() { githubRaw = rawWas })
+	l, err := TaggedRepos(ctx)
+	var m *TaggedMissing
+	if len(l) != 0 || !errors.As(err, &m) || m.Missing != 12 || !strings.Contains(m.Why.Error(), "127.0.0.1:1") {
+		t.Fatalf("raw unreachable: %v (%+v), %d repos", err, m, len(l))
+	}
+	// Try again, raw back: the list, no error
+	githubRaw = rawWas
+	TaggedAskAgain()
+	if l, err := TaggedRepos(ctx); len(l) != 7 || err != nil {
+		t.Fatalf("again: %v, %d repos", err, len(l))
+	}
+	// asked again, raw gone again: the seven read before are as they were,
+	// and only what was never read counts as missing
+	taggedMu.Lock()
+	taggedAt = time.Time{}
+	taggedMu.Unlock()
+	readMu.Lock()
+	clear(readRepo)
+	readMu.Unlock()
+	githubRaw = "http://127.0.0.1:1/raw"
+	l, err = TaggedRepos(ctx)
+	if len(l) != 7 || !errors.As(err, &m) || m.Missing != 5 {
+		t.Fatalf("raw gone, seven kept: %v (%+v), %d repos", err, m, len(l))
 	}
 }

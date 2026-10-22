@@ -9,12 +9,23 @@
 // (magpie.permissions), which /api/plugin-pages/read checks again.
 // A page that throws, or never says hello, shows the kernel's "This
 // page stopped working" with its Try again.
+//
+// Panels (magpie.panels, P5) are framed the same way in a page's
+// .plugin-slot, as tall as they draw, and one that breaks says so in its
+// place. A page may take a built-in one's place (magpie.page.replaces),
+// and its actions (magpie.actions, P6) are row menu items that open it:
+// plugin-runtime.md says the rest.
 (() => {
   if (mode !== "window") return;
   // how long a page has to say hello before it is taken as broken
   const HELLO_MS = 10e3;
   const pages = new Map(); // key → { entry, frame, hello, timer }
+  const panels = new Map(); // frame → { entry, frame, context, hello, timer, body }
+  let panelList = []; // /api/plugin-panels: every panel of a plugin on
   let ctx = null;
+  // a built-in page → the plugin's page in its place (magpie.page.replaces)
+  let replaced = new Map();
+  magpie.replacing = (v) => replaced.get(v) || v;
   magpie.plugin("plugin-pages", (c) => { ctx = c; });
 
   const TOKENS = ["bg", "card", "fg", "fg-2", "muted", "faint", "line", "accent", "accent-soft", "accent-fg", "green", "red", "amber", "font", "code"];
@@ -32,12 +43,20 @@
   // the theme or the language changed: every page open is told
   function pushTheme() {
     const data = theme();
-    for (const p of pages.values()) if (p.hello) post(p.frame?.contentWindow, { event: "theme", data });
+    for (const p of [...pages.values(), ...panels.values()]) if (p.hello) post(p.frame?.contentWindow, { event: "theme", data });
   }
   new MutationObserver(pushTheme).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "lang", "class", "style"] });
   matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", pushTheme);
 
   function broke(key, why) { ctx?.broke(key, new Error(why)); }
+
+  // a page's or a panel's title in the window's language: its titles
+  // (magpie.page.titles, {"zh": "…"}) by the language, then by its first
+  // part (zh for zh-TW), else its title
+  function titled(e) {
+    const m = e.titles || {};
+    return m[locale] || m[locale.split("-")[0]] || e.title;
+  }
 
   // the page's frame, made the first time the page is opened (and again
   // after Try again): a plugin's page costs nothing until it is looked at
@@ -53,14 +72,14 @@
     f.setAttribute("sandbox", "allow-scripts");
     f.setAttribute("referrerpolicy", "no-referrer");
     f.setAttribute("allow", "");
-    f.title = p.entry.title;
+    f.title = titled(p.entry);
     f.src = p.entry.url;
     p.frame = f;
     p.hello = false;
     p.ready = new Promise((resolve, reject) => {
       p.said = resolve;
       clearTimeout(p.timer);
-      p.timer = setTimeout(() => { if (!p.hello) reject(new Error(t("{name}'s page didn't answer", { name: p.entry.title }))); }, HELLO_MS);
+      p.timer = setTimeout(() => { if (!p.hello) reject(new Error(t("{name}'s page didn't answer", { name: titled(p.entry) }))); }, HELLO_MS);
     });
     main.replaceChildren(f);
     return p.ready;
@@ -73,7 +92,8 @@
         p.hello = true;
         clearTimeout(p.timer);
         p.said?.();
-        return theme();
+        // a panel is told where it is: the provider whose editor it is in
+        return { ...theme(), context: p.context || {} };
       case "theme":
         return theme();
       case "options.get":
@@ -87,7 +107,7 @@
         const name = String(m.params?.name || "");
         // what its package didn't declare is refused here, and again by
         // the server
-        if (!e.reads.includes(name)) throw new Error(t("{name} doesn't ask to read {what}", { name: e.title, what: name }));
+        if (!e.reads.includes(name)) throw new Error(t("{name} doesn't ask to read {what}", { name: titled(e), what: name }));
         return api("plugin-pages/read", { spec: e.spec, read: name, params: m.params?.params || {} });
       }
     }
@@ -99,11 +119,24 @@
     // or one that names a page, is nothing
     let key = "", p = null;
     for (const [k, x] of pages) if (x.frame && ev.source === x.frame.contentWindow) { key = k; p = x; break; }
+    if (!p) {
+      for (const [f, x] of panels) {
+        if (!f.isConnected) { panels.delete(f); clearTimeout(x.timer); continue; }
+        if (ev.source === f.contentWindow) { p = x; break; }
+      }
+    }
     if (!p) return;
     const m = ev.data;
     if (!m || typeof m !== "object" || m.magpie !== 1 || typeof m.method !== "string") return;
     if (m.method === "error") {
-      broke(key, String(m.params?.message || t("The page hit an error")));
+      const why = String(m.params?.message || t("The page hit an error"));
+      if (p.context) panelBroke(p, why); else broke(key, why);
+      return;
+    }
+    // a panel is as tall as what it draws; a page fills its view
+    if (m.method === "size") {
+      const h = Number(m.params?.height);
+      if (p.context && Number.isFinite(h)) p.frame.style.height = Math.min(Math.max(Math.ceil(h), 0), PANEL_MAX) + "px";
       return;
     }
     const src = ev.source;
@@ -133,12 +166,13 @@
       s.setAttribute("aria-hidden", "true");
       b.append(s);
     }
-    b.append(el("span", "", e.title));
+    b.append(el("span", "", titled(e)));
     b.onclick = () => { show(e.key); b.blur(); };
     return b;
   }
 
   async function load() {
+    loadPanels();
     let list;
     try { list = await api("plugin-pages"); } catch { return; }
     // an answer that isn't a list is not known: the tabs drawn stay
@@ -148,6 +182,10 @@
     // a page whose plugin went off, or away: its tab goes, and the window
     // leaves it if it was open
     for (const b of nav.querySelectorAll("button[data-plugin-page]")) if (!keys.has(b.dataset.view)) b.remove();
+    // a built-in page replaced by a plugin's that went is back in its place
+    const replacing = new Map(list.filter((e) => e.replaces).map((e) => [e.replaces, e.key]));
+    for (const b of nav.querySelectorAll("button[data-replaced]")) if (!replacing.has(b.dataset.view)) b.removeAttribute("data-replaced");
+    replaced = replacing;
     for (const [k, p] of pages) {
       if (keys.has(k)) continue;
       p.frame?.remove();
@@ -156,8 +194,9 @@
       if (view === k) show("plugins");
     }
     let head = nav.querySelector(".nav-gl[data-plugin-pages]");
-    if (!list.length) { head?.remove(); return; }
-    if (!head) {
+    const own = list.filter((e) => !e.replaces);
+    if (!own.length) head?.remove();
+    if (!head && own.length) {
       head = el("span", "nav-gl", t("Plugins"));
       head.dataset.pluginPages = "";
       head.dataset.en = "Plugins";
@@ -170,7 +209,7 @@
       if (!p) {
         p = { entry: e };
         pages.set(e.key, p);
-        ctx.slots.add("page", { key: e.key, title: e.title, html: "", mount(main) { main.classList.add("plugin-page"); p.frame = null; }, open: () => open(e.key) });
+        ctx.slots.add("page", { key: e.key, title: titled(e), html: "", mount(main) { main.classList.add("plugin-page"); p.frame = null; }, open: () => open(e.key) });
       } else if (p.entry.url !== e.url || p.gone) {
         p.frame?.remove();
         p.frame = null;
@@ -178,13 +217,25 @@
       p.gone = false;
       p.entry = e;
       const part = magpie.page(e.key);
-      if (part) part.title = e.title;
+      if (part) part.title = titled(e);
       let b = nav.querySelector(`button[data-plugin-page][data-view="${e.key}"]`);
       if (!b) b = tab(e);
+      else b.querySelector("span").textContent = titled(e);
       b.classList.toggle("on", view === e.key);
+      // in the place of the built-in page it replaces, which steps aside
+      // (and the reader on it is taken to the plugin's); else in the
+      // Plugins group
+      const built = e.replaces && nav.querySelector(`button[data-view="${e.replaces}"]:not([data-plugin-page])`);
+      if (built) {
+        built.dataset.replaced = e.key;
+        built.after(b);
+        if (view === e.replaces) show(e.key);
+        continue;
+      }
       at.after(b);
       at = b;
     }
+    navSubs();
     // a reload of a plugin's page, or the one the window was left on,
     // comes back to it once its tab is there
     if (view === "agents" && !opened) {
@@ -195,6 +246,125 @@
     }
   }
   let opened = false;
+
+  // ---- actions ----
+
+  // the row menu's items for menu ("provider", "agent"), each told
+  // context: { provider: { id, name } } or { agent: { id, name } }
+  magpie.actions = (menu, context) => {
+    const items = [];
+    for (const [key, p] of pages) {
+      if (p.gone) continue;
+      for (const a of p.entry.actions || []) {
+        if (a.menu !== menu) continue;
+        items.push({ name: titled(a), literal: true, icon: PUZZLE, sep: !items.length, run: () => act(key, a.id, context) });
+      }
+    }
+    return items;
+  };
+
+  async function act(key, id, context) {
+    // a reader who keeps an unsaved edit where they are stays there
+    if (await show(key) === false) return;
+    const p = pages.get(key);
+    try { await open(key); } catch { return; } // its page says it broke
+    post(p?.frame?.contentWindow, { event: "action", data: { id, ...context } });
+  }
+
+  // ---- panels ----
+
+  // how tall a panel can be, so one that says it is endless isn't
+  const PANEL_MAX = 2400;
+
+  function panelBroke(p, why) {
+    if (p.broken) return;
+    p.broken = true;
+    clearTimeout(p.timer);
+    panels.delete(p.frame);
+    const card = el("div", "plugin-panel-broke");
+    card.setAttribute("role", "alert");
+    card.append(el("b", "", t("{name} stopped working", { name: titled(p.entry) })), el("span", "note", why));
+    const again = el("button", "text", t("Try again"));
+    again.type = "button";
+    again.onclick = () => panelFrame(p.entry, p.context, p.body);
+    card.append(again);
+    p.body.replaceChildren(card);
+    console.error(`[magpie] ${p.entry.name}: panel ${p.entry.key}: ${why}`);
+  }
+
+  // a panel's frame in body, told context once it says hello
+  function panelFrame(e, context, body) {
+    const f = document.createElement("iframe");
+    f.className = "plugin-frame plugin-panel-frame";
+    f.setAttribute("sandbox", "allow-scripts");
+    f.setAttribute("referrerpolicy", "no-referrer");
+    f.setAttribute("allow", "");
+    f.title = titled(e);
+    f.src = e.url;
+    const p = { entry: e, frame: f, context, body, hello: false, broken: false };
+    p.timer = setTimeout(() => { if (!p.hello) panelBroke(p, t("{name}'s page didn't answer", { name: titled(e) })); }, HELLO_MS);
+    panels.set(f, p);
+    body.replaceChildren(f);
+  }
+
+  // fill a slot with the panels of its name: drawn again only when they
+  // changed, so a panel already open goes on as it is
+  function fill(box) {
+    const name = box.dataset.slot;
+    const list = panelList.filter((e) => e.slot === name);
+    const sig = list.map((e) => e.key + " " + e.url + " " + titled(e)).join("|");
+    if (box.dataset.sig === sig && box.childElementCount === list.length) return;
+    box.dataset.sig = sig;
+    const context = box.pluginContext || {};
+    const parts = list.map((e) => {
+      const sec = el("section", "plugin-panel");
+      sec.dataset.panel = e.key;
+      const head = el("div", "row-head");
+      head.append(el("span", "label", titled(e)));
+      if (titled(e) !== e.name) head.append(el("span", "note", e.name));
+      const body = el("div", "plugin-panel-body");
+      sec.append(head, body);
+      panelFrame(e, context, body);
+      return sec;
+    });
+    box.replaceChildren(...parts);
+    box.hidden = !parts.length;
+    // Settings' Plugins tab comes or goes with its panels, in the sidebar too
+    if (name === "settings" && typeof setSetTab === "function") { setSetTab(setTab); navSubs(); }
+  }
+
+  // a slot app.js draws, with what its panels are told (a provider's
+  // editor: { provider: { id, name } })
+  magpie.slot = (name, context) => {
+    const box = document.createElement("div");
+    box.className = "plugin-slot";
+    box.dataset.slot = name;
+    box.pluginContext = context || {};
+    box.hidden = true;
+    fill(box);
+    return box;
+  };
+
+  // a page's markup written after the panels came (a built-in page
+  // registered late, or put back by Try again): its slots filled now
+  magpie.fillSlots = (root) => { for (const box of root.querySelectorAll(".plugin-slot[data-slot]")) fill(box); };
+
+  async function loadPanels() {
+    let list;
+    try { list = await api("plugin-panels"); } catch { return; }
+    // an answer that isn't a list is not known: the panels drawn stay
+    if (!Array.isArray(list)) return;
+    panelList = list;
+    for (const box of document.querySelectorAll(".plugin-slot[data-slot]")) fill(box);
+  }
+
   window.loadPluginPages = load;
   load();
+  // a new language: the tabs and the panels' heads are titled in it
+  let lang = document.documentElement.lang;
+  new MutationObserver(() => {
+    if (document.documentElement.lang === lang) return;
+    lang = document.documentElement.lang;
+    load();
+  }).observe(document.documentElement, { attributes: true, attributeFilter: ["lang"] });
 })();

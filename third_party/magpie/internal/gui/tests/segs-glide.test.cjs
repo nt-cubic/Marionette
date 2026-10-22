@@ -47,11 +47,14 @@ function serve(lang, st, ctl) {
   };
 }
 
-// every thumb on General: where it is drawn, and where its option is
+// every thumb on General: where it is drawn, and where its option is. A
+// control is named by the nearest id above it: two off|on controls whose
+// parent has none (Full window's and Codex async's, in .compact-at) were
+// one name, and one's thumb was read as the other's (#2683)
 const THUMBS = `[...document.querySelectorAll("#setPage-general .segs")].filter((s) => s.offsetParent).map((s) => {
   const th = s.querySelector(":scope > .thumb"), on = s.querySelector(":scope > .on"), b = s.getBoundingClientRect();
   const r = th?.getBoundingClientRect(), o = on?.getBoundingClientRect();
-  return { id: s.parentElement.id || s.dataset.kind, x: r ? r.left - b.left : -1, w: r ? r.width : -1, ox: o ? o.left - b.left : -1, ow: o ? o.width : -1 };
+  return { id: s.parentElement.id || s.parentElement.closest("[id]")?.id + " " + s.dataset.kind, x: r ? r.left - b.left : -1, w: r ? r.width : -1, ox: o ? o.left - b.left : -1, ow: o ? o.width : -1 };
 })`;
 
 // records every thumb on General at each frame, and between them
@@ -73,6 +76,8 @@ async function stop(page) {
 function oneWay(frames, id, label) {
   const xs = frames.map((f) => f.find((c) => c.id === id)).filter(Boolean);
   assert.ok(xs.length > 3, label + ": frames recorded");
+  const ids = frames[0].map((c) => c.id);
+  assert.deepEqual(ids, [...new Set(ids)], label + ": two controls under one name");
   const up = xs[xs.length - 1].x >= xs[0].x;
   for (let i = 1; i < xs.length; i++) {
     const d = xs[i].x - xs[i - 1].x;
@@ -102,7 +107,12 @@ async function reveal(page, loc) {
   for (let i = 0; i < 40; i++) {
     const b = await loc.boundingBox();
     const h = page.viewportSize().height;
-    if (b && await loc.evaluate((o, [x, y]) => o.contains(document.elementFromPoint(x, y)), [b.x + b.width / 2, b.y + b.height / 2])) return;
+    // all of it: one cut by the view's foot is scrolled in by Playwright's
+    // click itself, and the page seemed to move on a click (#2683)
+    if (b && await loc.evaluate((o, [x, y]) => {
+      const v = o.closest("#view-settings").getBoundingClientRect(), r = o.getBoundingClientRect();
+      return o.contains(document.elementFromPoint(x, y)) && r.top >= v.top && r.bottom <= v.bottom;
+    }, [b.x + b.width / 2, b.y + b.height / 2])) return;
     await page.mouse.move(page.viewportSize().width / 2, h / 2);
     await page.mouse.wheel(0, b && b.y < h / 2 ? -150 : 150);
     await page.waitForTimeout(60);
@@ -122,7 +132,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const errors = [];
         // WebKit's notice of a ResizeObserver loop is no error of the page's
         page.on("pageerror", (e) => { if (!/ResizeObserver loop/.test(e.message)) errors.push(e.message); });
-        const st = {}, ctl = { hold: 0, refuse: false };
+        // turned off by the user, so On is a glide away
+        const st = { lightweight: false }, ctl = { hold: 0, refuse: false };
         await page.route("**/*", serve(lang, st, ctl));
         // opened on another tab: General is drawn while hidden
         await watchSettingsReads(page);

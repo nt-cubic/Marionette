@@ -58,6 +58,11 @@ var grokVideoAspects = []string{"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3
 // maxVideoBytes is the most of a video the gateway passes on.
 const maxVideoBytes = 512 << 20
 
+// videoTimeout is how long a video's vendor is given to answer each of its
+// calls: to take the video on, say how it goes, and send it. A video is
+// made between them, so Settings' Image generation timeout isn't it.
+const videoTimeout = 5 * time.Minute
+
 // Videomakers are the models a provider can make videos with: a Grok
 // subscription's, another magpie's, a preset plan's models when magpie
 // implements that vendor's video API, and those a provider's own model list
@@ -726,24 +731,32 @@ func (s *Server) videosCreate(w http.ResponseWriter, r *http.Request) {
 	call.To = provider.Chat
 	var unmask func()
 	prompt := f.Prompt
-	w, f.Prompt, unmask, err = redactedPrompt(w, f.Prompt)
+	var hits maskHits
+	w, f.Prompt, unmask, hits, err = redactedPromptHits(w, f.Prompt)
 	defer unmask()
 	// the fields passed on as they came are masked as the prompt is: a
 	// negative_prompt is the user's text all the same
-	n := 0
+	var extra maskHits
 	if err == nil {
-		n, err = maskStrings(f.Extra)
+		err = maskStrings(f.Extra, &extra)
 	}
 	if err != nil { // fails closed
-		fail(http.StatusServiceUnavailable, err.Error())
+		fail(maskStatus(err), err.Error())
 		return
 	}
+	n := extra.n
+	hits.add(extra)
+	sent := f.Prompt
+	if b, e := json.Marshal(f.Extra); e == nil && extra.n > 0 {
+		sent += " " + string(b)
+	}
+	noteMasked(r, "video", hits, sent, 0, call.Provider, call.Model)
 	if n > 0 && f.Prompt == prompt { // the prompt's mask wraps w already
 		var done func()
 		w, done = restoring(w)
 		defer done()
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), drawTimeout)
+	ctx, cancel := drawWithin(r.Context(), videoTimeout)
 	defer cancel()
 	var (
 		v       videoStart
@@ -957,7 +970,7 @@ func (s *Server) videosGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, provider.Chat, 403, held)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), drawTimeout)
+	ctx, cancel := drawWithin(r.Context(), videoTimeout)
 	defer cancel()
 	if filmsOpenAI(p) {
 		obj, model, code, err := s.openAIVideo(ctx, p, vendorID, id)
@@ -1001,7 +1014,7 @@ func (s *Server) videosContent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, provider.Chat, 403, held)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), drawTimeout)
+	ctx, cancel := drawWithin(r.Context(), videoTimeout)
 	defer cancel()
 	if filmsOpenAI(p) {
 		if _, models := keyHolds(r); models {
@@ -1110,13 +1123,12 @@ func (s *Server) remoteVideoContent(ctx context.Context, w http.ResponseWriter, 
 }
 
 // maskStrings masks every string in v (a decoded JSON value) in place as a
-// prompt is masked, and says how many values it swapped; an error when it
-// can't (fail closed).
-func maskStrings(v any) (int, error) {
-	n := 0
+// prompt is masked, adding what it swapped to h; an error when it can't
+// (fail closed).
+func maskStrings(v any, h *maskHits) error {
 	one := func(str string) (string, error) {
-		m, c, err := maskedText(str)
-		n += c
+		_, m, got, err := maskTextHits(str)
+		h.add(got)
 		return m, err
 	}
 	var err error
@@ -1126,12 +1138,10 @@ func maskStrings(v any) (int, error) {
 			if str, ok := e.(string); ok {
 				x[k], err = one(str)
 			} else {
-				var c int
-				c, err = maskStrings(e)
-				n += c
+				err = maskStrings(e, h)
 			}
 			if err != nil {
-				return n, err
+				return err
 			}
 		}
 	case []any:
@@ -1139,14 +1149,12 @@ func maskStrings(v any) (int, error) {
 			if str, ok := e.(string); ok {
 				x[i], err = one(str)
 			} else {
-				var c int
-				c, err = maskStrings(e)
-				n += c
+				err = maskStrings(e, h)
 			}
 			if err != nil {
-				return n, err
+				return err
 			}
 		}
 	}
-	return n, nil
+	return nil
 }

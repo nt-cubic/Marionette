@@ -139,7 +139,7 @@ func libraryCmd(args []string) error {
 			if res, err = library.UpdateSkill(rest[1], len(rest) == 3); err == nil {
 				fmt.Println(green.Render("✓"), rest[1], "is up to date")
 			} else if errors.As(err, &edited) {
-				err = fmt.Errorf("%w\n  magpie library skill update %s --replace-edits  takes GitHub's in its place, keeping yours with the backups", err, rest[1])
+				err = fmt.Errorf("%w\n  magpie library skill update %s --replace-edits  takes the fetched one in its place, keeping yours with the backups", err, rest[1])
 			}
 		case len(rest) == 1 && rest[0] == "update":
 			res, err = library.UpdateSkills()

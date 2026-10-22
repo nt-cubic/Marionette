@@ -2971,6 +2971,27 @@ pub fn engine_stop() {
     crate::engine::stop()
 }
 
+/// 检查 magpie 是否有比本机更新的稳定版（GitHub latest）。
+#[tauri::command(async)]
+pub fn engine_check_update() -> crate::engine::EngineUpdateInfo {
+    let _trace = crate::debug_log::CmdTrace::new("engine_check_update");
+    crate::engine::check_update()
+}
+
+/// 下载 GitHub latest 稳定 CLI，落位为本机权威引擎后拉起。
+#[tauri::command(async)]
+pub fn engine_update() -> Result<crate::engine::EngineStatus, String> {
+    let _trace = crate::debug_log::CmdTrace::new("engine_update");
+    crate::engine::update()
+}
+
+/// 用 exe 内嵌种子覆盖本机引擎（恢复出厂）后拉起。
+#[tauri::command(async)]
+pub fn engine_restore_factory() -> Result<crate::engine::EngineStatus, String> {
+    let _trace = crate::debug_log::CmdTrace::new("engine_restore_factory");
+    crate::engine::restore_factory()
+}
+
 /// Read the agent proxy config (single exit address for spawned agents).
 #[tauri::command]
 pub fn get_proxy_config() -> crate::proxy::ProxyConfig {

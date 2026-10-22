@@ -266,6 +266,31 @@ func TestClaudeSignInGoesThroughItsProxy(t *testing.T) {
 	}
 }
 
+// A Claude subscription behind a socks5:// proxy (#2651): Claude Code is
+// built with Bun, which takes only http:// and https:// proxies and failed
+// as UnsupportedProxyProtocol, so its sign-in, and the auth status read
+// after it, are given magpie's HTTP bridge to the SOCKS proxy.
+func TestClaudeSignInBridgesASOCKSProxy(t *testing.T) {
+	claudeHome(t)
+	noAnthropic(t)
+	exe := fakeClaudeLogin(t, fakeClaudeAccount{email: "s@example.com", name: "S", plan: "max", refresh: "sk-ant-ort01-s"}, "", true)
+	setProxies(t, "claude", "socks5://127.0.0.1:1", nil)
+	st, err := StartSignIn("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	finishInBrowser(t, st, "the-code")
+	if st = waitDone(t, st.ID); st.State != "done" {
+		t.Fatalf("state %+v", st)
+	}
+	for _, f := range []string{"login-proxy", "status-proxy"} {
+		b, _ := os.ReadFile(filepath.Join(filepath.Dir(exe), f))
+		if !strings.HasPrefix(string(b), "http://127.0.0.1:") {
+			t.Fatalf("%s: Claude Code ran with HTTPS_PROXY=%q", f, b)
+		}
+	}
+}
+
 // Signing out of a ChatGPT account, OpenAI revokes its refresh token
 // through the account's own proxy, the exit its sign-in and requests left
 // through, not the global one (#1663).
@@ -317,8 +342,9 @@ func TestChatGPTSignOutGoesThroughItsProxy(t *testing.T) {
 }
 
 // Devin's CLI, asked who is signed in and for its models, runs with the
-// account's own proxy, and while a sign-in asks it, with the proxy the
-// sign-in goes through, where it always had the global one (#1663).
+// account's own proxy, where it always had the global one (#1663). The
+// built-in's sign-in is retired; the plugin's goes through its proxy in
+// TestPluginSignInGoesThroughItsProxy.
 func TestDevinCLIGoesThroughItsProxy(t *testing.T) {
 	shellFakes(t)
 	home := claudeHome(t)
@@ -348,15 +374,15 @@ Account:
 ' "$who"
 `)
 	fakeDevin(t, exe)
-	exchange := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{"sessionToken": "devin-session-token$two"})
-	}))
-	t.Cleanup(exchange.Close)
-	oldTok := devinExchangeURL
-	devinExchangeURL = exchange.URL
-	t.Cleanup(func() { devinExchangeURL = oldTok })
 	const sub, mine, picked = "http://127.0.0.1:7001", "http://127.0.0.1:7002", "http://127.0.0.1:7003"
-	setProxies(t, "devin", sub, map[string]string{"dev@example.com": mine})
+	setProxies(t, "devin", sub, map[string]string{"dev@example.com": mine, "two@example.com": picked})
+	// the CLI's own account, and a second one in a home of magpie's
+	two, _ := newDevinHome()
+	os.WriteFile(devinCredentialsAt(two), devinCredentials("devin-session-token$two", "", "", ""), 0o600)
+	writeLogins([]savedLogin{
+		{Agent: "devin", User: "dev@example.com", On: true, First: true},
+		{Agent: "devin", User: "two@example.com", Home: two, On: true},
+	})
 	ran := func() []string {
 		b, _ := os.ReadFile(runs)
 		os.Remove(runs)
@@ -368,35 +394,10 @@ Account:
 		}
 		return out
 	}
-	forgetDevinStatus()
+	devinStatus.forget()
 	ran()
 
-	// a second account, signed in through a proxy picked for it: the CLI
-	// asked whose it is runs with that proxy
-	p := picked
-	st, err := StartSignInWith("devin", SignInOptions{Proxy: &p})
-	if err != nil {
-		t.Fatal(err)
-	}
-	finishInBrowser(t, st, "dv-code")
-	if st = waitDone(t, st.ID); st.State != "done" || st.User != "two@example.com" {
-		t.Fatalf("state %+v", st)
-	}
-	if got := ran(); !slices.Contains(got, "two@example.com auth "+picked) ||
-		slices.ContainsFunc(got, func(l string) bool { return strings.HasPrefix(l, "two@") && !strings.HasSuffix(l, " "+picked) }) {
-		t.Fatalf("the sign-in ran the CLI as %q", got)
-	}
-
-	// later, each account's CLI runs with that account's own proxy
-	var homeOf = map[string]string{}
-	for _, l := range devinLogins() {
-		homeOf[l.User] = l.Home
-	}
-	two, ok := homeOf["two@example.com"]
-	if !ok || two == "" {
-		t.Fatalf("logins %v", homeOf)
-	}
-	ran()
+	// each account's CLI runs with that account's own proxy
 	if _, err := askDevinFamiliesAt(context.Background(), two); err != nil && !strings.Contains(err.Error(), "no models") {
 		t.Logf("models: %v", err)
 	}

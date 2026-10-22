@@ -34,8 +34,10 @@ import (
 // say. `magpie plugin dump` shows the result and where each value came
 // from.
 //
-// A new install is written the Essentials preset, a magpie that ran here
-// before All (Settle), so an existing user keeps everything they had.
+// Every install starts with All (Settle): a new user sees everything
+// magpie can do, and turns off what they don't want ("所有的内置插件默认
+// 都应该是开启的", the owner, 10-17). Essentials is only ever the user's
+// own pick, `magpie plugin preset essentials`.
 
 // Presets a plugins.yml can name.
 const (
@@ -45,9 +47,19 @@ const (
 
 // File is plugins.yml as written.
 type File struct {
-	Preset  string `yaml:"preset,omitempty"`
-	Plugins []Row  `yaml:"plugins,omitempty"`
+	Preset string `yaml:"preset,omitempty"`
+	// Settled is the defaults the file was last settled to (settled):
+	// below it, Settle brings the file up to them once. Every write the
+	// user makes sets it, so a preset they pick afterwards is theirs.
+	Settled int   `yaml:"settled,omitempty"`
+	Plugins []Row `yaml:"plugins,omitempty"`
 }
+
+// settled is the defaults plugins.yml is settled to now. 1: All, where
+// from 10-13 a new install had been written Essentials, which left
+// Sessions, the Library, routing groups, warm-ups and Observability off
+// for every new user, who then never knew they were there.
+const settled = 1
 
 // Row is the user's own say about one plugin: only what they set.
 type Row struct {
@@ -175,22 +187,27 @@ func merge(under, over any) any {
 	return out
 }
 
-// Settle writes a first plugins.yml when there is none: the Essentials
-// preset on a new install, All on a magpie that ran here before. It says
-// whether it wrote one. A plugins.yml there, or one that can't be looked
-// at, is left as it is.
-func Settle(newInstall bool) (bool, error) {
+// Settle writes a first plugins.yml, All, when there is none, and brings
+// one settled to older defaults up to now's: an Essentials a new install
+// was written before settled 1 becomes All, the user's own rows kept
+// (what they turned off stays off). It says whether it wrote. A
+// plugins.yml that can't be read, or doesn't parse, is left as it is.
+func Settle() (bool, error) {
 	inProcess.Lock()
 	defer inProcess.Unlock()
 	fileLock.Lock()
 	defer fileLock.Unlock()
-	if _, err := os.Lstat(Path()); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Lstat(Path()); errors.Is(err, os.ErrNotExist) {
+		return true, write(File{Preset: PresetAll, Settled: settled})
+	}
+	f, there, err := Load()
+	if err != nil || !there || f.Settled >= settled {
 		return false, nil
 	}
-	f := File{Preset: PresetAll}
-	if newInstall {
-		f.Preset = PresetEssentials
+	if f.Preset == PresetEssentials {
+		f.Preset = PresetAll
 	}
+	f.Settled = settled
 	return true, write(f)
 }
 
@@ -259,6 +276,7 @@ func update(change func(*File)) error {
 		return err
 	}
 	change(&f)
+	f.Settled = settled
 	return write(f)
 }
 

@@ -157,7 +157,7 @@ func mayHold(ctx context.Context, path, needle string) bool {
 	defer f.Close()
 	nb := []byte(needle)
 	keep := len(nb) - 1
-	buf := make([]byte, 1<<20+keep)
+	buf := make([]byte, scanBuffer(f, 0)+keep)
 	have := 0
 	for {
 		if ctx.Err() != nil {

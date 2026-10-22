@@ -74,7 +74,9 @@ func TestResetsZhipu(t *testing.T) {
 }
 
 // heldClock gives the time with its offset, so a reader on another clock
-// can tell whose it is.
+// can tell whose it is. Each zone is passed in, never set on time.Local:
+// time.Now reads time.Local, and a goroutine an earlier test left running
+// read it while this test wrote it, a race on ubuntu CI (run 39242954115).
 func TestHeldClock(t *testing.T) {
 	cst := time.FixedZone("CST", 8*3600)
 	now := time.Date(2026, 10, 15, 16, 25, 0, 0, cst)
@@ -88,10 +90,7 @@ func TestHeldClock(t *testing.T) {
 		{time.UTC, time.Date(2026, 10, 15, 20, 12, 13, 0, cst), "12:12 UTC+0"},
 		{time.FixedZone("", -(3*3600 + 30*60)), time.Date(2026, 10, 15, 20, 12, 13, 0, cst), "08:42 UTC-3:30"},
 	} {
-		was := time.Local
-		time.Local = c.zone
-		got := heldClock(c.at, now)
-		time.Local = was
+		got := heldClockIn(c.at, now, c.zone)
 		if got != c.want {
 			t.Errorf("%v in %v: %q, want %q", c.at, c.zone, got, c.want)
 		}

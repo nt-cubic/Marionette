@@ -240,9 +240,6 @@ func agentTurnOf(r *http.Request, kind string) (bool, *toolScan) {
 // dirOf reads the folder body says its agent works in, when asked.
 func dirOf(proto provider.Protocol, body []byte) func() string {
 	return func() string {
-		if req, err := parse(proto, body); err == nil {
-			return workDir(req)
-		}
-		return ""
+		return factsOf(proto, body).dir
 	}
 }
