@@ -1,0 +1,674 @@
+/*
+ * Orb window styles (loaded in every window — see main.tsx — but globally
+ * gated on `html.is-orb`, which is set only when ?orb=1). All markup lives
+ * under .orb-* classes, so the main / detached windows never match anything.
+ *
+ * Window layout: the OS window is exactly the size of the visible orb
+ * (72×72 circle or 380×540 panel). The window-sized root is pointer-events:
+ * none so transparent regions never block desktop clicks; the ball and panel
+ * re-enable hit-testing.
+ */
+
+/* ── Window chrome: fully transparent viewport ──────────────────────────── */
+
+html.is-orb,
+html.is-orb body {
+  min-width: 0;
+  min-height: 0;
+  background: transparent;
+  overflow: hidden;
+  cursor: default;
+}
+
+html.is-orb #root {
+  background: transparent;
+}
+
+/* ── Root: window-sized, click-through outside the ball/panel ───────────── */
+
+.orb-root {
+  position: fixed;
+  inset: 0;
+  background: transparent;
+  pointer-events: none;
+  user-select: none;
+}
+
+.orb-root .orb-ball,
+.orb-root .orb-panel {
+  pointer-events: auto;
+}
+
+.orb-panel input,
+.orb-panel textarea {
+  user-select: text;
+}
+
+/* ── Collapsed ball (window is 72×72; ball is 64px so the drag-hover
+      scale-up stays inside the window) ─────────────────────────────────── */
+
+.orb-ball {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 64px;
+  height: 64px;
+  margin: -32px 0 0 -32px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  background:
+    radial-gradient(
+      circle at 30% 28%,
+      color-mix(in srgb, var(--accent) 55%, #ffffff) 0%,
+      var(--accent) 45%,
+      color-mix(in srgb, var(--accent) 70%, #10161b) 100%
+    );
+  box-shadow:
+    0 4px 14px rgba(0, 0, 0, 0.35),
+    0 0 10px color-mix(in srgb, var(--accent) 30%, transparent);
+  cursor: pointer;
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.orb-ball:active {
+  transform: scale(0.96);
+}
+
+.orb-ball--hover {
+  transform: scale(1.12);
+  box-shadow:
+    0 0 0 5px color-mix(in srgb, var(--accent) 45%, transparent),
+    0 6px 20px rgba(0, 0, 0, 0.42),
+    0 0 16px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.orb-ball__mark {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow:
+    inset 0 0 0 3px rgba(255, 255, 255, 0.35),
+    0 1px 3px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
+/* Badges never block the drag surface. */
+.orb-ball__badge,
+.orb-ball__count,
+.orb-ball__toast {
+  position: absolute;
+  pointer-events: none;
+}
+
+.orb-ball__badge {
+  top: -3px;
+  right: -3px;
+  display: grid;
+  place-items: center;
+  width: 21px;
+  height: 21px;
+  border-radius: 50%;
+  border: 2px solid var(--panel);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  animation: orb-badge-pulse 2s ease-in-out infinite;
+}
+
+.orb-ball__badge--reply {
+  background: var(--orange);
+}
+
+.orb-ball__badge--permission {
+  background: var(--blue);
+}
+
+.orb-ball__badge--error {
+  background: var(--red);
+}
+
+.orb-ball__count {
+  bottom: -2px;
+  right: -2px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  border: 2px solid var(--panel);
+  background: var(--accent);
+  color: var(--bg);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.orb-ball__toast {
+  left: 2px;
+  right: 2px;
+  bottom: 6px;
+  padding: 1px 4px;
+  border-radius: 999px;
+  overflow: hidden;
+  text-align: center;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.orb-ball__toast--ok {
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  color: var(--text);
+}
+
+.orb-ball__toast--warn {
+  background: color-mix(in srgb, var(--orange) 85%, transparent);
+  color: #fff;
+}
+
+@keyframes orb-badge-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.12);
+  }
+}
+
+/* ── Expanded panel (window is 380×540; panel fills it as a rounded card) ── */
+
+.orb-panel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  border-radius: 10px;
+  border: 1px solid var(--border-strong);
+  background: var(--panel);
+  box-shadow: 0 16px 44px var(--shadow);
+  overflow: hidden;
+  color: var(--text);
+}
+
+.orb-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 6px 8px 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-raised);
+}
+
+.orb-panel__title {
+  flex: 1 1 auto;
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-strong);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: default;
+}
+
+.orb-panel__icon-btn {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.orb-panel__icon-btn:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--panel-soft);
+}
+
+.orb-panel__icon-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.orb-panel__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 10px 12px;
+}
+
+.orb-panel__section {
+  display: grid;
+  gap: 6px;
+}
+
+.orb-panel__section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-height: 16px;
+}
+
+.orb-panel__section-head h3 {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.orb-panel__section-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.orb-panel__empty {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.orb-panel__empty--inline {
+  font-size: 10px;
+}
+
+.orb-panel__hint {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.orb-panel__processing {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+/* Quick input */
+
+.orb-quick {
+  display: flex;
+  gap: 6px;
+}
+
+.orb-quick__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  outline: none;
+  background: var(--panel-raised);
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 12px;
+}
+
+.orb-quick__input:focus {
+  border-color: var(--accent);
+}
+
+.orb-quick__input::placeholder {
+  color: var(--text-faint);
+}
+
+.orb-quick__send {
+  flex: 0 0 auto;
+  height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--bg);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.orb-quick__send:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.orb-quick__send:not(:disabled):hover {
+  filter: brightness(1.06);
+}
+
+/* Scenario grid */
+
+.orb-scenario-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.orb-scenario {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-raised);
+  cursor: pointer;
+}
+
+.orb-scenario:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: var(--panel-soft);
+}
+
+.orb-scenario__emoji {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.orb-scenario__name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 11px;
+}
+
+/* Running tasks */
+
+.orb-task-list,
+.orb-notice-list {
+  display: grid;
+  gap: 6px;
+}
+
+.orb-task,
+.orb-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-raised);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.orb-task:hover,
+.orb-notice:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: var(--panel-soft);
+}
+
+.orb-task__spinner {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  border: 2px solid color-mix(in srgb, var(--text-muted) 35%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: orb-spin 0.7s linear infinite;
+}
+
+.orb-task__meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.orb-task__meta strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.orb-task__meta span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.orb-task__elapsed {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Notices */
+
+.orb-notice__icon {
+  flex: 0 0 auto;
+  width: 16px;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.orb-notice--reply .orb-notice__icon {
+  color: var(--orange);
+}
+
+.orb-notice--permission .orb-notice__icon {
+  color: var(--blue);
+}
+
+.orb-notice--error .orb-notice__icon {
+  color: var(--red);
+}
+
+.orb-notice__label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.orb-notice__time {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Balances (rows reuse .usage-row / .usage-meter__track from app.css) */
+
+.orb-usage {
+  display: grid;
+  gap: 10px;
+}
+
+.orb-usage__provider {
+  display: grid;
+  gap: 5px;
+}
+
+.orb-usage__provider-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.orb-usage__provider-title strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.orb-usage__user {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+/* Toast strip (panel mode) */
+
+.orb-toast-strip {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 5px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.orb-toast-strip__item {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+}
+
+.orb-toast-strip__item--ok {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.orb-toast-strip__item--warn {
+  background: color-mix(in srgb, var(--orange) 16%, transparent);
+  color: var(--orange);
+}
+
+/* Footer */
+
+.orb-panel__footer {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--panel-raised);
+}
+
+.orb-panel__footer-btn {
+  flex: 1 1 0;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.orb-panel__footer-btn:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--panel-soft);
+}
+
+.orb-panel__footer-btn--danger:hover {
+  color: var(--red);
+  border-color: var(--red);
+}
+
+/* Drop overlay (panel mode) */
+
+.orb-drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--panel) 84%, transparent);
+}
+
+.orb-drop-overlay::before {
+  content: "";
+  position: absolute;
+  inset: 10px;
+  border: 1.5px dashed var(--accent);
+  border-radius: 8px;
+}
+
+.orb-drop-overlay span {
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+@keyframes orb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── Light theme (纯白) ─────────────────────────────────────────────────── */
+
+html.is-orb[data-theme="white"] .orb-ball {
+  box-shadow:
+    0 4px 12px rgba(0, 0, 0, 0.18),
+    0 0 10px color-mix(in srgb, var(--accent) 26%, transparent);
+}
+
+html.is-orb[data-theme="white"] .orb-ball--hover {
+  box-shadow:
+    0 0 0 5px color-mix(in srgb, var(--accent) 38%, transparent),
+    0 6px 18px rgba(0, 0, 0, 0.22);
+}
+
+html.is-orb[data-theme="white"] .orb-ball__badge {
+  border-color: var(--panel);
+}
+
+html.is-orb[data-theme="white"] .orb-panel {
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.14);
+}

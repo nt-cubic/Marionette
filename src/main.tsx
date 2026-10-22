@@ -1,8 +1,28 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "./app/App";
+import { OrbApp } from "./orb/OrbApp";
 import "./styles/tokens.css";
 import "./styles/app.css";
+// Loaded in every window, but every rule is gated on `html.is-orb` (set below,
+// only in the orb branch) or scoped to .orb-* classes — inert in the main and
+// detached windows. A static import (instead of a dynamic one) means the
+// transparent background is applied before the orb window's first paint.
+import "./styles/orb.css";
+
+/** The floating-orb window loads the same SPA with ?orb=1 (see orbWindow.ts). */
+const isOrbWindow = (() => {
+  try {
+    return new URLSearchParams(window.location.search).get("orb") === "1";
+  } catch {
+    return false;
+  }
+})();
+
+if (isOrbWindow) {
+  // Gate for orb.css global rules (transparent html/body, no min-size, …).
+  document.documentElement.classList.add("is-orb");
+}
 
 /** Prevent a single component crash from turning the whole window pure black. */
 class RootErrorBoundary extends React.Component<
@@ -71,8 +91,6 @@ class RootErrorBoundary extends React.Component<
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <RootErrorBoundary>
-      <App />
-    </RootErrorBoundary>
+    <RootErrorBoundary>{isOrbWindow ? <OrbApp /> : <App />}</RootErrorBoundary>
   </React.StrictMode>
 );

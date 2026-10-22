@@ -9192,3 +9192,187 @@ body.is-composer-resizing .composer {
   gap: 8px;
 }
 
+/* ===== orb scenario dialog (src/components/ScenarioDialog.tsx) ===== */
+/* Loaded in BOTH windows (main + orb): the dialog renders in the main window
+ * via ProjectShelf. Reuses .project-dialog / .custom-agent-dialog__* bones. */
+
+.scenario-dialog {
+  width: min(480px, 100%);
+  max-height: min(640px, calc(100vh - 48px));
+  overflow: auto;
+}
+
+.scenario-dialog__list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  max-height: 240px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.scenario-dialog__row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.scenario-dialog__emoji {
+  flex: 0 0 auto;
+  width: 26px;
+  text-align: center;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.scenario-dialog__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.scenario-dialog__meta strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scenario-dialog__badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.scenario-dialog__badge {
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-style: normal;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.scenario-dialog__badge--builtin {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  color: var(--accent);
+}
+
+.scenario-dialog__row-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.scenario-dialog__row-actions button {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.scenario-dialog__row-actions button:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.scenario-dialog__row-actions .scenario-dialog__delete:hover:not(:disabled) {
+  color: var(--red);
+  border-color: var(--red);
+}
+
+.scenario-dialog__row-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.scenario-dialog__form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-muted);
+}
+
+.scenario-dialog__form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.scenario-dialog__form-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  gap: 8px;
+}
+
+.scenario-dialog__form-row input,
+.scenario-dialog__form-row select,
+.scenario-dialog__form input,
+.scenario-dialog__form select,
+.scenario-dialog__form textarea {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+}
+
+.scenario-dialog__form input:focus,
+.scenario-dialog__form select:focus,
+.scenario-dialog__form textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.scenario-dialog__textarea {
+  resize: vertical;
+  min-height: 84px;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.scenario-dialog__hint {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.scenario-dialog__form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.scenario-dialog__form-actions--footer {
+  justify-content: space-between;
+}
+
+.scenario-dialog__form-actions .scenario-dialog__hint {
+  flex: 1 1 auto;
+}
+

@@ -3131,6 +3131,62 @@ pub fn dsh_plugin_remove(name: String) -> Result<(), String> {
     crate::dsh_plugins::remove(&name).map(|_| ())
 }
 
+// ── 悬浮球后台常驻助手（docs/plan-orb-assistant.md 档①/③/④） ─────────────
+
+/// The ONLY legal exit: orb menu 「退出 Marionette」. Runs the existing
+/// shutdown path (kill engine + agents, exit before tao WebView teardown).
+#[tauri::command(async)]
+pub fn quit_app(app: AppHandle) {
+    let _trace = crate::debug_log::CmdTrace::new("quit_app");
+    crate::shutdown_and_exit(&app);
+}
+
+/// Flip CloseRequested semantics: true = every window hides (orb keeps the
+/// app alive), false = legacy behavior (main / last visible window exits).
+#[tauri::command]
+pub fn set_background_mode(enabled: bool) {
+    crate::BACKGROUND_MODE.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Scenario buttons CRUD (frontend source of truth: src/lib/scenarios.ts).
+#[tauri::command(async)]
+pub fn scenario_list() -> Result<Vec<crate::scenarios::Scenario>, String> {
+    crate::scenarios::list()
+}
+
+/// Replace the whole scenario list; returns the list as stored (validated,
+/// deduped by id — builtins are re-merged by the frontend on load).
+#[tauri::command(async)]
+pub fn scenario_save(
+    scenarios: Vec<crate::scenarios::Scenario>,
+) -> Result<Vec<crate::scenarios::Scenario>, String> {
+    crate::scenarios::save(scenarios)
+}
+
+/// Absolute path of the capture inbox (`~/.marionette/inbox`), created on
+/// first call — the frontend matches/creates the 收集箱 project by this cwd.
+#[tauri::command]
+pub fn inbox_dir_path() -> Result<String, String> {
+    let dir = crate::capture::inbox_dir()?;
+    fs::create_dir_all(&dir).map_err(|e| format!("create inbox dir failed: {e}"))?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
+/// Orb drag/paste blob (base64) → file under `~/.marionette/inbox/files/`.
+/// Returns the absolute path for ACP image attachments.
+#[tauri::command(async)]
+pub fn capture_save_blob(data: String, name: Option<String>) -> Result<String, String> {
+    let _trace = crate::debug_log::CmdTrace::new("capture_save_blob");
+    crate::capture::save_blob(&data, name.as_deref())
+}
+
+/// Enrich a captured URL: download images / fetch `<title>` for pages.
+#[tauri::command(async)]
+pub fn capture_fetch_url(url: String) -> Result<crate::capture::CaptureFetchResult, String> {
+    let _trace = crate::debug_log::CmdTrace::new("capture_fetch_url");
+    crate::capture::fetch_url(&url)
+}
+
 #[cfg(test)]
 mod tests {
     use super::resolve_command;
