@@ -7,6 +7,7 @@ mod agent_update;
 mod app_paths;
 mod elicitation;
 mod app_update;
+mod capture;
 mod commands;
 mod context_inventory;
 mod credentials;
@@ -29,6 +30,7 @@ mod preflight;
 mod process_util;
 mod provider_usage;
 mod proxy;
+mod scenarios;
 mod session_manager;
 mod shell_integration;
 mod storage;
@@ -38,8 +40,17 @@ mod webview2_gate;
 
 use acp::AcpService;
 use session_manager::SessionManager;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use storage::StorageService;
+
+/// CloseRequested semantics for the orb assistant (default ON, 档①):
+/// true → closing any window only hides it; the app stays resident with the
+/// engine, sessions and Telegram bridge alive, and the sole exit is
+/// `quit_app`. Flipped by the ProjectShelf 「关闭时隐藏到后台」 toggle via
+/// `set_background_mode`. Relaxed ordering is enough — a boolean read once
+/// per close request.
+pub(crate) static BACKGROUND_MODE: AtomicBool = AtomicBool::new(true);
 
 pub struct AppState {
     pub storage: Mutex<StorageService>,
@@ -63,7 +74,7 @@ const SHUTDOWN_KILL_TIMEOUT_SECS: u64 = 5;
 ///
 /// Callers must `api.prevent_close()` first so default WebView teardown never
 /// starts while we are still on the event-handler stack.
-fn shutdown_and_exit(app: &tauri::AppHandle) -> ! {
+pub(crate) fn shutdown_and_exit(app: &tauri::AppHandle) -> ! {
     use tauri::Manager;
 
     // Kill our embedded translation engine first (fast TerminateProcess; the
@@ -328,38 +339,57 @@ fn main() {
                     // on Windows — tao 0.35.3 asserts in flush_paint_messages
                     // (tao#1180 / tauri#14088) and the process dies with 101.
                     //
-                    // Main / last window → stop agents and process::exit.
-                    // Detached dialog windows → hide only (reuse on next pop-out).
-                    // Destroy is deferred until process exit, which skips orderly
-                    // WebView teardown and avoids the paint assert.
+                    // Background mode (default, orb assistant 档①): closing any
+                    // window only hides it — main included. The engine, sessions
+                    // and Telegram bridge stay alive; the only exit is
+                    // `quit_app` → shutdown_and_exit.
+                    // Legacy mode: main / last visible window → stop agents and
+                    // process::exit. Detached dialog windows → hide only
+                    // (reuse on next pop-out). Destroy is deferred until
+                    // process exit, which skips orderly WebView teardown and
+                    // avoids the paint assert.
                     api.prevent_close();
                     let label = window.label().to_string();
                     let is_main = label == "main";
-                    // Count windows that are still visible — hidden detached
-                    // shells should not keep the app "alive" alone.
-                    let visible = window
-                        .app_handle()
-                        .webview_windows()
-                        .values()
-                        .filter(|w| w.is_visible().unwrap_or(true))
-                        .count();
-                    if is_main || visible <= 1 {
-                        shutdown_and_exit(window.app_handle());
-                    } else {
-                        let _ = window.hide();
+                    let background = BACKGROUND_MODE.load(Ordering::Relaxed);
+                    if !background {
+                        // Count windows that are still visible — hidden
+                        // detached shells should not keep the app "alive"
+                        // alone.
+                        let visible = window
+                            .app_handle()
+                            .webview_windows()
+                            .values()
+                            .filter(|w| w.is_visible().unwrap_or(true))
+                            .count();
+                        if is_main || visible <= 1 {
+                            shutdown_and_exit(window.app_handle());
+                        }
+                    }
+                    // Background mode, or a non-last secondary in legacy mode:
+                    // hide, never destroy.
+                    let _ = window.hide();
+                    if !is_main {
                         // Frontend reaper blanks excess hidden shells (memory).
                         // Detached SPA flushes transcript then releases ACP
                         // ownership — do not steal the stream here or main
                         // would rewrite JSONL from an empty in-memory rail.
-                        let _ = window.app_handle().emit("marionette-detached-hidden", &label);
-                        crate::debug_log::append(
-                            "window",
-                            "info",
-                            "",
-                            &format!("hid detached window `{label}` (no WebView destroy)"),
-                            Some("avoids tao#1180 paint assert on secondary close"),
-                        );
+                        let _ = window
+                            .app_handle()
+                            .emit("marionette-detached-hidden", &label);
                     }
+                    let which = if is_main { "main" } else { "detached" };
+                    crate::debug_log::append(
+                        "window",
+                        "info",
+                        "",
+                        &format!("hid {which} window `{label}` (no WebView destroy)"),
+                        Some(if background {
+                            "background mode — orb stays resident; avoids tao#1180 paint assert"
+                        } else {
+                            "avoids tao#1180 paint assert on secondary close"
+                        }),
+                    );
                 }
                 // Safety net if something still destroys a window without
                 // CloseRequested. Never try to paint/teardown here — exit.
@@ -504,6 +534,13 @@ fn main() {
             commands::telegram_remote_reset_pairing,
             commands::telegram_remote_ack,
             commands::telegram_remote_result,
+            commands::quit_app,
+            commands::set_background_mode,
+            commands::scenario_list,
+            commands::scenario_save,
+            commands::inbox_dir_path,
+            commands::capture_save_blob,
+            commands::capture_fetch_url,
             open_target::resolve_link_target,
             open_target::open_external,
             open_target::reveal_in_file_manager

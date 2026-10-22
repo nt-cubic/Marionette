@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { ChevronLeft, ChevronRight, FolderOpen, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
@@ -198,6 +199,17 @@ import { WindowControls } from "../components/WindowControls";
 import { parseAskQuestionPrompt } from "../lib/askQuestion";
 import { initScrollbarAutoHide } from "../lib/scrollbarAutoHide";
 import { nextTheme, parseStoredTheme, themeColorScheme, type ThemeMode } from "../lib/theme";
+import { ScenarioDialog } from "../components/ScenarioDialog";
+import {
+  emitOrbState,
+  listenOrbCommands,
+  type OrbCapturePayload,
+  type OrbNotice,
+  type OrbNoticeKind,
+  type OrbRunningTask,
+} from "../lib/orbEvents";
+import { ensureOrbWindow } from "../lib/orbWindow";
+import { listScenarios, renderScenarioTemplate, type Scenario } from "../lib/scenarios";
 
 const LEFT_PANEL_MIN = 180;
 const LEFT_PANEL_MAX = 420;
@@ -281,6 +293,71 @@ const CANCEL_ACK_GRACE_MS = 6_000;
  * up early is what produced the bogus "Agent 错误: a turn is already in flight".
  */
 const TURN_SLOT_WAIT_MS = 120_000;
+
+/** 主窗关闭 = 隐藏到后台（默认开；"0"/"false" = 关闭，关主窗即退出）。 */
+const BACKGROUND_MODE_STORAGE_KEY = "marionette-background-mode";
+
+function readBackgroundModeSetting(): boolean {
+  try {
+    const raw = window.localStorage.getItem(BACKGROUND_MODE_STORAGE_KEY);
+    if (raw == null) return true;
+    return raw !== "0" && raw.toLowerCase() !== "false";
+  } catch {
+    return true;
+  }
+}
+
+/** Orb 收集箱图片附件扩展（ACP ContentBlock::Image；svg 不算——agent 不栅格化它）。 */
+const ORB_IMAGE_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "avif"]);
+
+function orbImagePaths(paths: string[]): string[] {
+  return paths.filter((path) => {
+    const base = path.replace(/[/\\]+$/, "").split(/[/\\]/).pop() ?? path;
+    const dot = base.lastIndexOf(".");
+    if (dot < 0) return false;
+    return ORB_IMAGE_EXT.has(base.slice(dot + 1).toLowerCase());
+  });
+}
+
+/** 收集箱项目匹配：路径归一化（斜杠统一 + 去尾分隔），Windows 大小写不敏感。 */
+function orbSamePath(a: string, b: string): boolean {
+  const norm = (v: string) =>
+    v.trim().replace(/[/\\]+/g, "/").replace(/\/+$/, "").toLowerCase();
+  return norm(a) === norm(b);
+}
+
+function orbTimestamp(at: number): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const d = new Date(at);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+/**
+ * 捕获 payload → 中文速记文本：来源行（拖拽/粘贴 vs 输入 + 时间戳，payload
+ * 不带来源字段，按是否含链接/HTML/附件推断）、正文、链接列表、网页摘录提及、
+ * 附件列表。模板的 {content} 占位符替换的就是这段。
+ */
+function formatOrbCaptureContent(payload: OrbCapturePayload): string {
+  const hasDropParts =
+    payload.urls.length > 0 ||
+    (payload.html?.trim().length ?? 0) > 0 ||
+    payload.filePaths.length > 0;
+  const lines: string[] = [
+    `来源：${hasDropParts ? "拖拽/粘贴" : "输入"} · ${orbTimestamp(Date.now())}`,
+  ];
+  const text = payload.text.trim();
+  if (text) lines.push("", text);
+  if (payload.urls.length > 0) {
+    lines.push("", "链接：");
+    for (const url of payload.urls) lines.push(`- ${url}`);
+  }
+  if (payload.html?.trim()) lines.push("", "（含网页摘录 HTML 片段）");
+  if (payload.filePaths.length > 0) {
+    lines.push("", "附件：");
+    for (const path of payload.filePaths) lines.push(`- ${path}`);
+  }
+  return lines.join("\n");
+}
 
 /** Wake every send parked on `sessionId`'s turn slot (see `waitForTurnSlot`). */
 function releaseTurnSlotWaiters(
@@ -480,6 +557,10 @@ export function App() {
   });
   /** Taskbar flash + chime when AI replies / may be stuck. Completion also chimes while focused. */
   const [desktopNotifyOn, setDesktopNotifyOn] = useState(() => isDesktopNotifyEnabled());
+  /** 主窗关闭时隐藏到后台：引擎 / 会话 / Telegram 桥继续运行，悬浮球随时唤回。 */
+  const [backgroundMode, setBackgroundMode] = useState(readBackgroundModeSetting);
+  /** 「快捷动作」场景管理对话框（ProjectShelf 入口）。 */
+  const [showScenarios, setShowScenarios] = useState(false);
   /** Sessions that finished a turn while this window was looking at another dialog. */
   const [doneUnreadIds, setDoneUnreadIds] = useState<Set<string>>(() => new Set());
   /** Agent proxy config (single exit address), loaded on mount. */
@@ -832,6 +913,74 @@ export function App() {
   currentSessionIdRef.current = currentSessionId;
   currentProjectIdRef.current = currentProjectId;
   openSessionIdsRef.current = openSessionIds;
+
+  // ── 悬浮球桥（球窗 = 遥控器，主窗 = 执行器；契约见 src/lib/orbEvents.ts）──
+  // detached 弹出窗不参与：状态只能由主窗广播（pushOrbState 内部挡掉）。
+  const orbNoticesRef = useRef<OrbNotice[]>([]);
+  const orbRunningRef = useRef<Map<string, OrbRunningTask>>(new Map());
+  /** startedAt 锚点：turn 首次被观察到时记下，跨推送保持稳定。 */
+  const orbTurnStartedAtRef = useRef<Map<string, number>>(new Map());
+  const orbRunningSignatureRef = useRef("");
+  const orbMainVisibleRef = useRef(true);
+  const pushOrbStateRef = useRef<() => void>(() => undefined);
+  const queueOrbNoticeRef = useRef<
+    (kind: OrbNoticeKind, sessionId: string, label?: string) => void
+  >(() => undefined);
+
+  /** 广播 OrbState 给球窗（顺带清理 10 分钟前的过期提醒）。 */
+  const pushOrbState = useCallback(() => {
+    if (IS_DETACHED_WINDOW) return;
+    const cutoff = Date.now() - 10 * 60 * 1000;
+    if (orbNoticesRef.current.some((notice) => notice.at < cutoff)) {
+      orbNoticesRef.current = orbNoticesRef.current.filter((notice) => notice.at >= cutoff);
+    }
+    void emitOrbState({
+      mainVisible: orbMainVisibleRef.current,
+      running: [...orbRunningRef.current.values()],
+      notices: [...orbNoticesRef.current],
+    });
+  }, []);
+  pushOrbStateRef.current = pushOrbState;
+
+  /**
+   * 球体提醒入口：与 desktopNotify 的 raise / schedule 调用点同点共调，
+   * 只追加 + 推送，不改变既有提示行为（零回归约束）。
+   * reply/idle → "reply"；permission/question/plan → "permission"；
+   * error/process/stuck → "error"（subagent_complete 按完成归入 "reply"）。
+   */
+  const queueOrbNotice = useCallback(
+    (kind: OrbNoticeKind, sessionId: string, labelFallback?: string) => {
+      if (!sessionId) return;
+      const label =
+        labelFallback?.trim() ||
+        sessionsRef.current.find((s) => s.id === sessionId)?.label?.trim() ||
+        "Session";
+      orbNoticesRef.current = [
+        ...orbNoticesRef.current,
+        { kind, sessionId, label, at: Date.now() },
+      ].slice(-20);
+      pushOrbStateRef.current();
+    },
+    [],
+  );
+  queueOrbNoticeRef.current = queueOrbNotice;
+
+  /**
+   * 唤回主窗（orb showMain / newChat / openSession 用）。与 detached 合并回
+   * 主窗的窗口恢复序列同款：show → unminimize → setFocus。
+   */
+  const showMainWindowForOrb = useCallback(async () => {
+    if (!isTauriRuntime()) return;
+    try {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      const win = getCurrentWindow();
+      await win.show();
+      await win.unminimize();
+      await win.setFocus();
+    } catch {
+      /* best-effort */
+    }
+  }, []);
 
   const workspaceSplit = !IS_DETACHED_WINDOW && leafCount(splitState) > 1;
 
@@ -2385,11 +2534,13 @@ export function App() {
           if (!isDelegateChild) {
             if (turnFailed) {
               const errorDetail = compactNotifyDetail(formatAcpRpcError(payload.data));
+              queueOrbNoticeRef.current("error", payload.sessionId, label);
               void raiseDesktopNotify(
                 "error",
                 errorDetail ? `${label} · ${errorDetail}` : `${label} · Agent error`,
               );
             } else if (stoppedSilently) {
+              queueOrbNoticeRef.current("reply", payload.sessionId, label);
               scheduleDesktopNotify(
                 payload.sessionId,
                 "idle",
@@ -2398,6 +2549,7 @@ export function App() {
                 { audibleWhenFocused: true },
               );
             } else {
+              queueOrbNoticeRef.current("reply", payload.sessionId, label);
               scheduleDesktopNotify(
                 payload.sessionId,
                 "reply",
@@ -2500,6 +2652,7 @@ export function App() {
           const sess = sessionsRef.current.find((s) => s.id === payload.sessionId);
           const label = sess?.label?.trim() || "Session";
           const processDetail = compactNotifyDetail(detail);
+          queueOrbNoticeRef.current("error", payload.sessionId, label);
           void raiseDesktopNotify(
             "error",
             processDetail
@@ -2652,6 +2805,7 @@ export function App() {
           }
           stealFocusForPrompt(payload.sessionId);
           cancelScheduledDesktopNotify(payload.sessionId);
+          queueOrbNoticeRef.current("permission", payload.sessionId);
           void raiseDesktopNotify(
             planMarkdown ? "plan" : "permission",
             planMarkdown
@@ -2710,6 +2864,7 @@ export function App() {
           });
           cancelScheduledDesktopNotify(payload.sessionId);
           const question = compactNotifyDetail(parsed.questions[0]?.question);
+          queueOrbNoticeRef.current("permission", payload.sessionId);
           void raiseDesktopNotify(
             "question",
             question ? `Agent question: ${question}` : "Agent has a question",
@@ -2784,6 +2939,7 @@ export function App() {
           );
           stealFocusForPrompt(payload.sessionId);
           cancelScheduledDesktopNotify(payload.sessionId);
+          queueOrbNoticeRef.current("permission", payload.sessionId);
           void raiseDesktopNotify("plan", "Plan ready for review");
         }
       }
@@ -3764,6 +3920,94 @@ export function App() {
   // Clear taskbar flash / yellow bar when the user comes back to the window.
   useEffect(() => bindDesktopNotifyFocusHandlers(), []);
 
+  // ── Orb boot wiring（主窗独占；detached / 浏览器预览不参与）──────────────
+  // 挂载：同步后台模式到 Rust（CloseRequested 分支读它），创建/唤起球窗。
+  useEffect(() => {
+    if (!isTauriRuntime() || IS_DETACHED_WINDOW) return;
+    void ensureOrbWindow();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** 开关翻转与初值共用：localStorage + Rust set_background_mode（幂等）。 */
+  useEffect(() => {
+    if (!isTauriRuntime() || IS_DETACHED_WINDOW) return;
+    try {
+      window.localStorage.setItem(BACKGROUND_MODE_STORAGE_KEY, backgroundMode ? "1" : "0");
+    } catch {
+      /* private mode */
+    }
+    void invoke("set_background_mode", { enabled: backgroundMode }).catch(() => undefined);
+  }, [backgroundMode]);
+
+  const toggleBackgroundMode = useCallback(() => {
+    setBackgroundMode((current) => !current);
+  }, []);
+
+  /**
+   * Orb running map。session.status 是权威的「turn 进行中」信号：performSend
+   * 与 edit&resend / 斜令重放置 "running"；turn/complete（waiting/error）与
+   * 进程退出（exited）离开它。会话列表每次变化重建；同一 turn 的 startedAt
+   * 保持稳定；签名（起/止/标签变更）变化才推送，其余交给 5s 兜底。
+   */
+  useEffect(() => {
+    const next = new Map<string, OrbRunningTask>();
+    for (const session of availableSessions) {
+      if (session.status !== "running") continue;
+      const prev = orbRunningRef.current.get(session.id);
+      const startedAt =
+        prev?.startedAt ?? orbTurnStartedAtRef.current.get(session.id) ?? Date.now();
+      if (!prev) orbTurnStartedAtRef.current.set(session.id, startedAt);
+      const agent = agentsRef.current.find((a) => a.id === session.agentId);
+      next.set(session.id, {
+        sessionId: session.id,
+        label: session.label?.trim() || "Session",
+        agentLabel: agent?.label ?? session.agentId,
+        startedAt,
+      });
+    }
+    for (const id of orbTurnStartedAtRef.current.keys()) {
+      if (!next.has(id)) orbTurnStartedAtRef.current.delete(id);
+    }
+    const signature = [...next.values()]
+      .map((task) => `${task.sessionId}|${task.label}|${task.agentLabel}`)
+      .sort()
+      .join(";");
+    orbRunningRef.current = next;
+    if (signature !== orbRunningSignatureRef.current) {
+      orbRunningSignatureRef.current = signature;
+      pushOrbStateRef.current();
+    }
+  }, [availableSessions]);
+
+  /** mainVisible = document 可见且聚焦；主窗隐藏到后台（hide）立即变 false。 */
+  useEffect(() => {
+    if (!isTauriRuntime() || IS_DETACHED_WINDOW) return;
+    const sync = () => {
+      const visible = document.visibilityState === "visible" && document.hasFocus();
+      if (visible === orbMainVisibleRef.current) return;
+      orbMainVisibleRef.current = visible;
+      pushOrbStateRef.current();
+      // 主窗重新可见时唤回球窗：Alt+F4 对球只会隐藏（永不销毁），这里幂等恢复。
+      if (visible) void ensureOrbWindow();
+    };
+    sync();
+    document.addEventListener("visibilitychange", sync);
+    window.addEventListener("focus", sync);
+    window.addEventListener("blur", sync);
+    return () => {
+      document.removeEventListener("visibilitychange", sync);
+      window.removeEventListener("focus", sync);
+      window.removeEventListener("blur", sync);
+    };
+  }, []);
+
+  /** 兜底推送（隐藏窗口的 WebView2 定时器节流 ~1s，事件推送仍可达）。 */
+  useEffect(() => {
+    if (!isTauriRuntime() || IS_DETACHED_WINDOW) return;
+    const id = window.setInterval(() => pushOrbStateRef.current(), 5000);
+    return () => window.clearInterval(id);
+  }, []);
+
   /**
    * Stuck / stalled turns: if a session stays `running` with no stream for
    * long enough, ping once so the user can interrupt without staring at the UI.
@@ -3813,6 +4057,7 @@ export function App() {
         if (prev === "stalled" && health === "stalled") continue;
         notified.set(session.id, health);
         const label = session.label?.trim() || "Session";
+        queueOrbNoticeRef.current("error", session.id, label);
         void raiseDesktopNotify(
           "stuck",
           health === "stuck" ? `${label} · appears stuck` : `${label} · no updates`,
@@ -6069,9 +6314,11 @@ export function App() {
 
       const subagentLabel = `${meta.agentLabel || "Subagent"} subagent`;
       if (status === "done") {
+        queueOrbNoticeRef.current("reply", childId, subagentLabel);
         scheduleDesktopNotify(childId, "subagent_complete", subagentLabel);
       } else if (status === "failed" || status === "timeout") {
         const failureDetail = compactNotifyDetail(error);
+        queueOrbNoticeRef.current("error", childId, subagentLabel);
         void raiseDesktopNotify(
           "error",
           failureDetail
@@ -6843,6 +7090,7 @@ export function App() {
       setSessionStatusById(sid, "error");
       const label = sess?.label?.trim() || "Session";
       const sendError = compactNotifyDetail(classified.message);
+      queueOrbNoticeRef.current("error", sid, label);
       void raiseDesktopNotify(
         "error",
         sendError ? `${label} · ${sendError}` : `${label} · Send failed`,
@@ -7022,6 +7270,236 @@ export function App() {
           await telegramRemoteResult(
             `✅ [${row.label}] 模型已切换 · ${payload.modelLabel || payload.modelId}`,
           );
+        }
+      })();
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => unlisten?.();
+    // 只订阅一次；回调和会话查找全部走 ref。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Orb 收集箱捕获 + 远程命令（与 Telegram 命令同一「事件 → 本地管线」模式）──
+  const orbCreateChatSessionRef = useRef(handleCreateChatSession);
+  orbCreateChatSessionRef.current = handleCreateChatSession;
+  const orbCreateProjectSessionRef = useRef(createSessionForProject);
+  orbCreateProjectSessionRef.current = createSessionForProject;
+  const orbPerformSendRef = useRef(performSend);
+  orbPerformSendRef.current = performSend;
+  const orbExecuteCaptureRef = useRef<
+    (payload: OrbCapturePayload, scenario?: Scenario) => Promise<void>
+  >(async () => undefined);
+
+  /**
+   * 收集箱捕获：确保「收集箱」项目（cwd = ~/.marionette/inbox，Rust
+   * `inbox_dir_path`）与置顶会话存在，模板化提示词 + 图片附件经 performSend
+   * 发入。全程不把主窗带到前台——后台静默捕获正是悬浮球的意义。
+   */
+  const executeOrbCapture = async (payload: OrbCapturePayload, scenario?: Scenario) => {
+    let inboxDir = "";
+    try {
+      inboxDir = (await invoke<string>("inbox_dir_path")).trim();
+    } catch {
+      /* agent A 的 Rust 命令未就绪 / 非 Tauri —— 静默放弃 */
+    }
+    if (!inboxDir) {
+      pushDebug({ level: "warn", source: "orb", summary: "inbox_dir_path unavailable — capture dropped" });
+      return;
+    }
+
+    // 项目 ensure：本窗状态 → 磁盘 list_projects → add_project 补建。
+    let project: Project | undefined = projectsRef.current.find((p) =>
+      orbSamePath(p.rootPath, inboxDir),
+    );
+    if (!project) {
+      const found = (await listProjects()).find((p) => orbSamePath(p.rootPath, inboxDir));
+      if (found && !projectsRef.current.some((p) => p.id === found.id)) {
+        setAvailableProjects((current) => [...current.filter((item) => item.id !== found.id), found]);
+      }
+      project = found;
+    }
+    if (!project) {
+      // add_project 没有 label 参数（项目名沿用文件夹名 inbox）；无项目改名
+      // API，会话侧仍固定叫「收集箱」。
+      try {
+        const added = await addProject(inboxDir);
+        setAvailableProjects((current) => [...current.filter((item) => item.id !== added.id), added]);
+        project = added;
+      } catch (error) {
+        pushDebug({
+          level: "error",
+          source: "orb",
+          summary: "create inbox project failed",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+        return;
+      }
+    }
+    const inboxProject = project;
+
+    // 会话 ensure：标签「收集箱」→ 置顶 → 最近活跃；都没有则新建 + 置顶 + 固定标签。
+    const diskSessions = await listSessions(inboxProject.id);
+    const pick =
+      diskSessions.find((s) => s.label.trim() === "收集箱") ??
+      [...diskSessions]
+        .filter((s) => s.pinnedAt)
+        .sort((a, b) => (b.pinnedAt ?? "").localeCompare(a.pinnedAt ?? ""))[0] ??
+      [...diskSessions].sort((a, b) =>
+        (b.lastActiveAt || b.startedAt || "").localeCompare(a.lastActiveAt || a.startedAt || ""),
+      )[0];
+
+    let sessionId = pick?.id ?? null;
+    let createdNew = false;
+    if (!sessionId) {
+      const session = await orbCreateProjectSessionRef.current(
+        inboxProject.id,
+        scenario?.agentId,
+        inboxProject,
+        scenario?.modelId || scenario?.modeId
+          ? {
+              preferredModel: scenario?.modelId ?? null,
+              preferredMode: scenario?.modeId ?? null,
+              preferredEffort: null,
+              preferredEffortId: null,
+              preferredAlwaysApprove: null,
+            }
+          : null,
+      );
+      if (!session) {
+        pushDebug({ level: "error", source: "orb", summary: "create inbox session failed" });
+        return;
+      }
+      sessionId = session.id;
+      createdNew = true;
+      const pinnedRow = await setSessionPinned(sessionId, true).catch(() => null);
+      void updateSessionLabel(sessionId, "收集箱", "manual").catch(() => undefined);
+      setAvailableSessions((current) =>
+        current.map((s) =>
+          s.id === sessionId
+            ? {
+                ...s,
+                label: "收集箱",
+                labelSource: "manual",
+                pinnedAt: pinnedRow?.pinnedAt ?? String(Date.now()),
+              }
+            : s,
+        ),
+      );
+    } else if (pick && !sessionsRef.current.some((s) => s.id === pick.id)) {
+      // 磁盘上有、本窗状态里没有（项目刚补建等）——并入状态，prefs 才能生效。
+      const row = asIdleOnLoad(pick);
+      setAvailableSessions((current) => [row, ...current.filter((s) => s.id !== row.id)]);
+    }
+
+    const content = renderScenarioTemplate(
+      scenario?.promptTemplate,
+      formatOrbCaptureContent(payload),
+    );
+    const imageAttachments: ImageAttachment[] = orbImagePaths(payload.filePaths).map(
+      (path, index) => ({
+        id: `orb-${Date.now()}-${index}`,
+        path,
+        name: path.split(/[/\\]/).pop() ?? path,
+        mimeType: "image/*",
+        marks: [],
+      }),
+    );
+    pushDebug({
+      sessionId,
+      level: "info",
+      source: "orb",
+      summary: `inbox capture${createdNew ? " (new session)" : ""} · text=${payload.text.length} urls=${payload.urls.length} files=${payload.filePaths.length} images=${imageAttachments.length}`,
+    });
+    // remote: true —— 远程发送没有 Composer 快照，模型/模式只取会话自身偏好。
+    await orbPerformSendRef.current(sessionId, content, imageAttachments, undefined, {
+      remote: true,
+    });
+  };
+  orbExecuteCaptureRef.current = executeOrbCapture;
+
+  // Orb 命令监听（球 → 主窗）：showMain / newChat / openSession / capture /
+  // scenario / clearNotices。结构镜像 Telegram 命令监听：只订阅一次，回调全走 ref。
+  useEffect(() => {
+    if (!isTauriRuntime() || IS_DETACHED_WINDOW) return;
+    let unlisten: (() => void) | undefined;
+    void listenOrbCommands((command) => {
+      void (async () => {
+        if (command.kind === "showMain") {
+          await showMainWindowForOrb();
+          return;
+        }
+        if (command.kind === "newChat") {
+          await showMainWindowForOrb();
+          await orbCreateChatSessionRef.current(command.agentId);
+          return;
+        }
+        if (command.kind === "openSession") {
+          if (!command.sessionId) return;
+          const session = sessionsRef.current.find((s) => s.id === command.sessionId);
+          if (!session) return;
+          await showMainWindowForOrb();
+          openSessionRef.current(session);
+          return;
+        }
+        if (command.kind === "capture") {
+          await orbExecuteCaptureRef.current(command.payload);
+          return;
+        }
+        if (command.kind === "clearNotices") {
+          orbNoticesRef.current = [];
+          pushOrbStateRef.current();
+          return;
+        }
+        if (command.kind === "scenario") {
+          const scenarios = await listScenarios();
+          const scenario = scenarios.find((item) => item.id === command.scenarioId);
+          if (!scenario) return;
+          if (scenario.kind === "capture" || scenario.target === "inbox") {
+            await orbExecuteCaptureRef.current(
+              command.payload ?? { text: "", urls: [], filePaths: [] },
+              scenario,
+            );
+            return;
+          }
+          // prompt 场景（target=newChat）：建聊天会话 → 场景偏好落盘（镜像
+          // Telegram /new 向导）→ 模板渲染后发送。空模板（如「新对话」）只建会话。
+          await showMainWindowForOrb();
+          const session = await orbCreateChatSessionRef.current(scenario.agentId);
+          if (!session) return;
+          const modelId = scenario.modelId?.trim() || null;
+          const modeId = scenario.modeId?.trim() || null;
+          if (modelId || modeId) {
+            const merged = {
+              preferredModel: modelId ?? session.preferredModel ?? null,
+              preferredMode: modeId ?? session.preferredMode ?? null,
+              preferredEffort: session.preferredEffort ?? null,
+              preferredEffortId: session.preferredEffortId ?? null,
+              preferredAlwaysApprove: session.preferredAlwaysApprove ?? null,
+            };
+            setAvailableSessions((current) =>
+              current.map((s) =>
+                s.id === session.id
+                  ? {
+                      ...s,
+                      preferredModel: merged.preferredModel,
+                      preferredMode: merged.preferredMode,
+                    }
+                  : s,
+              ),
+            );
+            void updateSessionPrefs(session.id, merged).catch(() => undefined);
+          }
+          const text = command.payload?.text?.trim() ?? "";
+          if (text && scenario.promptTemplate?.trim()) {
+            await orbPerformSendRef.current(
+              session.id,
+              renderScenarioTemplate(scenario.promptTemplate, text),
+              [],
+              undefined,
+              { remote: true },
+            );
+          }
         }
       })();
     }).then((fn) => {
@@ -7633,6 +8111,9 @@ export function App() {
             collapsed={leftCollapsed}
             theme={theme}
             desktopNotifyEnabled={desktopNotifyOn}
+            backgroundMode={backgroundMode}
+            onToggleBackgroundMode={toggleBackgroundMode}
+            onOpenScenarios={() => setShowScenarios(true)}
             proxyConfig={proxyConfig}
             onSaveProxy={handleSaveProxy}
             onTestProxy={handleTestProxy}
@@ -8032,6 +8513,9 @@ export function App() {
             </div>
           </form>
         </div>
+      )}
+      {showScenarios && (
+        <ScenarioDialog onClose={() => setShowScenarios(false)} />
       )}
     </main>
   );
