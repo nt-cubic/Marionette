@@ -583,8 +583,9 @@ fn now_epoch_millis() -> String {
 // 且免掉运行时解码——UPX exe 启动时自解压）。
 //
 // 本机权威 = `~/.marionette/engine/`（manifest + exe）。内嵌只作出厂种子：
-// 未安装/损坏时落位；用户「更新引擎」装上的版本粘住，启动不再按内嵌版本
-// 强行覆盖。打包升内嵌 = import-magpie（默认同 latest 稳定 tag）+ 重编。
+// 未安装 / 损坏 / **比内嵌旧** 时落位；用户「更新引擎」装上的更新版本粘住
+// （种子只会单向前移，不倒退）。打包升内嵌 = import-magpie（默认同 latest
+// 稳定 tag）+ 重编，并把 `third_party/magpie` 一起提交（见 tools/README.md）。
 
 /// 内嵌引擎版本（下载路径存的是去 v 形态，这里同规矩归一后比较）。
 #[cfg(feature = "embedded-engine")]
@@ -615,10 +616,25 @@ fn embedded_artifact() -> (&'static [u8], &'static str) {
     }
 }
 
-/// 需要用内嵌种子落位：有内嵌构建，且本机还没有完整可用的引擎。
-/// 已装好的用户版（含主动从 GitHub 更新的）一律保留。
+/// 种子与本机版本的取舍（纯函数，便于测试）：本机缺失/损坏 → 落位；
+/// 内嵌比本机新 → 前移（否则用户重装的包永远停在旧引擎）；
+/// 用户自己更新过、比内嵌还新 → 保留（不倒退）。
+fn seed_is_newer_than(seed: &str, installed: Option<&str>) -> bool {
+    match installed {
+        Some(current) => crate::agent_update::is_newer(seed, current),
+        None => true,
+    }
+}
+
+/// 需要用内嵌种子落位：有内嵌构建，且本机没装 / 装坏了 / 装的是旧版本。
 fn needs_embedded_seed(dir: &Path) -> bool {
-    embedded_version().is_some() && !is_installed_at(dir)
+    let Some(seed) = embedded_version() else {
+        return false;
+    };
+    if !is_installed_at(dir) {
+        return true;
+    }
+    seed_is_newer_than(seed, installed_version_at(dir).as_deref())
 }
 
 /// 把内嵌的（UPX 自解压）magpie 字节落位安装：临时文件 + rename 原子写 +
@@ -2012,9 +2028,9 @@ fn enable_pipeline(dir: &Path) -> Result<(), String> {
         });
         return Ok(());
     }
-    // 2. 安装：本机权威在 `engine/`。仅当尚未完整安装时用内嵌种子离线落位；
-    //    用户已更新过的版本粘住。便携版种子落位失败即停（不偷偷上网）。
-    //    无内嵌的开发构建才走 GitHub 下载。
+    // 2. 安装：本机权威在 `engine/`。尚未完整安装、或本机版本比内嵌旧时用
+    //    内嵌种子离线落位（升级只前移，不覆盖用户已更新的更新版本）。
+    //    便携版种子落位失败即停（不偷偷上网）。无内嵌的开发构建才走 GitHub 下载。
     if needs_embedded_seed(dir) {
         let (bytes, version) = embedded_artifact();
         install_embedded_engine_at(bytes, version, dir)?;
@@ -2613,10 +2629,34 @@ mod tests {
         #[cfg(not(feature = "embedded-engine"))]
         assert!(!needs_embedded_seed(&dir));
 
+        // 用户自己更新到比内嵌更新的版本 → 粘住，不倒退。
         let payload = b"sticky user-updated magpie binary";
         install_embedded_engine_at(payload, "9.9.9", &dir).unwrap();
-        assert!(!needs_embedded_seed(&dir), "用户版粘住");
+        assert!(!needs_embedded_seed(&dir), "更新版本的用户引擎粘住");
         fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 种子只向前：本机旧版本被内嵌升级（重编后打开即最新），
+    /// 用户从 GitHub 更新的更新版本保留。
+    #[test]
+    fn seed_moves_forward_but_never_downgrades() {
+        assert!(seed_is_newer_than("0.1.1339", None), "没装 → 落位");
+        assert!(
+            seed_is_newer_than("0.1.1339", Some("0.1.1278")),
+            "本机旧版本 → 升级到内嵌"
+        );
+        assert!(
+            !seed_is_newer_than("0.1.1339", Some("0.1.1339")),
+            "同版本 → 不动"
+        );
+        assert!(
+            !seed_is_newer_than("0.1.1339", Some("0.1.1345")),
+            "用户更新的版本 → 不倒推"
+        );
+        assert!(
+            seed_is_newer_than("0.1.1339", Some("0.1.1339-beta.1")),
+            "同号正式版高于预发布"
+        );
     }
 
     // ─── SHA256SUMS / 日志截断 ───────────────────────────────────────────────
