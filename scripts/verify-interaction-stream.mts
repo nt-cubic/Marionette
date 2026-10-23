@@ -11,6 +11,7 @@ import {
   patchPromptEvent,
   planDecisionLabel,
   planPromptEvent,
+  promptCardOnRail,
   sessionHidesComposer,
   upsertPromptEvent,
 } from "../src/lib/interactionEvents.ts";
@@ -62,6 +63,22 @@ check("other session keeps composer", () => {
   );
 });
 
+check("a prompt whose card never reached the rail keeps the composer", () => {
+  // The live prompt state alone is not enough: if the card is missing from the
+  // transcript the composer is the only surface left to answer on.
+  const rail = [user("hi"), reply("ok")];
+  assert.equal(promptCardOnRail(rail, "q-missing"), false);
+  const askOnRail = askPromptEvent({
+    sessionId: "s1",
+    requestId: "q-live",
+    questions: [{ question: "哪一档?", options: [{ label: "A" }] }],
+  });
+  assert.equal(promptCardOnRail([...rail, askOnRail], "q-live"), true);
+  // Answered cards no longer need the composer hidden for them.
+  const answered = patchPromptEvent([askOnRail], "q-live", { status: "answered" });
+  assert.equal(promptCardOnRail(answered, "q-live"), false);
+});
+
 console.log("\nprompt events upsert, patch, expire");
 const plan = planPromptEvent({
   sessionId: "s1",
@@ -98,6 +115,30 @@ check("patch records the decision without duplicating", () => {
   assert.equal(row.type === "plan_prompt" && row.decisionLabel, "Yes");
 });
 
+check("a reused requestId appends the new prompt instead of rewriting history", () => {
+  // A restarted agent process restarts its per-session counter, so a fresh
+  // prompt can carry the id of one already persisted as answered. Overwriting
+  // that row moved the live card up into history while the composer stayed
+  // hidden for it — the question then had nowhere on screen to answer.
+  const settled = patchPromptEvent([ask], "q1", { status: "answered" });
+  const reused = { ...ask, questions: [{ question: "新的问题?", options: [{ label: "A" }] }] };
+  const merged = upsertPromptEvent(settled, reused);
+  assert.equal(merged.length, 2);
+  const [oldRow, newRow] = merged;
+  assert.equal(oldRow.type === "ask_prompt" && oldRow.status, "answered");
+  assert.equal(newRow.type === "ask_prompt" && newRow.status, "pending");
+  assert.equal(newRow.type === "ask_prompt" && newRow.questions[0]?.question, "新的问题?");
+});
+
+check("patching a reused requestId settles the newest open card", () => {
+  const settled = patchPromptEvent([ask], "q1", { status: "answered" });
+  const merged = upsertPromptEvent(settled, ask);
+  const patched = patchPromptEvent(merged, "q1", { status: "declined" });
+  assert.equal(patched.length, 2);
+  assert.equal(patched[0].type === "ask_prompt" && patched[0].status, "answered");
+  assert.equal(patched[1].type === "ask_prompt" && patched[1].status, "declined");
+});
+
 check("expire turns leftover pending cards into timeout", () => {
   const expired = expirePendingPrompts([plan, ask, reply("ok")], "s1");
   const prompts = expired.filter(
@@ -108,8 +149,7 @@ check("expire turns leftover pending cards into timeout", () => {
   assert.equal(prompts.every((e) => e.status === "timeout"), true);
 });
 
-console.log("\npresentation treats Plan/Ask as standalone cards");
-check("plan sits between reply groups, not inside Reply", () => {
+console.log("\npresentation treats Plan/Ask as standalone cards");check("plan sits between reply groups, not inside Reply", () => {
   const items = buildMessagePresentation([
     user("写计划"),
     reply("这是草稿"),

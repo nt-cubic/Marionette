@@ -276,7 +276,27 @@ pub struct AcpService {
 
 impl AcpService {
     pub fn new() -> Self {
-        Self::default()
+        let service = Self::default();
+        // Request ids embed a per-service counter (`<session>:ask:<seq>`), and
+        // the UI keys Ask/Plan cards in the transcript by that id. A counter
+        // that starts at 0 in every process re-issues ids the *previous*
+        // process already persisted: the new card merges into the old row far
+        // up the history while the composer stays hidden for the live prompt,
+        // so the question is answerable nowhere on screen. Seeding from the
+        // clock keeps the numbering increasing across restarts.
+        let base = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis().min(u64::MAX as u128) as u64)
+            .unwrap_or(0);
+        for seq in [
+            &service.permission_seq,
+            &service.question_seq,
+            &service.plan_approval_seq,
+            &service.elicitation_seq,
+        ] {
+            seq.store(base, Ordering::Relaxed);
+        }
+        service
     }
 
     pub fn start(

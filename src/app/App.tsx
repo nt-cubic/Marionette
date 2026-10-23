@@ -93,6 +93,7 @@ import {
   patchPromptEvent,
   planDecisionLabel,
   planPromptEvent,
+  promptCardOnRail,
   sessionHidesComposer,
   upsertPromptEvent,
 } from "../lib/interactionEvents";
@@ -7338,6 +7339,15 @@ export function App() {
   const renderConversation = (session: Session) => {
     void eventsTick[session.id];
     const events = eventsBySessionRef.current.get(session.id) ?? EMPTY_EVENTS;
+    // A prompt only removes the composer once its card is actually on the rail;
+    // hiding it for a card that never rendered leaves no way to answer.
+    const askOnRail = promptCardOnRail(events, askPrompt?.requestId);
+    const planOnRail = promptCardOnRail(events, planApproval?.requestId);
+    const hidesComposer = sessionHidesComposer(
+      session.id,
+      askOnRail ? askPrompt : null,
+      planOnRail ? planApproval : null,
+    );
     const allEvents = publishedEventsForView(session.id);
     const agent =
       availableAgents.find((item) => item.id === session.agentId) ??
@@ -7504,11 +7514,11 @@ export function App() {
         </div>
         <div
           className={
-            sessionHidesComposer(session.id, askPrompt, planApproval)
+            hidesComposer
               ? "composer-slot__input is-hidden"
               : "composer-slot__input"
           }
-          aria-hidden={sessionHidesComposer(session.id, askPrompt, planApproval)}
+          aria-hidden={hidesComposer}
         >
         <Composer
           key={`${session.id}:${session.agentId}`}
@@ -7521,7 +7531,7 @@ export function App() {
           autoFocus={
             composerAutoFocus &&
             session.id === currentSessionId &&
-            !sessionHidesComposer(session.id, askPrompt, planApproval)
+            !hidesComposer
           }
           isFocused={session.id === currentSessionId}
           onEmptyActivate={() => {

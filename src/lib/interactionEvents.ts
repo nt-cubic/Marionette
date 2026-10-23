@@ -15,6 +15,24 @@ export function sessionHidesComposer(
   return liveAsk?.sessionId === sessionId || livePlan?.sessionId === sessionId;
 }
 
+/**
+ * Is there a still-open prompt card for this request on the transcript rail?
+ *
+ * The composer is the only other input surface, and an Ask/Plan card is only
+ * rendered where its prompt event exists. Hiding the composer for a prompt that
+ * never reached the rail leaves the user with no way to answer at all, so the
+ * hide is gated on this.
+ */
+export function promptCardOnRail(
+  events: SessionEvent[],
+  requestId: string | null | undefined,
+): boolean {
+  if (!requestId) return false;
+  return events.some(
+    (row) => isPromptEvent(row) && row.requestId === requestId && row.status === "pending",
+  );
+}
+
 export function planPromptEvent(input: {
   sessionId: string;
   requestId: string;
@@ -64,16 +82,36 @@ export function askPromptEvent(
   };
 }
 
+function lastPromptIndex(events: SessionEvent[], requestId: string): number {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const row = events[i];
+    if (isPromptEvent(row) && row.requestId === requestId) return i;
+  }
+  return -1;
+}
+
 export function upsertPromptEvent(
   events: SessionEvent[],
   event: PromptEvent,
 ): SessionEvent[] {
-  const idx = events.findIndex(
-    (row) => isPromptEvent(row) && row.requestId === event.requestId,
-  );
+  const idx = lastPromptIndex(events, event.requestId);
   if (idx < 0) return [...events, event];
-  const next = events.slice();
   const prev = events[idx];
+  if (!isPromptEvent(prev)) return [...events, event];
+  // The agent reused a request id for a *new* prompt (a restarted process
+  // restarts its counter). Overwriting the settled row would move the live
+  // card back into history while the composer stays hidden for it, leaving no
+  // surface to answer on. Keep the settled row and append the live one — and
+  // close any older row still marked pending so only one card looks live.
+  if (event.status === "pending" && prev.status !== "pending") {
+    const retired = events.map((row) =>
+      isPromptEvent(row) && row.requestId === event.requestId && row.status === "pending"
+        ? ({ ...row, status: "timeout" } as PromptEvent)
+        : row,
+    );
+    return [...retired, event];
+  }
+  const next = events.slice();
   next[idx] = { ...prev, ...event, createdAt: prev.createdAt } as PromptEvent;
   return next;
 }
@@ -83,9 +121,18 @@ export function patchPromptEvent(
   requestId: string,
   patch: Partial<PromptEvent> & { status: PromptStatus },
 ): SessionEvent[] {
-  const idx = events.findIndex(
-    (row) => isPromptEvent(row) && row.requestId === requestId,
-  );
+  // Prefer the newest still-open row so a reused id settles the card the user
+  // is actually looking at, never an older answered one.
+  let idx = -1;
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const row = events[i];
+    if (!isPromptEvent(row) || row.requestId !== requestId) continue;
+    if (row.status === "pending") {
+      idx = i;
+      break;
+    }
+    if (idx < 0) idx = i;
+  }
   if (idx < 0) return events;
   const next = events.slice();
   next[idx] = {
