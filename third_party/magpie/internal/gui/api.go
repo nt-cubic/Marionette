@@ -1198,6 +1198,10 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		if _, sent := fields["imageTimeout"]; !sent {
 			in.ImageTimeout = cur.ImageTimeout
 		}
+		// nor how long a routing group's classifier is given (#2934)
+		if _, sent := fields["classifyTimeout"]; !sent {
+			in.ClassifyTimeout = cur.ClassifyTimeout
+		}
 		in.AgentOrder, in.AgentsHidden, in.AgentsShown = cur.AgentOrder, cur.AgentsHidden, cur.AgentsShown
 		in.Window, in.WindowMaximised = cur.Window, cur.WindowMaximised // the window's own, as it was last resized
 		// and what other pages keep here: which models an agent is shown, and

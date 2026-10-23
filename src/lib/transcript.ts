@@ -165,6 +165,10 @@ export function parseTranscriptEvents(raw: unknown[]): SessionEvent[] {
           changeType,
           createdAt,
           ...(typeof e.revision === "number" ? { revision: e.revision } : {}),
+          ...(typeof e.oldPath === "string" && e.oldPath ? { oldPath: e.oldPath } : {}),
+          ...(typeof e.add === "number" ? { add: e.add } : {}),
+          ...(typeof e.del === "number" ? { del: e.del } : {}),
+          ...(e.binary === true ? { binary: true } : {}),
         });
       }
       continue;

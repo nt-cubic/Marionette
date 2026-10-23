@@ -43,6 +43,10 @@ pub const MARIONETTE_PROVIDER: &str = "marionette";
 pub const MARIONETTE_TOKEN_ENV: &str = "MARIONETTE_API_KEY";
 /// 我们创建的 entry 前置标记行（移除时识别「整个 entry 是我们的」）。
 const MANAGED_MARKER: &str = "# managed-by: marionette-bridge";
+/// 首次建文件时写的说明行（移除托管 entry 时一并收走，不留「块在下面」
+/// 的孤儿说明）。
+const MANAGED_HEADER: &str =
+    "# Marionette model-share route (managed block below — regenerated on each dsh spawn while the engine runs)";
 
 pub fn dsh_patch_path() -> Option<PathBuf> {
     Some(crate::acp::dsh_home()?.join("cordis.patch.yml"))
@@ -133,6 +137,18 @@ fn is_comment(line: &str) -> bool {
 fn is_entry_start(line: &str) -> bool {
     let trimmed = line.trim_end();
     trimmed == "-" || trimmed.starts_with("- ")
+}
+
+/// 空 patch 骨架：只有注释、空行和 `[]` 占位（没有任何条目的空 patch）。
+///
+/// 既包括我们移除托管 entry 后留下的「MANAGED_HEADER + `[]`」，也包括
+/// 用户/桌面版手写的 `[]`（或只有注释的空文件）。这种文件语义就是「没有
+/// patch」，必须当空文件重写而不是拒写。
+fn is_empty_patch_skeleton(original: &str) -> bool {
+    original.lines().all(|line| {
+        let trimmed = line.trim();
+        is_blank(line) || is_comment(line) || trimmed == "[]"
+    })
 }
 
 /// `key: value` 行 → (缩进, key)；空行 / 注释 / `- ` 列表行 → None。
@@ -331,12 +347,21 @@ fn merge_home_patch(
     models: &[crate::model_bridge::CatalogModelRow],
 ) -> Result<String, String> {
     let trimmed = original.trim();
-    if trimmed.is_empty() || trimmed == "[]" {
-        let mut fresh = vec![
-            "# Marionette model-share route (managed block below — regenerated on each dsh spawn while the engine runs)"
-                .to_string(),
-            MANAGED_MARKER.to_string(),
-        ];
+    // 空 patch = 空文件、`[]`、或「注释 + `[]`」骨架（移除托管 entry 后留
+    // 下的形态，2026-10-23 实测踩坑：只认字面 `[]` 时这种文件被判「不是顶层
+    // 数组」永久拒写——引擎停过一次就再也挂不上路由）。
+    if trimmed.is_empty() || is_empty_patch_skeleton(original) {
+        // 保留用户写在文件里的注释（含我们自己那行）；`[]` 占位不保留，
+        // 托管块会取代它。
+        let mut fresh: Vec<String> = original
+            .lines()
+            .filter(|line| !is_blank(line) && line.trim() != "[]")
+            .map(str::to_string)
+            .collect();
+        if fresh.is_empty() {
+            fresh.push(MANAGED_HEADER.to_string());
+        }
+        fresh.push(MANAGED_MARKER.to_string());
         fresh.extend(managed_entry_lines(port, models));
         return Ok(join_lines(&fresh));
     }
@@ -453,8 +478,13 @@ fn remove_marionette_route_at(patch_path: &Path) -> Result<bool, String> {
                 drain_from -= 1;
             }
             lines.drain(drain_from..e);
-            // 条目删空了 → `[]` 占位，保持「合法的空 patch」。
+            // 条目删空了 → 我们的说明行也一起收走（不留孤儿「块在下面」），
+            // 落 `[]` 占位，保持「合法的空 patch」。
             if !lines.iter().any(|line| is_entry_start(line)) {
+                lines.retain(|line| line.trim() != MANAGED_HEADER);
+                while lines.last().is_some_and(|line| is_blank(line)) {
+                    lines.pop();
+                }
                 lines.push("[]".to_string());
             }
         } else {
@@ -720,6 +750,51 @@ mod tests {
     fn rejects_non_array_patch() {
         let error = merge_home_patch("version: 1\nrefs: {}\n", 3425, &models());
         assert!(error.is_err());
+    }
+
+    /// 「注释 + `[]`」骨架必须当空 patch 重写：这是移除托管 entry 后留在
+    /// 盘上的形态（2026-10-23 实测：只认字面 `[]` 时这种文件被永久判成
+    /// 「不是顶层数组」，引擎停过一次就再也挂不上路由 → DSH 模型菜单里
+    /// 一直没有 `marionette::*`）。
+    #[test]
+    fn rewrites_comment_only_empty_patch() {
+        for skeleton in [
+            format!("{MANAGED_HEADER}\n[]\n"),
+            "# 用户自己的注释\n[]\n".to_string(),
+            "# 只有注释，没有占位\n".to_string(),
+        ] {
+            let merged = merge_home_patch(&skeleton, 3425, &models())
+                .unwrap_or_else(|e| panic!("骨架 {skeleton:?} 应可重写: {e}"));
+            assert!(merged.contains(MANAGED_MARKER), "{merged}");
+            assert!(merged.contains("- id: llm-pi-ai"), "{merged}");
+            assert!(merged.contains("baseURL: http://127.0.0.1:3425/v1"), "{merged}");
+            assert!(
+                !merged.lines().any(|line| line.trim() == "[]"),
+                "占位行要被托管块取代：{merged}"
+            );
+            // 幂等：写出结果再合并一次字节不变。
+            assert_eq!(merge_home_patch(&merged, 3425, &models()).unwrap(), merged);
+        }
+    }
+
+    /// 移除托管 entry 后留下的文件形态（无孤儿说明行）能再次挂上路由——
+    /// 引擎「闲置回收 → 再唤醒」是常态，这条链路以前是断的。
+    #[test]
+    fn remove_then_readd_round_trip() {
+        let dir = temp_dir("roundtrip");
+        let patch = dir.join("cordis.patch.yml");
+        let creds = dir.join(".credentials.yaml");
+        ensure_route_at(&patch, &creds, 3425, &models()).unwrap();
+        assert!(remove_marionette_route_at(&patch).unwrap());
+        let emptied = fs::read_to_string(&patch).unwrap();
+        assert!(!emptied.contains(MANAGED_HEADER), "孤儿说明行要收走: {emptied}");
+        assert_eq!(emptied, "[]\n");
+        // 引擎再起 → 同一个文件必须还能挂上路由。
+        ensure_route_at(&patch, &creds, 3499, &models()).unwrap();
+        let again = fs::read_to_string(&patch).unwrap();
+        assert!(again.contains("- id: llm-pi-ai"), "{again}");
+        assert!(again.contains("http://127.0.0.1:3499/v1"), "{again}");
+        fs::remove_dir_all(&dir).ok();
     }
 
     // ── credentials ─────────────────────────────────────────────────────────

@@ -2,9 +2,11 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -53,7 +55,9 @@ func TestPartnersFromTheFeed(t *testing.T) {
 	t.Cleanup(resetPartners)
 	was := fetchPartnerIcon
 	t.Cleanup(func() { fetchPartnerIcon = was })
+	var iconFetches atomic.Int32
 	fetchPartnerIcon = func(_ context.Context, u string) (string, error) {
+		iconFetches.Add(1)
 		if u != "https://acme.example/logo.png" {
 			t.Errorf("icon fetched from %q", u)
 		}
@@ -64,6 +68,7 @@ func TestPartnersFromTheFeed(t *testing.T) {
 	var body atomic.Value
 	body.Store(`{"partners":[
 		{"id":"acme","name":"Acme AI","chat":"https://api.acme.example/v1","keysUrl":"https://acme.example/keys?ref=magpie",
+		 "website":"https://usemagpie.ai/go/acme/site","siteHost":"www.acme.example",
 		 "iconUrl":"https://acme.example/logo.png","notes":{"en":"Fast relay","zh":"快速中转"},"langs":["zh"],
 		 "decide":"https://api.acme.example/decide","noKey":true},
 		{"id":"plain","name":"Plain","chat":"http://api.plain.example/v1"},
@@ -72,7 +77,7 @@ func TestPartnersFromTheFeed(t *testing.T) {
 		{"id":"noname","chat":"https://x.example/v1"},
 		{"id":"later","name":"Later","chat":"https://later.example/v1","from":"` + future + `"},
 		{"id":"gone","name":"Gone","chat":"https://gone.example/v1","until":"` + past + `"},
-		{"id":"regioned","name":"Regioned","regions":[{"id":"cn","name":"China","chat":"https://cn.regioned.example/v1"}]},
+		{"id":"regioned","name":"Regioned","regions":[{"id":"cn","name":"China","chat":"https://cn.regioned.example/v1","website":"https://usemagpie.ai/go/regioned/site/cn","siteHost":"cn.regioned.example"}]},
 		{"id":"acme","name":"Acme twice","chat":"https://twice.example/v1"}
 	]}`)
 	t.Setenv("MAGPIE_PARTNERS", partnerFeedServer(t, &body).URL)
@@ -94,6 +99,19 @@ func TestPartnersFromTheFeed(t *testing.T) {
 	}
 	if got[1].Chat != "https://cn.regioned.example/v1" {
 		t.Errorf("a partner with regions only is at %q, not its first region", got[1].Chat)
+	}
+	// the host a /go website sends the browser to, which the editor's link reads
+	if a.SiteHost != "www.acme.example" || got[1].Regions[0].SiteHost != "cn.regioned.example" {
+		t.Errorf("siteHost = %q, region's %q", a.SiteHost, got[1].Regions[0].SiteHost)
+	}
+
+	// fetched again, its icon from the same URL is the one kept
+	fetchPartnersNow()
+	if n := iconFetches.Load(); n != 1 {
+		t.Errorf("icon fetched %d times over two fetches of one URL, want 1", n)
+	}
+	if got := Partners(); len(got) == 0 || got[0].Icon != a.Icon {
+		t.Errorf("icon after a second fetch = %v, want the kept %q", got, a.Icon)
 	}
 
 	// a provider is added from it as from a preset
@@ -117,7 +135,7 @@ func TestPartnersFromTheFeed(t *testing.T) {
 		t.Fatalf("partners after the list emptied = %s", partnerIDs(got))
 	}
 	resetPartners()
-	if pr := Preset("acme"); pr == nil || pr.Sponsored || pr.Chat != "https://api.acme.example/v1" {
+	if pr := Preset("acme"); pr == nil || pr.Sponsored || pr.Chat != "https://api.acme.example/v1" || pr.SiteHost != "www.acme.example" {
 		t.Fatalf("Preset(acme) after it left = %+v", pr)
 	}
 
@@ -179,6 +197,33 @@ func TestPartnersFetchedLastIsHeld(t *testing.T) {
 	}
 	if n := asked.Load(); n != 2 {
 		t.Fatalf("asked %d times, want 2", n)
+	}
+}
+
+// A process started fetches the list on its first ask, however fresh the
+// list kept on disk: one fetched empty a minute before a partner was added
+// held it back for six hours, restart or not.
+func TestPartnersFetchedOnStart(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	resetPartners()
+	t.Cleanup(resetPartners)
+	kept, _ := json.Marshal(partnerCache{At: time.Now().Add(-time.Minute)})
+	if err := os.MkdirAll(filepath.Dir(partnerCacheFile()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(partnerCacheFile(), kept, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var body atomic.Value
+	body.Store(`{"partners":[{"id":"acme","name":"Acme","chat":"https://a.example/v1"}]}`)
+	t.Setenv("MAGPIE_PARTNERS", partnerFeedServer(t, &body).URL)
+
+	Partners()
+	// the fetch it started has ended once a fetch can be claimed
+	claimPartnerFetch()
+	partnerMu.Unlock()
+	if ids := partnerIDs(Partners()); ids != "acme" {
+		t.Fatalf("partners after a start with a fresh empty list kept = %q, want acme", ids)
 	}
 }
 

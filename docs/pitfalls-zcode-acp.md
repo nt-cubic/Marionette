@@ -127,9 +127,10 @@ DisplayName 双查）全空、`%LOCALAPPDATA%\Programs\ZCode` 不存在——但
 
 1. `%LOCALAPPDATA%\Programs\ZCode\resources\glm\zcode.cjs`；
 2. `%ProgramFiles%\ZCode\resources\glm\zcode.cjs`；
-3. 开始菜单（用户/公共）与公共桌面的 `ZCode.lnk`——读字节流，扫 **UTF-16LE 可打印串**，
-   取「含盘符 `:` 且含 `zcode`」的那段；结尾是 `.exe` 就取父目录。LocalBasePath 就是
-   以这种形态躺在 .lnk 里的，不用引 shell-link 解析库。
+3. 开始菜单（用户/公共）与桌面的 `ZCode.lnk`——读字节流，扫 **ANSI 与 UTF-16LE**
+   可打印串（偶/奇对齐都扫），每个「含盘符 `:` 且含 `zcode`」的候选都拼
+   `resources/glm/zcode.cjs` 直到 `is_file`。只扫 UTF-16 且返回第一命中会丢掉
+   真实安装（雷 10）。
 
 **快速确诊**（node 一行版）：
 
@@ -193,6 +194,45 @@ let s = ""; for (let i = 0; i + 1 < b.length; i += 2) {
 **快速确诊**：改完 provider_config.json 后必看当日 zcode 日志有无
 `Personal Provider Config 加载失败`；模型目录归零 ≈ 中此雷。
 
+### 雷 7 续：`contextWindow: 0` 同样整层拒绝——引擎缺元数据时必须写兜底值
+
+**症状**（2026-10-23 本机，用户报「所有模型设置都不见了、也没法重新配」）：
+
+- ZCode 模型下拉整个空掉，不只是 `marionette` 的模型；用户原有的 Deepseek /
+  BigModel Coding Plan 也一起消失；
+- 设置页改不动/加不了 provider（每次保存都落在同一个非法文件上）；
+- 磁盘上的 `~/.zcode/v2/provider_config.json` **看起来是好的**（合法 JSON、条目都在），
+  所以「文件没坏」这个判断会误导排查。
+
+**根因**：个人层 schema 里 `providerModelRules[].config.properties.contextWindow`
+是 `number().positive()`。引擎目录某行没报窗口时，旧代码把 `m.context_window == 0`
+原样写了进去；zod 报 `too_small / expected number to be >0`，**整层**
+`providerModelRules` 校验失败 → zcode 以内存空配置降级（磁盘文件保留，但 UI 读到的
+是空层）。与雷 7 的未知键是同一失效模式，只是这次错在**值**而不是键名。
+
+**证据**（`~/.zcode/v2/logs/<YYYY-MM-DD>.log`）：
+
+```
+[provider-config] Personal Provider Config 加载失败，已保留磁盘状态并以内存空配置降级
+{"error":{"name":"ZodError","message":"[{\"origin\":\"number\",\"code\":\"too_small\",
+\"minimum\":0,\"inclusive\":false,\"path\":[\"providerModelRules\",12,\"config\",
+\"properties\",\"contextWindow\"],\"message\":\"Too small: expected number to be >0\"}]"}}
+```
+
+**修复**（`model_bridge.rs`）：
+
+- 写入器对 `context_window == 0` 落兜底 `ZCODE_UNKNOWN_CONTEXT_WINDOW = 200_000`
+  （与 zcode 内置 `.*` 兜底同值），绝不写 0；`max_output == 0` 时同样不写
+  `optionSpecs.maxOutputTokens`（缺省比写 0 安全）。
+- 已被写坏的现场：把托管条目里的 `"contextWindow": 0` 改成正数（或删掉托管段让
+  Marionette 下次 spawn 重写）。zcode 有文件监听，**通常无需重启**：本机实测
+  17:17:10 修好文件、同一主进程（pid 未变）在 17:17:10 就 `model-selection.getView OK`、
+  17:17:11 `provider/model 就绪`，之后日志不再出现 `加载失败`。若 UI 仍空白再重启 ZCode。
+- 回归测试：`zcode_model_rules_fallback_when_context_window_unknown`。
+
+**快速确诊**：日志 grep `Too small: expected number to be >0` +
+`"path":["providerModelRules"`；同时 `provider_config.json` 里 grep `"contextWindow": 0`。
+
 ---
 
 ## 雷 8：模型元数据不写就落兜底——200K 窗口、不收图
@@ -227,6 +267,35 @@ zcode 有两层 provider 配置，跨用托管必须选对：
   即三处全清（order / providerRules / providerModelRules），不留连不上的死条目。
 - `ZCODE_PROVIDER` env 可以钉 provider（适配器与后端都认）；Marionette 不设，
   尊重用户默认。
+
+---
+
+## 雷 10：`.lnk` 的 LocalBasePath 是 ANSI，UTF-16 第一命中是假路径
+
+**症状**：Marionette 日志
+`ZCode runtime not found (no zcode on PATH, no desktop install)`，适配器
+`spawn failed: zcode not found` → 用户面 `zcode create failed: zcode backend
+reader exited (backend dead)`——但 `D:\Program Files\ZCode\resources\glm\zcode.cjs`
+和开始菜单 `ZCode.lnk` 都在。
+
+**根因**：Windows LinkInfo 的 `LocalBasePath` 是 **ANSI**，`LocalBasePathUnicode`
+才是 UTF-16。按偶对齐扫 UTF-16 会把 ANSI 字节读成一段看起来像路径的串（本机
+实测 `D:\Program Files\ZCode``，多一个 backtick）。`lnk_utf16_dir` 返回第一个
+匹配就停，调用方发现 `zcode.cjs` 不存在就放弃**整个快捷方式**，同一 .lnk 里
+真正的 ANSI `D:\Program Files\ZCode\ZCode.exe` 根本没被看到。
+
+**证据**（本机 `ZCode.lnk`，2026-10-23 16:04 会话）：
+
+```
+UTF-16 even: "D:\\Program Files\\ZCode`"
+ASCII:       "D:\\Program Files\\ZCode\\ZCode.exe"
+```
+
+**修复**：同一 .lnk 扫 ANSI + UTF-16 偶/奇对齐，每个候选都拼
+`resources/glm/zcode.cjs` 直到 `is_file`（`acp.rs::lnk_candidate_dirs`）。
+
+**快速确诊**：dev.log 有 `ZCode runtime not found`，同时
+`icacls`/`dir` 看得到桌面版 cjs 和 `ZCode.lnk` → 中此雷。
 
 ---
 
@@ -267,6 +336,90 @@ zcode 有两层 provider 配置，跨用托管必须选对：
 | `spawn EFTYPE` | `ZCODE_NODE` 是否注入 | 雷 4 |
 | session/new -32602 | mcpServers 里有无 stdio 条目 | 雷 5 |
 | 找不到 zcode.cjs | 注册表/PATH/lnk 探测链 | 雷 6 |
-| 模型目录归零 | zcode 日志 `Personal Provider Config 加载失败` | 雷 7 |
+| 有桌面版 + ZCode.lnk，仍报 `backend dead` / `zcode not found` | dev.log `ZCode runtime not found`；.lnk 是否只扫了 UTF-16 | 雷 10 |
+| 模型目录归零（用户自己的 provider 也一起消失） | zcode 日志 `Personal Provider Config 加载失败` + 报错里的 `code` | 雷 7（`unrecognized_keys`）/ 雷 7 续（`too_small`，`contextWindow` 为 0） |
 | 窗口 200K / 不收图 | providerModelRules 是否写了元数据 | 雷 8 |
 | 默认模型被换 | providerOrder 是否前插 / 是否写了账号层 | 雷 9 |
+| 跨用 opencode-go 模型全 401 `api_key_expired`，opencode agent 自己正常 | `magpie providers` 指纹 vs opencode.db active=1 行 vs auth.json | 雷 11 |
+| 桌面版能选的 key，ACP 模型菜单里一条都没有 | `provider_config.json` 里该 provider 有没有 `providerModelRules`（模板建的 provider 通常没有） | 雷 12 |
+
+---
+
+## 雷 11：引擎读空 opencode.db——`type:"key"` vs `"api"`（跨用侧，2026-10-23 追加）
+
+**症状**：所有走引擎的 `opencode-go/*` 跨用模型 401 `api_key_expired`（错误文本带
+「Signing in again will not renew this key」）；用户的 opencode agent 里用同样模型一切
+正常；`magpie providers` 显示引擎持有的钥匙指纹**既不是** opencode.db 里 active=1 的
+活钥匙、**也不是** active=0 的死钥匙，而是 **auth.json 里 `opencode` 条目**的那把
+（本机实锤：指纹 `sk-8…yCJ2` = auth.json `opencode` 行，而 db 活钥匙是 `oc_sk_…`）。
+
+**根因**：`credentials.rs::peek_opencode_db_keys_at` 的类型过滤只认 `"type":"api"`
+（老 auth.json 格式），而**现行 opencode.db 的 credential.value 写 `"type":"key"`**
+（2026-10-23 实测本机全部 11 行）——整个新库被过滤成空 → 合并回退 09-02 的
+auth.json → `opencode` 条目（9 月旧 Go 钥匙，服务端已轮换过期）排在 `opencode-go`
+前、两者映射同一个 preset → 先到先得，死钥匙注册进引擎。opencode agent 正常是因为
+它直接读 db 的 active=1 行，不走这段代码。注意引擎的注册时机：enable 流水线一次 +
+凭据页刷新/增删 key 时补注册（`reregister_key_providers`）——**代码修了但引擎没重启
+也没人开凭据页时，旧注册会一直残留**。
+
+**修复**：类型过滤同时收 `"api"` 与 `"key"`（拦 `"oauth"`）。现场恢复 = 把 db 活钥匙
+重新注册进引擎（`magpie provider key opencode-go <key>`，与 `engine.rs` 的
+`run_magpie_cli` 同款动作；实测注册后 `provider test` 三端点全绿、引擎对话恢复）。
+
+**教训**：修「读不到新存储」这类 bug，**fixture 必须从真机 dump**——当时的单测手写
+`"type":"api"`，测试绿但真机整库读空；「上游说 key 过期」也不一定是钥匙真过期，
+先比对**指纹**确认用出去的到底是哪把，别急着让用户去换 key。
+
+---
+
+## 雷 12：桌面版能选的 provider，ACP 菜单里一个模型都没有（2026-10-23 追加）
+
+**症状**：ZCode 桌面版里「BigModel Coding Plan」这个 provider 能正常选 GLM-5.3，
+但在 Marionette 的 ZCode ACP 模式里，模型菜单只有账号层 provider（DeepSeek 2 条）
+和桥接的 `marionette\…`，这个 key 的模型**一条都不出现**。
+
+**根因**：`zcode-acp-server` 的 `dist/config/options.js::loadAllModels()` 装配下拉
+列表只有两个来源：
+
+1. `~/.zcode/v2/config.json`（账号层）里 `providerSelectable` 的 provider；
+2. `provider_config.json` 的 `modelConfigRules.providerModelRules`。
+
+3.12+ 桌面版把**所有用户自己加的 key** 写进个人层（`provider_config.json`），而这类
+provider 的模型**只走第 2 条**。从内置模板（`zcode-builtin.json` 的
+`templateRules[].config.builtinModelIds`）创建的 provider **没有任何 providerModelRules**
+——桌面版直接拿模板渲染，所以桌面正常；ACP 侧 `modelsByProvider.get(pid)` 是 undefined
+→ 0 条模型 → `session/new` 的 configOptions 里整个 provider 消失。`modelContextWindow()`
+同源，所以就算把模型补出来，上下文也是 0（客户端用量表读 `used / 0`）。
+
+**证据**（本机 2026-10-23）：
+
+```
+# 探针 session/new 的 model 选项：74 = 2 (账号层 DeepSeek) + 72 (marionette 桥)
+model option count: 74
+[bigmodel-api] 不存在
+
+# 个人层里这条 provider 是 keyed 的，但没有模型规则
+bigmodel-api  access.type=zhipu-coding-plan-api-key  personalModelIds: []  providerModelRules: 无
+
+# 桌面/后端自己认得它（所以不是 key 或端点的问题）
+[zcode-agent-service] provider/model 就绪 {"modelId":"GLM-5.3","providerId":"bigmodel-api"}
+```
+
+**修复**：`scripts/patch-zcode-acp-personal-models.mjs` 给适配器补回退链——
+`providerModelRules → rule.config.personalModelIds → 模板 builtinModelIds`，并把
+`modelContextWindow()` 的兜底接上模板 `modelConfigRules.modelRules`（按表序取最后一条
+声明了正窗口的规则；大小写不敏感 + 锚定，否则 `GLM-5.3` 匹配不到小写规则，会掉回 200K）。
+补完探针 74 → 76，`bigmodel-api\GLM-5.3` / `GLM-5.3-Flash` 出现，`session/set_config_option`
+切过去成功（后端 registry 认这两个 id）。
+
+**注意**：`npm i -g zcode-acp-server`（Marionette 的 agent 升级按钮就是它）会整体替换
+`dist/`，**升级后重跑这个脚本**。脚本是分段幂等的：缺哪段补哪段，旧版补丁会被就地升级
+（第一版脚本曾插入过一条更窄的 import，重复插入会让适配器 ESM 重声明直接崩，
+`import-reset` 那段就是为它准备的）。
+
+**前端同轮补课**（`src/lib/modelLabel.ts`）：适配器的选项名是 `Provider › Model`
+（`BigModel Coding Plan › GLM-5.3`），旧逻辑只认 `::` / `/` / `\`，会把这个名字
+整条当行标签、分组落到裸 `bigmodel-api` 上。现在 `providerPrefix` / `pathPrefix`
+都收 `›`，并且 `\` 优先于 `/`（`marionette\zhipu/glm-5.3` 的 provider 段是
+`marionette` 而不是 `marionette\zhipu`）。副作用是账号层那条 UUID provider 也从
+「裸 UUID 分组」变成 `DeepSeek`。

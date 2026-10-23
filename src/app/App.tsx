@@ -27,7 +27,7 @@ import {
 import { engineQuota as fetchEngineQuota, type EngineQuotaEntry } from "../lib/api";
 import { TELEGRAM_COMMAND_EVENT, telegramRemoteResult, type TelegramCommand } from "../lib/api";
 import { invalidateBridgeModels } from "../lib/bridge";
-import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, downloadAppUpdate, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getFileFingerprints, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, searchSessions, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, CHAT_PROJECT_ID } from "../lib/api";
+import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, beginWorkspaceSnapshot, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, discardWorkspaceSnapshot, downloadAppUpdate, endWorkspaceSnapshot, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, type TurnSnapshotEnd, type TurnSnapshotStart, CHAT_PROJECT_ID } from "../lib/api";
 import {
   bindDetachedWindowReaper,
   DETACHED_HIDDEN_EVENT,
@@ -144,6 +144,8 @@ import {
   isTurnInFlightError,
 } from "../lib/errors";
 import { prettyEffortLabel } from "../lib/modelLabel";
+import { classifyToolCall } from "../lib/turnActivity";
+import { selectTurnWorkspaceChanges } from "../lib/turnDelivery";
 import { getLastUsedDefaults } from "../lib/recentModels";
 import { pickRestoredSession, saveUiRestore, saveQueuedSends, loadQueuedSends, saveClosedTabs, loadClosedTabs, loadDetailsVisible, saveDetailsVisible } from "../lib/uiRestore";
 import {
@@ -379,21 +381,20 @@ function effortLabel(value: number): string {
   return value < 0.5 ? "Medium" : "High";
 }
 
-type ProjectFileSnapshot = {
+/**
+ * One prompt's workspace baseline: a content tree of the whole worktree taken
+ * through a private git index (see `begin_workspace_snapshot`). The turn's file
+ * delta is that tree vs the worktree at turn end.
+ */
+type TurnBaseline = {
   projectId: string;
-  changedFiles: ChangedFile[];
-  files: Record<string, { changeType: ChangedFile["changeType"]; fingerprint: string }>;
+  /** Project root, so tool paths can be compared with git's relative paths. */
+  root: string;
+  /** Distinguishes this prompt from a later one on the same session id. */
+  token: string;
+  /** Resolves to null when the project is not a git work tree. */
+  snapshot: Promise<TurnSnapshotStart | null>;
 };
-
-/** Small deterministic fingerprint so a turn snapshot does not retain full diff text. */
-function fingerprintDiff(text: string): string {
-  let hash = 2166136261;
-  for (let i = 0; i < text.length; i += 1) {
-    hash ^= text.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `${text.length}:${hash >>> 0}`;
-}
 
 function isToolCompletionStatus(status?: string): boolean {
   const normalized = status?.trim().toLowerCase().replace(/[\s-]+/g, "_");
@@ -443,8 +444,6 @@ export function App() {
   const [composerAutoFocus, setComposerAutoFocus] = useState(false);
   /** Manual rename wins over any later title emitted by an agent. */
   const manuallyRenamedSessionIdsRef = useRef<Set<string>>(new Set());
-  /** Ignore stale filesystem-search responses when the user keeps typing. */
-  const searchRequestRef = useRef(0);
   const [viewMode, setViewMode] = useState<SessionViewMode>("clean");
   const [leftCollapsed, setLeftCollapsed] = useState(IS_DETACHED_WINDOW);
   const [rightCollapsed, setRightCollapsed] = useState(false);
@@ -713,7 +712,6 @@ export function App() {
   const finalizeDelegateChildRef = useRef<
     (childId: string, status: "done" | "failed" | "cancelled" | "timeout", error?: string) => void
   >(() => undefined);
-  const [searchHitIds, setSearchHitIds] = useState<string[] | null>(null);
   /** agentId → sticky banner. Probe-driven (logged out) or error-driven (auth / outdated CLI). */
   const [agentBanner, setAgentBanner] = useState<
     Record<string, { kind: AgentBannerKind; message: string }>
@@ -1109,128 +1107,179 @@ export function App() {
     return out;
   };
 
-  /** One workspace snapshot per prompt; used to turn real edits into timeline cards. */
-  const fileChangeSnapshotsRef = useRef<Record<string, ProjectFileSnapshot>>({});
-  const fileChangeDetectionRef = useRef<Set<string>>(new Set());
-  const fileChangeFinalizeRef = useRef<Set<string>>(new Set());
-  const fileChangePublishedRef = useRef<Record<string, Record<string, {
-    fingerprint: string;
-    changeType: ChangedFile["changeType"];
-    createdAt: string;
-    revision: number;
-  }>>>({});
+  /**
+   * One workspace baseline per prompt. The delivery card's git truth is
+   * "worktree at turn start vs worktree at turn end" — never `git status` of the
+   * whole repo. `begin_workspace_snapshot` (Rust) explains why that baseline is
+   * a content tree taken through a private git index instead of per-file diff
+   * hashes.
+   */
+  const turnBaselineRef = useRef<Record<string, TurnBaseline>>({});
+  const turnBaselineSeqRef = useRef(0);
+  /** sessionId → the baseline token whose delta was already published. */
+  const turnBaselinePublishedRef = useRef<Record<string, string>>({});
 
-  const captureProjectFileSnapshot = useCallback(async (projectId: string): Promise<ProjectFileSnapshot | null> => {
-    if (!isTauriRuntime() || !projectId || projectId === CHAT_PROJECT_ID) return null;
-    // Two IPC calls total (status + one whole-tree diff). The previous
-    // per-file `getFileDiff` loop spawned a `git diff` process per changed
-    // file (two for untracked entries) and stalled Unity-scale sends for
-    // minutes before the prompt reached the agent (2026-10-18).
-    const [changedFiles, fingerprints] = await Promise.all([
-      getChangedFiles(projectId),
-      getFileFingerprints(projectId),
-    ]);
-    const emptyFingerprint = fingerprintDiff("");
-    const entries = changedFiles.map((file) => [
-      file.path,
-      {
-        changeType: file.changeType,
-        fingerprint: fingerprints[file.path] ?? emptyFingerprint,
-      },
-    ] as const);
-    return {
-      projectId,
-      changedFiles,
-      files: Object.fromEntries(entries),
-    };
+  /** Forget a baseline (send failed / abandoned turn) without publishing. */
+  const dropTurnBaseline = useCallback((sessionId: string) => {
+    const baseline = turnBaselineRef.current[sessionId];
+    delete turnBaselineRef.current[sessionId];
+    delete turnBaselinePublishedRef.current[sessionId];
+    if (!baseline) return;
+    void baseline.snapshot
+      .then((started) => (started ? discardWorkspaceSnapshot(started.snapshotId) : undefined))
+      .catch(() => undefined);
   }, []);
 
-  const syncFileChangesForTurn = useCallback(async (sessionId: string, finalize = false) => {
-    const before = fileChangeSnapshotsRef.current[sessionId];
-    if (!before) return;
-    if (fileChangeDetectionRef.current.has(sessionId)) {
-      if (finalize) fileChangeFinalizeRef.current.add(sessionId);
+  const startTurnBaseline = useCallback((sessionId: string, projectId: string) => {
+    if (!isTauriRuntime() || !projectId || projectId === CHAT_PROJECT_ID) return;
+    // An abandoned turn (the agent died before its turn ended) leaves a baseline
+    // behind; it belongs to that turn, never to this prompt's delta.
+    dropTurnBaseline(sessionId);
+    turnBaselineSeqRef.current += 1;
+    const token = `${Date.now()}-${turnBaselineSeqRef.current}`;
+    const root = projectsRef.current.find((project) => project.id === projectId)?.rootPath ?? "";
+    // A baseline that fails must fail closed: publishing nothing leaves the card
+    // on the turn's own tool calls, whereas treating the failure as "the
+    // workspace was clean" published every dirty file as this turn's work.
+    const snapshot = beginWorkspaceSnapshot(projectId).catch((error: unknown) => {
+      pushDebugRef.current({
+        sessionId,
+        level: "warn",
+        source: "git",
+        summary: "turn baseline failed — delivery card falls back to tool calls",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    });
+    turnBaselineRef.current[sessionId] = { projectId, root, token, snapshot };
+  }, [dropTurnBaseline]);
+
+  /** Changed-Files panel refresh only — the turn delta waits for the turn end. */
+  const refreshProjectChangedFiles = useCallback(async (sessionId: string) => {
+    if (!isTauriRuntime()) return;
+    const projectId = sessionsRef.current.find((session) => session.id === sessionId)?.projectId;
+    if (!projectId || projectId === CHAT_PROJECT_ID) return;
+    const files = await getChangedFiles(projectId);
+    if (currentProjectIdRef.current !== projectId) return;
+    setChangedFiles(files);
+    setChangedFilesNote(files.length === 0 ? "No local changes (or not a git repo)." : null);
+  }, []);
+
+  /**
+   * Files this turn's own edit/write tools touched, child sessions included.
+   * Only this turn's calls count: a previous turn's edit must not vouch for a
+   * file that was already dirty before this turn started.
+   */
+  const collectTurnTouchedPaths = useCallback((sessionId: string) => {
+    const ids = new Set<string>([sessionId]);
+    for (const [childId, meta] of delegateMetaRef.current) {
+      if (meta.parentId === sessionId) ids.add(childId);
+    }
+    const paths: string[] = [];
+    for (const id of ids) {
+      const rail = eventsBySessionRef.current.get(id);
+      if (!rail?.length) continue;
+      let startIndex = 0;
+      for (let i = rail.length - 1; i >= 0; i -= 1) {
+        const event = rail[i];
+        if (event.type === "user_message" || event.type === "handoff_prepared") {
+          startIndex = i;
+          break;
+        }
+      }
+      for (let i = startIndex; i < rail.length; i += 1) {
+        const event = rail[i];
+        if (event.type !== "tool_call" || !event.path) continue;
+        const kind = classifyToolCall(event);
+        if (kind === "edit" || kind === "write") paths.push(event.path);
+      }
+    }
+    return paths;
+  }, []);
+
+  /**
+   * Turn end: diff the worktree against the turn's baseline and publish one
+   * `file_change` per file. Files that were already dirty before the turn are
+   * only kept when the turn's own tools touched them, so a second conversation
+   * (or the user's editor) on the same project cannot land in this card.
+   */
+  const finalizeTurnFileChanges = useCallback(async (sessionId: string) => {
+    const baseline = turnBaselineRef.current[sessionId];
+    if (!baseline) return;
+    if (turnBaselinePublishedRef.current[sessionId] === baseline.token) return;
+    // Claim the baseline synchronously: the queued-next-prompt flush can start a
+    // new baseline before this async work finishes, and that one must not be
+    // diffed against this turn's start.
+    delete turnBaselineRef.current[sessionId];
+    const started = await baseline.snapshot.catch(() => null);
+    // Not a git work tree, or the baseline itself failed: no git truth at all.
+    if (!started) return;
+    if (turnBaselinePublishedRef.current[sessionId] === baseline.token) return;
+    let delta: TurnSnapshotEnd;
+    try {
+      delta = await endWorkspaceSnapshot(started.snapshotId);
+    } catch (error) {
+      pushDebugRef.current({
+        sessionId,
+        level: "warn",
+        source: "git",
+        summary: "turn delta failed — no file chips for this turn",
+        detail: error instanceof Error ? error.message : String(error),
+      });
       return;
     }
-    fileChangeDetectionRef.current.add(sessionId);
-    try {
-      // Let the agent's final file write settle before asking Git for its status.
-      await new Promise<void>((resolve) => window.setTimeout(resolve, 120));
-      const after = await captureProjectFileSnapshot(before.projectId);
-      if (!after) return;
-
-      const published = fileChangePublishedRef.current[sessionId] ?? {};
-      fileChangePublishedRef.current[sessionId] = published;
-      const changedDuringTurn = after.changedFiles.flatMap((file) => {
-        const previous = before.files[file.path];
-        const current = after.files[file.path];
-        const changed = current && (!previous ||
-          previous.changeType !== current.changeType ||
-          previous.fingerprint !== current.fingerprint);
-        if (!changed || !current) return [];
-        const priorPublication = published[file.path];
-        if (
-          priorPublication &&
-          priorPublication.changeType === file.changeType &&
-          priorPublication.fingerprint === current.fingerprint
-        ) {
-          return [];
+    turnBaselinePublishedRef.current[sessionId] = baseline.token;
+    const changes = selectTurnWorkspaceChanges(
+      delta.files.map((file) => ({
+        path: file.path,
+        changeType: file.changeType,
+        add: file.binary ? null : file.add,
+        del: file.binary ? null : file.del,
+        binary: file.binary,
+      })),
+      {
+        dirtyAtStart: started.dirtyPaths,
+        touched: collectTurnTouchedPaths(sessionId),
+        root: baseline.root,
+      },
+    );
+    if (changes.length > 0) {
+      const publishedAt = new Date().toISOString();
+      updateSessionEvents(sessionId, (current) => {
+        let next = [...current];
+        for (const change of changes) {
+          const index = next.findIndex(
+            (event) =>
+              event.type === "file_change" &&
+              event.sessionId === sessionId &&
+              event.path === change.path,
+          );
+          const previous = index >= 0 ? next[index] : null;
+          const prior = previous?.type === "file_change" ? previous : null;
+          const published: SessionEvent = {
+            type: "file_change",
+            sessionId,
+            path: change.path,
+            changeType: change.changeType,
+            createdAt: prior?.createdAt ?? publishedAt,
+            revision: (prior?.revision ?? 0) + 1,
+            ...(change.add == null ? {} : { add: change.add }),
+            ...(change.del == null ? {} : { del: change.del }),
+            ...(change.binary ? { binary: true } : {}),
+          };
+          if (index >= 0) next[index] = published;
+          else next = [...next, published];
         }
-        const publication = {
-          fingerprint: current.fingerprint,
-          changeType: file.changeType,
-          createdAt: priorPublication?.createdAt ?? new Date().toISOString(),
-          revision: (priorPublication?.revision ?? 0) + 1,
-        };
-        published[file.path] = publication;
-        return [{ file, publication }];
-      });
-      if (changedDuringTurn.length > 0) {
-        updateSessionEvents(sessionId, (current) => {
-          let next = [...current];
-          for (const { file, publication } of changedDuringTurn) {
-            const index = next.findIndex(
-              (event) => event.type === "file_change" &&
-                event.sessionId === sessionId &&
-                event.path === file.path &&
-                event.createdAt === publication.createdAt,
-            );
-            const updated = {
-              type: "file_change" as const,
-              sessionId,
-              path: file.path,
-              changeType: file.changeType,
-              createdAt: publication.createdAt,
-              revision: publication.revision,
-            };
-            if (index >= 0) next[index] = updated;
-            else next = [...next, updated];
-          }
-          return next;
-        }, { publish: true });
-      }
-      if (currentProjectIdRef.current === before.projectId) {
-        setChangedFiles(after.changedFiles);
-        setChangedFilesNote(
-          after.changedFiles.length === 0 ? "No local changes (or not a git repo)." : null,
-        );
-      }
-    } finally {
-      const finalizeRequested = fileChangeFinalizeRef.current.delete(sessionId);
-      fileChangeDetectionRef.current.delete(sessionId);
-      if (finalizeRequested && !finalize) {
-        // A final turn signal can race with a tool-completion refresh. Run one
-        // last snapshot after the in-flight refresh before releasing the base.
-        void syncFileChangesForTurn(sessionId, true);
-      } else if (finalize) {
-        delete fileChangeSnapshotsRef.current[sessionId];
-        delete fileChangePublishedRef.current[sessionId];
-      }
+        return next;
+      }, { publish: true });
     }
-  }, [captureProjectFileSnapshot]);
+    await refreshProjectChangedFiles(sessionId);
+  }, [collectTurnTouchedPaths, refreshProjectChangedFiles]);
 
-  const syncFileChangesRef = useRef(syncFileChangesForTurn);
-  syncFileChangesRef.current = syncFileChangesForTurn;
+  const finalizeTurnFileChangesRef = useRef(finalizeTurnFileChanges);
+  finalizeTurnFileChangesRef.current = finalizeTurnFileChanges;
+  const refreshProjectChangedFilesRef = useRef(refreshProjectChangedFiles);
+  refreshProjectChangedFilesRef.current = refreshProjectChangedFiles;
 
   // State-publish cadence for lastActivityById. The ref above stays exact on
   // every event; the state copy re-renders the App root, so a 60–80 events/sec
@@ -2052,7 +2101,7 @@ export function App() {
         if (!keepSuppressed) {
           streamSuppressedRef.current.delete(payload.sessionId);
         }
-        void syncFileChangesRef.current(payload.sessionId, true);
+        void finalizeTurnFileChangesRef.current(payload.sessionId);
         // Finalize @-delegate child when its turn ends.
         if (delegateMetaRef.current.has(payload.sessionId)) {
           if (payload.method === "process/ended" || payload.method === "process/stopped") {
@@ -2185,7 +2234,7 @@ export function App() {
             if (extracted.role === "tool" && isToolCompletionStatus(extracted.toolStatus)) {
               // Match codeg-main's live tool-result path: refresh the workspace
               // as soon as an edit/write/apply_patch-like tool settles.
-              void syncFileChangesRef.current(payload.sessionId);
+              void refreshProjectChangedFilesRef.current(payload.sessionId);
             }
             if (extracted.text) {
               // Status-only blocks — usage already merged above; keep the chat
@@ -3398,63 +3447,6 @@ export function App() {
       return next;
     });
   }, [openSessionIds, currentSessionId]);
-
-  const handleShelfSearch = useCallback(async (query: string) => {
-    const q = query.trim();
-    const requestId = ++searchRequestRef.current;
-    if (!q) {
-      setSearchHitIds(null);
-      return;
-    }
-    // Metadata filtering is immediate in ProjectShelf. Clear the previous
-    // transcript result while this query is being read from disk.
-    setSearchHitIds(null);
-    const hits = await searchSessions(q);
-    if (requestId !== searchRequestRef.current) return;
-
-    // The transcript writer is debounced, so include the current in-memory
-    // turn as well. This makes a just-sent phrase searchable immediately.
-    const needle = q.toLowerCase();
-    const liveHits = new Set<string>();
-    for (const rail of shadowBySessionRef.current.values()) {
-    for (const event of rail) {
-      let searchable = "";
-      switch (event.type) {
-        case "user_message":
-        case "assistant_message":
-        case "thought":
-        case "tool_call":
-          searchable = event.text;
-          break;
-        case "file_change":
-          searchable = event.path;
-          break;
-        case "handoff_prepared":
-          searchable = `${event.prompt} ${event.targetAgentId}`;
-          break;
-        case "subtask_started":
-          searchable = `${event.prompt} ${event.agentLabel}`;
-          break;
-        case "subtask_result":
-          searchable = `${event.summary} ${event.error ?? ""}`;
-          break;
-        case "plan_prompt":
-          searchable = `${event.title ?? ""} ${event.planMarkdown} ${event.decisionLabel ?? ""}`;
-          break;
-        case "ask_prompt":
-          searchable = event.questions
-            .map((q) => q.question)
-            .concat((event.answers ?? []).flatMap((a) => a.selected))
-            .join(" ");
-          break;
-        default:
-          break;
-      }
-      if (searchable.toLowerCase().includes(needle)) liveHits.add(event.sessionId);
-    }
-    }
-    setSearchHitIds([...new Set([...hits, ...liveHits])]);
-  }, []);
 
   const modelIdForAgentProbe = useCallback((agentId: string): string | undefined => {
     const sid = currentSessionIdRef.current;
@@ -6782,15 +6774,13 @@ export function App() {
       const imagePaths = imageAttachments.map((a) => a.path);
       const wireText = promptText;
       const projectId = sendRow?.projectId || currentProjectId;
-      // The snapshot only feeds turn-end change chips — it must never delay
-      // the prompt on the wire (Unity-scale repos took minutes, 2026-10-18).
-      // It lands within seconds, long before the agent's first file edit.
+      // Turn baseline for the end-of-turn delivery card: a worktree tree taken
+      // now, so the card can show what *this* turn changed. It never delays the
+      // prompt (the tree walk runs off the UI thread and is seeded from the
+      // user's index, ~0.1-0.6 s), and a failed baseline publishes nothing
+      // instead of the whole dirty workspace (2026-10-23).
       if (sendRow?.projectId !== CHAT_PROJECT_ID && projectId) {
-        void captureProjectFileSnapshot(projectId)
-          .then((fileSnapshot) => {
-            if (fileSnapshot) fileChangeSnapshotsRef.current[sid] = fileSnapshot;
-          })
-          .catch(() => {});
+        startTurnBaseline(sid, projectId);
       }
       await sendPromptWithTurnWait(sid, wireText, imagePaths);
       clearSendSilenceWatchdog(sid);
@@ -6804,9 +6794,7 @@ export function App() {
     } catch (error) {
       clearSendSilenceWatchdog(sid);
       flushingSendRef.current.delete(sid);
-      delete fileChangeSnapshotsRef.current[sid];
-      delete fileChangePublishedRef.current[sid];
-      fileChangeFinalizeRef.current.delete(sid);
+      dropTurnBaseline(sid);
       const sess = sessionsRef.current.find((s) => s.id === sid);
       const agent = sess
         ? agentsRef.current.find((a) => a.id === sess.agentId)
@@ -7396,6 +7384,7 @@ export function App() {
           }}
           onInterrupt={() => void cancelLiveTurn(session.id, { announce: true })}
           projectId={session.projectId || currentProjectId}
+          onFilesRestored={() => void refreshChangedFiles()}
           allEvents={allEvents}
           detailsVisible={detailsVisible}
           onDetailsVisibleChange={setDetailsVisible}
@@ -7657,10 +7646,6 @@ export function App() {
                 setDesktopNotifyEnabled(next);
                 return next;
               });
-            }}
-            searchHitIds={searchHitIds}
-            onSearchQueryChange={(q) => {
-              void handleShelfSearch(q);
             }}
             onCollapse={() => setLeftCollapsed(true)}
             onExpand={() => setLeftCollapsed(false)}

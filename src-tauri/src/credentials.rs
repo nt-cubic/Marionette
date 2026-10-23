@@ -603,10 +603,15 @@ fn peek_opencode_db_keys_at(db_path: &Path) -> Vec<(String, String)> {
     let mut out: Vec<(bool, String, String)> = rows
         .into_iter()
         .filter_map(|(integration, value, active)| {
-            // OAuth 型条目（value 是令牌包）不进 key 注册；只收 api 型。
+            // OAuth 型条目（value 是令牌包）不进 key 注册。类型字符串两代
+            // 并存：老库 / auth.json 写 "api"，现行 opencode.db 写 "key"
+            // （2026-10-23 实测本机全部 11 行都是 "key"——只认 "api" 会把
+            // 整库过滤成空、回退 auth.json 的死钥匙，引擎拿 9 月的旧 Go
+            // 钥匙注册，每个跨用请求 401 api_key_expired）。
             let parsed: serde_json::Value = serde_json::from_str(&value).ok()?;
-            if parsed.get("type").and_then(|t| t.as_str()) != Some("api") {
-                return None;
+            match parsed.get("type").and_then(|t| t.as_str()) {
+                Some("api") | Some("key") => {}
+                _ => return None,
             }
             let key = parsed.get("key")?.as_str()?.trim().to_string();
             if key.is_empty() {
@@ -1360,6 +1365,14 @@ mod tests {
                 r#"{"type":"oauth","access":"at-x"}"#.to_string(),
                 None,
             );
+            // 现行 opencode.db 的类型字符串是 "key"（2026-10-23 实测）——
+            // 只认 "api" 会把整库读空、回退 auth.json 的死钥匙。
+            ins(
+                &conn,
+                "deepseek",
+                r#"{"type":"key","key":"live-db-key"}"#.to_string(),
+                Some(1),
+            );
         }
 
         let keys = peek_opencode_db_keys_at(&db_path);
@@ -1367,9 +1380,10 @@ mod tests {
             keys,
             vec![
                 ("opencode-go".to_string(), "live-new".to_string()),
+                ("deepseek".to_string(), "live-db-key".to_string()),
                 ("opencode".to_string(), "stale-console".to_string()),
             ],
-            "active=1 在前、NULL 拷贝在后、active=0 与 OAuth 剔除"
+            "active=1 在前、NULL 拷贝在后、active=0 与 OAuth 剔除、type:\"key\" 照收"
         );
 
         // 库缺席 / 表缺席 → 空表，绝不 panic。

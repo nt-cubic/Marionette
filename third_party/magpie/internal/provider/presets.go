@@ -31,6 +31,7 @@ type PresetDef struct {
 	Decide    string   `json:"decide,omitempty"` // a decision API: the provider only routes (see decide.go)
 	Catalog   string   `json:"catalog,omitempty"`
 	Website   string   `json:"website,omitempty"`
+	SiteHost  string   `json:"siteHost,omitempty"` // a partner's: the host its usemagpie.ai/go Website sends the browser to, which the editor's link reads
 	KeysURL   string   `json:"keysUrl,omitempty"`
 	NoKey     bool     `json:"noKey,omitempty"`     // local servers: a key is optional
 	KeyHint   string   `json:"keyHint,omitempty"`   // the key field's placeholder, when it says more than NoKey's
@@ -80,7 +81,8 @@ type Region struct {
 	KeysURL string `json:"keysUrl,omitempty"`
 	// Website, when the region's docs are another page than the preset's,
 	// is where the editor's link goes.
-	Website string `json:"website,omitempty"`
+	Website  string `json:"website,omitempty"`
+	SiteHost string `json:"siteHost,omitempty"` // as PresetDef's
 	// Catalog, for a region whose models another models.dev entry names
 	// than the preset's (Tencent Cloud's pay as you go, beside its plan's
 	// none), is that entry's id.

@@ -10,18 +10,80 @@ import { classifyToolCall, extractDiffStats, formatActivityTally } from "./turnA
 export type TurnDeliveryChangeType = "added" | "modified" | "deleted" | "untracked";
 
 export type TurnDeliveryFile = {
-  /** Original path as the tool / git reported it. */
+  /** Path as the tool / git reported it; relative when git knew the file. */
   path: string;
   /** Path relative to the session cwd; full path when it is not under cwd. */
   relPath: string;
   /** From turn-end git truth (`file_change`); absent in non-git projects. */
   changeType?: TurnDeliveryChangeType;
-  /** Summed diff stats from this turn's edit/write tool calls; null = unknown. */
+  /**
+   * Line counts: git's `--numstat` for the turn window when the file came back
+   * from the workspace delta, otherwise what this turn's edit/write tool calls
+   * reported. null = unknown.
+   */
   add: number | null;
   del: number | null;
   /** How many edit/write tool calls touched this file in the turn. */
   touched: number;
 };
+
+/** One path of the turn's git delta (`diff-tree` between the two snapshots). */
+export type TurnWorkspaceChange = {
+  path: string;
+  changeType: TurnDeliveryChangeType;
+  add: number | null;
+  del: number | null;
+  binary?: boolean;
+};
+
+/**
+ * Normalize a path for set comparison against `diff-tree` output: forward
+ * slashes, project-relative, lowercased (Windows worktree).
+ */
+export function normalizeWorkspacePath(path: string, root: string): string {
+  const pathFwd = path.replace(/\\/g, "/").replace(/^(\.\/)+/, "");
+  const rootFwd = (root || "").replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!rootFwd) return pathFwd.toLowerCase();
+  const lowerPath = pathFwd.toLowerCase();
+  const lowerRoot = rootFwd.toLowerCase();
+  if (lowerPath === lowerRoot) return "";
+  if (lowerPath.startsWith(`${lowerRoot}/`)) {
+    return pathFwd.slice(rootFwd.length + 1).toLowerCase();
+  }
+  return pathFwd.toLowerCase();
+}
+
+/**
+ * Which workspace changes may be attributed to this turn.
+ *
+ * A path that was **clean** when the turn started (absent from `dirtyAtStart`)
+ * and dirty at the end is always the turn's: any writer counts — an edit tool,
+ * a subagent, `npm run build`, a formatter.
+ *
+ * A path that was **already dirty** at turn start is only the turn's when the
+ * turn's own tools touched it. Without that rule, edits made by whatever else
+ * shares the workspace (a second Marionette conversation on the same project, a
+ * dev server, the user's editor) are published as this turn's work — the
+ * "delivery card shows the whole repo" complaint (2026-10-23).
+ *
+ * `dirtyAtStart === null` (repo without HEAD) means the split is unknowable, so
+ * every change in the window is kept rather than silently dropping files.
+ */
+export function selectTurnWorkspaceChanges(
+  changes: TurnWorkspaceChange[],
+  options: { dirtyAtStart: Iterable<string> | null; touched: Iterable<string>; root?: string },
+): TurnWorkspaceChange[] {
+  const root = options.root ?? "";
+  if (options.dirtyAtStart === null) return changes;
+  const dirty = new Set<string>();
+  for (const path of options.dirtyAtStart) dirty.add(normalizeWorkspacePath(path, root));
+  const touched = new Set<string>();
+  for (const path of options.touched) touched.add(normalizeWorkspacePath(path, root));
+  return changes.filter((change) => {
+    const key = normalizeWorkspacePath(change.path, root);
+    return !dirty.has(key) || touched.has(key);
+  });
+}
 
 export type TurnDelivery = {
   files: TurnDeliveryFile[];
@@ -30,6 +92,17 @@ export type TurnDelivery = {
   /** "1 think, 2 read, 3 edit" — closed-fold tally over the turn's events. */
   tally: string;
 };
+
+/** Collapsed delivery headline. Files take priority over command-only turns. */
+export function formatDeliveryHeadline(delivery: Pick<TurnDelivery, "files" | "commandCount">): string {
+  if (delivery.files.length > 0) {
+    return `${delivery.files.length} 个文件已更改`;
+  }
+  if (delivery.commandCount > 0) {
+    return `跑了 ${delivery.commandCount} 条命令`;
+  }
+  return "本轮无改动";
+}
 
 export type TurnDeliveryUnit = {
   kind: "delivery";
@@ -60,7 +133,17 @@ function relativeToCwd(path: string, cwd: string): string {
   return path;
 }
 
-type FileAccumulator = TurnDeliveryFile & { order: number };
+type FileAccumulator = TurnDeliveryFile & {
+  order: number;
+  /** git's own line counts for the turn window (wins over tool-reported). */
+  gitAdd: number | null;
+  gitDel: number | null;
+};
+
+/** `C:/x/repo/a.ts` and `a.ts` (cwd = `C:/x/repo`) are the same file. */
+function isAbsolutePath(path: string): boolean {
+  return /^([a-zA-Z]:[\\/]|[\\/]{1,2})/.test(path);
+}
 
 export function buildTurnDeliveries(
   events: SessionEvent[],
@@ -115,7 +198,12 @@ export function buildTurnDeliveries(
     const tallyItems: { event: SessionEvent; index: number }[] = [];
     let order = 0;
     const fileAt = (path: string): FileAccumulator => {
-      let entry = files.get(path);
+      // One row per file: git reports workspace-relative paths (`src/a.ts`),
+      // while a tool call carries whatever the agent sent — often an absolute
+      // Windows path. Keying on the raw string listed every tool-edited file
+      // twice (2026-10-23).
+      const key = normalizeWorkspacePath(path, cwd);
+      let entry = files.get(key);
       if (!entry) {
         entry = {
           path,
@@ -124,8 +212,14 @@ export function buildTurnDeliveries(
           del: null,
           touched: 0,
           order: order++,
+          gitAdd: null,
+          gitDel: null,
         };
-        files.set(path, entry);
+        files.set(key, entry);
+      } else if (!isAbsolutePath(path) && isAbsolutePath(entry.path)) {
+        // Prefer the relative form for the tooltip, the diff request and undo.
+        entry.path = path;
+        entry.relPath = relativeToCwd(path, cwd);
       }
       return entry;
     };
@@ -154,7 +248,12 @@ export function buildTurnDeliveries(
       } else if (event.type === "file_change") {
         // Git truth: covers files written by subagents and commands too.
         // Same file changed twice in a turn → last changeType wins.
-        fileAt(event.path).changeType = event.changeType;
+        const entry = fileAt(event.path);
+        entry.changeType = event.changeType;
+        if (typeof event.add === "number" && typeof event.del === "number") {
+          entry.gitAdd = event.add;
+          entry.gitDel = event.del;
+        }
       }
     }
 
@@ -163,7 +262,11 @@ export function buildTurnDeliveries(
 
     const orderedFiles = [...files.values()]
       .sort((a, z) => a.order - z.order)
-      .map(({ order: _order, ...file }) => file);
+      .map(({ order: _order, gitAdd, gitDel, ...file }) => ({
+        ...file,
+        add: gitAdd ?? file.add,
+        del: gitDel ?? file.del,
+      }));
     let totalAdd = 0;
     let totalDel = 0;
     let anyStats = false;

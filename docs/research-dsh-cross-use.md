@@ -274,3 +274,39 @@ request.defaultInput`（`DEFAULT_INPUT = ["text"]`）。`marionette` 是**目录
 **教训**：给 pi-ai 自定义路由广告模型，**`id` 不是全部**——`input`（以及
 `contextWindow`/`maxTokens`）不写就是 pi-ai 的默认值，DSH 会按默认值做内容投影。
 桥目录以后加能力位，先看 pi-ai `modelProfile` 有哪些字段。
+
+### 8.7 上线后补课三：`cordis.patch.yml` 被自己的「空 patch」形态卡死（2026-10-23）
+
+**症状**：DSH 会话的模型菜单里始终没有 `marionette::*`（跨用分组可点，但钉上去不生效），
+dev.log 每次 DSH spawn 都有一条：
+
+```
+[warn] [bridge] session=… dsh marionette route refresh failed; bridge skipped |
+  cordis.patch.yml 不是顶层数组形态（找不到 column-0 的 `- ` 条目）— 拒绝写入
+```
+
+**根因（自锁环）**：`dsh_bridge::remove_marionette_route_at` 在「我们的 entry 是文件里
+唯一条目」时把 entry 删干净、落一个 `[]` 占位——但**说明注释行留着**，文件变成
+「`MANAGED_HEADER` + `[]`」。下一次 spawn 走 `merge_home_patch` 时，空文件判定只认
+字面 `[]`，这个形态既不空、又没有 `- ` 条目 → 拒写。引擎只要闲置回收（或用户手动停）过一次，
+路由就**永久挂不上**，且失败的只是 warn，界面只表现为「DSH 没有共享模型」。
+
+**修复**（`src-tauri/src/dsh_bridge.rs`）：
+
+1. 空 patch 判定按语义来——只有注释/空行/`[]` 的文件一律当空 patch 重写（保留用户注释，
+   占位行被托管块取代）；`MANAGED_HEADER` 提成常量。
+2. 移除托管 entry 时连带收走 `MANAGED_HEADER`，不留「块在下面」的孤儿说明。
+3. 回归测试：`rewrites_comment_only_empty_patch`（三种骨架，含幂等）、
+   `remove_then_readd_round_trip`（移除 → 清成 `[]` → 再挂上）。
+
+**实弹复验**：拿本机那份坏文件（`MANAGED_HEADER` + `[]`）过修复后的合并函数产出
+patch + 临时 `DSH_HOME`，同款 NDJSON 探针（`initialize` → `session/new`）广告出
+82 条 `marionette::…`（`model option count: 84`，另两条是 `deepseek-official::*`）。
+
+**同一轮的前端补课**：`lib/bridge.ts` 的目录缓存以前只在会话挂载时拉一次，
+引擎在菜单打开期间醒来的话，已打开的菜单会一直显示「模型共享未运行」——对
+DSH/Pi/Codex 这种**只有引擎源**的 agent 就是「列表空着不刷新」（Claude/Grok 还有
+key-plan 分组，看着像刷新了）。现在 `invalidateBridgeModels()` 会通知订阅者，
+Composer 订阅后当场重拉（引擎状态翻转、凭据增删都会触发）。
+另：`bridge_list_models` 的「菜单打开先唤醒引擎」名单补上 `Zcode`
+（DSH/Pi 那次是同款漏登记）。

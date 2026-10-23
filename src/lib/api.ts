@@ -473,15 +473,6 @@ export async function loadTranscript(sessionId: string): Promise<unknown[]> {
   }
 }
 
-export async function searchSessions(query: string): Promise<string[]> {
-  if (!isTauriRuntime()) return [];
-  try {
-    return await invoke<string[]>("search_sessions", { query });
-  } catch {
-    return [];
-  }
-}
-
 export type AgentAuthProbe = {
   agentId: string;
   status: "logged_in" | "logged_out" | "unknown";
@@ -725,19 +716,74 @@ export async function getFileDiff(projectId: string, path: string): Promise<stri
   }
 }
 
-/**
- * Per-file diff fingerprints from one whole-tree `git diff` (two IPC calls per
- * snapshot). Replaces the per-file `getFileDiff` loop that spawned a git
- * process per changed file and stalled sends in Unity-scale repos for minutes.
- */
-export async function getFileFingerprints(
+export type RestoreTurnResult = {
+  restored: string[];
+  removed: string[];
+  skipped: string[];
+  errors: string[];
+};
+
+/** Restore this turn's files to git HEAD (untracked / never-in-HEAD paths are deleted). */
+export async function restoreTurnFiles(
   projectId: string,
-): Promise<Record<string, string>> {
-  if (!isTauriRuntime()) return {};
+  files: { path: string }[],
+): Promise<RestoreTurnResult> {
+  if (!isTauriRuntime()) {
+    return { restored: files.map((f) => f.path), removed: [], skipped: [], errors: [] };
+  }
+  return invoke<RestoreTurnResult>("restore_turn_files", { projectId, files });
+}
+
+/**
+ * Turn baselines are content trees of the whole worktree, taken through a
+ * private git index/object dir (`git_service::begin_workspace_snapshot`).
+ * Two of these per turn replace the old `getChangedFiles` + `getFileFingerprints`
+ * pair: `git status` reported 227 dirty paths in this repo while `git diff HEAD`
+ * could only fingerprint 41, and a failed snapshot silently became an empty
+ * baseline — every dirty file in the workspace then landed in the delivery card
+ * (2026-10-23). Neither call swallows its error: a failed baseline must fail
+ * closed (no git truth this turn), never "everything changed".
+ */
+export type TurnSnapshotStart = {
+  snapshotId: string;
+  /** Paths already dirty (vs HEAD) when the turn started; null without HEAD. */
+  dirtyPaths: string[] | null;
+};
+
+export type TurnSnapshotFile = {
+  path: string;
+  oldPath?: string | null;
+  changeType: "added" | "modified" | "deleted" | "untracked";
+  add: number;
+  del: number;
+  binary: boolean;
+};
+
+export type TurnSnapshotEnd = { files: TurnSnapshotFile[] };
+
+/**
+ * Snapshot the worktree as this turn's baseline. `null` = not a git work tree
+ * (the card then relies on the turn's own tool calls). Throws when git fails.
+ */
+export async function beginWorkspaceSnapshot(
+  projectId: string,
+): Promise<TurnSnapshotStart | null> {
+  if (!isTauriRuntime()) return null;
+  return invoke<TurnSnapshotStart | null>("begin_workspace_snapshot", { projectId });
+}
+
+/** Diff the worktree against a turn baseline — the turn's file delta. */
+export async function endWorkspaceSnapshot(snapshotId: string): Promise<TurnSnapshotEnd> {
+  return invoke<TurnSnapshotEnd>("end_workspace_snapshot", { snapshotId });
+}
+
+/** Drop a baseline whose prompt never reached the agent. */
+export async function discardWorkspaceSnapshot(snapshotId: string): Promise<void> {
+  if (!isTauriRuntime()) return;
   try {
-    return await invoke<Record<string, string>>("get_file_fingerprints", { projectId });
+    await invoke("discard_workspace_snapshot", { snapshotId });
   } catch {
-    return {};
+    // Best effort: the Rust side prunes stale snapshots on its own.
   }
 }
 

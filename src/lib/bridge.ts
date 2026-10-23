@@ -23,6 +23,26 @@ type CacheEntry = {
 
 const cache = new Map<string, CacheEntry>();
 
+/**
+ * Mounted pickers subscribe here so an invalidation reaches open dialogs.
+ *
+ * Without this the catalog was only ever fetched on mount: a menu opened
+ * while the engine slept kept rendering its "模型共享未运行" note (and no
+ * 共享 sections) after the gateway woke, until the user switched sessions
+ * (2026-10-23 user report — DSH looked like the odd one out because the
+ * engine-only sources empty out completely while key/reference agents still
+ * show their own groups).
+ */
+const listeners = new Set<() => void>();
+
+/** Notified after the cache is dropped — re-fetch to pick up the new state. */
+export function subscribeBridgeModels(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
 /** Cross-use catalog for one agent (cached after the first call). */
 export async function getBridgeModels(agentId: string): Promise<BridgeModelsResult> {
   const hit = cache.get(agentId);
@@ -40,6 +60,7 @@ export async function getBridgeModels(agentId: string): Promise<BridgeModelsResu
 export function invalidateBridgeModels(agentId?: string): void {
   if (agentId) cache.delete(agentId);
   else cache.clear();
+  for (const listener of [...listeners]) listener();
 }
 
 /**

@@ -15,6 +15,7 @@
 | `verify-usage-row-layout.mts` | `npx tsx scripts/verify-usage-row-layout.mts` | usage 行布局：不再渲染 Last turn / Session total |
 | `verify-text-pipeline.mjs` | `npm run verify:text` | 文本 / 展示管线的冒烟检查（只依赖 `markdownText.ts`，不需要整棵 import 图） |
 | `verify-activity-cluster.mts` | `npx tsx scripts/verify-activity-cluster.mts` | 活动折叠：thought+tool 同一集群、同类连续分组、结束后摘要为 `1 think, 2 read, 3 edit`、live 时跟当前工具 |
+| `verify-turn-delivery.mts` | `npx tsx scripts/verify-turn-delivery.mts` | 交付卡折叠文案「N 个文件已更改」、git truth 与 tool edit 并集、git numstat 覆盖工具统计、**本轮归属规则**（起点就脏的文件需本轮工具碰过、无 HEAD 不丢文件、路径归一） |
 | `verify-transcript-scroll.mts` | `npx tsx scripts/verify-transcript-scroll.mts` | 对话 tab 滚动：贴底/历史位置快照、切回时恢复、虚拟列表行高缓存跨 tab 还在 |
 | `verify-session-order.mts` | `npx tsx scripts/verify-session-order.mts` | 侧栏折叠预览：置顶行和「刚完成、还没点进去」的对话不会掉进 Show more |
 | `verify-agent-errors.mts` | `npx tsx scripts/verify-agent-errors.mts` | 错误分类：Grok `auth_transient` 不当成需要登录、OpenCode 按当前模型渠道给提示、426 仍走更新 |
@@ -24,5 +25,6 @@
 | `verify-permission-plan.mts` | `npx tsx scripts/verify-permission-plan.mts` | Claude Code ExitPlanMode：从权限请求的 `{plan}` JSON 里拆出 markdown，普通改文件权限不误判 |
 | `verify-interaction-stream.mts` | `npx tsx scripts/verify-interaction-stream.mts` | Plan/Ask 进对话流：独立卡片、transcript 往返、composer 按会话收起 |
 | `check-ui.mjs` | `node scripts/check-ui.mjs` | 通过 CDP 检查运行中的界面；需要先有一个开着 `--remote-debugging-port=9222` 的窗口 |
+| `patch-zcode-acp-personal-models.mjs` | `node scripts/patch-zcode-acp-personal-models.mjs [--dry-run]` | 给已安装的 `zcode-acp-server` 打补丁：个人层 provider 没有 `providerModelRules` 时回退到 `personalModelIds` / 内置模板 `builtinModelIds`，并给这些模型接上模板的上下文窗口（否则 ACP 菜单里该 provider 一条模型都没有、用量表读 `used / 0`）。**`npm i -g zcode-acp-server` 后要重跑**；分段幂等，旧版补丁会就地升级 |
 
 Rust 侧的自检在 `src-tauri\`：`cargo test --bin marionette`（这个 crate 是 bin-only，`--lib` 不适用）。

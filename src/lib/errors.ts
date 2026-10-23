@@ -136,7 +136,9 @@ export function classifyAgentError(
     )
   ) {
     let hint = authHint;
-    if (opts?.agentId === "opencode") {
+    if (isBridgeNativeModelId(opts?.currentModel)) {
+      hint = bridgeCredentialHint(message, agentLabel);
+    } else if (opts?.agentId === "opencode") {
       hint = openCodeAuthHint(opts.currentModel, authHint);
     } else if (isGrok) {
       hint = grokApiKeySpawnHint(message) ?? authHint;
@@ -273,6 +275,37 @@ export function isAuthTransientMessage(message: string): boolean {
     /still signed in/i.test(message) &&
     /no need to[\s\S]{0,80}\/?login/i.test(message)
   );
+}
+
+/**
+ * Native ids the cross-use bridge injects into an agent's own model catalog —
+ * grok/opencode/pi `marionette/<id>`, DSH `marionette::<id>`, zcode
+ * `marionette\<id>`. Must stay in sync with Composer.tsx::isBridgeNativeModel.
+ */
+function isBridgeNativeModelId(id: string | null | undefined): boolean {
+  const model = id?.trim() ?? "";
+  return (
+    model.startsWith("marionette/") ||
+    model.startsWith("marionette::") ||
+    model.startsWith("marionette\\")
+  );
+}
+
+/**
+ * Cross-use sessions route through the local model-sharing engine; an auth
+ * error there is the ENGINE's upstream credential failing (e.g. an expired
+ * OpenCode Go API key), never the agent's own login. Point at the credential
+ * page instead of the agent Sign-in (misdirected 2026-10-23: an
+ * `api_key_expired` from the engine showed a「ZCode 未登录」banner and sent
+ * the user to re-login uselessly).
+ */
+function bridgeCredentialHint(message: string, agentLabel: string): string {
+  const goKeyExpired =
+    /opencode\s*go/i.test(message) && /expired|过期/i.test(message);
+  const expiry = goKeyExpired
+    ? "（上游是 OpenCode Go：这把 API Key 已在服务端过期，重新登录不会续期——去 OpenCode Console 换新 Key）"
+    : "";
+  return `当前模型走 Marionette 模型共享引擎（跨用）${expiry}。这个认证错误出在引擎的上游凭据，不是 ${agentLabel} 登录——在设置的凭据页更新对应渠道的 Key 后重试，或把模型换回 ${agentLabel} 原生渠道。`;
 }
 
 function openCodeAuthHint(

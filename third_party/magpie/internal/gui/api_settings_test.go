@@ -231,6 +231,36 @@ func TestSettingsImageTimeout(t *testing.T) {
 	}
 }
 
+// How long a routing group's classifier is given (#2934) is set by the
+// Settings page, 0 for the default 8 seconds, kept by a save from a page
+// that doesn't send it, and refused past 60 with the saved value kept.
+func TestSettingsClassifyTimeout(t *testing.T) {
+	h := t.TempDir()
+	t.Setenv("HOME", h)
+	t.Setenv("USERPROFILE", h)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(h, ".config"))
+	handler := Handler(nil, nil)
+	for _, x := range []struct {
+		body string
+		code int
+		want int
+	}{
+		{`{"theme":"dark","classifyTimeout":30}`, http.StatusOK, 30},
+		{`{"theme":"light"}`, http.StatusOK, 30},
+		{`{"theme":"light","classifyTimeout":61}`, http.StatusBadRequest, 30},
+		{`{"theme":"light","classifyTimeout":0}`, http.StatusOK, 0},
+	} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest("POST", "/api/settings", strings.NewReader(x.body)))
+		if rec.Code != x.code {
+			t.Fatalf("%s: %d %s", x.body, rec.Code, rec.Body)
+		}
+		if got := settings.Load().ClassifyTimeout; got != x.want {
+			t.Fatalf("%s: classifyTimeout %d", x.body, got)
+		}
+	}
+}
+
 func TestSettingsColorblindMode(t *testing.T) {
 	h := t.TempDir()
 	t.Setenv("HOME", h)

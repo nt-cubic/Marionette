@@ -1417,125 +1417,8 @@ button.file-diff-card__code:hover {
   color: var(--text-faint);
 }
 
-/*
- * End-of-turn delivery card (交付卡): accent-tinted turn closer that lists
- * what the turn changed. File rows reuse the .change-badge glyphs from the
- * Changed Files panel and lazily expand a workspace diff inline.
- */
-.event-card--turn_delivery {
-  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
-  background: color-mix(in srgb, var(--accent) 4%, var(--panel-raised));
-}
-
-.event-card--turn_delivery > .event-card__summary::before {
-  color: var(--accent);
-}
-
-.event-card--turn_delivery .event-card__type {
-  color: var(--accent);
-}
-
-.turn-delivery {
-  display: grid;
-  gap: 6px;
-  margin: 8px 0 2px 22px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border);
-}
-
-.turn-delivery__files {
-  display: grid;
-  gap: 2px;
-}
-
-.turn-delivery__row {
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) auto 14px;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  min-height: 26px;
-  padding: 2px 4px;
-  border: 0;
-  border-radius: var(--radius-sm);
-  color: var(--text);
-  background: transparent;
-  text-align: left;
-  font: inherit;
-}
-
-.turn-delivery__row.is-expandable {
-  cursor: pointer;
-}
-
-.turn-delivery__row.is-expandable:hover,
-.turn-delivery__row.is-expandable:focus-visible {
-  background: var(--panel-soft);
-}
-
-/* No git changeType (non-git project) — keep the row aligned with a soft dot. */
-.turn-delivery__dot {
-  justify-self: center;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--text-faint);
-}
-
-.turn-delivery__path {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: "Cascadia Mono", Consolas, monospace;
-  font-size: 11.5px;
-}
-
-.turn-delivery__stats {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: baseline;
-  gap: 5px;
-  font-family: "Cascadia Mono", Consolas, monospace;
-  font-size: 10px;
-  font-weight: 700;
-}
-
-.turn-delivery__stat--add {
-  color: var(--green, #73d391);
-}
-
-.turn-delivery__stat--del {
-  color: var(--red, #ef6c73);
-}
-
-.turn-delivery__chevron {
-  color: var(--text-faint);
-  transition: transform 120ms ease;
-}
-
-.turn-delivery__chevron.is-open {
-  transform: rotate(180deg);
-}
-
-.turn-delivery__diff {
-  margin: 0 4px 2px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--panel-soft);
-}
-
-.turn-delivery__diff-note {
-  padding: 6px 8px;
-  color: var(--text-muted);
-  font-size: 11px;
-}
-
-.turn-delivery__tally {
-  color: var(--text-faint);
-  font-family: "Cascadia Mono", Consolas, monospace;
-  font-size: 11px;
-}
+/* Turn-delivery card chrome lives next to .event-card so it can override
+   the shared card fill (see .event-card.event-card--turn_delivery). */
 
 .project-row,
 .session-row,
@@ -2273,8 +2156,9 @@ body.is-project-reordering .project-list {
 .editor-tabs__tablist {
   position: relative;
   display: flex;
-  align-items: center;
-  gap: 2px;
+  /* Tabs stretch to the full bar height; the strip reads as one piece of chrome. */
+  align-items: stretch;
+  gap: 0;
   min-width: 0;
   overflow: hidden;
 }
@@ -2300,13 +2184,16 @@ body.is-project-reordering .project-list {
   box-sizing: border-box;
   /* Equal-width tabs (Chrome-style): after a close, the next × lands under the cursor. */
   flex: 1 1 0px;
-  height: 28px;
+  /* Full-bleed vertical: the tab fills the bar top-to-bottom and sits flush on the
+     border below, instead of floating as a rounded chip in the middle. */
+  align-self: stretch;
+  height: 100%;
   min-width: 104px;
   max-width: 240px;
   padding: 0 3px 0 8px;
   overflow: hidden;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
+  border: 0;
+  border-radius: 0;
   color: var(--text-muted);
   background: transparent;
   font-size: 12px;
@@ -2317,6 +2204,30 @@ body.is-project-reordering .project-list {
   z-index: 1;
   -webkit-app-region: no-drag;
   app-region: no-drag;
+}
+
+/* Hairline separators between neighbours; hover and the active tab eat theirs. */
+.editor-tab + .editor-tab::before {
+  content: "";
+  position: absolute;
+  top: 7px;
+  bottom: 7px;
+  left: 0;
+  width: 1px;
+  background: var(--border);
+}
+
+.editor-tab:hover::before,
+.editor-tab:hover + .editor-tab::before,
+.editor-tab.is-active::before,
+.editor-tab.is-active + .editor-tab::before {
+  opacity: 0;
+}
+
+/* Done tabs keep their green fill; the others lift on hover. */
+.editor-tab:not(.is-active):not(.is-done):hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text-muted) 12%, transparent);
 }
 
 .editor-tab__select,
@@ -2536,8 +2447,8 @@ body.is-tab-detaching .floating-trigger {
 }
 
 .editor-tab.is-done:not(.is-active) {
-  border-color: color-mix(in srgb, var(--green) 55%, var(--border));
   color: var(--text);
+  /* Borders went away with the full-height tabs; the fill carries the done state. */
   background: color-mix(in srgb, var(--green) 14%, transparent);
 }
 
@@ -2966,6 +2877,8 @@ body.is-tab-detaching .floating-trigger {
 
 .editor-tab__new {
   flex: 0 0 auto;
+  /* Tablist stretches now; pill buttons keep their own height, so centre them. */
+  align-self: center;
   margin-left: 2px;
   color: var(--text-muted);
   position: relative;
@@ -2975,9 +2888,11 @@ body.is-tab-detaching .floating-trigger {
 }
 
 .editor-tab.is-active {
-  border-color: var(--border);
-  color: var(--text);
+  color: var(--text-strong);
+  /* No chip border any more: the raised fill alone is too subtle on the dark
+     chrome, so the accent bar carries the selection. */
   background: var(--panel-raised);
+  box-shadow: inset 0 2px 0 var(--accent);
 }
 
 .editor-tab span {
@@ -3630,6 +3545,239 @@ body.is-tab-detaching .floating-trigger {
 .event-card--tool_call {
   border-color: color-mix(in srgb, var(--border) 80%, var(--text-muted));
   background: color-mix(in srgb, var(--panel-soft) 88%, transparent);
+}
+
+/*
+ * End-of-turn delivery (交付卡): a slightly taller, denser gray receipt.
+ * Accent green is the live/selected language; a finished turn stays in the
+ * same gray family as tool cards, distinguished by height + a muted rail.
+ * Must beat .event-card's panel-raised fill — on 纯白 that fill is paper-white.
+ */
+.event-card.event-card--turn_delivery {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 8px 12px 8px 11px;
+  border-color: color-mix(in srgb, var(--border-strong) 45%, var(--border));
+  border-left-width: 3px;
+  border-left-color: color-mix(in srgb, var(--text-muted) 72%, var(--border));
+  background: var(--panel-soft);
+  contain: inline-size;
+}
+
+.event-card.event-card--turn_delivery.is-undone {
+  border-left-color: var(--text-faint);
+  background: color-mix(in srgb, var(--panel-soft) 70%, var(--panel-muted));
+  opacity: 0.78;
+}
+
+.turn-delivery__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 22px;
+}
+
+.turn-delivery__toggle {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.turn-delivery__fold {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1;
+  transition: transform 120ms ease;
+}
+
+.turn-delivery__fold.is-open {
+  transform: rotate(90deg);
+}
+
+.turn-delivery__headline {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-strong);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.event-card.event-card--turn_delivery.is-undone .turn-delivery__headline {
+  color: var(--text-muted);
+}
+
+.turn-delivery__totals {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: baseline;
+  gap: 6px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.turn-delivery__undo {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--panel-raised) 55%, transparent);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.turn-delivery__undo:hover,
+.turn-delivery__undo:focus-visible {
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 35%, var(--border));
+  background: color-mix(in srgb, var(--red) 10%, var(--panel-raised));
+}
+
+.turn-delivery__undo:disabled {
+  opacity: 0.45;
+  cursor: default;
+  pointer-events: none;
+}
+
+.turn-delivery__error {
+  margin: 6px 0 0;
+  color: var(--red);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.turn-delivery {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 6px;
+  border: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--panel-muted) 72%, var(--panel-raised));
+}
+
+.turn-delivery__files {
+  display: grid;
+  gap: 1px;
+}
+
+.turn-delivery__row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto 14px;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 28px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+  font: inherit;
+}
+
+.turn-delivery__row.is-expandable {
+  cursor: pointer;
+}
+
+.turn-delivery__row.is-expandable:hover,
+.turn-delivery__row.is-expandable:focus-visible {
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+
+/* No git changeType (non-git project) — keep the row aligned with a soft dot. */
+.turn-delivery__dot {
+  justify-self: center;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+.turn-delivery__path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11.5px;
+}
+
+.turn-delivery__stats {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: baseline;
+  gap: 5px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.turn-delivery__stat--add {
+  color: var(--green, #73d391);
+}
+
+.turn-delivery__stat--del {
+  color: var(--red, #ef6c73);
+}
+
+.turn-delivery__chevron {
+  color: var(--text-faint);
+  transition: transform 120ms ease;
+}
+
+.turn-delivery__chevron.is-open {
+  transform: rotate(180deg);
+}
+
+.turn-delivery__diff {
+  margin: 0 4px 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+}
+
+.turn-delivery__diff-note {
+  padding: 6px 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.turn-delivery__tally {
+  padding: 2px 6px 2px;
+  color: var(--text-faint);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
 }
 
 .event-card--thought.is-thought-live {

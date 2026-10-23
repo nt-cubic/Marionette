@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 )
@@ -88,29 +89,47 @@ func TestPluginToldWhereTheAgentWorks(t *testing.T) {
 		mu.Lock()
 		got = nil
 		mu.Unlock()
-		postProto(t, New(), tc.path, tc.body)
+		rt := postProto(t, New(), tc.path, tc.body)
 		mu.Lock()
-		if len(got) != 1 {
-			mu.Unlock()
-			t.Fatalf("%s: the vendor got %d requests", tc.name, len(got))
-		}
-		h := got[0]
+		sent := slices.Clone(got)
 		mu.Unlock()
-		for _, k := range []string{"X-Magpie-Work-Dir", "X-Magpie-Work-Git"} {
-			if v := h.Values(k); len(v) > 0 {
-				t.Errorf("%s: the vendor got %s: %q", tc.name, k, v)
+		// the requests this case is about are its tries: one, or more when
+		// a try failed and the lone account was asked again after a moment
+		// (TestLastOneLeftIsTriedAgain), each told the same. A request with
+		// no try of its own would be a duplicate, and fails (#3347)
+		for _, x := range rt.Tries[:max(len(rt.Tries)-1, 0)] {
+			if x.Status == http.StatusOK {
+				t.Fatalf("%s: a try that answered was tried again: %+v", tc.name, rt.Tries)
 			}
+			t.Logf("%s: tried again after %d %s", tc.name, x.Status, x.Error)
 		}
-		dir := h.Get("X-Saw-Work-Dir")
-		if dir != "" {
-			d, err := url.PathUnescape(dir)
-			if err != nil {
-				t.Fatalf("%s: %q isn't percent-encoded: %v", tc.name, dir, err)
-			}
-			dir = d
+		if len(sent) == 0 || len(sent) > len(rt.Tries) {
+			t.Fatalf("%s: the vendor got %d requests in %d tries: %+v", tc.name, len(sent), len(rt.Tries), rt.Tries)
 		}
-		if dir != tc.dir || h.Get("X-Saw-Work-Git") != tc.git {
-			t.Errorf("%s: the plugin was told %q, git %q; want %q, %q", tc.name, dir, h.Get("X-Saw-Work-Git"), tc.dir, tc.git)
+		for _, h := range sent {
+			sawWorkPlace(t, tc.name, h, tc.dir, tc.git)
 		}
+	}
+}
+
+// sawWorkPlace checks what one request told the plugin (X-Saw-Work-*, as
+// the fake plugin echoes it) and that none of it reached the vendor.
+func sawWorkPlace(t *testing.T, name string, h http.Header, wantDir, wantGit string) {
+	t.Helper()
+	for _, k := range []string{"X-Magpie-Work-Dir", "X-Magpie-Work-Git"} {
+		if v := h.Values(k); len(v) > 0 {
+			t.Errorf("%s: the vendor got %s: %q", name, k, v)
+		}
+	}
+	dir := h.Get("X-Saw-Work-Dir")
+	if dir != "" {
+		d, err := url.PathUnescape(dir)
+		if err != nil {
+			t.Fatalf("%s: %q isn't percent-encoded: %v", name, dir, err)
+		}
+		dir = d
+	}
+	if dir != wantDir || h.Get("X-Saw-Work-Git") != wantGit {
+		t.Errorf("%s: the plugin was told %q, git %q; want %q, %q", name, dir, h.Get("X-Saw-Work-Git"), wantDir, wantGit)
 	}
 }

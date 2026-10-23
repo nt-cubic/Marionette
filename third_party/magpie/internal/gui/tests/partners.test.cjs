@@ -18,7 +18,13 @@ const assets = path.resolve(__dirname, "../assets");
 
 const partner = (id, name, extra = {}) => ({ id, name, icon: "generic", kind: "partner", sponsored: true, chat: `https://api.${id}.example.com/v1`, ...extra });
 const partners = [
-  partner("acme", "Acme AI", { notes: { en: "Fast relay", zh: "快速中转", ja: "高速な中継" } }),
+  partner("acme", "Acme AI", { notes: { en: "Fast relay", zh: "快速中转", ja: "高速な中継" },
+    // its pages are /go links, named by the host they send the browser to
+    website: "https://usemagpie.ai/go/acme/site", siteHost: "www.acme.example",
+    regions: [
+      { id: "cn", name: "China", chat: "https://api.acme.example.com/v1", website: "https://usemagpie.ai/go/acme/site/cn", siteHost: "cn.acme.example" },
+      { id: "global", name: "Global", chat: "https://global.acme.example.com/v1", website: "https://usemagpie.ai/go/acme/site/global", siteHost: "global.acme.example" },
+    ] }),
   partner("zhonly", "China Only", { langs: ["zh"], notes: { en: "Mainland relay", zh: "国内中转" } }),
   partner("taken", "Taken", { added: true }),
 ];
@@ -111,6 +117,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await sheet.locator(".tile", { hasText: "Acme AI" }).click();
         await page.locator("#modal .editor .ehead .note").waitFor();
         assert.equal(await page.locator("#modal .editor .ehead .note").textContent(), w.note);
+        // and its site by the partner's own host, not usemagpie.ai's,
+        // following the region picked
+        const site = page.locator("#modal .editor .ehead .link.site");
+        assert.equal(await site.textContent(), "cn.acme.example ↗");
+        await page.locator("#modal .editor .segs.regions .opt").nth(1).click();
+        assert.equal(await site.textContent(), "global.acme.example ↗");
+        assert.equal(await site.getAttribute("data-url"), "https://usemagpie.ai/go/acme/site/global");
         assert.deepEqual(errors, []);
         await page.context().close();
       });

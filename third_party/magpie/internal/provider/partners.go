@@ -83,8 +83,11 @@ var (
 	partnerFetches bool
 )
 
+// A list is fetched again after partnerEvery, so a partner added reaches
+// an app left running within the hour; the list is a couple of KB and its
+// icons aren't fetched again (partnerIcon).
 const (
-	partnerEvery = 6 * time.Hour
+	partnerEvery = time.Hour
 	partnerRetry = 10 * time.Minute
 )
 
@@ -106,8 +109,9 @@ func partnersSource() string {
 }
 
 // Partners are the partners listed now, in the list's order: what was
-// fetched last, never waited for. A list older than six hours is fetched
-// again behind the call, and the page asked again shows it.
+// fetched last, never waited for. A list this process hasn't fetched, or
+// fetched an hour ago, is fetched again behind the call, and the page
+// asked again shows it.
 func Partners() []Partner {
 	if partnersSource() == "off" {
 		return nil
@@ -181,8 +185,10 @@ func loadPartners() {
 			delete(c.Seen, id)
 		}
 	}
+	// partnerNext stays zero: a process started fetches on its first ask,
+	// whatever the kept list's age. Waiting out the kept list's six hours
+	// held back a partner added minutes after it was fetched, restart or not.
 	partnerState = &c
-	partnerNext = c.At.Add(partnerEvery)
 }
 
 // refreshPartners fetches the list and keeps it; on a failure the list
@@ -352,13 +358,24 @@ func partnerIcon(ctx context.Context, p Partner) string {
 	if p.IconURL == "" {
 		return "generic"
 	}
+	// an icon kept from the same URL is used as it is, so an hourly fetch
+	// doesn't download it again; a partner's new logo goes at a new URL
+	partnerMu.Lock()
+	loadPartners()
+	s, ok := partnerState.Seen[p.ID]
+	partnerMu.Unlock()
+	kept := ok && s.IconURL == p.IconURL && s.Icon != "" && s.Icon != "generic"
+	if kept {
+		if f := IconFile(strings.TrimPrefix(s.Icon, iconPrefix)); f != "" {
+			if _, err := os.Stat(f); err == nil {
+				return s.Icon
+			}
+		}
+	}
 	if icon, err := fetchPartnerIcon(ctx, p.IconURL); err == nil {
 		return icon
 	}
-	partnerMu.Lock()
-	defer partnerMu.Unlock()
-	loadPartners()
-	if s, ok := partnerState.Seen[p.ID]; ok && s.IconURL == p.IconURL {
+	if kept {
 		return s.Icon
 	}
 	return "generic"

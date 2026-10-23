@@ -47,6 +47,7 @@ import {
   getBridgeModels,
   resolveBridgeSources,
   stripBridgeGroupPrefix,
+  subscribeBridgeModels,
 } from "../lib/bridge";
 import {
   getCachedAgentVersions,
@@ -838,18 +839,37 @@ export function Composer({
 
   // ── Cross-use (bridge) catalog + binding restore ──────────────────────────
   // Loaded once per dialog; the module cache (lib/bridge.ts) keeps it cheap.
-  // Stale data after a credential change is accepted until the next remount.
+  // Re-fetched on every invalidation (engine state flip, credential change) so
+  // an already-open dialog stops showing the stale "模型共享未运行" note and
+  // picks up the 共享 sections once the gateway is actually up (2026-10-23
+  // user report: the menu only refreshed after switching sessions).
+  const bridgeLoadSeq = useRef(0);
+  const reloadBridgeCatalog = useCallback(() => {
+    if (!isTauriRuntime()) return;
+    if (!sessionId || sessionId.startsWith("session-empty-")) return;
+    const seq = (bridgeLoadSeq.current += 1);
+    void getBridgeModels(agent.id)
+      .then((catalog) => {
+        if (seq === bridgeLoadSeq.current) setBridgeCatalog(catalog);
+      })
+      .catch(() => undefined);
+  }, [agent.id, sessionId]);
+
+  useEffect(() => subscribeBridgeModels(reloadBridgeCatalog), [reloadBridgeCatalog]);
+
   useEffect(() => {
     if (!isTauriRuntime()) return;
     if (!sessionId || sessionId.startsWith("session-empty-")) return;
     let cancelled = false;
+    const seq = (bridgeLoadSeq.current += 1);
     void (async () => {
       const [catalog, binding] = await Promise.all([
         getBridgeModels(agent.id),
         bridgeGetBinding(sessionId),
       ]);
       if (cancelled) return;
-      setBridgeCatalog(catalog);
+      // A newer reload (engine/key change) already landed — its catalog wins.
+      if (seq === bridgeLoadSeq.current) setBridgeCatalog(catalog);
       // Restore the display state for an existing binding (suspend/restart);
       // the backend applies the binding itself at spawn time.
       if (!binding) return;

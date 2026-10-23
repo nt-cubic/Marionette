@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -519,6 +520,34 @@ func codexIn(at place) *Agent {
 		}
 		dropList()
 		return nil
+	}
+	// bringBack moves the threads started while magpie was Codex's
+	// provider (model_provider "magpie") onto the provider Codex is on now,
+	// once it is off magpie: Codex lists only the threads of its current
+	// provider (app-server thread/list, the TUI's resume picker), so after
+	// a Disconnect, a hand edit, or magpie stepping back beside the
+	// ChatGPT sign-in, every thread started on magpie was gone from Codex
+	// (kaizaoji on X). Only magpie's own threads move, never those of a
+	// provider of the user's (CC Switch's, #887); none while a profile
+	// still names magpie, whose threads they are; and a copy of each is
+	// kept in magpie's trash (MoveCodexProvider). A thread Codex wrote to
+	// in the last minute waits for the next Sync. This machine's Codex
+	// only: a distro's state database isn't magpie's to open.
+	bringBack := func() {
+		if at.spell != nil || namesMagpie() {
+			return
+		}
+		to := sessions.CodexProviderIn(dir)
+		if to == magpieID {
+			return
+		}
+		moved, err := sessions.MoveCodexThreads(dir, magpieID, to)
+		if len(moved) > 0 {
+			log.Printf("codex: %d thread(s) started on magpie moved to %s, where Codex lists them", len(moved), to)
+		}
+		if err != nil {
+			log.Println("codex: moving magpie's threads:", err)
+		}
 	}
 	// mirrorsTaken are the mirrors takeMirrors pointed at magpie (#1796)
 	mirrorsTaken := func() []string {
@@ -1162,6 +1191,8 @@ func codexIn(at place) *Agent {
 			if at.spell == nil {
 				portCodexHome(dir, codexPortUnwire)
 			}
+			// and are listed where Codex now is
+			bringBack()
 			return settle()
 		},
 		// signed in with ChatGPT, Codex reaches magpie by the base URL with
@@ -1223,6 +1254,9 @@ func codexIn(at place) *Agent {
 		},
 		OwnVia: codexOwnViaMagpie,
 		Sync: func() error {
+			// after the sync, which may have put Codex back beside its
+			// sign-in, and whatever it failed at
+			defer bringBack()
 			// model_catalog_json naming magpie's list with the list gone,
 			// as an older magpie's Disconnect could leave it (zwaydot on
 			// X): Codex loads no config at all then. Connected or not, the
