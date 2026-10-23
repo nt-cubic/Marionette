@@ -567,11 +567,141 @@ pub fn peek_opencode_api_keys_at(path: &Path) -> Vec<(String, String)> {
     out
 }
 
+/// opencode 新版凭据库（2026-10 起）：`opencode.db` 的 `credential` 表。
+/// `integration_id` 对应旧 auth.json 的键名；`value` 是 `{"type":"api","key":…}`
+/// JSON；同一 integration 可有多行，`active=1` 是活钥匙、`active=0` 是被替换的
+/// 旧钥匙（auth.json 里躺的就是这种）、NULL 是迁移拷贝。迁移完成后 TUI 只写
+/// 库不写 auth.json（2026-10-23 实锤：本机 auth.json 停在 09-02，库里
+/// opencode-go 已是 10-13 的新钥匙——引擎拿 auth.json 的旧钥匙查 Go 额度
+/// 401，换库里的活钥匙立即 200）。只读打开（WAL 下与 TUI 并发安全），
+/// 任何失败按空表处理。输出顺序：active=1 在前、NULL 在后（同组保持表序）
+/// ——下游 registration_plan 先到先得，活钥匙要排前面。
+fn peek_opencode_db_keys_at(db_path: &Path) -> Vec<(String, String)> {
+    use rusqlite::{Connection, OpenFlags};
+    let Ok(conn) = Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) else {
+        return Vec::new();
+    };
+    let mut stmt = match conn.prepare(
+        "SELECT integration_id, value, active FROM credential WHERE active IS NOT 0",
+    ) {
+        Ok(stmt) => stmt,
+        Err(_) => return Vec::new(),
+    };
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0).unwrap_or_default(),
+                row.get::<_, Option<String>>(1).ok().flatten().unwrap_or_default(),
+                row.get::<_, Option<i64>>(2).ok().flatten().unwrap_or(-1),
+            ))
+        })
+        .map(|rows| rows.flatten().collect::<Vec<_>>())
+        .unwrap_or_default();
+    let mut out: Vec<(bool, String, String)> = rows
+        .into_iter()
+        .filter_map(|(integration, value, active)| {
+            // OAuth 型条目（value 是令牌包）不进 key 注册；只收 api 型。
+            let parsed: serde_json::Value = serde_json::from_str(&value).ok()?;
+            if parsed.get("type").and_then(|t| t.as_str()) != Some("api") {
+                return None;
+            }
+            let key = parsed.get("key")?.as_str()?.trim().to_string();
+            if key.is_empty() {
+                return None;
+            }
+            Some((active == 1, integration, key))
+        })
+        .collect();
+    out.sort_by_key(|(live, _, _)| !*live);
+    out.into_iter().map(|(_, i, k)| (i, k)).collect()
+}
+
+/// 合并新旧两个凭据源：库里有钥匙的 integration 以库为准（活钥匙覆盖
+/// auth.json 的同名旧条目），库里没有的 integration 保留 auth.json 兜底
+/// （老版本 opencode / 手写场景）。库条目整体排在 auth 兜底前。
+fn merge_opencode_key_sources(
+    db: Vec<(String, String)>,
+    auth: Vec<(String, String)>,
+) -> Vec<(String, String)> {
+    let owned: std::collections::HashSet<String> = db
+        .iter()
+        .map(|(id, _)| id.to_ascii_lowercase())
+        .collect();
+    let mut out = db;
+    out.extend(
+        auth.into_iter()
+            .filter(|(id, _)| !owned.contains(&id.to_ascii_lowercase())),
+    );
+    out
+}
+
 /// 真实路径版（路径探测与扫描一致：.local/share → .config → %APPDATA%）。
+/// auth.json 之上叠加 opencode.db 的活钥匙（新版 opencode 的凭据正位，
+/// 见 [`peek_opencode_db_keys_at`]）。
 pub fn peek_opencode_api_keys() -> Vec<(String, String)> {
-    crate::provider_usage::opencode_auth_path()
-        .map(|path| peek_opencode_api_keys_at(&path))
-        .unwrap_or_default()
+    let Some(auth_path) = crate::provider_usage::opencode_auth_path() else {
+        return Vec::new();
+    };
+    let auth = peek_opencode_api_keys_at(&auth_path);
+    let db = auth_path
+        .parent()
+        .map(|dir| peek_opencode_db_keys_at(&dir.join("opencode.db")))
+        .unwrap_or_default();
+    merge_opencode_key_sources(db, auth)
+}
+
+/// ZCode 桌面版「个人 provider 层」（`~/.zcode/v2/provider_config.json`，
+/// `ZCODE_HOME` 可挪根，语义同 parsers/zcode.rs）里的 Coding Plan 钥匙。
+/// 钥匙在 `providerRules[].config.access`：`type` = `zhipu-coding-plan-api-key`
+/// + `apiKey`——**不在** v2/config.json 的 provider 条目里（那里 options.apiKey
+/// 恒为空；2026-10-23 实测：设置页配了钥匙、config.json 仍空、钥匙本体在
+/// 个人层）。该文件同时是跨用桥 model_bridge 的托管位——这里只读不写。
+/// 返回 (preset-id, key)：智谱 Coding Plan → glm（open.bigmodel.cn 的 coding
+/// 端点族，`magpie_provider_for_preset("glm")` 直达）。
+pub fn peek_zcode_coding_plan_keys() -> Vec<(String, String)> {
+    let Some(root) = crate::parsers::util::env_dir("ZCODE_HOME")
+        .or_else(|| crate::parsers::util::home_join(".zcode"))
+    else {
+        return Vec::new();
+    };
+    peek_zcode_coding_plan_keys_at(&root.join("v2").join("provider_config.json"))
+}
+
+fn peek_zcode_coding_plan_keys_at(path: &Path) -> Vec<(String, String)> {
+    let Ok(text) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Vec::new();
+    };
+    let Some(rules) = value
+        .pointer("/config/providerConfigRules/providerRules")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Vec::new();
+    };
+    rules
+        .iter()
+        .filter_map(|rule| {
+            let access = rule.pointer("/config/access")?;
+            let kind = access.get("type").and_then(serde_json::Value::as_str)?;
+            let key = access
+                .get("apiKey")
+                .and_then(serde_json::Value::as_str)?
+                .trim()
+                .to_string();
+            if key.is_empty() {
+                return None;
+            }
+            match kind {
+                "zhipu-coding-plan-api-key" => Some(("glm".to_string(), key)),
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 /// 解析一份 opencode auth.json。解析失败 → `error`，绝不 panic、绝不猜半截文件。
@@ -915,8 +1045,10 @@ pub fn scan_all() -> ScanReport {
 mod tests {
     use super::{
         add_key_plan_at, decrypt_stored, delete_entry_at, encrypt_stored, load_store_at,
-        peek_opencode_api_keys_at, peek_secret_at, scan_all_at, scan_claude_at, scan_codex_at,
-        scan_grok_at, scan_opencode_at, touch_last_used_at, CredentialEntry, CredentialKind,
+        merge_opencode_key_sources, peek_opencode_api_keys_at, peek_opencode_db_keys_at,
+        peek_secret_at, peek_zcode_coding_plan_keys_at, scan_all_at, scan_claude_at,
+        scan_codex_at, scan_grok_at, scan_opencode_at, touch_last_used_at, CredentialEntry,
+        CredentialKind,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1191,6 +1323,141 @@ mod tests {
         assert!(peek_opencode_api_keys_at(&auth_path).is_empty());
         let missing = home.join("nowhere").join("auth.json");
         assert!(peek_opencode_api_keys_at(&missing).is_empty());
+
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// opencode.db credential 表：active=1 是活钥匙、active=0 剔除、OAuth 型
+    /// 不收；活钥匙排在 NULL 迁移拷贝前（2026-10-23 实锤场景：库里
+    /// opencode-go 已换新钥匙，auth.json 还躺旧钥匙）。
+    #[test]
+    fn opencode_db_keys_prefer_active_and_skip_oauth() {
+        let home = temp_home("opencode_db");
+        let db_path = home.join(".local").join("share").join("opencode").join("opencode.db");
+        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        {
+            use rusqlite::{params, Connection};
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute(
+                "CREATE TABLE credential (integration_id TEXT, value TEXT, active INTEGER)",
+                [],
+            )
+            .unwrap();
+            let ins = |conn: &Connection, id: &str, value: String, active: Option<i64>| {
+                conn.execute(
+                    "INSERT INTO credential (integration_id, value, active) VALUES (?1, ?2, ?3)",
+                    params![id, value, active],
+                )
+                .unwrap();
+            };
+            let api = |key: &str| format!(r#"{{"type":"api","key":"{key}"}}"#);
+            ins(&conn, "opencode", api("stale-console"), None);
+            ins(&conn, "opencode-go", api("dead-old"), Some(0));
+            ins(&conn, "opencode-go", api("live-new"), Some(1));
+            ins(
+                &conn,
+                "xai",
+                r#"{"type":"oauth","access":"at-x"}"#.to_string(),
+                None,
+            );
+        }
+
+        let keys = peek_opencode_db_keys_at(&db_path);
+        assert_eq!(
+            keys,
+            vec![
+                ("opencode-go".to_string(), "live-new".to_string()),
+                ("opencode".to_string(), "stale-console".to_string()),
+            ],
+            "active=1 在前、NULL 拷贝在后、active=0 与 OAuth 剔除"
+        );
+
+        // 库缺席 / 表缺席 → 空表，绝不 panic。
+        assert!(peek_opencode_db_keys_at(&home.join("nowhere.db")).is_empty());
+        let empty_db = home.join("empty.db");
+        {
+            use rusqlite::Connection;
+            let conn = Connection::open(&empty_db).unwrap();
+            conn.execute_batch("CREATE TABLE other (x);").unwrap();
+        }
+        assert!(peek_opencode_db_keys_at(&empty_db).is_empty());
+
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// 库里的活钥匙按 integration 覆盖 auth.json 同名条目；库里没有的
+    /// integration 保留 auth.json 兜底；库条目整体在前（先到先得的注册
+    /// 计划因此优先拿活钥匙）。
+    #[test]
+    fn merge_prefers_db_live_keys_over_auth_json() {
+        let merged = merge_opencode_key_sources(
+            vec![("opencode-go".to_string(), "live-new".to_string())],
+            vec![
+                ("opencode".to_string(), "stale-console".to_string()),
+                ("opencode-go".to_string(), "dead-old".to_string()),
+                ("deepseek".to_string(), "ds-key".to_string()),
+            ],
+        );
+        assert_eq!(
+            merged,
+            vec![
+                ("opencode-go".to_string(), "live-new".to_string()),
+                ("opencode".to_string(), "stale-console".to_string()),
+                ("deepseek".to_string(), "ds-key".to_string()),
+            ]
+        );
+        assert!(merge_opencode_key_sources(Vec::new(), Vec::new()).is_empty());
+    }
+
+    /// ZCode 个人 provider 层的 Coding Plan 钥匙：只认
+    /// access.type=zhipu-coding-plan-api-key 且 key 非空；其它类型 / 缺文件 /
+    /// 坏 JSON → 空表（2026-10-23 实测：钥匙在此层，config.json 的
+    /// options.apiKey 恒空）。
+    #[test]
+    fn zcode_coding_plan_keys_read_personal_provider_layer() {
+        let home = temp_home("zcode_keys");
+        let path = home.join("provider_config.json");
+        write_file(
+            &path,
+            r#"{
+  "schemaVersion": "1",
+  "config": {
+    "providerConfigRules": {
+      "providerRules": [
+        {
+          "providerId": "bigmodel-api",
+          "providerName": "BigModel Coding Plan",
+          "config": {
+            "group": "standard-personal",
+            "access": {"type": "zhipu-coding-plan-api-key", "apiKey": "sk-zhipu-plan"}
+          }
+        },
+        {
+          "providerId": "zai-api",
+          "config": {
+            "access": {"type": "zai-coding-plan-api-key", "apiKey": "sk-zai-plan"}
+          }
+        },
+        {
+          "providerId": "empty-key",
+          "config": {"access": {"type": "zhipu-coding-plan-api-key", "apiKey": "  "}}
+        }
+      ]
+    }
+  }
+}"#,
+        );
+        assert_eq!(
+            peek_zcode_coding_plan_keys_at(&path),
+            vec![("glm".to_string(), "sk-zhipu-plan".to_string())]
+        );
+
+        // 缺文件 / 坏 JSON / 结构缺失 → 空表，绝不 panic。
+        assert!(peek_zcode_coding_plan_keys_at(&home.join("nowhere.json")).is_empty());
+        write_file(&path, "{\"schemaVersion\":");
+        assert!(peek_zcode_coding_plan_keys_at(&path).is_empty());
+        write_file(&path, r#"{"config": {}}"#);
+        assert!(peek_zcode_coding_plan_keys_at(&path).is_empty());
 
         let _ = fs::remove_dir_all(&home);
     }

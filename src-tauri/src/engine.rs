@@ -936,6 +936,9 @@ fn register_key_providers(exe: &Path) {
     // 引用侧是 opencode 的原始 provider id（zhipuai-coding-plan / moonshot…），
     // 先归一化成 preset id —— registration_plan 只认 preset（同名巧合
     // deepseek/opencode-go 之外，原名直查会整体漏注册）。
+    // 叠加 ZCode 个人 provider 层里的 Coding Plan 钥匙（glm preset）：显式
+    // key-plan 仍优先（上面已入列），ZCode 次之，opencode 扫描引用殿后。
+    key_plans.extend(crate::credentials::peek_zcode_coding_plan_keys());
     let references = crate::model_bridge::reference_keys_as_presets(
         crate::credentials::peek_opencode_api_keys(),
     );

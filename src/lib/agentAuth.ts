@@ -65,6 +65,13 @@ export const AGENT_AUTH: Record<string, AgentAuthSpec> = {
     errorHint:
       "DeepSeek 未配置时可点横幅 Sign in，或在 Provider keys 里填 DEEPSEEK_API_KEY，或终端执行 `dsh-acp login`。",
   },
+  zcode: {
+    probe: true,
+    login: true,
+    loginCommand: "zcode login",
+    errorHint:
+      "ZCode 未登录时可点横幅 Sign in（走浏览器授权），或先安装并登录 ZCode 桌面版 —— 凭据共享自 ~/.zcode。",
+  },
 };
 
 export function agentAuthSpec(
