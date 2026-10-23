@@ -91,7 +91,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(await rows.nth(9).locator(".cache-hit").count(), 0, "a request still underway has no final rate");
         assert.equal(await rows.nth(12).locator(".meta").isVisible(), false, "a row with no available metrics has no empty band");
         assert.equal(await rows.locator(".rt-metric").filter({ hasText: "—" }).count(), 0, "unavailable metrics leave no dash placeholders");
-        assert.equal(await rows.nth(0).locator(".ttft .k").textContent(), lang === "zh" ? "首响" : "First token");
+        assert.equal(await rows.nth(0).locator(".ttft .k").textContent(), lang === "zh" ? "首字耗时" : "First token");
         const labels = lang === "zh" ? ["Token 明细", "输入（未缓存）", "输出", "缓存读取", "缓存写入"]
           : ["Token breakdown", "Input (uncached)", "Output", "Cache read", "Cache write"];
         assert.equal(await rows.nth(0).locator(".tokens").getAttribute("title"),
@@ -124,8 +124,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await rows.nth(0).click();
       assert.match(await page.locator(".rt-steps").textContent(), lang === "zh" ? /请求缓存命中率 60%/ : /request cache hit rate 60%/);
       if (lang === "zh") {
-        assert.match(await page.locator(".rt-steps").textContent(), /后首响/);
-        assert.doesNotMatch(await page.locator(".rt-steps").textContent(), /首字/);
+        assert.match(await page.locator(".rt-steps").textContent(), /后出首字/);
+        assert.doesNotMatch(await page.locator(".rt-steps").textContent(), /首响/);
       }
       for (const width of [1280, 1000, 700, 480, 360]) {
         await page.setViewportSize({ width, height: 900 });
@@ -198,7 +198,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await menu.locator('[role="menuitemcheckbox"]').count(), 6);
       // Keep only cache and speed. Each click updates the list immediately,
       // with the menu open and focus on the checkbox for continued selection.
-      const labels = lang === "zh" ? ["耗时", "首响", "Token", "费用"] : ["Duration", "First token", "Tokens", "Cost"];
+      const labels = lang === "zh" ? ["耗时", "首字耗时", "Token", "费用"] : ["Duration", "First token", "Tokens", "Cost"];
       for (const [i, label] of labels.entries()) {
         const option = menu.getByRole("menuitemcheckbox", { name: label, exact: true });
         await option.click();

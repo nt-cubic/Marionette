@@ -1509,14 +1509,24 @@ func dshLevels(ref string) []string {
 // near its window leaves dsh compacting at a sliver of it, or failing to
 // (#2823): 500000 with 393216 compacted at 41248; 524288 with 524288, and
 // 131072 with 65536, left it no budget at all. So the vendor's figure is
-// held to a quarter of the window, as VS Code's and Copilot's are, while a
-// Max output the user set stays as they set it (outputOr).
+// held to what leaves dsh half the window to compact in (window/2 - 65536),
+// or to a quarter of the window, as VS Code's and Copilot's are, where that
+// is more: a window under 262144 has no half to spare. A quarter alone cut
+// DeepSeek's 393216 on its 1000000 window to 250000, where dsh compacts at
+// 541248 with all of it (#3298); 500000 with 393216 is held to 184464 and
+// compacts at 250000. A Max output the user set stays as they set it
+// (outputOr).
 func dshMaxTokens(m catalog.Model) int {
 	if m.Context <= 0 {
 		return maxTokens(m)
 	}
-	return outputOr(m, min(maxTokens(m), max(1, m.Context/4)))
+	room := max(m.Context/4, m.Context/2-dshHeadroom)
+	return outputOr(m, min(maxTokens(m), max(1, room)))
 }
+
+// dshHeadroom is compaction-basic's default headroomTokens: what dsh keeps
+// free beside a request's maxTokens before it compacts.
+const dshHeadroom = 65536
 
 // dshRouteConfig is magpie's first route with every one of models on it.
 func dshRouteConfig(models []catalog.Model, api, gw string) dshPiRoute {

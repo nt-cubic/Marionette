@@ -56,6 +56,24 @@ func TestAccountNameOfAPluginAccount(t *testing.T) {
 	if qs[0].Alias != "某某·GLM 高级版" {
 		t.Fatalf("card alias %q", qs[0].Alias)
 	}
+	// and on what the vendor's name is kept by: the Usage page's Accounts,
+	// a gateway key's accounts, Routing's pools (magpie-community/plugins#310:
+	// a renamed Kiro account read by its old name on every request after)
+	if got := AccountShownOf(id, "31****36@qq.com"); got != "某某·GLM 高级版" {
+		t.Fatalf("shown as %q", got)
+	}
+	if got := AccountShownOf(id, "nobody@qq.com"); got != "nobody@qq.com" {
+		t.Fatalf("an unnamed account shown as %q", got)
+	}
+	var shown []string
+	for _, v := range AccountNames() {
+		if strings.HasPrefix(v, id+"/") {
+			shown = append(shown, v)
+		}
+	}
+	if len(shown) != 1 || shown[0] != id+"/某某·GLM 高级版" {
+		t.Fatalf("a gateway key's accounts read %q", shown)
+	}
 	for _, bad := range []struct{ ref, name string }{
 		{"nobody@qq.com", "x"},
 		{"31****36@qq.com", strings.Repeat("名", MaxAccountName+1)},

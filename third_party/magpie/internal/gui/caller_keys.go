@@ -79,10 +79,11 @@ func callerKeyRoutes(mux *http.ServeMux) {
 				continue
 			}
 			name := cmp.Or(p.Name, p.ID)
-			// an account by its stable id, kept through renames, shown by who
-			// is signed in; a key by its fingerprint
+			// an account by its stable id, kept through renames, shown by the
+			// name the user gave it, else who is signed in; a key by its
+			// fingerprint
 			for _, a := range p.AccountIDs() {
-				accounts = append(accounts, keyModelJSON{ID: p.ID + "/" + a.ID, Name: a.User, Provider: p.ID, ProviderName: name, Account: !a.Key, Key: a.Key, Plan: a.Plan})
+				accounts = append(accounts, keyModelJSON{ID: p.ID + "/" + a.ID, Name: a.Shown(p), Provider: p.ID, ProviderName: name, Account: !a.Key, Key: a.Key, Plan: a.Plan})
 			}
 		}
 		writeJSON(w, map[string]any{"models": out, "accounts": accounts})

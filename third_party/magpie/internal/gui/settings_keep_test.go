@@ -184,6 +184,7 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 	was.DesktopSubagentEffort = "high"
 	was.CodexAsyncCompact, was.CodexAsyncCompactPercent = true, 70
 	was.ClaudeRunsMost = 3
+	was.ProxyCustom = "http://me:secret@proxy.example:8080"
 	if err := settings.Save(was); err != nil {
 		t.Fatal(err)
 	}

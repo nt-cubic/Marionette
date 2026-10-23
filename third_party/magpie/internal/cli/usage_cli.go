@@ -13,6 +13,7 @@ import (
 
 	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/fx"
+	pr "github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
 	stats "github.com/yetone/magpie/internal/usage"
 )
@@ -254,7 +255,8 @@ func printUsage(out io.Writer, s stats.Summary, title string, names map[string]s
 	}
 	if len(s.Accounts) > 0 {
 		table("accounts", s.Accounts, func(g stats.Group) string {
-			who := g.Account
+			// by the name the user gave it now (plugins#310)
+			who := pr.AccountShownOf(g.Provider, g.Account)
 			if who == "" {
 				who = "account not recorded"
 			}

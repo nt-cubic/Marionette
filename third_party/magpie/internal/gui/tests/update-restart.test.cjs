@@ -147,10 +147,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
         // automatic updates off: kept, dimmed, says when it works
         // (the version row above then says automatic updates are off, a
-        // line that can grow it by a pixel or two: what is held is the
-        // control clicked, where it is on the screen, unless the view is at
-        // its top, which stays at its top and lets the switch move down by
-        // those pixels, #2134)
+        // line that grows it about 12px: what is held is the control
+        // clicked, where it is on the screen, unless the view is at its
+        // top, which stays at its top and lets the switch move down by
+        // less than its height, #2134)
         await showRow(page, auto);
         const settings = page.locator("#view-settings");
         const atTop = await settings.evaluate((v) => v.scrollTop < 1);
@@ -164,7 +164,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const y1 = (await auto.locator(".opt").nth(0).boundingBox()).y;
         if (atTop) {
           assert.equal(await settings.evaluate((v) => v.scrollTop), 0, "a view at its top stays at its top");
-          assert.ok(y1 - y0 >= -1 && y1 - y0 <= 4, `the clicked switch moved ${y1 - y0}px`);
+          const tall = (await auto.locator(".opt").nth(0).boundingBox()).height;
+          assert.ok(y1 - y0 >= -1 && y1 - y0 < tall, `the clicked switch moved ${y1 - y0}px, its height ${tall}px`);
         } else assert.ok(Math.abs(y1 - y0) <= 1, `the clicked switch moved ${y1 - y0}px`);
 
         // and off again

@@ -86,6 +86,28 @@ func AutoModeReviewed(p provider.Provider, model string) bool {
 	return anthropicModel.MatchString(model)
 }
 
+// AutoModeReviewable reports whether Claude Code, asking for model at p
+// through magpie, can have its actions reviewed: AutoModeReviewed, on a
+// route that reaches the Messages API. A Claude model p serves only on
+// Chat or Responses (a relay with no Anthropic endpoint, or one the user
+// set to be asked on another API) is asked translated, and a translation
+// carries neither the safeguards nor their results (nexnull on Discord).
+// The agent's wiring asks this before a request is made; serverReview,
+// on the Messages route already, asks AutoModeReviewed.
+func AutoModeReviewable(p provider.Provider, model string) bool {
+	if !AutoModeReviewed(p, model) {
+		return false
+	}
+	if p.Account != nil {
+		return true // the Claude subscription, through Claude Code's own binary
+	}
+	if p.Base(provider.Anthropic) == "" {
+		return false
+	}
+	apis := p.APIs(model)
+	return apis == nil || slices.Contains(apis, provider.Anthropic)
+}
+
 // classifierRoom is what a model that reasons is given on top of the
 // classifier's own budget, as Claude Code gives a Claude model that can't
 // turn its thinking off.
