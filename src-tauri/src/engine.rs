@@ -902,6 +902,7 @@ fn register_key_providers(exe: &Path) {
     if test_register_hook().is_some() {
         return;
     }
+    let _ = sync_sources_at(exe);
     let Some(home) = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)
@@ -1015,6 +1016,107 @@ fn register_key_providers(exe: &Path) {
         }
     }
     save_registered_ledger(&ledger_path, &kept_ledger);
+}
+
+/// Generic provider definitions discovered in CLI files. A separate ownership
+/// ledger keeps these routes apart from preset registrations and user routes.
+/// Fingerprints stay in memory only; secrets never enter the ledger or logs.
+fn sync_sources_at(exe: &Path) -> Vec<String> {
+    use sha2::{Digest, Sha256};
+    static SYNC: OnceLock<Mutex<std::collections::HashMap<String, Vec<u8>>>> = OnceLock::new();
+    let Ok(mut fingerprints) = SYNC.get_or_init(|| Mutex::new(std::collections::HashMap::new())).lock() else { return vec!["模型来源同步正忙".into()] };
+    let Ok(dir) = engine_dir() else { return vec![] };
+    let path = dir.join("discovered-providers.json");
+    let ledger = load_registered_ledger(&path);
+    let discovery = crate::model_sources::discover();
+    let mut warnings = vec![];
+    let mut kept = vec![];
+    let mut changed = false;
+    for source in &discovery.sources {
+        if source.view.issue.is_some() { continue; }
+        let id=&source.view.id;
+        let endpoint_key = match source.view.protocol.as_str() { "anthropic" => "anthropic", "responses" => "responses", _ => "url" };
+        let mut pairs=vec![format!("{endpoint_key}={}",source.view.endpoint),format!("key={}",source.key),format!("name={}",source.view.label)];
+        pairs.push(format!("models={}",source.view.models.iter().map(|m|m.id.as_str()).collect::<Vec<_>>().join(",")));
+        for (k,v) in &source.headers { pairs.push(format!("header.{k}={v}")); }
+        let fingerprint=Sha256::digest(pairs.join("\n")).to_vec();
+        if fingerprints.get(id)==Some(&fingerprint) && ledger.contains(id) { kept.push(id.clone()); continue; }
+        let mut args=vec!["provider", "set", id.as_str()];
+        args.extend(pairs.iter().map(String::as_str));
+        let result=run_magpie_cli(exe,&args).or_else(|_| {
+            let id_pair=format!("id={id}");
+            let mut args=vec!["provider","add",id.as_str(),id_pair.as_str()];
+            args.extend(pairs.iter().map(String::as_str));
+            run_magpie_cli(exe,&args)
+        });
+        if result.is_ok() { fingerprints.insert(id.clone(),fingerprint); kept.push(id.clone()); changed = true; }
+        else { warnings.push(format!("{} 来源注册失败，可刷新重试",source.view.label)); if ledger.contains(id) {kept.push(id.clone());} }
+    }
+    // On unreadable source files retain old routes for retry; do not interpret
+    // a parse failure as the user deliberately removing their provider.
+    for id in &ledger {
+        if kept.contains(id) {continue;}
+        if !discovery.warnings.is_empty() || run_magpie_cli(exe,&["provider","rm",id]).is_err() { kept.push(id.clone()); }
+        else { fingerprints.remove(id); changed = true; }
+    }
+    kept.sort(); kept.dedup();
+    save_registered_ledger(&path,&kept);
+    if changed {
+        if let Some(cache) = CATALOG.get() {
+            if let Ok(mut guard) = cache.lock() { *guard = None; }
+        }
+    }
+    warnings
+}
+
+pub fn sync_discovered_sources() -> Vec<String> {
+    if !matches!(status(),EngineStatus::Running {..}) { return vec![]; }
+    let Ok(dir)=engine_dir() else {return vec![]};
+    let exe=exe_path(&dir);
+    // Reused user installations are not owned by Marionette.
+    if matches!(status(),EngineStatus::Running {reused:true,..}) { return vec!["当前复用外部引擎；发现的 CLI 来源需由 Marionette 自带引擎接入".into()]; }
+    sync_sources_at(&exe)
+}
+
+/// Exact account aliases for menu presentation. Compare resolved credentials
+/// in memory, rather than merging unrelated accounts by model name.
+pub fn model_source_aliases(sources: &[crate::model_sources::Source]) -> std::collections::BTreeMap<String,String> {
+    let mut candidates: Vec<(String,String,String)> = vec![];
+    if let Ok(store)=crate::credentials::load_store() {
+        for e in store.entries {
+            let Some(preset)=e.preset else {continue};
+            if magpie_provider_for_preset(&preset).is_some() {
+                if let Some(key)=crate::credentials::peek_secret(&e.id) { candidates.push((e.id,preset,key)); }
+            }
+        }
+    }
+    for (provider,key) in crate::credentials::peek_opencode_api_keys() {
+        if let Some(preset)=crate::model_bridge::preset_for_opencode_provider(&provider) { candidates.push((format!("opencode/{provider}"),preset.id.into(),key)); }
+    }
+    let mut chosen: std::collections::HashMap<String,String>=std::collections::HashMap::new();
+    let mut aliases=std::collections::BTreeMap::new();
+    for (entry,preset,key) in candidates {
+        let Some((provider,_))=magpie_provider_for_preset(&preset) else {continue};
+        let selected=chosen.entry(provider.into()).or_insert_with(||key.clone());
+        if *selected!=key {continue;}
+        let canonical=format!("engine:{provider}");
+        aliases.insert(format!("entry:{entry}"),canonical.clone());
+        let Some(preset)=crate::model_bridge::find_preset(&preset) else {continue};
+        for source in sources {
+            // Same account = same key on the same vendor host, however each
+            // config spells the path (Grok writes `/inference/go/openai/v1`
+            // where the preset publishes `/inference/go/v1`).
+            let same_host = crate::model_sources::same_vendor_host(
+                &source.view.endpoint,
+                preset.chat_base,
+                preset.anthropic_base,
+            );
+            if source.key == key && same_host {
+                aliases.insert(format!("engine:{}",source.view.id),canonical.clone());
+            }
+        }
+    }
+    aliases
 }
 
 /// 凭据侧有变化（新增/删除 key-plan、opencode auth.json 更新）后的补注册。

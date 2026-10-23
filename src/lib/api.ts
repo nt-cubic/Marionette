@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { normalizeCredentialScan } from "./credentialScan";
 import { agents as mockAgents, projects as mockProjects, sessions as mockSessions, memoryStore as mockMemoryStore, dshPlugins as mockDshPlugins } from "./mockData";
 import type { AgentConfig, AgentCommandStatus, CapabilitySnapshot, Project, ProviderInfo, ProxyConfig, ProxyTestResult, Session, SessionLabelSource } from "./types";
 
@@ -991,6 +992,7 @@ export type BridgeScanSource = {
 
 export type BridgeScanReport = {
   sources: BridgeScanSource[];
+  entries?: BridgeEntryView[];
 };
 
 export type BridgeEntryKind = "key-plan" | "subscription" | "reference";
@@ -1045,10 +1047,14 @@ export type BridgeSelection = {
 export async function bridgeScan(): Promise<BridgeScanReport | null> {
   if (!isTauriRuntime()) return null;
   try {
-    return await invoke<BridgeScanReport>("bridge_scan");
+    return normalizeCredentialScan(await invoke<unknown>("bridge_scan"));
   } catch {
     return null;
   }
+}
+
+export async function bridgeAddCustomProvider(label: string, key: string, endpoint: string, protocol: string, models: string[]): Promise<void> {
+  await invoke("bridge_add_custom_provider", { label, key, config: { endpoint, protocol, models } });
 }
 
 export async function bridgeListEntries(): Promise<BridgeEntryView[]> {
