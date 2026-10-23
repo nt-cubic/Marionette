@@ -27,7 +27,7 @@ func TestPluginAccountLackingTheModelGoesLast(t *testing.T) {
 	t.Cleanup(plugin.Settle)
 	var mu sync.Mutex
 	var keys []string
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	up := testenv.FakeVendor(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		mu.Lock()
 		keys = append(keys, r.Header.Get("Authorization"))
@@ -42,7 +42,6 @@ func TestPluginAccountLackingTheModelGoesLast(t *testing.T) {
 		io.WriteString(w, sse(`event: response.completed`+"\n"+`data: {"type":"response.completed","response":`+done+`}`))
 	}))
 	defer up.Close()
-	t.Setenv("FAKE_BASE", up.URL+"/v1")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	abs, _ := filepath.Abs("../plugin/testdata/fake/index.js")

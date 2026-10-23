@@ -46,6 +46,10 @@ type Seat struct {
 	// its vendor serves that model at no cost to the subscription's
 	// allowance or credits (catalog.Model's Free). FreeFirst goes by it.
 	Free bool
+	// Credits: a Codex account that goes on past its allowance on its
+	// credits, and is let spend them. All but used up, it goes before
+	// those used up with nothing to go on with.
+	Credits bool
 }
 
 // Strategy orders a pool.

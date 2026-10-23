@@ -36,7 +36,8 @@ func revokedReply(req *http.Request, why string) *http.Response {
 
 // noteSignIn tells provider what the vendor said of the sign-in req went
 // with: a 401 that says it is revoked marks it, a request served clears a
-// mark the account had. The body read is put back for the caller.
+// mark the account had, and one that says the token expired renews it.
+// The body read is put back for the caller.
 func noteSignIn(ctx context.Context, a *provider.Account, req *http.Request, res *http.Response) {
 	if a == nil || res == nil {
 		return
@@ -47,8 +48,14 @@ func noteSignIn(ctx context.Context, a *provider.Account, req *http.Request, res
 	case res.StatusCode == http.StatusUnauthorized && res.Body != nil:
 		b, err := io.ReadAll(io.LimitReader(res.Body, 64<<10))
 		res.Body = readCloser{io.MultiReader(bytes.NewReader(b), res.Body), res.Body}
-		if err == nil && provider.SignInRevoked(res.StatusCode, b) {
+		switch {
+		case err != nil:
+		case provider.SignInRevoked(res.StatusCode, b):
 			provider.NoteRevokedSignIn(ctx, a, req)
+		case provider.SignInExpired(res.StatusCode, b):
+			// expired while its exp was ahead: renewed for the next
+			// request (#2973)
+			provider.NoteExpiredSignIn(ctx, a, req)
 		}
 	}
 }

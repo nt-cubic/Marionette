@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/yetone/magpie/internal/testenv"
 )
 
 // A plugin with auth.refresh leaves renewing its sign-ins to magpie: a
@@ -24,14 +25,13 @@ func TestPluginRenewsSignIns(t *testing.T) {
 	sandbox(t)
 	var mu sync.Mutex
 	var seen []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := testenv.FakeVendor(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		seen = append(seen, r.Header.Get("Authorization"))
 		mu.Unlock()
 		io.WriteString(w, "ok")
 	}))
 	defer srv.Close()
-	t.Setenv("FAKE_BASE", srv.URL+"/v1")
 	logf := filepath.Join(t.TempDir(), "renewals")
 	t.Setenv("RENEW_LOG", logf)
 	said := make(chan string, 16)

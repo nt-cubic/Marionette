@@ -552,6 +552,9 @@ function routingPage(part) {
       case "window": return t("Its allowance is used up: it rests until that renews, at {time}", { time });
       case "resets": return t("It rests until {time}, when the vendor says the limit resets", { time });
       case "quota": return t("It rests 15 minutes: out of quota, with no word of when it resets");
+      // a Codex account that holds credits, refused again once asked
+      // again onto them: not benched until its window renews
+      case "credits": return t("It holds credits, so it rests only {d} and its usage is read again, not until its allowance renews", { d });
       case "verify": return t("The vendor wants the account verified first: it rests half an hour, or until you say it's verified");
       // its provider set never to rest after an unknown failure
       // (`magpie provider rest-cap <id> off`): asked again next time
@@ -632,6 +635,7 @@ function routingPage(part) {
     if (f.kind !== "account" && !f.known) return t("{who} goes first.", { who: w });
     if (f.learns && peers.some((p) => p.known)) return t("{who} goes first: what it has left isn't known yet, and its answer tells — kept behind those known, it would never answer and never be known.", { who: w });
     if (!f.known && !peers.some((p) => p.known)) return t("The vendor hasn't said yet what these accounts have left, so they go in their order: {who} first.", { who: w });
+    if (group(f) === "spent" && f.credits) return t("Every account is all but used up, so {who} goes first: it goes on on its credits, which the vendor spends once its allowance is used up.", { who: w });
     if (group(f) !== "fine") return r.order.some((x) => x.kind !== "account" && x.known)
       ? t("Every key and account here is at 90% or more of its allowance, so the one with the most left goes first: {who}, at {n}.", { who: w, n: pct(f.used) })
       : t("Every account is at 90% or more of its allowance, so the one with the most left goes first: {who}, at {n}.", { who: w, n: pct(f.used) });
@@ -674,6 +678,7 @@ function routingPage(part) {
     for (const x of r.order.slice(1)) {
       if (x.sunk && !x.rest) out.push(t("{who} was rate limited at {time} while it had quota left, so it went to the back: it comes round again once those ahead of it are rate limited in turn.", { who: who(x), time: clock(x.sunk) }));
       else if (x.rest) out.push(t("{who} is resting — {why}, {when} — so it waits at the back.", { who: who(x), why: `${x.rest.status} · ${failWord(x.rest.why)}`, when: restWhen(x.rest, at(r.time)) }));
+      else if (smart(x) && x.known && group(x) === "spent" && x.credits) out.push(t("{who} is at {n} of its allowance but goes on on its credits — ahead of those used up with nothing to go on with, after those with allowance left.", { who: who(x), n: pct(x.used) }));
       else if (smart(x) && x.known && group(x) === "spent") out.push(t("{who} is at {n} — all but used up, it answers only when nothing else can.", { who: who(x), n: pct(x.used) }));
       else if (smart(x) && x.known && group(x) === "low") out.push(t("{who} is at {n} — kept for when the others can't.", { who: who(x), n: pct(x.used) }));
       else if (smart(x) && x.learns && someKnown) out.push(t("{who}: what it has left isn't known yet, and its answer tells, so it goes before those known.", { who: who(x) }));
@@ -999,6 +1004,9 @@ function routingPage(part) {
     // it was spent for is the one that then answered
     const spent = tr.reset && tr.status < 400
       ? t("Its week was used up, so one of {account}'s Codex resets was used by itself first.", { account: userShown(w?.provider, tr.reset.who) }) + " "
+      // Codex's own sign-in asked again onto its credits: the one try
+      : tr.credits && tr.status < 400
+      ? t("Its allowance had just run out and it was refused, so it was asked again at once to spend its credits.") + " "
       : "";
     if (tr.status < 400 && tr.fail)
       return tr.rest
@@ -1014,6 +1022,11 @@ function routingPage(part) {
     if (tr.reset)
       return t("{who} answered {status}: its week is used up and nobody else could take the request, so one of {account}'s Codex resets was used by itself and the request is asked again, before any of the reply reaches {agent}.",
         { who: name, status: tr.status, account: userShown(w?.provider, tr.reset.who), agent });
+    // a Codex account that holds credits, refused as its allowance ran
+    // out: asked again at once, for the vendor to spend its credits
+    if (tr.credits)
+      return t("{who} answered {status}: its allowance had just run out, but the account holds credits, which the vendor spends once the allowance is used up, so it is asked again at once, before any of the reply reaches {agent}.",
+        { who: name, status: tr.status, agent });
     if (tr.fail === "canceled")
       return t("{agent} canceled the request while {who} was answering: nobody failed, so nobody rests and nobody else is asked.", { who: name, agent });
     if (tr.fail === "auth")
@@ -1805,7 +1818,7 @@ function routingPage(part) {
         else if (tr.done && !tr.rest && !tr.again && !tr.earlier && r.done && tr === r.tries[r.tries.length - 1]) gave.set(tryseat(r, tr), tr);
         // one the gateway went on from says what it answered, and that the
         // request went on, not that the agent got it
-        else if (tr.done && !tr.rest && !tr.again && tr !== r.tries[r.tries.length - 1]) went.set(tryseat(r, tr), tr);
+        else if (tr.done && !tr.rest && !tr.again && !tr.credits && tr !== r.tries[r.tries.length - 1]) went.set(tryseat(r, tr), tr);
         if (tr.rest) restAt(tr.id, modelOf(tr), tr.rest);
       }
       // it answered: whatever rest it began in is over
@@ -1824,7 +1837,8 @@ function routingPage(part) {
       else if (w.sunk) s = t("rate limited at {time} · at the back", { time: clock(w.sunk) });
       else if (w.known) {
         const soon = usedRenews(w);
-        s = !w.routing && w.used >= 98 ? quota(w, "{n} used · all but used up", "{n} left · all but used up")
+        s = !w.routing && w.used >= 98 && w.credits ? quota(w, "{n} used · on credits", "{n} left · on credits")
+          : !w.routing && w.used >= 98 ? quota(w, "{n} used · all but used up", "{n} left · all but used up")
           : !w.routing && w.used >= 90 ? quota(w, "{n} used · kept for last", "{n} left · kept for last")
           : soon ? quota(w, "{n} used · renews in {d}", "{n} left · renews in {d}", { d: dur(soon - n) }) : quota(w, "{n} used", "{n} left");
       } else if (w.kind === "account") s = t("what's left not known yet");
@@ -3343,7 +3357,7 @@ function routingPage(part) {
         renderAll();
         dot.classList.add("back", "err");
         back = bird("res");
-        if (!tr.rest && (!tr.again || tr.gone)) { // that was the answer: the agent gets the error, or has gone
+        if (!tr.rest && !tr.credits && (!tr.again || tr.gone)) { // that was the answer: the agent gets the error, or has gone
           await fly(dot, back, home(row, A), 1350);
           flying.delete(dot);
           away(back);

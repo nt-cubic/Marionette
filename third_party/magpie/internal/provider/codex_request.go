@@ -380,7 +380,8 @@ func BoundCallID(id string) string {
 }
 
 // codexInput makes input items fit a request that keeps nothing: no
-// references to stored items, no ids, a tool's output without its call
+// references to stored items, no ids (nor a message's status, which goes
+// with its id), a tool's output without its call
 // kept as a message saying what it was, and no system role, which the
 // backend rejects (developer keeps what it means in its place).
 func codexInput(input []any) []any {
@@ -422,6 +423,14 @@ func codexInput(input []any) []any {
 			continue
 		}
 		delete(it, "id")
+		// A message's status goes only with its id: without one, the
+		// backend reads it as an input message, which has no status, and
+		// turns the request away 400 "Unknown parameter: 'input[N].status'"
+		// (Doby on Discord: Pi gives each assistant message it sends again
+		// status "completed"). Codex's own reasoning items carry none.
+		if t := it["type"]; t == nil || t == "message" || t == "reasoning" {
+			delete(it, "status")
+		}
 		switch t, _ := it["type"].(string); t {
 		case "function_call_output", "custom_tool_call_output", "local_shell_call_output":
 			id, _ := it["call_id"].(string)

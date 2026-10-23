@@ -182,6 +182,22 @@ type Limit struct {
 	// RunsOut is when the soonest of what the window has left is lost,
 	// apart from its reset (QuotaWindow.RunsOutAt): zero when not known.
 	RunsOut time.Time
+	// Credits: the account goes on past this window on its credits
+	// (QuotaWindow.Credits)
+	Credits bool
+}
+
+// OnCredits says whether the account goes on past its allowance on its
+// credits, as its last reading says (a ChatGPT account holding them,
+// QuotaWindow.Credits): a window used up doesn't stop it. Whether it is
+// let spend them is the user's (CodexCredits).
+func (a Allowance) OnCredits() bool {
+	for _, l := range a {
+		if l.Credits {
+			return true
+		}
+	}
+	return false
 }
 
 // Restarts is when an auto-used reset starts the account's windows again,
@@ -736,7 +752,7 @@ func allowanceOf(ws []QuotaWindow, now time.Time) Allowance {
 		if w.Aside {
 			continue
 		}
-		l := Limit{Used: w.Used, Span: w.Span, Model: w.Model, Amount: w.Amount, Of: w.Limit, Unit: w.Unit, matches: w.matches, partial: w.partial, Name: w.Name}
+		l := Limit{Used: w.Used, Span: w.Span, Model: w.Model, Amount: w.Amount, Of: w.Limit, Unit: w.Unit, matches: w.matches, partial: w.partial, Name: w.Name, Credits: w.Credits}
 		if ids := families[w.Model]; ids != nil && w.Family != "" && w.matches == nil {
 			l.Model = ""
 			l.matches = func(model string) bool { return ids[model] }

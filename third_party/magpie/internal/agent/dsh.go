@@ -92,13 +92,26 @@ func dshAt(at place) *Agent {
 	if dir == "" {
 		dir = filepath.Join(at.home, ".dsh")
 	}
-	// DeepSeek Harness Desktop, on this machine (a distro has none)
-	desktop := func() bool { return at.spell == nil && (&Agent{ID: "dsh"}).HasApp() }
+	// DeepSeek Harness Desktop and DeepSeek Hermes, on this machine (a
+	// distro has neither)
+	harness := func() bool { return at.spell == nil && (&Agent{ID: "dsh"}).HasApp() }
+	hermes := func() bool { return at.spell == nil && dshHermes.installed() }
+	desktop := func() bool { return harness() || hermes() }
+	// the profile an app installed and never opened starts on
+	appFile := func() string {
+		if harness() {
+			return dshDesktopFile(dir)
+		}
+		return dshWebFile(dir)
+	}
+	// dsh's own key store is written unless DeepSeek Hermes is the app
+	// here: its dsh can't start on the store's layout (dshHermes)
+	store := func() bool { return !hermes() || harness() }
 	path := filepath.Join(dir, "config.yaml")
 	if files := dshProfiles(dir); len(files) > 0 {
 		path = files[0]
 	} else if desktop() {
-		path = dshDesktopFile(dir)
+		path = appFile()
 	}
 	return &Agent{
 		ID: "dsh", Name: "DeepSeek Harness", Icon: "deepseek-color", Aliases: []string{"deepseek-harness"}, Spelled: prefixed,
@@ -106,18 +119,22 @@ func dshAt(at place) *Agent {
 		Bin: "dsh", Dir: dir, Path: path,
 		// the desktop app installed and not opened yet has no ~/.dsh (#2279)
 		sign: desktop,
-		Sync: func() error { return dshSync(dir, gw()) },
+		Sync: func() error { return dshSync(dir, gw(), store()) },
 		Notice: func() string {
 			var notes []string
-			if desktop() && dshUnopened(dir) {
+			if desktop() && dshUnopened(appFile()) {
 				// nothing of dsh's runs on it yet to be restarted
-				notes = append(notes, noticeDsh5.String())
+				if harness() {
+					notes = append(notes, noticeDsh5.String())
+				} else {
+					notes = append(notes, noticeDsh6.String())
+				}
 			} else if len(dshProfiles(dir)) > 0 {
 				// a session dsh already has keeps the model it was on,
 				// running or not: agent-default-model is read for new
 				// ones only (#2359)
 				notes = append(notes, noticeDsh1.String())
-			} else if Running(`DeepSeek Harness\.app/`, `(^|/)dsh( |$)`) {
+			} else if Running(`DeepSeek Harness\.app/`, `DeepSeek Hermes\.app/`, `(^|/)dsh( |$)`) {
 				notes = append(notes, noticeDsh2.String())
 			}
 			if dshSearchesHere(dir) && !gateway.CanSearch() {
@@ -129,7 +146,7 @@ func dshAt(at place) *Agent {
 			}
 			return strings.Join(notes, " ")
 		},
-		Check: func() string { return dshCheck(dir, gw()) },
+		Check: func() string { return dshCheck(dir, gw(), store()) },
 		// a model of DeepSeek's own picked in dsh (saved in its settings)
 		// leaves magpie's route in its list: dsh is still connected, its
 		// /model has magpie's models beside DeepSeek's (Fate on Discord:
@@ -161,7 +178,7 @@ func dshAt(at place) *Agent {
 			if err := dshMirrorHome(dir, nil, gw(), true); err != nil {
 				return err
 			}
-			return dshEnv(dir, gw(), false, false)
+			return dshEnv(dir, gw(), false, false, store())
 		},
 		// what magpie made for a desktop app never opened goes (#2279)
 		Restore: func() error { return dshTidyUnopened(dir) },
@@ -172,11 +189,11 @@ func dshAt(at place) *Agent {
 				// the desktop app not opened yet: its profile is made as
 				// it makes it, and it keeps the patch list it finds (#2279)
 				if v != "" && len(dshProfiles(dir)) == 0 && desktop() {
-					if err := dshMakeDesktop(dir); err != nil {
+					if err := dshMakeProfile(appFile()); err != nil {
 						return err
 					}
 				}
-				return dshSet(dir, v, gw())
+				return dshSet(dir, v, gw(), store())
 			},
 			Options: func(map[string]string) []Option {
 				own := append([]Option{}, dshModels...)
@@ -239,16 +256,65 @@ func dshDesktopFile(dir string) string {
 	return filepath.Join(dir, "profiles", "desktop", "cordis.patch.yml")
 }
 
-// dshMakeDesktop makes the desktop app's patch list, as dsh's template,
-// for an app installed and never opened (#2279, liangjinyuan-sihan): with
-// no profile at all magpie had nowhere to write, and DeepSeek Harness
-// Desktop has no ~/.dsh until its first start. The app's initProfile
-// writes each of a profile's files only where it is missing ("Existing
-// files are never touched"), so on its first start it adds its
-// package.json and pnpm-workspace.yaml beside this one and keeps
-// magpie's entries. The folder is owner-only, as the app makes it.
-func dshMakeDesktop(dir string) error {
-	f := dshDesktopFile(dir)
+// dshWebFile is the web profile's patch list, the one `dsh web` boots and
+// so DeepSeek Hermes (dshHermes).
+func dshWebFile(dir string) string {
+	return filepath.Join(dir, "profiles", "web", "cordis.patch.yml")
+}
+
+// dshHermes is DeepSeek Hermes (github.com/motongv/deepseek-hermes-desktop,
+// 1.0.0), a community desktop app that is DeepSeek Harness's web UI in a
+// window, not Nous Research's Hermes Agent (WuSix on Discord: magpie's
+// Agents page didn't find it). It starts `dsh web` from the dsh 0.1.0-rc.6
+// it bundles (resources/runtime/dsh; `npx @deepseek-ai/dsh web` without
+// it), on $DSH_HOME or ~/.dsh, so it reads the web profile's patch list as
+// the CLI does and loads ~/.dsh/.env, where magpie's key is. That dsh reads
+// only the pre-release flat layout of its key store: on the version 1
+// store magpie makes for DeepSeek Harness Desktop (#969) it fails to start
+// ("the value for "version" … must be a string"), so with this app the
+// key goes in .env alone. electron-builder makes it a per-user NSIS
+// install whose folder can be changed, under HKCU\Software\<guid>, the
+// guid a UUID v5 of its appId as dsh's is (1bf39983-… for com.deepseek.dsh
+// checks out the same way). It has no Linux build.
+var dshHermes = desktopApp{id: "com.deepseek.hermes.desktop", names: []string{"DeepSeek Hermes.app"}, win: filepath.Join("DeepSeek Hermes", "DeepSeek Hermes.exe"), guid: "df9f5892-ad1c-5623-a260-30fb0acc7e55"}
+
+// dshDropOwnStore takes out dsh's key store where it holds nothing but
+// magpie's key, as magpie made it: the dsh DeepSeek Hermes runs can't start
+// on it, and .env has the key. A store holding anything of the user's
+// stays.
+func dshDropOwnStore(dir string) error {
+	creds := filepath.Join(dir, ".credentials.yaml")
+	raw, err := os.ReadFile(creds)
+	if err != nil {
+		return nil
+	}
+	var doc map[string]any
+	if yaml.Unmarshal(raw, &doc) != nil || len(doc) != 2 || doc["version"] != 1 {
+		return nil
+	}
+	refs, ok := doc["refs"].(map[string]any)
+	if !ok || len(refs) == 0 {
+		return nil
+	}
+	for k, v := range refs {
+		s, ok := v.(string)
+		if !ok || (k != dshKeyRef && k != dshOldKeyRef) || !ourKey(s) {
+			return nil
+		}
+	}
+	return os.Remove(creds)
+}
+
+// dshMakeProfile makes the patch list f of an app's profile, as dsh's
+// template, for an app installed and never opened (#2279,
+// liangjinyuan-sihan): with no profile at all magpie had nowhere to write,
+// and DeepSeek Harness Desktop has no ~/.dsh until its first start, nor
+// has DeepSeek Hermes. dsh's initProfile writes each of a profile's files
+// only where it is missing ("Existing files are never touched"), so on its
+// first start the app adds its package.json and pnpm-workspace.yaml beside
+// this one and keeps magpie's entries. The folder is owner-only, as the
+// app makes it.
+func dshMakeProfile(f string) error {
 	if err := os.MkdirAll(filepath.Dir(f), 0o700); err != nil {
 		return err
 	}
@@ -258,11 +324,10 @@ func dshMakeDesktop(dir string) error {
 	return os.WriteFile(f, []byte(dshProfileTemplate), 0o644)
 }
 
-// dshUnopened says the desktop app's profile is one magpie made and the
-// app hasn't started on yet: it has no package.json, which the app's first
-// start writes.
-func dshUnopened(dir string) bool {
-	f := dshDesktopFile(dir)
+// dshUnopened says the app's profile with patch list f is one magpie made
+// and the app hasn't started on yet: it has no package.json, which the
+// app's first start writes.
+func dshUnopened(f string) bool {
 	if !isFile(f) {
 		return false
 	}
@@ -270,13 +335,22 @@ func dshUnopened(dir string) bool {
 	return errors.Is(err, os.ErrNotExist)
 }
 
-// dshTidyUnopened takes out, on Disconnect, what magpie made for a desktop
-// app never opened since: the profile's patch list back to dsh's template
+// dshTidyUnopened takes out, on Disconnect, what magpie made for an app
+// never opened since (DeepSeek Harness Desktop's profile or DeepSeek
+// Hermes'): the profile's patch list back to dsh's template
 // with nothing beside it, and the folders that leaves empty. A patch list
 // holding anything else, or a profile the app has started on, stays.
 func dshTidyUnopened(dir string) error {
-	f := dshDesktopFile(dir)
-	if !dshUnopened(dir) {
+	for _, f := range []string{dshDesktopFile(dir), dshWebFile(dir)} {
+		if err := dshTidyProfile(dir, f); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func dshTidyProfile(dir, f string) error {
+	if !dshUnopened(f) {
 		return nil
 	}
 	b, err := os.ReadFile(f)
@@ -757,8 +831,9 @@ func dshGetLegacy(path string) string {
 // the gateway: magpie's route (its llm-deepseek entry before 0.1.5) pointed
 // elsewhere, the model it starts on one the route doesn't list, or — since
 // 0.1.5 — the key it names gone from .env, or another key under that name in
-// dsh's own store, which it reads first.
-func dshCheck(dir, gw string) string {
+// dsh's own store, which it reads first; with store false (dshHermes) only
+// a key there that isn't magpie's is said.
+func dshCheck(dir, gw string, store bool) string {
 	if !usesMagpie(dshGet(dir)) {
 		return ""
 	}
@@ -888,7 +963,7 @@ func dshCheck(dir, gw string) string {
 			return "DeepSeek Harness's own key store (" + creds + ") holds another " + dshKeyRef + ", which it uses over magpie's; remove it there (dsh's Models page, Magpie's key) to go through magpie"
 		}
 		return "DeepSeek Harness's own key store (" + creds + ") holds another " + dshKeyRef + ", which it uses over magpie's and this magpie refuses; Apply again puts magpie's key there (Disconnect puts this one back)"
-	} else if !ok && dshCredsOurs(creds) {
+	} else if !ok && store && dshCredsOurs(creds) {
 		// the desktop app doesn't read .env (#969)
 		return "DeepSeek Harness's own key store (" + creds + ") doesn't hold " + dshKeyRef + ": the desktop app reads the key from there, not from .env, and its sessions fail with no credential for provider route " + dshRoute + " until it is written (Apply again)"
 	}
@@ -936,7 +1011,8 @@ var dshWrites sync.Mutex
 // dshSet writes v as the model new sessions start on: a catalog model
 // through the gateway, one of dsh's own models directly, or "" for dsh's own
 // default. Every profile gets it; config.yaml only where there are none.
-func dshSet(dir, v, gw string) error {
+// store says dsh's own key store is written too (dshEnv).
+func dshSet(dir, v, gw string, store bool) error {
 	dshWrites.Lock()
 	defer dshWrites.Unlock()
 	ref, viaGateway := strings.CutPrefix(v, magpieID+"/")
@@ -963,7 +1039,7 @@ func dshSet(dir, v, gw string) error {
 			return err
 		}
 	}
-	if err := dshEnv(dir, gw, viaGateway, true); err != nil {
+	if err := dshEnv(dir, gw, viaGateway, true, store); err != nil {
 		return err
 	}
 	// a model picked in dsh 0.1.x is saved in its settings and goes over
@@ -1006,9 +1082,14 @@ func dshKeepPick(f string) error {
 
 // dshEnv puts the key for the gateway in $DSH_HOME/.env and dsh's own key
 // store, or with on false takes it out; the name magpie's llm-deepseek entry
-// used goes either way.
-func dshEnv(dir, gw string, on, take bool) error {
-	if err := dshCreds(dir, gw, on, take); err != nil {
+// used goes either way. With store false the key goes in .env alone, and a
+// key store holding nothing but magpie's key goes (dshHermes).
+func dshEnv(dir, gw string, on, take, store bool) error {
+	if on && !store {
+		if err := dshDropOwnStore(dir); err != nil {
+			return err
+		}
+	} else if err := dshCreds(dir, gw, on, take); err != nil {
 		return err
 	}
 	env := filepath.Join(dir, ".env")
@@ -1684,8 +1765,8 @@ func dshRouteLines(model string) []string {
 // dshSync puts the catalog as it is now into magpie's route (its
 // llm-deepseek entry before 0.1.5), in every patch list that has it; a
 // profile still on dsh's DeepSeek row taken over moves to the route.
-// Nothing else in the patch lists changes.
-func dshSync(dir, gw string) error {
+// Nothing else in the patch lists changes. store is as dshSet's.
+func dshSync(dir, gw string, store bool) error {
 	dshWrites.Lock()
 	defer dshWrites.Unlock()
 	models := magpieModels("dsh")
@@ -1696,7 +1777,7 @@ func dshSync(dir, gw string) error {
 	defer func() {
 		// the key under the name the route gives it, moved from the old one
 		if _, items, err := dshRead(files[0]); err == nil && dshWired(items) {
-			dshEnv(dir, gw, true, false)
+			dshEnv(dir, gw, true, false, store)
 		}
 	}()
 	for _, f := range files {
@@ -2315,6 +2396,7 @@ var (
 	noticeDsh3 = newNotice("dsh's web search goes through magpie, which has nothing to search with yet: set up a provider that searches by itself (DeepSeek, Claude, Codex, …) or a search API under Settings › Web search.")
 	noticeDsh4 = newNotice("~/.dsh/settings.yaml sets its own DeepSeek endpoint or key, which dsh puts over magpie's; clear it in dsh's Models page to go through magpie.")
 	noticeDsh5 = newNotice("DeepSeek Harness Desktop hasn't been opened yet: it starts on this the first time it opens.")
+	noticeDsh6 = newNotice("DeepSeek Hermes hasn't been opened yet: it starts on this the first time it opens.")
 )
 
 // dshDocStart says whether l is YAML's document start marker, "---" at the

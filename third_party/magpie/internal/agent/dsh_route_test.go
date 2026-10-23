@@ -387,7 +387,7 @@ func TestDshRouteAgainLeavesTheRouteWithNoCatalog(t *testing.T) {
 	if b, _ := os.ReadFile(web); string(b) != stale {
 		t.Fatalf("a route written with no catalog:\n%s", b)
 	}
-	if err := dshSync(filepath.Join(home, ".dsh"), gateway.URL()); err != nil {
+	if err := dshSync(filepath.Join(home, ".dsh"), gateway.URL(), true); err != nil {
 		t.Fatal(err)
 	}
 	if b, _ := os.ReadFile(web); string(b) != stale {
@@ -450,7 +450,7 @@ func TestDshFillNewProfilesLeavesABareProfileWithNoCatalog(t *testing.T) {
 		"- id: agent-default-model\n  config:\n    provider: magpie\n    model: deepseek/pro\n"), 0o644)
 	bare := "# A new profile.\n[]\n"
 	os.WriteFile(desktop, []byte(bare), 0o644)
-	if err := dshSync(dir, gateway.URL()); err != nil {
+	if err := dshSync(dir, gateway.URL(), true); err != nil {
 		t.Fatal(err)
 	}
 	if b, _ := os.ReadFile(desktop); string(b) != bare {
@@ -467,7 +467,7 @@ func TestDshFillNewProfilesFillsABareProfile(t *testing.T) {
 		dshRouteFixture("deepseek/pro", "deepseek/flash")+
 		"- id: agent-default-model\n  config:\n    provider: magpie\n    model: deepseek/flash\n"), 0o644)
 	os.WriteFile(desktop, []byte("# A new profile.\n[]\n"), 0o644)
-	if err := dshSync(dir, gateway.URL()); err != nil {
+	if err := dshSync(dir, gateway.URL(), true); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(desktop)

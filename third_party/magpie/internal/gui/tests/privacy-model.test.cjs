@@ -10,7 +10,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
-const { watchSettingsReads, settingsDrawn } = require("./reader.cjs");
+const { wheelTo, watchSettingsReads, settingsDrawn } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const size = 1637572192;
@@ -134,6 +134,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     const { browser, page, errors } = await open(engine, "en", 1100, true, model, posts);
     t.after(() => browser.close());
     const row = page.locator("#privacyModelRow");
+    await wheelTo(page, row, 300); // under the masking card; WebKit's own scroll-into-view misses it
     await row.locator(".segs .opt", { hasText: "On" }).click();
     await row.locator("button.text", { hasText: "Cancel" }).click();
     await page.waitForFunction(() => document.querySelector("#privacyModelRow .segs .opt.on")?.textContent === "Off");
@@ -141,6 +142,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
     Object.assign(model, { installed: true, on: false });
     await page.reload();
+    await wheelTo(page, row.locator("button.text", { hasText: "Delete model" }), 300);
     await row.locator("button.text", { hasText: "Delete model" }).click();
     await page.locator("dialog.action-confirm button", { hasText: /^Delete$/ }).click();
     await page.waitForFunction(() => !document.querySelector("#privacyModelRow button.text"));

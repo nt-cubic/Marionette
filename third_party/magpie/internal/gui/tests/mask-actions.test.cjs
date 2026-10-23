@@ -12,7 +12,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
-const { reach, watchSettingsReads, settingsDrawn } = require("./reader.cjs");
+const { reach, wheelTo, watchSettingsReads, settingsDrawn } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const SECRET = "sk-proj-Tr1eDq8Wm3Rt6YxN2vLp";
@@ -81,7 +81,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.deepEqual(await acts.locator(".mask-act").evaluateAll((rs) => rs.map((r) => r.dataset.kind)), ["API_KEY", "PRIVATE_KEY", "TOKEN", "PASSWORD", "SECRET"]);
         assert.equal(await acts.locator(".mask-act .segs .opt.on").count(), 5);
         const more = acts.locator(".mask-act-more button");
-        await reach(page, more);
+        await wheelTo(page, more, 300); // under the masking card, a long wheel down at 640px
         await more.click();
         await acts.locator('.mask-act[data-kind="EMAIL"]').waitFor();
         assert.equal(await acts.locator(".mask-act").count(), 22, "every personal kind shown");

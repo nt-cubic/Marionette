@@ -246,19 +246,43 @@ func useCodexReset(ctx context.Context, user, why string) (ResetOutcome, error) 
 // codexUserToken signs in as the Codex account user: the one Codex itself
 // is signed in to, or one magpie keeps — and says which it was.
 func codexUserToken(ctx context.Context, user string) (who, tok, accountID string, err error) {
+	who, tok, accountID, _, err = codexUserSign(ctx, user)
+	return who, tok, accountID, err
+}
+
+// codexUserSign is codexUserToken, with how to renew that sign-in.
+func codexUserSign(ctx context.Context, user string) (who, tok, accountID string, renew codexRenew, err error) {
 	// the one signed in now, read from Codex's own file: the list of those
 	// kept may not have caught up with it yet
 	if live, ok := liveLogin("codex"); user == "" || ok && strings.EqualFold(live.User, user) {
 		tok, accountID, err = codexToken(ctx, codexHome())
-		return live.User, tok, accountID, err
+		renew = func(ctx context.Context, stale string) (string, string, error) {
+			return codexTokenRenewing(ctx, codexHome(), stale)
+		}
+		return live.User, tok, accountID, renew, err
 	}
 	for _, l := range Logins("codex") {
 		if strings.EqualFold(l.User, user) {
-			tok, accountID, err = savedLoginToken(ctx, "codex", l.User)
-			return l.User, tok, accountID, err
+			who := l.User
+			tok, accountID, err = savedLoginToken(ctx, "codex", who)
+			renew = func(ctx context.Context, stale string) (string, string, error) {
+				return renewSavedLoginFrom(ctx, "codex", who, stale)
+			}
+			return who, tok, accountID, renew, err
 		}
 	}
-	return "", "", "", fmt.Errorf("no Codex account %q", user)
+	return "", "", "", nil, fmt.Errorf("no Codex account %q", user)
+}
+
+// codexUserWindows reads the windows and resets of the Codex account user
+// (codexUserSign), renewing a sign-in the backend calls expired once.
+func codexUserWindows(ctx context.Context, user string) (who string, windows []QuotaWindow, resets *ResetCredits, err error) {
+	who, tok, accountID, renew, err := codexUserSign(ViaLogin(ctx, "codex", user), user)
+	if err != nil {
+		return who, nil, nil, err
+	}
+	_, windows, resets, _, _, err = codexWindowsRenewing(ViaLogin(ctx, "codex", who), tok, accountID, renew)
+	return who, windows, resets, err
 }
 
 // consumeCodexReset spends the reset credit; id makes a retry of the same

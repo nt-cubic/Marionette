@@ -243,7 +243,7 @@ func (a *Agent) unreachable(on Field, now string) *Drift {
 	d.Detail = a.Name + " is pointed at magpie at " + addr + ", where nothing answers from this computer, though magpie answers at " + gateway.URL() + ". "
 	if a.WSL != "" || runtime.GOOS == "windows" {
 		d.Detail += "Under WSL's NAT networking, Windows as WSL sees it reaches magpie only while something listens on " + host +
-			": magpie itself with Settings › Share on local network on (it then listens on every address, and asks other computers for a gateway key), or a forward of your own (netsh interface portproxy, which may need setting up again after Windows restarts). " +
+			": magpie itself with Settings › Network and sharing › Share on local network on (it then listens on every address, and asks other computers for a gateway key), or a forward of your own (netsh interface portproxy, which may need setting up again after Windows restarts). " +
 			"Once it answers here and WSL still can't connect, Windows' firewall may be keeping WSL out: allow the port " + gateway.Port() + " for the WSL network. " +
 			"On Windows 11, networkingMode=mirrored under [wsl2] in %UserProfile%\\.wslconfig lets WSL reach magpie at 127.0.0.1 instead."
 	} else {

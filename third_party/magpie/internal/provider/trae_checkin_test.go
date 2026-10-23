@@ -140,8 +140,10 @@ func TestTraeCheckinAnswers(t *testing.T) {
 		t.Fatalf("9095: %+v", rs)
 	}
 	dev.asked()
-	if rs := c.checkinNow(ctx, true); rs[0].Outcome != CheckinIneligible || len(dev.asked()) != 0 {
-		t.Fatalf("9095 asked again: %+v", rs)
+	// a press asks again, on the same device: a 9095 from before the
+	// vendor's day turned may be yesterday's (#3326)
+	if rs := c.checkinNow(ctx, true); rs[0].Outcome != CheckinIneligible || strings.Join(dev.asked(), ", ") != "POST /status, POST /claim" {
+		t.Fatalf("9095 pressed: %+v", rs)
 	}
 
 	// a failure that got no answer is tried again the same day

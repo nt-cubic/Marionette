@@ -26,9 +26,7 @@ func movedFake(t *testing.T, id string, up http.Handler) {
 	t.Setenv("MAGPIE_BUN", bun)
 	t.Setenv("FAKE_ID", id)
 	t.Cleanup(plugin.Settle)
-	srv := httptest.NewServer(up)
-	t.Cleanup(srv.Close)
-	t.Setenv("FAKE_BASE", srv.URL+"/v1")
+	testenv.FakeVendor(t, up)
 	dir := filepath.Dir(provider.Path())
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)

@@ -1,8 +1,11 @@
 package gateway
 
 import (
+	"context"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yetone/magpie/internal/provider"
 )
@@ -156,5 +159,186 @@ func TestCodexNoCreditsResetAfterTheLastRefusal(t *testing.T) {
 	}
 	if got := resetsTraced(srv); len(got) != 1 || got[0] != "spare@example.com: 2 windows started again" {
 		t.Fatalf("traced %v", got)
+	}
+}
+
+// creditsUsage is capUsage for Codex accounts whose five hours and week
+// are each at used's share, those named in credits holding credits as
+// /wham/usage says (provider.QuotaWindow.Credits).
+func creditsUsage(t *testing.T, used map[string]float64, credits ...string) {
+	t.Helper()
+	old := allowances
+	t.Cleanup(func() { allowances = old })
+	allowances = func(string) map[string]provider.Allowance {
+		out := map[string]provider.Allowance{}
+		for u, n := range used {
+			c := slices.Contains(credits, u)
+			out[u] = provider.Allowance{
+				{Used: n, Resets: time.Now().Add(2 * time.Hour), Span: 5 * time.Hour, Credits: c},
+				{Used: n, Resets: time.Now().Add(3 * 24 * time.Hour), Span: 7 * 24 * time.Hour, Credits: c},
+			}
+		}
+		return out
+	}
+}
+
+// triesOf is each try of srv's routes, as account: why it failed, how
+// long it rests and why, and whether it was asked again onto its credits.
+func triesOf(srv *Server) []Try {
+	var out []Try
+	for _, r := range srv.Trace(context.Background(), 0, 0).Routes {
+		out = append(out, r.Tries...)
+	}
+	return out
+}
+
+// Zhenzhen on Discord: a Codex account that holds credits used up its
+// allowance mid-session, and the turn that ran it out was refused
+// (usage_limit_reached) while the next session answered on its credits.
+// The refused turn is asked again of the same account at once, and
+// answers: the session doesn't end. Codex's one account goes through the
+// relay, two or more through routing; each asks again once a request.
+func TestCodexCreditsAskedAgainAtTheEdge(t *testing.T) {
+	t.Run("relayed", func(t *testing.T) {
+		codexSignedIn(t)
+		b := newResetBackend(t, "acct-1")
+		b.credits["acct-1"], b.edge["acct-1"] = true, 1
+		creditsUsage(t, map[string]float64{"me@example.com": 100}, "me@example.com")
+		srv := New()
+		code, body := resetPost(t, srv)
+		if tried, spent := b.seen(); code != 200 || !strings.Contains(body, "pong") || tried != "acct-1,acct-1" || spent != "" {
+			t.Fatalf("%d %s tried %s spent %s", code, body, tried, spent)
+		}
+		if ts := triesOf(srv); len(ts) == 0 || !ts[0].Credits {
+			t.Fatalf("not traced as asked again onto its credits: %+v", ts)
+		}
+		// refused again: told as it came, not asked a third time
+		b.mu.Lock()
+		b.tried, b.edge["acct-1"] = nil, 2
+		b.mu.Unlock()
+		if code, _ := resetPost(t, srv); code != 429 {
+			t.Fatalf("refused twice: %d", code)
+		}
+		if tried, _ := b.seen(); tried != "acct-1,acct-1" {
+			t.Fatalf("refused twice, tried %s", tried)
+		}
+	})
+	t.Run("routed", func(t *testing.T) {
+		codexSignedIn(t, "spare@example.com")
+		b := newResetBackend(t, "acct-1", "acct-2")
+		b.credits["acct-1"], b.edge["acct-1"] = true, 1
+		creditsUsage(t, map[string]float64{"me@example.com": 100, "spare@example.com": 100}, "me@example.com")
+		if err := provider.SetRouting("codex", provider.Ordered); err != nil {
+			t.Fatal(err)
+		}
+		srv := New()
+		code, body := resetPost(t, srv)
+		if tried, _ := b.seen(); code != 200 || !strings.Contains(body, "pong") || tried != "acct-1,acct-1" {
+			t.Fatalf("%d %s tried %s", code, body, tried)
+		}
+		ts := triesOf(srv)
+		if len(ts) != 2 || !ts[0].Credits || ts[0].Rest != nil || ts[1].Status != 200 {
+			t.Fatalf("traced %+v", ts)
+		}
+	})
+	t.Run("set not to spend them", func(t *testing.T) {
+		codexSignedIn(t)
+		b := newResetBackend(t, "acct-1")
+		b.credits["acct-1"], b.edge["acct-1"] = true, 1
+		creditsUsage(t, map[string]float64{"me@example.com": 100}, "me@example.com")
+		if err := provider.SetCodexCredits("me@example.com", false); err != nil {
+			t.Fatal(err)
+		}
+		// held as used up (TestCodexNoCreditsEveryAccount): never sent,
+		// so never asked again
+		code, _ := resetPost(t, New())
+		if tried, _ := b.seen(); code != 429 || tried != "" {
+			t.Fatalf("%d tried %s", code, tried)
+		}
+	})
+}
+
+// 豆子 on Discord: a Codex account out of its allowance that holds credits
+// still answers on them, so it isn't benched until its window renews —
+// neither when ChatGPT refuses it as out of its allowance (it rests a
+// minute, and its usage is read again) nor when it fails otherwise with
+// its windows full (it rests as any account that failed does). One with
+// no credits still rests until its allowance is back.
+func TestCodexCreditsNoLongRest(t *testing.T) {
+	t.Run("refused as out", func(t *testing.T) {
+		codexSignedIn(t, "spare@example.com")
+		b := newResetBackend(t, "acct-1")
+		b.credits["acct-1"], b.edge["acct-1"] = true, 5
+		creditsUsage(t, map[string]float64{"me@example.com": 100, "spare@example.com": 20}, "me@example.com")
+		if err := provider.SetRouting("codex", provider.Ordered); err != nil {
+			t.Fatal(err)
+		}
+		srv := New()
+		code, body := resetPost(t, srv)
+		if tried, _ := b.seen(); code != 200 || !strings.Contains(body, "pong") || tried != "acct-1,acct-1,acct-2" {
+			t.Fatalf("%d %s tried %s", code, body, tried)
+		}
+		ts := triesOf(srv)
+		if len(ts) != 3 || !ts[0].Credits || ts[1].Rest == nil {
+			t.Fatalf("traced %+v", ts)
+		}
+		if r := ts[1].Rest; r.By != "credits" || r.Why != failQuota || time.Until(r.Until) > fallbackCooldown {
+			t.Fatalf("rests %s for %s until %v", r.By, r.Why, r.Until)
+		}
+	})
+	t.Run("failed otherwise", func(t *testing.T) {
+		codexSignedIn(t, "spare@example.com")
+		b := newResetBackend(t)
+		b.fails["acct-1"] = 500
+		creditsUsage(t, map[string]float64{"me@example.com": 100, "spare@example.com": 20}, "me@example.com")
+		if err := provider.SetRouting("codex", provider.Ordered); err != nil {
+			t.Fatal(err)
+		}
+		srv := New()
+		if code, body := resetPost(t, srv); code != 200 || !strings.Contains(body, "pong") {
+			t.Fatalf("%d %s", code, body)
+		}
+		ts := triesOf(srv)
+		if len(ts) == 0 || ts[0].Rest == nil || ts[0].Rest.By != "backoff" || time.Until(ts[0].Rest.Until) > longestRetry {
+			t.Fatalf("traced %+v", ts)
+		}
+	})
+	t.Run("no credits", func(t *testing.T) {
+		codexSignedIn(t, "spare@example.com")
+		b := newResetBackend(t, "acct-1")
+		creditsUsage(t, map[string]float64{"me@example.com": 100, "spare@example.com": 20})
+		if err := provider.SetRouting("codex", provider.Ordered); err != nil {
+			t.Fatal(err)
+		}
+		srv := New()
+		if code, _ := resetPost(t, srv); code != 200 {
+			t.Fatalf("%d", code)
+		}
+		if tried, _ := b.seen(); tried != "acct-1,acct-2" {
+			t.Fatalf("tried %s", tried)
+		}
+		ts := triesOf(srv)
+		if len(ts) == 0 || ts[0].Credits || ts[0].Rest == nil || time.Until(ts[0].Rest.Until) < time.Hour {
+			t.Fatalf("traced %+v", ts)
+		}
+	})
+}
+
+// Every account all but used up: the one that goes on on its credits is
+// asked before one with nothing to go on with, though it has used more,
+// and the trace says it holds them (豆子 on Discord).
+func TestCodexCreditsFirstOfTheSpent(t *testing.T) {
+	codexSignedIn(t, "spare@example.com")
+	b := newResetBackend(t, "acct-1")
+	b.credits["acct-2"] = true
+	creditsUsage(t, map[string]float64{"me@example.com": 99, "spare@example.com": 100}, "spare@example.com")
+	srv := New()
+	code, body := resetPost(t, srv)
+	if tried, _ := b.seen(); code != 200 || !strings.Contains(body, "pong") || tried != "acct-2" {
+		t.Fatalf("%d %s tried %s", code, body, tried)
+	}
+	rs := srv.Trace(t.Context(), 0, 0).Routes
+	if len(rs) == 0 || len(rs[0].Order) != 2 || rs[0].Order[0].Who != "spare@example.com" || !rs[0].Order[0].Credits || rs[0].Order[1].Credits {
+		t.Fatalf("order %+v", rs)
 	}
 }

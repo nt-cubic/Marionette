@@ -903,6 +903,18 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	case failCredit:
 		d, r.By = creditRest, "credit"
 	case failQuota:
+		if c.onCredits() {
+			// a Codex account that holds credits refused as out of its
+			// allowance: at the moment a window is used up ChatGPT may
+			// turn a turn away before it spends the credits, and the next
+			// goes through on them (Zhenzhen on Discord: a new session
+			// answered at once). Benched until the window renews, days
+			// off, it would leave its credits unspent; it is asked again
+			// after a moment instead, and the reading asked for again
+			// below tells whether it still holds them
+			d, r.By = fallbackCooldown, "credits"
+			break
+		}
 		// out of quota is out until the quota comes back: when the refusal
 		// says (Claude Code's time, ChatGPT's resets_at — noted by
 		// keepRetry once the error is put in words), else when the window
@@ -1195,10 +1207,37 @@ func (s *Server) rateRest(c candidate, header http.Header, body []byte, sharedPo
 // candidate's model renews; zero otherwise. Used up is all but
 // (usedShare), except In order: there an account at 98% is still tried in
 // its turn, and one that fails then isn't benched until its week renews
-// unless the vendor said it was out (#530).
+// unless the vendor said it was out (#530). A Codex account that goes on
+// on its credits is never: a window used up doesn't stop it (onCredits).
 func (c candidate) full(now time.Time) time.Time {
 	a, _ := c.allowance()
+	if spendsCredits(c.p, a) {
+		return time.Time{}
+	}
 	return a.Full(c.model, provider.SpentShareOf(c.p.Routing), now)
+}
+
+// onCredits: c is a Codex account that goes on past its allowance on its
+// credits, as its last reading says, and the user lets it spend them
+// (provider.CodexCredits): its allowance used up, the vendor spends the
+// credits, so it isn't benched until the window renews (豆子 on Discord).
+func (c candidate) onCredits() bool {
+	a, _ := c.allowance()
+	return spendsCredits(c.p, a)
+}
+
+// creditsAgain says whether c, refused with status and body, is asked
+// again at once: a Codex account on its credits (onCredits) that the
+// vendor said is out of its allowance. At the moment a window is used
+// up ChatGPT may refuse the turn before it goes on to the credits; the
+// next request is answered on them.
+func creditsAgain(c candidate, status int, body []byte) bool {
+	return status == http.StatusTooManyRequests && failure(status, body) == failQuota && c.onCredits()
+}
+
+// spendsCredits is onCredits for the account of p, whose allowance is a.
+func spendsCredits(p provider.Provider, a provider.Allowance) bool {
+	return p.Account != nil && p.Account.UsageAgent() == "codex" && a.OnCredits() && provider.CodexCredits(p.Account.User)
 }
 
 // allowance is the candidate's allowance as last known: a subscription
@@ -1348,6 +1387,9 @@ type left struct {
 	// (Allowance.Count): amount of of, in unit
 	amount, of float64
 	unit       string
+	// credits: a Codex account that goes on on its credits once its
+	// allowance is used up (spendsCredits)
+	credits bool
 }
 
 // learns: c is a subscription whose allowance isn't known yet, of an agent
@@ -1420,7 +1462,7 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 			amt, of, unit := a.Count(c.model, now)
 			rs := a.Restarts(now)
 			wg.lefts[c.allowanceKey()] = left{used: u, renews: r, fullest: a.Fullest(c.model, now), soon: a.Renewal(c.model, now), pace: pc, due: due, amount: amt, of: of, unit: unit,
-				restarts: rs, dueRestart: !rs.IsZero() && due.Equal(rs)} // one not known counts as unused
+				restarts: rs, dueRestart: !rs.IsZero() && due.Equal(rs), credits: spendsCredits(c.p, a)} // one not known counts as unused
 		}
 	}
 	if len(cs) < 2 {
@@ -1441,7 +1483,7 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 			pace = provider.FreshPace
 		}
 		seats[i] = routes.Seat{Key: c.rest, Account: c.p.Account != nil, Known: known, Learns: learns(c, wg.lefts),
-			Used: l.used, Soon: l.soon, Pace: pace, Weight: keyWeight(c), Resting: resting(c), Tokens: routed.used[c.restKey()].now(now)}
+			Used: l.used, Soon: l.soon, Pace: pace, Weight: keyWeight(c), Resting: resting(c), Tokens: routed.used[c.restKey()].now(now), Credits: l.credits}
 	}
 	routed.Unlock()
 	if st.ByUse {

@@ -1883,6 +1883,51 @@ function renderLedger() {
 // The agents' own sessions, read from their session files: what each cost,
 // and the command that picks it up again. A segment of the Usage page.
 
+// A session's row and details, as this list and the Sessions page's
+// (plugins/sessions/client.js) both draw them.
+
+// sessModelNames lists models for a cost note, one an agent recorded no
+// name for told as such: joined bare, the note read "Not counted: , with
+// no known price" (tony, Discord)
+const sessModelNames = (models) => [...new Set(models.map((m) => m || t("a model with no name")))].join(", ");
+
+// wslBadge marks a session an agent ran in a WSL distro, read through
+// \\wsl.localhost; its resume command runs it there through wsl.exe
+function wslBadge(s) {
+  const b = el("span", "badge wsl", "WSL " + s.wsl);
+  b.title = t("In WSL {distro}: resumed there through wsl.exe", { distro: s.wsl });
+  return b;
+}
+
+// sessModelsText: a session's models, the first two and how many more, and
+// where magpie's gateway sent its calls, the most first: a routing group's
+// member and the reasoning it was asked for
+function sessModelsText(s) {
+  const via = s.via?.length ? "→ " + [s.via[0].model, s.via[0].effort].filter(Boolean).join(" · ") + (s.via.length > 1 ? " +" + (s.via.length - 1) : "") : "";
+  return sessModelNames(s.models.slice(0, 2).map((m) => m.model)) + (s.models.length > 2 ? " +" + (s.models.length - 2) : "") + (via ? " " + via : "");
+}
+
+// sessUsageDetail adds to a session's details what it spent by model, and
+// what the gateway sent its calls to, at what reasoning; line(label, value)
+// adds a line of the details
+function sessUsageDetail(d, s, line) {
+  if (s.models?.length) {
+    const m = el("div", "sess-models");
+    for (const x of s.models) {
+      m.append(el("span", "model", x.model || t("a model with no name")),
+        el("span", "n", t("{a} in · {b} out", { a: fmtN(x.input), b: fmtN(x.output) }) + (x.cache_read ? " · " + t("{n} cached", { n: fmtN(x.cache_read) }) : "") + (x.cache_write ? " · " + t("{n} written", { n: fmtN(x.cache_write) }) : "")),
+        el("span", "c" + (x.priced ? "" : " none"), x.priced ? "≈" + fmtCost({ cost: x.cost }) : "—"));
+    }
+    d.append(m);
+  }
+  (s.via || []).forEach((v, i) => line(i ? "" : t("Routed"), viaText(v) + " · " + t("{n} tokens", { n: fmtN(v.tokens) }) + (v.credited ? " · " + ledCredits(v).textContent : "")));
+}
+
+// one place a session's calls went through magpie, in words
+function viaText(v) {
+  return `${v.provider}/${v.model}` + (v.effort ? " · " + v.effort : "") + " · " + t("{n} calls", { n: v.calls });
+}
+
 const USAGE_TABS = [["usage", "Overview"], ["requests", "Requests"], ["sessions", "Sessions"], ["context", "Context"]];
 let usageTab = "usage";
 try { const k = localStorage.getItem("magpie.usageTab"); if (USAGE_TABS.some(([id]) => id === k)) usageTab = k; } catch {}

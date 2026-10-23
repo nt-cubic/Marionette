@@ -220,3 +220,24 @@ func TestTraeOwnAppSaysTraeRefused(t *testing.T) {
 		t.Errorf("WorkBuddy's own-app: %q", wb)
 	}
 }
+
+// #3326: an "already in" magpie asks again (Again: before noon Beijing,
+// with no claim magpie saw) may be the vendor's day before, so it is not
+// shown as today's check-in.
+func TestCheckinAgainNotShownAsToday(t *testing.T) {
+	now := time.Date(2026, 10, 23, 0, 0, 28, 0, time.FixedZone("CST", 8*3600))
+	r := provider.WorkBuddyCheckin{User: "177", By: "plugin:autoclaw-cn", Vendor: "AutoClaw CN", Day: "2026-10-23", Outcome: provider.CheckinDone, Credit: 200, Again: true}
+	if w := checkinWords(r); strings.Contains(w, "checked in today") || !strings.Contains(w, "asks again later") {
+		t.Errorf("words: %q", w)
+	}
+	if c := checkinCell(provider.SubscriptionQuota{Checkins: true, Checkin: &r}, now); strings.Contains(c, "✓") || !strings.Contains(c, "asked again later") {
+		t.Errorf("cell: %q", c)
+	}
+	r.Again = false
+	if w := checkinWords(r); !strings.Contains(w, "checked in today +200") {
+		t.Errorf("settled done: %q", w)
+	}
+	if c := checkinCell(provider.SubscriptionQuota{Checkins: true, Checkin: &r}, now); !strings.Contains(c, "✓") {
+		t.Errorf("settled cell: %q", c)
+	}
+}

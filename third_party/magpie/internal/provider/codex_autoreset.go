@@ -186,13 +186,10 @@ func AutoUseCodexReset(ctx context.Context, user string) (ResetOutcome, error) {
 	}
 	var who string
 	return autoReset.use(user, func(now time.Time) (*time.Time, bool, error) {
-		var tok, accountID string
+		var windows []QuotaWindow
+		var resets *ResetCredits
 		var err error
-		who, tok, accountID, err = codexUserToken(ViaLogin(ctx, "codex", user), user)
-		if err != nil {
-			return nil, false, err
-		}
-		_, windows, resets, _, _, err := codexWindows(ViaLogin(ctx, "codex", who), tok, accountID)
+		who, windows, resets, err = codexUserWindows(ctx, user)
 		if err != nil {
 			return nil, false, err
 		}

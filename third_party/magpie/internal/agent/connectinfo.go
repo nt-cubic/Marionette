@@ -191,9 +191,12 @@ type StaleCopy struct {
 	// subcommand the daemon spawns beside itself, no copy to reopen) or
 	// "cli"; "" for other agents; "embedded" is another app's own Codex,
 	// named by App
-	Kind  string    `json:"kind,omitempty"`
-	App   string    `json:"app,omitempty"`
-	Since time.Time `json:"since"`
+	Kind string `json:"kind,omitempty"`
+	App  string `json:"app,omitempty"`
+	// Bundle is the desktop app's own, for "app": what the row's Restart
+	// quits and opens again
+	Bundle string    `json:"bundle,omitempty"`
+	Since  time.Time `json:"since"`
 }
 
 // StaleCopies are the copies Stale counts. Reopening one kind doesn't end
@@ -243,8 +246,11 @@ func (a *Agent) StaleCopies() []StaleCopy {
 					// is no Codex to quit (#1461)
 					continue
 				}
-				if c.Kind == "embedded" {
+				switch c.Kind {
+				case "embedded":
 					c.App = app
+				case "app":
+					c.Bundle = app
 				}
 				if app != "" {
 					if i, ok := apps[app]; ok {

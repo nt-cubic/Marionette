@@ -39,7 +39,7 @@ func sandbox(t *testing.T) {
 func TestFakePlugin(t *testing.T) {
 	sandbox(t)
 	var seen []http.Header
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := testenv.FakeVendor(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen = append(seen, r.Header.Clone())
 		b, _ := io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -50,7 +50,6 @@ func TestFakePlugin(t *testing.T) {
 		fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	defer srv.Close()
-	t.Setenv("FAKE_BASE", srv.URL+"/v1")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
@@ -197,12 +196,11 @@ func TestFakePlugin(t *testing.T) {
 func TestPluginAccounts(t *testing.T) {
 	sandbox(t)
 	var auths []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := testenv.FakeVendor(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auths = append(auths, r.Header.Get("Authorization"))
 		fmt.Fprint(w, "{}")
 	}))
 	defer srv.Close()
-	t.Setenv("FAKE_BASE", srv.URL+"/v1")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	abs, _ := filepath.Abs("testdata/fake/index.js")

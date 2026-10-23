@@ -837,6 +837,21 @@ func marshalJSON(v any) ([]byte, error) {
 
 // codexUpstream relays a request as it came, the sign-in included, to where
 // Codex would have sent it.
+// relayOnCredits says whether the account a turn is relayed on — on, or
+// Codex's own sign-in when on is nil — goes on past its allowance on its
+// credits, as its last reading says, and is let spend them (onCredits).
+func relayOnCredits(on *provider.Provider) bool {
+	if on != nil {
+		return candidate{p: *on}.onCredits()
+	}
+	who, ok := provider.CodexSignedIn()
+	if !ok {
+		return false
+	}
+	a := allowances("codex")[who]
+	return a.OnCredits() && provider.CodexCredits(who)
+}
+
 func (s *Server) codexUpstream(w http.ResponseWriter, r *http.Request, rest string, body []byte) {
 	s.codexUpstreamOn(w, r, rest, body, nil)
 }
@@ -967,11 +982,12 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 		}
 	}
 	var res *http.Response
-	autoReset := false // a Codex reset looked at, once
-	resetNote := ""    // what spending it did, for the request log
-	resets := 0        // times a large request ChatGPT closed on was asked again (#1628)
-	sent := len(body)  // the bytes that went, compressed (provider.CodexCompressed)
-	began := start     // when the try now going began
+	autoReset := false    // a Codex reset looked at, once
+	creditsAsked := false // asked again onto the account's credits, once (relayOnCredits)
+	resetNote := ""       // what spending it did, for the request log
+	resets := 0           // times a large request ChatGPT closed on was asked again (#1628)
+	sent := len(body)     // the bytes that went, compressed (provider.CodexCompressed)
+	began := start        // when the try now going began
 	// failWith tells Codex of a failure before any reply: as the stream's
 	// error once it was sent the stream's headers while it waited
 	failWith := func(status int, msg string) {
@@ -1075,6 +1091,21 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 				// one of magpie's accounts: a revoked sign-in shows on its
 				// row, to sign in again (#1793)
 				noteSignIn(ctx, on.Account, req, res)
+			}
+			if !creditsAsked && rest == "/responses" && base != codexAPIBase && res.StatusCode == http.StatusTooManyRequests && relayOnCredits(on) {
+				// the account holds credits and was refused as out of its
+				// allowance: ChatGPT may turn away the turn that uses the
+				// window up before it spends them, and answers the next
+				// on them (Zhenzhen on Discord). Asked again at once,
+				// before a reset is looked at, rather than the turn ended
+				creditsAsked = true
+				msg, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+				res.Body.Close()
+				res.Body = io.NopCloser(bytes.NewReader(msg))
+				if failure(res.StatusCode, msg) == failQuota {
+					s.trace.update(tr, func(t *Route) { t.Tries[len(t.Tries)-1].Credits = true })
+					continue
+				}
 			}
 			if !autoReset && rest == "/responses" && base != codexAPIBase && res.StatusCode == http.StatusTooManyRequests {
 				// the account is out of its allowance: one it lets spend its

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -139,7 +138,7 @@ func TestPluginRestrictedAccountSkipped(t *testing.T) {
 			t.Cleanup(plugin.Settle)
 			var mu sync.Mutex
 			var tried []string
-			up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			up := testenv.FakeVendor(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				io.ReadAll(r.Body)
 				who := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer fresh-r-")
 				mu.Lock()
@@ -156,7 +155,6 @@ func TestPluginRestrictedAccountSkipped(t *testing.T) {
 				fmt.Fprint(w, `data: {"id":"c","object":"chat.completion.chunk","model":"fake-1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`+"\n\ndata: [DONE]\n\n")
 			}))
 			defer up.Close()
-			t.Setenv("FAKE_BASE", up.URL+"/v1")
 
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()

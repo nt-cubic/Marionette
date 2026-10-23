@@ -28,6 +28,8 @@ export const RacePlugin = async () => ({
         const a = await getAuth()
         const h = new Headers(init.headers)
         h.set("authorization", "Bearer " + a.access)
+        // the test this host runs for (testenv.FakeVendor)
+        if (process.env.FAKE_RUN) h.set("x-fake-run", process.env.FAKE_RUN)
         return fetch(url, { ...init, headers: h })
       },
     }),

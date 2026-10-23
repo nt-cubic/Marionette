@@ -104,7 +104,7 @@ func sessionRouteOf(r Route) SessionRoute {
 // secret the key can be trusted to lack.
 func (s *Server) sessionRoute(w http.ResponseWriter, r *http.Request) {
 	if !local(r) && !sharedWith(r) {
-		writeError(w, provider.Chat, http.StatusForbidden, "magpie's routes are told to another machine only when magpie is shared on the local network (Settings → Share on local network) and the request carries its API key (Authorization: Bearer <key> or x-api-key: <key>)")
+		writeError(w, provider.Chat, http.StatusForbidden, "magpie's routes are told to another machine only when magpie is shared on the local network (Settings → Network and sharing → Share on local network) and the request carries its API key (Authorization: Bearer <key> or x-api-key: <key>)")
 		return
 	}
 	q := r.URL.Query()

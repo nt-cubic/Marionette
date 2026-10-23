@@ -92,7 +92,7 @@ func TestPiResponsesRelayedToChatGPT(t *testing.T) {
 	auth := fmt.Sprintf(`{"auth_mode":"chatgpt","tokens":{"id_token":%q,"access_token":%q,"refresh_token":"r","account_id":"acct-1"}}`,
 		claims(map[string]any{"email": "me@example.com"}), claims(map[string]any{"exp": time.Now().Add(time.Hour).Unix()}))
 	os.WriteFile(filepath.Join(home, ".codex", "auth.json"), []byte(auth), 0o600)
-	f := &fake{t: t, ctype: "none", reply: piReply}
+	f := &fake{t: t, ctype: "none", reply: piReply, refuse: codexBackendRefuses}
 	up := httptest.NewServer(f)
 	defer up.Close()
 	old := provider.CodexBase
@@ -110,6 +110,29 @@ func TestPiResponsesRelayedToChatGPT(t *testing.T) {
 	if ins, _ := got["instructions"].(string); !strings.HasPrefix(ins, "You are Codex") {
 		t.Errorf("instructions: %q", ins)
 	}
+}
+
+// codexBackendRefuses answers as the ChatGPT backend does an input item
+// with a parameter its kind doesn't have: a message without its id is an
+// input message, and an input message has no status (Doby on Discord, Pi
+// 1.4.0 going on with a conversation: 400 "Unknown parameter:
+// 'input[8].status'").
+func codexBackendRefuses(body []byte) (int, string) {
+	var q struct {
+		Input []map[string]any `json:"input"`
+	}
+	if json.Unmarshal(body, &q) != nil {
+		return 400, `{"error":{"message":"bad json","type":"invalid_request_error"}}`
+	}
+	for i, it := range q.Input {
+		_, id := it["id"]
+		_, status := it["status"]
+		if typ := it["type"]; status && !id && (typ == nil || typ == "message") {
+			p := fmt.Sprintf("input[%d].status", i)
+			return 400, fmt.Sprintf(`{"error":{"message":"Unknown parameter: '%s'.","type":"invalid_request_error","param":"%s","code":"unknown_parameter"}}`, p, p)
+		}
+	}
+	return 0, ""
 }
 
 // DeepSeek Harness on magpie's route switched to OpenAI Responses (its

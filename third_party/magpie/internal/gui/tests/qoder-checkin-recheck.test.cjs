@@ -3,10 +3,10 @@
 // so magpie asks Qoder's check-in again, the built-in's and the Qoder and
 // Qoder CN plugins', on a press. A Qoder account whose check-in found no
 // campaign (inactive) today keeps Check in now on its card, built-in
-// (checkinBy "qoder") and plugin ("plugin:qoder-cn") alike, and the press
-// says the check-in was refreshed rather than "Checked in", since it may
-// still find none. Another vendor's inactive, a plugin's included, is
-// settled for the day and has no press. After LoKi's patch on the issue.
+// (checkinBy "qoder") and plugin ("plugin:qoder-cn") alike, and a press
+// that finds none again says it is not available yet rather than
+// "Checked in" (#3326). Another vendor's inactive, a plugin's included,
+// is settled for the day and has no press. After LoKi's patch on the issue.
 // English, Simplified and Traditional Chinese, Japanese and German, the
 // window and the panel's 440px; the API is faked here.
 const assert = require("node:assert/strict");
@@ -53,7 +53,7 @@ function serve(lang, asked) {
   };
 }
 
-const refreshed = { en: "Check-in status refreshed", zh: "签到状态已刷新", "zh-TW": "簽到狀態已重新整理", ja: "チェックイン状態を更新しました", de: "Check-in-Status aktualisiert" };
+const refreshed = { en: "Not available yet: 1", zh: "暂不可签到：1", "zh-TW": "暫不可簽到：1", ja: "まだチェックインできません：1", de: "Noch nicht verfügbar: 1" };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
   for (const lang of ["en", "zh", "zh-TW", "ja", "de"]) {
