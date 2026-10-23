@@ -1,39 +1,23 @@
 /**
- * OrbApp — root of the floating-orb window (`index.html?orb=1`, label "orb").
+ * OrbApp — the orb panel window (`index.html?orb=1`, label "orb-panel").
  *
- * The orb is a remote control: it renders the ball / panel UI and emits
- * OrbCommand events; the (possibly hidden) main window executes them and
- * pushes OrbState back. This component owns:
+ * The ball itself is a native Win32 layered window (src-tauri/src/orb_native.rs);
+ * clicking it creates/shows THIS webview. The panel is the rich remote control:
+ * quick capture input, scenario buttons, running tasks, notices and quota —
+ * every action goes out as an OrbCommand event and the (possibly hidden) main
+ * window executes it.
  *
- *  - circle ⇄ panel mode transitions (resizeOrbWindow keeps the bottom-right
- *    corner anchored);
- *  - the capture pipeline (HTML5 drag-and-drop + paste → capture_save_blob /
- *    capture_fetch_url → OrbCommand "capture");
- *  - notice sounds (only while the main window is hidden, dedup by `at`);
- *  - collapse triggers (window blur after a grace period, Escape) — never
- *    while an HTML5 drag is hovering.
+ * Collapsing (✕ / Escape / blur) invokes `orb_panel_hide`: Rust hides the
+ * window and navigates it to about:blank after a grace period — the WebView is
+ * never destroyed (tao paint-assert rule). Every show reloads fresh state.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { engineQuota, isTauriRuntime } from "../lib/api";
-import {
-  emitOrbCommand,
-  listenOrbState,
-  type OrbNoticeKind,
-  type OrbState,
-} from "../lib/orbEvents";
-import {
-  applySavedOrbPosition,
-  bindOrbMovePersistence,
-  resizeOrbWindow,
-} from "../lib/orbWindow";
+import { emitOrbCommand, listenOrbState, type OrbState } from "../lib/orbEvents";
 import { BUILTIN_SCENARIOS, listScenarios, type Scenario } from "../lib/scenarios";
-import completeWav from "../assets/notifications/complete.wav";
-import errorWav from "../assets/notifications/error.wav";
-import permissionWav from "../assets/notifications/permission.wav";
-import { OrbBall, worstNoticeKind } from "./OrbBall";
 import { OrbPanel, type OrbToast } from "./OrbPanel";
 import type { OrbQuotaSnapshot } from "./OrbQuota";
 import {
@@ -44,36 +28,9 @@ import {
   type RawCaptureItems,
 } from "./orbCapture";
 
-type OrbMode = "circle" | "panel";
-
 const IDLE_ORB_STATE: OrbState = { mainVisible: true, running: [], notices: [] };
 
-/** Mirrors desktopNotify.ts: import the bundled WAV, play best-effort. */
-const NOTICE_SOUNDS: Record<OrbNoticeKind, string> = {
-  reply: completeWav,
-  permission: permissionWav,
-  error: errorWav,
-};
-
-function playNoticeSound(kind: OrbNoticeKind): void {
-  try {
-    const audio = new Audio(NOTICE_SOUNDS[kind]);
-    audio.preload = "auto";
-    window.setTimeout(() => {
-      try {
-        audio.pause();
-      } catch {
-        /* ignore */
-      }
-    }, 5000);
-    void audio.play().catch(() => undefined);
-  } catch {
-    /* autoplay policy / missing asset — badge stays the primary channel */
-  }
-}
-
 export function OrbApp() {
-  const [mode, setMode] = useState<OrbMode>("circle");
   const [orbState, setOrbState] = useState<OrbState>(IDLE_ORB_STATE);
   const [scenarios, setScenarios] = useState<Scenario[]>(BUILTIN_SCENARIOS);
   const [quickText, setQuickText] = useState("");
@@ -85,12 +42,8 @@ export function OrbApp() {
   /** Re-rendered every second while tasks run (elapsed timers). */
   const [nowMs, setNowMs] = useState(() => Date.now());
 
-  const modeRef = useRef<OrbMode>("circle");
   /** True while an HTML5 drag is hovering — suppresses auto-collapse. */
   const dragActiveRef = useRef(false);
-  /** Notice timestamps already seen (sound dedup; acked by clearNotices). */
-  const seenNoticeAtRef = useRef<Set<number>>(new Set());
-  const firstStateRef = useRef(true);
   const toastIdRef = useRef(0);
   const quickInputRef = useRef<HTMLInputElement>(null);
 
@@ -105,30 +58,13 @@ export function OrbApp() {
     []
   );
 
-  const expand = useCallback(() => {
-    modeRef.current = "panel";
-    setMode("panel");
-    void resizeOrbWindow("panel");
-    // Deferred: keep native window calls away from the click paint, and let
-    // the resize settle before the input grabs focus.
-    window.setTimeout(() => {
-      try {
-        if (isTauriRuntime()) void getCurrentWindow().setFocus();
-      } catch {
-        /* optional */
-      }
-      quickInputRef.current?.focus();
-    }, 80);
-    void emitOrbCommand({ kind: "clearNotices" });
-  }, []);
-
+  /** Collapse = let Rust hide + blank the window (never destroy). */
   const collapse = useCallback(() => {
-    modeRef.current = "circle";
-    setMode("circle");
-    void resizeOrbWindow("circle");
+    if (!isTauriRuntime()) return;
+    void invoke("orb_panel_hide").catch(() => undefined);
   }, []);
 
-  // ── Mount: theme, saved position, move persistence ──────────────────────
+  // ── Mount: theme mirror, ack notices, focus the quick input ───────────────
   useEffect(() => {
     // Mirror the main window's persisted theme (only "white" overrides tokens).
     try {
@@ -140,41 +76,17 @@ export function OrbApp() {
     } catch {
       /* private mode */
     }
-    void applySavedOrbPosition();
-    let disposed = false;
-    let unbindMoves: (() => void) | undefined;
-    void bindOrbMovePersistence().then((unbind) => {
-      if (disposed) unbind();
-      else unbindMoves = unbind;
-    });
-    return () => {
-      disposed = true;
-      unbindMoves?.();
-    };
+    // Fresh open = the user is about to see the notices — ack the ball badge.
+    void emitOrbCommand({ kind: "clearNotices" });
+    window.setTimeout(() => quickInputRef.current?.focus(), 60);
   }, []);
 
-  // ── State from the main window + notice sounds ──────────────────────────
+  // ── State from the main window ────────────────────────────────────────────
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void (async () => {
-      unlisten = await listenOrbState((state) => {
-        setOrbState(state);
-        const seen = seenNoticeAtRef.current;
-        const fresh = state.notices.filter((n) => !seen.has(n.at));
-        for (const n of state.notices) seen.add(n.at);
-        if (seen.size > 512) {
-          // Prune to the live set — acked/old notices never come back anyway.
-          seenNoticeAtRef.current = new Set(state.notices.map((n) => n.at));
-        }
-        // The first push is a sync of pre-existing state — never chime for it.
-        if (firstStateRef.current) {
-          firstStateRef.current = false;
-          return;
-        }
-        if (state.mainVisible || fresh.length === 0) return;
-        for (const n of fresh) playNoticeSound(n.kind);
-      });
+      unlisten = await listenOrbState((state) => setOrbState(state));
       if (disposed) unlisten();
     })();
     return () => {
@@ -240,13 +152,10 @@ export function OrbApp() {
             }
             return;
           }
-          if (modeRef.current !== "panel" || timer !== undefined) return;
-          // ~400ms grace: cancels on refocus, and defers the native resize
-          // past the focus-change paint (tao flush_paint_messages).
+          if (timer !== undefined) return;
           timer = window.setTimeout(() => {
             timer = undefined;
-            if (disposed || modeRef.current !== "panel") return;
-            if (dragActiveRef.current) return;
+            if (disposed || dragActiveRef.current) return;
             collapse();
           }, 400);
         });
@@ -263,8 +172,7 @@ export function OrbApp() {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      if (modeRef.current !== "panel" || dragActiveRef.current) return;
+      if (e.key !== "Escape" || dragActiveRef.current) return;
       collapse();
     };
     window.addEventListener("keydown", onKeyDown);
@@ -333,7 +241,7 @@ export function OrbApp() {
     return () => window.removeEventListener("paste", onPaste);
   }, [runCapture]);
 
-  // ── HTML5 drag & drop (works in both modes) ─────────────────────────────
+  // ── HTML5 drag & drop capture ────────────────────────────────────────────
   const dragHasCapture = (dt: DataTransfer | null): boolean => {
     if (!dt) return false;
     const types = Array.from(dt.types ?? []);
@@ -425,8 +333,6 @@ export function OrbApp() {
     void invoke("quit_app").catch(() => undefined);
   }, []);
 
-  const lastToast = toasts.length > 0 ? toasts[toasts.length - 1] : null;
-
   return (
     <div
       className="orb-root"
@@ -435,38 +341,27 @@ export function OrbApp() {
       onDragLeave={onDragLeave}
       onDrop={onDrop}
     >
-      {mode === "panel" ? (
-        <OrbPanel
-          orbState={orbState}
-          scenarios={scenarios}
-          quickText={quickText}
-          onQuickTextChange={setQuickText}
-          onSendQuickCapture={sendQuickCapture}
-          onScenarioClick={onScenarioClick}
-          onCollapse={collapse}
-          onOpenSession={openSession}
-          onShowMain={showMain}
-          onNewChat={newChat}
-          onQuit={quit}
-          quota={quota}
-          quotaBusy={quotaBusy}
-          onQuotaRefresh={() => void refreshQuota(true)}
-          dragHover={dragHover}
-          nowMs={nowMs}
-          toasts={toasts}
-          processingCount={processingCount}
-          quickInputRef={quickInputRef}
-        />
-      ) : (
-        <OrbBall
-          worstNotice={worstNoticeKind(orbState.notices.map((n) => n.kind))}
-          processingCount={processingCount}
-          toastText={lastToast ? lastToast.text : null}
-          toastTone={lastToast ? lastToast.tone : "ok"}
-          dragHover={dragHover}
-          onActivate={expand}
-        />
-      )}
+      <OrbPanel
+        orbState={orbState}
+        scenarios={scenarios}
+        quickText={quickText}
+        onQuickTextChange={setQuickText}
+        onSendQuickCapture={sendQuickCapture}
+        onScenarioClick={onScenarioClick}
+        onCollapse={collapse}
+        onOpenSession={openSession}
+        onShowMain={showMain}
+        onNewChat={newChat}
+        onQuit={quit}
+        quota={quota}
+        quotaBusy={quotaBusy}
+        onQuotaRefresh={() => void refreshQuota(true)}
+        dragHover={dragHover}
+        nowMs={nowMs}
+        toasts={toasts}
+        processingCount={processingCount}
+        quickInputRef={quickInputRef}
+      />
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Bell, BellOff, ChevronDown, ChevronRight, CloudMoon, Folder, FolderOpen, Ghost, Globe, GripVertical, KeyRound, MessageSquare, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, Sparkles, SunMedium, Trash2, X, Zap } from "lucide-react";
+import { Bell, BellOff, ChevronDown, ChevronRight, CloudMoon, Folder, FolderOpen, Globe, GripVertical, KeyRound, MessageSquare, Network, NotebookPen, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, SunMedium, Trash2, X, Zap } from "lucide-react";
 // Refresh on a project row folds CLI history into the normal session list.
 import type { AgentConfig, Project, ProxyConfig, ProxyTestResult, Session } from "../lib/types";
 import { themeToggleTitle, type ThemeMode } from "../lib/theme";
@@ -100,11 +100,9 @@ type ProjectShelfProps = {
   /** Desktop attention (taskbar flash + sound) for agent events and stalls. */
   desktopNotifyEnabled?: boolean;
   onToggleDesktopNotify?: () => void;
-  /** 主窗关闭时隐藏到后台：引擎 / 会话继续运行，悬浮球唤回（默认开）。 */
-  backgroundMode?: boolean;
-  onToggleBackgroundMode?: () => void;
-  /** 打开「快捷动作」场景按钮管理对话框。 */
-  onOpenScenarios?: () => void;
+  /** Memo timeline is the active center view. */
+  memosActive?: boolean;
+  onOpenMemos?: () => void;
   onAddProject: () => void;
   onNewSession: (projectId: string) => void;
   onProjectSelect: (projectId: string) => void;
@@ -175,9 +173,8 @@ export function ProjectShelf({
   onToggleTheme,
   desktopNotifyEnabled = true,
   onToggleDesktopNotify,
-  backgroundMode = true,
-  onToggleBackgroundMode,
-  onOpenScenarios,
+  memosActive = false,
+  onOpenMemos,
   onDeleteSession,
   onToggleSessionPin,
   onDeleteProject,
@@ -779,40 +776,6 @@ export function ProjectShelf({
     </button>
   ) : null;
 
-  const backgroundButton = onToggleBackgroundMode ? (
-    <button
-      className={
-        backgroundMode
-          ? "pill-action pill-action--icon pill-action--sm sidebar-footer__button is-notify-on"
-          : "pill-action pill-action--icon pill-action--sm sidebar-footer__button is-notify-off"
-      }
-      type="button"
-      title={
-        backgroundMode
-          ? "关闭时隐藏到后台已开启 · 关主窗后引擎与会话继续运行，用悬浮球唤回"
-          : "关闭时隐藏到后台已关闭 · 关主窗即退出 Marionette"
-      }
-      aria-label={backgroundMode ? "关闭时隐藏到后台（已开启）" : "关闭时隐藏到后台（已关闭）"}
-      aria-pressed={backgroundMode}
-      role="switch"
-      onClick={onToggleBackgroundMode}
-    >
-      <Ghost size={13} />
-    </button>
-  ) : null;
-
-  const scenariosButton = onOpenScenarios ? (
-    <button
-      className="pill-action pill-action--icon pill-action--sm sidebar-footer__button"
-      type="button"
-      title="快捷动作 · 自定义场景按钮（记录收藏、新对话…）"
-      aria-label="快捷动作"
-      onClick={onOpenScenarios}
-    >
-      <Sparkles size={13} />
-    </button>
-  ) : null;
-
   const proxyButton = (
     <button
       ref={proxyBtnRef}
@@ -1331,6 +1294,19 @@ export function ProjectShelf({
         })}
       </div>
 
+      {onOpenMemos && (
+        <section className="memo-section">
+          <button
+            type="button"
+            className={memosActive ? "memo-section__row is-active" : "memo-section__row"}
+            onClick={onOpenMemos}
+          >
+            <NotebookPen size={13} aria-hidden />
+            Memo
+          </button>
+        </section>
+      )}
+
       {/* ── Chat section ── */}
       {onChatSessionSelect && (
         <section className="chat-section">
@@ -1504,8 +1480,6 @@ export function ProjectShelf({
       <div className="sidebar-footer">
         {themeButton}
         {notifyButton}
-        {backgroundButton}
-        {scenariosButton}
         {proxyButton}
         {gatewayButton}
         {telegramButton}

@@ -6,11 +6,17 @@
  */
 
 import type { RefObject } from "react";
-import type { OrbState } from "../lib/orbEvents";
+import type { OrbNoticeKind, OrbState } from "../lib/orbEvents";
 import type { Scenario } from "../lib/scenarios";
-import { NOTICE_BADGES } from "./OrbBall";
 import { OrbQuota, type OrbQuotaSnapshot } from "./OrbQuota";
 import { formatClock, formatElapsed } from "./orbCapture";
+
+/** Notice-kind glyphs for the notice list (the native ball draws its own). */
+const NOTICE_BADGES: Record<OrbNoticeKind, { icon: string }> = {
+  reply: { icon: "!" },
+  permission: { icon: "🔑" },
+  error: { icon: "⚠" },
+};
 
 export type OrbToast = {
   id: number;
