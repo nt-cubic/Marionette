@@ -23,6 +23,8 @@ Thumbs.db
 # Claude Code CLI: the session registry holds a peer token, and the config
 # backup is a copy of ~/.claude.json
 .claude/
+# ZCode CLI workspace state (plans etc.) -- local session scratch, not source
+.zcode/
 /sessions/
 /backups/
 
