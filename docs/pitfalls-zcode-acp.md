@@ -326,6 +326,50 @@ ASCII:       "D:\\Program Files\\ZCode\\ZCode.exe"
 
 ---
 
+## 雷 13：postinstall 是 Unix-only——`npm i -g` 在 Windows 上必然回滚成空壳（2026-10-24）
+
+**症状**：`npm install -g zcode-acp-server`（Marionette 应用内安装/升级按钮同通道）失败；
+或装完发现适配器是**空壳**——`node_modules\zcode-acp-server` 递归 0 个文件、
+`npm ls -g` 显示 `zcode-acp-server@`（版本号空）、`%APPDATA%\npm` 的 shim `.cmd` 还在
+但指向不存在的 bin。UI 表现：ZCode agent 永远起不来，且没有直观报错。
+
+**根因**：包的 postinstall 写死了 Unix 语法：
+`node dist/remote/hub-upgrade-notify.js 2>/dev/null || true`。npm 在 Windows 用
+cmd.exe 跑 lifecycle scripts：`/dev/null` 不存在（`The system cannot find the path
+specified.`）、`true` 不是命令（`'true' is not recognized as an internal or external
+command`）→ postinstall **恒败** → npm 回滚整个安装。回滚清理又常撞 EPERM（目录被
+占用/杀软扫描），最终留下 0 文件的空壳目录 + 死 shim。
+
+**证据**（2026-10-24 本机重装实测）：
+
+```
+npm error command C:\WINDOWS\system32\cmd.exe /d /s /c node dist/remote/hub-upgrade-notify.js 2>/dev/null || true
+npm error The system cannot find the path specified.
+npm error 'true' is not recognized as an internal or external command
+npm warn cleanup Failed to remove some directories [ ... EPERM rmdir ... zod ...]
+```
+
+`--ignore-scripts` 重装 3 秒完成（30 包），NDJSON 探针 initialize + session/new 全绿
+（0.76.2，configOptions：model=67 / mode=5 / thought=3）——适配器不依赖任何
+lifecycle script。
+
+**修复/规避**：
+
+- 手工：`npm install -g zcode-acp-server --ignore-scripts`，然后照例重跑
+  `scripts/patch-zcode-acp-personal-models.mjs`（雷 12）。
+- 产品（`commands.rs::npm_install_args`）：对 `zcode-acp-server` 一个包追加
+  `--ignore-scripts`——应用内安装按钮与启动时 auto-update 走同一条
+  `npm_install_global`，一并生效。**其它 npm agent 不动**（opencode-ai 的
+  postinstall 负责放置平台二进制，跳过会得到 16 位应用假 exe，见 opencode 事故）。
+- 同轮修 UI 误报：`zcode_desktop_present()` 原来认 `~/.zcode/v2` 目录——跨用桥
+  自己就写这个目录（provider_config.json），从没装过桌面版的机器也会被判
+  「已安装」。改为 `acp::zcode_bin_path().is_some()`（与 spawn 注入同一条探测链）。
+
+**快速确诊**：`npm ls -g zcode-acp-server` 版本号为空 / 包目录 0 文件 → 此雷。
+每次装完必查 `dist\config\options.js` 里有 `builtinModelIds` 补丁标记。
+
+---
+
 ## 快速确诊表
 
 | 症状 | 先看 | 结论 |
@@ -342,6 +386,7 @@ ASCII:       "D:\\Program Files\\ZCode\\ZCode.exe"
 | 默认模型被换 | providerOrder 是否前插 / 是否写了账号层 | 雷 9 |
 | 跨用 opencode-go 模型全 401 `api_key_expired`，opencode agent 自己正常 | `magpie providers` 指纹 vs opencode.db active=1 行 vs auth.json | 雷 11 |
 | 桌面版能选的 key，ACP 模型菜单里一条都没有 | `provider_config.json` 里该 provider 有没有 `providerModelRules`（模板建的 provider 通常没有） | 雷 12 |
+| `npm ls -g` 显示 `zcode-acp-server@`（空版本）/ 包目录空壳、agent 起不来 | postinstall 是否 Unix-only；用 `--ignore-scripts` 重装 | 雷 13 |
 
 ---
 
