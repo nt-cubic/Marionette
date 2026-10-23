@@ -7711,7 +7711,7 @@ export function App() {
 
         {/* Shared titlebar across center + right columns */}
         <div className="workspace-titlebar">
-          {!workspaceSplit && (
+          {!workspaceSplit ? (
           <SessionTabs
             openSessions={openSessions}
             session={displaySession}
@@ -7738,6 +7738,8 @@ export function App() {
             onOpenBeside={IS_DETACHED_WINDOW ? undefined : handleOpenBeside}
             titlebarDragRegion
           />
+          ) : (
+            <div className="workspace-titlebar__fill" data-tauri-drag-region />
           )}
           <div className="workspace-titlebar__spacer" data-tauri-drag-region />
           <WindowControls />
