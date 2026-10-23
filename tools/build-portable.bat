@@ -275,6 +275,11 @@ if errorlevel 1 (
   exit /b 1
 )
 copy /Y "third_party\magpie\VERSION" "src-tauri\engine-embedded\VERSION" >nul
+rem Release hygiene: the baked seed must equal what the repo vendors. If the import
+rem pulled a newer tag, commit third_party\magpie before publishing so the release
+rem commit and the shipped exe tell the same story.
+git -C "%~dp0.." diff --quiet -- third_party\magpie 2>nul
+if errorlevel 1 echo  [engine] note: third_party\magpie differs from HEAD - commit it so the release matches this build
 echo  [engine] embedded artifact ready: version !MAG_VER!
 exit /b 0
 
