@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -148,6 +149,9 @@ type Session struct {
 	// WSL is the WSL distro the session ran in, its files read through
 	// \\wsl.localhost (see wsl.go); "" for this computer's own
 	WSL string `json:"wsl,omitempty"`
+	// Convs are the ids magpie's gateway keys the session's requests by
+	// when they carry no session id of their own (dshConvs)
+	Convs []string `json:"-"`
 }
 
 // PriceOf is the effective price of a model as a session names it, at the
@@ -192,6 +196,7 @@ type state struct {
 	Named                 string            `json:"named,omitempty"`  // the agent's own title for it
 	Custom                string            `json:"custom,omitempty"` // the name the user gave it
 	First                 string            `json:"first,omitempty"`  // the first message, when no prompt looked typed
+	Convs                 []string          `json:"convs,omitempty"`  // the gateway's ids for its requests (dshConvs)
 	Start                 time.Time         `json:"start"`
 	Last                  time.Time         `json:"last"`
 	Models                map[string]Tokens `json:"models,omitempty"`
@@ -362,6 +367,7 @@ func (s *state) clone() *state {
 		t := *s.Total
 		c.Total = &t
 	}
+	c.Convs = slices.Clone(s.Convs)
 	c.CodexSpawnNames = maps.Clone(s.CodexSpawnNames)
 	c.CodexSpawnConflicts = maps.Clone(s.CodexSpawnConflicts)
 	c.CodexAgentIDs = maps.Clone(s.CodexAgentIDs)
@@ -498,6 +504,22 @@ func allFiles() []file {
 		grokFiles(), workbuddyFiles(), codebuddyFiles(), droidFiles(), ompFiles(), cursorFiles(), hermesFiles(), almaFiles(), kimiFiles()} {
 		out = append(out, fs...)
 	}
+	return distinctPaths(out)
+}
+
+// distinctPaths is fs with each path kept once, the first time it is
+// listed. A path is one file to read and count: a session a database
+// holds twice under one id (a TEXT and a BLOB row, #2932), or a folder
+// two agents are told to share, would otherwise be counted twice.
+func distinctPaths(fs []file) []file {
+	seen := make(map[string]bool, len(fs))
+	out := fs[:0]
+	for _, f := range fs {
+		if !seen[f.path] {
+			seen[f.path] = true
+			out = append(out, f)
+		}
+	}
 	return out
 }
 
@@ -505,6 +527,7 @@ func allFiles() []file {
 // Codex's, and the other agents' where they keep sessions on this computer.
 func Dirs() []string {
 	out := []string{ClaudeDir(), CodexDir()}
+	var named []os.FileInfo
 	for _, d := range []struct{ dir, sessions string }{
 		{OpenCodeDir(), OpenCodeDir()},
 		{PiDir(), PiDir()},
@@ -525,9 +548,18 @@ func Dirs() []string {
 		{MiniMaxDir(), minimaxSessions()},
 		{KimiCodeDir(), kimiSessions()},
 	} {
-		if _, err := os.Stat(d.sessions); err == nil {
-			out = append(out, d.dir)
+		if _, err := os.Stat(d.sessions); err != nil {
+			continue
 		}
+		// a folder two agents share is named once
+		// (CODEBUDDY_CONFIG_DIR set to ~/.workbuddy, #2932)
+		if fi, err := os.Stat(d.dir); err == nil {
+			if slices.ContainsFunc(named, func(o os.FileInfo) bool { return os.SameFile(o, fi) }) {
+				continue
+			}
+			named = append(named, fi)
+		}
+		out = append(out, d.dir)
 	}
 	out = append(out, HermesDirs()...)
 	out = append(out, wslDirs()...)
@@ -658,7 +690,8 @@ func CachePath() string { return filepath.Join(filepath.Dir(catalog.CachePath())
 // 19: the names the user gave Claude Code's and WorkBuddy's (custom-title).
 // 20: Codex's source and direct parent thread identity.
 // 21: Codex subagent nicknames and parent spawn task names.
-const cacheVersion = 21
+// 22: dsh's gateway conversation ids (Convs).
+const cacheVersion = 22
 
 type cacheFile struct {
 	Version int               `json:"version"`
@@ -789,13 +822,18 @@ func refresh(want, all []file) {
 		}
 		if s := cache[f.path]; s == nil || s.Size != f.size || s.Mod != f.mod.UnixNano() || (f.agent == "hermes" && (f.hermes == nil || f.rev == "" || s.DBRevision != f.rev)) || ((f.agent == "alma" || f.agent == "cursor") && s.DBRevision != f.rev) {
 			if parsing[f.path] != nil {
-				// another refresh is reading it: its last parse stands
-				// until that one is in, and one never read is waited for
+				// a refresh is reading it, another or this one (a path
+				// listed twice): its last parse stands until that one is
+				// in, and one never read is waited for
 				if s == nil {
 					waits = append(waits, f)
 				}
 				continue
 			}
+			// marked as it is taken, so a second listing of the path is
+			// not a second job: two jobs shared one entry, and the second
+			// publish closed a nil channel (#2932)
+			parsing[f.path] = make(chan struct{})
 			todo = append(todo, f)
 		}
 	}
@@ -844,7 +882,6 @@ func refresh(want, all []file) {
 	jobs := make([]job, len(todo))
 	for i, f := range todo {
 		jobs[i] = job{f: f, old: cache[f.path]}
-		parsing[f.path] = make(chan struct{})
 	}
 	generation := cacheGeneration
 	mu.Unlock()
@@ -1198,6 +1235,7 @@ func assembleListed(fs []file, price func(string) *catalog.Price) (Session, bool
 			if first == "" {
 				first = st.First
 			}
+			s.Convs = append(s.Convs, st.Convs...)
 		}
 		if s.Agent == "codex" && st.CodexNickname != "" {
 			s.Nickname = st.CodexNickname

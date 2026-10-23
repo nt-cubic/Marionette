@@ -435,6 +435,9 @@ func checkGitSkill(s *Skill, f *fetcher, asked map[string]string) (SkillCheck, s
 	}
 	from := filepath.Join(tmp, filepath.FromSlash(src.Path))
 	if _, ok := readMeta(from); !ok {
+		if goneFrom(tmp, src.Path) {
+			return goneCheck(&GoneError{Name: s.Name, Source: src.Repo}), "", ""
+		}
 		c.Error = fmt.Sprintf("%s has no SKILL.md at %s any more", src.Repo, src.Path)
 		return c, "", ""
 	}

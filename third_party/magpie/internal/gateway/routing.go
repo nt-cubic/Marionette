@@ -38,7 +38,15 @@ var routed = struct {
 	sync.Mutex
 	used     map[string]tokenUse // candidate restKey → tokens it served
 	failures map[string]int      // candidate restKey → failures since it last answered
-}{used: map[string]tokenUse{}, failures: map[string]int{}}
+	slow     map[string]slowRun  // candidate restID → its slow starts since it last answered (restSlow)
+}{used: map[string]tokenUse{}, failures: map[string]int{}, slow: map[string]slowRun{}}
+
+// slowRun is a model's slow starts in a row on one account or key, and
+// when the last of them was.
+type slowRun struct {
+	n  int
+	at time.Time
+}
 
 type tokenUse struct {
 	n  float64
@@ -74,6 +82,7 @@ func servedCandidate(c candidate, tokens int) {
 	if id := c.restID(); id != c.restKey() {
 		routed.Lock()
 		delete(routed.failures, id)
+		delete(routed.slow, id)
 		routed.Unlock()
 		clearRest(id)
 	}
@@ -183,6 +192,11 @@ const (
 	// afternoon without anyone acting; the Routing page lifts it at once
 	// (Unrest) for a user whose appeal went through
 	restrictedRest = 2 * time.Hour
+	// slowRests is how many slow starts in a row (restSlow) rest a model
+	// on an account or key, and slowForget how long after the last one
+	// the next starts a new run
+	slowRests  = 2
+	slowForget = 30 * time.Minute
 )
 
 var (
@@ -212,12 +226,22 @@ var (
 	// resetsWhen: a 429 that says in words when the account is back, as
 	// WorkBuddy's do in both its builds (#1669): "将在 2026-10-11 20:16:02
 	// UTC+8重置", "your usage will reset at 2026-10-11 12:37:53 UTC+8, ...".
+	// Volcengine Ark's monthly one writes its time as Go prints one, the
+	// offset as four digits and the zone's name after it (#3251 CNife,
+	// #3276 wyx1818): "It will reset at 2026-10-25 23:59:59 +0800 CST.";
+	// the offset is read, the name (CST is more than one zone) isn't.
 	// Only the reset phrasing right beside a whole date and time with its
 	// offset is read, and the offset must be followed by what follows it
 	// there (重置, or a comma or full stop), so a refusal cut short after
-	// "UTC" or "UTC+" isn't read as UTC: another vendor's date in passing
-	// ("deprecated on …"), or one with no offset, is not a reset time.
-	resetsWhen = regexp.MustCompile(`(?i)(?:\bresets? at|将在|将于)\s*(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{2}):(\d{2})\s*(?:UTC|GMT)([+-])(\d{1,2})(?::?(\d{2}))?(?:\s*(?:重置|[,.;，。；]))`)
+	// "UTC", "UTC+" or Ark's "+0800" isn't read as UTC: another vendor's
+	// date in passing ("deprecated on …"), or one with no offset, is not a
+	// reset time.
+	resetsWhen = regexp.MustCompile(`(?i)(?:\bresets? at|将在|将于)\s*(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{2}):(\d{2})\s*(?:(?:UTC|GMT)([+-])(\d{1,2})(?::?(\d{2}))?|([+-])(\d{2})(\d{2}) (?-i:[A-Z]{2,5}))(?:\s*(?:重置|[,.;，。；]))`)
+	// monthlyWords: a refusal that says the allowance it used up is a
+	// month's, as Ark's does ("You have exceeded the monthly usage quota")
+	// and Zhipu's 1310 ("Weekly/Monthly Limit Exhausted"): the reset time
+	// it writes can honestly be weeks off (longestSaid).
+	monthlyWords = regexp.MustCompile(`(?i)\bmonthly\b|月度|每月|本月`)
 	// otherModels: a refusal that says the account's other models still
 	// answer ("切换其他模型", "switch to the other models"): its limit is
 	// the model's, and the model alone rests
@@ -288,8 +312,9 @@ const (
 	// left, and nobody rests
 	failRoom = "room"
 	// failSlow: the member hadn't begun its reply when its group's
-	// FirstToken ran out, nothing of it sent — the next is asked, and
-	// nobody rests, as a long prompt is slow anywhere
+	// FirstToken ran out, nothing of it sent — the next is asked. Once,
+	// nobody rests, as a long prompt is slow anywhere; again and again on
+	// one account's model, that model rests there (restSlow)
 	failSlow = "slow"
 	// failLoop: the reply was ended stuck in a loop (#1359) — the agent
 	// is told, and nobody rests, as the model, not the account, looped
@@ -691,7 +716,7 @@ var zhipuZone = time.FixedZone("UTC+8", 8*3600)
 // resetsZhipu is how long until the time a Zhipu 1308 or 1310 names
 // (zhipuResets), read in Beijing's time. Zero when there is none, it isn't
 // a real date, it is written with a zone of its own (resetsWritten reads
-// those), it has passed, or it is over longestWritten off.
+// those), it has passed, or it is further off than longestSaid.
 func resetsZhipu(body []byte, now time.Time) time.Duration {
 	m := zhipuResets.FindSubmatch(wordsOf(body))
 	if m == nil {
@@ -712,7 +737,7 @@ func resetsZhipu(body []byte, now time.Time) time.Duration {
 	if t.Year() != y || int(t.Month()) != mo || t.Day() != d || t.Hour() != h || t.Minute() != mi || t.Second() != sec {
 		return 0
 	}
-	if w := t.Sub(now); w > 0 && w <= longestWritten {
+	if w := t.Sub(now); w > 0 && w <= longestSaid(body) {
 		return w
 	}
 	return 0
@@ -769,27 +794,49 @@ func spanWritten(m [][]byte) time.Duration {
 // time further off than a week is more likely a misreading than a reset.
 const longestWritten = 7 * 24 * time.Hour
 
+// longestMonthly is the furthest off a written reset of a month's
+// allowance is believed, and the longest an account or key out of one
+// sits out: a month, and days over. Ark's monthly quota used up on the
+// 22nd resets on the 31st, 9 days off; held to the week, it was read as
+// no reset and asked again every quotaRest till the month turned (#3276).
+const longestMonthly = 35 * 24 * time.Hour
+
+// longestSaid is the furthest off a reset time a refusal writes is
+// believed: longestMonthly when it says its allowance is a month's
+// (monthlyWords), else longestWritten.
+func longestSaid(body []byte) time.Duration {
+	if monthlyWords.Match(wordsOf(body)) {
+		return longestMonthly
+	}
+	return longestWritten
+}
+
 // resetsWritten is how long until the time a refusal names in words
 // (resetsWhen), read in the offset it is written with. Zero when there is
-// none, it isn't a real date, it has passed, or it is over longestWritten
-// off.
+// none, it isn't a real date, it has passed, or it is further off than
+// longestSaid.
 func resetsWritten(body []byte, now time.Time) time.Duration {
 	m := resetsWhen.FindSubmatch(wordsOf(body))
 	if m == nil {
 		return 0
 	}
-	n := make([]int, 9)
-	for i, g := range [][]byte{m[1], m[2], m[3], m[4], m[5], m[6], m[8], m[9]} {
+	// the offset after UTC or GMT, else as Go prints it (Ark's +0800 CST)
+	sign, oh, om := m[7], m[8], m[9]
+	if len(sign) == 0 {
+		sign, oh, om = m[10], m[11], m[12]
+	}
+	n := make([]int, 8)
+	for i, g := range [][]byte{m[1], m[2], m[3], m[4], m[5], m[6], oh, om} {
 		if len(g) > 0 {
 			n[i], _ = strconv.Atoi(string(g))
 		}
 	}
-	y, mo, d, h, mi, sec, oh, om := n[0], n[1], n[2], n[3], n[4], n[5], n[6], n[7]
-	if oh > 14 || om > 59 {
+	y, mo, d, h, mi, sec, offH, offM := n[0], n[1], n[2], n[3], n[4], n[5], n[6], n[7]
+	if offH > 14 || offM > 59 {
 		return 0
 	}
-	off := oh*3600 + om*60
-	if string(m[7]) == "-" {
+	off := offH*3600 + offM*60
+	if string(sign) == "-" {
 		off = -off
 	}
 	t := time.Date(y, time.Month(mo), d, h, mi, sec, 0, time.FixedZone("", off))
@@ -797,7 +844,7 @@ func resetsWritten(body []byte, now time.Time) time.Duration {
 	if t.Year() != y || int(t.Month()) != mo || t.Day() != d || t.Hour() != h || t.Minute() != mi || t.Second() != sec {
 		return 0
 	}
-	if w := t.Sub(now); w > 0 && w <= longestWritten {
+	if w := t.Sub(now); w > 0 && w <= longestSaid(body) {
 		return w
 	}
 	return 0
@@ -819,6 +866,18 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 		// the model and the account are as good as they were, and answer
 		// as soon as the switch is off
 		return Rest{Why: why, Status: status, By: "off", Until: now}
+	}
+	if status == http.StatusBadRequest {
+		if _, ok := policyRefusal(body); ok {
+			// the safety filter refused the request's content (#3274:
+			// Codex's 400 cyber_policy), read from the vendor's error
+			// object, never from words a body may echo of the request:
+			// any account is refused it alike, so none is set aside and
+			// the failure counts nowhere. The serve loop doesn't rest a
+			// refusal it reads (failRefused); this holds for every other
+			// route that rests one
+			return Rest{Why: failRefused, Status: status, By: "off", Until: now}
+		}
 	}
 	// read before the allowance is asked again below: out of a pool that
 	// counts some models only, the account's others are still in theirs
@@ -876,7 +935,13 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 			// asked again every hour, whatever rest the user set)
 			d, r.By = w, "retry-after"
 		}
-		d = min(d, longestQuota)
+		// a month's allowance whose refusal named its reset is out till
+		// then, past the week's cap (#3276); nothing else is held longer
+		longest := longestQuota
+		if r.By == "resets" && monthlyWords.Match(wordsOf(body)) {
+			longest = longestMonthly
+		}
+		d = min(d, longest)
 	case failRate:
 		d, r.By, r.Failures = s.rateRest(c, header, body, sharedPool, now)
 		// rate limited with quota left: to the back, where the order sinks
@@ -1020,6 +1085,61 @@ func remoteModelRest(c candidate, why string, header http.Header) bool {
 		return false
 	}
 	return why == failQuota || why == failCredit || why == failRate || why == failRestricted || why == failVerify
+}
+
+// restSlow counts a slow start — let go for no first token in its group's
+// FirstToken — against the candidate's model on its account or key
+// (restID), and rests that model there from the slowRests'th in a row: a
+// minute, twice as long each time after, up to the provider's rest cap.
+// One alone rests nothing, a long prompt being slow to start anywhere; a
+// run ends when the model answers there (servedCandidate) or slowForget
+// passes with none. Its other models and the account's other mates are
+// asked as before (小八 on Discord: WorkBuddy's kimi-k3-1 and glm-5.3,
+// out of a per-model token limit the vendor never named, stalled 15 times
+// in 17 minutes, each request waiting 30s for it before the fallback
+// answered). A slow start while it rests for one keeps the count where it
+// is, so one request's tries don't stretch it. A provider set never to
+// rest after a failure that says nothing of why (RestCapOff) isn't
+// rested, nor its slow starts counted.
+func restSlow(c candidate, now time.Time) (Rest, bool) {
+	if c.p.NoFailRest() {
+		return Rest{}, false
+	}
+	id := c.restID()
+	prev, resting := restOf(id)
+	routed.Lock()
+	run := routed.slow[id]
+	if now.Sub(run.at) >= slowForget {
+		run.n = 0
+	}
+	if !resting || prev.Why != failSlow || run.n == 0 {
+		run.n++
+	}
+	run.at = now
+	routed.slow[id] = run
+	routed.Unlock()
+	if run.n < slowRests {
+		return Rest{}, false
+	}
+	d, by := min(fallbackCooldown<<min(run.n-slowRests, 10), c.p.RestCapOr(longestRetry)), "cooldown"
+	if run.n > slowRests {
+		by = "backoff"
+	}
+	r := Rest{Why: failSlow, Status: http.StatusGatewayTimeout, Until: now.Add(d), By: by, Failures: run.n, Key: id, Model: c.model}
+	if a := c.p.Account; a != nil {
+		r.agent, r.user = a.UsageAgent(), a.User
+	}
+	restingUntil.Lock()
+	defer restingUntil.Unlock()
+	if until, ok := restingUntil.m[id]; ok && until.After(r.Until) {
+		// resting longer already, for what another failure said
+		kept := restingUntil.note[id]
+		kept.Until = until
+		return kept, true
+	}
+	restingUntil.m[id] = r.Until
+	restingUntil.note[id] = r
+	return r, true
 }
 
 // rateRest is how long a rate-limited candidate sits out: as long as the

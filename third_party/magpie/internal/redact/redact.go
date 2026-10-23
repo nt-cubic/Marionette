@@ -585,7 +585,31 @@ func mask(s string, o Options, put func(kind, v string) string) (string, int) {
 	// kind it has always had
 	found = append(found, modelSpans(s, o)...)
 	found = append(found, knownSpans(s, o)...)
-	return apply(s, noIDs(s, found), put, o)
+	return apply(s, noDecimals(s, noIDs(s, found)), put, o)
+}
+
+// noDecimals is found without what is a piece of a decimal number of s:
+// digits right after the point of 5.13800138000, or right before the
+// point of 13800138000.5. A number is judged whole, and the fraction of
+// a height, a price or a coordinate is not a phone or a card number
+// because its digits happen to check (willz on Discord). Only personal
+// data's kinds, whoever found them (a rule, the model, a value known
+// before): a secret is masked wherever it is, and what the user chose
+// (their words, their rules) stays theirs.
+func noDecimals(s string, found []span) []span {
+	return slices.DeleteFunc(found, func(f span) bool {
+		_, personal := kindCats[f.kind]
+		return personal && f.by != ByWord && f.by != ByYours && inDecimal(s, f.start, f.end)
+	})
+}
+
+// inDecimal says s[a:b] starts with a digit that is a decimal's fraction
+// (a digit and a point before it) or ends with a digit that is its whole
+// part (a point and a digit after it).
+func inDecimal(s string, a, b int) bool {
+	isDigit := func(i int) bool { return i >= 0 && i < len(s) && s[i] >= '0' && s[i] <= '9' }
+	return isDigit(a) && a >= 2 && s[a-1] == '.' && isDigit(a-2) ||
+		isDigit(b-1) && b+1 < len(s) && s[b] == '.' && isDigit(b+1)
 }
 
 // by is the finder r is, for Hit.By.

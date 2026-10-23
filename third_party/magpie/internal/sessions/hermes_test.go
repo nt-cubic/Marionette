@@ -318,3 +318,57 @@ func TestHermesOpensStateDatabaseReadOnly(t *testing.T) {
 		t.Fatalf("read-only probe changed fixture title to %q", title)
 	}
 }
+
+// nativeas's state.db (#2932) held one session id twice, a TEXT row and a
+// BLOB row of the same bytes: SQLite keeps them apart under a TEXT primary
+// key, but both scan to one string, so the session was listed twice and its
+// usage counted twice (and, before refresh marked a path as it was taken,
+// the second read closed a nil channel at start).
+func TestHermesIDStoredAsTextAndBlobIsOneSession(t *testing.T) {
+	setup(t)
+	root := filepath.Join(t.TempDir(), "hermes")
+	t.Setenv("HERMES_HOME", root)
+	path := hermesFixture(t, root, "", "same-id", true)
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC).Unix()
+	if _, err := db.Exec(`INSERT INTO sessions (id, title, started_at) VALUES (?, 'stray', ?)`, []byte("same-id"), float64(base)); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	var kinds string
+	if err := db.QueryRow(`SELECT group_concat(typeof(id)) FROM sessions`).Scan(&kinds); err != nil || kinds != "text,blob" {
+		db.Close()
+		t.Fatalf("fixture's ids are %q (%v), want a text and a blob", kinds, err)
+	}
+	db.Close()
+
+	var hs []Session
+	for _, s := range List(0) {
+		if s.Agent == "hermes" {
+			hs = append(hs, s)
+		}
+	}
+	if len(hs) != 1 {
+		t.Fatalf("listed %d Hermes sessions, want 1: %+v", len(hs), hs)
+	}
+	if hs[0].Title != "A Hermes task" {
+		t.Errorf("the session read is %q, want the one its messages belong to", hs[0].Title)
+	}
+	var total Tokens
+	for _, d := range StatsAt(0, time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)).Days {
+		for _, u := range d.Usage {
+			if u.Agent == "hermes" {
+				total.add(u.Tokens)
+			}
+		}
+	}
+	if total != (Tokens{100, 50, 25, 15, 0}) {
+		t.Errorf("Hermes usage %+v, want the session's once", total)
+	}
+	if n := len(ListAgent("hermes")); n != 1 {
+		t.Errorf("the management page lists %d Hermes sessions, want 1", n)
+	}
+}

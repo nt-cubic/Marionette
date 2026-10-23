@@ -31,6 +31,7 @@ type pluginSubJSON struct {
 	Spec     string          `json:"spec"` // the plugin
 	Methods  []plugin.Method `json:"methods"`
 	SignedIn bool            `json:"signedIn"`
+	Single   bool            `json:"single,omitempty"`
 	Models   int             `json:"models"`
 	// Options are the switches the plugin declares (auth.options, #2038),
 	// each with where it stands now
@@ -81,7 +82,7 @@ func pluginSubs() []pluginSubJSON {
 		}
 		out = append(out, pluginSubJSON{
 			ID: provider.PluginID(pp.ID), PID: pp.ID, Name: pp.Name, Icon: pluginIcon(pp), Spec: pp.Spec,
-			Methods: pp.Methods, SignedIn: pp.SignedIn, Models: len(pp.Models), Options: opts,
+			Methods: pp.Methods, SignedIn: pp.SignedIn, Single: pp.Single, Models: len(pp.Models), Options: opts,
 		})
 	}
 	return out

@@ -143,6 +143,11 @@ func TestRetiredWords(t *testing.T) {
 		{401, `{"error":{"code":null,"message":"OpenCode Zen Free: Model glm-5-free is not supported","param":null,"type":"authentication_error"}}`, true},
 		{401, `Model grok-4.7 is not supported for format anthropic`, false},
 		{401, `Invalid API key.`, false},
+		// the safety filter's refusal, whatever its message says of the
+		// model, is about the request (#3274)
+		{400, `{"error":{"type":"invalid_request_error","code":"cyber_policy","message":"This request was flagged by our safety filter. The model m1 is retired.","param":null}}`, false},
+		{400, `{"error":{"code":"content_filter","message":"The model m1 has been deprecated."}}`, false},
+		{400, `{"error":{"type":"invalid_request_error","code":"model_deprecated","message":"The model m1 is retired."}}`, true},
 	} {
 		if got := modelRetired(c.status, []byte(c.body)); got != c.want {
 			t.Errorf("modelRetired(%d, %s) = %v", c.status, c.body, got)
@@ -172,5 +177,33 @@ func TestZenUnsupportedModelLeavesTheListAlone(t *testing.T) {
 	}
 	if code, body := postAs(t, s, "", `{"model":"opencode-zen-free/space-bunny-free","messages":[{"role":"user","content":"hi"}]}`); code != http.StatusOK {
 		t.Fatalf("the account's other model sat out with it: %d %s", code, body)
+	}
+}
+
+// A safety filter's refusal whose message also says the model is retired
+// is a refusal of the request: the model stays in the provider's lists
+// (#3274, CartethyiaQwQ). A retirement said without one still retires.
+func TestRefusalSayingRetiredRetiresNothing(t *testing.T) {
+	for _, x := range []struct {
+		name, body string
+		retire     bool
+	}{
+		{"refusal", `{"error":{"type":"invalid_request_error","code":"cyber_policy","message":"This content was flagged for possible cybersecurity risk. The model m1 is retired.","param":null}}`, false},
+		{"retired alone", `{"error":{"type":"invalid_request_error","code":"model_deprecated","message":"The model m1 is retired."}}`, true},
+	} {
+		t.Run(x.name, func(t *testing.T) {
+			fresh(t)
+			t.Cleanup(func() { provider.Unretire("a", "m1") })
+			serveOn(t, "a", "k", []string{"m1"}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				io.ReadAll(r.Body)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				io.WriteString(w, x.body)
+			}))
+			code, body := postAs(t, New(), "", `{"model":"a/m1","messages":[{"role":"user","content":"hi"}]}`)
+			if got := provider.Retired("a", "m1"); got != x.retire {
+				t.Fatalf("retired %v, want %v (%d %s)", got, x.retire, code, body)
+			}
+		})
 	}
 }

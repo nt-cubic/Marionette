@@ -319,12 +319,24 @@ func hermesFiles() []file {
 		if err != nil {
 			continue
 		}
+		// an id stored once as TEXT and once as BLOB is two rows under a
+		// TEXT primary key and one string here: it is one session, as
+		// late as the later of them (#2932)
+		at := map[string]int{}
 		for rows.Next() {
 			var sid string
 			var start, end, last, messageAt, usageAt float64
 			if rows.Scan(&sid, &start, &end, &last, &messageAt, &usageAt) != nil || sid == "" {
 				continue
 			}
+			mod := hermesTime(max(start, end, last, messageAt, usageAt))
+			if i, ok := at[sid]; ok {
+				if mod.After(out[i].mod) {
+					out[i].mod = mod
+				}
+				continue
+			}
+			at[sid] = len(out)
 			id := storeID + "-" + sid
 			out = append(out, file{
 				agent:    "hermes",
@@ -332,7 +344,7 @@ func hermesFiles() []file {
 				path:     path + "#" + url.QueryEscape(sid),
 				sid:      sid,
 				main:     true,
-				mod:      hermesTime(max(start, end, last, messageAt, usageAt)),
+				mod:      mod,
 				hermes:   store,
 				rev:      prints[sid], // "" when unknown: parsed again
 				readOnly: true,

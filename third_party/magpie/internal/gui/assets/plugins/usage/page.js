@@ -3,6 +3,15 @@
 // first page.
 const PERIODS = [["today", "Today"], ["7d", "7 days"], ["30d", "30 days"], ["all", "All"]];
 
+// The reader's time zone, which magpie reads the period's days, the chart's
+// hours and a picked day in: magpie web may be read from another zone than
+// the computer's, whose days put a call at 9:00 in UTC+8 under 1:00 (Outvi V
+// on Discord). None, and magpie reads its own.
+function usageZone() {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch { return ""; }
+}
+const usageZoneQ = () => (usageZone() ? "&tz=" + encodeURIComponent(usageZone()) : "");
+
 // asked: the reader opened the page, so a Claude account's usage is read
 // at once, by running Claude Code's own /usage, rather than when its last
 // reading is due (every 5 to 15 minutes, at random, once Claude Code was used).
@@ -19,7 +28,7 @@ async function loadUsage(asked) {
   renderUsageLoading();
   if (!asked) loadQuotas();
   const p = period, read = ++usageRead;
-  const next = await api("usage?period=" + encodeURIComponent(p));
+  const next = await api("usage?period=" + encodeURIComponent(p) + usageZoneQ());
   if (read !== usageRead || view !== "usage" || usageTab !== "usage" || period !== p) return;
   usage = next;
   renderUsage();
@@ -693,6 +702,7 @@ function ledLeave() {
 
 function ledParams(extra) {
   const q = new URLSearchParams({ period });
+  if (usageZone()) q.set("tz", usageZone());
   if (ledDay) q.set("day", ledDay);
   if (ledAgent) q.set("agent", ledAgent);
   if (ledPurpose) q.set("purpose", ledPurpose);
@@ -1343,6 +1353,12 @@ function ledHScroll() {
   if (!over) return;
   bar.firstElementChild.style.width = wrap.scrollWidth - wrap.clientWidth + bar.clientWidth + "px";
   bar.scrollLeft = wrap.scrollLeft;
+  // a sticky box keeps clear of its scroller's padding, so at bottom 0 it
+  // stood the view's bottom padding above the window's foot, the table
+  // showing through the strip under it: it goes down over that padding
+  const view = bar.closest(".view");
+  const pad = view ? parseFloat(getComputedStyle(view).paddingBottom) || 0 : 0;
+  bar.style.bottom = -pad + "px";
 }
 $("#ledWrap").addEventListener("scroll", () => { const bar = $("#ledHScroll"); if (bar.scrollLeft !== $("#ledWrap").scrollLeft) bar.scrollLeft = $("#ledWrap").scrollLeft; }, { passive: true });
 $("#ledHScroll").addEventListener("scroll", () => { const wrap = $("#ledWrap"); if (wrap.scrollLeft !== $("#ledHScroll").scrollLeft) wrap.scrollLeft = $("#ledHScroll").scrollLeft; }, { passive: true });
@@ -1426,7 +1442,8 @@ const ledRowSpeed = (r) => { const d = ledDecode(r); return d ? d.n / (d.w / 100
 // stream it read 2–5% under for a reply of 1,400 tokens or more, 11–33% for
 // a shorter one or one asked with a tool's result, so only a reply of 1,000
 // or more is told. 0 when it tells none, and a call magpie timed tells its
-// own (ledDecode). Only the row's: the period's speed counts timed calls.
+// own (ledDecode). Only the row's: the period's speed counts timed calls
+// and session files' floors (usage.Row.Floor), not a gateway row's below.
 // Claude Code's, Claude Desktop's and Codex's files only (usage.FloorAgents):
 // a call's time is from what asked for it, never from inside it. OpenCode's
 // isn't checked against real sessions, and tells none.
@@ -1437,17 +1454,46 @@ const ledRowSpeed = (r) => { const d = ledDecode(r); return d ? d.n / (d.w / 100
 // more and the answer 100 tokens or more, as a measured one is. A Codex turn
 // of one call that tells neither tells its output over the whole turn, the
 // wait in it, by the same 1,000-token rule as any whole-time floor (Fallmonkey
-// on Discord: 11 tokens in 2.75 s read ≥4 tok/s). ledFloor_ says the tokens,
-// the ms, and which it is (answer, turn).
+// on Discord: 11 tokens in 2.75 s read ≥4 tok/s).
+// A gateway call that tells no speed of its own (夜松云 on Discord: the
+// Requests tab's speed was blank for some rows) has the same two floors, as
+// its time is from when it came to its last token: one that reasoned with no
+// first text recorded (a tool call after hidden reasoning), its answer after
+// the first token, unless its content came in a burst; else one not streamed,
+// or not timed, its output over its whole time, by the 1,000-token rule.
+// ledFloor_ says the tokens, the ms, and which it is (answer, turn, gateway).
 const LED_FLOOR_AGENTS = new Set(["claude", "claude-desktop", "codex"]);
+const ledWhole_ = (r) => r.out >= 1000 && r.ms >= 1000 && r.out * 1000 <= 10000 * r.ms;
 const ledFloor_ = (r) => {
-  if (r.source !== "log" || !LED_FLOOR_AGENTS.has(r.agent) || ledFailed_(r) || ledRowSpeed(r)) return null;
+  if (ledFailed_(r) || ledRowSpeed(r)) return null;
+  if (r.source !== "log") {
+    const n = r.out - (r.reasoning || 0), w = r.ms - r.ttft_ms;
+    if (r.ttft_ms > 0 && r.reasoning > 0 && !(r.first_text_ms > 0) && n >= LED_CODEX_BODY && w >= LED_CODEX_WINDOW_MS && n * 1000 <= 10000 * w && !(r.flow_ms > 0 && r.flow_ms * 4 < w)) return { n, w, answer: true, gateway: true };
+    return ledWhole_(r) ? { n: r.out, w: r.ms, gateway: true } : null;
+  }
+  if (!LED_FLOOR_AGENTS.has(r.agent)) return null;
   if (ledCodexTurn(r)) {
     const n = r.out - (r.reasoning || 0), w = r.ms - r.ttft_ms;
     if (r.reasoning > 0 && n >= LED_CODEX_BODY && w >= LED_CODEX_WINDOW_MS && n * 1000 <= 10000 * w) return { n, w, answer: true };
-    return r.out >= 1000 && r.ms >= 1000 && r.out * 1000 <= 10000 * r.ms ? { n: r.out, w: r.ms, turn: true } : null;
+    return ledWhole_(r) ? { n: r.out, w: r.ms, turn: true } : null;
   }
-  return r.out >= 1000 && r.ms >= 1000 && r.out * 1000 <= 10000 * r.ms ? { n: r.out, w: r.ms } : null;
+  return ledWhole_(r) ? { n: r.out, w: r.ms } : null;
+};
+// why a row tells no speed of its own, in words for its tooltip, so a dash
+// is never left unexplained: ledDecode's reasons, in its order
+const ledNoSpeed_ = (r) => {
+  if (ledFailed_(r)) return t("A failed request tells no speed");
+  if (!(r.ms > 0)) return t("No duration was recorded to time a speed from");
+  if (!(r.out > 0)) return t("No output tokens to time a speed from");
+  if (!(r.ttft_ms > 0)) return r.source === "log" ? t("The session file has no first token to time a speed from") : t("Not streamed: no first token to time a speed from");
+  const think = r.reasoning > 0, visible = think && !(r.first_text_ms > 0) && r.first_reasoning_ms >= r.ttft_ms && r.flow_ms > 0 && r.reasoning <= r.out;
+  const n = think && !visible ? r.out - r.reasoning : r.out;
+  if (!(n > 0)) return t("All its output was reasoning: no answer after it to time a speed from");
+  const from = visible ? r.first_reasoning_ms : think && r.first_text_ms > 0 ? r.first_text_ms : r.ttft_ms, w = r.ms - from;
+  const little = t("Too little came after the first token to time a speed by: {n} tokens in {ms}", { n: ledNum(n), ms: ledTook(Math.max(0, w)) });
+  if (w < 100) return little;
+  if (n * 1000 > 10000 * w || r.flow_ms > 0 && r.flow_ms * 4 < w || think && r.first_text_ms > 0 && n * (r.first_text_ms - r.ttft_ms) > 20 * r.reasoning * w) return t("It came in one burst at its end, not as it was written, so how fast it was written isn't seen");
+  return little;
 };
 const ledFloorSpeed = (r) => { const f = ledFloor_(r); return f ? f.n / (f.w / 1000) : 0; };
 
@@ -1516,7 +1562,7 @@ function renderLedger() {
   sessPick($("#ledComputer"), "All computers", ledComputer, computers, "Computer", (v) => { ledComputer = v; ledOwn("computer"); ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
   sessPick($("#ledAgent"), "All agents", ledAgent, l.agents.map((a) => ({ v: a.id, name: a.name, note: "" })), "Agent", (v) => { ledAgent = v; ledOwn("agent"); ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
   sessPick($("#ledProvider"), "All providers", ledProvider, providers.map((p) => ({ v: p.id, name: t(p.name), note: "" })), "Provider", (v) => { ledProvider = v; ledOwn("provider"); ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
-  sessPick($("#ledAccount"), "All accounts", ledAccount, accounts.map((a) => ({ v: a.id, name: a.id, note: (a.providers || []).map((p) => t(p)).join(" · ") })), "Account", (v) => { ledAccount = v; ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
+  sessPick($("#ledAccount"), "All accounts", ledAccount, accounts.map((a) => ({ v: a.id, name: a.name || a.id, note: [a.name && a.id, ...(a.providers || []).map((p) => t(p))].filter(Boolean).join(" · ") })), "Account", (v) => { ledAccount = v; ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
   sessPick($("#ledKey"), "All gateway keys", ledCallerKey, callers.map((k) => ({
     v: k.id, name: k.name, note: "",
   })).concat(noKey ? [{ v: "none", name: t("No gateway key"), note: "" }] : []), "Gateway keys", (v) => { ledCallerKey = v; ledOwn("callerKey"); ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
@@ -1741,14 +1787,17 @@ function renderLedger() {
     td(untimed ? "—" : (timed ? "≈" : "") + ledTook(r.ms), "n duration " + (untimed ? "faint" : "duration-" + durationBand),
       [!untimed ? t("{n} ms", { n: ledNum(r.ms) }) : "", !untimed ? t("Duration colors: ≤10 s green · 10–30 s amber · >30 s red") : "", timed && !untimed ? t("About: told from the session file's times, a little more or less than it took") : "", r.ttft_ms ? t("TTFT {ms}", { ms: ledTook(r.ttft_ms) }) : ""].filter(Boolean).join(" · "));
     // how fast it wrote once it began, as CC Switch's log has it (#860)
-    const v = ledRowSpeed(r), floor = ledFloorSpeed(r);
+    const v = ledRowSpeed(r), floor = ledFloorSpeed(r), f = ledFloor_(r);
+    const ttft = r.ttft_ms > 0 ? " · " + t("TTFT {ms}", { ms: ledTook(r.ttft_ms) }) : "";
     td(v ? t("{n} tok/s", { n: ledNum(Math.round(v)) }) : floor ? "≥" + t("{n} tok/s", { n: ledNum(Math.round(floor)) }) : "—", "n speed" + (v || floor ? "" : " faint"),
       v ? (r.reasoning > 0 && r.first_text_ms > 0 ? t("{n} answer tokens in {ms} after the first text, the {r} reasoning tokens before it left out", { n: ledNum(ledDecode(r).n), ms: ledTook(ledDecode(r).w), r: ledNum(r.reasoning) })
-        : t("{n} output tokens in {ms} after the first", { n: ledNum(ledDecode(r).n), ms: ledTook(ledDecode(r).w) })) + " · " + t("TTFT {ms}", { ms: ledTook(r.ttft_ms) })
-        : floor && ledFloor_(r).answer ? t("At least: {n} answer tokens in {ms} after the first token, the {r} reasoning tokens left out. The session file has no first text, so reasoning after the first token is counted too", { n: ledNum(ledFloor_(r).n), ms: ledTook(ledFloor_(r).w), r: ledNum(r.reasoning) }) + " · " + t("TTFT {ms}", { ms: ledTook(r.ttft_ms) })
-        : floor && ledFloor_(r).turn ? t("At least: {n} output tokens in {ms}, the whole turn. What came after the first token ({after}) is too little to time a speed by: under a second or under 100 tokens, so the wait for it is counted too", { n: ledNum(r.out), ms: ledTook(r.ms), after: ledTook(r.ms - r.ttft_ms) }) + " · " + t("TTFT {ms}", { ms: ledTook(r.ttft_ms) })
+        : t("{n} output tokens in {ms} after the first", { n: ledNum(ledDecode(r).n), ms: ledTook(ledDecode(r).w) })) + ttft
+        : floor && f.gateway && f.answer ? t("At least: {n} answer tokens in {ms} after the first token, the {r} reasoning tokens left out. No first text was recorded, so reasoning after the first token is counted too", { n: ledNum(f.n), ms: ledTook(f.w), r: ledNum(r.reasoning) }) + ttft
+        : floor && f.gateway ? t("At least: {n} output tokens in {ms}, from the request to its last token, the wait for the first one counted too", { n: ledNum(r.out), ms: ledTook(r.ms) }) + ". " + ledNoSpeed_(r) + ttft
+        : floor && f.answer ? t("At least: {n} answer tokens in {ms} after the first token, the {r} reasoning tokens left out. The session file has no first text, so reasoning after the first token is counted too", { n: ledNum(f.n), ms: ledTook(f.w), r: ledNum(r.reasoning) }) + ttft
+        : floor && f.turn ? t("At least: {n} output tokens in {ms}, the whole turn. What came after the first token ({after}) is too little to time a speed by: under a second or under 100 tokens, so the wait for it is counted too", { n: ledNum(r.out), ms: ledTook(r.ms), after: ledTook(r.ms - r.ttft_ms) }) + ttft
         : floor ? t("At least: {n} output tokens in {ms}, from the line that asked for it to its last. The session file has no first token, so the wait for it is counted too", { n: ledNum(r.out), ms: ledTook(r.ms) })
-        : r.ttft_ms || untimed || ledFailed_(r) ? "" : timed ? t("The session file has no first token to time a speed from") : t("Not streamed: no first token to time a speed from"));
+        : ledNoSpeed_(r));
     const st = el("span", "st");
     // a status when the gateway logged the call; a session file has none,
     // and says only whether it went well
@@ -3219,7 +3268,7 @@ function refreshUsage(now = false) {
         else if (usage && performance.now() - quotasAsked > 60e3) { quotasAsked = performance.now(); loadQuotas(); }
         if (usage) {
           const p = period, read = ++usageRead;
-          const u = await api("usage?period=" + encodeURIComponent(p));
+          const u = await api("usage?period=" + encodeURIComponent(p) + usageZoneQ());
           if (read === usageRead && view === "usage" && usageTab === "usage" && p === period) {
             if (JSON.stringify(u) !== JSON.stringify(usage)) { usage = u; renderUsage(); }
             // this read claimed the newest one: a pick it superseded had put the

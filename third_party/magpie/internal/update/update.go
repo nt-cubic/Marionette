@@ -353,7 +353,29 @@ func InstallAsAdmin(staged, bundle string) error {
 // window when window is set, else only its menu bar icon (`tray`, as a
 // login launch), which a restart by itself uses while no window was up.
 func Relaunch(bundle string, window bool) error {
-	return runAfterExit(os.Getpid(), relaunchOpen(bundle, window))
+	return runAfterExit(os.Getpid(), relaunchCommand(bundle, window))
+}
+
+// openWaits are the pauses, in seconds, between tries of the relaunch's
+// open: about 13s in all. Just after magpie exits, LaunchServices can
+// still hold it as running and send the open to the process that is gone,
+// and open fails (-600, procNotFound; seen with the screen locked). Tried
+// once, nothing started magpie again until the user did, nine hours later.
+var openWaits = []string{"0.5", "1", "1", "2", "2", "3", "4"}
+
+// relaunchCommand is the shell command Relaunch runs once magpie has
+// exited: open, tried again while it fails.
+func relaunchCommand(bundle string, window bool) string {
+	return retried(relaunchOpen(bundle, window), openWaits)
+}
+
+// retried is a shell command that runs command until it succeeds, sleeping
+// each of waits in turn after a failure; the last try's status is its own.
+func retried(command string, waits []string) string {
+	if len(waits) == 0 {
+		return command
+	}
+	return fmt.Sprintf("for w in %s; do %s && exit 0; sleep $w; done; %s", strings.Join(waits, " "), command, command)
 }
 
 // runAfterExit starts a shell that runs command once pid has exited. The

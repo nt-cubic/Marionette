@@ -4,9 +4,10 @@
 // model in the opened row's Tiers: unset it says the tier runs at the effort
 // Claude Code asks for, a click opens the effort slider with Default as its
 // first stop, and a level picked is posted and named in its title. (The
-// tray panel keeps them as entries under the models in the tiers' square.) The subagents' effort is a square, as Codex's is, that says what
-// unset means for Claude Code. Before Claude Code goes through magpie there
-// are no levels: no effort entries and no square. No click scrolls the page.
+// tray panel keeps them as entries under the models in the tiers' square.)
+// The subagents' effort is on the Subagents row, as a tier's is. Before
+// Claude Code goes through magpie there are no levels: no effort entries
+// and no square. No click scrolls the page.
 // In English and Chinese. No backend: the API is faked here.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
@@ -61,11 +62,11 @@ function server(lang, sets) {
 const W = {
   en: {
     asks: "the effort Claude Code asks for", effort: (tier) => tier + " effort", title: "haiku effort", def: "default", low: "low", high: "high",
-    sub: "subagent effort: default\nthe effort Claude Code asks for", sep: (l, v) => `${l}: ${v}`,
+    sep: (l, v) => `${l}: ${v}`,
   },
   zh: {
     asks: "跟随 Claude Code 请求的推理强度", effort: (tier) => tier + " 推理强度", title: "haiku 推理强度", def: "默认", low: "低", high: "高",
-    sub: "子代理推理强度：默认\n跟随 Claude Code 请求的推理强度", sep: (l, v) => `${l}：${v}`,
+    sep: (l, v) => `${l}：${v}`,
   },
 };
 
@@ -95,17 +96,18 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.locator(`${cc} .ag-link`).click();
       await page.locator(`${cc} .ag-exp`).waitFor();
 
-      // no tier's effort is a field of the row's own; the subagents' is a square
-      assert.deepEqual(await page.locator(`${cc} .field:not(.ag-eff)[data-key$="_effort"]`).evaluateAll((es) => es.map((e) => e.dataset.key)), ["subagent_effort"]);
-      assert.equal(await page.locator(`${cc} .field.extra[data-key="subagent_effort"]`).getAttribute("aria-label"), w.sub);
+      // no tier's effort is a field of the row's own, nor the subagents': theirs
+      // is on the Subagents row (claude-subagent-effort-row.test.cjs)
+      assert.deepEqual(await page.locator(`${cc} .field:not(.ag-eff)[data-key$="_effort"]`).evaluateAll((es) => es.map((e) => e.dataset.key)), []);
+      assert.equal(await page.locator(`${cc} .field.extra[data-key="subagent_effort"]`).count(), 0);
       // not through magpie: no levels, no square, no effort entries
       assert.equal(await page.locator('.row.agent[data-id="cc-own"] .field[data-key$="_effort"]').count(), 0);
 
       // each tier's row in the opened row: its model, then its effort
       const effs = page.locator(`${cc} .ag-exp .field.ag-eff`);
-      assert.deepEqual(await effs.evaluateAll((es) => es.map((e) => e.dataset.key)), tiers.map((tier) => tier + "_effort"));
+      assert.deepEqual(await effs.evaluateAll((es) => es.map((e) => e.dataset.key)), [...tiers.map((tier) => tier + "_effort"), "subagent_effort"]);
       for (const tier of tiers) assert.equal(await page.locator(`${cc} .ag-exp .field.ag-eff[data-key="${tier}_effort"]`).getAttribute("aria-label"), t2(w, w.effort(tier), w.asks));
-      assert.equal(await effs.locator(".effort-ic").count(), 4, "each effort shows the bars");
+      assert.equal(await effs.locator(".effort-ic").count(), 5, "each effort shows the bars");
       const haiku = page.locator(`${cc} .ag-exp .field.ag-eff[data-key="haiku_effort"]`);
       const y = await page.evaluate(() => scrollY);
 

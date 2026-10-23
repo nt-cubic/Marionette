@@ -32,8 +32,9 @@ var githubAPI = "https://api.github.com"
 type SkillCheck struct {
 	Name string `json:"name"`
 	// Status is current when GitHub has the skill as the library does,
-	// update when it has changed it since, and unknown when it couldn't be
-	// told (Error says why)
+	// update when it has changed it since, gone when it was read without
+	// the skill (removed there, skill_gone.go), and unknown when it
+	// couldn't be told (Error says why)
 	Status  string `json:"status"`
 	Commit  string `json:"commit,omitempty"`  // the last commit to touch the skill's folder
 	Date    string `json:"date,omitempty"`    // when it was made
@@ -359,6 +360,16 @@ func CheckSkills() ([]SkillCheck, error) {
 		}
 		mu.Unlock()
 	}
+	var gone, there []string
+	for _, c := range out {
+		switch c.Status {
+		case "gone":
+			gone = append(gone, c.Name)
+		case "current", "update":
+			there = append(there, c.Name)
+		}
+	}
+	markGone(gone, there)
 	checks.Lock()
 	for _, c := range out {
 		checks.m[c.Name] = c
@@ -411,6 +422,13 @@ func checkSkill(s *Skill, f *fetcher, asked map[string]*commit, limited *atomic.
 			c.Status = "current"
 			return c, "", ""
 		}
+		if s.Gone != "" {
+			// the last commit to touch its folder may be the one that
+			// removed it: it stays removed till an update finds it there
+			g := goneCheck(&GoneError{Name: s.Name, Source: src.Repo})
+			g.Commit, g.Date, g.Message = c.Commit, c.Date, c.Message
+			return g, "", ""
+		}
 		c.Status, c.URL = "update", "https://github.com/"+src.Repo+"/compare/"+s.Commit+"..."+last.SHA
 		return c, "", ""
 	}
@@ -422,6 +440,9 @@ func checkSkill(s *Skill, f *fetcher, asked map[string]*commit, limited *atomic.
 	}
 	from := filepath.Join(tmp, filepath.FromSlash(src.Path))
 	if _, ok := readMeta(from); !ok {
+		if goneFrom(tmp, src.Path) {
+			return goneCheck(&GoneError{Name: s.Name, Source: src.Repo}), "", ""
+		}
 		c.Error = fmt.Sprintf("%s has no SKILL.md at %s any more", src.Repo, src.Path)
 		return c, "", ""
 	}

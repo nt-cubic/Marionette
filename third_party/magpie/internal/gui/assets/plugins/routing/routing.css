@@ -239,7 +239,10 @@
 .rt-req .asked i.ag { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--agent); }
 .rt-req .asked .ic, .rt-req .asked .ic img, .rt-req .asked .ic svg { width: 14px; height: 14px; flex: none; }
 .rt-req .m, .rt-req .to span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rt-req .to { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; color: var(--fg); }
+/* the waiting dot's 6px glow fits inside the clip: 6px on its left,
+   1px more above and below, given back outside so nothing moves
+   (#2553, dumplings) */
+.rt-req .to { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; color: var(--fg); padding: 1px 0 1px 6px; margin: -1px 0 -1px -6px; }
 .rt-req .to .said { flex-shrink: 100000; min-width: min(9em, 60%); }
 .rt-req .to .said.split { display: flex; }
 .rt-req .to .said .who { flex: 0 1000 auto; min-width: 2.5em; }

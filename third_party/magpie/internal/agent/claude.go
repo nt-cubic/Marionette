@@ -315,7 +315,8 @@ const claudeReviewEnv = "CLAUDE_CODE_AUTO_MODE_SERVER"
 const claudeExploreEnv = "CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP"
 
 // claudeReviewed reports whether a model Claude Code can reach through
-// magpie has its actions reviewed by Anthropic (gateway.AutoModeReviewed):
+// magpie has its actions reviewed by Anthropic (gateway.AutoModeReviewable:
+// a Claude model asked on the Messages API, not translated):
 // one shown to the agents in catalogs (Claude Code, Claude Desktop whose
 // Code tab is Claude Code, T3 Code's instance of it), a routing group's
 // member, a provider's fallback, or one of models (those it is set to),
@@ -328,12 +329,12 @@ func claudeReviewed(catalogs []string, models ...string) bool {
 		entries = append(entries, shown...)
 	}
 	reviewed := func(p provider.Provider, model string) bool {
-		if gateway.AutoModeReviewed(p, model) {
+		if gateway.AutoModeReviewable(p, model) {
 			return true
 		}
 		return slices.ContainsFunc(p.Fallback, func(id string) bool {
 			fp, fm, ok := provider.Resolve(id)
-			return ok && gateway.AutoModeReviewed(fp, fm)
+			return ok && gateway.AutoModeReviewable(fp, fm)
 		})
 	}
 	find := provider.GroupFinder()
@@ -1263,19 +1264,38 @@ func claudeIn(at place) *Agent {
 	// takes the Agent call's model, then the agent's frontmatter, then
 	// CLAUDE_CODE_SUBAGENT_MODEL, then the session's (2.1.287). Empty
 	// while it follows the main model, as magpie writes it by itself.
+	// An effort with no model of their own is never written: the main
+	// model at that effort in CLAUDE_CODE_SUBAGENT_MODEL pins every
+	// subagent to the main model (KorenKrita on Discord).
 	subagentOwn := func() string {
 		w := env("CLAUDE_CODE_SUBAGENT_MODEL")
-		if m, e := tierAt(w); routed() && isMagpie(m) && (own("subagent") || w != wroteMain() && (e != "" || m != wroteMain())) {
+		if m, _ := tierAt(w); routed() && isMagpie(m) && (own("subagent") || m != wroteMain()) {
 			return w
 		}
 		return ""
 	}
+	// the effort an older magpie wrote for subagents that follow the main
+	// model, as the main model at that effort: "" for none
+	subagentFollowing := func() string {
+		m, e := tierAt(env("CLAUDE_CODE_SUBAGENT_MODEL"))
+		if routed() && e != "" && m == wroteMain() && !own("subagent") {
+			return e
+		}
+		return ""
+	}
+	// the subagents' effort the user gave with no model of their own: kept
+	// in the stash, not written, and applied once they have a model
+	subEffortKey := at.key("claude.subagent_effort")
+	subagentSaved := func() string { return cmp.Or(stashLoad()[subEffortKey], subagentFollowing()) }
 	// the subagents' model as written, its effort apart: "" for each while
-	// it follows the main model
+	// it follows the main model, which takes no effort of theirs
 	subagentAt := func() (string, string) {
 		m, e := tierAt(subagentOwn())
 		if m == wroteMain() && !own("subagent") {
 			m = ""
+		}
+		if m == "" {
+			e = ""
 		}
 		return m, e
 	}
@@ -1493,12 +1513,6 @@ func claudeIn(at place) *Agent {
 					}
 				}
 			}
-			// so do subagents that follow it at an effort of their own
-			if m, e := subagentAt(); routed() && m == "" && e != "" {
-				if err := edit.SetJSON(path, edit.KV{Path: "env.CLAUDE_CODE_SUBAGENT_MODEL", Value: spell(tierWith(v, e))}); err != nil {
-					return err
-				}
-			}
 			return writeTiers(v, tiers)
 		}
 		// a word that is no model: an effort level the model doesn't take,
@@ -1534,7 +1548,11 @@ func claudeIn(at place) *Agent {
 			return err
 		}
 		// subagents given a model of their own keep it; the others run on
-		// the session's, whatever /model picked, or on the tier they ask for
+		// the session's, whatever /model picked, or on the tier they ask for.
+		// An older magpie's effort on the main model goes out, kept unwritten.
+		if e := subagentFollowing(); e != "" && stashLoad()[subEffortKey] == "" {
+			stash(map[string]string{subEffortKey: e})
+		}
 		sub := subagentOwn()
 		// the main model is settings.json's alone: ANTHROPIC_MODEL would
 		// outrank a pick in /model
@@ -1815,15 +1833,24 @@ func claudeIn(at place) *Agent {
 	// subagents: the model one runs on when it names none (general-purpose,
 	// an agent of the user's without a model:). Unset, the session's, as
 	// before; an agent that names a tier (Explore's haiku) takes the tier's.
-	// setSubagent writes the subagents' model and effort, the main model's
-	// at none taking the variable away
+	// setSubagent writes the subagents' model and effort. With no model,
+	// the variable goes and the effort is kept unwritten (subagentSaved):
+	// the main model at an effort would pin every subagent to it.
 	setSubagent := func(model, effort string) error {
-		if model == "" && effort == "" {
+		if model == "" {
+			if effort != "" {
+				stash(map[string]string{subEffortKey: effort})
+			} else {
+				forget(subEffortKey)
+			}
 			if err := edit.DelJSON(path, "env.CLAUDE_CODE_SUBAGENT_MODEL"); err != nil {
 				return err
 			}
-		} else if err := edit.SetJSON(path, edit.KV{Path: "env.CLAUDE_CODE_SUBAGENT_MODEL", Value: spell(tierWith(cmp.Or(model, mainModel()), effort))}); err != nil {
-			return err
+		} else {
+			forget(subEffortKey)
+			if err := edit.SetJSON(path, edit.KV{Path: "env.CLAUDE_CODE_SUBAGENT_MODEL", Value: spell(tierWith(model, effort))}); err != nil {
+				return err
+			}
 		}
 		return writeTiers(curTiers())
 	}
@@ -1840,7 +1867,10 @@ func claudeIn(at place) *Agent {
 			if v != "" && !isMagpie(v) {
 				return fmt.Errorf("subagents: %q is not a model magpie serves", v)
 			}
-			_, e := subagentAt()
+			m, e := subagentAt()
+			if m == "" {
+				e = subagentSaved()
+			}
 			// a model picked is the user's own, the main model too
 			// (#2654: given the main model, the subagents' was left out
 			// and they followed the main model's next move); only "Same
@@ -2045,6 +2075,11 @@ func claudeIn(at place) *Agent {
 				if err := dropAbout(nil); err != nil {
 					return err
 				}
+			}
+			// subagents an older magpie pinned to the main model at an
+			// effort of theirs follow it again, the effort kept unwritten
+			if subagentFollowing() != "" {
+				return writeTiers(curTiers())
 			}
 			// a model of magpie's an older magpie wrote with a dotted Claude
 			// version goes in as Claude Code is given it now (spell)

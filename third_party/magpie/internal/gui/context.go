@@ -161,6 +161,43 @@ func sessionOfRoute(r gateway.Route) string {
 	return r.Conv
 }
 
+// joinConvs puts a route that names no session under the agent's session
+// its conversation id was read from (sessions' Convs): dsh's
+// chat-completions and messages routes send no session id, so the gateway
+// keys each request by its first prompt's hash, and the page showed
+// "magpie-a…" where the Sessions page shows the session's title (Kumo31
+// on Discord). An id two sessions share stays as it is.
+func joinConvs(routes []gateway.Route, list func() []sessions.Session) {
+	loose := false
+	for _, r := range routes {
+		if r.Session == "" && r.ParentSession == "" && r.Conv != "" {
+			loose = true
+			break
+		}
+	}
+	if !loose {
+		return
+	}
+	of := map[string]string{}
+	for _, s := range list() {
+		for _, c := range s.Convs {
+			k := s.Agent + "\x00" + c
+			if id, ok := of[k]; ok && id != s.ID {
+				of[k] = ""
+			} else if !ok {
+				of[k] = s.ID
+			}
+		}
+	}
+	for i, r := range routes {
+		if r.Session == "" && r.ParentSession == "" && r.Conv != "" {
+			if id := of[r.Agent+"\x00"+r.Conv]; id != "" {
+				routes[i].Session = id
+			}
+		}
+	}
+}
+
 // compacted says a prompt is a compaction of the one before it: under 60%
 // of a prompt of some size.
 func compacted(prev, next int) bool { return prev >= 20000 && next < prev*6/10 }
@@ -211,6 +248,14 @@ func contextOf(routes []gateway.Route, days int) ctxJSON {
 	}
 	agents := map[string]*agentAcc{}
 	sess := map[string]*ctxSession{}
+	var listed []sessions.Session
+	list := func() []sessions.Session {
+		if listed == nil {
+			listed = sessions.List(0)
+		}
+		return listed
+	}
+	joinConvs(routes, list)
 	tooled := toolSessions(routes)
 	var order []string
 	for _, r := range routes {
@@ -341,7 +386,7 @@ func contextOf(routes []gateway.Route, days int) ctxJSON {
 		}
 	}
 	if len(untitled) > 0 {
-		for _, s := range sessions.List(0) {
+		for _, s := range list() {
 			if i, ok := untitled[s.Agent+"\x00"+s.ID]; ok && s.Title != "" {
 				out.Sessions[i].Title = s.Title
 			}

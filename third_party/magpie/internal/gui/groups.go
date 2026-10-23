@@ -176,12 +176,13 @@ func seesImages(e provider.Entry) bool { return e.Images && (e.ImageInput == nil
 // list saying it takes none, and the page says unknown rather than text-only.
 func imagesUnknown(e provider.Entry) bool { return e.ImageInput == nil && !e.Images }
 
-// onOf is who a provider's requests spread over: its accounts, or keys.
+// onOf is who a provider's requests spread over: its accounts, by the
+// name the user gave each (provider.AccountShown), or keys.
 func onOf(p provider.Provider) (kind string, who []string) {
 	if p.Account != nil {
-		who = append(who, p.Account.User)
+		who = append(who, p.AccountShown(p.Account.User))
 		for _, q := range p.AlsoOn() {
-			who = append(who, q.Account.User)
+			who = append(who, p.AccountShown(q.Account.User))
 		}
 		return "account", who
 	}

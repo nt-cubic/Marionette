@@ -344,6 +344,39 @@ func TestAutoModeReviewedRoutes(t *testing.T) {
 	}
 }
 
+// TestAutoModeReviewableAsksOnMessages: what Claude Code's wiring keeps
+// the review on for (nexnull on Discord) is a reviewed model that is asked
+// on the Messages API. A Claude model on a relay with only a Chat URL is
+// translated, and a translation carries no safeguards and gets no
+// results back, so it is not; the Claude subscription, Anthropic's API, a
+// relay's or Bedrock's Anthropic endpoint are.
+func TestAutoModeReviewableAsksOnMessages(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	sub := provider.Provider{ID: "claude", Account: &provider.Account{Agent: "claude", User: "u"}}
+	anthropic := provider.Provider{ID: "anthropic", Anthropic: "https://api.anthropic.com", Key: "k"}
+	relay := provider.Provider{ID: "or", Chat: "https://openrouter.ai/api/v1", Anthropic: "https://openrouter.ai/api", Key: "k"}
+	chatOnly := provider.Provider{ID: "cr", Chat: "https://relay.example/v1", Key: "k"}
+	bedrock := provider.Provider{ID: "bedrock", Preset: "bedrock", Anthropic: "https://bedrock-runtime.us-east-1.amazonaws.com", Key: "k"}
+	for _, c := range []struct {
+		p     provider.Provider
+		model string
+		want  bool
+	}{
+		{sub, "claude-opus-4-8", true},
+		{anthropic, "claude-sonnet-5", true},
+		{relay, "anthropic/claude-sonnet-5", true},
+		{bedrock, "us.anthropic.claude-opus-4-8-v1:0", true},
+		{chatOnly, "claude-sonnet-5", false},
+		{chatOnly, "deepseek-v4.1-flash", false},
+		{relay, "openai/gpt-6", false},
+	} {
+		if got := AutoModeReviewable(c.p, c.model); got != c.want {
+			t.Errorf("%s/%s: %v, want %v", c.p.ID, c.model, got, c.want)
+		}
+	}
+}
+
 // Claude Code asks for the review on every auto-mode request. A Claude
 // model on another vendor's subscription (Copilot here, which answers the
 // safeguards with "Extra inputs are not permitted", #1756) is sent neither
