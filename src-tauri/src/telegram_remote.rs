@@ -249,6 +249,9 @@ struct SessionTrack {
     last_reply: String,
     /// 挂起未解的权限/ask/plan 请求数（>0 = 会话在等你）。
     waiting: u32,
+    /// 本回合是本地探针（额度面板刷新发的 `/status` / `/usage`）：完成时
+    /// 不推送、正文不进 last_reply——它不是用户发起的对话。
+    probe_turn: bool,
 }
 
 /// 回合内 agent 文本的「末段」追踪。agent 常在工具调用之间插一段解说
@@ -298,6 +301,7 @@ impl SessionTrack {
             text: TurnText::default(),
             last_reply: String::new(),
             waiting: 0,
+            probe_turn: false,
         }
     }
 
@@ -747,6 +751,27 @@ fn ensure_threads(slot: &'static Telegram) {
 
 // ─── UI 事件钩子（acp.rs emit_now 调用）────────────────────────────────────
 
+/// 标记该会话刚发出的回合是本地探针（额度面板刷新发的 `/status` /
+/// `/usage`，发送方在 `send_prompt` 成功后调用）。回合完成时
+/// `observe_turn_complete` 据此跳过推送——否则每次刷新额度都会给
+/// Telegram 发一条「✅ 跑完 · 0秒」+ 整张状态卡。
+pub fn mark_probe_turn(session_id: &str) {
+    let Some(slot) = TELEGRAM.get() else { return };
+    // 未生效时不留标记：残留标记会误吞启用后第一条真实回合的推送。
+    let live_on = slot
+        .live
+        .lock()
+        .ok()
+        .map(|live| live.active())
+        .unwrap_or(false);
+    if !live_on {
+        return;
+    }
+    if let Ok(mut inner) = slot.inner.lock() {
+        inner.track(session_id).probe_turn = true;
+    }
+}
+
 /// UI 事件的旁路观察点。必须便宜：未初始化 / 未生效时前两行就返回。
 pub fn observe_ui_event(session_id: &str, kind: &str, method: Option<&str>, data: &Value) {
     let Some(slot) = TELEGRAM.get() else { return };
@@ -939,23 +964,30 @@ fn observe_turn_complete(
 
     // 无论推不推，回合状态都就地清掉（缓冲不跨回合泄漏）。
     // tail 与 started 解耦：agent 不回显 user_message 时（Grok 实测）也照样带正文。
-    let (elapsed, tail) = slot
+    let (elapsed, tail, probe) = slot
         .inner
         .lock()
         .ok()
         .and_then(|mut inner| {
             let track = inner.track(session_id);
             let started = track.turn_started.take();
+            let probe = std::mem::take(&mut track.probe_turn);
             let tail = track.text.take_final();
             // 详情视图的正文缓存：不受通知偏好影响，只在门控下出本机。
-            if !tail.trim().is_empty() {
+            // 探针（/status 卡片）不是回复，别拿它顶掉真实正文。
+            if !probe && !tail.trim().is_empty() {
                 track.last_reply = clip(tail.trim(), LAST_REPLY_CHARS);
             }
-            Some((started.map(|t| t.elapsed()), tail))
+            Some((started.map(|t| t.elapsed()), tail, probe))
         })
-        .unwrap_or((None, String::new()));
+        .unwrap_or((None, String::new(), false));
     // 回合结束 = 总控面板的可见状态变化（含 cancelled：推送降噪，面板照刷）。
     schedule_dashboard(slot);
+
+    // 探针回合（额度刷新的 /status、/usage）：面板照刷，推送全免。
+    if probe {
+        return;
+    }
 
     if kind == "error" {
         if live.prefs.notify_error {

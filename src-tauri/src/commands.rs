@@ -2123,11 +2123,18 @@ pub fn send_acp_prompt(
     session_id: String,
     text: String,
     image_paths: Option<Vec<String>>,
+    probe: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<Value, String> {
-    state
+    let result = state
         .acp
-        .send_prompt(&session_id, text, image_paths.unwrap_or_default())
+        .send_prompt(&session_id, text, image_paths.unwrap_or_default());
+    // 本地探针（额度刷新发的 /status、/usage）：发送成功才标记，Telegram 桥
+    // 在回合完成时不推送。失败不标——残留标记会误吞下一个真实回合的推送。
+    if result.is_ok() && probe.unwrap_or(false) {
+        crate::telegram_remote::mark_probe_turn(&session_id);
+    }
+    result
 }
 
 /// Read a local image as a `data:` URL for previews (annotator, You-card,
@@ -3135,7 +3142,8 @@ pub fn test_proxy(url: String) -> Result<crate::proxy::ProxyTestResult, String> 
 
 #[tauri::command(async)]
 pub fn memory_get() -> Result<serde_json::Value, String> {
-    // 打开面板即同步各家全局记忆（Claude/Codex/OpenCode/Gemini…）。
+    // 打开面板即同步各家全局记忆（Claude/Codex/Grok/OpenCode/ZCode…，
+    // 阵容见 memory.rs 的 IMPORT_SPECS）。
     serde_json::to_value(crate::memory::load_synced()).map_err(|e| e.to_string())
 }
 

@@ -543,16 +543,22 @@ export async function startAcpSession(
   return invoke<CapabilitySnapshot>("start_acp_session", { sessionId, command, args, cwd });
 }
 
+/**
+ * @param probe true = 本地探针回合（额度刷新发的 /status、/usage）：
+ * Telegram 桥、桌面提醒与 orb 通知在该回合完成时全部静默。
+ */
 export async function sendAcpPrompt(
   sessionId: string,
   text: string,
   imagePaths: string[] = [],
+  probe = false,
 ): Promise<unknown> {
   if (!isTauriRuntime()) return null;
   return invoke("send_acp_prompt", {
     sessionId,
     text,
     imagePaths: imagePaths.length > 0 ? imagePaths : null,
+    probe: probe || null,
   });
 }
 
