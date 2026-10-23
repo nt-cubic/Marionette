@@ -61,14 +61,21 @@ func TestGitSourceReads(t *testing.T) {
 	}
 }
 
+// realGit is the machine's git, found before any test's sandbox takes
+// PATH away: looked up after it, every test of a git repository skipped.
+var realGit, _ = exec.LookPath("git")
+
+// gitRemoved, as a file's body in a commit, removes that file or folder.
+const gitRemoved = "\x00removed"
+
 // gitRepo makes a bare repository with skills in it, and gives its
 // file:// address and a function to commit files to it. git runs with no
 // system or user config of the machine's (no credential helper, no
 // Keychain).
 func gitRepo(t *testing.T, files map[string]string) (string, func(map[string]string)) {
 	t.Helper()
-	git, err := exec.LookPath("git")
-	if err != nil {
+	git := realGit
+	if git == "" {
 		t.Skip("git isn't installed")
 	}
 	old := gitPath
@@ -90,6 +97,12 @@ func gitRepo(t *testing.T, files map[string]string) (string, func(map[string]str
 	run(root, "init", "-q", work)
 	commit := func(files map[string]string) {
 		for p, body := range files {
+			if body == gitRemoved {
+				if err := os.RemoveAll(filepath.Join(work, filepath.FromSlash(p))); err != nil {
+					t.Fatal(err)
+				}
+				continue
+			}
 			write(t, filepath.Join(work, filepath.FromSlash(p)), body)
 		}
 		run(work, "add", "-A")

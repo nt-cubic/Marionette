@@ -3,8 +3,8 @@
 // 模型名字还是带上了…): a remote magpie's models are named in its list with
 // its own provider after them ("DeepSeek Chat · Relay A"), by that magpie's
 // setting, and Off here kept it. Names & levels says what the agents' lists
-// show under each choice: On, that label with this provider after it; Off,
-// the model's name there alone. Every language.
+// show under each choice, saved on Settings: On, that label with this
+// provider after it; Off, the model's name there alone. Every language.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -13,9 +13,9 @@ const { chromium, webkit } = require("playwright");
 
 const assets = path.resolve(__dirname, "../assets");
 
-function serve(lang, posts) {
-  let cur = { lang, theme: "light", plainNames: false, plainOwnNames: false };
-  const state = { agents: [{ id: "codex", name: "Codex", path: "/test/codex", fields: [] }], profiles: [], settings: { lang, theme: "light" } };
+function serve(lang, posts, plainNames) {
+  let cur = { lang, theme: "light", plainNames, plainOwnNames: false };
+  const state = { agents: [{ id: "codex", name: "Codex", path: "/test/codex", fields: [] }], profiles: [], settings: { lang, theme: "light", plainNames } };
   const models = [
     { id: "relaya/deepseek-chat", name: "DeepSeek Chat · Relay A", plain: "DeepSeek Chat", on: true, efforts: [], images: false },
   ];
@@ -64,19 +64,20 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       page.setDefaultTimeout(5000);
       const errors = [], posts = [];
       page.on("pageerror", (e) => errors.push(e.message));
-      await page.route("**/*", serve(lang, posts));
-      await page.goto("http://magpie.test/?view=providers");
-      const tr = (k, vars = {}) => page.evaluate(([k, vars]) => t(k, vars), [k, vars]);
-      await page.locator(".row.provider").click();
-      if (!(await page.locator(".mnames:not([hidden])").count())) await page.getByRole("button", { name: await tr("Names & levels"), exact: true }).click();
-      const sfx = page.locator(".mnames:not([hidden]) .msuffix");
-      await sfx.waitFor();
-      assert.equal((await sfx.locator(".opt.on").textContent()).trim(), await tr("On"));
-      assert.equal(await sfx.locator(".hint").textContent(), await tr("Agents’ lists show “{label}”", { label: "DeepSeek Chat · Relay A · Remote magpie" }));
-      await sfx.locator(".opt", { hasText: await tr("Off") }).click();
-      await page.locator(".mnames:not([hidden]) .msuffix .opt.on", { hasText: await tr("Off") }).waitFor();
-      await says(sfx.locator(".hint"), await tr("Agents’ lists show “{label}”", { label: "DeepSeek Chat" }));
-      assert.deepEqual(posts, [{ mode: "off" }]);
+      // Provider in model names is Settings' (joe on Discord): the editor
+      // says what each saved choice shows, On and then Off
+      for (const [plain, label] of [[false, "DeepSeek Chat · Relay A · Remote magpie"], [true, "DeepSeek Chat"]]) {
+        await page.unrouteAll({ behavior: "wait" });
+        await page.route("**/*", serve(lang, posts, plain));
+        await page.goto("http://magpie.test/?view=providers");
+        const tr = (k, vars = {}) => page.evaluate(([k, vars]) => t(k, vars), [k, vars]);
+        await page.locator(".row.provider").click();
+        if (!(await page.locator(".mnames:not([hidden])").count())) await page.getByRole("button", { name: await tr("Names & levels"), exact: true }).click();
+        const sfx = page.locator(".mnames:not([hidden]) .msuffix");
+        await sfx.waitFor();
+        await says(sfx.locator(".hint"), await tr("Agents’ lists show “{label}”", { label }));
+      }
+      assert.deepEqual(posts, []);
       assert.deepEqual(errors, []);
     });
   }

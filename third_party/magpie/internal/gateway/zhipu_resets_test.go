@@ -58,6 +58,10 @@ func TestResetsZhipu(t *testing.T) {
 		{"hour 25", strings.Replace(zai1308, "20:12:13", "25:12:13", 1), player, 0},
 		{"past", zai1308, time.Date(2026, 10, 15, 12, 13, 0, 0, time.UTC), 0},
 		{"over a week off", zai1308, time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC), 0},
+		// 1310 is a week's or a month's: a month's reset is believed
+		// weeks off, as Ark's is (#3276)
+		{"1310, 9 days off", zai1310, time.Date(2026, 10, 1, 13, 0, 6, 0, time.UTC), 9 * 24 * time.Hour},
+		{"1310, 36 days off", zai1310, time.Date(2026, 9, 4, 13, 0, 6, 0, time.UTC), 0},
 		// another vendor's words, without a zone: not taken as Beijing's
 		{"WorkBuddy without its offset", strings.Replace(wbZh, " UTC+8", "", 1), player, 0},
 		{"a date in passing", "this model is retired at 2026-10-15 20:12:13", player, 0},

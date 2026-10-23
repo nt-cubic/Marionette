@@ -29,6 +29,8 @@ type Method struct {
 	// Placeholder is the hint an "api" method gives in its key's field
 	// (magpie's own field: OpenCode's says "API key")
 	Placeholder string `json:"placeholder,omitempty"`
+	// Keyless skips personal-key entry; authorize supplies the credential.
+	Keyless bool `json:"keyless,omitempty"`
 }
 
 // KeyTitle is what an "api" method's key is asked as: its label, as
@@ -151,6 +153,8 @@ type Provider struct {
 	// Accounts are the accounts signed in to it, the one kept under its
 	// own id first; SignedIn, AuthType and AccountID are that one's.
 	Accounts []Account `json:"accounts"`
+	// Single is the auth hook declaring that sign-in replaces one identity.
+	Single bool `json:"single,omitempty"`
 	// MaxConcurrency is how many requests the plugin says each of its
 	// accounts takes at once (magpie's own field, which OpenCode ignores:
 	// the auth hook's maxConcurrency, else package.json's

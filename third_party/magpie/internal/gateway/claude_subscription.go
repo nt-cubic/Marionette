@@ -595,7 +595,8 @@ const claudeMCPPath = "/_magpie/claude-mcp/"
 func (b *subscriptionBridge) start(ctx context.Context, req *Request, model, configDir, owner string, from *savedSession) (*subscriptionRun, <-chan Event, error) {
 	run, events, err := b.startRun(ctx, req, model, configDir, owner, from)
 	var full *claudeFull
-	if err != nil && from != nil && !errors.As(err, &full) && ctx.Err() == nil {
+	var refused *cliSchemaRefused
+	if err != nil && from != nil && !errors.As(err, &full) && !errors.As(err, &refused) && ctx.Err() == nil {
 		log.Printf("claude: Claude Code could not go on from the conversation's saved session (%v); a new one is told the whole conversation", err)
 		return b.startRun(ctx, req, model, configDir, owner, nil)
 	}
@@ -676,7 +677,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 		args = append(args, "--thinking", "disabled")
 	}
 	if len(req.Format.schema()) > 0 {
-		args = append(args, "--json-schema", string(req.Format.schema()))
+		args = append(args, "--json-schema", string(cliSchema(req.Format.schema())))
 	}
 	work, err := claudeWorkDir()
 	var sessions []string
@@ -3669,6 +3670,9 @@ func (r *subscriptionRun) launch() error {
 		if room != nil {
 			room(left)
 		}
+		if err := r.schemaEnded(); err != nil {
+			r.emit(Event{Kind: KError, Text: err.Error(), Status: http.StatusBadRequest})
+		}
 		r.finish()
 	}()
 	return nil
@@ -3723,11 +3727,73 @@ func (r *subscriptionRun) endedBefore(what string) error {
 	} else if r.exit != nil {
 		why += " (" + r.exit.Error() + ")"
 	}
-	if said := strings.TrimSpace(r.stderr.String()); said != "" {
+	said := strings.TrimSpace(r.stderr.String())
+	if at := cliSchemaWords.FindStringIndex(said); at != nil {
+		// its words from the flag on, which a long list of Ajv's
+		// errors after them would push out of the tail
+		said = said[at[0]:]
+		if len(said) > 300 {
+			said = strings.ToValidUTF8(said[:300], "") + "…"
+		}
+		return &cliSchemaRefused{why + ": " + said}
+	}
+	if said != "" {
 		why += ": " + clipTail(said, 300)
 	}
 	return errors.New(why)
 }
+
+// schemaEnded is the error of a run whose Claude Code took its input and
+// then ended over its --json-schema, nil for any other end: it checks the
+// schema while it starts, and its input may be taken before it gets to
+// it, so the turn told it heard no answer, and was "ended without an
+// answer", a 502 asked again.
+func (r *subscriptionRun) schemaEnded() error {
+	r.mu.Lock()
+	killed, said := r.killed, r.stderr.String()
+	r.mu.Unlock()
+	if killed || !cliSchemaWords.MatchString(said) {
+		return nil
+	}
+	return r.endedBefore("answered")
+}
+
+// cliSchema is a schema as Claude Code's --json-schema takes it: without
+// its root $schema. Claude Code checks the schema with Ajv's default
+// class, which knows draft-07's meta-schema alone, and exits "no schema
+// with key or ref" over any other a schema names, as Codex's titles name
+// draft 2020-12 (zod's toJSONSchema), before it reads its input (#3036).
+// Without it the schema is read as draft-07. The rest is kept as written:
+// $id, $defs and a $schema below the root pass Ajv as they are.
+func cliSchema(raw json.RawMessage) json.RawMessage {
+	var root map[string]json.RawMessage
+	if json.Unmarshal(raw, &root) != nil {
+		return raw
+	}
+	if _, ok := root["$schema"]; !ok {
+		return raw
+	}
+	delete(root, "$schema")
+	out, err := json.Marshal(root)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+// cliSchemaWords are how Claude Code exits over the --json-schema it was
+// given, before it reads its input: not JSON, not an object, or a schema
+// its Ajv won't compile ("strict mode: unknown keyword" for one only a
+// later draft has).
+var cliSchemaWords = regexp.MustCompile(`--json-schema (is not a valid JSON Schema|is not valid JSON|must be a JSON object)`)
+
+// cliSchemaRefused is a run's Claude Code ending over the request's schema:
+// it ends the same for the same schema on every account and every try,
+// so it is the request's 400, neither asked again nor of the next
+// account, and no account rests for it (#3036: asked three times).
+type cliSchemaRefused struct{ msg string }
+
+func (e *cliSchemaRefused) Error() string { return e.msg }
 
 // clipTail is s's last n bytes at most, cut at a rune, "…" before them
 // where some went.
@@ -4218,8 +4284,11 @@ func (s *Server) serveSubscription(w http.ResponseWriter, r *http.Request, from 
 		// the account: a 503 passes it to the next (#2956)
 		code := 502
 		var full *claudeFull
+		var refused *cliSchemaRefused
 		if errors.As(err, &full) {
 			code = 503
+		} else if errors.As(err, &refused) {
+			code = 400
 		}
 		return writeError(w, from, code, name+": "+err.Error()), err.Error()
 	}

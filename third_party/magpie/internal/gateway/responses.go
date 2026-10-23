@@ -1580,7 +1580,11 @@ func (d *responsesDecoder) decode(data string, emit func(Event)) error {
 				msg = ev.Response.Error.Message
 			}
 			status, said := requestRefused(data)
-			emit(Event{Kind: KError, Text: cmp.Or(msg, streamErrorText(data)), Code: refusedCode(data), Status: status, Said: said})
+			code, fs, fsaid := filterRefused(data)
+			if status == 0 {
+				status, said = fs, fsaid
+			}
+			emit(Event{Kind: KError, Text: cmp.Or(msg, streamErrorText(data)), Code: code, Status: status, Said: said})
 			return nil
 		}
 		stop := "stop"
@@ -1608,7 +1612,11 @@ func (d *responsesDecoder) decode(data string, emit func(Event)) error {
 			msg = cmp.Or(ev.Error.Message, msg)
 		}
 		status, said := requestRefused(data)
-		emit(Event{Kind: KError, Text: cmp.Or(msg, streamErrorText(data)), Code: refusedCode(data), Status: status, Said: said})
+		code, fs, fsaid := filterRefused(data)
+		if status == 0 {
+			status, said = fs, fsaid
+		}
+		emit(Event{Kind: KError, Text: cmp.Or(msg, streamErrorText(data)), Code: code, Status: status, Said: said})
 	}
 	return nil
 }

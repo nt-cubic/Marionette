@@ -478,3 +478,87 @@ func TestPluginCheckinCarriesNothingOverAnUnreadableFile(t *testing.T) {
 		t.Fatalf("carried as %+v", st)
 	}
 }
+
+// pluginCheckinCounter is a plugin provider with one account whose
+// check-in answers what *outcome holds and counts the asks in *calls.
+func pluginCheckinCounter(id string, outcome *string, calls *int) pluginCheckinProvider {
+	return pluginCheckinProvider{ID: id, accounts: []pluginCheckinAcct{{User: "ann", On: true, key: id + "|ann", card: id, do: func(context.Context) WorkBuddyCheckin {
+		*calls++
+		return WorkBuddyCheckin{Outcome: *outcome}
+	}}}}
+}
+
+// #2696 (LoKi, mufanmu): the Qoder plugins' check-in is rechecked as
+// magpie's own Qoder check-in is. A campaign can open mid-day, so a done or
+// inactive read before it was kept for the whole Beijing day, even on a
+// press. Now the loop asks again 30 minutes after the last answer, not
+// before, and a press asks at once.
+func TestPluginCheckinQoderRechecksCampaigns(t *testing.T) {
+	for _, id := range []string{"qoder", QoderCNID} {
+		for _, first := range []string{CheckinInactive, CheckinDone} {
+			// each: wait this long, press or not, then the outcome shown
+			// and the asks so far
+			type step struct {
+				wait      time.Duration
+				press     bool
+				want      string
+				wantCalls int
+			}
+			for name, steps := range map[string][]step{
+				"loop": {
+					{0, false, first, 1},
+					{29 * time.Minute, false, first, 1},
+					{time.Minute, false, CheckinClaimed, 2},
+					{29 * time.Minute, false, CheckinClaimed, 2},
+					{time.Minute, false, CheckinClaimed, 3}, // a claim is rechecked too
+				},
+				"press": {
+					{0, false, first, 1},
+					{10 * time.Minute, true, CheckinClaimed, 2},
+					{0, false, CheckinClaimed, 2}, // the loop keeps what the press read
+					{0, true, CheckinClaimed, 3},
+				},
+			} {
+				t.Run(id+"/"+first+"/"+name, func(t *testing.T) {
+					claudeHome(t)
+					now := time.Date(2026, 10, 18, 1, 0, 0, 0, time.UTC) // 09:00 Beijing
+					outcome, calls := first, 0
+					p := pluginCheckinCounter(id, &outcome, &calls)
+					for i, s := range steps {
+						now = now.Add(s.wait)
+						got := p.checkiner(func() time.Time { return now }).checkinNow(context.Background(), s.press)
+						if len(got) != 1 || got[0].Outcome != s.want || calls != s.wantCalls {
+							t.Fatalf("step %d (press=%v at %s): got %+v after %d asks; want %s after %d", i, s.press, now.Format(time.TimeOnly), got, calls, s.want, s.wantCalls)
+						}
+						outcome = CheckinClaimed
+					}
+				})
+			}
+		}
+	}
+}
+
+// Every other plugin's check-in is settled for the Beijing day: neither
+// the loop after 30 minutes nor a press asks again (#2696 changes Qoder's
+// alone).
+func TestPluginCheckinOthersSettledForTheDay(t *testing.T) {
+	for _, first := range []string{CheckinInactive, CheckinDone, CheckinClaimed} {
+		t.Run(first, func(t *testing.T) {
+			claudeHome(t)
+			now := time.Date(2026, 10, 18, 1, 0, 0, 0, time.UTC)
+			outcome, calls := first, 0
+			p := pluginCheckinCounter("fakeco", &outcome, &calls)
+			p.checkiner(func() time.Time { return now }).checkinNow(context.Background(), false)
+			outcome = CheckinClaimed
+			for _, step := range []time.Duration{31 * time.Minute, 5 * time.Hour} {
+				now = now.Add(step)
+				for _, press := range []bool{false, true} {
+					got := p.checkiner(func() time.Time { return now }).checkinNow(context.Background(), press)
+					if len(got) != 1 || got[0].Outcome != first || calls != 1 {
+						t.Fatalf("press=%v at %s: got %+v after %d asks; want %s kept after 1", press, now, got, calls, first)
+					}
+				}
+			}
+		})
+	}
+}

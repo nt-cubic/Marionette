@@ -93,6 +93,16 @@ export const FakePlugin = async ({ client }) => ({
       // Cline sends glm-5.3-flash through OpenRouter, not Vercel's gateway
       cfg.provider[ID].models["glm-5.3-flash"] = { name: "GLM 5.3 Flash", limit: { context: 1000, output: 100 } }
     }
+    // $FAKE_MINIMAX: MiniMax Code's models as its plugin (minimax 0.1.4)
+    // gives them, on Anthropic's API: M3.1-Flash and its -Preview always
+    // think at an effort, M3 thinks or doesn't (plugins#316)
+    if (process.env.FAKE_MINIMAX) {
+      const efforts = Object.fromEntries(["low", "medium", "high", "xhigh", "max"].map((e) => [e, { thinking: { type: "adaptive" }, effort: e }]))
+      const mm = { provider: { npm: "@ai-sdk/anthropic" }, reasoning: true, limit: { context: 1048576, output: 524288 } }
+      cfg.provider[ID].models["MiniMax-M3.1-Flash"] = { ...mm, name: "M3.1-Flash", variants: efforts }
+      cfg.provider[ID].models["MiniMax-M3.1-Flash-Preview"] = { ...mm, name: "M3.1-Flash-Preview", variants: efforts }
+      cfg.provider[ID].models["MiniMax-M3"] = { ...mm, name: "MiniMax-M3", variants: { none: { thinking: { type: "disabled" } }, high: { thinking: { type: "adaptive" } } } }
+    }
     // $FAKE_SEARCHES: the provider's upstream searches by itself (#2027),
     // as a plugin in front of Claude's API says
     if (process.env.FAKE_SEARCHES) cfg.provider[ID].searches = true
@@ -121,8 +131,9 @@ export const FakePlugin = async ({ client }) => ({
   },
   auth: {
     provider: ID,
+    single: process.env.FAKE_KEYLESS === "1",
     methods: [
-      { type: "api", label: "API key" },
+      { type: "api", label: "API key", ...(process.env.FAKE_KEYLESS === "1" ? { keyless: true, authorize: async (inputs) => ({ type: "success", key: inputs.credential || "public-fixture" }) } : {}) },
       {
         type: "oauth",
         label: "Browser",

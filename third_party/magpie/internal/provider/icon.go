@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/iconproxy"
+	"github.com/yetone/magpie/internal/netguard"
 )
 
 // A provider's own picture lives in the icons folder beside providers.json,
@@ -132,30 +133,22 @@ func publicHost(ctx context.Context, host string) error {
 	return err
 }
 
-// Loon synthesizes AAAA records by embedding its fake IPv4 in fd27:712::/96.
-// Prefer the matching A record already accepted by our IPv4 guard. Do not
-// dial the private IPv6 address or exempt the whole ULA prefix: an unpaired
-// record (or any other private answer) still fails the check.
-var loonIconPrefix = netip.MustParsePrefix("fd27:712::/96")
-
+// iconIPs is ips without the AAAA records Loon synthesizes for an A
+// answer beside them (netguard.LoonPaired; that A answer is judged in
+// their place), or an error when any other is not public.
 func iconIPs(host string, ips []net.IPAddr) ([]net.IPAddr, error) {
+	all := make([]netip.Addr, len(ips))
+	for i, ip := range ips {
+		all[i], _ = netip.AddrFromSlice(ip.IP)
+	}
 	var allowed []net.IPAddr
-	for _, ip := range ips {
+	for i, ip := range ips {
 		if publicIP(ip.IP) {
 			allowed = append(allowed, ip)
 			continue
 		}
-		if addr, ok := netip.AddrFromSlice(ip.IP); ok && loonIconPrefix.Contains(addr) {
-			paired := false
-			for _, other := range ips {
-				if v4 := other.IP.To4(); v4 != nil && publicIP(v4) && v4.Equal(ip.IP[12:]) {
-					paired = true
-					break
-				}
-			}
-			if paired {
-				continue
-			}
+		if netguard.LoonPaired(all[i].Unmap(), all) {
+			continue
 		}
 		return nil, errorf("the icon host %s resolves to %s, which is not public", host, ip.IP)
 	}
@@ -208,49 +201,17 @@ func publicDial(ctx context.Context, dial func(context.Context, string, string) 
 	return nil, lastErr
 }
 
-// publicIP is true for an address on the open internet: not loopback,
-// private, link-local, unspecified, multicast or otherwise reserved.
-//
-// 198.18.0.0/15, RFC 2544's benchmarking range, is let through: Clash's TUN
-// mode with fake-ip and Surge's enhanced mode answer every name with an
-// address there and carry the connection to the real host through the proxy
-// (#252). No machine on the user's network sits in that range, so a fetch
-// aimed at it reaches the internet host the name stands for, not this
-// computer or the LAN.
+// publicIP is true for an address an icon may be fetched from: one on the
+// open internet (netguard.Public, the gateway's rule), or a fake-IP
+// resolver's answer in 198.18.0.0/15 (netguard.FakeIP): Clash's TUN mode
+// with fake-ip and Surge's enhanced mode answer every name with an
+// address there and carry the connection to the real host through the
+// proxy (#252). No machine on the user's network sits in that range, so a
+// fetch aimed at it reaches the internet host the name stands for, not
+// this computer or the LAN.
 func publicIP(ip net.IP) bool {
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
-		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() {
-		return false
-	}
-	if v4 := ip.To4(); v4 != nil {
-		// 100.64/10 carrier NAT, 192.0.0.0/24, 192.0.2/24 and friends:
-		// never a public web host.
-		switch {
-		case v4[0] == 100 && v4[1]&0xc0 == 64:
-			return false
-		case v4[0] == 192 && v4[1] == 0 && v4[2] == 0:
-			return false
-		case v4[0] == 192 && v4[1] == 0 && v4[2] == 2:
-			return false
-		case v4[0] == 198 && v4[1] == 51 && v4[2] == 100:
-			return false
-		case v4[0] == 203 && v4[1] == 0 && v4[2] == 113:
-			return false
-		}
-		return true
-	}
-	// IPv6: unique local (fc00::/7) and 6to4/teredo tunnels are not public
-	// web hosts either.
-	if len(ip) == net.IPv6len {
-		if ip[0]&0xfe == 0xfc {
-			return false
-		}
-		if ip[0] == 0x20 && ip[1] == 0x02 {
-			return false // 2002::/16 6to4
-		}
-	}
-	return true
+	a, ok := netip.AddrFromSlice(ip)
+	return ok && (netguard.Public(a) || netguard.FakeIP(a))
 }
 
 // fetchIcon is the download itself, split out so tests can point it at a
