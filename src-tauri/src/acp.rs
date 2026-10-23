@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
@@ -519,6 +519,56 @@ impl AcpService {
                     );
                 }
             }
+            // ZCode (`zcode-acp-server`): the bridge spawns `zcode app-server`
+            // itself and resolves the runtime ZCODE_BIN → `zcode` on PATH →
+            // %LOCALAPPDATA%\Programs\ZCode. Desktop installs in custom dirs
+            // (D:\Program Files\ZCode) are invisible to all three, so hand it
+            // the zcode.cjs we discovered. A user-set ZCODE_BIN or a PATH
+            // zcode always wins — never override a deliberate choice.
+            if matches!(id, "zcode" | "zcode-acp")
+                && std::env::var_os("ZCODE_BIN").is_none()
+                && crate::process_util::resolve_spawn_command("zcode").is_err()
+            {
+                match zcode_bin_path() {
+                    Some(cjs) => {
+                        child_command.env("ZCODE_BIN", &cjs);
+                        // A .cjs ZCODE_BIN is launched by prefixing a
+                        // sqlite-capable node, but the bridge's own candidate
+                        // chain (ZCODE_NODE → unix paths → `which node` → Zed
+                        // bundle) comes up empty under a Windows GUI PATH and
+                        // it falls back to exec'ing the .cjs → spawn EFTYPE
+                        // (probed 2026-10-23). Hand it the very node this
+                        // adapter is running on.
+                        let program = resolved.program.clone();
+                        let is_node = Path::new(&program)
+                            .file_name()
+                            .map(|name| {
+                                name.to_string_lossy()
+                                    .to_ascii_lowercase()
+                                    .starts_with("node")
+                            })
+                            .unwrap_or(false);
+                        if std::env::var_os("ZCODE_NODE").is_none() && is_node {
+                            child_command.env("ZCODE_NODE", &program);
+                        }
+                        crate::debug_log::append(
+                            "acp",
+                            "info",
+                            &session_id,
+                            "zcode-acp-server pointed at the desktop CLI via ZCODE_BIN",
+                            Some(&cjs.display().to_string()),
+                        );
+                    }
+                    None => crate::debug_log::append(
+                        "acp",
+                        "warn",
+                        &session_id,
+                        "ZCode runtime not found (no zcode on PATH, no desktop install); \
+                         the bridge will try its own fallbacks",
+                        None,
+                    ),
+                }
+            }
             // ── DSH 原生跨用（2026-10-20，docs/research-dsh-cross-use.md §8）：
             //    与 opencode 的 OPENCODE_CONFIG_CONTENT 同款姿势——不看绑定，
             //    引擎在跑就把 provider「marionette」（openai-completions → 引擎
@@ -579,6 +629,35 @@ impl AcpService {
                         "warn",
                         &session_id,
                         "pi marionette route refresh failed; bridge skipped",
+                        Some(&error),
+                    ),
+                }
+            }
+            // ── zcode 原生跨用（2026-10-23）：与 dsh/pi 同款姿势——引擎在跑就
+            //    把 provider「marionette」（openai-chat-completions → 引擎
+            //    /v1，apiKey 用引擎常量令牌直接写文件）合并进
+            //    ~/.zcode/v2/provider_config.json（个人 provider 层；追加到
+            //    providerOrder 尾部，不动用户的默认模型）。模型经 zcode 原生
+            //    目录广告，id 形如 marionette\<engineId>（适配器 configOptions
+            //    的 provider\model 拼法）。引擎停用则移除托管段。
+            if matches!(id, "zcode" | "zcode-acp") {
+                crate::engine::wake_if_installed();
+                match crate::model_bridge::refresh_zcode_marionette_route() {
+                    Ok(true) => {
+                        crate::debug_log::append(
+                            "bridge",
+                            "info",
+                            &session_id,
+                            "zcode session bridged via provider_config.json",
+                            Some("provider=marionette"),
+                        );
+                    }
+                    Ok(false) => {}
+                    Err(error) => crate::debug_log::append(
+                        "bridge",
+                        "warn",
+                        &session_id,
+                        "zcode marionette route refresh failed; bridge skipped",
                         Some(&error),
                     ),
                 }
@@ -951,6 +1030,7 @@ impl AcpService {
                         agent,
                         supports_http,
                         supports_sse,
+                        crate::agent_registry::accepts_stdio_mcp(agent_id.as_deref()),
                     ),
                     None => (Vec::new(), Vec::new()),
                 }
@@ -4656,6 +4736,40 @@ mod tests {
     use super::*;
     use std::sync::mpsc::Receiver;
 
+    /// ZCode desktop installs hide in custom dirs; the install dir has to come
+    /// out of the Start-Menu shortcut's UTF-16 LocalBasePath run, with or
+    /// without the trailing executable name.
+    #[test]
+    fn lnk_utf16_dir_finds_the_install_dir() {
+        let dir = std::env::temp_dir().join(format!("marionette-zcode-lnk-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let write_lnk = |name: &str, text: &str| {
+            let mut bytes: Vec<u8> = Vec::new();
+            for ch in text.chars() {
+                bytes.extend_from_slice(&(ch as u16).to_le_bytes());
+            }
+            let lnk = dir.join(name);
+            fs::write(&lnk, bytes).unwrap();
+            lnk
+        };
+        // Full target path …\ZCode.exe → parent dir.
+        let lnk = write_lnk("with-exe.lnk", "\0\0D:\\Program Files\\ZCode\\ZCode.exe\0\0");
+        assert_eq!(
+            lnk_utf16_dir(&lnk).as_deref(),
+            Some(Path::new("D:\\Program Files\\ZCode"))
+        );
+        // Bare install-dir run works as-is.
+        let lnk = write_lnk("bare-dir.lnk", "\0\0D:\\Apps\\ZCode\0\0");
+        assert_eq!(
+            lnk_utf16_dir(&lnk).as_deref(),
+            Some(Path::new("D:\\Apps\\ZCode"))
+        );
+        // Runs without a drive colon (app ids like dev.zcode.app) are ignored.
+        let lnk = write_lnk("noise.lnk", "\0\0dev.zcode.app\0\0");
+        assert_eq!(lnk_utf16_dir(&lnk), None);
+        fs::remove_dir_all(&dir).ok();
+    }
+
     /// Effort must survive an agent that advertises no effort config option —
     /// that is exactly Grok, whose only transport is session/set_model `_meta`.
     #[test]
@@ -6416,6 +6530,121 @@ pub(crate) fn dsh_home() -> Option<PathBuf> {
     }
     let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
     Some(PathBuf::from(home).join(".dsh"))
+}
+
+/// Locate the ZCode desktop CLI (`resources/glm/zcode.cjs`) for the
+/// `zcode-acp-server` bridge. Desktop installs pick arbitrary dirs, write no
+/// uninstall-registry entry and rarely touch PATH, so after the two default
+/// roots we read the Start-Menu / Public-Desktop shortcut and pull the UTF-16
+/// target path out of the .lnk bytes (probed 2026-10-23: D:\Program
+/// Files\ZCode is only discoverable that way).
+pub(crate) fn zcode_bin_path() -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        candidates.push(
+            PathBuf::from(local)
+                .join("Programs")
+                .join("ZCode")
+                .join("resources")
+                .join("glm")
+                .join("zcode.cjs"),
+        );
+    }
+    if let Some(program_files) = std::env::var_os("ProgramFiles") {
+        candidates.push(
+            PathBuf::from(program_files)
+                .join("ZCode")
+                .join("resources")
+                .join("glm")
+                .join("zcode.cjs"),
+        );
+    }
+    if let Some(candidate) = candidates.iter().find(|p| p.is_file()) {
+        return Some(candidate.clone());
+    }
+    for shortcut in zcode_shortcuts() {
+        if let Some(dir) = lnk_utf16_dir(&shortcut) {
+            let cjs = dir.join("resources").join("glm").join("zcode.cjs");
+            if cjs.is_file() {
+                return Some(cjs);
+            }
+        }
+    }
+    None
+}
+
+/// The shortcuts a ZCode desktop install leaves behind, most specific first.
+fn zcode_shortcuts() -> Vec<PathBuf> {
+    let mut shortcuts = Vec::new();
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        shortcuts.push(
+            PathBuf::from(appdata)
+                .join("Microsoft")
+                .join("Windows")
+                .join("Start Menu")
+                .join("Programs")
+                .join("ZCode.lnk"),
+        );
+    }
+    if let Some(program_data) = std::env::var_os("ProgramData") {
+        shortcuts.push(
+            PathBuf::from(program_data.clone())
+                .join("Microsoft")
+                .join("Windows")
+                .join("Start Menu")
+                .join("Programs")
+                .join("ZCode.lnk"),
+        );
+        shortcuts.push(
+            PathBuf::from(program_data)
+                .join("Desktop")
+                .join("ZCode.lnk"),
+        );
+    }
+    shortcuts
+}
+
+/// Extract the ZCode install directory from a .lnk by scanning for UTF-16LE
+/// printable runs that look like a path mentioning zcode. Shell-link parsing
+/// proper needs a parser crate for little gain — the LocalBasePath is stored
+/// as exactly such a run.
+fn lnk_utf16_dir(lnk: &Path) -> Option<PathBuf> {
+    let bytes = fs::read(lnk).ok()?;
+    let mut runs: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for pair in bytes.chunks_exact(2) {
+        let code = u16::from_le_bytes([pair[0], pair[1]]);
+        let ch = char::from_u32(code as u32).filter(|c| (*c as u32) >= 0x20 && !c.is_control());
+        match ch {
+            Some(ch) => current.push(ch),
+            None => {
+                if current.len() >= 4 {
+                    runs.push(std::mem::take(&mut current));
+                } else {
+                    current.clear();
+                }
+            }
+        }
+    }
+    if current.len() >= 4 {
+        runs.push(current);
+    }
+    for run in runs {
+        let lower = run.to_ascii_lowercase();
+        if !lower.contains("zcode") || !lower.contains(':') {
+            continue;
+        }
+        // "<dir>\ZCode.exe" → parent; a bare dir run works as-is.
+        let dir = if lower.ends_with(".exe") {
+            PathBuf::from(&run)
+                .parent()
+                .map(Path::to_path_buf)?
+        } else {
+            PathBuf::from(&run)
+        };
+        return Some(dir);
+    }
+    None
 }
 
 /// `Marionette_RAW_LOG=1` mirrors every stdout line the reader yields to
