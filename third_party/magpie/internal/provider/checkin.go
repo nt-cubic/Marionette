@@ -2,11 +2,15 @@ package provider
 
 // A daily check-in, whichever vendor's: WorkBuddy's (workbuddy_checkin.go)
 // and Trae CN's (trae_checkin.go). Each account in use is checked in once
-// a Beijing day, except Qoder's campaigns, rechecked every 30 minutes.
+// a Beijing day, except Qoder's campaigns, rechecked every 30 minutes,
+// and an answer that may be the vendor's day before (provisional, #3326),
+// asked again every 30 minutes until a claim or an answer from noon on.
+// A press asks the vendor again for a done, inactive or ineligible one.
 // What came of it is kept in the vendor's file by its key for reuse
 // (see workbuddy_checkin.go for when a failure is tried again).
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"log"
@@ -85,6 +89,18 @@ func (c checkiner) checkinNow(ctx context.Context, soon bool) []WorkBuddyCheckin
 		asked[a.key] = true
 		prev, seen := st[a.key]
 		settled := prev.settled(day, now, soon)
+		// a press asks the vendor again for a done, inactive or
+		// ineligible magpie saw no claim for: answered from the record,
+		// a press never reached the vendor (#3326). A claim, and an
+		// answer the user acts on (own-app, captcha), stand.
+		if soon && prev.unclaimedAnswer() {
+			settled = false
+		}
+		// and the loop asks again an answer that may be the vendor's
+		// day before (#3326)
+		if settled && prev.provisional() {
+			settled = now.Sub(prev.At) < wbCheckinEvery
+		}
 		if c.recheck {
 			settled = settled && !soon && now.Sub(prev.At) < wbCheckinEvery
 			if prev.Checked() && !prev.ValidUntil.IsZero() {
@@ -93,7 +109,7 @@ func (c checkiner) checkinNow(ctx context.Context, soon bool) []WorkBuddyCheckin
 		}
 		if seen && settled {
 			prev.User, prev.By = a.User, c.by
-			out = append(out, prev)
+			out = append(out, prev.shown())
 			continue
 		}
 		r := a.do(ctx)
@@ -101,9 +117,16 @@ func (c checkiner) checkinNow(ctx context.Context, soon bool) []WorkBuddyCheckin
 		if r.Offline && seen && prev.Day == day && prev.Offline {
 			r.Tries = prev.Tries + 1
 		}
+		switch {
+		case r.Outcome == CheckinClaimed:
+			r.Claimed = now
+		case seen && prev.claimedOn(day):
+			// a done after magpie's own claim is that claim
+			r.Claimed = cmp.Or(prev.Claimed, prev.At)
+		}
 		st[a.key], changed = r, true
 		r.User, r.By, r.Asked = a.User, c.by, true
-		out = append(out, r)
+		out = append(out, r.shown())
 	}
 	if changed {
 		if b, err := json.MarshalIndent(st, "", "  "); err == nil {

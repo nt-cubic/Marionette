@@ -21,6 +21,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base32"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -477,21 +478,39 @@ func anyCase(w string) *regexp.Regexp {
 
 // Mask swaps what o covers in s for placeholders, and says how many.
 func Mask(s string, o Options) (string, int) {
-	return mask(s, withModel(o, []string{s}), placeholder)
+	return mask(s, withModel(o, []string{s}), placeholder, false)
 }
 
 // Preview is Mask with nothing remembered: each value goes as the
 // placeholder it would have, which isn't kept for Restore or as a value
 // seen before (known.go).
 func Preview(s string, o Options) string {
-	out, _ := mask(s, withModel(o, []string{s}), tag)
+	out, _ := mask(s, withModel(o, []string{s}), tag, false)
 	return out
 }
 
 // mask swaps what o covers in s for what put makes of each value.
-func mask(s string, o Options, put func(kind, v string) string) (string, int) {
-	if len(s) < 3 {
-		return s, 0
+//
+// escaped says s holds JSON text of its own (asJSON: a tool call's
+// arguments), which the vendor reads after one more unescaping. There the
+// finders read s as the vendor does (unescapedView): the \n before
+// @mcp.tool is a newline, not an n that starts an address, and the \n
+// before jo@quill.dev is no letter of it either. No value starts or ends
+// inside an escape (outsideEscapes), and what is kept to put back is the
+// value as it reads unescaped, so Restore, which escapes it again in
+// arguments, gives the agent what it wrote. Read as plain text, the n of
+// a \n went as the first letter of n@mcp.tool, the backslash was left
+// before the placeholder (\{{EMAIL_…}}), the arguments were JSON no
+// longer, and Ollama Cloud turned away every turn that replayed the call
+// with 400 "invalid tool call arguments" (#3022).
+func mask(raw string, o Options, put func(kind, v string) string, escaped bool) (string, int) {
+	if len(raw) < 3 {
+		return raw, 0
+	}
+	s := raw // what the finders read: as long as raw, a place in one is the same in the other
+	if escaped {
+		s = unescapedView(raw)
+		put = unescapedPut(put)
 	}
 	var found []span
 	for _, w := range o.Words {
@@ -583,9 +602,108 @@ func mask(s string, o Options, put func(kind, v string) string) (string, int) {
 	}
 	// after the rules', so where a rule finds the same value it keeps the
 	// kind it has always had
-	found = append(found, modelSpans(s, o)...)
+	found = append(found, modelSpans(raw, o)...) // the model was asked about raw
 	found = append(found, knownSpans(s, o)...)
-	return apply(s, noDecimals(s, noIDs(s, found)), put, o)
+	if escaped {
+		found = outsideEscapes(raw, found)
+	}
+	return apply(raw, noDecimals(s, noIDs(s, found)), put, o)
+}
+
+// unescapedView is s, JSON text, as long as s and read as the vendor reads
+// it once unescaped, as far as the finders tell: an escape that stands for
+// a newline, a tab or another control character has its letter read as
+// one (\n as \ and a newline), and a \u escape's u and digits as line
+// breaks, so neither starts or ends a word. A backslash, a quote and a
+// slash escaped stay as written: the rules read \" as a quote and C:\\Users
+// as a Windows path.
+func unescapedView(s string) string {
+	if strings.IndexByte(s, '\\') < 0 {
+		return s
+	}
+	b := []byte(s)
+	for i := 0; i+1 < len(b); i++ {
+		if b[i] != '\\' {
+			continue
+		}
+		i++
+		switch b[i] {
+		case 'n', 'b', 'f':
+			b[i] = '\n'
+		case 'r':
+			b[i] = '\r'
+		case 't':
+			b[i] = '\t'
+		case 'u':
+			for j := i; j < i+5 && j < len(b); j++ {
+				b[j] = '\n'
+			}
+			i += 4
+		}
+	}
+	return string(b)
+}
+
+// unescapedPut is put given each value unescaped, as the vendor and the
+// agent read it: a private key's \n are newlines. A value that isn't a
+// JSON string's text goes as it is.
+func unescapedPut(put func(kind, v string) string) func(kind, v string) string {
+	return func(kind, v string) string {
+		if strings.IndexByte(v, '\\') >= 0 {
+			var u string
+			if json.Unmarshal([]byte(`"`+v+`"`), &u) == nil {
+				v = u
+			}
+		}
+		return put(kind, v)
+	}
+}
+
+// outsideEscapes is found with no value starting or ending inside one of
+// the escapes of s, JSON text: after an escape's backslash, as the n of
+// \n, or among a \u00e9's digits. Masked there, it would leave a
+// backslash before the placeholder or cut one off from its letter, and s
+// would be JSON no longer (#3022). A value is cut back to the escapes'
+// edges instead, so what it holds is still masked: the zoe@quill.dev of a
+// model's "nzoe@quill.dev" read in \nzoe@quill.dev, a user's rule that
+// reads up to the backslash of \". One left with nothing goes. Every
+// finder's values go through here: the rules', the user's words, the
+// model's and those known before.
+func outsideEscapes(s string, found []span) []span {
+	if len(found) == 0 || strings.IndexByte(s, '\\') < 0 {
+		return found
+	}
+	// esc[i], for i inside an escape past its backslash: where the escape
+	// starts and ends, plus one each so a zero is outside one
+	type edges struct{ from, to int }
+	esc := make([]edges, len(s)+1)
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' {
+			continue
+		}
+		n := 2
+		if i+1 < len(s) && s[i+1] == 'u' {
+			n = 6
+		}
+		end := min(i+n, len(s))
+		for j := i + 1; j < end; j++ {
+			esc[j] = edges{i + 1, end + 1}
+		}
+		i = end - 1
+	}
+	out := found[:0]
+	for _, f := range found {
+		if e := esc[f.start]; e.to > 0 {
+			f.start = e.to - 1
+		}
+		if e := esc[f.end]; e.from > 0 {
+			f.end = e.from - 1
+		}
+		if f.start < f.end {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // noDecimals is found without what is a piece of a decimal number of s:

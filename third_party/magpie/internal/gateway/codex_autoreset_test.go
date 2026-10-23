@@ -25,11 +25,18 @@ type resetBackend struct {
 	spent []string           // accounts a reset was spent on
 	gone  bool               // every reset spent elsewhere since the usage was read
 	tried []string           // accounts asked for a turn
+	// credits: holds credits, which the backend spends once the account
+	// is out of its allowance, after turning away the first edge turns
+	// at the moment it ran out; fails: answers every turn with it
+	credits map[string]bool
+	edge    map[string]int
+	fails   map[string]int
 }
 
 func newResetBackend(t *testing.T, accounts ...string) *resetBackend {
 	t.Helper()
-	b := &resetBackend{week: map[string]float64{}, held: map[string]int{}, out: map[string]bool{}}
+	b := &resetBackend{week: map[string]float64{}, held: map[string]int{}, out: map[string]bool{},
+		credits: map[string]bool{}, edge: map[string]int{}, fails: map[string]int{}}
 	for _, a := range accounts {
 		b.week[a], b.held[a], b.out[a] = 100, 1, true
 	}
@@ -42,7 +49,18 @@ func newResetBackend(t *testing.T, accounts ...string) *resetBackend {
 		case "/backend-api/codex/responses":
 			io.ReadAll(r.Body)
 			b.tried = append(b.tried, acct)
-			if b.out[acct] {
+			if n := b.fails[acct]; n > 0 {
+				w.WriteHeader(n)
+				io.WriteString(w, `{"error":{"type":"server_error","message":"something went wrong"}}`)
+				return
+			}
+			// out of its allowance: refused, unless it holds credits and
+			// is past the turns turned away as it ran out
+			refused := b.out[acct] && (!b.credits[acct] || b.edge[acct] > 0)
+			if refused && b.credits[acct] {
+				b.edge[acct]--
+			}
+			if refused {
 				w.WriteHeader(429)
 				io.WriteString(w, `{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","plan_type":"plus","resets_in_seconds":7200}}`)
 				return
@@ -60,7 +78,8 @@ func newResetBackend(t *testing.T, accounts ...string) *resetBackend {
 				"rate_limit": map[string]any{
 					"primary_window":   map[string]any{"used_percent": five, "limit_window_seconds": 18000, "reset_at": now.Add(2 * time.Hour).Unix()},
 					"secondary_window": map[string]any{"used_percent": b.week[acct], "limit_window_seconds": 604800, "reset_at": now.Add(3 * 24 * time.Hour).Unix()}},
-				"rate_limit_reset_credits": map[string]any{"available_count": b.held[acct]}})
+				"rate_limit_reset_credits": map[string]any{"available_count": b.held[acct]},
+				"credits":                  map[string]any{"has_credits": b.credits[acct], "unlimited": false, "balance": map[bool]string{true: "120", false: "0"}[b.credits[acct]]}})
 		case "/backend-api/wham/rate-limit-reset-credits":
 			var credits []any
 			for i := range b.held[acct] {

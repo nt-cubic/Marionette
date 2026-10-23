@@ -17,6 +17,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/yetone/magpie/internal/testenv"
 )
 
 // raceVendor is a vendor that spends a refresh token once (plugins
@@ -67,7 +69,7 @@ func newRaceVendor(t *testing.T) *raceVendor {
 		fmt.Fprintf(w, `{"access":"a-%s","refresh":%q}`, next, next)
 	}))
 	t.Cleanup(tokens.Close)
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	api := testenv.FakeVendor(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		v.mu.Lock()
 		v.auths = append(v.auths, r.Header.Get("Authorization"))
 		v.mu.Unlock()
@@ -75,7 +77,6 @@ func newRaceVendor(t *testing.T) *raceVendor {
 	}))
 	t.Cleanup(api.Close)
 	t.Setenv("RACE_TOKEN_URL", tokens.URL)
-	t.Setenv("FAKE_BASE", api.URL+"/v1")
 	return v
 }
 

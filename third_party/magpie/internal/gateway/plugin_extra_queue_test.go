@@ -31,7 +31,7 @@ func TestPluginSecondAccountKeepsTheQueue(t *testing.T) {
 	var seen []string
 	gate := make(chan struct{})
 	let := sync.OnceFunc(func() { close(gate) })
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	up := testenv.FakeVendor(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.ReadAll(r.Body)
 		mu.Lock()
 		seen = append(seen, r.Header.Get("Authorization"))
@@ -46,7 +46,6 @@ func TestPluginSecondAccountKeepsTheQueue(t *testing.T) {
 	}))
 	t.Cleanup(up.Close)
 	t.Cleanup(let) // runs before up.Close, which waits for the held request
-	t.Setenv("FAKE_BASE", up.URL+"/v1")
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()

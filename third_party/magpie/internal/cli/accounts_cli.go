@@ -749,6 +749,16 @@ func checkinWorkBuddy(asJSON bool) error {
 				r.User = strings.TrimSpace(r.Vendor + " " + r.User)
 			}
 		}
+		// an answer that may be the vendor's day before: asked again
+		// later (#3326)
+		later := ""
+		if r.Again {
+			later = " · magpie asks again later"
+			if r.Outcome == provider.CheckinDone {
+				fmt.Println(muted.Render("·"), r.User, muted.Render("says already checked in · its day may not have turned"+later))
+				continue
+			}
+		}
 		switch r.Outcome {
 		case provider.CheckinClaimed, provider.CheckinDone:
 			line := fmt.Sprint(green.Render("✓"), " ", r.User, " checked in today")
@@ -763,9 +773,9 @@ func checkinWorkBuddy(asJSON bool) error {
 			}
 			fmt.Println(line)
 		case provider.CheckinIneligible:
-			fmt.Println(muted.Render("·"), r.User, muted.Render("not eligible for the check-in"))
+			fmt.Println(muted.Render("·"), r.User, muted.Render("not eligible for the check-in"+later))
 		case provider.CheckinInactive:
-			fmt.Println(muted.Render("·"), r.User, muted.Render("no check-in event now"))
+			fmt.Println(muted.Render("·"), r.User, muted.Render("no check-in event now"+later))
 		case provider.CheckinCaptcha:
 			fmt.Println(muted.Render("·"), r.User, muted.Render(strings.TrimSpace("asks for a captcha: check in in its own app "+r.Msg)))
 		case provider.CheckinOwnApp:

@@ -1830,6 +1830,29 @@ function daemonRestart() {
   return go;
 }
 
+// appReopen is the Restart beside the Codex app left on the old list: magpie
+// quits it, as ⌘Q does, and opens it again
+function appReopen(bundle) {
+  const go = el("button", "ag-quiet accent", t("Restart"));
+  go.type = "button";
+  go.title = bundle;
+  go.onclick = async () => {
+    go.disabled = true;
+    go.classList.add("busy");
+    try {
+      await api("codex/app/reopen", { bundle });
+      state = await api("state");
+      renderAgents();
+      status(t("The Codex app reopened"));
+    } catch (e) {
+      go.disabled = false;
+      go.classList.remove("busy");
+      status(e.message, "err");
+    }
+  };
+  return go;
+}
+
 // connectPanel: a connected agent's row, opened
 function connectPanel(a, { fields, fieldBtn }) {
   const box = el("div", "ag-exp");
@@ -1883,6 +1906,7 @@ function connectPanel(a, { fields, fieldBtn }) {
         // session is on it: with one on, here, when the user says (open
         // sessions of Codex 0.162 reconnect to the new one)
         if (c.kind === "daemon" && a.id === "codex") l.append(daemonRestart());
+        if (c.kind === "app" && a.id === "codex" && c.bundle) l.append(appReopen(c.bundle));
         parts.push(l);
       }
     }
@@ -13359,7 +13383,7 @@ function quotaError(err, q) {
   // a remote magpie's card (remote_quotas.go)
   if (/^nothing read on that magpie yet/.test(err)) return t("Nothing read on that computer yet — refresh this card to have it read");
   if (/^remote magpie doesn't share its quotas/.test(err)) return t("That computer's magpie doesn't share its quotas yet — update magpie there");
-  if (/^remote magpie isn't shared/.test(err)) return t("That computer's magpie isn't shared — turn on Settings → Share on local network there");
+  if (/^remote magpie isn't shared/.test(err)) return t("That computer's magpie isn't shared — turn on Settings → Network and sharing → Share on local network there");
   if (/^remote magpie didn't take this key/.test(err)) return t("That computer's magpie didn't take this key — use one of its gateway keys in this provider");
   if (/^couldn't reach the remote magpie/.test(err)) return t("Couldn't reach that computer's magpie — check that it is running and its address");
   // a remote magpie's gateway key card (#1547, remote_key_limits.go)
@@ -17678,14 +17702,21 @@ function checkinRow(q, first, subs) {
     switch (r.outcome) {
       case "claimed":
       case "done":
+        if (r.again) {
+          // "already in" before noon with no claim magpie saw: maybe the
+          // vendor's day before, so not shown as today's (#3326)
+          kind = "wait";
+          text = t("{name} says already checked in; its day may not have turned yet, so magpie asks again later", { name: checkinVendorName(r, q.name) });
+          break;
+        }
         kind = "ok";
         text = t("Checked in today") + (r.credit ? " +" + r.credit : "") + (r.streak ? " · " + t("{n}-day streak", { n: r.streak }) : "");
         break;
       case "ineligible":
-        text = t("Not eligible for the daily check-in");
+        text = t("Not eligible for the daily check-in") + (r.again ? " · " + t("magpie asks again later") : "");
         break;
       case "inactive":
-        text = t("No check-in event now");
+        text = t("No check-in event now") + (r.again ? " · " + t("magpie asks again later") : "");
         break;
       case "captcha":
         // the vendor wants a captcha, which magpie never solves
@@ -17737,9 +17768,11 @@ function checkinRow(q, first, subs) {
   };
   row.append(auto);
   // pressed now: shown while an account isn't in today and could be; a
-  // Qoder campaign can open later in the day, so its inactive too (#2696)
+  // Qoder campaign can open later in the day, so its inactive too (#2696),
+  // and an answer magpie asks again, which may be the vendor's day before
+  // (#3326)
   const later = /^(plugin:)?qoder(-cn)?$/.test(by);
-  const due = subs.filter((x) => x.checkins && !x.checkinOff && (x.checkinBy || "") === by && !(x.checkin?.day === today && x.checkin.outcome !== "failed" && !(later && x.checkin.outcome === "inactive")));
+  const due = subs.filter((x) => x.checkins && !x.checkinOff && (x.checkinBy || "") === by && !(x.checkin?.day === today && x.checkin.outcome !== "failed" && !x.checkin.again && !(later && x.checkin.outcome === "inactive")));
   if (due.length) {
     const now = el("button", "text ci-now", t("Check in now"));
     now.type = "button";
@@ -17750,8 +17783,8 @@ function checkinRow(q, first, subs) {
       now.classList.add("busy");
       try {
         const rs = await api("usage/" + vendor.api, vendor.plugin ? { provider: vendor.plugin } : {});
-        const bad = (rs || []).filter((x) => x.outcome === "failed").length;
-        status(bad ? t("Check-in failed for {n} account(s)", { n: bad }) : t("Check-in status refreshed"), bad ? "err" : "ok");
+        const said = checkinPressSaid(rs);
+        status(said.text, said.bad ? "err" : "ok");
       } catch (err) {
         status(err.message, "err");
       }
@@ -17760,6 +17793,22 @@ function checkinRow(q, first, subs) {
     row.append(now);
   }
   return row;
+}
+
+// checkinPressSaid: what a press came to, a count per kind (#3326)
+function checkinPressSaid(rs) {
+  const n = {};
+  let cr = 0;
+  for (const r of rs || []) {
+    const o = r.outcome, k = r.again || o === "inactive" || o === "ineligible" ? "Not available yet: {n}"
+      : o === "claimed" && r.asked ? "Claimed: {n}"
+      : o === "claimed" || o === "done" ? "Already checked in today: {n}"
+      : o === "captcha" || o === "own-app" ? "Check in in its own app: {n}" : "Check-in failed for {n} account(s)";
+    n[k] = (n[k] || 0) + 1;
+    if (r.asked && o === "claimed") cr += r.credit || 0;
+  }
+  const bad = n["Check-in failed for {n} account(s)"] || 0;
+  return { bad, text: Object.keys(n).map((k) => t(k === "Claimed: {n}" && cr ? "Claimed: {n} (+{credits} credits)" : k, { n: n[k], credits: Math.round(cr * 100) / 100 })).join(" · ") || t("Check-in status refreshed") };
 }
 
 // checkinVendorName is the vendor of check-in r by name: a plugin's as
@@ -18672,10 +18721,6 @@ function fmtBytes(n) {
   return (i && n < 10 ? n.toFixed(1) : Math.round(n)) + " " + u[i];
 }
 
-// sessModelNames lists models for a cost note, one an agent recorded no
-// name for told as such: joined bare, the note read "Not counted: , with
-// no known price" (tony, Discord)
-const sessModelNames = (models) => [...new Set(models.map((m) => m || t("a model with no name")))].join(", ");
 function ago(when) {
   const sec = (new Date(when) - Date.now()) / 1000;
   const rtf = new Intl.RelativeTimeFormat(intlLang(), { numeric: "auto" });
@@ -18784,43 +18829,6 @@ function openSessCombo(anchor, all, opts, value, choose, head) {
   addEventListener("resize", closeProtoMenu);
   protoMenu = { box, anchor, outside, keys, scroll };
   q.focus({ preventScroll: true });
-}
-
-// wslBadge marks a session an agent ran in a WSL distro, read through
-// \\wsl.localhost; its resume command runs it there through wsl.exe
-function wslBadge(s) {
-  const b = el("span", "badge wsl", "WSL " + s.wsl);
-  b.title = t("In WSL {distro}: resumed there through wsl.exe", { distro: s.wsl });
-  return b;
-}
-
-// sessModelsText: a session's models, the first two and how many more, and
-// where magpie's gateway sent its calls, the most first: a routing group's
-// member and the reasoning it was asked for
-function sessModelsText(s) {
-  const via = s.via?.length ? "→ " + [s.via[0].model, s.via[0].effort].filter(Boolean).join(" · ") + (s.via.length > 1 ? " +" + (s.via.length - 1) : "") : "";
-  return sessModelNames(s.models.slice(0, 2).map((m) => m.model)) + (s.models.length > 2 ? " +" + (s.models.length - 2) : "") + (via ? " " + via : "");
-}
-
-// sessUsageDetail adds to a session's details what it spent by model, and
-// what the gateway sent its calls to, at what reasoning; line(label, value)
-// adds a line of the details
-function sessUsageDetail(d, s, line) {
-  if (s.models?.length) {
-    const m = el("div", "sess-models");
-    for (const x of s.models) {
-      m.append(el("span", "model", x.model || t("a model with no name")),
-        el("span", "n", t("{a} in · {b} out", { a: fmtN(x.input), b: fmtN(x.output) }) + (x.cache_read ? " · " + t("{n} cached", { n: fmtN(x.cache_read) }) : "") + (x.cache_write ? " · " + t("{n} written", { n: fmtN(x.cache_write) }) : "")),
-        el("span", "c" + (x.priced ? "" : " none"), x.priced ? "≈" + fmtCost({ cost: x.cost }) : "—"));
-    }
-    d.append(m);
-  }
-  (s.via || []).forEach((v, i) => line(i ? "" : t("Routed"), viaText(v) + " · " + t("{n} tokens", { n: fmtN(v.tokens) }) + (v.credited ? " · " + ledCredits(v).textContent : "")));
-}
-
-// one place a session's calls went through magpie, in words
-function viaText(v) {
-  return `${v.provider}/${v.model}` + (v.effort ? " · " + v.effort : "") + " · " + t("{n} calls", { n: v.calls });
 }
 
 const THEMES = [["system", "System"], ["light", "Light"], ["dark", "Dark"]];
@@ -22150,7 +22158,7 @@ function drawMaskObs() {
   const on = !!(s.redact || s.redactPersonal);
   if (sum?.requests) maskSawLoad();
   const saw = maskSawLines();
-  const key = JSON.stringify([document.documentElement.lang, maskDays, on, sum, saw.map((x) => x.text), state.agents?.length, (providers || maskProv)?.providers?.length]);
+  const key = JSON.stringify([document.documentElement.lang, maskDays, on, sum, saw?.texts, state.agents?.length, (providers || maskProv)?.providers?.length]);
   if (key === maskDrawn && box.firstChild) return;
   maskDrawn = key;
   // it moves when it first has numbers to say, and for other days: not
@@ -22162,12 +22170,10 @@ function drawMaskObs() {
   box.classList.toggle("off", !on);
 
   const head = el("div", "mo-head");
-  const shield = el("span", "mo-shield");
-  shield.append(svg(SHIELD, 17, 1.5));
   const words = el("div", "mo-title");
   words.append(el("div", "mo-name", t("Kept from vendors")),
     el("div", "mo-sub", on ? t("Masked on this computer before each request left it, and put back in each answer") : t("Masking is off: requests go to vendors as they are")));
-  head.append(shield, words, el("span", "grow"));
+  head.append(words, el("span", "grow"));
   if (sum?.requests || maskDays === 30) head.append(segs([["7", t("7 days")], ["30", t("30 days")]], String(maskDays), (v) => {
     maskDays = +v;
     try { localStorage.setItem("magpie.maskDays", v); } catch {}
@@ -22185,19 +22191,23 @@ function drawMaskObs() {
     return;
   }
 
-  // the number, and the days under it
-  const hero = el("div", "mo-hero");
-  const count = el("div", "mo-count");
-  const big = el("div", "mo-big");
-  const num = el("span", "mo-num", fmtN(sum.n));
-  big.append(num, el("span", "mo-unit", t(sum.n === 1 ? "value masked" : "values masked")));
-  count.append(big, el("div", "mo-meta", sum.requests
-    ? [t(sum.distinct === 1 ? "1 different value" : "{n} different values", { n: fmtN(sum.distinct) }), t(sum.requests === 1 ? "1 request" : "{n} requests", { n: fmtN(sum.requests) }),
-      sum.blocked ? t(sum.blocked === 1 ? "1 request held back" : "{n} requests held back", { n: fmtN(sum.blocked) }) : "",
-      sum.warned ? t(sum.warned === 1 ? "1 value sent as written" : "{n} values sent as written", { n: fmtN(sum.warned) }) : ""].filter(Boolean).join(" · ")
-    : t("Nothing yet in these days")));
+  // the number in full; beside it what makes it up, and the days
+  const hero = el("div", "mo-hero"), count = el("div", "mo-count");
+  const num = el("div", "mo-num", sum.n.toLocaleString(intlLang()));
+  const unit = el("div", "mo-unit", t(sum.n === 1 ? "value masked" : "values masked"));
+  unit.append(el("span", "", t(maskDays === 30 ? "30 days" : "7 days")));
+  count.append(num, unit);
+  const stats = el("div", "mo-stats");
+  const stat = (label, n) => { const r = el("div", "mo-stat"); r.append(el("span", "", label), el("b", "", fmtN(n))); stats.append(r); };
+  if (sum.requests) {
+    stat(t("Different values"), sum.distinct);
+    stat(t("Requests"), sum.requests);
+    if (sum.blocked) stat(t("Held back"), sum.blocked);
+    if (sum.warned) stat(t("Sent as written"), sum.warned);
+  } else stats.append(el("div", "mo-stat", t("Nothing yet in these days")));
   const chart = el("div", "mo-days");
-  hero.append(count, chart);
+  stats.append(chart);
+  hero.append(count, stats);
   box.append(hero);
   maskStrip(chart, sum.days, move);
   if (move && sum.n) maskCountUp(num, sum.n);
@@ -22206,49 +22216,41 @@ function drawMaskObs() {
     return;
   }
 
-  // what the vendor saw: the newest lines, as they went
-  if (saw.length) box.append(maskSawPane(saw, move));
+  // agents, this computer, providers; then the newest request
+  if (sum.agents.length && sum.providers.length) box.append(maskFlow(sum, move));
+  if (saw) box.append(maskSawPane(saw, move));
 
-  // what was kept, by kind, and what found it
-  const ledger = el("div", "mo-ledger");
+  // what was kept and what found it; beside them the values masked most
+  const low = el("div", "mo-low"), ledger = el("div", "mo-ledger");
   if (sum.kinds.length) {
     const top = sum.kinds.slice(0, 6), rest = sum.kinds.slice(6);
-    const rows = top.map((k) => ({ n: k.n, c: maskColor(k.name), label: maskKindName(k.name), open: { kind: k.name }, tip: t("Show the requests with {kind}", { kind: maskKindName(k.name) }) }));
-    if (rest.length) rows.push({ n: rest.reduce((a, k) => a + k.n, 0), c: "var(--faint)", label: t("Other") });
-    ledger.append(maskLedger(t("What was kept"), "kind", rows, move));
+    const rows = top.map((k) => ({ n: k.n, label: maskKindName(k.name), open: { kind: k.name }, tip: t("Show the requests with {kind}", { kind: maskKindName(k.name) }) }));
+    if (rest.length) rows.push({ n: rest.reduce((a, k) => a + k.n, 0), label: t("Other") });
+    ledger.append(maskLedger(t("What was kept"), "kind", rows));
   }
   const by = Object.keys(MASK_BY).filter((b) => sum.by?.[b]).map((b) => ({ n: sum.by[b], label: maskByName(b), open: { by: b }, model: b === "model",
     tip: b === "model" ? t(sum.by.model === 1 ? "1 value found by the local model, which no rule recognises" : "{n} values found by the local model, which no rule recognises", { n: fmtN(sum.by.model) }) : "" }));
-  if (by.length) ledger.append(maskLedger(t("Found by"), "by", by, move));
-  if (ledger.firstChild) box.append(ledger);
-
-  // from which agents, to which providers
-  if (sum.agents.length && sum.providers.length) {
-    const sec = el("div", "mo-sec");
-    sec.append(el("div", "label", t("From your agents, masked, to vendors")));
-    sec.append(maskFlow(sum, move));
-    box.append(sec);
-  }
-
-  // the values masked most, shown while pointed at
+  if (by.length) ledger.append(maskLedger(t("Found by"), "by", by));
+  low.append(ledger);
   if (sum.values.length) {
-    const sec = el("div", "mo-sec");
-    const lh = el("div", "mo-lh");
-    lh.append(el("span", "label", t("Masked most")), el("span", "mo-hint", t("Point at one to see what it was")));
-    sec.append(lh);
-    const wrap = el("div", "mo-values");
-    for (const v of sum.values.slice(0, 12)) {
-      const c = el("button", "mo-val");
+    const sec = el("div", "mo-top"), lh = el("div", "mo-lh");
+    lh.append(el("span", "label", t("Masked most")), el("span", "grow"), el("span", "mo-hint", t("Point at one to see what it was")));
+    const wrap = el("div", "mo-values"), max = sum.values[0].n || 1;
+    for (const [i, v] of sum.values.slice(0, 8).entries()) {
+      const c = el("button", "mo-val"), sh = maskShape(v.head, v.len), bar = el("span", "bar"), f = el("i");
       c.type = "button";
-      c.setAttribute("aria-label", maskKindName(v.kind) + " " + maskShape(v.head, v.len));
-      c.append(maskDot(v.kind), el("span", "sh", maskShape(v.head, v.len)), el("span", "x", "×" + fmtN(v.n)));
+      c.setAttribute("aria-label", maskKindName(v.kind) + " " + sh);
+      f.style.width = Math.max(3, (100 * v.n) / max) + "%";
+      bar.append(f);
+      c.append(el("span", "i", String(i + 1).padStart(2, "0")), el("span", "sh", sh), el("span", "by", maskByName(v.by)), bar, el("span", "x", fmtN(v.n)));
       maskTipOn(c, { p: v.p, kind: v.kind, by: v.by, meta: t(v.requests === 1 ? "In 1 request, {when}" : "In {n} requests, most recently {when}", { n: fmtN(v.requests), when: ago(v.last) }) });
       c.onclick = () => maskOpenRecords({ kind: v.kind });
       wrap.append(c);
     }
-    sec.append(wrap);
-    box.append(sec);
+    sec.append(lh, wrap);
+    low.append(sec);
   }
+  box.append(low);
 
   const foot = el("div", "mo-foot");
   foot.append(el("span", "mo-note", t("Kept on this computer for 30 days, without the values themselves")));
@@ -22257,7 +22259,8 @@ function drawMaskObs() {
   open.onclick = () => maskOpenRecords({});
   foot.append(open);
   box.append(foot);
-  if (move) for (const [i, n] of [...box.children].slice(2).entries()) n.animate([{ opacity: 0, transform: "translateY(6px)" }, { opacity: 1, transform: "none" }], { duration: 520, delay: 160 + i * 70, easing: "cubic-bezier(.32, .72, 0, 1)", fill: "backwards" });
+  // each part rises out of a blur
+  if (move) for (const [i, n] of [...box.children].slice(1).entries()) n.animate([{ opacity: 0, transform: "translateY(8px)", filter: "blur(6px)" }, {}], { duration: 1100, delay: i * 120, easing: "cubic-bezier(.2, .7, .1, 1)", fill: "backwards" });
 }
 
 function maskCountUp(node, n) {
@@ -22266,7 +22269,7 @@ function maskCountUp(node, n) {
     if (!node.isConnected) return;
     const p = Math.min(1, (now - start) / ms);
     const e = p === 1 ? 1 : 1 - Math.pow(2, -10 * p);
-    node.textContent = fmtN(Math.round(n * e));
+    node.textContent = Math.round(n * e).toLocaleString(intlLang());
     if (p < 1) requestAnimationFrame(step);
   };
   requestAnimationFrame(step);
@@ -22304,30 +22307,20 @@ function maskStrip(box, days, move) {
   box.append(bars, axis, tip);
 }
 
-// maskLedger: one column of the breakdown, a row each with its count and a
-// hairline meter of its share; a row opens its records
-function maskLedger(title, kind, rows, move) {
+// maskLedger: a column of the breakdown; a row opens its records
+function maskLedger(title, kind, rows) {
   const col = el("div", "mo-ledg " + kind);
   col.append(el("div", "label", title));
-  const max = Math.max(1, ...rows.map((r) => r.n));
-  rows.forEach((r, i) => {
+  for (const r of rows) {
     const b = el("button", "mo-row" + (r.model ? " model" : ""));
     b.type = "button";
-    const d = el("span", "mo-dotc");
-    d.style.background = r.c || (r.model ? "var(--c6)" : "var(--faint)");
-    b.append(d);
-    const m = el("span", "mo-meter"), f = el("i");
-    f.style.width = (100 * r.n) / max + "%";
-    if (r.c) f.style.background = r.c;
-    m.append(f);
-    b.append(el("span", "nm", r.label), el("b", "", fmtN(r.n)), m);
+    b.append(el("span", "nm", r.label), el("b", "", fmtN(r.n)));
     if (r.open) {
       if (r.tip) b.title = r.tip;
       b.onclick = () => maskOpenRecords(r.open);
     } else b.disabled = true;
-    if (move) f.animate([{ transform: "scaleX(0)" }, { transform: "none" }], { duration: 820, delay: 360 + i * 60, easing: "cubic-bezier(.32, .72, 0, 1)", fill: "backwards" });
     col.append(b);
-  });
+  }
   return col;
 }
 
@@ -22347,18 +22340,10 @@ function maskSawLoad() {
     .catch(() => {})
     .finally(() => { maskSawBusy = false; maskSawAt = Date.now(); drawMaskObs(); });
 }
-// up to three lines, one a record before a second from any
+// the newest record with lines, up to three of them
 function maskSawLines() {
-  const out = [], seen = new Set();
-  for (const pass of [0, 1]) for (const r of maskSaw || []) {
-    const texts = maskSnipTexts(r).filter((x) => !seen.has(x));
-    for (const text of pass ? texts : texts.slice(0, 1)) {
-      if (out.length >= 3) return out;
-      seen.add(text);
-      out.push({ text: text.replace(/\s+/g, " "), t: r.t, info: new Map((r.values || []).map((x) => [x.p, x])) });
-    }
-  }
-  return out;
+  const r = (maskSaw || []).find((r) => maskSnipTexts(r).length);
+  return r && { r, texts: maskSnipTexts(r).slice(0, 3).map((x) => x.replace(/\s+/g, " ")), info: new Map((r.values || []).map((x) => [x.p, x])) };
 }
 // maskPlace: a placeholder as the text carried it, in its kind's colour,
 // what it stood for shown while pointed at
@@ -22370,37 +22355,51 @@ function maskPlace(cls, p, x) {
   maskTipOn(mark, { p, kind, by: x?.b || "known" });
   return mark;
 }
-function maskSawPane(lines, move) {
-  const pane = el("div", "mo-saw");
+// maskSawPane: the newest request's lines as the vendor got them, or as
+// written here, each value read from this magpie's memory when asked
+function maskSawPane(saw, move) {
+  const pane = el("div", "mo-saw"), r = saw.r;
   const h = el("div", "mo-lh");
-  h.append(el("span", "label", t("What the vendor saw")), el("span", "grow"), el("span", "mo-hint", ago(lines[0].t)));
-  pane.append(h);
-  let k = 0;
-  for (const x of lines) {
-    const s = el("div", "mo-snip");
-    let at = 0;
-    for (const m of x.text.matchAll(PLACEHOLDER)) {
-      s.append(document.createTextNode(x.text.slice(at, m.index)));
-      const mark = maskPlace("mo-ph", m[0], x.info.get(m[0]));
-      // a marker drawn over the value, then lifted to the placeholder
-      if (move) mark.animate([
-        { clipPath: "inset(0 100% 0 0)", backgroundColor: "var(--k)", color: "transparent" },
-        { clipPath: "inset(0 0 0 0)", backgroundColor: "var(--k)", color: "transparent", offset: .55 },
-        { clipPath: "inset(0 0 0 0)" },
-      ], { duration: 900, delay: 520 + k++ * 180, easing: "cubic-bezier(.65, 0, .35, 1)", fill: "backwards" });
-      s.append(mark);
-      at = m.index + m[0].length;
+  h.append(el("span", "label", t("Latest request")), el("span", "mo-hint", [maskWho(r.agent, "agent").name + " → " + maskWho(r.provider, "provider").name, ago(r.t), t(r.n === 1 ? "1 value masked" : "{n} values masked", { n: fmtN(r.n) })].join(" · ")), el("span", "grow"));
+  const body = el("div", "mo-lines");
+  const fill = (here) => {
+    maskTipOff();
+    body.replaceChildren();
+    let k = 0;
+    for (const text of saw.texts) {
+      const s = el("div", "mo-snip");
+      let at = 0;
+      for (const m of text.matchAll(PLACEHOLDER)) {
+        s.append(document.createTextNode(text.slice(at, m.index)));
+        let mark;
+        if (here) {
+          mark = el("span", "mo-orig", m[0]);
+          maskValue(m[0]).then((v) => { if (v === null) mark.classList.add("gone"); else mark.textContent = v; });
+        } else {
+          mark = maskPlace("mo-ph", m[0], saw.info.get(m[0]));
+          // a marker drawn over the value, then lifted
+          const ink = { backgroundColor: "var(--accent)", color: "transparent" };
+          if (move) mark.animate([{ clipPath: "inset(0 100% 0 0)", ...ink }, { clipPath: "inset(0)", ...ink, offset: .55 }, { clipPath: "inset(0)" }],
+            { duration: 900, delay: 900 + k++ * 180, easing: "cubic-bezier(.65, 0, .35, 1)", fill: "backwards" });
+        }
+        s.append(mark);
+        at = m.index + m[0].length;
+      }
+      s.append(document.createTextNode(text.slice(at)));
+      body.append(s);
     }
-    s.append(document.createTextNode(x.text.slice(at)));
-    pane.append(s);
-  }
+    move = false;
+  };
+  h.append(segs([["v", t("What the vendor saw")], ["h", t("As written here")]], "v", (v) => fill(v === "h")));
+  fill(false);
+  pane.append(h, body);
   return pane;
 }
 
-// maskFlow: the agents that sent what was masked, each a ribbon as wide
-// as its share into the shield, and from it to the providers it went to
+// maskFlow: hairlines from the agents into this computer, uneven as
+// written, and out of it to the providers, even as placeholders
 function maskFlow(sum, move) {
-  const flow = el("div", "mo-flow");
+  const sec = el("div", "mo-sec mo-fl"), flow = el("div", "mo-flow");
   const side = (list, kind) => {
     const shown = list.slice(0, 4), rest = list.slice(4);
     const rows = shown.map((x) => ({ id: x.name, n: x.n, ...maskWho(x.name, kind) }));
@@ -22409,7 +22408,6 @@ function maskFlow(sum, move) {
     for (const r of rows) {
       const b = el("button", "mo-node");
       b.type = "button";
-      if (r.icon) b.append(icon(r.icon));
       b.append(el("span", "nm", r.name), el("span", "ct", fmtN(r.n)));
       if (r.id) {
         b.title = t("Show what {name} sent masked", { name: r.name });
@@ -22422,62 +22420,63 @@ function maskFlow(sum, move) {
   const [from, fromRows] = side(sum.agents, "agent");
   const [to, toRows] = side(sum.providers, "provider");
   const mid = el("div", "mo-mid");
-  const rowH = 34;
-  const H = Math.max(fromRows.length, toRows.length) * rowH - 4;
+  const rowH = 48, H = Math.max(fromRows.length, toRows.length, 2) * rowH;
   const max = Math.max(...fromRows.map((r) => r.n), ...toRows.map((r) => r.n), 1);
-  const ys = (rows) => {
-    const off = (H - (rows.length * rowH - 4)) / 2;
-    return rows.map((_, i) => off + i * rowH + 15);
-  };
-  const c = H / 2, hubR = 19;
   const hub = el("span", "mo-hub");
-  hub.append(svg(SHIELD, 16, 1.6));
-  hub.title = t("Masked here, on this computer");
-  // drawn in the middle's own pixels, again as it is resized: a viewBox
-  // stretched to fit would bend the strokes and their dashes
+  hub.append(svg(SHIELD, 16, 1.3));
+  // drawn in the middle's own pixels on each resize: a stretched viewBox
+  // would bend the hairlines
   const s = sv("svg", { "aria-hidden": "true" });
-  let drawnW = 0, first = true;
+  let drawnW = 0;
   const draw = () => {
     const W = Math.round(mid.clientWidth);
     if (!W || W === drawnW) return;
     drawnW = W;
     s.setAttribute("viewBox", `0 0 ${W} ${H}`);
     s.replaceChildren();
-    const m = W / 2, bend = Math.max(18, (m - hubR) * .55);
-    const ribs = [];
-    const rib = (d, n, out, i) => {
-      const w = 1.5 + 5 * n / max;
-      const path = sv("path", { d, class: "mo-rib" + (out ? " out" : ""), "stroke-width": w, "stroke-opacity": (out ? .34 : .14) + .36 * n / max });
-      s.append(path);
-      ribs.push(path);
-      // what goes along it: a value as it was on the way in, a placeholder
-      // after the shield; more of them on a busier ribbon
-      if (!stillMotion()) for (let k = 0, dots = 1 + Math.round(2 * n / max); k < dots; k++) {
-        const dot = sv("circle", { r: out ? 2.2 : 1.8, class: "mo-dot" + (out ? " out" : "") });
-        const dur = 2.4 + i * .17;
-        dot.append(sv("animateMotion", { path: d, dur: dur + "s", begin: (out ? 1.2 : 0) + k * dur / dots + "s", repeatCount: "indefinite", keyPoints: "0;1", keyTimes: "0;1", calcMode: "spline", keySplines: ".45 0 .55 1" }));
-        dot.append(sv("animate", { attributeName: "opacity", values: "0;1;1;0", keyTimes: "0;.12;.85;1", dur: dur + "s", begin: (out ? 1.2 : 0) + k * dur / dots + "s", repeatCount: "indefinite" }));
-        s.append(dot);
-      }
+    const m = W / 2, still = stillMotion(), lines = [];
+    const add = (tag, a, to = s) => { const n = sv(tag, a); to.append(n); return n; };
+    const curve = (x0, y0, x1, y1) => `M${x0},${y0}C${(x0 + x1) / 2},${y0} ${(x0 + x1) / 2},${y1} ${x1},${y1}`;
+    const bundle = (rows, out) => {
+      const ks = rows.map((r) => Math.max(1, Math.round(24 * r.n / max))), all = ks.reduce((a, k) => a + k, 0);
+      let j = 0, rnd = out ? 11 : 7;
+      rows.forEach((r, i) => {
+        const y = (H - rows.length * rowH) / 2 + (i + .5) * rowH;
+        for (let q = 0; q < ks[i]; q++, j++) {
+          const at = all > 1 ? H * (.2 + .6 * j / (all - 1)) : H / 2;
+          rnd = (rnd * 16807) % 2147483647;
+          const end = y + (q - (ks[i] - 1) / 2) * 1.6 + (out ? 0 : (rnd % 30 - 15) / 10);
+          const d = out ? curve(m, at, W, end) : curve(0, end, m, at);
+          lines.push(add("path", { d, pathLength: 1, class: "mo-th" + (out ? " out" : "") + (ks[i] === 1 ? " one" : ""), "stroke-opacity": ks[i] === 1 ? (out ? .8 : .4) : out ? .42 : .07 + (rnd % 20) / 100 }));
+          // a value goes in round, a placeholder out square
+          if (q === ks[i] >> 1 && !still) for (let k = 0, dots = 1 + Math.round(2 * r.n / max); k < dots; k++) {
+            const dur = 1.7 + i * .5, begin = (out ? dur : 0) + k * 2 * dur / dots + "s";
+            const z = out ? 1.8 : 1.7, dot = add("rect", { x: -z, y: -z, width: 2 * z, height: 2 * z, rx: out ? .6 : z, class: "mo-dot" + (out ? " out" : "") });
+            const a = { dur: dur + "s", begin, repeatCount: "indefinite" };
+            add("animateMotion", { path: d, ...a }, dot);
+            add("animate", { attributeName: "opacity", values: "0;1;1;0", keyTimes: "0;.1;.85;1", ...a }, dot);
+          }
+        }
+      });
     };
-    ys(fromRows).forEach((y, i) => rib(`M0,${y}C${bend},${y} ${m - hubR - bend},${c} ${m - hubR},${c}`, fromRows[i].n, false, i));
-    ys(toRows).forEach((y, i) => rib(`M${m + hubR},${c}C${m + hubR + bend},${c} ${W - bend},${y} ${W},${y}`, toRows[i].n, true, i));
-    if (move && first) ribs.forEach((r, i) => {
-      // drawn in once, by its own length, then left whole
-      const len = r.getTotalLength();
-      r.style.strokeDasharray = `${len} ${len}`;
-      const out = r.classList.contains("out");
-      r.animate([{ strokeDashoffset: len }, { strokeDashoffset: 0 }], { duration: 760, delay: 380 + (out ? 520 : 0) + i * 40, easing: "cubic-bezier(.65, 0, .35, 1)", fill: "backwards" })
-        .finished.then(() => { r.style.strokeDasharray = ""; }, () => { r.style.strokeDasharray = ""; });
+    bundle(fromRows, false);
+    bundle(toRows, true);
+    // this computer: a ticked line, and a mark going down it
+    add("line", { x1: m, y1: 0, x2: m, y2: H, class: "mo-mem" });
+    for (let y = 0; y <= H; y += 19) add("line", { x1: m - 3, y1: y, x2: m + 3, y2: y, class: "mo-tick" });
+    if (!still) add("rect", { x: m - 1, y: 0, width: 2, height: 22, rx: 1, class: "mo-scan" }).style.setProperty("--h", H - 22 + "px");
+    // drawn in once, the way in first
+    if (move) lines.forEach((p) => {
+      p.animate([{ strokeDashoffset: 1 }, {}], { duration: 2400, delay: p.classList.contains("out") ? 700 : 300, easing: "cubic-bezier(.3, .6, .1, 1)", fill: "backwards" });
     });
-    first = false;
+    move = false;
   };
   mid.append(s, hub);
   flow.style.height = H + "px";
   flow.append(from, mid, to);
   new ResizeObserver(draw).observe(mid);
-  if (move) hub.animate([{ transform: "scale(.4)", opacity: 0 }, { transform: "none", opacity: 1 }], { duration: 520, delay: 760, easing: "cubic-bezier(.34, 1.56, .64, 1)", fill: "backwards" });
-  return flow;
+  sec.append(flow, el("div", "mo-cap", t("Masked here, on this computer")));
+  return sec;
 }
 
 // ---- the records: each request masking changed, newest first ----
@@ -23622,6 +23621,8 @@ function wbCheckinLine(r) {
   switch (r.outcome) {
     case "claimed":
     case "done":
+      // maybe the vendor's day before (#3326)
+      if (r.again) return t("{user}: {name} says already checked in; magpie asks again later", { user: r.user, name: checkinVendorName(r) });
       return t("{user} checked in today", { user: r.user }) + (r.credit ? " +" + r.credit : "")
         + (r.streak ? ", " + t("{n}-day streak", { n: r.streak }) : "");
     case "ineligible":

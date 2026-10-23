@@ -149,3 +149,22 @@ func TestWeighted(t *testing.T) {
 		t.Fatalf("by weight: %v, want a 4, b 2, c 2", firsts)
 	}
 }
+
+// Of those all but used up, one that goes on on its credits (a Codex
+// account holding them) goes before those with nothing left, though it
+// has used more, in Smart, Weekly pace and Least used alike; still after
+// every one with room or running low, its allowance spent before its
+// credits are.
+func TestCreditsFirstOfTheSpent(t *testing.T) {
+	s := []Seat{
+		{Key: "spent", Used: 98},
+		{Key: "credits", Used: 100, Credits: true},
+		{Key: "low", Used: 92, Credits: true},
+		{Key: "fine", Used: 20},
+	}
+	for name, st := range map[string]Strategy{"smart": Smart, "pace": Pace, "least used": LeastUsed} {
+		if got := keys(s, Apply(st, "p", s)); !slices.Equal(got, []string{"fine", "low", "credits", "spent"}) {
+			t.Errorf("%s: %v", name, got)
+		}
+	}
+}

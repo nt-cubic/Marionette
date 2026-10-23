@@ -308,14 +308,13 @@ func TestPluginWrittenResetRests(t *testing.T) {
 
 	back := 4 * time.Hour
 	refusal := wbAt("zh", time.Now().Add(back))
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	up := testenv.FakeVendor(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(429)
 		fmt.Fprintf(w, `{"error":{"message":%q,"code":"6004"}}`, refusal)
 	}))
 	defer up.Close()
-	t.Setenv("FAKE_BASE", up.URL+"/v1")
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()

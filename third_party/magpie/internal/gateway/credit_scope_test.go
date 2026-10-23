@@ -60,7 +60,7 @@ func TestOutOfCreditLeavesFreeModels(t *testing.T) {
 
 	var mu sync.Mutex
 	var keys []string // the key each request for fake-1 came with
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	up := testenv.FakeVendor(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var q struct {
 			Model string `json:"model"`
 		}
@@ -80,7 +80,6 @@ func TestOutOfCreditLeavesFreeModels(t *testing.T) {
 		io.WriteString(w, `data: {"id":"c","object":"chat.completion.chunk","model":"fake-1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`+"\n\ndata: [DONE]\n\n")
 	}))
 	defer up.Close()
-	t.Setenv("FAKE_BASE", up.URL+"/v1")
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()

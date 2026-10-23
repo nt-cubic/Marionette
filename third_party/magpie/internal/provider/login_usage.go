@@ -337,12 +337,20 @@ func loginQuota(ctx context.Context, l Login) SubscriptionQuota {
 	}
 	var tok, accountID string
 	var err error
+	var renew codexRenew
 	switch {
 	case l.Agent == "claude": // Claude Code reads its own (claudeWindows)
 	case l.Active:
 		tok, accountID, err = codexToken(ctx, codexHome())
+		renew = func(ctx context.Context, stale string) (string, string, error) {
+			return codexTokenRenewing(ctx, codexHome(), stale)
+		}
 	default:
 		tok, accountID, err = savedLoginToken(ctx, l.Agent, l.User)
+		agent, user := l.Agent, l.User
+		renew = func(ctx context.Context, stale string) (string, string, error) {
+			return renewSavedLoginFrom(ctx, agent, user, stale)
+		}
 	}
 	if err == nil {
 		if l.Agent == "claude" {
@@ -351,7 +359,7 @@ func loginQuota(ctx context.Context, l Login) SubscriptionQuota {
 			}
 		} else {
 			var plan string
-			if plan, q.Windows, q.Resets, q.Balance, q.Held, err = codexWindows(ctx, tok, accountID); plan != "" {
+			if plan, q.Windows, q.Resets, q.Balance, q.Held, err = codexWindowsRenewing(ctx, tok, accountID, renew); plan != "" {
 				q.Plan = plan
 			}
 			q.Until = codexUntil(codexLoginAuth(l), time.Now())

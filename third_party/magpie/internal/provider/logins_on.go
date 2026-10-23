@@ -163,6 +163,9 @@ func (p Provider) alsoOn() []Provider {
 		}
 		if agent == "codex" {
 			a.sign = codexSign(func(ctx context.Context) (string, string, error) { return savedLoginToken(ctx, agent, user) })
+			a.renew = func(ctx context.Context, stale string) (string, string, error) {
+				return renewSavedLoginFrom(ctx, agent, user, stale)
+			}
 		}
 		q := p
 		q.Account = &a
@@ -203,6 +206,18 @@ func savedLoginToken(ctx context.Context, agent, user string) (tok, accountID st
 // refuses is kept on the account as lapsed, until one goes through or it is
 // signed in again.
 func renewSavedLogin(ctx context.Context, agent, user string, force bool) (tok, accountID string, err error) {
+	return renewSaved(ctx, agent, user, force, "")
+}
+
+// renewSavedLoginFrom refreshes the saved sign-in whose access token stale
+// the backend just called expired while it had time left (#2973), unless
+// it was renewed since: the token saved by now is returned then, its
+// refresh token being the one spent already.
+func renewSavedLoginFrom(ctx context.Context, agent, user, stale string) (tok, accountID string, err error) {
+	return renewSaved(ctx, agent, user, false, stale)
+}
+
+func renewSaved(ctx context.Context, agent, user string, force bool, stale string) (tok, accountID string, err error) {
 	ctx = ViaLogin(ctx, agent, user) // refreshed through the account's own proxy
 	savedTokenMu.Lock()
 	defer savedTokenMu.Unlock()
@@ -230,7 +245,11 @@ func renewSavedLogin(ctx context.Context, agent, user string, force bool) (tok, 
 		if accountID == "" {
 			accountID = claimString(jwtClaims(a.Tokens.IDToken), "https://api.openai.com/auth", "chatgpt_account_id")
 		}
-		if exp, _ := jwtClaims(a.Tokens.AccessToken)["exp"].(float64); !force && (exp == 0 || time.Until(time.Unix(int64(exp), 0)) > 5*time.Minute) {
+		if stale != "" {
+			if a.Tokens.AccessToken != stale {
+				return a.Tokens.AccessToken, accountID, nil
+			}
+		} else if exp, _ := jwtClaims(a.Tokens.AccessToken)["exp"].(float64); !force && (exp == 0 || time.Until(time.Unix(int64(exp), 0)) > 5*time.Minute) {
 			return a.Tokens.AccessToken, accountID, nil
 		}
 		if tok, err = codexRefresh(ctx, raw); err != nil {

@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/yetone/magpie/internal/testenv"
 )
 
 // installedAt fakes the package installed at version v.
@@ -119,7 +120,7 @@ func TestPinned(t *testing.T) {
 func TestRestartFinishesTheReply(t *testing.T) {
 	sandbox(t)
 	release := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := testenv.FakeVendor(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		io.WriteString(w, "data: first\n\n")
 		w.(http.Flusher).Flush()
@@ -133,7 +134,6 @@ func TestRestartFinishesTheReply(t *testing.T) {
 	// slow reply's handler, which a failed check would leave held (#1808)
 	let := sync.OnceFunc(func() { close(release) })
 	defer let()
-	t.Setenv("FAKE_BASE", srv.URL+"/v1")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	abs, _ := filepath.Abs("testdata/fake/index.js")

@@ -396,7 +396,7 @@ func MaskJSON(body []byte, o Options) ([]byte, int) {
 		if !masked(path, key, s) {
 			return s
 		}
-		t, n := mask(s, o, put)
+		t, n := mask(s, o, put, asJSON(key, ""))
 		total += n
 		return t
 	})

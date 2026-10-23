@@ -83,6 +83,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.goto("http://magpie.test/?view=providers");
       const row = page.locator('.row.provider[data-id="delta"]');
       await row.waitFor();
+      // the list still: at 420px its rows come in, a pixel or more each
+      // frame, and a row measured on the way read 1 to 5px off where the
+      // dialog then grew from (10-23)
+      await page.waitForFunction(() => {
+        const y = document.querySelector('.row.provider[data-id="delta"]').getBoundingClientRect().y;
+        const was = window.__rowY;
+        window.__rowY = y;
+        return was === y;
+      }, null, { polling: 100 });
       await page.evaluate(() => { window.__hold = true; });
       const r = await row.boundingBox();
 

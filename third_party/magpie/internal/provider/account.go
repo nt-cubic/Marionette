@@ -69,7 +69,11 @@ type Account struct {
 	// go (google.go).
 	codeAssist string
 
-	sign   func(ctx context.Context, req *http.Request, body []byte) error
+	sign func(ctx context.Context, req *http.Request, body []byte) error
+	// renew is set on a ChatGPT account: its sign-in refreshed in place of
+	// stale, the access token the backend just called expired while it
+	// had time left (codexTokenRenewing, renewSavedLogin).
+	renew  func(ctx context.Context, stale string) (tok, accountID string, err error)
 	body   func(body []byte) []byte // request tweaks the backend insists on
 	models func() []catalog.Model
 	fetch  func(ctx context.Context) ([]catalog.Model, error)
@@ -986,6 +990,9 @@ func codexAccount(home string) (Provider, bool) {
 		acct.User = codexLiveName(acct.User, bytes.TrimSpace(b))
 	}
 	acct.sign = codexSign(func(ctx context.Context) (string, string, error) { return codexToken(ctx, dir) })
+	acct.renew = func(ctx context.Context, stale string) (string, string, error) {
+		return codexTokenRenewing(ctx, dir, stale)
+	}
 	acct.body = codexBody
 	acct.models = catalog.Codex
 	acct.fetch = func(ctx context.Context) ([]catalog.Model, error) {
@@ -1007,17 +1014,31 @@ func codexAccount(home string) (Provider, bool) {
 // sign-in (auth.json or the keychain item, codexStore.write) for Codex to
 // find.
 func codexToken(ctx context.Context, dir string) (tok, accountID string, err error) {
+	return codexTokenRenewing(ctx, dir, "")
+}
+
+// codexTokenRenewing is codexToken, and with stale, the access token the
+// backend just answered 401 "token expired" for while its exp was still
+// ahead (willz on Discord, #2973: a Team account's), refreshes the
+// sign-in all the same. Unless the store holds another token by now,
+// refreshed meanwhile by Codex or another request, which is returned
+// instead: its refresh token is the one spent already.
+func codexTokenRenewing(ctx context.Context, dir, stale string) (tok, accountID string, err error) {
 	codexMu.Lock()
 	defer codexMu.Unlock()
-	b, st, err := readCodexLogin(dir, false)
+	// a refresh asked for: the store's own, not a kept read
+	b, st, err := readCodexLogin(dir, stale != "")
 	var a codexAuth
 	if err == nil && json.Unmarshal(b, &a) == nil && a.Tokens.AccessToken != "" {
-		if exp, _ := jwtClaims(a.Tokens.AccessToken)["exp"].(float64); exp == 0 || time.Until(time.Unix(int64(exp), 0)) > 5*time.Minute {
+		if stale != "" {
+			if a.Tokens.AccessToken != stale {
+				return a.Tokens.AccessToken, codexAccountID(a), nil
+			}
+		} else if exp, _ := jwtClaims(a.Tokens.AccessToken)["exp"].(float64); exp == 0 || time.Until(time.Unix(int64(exp), 0)) > 5*time.Minute {
 			return a.Tokens.AccessToken, codexAccountID(a), nil
-		}
-		// about to be refreshed: the store's own, not a kept read, which
-		// Codex may have rotated since (its refresh token spent)
-		if st.keychain {
+		} else if st.keychain {
+			// about to be refreshed: the store's own, not a kept read,
+			// which Codex may have rotated since (its refresh token spent)
 			b, st, err = readCodexLogin(dir, true)
 			a = codexAuth{}
 			if err == nil && json.Unmarshal(b, &a) == nil && a.Tokens.AccessToken != "" {

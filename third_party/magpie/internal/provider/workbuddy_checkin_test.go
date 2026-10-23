@@ -182,7 +182,8 @@ func TestWorkBuddyCheckinOncePerDay(t *testing.T) {
 }
 
 // Checked in already (in WorkBuddy), or the event not running: nothing is
-// claimed, and that holds for the day.
+// claimed, and, answered from noon Beijing on (checkinSureHour), that holds
+// for the day; an earlier one is asked again (#3326).
 func TestWorkBuddyCheckinNothingToClaim(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -194,7 +195,7 @@ func TestWorkBuddyCheckinNothingToClaim(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := tc.f.serve(t)
-			now := time.Date(2026, 3, 1, 2, 0, 0, 0, time.UTC)
+			now := time.Date(2026, 3, 1, 4, 0, 0, 0, time.UTC) // 12:00 Beijing
 			c := wbCheckinFixture(t, srv, &now)
 			rs := c.checkinNow(context.Background(), false)
 			if len(rs) != 1 || rs[0].Outcome != tc.outcome {
@@ -212,13 +213,13 @@ func TestWorkBuddyCheckinNothingToClaim(t *testing.T) {
 	}
 }
 
-// A claim refused as already made (1001) or not eligible (1002) is that
-// day's answer, not asked again.
+// A claim refused as already made (1001) or not eligible (1002) from noon
+// Beijing on is that day's answer, not asked again by the loop.
 func TestWorkBuddyCheckinRefused(t *testing.T) {
 	for code, outcome := range map[int]string{wbCheckinAlready: CheckinDone, wbCheckinIneligible: CheckinIneligible, wbCheckinEnded: CheckinInactive} {
 		f := &fakeWBCheckin{active: true, claimCode: code}
 		srv := f.serve(t)
-		now := time.Date(2026, 3, 1, 2, 0, 0, 0, time.UTC)
+		now := time.Date(2026, 3, 1, 4, 0, 0, 0, time.UTC) // 12:00 Beijing
 		c := wbCheckinFixture(t, srv, &now)
 		rs := c.checkinNow(context.Background(), false)
 		if len(rs) != 1 || rs[0].Outcome != outcome {
@@ -522,5 +523,28 @@ func TestWorkBuddyCheckinUnauthorizedThroughPlugin(t *testing.T) {
 	}
 	if len(paths) != 2 || !strings.HasSuffix(paths[1], "/billing/meter/get-user-resource-summary") || strings.Contains(paths[1], "/v2/") {
 		t.Fatalf("asked %v", paths)
+	}
+}
+
+// #3326: magpie's own check-ins go through the same checkiner, so a done
+// WorkBuddy gives before its day turns is asked again too, and claimed
+// once it has.
+func TestWorkBuddyCheckinEarlyDoneAskedAgain(t *testing.T) {
+	f := &fakeWBCheckin{active: true, checked: true}
+	srv := f.serve(t)
+	now := time.Date(2026, 10, 22, 16, 0, 28, 0, time.UTC) // 00:00:28 Beijing
+	c := wbCheckinFixture(t, srv, &now)
+	if rs := c.checkinNow(context.Background(), false); len(rs) != 1 || rs[0].Outcome != CheckinDone || !rs[0].Again {
+		t.Fatalf("at midnight: %+v", rs)
+	}
+	f.mu.Lock()
+	f.checked = false
+	f.mu.Unlock()
+	now = now.Add(wbCheckinEvery)
+	if rs := c.checkinNow(context.Background(), false); len(rs) != 1 || rs[0].Outcome != CheckinClaimed {
+		t.Fatalf("30 minutes on: %+v", rs)
+	}
+	if s, cl := f.counts(); s != 2 || cl != 1 {
+		t.Fatalf("status %d, claims %d", s, cl)
 	}
 }

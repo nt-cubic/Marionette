@@ -51,7 +51,7 @@ func scrub(s string) string {
 	if len(s) >= 256 {
 		scrubRuns.Add(1)
 	}
-	out, _ := mask(s, Options{Secrets: true}, scrubbed)
+	out, _ := mask(s, Options{Secrets: true}, scrubbed, false)
 	return out
 }
 

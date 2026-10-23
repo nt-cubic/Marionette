@@ -14,19 +14,24 @@ import (
 
 // The credits a ChatGPT account holds besides its windows are its balance
 // (#571), shown when it has some to spend and they are not unlimited.
+// Routing is told the account goes on past its windows on them (onCredits:
+// every window's Credits, and the allowance's OnCredits) when it holds
+// some or they are unlimited, as the Codex app reads has_credits; a
+// balance said and spent is none.
 func TestCodexCreditsBalance(t *testing.T) {
 	for _, c := range []struct {
-		name    string
-		credits any
-		want    string
+		name      string
+		credits   any
+		want      string
+		onCredits bool
 	}{
-		{"none said", nil, ""},
-		{"held", map[string]any{"has_credits": true, "unlimited": false, "balance": "1234.5"}, "1234.5 credits"},
-		{"a few", map[string]any{"has_credits": true, "unlimited": false, "balance": "42"}, "42 credits"},
-		{"none held", map[string]any{"has_credits": false, "unlimited": false, "balance": "0"}, ""},
-		{"spent", map[string]any{"has_credits": true, "unlimited": false, "balance": "0"}, ""},
-		{"unlimited", map[string]any{"has_credits": true, "unlimited": true, "balance": ""}, ""},
-		{"unreadable", map[string]any{"has_credits": true, "balance": "lots"}, ""},
+		{"none said", nil, "", false},
+		{"held", map[string]any{"has_credits": true, "unlimited": false, "balance": "1234.5"}, "1234.5 credits", true},
+		{"a few", map[string]any{"has_credits": true, "unlimited": false, "balance": "42"}, "42 credits", true},
+		{"none held", map[string]any{"has_credits": false, "unlimited": false, "balance": "0"}, "", false},
+		{"spent", map[string]any{"has_credits": true, "unlimited": false, "balance": "0"}, "", false},
+		{"unlimited", map[string]any{"has_credits": true, "unlimited": true, "balance": ""}, "", true},
+		{"unreadable", map[string]any{"has_credits": true, "balance": "lots"}, "", true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -47,6 +52,9 @@ func TestCodexCreditsBalance(t *testing.T) {
 			}
 			if credits != c.want {
 				t.Errorf("credits %q, want %q", credits, c.want)
+			}
+			if windows[0].Credits != c.onCredits || allowanceOf(windows, time.Now()).OnCredits() != c.onCredits {
+				t.Errorf("on credits %v / %v, want %v", windows[0].Credits, allowanceOf(windows, time.Now()).OnCredits(), c.onCredits)
 			}
 		})
 	}

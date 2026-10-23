@@ -36,7 +36,7 @@ func TestPluginFailover(t *testing.T) {
 	var mu sync.Mutex
 	var tried []string          // each request's account, as its token names it
 	fail := map[string]string{} // account → how it fails
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	up := testenv.FakeVendor(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.ReadAll(r.Body)
 		who := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer fresh-r-")
 		mu.Lock()
@@ -78,7 +78,6 @@ func TestPluginFailover(t *testing.T) {
 		fmt.Fprint(w, `data: {"id":"c","object":"chat.completion.chunk","model":"fake-1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`+"\n\ndata: [DONE]\n\n")
 	}))
 	defer up.Close()
-	t.Setenv("FAKE_BASE", up.URL+"/v1")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -259,7 +258,7 @@ func TestPluginSaysSignIn(t *testing.T) {
 
 	var mu sync.Mutex
 	status, said := 200, ""
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	up := testenv.FakeVendor(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.ReadAll(r.Body)
 		mu.Lock()
 		st, sa := status, said
@@ -277,7 +276,6 @@ func TestPluginSaysSignIn(t *testing.T) {
 		fmt.Fprint(w, `data: {"id":"c","object":"chat.completion.chunk","model":"fake-1","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`+"\n\ndata: [DONE]\n\n")
 	}))
 	defer up.Close()
-	t.Setenv("FAKE_BASE", up.URL+"/v1")
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()

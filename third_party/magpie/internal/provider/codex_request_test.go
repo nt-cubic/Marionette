@@ -375,3 +375,31 @@ func TestCodexBodyDropsPromptCacheOptions(t *testing.T) {
 		t.Errorf("cache key lost: %v", m)
 	}
 }
+
+// A message's status goes with its id, and Codex's reasoning items carry
+// none, so both lose it with the id (Doby on Discord: Pi's assistant
+// message sent again with status "completed" was refused 400 "Unknown
+// parameter: 'input[8].status'"). A tool call keeps its status, as Codex
+// sends it.
+func TestCodexInputDropsStatusWithID(t *testing.T) {
+	in := []any{}
+	json.Unmarshal([]byte(`[
+	  {"role":"user","content":"hi","status":"completed"},
+	  {"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"e","status":"completed"},
+	  {"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok","annotations":[]}],"status":"completed","id":"msg_1"},
+	  {"type":"function_call","id":"fc_1","call_id":"c1","name":"ls","arguments":"{}","status":"completed"},
+	  {"type":"local_shell_call","id":"lsh_1","call_id":"c2","status":"completed","action":{"type":"exec","command":["ls"]}},
+	  {"type":"function_call_output","call_id":"c1","output":"a"},
+	  {"type":"local_shell_call_output","call_id":"c2","output":"b"}]`), &in)
+	out := codexInput(in)
+	want := []bool{false, false, false, true, true, false, false}
+	if len(out) != len(want) {
+		t.Fatalf("items: %v", out)
+	}
+	for i, item := range out {
+		_, has := item.(map[string]any)["status"]
+		if has != want[i] {
+			t.Errorf("input[%d] status kept %v, want %v: %v", i, has, want[i], item)
+		}
+	}
+}

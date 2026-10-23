@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -35,7 +34,7 @@ func TestPluginProvider(t *testing.T) {
 	var got []seen
 	limited := "" // the Authorization answered 429
 	refused := "" // and 401
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	up := testenv.FakeVendor(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		mu.Lock()
 		got = append(got, seen{r.URL.RequestURI(), r.Header.Get("Authorization"), r.Header.Get("X-Plugin-Model"), string(b)})
@@ -77,7 +76,6 @@ func TestPluginProvider(t *testing.T) {
 		}
 	}))
 	defer up.Close()
-	t.Setenv("FAKE_BASE", up.URL+"/v1")
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()

@@ -4,13 +4,14 @@ import (
 	"context"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/yetone/magpie/internal/testenv"
 )
 
 // A request is told the provider as info builds it once for its account,
@@ -21,14 +22,13 @@ func TestFetchBuildsInfoOnce(t *testing.T) {
 	sandbox(t)
 	var mu sync.Mutex
 	var told []string // x-plugin-model, as chat.headers set it, and x-models, as the loader was told them
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := testenv.FakeVendor(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		told = append(told, r.Header.Get("x-plugin-model")+" "+r.Header.Get("x-models"))
 		mu.Unlock()
 		io.WriteString(w, "ok")
 	}))
 	defer srv.Close()
-	t.Setenv("FAKE_BASE", srv.URL+"/v1")
 	log := filepath.Join(t.TempDir(), "models.log")
 	t.Setenv("FAKE_MODELS_LOG", log)
 	asked := func() int {

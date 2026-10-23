@@ -283,6 +283,12 @@ func (a *Agent) AppVersion() string {
 	if !ok || a.WSL != "" {
 		return ""
 	}
+	return app.version()
+}
+
+// version is the version of app installed here, "" when it isn't or doesn't
+// say (see AppVersion).
+func (app desktopApp) version() string {
 	for _, bundle := range macBundles(app) {
 		b, err := os.ReadFile(filepath.Join(bundle, "Contents", "Info.plist"))
 		if err != nil {
@@ -358,11 +364,16 @@ func storeAppVersion(packages []string, name, publisher string) string {
 // bundle on macOS (AppVersion), its executable on Windows: under
 // %LOCALAPPDATA%\Programs, or in the folder its installer registered.
 func (a *Agent) HasApp() bool {
-	if a.AppVersion() != "" {
+	app, ok := desktopApps[a.ID]
+	return ok && a.WSL == "" && app.installed()
+}
+
+// installed reports whether app is installed on this machine (see HasApp).
+func (app desktopApp) installed() bool {
+	if app.version() != "" {
 		return true
 	}
-	app, ok := desktopApps[a.ID]
-	if !ok || a.WSL != "" || app.win == "" {
+	if app.win == "" {
 		return false
 	}
 	for _, dir := range appFolders() {

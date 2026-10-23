@@ -176,6 +176,10 @@ export const FakePlugin = async ({ client }) => ({
         h.set("authorization", "Bearer " + (a.type === "oauth" ? a.access : a.key))
         h.set("x-models", Object.keys(provider.models).sort().join(","))
         h.set("x-body-type", typeof init.body)
+        // $FAKE_RUN: the test this host runs for, so its vendor tells its
+        // own requests from a stray that reached a port the kernel handed
+        // on (testenv.FakeVendor)
+        if (process.env.FAKE_RUN) h.set("x-fake-run", process.env.FAKE_RUN)
         // where magpie said the agent works, as the plugin read it; its own
         // headers go on too, as a plugin that sends on what it got sends
         // them, for the host to take off

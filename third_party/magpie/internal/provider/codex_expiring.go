@@ -193,13 +193,10 @@ func SpendExpiringCodexResets(ctx context.Context) {
 		}
 		var who string
 		out, err := expiring.check(user, time.Now(), func() ([]QuotaWindow, *ResetCredits, error) {
-			var tok, accountID string
+			var windows []QuotaWindow
+			var resets *ResetCredits
 			var err error
-			who, tok, accountID, err = codexUserToken(ViaLogin(ctx, "codex", user), user)
-			if err != nil {
-				return nil, nil, err
-			}
-			_, windows, resets, _, _, err := codexWindows(ViaLogin(ctx, "codex", who), tok, accountID)
+			who, windows, resets, err = codexUserWindows(ctx, user)
 			return windows, resets, err
 		}, func() (ResetOutcome, error) {
 			// one spend at a time, with the week's used-up one too
@@ -225,11 +222,7 @@ func SpendExpiringCodexResets(ctx context.Context) {
 // stillExpiring reads who's windows and resets again and says whether
 // check would still spend one now; a var so tests can stand in for it.
 var stillExpiring = func(ctx context.Context, who string) bool {
-	who, tok, accountID, err := codexUserToken(ViaLogin(ctx, "codex", who), who)
-	if err != nil {
-		return false
-	}
-	_, windows, resets, _, _, err := codexWindows(ViaLogin(ctx, "codex", who), tok, accountID)
+	_, windows, resets, err := codexUserWindows(ctx, who)
 	return err == nil && spendExpiringNow(windows, resets, time.Now())
 }
 

@@ -2078,6 +2078,22 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		}
 		writeJSON(rw, providersState())
 	})
+	// The Codex desktop app left on the model list before a change (the
+	// Agents row's Restart): quit it and open it again.
+	mux.HandleFunc("POST /api/codex/app/reopen", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ Bundle string }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
+		defer cancel()
+		if err := agent.ReopenCodexApp(ctx, in.Bundle); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, map[string]bool{"ok": true})
+	})
 	// A provider's several keys: add one, put one in use, name or remove it.
 	mux.HandleFunc("POST /api/keys/{action}", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct {
