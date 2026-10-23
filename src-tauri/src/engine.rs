@@ -547,8 +547,7 @@ fn download_once(plan: &ReleasePlan, dir: &Path) -> Result<(), String> {
     }
     set_status(EngineStatus::Downloading { downloaded, total: downloaded });
     // 原子落位 + 围栏标记 + manifest。
-    std::fs::rename(&temp, exe_path(dir))
-        .map_err(|e| format!("magpie.exe 原子落位失败: {e}"))?;
+    replace_engine_exe(&temp, dir)?;
     std::fs::write(dir.join(".portable"), b"")
         .map_err(|e| format!("写 .portable 标记失败: {e}"))?;
     let manifest = EngineManifest {
@@ -646,6 +645,57 @@ fn needs_embedded_seed(dir: &Path) -> bool {
     seed_is_newer_than(seed, installed_version_at(dir).as_deref())
 }
 
+/// 清掉历次落位留下的临时件（`.extract` / `.download` / 让位出来的 `.old`）；
+/// 仍被旧进程占着的 `.old` 删不掉，忽略即可，下次再试。
+fn sweep_engine_temp_files(dir: &Path, keep: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == keep {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("magpie.exe.") {
+            continue;
+        }
+        if name.ends_with(".extract") || name.ends_with(".download") || name.ends_with(".old") {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+/// 把落位好的临时文件换成 `magpie.exe`。Windows 不允许覆盖**正在运行**的
+/// 镜像（上一个实例的孤儿 serve 还从这个路径跑着，rename 直接 os error 5）：
+/// 运行中的镜像可以改名，先把它挪到 `magpie.exe.<pid>.old` 再落位新的。
+/// 老进程继续从 .old 跑完自己的生命周期；下次启动端口不同，不会互相踩。
+fn replace_engine_exe(temp: &Path, dir: &Path) -> Result<(), String> {
+    sweep_engine_temp_files(dir, temp);
+    let target = exe_path(dir);
+    let error = match std::fs::rename(temp, &target) {
+        Ok(()) => return Ok(()),
+        Err(error) => error,
+    };
+    if !target.exists() {
+        return Err(format!("magpie.exe 原子落位失败: {error}"));
+    }
+    let aside = dir.join(format!("magpie.exe.{}.old", std::process::id()));
+    let _ = std::fs::remove_file(&aside);
+    std::fs::rename(&target, &aside).map_err(|move_error| {
+        format!("magpie.exe 原子落位失败（旧文件也让不开: {move_error}）: {error}")
+    })?;
+    std::fs::rename(temp, &target).map_err(|e| format!("magpie.exe 原子落位失败: {e}"))?;
+    crate::debug_log::append(
+        "engine",
+        "info",
+        "",
+        "running magpie.exe was moved aside to replace it",
+        Some(&format!("aside={}", aside.display())),
+    );
+    Ok(())
+}
+
 /// 把内嵌的（UPX 自解压）magpie 字节落位安装：临时文件 + rename 原子写 +
 /// `.portable` 围栏 + manifest 记真实 sha——与下载路径共用 `is_installed_at`
 /// 的校验语义。纯输入参数，测试直接喂小夹具。
@@ -655,8 +705,7 @@ fn install_embedded_engine_at(bytes: &[u8], version: &str, dir: &Path) -> Result
     std::fs::write(&temp, bytes)
         .map_err(|e| format!("写解出临时文件失败（{}）: {e}", temp.display()))?;
     let sha = sha256_of_file(&temp)?;
-    std::fs::rename(&temp, exe_path(dir))
-        .map_err(|e| format!("magpie.exe 原子落位失败: {e}"))?;
+    replace_engine_exe(&temp, dir)?;
     std::fs::write(dir.join(".portable"), b"")
         .map_err(|e| format!("写 .portable 标记失败: {e}"))?;
     let manifest = EngineManifest {
@@ -2631,6 +2680,31 @@ mod tests {
         assert!(needs_embedded_seed(&dir), "损坏后才允许内嵌种子重落位");
         #[cfg(not(feature = "embedded-engine"))]
         assert!(!needs_embedded_seed(&dir), "无内嵌构建不走种子");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 目标被占用（Windows 上就是上一个实例还在跑的 magpie.exe，rename 报
+    /// os error 5）时的备用路径：旧文件让位、新文件落位。用同名目录模拟第一次
+    /// rename 失败（目录不会被文件 rename 覆盖）。
+    #[test]
+    fn replace_engine_exe_moves_a_blocked_target_aside() {
+        let dir = temp_dir("replace-blocked");
+        fs::create_dir_all(exe_path(&dir)).unwrap();
+        let temp = dir.join("magpie.exe.123.extract");
+        fs::write(&temp, b"new magpie payload").unwrap();
+
+        replace_engine_exe(&temp, &dir).unwrap();
+        assert_eq!(fs::read(exe_path(&dir)).unwrap(), b"new magpie payload");
+        assert!(!temp.exists(), "临时文件必须已改名为正式 exe");
+
+        let aside: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".old"))
+            .collect();
+        assert_eq!(aside.len(), 1, "旧文件应被挪到 .old 留档");
 
         fs::remove_dir_all(&dir).ok();
     }
