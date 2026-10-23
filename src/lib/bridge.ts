@@ -19,6 +19,7 @@ type CacheEntry = {
   models: BridgeModel[];
   sources: BridgeModelSource[] | null;
   note: string | null;
+  savedAt: number;
 };
 
 const cache = new Map<string, CacheEntry>();
@@ -46,12 +47,13 @@ export function subscribeBridgeModels(listener: () => void): () => void {
 /** Cross-use catalog for one agent (cached after the first call). */
 export async function getBridgeModels(agentId: string): Promise<BridgeModelsResult> {
   const hit = cache.get(agentId);
-  if (hit) return { models: hit.models, sources: hit.sources, note: hit.note };
+  if (hit && Date.now() - hit.savedAt < 15_000) return { models: hit.models, sources: hit.sources, note: hit.note };
   const result = await bridgeListModels(agentId);
   cache.set(agentId, {
     models: result.models,
     sources: result.sources ?? null,
     note: result.note,
+    savedAt: Date.now(),
   });
   return result;
 }

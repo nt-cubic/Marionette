@@ -8144,7 +8144,9 @@ body.is-composer-resizing .composer {
 .provider-dialog__item-name {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
+  min-width: 0;
   font-size: 13px;
   font-weight: 500;
   color: var(--text-primary);
@@ -8195,6 +8197,9 @@ body.is-composer-resizing .composer {
   letter-spacing: 0.03em;
   text-transform: uppercase;
   color: var(--text-tertiary);
+  /* A narrow dialog used to break these into "引 / 用" stacked cells. */
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .provider-dialog__warning {
@@ -8268,6 +8273,8 @@ body.is-composer-resizing .composer {
 
 /* ── Credentials (跨用凭据) Dialog ─────────────────────────────────────── */
 .credentials-dialog {
+  /* Wide enough for `引用`/`扫描` badges to sit on one line beside a long name. */
+  width: min(560px, calc(100vw - 40px));
   min-width: 440px;
 }
 
@@ -9261,6 +9268,8 @@ body.is-composer-resizing .composer {
 }
 
 .engine-popover__footer {
+  display: flex;
+  flex-direction: column;
   margin-top: 8px;
   padding-top: 6px;
   border-top: 1px solid var(--border);
@@ -9281,6 +9290,33 @@ body.is-composer-resizing .composer {
 .engine-popover__link:hover {
   color: var(--text-muted);
   text-decoration: underline;
+}
+
+/* Two destinations, one per row: side by side the longer label ran into the
+   shorter one and both read as a single sentence. */
+.engine-popover__footer .engine-popover__link {
+  width: 100%;
+  padding: 6px 4px;
+  border-radius: var(--radius-sm, 6px);
+  text-align: left;
+  /* The icon would otherwise make its row 2px taller than a text-only one. */
+  line-height: 16px;
+}
+
+.engine-popover__footer .engine-popover__link svg {
+  display: block;
+  flex-shrink: 0;
+}
+
+.engine-popover__footer .engine-popover__link + .engine-popover__link {
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 var(--radius-sm, 6px) var(--radius-sm, 6px);
+}
+
+.engine-popover__footer .engine-popover__link:hover {
+  color: var(--text);
+  background: var(--hover);
+  text-decoration: none;
 }
 
 .engine-popover__credit {
@@ -9460,3 +9496,61 @@ body.is-composer-resizing .composer {
   gap: 8px;
 }
 
+.model-library-dialog { width: min(760px, calc(100vw - 40px)); max-height: calc(100vh - 64px); display: flex; flex-direction: column; }
+.model-library-dialog__header, .model-library-dialog__toolbar, .model-library-dialog__provider, .model-library-dialog__model { display: flex; align-items: center; gap: 8px; }
+.model-library-dialog__header { justify-content: space-between; }
+.model-library-dialog__body { overflow-y: auto; min-height: 0; }
+.model-library-dialog__hint { color: var(--text-muted); font-size: 12px; line-height: 1.6; margin: 0 0 8px; }
+.model-library-dialog__toolbar { position: sticky; top: 0; z-index: 1; background: var(--panel); padding: 8px 0; }
+.model-library-dialog__toolbar input { flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--border); padding: 8px 10px; color: var(--text); border-radius: var(--radius); }
+.model-library-dialog__toolbar button { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.model-library-dialog__group { border: 1px solid var(--border); border-radius: var(--radius); margin-top: 10px; overflow: hidden; }
+.model-library-dialog__provider { padding: 8px 10px; background: var(--panel-raised); }
+.model-library-dialog__provider strong { font-size: 13px; }
+.model-library-dialog__provider label, .model-library-dialog__model label { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
+.model-library-dialog input[type="checkbox"] { accent-color: var(--accent); width: 14px; height: 14px; flex-shrink: 0; }
+.model-library-dialog__count { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.model-library-dialog__provider button, .model-library-dialog__model button { display: grid; place-items: center; background: transparent; color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 4px; cursor: pointer; }
+/* Reorder arrows are secondary: show them while the row is under the pointer
+   or focused, so a long list reads as models rather than as controls. */
+.model-library-dialog__order { display: flex; gap: 4px; flex-shrink: 0; opacity: 0; transition: opacity .12s ease; }
+.model-library-dialog__provider:hover .model-library-dialog__order,
+.model-library-dialog__model:hover .model-library-dialog__order,
+.model-library-dialog__order:focus-within { opacity: 1; }
+.model-library-dialog__disclosure { display: grid; place-items: center; width: 20px; height: 20px; padding: 0; border: none; background: transparent; color: var(--text-muted); cursor: pointer; flex-shrink: 0; }
+.model-library-dialog__disclosure svg { transition: transform .12s ease; }
+.model-library-dialog__disclosure svg.is-open { transform: rotate(90deg); }
+.model-library-dialog button:disabled { opacity: .35; cursor: default; }
+.model-library-dialog__origin { padding: 6px 12px 8px; font-size: 11px; line-height: 1.5; color: var(--text-muted); overflow-wrap: anywhere; background: var(--panel-raised); border-top: 1px solid var(--border); }
+.model-library-dialog__origin > div + div { margin-top: 2px; }
+.model-library-dialog__model { padding: 6px 10px; border-top: 1px solid var(--border); min-height: 34px; }
+.model-library-dialog__model:hover { background: var(--hover); }
+.model-library-dialog__model label span { overflow-wrap: anywhere; font-size: 12px; }
+.model-library-dialog__model small { display: block; color: var(--text-muted); font-size: 10px; font-family: var(--font-mono, ui-monospace, monospace); }
+.model-library-dialog__more { width: 100%; padding: 6px 10px; border: none; border-top: 1px solid var(--border); background: transparent; color: var(--accent); font-size: 11px; text-align: left; cursor: pointer; }
+.model-library-dialog__more:hover { background: var(--hover); }
+.model-library-dialog__group.is-hidden .model-library-dialog__models { opacity: .55; }
+.model-library-dialog__error { color: var(--red); font-size: 12px; }
+.credentials-dialog__source-detail { font-size: 12px; line-height: 1.6; padding: 8px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.credentials-dialog__source-detail div { color: var(--text-muted); }
+.credentials-dialog__source-detail code { color: var(--text-muted); font-size: 11px; }
+.credentials-dialog__source-head { display: flex; align-items: baseline; gap: 8px; }
+.credentials-dialog__source-head strong { color: var(--text); font-size: 12px; }
+.credentials-dialog__source-count { color: var(--text-faint); font-size: 11px; white-space: nowrap; }
+.credentials-dialog__source-issue { color: var(--red); }
+.credentials-dialog__paths { margin-top: 12px; font-size: 12px; }
+.credentials-dialog__paths summary { cursor: pointer; color: var(--text-muted); }
+.credentials-dialog__toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.credentials-dialog .provider-dialog__item { gap: 8px; padding: 9px 0; }
+.credentials-dialog .provider-dialog__item-name { flex: 1; min-width: 0; }
+.credentials-dialog__entry-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.credentials-dialog__entry-status { flex-shrink: 0; color: var(--text-muted); font-size: 11px; white-space: nowrap; }
+.credentials-dialog .provider-dialog__item > button { flex-shrink: 0; }
+.credentials-dialog { max-height: calc(100vh - 48px); display: flex; flex-direction: column; }
+.credentials-dialog > .project-dialog__body { min-height: 0; overflow-y: auto; }
+.credentials-dialog > .project-dialog__header, .credentials-dialog > .project-dialog__actions { flex-shrink: 0; }
+.model-library-dialog .project-dialog__actions { flex-wrap: wrap; }
+.model-library-dialog__environment { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; margin-top: 8px; }
+.model-library-dialog__environment label { display: grid; gap: 4px; flex: 1; min-width: 160px; }
+.model-library-dialog__environment input { width: 100%; box-sizing: border-box; background: var(--bg); border: 1px solid var(--border); padding: 8px; color: var(--text); border-radius: var(--radius); }
+.model-library-dialog__environment small, .model-library-dialog__environment [role="alert"] { width: 100%; }
