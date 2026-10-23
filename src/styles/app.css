@@ -30,8 +30,13 @@
   grid-template-columns: var(--left-panel-width, 224px) minmax(0, 1fr) 0px;
 }
 
-.workspace-grid.is-left-collapsed.is-right-collapsed {
+.workspace-grid.is-left-collapsed.is-right-collapsed,
+.workspace-grid.is-memos.is-left-collapsed {
   grid-template-columns: 0px minmax(0, 1fr) 0px;
+}
+
+.workspace-grid.is-memos {
+  grid-template-columns: var(--left-panel-width, 224px) minmax(0, 1fr) 0px;
 }
 
 /* Smooth transition for the expand/collapse animation */
@@ -60,6 +65,14 @@ body.is-panel-resizing .workspace-grid {
   min-width: 8px;
   align-self: stretch;
   height: 100%;
+}
+
+/* Fills the bar so window controls stay pinned to the far right when there
+   are no session tabs (Memo page, split titlebar). */
+.workspace-titlebar__fill {
+  flex: 1 1 auto;
+  min-width: 0;
+  align-self: stretch;
 }
 
 /* Drag handles on the inner seams of side panels. */
@@ -1061,6 +1074,192 @@ body.is-pane-splitting * {
   opacity: 1;
 }
 
+.memo-section {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+}
+
+.memo-section__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 28px;
+  padding: 0 8px;
+  border: none;
+  border-left: 2px solid transparent;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.memo-section__row:hover {
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+
+.memo-section__row.is-active {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-left-color: var(--accent);
+  color: var(--accent);
+}
+
+.memo-section__row svg {
+  color: var(--accent);
+}
+
+.memos-titlebar {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  min-width: 0;
+  padding: 0 12px;
+  color: var(--text-strong);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.memos-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--editor-bg);
+}
+
+.memos-composer {
+  flex: 0 0 auto;
+  width: min(720px, calc(100% - 40px));
+  margin: 20px auto 0;
+  padding: 12px 14px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.memos-composer__input {
+  display: block;
+  width: 100%;
+  min-height: 40px;
+  padding: 0;
+  border: 0;
+  resize: none;
+  outline: none;
+  background: transparent;
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.memos-composer__input::placeholder {
+  color: var(--text-faint);
+}
+
+.memos-composer__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.memos-composer__hint {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.memos-composer__send {
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--bg);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.memos-composer__send:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.memos-stream {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  width: min(720px, calc(100% - 40px));
+  margin: 0 auto;
+  padding: 16px 0 36px;
+}
+
+.memos-empty {
+  margin: 24px 0 0;
+  color: var(--text-faint);
+  font-size: 13px;
+}
+
+.memos-day {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.memos-day__label {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.memo-card {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.memo-card__body {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.memo-card__body .md-body {
+  font-size: 13px;
+}
+
+.memo-card__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.memo-card__tag {
+  color: var(--accent);
+  font-size: 11px;
+}
+
+.memo-card__meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
 .chat-list {
   min-height: 0;
   max-height: 200px;
@@ -1415,6 +1614,126 @@ button.file-diff-card__code:hover {
 .file-diff-card__note {
   font-size: 10px;
   color: var(--text-faint);
+}
+
+/*
+ * End-of-turn delivery card (交付卡): accent-tinted turn closer that lists
+ * what the turn changed. File rows reuse the .change-badge glyphs from the
+ * Changed Files panel and lazily expand a workspace diff inline.
+ */
+.event-card--turn_delivery {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+  background: color-mix(in srgb, var(--accent) 4%, var(--panel-raised));
+}
+
+.event-card--turn_delivery > .event-card__summary::before {
+  color: var(--accent);
+}
+
+.event-card--turn_delivery .event-card__type {
+  color: var(--accent);
+}
+
+.turn-delivery {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 2px 22px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.turn-delivery__files {
+  display: grid;
+  gap: 2px;
+}
+
+.turn-delivery__row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto 14px;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 26px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+  font: inherit;
+}
+
+.turn-delivery__row.is-expandable {
+  cursor: pointer;
+}
+
+.turn-delivery__row.is-expandable:hover,
+.turn-delivery__row.is-expandable:focus-visible {
+  background: var(--panel-soft);
+}
+
+/* No git changeType (non-git project) — keep the row aligned with a soft dot. */
+.turn-delivery__dot {
+  justify-self: center;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+.turn-delivery__path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11.5px;
+}
+
+.turn-delivery__stats {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: baseline;
+  gap: 5px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.turn-delivery__stat--add {
+  color: var(--green, #73d391);
+}
+
+.turn-delivery__stat--del {
+  color: var(--red, #ef6c73);
+}
+
+.turn-delivery__chevron {
+  color: var(--text-faint);
+  transition: transform 120ms ease;
+}
+
+.turn-delivery__chevron.is-open {
+  transform: rotate(180deg);
+}
+
+.turn-delivery__diff {
+  margin: 0 4px 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+}
+
+.turn-delivery__diff-note {
+  padding: 6px 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.turn-delivery__tally {
+  color: var(--text-faint);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
 }
 
 .project-row,

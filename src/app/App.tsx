@@ -199,7 +199,7 @@ import { WindowControls } from "../components/WindowControls";
 import { parseAskQuestionPrompt } from "../lib/askQuestion";
 import { initScrollbarAutoHide } from "../lib/scrollbarAutoHide";
 import { nextTheme, parseStoredTheme, themeColorScheme, type ThemeMode } from "../lib/theme";
-import { ScenarioDialog } from "../components/ScenarioDialog";
+import { MemosPage } from "../components/MemosPage";
 import {
   emitOrbState,
   listenOrbCommands,
@@ -208,7 +208,6 @@ import {
   type OrbNoticeKind,
   type OrbRunningTask,
 } from "../lib/orbEvents";
-import { ensureOrbWindow } from "../lib/orbWindow";
 import { listScenarios, renderScenarioTemplate, type Scenario } from "../lib/scenarios";
 
 const LEFT_PANEL_MIN = 180;
@@ -558,9 +557,11 @@ export function App() {
   /** Taskbar flash + chime when AI replies / may be stuck. Completion also chimes while focused. */
   const [desktopNotifyOn, setDesktopNotifyOn] = useState(() => isDesktopNotifyEnabled());
   /** 主窗关闭时隐藏到后台：引擎 / 会话 / Telegram 桥继续运行，悬浮球随时唤回。 */
-  const [backgroundMode, setBackgroundMode] = useState(readBackgroundModeSetting);
-  /** 「快捷动作」场景管理对话框（ProjectShelf 入口）。 */
-  const [showScenarios, setShowScenarios] = useState(false);
+  const [backgroundMode] = useState(readBackgroundModeSetting);
+  /** Center workspace: session conversation or the Memo timeline. */
+  const [workspaceView, setWorkspaceView] = useState<"session" | "memos">("session");
+  const [inboxDir, setInboxDir] = useState("");
+  const [inboxSessionId, setInboxSessionId] = useState<string | null>(null);
   /** Sessions that finished a turn while this window was looking at another dialog. */
   const [doneUnreadIds, setDoneUnreadIds] = useState<Set<string>>(() => new Set());
   /** Agent proxy config (single exit address), loaded on mount. */
@@ -747,6 +748,13 @@ export function App() {
    * on turn/complete so that turn's invisible end stays quiet.
    */
   const silentTurnRef = useRef<Set<string>>(new Set());
+  /**
+   * Sessions whose live turn is a usage probe (`/status` / `/usage` sent by the
+   * usage panel refresh). Consumed on turn/complete: no chime / orb notice, and
+   * no after-turn usage re-probe (the probe itself just delivered fresh data —
+   * re-probing made every refresh click fire twice).
+   */
+  const probeTurnRef = useRef<Set<string>>(new Set());
   /** Set each render so turn/complete can drain the queue without stale closures. */
   const drainQueuedSendRef = useRef<(sessionId: string) => void>(() => undefined);
   /**
@@ -2515,8 +2523,10 @@ export function App() {
         // queued follow-up can cancel the intermediate completion alert.
         // A silent turn (hidden `/always-approve` replay) completes with nothing
         // on screen — chiming for it would be noise the user cannot explain.
+        // Same for a usage probe (`/status` card): refresh ≠ a reply.
         const silentTurnEnded = silentTurnRef.current.delete(payload.sessionId);
-        if (wasRunning && stopReason !== "cancelled" && !silentTurnEnded) {
+        const probeTurnEnded = probeTurnRef.current.delete(payload.sessionId);
+        if (wasRunning && stopReason !== "cancelled" && !silentTurnEnded && !probeTurnEnded) {
           const sess = sessionsRef.current.find((s) => s.id === payload.sessionId);
           const label = sess?.label?.trim() || "Session";
           const isDelegateChild = delegateMetaRef.current.has(payload.sessionId);
@@ -2601,6 +2611,7 @@ export function App() {
         pendingSendsRef.current.delete(payload.sessionId);
         flushingSendRef.current.delete(payload.sessionId);
         silentTurnRef.current.delete(payload.sessionId);
+        probeTurnRef.current.delete(payload.sessionId);
         setQueuedStripTick((t) => t + 1);
         // Zombie Ask / Plan / Permission cards block the composer — clear for this session.
         setAskPrompt((cur) => (cur?.sessionId === payload.sessionId ? null : cur));
@@ -3770,7 +3781,9 @@ export function App() {
       active &&
       (active.status === "running" || active.status === "waiting")
     ) {
-      void sendAcpPrompt(sid, limitCommand).catch((error) => {
+      probeTurnRef.current.add(sid);
+      void sendAcpPrompt(sid, limitCommand, [], true).catch((error) => {
+        probeTurnRef.current.delete(sid);
         pushDebug({
           sessionId: sid,
           level: "warn",
@@ -3889,6 +3902,9 @@ export function App() {
   const refreshUsageAfterTurn = useCallback(
     (sessionId: string) => {
       if (!sessionId || sessionId !== currentSessionIdRef.current) return;
+      // The turn that just ended was itself the usage probe — the panel already
+      // has the freshest data; probing again doubles the transcript noise.
+      if (probeTurnRef.current.has(sessionId)) return;
       const session = sessionsRef.current.find((candidate) => candidate.id === sessionId);
       const model = activeModelId ?? sessionCapabilities?.currentModel ?? null;
       if (session?.agentId === "opencode" && isChatgptUsageModel(model)) return;
@@ -3921,12 +3937,8 @@ export function App() {
   useEffect(() => bindDesktopNotifyFocusHandlers(), []);
 
   // ── Orb boot wiring（主窗独占；detached / 浏览器预览不参与）──────────────
-  // 挂载：同步后台模式到 Rust（CloseRequested 分支读它），创建/唤起球窗。
-  useEffect(() => {
-    if (!isTauriRuntime() || IS_DETACHED_WINDOW) return;
-    void ensureOrbWindow();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // 悬浮球本体是原生 Win32 窗口（orb_native.rs，随进程启动）；主窗只负责
+  // 同步后台模式开关（CloseRequested 分支读它）。
 
   /** 开关翻转与初值共用：localStorage + Rust set_background_mode（幂等）。 */
   useEffect(() => {
@@ -3939,8 +3951,11 @@ export function App() {
     void invoke("set_background_mode", { enabled: backgroundMode }).catch(() => undefined);
   }, [backgroundMode]);
 
-  const toggleBackgroundMode = useCallback(() => {
-    setBackgroundMode((current) => !current);
+  useEffect(() => {
+    if (!isTauriRuntime() || IS_DETACHED_WINDOW) return;
+    void invoke<string>("inbox_dir_path")
+      .then((dir) => setInboxDir(dir.trim()))
+      .catch(() => undefined);
   }, []);
 
   /**
@@ -3987,8 +4002,6 @@ export function App() {
       if (visible === orbMainVisibleRef.current) return;
       orbMainVisibleRef.current = visible;
       pushOrbStateRef.current();
-      // 主窗重新可见时唤回球窗：Alt+F4 对球只会隐藏（永不销毁），这里幂等恢复。
-      if (visible) void ensureOrbWindow();
     };
     sync();
     document.addEventListener("visibilitychange", sync);
@@ -4169,6 +4182,12 @@ export function App() {
     () => availableSessions.filter((session) => session.projectId === CHAT_PROJECT_ID),
     [availableSessions]
   );
+
+  const memosEvents = useMemo(() => {
+    if (!inboxSessionId) return EMPTY_EVENTS;
+    void eventsTick[inboxSessionId];
+    return eventsBySessionRef.current.get(inboxSessionId) ?? EMPTY_EVENTS;
+  }, [inboxSessionId, eventsTick]);
 
   const currentSession = useMemo(
     () =>
@@ -7290,40 +7309,43 @@ export function App() {
   const orbExecuteCaptureRef = useRef<
     (payload: OrbCapturePayload, scenario?: Scenario) => Promise<void>
   >(async () => undefined);
+  const orbOpenMemosRef = useRef<() => Promise<void>>(async () => undefined);
 
   /**
-   * 收集箱捕获：确保「收集箱」项目（cwd = ~/.marionette/inbox，Rust
-   * `inbox_dir_path`）与置顶会话存在，模板化提示词 + 图片附件经 performSend
-   * 发入。全程不把主窗带到前台——后台静默捕获正是悬浮球的意义。
+   * 收集箱项目 + 置顶会话：Memo 页与捕获共用。不把主窗带到前台。
    */
-  const executeOrbCapture = async (payload: OrbCapturePayload, scenario?: Scenario) => {
-    let inboxDir = "";
-    try {
-      inboxDir = (await invoke<string>("inbox_dir_path")).trim();
-    } catch {
-      /* agent A 的 Rust 命令未就绪 / 非 Tauri —— 静默放弃 */
+  const ensureInboxSession = async (scenario?: Scenario): Promise<{
+    project: Project;
+    sessionId: string;
+    createdNew: boolean;
+  } | null> => {
+    let dir = inboxDir;
+    if (!dir) {
+      try {
+        dir = (await invoke<string>("inbox_dir_path")).trim();
+      } catch {
+        /* agent A 的 Rust 命令未就绪 / 非 Tauri */
+      }
+      if (dir) setInboxDir(dir);
     }
-    if (!inboxDir) {
+    if (!dir) {
       pushDebug({ level: "warn", source: "orb", summary: "inbox_dir_path unavailable — capture dropped" });
-      return;
+      return null;
     }
 
-    // 项目 ensure：本窗状态 → 磁盘 list_projects → add_project 补建。
     let project: Project | undefined = projectsRef.current.find((p) =>
-      orbSamePath(p.rootPath, inboxDir),
+      orbSamePath(p.rootPath, dir),
     );
     if (!project) {
-      const found = (await listProjects()).find((p) => orbSamePath(p.rootPath, inboxDir));
+      const found = (await listProjects()).find((p) => orbSamePath(p.rootPath, dir));
       if (found && !projectsRef.current.some((p) => p.id === found.id)) {
         setAvailableProjects((current) => [...current.filter((item) => item.id !== found.id), found]);
       }
       project = found;
     }
     if (!project) {
-      // add_project 没有 label 参数（项目名沿用文件夹名 inbox）；无项目改名
-      // API，会话侧仍固定叫「收集箱」。
       try {
-        const added = await addProject(inboxDir);
+        const added = await addProject(dir);
         setAvailableProjects((current) => [...current.filter((item) => item.id !== added.id), added]);
         project = added;
       } catch (error) {
@@ -7333,12 +7355,11 @@ export function App() {
           summary: "create inbox project failed",
           detail: error instanceof Error ? error.message : String(error),
         });
-        return;
+        return null;
       }
     }
     const inboxProject = project;
 
-    // 会话 ensure：标签「收集箱」→ 置顶 → 最近活跃；都没有则新建 + 置顶 + 固定标签。
     const diskSessions = await listSessions(inboxProject.id);
     const pick =
       diskSessions.find((s) => s.label.trim() === "收集箱") ??
@@ -7368,7 +7389,7 @@ export function App() {
       );
       if (!session) {
         pushDebug({ level: "error", source: "orb", summary: "create inbox session failed" });
-        return;
+        return null;
       }
       sessionId = session.id;
       createdNew = true;
@@ -7387,10 +7408,21 @@ export function App() {
         ),
       );
     } else if (pick && !sessionsRef.current.some((s) => s.id === pick.id)) {
-      // 磁盘上有、本窗状态里没有（项目刚补建等）——并入状态，prefs 才能生效。
       const row = asIdleOnLoad(pick);
       setAvailableSessions((current) => [row, ...current.filter((s) => s.id !== row.id)]);
     }
+    return { project: inboxProject, sessionId: sessionId!, createdNew };
+  };
+
+  /**
+   * 收集箱捕获：确保「收集箱」项目与置顶会话存在，模板化提示词 + 图片附件经
+   * performSend 发入。全程不把主窗带到前台——后台静默捕获正是悬浮球的意义。
+   */
+  const executeOrbCapture = async (payload: OrbCapturePayload, scenario?: Scenario) => {
+    const ensured = await ensureInboxSession(scenario);
+    if (!ensured) return;
+    const { sessionId, createdNew } = ensured;
+    setInboxSessionId(sessionId);
 
     const content = renderScenarioTemplate(
       scenario?.promptTemplate,
@@ -7418,6 +7450,16 @@ export function App() {
   };
   orbExecuteCaptureRef.current = executeOrbCapture;
 
+  const openMemosWorkspace = async () => {
+    setWorkspaceView("memos");
+    const ensured = await ensureInboxSession();
+    if (!ensured) return;
+    setInboxSessionId(ensured.sessionId);
+    livePaintSetRef.current.add(ensured.sessionId);
+    await loadSessionTranscript(ensured.sessionId);
+  };
+  orbOpenMemosRef.current = openMemosWorkspace;
+
   // Orb 命令监听（球 → 主窗）：showMain / newChat / openSession / capture /
   // scenario / clearNotices。结构镜像 Telegram 命令监听：只订阅一次，回调全走 ref。
   useEffect(() => {
@@ -7427,6 +7469,11 @@ export function App() {
       void (async () => {
         if (command.kind === "showMain") {
           await showMainWindowForOrb();
+          return;
+        }
+        if (command.kind === "openMemos") {
+          await showMainWindowForOrb();
+          await orbOpenMemosRef.current();
           return;
         }
         if (command.kind === "newChat") {
@@ -8089,7 +8136,7 @@ export function App() {
     <main className="app-shell">
       <div
         ref={workspaceGridRef}
-        className={`workspace-grid${leftCollapsed || IS_DETACHED_WINDOW ? " is-left-collapsed" : ""}${rightCollapsed ? " is-right-collapsed" : ""}${IS_DETACHED_WINDOW ? " is-detached" : ""}`}
+        className={`workspace-grid${leftCollapsed || IS_DETACHED_WINDOW ? " is-left-collapsed" : ""}${rightCollapsed ? " is-right-collapsed" : ""}${IS_DETACHED_WINDOW ? " is-detached" : ""}${workspaceView === "memos" ? " is-memos" : ""}`}
         style={
           {
             "--left-panel-width": `${leftWidth}px`,
@@ -8102,18 +8149,23 @@ export function App() {
           {!IS_DETACHED_WINDOW && (
           <ProjectShelf
             agents={availableAgents}
-            projects={availableProjects.filter((p) => p.id !== CHAT_PROJECT_ID)}
+            projects={availableProjects.filter(
+              (p) =>
+                p.id !== CHAT_PROJECT_ID &&
+                !(inboxDir && orbSamePath(p.rootPath, inboxDir)),
+            )}
             sessions={availableSessions}
-            currentProjectId={currentProjectId}
-            currentSessionId={displaySession.id}
+            currentProjectId={workspaceView === "memos" ? "" : currentProjectId}
+            currentSessionId={workspaceView === "memos" ? "" : displaySession.id}
             doneUnreadIds={doneUnreadIds}
             pinnedProjectId={openHereProjectId}
             collapsed={leftCollapsed}
             theme={theme}
             desktopNotifyEnabled={desktopNotifyOn}
-            backgroundMode={backgroundMode}
-            onToggleBackgroundMode={toggleBackgroundMode}
-            onOpenScenarios={() => setShowScenarios(true)}
+            memosActive={workspaceView === "memos"}
+            onOpenMemos={() => {
+              void openMemosWorkspace();
+            }}
             proxyConfig={proxyConfig}
             onSaveProxy={handleSaveProxy}
             onTestProxy={handleTestProxy}
@@ -8133,9 +8185,11 @@ export function App() {
             onToggleTheme={() => setTheme((current) => nextTheme(current))}
             onAddProject={() => { setProjectDialogOpen(true); setProjectError(""); }}
             onNewSession={(projectId) => {
+              setWorkspaceView("session");
               createSessionForProject(projectId);
             }}
             onProjectSelect={(projectId) => {
+              setWorkspaceView("session");
               setCurrentProjectId(projectId);
               const nextSession = availableSessions.find((session) => session.projectId === projectId);
               if (nextSession) {
@@ -8145,7 +8199,10 @@ export function App() {
                 void createSessionForProject(projectId);
               }
             }}
-            onSessionSelect={openSession}
+            onSessionSelect={(session) => {
+              setWorkspaceView("session");
+              openSession(session);
+            }}
             onOpenBeside={handleOpenBeside}
             externalScanning={externalScanning}
             onRefreshExternal={handleRefreshExternal}
@@ -8160,8 +8217,12 @@ export function App() {
             }}
             defaultFolderPath={defaultFolderPath}
             chatSessions={chatSessions}
-            onChatSessionSelect={openChatSession}
+            onChatSessionSelect={(session) => {
+              setWorkspaceView("session");
+              openChatSession(session);
+            }}
             onNewChat={() => {
+              setWorkspaceView("session");
               void handleCreateChatSession();
             }}
           />
@@ -8182,7 +8243,11 @@ export function App() {
 
         {/* Shared titlebar across center + right columns */}
         <div className="workspace-titlebar">
-          {!workspaceSplit && (
+          {workspaceView === "memos" && !IS_DETACHED_WINDOW ? (
+            <div className="memos-titlebar" data-tauri-drag-region>
+              Memo
+            </div>
+          ) : !workspaceSplit ? (
           <SessionTabs
             openSessions={openSessions}
             session={displaySession}
@@ -8209,6 +8274,8 @@ export function App() {
             onOpenBeside={IS_DETACHED_WINDOW ? undefined : handleOpenBeside}
             titlebarDragRegion
           />
+          ) : (
+            <div className="workspace-titlebar__fill" data-tauri-drag-region />
           )}
           <div className="workspace-titlebar__spacer" data-tauri-drag-region />
           <WindowControls />
@@ -8239,7 +8306,7 @@ export function App() {
               {leftCollapsed ? <ChevronRight size={12} /> : <ChevronLeft size={12} />}
             </button>
           )}
-          {(rightCollapsed || rightEdgeHover) && (
+          {workspaceView !== "memos" && (rightCollapsed || rightEdgeHover) && (
             <button
               type="button"
               className={`floating-trigger floating-trigger--center-right${rightEdgeHover ? " is-visible" : ""}`}
@@ -8250,7 +8317,14 @@ export function App() {
               {rightCollapsed ? <ChevronLeft size={12} /> : <ChevronRight size={12} />}
             </button>
           )}
-          {workspaceSplit ? (
+          {workspaceView === "memos" && !IS_DETACHED_WINDOW ? (
+            <MemosPage
+              events={memosEvents}
+              onSubmit={(text) =>
+                executeOrbCapture({ text, urls: [], filePaths: [] })
+              }
+            />
+          ) : workspaceSplit ? (
             <SplitWorkspace
               state={splitState}
               dropPreview={tabDropPreview}
@@ -8287,6 +8361,7 @@ export function App() {
           )}
         </section>
 
+        {workspaceView === "memos" ? null : (
         <ContextPanel
           collapsed={rightCollapsed}
           onCollapse={() => setRightCollapsed(true)}
@@ -8329,6 +8404,7 @@ export function App() {
           resizeDragging={resizingSide === "right"}
           onResizeStart={() => setResizingSide("right")}
         />
+        )}
       </div>
       {/* Window-level: draw as soon as the prompt exists. Do not wait for pane focus. */}
       {permissionPrompt && (
@@ -8513,9 +8589,6 @@ export function App() {
             </div>
           </form>
         </div>
-      )}
-      {showScenarios && (
-        <ScenarioDialog onClose={() => setShowScenarios(false)} />
       )}
     </main>
   );

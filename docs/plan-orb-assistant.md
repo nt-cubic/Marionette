@@ -1,7 +1,8 @@
-# 悬浮球后台常驻助手 — 设计稿（未实现）
+# 悬浮球后台常驻助手 — 设计稿
 
 > 2026-10-22 定稿。五档实施计划，每档做完可验收再做下一档。
-> 状态：**设计已认可，代码未开工**。落地后本文件的行为描述并入 `CURRENT.md`，本文件挪入 `archive/`。
+> 状态：**已落地后改过交互（2026-10-23）**：点球不再开 380×540 卡片，改为卫星球 +
+> 配额上伸圆环 + 主窗 Memo 时间流。现行行为以 `CURRENT.md` 为准。
 
 ## 0. 背景与目标
 
@@ -146,12 +147,12 @@ create-webview-window）。
 
 ### 档⑤ 余额列表（QuotaBar 式）
 
-- 面板「余额」区：球窗直接 invoke 现有 `engine_quota`（Rust 侧已有 30s 缓存），
-  列全部 provider：订阅配额窗口（剩 X% + 进度条 + 重置时间）与 key 余额（¥/$ 字符串），
-  样式抽取复用 ContextPanel `.usage-row` / `.usage-meter` 与 `usage.ts` 的
-  `engineQuotaRows` 格式化。
-- 引擎运行时 5 分钟自动刷新 + 手动刷新；引擎停止显示引导文案。
-- 本期不接 magpie `/v1/magpie/usage` 账本与 `provider_usage.rs` 逐家探测（后续增强）。
+- 额卫星把球窗拉成 **ProviderRing 栈**（不是 380 卡片、也不是汉字圈）：每家一圈，
+  中间品牌 logo（`src-tauri/quota-logos/`，来自 QuotaBar MIT / theSVG），弧长 =
+  剩余，颜色 = QuotaBar `UsageRamp`（按 **used** 走绿→橄榄→琥珀→红，90% 用尽满红）。
+  数据仍是 `engine_quota`（30s 缓存）。钱余额账号弧可空、圈下写金额。
+- 引擎停止显示「引擎未运行」。本期不接 magpie `/v1/magpie/usage` 账本与
+  `provider_usage.rs` 逐家探测（后续增强）。
 
 ## 5. 涉及文件
 

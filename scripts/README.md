@@ -22,6 +22,7 @@
 | `verify-ui-restore.mts` | `npx tsx scripts/verify-ui-restore.mts` | 冷启动恢复：旧扁平快照迁成单格、两格树还原、扣掉仍在撕窗的会话、撕窗 URL 忽略树 |
 | `verify-acp-render-budget.mts` | `npx tsx scripts/verify-acp-render-budget.mts` | 渲染预算：paintSet 含 @-delegate 子会话、隐藏标签 thought 走 shadow、tool 不 defer、activate 时 flush |
 | `verify-permission-plan.mts` | `npx tsx scripts/verify-permission-plan.mts` | Claude Code ExitPlanMode：从权限请求的 `{plan}` JSON 里拆出 markdown，普通改文件权限不误判 |
+| `verify-memos.mts` | `npx tsx scripts/verify-memos.mts` | Memo 时间线：拆掉收集箱整理提示词、#标签、按日分组 |
 | `verify-interaction-stream.mts` | `npx tsx scripts/verify-interaction-stream.mts` | Plan/Ask 进对话流：独立卡片、transcript 往返、composer 按会话收起 |
 | `check-ui.mjs` | `node scripts/check-ui.mjs` | 通过 CDP 检查运行中的界面；需要先有一个开着 `--remote-debugging-port=9222` 的窗口 |
 

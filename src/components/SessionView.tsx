@@ -36,6 +36,7 @@ import { cleanAssistantText } from "../lib/markdownText";
 import { type ForkAnchor } from "../lib/sessionFork";
 import { newQuotePinId, type QuotePin } from "../lib/quoteComment";
 import { buildMessagePresentation } from "../lib/messagePresentation";
+import { buildTurnDeliveries, type TurnDeliveryUnit } from "../lib/turnDelivery";
 import { modeTone } from "../lib/modeTone";
 import { diffTargetPath, isWorkspaceDiffPath, splitToolBody } from "../lib/toolBody";
 import {
@@ -71,6 +72,7 @@ import { MarkdownBody, MarkdownImageCwdContext, PreviewImage } from "./MarkdownB
 import { MessageOutline } from "./MessageOutline";
 import { MessageTimestamp } from "./MessageTimestamp";
 import { ToolImageStrip } from "./ToolImageStrip";
+import { TurnDeliveryCard } from "./TurnDeliveryCard";
 import { UnifiedDiffView } from "./UnifiedDiffView";
 import { UserImageCard } from "./UserImageCard";
 
@@ -1584,6 +1586,8 @@ function CleanPlaceholder({
    * Eye open: each thought/tool is its own card (original chrome).
    * Eye closed: consecutive thought+tool runs collapse into one nested fold.
    * Rows stay in the list — the eye never drops them.
+   * End-of-turn delivery cards interleave after clustering, anchored before
+   * the next turn's opening card.
    */
   const renderUnits = useMemo(() => {
     const flat: { key: string; event: SessionEvent; index: number }[] = [];
@@ -1606,11 +1610,24 @@ function CleanPlaceholder({
         });
       }
     }
-    if (detailsVisible) {
-      return groupSubagentRuns(flat);
+    const clustered = detailsVisible ? groupSubagentRuns(flat) : clusterActivityRuns(flat);
+    const deliveries = buildTurnDeliveries(displayEvents, session.id, session.cwd, isRunning);
+    if (deliveries.length === 0) return clustered;
+    const merged: (TranscriptUnit | TurnDeliveryUnit)[] = [];
+    let di = 0;
+    const pushDue = (minIndex: number) => {
+      while (di < deliveries.length && deliveries[di].anchorIndex <= minIndex) {
+        merged.push(deliveries[di]);
+        di += 1;
+      }
+    };
+    for (const unit of clustered) {
+      pushDue(unit.kind === "row" ? unit.index : unit.items[0].index);
+      merged.push(unit);
     }
-    return clusterActivityRuns(flat);
-  }, [presentationItems, detailsVisible]);
+    pushDue(Number.MAX_SAFE_INTEGER);
+    return merged;
+  }, [presentationItems, detailsVisible, displayEvents, session.id, session.cwd, isRunning]);
   /**
    * Virtual window for long rails only. Short chats stay fully mounted (simpler
    * selection / stick-to-bottom). Threshold matches heavy tool-heavy sessions
@@ -2817,11 +2834,15 @@ function CleanPlaceholder({
           const nodes = slice.map((unit, sliceIndex) => {
             const absoluteIndex = useVirtual ? virtual.start + sliceIndex : sliceIndex;
             const node =
-              unit.kind === "activity"
-                ? renderActivity(unit)
-                : unit.kind === "subagent_group"
-                  ? renderSubagentGroup(unit)
-                  : renderEvent(unit.event, unit.index);
+              unit.kind === "delivery" ? (
+                <TurnDeliveryCard key={unit.key} delivery={unit.delivery} projectId={projectId} />
+              ) : unit.kind === "activity" ? (
+                renderActivity(unit)
+              ) : unit.kind === "subagent_group" ? (
+                renderSubagentGroup(unit)
+              ) : (
+                renderEvent(unit.event, unit.index)
+              );
             if (!node || !useVirtual) return node;
             return (
               <VirtItem

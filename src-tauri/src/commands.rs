@@ -315,6 +315,14 @@ pub fn auto_update_agents_in_background() {
     });
 }
 
+/// ZCode desktop footprint: the app maintains ~/.zcode/v2 wherever it was
+/// installed, while the CLI itself rarely lands on PATH.
+fn zcode_desktop_present() -> bool {
+    home_dir()
+        .map(|h| h.join(".zcode").join("v2").is_dir())
+        .unwrap_or(false)
+}
+
 /// Is the agent's own command on PATH, and are the CLIs it drives present too?
 fn agent_command_status(agent: &AgentConfig) -> AgentCommandStatus {
     let bridge = resolve_command(&agent.command);
@@ -345,6 +353,14 @@ fn agent_command_status(agent: &AgentConfig) -> AgentCommandStatus {
 
     // A present bridge with an absent CLI still cannot answer a prompt.
     for dependency in &agent.install.requires {
+        // ZCode desktop installs never put `zcode` on PATH — the app writes
+        // ~/.zcode/v2 regardless of install dir, and acp.rs hands the
+        // discovered zcode.cjs to the bridge via ZCODE_BIN. Count a desktop
+        // footprint as satisfying the dependency instead of a perpetual
+        // "needs: ZCode CLI" tag.
+        if dependency.command == "zcode" && zcode_desktop_present() {
+            continue;
+        }
         if matches!(resolve_command(&dependency.command), Ok(None)) {
             missing.push(format!("{} (`{}`)", dependency.label, dependency.command));
             installable = installable || dependency.package.is_some();
@@ -1099,6 +1115,7 @@ pub fn probe_agent_auth(
         "codebuddy" => probe_codebuddy_auth(),
         "opencode" => probe_opencode_auth(model_id.as_deref()),
         "deepseek" | "deepseek-acp" => probe_deepseek_auth(),
+        "zcode" | "zcode-acp" => probe_zcode_auth(),
         _ => Ok(auth_result(
             &agent_id,
             "unknown",
@@ -1757,6 +1774,55 @@ fn probe_deepseek_auth() -> Result<serde_json::Value, String> {
     ))
 }
 
+/// ZCode shares the desktop app's credentials: provider API keys in
+/// `~/.zcode/v2/config.json`, OAuth tokens in the encrypted
+/// `~/.zcode/v2/credentials.json`. Either one lets the runtime answer a
+/// prompt without another login round.
+fn probe_zcode_auth() -> Result<serde_json::Value, String> {
+    let v2 = home_dir().map(|h| h.join(".zcode").join("v2"));
+    let has_providers = v2
+        .as_ref()
+        .map(|dir| {
+            fs::read_to_string(dir.join("config.json"))
+                .ok()
+                .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+                .and_then(|value| {
+                    value
+                        .get("provider")
+                        .and_then(Value::as_object)
+                        .map(|providers| !providers.is_empty())
+                })
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+    if has_providers {
+        return Ok(auth_result(
+            "zcode",
+            "logged_in",
+            "ZCode credentials found (~/.zcode/v2/config.json)",
+        ));
+    }
+    let has_tokens = v2
+        .as_ref()
+        .map(|dir| {
+            let creds = dir.join("credentials.json");
+            creds.exists() && fs::metadata(&creds).map(|m| m.len() > 0).unwrap_or(false)
+        })
+        .unwrap_or(false);
+    if has_tokens {
+        return Ok(auth_result(
+            "zcode",
+            "logged_in",
+            "ZCode login found (~/.zcode/v2/credentials.json)",
+        ));
+    }
+    Ok(auth_result(
+        "zcode",
+        "logged_out",
+        "ZCode is signed out — click Sign in (`zcode login`), or install and sign in to the ZCode desktop app first",
+    ))
+}
+
 /// Open `grok update` in its own console. The ACP process already running
 /// keeps the old binary until the user starts a new session.
 #[tauri::command(async)]
@@ -1852,9 +1918,64 @@ pub fn start_agent_login(agent_id: String) -> Result<serde_json::Value, String> 
             "deepseek",
             "Opened dsh-acp login — store an API key (or set DEEPSEEK_API_KEY), then return here.",
         ),
+        "zcode" | "zcode-acp" => {
+            // Desktop-only installs have no `zcode` on PATH — drive the
+            // bundled CLI through node in its own console instead.
+            if crate::process_util::resolve_spawn_command("zcode").is_ok() {
+                (
+                    "zcode",
+                    &["login"][..],
+                    "zcode",
+                    "Opened ZCode login — finish the browser sign-in, then return here.",
+                )
+            } else {
+                let cjs = crate::acp::zcode_bin_path().ok_or(
+                    "`zcode` is not on PATH and no ZCode desktop install was found — \
+                     install ZCode first, then Sign in again",
+                )?;
+                return start_zcode_cjs_login(&cjs);
+            }
+        }
         _ => return Err(format!("No in-app login flow for agent `{agent_id}`")),
     };
     start_cli_login(bin, args, id, message)
+}
+
+/// `node <zcode.cjs> login` in its own console — for machines where only the
+/// ZCode desktop install exists (no `zcode` shim on PATH).
+fn start_zcode_cjs_login(cjs: &Path) -> Result<serde_json::Value, String> {
+    use std::process::{Command, Stdio};
+    let resolved = crate::process_util::resolve_spawn_command("node")
+        .map_err(|error| format!("`node` not found on PATH: {error}"))?;
+    let cjs = cjs.display().to_string();
+    let mut command = Command::new(&resolved.program);
+    resolved.apply_to(&mut command);
+    command
+        .args([&cjs, "login"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+        command.creation_flags(CREATE_NEW_CONSOLE);
+    }
+    command
+        .spawn()
+        .map_err(|error| format!("Start `node zcode.cjs login` failed: {error}"))?;
+    crate::debug_log::append(
+        "auth",
+        "info",
+        "",
+        "started zcode login (desktop CLI via node)",
+        Some(&cjs),
+    );
+    Ok(serde_json::json!({
+        "agentId": "zcode",
+        "started": true,
+        "message": "Opened ZCode login — finish the browser sign-in, then return here.",
+    }))
 }
 
 /// Spawn the agent's login command in its own console window.
@@ -2002,11 +2123,18 @@ pub fn send_acp_prompt(
     session_id: String,
     text: String,
     image_paths: Option<Vec<String>>,
+    probe: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<Value, String> {
-    state
+    let result = state
         .acp
-        .send_prompt(&session_id, text, image_paths.unwrap_or_default())
+        .send_prompt(&session_id, text, image_paths.unwrap_or_default());
+    // 本地探针（额度刷新发的 /status、/usage）：发送成功才标记，Telegram 桥
+    // 在回合完成时不推送。失败不标——残留标记会误吞下一个真实回合的推送。
+    if result.is_ok() && probe.unwrap_or(false) {
+        crate::telegram_remote::mark_probe_turn(&session_id);
+    }
+    result
 }
 
 /// Read a local image as a `data:` URL for previews (annotator, You-card,
@@ -3014,7 +3142,8 @@ pub fn test_proxy(url: String) -> Result<crate::proxy::ProxyTestResult, String> 
 
 #[tauri::command(async)]
 pub fn memory_get() -> Result<serde_json::Value, String> {
-    // 打开面板即同步各家全局记忆（Claude/Codex/OpenCode/Gemini…）。
+    // 打开面板即同步各家全局记忆（Claude/Codex/Grok/OpenCode/ZCode…，
+    // 阵容见 memory.rs 的 IMPORT_SPECS）。
     serde_json::to_value(crate::memory::load_synced()).map_err(|e| e.to_string())
 }
 
@@ -3146,6 +3275,14 @@ pub fn quit_app(app: AppHandle) {
 #[tauri::command]
 pub fn set_background_mode(enabled: bool) {
     crate::BACKGROUND_MODE.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Panel SPA collapse (Escape / ✕ / blur): hide the orb-panel webview and
+/// schedule the about:blank reaper. The native ball owns the next show.
+#[tauri::command]
+pub fn orb_panel_hide(app: AppHandle) {
+    let _trace = crate::debug_log::CmdTrace::new("orb_panel_hide");
+    crate::orb_native::panel_hide_from_ui(&app);
 }
 
 /// Scenario buttons CRUD (frontend source of truth: src/lib/scenarios.ts).

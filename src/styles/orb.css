@@ -1,187 +1,33 @@
 /*
- * Orb window styles (loaded in every window — see main.tsx — but globally
+ * Orb PANEL styles (loaded in every window — see main.tsx — but globally
  * gated on `html.is-orb`, which is set only when ?orb=1). All markup lives
  * under .orb-* classes, so the main / detached windows never match anything.
  *
- * Window layout: the OS window is exactly the size of the visible orb
- * (72×72 circle or 380×540 panel). The window-sized root is pointer-events:
- * none so transparent regions never block desktop clicks; the ball and panel
- * re-enable hit-testing.
+ * The ball is native Win32 (src-tauri/src/orb_native.rs); the window this
+ * stylesheet shapes is the 380×540 on-demand panel webview ("orb-panel").
  */
 
-/* ── Window chrome: fully transparent viewport ──────────────────────────── */
+/* ── Window chrome: opaque panel viewport ───────────────────────────────── */
 
 html.is-orb,
 html.is-orb body {
   min-width: 0;
   min-height: 0;
-  background: transparent;
+  margin: 0;
+  background: var(--bg);
   overflow: hidden;
   cursor: default;
 }
 
-html.is-orb #root {
-  background: transparent;
-}
-
-/* ── Root: window-sized, click-through outside the ball/panel ───────────── */
-
 .orb-root {
   position: fixed;
   inset: 0;
-  background: transparent;
-  pointer-events: none;
   user-select: none;
-}
-
-.orb-root .orb-ball,
-.orb-root .orb-panel {
-  pointer-events: auto;
 }
 
 .orb-panel input,
 .orb-panel textarea {
   user-select: text;
-}
-
-/* ── Collapsed ball (window is 72×72; ball is 64px so the drag-hover
-      scale-up stays inside the window) ─────────────────────────────────── */
-
-.orb-ball {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 64px;
-  height: 64px;
-  margin: -32px 0 0 -32px;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
-  background:
-    radial-gradient(
-      circle at 30% 28%,
-      color-mix(in srgb, var(--accent) 55%, #ffffff) 0%,
-      var(--accent) 45%,
-      color-mix(in srgb, var(--accent) 70%, #10161b) 100%
-    );
-  box-shadow:
-    0 4px 14px rgba(0, 0, 0, 0.35),
-    0 0 10px color-mix(in srgb, var(--accent) 30%, transparent);
-  cursor: pointer;
-  transition:
-    transform 0.15s ease,
-    box-shadow 0.15s ease;
-}
-
-.orb-ball:active {
-  transform: scale(0.96);
-}
-
-.orb-ball--hover {
-  transform: scale(1.12);
-  box-shadow:
-    0 0 0 5px color-mix(in srgb, var(--accent) 45%, transparent),
-    0 6px 20px rgba(0, 0, 0, 0.42),
-    0 0 16px color-mix(in srgb, var(--accent) 55%, transparent);
-}
-
-.orb-ball__mark {
-  width: 15px;
-  height: 15px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow:
-    inset 0 0 0 3px rgba(255, 255, 255, 0.35),
-    0 1px 3px rgba(0, 0, 0, 0.35);
-  pointer-events: none;
-}
-
-/* Badges never block the drag surface. */
-.orb-ball__badge,
-.orb-ball__count,
-.orb-ball__toast {
-  position: absolute;
-  pointer-events: none;
-}
-
-.orb-ball__badge {
-  top: -3px;
-  right: -3px;
-  display: grid;
-  place-items: center;
-  width: 21px;
-  height: 21px;
-  border-radius: 50%;
-  border: 2px solid var(--panel);
-  color: #fff;
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1;
-  animation: orb-badge-pulse 2s ease-in-out infinite;
-}
-
-.orb-ball__badge--reply {
-  background: var(--orange);
-}
-
-.orb-ball__badge--permission {
-  background: var(--blue);
-}
-
-.orb-ball__badge--error {
-  background: var(--red);
-}
-
-.orb-ball__count {
-  bottom: -2px;
-  right: -2px;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  display: grid;
-  place-items: center;
-  border-radius: 999px;
-  border: 2px solid var(--panel);
-  background: var(--accent);
-  color: var(--bg);
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 1;
-}
-
-.orb-ball__toast {
-  left: 2px;
-  right: 2px;
-  bottom: 6px;
-  padding: 1px 4px;
-  border-radius: 999px;
-  overflow: hidden;
-  text-align: center;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-size: 9px;
-  line-height: 1.5;
-}
-
-.orb-ball__toast--ok {
-  background: color-mix(in srgb, var(--panel) 88%, transparent);
-  color: var(--text);
-}
-
-.orb-ball__toast--warn {
-  background: color-mix(in srgb, var(--orange) 85%, transparent);
-  color: #fff;
-}
-
-@keyframes orb-badge-pulse {
-  0%,
-  100% {
-    transform: scale(1);
-  }
-  50% {
-    transform: scale(1.12);
-  }
 }
 
 /* ── Expanded panel (window is 380×540; panel fills it as a rounded card) ── */
@@ -652,22 +498,6 @@ html.is-orb #root {
 }
 
 /* ── Light theme (纯白) ─────────────────────────────────────────────────── */
-
-html.is-orb[data-theme="white"] .orb-ball {
-  box-shadow:
-    0 4px 12px rgba(0, 0, 0, 0.18),
-    0 0 10px color-mix(in srgb, var(--accent) 26%, transparent);
-}
-
-html.is-orb[data-theme="white"] .orb-ball--hover {
-  box-shadow:
-    0 0 0 5px color-mix(in srgb, var(--accent) 38%, transparent),
-    0 6px 18px rgba(0, 0, 0, 0.22);
-}
-
-html.is-orb[data-theme="white"] .orb-ball__badge {
-  border-color: var(--panel);
-}
 
 html.is-orb[data-theme="white"] .orb-panel {
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.14);

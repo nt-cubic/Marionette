@@ -25,6 +25,7 @@ mod memory;
 mod models;
 mod model_bridge;
 mod open_target;
+mod orb_native;
 mod parsers;
 mod preflight;
 mod process_util;
@@ -313,6 +314,8 @@ fn main() {
                     Some(&err),
                 );
             }
+            // 悬浮球（原生 Win32 分层窗 + 托盘；面板 WebView 按需创建）。
+            orb_native::start(app.handle().clone());
             shell_integration::spawn_pending_open_watcher(app.handle().clone());
             // Startup is the only safe moment: no session exists yet, so an
             // upgrade cannot replace a binary an agent is mid-turn on.
@@ -536,6 +539,7 @@ fn main() {
             commands::telegram_remote_result,
             commands::quit_app,
             commands::set_background_mode,
+            commands::orb_panel_hide,
             commands::scenario_list,
             commands::scenario_save,
             commands::inbox_dir_path,

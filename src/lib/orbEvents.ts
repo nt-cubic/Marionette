@@ -62,6 +62,7 @@ export type OrbCommand =
   | { kind: "newChat"; agentId?: string }
   | { kind: "openSession"; sessionId: string }
   | { kind: "showMain" }
+  | { kind: "openMemos" }
   | { kind: "clearNotices" }
   | { kind: "scenario"; scenarioId: string; payload?: OrbCapturePayload }
   | { kind: "capture"; payload: OrbCapturePayload };
