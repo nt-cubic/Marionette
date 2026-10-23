@@ -7,6 +7,7 @@
 | [`close-freeze-deadlock.md`](./close-freeze-deadlock.md) | 案例记录：关窗死锁的成因、日志证据链，以及后续 kill 路径必须遵守的规则 |
 | [`pitfalls-zcode-acp.md`](./pitfalls-zcode-acp.md) | **踩坑集**：ZCode ACP 接入与跨用桥的九个实测雷区（EFTYPE/stdio MCP 毒化/个人 provider 层 zod 整层拒绝等），含证据链与快速确诊表 |
 | [`pitfalls-model-share-quota.md`](./pitfalls-model-share-quota.md) | **踩坑集**：模型共享引擎与额度面板（2026-10-23）——opencode 凭据迁库 auth.json→opencode.db、双钥匙抢槽、Go 额度端点规矩、ZCode Coding Plan 钥匙藏位（provider_config.json 个人层）、pi-ai catalog 限制边界勘误，含快速确诊表 |
+| [`code-audit-2026-10-24.md`](./code-audit-2026-10-24.md) | **全库代码摸底（2026-10-24）**：10 个只读子代理 + 主代理逐条抽查的全量体检——1 个 P0（Telegram token 进 dev.log）、45 个 P1 按主题分组（前端热路径 / Rust 假死面 / 安全边界 / 存储耐久 / 工程卫生）、P2 摘要、巨型文件拆分方案与处理顺序；条目修复后就地打 ✅ |
 | [`telegram-bridge.md`](./telegram-bridge.md) | Telegram 远程桥——MVP 已实现（通知/回复/远程批准/配对）；设计、调研与实现差异记录 |
 | [`split-workspace.md`](./split-workspace.md) | **设计稿（未实现）**：对话区内分屏/停靠——拖标签预览、左右（后续四格）、焦点格、与撕窗共存、渲染预算 |
 | [`research-content-filter.md`](./research-content-filter.md) | 归因报告：content_filter 不是 marionette 中转引入的（抓包逐字段对照 + 直连反例 + 时间线） |
