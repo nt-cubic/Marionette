@@ -626,6 +626,15 @@ fn seed_is_newer_than(seed: &str, installed: Option<&str>) -> bool {
     }
 }
 
+/// 端口上已有的 magpie 是否值得复用：版本未知 / 没有内嵌种子 → 沿用老语义复用；
+/// 有种子时只有「不比内嵌旧」才复用，避免旧实例把新构建显示的版本拖回去。
+fn reuse_foreign_engine(running: Option<&str>, seed: Option<&str>) -> bool {
+    match (running, seed) {
+        (Some(version), Some(seed)) => !crate::agent_update::is_newer(seed, strip_v(version)),
+        _ => true,
+    }
+}
+
 /// 需要用内嵌种子落位：有内嵌构建，且本机没装 / 装坏了 / 装的是旧版本。
 fn needs_embedded_seed(dir: &Path) -> bool {
     let Some(seed) = embedded_version() else {
@@ -2013,20 +2022,35 @@ pub fn enable() -> Result<EngineStatus, String> {
 
 fn enable_pipeline(dir: &Path) -> Result<(), String> {
     // 1. 用户自装实例在默认端口上跑着 → 直接复用（不是我们的进程，不杀）。
+    //    但旧实例不能把新构建的版本拖回去：比内嵌还旧就忽略它，自己在下一个
+    //    空闲端口起最新引擎（典型场景：上一个实例的 magpie 还占着端口）。
     if let Some(version) = probe_reuse_at(DEFAULT_PORT) {
+        if reuse_foreign_engine(version.as_deref(), embedded_version()) {
+            crate::debug_log::append(
+                "engine",
+                "info",
+                "",
+                "reusing a user-installed magpie on the default port",
+                Some(&format!("port={DEFAULT_PORT}")),
+            );
+            set_status(EngineStatus::Running {
+                port: DEFAULT_PORT,
+                version,
+                reused: true,
+            });
+            return Ok(());
+        }
         crate::debug_log::append(
             "engine",
             "info",
             "",
-            "reusing a user-installed magpie on the default port",
-            Some(&format!("port={DEFAULT_PORT}")),
+            "ignoring an older magpie on the default port; starting our own engine",
+            Some(&format!(
+                "port={DEFAULT_PORT} running={} embedded={}",
+                version.as_deref().unwrap_or("?"),
+                embedded_version().unwrap_or("?")
+            )),
         );
-        set_status(EngineStatus::Running {
-            port: DEFAULT_PORT,
-            version,
-            reused: true,
-        });
-        return Ok(());
     }
     // 2. 安装：本机权威在 `engine/`。尚未完整安装、或本机版本比内嵌旧时用
     //    内嵌种子离线落位（升级只前移，不覆盖用户已更新的更新版本）。
@@ -2657,6 +2681,46 @@ mod tests {
             seed_is_newer_than("0.1.1339", Some("0.1.1339-beta.1")),
             "同号正式版高于预发布"
         );
+    }
+
+    /// 默认端口上别人家的 magpie：同版本或更新 → 复用；更旧 → 忽略，自己起。
+    #[test]
+    fn reuse_only_keeps_a_same_or_newer_foreign_engine() {
+        assert!(
+            reuse_foreign_engine(Some("v0.1.1339"), Some("0.1.1339")),
+            "同版本 → 复用"
+        );
+        assert!(
+            reuse_foreign_engine(Some("v0.1.1345"), Some("0.1.1339")),
+            "更新的实例 → 复用"
+        );
+        assert!(
+            !reuse_foreign_engine(Some("v0.1.1278"), Some("0.1.1339")),
+            "旧实例 → 忽略（否则新构建显示旧版本）"
+        );
+        assert!(
+            reuse_foreign_engine(None, Some("0.1.1339")),
+            "版本未知 → 保持老语义复用"
+        );
+        assert!(
+            reuse_foreign_engine(Some("v0.1.1278"), None),
+            "无内嵌构建（开发态）→ 复用"
+        );
+    }
+
+    /// 真实内嵌构建：本机装着旧引擎（0.1.1278）时必须前移，重编后打开即最新。
+    #[cfg(feature = "embedded-engine")]
+    #[test]
+    fn embedded_seed_upgrades_an_older_installed_engine() {
+        let dir = temp_dir("seed-upgrade");
+        install_embedded_engine_at(b"old but intact magpie exe", "0.1.1278", &dir).unwrap();
+        assert!(is_installed_at(&dir), "旧引擎本身是完整安装");
+        assert!(
+            needs_embedded_seed(&dir),
+            "内嵌 {} 应升级 0.1.1278",
+            embedded_version().unwrap()
+        );
+        fs::remove_dir_all(&dir).ok();
     }
 
     // ─── SHA256SUMS / 日志截断 ───────────────────────────────────────────────
