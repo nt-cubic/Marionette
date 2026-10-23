@@ -340,6 +340,11 @@ type Settings struct {
 	// than 5): from 1 to ImageTimeoutMost, 0 for ImageTimeoutDefault.
 	// ImageWait reads it.
 	ImageTimeout int `json:"imageTimeout,omitempty"`
+	// ClassifyTimeout is how long, in seconds, a routing group's classifier
+	// is given to say which intent a turn is (#2934: a Kiro subscription's
+	// haiku needed more than 8): from 1 to ClassifyTimeoutMost, 0 for
+	// ClassifyTimeoutDefault. ClassifyWait reads it.
+	ClassifyTimeout int `json:"classifyTimeout,omitempty"`
 	// Searcher is the provider that searches the web for a model that
 	// can't: "<provider>" with the small model magpie picks of it,
 	// "<provider>/<model>", or empty for the one magpie picks
@@ -876,6 +881,27 @@ func (s Settings) ImageWait() time.Duration {
 	return time.Duration(min(m, ImageTimeoutMost)) * time.Minute
 }
 
+// ClassifyTimeoutDefault is the seconds a classifier is given when
+// ClassifyTimeout is 0, and ClassifyTimeoutMost the most it can be set to:
+// the turn waits on it before it goes anywhere, with nothing sent to its
+// agent meanwhile.
+const (
+	ClassifyTimeoutDefault = 8
+	ClassifyTimeoutMost    = 60
+)
+
+// ClassifyWait is how long a classifier is given to answer:
+// ClassifyTimeout's seconds, ClassifyTimeoutDefault's when it is 0 (or
+// below), and no more than ClassifyTimeoutMost's when settings.json was
+// written by hand past it.
+func (s Settings) ClassifyWait() time.Duration {
+	n := s.ClassifyTimeout
+	if n < 1 {
+		n = ClassifyTimeoutDefault
+	}
+	return time.Duration(min(n, ClassifyTimeoutMost)) * time.Second
+}
+
 // Themes and Langs are the accepted values, in the order the UI offers them.
 var (
 	Themes     = []string{"system", "light", "dark"}
@@ -1391,6 +1417,9 @@ func save(s Settings, recording bool) error {
 	}
 	if s.ImageTimeout < 0 || s.ImageTimeout > ImageTimeoutMost {
 		return fmt.Errorf("image generation is given from 1 to %d minutes, or 0 for %d, not %d", ImageTimeoutMost, ImageTimeoutDefault, s.ImageTimeout)
+	}
+	if s.ClassifyTimeout < 0 || s.ClassifyTimeout > ClassifyTimeoutMost {
+		return fmt.Errorf("a routing group's classifier is given from 1 to %d seconds, or 0 for %d, not %d", ClassifyTimeoutMost, ClassifyTimeoutDefault, s.ClassifyTimeout)
 	}
 	if s.UsageAlert < 0 || s.UsageAlert > 100 {
 		return fmt.Errorf("a usage alert is at a percentage from 1 to 100, or 0 for off, not %d", s.UsageAlert)

@@ -4755,19 +4755,67 @@ mod tests {
         // Full target path …\ZCode.exe → parent dir.
         let lnk = write_lnk("with-exe.lnk", "\0\0D:\\Program Files\\ZCode\\ZCode.exe\0\0");
         assert_eq!(
-            lnk_utf16_dir(&lnk).as_deref(),
+            lnk_candidate_dirs(&lnk).first().map(PathBuf::as_path),
             Some(Path::new("D:\\Program Files\\ZCode"))
         );
         // Bare install-dir run works as-is.
         let lnk = write_lnk("bare-dir.lnk", "\0\0D:\\Apps\\ZCode\0\0");
         assert_eq!(
-            lnk_utf16_dir(&lnk).as_deref(),
+            lnk_candidate_dirs(&lnk).first().map(PathBuf::as_path),
             Some(Path::new("D:\\Apps\\ZCode"))
         );
         // Runs without a drive colon (app ids like dev.zcode.app) are ignored.
         let lnk = write_lnk("noise.lnk", "\0\0dev.zcode.app\0\0");
-        assert_eq!(lnk_utf16_dir(&lnk), None);
+        assert_eq!(lnk_candidate_dirs(&lnk), Vec::<PathBuf>::new());
         fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Real ZCode.lnk (probed 2026-10-23) stores LocalBasePath as ANSI
+    /// (`D:\Program Files\ZCode\ZCode.exe`) and a UTF-16 even-aligned scan
+    /// hits a junk run first (`D:\Program Files\ZCode``). Returning that
+    /// first match and then giving up on the whole shortcut is how we
+    /// missed a present desktop install.
+    #[test]
+    fn lnk_ansi_localbasepath_survives_utf16_junk_prefix() {
+        let root = std::env::temp_dir().join(format!(
+            "marionette-zcode-ansi-{}",
+            std::process::id()
+        ));
+        let install = root.join("ZCode");
+        let glm = install.join("resources").join("glm");
+        fs::create_dir_all(&glm).unwrap();
+        let cjs = glm.join("zcode.cjs");
+        fs::write(&cjs, b"// stub\n").unwrap();
+
+        let mut bytes = Vec::new();
+        for ch in "D:\\Program Files\\ZCode`".chars() {
+            bytes.extend_from_slice(&(ch as u16).to_le_bytes());
+        }
+        bytes.extend_from_slice(&[0, 0]);
+        let ansi = format!("{}\\ZCode.exe", install.display());
+        bytes.extend_from_slice(ansi.as_bytes());
+        bytes.push(0);
+
+        let lnk = root.join("ZCode.lnk");
+        fs::write(&lnk, &bytes).unwrap();
+
+        let found = lnk_candidate_dirs(&lnk)
+            .into_iter()
+            .map(|dir| dir.join("resources").join("glm").join("zcode.cjs"))
+            .find(|p| p.is_file());
+        assert_eq!(found.as_deref(), Some(cjs.as_path()));
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// If this machine has the desktop CLI where the 2026-10-23 session
+    /// looked, `zcode_bin_path` must find it — the UTF-16-only parser did not.
+    #[test]
+    fn zcode_bin_path_finds_desktop_cjs_when_installed() {
+        let known = PathBuf::from(r"D:\Program Files\ZCode\resources\glm\zcode.cjs");
+        if !known.is_file() {
+            return;
+        }
+        assert_eq!(zcode_bin_path().as_deref(), Some(known.as_path()));
     }
 
     /// Effort must survive an agent that advertises no effort config option —
@@ -6534,10 +6582,11 @@ pub(crate) fn dsh_home() -> Option<PathBuf> {
 
 /// Locate the ZCode desktop CLI (`resources/glm/zcode.cjs`) for the
 /// `zcode-acp-server` bridge. Desktop installs pick arbitrary dirs, write no
-/// uninstall-registry entry and rarely touch PATH, so after the two default
-/// roots we read the Start-Menu / Public-Desktop shortcut and pull the UTF-16
-/// target path out of the .lnk bytes (probed 2026-10-23: D:\Program
-/// Files\ZCode is only discoverable that way).
+/// uninstall-registry entry and rarely touch PATH, so after the default
+/// roots we read the Start-Menu / Desktop shortcut and pull every
+/// path-like run out of the .lnk bytes (ANSI LocalBasePath *and* UTF-16
+/// LocalBasePathUnicode — a UTF-16-only scan of the real shortcut on
+/// 2026-10-23 returned `D:\Program Files\ZCode`` and missed the install).
 pub(crate) fn zcode_bin_path() -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(local) = std::env::var_os("LOCALAPPDATA") {
@@ -6559,11 +6608,20 @@ pub(crate) fn zcode_bin_path() -> Option<PathBuf> {
                 .join("zcode.cjs"),
         );
     }
+    if let Some(program_files) = std::env::var_os("ProgramFiles(x86)") {
+        candidates.push(
+            PathBuf::from(program_files)
+                .join("ZCode")
+                .join("resources")
+                .join("glm")
+                .join("zcode.cjs"),
+        );
+    }
     if let Some(candidate) = candidates.iter().find(|p| p.is_file()) {
         return Some(candidate.clone());
     }
     for shortcut in zcode_shortcuts() {
-        if let Some(dir) = lnk_utf16_dir(&shortcut) {
+        for dir in lnk_candidate_dirs(&shortcut) {
             let cjs = dir.join("resources").join("glm").join("zcode.cjs");
             if cjs.is_file() {
                 return Some(cjs);
@@ -6601,50 +6659,76 @@ fn zcode_shortcuts() -> Vec<PathBuf> {
                 .join("ZCode.lnk"),
         );
     }
+    if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
+        shortcuts.push(PathBuf::from(home).join("Desktop").join("ZCode.lnk"));
+    }
     shortcuts
 }
 
-/// Extract the ZCode install directory from a .lnk by scanning for UTF-16LE
-/// printable runs that look like a path mentioning zcode. Shell-link parsing
-/// proper needs a parser crate for little gain — the LocalBasePath is stored
-/// as exactly such a run.
-fn lnk_utf16_dir(lnk: &Path) -> Option<PathBuf> {
-    let bytes = fs::read(lnk).ok()?;
-    let mut runs: Vec<String> = Vec::new();
+/// Every install-dir candidate buried in a .lnk. Windows LinkInfo stores
+/// LocalBasePath as ANSI and LocalBasePathUnicode as UTF-16; a UTF-16-only
+/// even-aligned scan of a real ZCode.lnk (2026-10-23) hits a junk run
+/// (`D:\Program Files\ZCode``) *before* the ANSI `…\ZCode.exe`, and
+/// returning that first match made us skip a present desktop install.
+fn lnk_candidate_dirs(lnk: &Path) -> Vec<PathBuf> {
+    let Ok(bytes) = fs::read(lnk) else {
+        return Vec::new();
+    };
+    let mut runs = Vec::new();
+    collect_ascii_runs(&bytes, &mut runs);
+    collect_utf16_runs(&bytes, 0, &mut runs);
+    collect_utf16_runs(&bytes, 1, &mut runs);
+    runs.into_iter()
+        .filter_map(|run| zcode_dir_from_run(&run))
+        .collect()
+}
+
+fn collect_ascii_runs(bytes: &[u8], runs: &mut Vec<String>) {
     let mut current = String::new();
-    for pair in bytes.chunks_exact(2) {
-        let code = u16::from_le_bytes([pair[0], pair[1]]);
-        let ch = char::from_u32(code as u32).filter(|c| (*c as u32) >= 0x20 && !c.is_control());
-        match ch {
-            Some(ch) => current.push(ch),
-            None => {
-                if current.len() >= 4 {
-                    runs.push(std::mem::take(&mut current));
-                } else {
-                    current.clear();
-                }
-            }
+    for &b in bytes {
+        if (0x20..0x7f).contains(&b) {
+            current.push(b as char);
+        } else if current.len() >= 4 {
+            runs.push(std::mem::take(&mut current));
+        } else {
+            current.clear();
         }
     }
     if current.len() >= 4 {
         runs.push(current);
     }
-    for run in runs {
-        let lower = run.to_ascii_lowercase();
-        if !lower.contains("zcode") || !lower.contains(':') {
-            continue;
-        }
-        // "<dir>\ZCode.exe" → parent; a bare dir run works as-is.
-        let dir = if lower.ends_with(".exe") {
-            PathBuf::from(&run)
-                .parent()
-                .map(Path::to_path_buf)?
-        } else {
-            PathBuf::from(&run)
-        };
-        return Some(dir);
+}
+
+fn collect_utf16_runs(bytes: &[u8], offset: usize, runs: &mut Vec<String>) {
+    if offset >= bytes.len() {
+        return;
     }
-    None
+    let mut current = String::new();
+    for pair in bytes[offset..].chunks_exact(2) {
+        let code = u16::from_le_bytes([pair[0], pair[1]]);
+        let ch = char::from_u32(code as u32).filter(|c| (*c as u32) >= 0x20 && !c.is_control());
+        match ch {
+            Some(ch) => current.push(ch),
+            None if current.len() >= 4 => runs.push(std::mem::take(&mut current)),
+            None => current.clear(),
+        }
+    }
+    if current.len() >= 4 {
+        runs.push(current);
+    }
+}
+
+fn zcode_dir_from_run(run: &str) -> Option<PathBuf> {
+    let lower = run.to_ascii_lowercase();
+    if !lower.contains("zcode") || !lower.contains(':') {
+        return None;
+    }
+    // "<dir>\ZCode.exe" → parent; a bare dir run works as-is.
+    if lower.ends_with(".exe") {
+        PathBuf::from(run).parent().map(Path::to_path_buf)
+    } else {
+        Some(PathBuf::from(run))
+    }
 }
 
 /// `Marionette_RAW_LOG=1` mirrors every stdout line the reader yields to

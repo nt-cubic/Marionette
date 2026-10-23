@@ -350,10 +350,23 @@ func (s *Server) jevLevelled(ctx context.Context, p provider.Provider, model str
 	return l, nil
 }
 
+// errNoAnswer is a System One call the classifier's wait cut off; askJev
+// says which provider and how long it was given.
+var errNoAnswer = errors.New("no answer in the classifier's wait")
+
 // askJev asks a decision provider's model through its System One API.
-func (s *Server) askJev(p provider.Provider, model string, intents []string, prev before, effort bool, text string) (verdict, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), classifyTimeout)
-	defer cancel()
+func (s *Server) askJev(p provider.Provider, model string, intents []string, prev before, effort bool, text string) (v verdict, err error) {
+	wait := classifyTimeout()
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer func() {
+		// only a call cut off by the wait is reworded: a refusal or an
+		// answer read as the wait ran out keeps its own type, which
+		// askDecideTries rests the account by
+		if errors.Is(err, errNoAnswer) {
+			err = fmt.Errorf("%s gave no answer in %s", p.Name, wait)
+		}
+		cancel()
+	}()
 	if model == "" {
 		model = p.Jev()
 	}
@@ -408,7 +421,7 @@ func (s *Server) systemOne(ctx context.Context, p provider.Provider, model strin
 	status, b, header, err := s.postDecide(ctx, p, model, body)
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("%s gave no answer in %s", p.Name, classifyTimeout)
+			return nil, errNoAnswer
 		}
 		return nil, err
 	}

@@ -121,6 +121,8 @@ type SessionViewProps = {
   onInterrupt?: () => void | Promise<void>;
   /** Project id for on-demand workspace diffs in editing-tool cards. */
   projectId?: string;
+  /** After a delivery-card undo, refresh the Changed Files panel. */
+  onFilesRestored?: () => void;
   /** All live events (for expanding @-delegate child streams). */
   allEvents?: SessionEvent[];
   onSubtaskStop?: (childSessionId: string) => void;
@@ -719,6 +721,7 @@ export function SessionView({
   onQuotePinsChange,
   onInterrupt,
   projectId,
+  onFilesRestored,
   allEvents = [],
   onSubtaskStop,
   onSubtaskQuote,
@@ -812,6 +815,7 @@ export function SessionView({
             onQuotePinsChange={onQuotePinsChange}
             onInterrupt={onInterrupt}
             projectId={projectId}
+            onFilesRestored={onFilesRestored}
             allEvents={allEvents}
             expandedChildId={expandedChildId}
             setExpandedChildId={setExpandedChildId}
@@ -1505,6 +1509,7 @@ function CleanPlaceholder({
   onQuotePinsChange,
   onInterrupt,
   projectId,
+  onFilesRestored,
   allEvents = [],
   expandedChildId = null,
   setExpandedChildId,
@@ -1532,6 +1537,7 @@ function CleanPlaceholder({
   onQuotePinsChange?: (pins: QuotePin[]) => void;
   onInterrupt?: () => void | Promise<void>;
   projectId?: string;
+  onFilesRestored?: () => void;
   allEvents?: SessionEvent[];
   expandedChildId?: string | null;
   setExpandedChildId?: (id: string | null) => void;
@@ -1647,6 +1653,8 @@ function CleanPlaceholder({
   const [editBusy, setEditBusy] = useState(false);
   /** User-toggled tool cards only — never store force-open (running) keys here. */
   const [expandedToolKeys, setExpandedToolKeys] = useState<Set<string>>(() => new Set());
+  /** Delivery cards the user undid this session — survives virtual remounts. */
+  const [undoneDeliveryKeys, setUndoneDeliveryKeys] = useState<Set<string>>(() => new Set());
   /** User-expanded thought cards (lazy body mount). */
   const [expandedThoughtKeys, setExpandedThoughtKeys] = useState<Set<string>>(() => new Set());
   /** User-expanded activity / kind-group folds. Live force-open is not stored. */
@@ -2835,7 +2843,20 @@ function CleanPlaceholder({
             const absoluteIndex = useVirtual ? virtual.start + sliceIndex : sliceIndex;
             const node =
               unit.kind === "delivery" ? (
-                <TurnDeliveryCard key={unit.key} delivery={unit.delivery} projectId={projectId} />
+                <TurnDeliveryCard
+                  key={unit.key}
+                  delivery={unit.delivery}
+                  projectId={projectId}
+                  undone={undoneDeliveryKeys.has(`${session.id}:${unit.key}`)}
+                  onUndone={() =>
+                    setUndoneDeliveryKeys((current) => {
+                      const next = new Set(current);
+                      next.add(`${session.id}:${unit.key}`);
+                      return next;
+                    })
+                  }
+                  onRestored={onFilesRestored}
+                />
               ) : unit.kind === "activity" ? (
                 renderActivity(unit)
               ) : unit.kind === "subagent_group" ? (

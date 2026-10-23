@@ -79,6 +79,24 @@ icacls D:\Apps\Marionette /setintegritylevel (OI)(CI)Medium
 `data_dir_gate::prompt_and_exit()` 弹原生对话框并 `exit(1)`，不再出现「静默 exit(0)」；
 单实例锁只有真被占用（Windows 32/33 共享冲突）才交接，权限类错误会记一条 `[shell] warn` 后照常启动。
 
+## 交付卡 / 每轮改动追踪（2026-10-23 修）
+
+**别再用 `git status` 或逐文件 `git diff` 指纹当「本轮改了什么」——口径不一致会造假。**
+
+- 本仓库实测：`git status -uall` 报 224~227 条，`git diff HEAD` 真实内容差异只有 52 条
+  （`third_party/magpie/**` 这些 `text=auto`/CRLF 文件 stat-dirty 但 diff 0 行）。旧实现「status 列文件 +
+  diff 算指纹」于是给 186 个文件留空指纹；再加上基线 `catch { return [] }` 把失败当成「基线是空的」，
+  交付卡就成了「整库改动」展示器。
+- 现行实现：`git_service::begin_workspace_snapshot` / `end_workspace_snapshot` / `discard_workspace_snapshot`
+  —— turn 起止各拍一棵 worktree 内容树（私有 `GIT_INDEX_FILE` + 私有 object dir + alternates），
+  `diff-tree -r -M --name-status/--numstat` 出真 `+/-`。**性能要害：私有 index 必须先复制用户
+  `.git/index` 当 stat 缓存（0.6–1.2s）；裸 `read-tree`+`add --all` 要 8.6s。** 别写回用户 index。
+- 归属规则在 `src/lib/turnDelivery.ts::selectTurnWorkspaceChanges`：起点干净→结束脏无条件算；
+  **起点就脏的必须被本轮 edit/write 工具碰过才算**（否则同工作区的另一场对话会串进本卡）。
+- **fail closed**：基线失败 / 不是 git 仓库 → 不发布任何 git 真相，卡片只留工具账本。
+- 口径与实测数据另见 `docs/CURRENT.md`「交付卡（每轮改动的口径）」；回归用例
+  `npx tsx scripts/verify-turn-delivery.mts` + `cargo test --bin marionette git_service`。
+
 ## DeepSeek Harness 接入（@openma/deepseek-harness-acp，2026-10-19 起）
 
 Marionette 的 DSH agent 走 `@openma/deepseek-harness-acp`（bin `dsh-acp`），不再用停更的社区适配器
@@ -121,6 +139,15 @@ Marionette 的 DSH agent 走 `@openma/deepseek-harness-acp`（bin `dsh-acp`）�
 符号链接坑），stdin 依次发 `initialize`（`protocolVersion: 1`）和 `session/new`（`cwd` 必须是
 绝对路径、`mcpServers: []`），读 `id=2` 应答里的 `configOptions` → `id: "model"` 的 `options`。
 
+**`cordis.patch.yml` 的自锁坑（2026-10-23 修）**：移除托管路由时我们落的是
+「说明注释 + `[]`」，而合并入口以前只认字面 `[]` —— 引擎闲置回收/停过一次之后，这个文件
+被永久判成「不是顶层数组」拒写（dev.log 只有一条 `dsh marionette route refresh failed;
+bridge skipped` warn，界面表现是「DSH 没有共享模型」）。现在空 patch 判定按语义来
+（只有注释/空行/`[]` 即当空文件重写）、移除时连带收走说明行，回归测试
+`rewrites_comment_only_empty_patch` / `remove_then_readd_round_trip`。
+前端同轮补课：跨用目录缓存现在会随 `invalidateBridgeModels()` 通知订阅者（Composer 当场重拉），
+引擎在菜单打开期间醒来不再需要切会话才刷新。踩坑定稿：`docs/research-dsh-cross-use.md` §8.7。
+
 **仍成立的上游限制：pi-ai catalog 没有的 model id 会被 DSH 丢掉。** `dsh-llm-pi-ai` 是 DSH 官方唯一的多
 provider 层，只服务 catalog 描述得出的模型（本机 catalog 在
 `@earendil-works/pi-ai/dist/providers/data/opencode*.json`）。**不要给既有路由补 `api:` 来救** —— 路由级
@@ -141,7 +168,7 @@ key-plan → ZCode 个人 provider 层（`~/.zcode/v2/provider_config.json` 的
 
 ## ZCode 接入（社区适配器 `zcode-acp-server`，2026-10-23 起）
 
-> 完整踩坑集（九雷 + 快速确诊表，含日志证据链）：`docs/pitfalls-zcode-acp.md`。改 zcode 相关代码前先过一遍。
+> 完整踩坑集（十一雷 + 快速确诊表，含日志证据链）：`docs/pitfalls-zcode-acp.md`。改 zcode 相关代码前先过一遍。
 
 ZCode 官方**没有** ACP（CLI 0.16.x 无 `--acp`，ACP registry 未收录）；走的是社区桥
 `zcode-acp-server`（npm，Apache-2.0，bin `zcode-acp-server`）：ACP ↔ `zcode app-server`
@@ -153,7 +180,7 @@ ZCode 官方**没有** ACP（CLI 0.16.x 无 `--acp`，ACP registry 未收录）�
 - **spawn 注入两件事**（`acp.rs` zcode 分支，用户自设 `ZCODE_BIN`/PATH `zcode` 时不覆盖）：
   1. `ZCODE_BIN` = 桌面版内置 `resources\glm\zcode.cjs`。桌面版可装任意目录、**注册表卸载键不登记**
      （本机 D:\Program Files\ZCode），探测链：`%LOCALAPPDATA%\Programs\ZCode` → `%ProgramFiles%\ZCode`
-     → 开始菜单/公共桌面 `ZCode.lnk` 里抽 UTF-16 LocalBasePath（`zcode_bin_path()`）。
+     → 开始菜单/桌面 `ZCode.lnk` 里抽 ANSI LocalBasePath 与 UTF-16 路径（`zcode_bin_path()`；只扫 UTF-16 会命中假路径，见 `docs/pitfalls-zcode-acp.md` 雷 10）。
   2. `ZCODE_NODE` = 起适配器的那台 node。适配器对 .cjs 型 ZCODE_BIN 自己找 sqlite-capable node，
      候选链（ZCODE_NODE → unix 路径 → which node → Zed bundle）在 Windows GUI PATH 下全空，
      最后裸 exec .cjs → **`spawn EFTYPE`**（实测 2026-10-23，0.76.2）。
@@ -189,3 +216,10 @@ ZCode 官方**没有** ACP（CLI 0.16.x 无 `--acp`，ACP registry 未收录）�
   `cargo test zcode -- --ignored`。
 - **NDJSON 探针**：`npx -y zcode-acp-server`（配 `ZCODE_BIN`/`ZCODE_NODE` env），stdin 发
   `initialize` → `session/new`（`cwd` 绝对路径），读 `id=2` 的 `configOptions`（id: model/mode/thought）。
+- **个人层 provider 的模型要 `providerModelRules` 才进 ACP 菜单**（2026-10-23）：适配器
+  `loadAllModels()` 对只在 `provider_config.json` 里的 provider 只认
+  `modelConfigRules.providerModelRules`，从内置模板建的 provider（如桌面版「BigModel
+  Coding Plan」）一条都没有 → 桌面能选、ACP 菜单里整家消失。已用
+  `scripts/patch-zcode-acp-personal-models.mjs` 给适配器补回退链（→ `personalModelIds`
+  → 模板 `builtinModelIds`，上下文窗口同源兜底）。**`npm i -g zcode-acp-server`
+  会覆盖 `dist/`，升级后重跑该脚本**；细节见 `docs/pitfalls-zcode-acp.md` 雷 12。

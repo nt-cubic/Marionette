@@ -8606,17 +8606,21 @@ $("#modal").addEventListener("keydown", (e) => {
 const modalHold = { off: 0, at: null, y: 0, cap: null, capSet: "" };
 // how far down the dialog an element sits, to the fraction of a pixel,
 // what moves it in an animation (a row coming in) left out. An element
-// that scales (a Copy button's pop) is measured by what holds it, as its
-// top moves round its middle by more than the matrix says.
+// that scales (a Copy button's pop, a segment pressed) is measured by its
+// own top as drawn unscaled, round its transform-origin: measured by what
+// holds it, a pressed segment read 2px above where it was marked, and the
+// dialog went 2px down at every click (the owner, 10-23). One that turns
+// or skews is measured by what holds it.
 function modalDepth(a, d) {
   if (!a?.isConnected || !d.contains(a) || a === d || !a.offsetParent) return null;
   if (getComputedStyle(d).transform === "none") {
     const moves = [];
     for (let x = a; x && x !== d; x = x.parentElement) {
-      const t = getComputedStyle(x).transform;
+      const c = getComputedStyle(x), t = c.transform;
       if (t === "none") continue;
       const m = new DOMMatrixReadOnly(t);
       if (m.m11 === 1 && m.m22 === 1 && !m.m12 && !m.m21) moves.push(m.m42);
+      else if (!m.m12 && !m.m21) { a = x; moves.length = 0; moves.push(m.m42 + parseFloat(c.transformOrigin.split(" ")[1]) * (1 - m.m22)); }
       else { a = x.parentElement; moves.length = 0; }
     }
     if (a === d) return null;
@@ -9025,11 +9029,12 @@ function drawEditor(p, presetID) {
     h.append(icon(p?.icon || (copyOf && draft.icon) || pr?.icon || "generic"), el("b", "", p ? p.name : copyOf ? t("Copy of {name}", { name: copyOf.name }) : pr ? pr.name : t("Custom provider")));
     if (pr?.kind === "partner") { if (partnerNote(pr)) h.append(el("span", "note", partnerNote(pr))); } else if (pr?.note) h.append(el("span", "note", t(pr.note)));
     h.append(el("span", "grow"));
-    // a region with docs of its own (Tencent Cloud's plan and TokenHub) has
-    // its page here, following the region picked below
-    const site = regionAt(pr, draft)?.website || pr?.website || p?.website || hostSite(p);
+    // a region's own page (Tencent Cloud's), following the region picked
+    // below; a partner's /go link is named by where it goes (siteHost)
+    const at = regionAt(pr, draft)?.website ? regionAt(pr, draft) : pr;
+    const site = at?.website || p?.website || hostSite(p);
     if (site) {
-      const b = el("button", "link site", hostOf(site) + " ↗");
+      const b = el("button", "link site", hostOf(at?.siteHost || site) + " ↗");
       b.dataset.url = site;
       b.onclick = () => api("open", { url: b.dataset.url });
       h.append(b);
@@ -9699,7 +9704,7 @@ function drawEditor(p, presetID) {
         const site = ed.querySelector(".ehead .link.site");
         if (site && pr.regions.some((x) => x.website)) {
           site.dataset.url = r.website || pr.website;
-          site.textContent = hostOf(site.dataset.url) + " ↗";
+          site.textContent = hostOf((r.website ? r : pr).siteHost || site.dataset.url) + " ↗";
         }
         onRegion(r);
         accessAt(r);
@@ -21268,18 +21273,19 @@ function renderImageGen(s, keep, box) {
   box.append(r);
   // how long a vendor is given to draw an image and send it: 5 minutes
   // unless set, as a slow image endpoint needs more (neighbads on X)
-  const w = el("div", "row pref");
-  w.id = "imageTimeoutRow";
-  const wwho = el("div", "who");
-  wwho.append(el("div", "name", t("Image generation timeout")),
-    el("div", "sub wraps", t("How long a provider is given to draw an image and send it, before the request is given up. A slow image endpoint may need longer")));
-  const mins = [5, 10, 15, 30, 60].map((n) => [String(n), t("{n} min", { n })]);
-  const m = String(s.imageTimeout > 0 ? s.imageTimeout : 5);
-  if (!mins.some(([id]) => id === m)) mins.push([m, t("{n} min", { n: m })]); // set by hand in settings.json
-  const wval = el("div", "val");
-  wval.append(segs(mins, m, (v) => savePrefs({ ...keep, imageTimeout: Number(v) })));
-  w.append(wwho, wval);
-  box.append(w);
+  box.append(waitRow("imageTimeoutRow", t("Image generation timeout"), t("How long a provider is given to draw an image and send it, before the request is given up. A slow image endpoint may need longer"),
+    [5, 10, 15, 30, 60], s.imageTimeout > 0 ? s.imageTimeout : 5, "{n} min", (n) => savePrefs({ ...keep, imageTimeout: n })));
+}
+
+// waitRow: a Settings row of how long something is given, ns (in unit)
+// offered, and cur too when set by hand in settings.json
+function waitRow(id, name, sub, ns, cur, unit, pick) {
+  const r = el("div", "row pref"), who = el("div", "who"), val = el("div", "val");
+  r.id = id;
+  who.append(el("div", "name", name), el("div", "sub wraps", sub));
+  val.append(segs([...new Set([...ns, cur])].map((n) => [String(n), t(unit, { n })]), String(cur), (v) => pick(Number(v))));
+  r.append(who, val);
+  return r;
 }
 
 // mcpAddress: where one of the gateway's own MCP servers is, at path. A
@@ -21718,6 +21724,9 @@ function renderReplies(s, keep) {
   fval.append(segs([...counts, ["", t("All")]], n,
     (v) => savePrefs({ ...keep, refusalRetries: v === "" ? null : Number(v) })));
   f.append(fwho, fval);
+  // how long a routing group's classifier is given: 8 seconds unless set (#2934)
+  const k = waitRow("classifyTimeoutRow", t("Intent classifier timeout"), t("How long a routing group's classifier is given to say which intent a turn is. The turn waits for it before it goes anywhere, and past it goes on without its answer. A slow classifier may need longer"),
+    [8, 15, 30, 60], s.classifyTimeout > 0 ? s.classifyTimeout : 8, "{n} s", (n) => savePrefs({ ...keep, classifyTimeout: n }));
   // the agent's instructions as a Claude run's system prompt (off unless on)
   const c = el("div", "row pref");
   c.id = "claudeLeanRow";
@@ -21728,7 +21737,7 @@ function renderReplies(s, keep) {
   cval.append(segs([["off", t("Off")], ["on", t("On")]], s.claudeLeanPrompt ? "on" : "off",
     (v) => savePrefs({ ...keep, claudeLeanPrompt: v === "on" })));
   c.append(cwho, cval);
-  box.append(r, l, f, c);
+  box.append(r, l, f, k, c);
 }
 
 // renderDisabledModels: the models the user turned off for every request
@@ -23642,7 +23651,7 @@ function prefsKeep(s) {
     codexWarmAts: warmTimes(s.codexWarmAts, s.codexWarmAt), claudeWarmAts: warmTimes(s.claudeWarmAts, s.claudeWarmAt), workbuddyCheckin: !!s.workbuddyCheckin, traeCheckin: !!s.traeCheckin, minimaxCheckin: !!s.minimaxCheckin, qoderCheckin: !!s.qoderCheckin, noStats: !!s.noStats, noUsageStats: !!s.noUsageStats,
     memberModel: !!s.memberModel, noLoopGuard: !!s.noLoopGuard, claudeLeanPrompt: !!s.claudeLeanPrompt, refusalRetries: s.refusalRetries ?? null,
     noUpdatePill: !!s.noUpdatePill, noAutoUpdate: !!s.noAutoUpdate, updateEvery: s.updateEvery || 360, autoRestart: !!s.autoRestart, noAutoDownload: !!s.noAutoDownload,
-    trayUsage: s.trayUsage || "", trayUsageEvery: s.trayUsageEvery || 3, trayNoLogos: !!s.trayNoLogos, trayNoBird: !!s.trayNoBird, trayPace: !!s.trayPace, trayNoCost: !!s.trayNoCost, vision: s.vision || "", visionEffort: s.visionEffort || "", searcherEffort: s.searcherEffort || "", imageGen: s.imageGen || "", imageTimeout: s.imageTimeout || 0, searcher: s.searcher || "", searchFirst: s.searchFirst || "", currency: s.currency || "usd",
+    trayUsage: s.trayUsage || "", trayUsageEvery: s.trayUsageEvery || 3, trayNoLogos: !!s.trayNoLogos, trayNoBird: !!s.trayNoBird, trayPace: !!s.trayPace, trayNoCost: !!s.trayNoCost, vision: s.vision || "", visionEffort: s.visionEffort || "", searcherEffort: s.searcherEffort || "", imageGen: s.imageGen || "", imageTimeout: s.imageTimeout || 0, classifyTimeout: s.classifyTimeout || 0, searcher: s.searcher || "", searchFirst: s.searchFirst || "", currency: s.currency || "usd",
     chineseUnits: !!s.chineseUnits, usageAlert: s.usageAlert || 0, balanceAlert: s.balanceAlert || 0, resetReminder: s.resetReminder || 0,
     turnDoneAlert: s.turnDoneAlert || 0 };
 }

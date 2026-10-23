@@ -275,6 +275,16 @@ export type SessionEvent =
       createdAt: string;
       /** Increments when the same file is changed again during one turn. */
       revision?: number;
+      /** Rename source, when the turn's git delta detected one. */
+      oldPath?: string;
+      /**
+       * Real line counts from the turn-end `diff-tree --numstat` (git truth).
+       * Absent on events published before 2026-10-23 and outside git.
+       */
+      add?: number;
+      del?: number;
+      /** Binary files carry no line counts. */
+      binary?: boolean;
     }
   | {
       type: "subtask_started";

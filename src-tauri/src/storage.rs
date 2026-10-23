@@ -972,68 +972,6 @@ impl StorageService {
         Ok(events)
     }
 
-    /// Search project/session labels and transcript text. Returns matching session ids.
-    pub fn search_sessions(&self, query: &str) -> Result<Vec<String>, String> {
-        let q = query.trim().to_ascii_lowercase();
-        if q.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut hits = Vec::new();
-        for project in self.list_projects()? {
-            for session in self.list_sessions_all(&project.id)? {
-                // Skip @-delegate children — no independent entry in search.
-                if session
-                    .parent_session_id
-                    .as_ref()
-                    .map(|p| !p.is_empty())
-                    .unwrap_or(false)
-                {
-                    continue;
-                }
-                let mut matched = session.label.to_ascii_lowercase().contains(&q)
-                    || session.agent_id.to_ascii_lowercase().contains(&q)
-                    || project.name.to_ascii_lowercase().contains(&q);
-                if !matched {
-                    let path = PathBuf::from(&session.transcript_path);
-                    if path.exists() {
-                        if let Ok(text) = fs::read_to_string(&path) {
-                            matched = text.to_ascii_lowercase().contains(&q);
-                        }
-                    }
-                }
-                if matched {
-                    hits.push(session.id);
-                }
-            }
-        }
-        for session in self.read_chat_sessions_all()? {
-            if session
-                .parent_session_id
-                .as_ref()
-                .map(|p| !p.is_empty())
-                .unwrap_or(false)
-            {
-                continue;
-            }
-            let mut matched = session.label.to_ascii_lowercase().contains(&q)
-                || session.agent_id.to_ascii_lowercase().contains(&q)
-                || session.cwd.to_ascii_lowercase().contains(&q)
-                || "聊天".contains(&q);
-            if !matched {
-                let path = PathBuf::from(&session.transcript_path);
-                if path.exists() {
-                    if let Ok(text) = fs::read_to_string(&path) {
-                        matched = text.to_ascii_lowercase().contains(&q);
-                    }
-                }
-            }
-            if matched {
-                hits.push(session.id);
-            }
-        }
-        Ok(hits)
-    }
-
     /// Root directory used for Chat metadata and transcripts. This lives under
     /// the global app directory, never under a user's workspace.
     pub fn chat_data_dir(&self) -> PathBuf {

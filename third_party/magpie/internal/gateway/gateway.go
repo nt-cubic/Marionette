@@ -1242,9 +1242,15 @@ func unprefixed(id string) string {
 // on (#536) — into the model and the level, "" for none. As a routing
 // group's member is read (#189), only a level's name after the last colon is
 // one, and a model a provider has by the whole id ("x:high") is taken whole.
+//
+// A level spelled "off" (":off") is none, as a body's effort "off" is
+// (offAsNone).
 func askedAt(id string) (string, string) {
 	bare, marked := strings.CutSuffix(id, "[1m]")
 	m, e := provider.MemberEffort(bare)
+	if i := strings.LastIndex(bare, ":"); e == "" && i > 0 && strings.EqualFold(bare[i+1:], "off") {
+		m, e = provider.MemberEffort(bare[:i] + ":none")
+	}
 	if e == "" {
 		return id, ""
 	}
@@ -1597,6 +1603,9 @@ func estimate(req *Request) int {
 // serve routes one parsed-enough request to its provider.
 func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Protocol, body []byte) {
 	start := time.Now()
+	// a client's "off" is magpie's none, for every route and check below
+	// that reads the body's effort (plugins#334)
+	body = offAsNone(from, body)
 	// the upstream names in force for this request, read once here rather
 	// than once per place a name is looked up below
 	r = withWires(r)
@@ -6551,6 +6560,67 @@ func conversationID(in http.Header, body []byte) string {
 	}
 	sum := sha256.Sum256(first)
 	return "magpie-" + hex.EncodeToString(sum[:12])
+}
+
+// offSpelled is a client's effort spelled "off", which no OpenAI API
+// takes: a client asking reasoning off by that word (plugins#334, raw
+// reasoning_effort "off" to a Command Code DeepSeek fell back to its lowest
+// level and still thought).
+func offSpelled(e string) bool { return strings.EqualFold(strings.TrimSpace(e), "off") }
+
+// offAsNone is a Chat or Responses body asking reasoning "off"
+// (reasoning_effort, or reasoning.effort) asking for magpie's own off
+// level, none, instead: what every check and route reads the effort by,
+// and what fitEffort fits to the model's own off level, or its least
+// where it has none, as "none" asked is. A body with no such field goes
+// as it came.
+func offAsNone(from provider.Protocol, body []byte) []byte {
+	if from != provider.Chat && from != provider.Responses || !saysOff(body) {
+		return body
+	}
+	var v struct {
+		ReasoningEffort *string                    `json:"reasoning_effort"`
+		Reasoning       map[string]json.RawMessage `json:"reasoning"`
+	}
+	if decodeJSON(body, &v) != nil {
+		return body
+	}
+	fields := map[string]any{}
+	var e string
+	if v.ReasoningEffort != nil && offSpelled(*v.ReasoningEffort) {
+		fields["reasoning_effort"] = "none"
+	}
+	if decodeJSON(v.Reasoning["effort"], &e) == nil && offSpelled(e) {
+		v.Reasoning["effort"] = json.RawMessage(`"none"`)
+		fields["reasoning"] = v.Reasoning
+	}
+	if len(fields) == 0 {
+		return body
+	}
+	return withFields(body, fields)
+}
+
+// saysOff is whether body has an effort field valued "off" anywhere,
+// looked for without parsing it: serve looks at every request's body,
+// however large, and only one naming off is parsed (offAsNone).
+func saysOff(body []byte) bool {
+	key := []byte(`effort"`)
+	for rest := body; ; {
+		i := bytes.Index(rest, key)
+		if i < 0 {
+			return false
+		}
+		rest = rest[i+len(key):]
+		v := bytes.TrimLeft(rest, " \t\r\n")
+		if v, ok := bytes.CutPrefix(v, []byte(":")); ok {
+			v = bytes.TrimLeft(v, " \t\r\n")
+			if s, ok := bytes.CutPrefix(v, []byte(`"`)); ok {
+				if j := bytes.IndexByte(s, '"'); j >= 0 && offSpelled(string(s[:j])) {
+					return true
+				}
+			}
+		}
+	}
 }
 
 // offEffort is an effort turning reasoning off, or as near off as asked.

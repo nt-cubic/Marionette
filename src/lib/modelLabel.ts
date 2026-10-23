@@ -31,8 +31,15 @@ function stripNoise(text: string): string {
 
 function providerPrefix(text: string): { provider: string; rest: string } | null {
   const idx = text.indexOf("/");
-  if (idx <= 0 || idx >= text.length - 1) return null;
-  return { provider: text.slice(0, idx), rest: text.slice(idx + 1) };
+  if (idx > 0 && idx < text.length - 1) {
+    return { provider: text.slice(0, idx), rest: text.slice(idx + 1) };
+  }
+  // zcode-acp-server composes option names as `Provider › Model` (BigModel
+  // Coding Plan › GLM-5.3). The group header prints the provider, so the row
+  // label must not repeat it.
+  const arrow = /^(.+?)\s*›\s*(.+)$/.exec(text);
+  if (arrow) return { provider: arrow[1].trim(), rest: arrow[2].trim() };
+  return null;
 }
 
 /** Leading `[OpenCode] GLM-5.3` — a Grok catalog `name` tagging the billed host. */
@@ -153,6 +160,10 @@ const FAMILY_GROUPS: Array<{ match: RegExp; group: string }> = [
   { match: /^deepseek\b/i, group: "DeepSeek" },
   { match: /^(xai|grok)\b/i, group: "xAI" },
   { match: /^(glm|zai|z\.ai|zhipu)\b/i, group: "Z.AI" },
+  // 智谱's domestic platform (open.bigmodel.cn) — the provider ZCode's desktop
+  // creates from the "BigModel Coding Plan" template. Its own header, not
+  // Z.AI: different host and key type, even though both bill GLM models.
+  { match: /^bigmodel\b/i, group: "BigModel" },
   // Grok catalog key `home-qwen-dflash` (hyphen continues). OpenCode's path
   // prefix is the exact segment `home-qwen` and must stay that provider name.
   { match: /^home-qwen[-_]/i, group: "SelfHosted" },
@@ -182,8 +193,13 @@ function pathPrefix(model: Pick<ModelDef, "id" | "label">): string | null {
   const leading = (text: string): string => {
     const trimmed = text.trim();
     if (trimmed.includes("::")) return trimmed.split("::")[0];
-    if (trimmed.includes("/")) return trimmed.split("/")[0];
-    return trimmed.includes("\\") ? trimmed.split("\\")[0] : "";
+    // Adapter display name (`Provider › Model`) — checked before the path
+    // separators because the model half may itself contain `/`.
+    if (trimmed.includes("›")) return trimmed.split("›")[0];
+    // ZCode ids are `provider\model`; the model half can contain `/`
+    // (`marionette\zhipu/glm-5.3`), so the backslash wins over the slash.
+    if (trimmed.includes("\\")) return trimmed.split("\\")[0];
+    return trimmed.includes("/") ? trimmed.split("/")[0] : "";
   };
   const idPart = leading(model.id);
   const labelPart = leading(model.label);

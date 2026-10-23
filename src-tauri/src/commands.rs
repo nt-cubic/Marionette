@@ -1081,18 +1081,6 @@ pub fn load_transcript(
     storage.load_transcript(&session_id)
 }
 
-#[tauri::command(async)]
-pub fn search_sessions(
-    query: String,
-    state: State<'_, AppState>,
-) -> Result<Vec<String>, String> {
-    let storage = state
-        .storage
-        .lock()
-        .map_err(|_| "Storage lock poisoned".to_string())?;
-    storage.search_sessions(&query)
-}
-
 /// Best-effort local auth probe: CLI status commands where available, credential
 /// files / env vars otherwise. Every built-in agent is probed so the Clean
 /// banner can offer a per-agent Sign in.
@@ -2528,24 +2516,52 @@ pub fn get_file_diff(
     crate::git_service::get_file_diff(Path::new(&project.root_path), &path)
 }
 
-/// Whole-tree per-file diff fingerprints in one `git diff` — see
-/// `git_service::get_file_fingerprints` for why the per-file command must not
-/// be used for snapshots.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreTurnFileDto {
+    pub path: String,
+}
+
 #[tauri::command(async)]
-pub fn get_file_fingerprints(
+pub fn restore_turn_files(
+    project_id: String,
+    files: Vec<RestoreTurnFileDto>,
+    state: State<'_, AppState>,
+) -> Result<crate::git_service::RestoreTurnResult, String> {
+    let _trace = crate::debug_log::CmdTrace::new("restore_turn_files");
+    let root = project_root_of(&project_id, &state)?;
+    let paths: Vec<String> = files.into_iter().map(|file| file.path).collect();
+    crate::git_service::restore_turn_files(&root, &paths)
+}
+
+/// Baseline for one turn: a content tree of the whole worktree, taken through
+/// a private index/object dir so the repo's own index is never locked or
+/// rewritten. `None` = not a git work tree → the turn keeps the tool ledger and
+/// publishes no git truth (see `git_service::begin_workspace_snapshot`).
+#[tauri::command(async)]
+pub fn begin_workspace_snapshot(
     project_id: String,
     state: State<'_, AppState>,
-) -> Result<std::collections::HashMap<String, String>, String> {
-    let storage = state
-        .storage
-        .lock()
-        .map_err(|_| "Storage lock poisoned".to_string())?;
-    let project = storage
-        .list_projects()?
-        .into_iter()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| format!("Unknown project: {project_id}"))?;
-    crate::git_service::get_file_fingerprints(Path::new(&project.root_path))
+) -> Result<Option<crate::git_service::TurnSnapshotStart>, String> {
+    let _trace = crate::debug_log::CmdTrace::new("begin_workspace_snapshot");
+    let root = project_root_of(&project_id, &state)?;
+    crate::git_service::begin_workspace_snapshot(&root)
+}
+
+/// Turn delta: the same worktree walked again at turn end, diffed against the
+/// baseline tree (`diff-tree --numstat`) — content truth, not `git status`.
+#[tauri::command(async)]
+pub fn end_workspace_snapshot(
+    snapshot_id: String,
+) -> Result<crate::git_service::TurnSnapshotEnd, String> {
+    let _trace = crate::debug_log::CmdTrace::new("end_workspace_snapshot");
+    crate::git_service::end_workspace_snapshot(&snapshot_id)
+}
+
+/// Drop a turn baseline whose prompt never reached the agent.
+#[tauri::command(async)]
+pub fn discard_workspace_snapshot(snapshot_id: String) {
+    crate::git_service::discard_workspace_snapshot(&snapshot_id);
 }
 
 /// Answer a pending ACP `session/request_permission` prompt.
@@ -3011,6 +3027,9 @@ pub fn bridge_list_models(agent_id: String) -> crate::model_bridge::BridgeModels
             | crate::model_bridge::BridgeAgent::Opencode
             | crate::model_bridge::BridgeAgent::Deepseek
             | crate::model_bridge::BridgeAgent::Pi
+            // 2026-10-23：zcode 接入当天同样漏登记——引擎睡着时它的菜单直接
+            // 按「未运行」回答，与 DSH/Pi 那次是同一个坑。
+            | crate::model_bridge::BridgeAgent::Zcode
     ) {
         crate::engine::ensure_bridge_ready_if_installed(std::time::Duration::from_secs(5));
     }

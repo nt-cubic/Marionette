@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
@@ -230,7 +231,12 @@ func MoveCodexProvider(id, to string) (CodexMove, error) {
 	if len(paths) == 0 {
 		return CodexMove{}, errors.New("no such session")
 	}
-	now := time.Now()
+	return moveCodexPaths(id, to, paths, time.Now())
+}
+
+// moveCodexPaths moves one Codex thread, whose files are paths, to the
+// provider to, as MoveCodexProvider says; storeMu and mu are held.
+func moveCodexPaths(id, to string, paths []string, now time.Time) (CodexMove, error) {
 	for _, p := range paths {
 		if recent(p, now) {
 			return CodexMove{}, ErrActive
@@ -288,8 +294,8 @@ func MoveCodexProvider(id, to string) (CodexMove, error) {
 			mv.Files = append(mv.Files, p)
 		}
 	}
-	for _, f := range fs {
-		delete(cache, f.path)
+	for _, p := range paths {
+		delete(cache, p)
 	}
 	saveCache()
 	homes := map[string]bool{}
@@ -338,6 +344,95 @@ func CodexThreadProviders(home string) []string {
 		db.Close()
 	}
 	return out
+}
+
+// codexThreadsOn are the ids of the threads a Codex folder's state
+// databases keep on the provider p. A database without the threads table,
+// or one that can't be read, says nothing.
+func codexThreadsOn(home, p string) []string {
+	var out []string
+	for _, path := range codexStateDBs(home) {
+		u := url.URL{Scheme: "file", Path: filepath.ToSlash(path), RawQuery: "mode=ro&_pragma=busy_timeout(2000)"}
+		if len(u.Path) >= 2 && u.Path[1] == ':' {
+			u.Path = "/" + u.Path
+		}
+		db, err := sql.Open("sqlite", u.String())
+		if err != nil {
+			continue
+		}
+		rows, err := db.Query(`SELECT id FROM threads WHERE model_provider = ?`, p)
+		if err == nil {
+			for rows.Next() {
+				var id string
+				if rows.Scan(&id) == nil && safeID.MatchString(id) && !contains(out, id) {
+					out = append(out, id)
+				}
+			}
+			rows.Close()
+		}
+		db.Close()
+	}
+	return out
+}
+
+// MoveCodexThreads moves every thread of a Codex folder its state database
+// keeps on the provider from to the provider to, each as MoveCodexProvider
+// moves one: its files' session_meta and its row, a copy of the files kept
+// in magpie's trash first. Codex lists only the threads of the provider it
+// is on (app-server thread/list, the TUI's resume picker), so the threads
+// started while magpie was Codex's provider were gone from Codex's lists
+// once Codex was off magpie (kaizaoji on X: "the context doesn't exist").
+// A thread written to in the last minute is left for the next call, and
+// so is one whose files can't be found; it says what it moved and the
+// first error it met, having gone on past it.
+func MoveCodexThreads(home, from, to string) ([]CodexMove, error) {
+	if !codexProviderRe.MatchString(from) || !codexProviderRe.MatchString(to) || from == to {
+		return nil, fmt.Errorf("can't move Codex's threads from %q to %q", from, to)
+	}
+	ids := codexThreadsOn(home, from)
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	storeMu.Lock()
+	defer storeMu.Unlock()
+	mu.Lock()
+	defer mu.Unlock()
+	loadCache()
+	// each thread's files: its rollout, its segments (<id>_<child>) and
+	// their compressed twins, in sessions/ or archived_sessions/
+	files := map[string][]string{}
+	for _, sub := range []string{"sessions", "archived_sessions"} {
+		filepath.WalkDir(filepath.Join(home, sub), func(p string, d os.DirEntry, err error) error {
+			if err != nil || !d.Type().IsRegular() || !strings.HasPrefix(d.Name(), "rollout-") {
+				return nil
+			}
+			for _, id := range ids {
+				if strings.Contains(d.Name(), id) {
+					files[id] = append(files[id], p)
+					break
+				}
+			}
+			return nil
+		})
+	}
+	var moved []CodexMove
+	var first error
+	now := time.Now()
+	for _, id := range ids {
+		if len(files[id]) == 0 {
+			continue
+		}
+		mv, err := moveCodexPaths(id, to, files[id], now)
+		if err != nil {
+			if !errors.Is(err, ErrActive) && first == nil {
+				first = fmt.Errorf("thread %s: %w", id, err)
+			}
+			continue
+		}
+		mv.From = from
+		moved = append(moved, mv)
+	}
+	return moved, first
 }
 
 func contains(list []string, s string) bool {

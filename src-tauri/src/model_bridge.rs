@@ -703,6 +703,13 @@ pub fn refresh_pi_marionette_route() -> Result<bool, String> {
 
 // ─── zcode 原生跨用（2026-10-23）───────────────────────────────────────────
 
+/// 引擎目录没报窗口时写进 zcode 的兜底值。**不能写 0**：个人层 zod 对
+/// `properties.contextWindow` 是 `number().positive()`，一条 0 会让整层
+/// `providerModelRules` 校验失败、zcode 以内存空配置降级——用户自己所有
+/// provider/模型设置一起消失（2026-10-23 实测，见 docs/pitfalls-zcode-acp.md 雷 7）。
+/// 取 200000 与 zcode 内置 `.*` 兜底规则同值，显示口径一致。
+const ZCODE_UNKNOWN_CONTEXT_WINDOW: u64 = 200_000;
+
 /// `~/.zcode/v2/provider_config.json` — zcode 的**个人** provider 层（桌面版
 /// 与 CLI 共读；适配器把它经 `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE` 显式递给
 /// 后端）。托管写这层而不是账号层 `v2/config.json`（桌面版自己重写账号层，
@@ -756,10 +763,17 @@ fn zcode_marionette_model_rules(models: &[CatalogModelRow]) -> Vec<serde_json::V
     models
         .iter()
         .map(|m| {
+            // 引擎没说窗口（0）→ 写兜底值，不能写 0（见 ZCODE_UNKNOWN_CONTEXT_WINDOW：
+            // 0 会让 zcode 整层 personal provider 配置解析失败）。
+            let context_window = if m.context_window > 0 {
+                m.context_window
+            } else {
+                ZCODE_UNKNOWN_CONTEXT_WINDOW
+            };
             let mut config = serde_json::json!({
                 "enabled": true,
                 "properties": {
-                    "contextWindow": m.context_window,
+                    "contextWindow": context_window,
                     "inputFormat": {
                         "supportsText": true,
                         "supportsImage": m.images,
@@ -3985,6 +3999,36 @@ official_marketplace_auto_installed = true\n";
                 .count(),
             1
         );
+    }
+
+    /// 引擎没报窗口（0）时不能把 0 原样写进个人层：zcode 的 zod 要求
+    /// contextWindow > 0，一条 0 就让整层降级空配置，用户所有 provider 消失。
+    #[test]
+    fn zcode_model_rules_fallback_when_context_window_unknown() {
+        let models = vec![CatalogModelRow {
+            id: "mystery-model".to_string(),
+            context_window: 0,
+            max_output: 0,
+            images: false,
+        }];
+        let rules = zcode_marionette_model_rules(&models);
+        assert_eq!(rules.len(), 1);
+        let window = rules[0]["config"]["properties"]["contextWindow"]
+            .as_u64()
+            .expect("contextWindow must be a number");
+        assert_eq!(window, ZCODE_UNKNOWN_CONTEXT_WINDOW);
+        assert!(window > 0, "zcode schema requires contextWindow > 0");
+        // max_output 未知时同样不写 0 的 optionSpecs。
+        assert!(rules[0]["config"].get("optionSpecs").is_none());
+
+        // 合并结果里也不允许出现 0（含用户已有文件被整体重写的情况）。
+        let (merged, _) = zcode_merge_provider_config(None, 3425, &models);
+        let parsed: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        let window = parsed["config"]["modelConfigRules"]["providerModelRules"][0]["config"]
+            ["properties"]["contextWindow"]
+            .as_u64()
+            .unwrap();
+        assert_eq!(window, ZCODE_UNKNOWN_CONTEXT_WINDOW);
     }
 
     /// 移除：三处托管位全清、用户内容保真；没文件/没托管段 → no-op。

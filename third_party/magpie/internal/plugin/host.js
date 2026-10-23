@@ -26,7 +26,7 @@
 // plugin's getAuth, client.auth.set and loader see that account alone.
 
 import { AsyncLocalStorage } from "node:async_hooks"
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import dns from "node:dns"
 import fs from "node:fs"
 import http2 from "node:http2"
@@ -2168,14 +2168,103 @@ async function fresh(provider, key) {
   clearTimeout(t)
 }
 
+// Each magpie process runs a host of its own (the gateway, a CLI's quota
+// or usage, a host restarting), and each renews the same sign-in when it
+// comes due: a vendor that spends a refresh token once turned the second
+// away, and the account was marked signed out under the token the first
+// had saved (plugins #331). So a renewal is made under a lock file of the
+// account's beside plugin-auth.json, held across the plugin's refresh,
+// and the sign-in is read again under it. The lock names its holder's pid:
+// one whose holder is gone is taken over at once, and one held longer
+// than RENEW_LOCK_STALE by anyone.
+const RENEW_LOCK_STALE = 60 * 1000
+
+function alive(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (e) {
+    return e?.code === "EPERM" // someone else's process
+  }
+}
+
+async function lockRenew(key) {
+  const lock = `${authPath}.renew-${createHash("sha256").update(key).digest("hex").slice(0, 16)}.lock`
+  const me = JSON.stringify({ pid: process.pid, at: Date.now(), n: randomUUID() })
+  fs.mkdirSync(path.dirname(authPath), { recursive: true })
+  for (let start = Date.now(), wait = 10; ; wait = Math.min(wait * 2, 500)) {
+    try {
+      fs.writeFileSync(lock, me, { flag: "wx", mode: 0o600 })
+      return () => {
+        try {
+          if (fs.readFileSync(lock, "utf8") === me) fs.unlinkSync(lock)
+        } catch {}
+      }
+    } catch (e) {
+      if (!["EEXIST", "EPERM", "EACCES"].includes(e?.code)) throw e
+    }
+    let raw = null
+    let h = null
+    let age = 0
+    try {
+      raw = fs.readFileSync(lock, "utf8")
+      age = Date.now() - fs.statSync(lock).mtimeMs
+      h = JSON.parse(raw)
+    } catch {}
+    // a holder gone, or one too long at it; a file not written yet is
+    // judged by its age
+    const stale = Number.isInteger(h?.pid) ? !alive(h.pid) || Date.now() - h.at > RENEW_LOCK_STALE : age > RENEW_LOCK_STALE
+    if (raw !== null && (stale || Date.now() - start > 2 * RENEW_LOCK_STALE)) {
+      try {
+        if (fs.readFileSync(lock, "utf8") === raw) fs.unlinkSync(lock)
+      } catch {}
+      continue
+    }
+    await new Promise((ok) => setTimeout(ok, wait))
+  }
+}
+
+// changed says the sign-in now isn't was any longer: signed out, signed
+// in again or renewed, by this host or another.
+function changed(now, was) {
+  return !now || secretOf(now) !== secretOf(was) || now.access !== was.access
+}
+
 async function renew(provider, key, a) {
   const was = readAuth()[key]
   const at = renewAt(a, was)
   if (!at || Date.now() < at) return // renewed meanwhile
+  const unlock = await lockRenew(key)
+  try {
+    await renewLocked(provider, key, a, was)
+  } finally {
+    unlock()
+  }
+}
+
+async function renewLocked(provider, key, a, was) {
+  // read past authSeen: another host renewed it while this one waited,
+  // and its token stands
+  const now = readAuthState().all[key]
+  if (changed(now, was)) {
+    unrenewed.delete(key)
+    forgetAccount(key)
+    return
+  }
+  const at = renewAt(a, now)
+  if (!at || Date.now() < at) return
+  was = now
   let got
   try {
     got = await inScope(provider, key, () => a.refresh(JSON.parse(JSON.stringify(was)), provider))
   } catch (e) {
+    // the token was spent by a host that didn't wait for this one's lock
+    // (a magpie from before it) and saved what it got: not signed out
+    if (changed(readAuthState().all[key], was)) {
+      send({ event: "log", level: "error", message: `${auths().get(provider)?.spec ?? provider}: auth.refresh: ${e?.message ?? e} (renewed elsewhere meanwhile)` })
+      forgetAccount(key)
+      return
+    }
     unrenewed.set(key, { at: Date.now(), secret: secretOf(was), gone: e?.signIn === "expired" })
     if (e?.signIn === "expired") send({ event: "signIn", provider, account: key, said: "expired" })
     send({ event: "log", level: "error", message: `${auths().get(provider)?.spec ?? provider}: auth.refresh: ${e?.message ?? e}` })
@@ -2187,8 +2276,7 @@ async function renew(provider, key, a) {
   // nothing comes between the two.
   const { type: _t, ...fields } = got
   const kept = changeAuth((all) => {
-    const now = all[key]
-    if (!now || secretOf(now) !== secretOf(was) || now.access !== was.access) return false
+    if (changed(all[key], was)) return false
     all[key] = { ...was, ...fields, type: "oauth" }
   })
   if (kept === false) return

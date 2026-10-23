@@ -91,9 +91,6 @@ type ProjectShelfProps = {
   pinnedProjectId?: string | null;
   collapsed: boolean;
   theme: ThemeMode;
-  /** Session ids matched by transcript search (null = no active query). */
-  searchHitIds?: string[] | null;
-  onSearchQueryChange?: (query: string) => void;
   onCollapse: () => void;
   onExpand: () => void;
   onToggleTheme: () => void;
@@ -180,8 +177,6 @@ export function ProjectShelf({
   proxyConfig = null,
   onSaveProxy,
   onTestProxy,
-  searchHitIds = null,
-  onSearchQueryChange,
   defaultFolderPath = "",
   chatSessions = [],
   onChatSessionSelect,
@@ -600,17 +595,14 @@ export function ProjectShelf({
     if (!q) {
       return { projects, sessionsByProject: null as Map<string, Session[]> | null };
     }
-    const hitSet = searchHitIds ? new Set(searchHitIds) : null;
     const sessionsByProject = new Map<string, Session[]>();
     const projectIds = new Set<string>();
 
+    // Titles only: the box filters the names drawn in the shelf (project name,
+    // session title). Transcript content is out of scope here — matching it
+    // meant reading every transcript on each keystroke.
     for (const session of sessions) {
-      const metaMatch =
-        session.label.toLowerCase().includes(q) ||
-        session.agentId.toLowerCase().includes(q) ||
-        agentLabel(session.agentId).toLowerCase().includes(q);
-      const transcriptMatch = hitSet?.has(session.id) ?? false;
-      if (metaMatch || transcriptMatch) {
+      if (session.label.toLowerCase().includes(q)) {
         projectIds.add(session.projectId);
         const list = sessionsByProject.get(session.projectId) ?? [];
         list.push(session);
@@ -619,7 +611,7 @@ export function ProjectShelf({
     }
 
     for (const project of projects) {
-      if (project.name.toLowerCase().includes(q) || project.rootPath.toLowerCase().includes(q)) {
+      if (project.name.toLowerCase().includes(q)) {
         projectIds.add(project.id);
         if (!sessionsByProject.has(project.id)) {
           sessionsByProject.set(
@@ -634,7 +626,7 @@ export function ProjectShelf({
       projects: projects.filter((p) => projectIds.has(p.id)),
       sessionsByProject,
     };
-  }, [agents, projects, query, searchHitIds, sessions]);
+  }, [projects, query, sessions]);
 
   const toggleProject = (projectId: string) => {
     setCollapsedProjects((current) => {
@@ -888,14 +880,8 @@ export function ProjectShelf({
   const visibleChatSessions = useMemo(() => {
     if (!searching) return chatSessions;
     const q = query.trim().toLowerCase();
-    const hitSet = searchHitIds ? new Set(searchHitIds) : null;
-    return chatSessions.filter((session) =>
-      hitSet?.has(session.id) ||
-      session.label.toLowerCase().includes(q) ||
-      session.agentId.toLowerCase().includes(q) ||
-      session.cwd.toLowerCase().includes(q),
-    );
-  }, [chatSessions, query, searchHitIds, searching]);
+    return chatSessions.filter((session) => session.label.toLowerCase().includes(q));
+  }, [chatSessions, query, searching]);
   // Pin the Explorer "open here" project to the top of the shelf (still filterable).
   const allVisibleProjects = useMemo(() => {
     const list = filtered.projects;
@@ -905,6 +891,14 @@ export function ProjectShelf({
     return [pinned, ...list.filter((p) => p.id !== pinnedProjectId)];
   }, [filtered.projects, pinnedProjectId]);
   // Projects always fully listed; only sessions inside a project use Show more/less.
+
+  /**
+   * A query that matched nothing anywhere in the shelf. The "no match" line is
+   * shelf-wide but lives in the project list, so it must stay quiet while the
+   * Chat list below is showing its own hits.
+   */
+  const noShelfMatch =
+    searching && allVisibleProjects.length === 0 && visibleChatSessions.length === 0;
 
   return (
     <>
@@ -919,12 +913,8 @@ export function ProjectShelf({
             type="search"
             value={query}
             placeholder="Search threads…"
-            aria-label="Search threads"
-            onChange={(event) => {
-              const next = event.target.value;
-              setQuery(next);
-              onSearchQueryChange?.(next);
-            }}
+            aria-label="Search thread titles"
+            onChange={(event) => setQuery(event.target.value)}
           />
         </label>
       </div>
@@ -936,10 +926,11 @@ export function ProjectShelf({
       </button>
 
       <div className="project-list custom-scrollbar scrollbar-autohide" aria-label="Projects with sessions">
-        {allVisibleProjects.length === 0 && (
-          <div className="project-list__empty">
-            {searching ? `No threads match “${query.trim()}”` : "No projects yet"}
-          </div>
+        {allVisibleProjects.length === 0 && !searching && (
+          <div className="project-list__empty">No projects yet</div>
+        )}
+        {noShelfMatch && (
+          <div className="project-list__empty">No threads match “{query.trim()}”</div>
         )}
         {allVisibleProjects.map((project) => {
           const rawSessions =
@@ -1313,10 +1304,8 @@ export function ProjectShelf({
             )}
           </div>
           <div className="chat-list custom-scrollbar scrollbar-autohide" aria-label="Chat conversations">
-            {visibleChatSessions.length === 0 && (
-              <div className="chat-list__empty">
-                {searching ? `没有匹配的对话 “${query.trim()}”` : "暂无对话"}
-              </div>
+            {visibleChatSessions.length === 0 && !searching && (
+              <div className="chat-list__empty">暂无对话</div>
             )}
             {sortSessionsNewestFirst(visibleChatSessions).map((session) => {
               const busy = sessionIsBusy(session.status);
