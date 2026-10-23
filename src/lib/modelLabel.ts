@@ -175,13 +175,15 @@ function familyGroup(text: string): string | null {
   return hit ? hit.group : null;
 }
 
-/** Provider path prefix of `provider/model` (and pi-ai `provider::model`) ids
- *  and labels. The `::` form is DSH's native bridge id (`marionette::<id>`). */
+/** Provider path prefix of `provider/model` (pi-ai `provider::model` and
+ *  zcode `provider\model`) ids and labels. The `::` form is DSH's native
+ *  bridge id (`marionette::<id>`); the `\` form is ZCode's. */
 function pathPrefix(model: Pick<ModelDef, "id" | "label">): string | null {
   const leading = (text: string): string => {
     const trimmed = text.trim();
     if (trimmed.includes("::")) return trimmed.split("::")[0];
-    return trimmed.includes("/") ? trimmed.split("/")[0] : "";
+    if (trimmed.includes("/")) return trimmed.split("/")[0];
+    return trimmed.includes("\\") ? trimmed.split("\\")[0] : "";
   };
   const idPart = leading(model.id);
   const labelPart = leading(model.label);
