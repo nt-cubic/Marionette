@@ -159,6 +159,14 @@ pub fn current_exe_string() -> Result<String, String> {
 /// Returns `true` if this process should continue as the primary UI.
 /// Returns `false` after handing off to an already-running instance (caller should exit).
 pub fn acquire_single_instance_or_handoff(open_path: Option<&str>) -> bool {
+    // A dev build exists to run next to the installed app: both read the same
+    // global dir, so the lock would hand the dev window off to the release
+    // process and the dev build would exit without a window. Debug-only, so a
+    // second release start still focuses the running one.
+    if cfg!(debug_assertions) && std::env::var("MARIONETTE_DEV_INSTANCE").is_ok() {
+        return true;
+    }
+
     let Some(lock_path) = instance_lock_file() else {
         return true;
     };
@@ -333,7 +341,7 @@ fn windows_is_registered() -> bool {
 }
 
 #[cfg(windows)]
-fn reg_set_string(subkey: &str, value_name: Option<&str>, data: &str) -> Result<(), String> {
+pub(crate) fn reg_set_string(subkey: &str, value_name: Option<&str>, data: &str) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
     use windows_sys::Win32::System::Registry::{

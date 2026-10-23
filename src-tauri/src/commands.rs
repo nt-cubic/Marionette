@@ -2886,11 +2886,42 @@ pub fn bridge_list_models(agent_id: String) -> crate::model_bridge::BridgeModels
     ) {
         crate::engine::ensure_bridge_ready_if_installed(std::time::Duration::from_secs(5));
     }
+    let _ = crate::engine::sync_discovered_sources();
     let result = crate::model_bridge::list_models(&agent_id);
     // B4-2 漂移防线：按 source 对比指纹存档，变化记 dev.log（只记日志，失败
     // 不影响目录本身）。
     crate::model_bridge::note_catalog_drift(&result);
     result
+}
+
+#[tauri::command(async)]
+pub fn bridge_add_custom_provider(label: String, key: String, config: crate::credentials::CustomProviderConfig) -> Result<(),String> {
+    crate::credentials::add_custom_provider(&label,&key,config)?;
+    crate::engine::reregister_key_providers();
+    Ok(())
+}
+
+#[tauri::command(async)]
+pub fn model_library_scan() -> serde_json::Value {
+    let mut discovery = crate::model_sources::discover();
+    discovery.warnings.extend(crate::engine::sync_discovered_sources());
+    let aliases=crate::engine::model_source_aliases(&discovery.sources);
+    serde_json::json!({ "sources": discovery.sources.into_iter().map(|s|s.view).collect::<Vec<_>>(), "warnings": discovery.warnings, "paths": discovery.paths, "aliases": aliases, "accounts": discovery.accounts })
+}
+
+#[tauri::command(async)]
+pub fn model_library_check_source(id: String) -> serde_json::Value {
+    crate::model_sources::check_source(&id)
+}
+
+#[tauri::command(async)]
+pub fn model_library_preferences() -> Result<serde_json::Value,String> {
+    crate::model_sources::load_preferences()
+}
+
+#[tauri::command(async)]
+pub fn model_library_save_preferences(preferences: serde_json::Value) -> Result<(),String> {
+    crate::model_sources::save_preferences(preferences)
 }
 
 /// Bind (or unbind: `selection = None`) a session to a cross-use model.
@@ -3266,4 +3297,9 @@ mod tests {
         assert!(resolve_image_path(root.join("b.png").to_str().unwrap()).is_err());
         let _ = fs::remove_dir_all(&root);
     }
+}
+
+#[tauri::command(async)]
+pub fn model_library_set_environment(source_id: String, name: String, value: String) -> Result<(), String> {
+    crate::model_sources::set_environment(&source_id, &name, &value)
 }

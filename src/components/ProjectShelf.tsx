@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Bell, BellOff, ChevronDown, ChevronRight, CloudMoon, Folder, FolderOpen, Globe, GripVertical, KeyRound, MessageSquare, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, SunMedium, Trash2, X, Zap } from "lucide-react";
+import { Bell, BellOff, ChevronDown, ChevronRight, CloudMoon, Folder, FolderOpen, Globe, GripVertical, KeyRound, MessageSquare, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, SlidersHorizontal, SunMedium, Trash2, X, Zap } from "lucide-react";
 // Refresh on a project row folds CLI history into the normal session list.
 import type { AgentConfig, Project, ProxyConfig, ProxyTestResult, Session } from "../lib/types";
 import { themeToggleTitle, type ThemeMode } from "../lib/theme";
@@ -9,6 +9,7 @@ import { loadCollapsedProjectIds, saveCollapsedProjectIds } from "../lib/uiResto
 import { engineEnable, engineStatus, engineStop, telegramAcceptPairing, telegramDismissPairing, telegramResetPairing, telegramSave, telegramStatus, type EngineStatus, type TelegramPrefs, type TelegramStatus } from "../lib/api";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { CredentialsDialog } from "./CredentialsDialog";
+import { ModelLibraryDialog } from "./ModelLibraryDialog";
 import { SplitBesideMenu, type OpenBesideEdge } from "./SplitBesideMenu";
 import type { DropEdge } from "../lib/splitWorkspace";
 
@@ -268,6 +269,7 @@ export function ProjectShelf({
   };
   /** Credentials (cross-agent bridge) dialog — key scan + manual keys. */
   const [credentialsOpen, setCredentialsOpen] = useState(false);
+  const [modelLibraryOpen, setModelLibraryOpen] = useState(false);
 
   /**
    * Cross-use gateway (engine) popover. The engine auto-starts with the app
@@ -1480,7 +1482,7 @@ export function ProjectShelf({
           {engineRunning ? (
             <>
               <div className="proxy-popover__hint">
-                当前所有的 Agent Harness 都能直接使用已登录的各家订阅与 API 了。
+                已连接模型共享。可在「模型与来源」查看已发现的配置和可用模型。
               </div>
               {engineState?.reused ? (
                 <div className="proxy-popover__hint">
@@ -1515,6 +1517,9 @@ export function ProjectShelf({
             </button>
           )}
           <div className="engine-popover__footer">
+            <button type="button" className="engine-popover__link" onClick={() => { setEngineOpen(false); setModelLibraryOpen(true); }}>
+              <SlidersHorizontal size={11} aria-hidden /> 模型与来源 · 显示和排序…
+            </button>
             <button
               type="button"
               className="engine-popover__link"
@@ -1704,6 +1709,7 @@ export function ProjectShelf({
     {credentialsOpen && (
       <CredentialsDialog agents={agents} onClose={() => setCredentialsOpen(false)} />
     )}
+    {modelLibraryOpen && <ModelLibraryDialog agents={agents} onClose={() => setModelLibraryOpen(false)} onManageSources={() => { setModelLibraryOpen(false); setCredentialsOpen(true); }} />}
     {pendingDelete && (
       <ConfirmDialog
         title={

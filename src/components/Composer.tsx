@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { Expand, Plus, Search, SendHorizontal, Shrink, Square } from "lucide-react";
+import { Expand, Plus, Search, SendHorizontal, Settings2, Shrink, Square } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -38,15 +38,10 @@ import {
   type PreflightResult,
 } from "../lib/api";
 import {
-  bridgeGroupTitle,
   bridgePresetFor,
-  bridgePresetLabel,
-  bridgeSourceGroupTitle,
-  crossUseModelKey,
-  engineProviderLabel,
   getBridgeModels,
+  invalidateBridgeModels,
   resolveBridgeSources,
-  stripBridgeGroupPrefix,
 } from "../lib/bridge";
 import {
   getCachedAgentVersions,
@@ -61,9 +56,9 @@ import {
   invalidateCapsIfAgentUpdated,
 } from "../lib/capabilityCache";
 import { detectCapabilityDrift } from "../lib/capabilityDrift";
+import { ensureModelSources, expandHiddenProviders, libraryGroups, refreshModelSources, visibleLibraryGroups, useModelLibrary } from "../lib/modelLibrary";
 import { modeTone } from "../lib/modeTone";
 import {
-  groupModelsByProvider,
   modelProviderGroup,
   modelRowLabel,
   modelTooltip,
@@ -90,6 +85,8 @@ import {
   type DelegateCandidate,
 } from "../lib/delegate";
 import { ProviderConfigDialog } from "./ProviderConfigDialog";
+import { ModelLibraryDialog } from "./ModelLibraryDialog";
+import { CredentialsDialog } from "./CredentialsDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ImageAnnotator } from "./ImageAnnotator";
 import { CustomAgentDialog } from "./CustomAgentDialog";
@@ -233,8 +230,6 @@ const OPENCODE_AUTH_AGENTS = new Set(["opencode"]);
  * working after a restart), but the picker never shows them there: the
  * cross-use sections are the single entry point for shared models.
  */
-const isBridgeNativeModel = (id: string) =>
-  id.startsWith("marionette/") || id.startsWith("marionette::");
 
 function formatRecentTime(timestamp: number): string {
   const diff = Date.now() - timestamp;
@@ -373,15 +368,7 @@ const OPTION_PIN_MS = 4000;
  * `hasPresetModels` false means the source's model list is not enumerable
  * (custom-id-only, e.g. openrouter): the group renders a hint line instead.
  */
-type CrossUseGroup = {
-  key: string;
-  title: string;
-  entryId: string;
-  fromScan: boolean;
-  hasPresetModels: boolean;
-  sampleModelId: string;
-  models: BridgeModel[];
-};
+
 
 /**
  * Keep the dialog's saved choice on the chips even when the agent reports its
@@ -518,6 +505,7 @@ export function Composer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
+  const { preferences: modelPreferences, sources: modelSources, aliases: modelAliases, accounts: engineAccounts } = useModelLibrary();
   const [caps, setCaps] = useState<CapabilitySnapshot | null>(initialCaps);
   const [currentMode, setCurrentMode] = useState<string | null>(initialCaps?.currentMode ?? null);
   const [currentModel, setCurrentModel] = useState<string | null>(initialCaps?.currentModel ?? null);
@@ -586,6 +574,9 @@ export function Composer({
   /** Enter sends immediately instead of Ctrl+Enter. Persisted globally. */
   const [sendOnEnter, setSendOnEnter] = useState(readSendOnEnter);
   const [showProviderDialog, setShowProviderDialog] = useState(false);
+  /** Opened from the model menu — display/order settings for every source. */
+  const [showModelLibrary, setShowModelLibrary] = useState(false);
+  const [showSourcesDialog, setShowSourcesDialog] = useState(false);
   /** A key was added/removed this visit — the agent must restart to see it. */
   const [providerKeysDirty, setProviderKeysDirty] = useState(false);
   /**
@@ -1960,7 +1951,7 @@ export function Composer({
 
   // ── Derived state ──────────────────────────────────────────────────────────
   const hasModes = caps != null && caps.modes.length > 1;
-  const hasModels = caps != null && caps.models.length > 0;
+  const hasModels = (caps?.models.length ?? 0) > 0 || (bridgeCatalog?.models.length ?? 0) > 0;
   const effortOptions = caps?.effortOptions ?? [];
   const agentSupplement = getAcpSupplement(agent.id);
   const alwaysApproveSpec = agentSupplement?.alwaysApprove ?? null;
@@ -2025,12 +2016,19 @@ export function Composer({
     : hasEffort && currentEffort != null
       ? effortLabel(currentEffort)
       : null;
+  const allLibraryGroups = useMemo(() => libraryGroups(agent.id, caps?.models ?? [], bridgeCatalog, modelSources, modelAliases, engineAccounts), [agent.id, caps?.models, bridgeCatalog, modelSources, modelAliases, engineAccounts]);
+  // Settings saved before a source merge still name the old provider/row keys;
+  // migrate them against this catalog so hiding and order survive the merge.
+  const effectiveModelPreferences = useMemo(() => expandHiddenProviders(modelPreferences, allLibraryGroups), [modelPreferences, allLibraryGroups]);
+  const displayLibraryModel = allLibraryGroups.flatMap(group => group.rows.map(row => ({ group, row }))).find(({ row }) =>
+    bridgeActive && bridgeSelection ? row.bridge?.entryId === bridgeSelection.entryId && row.bridge.modelId === bridgeSelection.modelId
+      : row.native?.id === displayModel || (row.bridge != null && displayModel === nativeBridgeModelId(row.bridge.modelId)));
   const displayModelDef =
     displayModel && caps?.models
       ? caps.models.find((m) => m.id === displayModel)
       : undefined;
   const displayModelFull = displayModelDef?.label || displayModel;
-  const displayModelLabel = displayModelDef
+  const displayModelLabel = displayLibraryModel ? `${displayLibraryModel.group.label} · ${displayLibraryModel.row.label}` : displayModelDef
     ? prettyModelChip(displayModelDef)
     : shortTriggerLabel(displayModelFull, displayModel);
   const displayModelTitle = displayModelDef
@@ -2040,7 +2038,7 @@ export function Composer({
     : (displayModelFull ?? "Choose model");
   /** Cross-use chip display — local state, independent of agent advertisement. */
   const bridgeChipLabel =
-    bridgeActive && bridgeSelection ? `共享 · ${bridgeSelection.label}` : null;
+    bridgeActive && bridgeSelection ? (displayLibraryModel ? `${displayLibraryModel.group.label} · ${displayLibraryModel.row.label}` : bridgeSelection.label) : null;
   const bridgeChipTitle =
     bridgeActive && bridgeSelection
       ? [`共享 · ${bridgeSelection.label}`, bridgeSelection.preset, bridgeSelection.modelId].join("\n")
@@ -2079,165 +2077,26 @@ export function Composer({
     return v.includes("read-only") || v.includes("read_only") || v === "read";
   };
 
-  const modelGroups = useMemo(() => {
-    if (!caps?.models?.length) return [];
-    // Bridge-injected natives stay out of the native list — cross-use sections
-    // own their presentation (and highlight the pinned one).
-    const native = caps.models.filter((m) => !isBridgeNativeModel(m.id));
-    const q = modelQuery.trim().toLowerCase();
-    const filtered = q
-      ? native.filter(
-          (m) =>
-            m.id.toLowerCase().includes(q) ||
-            m.label.toLowerCase().includes(q) ||
-            (m.description ?? "").toLowerCase().includes(q) ||
-            modelProviderGroup(m).toLowerCase().includes(q),
-        )
-      : native;
-    return groupModelsByProvider(filtered);
-  }, [caps?.models, modelQuery]);
-
+  const modelGroups = useMemo(() => visibleLibraryGroups(allLibraryGroups, effectiveModelPreferences, modelQuery), [allLibraryGroups, effectiveModelPreferences, modelQuery]);
   const recentModels = useMemo(() => {
-    if (!caps?.models?.length) return [];
-    const validIds = new Set(
-      caps.models.filter((m) => !isBridgeNativeModel(m.id)).map((m) => m.id),
-    );
-    return getRecentModels(validIds);
-  }, [caps?.models]);
+    const shown = visibleLibraryGroups(allLibraryGroups, effectiveModelPreferences);
+    const ids = new Set(shown.flatMap(group => group.rows.flatMap(row => row.native ? [row.native.id] : [])));
+    return getRecentModels(ids);
+  }, [allLibraryGroups, effectiveModelPreferences]);
+  const crossSections = useMemo(() => ({ customSources: bridgeCatalog ? resolveBridgeSources(bridgeCatalog)
+    .filter(source => {
+      const key = modelAliases[`entry:${source.entryId}`] ?? `entry:${source.entryId}`;
+      return source.entryId !== "engine" && !effectiveModelPreferences.hiddenProviders.includes(key) && !allLibraryGroups.find(group => group.key === key)?.rows.length;
+    })
+    .map(source => ({ entryId: source.entryId, sampleModelId: "provider-model-id", hasPresetModels: false, label: source.label })) : [] }), [bridgeCatalog, effectiveModelPreferences, modelAliases, allLibraryGroups]);
 
-  /**
-   * Cross-use groups — appended after the native ones, never merged into them.
-   * Built per source (`bridge_list_models` → sources): key-plan entries and
-   * scanned references each get one group, and a source with zero preset
-   * models still shows (custom-id-only sources like openrouter) with a hint
-   * line. Older backends without `sources` degrade to one group per preset
-   * derived from the models themselves (resolveBridgeSources).
-   * The active custom binding (id not in the preset catalog) rides along in
-   * its group so the picker keeps showing what the chip shows.
-   */
-  const crossGroups = useMemo<CrossUseGroup[]>(() => {
-    if (!bridgeCatalog) return [];
-    const sources = resolveBridgeSources(bridgeCatalog);
-    const models = bridgeCatalog.models;
-    if (sources.length === 0 && models.length === 0) return [];
-    // Active binding whose id is not in the preset catalog (custom id).
-    const extras: BridgeModel[] = [];
-    if (
-      bridgeSelection &&
-      !models.some(
-        (m) => m.entryId === bridgeSelection.entryId && m.modelId === bridgeSelection.modelId,
-      )
-    ) {
-      extras.push(bridgeSelection);
-    }
-    const q = modelQuery.trim().toLowerCase();
-    const groups: CrossUseGroup[] = [];
-    const covered = new Set<string>();
-    for (const source of sources) {
-      covered.add(source.entryId);
-      const own = models.filter((m) => m.entryId === source.entryId);
-      const pooled = [...own, ...extras.filter((e) => e.entryId === source.entryId)];
-      // A query matches models individually, or the whole group by its
-      // source name; no query keeps every usable source visible.
-      const labelMatch =
-        source.label.toLowerCase().includes(q) || source.preset.toLowerCase().includes(q);
-      const modelMatch = (m: BridgeModel) =>
-        m.modelId.toLowerCase().includes(q) ||
-        m.label.toLowerCase().includes(q) ||
-        m.preset.toLowerCase().includes(q);
-      const shown = !q ? pooled : labelMatch ? pooled : pooled.filter(modelMatch);
-      if (q && shown.length === 0) continue;
-      groups.push({
-        key: source.entryId,
-        title: bridgeSourceGroupTitle(source.label),
-        entryId: source.entryId,
-        fromScan: source.fromScan,
-        hasPresetModels: own.length > 0,
-        sampleModelId: own[0]?.modelId ?? "cat-jam-free",
-        models: shown.slice().sort((x, y) => x.label.localeCompare(y.label)),
-      });
-    }
-    // Active binding on an entry the catalog no longer lists (credential
-    // removed meanwhile) — keep an ad-hoc group so the chip stays explainable.
-    for (const extra of extras) {
-      if (covered.has(extra.entryId)) continue;
-      groups.push({
-        key: `orphan:${extra.entryId}`,
-        title: bridgeGroupTitle(extra.preset || extra.label),
-        entryId: extra.entryId,
-        fromScan: false,
-        hasPresetModels: true,
-        sampleModelId: "cat-jam-free",
-        models: [extra],
-      });
-    }
-    return groups;
-  }, [bridgeCatalog, bridgeSelection, modelQuery]);
-
-  /**
-   * Cross-use menu sections (2026-10-17 user decision): provider-grouped
-   * lists — key/reference sources keep one group each (titled by preset),
-   * the engine source splits into per-provider groups (grok/* → Grok 订阅…).
-   * A model offered both direct AND through the engine collapses to the
-   * direct source (same wire, fewer hops — the flat list duplicated them).
-   * Group headers carry a right-aligned 跨用 mark; custom-id rows stay per
-   * source as a compact footer (binding targets an entry).
-   */
-  const crossSections = useMemo(() => {
-    // Dedup across sources: direct (manual key) > scanned reference > engine.
-    const rank = (group: CrossUseGroup) =>
-      group.entryId === "engine" ? 2 : group.fromScan ? 1 : 0;
-    const ordered = crossGroups.slice().sort((a, b) => rank(a) - rank(b));
-    const seen = new Set<string>();
-    const deduped = ordered.map((group) => ({
-      ...group,
-      models: group.models.filter((m) => {
-        const key = crossUseModelKey(m.entryId, m.modelId);
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      }),
-    }));
-    const byLabel = (a: BridgeModel, b: BridgeModel) => a.label.localeCompare(b.label);
-    type Section = { key: string; title: string; models: BridgeModel[] };
-    const sections: Section[] = [];
-    // Engine → one section per provider prefix.
-    const engine = deduped.find((group) => group.entryId === "engine");
-    if (engine) {
-      const byProvider = new Map<string, BridgeModel[]>();
-      for (const m of engine.models) {
-        const provider = m.modelId.includes("/") ? m.modelId.split("/")[0]! : "engine";
-        const list = byProvider.get(provider) ?? [];
-        list.push(m);
-        byProvider.set(provider, list);
-      }
-      for (const [provider, models] of byProvider) {
-        sections.push({
-          key: `engine:${provider}`,
-          title: engineProviderLabel(provider),
-          models: models.sort(byLabel),
-        });
-      }
-    }
-    // Key / reference sources → one section each, titled by preset label.
-    for (const group of deduped) {
-      if (group.entryId === "engine" || group.models.length === 0) continue;
-      const preset = group.models[0]?.preset;
-      sections.push({
-        key: group.key,
-        title: preset ? bridgePresetLabel(preset) : stripBridgeGroupPrefix(group.title),
-        models: group.models.slice().sort(byLabel),
-      });
-    }
-    sections.sort((a, b) => a.title.localeCompare(b.title));
-    const customSources = deduped.map((group) => ({
-      entryId: group.entryId,
-      sampleModelId: group.sampleModelId,
-      hasPresetModels: group.hasPresetModels,
-      label: stripBridgeGroupPrefix(group.title),
-    }));
-    return { sections, customSources };
-  }, [crossGroups]);
+  // Reopening the menu also picks up sources changed in another window.
+  useEffect(() => {
+    if (menu !== "model") return;
+    let cancelled = false;
+    void ensureModelSources().then(() => getBridgeModels(agent.id)).then(catalog => { if (!cancelled) setBridgeCatalog(catalog); }).catch(error => { if (!cancelled) flash(String(error)); });
+    return () => { cancelled = true; };
+  }, [menu, agent.id, modelSources]);
 
   /** Backend explanation when cross-use is not available for this agent (e.g. codex M2). */
   const bridgeNote = bridgeCatalog?.note?.trim() || null;
@@ -3129,85 +2988,30 @@ export function Composer({
                               {!modelQuery.trim() && recentModels.length > 0 && (
                                 <span className="composer-menu__divider" />
                               )}
-                              {modelGroups.length === 0 && crossGroups.length === 0 && (
-                                <div className="composer-menu__empty">No models match “{modelQuery}”</div>
+                              {modelGroups.length === 0 && crossSections.customSources.length === 0 && (
+                                <div className="composer-menu__empty">{modelQuery ? `没有匹配“${modelQuery}”的模型` : "没有显示的模型，可在模型共享中调整显示设置"}</div>
                               )}
-                              {modelGroups.map((group) => (
-                                <div className="composer-menu__group" key={group.provider}>
-                                  <span className="composer-menu__label">{group.provider}</span>
-                                  {group.models.map((m) => {
-                                    const selected = !bridgeActive && displayModel === m.id;
-                                    return (
-                                      <button
-                                        key={m.id}
-                                        className={selected ? "is-selected" : ""}
-                                        type="button"
-                                        role="option"
-                                        aria-selected={selected}
-                                        title={modelTooltip(m)}
-                                        onClick={() => {
+                              {modelGroups.map(group => (
+                                <div className="composer-menu__group" key={group.key}>
+                                  <span className="composer-menu__label">{group.label}</span>
+                                  {group.rows.map(row => {
+                                    const m = row.native;
+                                    const shared = row.bridge;
+                                    const selected = m ? !bridgeActive && displayModel === m.id : shared != null && ((bridgeSelection?.entryId === shared.entryId && bridgeSelection.modelId === shared.modelId) || currentModel === nativeBridgeModelId(shared.modelId));
+                                    return <button key={row.key} className={selected ? "is-selected" : ""} type="button" role="option" aria-selected={selected}
+                                      title={[row.label, row.modelId, row.origin].filter(Boolean).join("\n")}
+                                      onClick={() => {
+                                        if (m) {
                                           const prev = displayModel;
-                                          // Picking a native model drops the cross-use binding.
                                           unbindBridge();
                                           pinOptions({ model: m.id });
                                           setCurrentModel(m.id);
-                                          // Never jump to Effort before the agent re-negotiates
-                                          // options — Haiku drops effort and a stale menu white-screens.
                                           setMenu(null);
-                                          void commitUpdate({ model: m.id }, () => {
-                                            unpinOption("model");
-                                            setCurrentModel(prev);
-                                          });
-                                        }}
-                                      >
-                                        <span className="composer-menu__model-name">{modelRowLabel(m)}</span>
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              ))}
-                              {/* ── Cross-use (跨用) — provider sections + 右上角跨用标记 ── */}
-                              {(crossSections.sections.length > 0 ||
-                                crossSections.customSources.length > 0) &&
-                                modelGroups.length > 0 && (
-                                  <span className="composer-menu__divider" />
-                                )}
-                              {crossSections.sections.map((section) => (
-                                <div className="composer-menu__group" key={section.key}>
-                                  <span className="composer-menu__label composer-menu__label--cross">
-                                    {section.title}
-                                    <span
-                                      className="composer-menu__cross-mark"
-                                      title="共享来源 · 由 Marionette 桥接"
-                                    >
-                                      共享
-                                    </span>
-                                  </span>
-                                  {section.models.map((m) => {
-                                    // Highlight the picked row even after the
-                                    // native pin took over (bridgeActive then
-                                    // yields — the native row is hidden, so
-                                    // this section must carry the selection).
-                                    const selected =
-                                      (bridgeActive &&
-                                        bridgeSelection?.entryId === m.entryId &&
-                                        bridgeSelection?.modelId === m.modelId) ||
-                                      currentModel === nativeBridgeModelId(m.modelId);
-                                    return (
-                                      <button
-                                        key={`${m.entryId}:${m.modelId}`}
-                                        className={selected ? "is-selected" : ""}
-                                        type="button"
-                                        role="option"
-                                        aria-selected={selected}
-                                        title={`${m.label}\n${m.modelId}（共享）`}
-                                        onClick={() => pickBridgeModel(m)}
-                                      >
-                                        <span className="composer-menu__model-name">
-                                          {m.label}
-                                        </span>
-                                      </button>
-                                    );
+                                          void commitUpdate({ model: m.id }, () => { unpinOption("model"); setCurrentModel(prev); });
+                                        } else if (shared) { void pickBridgeModel(shared); }
+                                      }}>
+                                      <span className="composer-menu__model-name">{m ? modelRowLabel(m) : row.label}</span>
+                                    </button>;
                                   })}
                                 </div>
                               ))}
@@ -3268,18 +3072,25 @@ export function Composer({
                               )}
                             </div>
 
-                            {/* ── Add API Key entry at bottom ── */}
+                            {/* ── Configure sources / display at the bottom ── */}
+                            <span className="composer-menu__divider" />
+                            <button
+                              className="composer-menu__add-key-item"
+                              type="button"
+                              title="选择要显示的模型、调整分组与顺序"
+                              onClick={() => { setMenu(null); setShowModelLibrary(true); }}
+                            >
+                              <Settings2 size={13} aria-hidden /> 配置模型与来源…
+                            </button>
                             {usesOpencodeAuth && (
-                              <>
-                                <span className="composer-menu__divider" />
-                                <button
-                                  className="composer-menu__add-key-item"
-                                  type="button"
-                                  onClick={() => { setMenu(null); setShowProviderDialog(true); }}
-                                >
-                                  ＋ 添加 API Key…
-                                </button>
-                              </>
+                              <button
+                                className="composer-menu__add-key-item"
+                                type="button"
+                                title="添加或管理 API Key、查看已发现的配置"
+                                onClick={() => { setMenu(null); setShowProviderDialog(true); }}
+                              >
+                                ＋ 添加 API Key…
+                              </button>
                             )}
                           </>
                         )}
@@ -3768,6 +3579,25 @@ export function Composer({
             // process picks the key up. Batched to dialog close so adding three
             // keys restarts once.
             void onProviderKeysChanged?.();
+          }}
+        />
+      )}
+      {showModelLibrary && (
+        <ModelLibraryDialog
+          agents={agents}
+          onClose={() => setShowModelLibrary(false)}
+          onManageSources={() => { setShowModelLibrary(false); setShowSourcesDialog(true); }}
+        />
+      )}
+      {showSourcesDialog && (
+        <CredentialsDialog
+          agents={agents}
+          onClose={() => {
+            setShowSourcesDialog(false);
+            // Keys and sources feed the picker; re-read them once the dialog
+            // closes so the model menu reflects an added or removed credential.
+            void refreshModelSources().catch(() => undefined);
+            invalidateBridgeModels();
           }}
         />
       )}

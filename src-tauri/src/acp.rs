@@ -519,30 +519,37 @@ impl AcpService {
                     );
                 }
             }
-            // ── DSH 原生跨用（2026-10-20，docs/research-dsh-cross-use.md §8）：
+            // ── DSH 原生跨用（2026-10-22 改版，docs/research-dsh-cross-use.md §8.7）：
             //    与 opencode 的 OPENCODE_CONFIG_CONTENT 同款姿势——不看绑定，
             //    引擎在跑就把 provider「marionette」（openai-completions → 引擎
-            //    /v1）刷新进 dsh 的 home patch（~/.dsh/cordis.patch.yml，standalone
-            //    dsh-acp 与 dsh Web 共享的唯一用户层），令牌同步进
-            //    ~/.dsh/.credentials.yaml refs。模型经 dsh-acp 原生目录广告（id
-            //    形如 marionette::provider/model，首个 :: 切分，斜杠安全——实测），
-            //    前端把该 id 钉成原生偏好。引擎停用则移除路由（不留连不上的
-            //    死条目）；过渡态（Starting/Downloading）文件不动。
+            //    /v1）写进一个**本次进程专用**的 bundle（~/.marionette/dsh-acp-bundle），
+            //    用 `dsh-acp --bundle <dir>` 注入；不再碰 ~/.dsh/cordis.patch.yml。
+            //    原因：home patch 的条目 config 是整条替换，会盖掉用户在 dsh Web
+            //    里配的 pi-ai provider，并让 Web 的保存校验拒绝落盘。bundle 层只
+            //    作用于这次 dsh-acp，Web 的 llm-pi-ai 保持可编辑。
+            //    模型经 dsh-acp 原生目录广告（id 形如 marionette::provider/model，
+            //    首个 :: 切分，斜杠安全——实测），前端把该 id 钉成原生偏好。引擎
+            //    停用则删 bundle（不留连不上的死条目）；过渡态不动文件。
             if matches!(id, "deepseek" | "deepseek-acp") {
                 crate::engine::wake_if_installed();
                 match crate::dsh_bridge::refresh_marionette_route() {
-                    Ok(true) => {
+                    Ok(Some(bundle)) => {
                         child_command
+                            .arg("--bundle")
+                            .arg(&bundle)
                             .env(crate::dsh_bridge::MARIONETTE_TOKEN_ENV, crate::engine::ENGINE_TOKEN);
                         crate::debug_log::append(
                             "bridge",
                             "info",
                             &session_id,
-                            "dsh session bridged via cordis.patch llm-pi-ai route",
-                            Some("provider=marionette"),
+                            "dsh session bridged via --bundle llm-pi-ai route",
+                            Some(&format!(
+                                "provider=marionette bundle={}",
+                                bundle.display()
+                            )),
                         );
                     }
-                    Ok(false) => {}
+                    Ok(None) => {}
                     Err(error) => crate::debug_log::append(
                         "bridge",
                         "warn",
