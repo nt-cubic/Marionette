@@ -1,37 +1,36 @@
-//! DSH（@openma/deepseek-harness-acp）跨用桥 — llm-pi-ai 托管路由写入器。
+//! DSH 跨用桥 —— 用「本次 spawn 的 bundle 层」把 llm-pi-ai 路由 `marionette`
+//! 交给 `dsh-acp`（2026-10-22 改版，旧 home patch 方案见
+//! `docs/research-dsh-cross-use.md` §8.7）。
 //!
-//! 2026-10-20 定稿（docs/research-dsh-cross-use.md §8）。DSH 的跨用不是
-//! ANTHROPIC env 三件套，而是在 dsh 的 home 层 patch
-//! （`~/.dsh/cordis.patch.yml`）挂一条 llm-pi-ai 路由 `marionette`：
+//! 为什么不再写 `~/.dsh/cordis.patch.yml`：
 //!
-//! - `api: openai-completions` + `baseURL: http://127.0.0.1:{port}/v1` 指翻译
-//!   引擎 —— 与 OpenCode 的 provider「marionette」同款端点/令牌配方；
-//! - 模型 id 用引擎目录原样（斜杠形态安全：适配器 `provider::model` 按首个
-//!   `::` 切分，2026-10-20 实测 `marionette::group/auto-claude-haiku-5-5`
-//!   原样出现在 session/new 的模型选项里）；
-//! - 凭据 `apiKeyEnv: MARIONETTE_API_KEY`：dsh-credentials-local 的解析
-//!   顺序是「继承进程 env → `~/.dsh/.credentials.yaml` 的 refs → .env 兜底」，
-//!   spawn 注入 env 已够；仍把常量令牌（字面量 `magpie`，回环非机密）合并进
-//!   refs —— home patch 是 standalone dsh-acp 与 dsh Web/desktop 每个 profile
-//!   共享的唯一用户层，写进 refs 后 dsh Web（没有 Marionette 的 env）也能真实
-//!   走这条路由。
+//! - dsh 的 patch 层序是 bundle → profile patch → **home patch** → CLI overlay，
+//!   同 id 条目的 `config` 是**整条替换**（`cordis-plugin-include` 的
+//!   `target[key] = value`）。home 层一旦声明 `llm-pi-ai`，profile 层的同名
+//!   `config`（用户在 dsh Web 里配的 provider）就被整条盖掉；
+//! - dsh 的 config editor 保存前会把「叠加 home 后的组合值」和表单值做
+//!   deep-equal，不等就拒绝落盘（报 "overridden by a home patch or
+//!   command-line overlay"）——于是 Web 的「添加提供商」整个失效。
 //!
-//! 写入纪律（对齐 `ensure_grok_model_table` 的立场）：
-//! - **文本外科手术，不整档重排**：home patch 允许 `!!js` 标签、注释与用户
-//!   手写内容，serde_yaml 整体解析重写会砸掉它们 —— 只动定位到的最小区域
-//!   （`config.providers.marionette` 子块 / credentials refs 里的一行）。
-//! - **幂等**：产物与原文逐字节一致则零写入。
-//! - **看不懂就不写**：文件形态超出预期（非顶层数组 / refs 内联非空 /
-//!   credentials 是 pre-release 平铺）→ Err 上报，绝不写半截。桥少一条路由
-//!   只是少一批模型，砸了用户文件才是事故。
-//! - 引擎停用（Absent/Failed）时**移除**托管路由：dsh 的菜单会把路由广告成
-//!   原生模型，留着连不上的死条目比没有更糟（与 grok 解绑清表同理由）。
+//! 现在改为：每次 spawn 时生成一个最小 bundle（`package.json` 声明
+//! `dsh.bundle.patch`，`cordis.patch.yml` 只含 `providers.marionette`），用
+//! `dsh-acp --bundle <dir>` 注入。适配器的层序（`bootAcpProfile`）把 bundle
+//! 层放在 home patch 之前、且只作用于本次进程——不写任何全局配置文件，
+//! dsh Web / desktop 的 `llm-pi-ai` 保持完全可编辑。
+//!
+//! 代价（已确认接受）：dsh Web / desktop 看不到 `marionette::*` 模型；这些
+//! 模型只服务 Marionette 自己拉起的 DSH 会话。
+//!
+//! 纪律：
+//! - bundle 内容由引擎目录确定性生成，逐字节幂等（相同输入零写入）；
+//! - 引擎不在跑（Absent/Failed）就删掉 bundle，不留连不上的死路由；
+//! - 旧版写进 home patch 的托管块由 [`migrate_legacy_home_patch`] 一次性清掉
+//!   （先备份原文件）；dsh-acp 的默认模型若指向已消失的 provider 也一并改指
+//!   `marionette`。
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// 托管路由的 provider 名（llm-pi-ai `config.providers` 的键，也是广告 id
-/// `provider::model` 的前缀）。
 pub const MARIONETTE_PROVIDER: &str = "marionette";
 /// 路由的凭据 ref 名（`apiKeyEnv` 指它；值 = 引擎令牌字面量）。
 ///
@@ -40,86 +39,338 @@ pub const MARIONETTE_PROVIDER: &str = "marionette";
 /// apiKeyEnv** ——起名 `MARIONETTE_ENGINE_TOKEN` 时模型广告/切换都正常，
 /// 真发消息却在请求前 2ms 被拒 "Authentication required"（2026-10-20 实测
 /// 踩坑）。dsh-llm-pi-ai 的路由解析与这个约定殊途同归，一个名字两处都认。
+///
+/// 现在只靠 spawn 注入的进程 env 解析（env 优先于 `~/.dsh/.credentials.yaml`），
+/// 不再往用户的凭据文件里写 ref。
 pub const MARIONETTE_TOKEN_ENV: &str = "MARIONETTE_API_KEY";
-/// 我们创建的 entry 前置标记行（移除时识别「整个 entry 是我们的」）。
-const MANAGED_MARKER: &str = "# managed-by: marionette-bridge";
-/// 首次建文件时写的说明行（移除托管 entry 时一并收走，不留「块在下面」
-/// 的孤儿说明）。
-const MANAGED_HEADER: &str =
-    "# Marionette model-share route (managed block below — regenerated on each dsh spawn while the engine runs)";
+
+/// bundle 目录名（`~/.marionette/dsh-acp-bundle`）。
+const BUNDLE_DIR_NAME: &str = "dsh-acp-bundle";
+const BUNDLE_MANIFEST: &str = "package.json";
+const BUNDLE_PATCH: &str = "cordis.patch.yml";
+
+/// 旧 home patch 方案留下的标记行。
+const LEGACY_MARKER: &str = "# managed-by: marionette-bridge";
+/// 旧方案的说明注释（紧挨标记行，同属托管块）。
+const LEGACY_HEADER_PREFIX: &str = "# Marionette model-share route";
+
+/// dsh-acp 持久化的默认模型（provider/model 分开存）。
+const STANDALONE_MODEL_FILE: &str = "acp-standalone-model.json";
+
+const MANIFEST_JSON: &str = r#"{
+  "name": "marionette-dsh-acp-bundle",
+  "version": "0.0.0",
+  "private": true,
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
+"#;
+
+pub fn bundle_dir() -> Option<PathBuf> {
+    Some(crate::app_paths::global_dir().ok()?.join(BUNDLE_DIR_NAME))
+}
 
 pub fn dsh_patch_path() -> Option<PathBuf> {
     Some(crate::acp::dsh_home()?.join("cordis.patch.yml"))
 }
 
-pub fn dsh_credentials_path() -> Option<PathBuf> {
-    Some(crate::acp::dsh_home()?.join(".credentials.yaml"))
+pub fn dsh_standalone_model_path() -> Option<PathBuf> {
+    Some(crate::acp::dsh_home()?.join(STANDALONE_MODEL_FILE))
 }
 
-/// spawn 时刻入口（acp.rs 的 DSH 分支）：按引擎现状收敛托管路由。
+/// spawn 时刻入口（acp.rs 的 DSH 分支）。
 ///
-/// - Running 且目录非空 → 刷新路由 + 令牌 refs → `Ok(true)`（调用方注入 env）；
-/// - Absent / Failed → 移除托管路由（dsh 菜单不留死条目）→ `Ok(false)`；
-/// - Starting / Downloading / 目录暂空 → 文件不动（过渡态，下一次 spawn 收敛；
-///   与 opencode「引擎睡着就不注入」同款降级姿势）。
-pub fn refresh_marionette_route() -> Result<bool, String> {
-    let patch = dsh_patch_path().ok_or_else(|| "无法定位用户目录".to_string())?;
-    let credentials = dsh_credentials_path().ok_or_else(|| "无法定位用户目录".to_string())?;
+/// - 引擎 Running 且目录非空 → 重写 bundle → `Ok(Some(dir))`（调用方加
+///   `--bundle <dir>` 并注入 [`MARIONETTE_TOKEN_ENV`]）；
+/// - 引擎 Absent/Failed → 删 bundle（不留连不上的死路由）→ `Ok(None)`；
+/// - Starting/Downloading 或目录暂空 → 文件不动，`Ok(None)`。
+pub fn refresh_marionette_route() -> Result<Option<PathBuf>, String> {
+    let dir = bundle_dir().ok_or_else(|| "无法定位用户目录".to_string())?;
     match crate::engine::status() {
         crate::engine::EngineStatus::Running { port, .. } => {
             let models = crate::engine::catalog_direct_entries();
             if models.is_empty() {
-                return Ok(false);
+                return Ok(None);
             }
-            ensure_route_at(&patch, &credentials, port, &models)?;
-            Ok(true)
+            ensure_bundle_at(&dir, port, &models)?;
+            // 旧 home patch 若还残留（启动迁移失败/旧版本又写过一次），顺手清掉。
+            if let Err(error) = migrate_legacy_home_patch() {
+                crate::debug_log::append(
+                    "bridge",
+                    "warn",
+                    "",
+                    "legacy dsh home-patch cleanup failed",
+                    Some(&error),
+                );
+            }
+            match migrate_standalone_default_model(&models) {
+                Ok(true) => crate::debug_log::append(
+                    "bridge",
+                    "info",
+                    "",
+                    "dsh-acp default model re-pointed at marionette route",
+                    None,
+                ),
+                Ok(false) => {}
+                Err(error) => crate::debug_log::append(
+                    "bridge",
+                    "warn",
+                    "",
+                    "dsh-acp default model migration failed",
+                    Some(&error),
+                ),
+            }
+            Ok(Some(dir))
         }
         crate::engine::EngineStatus::Starting
-        | crate::engine::EngineStatus::Downloading { .. } => Ok(false),
+        | crate::engine::EngineStatus::Downloading { .. } => Ok(None),
         crate::engine::EngineStatus::Absent | crate::engine::EngineStatus::Failed { .. } => {
-            remove_marionette_route_at(&patch)?;
-            Ok(false)
+            remove_bundle_at(&dir)?;
+            Ok(None)
         }
     }
 }
 
-/// ensure 的本体（路径注入）：刷新 home patch 的 `marionette` 路由与
-/// credentials refs。两个文件各自幂等；任一写入失败 → Err（调用方 warn，
-/// 本次 spawn 不注入 env）。
-fn ensure_route_at(
-    patch_path: &Path,
-    credentials_path: &Path,
+// ─── bundle 生成 ─────────────────────────────────────────────────────────────
+
+fn ensure_bundle_at(
+    dir: &Path,
     port: u16,
     models: &[crate::model_bridge::CatalogModelRow],
 ) -> Result<(), String> {
     if models.is_empty() {
         return Err("引擎目录为空，拒绝写 dsh 路由".to_string());
     }
-    // 先令牌后路由：refs 就位后路由才对外可见，dsh Web 不经历「有路由没凭据」。
-    let original = read_optional(credentials_path)?;
-    let next = merge_credentials_refs(&original)?;
-    if next != original {
-        crate::model_bridge::write_text_atomic_pub(credentials_path, &next)
-            .map_err(|e| format!("写入 dsh .credentials.yaml 失败: {e}"))?;
-    }
-    let original = read_optional(patch_path)?;
-    let next = merge_home_patch(&original, port, models)?;
-    if next != original {
-        crate::model_bridge::write_text_atomic_pub(patch_path, &next)
-            .map_err(|e| format!("写入 cordis.patch.yml 失败: {e}"))?;
-    }
+    fs::create_dir_all(dir)
+        .map_err(|e| format!("创建 bundle 目录 {} 失败: {e}", dir.display()))?;
+    write_if_changed(&dir.join(BUNDLE_MANIFEST), MANIFEST_JSON)?;
+    write_if_changed(&dir.join(BUNDLE_PATCH), &patch_text(port, models))?;
     Ok(())
 }
 
-fn read_optional(path: &Path) -> Result<String, String> {
+fn write_if_changed(path: &Path, text: &str) -> Result<(), String> {
     match fs::read_to_string(path) {
-        Ok(text) => Ok(text),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
-        Err(error) => Err(format!("读取 {} 失败: {error}", path.display())),
+        Ok(current) if current == text => Ok(()),
+        _ => crate::model_bridge::write_text_atomic_pub(path, text)
+            .map_err(|e| format!("写入 {} 失败: {e}", path.display())),
     }
 }
 
-// ─── 行级辅助（只在标准 YAML 缩进形态上工作，认不出就 Err/None）─────────────
+fn remove_bundle_at(dir: &Path) -> Result<(), String> {
+    match fs::remove_dir_all(dir) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("删除 bundle 目录 {} 失败: {error}", dir.display())),
+    }
+}
+
+/// bundle 的 patch 文本。
+///
+/// 行里**故意不写 `name`**：patch 按 `id` 定位既有条目，而适配器的
+/// `rewriteBundleRows` 会把任何非绝对 `name` 当成 bundle 自己的插件去
+/// `require.resolve`，解析不到就抛错。
+fn patch_text(port: u16, models: &[crate::model_bridge::CatalogModelRow]) -> String {
+    let mut lines = vec![
+        "# Generated by Marionette for one `dsh-acp --bundle` spawn — do not edit."
+            .to_string(),
+        "# Regenerated on every spawn; the directory is removed while the engine is not running."
+            .to_string(),
+        "# No `name`: this row targets the existing llm-pi-ai entry by id, and the adapter"
+            .to_string(),
+        "# would try to require.resolve a name against this bundle's package.json."
+            .to_string(),
+        "- id: llm-pi-ai".to_string(),
+        "  config:".to_string(),
+        "    providers:".to_string(),
+        format!("      {MARIONETTE_PROVIDER}:"),
+        "        displayName: Marionette 模型共享".to_string(),
+        format!("        apiKeyEnv: {MARIONETTE_TOKEN_ENV}"),
+        "        api: openai-completions".to_string(),
+        format!("        baseURL: http://127.0.0.1:{port}/v1"),
+        "        models:".to_string(),
+    ];
+    for model in models {
+        lines.push(format!(
+            "          - id: \"{}\"",
+            escape_double_quoted(&model.id)
+        ));
+        if model.images {
+            lines.push("            input: [text, image]".to_string());
+        }
+        if model.context_window > 0 {
+            lines.push(format!("            contextWindow: {}", model.context_window));
+        }
+        if model.max_output > 0 {
+            lines.push(format!("            maxTokens: {}", model.max_output));
+        }
+    }
+    join_lines(&lines)
+}
+
+fn escape_double_quoted(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn join_lines(lines: &[String]) -> String {
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
+// ─── 旧 home patch 迁移 ──────────────────────────────────────────────────────
+
+/// 一次性迁移：把旧版写进 `~/.dsh/cordis.patch.yml` 的托管块整段删掉。
+///
+/// 只删「紧邻 [`LEGACY_MARKER`] 且 id 为 llm-pi-ai」的条目；用户自己写的
+/// llm-pi-ai 条目（没有标记行）一律不动。删之前把原文件备份为
+/// `cordis.patch.yml.marionette-bak`，因为托管块里可能被用户手加过 provider。
+pub fn migrate_legacy_home_patch() -> Result<bool, String> {
+    match dsh_patch_path() {
+        Some(path) => migrate_legacy_patch_at(&path),
+        None => Ok(false),
+    }
+}
+
+fn migrate_legacy_patch_at(path: &Path) -> Result<bool, String> {
+    let original = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("读取 {} 失败: {error}", path.display())),
+    };
+    let Some(next) = strip_managed_block(&original) else {
+        return Ok(false);
+    };
+    let backup = path.with_extension("marionette-bak");
+    fs::write(&backup, &original)
+        .map_err(|e| format!("备份 {} 失败: {e}", backup.display()))?;
+    crate::model_bridge::write_text_atomic_pub(path, &next)
+        .map_err(|e| format!("写入 {} 失败: {e}", path.display()))?;
+    crate::debug_log::append(
+        "bridge",
+        "info",
+        "",
+        "removed legacy llm-pi-ai block from dsh home patch",
+        Some(&backup.display().to_string()),
+    );
+    Ok(true)
+}
+
+/// 文本外科：删掉带标记的 llm-pi-ai 条目（含说明注释与相邻空行）。
+/// 没有可删内容 → None；产物始终是可加载的 patch 文档。
+fn strip_managed_block(original: &str) -> Option<String> {
+    let mut lines: Vec<String> = original.lines().map(str::to_string).collect();
+    let spans = entry_spans(&lines);
+    let mut removed = false;
+    for (start, end) in spans.into_iter().rev() {
+        // 标记行：向上跳过空行后的第一个非空行。
+        let mut marker = start;
+        while marker > 0 && is_blank(&lines[marker - 1]) {
+            marker -= 1;
+        }
+        if marker == 0 || lines[marker - 1].trim() != LEGACY_MARKER {
+            continue;
+        }
+        let Some((id, _)) = entry_identity(&lines, start, end) else {
+            continue;
+        };
+        if id != "llm-pi-ai" {
+            continue;
+        }
+        let mut from = marker - 1;
+        if from > 0 && lines[from - 1].trim_start().starts_with(LEGACY_HEADER_PREFIX) {
+            from -= 1;
+        }
+        while from > 0 && is_blank(&lines[from - 1]) {
+            from -= 1;
+        }
+        lines.drain(from..end);
+        removed = true;
+    }
+    if !removed {
+        return None;
+    }
+    while lines.first().is_some_and(|line| is_blank(line)) {
+        lines.remove(0);
+    }
+    while lines.last().is_some_and(|line| is_blank(line)) {
+        lines.pop();
+    }
+    if !lines.iter().any(|line| is_entry_start(line)) {
+        return Some("[]\n".to_string());
+    }
+    Some(join_lines(&lines))
+}
+
+// ─── dsh-acp 默认模型迁移 ────────────────────────────────────────────────────
+
+/// 路由从 home 层挪走后，`acp-standalone-model.json` 里指向 `opencode-go`
+/// 之类的默认模型会指向一个不存在的 provider；改指 `marionette` 路由上等价
+/// 的引擎模型 id（`<provider>/<model>`），没有等价项就落目录第一个。
+fn migrate_standalone_default_model(
+    models: &[crate::model_bridge::CatalogModelRow],
+) -> Result<bool, String> {
+    match dsh_standalone_model_path() {
+        Some(path) => migrate_standalone_model_at(&path, models),
+        None => Ok(false),
+    }
+}
+
+fn migrate_standalone_model_at(
+    path: &Path,
+    models: &[crate::model_bridge::CatalogModelRow],
+) -> Result<bool, String> {
+    if models.is_empty() {
+        return Ok(false);
+    }
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("读取 {} 失败: {error}", path.display())),
+    };
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Ok(false);
+    };
+    let provider = value
+        .get("provider")
+        .and_then(|item| item.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let model = value
+        .get("model")
+        .and_then(|item| item.as_str())
+        .unwrap_or_default()
+        .to_string();
+    if model.is_empty() {
+        return Ok(false);
+    }
+    let routes_marionette = provider == MARIONETTE_PROVIDER
+        && models.iter().any(|row| row.id == model);
+    let routes_native = provider == "deepseek-official" || provider == "deepseek";
+    if routes_marionette || routes_native {
+        return Ok(false);
+    }
+    let candidate = format!("{provider}/{model}");
+    let target = if models.iter().any(|row| row.id == candidate) {
+        candidate
+    } else {
+        models[0].id.clone()
+    };
+    value["provider"] = serde_json::Value::String(MARIONETTE_PROVIDER.to_string());
+    value["model"] = serde_json::Value::String(target);
+    let next = serde_json::to_string(&value)
+        .map_err(|e| format!("序列化 {STANDALONE_MODEL_FILE} 失败: {e}"))?;
+    if next == text {
+        return Ok(false);
+    }
+    crate::model_bridge::write_text_atomic_pub(path, &next)
+        .map_err(|e| format!("写入 {} 失败: {e}", path.display()))?;
+    Ok(true)
+}
+
+// ─── 行级辅助（只在标准 YAML 缩进形态上工作，认不出就跳过）───────────────────
 
 fn indent_of(line: &str) -> usize {
     line.len() - line.trim_start().len()
@@ -137,18 +388,6 @@ fn is_comment(line: &str) -> bool {
 fn is_entry_start(line: &str) -> bool {
     let trimmed = line.trim_end();
     trimmed == "-" || trimmed.starts_with("- ")
-}
-
-/// 空 patch 骨架：只有注释、空行和 `[]` 占位（没有任何条目的空 patch）。
-///
-/// 既包括我们移除托管 entry 后留下的「MANAGED_HEADER + `[]`」，也包括
-/// 用户/桌面版手写的 `[]`（或只有注释的空文件）。这种文件语义就是「没有
-/// patch」，必须当空文件重写而不是拒写。
-fn is_empty_patch_skeleton(original: &str) -> bool {
-    original.lines().all(|line| {
-        let trimmed = line.trim();
-        is_blank(line) || is_comment(line) || trimmed == "[]"
-    })
 }
 
 /// `key: value` 行 → (缩进, key)；空行 / 注释 / `- ` 列表行 → None。
@@ -178,77 +417,6 @@ fn scalar_value(line: &str) -> String {
     value.trim_matches(|c| c == '\'' || c == '"').to_string()
 }
 
-/// 行数组拼回文本（统一收尾换行；首写规范化，其后逐字节幂等）。
-fn join_lines(lines: &[String]) -> String {
-    let mut out = lines.join("\n");
-    out.push('\n');
-    out
-}
-
-fn escape_double_quoted(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-fn token_ref_line(indent: usize) -> String {
-    format!(
-        "{}{MARIONETTE_TOKEN_ENV}: {}",
-        " ".repeat(indent),
-        crate::engine::ENGINE_TOKEN
-    )
-}
-
-/// marionette 路由子块（`indent` = providers 子键的缩进列）。
-///
-/// 每个模型带 `contextWindow`/`maxTokens`（引擎说了才写）：dsh 的 llm-pi-ai
-/// 对缺声明的模型一律落 256K 兜底——1M 的 DeepSeek 会被当成 256K 显示，
-/// 自动压缩阈值也跟着错。
-fn marionette_lines(
-    indent: usize,
-    port: u16,
-    models: &[crate::model_bridge::CatalogModelRow],
-) -> Vec<String> {
-    let pad = " ".repeat(indent);
-    let pad2 = " ".repeat(indent + 2);
-    let pad4 = " ".repeat(indent + 4);
-    let pad5 = " ".repeat(indent + 6);
-    let mut block = vec![
-        format!("{pad}{MARIONETTE_PROVIDER}:"),
-        format!("{pad2}displayName: Marionette 模型共享"),
-        format!("{pad2}apiKeyEnv: {MARIONETTE_TOKEN_ENV}"),
-        format!("{pad2}api: openai-completions"),
-        format!("{pad2}baseURL: http://127.0.0.1:{port}/v1"),
-        format!("{pad2}models:"),
-    ];
-    for model in models {
-        block.push(format!("{pad4}- id: \"{}\"", escape_double_quoted(&model.id)));
-        if model.images {
-            block.push(format!("{pad5}input: [text, image]"));
-        }
-        if model.context_window > 0 {
-            block.push(format!("{pad5}contextWindow: {}", model.context_window));
-        }
-        if model.max_output > 0 {
-            block.push(format!("{pad5}maxTokens: {}", model.max_output));
-        }
-    }
-    block
-}
-
-/// 我们整段新建的 llm-pi-ai entry（挂在 MANAGED_MARKER 之后）。
-fn managed_entry_lines(
-    port: u16,
-    models: &[crate::model_bridge::CatalogModelRow],
-) -> Vec<String> {
-    let mut entry = vec![
-        "- id: llm-pi-ai".to_string(),
-        "  name: \"@deepseek-ai/dsh-llm-pi-ai\"".to_string(),
-        "  config:".to_string(),
-        "    providers:".to_string(),
-    ];
-    entry.extend(marionette_lines(6, port, models));
-    entry
-}
-
 /// 定位全部顶层条目 (start, end)。
 fn entry_spans(lines: &[String]) -> Vec<(usize, usize)> {
     let starts: Vec<usize> = lines
@@ -273,8 +441,6 @@ fn entry_identity(lines: &[String], start: usize, end: usize) -> Option<(String,
             return Some((scalar_value(&lines[start]), 2));
         }
     }
-    // id 在后续行：以条目内第一个键行的缩进为子键缩进；第一个键不是 id
-    // （patch 行约定 id 在最前）→ 认不出。
     for i in (start + 1)..end {
         if let Some((indent, key)) = key_of(&lines[i]) {
             if key == "id" {
@@ -284,291 +450,6 @@ fn entry_identity(lines: &[String], start: usize, end: usize) -> Option<(String,
         }
     }
     None
-}
-
-/// 找最后一个 `id: llm-pi-ai` 条目 → (start, end, 子键缩进)。
-fn find_last_llm_entry(lines: &[String]) -> Option<(usize, usize, usize)> {
-    for (s, e) in entry_spans(lines).into_iter().rev() {
-        if let Some((id, child_indent)) = entry_identity(lines, s, e) {
-            if id == "llm-pi-ai" {
-                return Some((s, e, child_indent));
-            }
-        }
-    }
-    None
-}
-
-/// 在 [from, end) 里找缩进恰为 `indent` 的 `key:` 行；遇到更浅的键行即止。
-fn find_key_line(
-    lines: &[String],
-    from: usize,
-    end: usize,
-    indent: usize,
-    key: &str,
-) -> Option<usize> {
-    for i in from..end {
-        if let Some((line_indent, line_key)) = key_of(&lines[i]) {
-            if line_indent < indent {
-                return None;
-            }
-            if line_indent == indent && line_key == key {
-                return Some(i);
-            }
-        }
-    }
-    None
-}
-
-/// 一个键行的块尾：空行与**更深缩进**的内容（含深注释）算块内；同缩进/
-/// 更浅的键行或浅注释终止块。
-fn block_end(lines: &[String], key_line: usize, end: usize, key_indent: usize) -> usize {
-    let mut i = key_line + 1;
-    while i < end {
-        let line = &lines[i];
-        if is_blank(line) || indent_of(line) > key_indent {
-            i += 1;
-            continue;
-        }
-        break;
-    }
-    i
-}
-
-/// 块内第一个子键的缩进（没有子键 → None）。
-fn first_child_indent(lines: &[String], from: usize, end: usize) -> Option<usize> {
-    (from..end).find_map(|i| key_of(&lines[i]).map(|(indent, _)| indent))
-}
-
-// ─── home patch 合并 ─────────────────────────────────────────────────────────
-
-fn merge_home_patch(
-    original: &str,
-    port: u16,
-    models: &[crate::model_bridge::CatalogModelRow],
-) -> Result<String, String> {
-    let trimmed = original.trim();
-    // 空 patch = 空文件、`[]`、或「注释 + `[]`」骨架（移除托管 entry 后留
-    // 下的形态，2026-10-23 实测踩坑：只认字面 `[]` 时这种文件被判「不是顶层
-    // 数组」永久拒写——引擎停过一次就再也挂不上路由）。
-    if trimmed.is_empty() || is_empty_patch_skeleton(original) {
-        // 保留用户写在文件里的注释（含我们自己那行）；`[]` 占位不保留，
-        // 托管块会取代它。
-        let mut fresh: Vec<String> = original
-            .lines()
-            .filter(|line| !is_blank(line) && line.trim() != "[]")
-            .map(str::to_string)
-            .collect();
-        if fresh.is_empty() {
-            fresh.push(MANAGED_HEADER.to_string());
-        }
-        fresh.push(MANAGED_MARKER.to_string());
-        fresh.extend(managed_entry_lines(port, models));
-        return Ok(join_lines(&fresh));
-    }
-    let mut lines: Vec<String> = original.lines().map(str::to_string).collect();
-    if !lines.iter().any(|line| is_entry_start(line)) {
-        return Err(
-            "cordis.patch.yml 不是顶层数组形态（找不到 column-0 的 `- ` 条目）— 拒绝写入"
-                .to_string(),
-        );
-    }
-    let Some((s, e, child_indent)) = find_last_llm_entry(&lines) else {
-        // 没有 llm-pi-ai 条目：文件尾追加托管 entry（composeEntries 按 id
-        // 后写者胜，追加即生效）。
-        if !lines.last().is_some_and(|line| is_blank(line)) {
-            lines.push(String::new());
-        }
-        lines.push(MANAGED_MARKER.to_string());
-        lines.extend(managed_entry_lines(port, models));
-        return Ok(join_lines(&lines));
-    };
-
-    if let Some(config_line) = find_key_line(&lines, s + 1, e, child_indent, "config") {
-        let config_end = block_end(&lines, config_line, e, child_indent);
-        let providers_indent =
-            first_child_indent(&lines, config_line + 1, config_end).unwrap_or(child_indent + 2);
-        if let Some(providers_line) =
-            find_key_line(&lines, config_line + 1, e, providers_indent, "providers")
-        {
-            let providers_end = block_end(&lines, providers_line, e, providers_indent);
-            let marionette_indent = first_child_indent(&lines, providers_line + 1, providers_end)
-                .unwrap_or(providers_indent + 2);
-            if let Some(marionette_line) =
-                find_key_line(&lines, providers_line + 1, e, marionette_indent, MARIONETTE_PROVIDER)
-            {
-                // 已有托管块：整块替换（含我们写过的模型列表；端口/目录变更
-                // 都在新块里）。
-                let replace_end = block_end(&lines, marionette_line, e, marionette_indent);
-                lines.splice(
-                    marionette_line..replace_end,
-                    marionette_lines(marionette_indent, port, models),
-                );
-            } else {
-                // 用户已有 providers（如 opencode-go）：块尾插入，别家原样。
-                let insert_at = block_end(&lines, providers_line, e, providers_indent);
-                let block = marionette_lines(marionette_indent, port, models);
-                lines.splice(insert_at..insert_at, block);
-            }
-        } else {
-            // 有 config 无 providers：config 块尾补 providers + marionette。
-            let insert_at = block_end(&lines, config_line, e, child_indent);
-            let mut addition = vec![format!("{}providers:", " ".repeat(providers_indent))];
-            addition.extend(marionette_lines(providers_indent + 2, port, models));
-            lines.splice(insert_at..insert_at, addition);
-        }
-    } else {
-        // 条目里连 config 都没有：entry 尾部补齐三层。
-        let mut addition = vec![
-            format!("{}config:", " ".repeat(child_indent)),
-            format!("{}providers:", " ".repeat(child_indent + 2)),
-        ];
-        addition.extend(marionette_lines(child_indent + 4, port, models));
-        lines.splice(e..e, addition);
-    }
-    Ok(join_lines(&lines))
-}
-
-/// 移除托管路由：我们的 entry 整段删（含标记行）；用户的 entry 只删
-/// `marionette` 子块（providers 空了落成 `providers: {}`，保持合法 YAML）。
-/// 返回是否动了文件。
-fn remove_marionette_route_at(patch_path: &Path) -> Result<bool, String> {
-    let original = read_optional(patch_path)?;
-    if original.trim().is_empty() {
-        return Ok(false);
-    }
-    let mut lines: Vec<String> = original.lines().map(str::to_string).collect();
-    let Some((s, e, child_indent)) = find_last_llm_entry(&lines) else {
-        return Ok(false);
-    };
-    let Some(config_line) = find_key_line(&lines, s + 1, e, child_indent, "config") else {
-        return Ok(false);
-    };
-    let config_end = block_end(&lines, config_line, e, child_indent);
-    let providers_indent =
-        first_child_indent(&lines, config_line + 1, config_end).unwrap_or(child_indent + 2);
-    let Some(providers_line) =
-        find_key_line(&lines, config_line + 1, e, providers_indent, "providers")
-    else {
-        return Ok(false);
-    };
-    let providers_end = block_end(&lines, providers_line, e, providers_indent);
-    let Some(marionette_indent) = first_child_indent(&lines, providers_line + 1, providers_end)
-    else {
-        return Ok(false);
-    };
-    let Some(marionette_line) =
-        find_key_line(&lines, providers_line + 1, e, marionette_indent, MARIONETTE_PROVIDER)
-    else {
-        return Ok(false);
-    };
-    let replace_end = block_end(&lines, marionette_line, e, marionette_indent);
-    let removed = replace_end - marionette_line;
-    lines.drain(marionette_line..replace_end);
-    let e = e - removed; // drain 只发生在 entry 内，end 等量左移。
-
-    // providers 还有没有别的子键？
-    let providers_end = block_end(&lines, providers_line, e, providers_indent);
-    let has_children = first_child_indent(&lines, providers_line + 1, providers_end).is_some();
-    if !has_children {
-        let entry_is_ours = s > 0 && lines[s - 1].trim() == MANAGED_MARKER;
-        if entry_is_ours {
-            // 整段删除：标记行 + entry（含它前面的一个分隔空行）。
-            let mut drain_from = s - 1;
-            if drain_from > 0 && is_blank(&lines[drain_from - 1]) {
-                drain_from -= 1;
-            }
-            lines.drain(drain_from..e);
-            // 条目删空了 → 我们的说明行也一起收走（不留孤儿「块在下面」），
-            // 落 `[]` 占位，保持「合法的空 patch」。
-            if !lines.iter().any(|line| is_entry_start(line)) {
-                lines.retain(|line| line.trim() != MANAGED_HEADER);
-                while lines.last().is_some_and(|line| is_blank(line)) {
-                    lines.pop();
-                }
-                lines.push("[]".to_string());
-            }
-        } else {
-            // 用户的 entry：providers 空映射（llm-pi-ai 零路由 = 休眠）。
-            lines[providers_line] = format!("{}providers: {{}}", " ".repeat(providers_indent));
-        }
-    }
-    let next = join_lines(&lines);
-    if next == original {
-        return Ok(false);
-    }
-    crate::model_bridge::write_text_atomic_pub(patch_path, &next)
-        .map_err(|e| format!("写入 cordis.patch.yml 失败: {e}"))?;
-    Ok(true)
-}
-
-// ─── credentials refs 合并（`version: 1` 文档，只动 refs 里的一行）──────────
-
-fn merge_credentials_refs(original: &str) -> Result<String, String> {
-    if original.trim().is_empty() {
-        return Ok(join_lines(&[
-            "version: 1".to_string(),
-            "refs:".to_string(),
-            token_ref_line(2),
-        ]));
-    }
-    let mut lines: Vec<String> = original.lines().map(str::to_string).collect();
-    let top_key = |line: &str| -> Option<String> {
-        let (indent, key) = key_of(line)?;
-        (indent == 0).then_some(key)
-    };
-    if !lines.iter().any(|line| top_key(line).as_deref() == Some("version")) {
-        return Err(
-            "credentials.yaml 是 pre-release 平铺形态（无 version 键）— 不写入，等 dsh 自己迁移"
-                .to_string(),
-        );
-    }
-    let Some(refs_line) = lines.iter().position(|line| top_key(line).as_deref() == Some("refs"))
-    else {
-        // 没有 refs 段：文档尾补一个（version/records 原样）。
-        lines.push("refs:".to_string());
-        lines.push(token_ref_line(2));
-        return Ok(join_lines(&lines));
-    };
-    let inline = scalar_value(&lines[refs_line]);
-    if !inline.is_empty() && inline != "{}" {
-        return Err("refs 是内联非空形态 — 不识别，拒绝写入".to_string());
-    }
-    if inline == "{}" {
-        lines[refs_line] = "refs:".to_string();
-        lines.insert(refs_line + 1, token_ref_line(2));
-        return Ok(join_lines(&lines));
-    }
-    // refs 块内：已有我们的 ref → 改值（一致则原文返回，零写入）；没有 →
-    // 块尾插入。插入缩进跟随块内既有子键（混缩进会破 YAML）。
-    let mut refs_child_indent: Option<usize> = None;
-    for i in (refs_line + 1)..lines.len() {
-        if is_blank(&lines[i]) || is_comment(&lines[i]) {
-            continue;
-        }
-        let Some((indent, key)) = key_of(&lines[i]) else {
-            continue;
-        };
-        if indent == 0 {
-            // 到下一个顶层键：这里就是 refs 块尾。
-            let at = refs_child_indent.unwrap_or(2);
-            lines.insert(i, token_ref_line(at));
-            return Ok(join_lines(&lines));
-        }
-        if refs_child_indent.is_none() {
-            refs_child_indent = Some(indent);
-        }
-        if key == MARIONETTE_TOKEN_ENV {
-            let desired = token_ref_line(indent);
-            if lines[i] == desired {
-                return Ok(original.to_string());
-            }
-            lines[i] = desired;
-            return Ok(join_lines(&lines));
-        }
-    }
-    let at = refs_child_indent.unwrap_or(2);
-    lines.push(token_ref_line(at));
-    Ok(join_lines(&lines))
 }
 
 #[cfg(test)]
@@ -614,232 +495,191 @@ mod tests {
         ]
     }
 
-    // ── home patch ──────────────────────────────────────────────────────────
+    // ── bundle ──────────────────────────────────────────────────────────────
 
     #[test]
-    fn creates_fresh_patch_from_missing_file() {
-        let dir = temp_dir("fresh");
-        let patch = dir.join("cordis.patch.yml");
-        ensure_route_at(&patch, &dir.join(".credentials.yaml"), 3425, &models()).unwrap();
-        let text = fs::read_to_string(&patch).unwrap();
-        assert!(text.contains(MANAGED_MARKER));
-        assert!(text.contains("- id: llm-pi-ai"));
-        assert!(text.contains("baseURL: http://127.0.0.1:3425/v1"));
-        assert!(text.contains("- id: \"group/auto-claude-haiku-5-5\""));
-        assert!(text.contains("apiKeyEnv: MARIONETTE_API_KEY"));
-        // 窗口/输出上限跟着模型走：引擎说了的写、没说的不写（llm-pi-ai 兜底 256K）。
-        assert!(text.contains("contextWindow: 500000"));
-        assert!(text.contains("maxTokens: 250000"));
+    fn writes_bundle_manifest_and_patch() {
+        let dir = temp_dir("bundle").join(BUNDLE_DIR_NAME);
+        ensure_bundle_at(&dir, 3425, &models()).unwrap();
+        let manifest = fs::read_to_string(dir.join(BUNDLE_MANIFEST)).unwrap();
+        assert!(manifest.contains("\"dsh\""));
+        assert!(manifest.contains("./cordis.patch.yml"));
+        let patch = fs::read_to_string(dir.join(BUNDLE_PATCH)).unwrap();
+        assert!(patch.contains("- id: llm-pi-ai"));
+        assert!(patch.contains("      marionette:"));
+        assert!(patch.contains("baseURL: http://127.0.0.1:3425/v1"));
+        assert!(patch.contains("apiKeyEnv: MARIONETTE_API_KEY"));
+        assert!(patch.contains("- id: \"group/auto-claude-haiku-5-5\""));
+        assert!(patch.contains("contextWindow: 500000"));
+        assert!(patch.contains("maxTokens: 250000"));
         assert_eq!(
-            text.matches("contextWindow:").count(),
+            patch.matches("contextWindow:").count(),
             1,
             "只有引擎披露窗口的模型才写 contextWindow"
         );
-        fs::remove_dir_all(&dir).ok();
+        // 不写 name：适配器会拿它去 require.resolve。
+        assert!(
+            !patch.lines().any(|line| line.trim_start().starts_with("name:")),
+            "bundle patch 不应声明 name:\n{patch}"
+        );
     }
 
     /// 引擎目录标了 text+image 的模型必须带 `input: [text, image]`——pi-ai 对
-    /// 自定义路由默认 `input: [text]`，DSH 会据此把附图换成
-    /// 「image omitted because this model accepts text only」占位文本；纯文本
-    /// 模型不写（否则图会打到上游换回 400，而不是被 DSH 就地省略）。
+    /// 自定义路由默认 `input: [text]`，DSH 会据此把附图换成占位文本。
     #[test]
     fn writes_image_capability_only_for_vision_models() {
-        let dir = temp_dir("vision");
-        let patch = dir.join("cordis.patch.yml");
-        ensure_route_at(&patch, &dir.join(".credentials.yaml"), 3425, &models()).unwrap();
-        let text = fs::read_to_string(&patch).unwrap();
-        assert_eq!(
-            text.matches("input: [text, image]").count(),
-            1,
-            "只有引擎标了 image 的模型才写 input"
-        );
-        assert!(
-            text.contains(
-                "          - id: \"opencode-go/grok-4.7\"\n            input: [text, image]\n"
-            ),
-            "vision model 要声明 input 且与 id 同列缩进:\n{text}"
-        );
-        fs::remove_dir_all(&dir).ok();
+        let dir = temp_dir("vision").join(BUNDLE_DIR_NAME);
+        ensure_bundle_at(&dir, 3425, &models()).unwrap();
+        let patch = fs::read_to_string(dir.join(BUNDLE_PATCH)).unwrap();
+        assert_eq!(patch.matches("input: [text, image]").count(), 1);
+        assert!(patch.contains(
+            "          - id: \"opencode-go/grok-4.7\"\n            input: [text, image]\n"
+        ));
     }
 
     #[test]
-    fn merge_is_idempotent_and_tracks_port_changes() {
-        let dir = temp_dir("idem");
-        let patch = dir.join("cordis.patch.yml");
-        let creds = dir.join(".credentials.yaml");
-        ensure_route_at(&patch, &creds, 3425, &models()).unwrap();
+    fn bundle_is_idempotent_and_tracks_port_changes() {
+        let dir = temp_dir("idem").join(BUNDLE_DIR_NAME);
+        ensure_bundle_at(&dir, 3425, &models()).unwrap();
+        let patch = dir.join(BUNDLE_PATCH);
         let first = fs::read_to_string(&patch).unwrap();
-        // 同参数重跑 → 零写入（字节一致）。
-        ensure_route_at(&patch, &creds, 3425, &models()).unwrap();
+        ensure_bundle_at(&dir, 3425, &models()).unwrap();
         assert_eq!(fs::read_to_string(&patch).unwrap(), first);
-        // 端口变了 → baseURL 换新，其余不动。
-        ensure_route_at(&patch, &creds, 3499, &models()).unwrap();
+        ensure_bundle_at(&dir, 3499, &models()).unwrap();
         let second = fs::read_to_string(&patch).unwrap();
         assert!(second.contains("http://127.0.0.1:3499/v1"));
         assert!(!second.contains("3425"));
-        fs::remove_dir_all(&dir).ok();
     }
 
-    /// 用户已有的 llm-pi-ai entry（Web 侧手写 opencode-go 的形态）：只添
-    /// marionette 子块，opencode-go 与其余行逐字保留。
     #[test]
-    fn merges_into_user_llm_entry_preserving_other_providers() {
-        let user = r#"# user's own patch
-- id: ui-settings-general
-  name: "@deepseek-ai/dsh-client-ui-settings-general"
-  config:
-    welcomeNoticeVersion: 2026-09-28.1
+    fn removes_bundle_directory() {
+        let dir = temp_dir("remove").join(BUNDLE_DIR_NAME);
+        ensure_bundle_at(&dir, 3425, &models()).unwrap();
+        assert!(dir.join(BUNDLE_PATCH).exists());
+        remove_bundle_at(&dir).unwrap();
+        assert!(!dir.exists());
+        // 已不存在 → 静默成功（引擎停在 Absent 反复 spawn 的路径）。
+        remove_bundle_at(&dir).unwrap();
+    }
+
+    // ── 旧 home patch 迁移 ──────────────────────────────────────────────────
+
+    #[test]
+    fn migration_strips_managed_block_and_keeps_user_rows() {
+        let dir = temp_dir("legacy");
+        let patch = dir.join("cordis.patch.yml");
+        fs::write(
+            &patch,
+            r#"# Marionette model-share route (managed block below — regenerated on each dsh spawn while the engine runs)
+# managed-by: marionette-bridge
 - id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      marionette:
+        apiKeyEnv: MARIONETTE_API_KEY
+        baseURL: http://127.0.0.1:3425/v1
+      opencode-go:
+        apiKeyEnv: OPENCODE_GO_API_KEY
+- id: ui-theme
+  name: "@deepseek-ai/dsh-client-ui-theme"
+  config:
+    preference: light
+"#,
+        )
+        .unwrap();
+        assert!(migrate_legacy_patch_at(&patch).unwrap());
+        let after = fs::read_to_string(&patch).unwrap();
+        assert!(!after.contains("llm-pi-ai"));
+        assert!(!after.contains(LEGACY_MARKER));
+        assert!(after.contains("- id: ui-theme"));
+        assert!(after.contains("preference: light"));
+        // 原文件留档（托管块里可能被用户手加过 provider）。
+        let backup = path_text(&patch.with_extension("marionette-bak"));
+        assert!(backup.contains("opencode-go"));
+        // 幂等：再跑一遍不动文件。
+        assert!(!migrate_legacy_patch_at(&patch).unwrap());
+    }
+
+    #[test]
+    fn migration_removes_only_marked_rows() {
+        let dir = temp_dir("legacy_hand");
+        let patch = dir.join("cordis.patch.yml");
+        let user_owned = r#"- id: llm-pi-ai
   name: "@deepseek-ai/dsh-llm-pi-ai"
   config:
     providers:
       opencode-go:
         apiKeyEnv: OPENCODE_GO_API_KEY
-- id: agent-default-model
-  name: "@deepseek-ai/dsh-agent-default-model"
-  config:
-    provider: opencode-go
 "#;
-        let merged = merge_home_patch(user, 3425, &models()).unwrap();
-        // opencode-go 原样保留，且仍在 marionette 之前。
-        let go = merged.find("opencode-go:").unwrap();
-        let mar = merged.find("      marionette:").unwrap();
-        assert!(go < mar, "用户 provider 应原位保留");
-        assert!(merged.contains("apiKeyEnv: OPENCODE_GO_API_KEY"));
-        assert!(merged.contains("provider: opencode-go"));
-        assert!(merged.contains("displayName: Marionette 模型共享"));
-        // 幂等。
-        assert_eq!(merge_home_patch(&merged, 3425, &models()).unwrap(), merged);
-        // 移除后 opencode-go 仍在（只删 marionette 子块，providers 非空）。
-        let dir = temp_dir("user_entry");
+        fs::write(&patch, user_owned).unwrap();
+        assert!(!migrate_legacy_patch_at(&patch).unwrap());
+        assert_eq!(fs::read_to_string(&patch).unwrap(), user_owned);
+    }
+
+    #[test]
+    fn migration_leaves_empty_patch_placeholder() {
+        let dir = temp_dir("legacy_empty");
         let patch = dir.join("cordis.patch.yml");
-        fs::write(&patch, &merged).unwrap();
-        assert!(remove_marionette_route_at(&patch).unwrap());
-        let after = fs::read_to_string(&patch).unwrap();
-        assert!(!after.contains("marionette"));
-        assert!(after.contains("apiKeyEnv: OPENCODE_GO_API_KEY"));
-        fs::remove_dir_all(&dir).ok();
+        fs::write(
+            &patch,
+            "# Marionette model-share route (managed)\n# managed-by: marionette-bridge\n- id: llm-pi-ai\n  config:\n    providers:\n      marionette:\n        apiKeyEnv: MARIONETTE_API_KEY\n",
+        )
+        .unwrap();
+        assert!(migrate_legacy_patch_at(&patch).unwrap());
+        assert_eq!(fs::read_to_string(&patch).unwrap(), "[]\n");
     }
 
-    /// 只有别的条目、没有 llm-pi-ai：尾部追加托管 entry，其余行不动。
-    #[test]
-    fn appends_entry_when_llm_row_absent() {
-        let user = r#"# keep me: !!js weirdness is fine
-- id: timer
-  name: '@deepseek-ai/cordis-plugin-timer'
-"#;
-        let merged = merge_home_patch(user, 3425, &models()).unwrap();
-        assert!(merged.starts_with("# keep me"));
-        assert!(merged.contains("!!js weirdness"));
-        assert!(merged.contains("- id: timer"));
-        assert!(merged.contains(MANAGED_MARKER));
-        assert!(merged.contains("- id: llm-pi-ai"));
-        // 移除 → 托管 entry 整段消失，用户内容保留。
-        let dir = temp_dir("append");
-        let patch = dir.join("cordis.patch.yml");
-        fs::write(&patch, &merged).unwrap();
-        assert!(remove_marionette_route_at(&patch).unwrap());
-        let after = fs::read_to_string(&patch).unwrap();
-        assert!(!after.contains("llm-pi-ai"));
-        assert!(after.contains("- id: timer"));
-        assert!(after.contains("!!js weirdness"));
-        fs::remove_dir_all(&dir).ok();
+    fn path_text(path: &Path) -> String {
+        fs::read_to_string(path).unwrap_or_default()
+    }
+
+    // ── 默认模型迁移 ────────────────────────────────────────────────────────
+
+    fn write_model(path: &Path, body: &str) {
+        fs::write(path, body).unwrap();
     }
 
     #[test]
-    fn rejects_non_array_patch() {
-        let error = merge_home_patch("version: 1\nrefs: {}\n", 3425, &models());
-        assert!(error.is_err());
-    }
-
-    /// 「注释 + `[]`」骨架必须当空 patch 重写：这是移除托管 entry 后留在
-    /// 盘上的形态（2026-10-23 实测：只认字面 `[]` 时这种文件被永久判成
-    /// 「不是顶层数组」，引擎停过一次就再也挂不上路由 → DSH 模型菜单里
-    /// 一直没有 `marionette::*`）。
-    #[test]
-    fn rewrites_comment_only_empty_patch() {
-        for skeleton in [
-            format!("{MANAGED_HEADER}\n[]\n"),
-            "# 用户自己的注释\n[]\n".to_string(),
-            "# 只有注释，没有占位\n".to_string(),
-        ] {
-            let merged = merge_home_patch(&skeleton, 3425, &models())
-                .unwrap_or_else(|e| panic!("骨架 {skeleton:?} 应可重写: {e}"));
-            assert!(merged.contains(MANAGED_MARKER), "{merged}");
-            assert!(merged.contains("- id: llm-pi-ai"), "{merged}");
-            assert!(merged.contains("baseURL: http://127.0.0.1:3425/v1"), "{merged}");
-            assert!(
-                !merged.lines().any(|line| line.trim() == "[]"),
-                "占位行要被托管块取代：{merged}"
-            );
-            // 幂等：写出结果再合并一次字节不变。
-            assert_eq!(merge_home_patch(&merged, 3425, &models()).unwrap(), merged);
-        }
-    }
-
-    /// 移除托管 entry 后留下的文件形态（无孤儿说明行）能再次挂上路由——
-    /// 引擎「闲置回收 → 再唤醒」是常态，这条链路以前是断的。
-    #[test]
-    fn remove_then_readd_round_trip() {
-        let dir = temp_dir("roundtrip");
-        let patch = dir.join("cordis.patch.yml");
-        let creds = dir.join(".credentials.yaml");
-        ensure_route_at(&patch, &creds, 3425, &models()).unwrap();
-        assert!(remove_marionette_route_at(&patch).unwrap());
-        let emptied = fs::read_to_string(&patch).unwrap();
-        assert!(!emptied.contains(MANAGED_HEADER), "孤儿说明行要收走: {emptied}");
-        assert_eq!(emptied, "[]\n");
-        // 引擎再起 → 同一个文件必须还能挂上路由。
-        ensure_route_at(&patch, &creds, 3499, &models()).unwrap();
-        let again = fs::read_to_string(&patch).unwrap();
-        assert!(again.contains("- id: llm-pi-ai"), "{again}");
-        assert!(again.contains("http://127.0.0.1:3499/v1"), "{again}");
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    // ── credentials ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn credentials_merge_preserves_user_refs() {
-        let user = r#"version: 1
-records:
-  client-connection/browser-session:
-    kind: browser
-refs:
-  OPENCODE_GO_API_KEY: sk-user-secret
-"#;
-        let merged = merge_credentials_refs(user).unwrap();
-        assert!(merged.contains("OPENCODE_GO_API_KEY: sk-user-secret"));
-        assert!(merged.contains("  MARIONETTE_API_KEY: magpie"));
-        // 幂等：再跑一遍字节不变。
-        assert_eq!(merge_credentials_refs(&merged).unwrap(), merged);
-    }
-
-    #[test]
-    fn credentials_creates_and_replaces_token() {
-        // 缺失 → 最小 v1 文档。
-        let fresh = merge_credentials_refs("").unwrap();
-        assert_eq!(
-            fresh,
-            "version: 1\nrefs:\n  MARIONETTE_API_KEY: magpie\n"
+    fn model_migration_repoints_removed_route() {
+        let dir = temp_dir("model");
+        let path = dir.join(STANDALONE_MODEL_FILE);
+        write_model(
+            &path,
+            r#"{"provider":"opencode-go","model":"grok-4.7","reasoningEffort":"high"}"#,
         );
-        // 已有旧值（假想的历史令牌）→ 改成引擎令牌。
-        let stale = "version: 1\nrefs:\n  MARIONETTE_API_KEY: old\n";
-        let merged = merge_credentials_refs(stale).unwrap();
-        assert!(merged.contains("MARIONETTE_API_KEY: magpie"));
-        assert!(!merged.contains("old"));
+        assert!(migrate_standalone_model_at(&path, &models()).unwrap());
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["provider"], "marionette");
+        assert_eq!(value["model"], "opencode-go/grok-4.7");
+        assert_eq!(value["reasoningEffort"], "high");
+        // 已经是 marionette 的等价模型 → 再跑不动文件。
+        assert!(!migrate_standalone_model_at(&path, &models()).unwrap());
     }
 
     #[test]
-    fn credentials_rejects_flat_layout() {
-        assert!(merge_credentials_refs("OPENCODE_GO_API_KEY: sk-x\n").is_err());
-    }
+    fn model_migration_keeps_native_and_falls_back() {
+        let dir = temp_dir("model_native");
+        let native = dir.join("native.json");
+        write_model(&native, r#"{"provider":"deepseek","model":"deepseek-flash"}"#);
+        assert!(!migrate_standalone_model_at(&native, &models()).unwrap());
 
-    #[test]
-    fn credentials_appends_refs_section_when_absent() {
-        let user = "version: 1\nrecords: {}\n";
-        let merged = merge_credentials_refs(user).unwrap();
-        assert!(merged.contains("records: {}"));
-        assert!(merged.contains("refs:\n  MARIONETTE_API_KEY: magpie"));
+        let fallback = dir.join("fallback.json");
+        write_model(
+            &fallback,
+            r#"{"provider":"opencode-go","model":"unknown-model"}"#,
+        );
+        // 引擎目录里没有 group/*（catalog_direct_entries 已过滤），这里也照着来。
+        let catalog: Vec<_> = models()
+            .into_iter()
+            .filter(|row| !row.id.starts_with("group/"))
+            .collect();
+        assert!(migrate_standalone_model_at(&fallback, &catalog).unwrap());
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&fallback).unwrap()).unwrap();
+        assert_eq!(value["provider"], "marionette");
+        // 没有等价 id → 目录第一个。
+        assert_eq!(value["model"], "opencode-go/grok-4.7");
     }
 }

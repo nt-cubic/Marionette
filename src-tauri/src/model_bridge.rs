@@ -475,25 +475,12 @@ fn engine_bridge_source() -> BridgeSource {
     }
 }
 
-/// 引擎目录装进 models（只在引擎可见时调用）。截断按**提供商**计——引擎 id
-/// 是 `provider/model` 形态，一家超过 [`ENGINE_PROVIDER_CAP`] 才砍它自家的
-/// 尾部。2026-10-20 的教训：按全局总数砍平铺清单的尾巴，别家目录一膨胀
-/// （OpenRouter 一家 ~20 条把总量顶过 60）就会把恰好排在 magpie 返回序
-/// 末尾的 provider（当时的 grok 4.5/4.6）整组砍穿，而那家在菜单里明明
-/// 排得靠前——前端分组排序与引擎清单顺序无关，用户完全无法理解谁被砍了。
-/// 返回是否截断。
+/// 保留引擎完整目录。显示范围和顺序统一交给模型库偏好。
 fn push_engine_models(models: &mut Vec<BridgeModel>) -> bool {
     let engine_ids = crate::engine::catalog_direct();
-    let mut counts: HashMap<&str, usize> = HashMap::new();
-    let mut truncated = false;
     for model_id in &engine_ids {
-        let provider = model_id.split('/').next().unwrap_or(model_id);
-        let count = counts.entry(provider).or_insert(0);
-        if *count >= ENGINE_PROVIDER_CAP {
-            truncated = true;
-            continue;
-        }
-        *count += 1;
+        // Visibility belongs to the model library; do not silently cut off
+        // models before the user can choose which ones should be shown.
         models.push(BridgeModel {
             entry_id: crate::engine::ENGINE_ENTRY_ID.to_string(),
             preset: crate::engine::ENGINE_PRESET_ID.to_string(),
@@ -501,12 +488,9 @@ fn push_engine_models(models: &mut Vec<BridgeModel>) -> bool {
             model_id: model_id.clone(),
         });
     }
-    truncated
+    false
 }
 
-/// 跨用菜单里**单一引擎 provider** 的条目上限（组内太长才砍组内尾部；
-/// 全局无上限——菜单有搜索框，多 provider 全量列出也不影响可用性）。
-const ENGINE_PROVIDER_CAP: usize = 60;
 
 // ─── opencode 原生跨用（provider「marionette」→ 引擎 /v1）───────────────────
 
@@ -1283,7 +1267,6 @@ static DYNAMIC_MODELS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, Dyna
 
 const DYNAMIC_TTL: std::time::Duration = std::time::Duration::from_secs(600);
 const DYNAMIC_FAIL_TTL: std::time::Duration = std::time::Duration::from_secs(90);
-const DYNAMIC_CAP: usize = 60;
 const DYNAMIC_BUDGET: std::time::Duration = std::time::Duration::from_millis(3500);
 
 fn dynamic_cache() -> &'static std::sync::Mutex<HashMap<String, DynamicEntry>> {
@@ -1509,7 +1492,6 @@ fn assemble_models(
     }
     // 装配：动态清单为主，静态清单补差；都空 → 静态（可能也为空）。
     let mut models = Vec::new();
-    let mut truncated = false;
     for (entry_id, preset) in source_rows {
         let dynamic = fresh_dynamic(entry_id).unwrap_or_default();
         let mut ids: Vec<String> = dynamic;
@@ -1517,10 +1499,6 @@ fn assemble_models(
             if !ids.iter().any(|existing| existing == static_id) {
                 ids.push(static_id.to_string());
             }
-        }
-        if ids.len() > DYNAMIC_CAP {
-            ids.truncate(DYNAMIC_CAP);
-            truncated = true;
         }
         for model_id in ids {
             // label 用模型 id 本身：动态目录的名字就是用户在 opencode 里看到的
@@ -1533,7 +1511,7 @@ fn assemble_models(
             });
         }
     }
-    (models, truncated)
+    (models, false)
 }
 
 // ─── 路径（默认 = 真实用户目录；*_at 注入路径供测试）────────────────────────
@@ -3204,6 +3182,7 @@ official_marketplace_auto_installed = true\n";
 
         // 规则本体：reference 对宿主不可见、对别人可见；subscription 一律不可见。
         let host = crate::credentials::CredentialEntry {
+            custom_provider: None,
             id: "opencode/deepseek".into(),
             kind: CredentialKind::Reference,
             label: "deepseek".into(),
@@ -3304,7 +3283,7 @@ official_marketplace_auto_installed = true\n";
     // ─── M2 翻译引擎伪来源（crate::engine 的接线规则）───────────────────────
 
     /// 可见性：引擎不在 Running → 完全不出现（不自动下载）；Running → 追加
-    /// engine 源，模型 id 原样（`provider/model` 形态）、label 同 id、>60 截断。
+    /// engine 源，模型 id 原样（`provider/model` 形态）、完整目录不截断。
     #[test]
     fn engine_source_appears_only_when_running() {
         let dir = temp_dir("engvis");
@@ -3365,7 +3344,7 @@ official_marketplace_auto_installed = true\n";
             .filter(|m| m.entry_id == crate::engine::ENGINE_ENTRY_ID)
             .all(|m| m.label == m.model_id));
 
-        // >60 截断同现有逻辑 + 提示。（先 drop 前一个句柄——TestHandle 持有
+        // 完整目录由模型库管理显示。（先 drop 前一个句柄——TestHandle 持有
         // 引擎测试的串行锁，两个句柄同时活着会自死锁。）
         drop(_engine);
         let many: Vec<String> = (0..70).map(|i| format!("p/model-{i}")).collect();
@@ -3377,13 +3356,11 @@ official_marketplace_auto_installed = true\n";
                 .iter()
                 .filter(|m| m.entry_id == crate::engine::ENGINE_ENTRY_ID)
                 .count(),
-            60
+            70
         );
-        assert!(result.note.as_deref().unwrap_or_default().contains("截断"));
+        assert!(!result.note.as_deref().unwrap_or_default().contains("截断"));
 
-        // 截断按 provider 计：一家 70 条保 60，但排在清单**末尾**的另一家
-        // （2026-10-20 的实际事故形态：grok 4.5/4.6 被 OpenRouter 的体量
-        // 顶出全局前 60）一条不少；`group/` 路由组不进菜单。
+        // 大小来源都完整保留；`group/` 路由组不进菜单。
         drop(_engine_many);
         let mut mixed: Vec<String> = (0..70).map(|i| format!("p/model-{i}")).collect();
         mixed.push("grok/grok-4.5".to_string());
@@ -3396,7 +3373,7 @@ official_marketplace_auto_installed = true\n";
             .iter()
             .filter(|m| m.entry_id == crate::engine::ENGINE_ENTRY_ID)
             .collect();
-        assert_eq!(engine_models.len(), 62, "尾部 provider 不被别家体量砍穿");
+        assert_eq!(engine_models.len(), 72, "尾部 provider 不被别家体量砍穿");
         assert!(engine_models.iter().any(|m| m.model_id == "grok/grok-4.5"));
         assert!(engine_models.iter().any(|m| m.model_id == "grok/grok-4.6"));
         assert!(
@@ -4524,6 +4501,7 @@ Connection: close
         let scan = crate::credentials::scan_opencode_at(&home);
 
         let ref_entry = |provider: &str| CredentialEntry {
+            custom_provider: None,
             id: format!("opencode/{provider}"),
             kind: CredentialKind::Reference,
             label: provider.to_string(),

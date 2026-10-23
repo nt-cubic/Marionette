@@ -23,6 +23,7 @@ mod http_client;
 mod memory;
 mod models;
 mod model_bridge;
+mod model_sources;
 mod open_target;
 mod parsers;
 mod preflight;
@@ -303,6 +304,27 @@ fn main() {
                 );
             }
             shell_integration::spawn_pending_open_watcher(app.handle().clone());
+            // DSH 跨用桥已改成 per-spawn bundle（--bundle），不再写
+            // ~/.dsh/cordis.patch.yml。旧版本留下的 llm-pi-ai 托管块必须一次性
+            // 清掉：它在 home 层，会整条盖住用户在 dsh Web 里配的 provider，并
+            // 让 Web 的保存校验一直报 "overridden by a home patch"。删前备份。
+            match dsh_bridge::migrate_legacy_home_patch() {
+                Ok(true) => debug_log::append(
+                    "bridge",
+                    "info",
+                    "",
+                    "removed legacy llm-pi-ai block from dsh home patch",
+                    None,
+                ),
+                Ok(false) => {}
+                Err(err) => debug_log::append(
+                    "bridge",
+                    "warn",
+                    "",
+                    "legacy dsh home-patch cleanup failed",
+                    Some(&err),
+                ),
+            }
             // Startup is the only safe moment: no session exists yet, so an
             // upgrade cannot replace a binary an agent is mid-turn on.
             commands::auto_update_agents_in_background();
@@ -487,6 +509,12 @@ fn main() {
             commands::bridge_add_key,
             commands::bridge_delete_entry,
             commands::bridge_list_models,
+            commands::bridge_add_custom_provider,
+            commands::model_library_scan,
+            commands::model_library_check_source,
+            commands::model_library_set_environment,
+            commands::model_library_preferences,
+            commands::model_library_save_preferences,
             commands::bridge_bind,
             commands::bridge_get_binding,
             commands::engine_status,

@@ -62,6 +62,16 @@ pub struct CredentialEntry {
     pub created_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_used_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_provider: Option<CustomProviderConfig>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomProviderConfig {
+    pub endpoint: String,
+    pub protocol: String,
+    pub models: Vec<String>,
 }
 
 /// 存储文件 `~/.marionette/credentials.json` 的整体结构。
@@ -372,6 +382,7 @@ pub fn add_key_plan_at(path: &Path, preset: &str, label: &str, key: &str) -> Res
         existing.last_used_at = None; // 旧 key 的使用记录对新 key 没有意义。
     } else {
         store.entries.push(CredentialEntry {
+            custom_provider: None,
             id: preset.to_string(),
             kind: CredentialKind::KeyPlan,
             label,
@@ -385,6 +396,36 @@ pub fn add_key_plan_at(path: &Path, preset: &str, label: &str, key: &str) -> Res
         });
     }
     save_store_at(path, &store)
+}
+
+pub fn add_custom_provider(label: &str, key: &str, config: CustomProviderConfig) -> Result<String, String> {
+    let path=credentials_store_path().ok_or_else(||"无法定位用户目录".to_string())?;
+    add_custom_provider_at(&path,label,key,config)
+}
+
+fn add_custom_provider_at(path: &Path, label: &str, key: &str, config: CustomProviderConfig) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let label=label.trim();
+    if label.is_empty() { return Err("请输入自定义来源名称".into()); }
+    if !matches!(config.protocol.as_str(), "chat" | "responses" | "anthropic") { return Err("请选择支持的接口协议".into()); }
+    let endpoint=config.endpoint.trim().trim_end_matches('/');
+    let authority=endpoint.split("://").nth(1).unwrap_or("").split('/').next().unwrap_or("");
+    if authority.is_empty() || authority.contains('@') || endpoint.contains('?') || endpoint.contains('#') || !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
+        return Err("请输入有效的 http/https 接口地址，认证信息请填在 API Key 中".into());
+    }
+    let mut models:Vec<String>=config.models.iter().map(|m|m.trim().to_string()).filter(|m|!m.is_empty()).collect();
+    models.dedup();
+    if models.iter().any(|m|m.contains(',') || m.chars().any(char::is_control)) { return Err("模型 ID 不能包含逗号或控制字符".into()); }
+    let digest=Sha256::digest(format!("{label}|{endpoint}|{}",config.protocol));
+    let id=format!("custom-{digest:x}")[..23].to_string();
+    let mut store=load_store_at(&path)?;
+    let created_at=store.entries.iter().find(|e|e.id==id).map(|e|e.created_at.clone()).unwrap_or_else(now_epoch_secs);
+    let secret=if key.trim().is_empty() {None} else {Some(encrypt_stored(key.trim())?)};
+    store.entries.retain(|e|e.id!=id);
+    store.entries.push(CredentialEntry { id:id.clone(),kind:CredentialKind::KeyPlan,label:label.into(),preset:Some("custom".into()),secret,ref_path:None,host_agent:None,source:"manual".into(),created_at,last_used_at:None,
+        custom_provider:Some(CustomProviderConfig {endpoint:endpoint.into(),protocol:config.protocol,models}) });
+    save_store_at(&path,&store)?;
+    Ok(id)
 }
 
 /// 删除一条凭证。id 不存在时报错而不是假装成功（对齐 delete_provider_key）。
@@ -491,6 +532,7 @@ fn scan_entry(
     host_agent: &str,
 ) -> CredentialEntry {
     CredentialEntry {
+        custom_provider: None,
         id: id.to_string(),
         kind,
         label: label.to_string(),
@@ -1085,6 +1127,26 @@ mod tests {
 
     fn find_entry<'a>(entries: &'a [CredentialEntry], id: &str) -> &'a CredentialEntry {
         entries.iter().find(|e| e.id == id).unwrap()
+    }
+
+    #[test]
+    fn custom_provider_roundtrip_rotation_and_deletion() {
+        let root=temp_home("custom_provider");
+        let path=root.join("credentials.json");
+        let config=super::CustomProviderConfig {endpoint:"https://ollama.com/v1/".into(),protocol:"chat".into(),models:vec!["deepseek-v4.1-flash:1017".into()]};
+        let id=super::add_custom_provider_at(&path,"Ollama","sk-fixture-private",config.clone()).unwrap();
+        let stored=super::load_store_at(&path).unwrap();
+        assert_eq!(stored.entries.len(),1);
+        assert_eq!(stored.entries[0].custom_provider.as_ref().unwrap().endpoint,"https://ollama.com/v1");
+        assert!(!fs::read_to_string(&path).unwrap().contains("sk-fixture-private"));
+        assert_eq!(super::peek_secret_at(&path,&id).unwrap().as_deref(),Some("sk-fixture-private"));
+        let rotated=super::add_custom_provider_at(&path,"Ollama","sk-fixture-rotated",config).unwrap();
+        assert_eq!(id,rotated);
+        assert_eq!(super::load_store_at(&path).unwrap().entries.len(),1);
+        assert_eq!(super::peek_secret_at(&path,&id).unwrap().as_deref(),Some("sk-fixture-rotated"));
+        super::delete_entry_at(&path,&id).unwrap();
+        assert!(super::load_store_at(&path).unwrap().entries.is_empty());
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn corrupt_archives(dir: &Path) -> Vec<PathBuf> {
