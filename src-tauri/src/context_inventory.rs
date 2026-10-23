@@ -440,6 +440,67 @@ fn scan_grok_config(path: &Path, out: &mut Collector) {
     }
 }
 
+/// ZCode: `~/.zcode/cli/config.json` → `mcp.servers: { name: { type, command,
+/// args, url } }` (same shape the zcode-acp bridge's own discovery reads).
+/// Scanned so zcode's servers can be lent to other agents and stdio servers
+/// zcode owns natively are not double-injected into its own sessions.
+fn scan_zcode_config(path: &Path, out: &mut Collector) {
+    let Some(value) = read_jsonc(path) else {
+        if path.exists() {
+            out.notes.push(format!("Could not parse {}", path.display()));
+        }
+        return;
+    };
+    let Some(servers) = value
+        .get("mcp")
+        .and_then(Value::as_object)
+        .and_then(|mcp| mcp.get("servers"))
+        .and_then(Value::as_object)
+    else {
+        return;
+    };
+    for (name, entry) in servers {
+        let Some(obj) = entry.as_object() else { continue };
+        if obj.get("enabled").and_then(Value::as_bool) == Some(false) {
+            continue;
+        }
+        let url = obj.get("url").and_then(Value::as_str).map(str::to_string);
+        let command = obj.get("command").and_then(Value::as_str).map(str::to_string);
+        let args = obj
+            .get("args")
+            .and_then(Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let env_keys = obj
+            .get("env")
+            .and_then(Value::as_object)
+            .map(|env| env.keys().cloned().collect())
+            .unwrap_or_default();
+
+        out.add_server(McpServerSpec {
+            id: name.to_lowercase(),
+            name: name.clone(),
+            transport: match obj.get("type").and_then(Value::as_str) {
+                Some("sse") => "sse".into(),
+                _ if url.is_some() => "http".into(),
+                _ => "stdio".into(),
+            },
+            command,
+            args,
+            env_keys,
+            header_keys: Vec::new(),
+            url,
+            sources: vec!["zcode".to_string()],
+            source_paths: vec![path.display().to_string()],
+            agents: vec!["zcode".to_string()],
+        });
+    }
+}
+
 /// Claude / generic: `{ "mcpServers": { name: { command, args, env } | { url } } }`
 fn scan_mcp_json(path: &Path, source: &str, agent: Option<&str>, out: &mut Collector) {
     let Some(value) = read_jsonc(path) else { return };
@@ -568,11 +629,15 @@ pub fn scan(project_root: &Path) -> ContextInventory {
         // headers, so Unity MCP came up as 401 and the agent only saw `tasks`.
         scan_grok_config(&home.join(".grok/config.toml"), &mut out);
         scan_mcp_json(&home.join(".claude.json"), "claude-code", Some("claude-code"), &mut out);
+        // ZCode keeps user MCP in `~/.zcode/cli/config.json` (`mcp.servers`);
+        // plugin MCP stays zcode-internal (the runtime loads it itself).
+        scan_zcode_config(&home.join(".zcode/cli/config.json"), &mut out);
 
         scan_skills_dir(&home.join(".config/opencode/skills"), "opencode", Some("opencode"), &mut out);
         scan_skills_dir(&home.join(".claude/skills"), "claude-code", Some("claude-code"), &mut out);
         scan_skills_dir(&home.join(".grok/skills"), "grok-build", Some("grok-build"), &mut out);
         scan_skills_dir(&home.join(".codex/skills"), "codex", Some("codex"), &mut out);
+        scan_skills_dir(&home.join(".zcode/cli/skills"), "zcode", Some("zcode"), &mut out);
     }
 
     // Project: these travel with the repo, so they win on relevance.
@@ -1001,11 +1066,16 @@ fn header_values_for(spec: &McpServerSpec) -> Vec<(String, String)> {
 /// "already native"**: Grok lists servers in `config.toml` that do not actually
 /// attach in ACP (`_x.ai/mcp/servers_updated` only had `ue58_official` while
 /// `ai-game-developer` was marked native and left uninjected).
+///
+/// `supports_stdio: false` drops stdio entries for adapters whose
+/// session/new schema only takes remote servers (zcode-acp-server) — one
+/// stdio entry would fail the whole call, not just that server.
 pub fn mcp_payload_for_agent(
     project_root: &Path,
     agent_id: &str,
     supports_http: bool,
     supports_sse: bool,
+    supports_stdio: bool,
 ) -> (Vec<Value>, Vec<String>) {
     let inventory = scan(project_root);
     let selection = load_selection(project_root);
@@ -1063,6 +1133,10 @@ pub fn mcp_payload_for_agent(
             }
             _ => {
                 // Stdio: a second process with the same name is a real conflict.
+                if !supports_stdio {
+                    skipped.push(format!("{} (stdio unsupported by agent)", spec.name));
+                    continue;
+                }
                 if claimed_native {
                     skipped.push(format!("{} (already native)", spec.name));
                     continue;
@@ -1238,7 +1312,7 @@ mod tests {
 
         // Use an agent that does not natively own this server on the machine
         // (grok-build / opencode may already list it in ~/.grok or ~/.config).
-        let (payload, skipped) = mcp_payload_for_agent(&root, "claude-code", true, true);
+        let (payload, skipped) = mcp_payload_for_agent(&root, "claude-code", true, true, true);
         assert!(
             !skipped.iter().any(|s| s.contains("already native")),
             "claude-code should receive a lend, not a native skip: {skipped:?}"
