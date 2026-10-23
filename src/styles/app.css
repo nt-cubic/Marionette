@@ -62,6 +62,14 @@ body.is-panel-resizing .workspace-grid {
   height: 100%;
 }
 
+/* Fills the bar so the window controls stay pinned to the far right in the
+   split titlebar, where no session tabs are rendered. */
+.workspace-titlebar__fill {
+  flex: 1 1 auto;
+  min-width: 0;
+  align-self: stretch;
+}
+
 /* Drag handles on the inner seams of side panels. */
 .panel-resizer {
   position: absolute;
