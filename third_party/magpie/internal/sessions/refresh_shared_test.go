@@ -169,3 +169,37 @@ func TestStoresLiveAsLongAsTheirLastUser(t *testing.T) {
 		t.Fatal("left open after the last read")
 	}
 }
+
+// A path listed twice in one read is read once. Each listing was a job of
+// its own on one parsing entry, so the second publish closed a nil
+// channel and took magpie down a few seconds after every start (#2932).
+func TestRefreshReadsAPathListedTwiceOnce(t *testing.T) {
+	inZone(t, 0)
+	claude, _ := setup(t)
+	moreSessions(t, claude, 3)
+	var parsed atomic.Int32
+	parseHook = func() { parsed.Add(1) }
+	t.Cleanup(func() { parseHook = nil })
+
+	mu.Lock()
+	defer mu.Unlock()
+	loadCache()
+	defer useDBs()()
+	files := allFiles()
+	if len(files) < 3 {
+		t.Fatalf("listed %d files", len(files))
+	}
+	twice := append(append([]file(nil), files...), files[0], files[len(files)-1])
+	refresh(twice, files)
+	if n := int(parsed.Load()); n != len(files) {
+		t.Fatalf("parsed %d times for %d files", n, len(files))
+	}
+	for _, f := range files {
+		if cache[f.path] == nil {
+			t.Fatalf("%s has no parse", f.path)
+		}
+		if parsing[f.path] != nil {
+			t.Fatalf("%s is still being read", f.path)
+		}
+	}
+}

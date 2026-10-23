@@ -331,7 +331,7 @@ func callSources() []file {
 	out = append(out, piCallFiles()...)
 	out = append(out, codebuddyCallFiles()...)
 	out = append(out, agyCallFiles()...) // #2097
-	return append(out, workbuddyCallFiles()...)
+	return distinctPaths(append(out, workbuddyCallFiles()...))
 }
 
 // desktopDataDirs are Claude Desktop's folders on this computer that

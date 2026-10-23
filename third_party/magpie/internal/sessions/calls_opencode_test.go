@@ -2,6 +2,7 @@ package sessions
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -125,4 +126,40 @@ func TestOpenCodeCallsV2(t *testing.T) {
 	if c := cs["msg_0008"]; c.Model != "big-pickle" || c.Upstream != "opencode" || c.Tokens != (Tokens{11, 2, 0, 0, 0}) || c.Effort != "xhigh" {
 		t.Fatalf("its compaction: %+v", c)
 	}
+}
+
+// A session id stored once as TEXT and once as BLOB is two rows in
+// SQLite and one path here (#2932, as Hermes's state.db had it): every
+// list of the files to read has it once, so nothing reads or counts it
+// twice.
+func TestOpenCodeIDStoredAsTextAndBlobIsListedOnce(t *testing.T) {
+	data, _ := setupMore(t)
+	db := ocMakeDB(t, filepath.Join(data, "opencode", "opencode.db"))
+	if _, err := db.Exec("INSERT INTO session (id, project_id, parent_id, slug, directory, title, version, time_created, time_updated) VALUES (?, '0f3a', NULL, 's', '/work/oc', 'stray', '1.1.53', 1790416000000, 1790416000000)", []byte(ocMain)); err != nil {
+		t.Fatal(err)
+	}
+	listed := func(fs []file) (n int) {
+		for _, f := range fs {
+			if strings.HasSuffix(f.path, "#"+ocMain) {
+				n++
+			}
+		}
+		return n
+	}
+	// listed as List lists them, with mu held and the databases closed
+	// after: one left open can't be removed on Windows
+	mu.Lock()
+	release := useDBs()
+	own, all := openCodeFiles(), allFiles()
+	release()
+	mu.Unlock()
+	if n := listed(own); n != 2 {
+		t.Fatalf("OpenCode's own list has the session %d times, want the TEXT and the BLOB row", n)
+	}
+	for name, fs := range map[string][]file{"allFiles": all, "callSources": callSources()} {
+		if n := listed(fs); n != 1 {
+			t.Errorf("%s lists the session %d times", name, n)
+		}
+	}
+	checkOCCalls(t, ocCalls(t))
 }

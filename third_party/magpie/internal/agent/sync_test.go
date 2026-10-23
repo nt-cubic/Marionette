@@ -139,8 +139,8 @@ func TestCrushModelsCarryMaxTokens(t *testing.T) {
 // output. ZCode and WorkBuddy cap it at zcodeMaxOutput besides, Crush falls
 // back to 16384 without a known output, OpenCode is handed no limit without
 // a window, and AtomCode and Snow CLI, each told a window of its own when
-// the model's isn't known, are cut to that. dsh is held to a quarter of
-// a known window (dshMaxTokens, #2823).
+// the model's isn't known, are cut to that. dsh is held to what leaves it
+// half of a known window, or a quarter of it (dshMaxTokens, #2823).
 func TestMaxTokensWithinContextWindow(t *testing.T) {
 	home := syncHome(t)
 	check := func(limit string, want, window int) {
@@ -181,10 +181,11 @@ func TestMaxTokensWithinContextWindow(t *testing.T) {
 			told = strconv.Itoa(min(want, atomcodeContext))
 		}
 		// dsh reserves maxTokens out of its window before compacting, so a
-		// known window holds it to a quarter (dshMaxTokens, #2823).
+		// known window holds it to what leaves dsh half of it, or a quarter
+		// where that is more (dshMaxTokens, #2823, #3298).
 		dshTold := n
 		if strings.Contains(limit, "context") {
-			dshTold = strconv.Itoa(min(want, window/4))
+			dshTold = strconv.Itoa(min(want, max(window/4, window/2-65536)))
 		}
 		snowTold := n
 		if !strings.Contains(limit, "context") {

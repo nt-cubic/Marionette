@@ -10,11 +10,13 @@ package wslrun
 import (
 	"bufio"
 	"context"
+	"errors"
 	"net"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -112,6 +114,67 @@ func Find(name string) (Tool, bool) {
 	return Tool{}, false
 }
 
+// ErrDown is In's answer for a distro that isn't running, which it doesn't
+// start to look.
+var ErrDown = errors.New("the distro isn't running")
+
+// ErrNotFound is In's answer for a command the distro hasn't.
+var ErrNotFound = errors.New("not in the distro")
+
+// plainName is a command In can look for: the probe names it in a shell
+// script unquoted, so a name with anything else in it isn't looked for.
+var plainName = regexp.MustCompile(`^[A-Za-z0-9_./+@:-]+$`)
+
+var foundIn struct {
+	sync.Mutex
+	at    map[string]time.Time
+	tools map[string]Tool
+}
+
+// In is command name, a program's name or its path, as distro has it, for
+// a run there: found as Find finds one (a login shell's PATH, then an
+// interactive one's, where nvm puts node), in that distro only. A distro
+// that isn't running is ErrDown and isn't started. A path the probe can't
+// name for the shell is taken as it is, on a login shell's usual PATH.
+// What was found is kept for findAge.
+func In(distro, name string) (Tool, error) {
+	if !On {
+		return Tool{}, errors.New("no WSL")
+	}
+	if !Up(distro) {
+		return Tool{}, ErrDown
+	}
+	if !plainName.MatchString(name) {
+		if strings.HasPrefix(name, "/") {
+			return Tool{Distro: distro, Path: name, PATH: defaultPATH, Mount: "/mnt/"}, nil
+		}
+		return Tool{}, ErrNotFound
+	}
+	key := distro + "\x00" + name
+	foundIn.Lock()
+	t, ok := foundIn.tools[key]
+	fresh := ok && time.Since(foundIn.at[key]) < findAge
+	foundIn.Unlock()
+	if fresh {
+		return t, nil
+	}
+	out, err := Run(30*time.Second, "-d", distro, "-e", "sh", "-lc", probeScript(name))
+	if err != nil {
+		return Tool{}, err
+	}
+	t, ok = parseProbe(distro, string(out))
+	if !ok {
+		return Tool{}, ErrNotFound
+	}
+	foundIn.Lock()
+	if foundIn.at == nil {
+		foundIn.at, foundIn.tools = map[string]time.Time{}, map[string]Tool{}
+	}
+	foundIn.at[key], foundIn.tools[key] = time.Now(), t
+	foundIn.Unlock()
+	return t, nil
+}
+
 var up struct {
 	sync.Mutex
 	at    time.Time
@@ -171,11 +234,14 @@ func Known(name string) (Tool, bool) {
 	return Tool{}, false
 }
 
-// Forget drops what Find knows, so the next Find looks again.
+// Forget drops what Find and In know, so the next one looks again.
 func Forget() {
 	found.Lock()
 	found.at, found.tools = nil, nil
 	found.Unlock()
+	foundIn.Lock()
+	foundIn.at, foundIn.tools = nil, nil
+	foundIn.Unlock()
 	up.Lock()
 	up.at = time.Time{}
 	up.Unlock()
@@ -197,6 +263,9 @@ func probeScript(name string) string {
 		`ip route show default 2>/dev/null | head -n1 | sed 's/^/route:/'; ` +
 		`command -v wslinfo >/dev/null 2>&1 && echo "net:$(wslinfo --networking-mode 2>/dev/null)"; true`
 }
+
+// defaultPATH is a login shell's PATH, for a distro that printed none.
+const defaultPATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 func parseProbe(distro, out string) (Tool, bool) {
 	t := Tool{Distro: distro, Mount: "/mnt/"}
@@ -237,7 +306,7 @@ func parseProbe(distro, out string) (Tool, bool) {
 		t.PATH = ipath
 	}
 	if t.PATH == "" {
-		t.PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+		t.PATH = defaultPATH
 	}
 	if dir := t.Path[:strings.LastIndex(t.Path, "/")]; dir != "" && !onPath(t.PATH, dir) {
 		t.PATH = dir + ":" + t.PATH

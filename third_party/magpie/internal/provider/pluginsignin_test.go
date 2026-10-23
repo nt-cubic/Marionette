@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/plugin"
+	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/testenv"
 )
 
@@ -226,5 +228,63 @@ func TestPluginAccounts(t *testing.T) {
 	}
 	if got := users(); !slices.Equal(got, us) {
 		t.Fatalf("shown again with %v, was %v", got, us)
+	}
+}
+
+// Keyless is generic metadata: neither the provider id nor credential is
+// known to the host. Ordinary API methods still reject empty input.
+func TestPluginKeylessSingleIdentity(t *testing.T) {
+	bun := testenv.Bun(t)
+	claudeHome(t)
+	t.Setenv("MAGPIE_BUN", bun)
+	t.Setenv("FAKE_KEYLESS", "1")
+	t.Cleanup(plugin.Settle)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	abs, _ := filepath.Abs("../plugin/testdata/fake/index.js")
+	if _, err := plugin.Add(ctx, abs); err != nil {
+		t.Fatal(err)
+	}
+	ps, err := plugin.Providers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ps) != 1 || !ps[0].Single || !ps[0].Methods[0].Keyless || ps[0].Methods[1].Keyless {
+		t.Fatalf("keyless metadata lost or leaked to OAuth: %+v", ps)
+	}
+	for _, credential := range []string{"public-fixture", "renewed-fixture"} {
+		if id, err := PluginAPIKey(ctx, "fakeco", 0, map[string]string{"credential": credential}, ""); err != nil || id != "fakeco" {
+			t.Fatalf("keyless sign-in: %q %v", id, err)
+		}
+	}
+	ps, err = plugin.Providers(ctx)
+	if err != nil || len(ps[0].Accounts) != 1 {
+		t.Fatalf("single identity duplicated: %+v %v", ps, err)
+	}
+	if _, err := PluginAPIKey(ctx, "fakeco", 1, nil, ""); err == nil {
+		t.Fatal("OAuth must not accept an empty API key")
+	}
+}
+
+// An empty key is taken only by an API method the plugin says is keyless:
+// a plain API method, or one of another plugin, still asks for the key.
+func TestPluginEmptyKeyOnlyKeyless(t *testing.T) {
+	claudeHome(t)
+	t.Setenv("MAGPIE_BUN", "")
+	spec := "@example/opencode-acme-auth"
+	os.MkdirAll(settings.Dir(), 0o700)
+	if err := os.WriteFile(filepath.Join(settings.Dir(), "plugins.json"), []byte(`{"plugins":[{"spec":"`+spec+`"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plugin.UseCached([]plugin.Provider{{ID: "acme", Spec: spec, Name: "Acme",
+		Methods: []plugin.Method{{Type: "api", Label: "API key"}, {Type: "oauth", Label: "Browser", Keyless: true}}}})
+	t.Cleanup(func() { plugin.UseCached(nil) })
+	for _, m := range []int{0, 1, 2, -1} {
+		if _, err := PluginAPIKey(context.Background(), "acme", m, nil, " "); err == nil || err.Error() != "enter the key" {
+			t.Errorf("method %d with no key: %v, want enter the key", m, err)
+		}
+	}
+	if _, err := PluginAPIKey(context.Background(), "nobody", 0, nil, ""); err == nil || err.Error() != "enter the key" {
+		t.Errorf("an unknown plugin with no key: %v", err)
 	}
 }

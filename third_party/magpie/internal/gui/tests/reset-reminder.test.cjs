@@ -9,7 +9,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
-const { watchSettingsReads, settingsDrawn } = require("./reader.cjs");
+const { watchSettingsReads, settingsDrawn, reach } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 
@@ -83,19 +83,25 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await page.locator("#resetReminderSegs .opt.on").textContent(), w.off);
       assert.equal(await page.locator("#resetReminderRow select").count(), 0);
 
-      await page.locator("#resetReminderRow").scrollIntoViewIfNeeded();
-      await page.waitForTimeout(200);
-      const top = await page.locator("#view-settings").evaluate((v) => v.scrollTop);
+      // each control wheeled wholly into sight, clear of the tabs and the
+      // window's foot, before it is clicked: Playwright's own scroll to one
+      // cut off moved the page, not the click (10-22, taller rows)
+      const scrolled = () => page.locator("#view-settings").evaluate((v) => v.scrollTop);
+      await reach(page, opts.nth(2));
+      let top = await scrolled();
       await opts.nth(2).click();
       assert.equal((await posted(1)).resetReminder, 24);
       await page.waitForTimeout(300);
       assert.equal(await page.locator("#resetReminderSegs .opt.on").textContent(), w.h(24));
+      assert.equal(await scrolled(), top, "the click moved the page");
 
       // another setting saved later keeps it
+      await reach(page, page.locator("#currencySegs .opt", { hasText: w.cny }));
+      top = await scrolled();
       await page.locator("#currencySegs .opt", { hasText: w.cny }).click();
       assert.equal((await posted(2)).resetReminder, 24, "kept by another save");
       await page.waitForTimeout(300);
-      assert.equal(await page.locator("#view-settings").evaluate((v) => v.scrollTop), top, "no click moved the page");
+      assert.equal(await scrolled(), top, "no click moved the page");
 
       await opts.nth(0).click();
       assert.equal((await posted(3)).resetReminder, 0, "Off saves 0");

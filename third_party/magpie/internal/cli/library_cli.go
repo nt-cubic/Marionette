@@ -25,6 +25,7 @@ const libraryUsage = `magpie library                     what the library gives 
   magpie library skill agents <name> <a,b…|none>
   magpie library skill rm <name>     (skills are installed from the app's Library page)
   magpie library skill rm --all [--yes]   every skill out of the library and the agents (asks first; --yes doesn't)
+  magpie library skill rm --gone [--yes]  every skill an update found removed from its source (asks first; --yes doesn't)
   magpie library skill update [name] fetch a skill from GitHub again; with no name, every one from there
                                      (one changed here is left as it is; update it by name with --replace-edits)
   magpie library skill how link|copy [agent]   give skills as links to the library's or as copies: every agent's way, or one agent's
@@ -122,6 +123,10 @@ func libraryCmd(args []string) error {
 			if as, err = libraryAgents(rest[2], "skills"); err == nil {
 				res, err = library.SkillAgents(rest[1], as)
 			}
+		case len(rest) >= 2 && rest[0] == "rm" && slices.Contains(rest[1:], "--gone"):
+			if res, err = removeGoneSkills(rest[1:]); res == nil && err == nil {
+				return nil
+			}
 		case len(rest) >= 2 && rest[0] == "rm" && slices.Contains(rest[1:], "--all"):
 			if res, err = removeEverySkill(rest[1:]); res == nil && err == nil {
 				return nil
@@ -136,10 +141,16 @@ func libraryCmd(args []string) error {
 			// a skill changed here is updated only when asked to be, its
 			// changed version kept with the backups (#1449)
 			var edited *library.EditedError
+			var gone *library.GoneError
 			if res, err = library.UpdateSkill(rest[1], len(rest) == 3); err == nil {
 				fmt.Println(green.Render("✓"), rest[1], "is up to date")
 			} else if errors.As(err, &edited) {
 				err = fmt.Errorf("%w\n  magpie library skill update %s --replace-edits  takes the fetched one in its place, keeping yours with the backups", err, rest[1])
+			} else if errors.As(err, &gone) {
+				// removed there: said, with how to take it out; it's kept till then
+				fmt.Println(amber.Render("!"), err)
+				fmt.Println(muted.Render("  magpie library skill rm " + rest[1] + "  takes it out (its folder goes to the backups)"))
+				return nil
 			}
 		case len(rest) == 1 && rest[0] == "update":
 			res, err = library.UpdateSkills()
@@ -225,6 +236,65 @@ func removeEverySkill(args []string) (*library.Result, error) {
 	return res, nil
 }
 
+// removeGoneSkills is magpie library skill rm --gone: every skill an
+// update or a check found its source without, asked about first, naming
+// the ones changed here.
+func removeGoneSkills(args []string) (*library.Result, error) {
+	yes := false
+	for _, a := range args {
+		switch a {
+		case "--gone":
+		case "--yes", "-y":
+			yes = true
+		default:
+			return nil, fmt.Errorf("usage:\n  %s", libraryUsage)
+		}
+	}
+	v, err := library.Read(nil)
+	if err != nil {
+		return nil, err
+	}
+	var names, shown []string
+	for _, s := range v.Skills {
+		if s.Gone == "" {
+			continue
+		}
+		names = append(names, s.Name)
+		if s.Edited {
+			shown = append(shown, s.Name+" (changed here)")
+		} else {
+			shown = append(shown, s.Name)
+		}
+	}
+	if len(names) == 0 {
+		fmt.Println(green.Render("✓"), "no skill is removed from its source", muted.Render("(magpie library skill update finds them)"))
+		return nil, nil
+	}
+	if !yes {
+		if !term.IsTerminal(int(os.Stdin.Fd())) {
+			return nil, fmt.Errorf("this removes %s removed from their source; run it with --yes to do so without being asked", plural(len(names), "skill"))
+		}
+		fmt.Printf("Remove %s removed from their source (%s) from the library and every agent? The library's folders go to magpie's backups. [y/N] ",
+			plural(len(names), "skill"), strings.Join(shown, ", "))
+		line, _ := stdin.ReadString('\n')
+		if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
+			return nil, fmt.Errorf("nothing removed")
+		}
+	}
+	res, err := library.RemoveGoneSkills(names)
+	if err != nil {
+		return nil, err
+	}
+	n := 0
+	for _, name := range names {
+		if !slices.ContainsFunc(res.Unremoved, func(p library.Problem) bool { return p.What == "skill:"+name }) {
+			n++
+		}
+	}
+	fmt.Println(green.Render("✓"), plural(n, "skill"), "removed")
+	return res, nil
+}
+
 // agentList is a comma list of agents; none (or nothing) is no agent.
 func agentList(s string) []string {
 	out := []string{}
@@ -268,6 +338,10 @@ func printLibraryResult(res *library.Result) {
 	}
 	for _, p := range res.Unupdated {
 		fmt.Println(amber.Render("!"), strings.TrimPrefix(p.What, "skill:"), muted.Render("not updated:"), p.Error)
+	}
+	if len(res.Gone) > 0 {
+		fmt.Println(amber.Render("!"), "removed from their source:", strings.Join(res.Gone, ", "))
+		fmt.Println(muted.Render("  kept here till you take them out: magpie library skill rm --gone"))
 	}
 	for _, p := range res.Unremoved {
 		fmt.Println(amber.Render("!"), strings.TrimPrefix(p.What, "skill:"), muted.Render("not removed:"), p.Error)
@@ -344,6 +418,9 @@ func libraryStatus() error {
 		fmt.Printf("  %s → %s\n", bold.Render(s.Name), on(s.Agents))
 		if s.Missing {
 			fmt.Println("   ", amber.Render("!"), muted.Render("its folder is gone"))
+		}
+		if s.Gone != "" {
+			fmt.Println("   ", amber.Render("!"), muted.Render("removed from "+s.Source+" · magpie library skill rm --gone"))
 		}
 	}
 	fmt.Println(muted.Render("  kept in " + v.Dir + " · magpie library help"))

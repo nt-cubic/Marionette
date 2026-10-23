@@ -859,6 +859,11 @@ func shown(c []string) string {
 	if c[0] == "sh" {
 		return c[2]
 	}
+	if c[0] == rtkWindowsRelease {
+		// magpie's own action, not a command line: name what it does
+		// rather than the action and the path the user's rtk is at (#2006)
+		return "rtk's own Windows release"
+	}
 	return strings.Join(c, " ")
 }
 

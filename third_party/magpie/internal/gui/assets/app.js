@@ -436,7 +436,7 @@ function renderAgents() {
       b.title = claudePicks(a, f) && !f.value ? t("{label}: {value}", { label: t(f.label), value: t(AUTO_MODE_UNSET) }) + "\n" + t(CLAUDE_PICKS)
         : t("{label}: {value}", { label: t(f.label), value: f.value || t("agent default") }) + (opt?.note ? ` · ${opt.note}` : "");
       if (f.value && opt?.direct) b.title += "\n" + directSaid(a, opt);
-      const effort = f.key === "effort" || f.label === "effort" || f.label === "thinking" || TIER_EFFORTS.includes(f.label);
+      const effort = f.key === "effort" || f.label === "effort" || f.label === "thinking" || TIER_EFFORTS.includes(f.label) || f.label === SUB_EFFORT;
       if (opt?.icon || opt?.icons?.length) b.append(optionIcon(opt));
       // a field with no logo of its own still leads with an icon: how much
       // effort, or the agent's own for its default, as the picker shows it
@@ -626,7 +626,7 @@ function renderAgents() {
       // Claude Code's tiers, subagents and auto mode have rows of their own
       // when opened
       if (a.id === "claude") {
-        for (const f of a.fields.filter((f) => TIERS.includes(f.label) || f.label === "subagents" || f.label === AUTO_MODE)) extras.querySelector(`[data-key="${CSS.escape(f.key)}"]`)?.remove();
+        for (const f of a.fields.filter((f) => TIERS.includes(f.label) || f.label === "subagents" || f.label === SUB_EFFORT || f.label === AUTO_MODE)) extras.querySelector(`[data-key="${CSS.escape(f.key)}"]`)?.remove();
         extras.querySelector('[data-key="tiers"]')?.remove();
       }
       row.append(agentHandle(a, row, inFold), who);
@@ -1895,22 +1895,29 @@ function connectPanel(a, { fields, fieldBtn }) {
     const tiers = a.fields.filter((f) => TIERS.includes(f.label) && f.options.length);
     const hint = { opus: "/model opus", sonnet: "/model sonnet", haiku: "/model haiku", fable: "/model fable" };
     const also = { sonnet: " · " + t("the default tier"), haiku: " · " + t("also for small background tasks") };
+    // a tier's own effort (#536) or the subagents', while there are levels
+    // to pick; unset, at the effort Claude Code asks for (off: no model)
+    const effortBtn = (e, off) => {
+      const b = fieldBtn(off ? { ...e, value: "" } : e, "ag-eff");
+      b.disabled = !!off;
+      b.title = t("{label}: {value}", { label: t(e.label), value: off ? t("default") : e.value ? effortName(optionFor(e, e.value) || { value: e.value }) : t("the effort Claude Code asks for") }) + (off ? "\n" + t("Set a subagent model first") : "");
+      b.setAttribute("aria-label", b.title);
+      return b;
+    };
     const rows = tiers.map((f) => {
       const l = line(el("span", "ag-tier", f.label[0].toUpperCase() + f.label.slice(1)), fieldBtn(f, "ag-pick"));
-      // the tier's own effort (#536), while there are levels to pick;
-      // unset, it runs at the effort Claude Code asks for
       const e = a.fields.find((x) => x.label === f.label + " effort" && (x.options.length || x.value));
-      if (e) {
-        const b = fieldBtn(e, "ag-eff");
-        b.title = t("{label}: {value}", { label: t(e.label), value: e.value ? effortName(optionFor(e, e.value) || { value: e.value }) : t("the effort Claude Code asks for") });
-        b.setAttribute("aria-label", b.title);
-        l.append(b);
-      }
+      if (e) l.append(effortBtn(e));
       l.append(el("span", "ag-hint", (hint[f.label] || "") + (also[f.label] || "")));
       return l;
     });
     const sub = a.fields.find((f) => f.label === "subagents" && (f.options.length || f.value));
-    if (sub) rows.push(line(el("span", "ag-tier", t("Subagents")), fieldBtn(sub, "ag-pick")));
+    if (sub) {
+      const l = line(el("span", "ag-tier", t("Subagents")), fieldBtn(sub, "ag-pick"));
+      const e = a.fields.find((x) => x.label === SUB_EFFORT && (x.options.length || x.value));
+      if (e) l.append(effortBtn(e, !sub.value));
+      rows.push(l);
+    }
     // the model its auto mode classifier runs on; unset, Claude Code's own
     const auto = a.fields.find((f) => f.label === AUTO_MODE && (f.options.length || f.value));
     if (auto) rows.push(line(el("span", "ag-tier", t("Auto mode")), fieldBtn(auto, "ag-pick"), el("span", "ag-hint", t("the model that checks each action in auto mode"))));
@@ -4331,9 +4338,9 @@ function showWhatsNew(releases, auto, more = {}) {
   ok.focus({ preventScroll: true });
 }
 
-// noteBlocks draws a release's markdown as text: headings, bullets,
-// paragraphs, and inline bold, code and links. Nothing in it is taken as
-// HTML; #123 links the issue.
+// noteBlocks draws a release's markdown as text: headings (tHeading),
+// bullets, paragraphs, inline bold, code and links, never as HTML; #123
+// links the issue.
 function noteBlocks(md) {
   const box = el("div", "wn-notes");
   let list = null;
@@ -4342,7 +4349,7 @@ function noteBlocks(md) {
     const li = /^\s*[-*+]\s+(.*)$/.exec(line);
     if (h) {
       list = null;
-      box.append(inlineMD(el("div", "wn-h wn-h" + Math.min(h[1].length, 4)), h[2]));
+      box.append(inlineMD(el("div", "wn-h wn-h" + Math.min(h[1].length, 4)), tHeading(h[2])));
     } else if (li) {
       if (!list) box.append(list = el("ul"));
       list.append(inlineMD(el("li"), li[1]));
@@ -4841,14 +4848,14 @@ function renderEffortPicker() {
     }
     opened.anchor.querySelector(".effort-ic")?.replaceWith(effortIcon(opened.field));
     // a square (the subagents' effort) says it in its title, lit while set
-    if (opened.field.label === SUB_EFFORT) {
+    if (opened.field.label === SUB_EFFORT && !opened.anchor.classList.contains("ag-eff")) {
       opened.anchor.classList.toggle("set", !!option.value);
       opened.anchor.title = subEffortTitle(opened.agent, opened.field, option);
       opened.anchor.setAttribute("aria-label", opened.anchor.title);
     }
     // a tier's effort, opened from the tiers' square: that square's title
     // and light follow the level
-    if (roleLevel(opened.field.label) && opened.anchor.classList.contains("ag-eff")) {
+    if ((roleLevel(opened.field.label) || opened.field.label === SUB_EFFORT) && opened.anchor.classList.contains("ag-eff")) {
       opened.anchor.title = t("{label}: {value}", { label: t(opened.field.label), value: option.value ? effortName(option) : levelUnset(opened.agent) });
       opened.anchor.setAttribute("aria-label", opened.anchor.title);
     } else if (roleLevel(opened.field.label)) {
@@ -7642,6 +7649,7 @@ function providerDraftValue() {
 function providerDirty() {
   // Price boxes parse on change; a page closed while typing hasn't blurred one yet.
   const active = document.activeElement;
+  if (accountModelsDraft(providers?.providers?.find((p) => p.id === editing)) !== null) return true;
   return !!draft && draft === providerDraftRef && (providerDraftValue() !== providerDraftBase ||
     (active?.matches(".editor .mprice input") && active.value !== active.defaultValue));
 }
@@ -7715,7 +7723,7 @@ function confirmDiscard() {
 async function cancelEdit(keep) {
   if ((providerDirty() || ((importing || importingApps) && modalFormDirty())) && !(await confirmDiscard())) return false;
   if (keep !== true) dropSigningIn(editing);
-  editing = null; draft = null; importing = null; importingApps = null; renderProviders();
+  editing = null; draft = null; acctModels = null; importing = null; importingApps = null; renderProviders();
   return true;
 }
 window.addEventListener("beforeunload", (e) => {
@@ -9307,9 +9315,11 @@ function drawEditor(p, presetID) {
       const priceRate = priceRateOfDraft();
       if (priceRate === undefined) return priceRateError(ed);
       if (priceTypedError(ed)) return;
+      const picked = accountModelsDraft(p);
+      if (picked === false) return editorError(t("Pick at least one model for the account, or choose All models"), "warn");
       const body = { id: p.id, models: chosenIds(), noModels: noneChosen(), unlisted: draft.unlisted, fallback: draft.fallback, contexts: cx.map, outputs: ox.map, compacts: cpx.map, proxy, accountProxies: own.map, maxConcurrency, ...queue, priceRate, modelPrefs: modelPrefsOfDraft(), pinUpstream: !!draft.pinUpstream, ...(p.carriesCompaction ? { nativeCompaction: !!draft.nativeCompaction } : {}), ...routingOfDraft(p) };
       saving(saveBtn, t("Saving…"));
-      savePluginOptions(subOf(a.agent)).then(() => providerAction("save", body, t("{name} saved", { name: p.name })), (e) => { doneSaving(saveBtn); editorError(e.message || String(e)); }); };
+      saveAccountModelsDraft(picked).then(() => savePluginOptions(subOf(a.agent))).then(() => providerAction("save", body, t("{name} saved", { name: p.name })), (e) => { doneSaving(saveBtn); editorError(e.message || String(e)); }); };
     bar.append(cancel, saveBtn);
     ed.append(bar);
     return ed;
@@ -9978,8 +9988,11 @@ function drawEditor(p, presetID) {
       Object.assign(body, movedURLs(draft));
     }
     editorError("");
+    const picked = accountModelsDraft(p);
+    if (picked === false) return editorError(t("Pick at least one model for the account, or choose All models"), "warn");
     saving(saveBtn, t(isNew ? "Adding…" : "Saving…"));
-    providerAction("save", body, t(isNew ? "{name} added" : "{name} saved", { name: draft.name || draft.id }));
+    const okMsg = t(isNew ? "{name} added" : "{name} saved", { name: draft.name || draft.id });
+    saveAccountModelsDraft(picked).then(() => providerAction("save", body, okMsg), (e) => { doneSaving(saveBtn); editorError(e.message || String(e)); });
   };
   saveBtn.onclick = save;
   bar.append(cancel, saveBtn);
@@ -11172,9 +11185,9 @@ function renderModels(p) {
     if (!ids.length) { names.append(el("span", "hint", t("Pick a model first."))); return; }
     const prefs = draft.modelPrefs = draft.modelPrefs || {};
     draft.onModelPrefs = drawNames;
-    // how the agents' lists will call them, and the setting that says so
-    // (#868), above the names given here
-    const sfx = el("div", "msuffix");
+    // how the agents' lists will call them (#868), and that the setting is
+    // every provider's, on Settings (joe on Discord)
+    const sfx = el("div", "msuffix suffix-said");
     const sfxSaid = el("span", "hint");
     const first = p.models.find((x) => x.id === ids[0]) || { id: ids[0], name: ids[0] };
     const sayLabel = (mode) => {
@@ -11187,7 +11200,13 @@ function renderModels(p) {
       sfxSaid.textContent = t("Agents’ lists show “{label}”", { label });
     };
     sayLabel();
-    sfx.append(el("span", "", t("Provider in model names")), suffixSegs(sayLabel), sfxSaid);
+    sfx.dataset.mode = suffixMode();
+    sfx.drawnAgain = sayLabel;
+    const where = el("button", "text action", t("Change in Settings"));
+    where.type = "button";
+    where.hidden = gatewayMode; // Settings has no such row then
+    where.onclick = (e) => openSettingsAt(e, "general", $("#plainNamesSegs").closest(".row"));
+    sfx.append(sfxSaid, el("span", "where", t("“Provider in model names” is one setting for every provider")), where);
     sfx.append(noNamesLine("span", "said"));
     names.append(sfx);
     // the APIs a model can be asked on alone: those of a key's provider
@@ -11998,7 +12017,7 @@ function pluginMethod(sub, site) {
 // magpie, signs in and carries the requests.
 function pluginSubs() {
   return (providers.plugins || []).map((x) => ({
-    agent: x.id, pid: x.pid, name: x.name, icon: x.icon, plugin: x, own: true,
+    agent: x.id, pid: x.pid, name: x.name, icon: x.icon, plugin: x, own: true, single: !!x.single,
     get plans() { return t("from the plugin {spec}", { spec: x.spec }); },
   }));
 }
@@ -12175,7 +12194,8 @@ async function startPluginSignIn(sub, method, inputs = {}, o = {}) {
       return renderProviders();
     }
     if (ms[method].type === "api") {
-      signing = { agent: sub.agent, ...keep, state: "key" };
+      signing = { agent: sub.agent, ...keep, state: ms[method].keyless === true ? "starting" : "key" };
+      if (ms[method].keyless === true) return pluginKey(sub, "");
       return renderProviders();
     }
     const body = { provider: sub.pid, method, inputs };
@@ -12219,7 +12239,7 @@ async function pluginKey(sub, key) {
     const st = await api("plugin-signin", { provider: sub.pid, method: flow.method, inputs: flow.inputs, key });
     if (signing?.agent === sub.agent) signedIn(st);
   } catch (e) {
-    if (signing?.agent === sub.agent) { signing = { ...flow, error: e.message }; renderProviders(); }
+    if (signing?.agent === sub.agent) { signing = { ...flow, state: flow.state === "starting" ? "failed" : flow.state, error: e.message }; renderProviders(); }
   }
 }
 
@@ -13089,7 +13109,7 @@ function renderAccounts(a, p) {
     const add = el("button", "acc add");
     const ic = el("span", "dot");
     ic.append(svg(PLUS, 10, 1.8));
-    add.append(ic, el("span", "n", t(sub.single ? "Sign in to another {name} account" : "Add another {name} account", { name: sub.name })));
+    add.append(ic, el("span", "n", t(sub.single && sub.plugin ? "Sign in again" : sub.single ? "Sign in to another {name} account" : "Add another {name} account", { name: sub.name })));
     add.onclick = () => startSignIn(a.agent);
     list.append(add);
     if (sub.importable) {
@@ -14097,9 +14117,25 @@ async function accountAction(path, body, okMsg, confirmed = false) {
 // provider's, as before. The pill on its row says which it serves; a click
 // opens the provider's models under it as chips, picked and saved apart
 // from the editor's Save. acctModels is the row being picked: { id, ref,
-// chosen }.
+// chosen }. Picks left unsaved there go with the editor's Save, which says
+// it saved them (#2862).
 let acctModels = null;
 function accountModelsOf(p, ref) { return p.accountModels?.[String(ref).toLowerCase()] || []; }
+// accountModelsDraft: what the open picker of p's has picked and not saved,
+// as provider/accountmodels takes it; null when nothing, false when it has
+// every model unpicked, which no Save keeps.
+function accountModelsDraft(p) {
+  const a = acctModels;
+  if (!p || a?.id !== p.id) return null;
+  const own = accountModelsOf(p, a.ref);
+  if (own.length === a.chosen.length && a.chosen.every((id) => own.includes(id))) return null;
+  return a.chosen.length ? { id: p.id, account: a.ref, allow: [...a.chosen] } : false;
+}
+async function saveAccountModelsDraft(body) {
+  if (!body) return;
+  await api("provider/accountmodels", body);
+  acctModels = null;
+}
 // It gives the pill, and the open picker the row ends with, or null.
 function accountModels(p, ref, isKey, name) {
   const own = accountModelsOf(p, ref);
@@ -15587,13 +15623,19 @@ function renderQuotas(lazy) {
 // account's full or brief is remembered by provider and account
 // (magpie.usageAccounts), for the window and the panel alike; a provider
 // opened before that (magpie.usageOpen) starts with every account in full.
-let usageOpen = new Set(), usageAccts = {};
+// The accounts the card's button opened are remembered too
+// (magpie.usageAcctsOpened), so that its fold puts those back in brief,
+// and only those (WuSix on Discord: with both accounts in brief, 展开 opened
+// both and 收起其余账号 folded only the second).
+let usageOpen = new Set(), usageAccts = {}, usageByMore = new Set();
 try { usageOpen = new Set(JSON.parse(localStorage.getItem("magpie.usageOpen") || "[]")); } catch {}
 try { usageAccts = JSON.parse(localStorage.getItem("magpie.usageAccounts") || "{}") || {}; } catch {}
+try { usageByMore = new Set(JSON.parse(localStorage.getItem("magpie.usageAcctsOpened") || "[]")); } catch {}
 addEventListener("storage", (e) => {
-  if (e.key !== "magpie.usageOpen" && e.key !== "magpie.usageAccounts") return;
+  if (e.key !== "magpie.usageOpen" && e.key !== "magpie.usageAccounts" && e.key !== "magpie.usageAcctsOpened") return;
   try { usageOpen = new Set(JSON.parse(localStorage.getItem("magpie.usageOpen") || "[]")); } catch {}
   try { usageAccts = JSON.parse(localStorage.getItem("magpie.usageAccounts") || "{}") || {}; } catch {}
+  try { usageByMore = new Set(JSON.parse(localStorage.getItem("magpie.usageAcctsOpened") || "[]")); } catch {}
   renderQuotas();
 });
 function usageShown(subs) {
@@ -15608,9 +15650,16 @@ function usageAcctOpen(q, subs) {
   if (typeof v === "boolean") return v;
   return usageOpen.has(q.provider) || q === usageShown(subs);
 }
-function setUsageAccts(list, open) {
-  for (const q of list) usageAccts[usageAcctKey(q)] = typeof open === "function" ? open(q) : open;
+// setUsageAccts: the accounts in list in full (open true) or in brief;
+// byMore: true when the card's button opened them, false when it or
+// anything else did (an account's own fold, a menu bar cell asking for it)
+function setUsageAccts(list, open, byMore = false) {
+  for (const q of list) {
+    usageAccts[usageAcctKey(q)] = typeof open === "function" ? open(q) : open;
+    if (byMore) usageByMore.add(usageAcctKey(q)); else usageByMore.delete(usageAcctKey(q));
+  }
   try { localStorage.setItem("magpie.usageAccounts", JSON.stringify(usageAccts)); } catch {}
+  try { localStorage.setItem("magpie.usageAcctsOpened", JSON.stringify([...usageByMore])); } catch {}
   renderQuotas();
 }
 // A card of a provider's keys shows the first three, and any in full,
@@ -15684,20 +15733,28 @@ function keysSum(subs) {
   return balanceAmount(subs[0], total);
 }
 // the card's button: the accounts in brief (or, in the panel, left out) in
-// full, or every one but the one in sight back in brief
+// full, its count the ones it opens; or, every one in full, the ones it
+// opened back in brief (none of them: every one but the one in sight). An
+// account's own fold leaves the button's count and fold as they are.
 function usageMore(subs, cls) {
   const closed = subs.filter((q) => !usageAcctOpen(q, subs));
   const panel = mode === "panel";
   // the panel draws the one in sight when none is in full
   const n = closed.length - (panel && closed.length === subs.length ? 1 : 0);
-  const b = el("button", cls, n
-    ? t(panel ? (n === 1 ? "Show 1 more account" : "Show {n} more accounts") : (n === 1 ? "Show 1 more account in full" : "Show {n} more accounts in full"), { n })
-    : t(panel ? "Show fewer accounts" : "Show the other accounts in brief"));
+  const pick = usageShown(subs);
+  const opened = subs.filter((q) => usageByMore.has(usageAcctKey(q)));
+  const fold = opened.length ? opened : subs.filter((q) => q !== pick);
+  // with none in full, "the other" accounts would be all of them
+  const label = n
+    ? (panel ? (n === 1 ? "Show 1 more account" : "Show {n} more accounts")
+      : n === subs.length ? "Show all {n} accounts in full"
+      : (n === 1 ? "Show 1 more account in full" : "Show {n} more accounts in full"))
+    : (panel ? "Show fewer accounts" : fold.length === subs.length ? "Show every account in brief" : "Show the other accounts in brief");
+  const b = el("button", cls, t(label, { n }));
   b.type = "button";
   b.setAttribute("aria-expanded", String(!n));
   b.onclick = () => {
-    const pick = usageShown(subs);
-    if (n) setUsageAccts(closed, true); else setUsageAccts(subs, (q) => q === pick);
+    if (n) setUsageAccts(closed, true, true); else setUsageAccts(fold, false);
     if (!panel) backToReader($("#view-usage"));
   };
   return b;
@@ -17674,8 +17731,10 @@ function checkinRow(q, first, subs) {
     }
   };
   row.append(auto);
-  // pressed now: shown while an account isn't in today and could be
-  const due = subs.filter((x) => x.checkins && !x.checkinOff && (x.checkinBy || "") === by && !(x.checkin?.day === today && x.checkin.outcome !== "failed"));
+  // pressed now: shown while an account isn't in today and could be; a
+  // Qoder campaign can open later in the day, so its inactive too (#2696)
+  const later = /^(plugin:)?qoder(-cn)?$/.test(by);
+  const due = subs.filter((x) => x.checkins && !x.checkinOff && (x.checkinBy || "") === by && !(x.checkin?.day === today && x.checkin.outcome !== "failed" && !(later && x.checkin.outcome === "inactive")));
   if (due.length) {
     const now = el("button", "text ci-now", t("Check in now"));
     now.type = "button";
@@ -17687,7 +17746,7 @@ function checkinRow(q, first, subs) {
       try {
         const rs = await api("usage/" + vendor.api, vendor.plugin ? { provider: vendor.plugin } : {});
         const bad = (rs || []).filter((x) => x.outcome === "failed").length;
-        status(bad ? t("Check-in failed for {n} account(s)", { n: bad }) : t("Checked in"), bad ? "err" : "ok");
+        status(bad ? t("Check-in failed for {n} account(s)", { n: bad }) : t("Check-in status refreshed"), bad ? "err" : "ok");
       } catch (err) {
         status(err.message, "err");
       }
@@ -20149,7 +20208,8 @@ function suffixMode(s = state.settings || {}) { return s.plainNames ? "off" : s.
 function suffixSegs(drawn) {
   const mode = suffixMode();
   const seg = segs([["off", t("Off")], ["own", t("Not on names I set")], ["on", t("On")]], mode, (v) =>
-    writingPrefs(api("settings/plain-names", { mode: v })).then((ns) => { prefs = state.settings = ns; seg.dataset.mode = v; renderSettings(); drawn?.(v); })
+    // every place that says it follows (Names & levels behind Settings)
+    writingPrefs(api("settings/plain-names", { mode: v })).then((ns) => { prefs = state.settings = ns; seg.dataset.mode = v; renderSettings(); drawn?.(v); redrawSuffix(); })
       .catch((e) => { status(t(e.message), "err"); renderSettings(); drawn?.(suffixMode()); }));
   seg.classList.add("suffix-segs");
   seg.dataset.mode = mode;
@@ -20191,13 +20251,15 @@ function sayNoNamesInSettings() {
 // redrawSuffix draws each suffix choice in the page again when the
 // settings that came in say another mode than it was drawn with: a page
 // drawn before the state's first read (Routing's groups can come back
-// first) showed the default, On (#1433).
+// first) showed the default, On (#1433). A line that only says what the
+// lists show (.suffix-said, a provider's Names & levels) is said again.
 function redrawSuffix() {
   const mode = suffixMode();
-  for (const seg of document.querySelectorAll(".suffix-segs")) {
+  for (const seg of document.querySelectorAll(".suffix-segs, .suffix-said")) {
     if (seg.dataset.mode === mode) continue;
     const drawn = seg.drawnAgain;
-    seg.replaceWith(suffixSegs(drawn));
+    if (seg.matches(".suffix-said")) seg.dataset.mode = mode;
+    else seg.replaceWith(suffixSegs(drawn));
     drawn?.(mode);
   }
 }
@@ -20328,7 +20390,7 @@ const UPDATE_EVERY = [30, 60, 360, 1440];
 // their own; this row says which one, and lets it be turned off or set. A provider, account or key
 // that names a proxy of its own (or Direct) keeps it whatever this says (netproxy.With), so the
 // line says it holds for those without one (#1832).
-let proxyCustom = false; // Custom picked, nothing typed yet
+let proxyCustom = false; // Custom picked, not saved yet
 // Keep SOCKS credentials in their own fields; URL userinfo is the existing
 // saved format, with reserved characters escaped before it reaches Go/Bun.
 function proxyFields(value) {
@@ -20373,7 +20435,9 @@ function renderProxy(s, keep) {
     else renderProxy(s, keep);
   };
   if (mode === "custom") {
-    let fields = proxyFields(cur === "custom" ? s.proxy : "");
+    // Custom picked again after Off or Auto: the last one saved, login and
+    // all, which settings.Save keeps as proxyCustom (Zane on Discord)
+    let fields = proxyFields(cur === "custom" ? s.proxy : s.proxyCustom || "");
     const i = input(fields.address, "http://127.0.0.1:7890");
     i.className = "proxy";
     i.setAttribute("aria-label", t("Proxy address"));
@@ -21088,6 +21152,11 @@ function renderImages(s, keep) {
   if (gone) who.append(el("div", "sub err vision-missing", s.visionAuto
     ? t("{model}, picked here, isn't set up any more: its provider was removed or turned off, or no longer has it. {auto}, the automatic choice, describes images in its place. Pick another model here.", { model: v, auto: named(s.visionAuto) })
     : t("{model}, picked here, isn't set up any more: its provider was removed or turned off, or no longer has it. No other model sees, so images are turned away. Pick another model here.", { model: v })));
+  // a custom provider's model nothing says takes images isn't offered: say
+  // where it is marked, by the editor's own words (nexnull on Discord)
+  const notMarked = s.visionNotMarked || [];
+  if (notMarked.length && v !== "off") who.append(el("div", "sub vision-not-marked", t("Models of {providers} aren’t listed until marked in their provider’s {names} › {images}",
+    { providers: notMarked.join(", "), names: t("Names & levels"), images: t("Accepts images") })));
   // a routing group (no provider of its own) goes with the others, as in
   // an agent's picker, not in a group of its own with its own rail button
   const opt = (x) => ({ value: x.id, label: x.name || x.id, note: x.providerName, icon: x.icon, group: x.provider ? x.providerName : ROUTING_GROUPS, ref: x.id });
@@ -23737,20 +23806,41 @@ const barLifted = () => {
   readerScrolls(250);
   barDrag = null;
 };
+// The middle button's autoscroll (Windows) is the reader's scroll: put back,
+// each of its scrolls twitched the page (#2767). From a trusted middle press,
+// the view it lands in follows it and lets go of what a click held, till it
+// ends as Chromium ends it: the next press (only its pointerup arrives), a
+// key, blur, or the lift after moving past 15px. More in gui-shell.md.
+let panning = null; // { v, from: [x, y], far, lifted }
+const panEnds = () => { panning = null; };
 addEventListener("pointerdown", (e) => {
   downAt = [e.clientX, e.clientY];
+  panEnds();
+  if (e.button === 1 && e.isTrusted) {
+    const pv = e.target instanceof Element ? e.target.closest(".view") : null;
+    if (pv && !pv.hidden && pv.scrollHeight > pv.clientHeight) { panning = { v: pv, from: downAt, far: false, lifted: false }; held = null; }
+  }
   const v = e.target;
   const bar = v instanceof Element && v.classList.contains("view") ? v.offsetWidth - v.clientWidth : 0;
   barDrag = v instanceof Element && v.classList.contains("view") && !v.hidden && bar > 0 &&
     e.clientX >= v.getBoundingClientRect().right - bar ? v : null;
   if (barDrag) held = null;
 }, { capture: true, passive: true });
-addEventListener("pointerup", barLifted, { capture: true, passive: true });
+addEventListener("pointerup", (e) => {
+  barLifted();
+  if (!panning) return;
+  if (panning.lifted || e.button !== 1 || panning.far || Math.hypot(e.clientX - panning.from[0], e.clientY - panning.from[1]) > 15) panEnds();
+  else panning.lifted = true;
+}, { capture: true, passive: true });
 addEventListener("pointercancel", barLifted, { capture: true, passive: true });
 addEventListener("pointermove", (e) => {
+  if (panning && !panning.lifted && Math.hypot(e.clientX - panning.from[0], e.clientY - panning.from[1]) > 15) panning.far = true;
   if (e.buttons && downAt && Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 6) readerScrolls(250);
 }, { capture: true, passive: true });
+addEventListener("keyup", panEnds, true);
+addEventListener("blur", panEnds);
 addEventListener("keydown", (e) => {
+  panEnds();
   const typing = e.target.closest?.("input, textarea, select, [contenteditable]");
   if (e.key === "Tab" || (!typing && SCROLL_KEYS.has(e.key))) readerScrolls(400);
   if (e.isTrusted && e.key === "Enter") keyboardFocus(e);
@@ -23759,6 +23849,9 @@ addEventListener("keyup", (e) => {
   if (e.isTrusted && e.key === " " && !e.target.closest?.("input, textarea, select, [contenteditable]")) keyboardFocus(e);
 }, true);
 const readerAt = new WeakMap();
+// what had the focus when the reader last scrolled a view themselves: they
+// took it out of sight, and it isn't brought back (backToReader)
+const scrolledFrom = new WeakMap();
 // Where the reader is is a number, the view's scrollTop, unless the view
 // names a part of itself to keep in place (keepInView): a part under others
 // that redraw on their own (the Routing page's groups, under the live stage
@@ -23799,9 +23892,11 @@ function backToReader(v) {
   if (pinned != null) readerAt.set(v, want);
   if (Math.abs(v.scrollTop - want) < 0.5) return;
   v.scrollTop = want;
-  // a field focused out of sight still comes into view, no further than needed
+  // a field focused out of sight still comes into view, no further than needed,
+  // unless the reader scrolled it away (scrolledFrom): else a middle press's
+  // button, left behind by the autoscroll, pulled the page back to it.
   const f = document.activeElement;
-  if (f && f !== document.body && v.contains(f)) {
+  if (f && f !== document.body && f !== scrolledFrom.get(v) && v.contains(f)) {
     const r = f.getBoundingClientRect(), b = v.getBoundingClientRect();
     if (r.bottom > b.bottom || r.top < b.top) { readerScrolls(1000); guardUntil = purposeUntil; f.scrollIntoView({ block: "nearest" }); }
   }
@@ -23882,10 +23977,12 @@ function hold(h) {
     // what was clicked moves it down rather than scrolling the view to follow
     // it. Turning automatic updates off grew the Version row above the
     // switch once the save answered, and the view slid 2px off its top (#2134).
-    // Only while what was clicked stays under the pointer, moved by less than
-    // half its height: a day picked on Routing brings its stage in above the
-    // bar (~138px), and the bar is held where it was clicked (#961)
-    if (h.top && want > 0 && Math.abs(d) < a[0].getBoundingClientRect().height / 2) want = 0;
+    // Only while what was clicked moved by less than its height, a line come
+    // in above it: a day picked on Routing brings its stage in above the bar
+    // (~138px), and the bar is held where it was clicked (#961). Half its
+    // height was too little once a settings row kept 12px above and below its
+    // words: the Version row's line grew it 12px past a 22px switch (10-22)
+    if (h.top && want > 0 && Math.abs(d) < a[0].getBoundingClientRect().height) want = 0;
     // a view at its top when clicked stays there rather than be given room
     // to scroll down: a chip saved in the panel's Profiles came in above the
     // button held, and room made for the button slid the chip up under the
@@ -23980,7 +24077,8 @@ for (const v of document.querySelectorAll(".view")) {
   v.tabIndex = -1;
   v.addEventListener("scroll", () => {
     if (v.hidden) return;
-    if (performance.now() < purposeUntil || barDrag === v) { fitRoom(v); readerLeaves(v); return; }
+    if (panning?.v === v) readerScrolls(250);
+    if (performance.now() < purposeUntil || barDrag === v) { fitRoom(v); readerLeaves(v); scrolledFrom.set(v, document.activeElement); return; }
     const from = v.scrollTop;
     if (held?.v === v) hold(held);
     else backToReader(v);
@@ -24169,6 +24267,20 @@ function openSettings() {
   closeProtoMenu();
   closeAgentMenu();
   show("settings");
+}
+// openSettingsAt: Settings at a row, in sight and lit; e is the click
+async function openSettingsAt(e, tab, row) {
+  const go = scrollOnPurpose(e, 3000);
+  closeProtoMenu();
+  closeAgentMenu();
+  if (!await show("settings")) return;
+  if (setQuery) { $("#setQ").value = ""; searchSettings(""); }
+  setSetTab(tab, true);
+  if (!row) return;
+  if (go) { row.scrollIntoView({ block: "center" }); arrived($("#view-settings")); }
+  row.classList.remove("flash");
+  void row.offsetWidth; // the light goes again on a second click
+  row.classList.add("flash");
 }
 $("#prefs").onclick = () => { openSettings(); $("#prefs").blur(); };
 

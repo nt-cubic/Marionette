@@ -1882,6 +1882,21 @@ func codexInputAs(body []byte, magpieModel, native bool) (_ []byte, compact bool
 	if !changed {
 		return body, false
 	}
+	if compact {
+		// Responses Lite offers Codex's tools as an additional_tools input
+		// item, not in tools (codex/gpt-6-astra's entry is Codex's own):
+		// left in, the summary request still offered every one of them,
+		// and the model could call one rather than write the summary
+		// (likely WuSix's "the model wrote no summary", 3 times in a row,
+		// on Discord)
+		kept := out[:0]
+		for _, it := range out {
+			if it["type"] != additionalToolsItem {
+				kept = append(kept, it)
+			}
+		}
+		out = kept
+	}
 	b, _ := json.Marshal(out)
 	q["input"] = b
 	if compact {
@@ -2630,8 +2645,9 @@ func (s *Server) codexCompact(w http.ResponseWriter, r *http.Request, body []byt
 		}
 	}
 	if strings.TrimSpace(sum.String()) == "" {
-		s.compactFails.failed(key, http.StatusBadGateway, "the model wrote no summary")
-		writeError(w, provider.Responses, 502, "compaction: the model wrote no summary")
+		why := "the model wrote no summary" + answeredWith(res.Output)
+		s.compactFails.failed(key, http.StatusBadGateway, why)
+		writeError(w, provider.Responses, 502, "compaction: "+why)
 		return
 	}
 	s.compactFails.done(key)
@@ -2825,6 +2841,7 @@ func localSummary(body []byte, why string) string {
 
 type compactOutput struct {
 	Type    string `json:"type"`
+	Name    string `json:"name"` // a call's tool
 	Content []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
@@ -2842,6 +2859,27 @@ type compactResult struct {
 	Error             *struct {
 		Message string `json:"message"`
 	} `json:"error"`
+}
+
+// answeredWith says what a summary reply without a summary held instead
+// — " (it answered with function_call shell)", " (it answered with
+// reasoning)", " (it answered with nothing)" — so the failure says whether
+// the model called a tool, only thought, or said nothing.
+func answeredWith(out []compactOutput) string {
+	if len(out) == 0 {
+		return " (it answered with nothing)"
+	}
+	var kinds []string
+	for _, o := range out {
+		k := cmp.Or(o.Type, "an untyped item")
+		if o.Name != "" {
+			k += " " + o.Name
+		}
+		if !slices.Contains(kinds, k) {
+			kinds = append(kinds, k)
+		}
+	}
+	return " (it answered with " + strings.Join(kinds, ", ") + ")"
 }
 
 // compactReply reads the summary's reply, a Responses stream as Codex asks

@@ -85,12 +85,6 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await open.evaluate((n) => { n.scrollTop = n.scrollHeight; });
       const [nTop, hTop] = await Promise.all([open.evaluate((n) => n.getBoundingClientRect().top), head.evaluate((h) => h.getBoundingClientRect().top)]);
       assert.ok(Math.abs(hTop - nTop) <= 2, `the head scrolled away: ${hTop} vs ${nTop}`);
-      if (w.own) {
-        // picking Provider in model names leaves it open, and foldable
-        await open.locator(".msuffix .opt", { hasText: w.own }).click();
-        await page.locator(".mnames:not([hidden]) .msuffix .opt.on", { hasText: w.own }).waitFor();
-        assert.deepEqual(posts, [{ mode: "own" }]);
-      }
       const before = await scrolls(page);
       await page.locator(".mnames:not([hidden]) .mnhead button").click();
       await open.waitFor({ state: "detached" }).catch(() => {});

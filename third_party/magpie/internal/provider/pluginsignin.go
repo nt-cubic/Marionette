@@ -215,7 +215,10 @@ func (s *signInFlow) pluginDone(saved plugin.Saved, err error) {
 // provider's magpie id.
 func PluginAPIKey(ctx context.Context, id string, method int, inputs map[string]string, key string) (string, error) {
 	if strings.TrimSpace(key) == "" {
-		return "", errors.New("enter the key")
+		pp, ok := PluginOf(PluginID(id))
+		if !ok || method < 0 || method >= len(pp.Methods) || pp.Methods[method].Type != "api" || !pp.Methods[method].Keyless {
+			return "", errors.New("enter the key")
+		}
 	}
 	// through the proxy the provider's requests go through (#1663)
 	saved, err := plugin.APIKey(Via(ctx, PluginID(id)), id, method, inputs, strings.TrimSpace(key), plugin.NewAccount)

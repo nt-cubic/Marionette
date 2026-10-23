@@ -37,8 +37,8 @@ type Day struct {
 	Unpriced int `json:"unpriced,omitempty"`
 }
 
-// Heatmap is the days from From to To (today), both YYYY-MM-DD in the local
-// time zone: only those with calls are listed, oldest first.
+// Heatmap is the days from From to To (today), both YYYY-MM-DD in the
+// reader's time zone (Filter.Zone): only those with calls are listed, oldest first.
 type Heatmap struct {
 	From string `json:"from"`
 	To   string `json:"to"`
@@ -56,10 +56,10 @@ func HeatmapOf(f Filter) Heatmap {
 	return Heatmap{Days: []Day{}}
 }
 
-// heatmapOf sums the rows visit gives it by their local day, from since to
-// now's day; a row outside those days is left out.
+// heatmapOf sums the rows visit gives it by their day in now's zone (the
+// reader's), from since to now's day; a row outside those days is left out.
 func heatmapOf(since, now time.Time, visit func(add func(Row))) *Heatmap {
-	h := &Heatmap{From: since.Format(time.DateOnly), To: now.In(time.Local).Format(time.DateOnly), Days: []Day{}}
+	h := &Heatmap{From: since.Format(time.DateOnly), To: now.Format(time.DateOnly), Days: []Day{}}
 	at := map[string]*Day{}
 	// a day's name is made once for each day, not for each of its calls
 	type ymd struct{ y, yd int }
@@ -68,7 +68,7 @@ func heatmapOf(since, now time.Time, visit func(add func(Row))) *Heatmap {
 		if r.IsRejected() || r.Time.Before(since) {
 			return
 		}
-		t := r.Time.In(time.Local)
+		t := r.Time.In(now.Location())
 		k := ymd{t.Year(), t.YearDay()}
 		d, ok := names[k]
 		if !ok {

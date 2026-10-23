@@ -41,7 +41,8 @@ const ROWS = [
   { ...LOG, t: at(1), out: 462, ms: 5340 },
   // 2: a call magpie timed keeps its own speed: 135 tokens in 1.8 s after its first
   { ...GATEWAY, t: at(2), out: 135, ms: 2400, ttft_ms: 600 },
-  // 3: a gateway call not streamed is still told so
+  // 3: a gateway call not streamed is still told so, with the least it
+  // wrote at over its whole time: 1500 tokens in 3 s (夜松云 on Discord)
   { ...GATEWAY, route_id: 901, rid: "req_901", t: at(3), out: 1500, ms: 3000 },
   // 4: a session file that timed its turn (Codex's, one call) tells its own: 1200 tokens in 8 s
   { ...LOG, agent: "codex", agentName: "Codex", icon: "codex-color", model: "gpt-6-astra", t: at(4), out: 1200, ms: 10000, ttft_ms: 2000 },
@@ -98,12 +99,12 @@ function server(lang) {
 
 const L = {
   en: {
-    speed: "Speed", floor: "≥98 tok/s", desktop: "≥125 tok/s", codexFloor: "≥25 tok/s", timed: "75 tok/s", codex: "150 tok/s",
+    speed: "Speed", gatewayFloor: "≥500 tok/s", floor: "≥98 tok/s", desktop: "≥125 tok/s", codexFloor: "≥25 tok/s", timed: "75 tok/s", codex: "150 tok/s",
     floorTip: "At least: 2,558 output tokens in 26 s, from the line that asked for it to its last. The session file has no first token, so the wait for it is counted too",
     noFirst: "The session file has no first token to time a speed from", notStreamed: "Not streamed: no first token to time a speed from",
   },
   zh: {
-    speed: "速度", floor: "≥98 token/秒", desktop: "≥125 token/秒", codexFloor: "≥25 token/秒", timed: "75 token/秒", codex: "150 token/秒",
+    speed: "速度", gatewayFloor: "≥500 token/秒", floor: "≥98 token/秒", desktop: "≥125 token/秒", codexFloor: "≥25 token/秒", timed: "75 token/秒", codex: "150 token/秒",
     floorTip: "下限：从发出请求的那一行到最后一行，26 秒 输出 2,558 个 token。会话文件没有首字时间，等首字的时间也算在里面",
     noFirst: "会话文件没有首字时间，算不出速度", notStreamed: "非流式：没有首字时间，算不出速度",
   },
@@ -144,8 +145,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(await tip(1), w.noFirst);
         // what magpie timed is as it was
         assert.equal(await text(2), w.timed);
-        assert.equal(await text(3), "—");
-        assert.equal(await tip(3), w.notStreamed);
+        assert.equal(await text(3), w.gatewayFloor);
+        assert((await tip(3)).includes(w.notStreamed), await tip(3));
         // a session file's own timing wins over the floor
         assert.equal(await text(4), w.codex);
         // a failed call, and a reply in under a second, tell none

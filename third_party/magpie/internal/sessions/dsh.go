@@ -3,6 +3,8 @@ package sessions
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -227,7 +229,12 @@ type dshEvent struct {
 		} `json:"source"`
 		Title     string `json:"title"`
 		Inherited bool   `json:"inherited"`
-		Message   struct {
+		// Messages are a title call's (session/title-llm-request)
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+		Message struct {
 			Source dshSource `json:"source"`
 		} `json:"message"`
 		Usage *struct {
@@ -239,7 +246,7 @@ type dshEvent struct {
 	} `json:"data"`
 }
 
-var dshWanted = [][]byte{[]byte(`"user/message"`), []byte(`"session/title"`), []byte(`"assistant/message"`), []byte(`"session/end-seed"`)}
+var dshWanted = [][]byte{[]byte(`"user/message"`), []byte(`"session/title"`), []byte(`"session/title-llm-request"`), []byte(`"assistant/message"`), []byte(`"session/end-seed"`)}
 
 // dshCarry is what a read of a dsh session file carries on with: where it
 // read to and the header it read first.
@@ -323,6 +330,7 @@ func dshCount(s *state, h *dshHead, b []byte, main bool) {
 	switch e.Type {
 	case "user/message":
 		if main && s.Title == "" && s.First == "" && e.Data.Source.Kind == "user" {
+			s.Convs = append(s.Convs, dshConvs(e.Data.Content)...)
 			if t := ccText(e.Data.Content); strings.HasPrefix(t, "<") {
 				s.First = untagged(t)
 			} else {
@@ -332,6 +340,15 @@ func dshCount(s *state, h *dshHead, b []byte, main bool) {
 	case "session/title":
 		if t := title(e.Data.Title); t != "" {
 			s.Named = t
+		}
+	case "session/title-llm-request":
+		if main {
+			for _, m := range e.Data.Messages {
+				if m.Role == "user" {
+					s.Convs = append(s.Convs, dshConvs(m.Content)...)
+					break
+				}
+			}
 		}
 	case "session/end-seed":
 		if h.Version >= 2 && h.IsSeeded && e.Data.Inherited {
@@ -379,4 +396,68 @@ func dshNum(b []byte, key string) int64 {
 		return -1
 	}
 	return n
+}
+
+// dshConvs are the conversation ids magpie's gateway gives the requests a
+// message starts (gateway's conversationID). dsh sends no session id on
+// its chat-completions and messages routes, so the gateway keys each such
+// request by the hash of its first user message as sent, and the Context
+// page finds the session only through it (Kumo31 on Discord). A message
+// of one text part goes out as a plain string, or, as the last user
+// message on the messages route, as that part with a cache mark: each
+// spelling is hashed. Anything else (an image, several parts) gives none.
+func dshConvs(content json.RawMessage) []string {
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(content, &parts) != nil || len(parts) != 1 || parts[0].Type != "text" || parts[0].Text == "" {
+		return nil
+	}
+	t := jsString(parts[0].Text)
+	out := make([]string, 0, 3)
+	for _, m := range []string{
+		`{"role":"user","content":` + t + `}`,
+		`{"role":"user","content":[{"type":"text","text":` + t + `}]}`,
+		`{"role":"user","content":[{"type":"text","text":` + t + `,"cache_control":{"type":"ephemeral"}}]}`,
+	} {
+		sum := sha256.Sum256([]byte(m))
+		out = append(out, "magpie-"+hex.EncodeToString(sum[:12]))
+	}
+	return out
+}
+
+// jsString is a string as JavaScript's JSON.stringify writes it, the way
+// dsh's requests carry it: unlike encoding/json it leaves <, >, &, U+2028
+// and U+2029 as they are.
+func jsString(s string) string {
+	var b strings.Builder
+	b.Grow(len(s) + 2)
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '"':
+			b.WriteString(`\"`)
+		case '\\':
+			b.WriteString(`\\`)
+		case '\b':
+			b.WriteString(`\b`)
+		case '\f':
+			b.WriteString(`\f`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			if r < 0x20 {
+				fmt.Fprintf(&b, `\u%04x`, r)
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
 }

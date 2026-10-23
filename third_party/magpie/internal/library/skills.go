@@ -41,6 +41,9 @@ type Skill struct {
 	// From is the repository one not installed from GitHub was found to
 	// come from (skill_from.go), only to group it with the rest of it
 	From string `json:"from,omitempty"`
+	// Gone is when an update or a check found its source without it: it
+	// was removed there (skill_gone.go). Kept on this computer only.
+	Gone string `json:"gone,omitempty"`
 }
 
 // Source is where a skill came from: a GitHub repository it can be updated
@@ -1256,6 +1259,13 @@ func UpdateSkill(name string, replace bool) (*Result, error) {
 		return nil, editedError(s)
 	}
 	up, err := f.prepare(s)
+	var gone *GoneError
+	if errors.As(err, &gone) {
+		markGone([]string{name}, nil)
+		checks.Lock()
+		checks.m[name] = goneCheck(gone)
+		checks.Unlock()
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1298,6 +1308,7 @@ func updateSkills(names []string) (*Result, error) {
 	var (
 		ups    []*skillUpdate
 		failed []Problem
+		gone   []*GoneError
 		pmu    sync.Mutex
 		wg     sync.WaitGroup
 		sem    = make(chan struct{}, 4)
@@ -1314,6 +1325,11 @@ func updateSkills(names []string) (*Result, error) {
 			up, err := f.prepare(s)
 			pmu.Lock()
 			defer pmu.Unlock()
+			var g *GoneError
+			if errors.As(err, &g) {
+				gone = append(gone, g)
+				return
+			}
 			if err != nil {
 				failed = append(failed, Problem{What: "skill:" + s.Name, Error: err.Error()})
 				return
@@ -1324,6 +1340,14 @@ func updateSkills(names []string) (*Result, error) {
 	wg.Wait()
 	sort.Slice(failed, func(i, j int) bool { return failed[i].What < failed[j].What })
 	res, err := change(func(l *Library) error {
+		var names []string
+		checks.Lock()
+		for _, g := range gone {
+			names = append(names, g.Name)
+			checks.m[g.Name] = goneCheck(g)
+		}
+		checks.Unlock()
+		l.setGone(names, nil)
 		targets := Targets()
 		for _, up := range ups {
 			if s := l.skill(up.name); s != nil {
@@ -1349,6 +1373,10 @@ func updateSkills(names []string) (*Result, error) {
 	}
 	sort.Strings(res.Updated)
 	res.Unupdated = failed
+	for _, g := range gone {
+		res.Gone = append(res.Gone, g.Name)
+	}
+	sort.Strings(res.Gone)
 	return res, nil
 }
 
@@ -1446,6 +1474,10 @@ func (f *fetcher) prepare(s *Skill) (*skillUpdate, error) {
 	}
 	from := filepath.Join(tmp, filepath.FromSlash(src.Path))
 	if _, ok := readMeta(from); !ok {
+		if !adopt && goneFrom(tmp, src.Path) {
+			// the repository was read, and the skill isn't in it
+			return nil, &GoneError{Name: name, Source: src.Repo}
+		}
 		return nil, fmt.Errorf("%s has no SKILL.md at %s any more", src.Repo, src.Path)
 	}
 	up := &skillUpdate{name: name, src: src, adopt: adopt, from: from}
@@ -1497,6 +1529,7 @@ func (up *skillUpdate) apply(l *Library, targets []*Target) error {
 		// the commit it's at is known again once a check finds the files
 		// GitHub has to be these; a git repository's is the one fetched
 		s.Hash, s.Commit = hash, up.commit
+		s.Gone = "" // its source has it again
 	}
 	forgetCheck(name)
 	if old == "" {

@@ -1223,7 +1223,8 @@ func (d *chatDecoder) decode(data string, emit func(Event)) error {
 		return nil
 	}
 	if ch.Error != nil {
-		emit(Event{Kind: KError, Text: cmp.Or(ch.Error.Message, streamErrorText(data)), Code: refusedCode(data)})
+		code, status, said := filterRefused(data)
+		emit(Event{Kind: KError, Text: cmp.Or(ch.Error.Message, streamErrorText(data)), Code: code, Status: status, Said: said})
 		return nil
 	}
 	if !d.started {

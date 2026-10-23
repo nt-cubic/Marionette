@@ -2,9 +2,10 @@
 // #868 (模型名称太长了…路由组的名称也很长。会看不到后面代表什么): an agent's
 // narrow model menu cut "Long name · routing group" short, and the setting
 // that drops the suffix (Settings › Provider in model names, #335) wasn't
-// found. It is now offered where names are given too: the provider editor's
-// Names & levels has the three choices and says what the agents' lists will
-// show ("My Sol · Relay"). For the routing groups it is one setting for them
+// found. Names & levels says what the agents' lists will show ("My Sol ·
+// Relay") and where the setting is. Its three choices were in there too, and
+// read as this provider's own (joe on Discord), so the editor now says it is
+// one setting for every provider and opens Settings at it. For the routing groups it is one setting for them
 // all, so it sits over the groups on Routing, not in one group's editor (PAMI
 // on Discord: in there it read as that group's alone); the editor only says
 // what its group will be called ("Fast · routing group") and where that is
@@ -19,9 +20,9 @@ const { chromium, webkit } = require("playwright");
 
 const assets = path.resolve(__dirname, "../assets");
 const words = {
-  en: { names: "Names & levels", edit: "Edit", own: "Not on names I set", on: "On", off: "Off", label: "In agents’ lists",
+  en: { names: "Names & levels", edit: "Edit", general: "General", global: "“Provider in model names” is one setting for every provider", change: "Change in Settings", own: "Not on names I set", on: "On", off: "Off", label: "In agents’ lists",
     shows: (l) => `Agents’ lists show “${l}”`, above: " · “· routing group” is set for every group above", setting: "Names in agents’ lists" },
-  zh: { names: "名称与推理档位", edit: "编辑", own: "自定义名称不带供应商", on: "开启", off: "关闭", label: "Agent 列表里的名称",
+  zh: { names: "名称与推理档位", edit: "编辑", general: "常规", global: "「模型名带供应商」是全局设置，对所有供应商生效", change: "在设置中修改", own: "自定义名称不带供应商", on: "开启", off: "关闭", label: "Agent 列表里的名称",
     shows: (l) => `Agent 的模型列表里显示为「${l}」`, above: " · 是否带「· routing group」在上方统一设置，对所有路由组生效", setting: "Agent 列表里的名称" },
 };
 
@@ -90,7 +91,7 @@ const scrolls = (page) => page.evaluate(() => [scrollY, ...[...document.querySel
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
   for (const lang of ["en", "zh"]) {
     const w = words[lang];
-    test(`${engine} ${lang}: Names & levels says what agents' lists show and drops the provider there`, async (t) => {
+    test(`${engine} ${lang}: Names & levels says what agents' lists show and opens the setting on Settings`, async (t) => {
       const posts = [];
       const { page, errors } = await launch(t, engine, lang, posts);
       await page.goto("http://magpie.test/?view=providers");
@@ -98,15 +99,35 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       if (!(await page.locator(".mnames:not([hidden])").count())) await page.getByRole("button", { name: w.names, exact: true }).click();
       const sfx = page.locator(".mnames:not([hidden]) .msuffix");
       await sfx.waitFor();
-      assert.deepEqual((await sfx.locator(".segs .opt").allTextContents()).map((s) => s.trim()), [w.off, w.own, w.on]);
-      assert.equal((await sfx.locator(".opt.on").textContent()).trim(), w.on);
+      // no choices in one provider's editor: it says the setting is every
+      // provider's, and where it is
+      assert.equal(await sfx.locator(".segs").count(), 0, "the provider's editor has the setting for every provider");
       assert.equal(await sfx.locator(".hint").textContent(), w.shows("My Sol · Relay"));
-      const before = await scrolls(page);
-      await sfx.locator(".opt", { hasText: w.own }).click();
-      await page.locator(".mnames:not([hidden]) .msuffix .opt.on", { hasText: w.own }).waitFor();
-      await says(sfx.locator(".hint"), w.shows("My Sol"));
+      assert.equal(await sfx.locator(".where").textContent(), w.global);
+      assert.equal(await sfx.evaluate((e) => getComputedStyle(e).borderLeftWidth), "0px");
+      assert.equal(await page.locator("#view-providers select").count(), 0);
+      // the button opens Settings › General at the setting, lit
+      await sfx.getByRole("button", { name: w.change, exact: true }).click();
+      const row = page.locator("#view-settings .row.pref", { has: page.locator("#plainNamesSegs") });
+      await row.waitFor();
+      assert.ok(await row.isVisible(), "the setting is shown");
+      assert.equal((await page.locator("#view-settings [role=tab][data-set][aria-selected=true]").textContent()).trim(), w.general);
+      await page.locator("#view-settings .row.pref.flash #plainNamesSegs").waitFor({ state: "attached" });
+      const box = await row.boundingBox(), vh = page.viewportSize().height;
+      assert.ok(box.y >= 0 && box.y + box.height <= vh, `the setting is in view (${box.y})`);
+      // picked there, it posts once, and the editor's line follows it
+      await row.locator(".opt", { hasText: w.own }).click();
+      await page.locator("#plainNamesSegs .opt.on", { hasText: w.own }).waitFor();
       assert.deepEqual(posts, [{ mode: "own" }]);
-      assert.deepEqual(await scrolls(page), before, "the click scrolled the page");
+      // back on Providers, its editor says it
+      await page.locator("button[data-view=providers]").first().click();
+      await page.locator("#view-providers.on, #view-providers:not([hidden])").first().waitFor();
+      await page.locator("#view-providers .row.provider:visible, .mnames:not([hidden])").first().waitFor();
+      if (!(await page.locator(".mnames:not([hidden])").count())) {
+        if (await page.locator(".row.provider").isVisible()) await page.locator(".row.provider").click();
+        if (!(await page.locator(".mnames:not([hidden])").count())) await page.getByRole("button", { name: w.names, exact: true }).click();
+      }
+      await says(page.locator(".mnames:not([hidden]) .msuffix .hint"), w.shows("My Sol"));
       assert.deepEqual(errors, []);
     });
 
@@ -145,7 +166,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await page.locator("#view-routing select").count(), 0);
       assert.equal(await set.evaluate((e) => getComputedStyle(e).borderLeftWidth), "0px");
       assert.equal(await row2.evaluate((e) => getComputedStyle(e).borderLeftWidth), "0px");
-      const missing = await page.evaluate(() => ["Agents’ lists show “{label}”", "In agents’ lists", "Not on names I set", "Provider in model names",
+      const missing = await page.evaluate(() => ["Agents’ lists show “{label}”", "In agents’ lists",
+        "“Provider in model names” is one setting for every provider", "Change in Settings", "Not on names I set", "Provider in model names",
         "Names in agents’ lists", "“· routing group” is set for every group above",
         "Whether “· routing group” follows a group’s name in the agents’ lists: one setting for every group, and for the provider after each model’s name, as on Settings."]
         .filter((k) => !I18N.zh[k] || !I18N.ja[k] || !I18N.de[k]));

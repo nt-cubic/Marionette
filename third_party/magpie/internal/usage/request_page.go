@@ -362,6 +362,10 @@ type pageKey struct {
 	Period        Period
 	Filter        Filter
 	Offset, Limit int
+	// Date is today in the reader's zone (Filter.Zone): the request
+	// state's key turns with this computer's day, and a reader in another
+	// zone has a today of their own
+	Date string
 }
 type requestIndex struct {
 	sync.Mutex
@@ -457,7 +461,7 @@ func readRequestState(now time.Time) requestState {
 	meta += fmt.Sprintf("|%x|%s", h.Sum(nil), statKey(catalog.LivePath("antigravity")))
 	h.Reset()
 	snapshot := readLogSnapshot()
-	fmt.Fprint(h, meta, snapshot.version, now.Format("2006-01-02 MST"))
+	fmt.Fprint(h, meta, snapshot.version, now.In(time.Local).Format("2006-01-02 MST"))
 	for _, s := range sources {
 		fmt.Fprintf(h, "%s:%d:%d;", s.Path, s.Size, s.Modified.UnixNano())
 	}
@@ -479,8 +483,9 @@ func queryPage(p Period, f Filter, offset, limit int, readSource func(sessions.C
 	limit = min(limit, 500)
 	offset = max(0, offset)
 	// The time is read once, so that the rows, the chart and the day the page
-	// is kept for are of one day when midnight falls while it is worked out.
-	now := Clock()
+	// is kept for are of one day when midnight falls while it is worked out,
+	// and read in the reader's zone, whose days and hours the page shows.
+	now := Clock().In(f.loc())
 	// A replacement reader remains useful to callers supplying synthetic logs.
 	if LogCalls != nil {
 		return pageFromLedgerAt(p, f, offset, limit, LedgerOfAt(p, Filter{}, now), now)
@@ -501,7 +506,7 @@ func queryPage(p Period, f Filter, offset, limit int, readSource func(sessions.C
 		idx.pages = map[pageKey]RequestPage{}
 		idx.key = key
 	}
-	q := pageKey{p, f, offset, limit}
+	q := pageKey{p, f, offset, limit, now.Format(time.DateOnly)}
 	if page, ok := idx.pages[q]; ok {
 		idx.Unlock()
 		return page
@@ -620,8 +625,8 @@ func queryPage(p Period, f Filter, offset, limit int, readSource func(sessions.C
 	var others []*rowChunk
 	var renames map[string]string
 	from := ""
-	if !since.IsZero() {
-		from = since.AddDate(0, 0, -1).Format(time.DateOnly)
+	if !since.IsZero() { // as sharedSources reads it
+		from = since.AddDate(0, 0, -2).Format(time.DateOnly)
 	}
 	for _, s := range days {
 		on[s.path] = true
@@ -1193,7 +1198,7 @@ func buildRequestBlocksWithCodex(p Period, f Filter, offset, limit int, now time
 	}
 	for _, ref := range charted {
 		r := ref.row()
-		t := r.Time.In(time.Local)
+		t := r.Time.In(now.Location())
 		if t.Before(chartSince) {
 			continue
 		}
