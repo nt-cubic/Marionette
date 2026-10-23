@@ -5,18 +5,23 @@ import {
   memoryDelete,
   memoryDistill,
   memoryGet,
+  memoryImportPreview,
   memorySetEntryEnabled,
   memoryUpdate,
   type MemoryEntry,
+  type MemoryImportSource,
   type MemoryStore,
 } from "../lib/api";
 
 const SOURCE_LABELS: Record<string, string> = {
   manual: "manual",
   claude: "Claude",
+  "claude-auto": "Claude 记忆",
   codex: "Codex",
+  "codex-mem": "Codex 记忆",
+  grok: "Grok",
   opencode: "OpenCode",
-  gemini: "Gemini",
+  zcode: "ZCode",
   session: "session",
 };
 
@@ -39,6 +44,28 @@ export function MemorySection({ activeSessionId }: { activeSessionId?: string | 
 
   const [draft, setDraft] = useState<string | null>(null);
   const [draftBusy, setDraftBusy] = useState(false);
+
+  // 空列表时把探测结果亮出来：哪个源、扫的哪个路径、有没有命中——
+  // 避免「刷不出但不知道为什么」。
+  const [probed, setProbed] = useState<MemoryImportSource[] | null>(null);
+
+  useEffect(() => {
+    if (!store || store.entries.length > 0) {
+      setProbed(null);
+      return;
+    }
+    let alive = true;
+    memoryImportPreview()
+      .then(({ sources }) => {
+        if (alive) setProbed(sources);
+      })
+      .catch(() => {
+        if (alive) setProbed([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [store]);
 
   const refresh = useCallback(async () => {
     try {
@@ -114,9 +141,38 @@ export function MemorySection({ activeSessionId }: { activeSessionId?: string | 
       ) : null}
 
       {entries.length === 0 ? (
-        <p className="context-card__empty" style={{ marginTop: 8 }}>
-          No agent memory files found yet.
-        </p>
+        <>
+          <p className="context-card__empty" style={{ marginTop: 8 }}>
+            No agent memory files found yet.
+          </p>
+          {probed && probed.length > 0 ? (
+            <ul
+              className="context-lend__list custom-scrollbar scrollbar-autohide"
+              style={{ marginTop: 6 }}
+            >
+              {probed.map((s) => (
+                <li
+                  key={`${s.source}:${s.path}`}
+                  className="context-lend__row"
+                  title={s.exists ? s.excerpt : s.path}
+                >
+                  <span
+                    className="context-lend__name"
+                    style={{ flexShrink: 0, opacity: s.exists ? 1 : 0.5 }}
+                  >
+                    {s.exists ? "✓" : "·"} {s.title}
+                  </span>
+                  <span
+                    className="context-lend__meta"
+                    style={{ wordBreak: "break-all", textAlign: "right" }}
+                  >
+                    {s.path}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </>
       ) : (
         <ul className="context-lend__list custom-scrollbar scrollbar-autohide">
           {entries.map((entry) => (
