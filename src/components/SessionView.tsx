@@ -1736,6 +1736,10 @@ function CleanPlaceholder({
   const awaitingRef = useRef(awaitingFirstChunk);
   awaitingRef.current = awaitingFirstChunk;
 
+  const liveAskPromptId = streamPrompt?.liveAsk?.requestId ?? null;
+  const livePlanPromptId = streamPrompt?.livePlan?.requestId ?? null;
+  const prevLivePromptRef = useRef<string | null>(null);
+
   // Own send → jump back to live tail (even if you were reading history).
   useEffect(() => {
     if (awaitingFirstChunk && !prevAwaitingRef.current) {
@@ -1744,6 +1748,24 @@ function CleanPlaceholder({
     }
     prevAwaitingRef.current = awaitingFirstChunk;
   }, [awaitingFirstChunk]);
+
+  // A live Ask/Plan card lands at the tail and the composer hides for it, so
+  // the card is the only surface left to answer on. Pin the rail down when a
+  // prompt becomes live; otherwise a reader who had scrolled up sees the
+  // composer vanish with the options still below the fold.
+  useEffect(() => {
+    const liveId = liveAskPromptId ?? livePlanPromptId;
+    const became = Boolean(liveId) && liveId !== prevLivePromptRef.current;
+    prevLivePromptRef.current = liveId;
+    if (!became) return;
+    stickToBottomRef.current = true;
+    setAtBottom(true);
+    const frame = window.requestAnimationFrame(() => {
+      const el = listRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [liveAskPromptId, livePlanPromptId]);
 
   const rememberScrollSnap = useCallback(() => {
     const el = listRef.current;
