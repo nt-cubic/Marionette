@@ -6,9 +6,12 @@
 //! 壳是唯一同时看得见所有 agent 的位置。
 //!
 //! 启动同步：打开应用 / 拉记忆面板时，自动把各家引擎的**用户级**全局记忆
-//! （`~/.claude/CLAUDE.md` 等）收成可勾选条目（记 origin_path+mtime，文件
-//! 变了下次同步才刷新）。项目级 AGENTS.md/CLAUDE.md 不收：各引擎在会话里
-//! 原生就读项目文件。
+//! 收成可勾选条目：全局指令文件（`~/.claude/CLAUDE.md`、`~/.zcode/AGENTS.md`
+//! 等）+ agent 自攒的自动记忆（Claude `~/.claude/projects/*/memory/`、
+//! Grok `~/.grok/memory-v2/`、Codex `~/.codex/memories/`）。路径考证见
+//! `docs/research-agent-memory-locations.md`；阵容对齐 agent_registry（gemini
+//! 已下架；dsh/pi/hermes 无全局记忆文件）。项目级 AGENTS.md/CLAUDE.md 不收：
+//! 各引擎在会话里原生就读项目文件。
 //!
 //! 蒸馏：`memory_distill` 把会话 JSONL 的尾部（user/assistant/thought 的
 //! text）发给 DeepSeek 提炼要点草稿，用户确认后落库（source=session）。
@@ -27,7 +30,7 @@ static ENTRY_COUNTER: AtomicU64 = AtomicU64::new(1);
 #[serde(rename_all = "camelCase")]
 pub struct MemoryEntry {
     pub id: String,
-    /// manual | claude | codex | opencode | gemini | session
+    /// manual | claude | claude-auto | codex | codex-mem | grok | opencode | zcode | session
     pub source: String,
     pub title: String,
     pub text: String,
@@ -153,9 +156,12 @@ fn source_label(source: &str) -> &str {
     match source {
         "manual" => "手动",
         "claude" => "Claude",
+        "claude-auto" => "Claude 自动记忆",
         "codex" => "Codex",
+        "codex-mem" => "Codex 记忆",
+        "grok" => "Grok",
         "opencode" => "OpenCode",
-        "gemini" => "Gemini",
+        "zcode" => "ZCode",
         "session" => "会话蒸馏",
         other => other,
     }
@@ -222,44 +228,235 @@ pub struct ImportSource {
     pub excerpt: String,
 }
 
-const IMPORT_TARGETS: [(&str, &str, &str); 4] = [
-    ("claude", "Claude", ".claude/CLAUDE.md"),
-    ("codex", "Codex", ".codex/AGENTS.md"),
-    ("opencode", "OpenCode", ".config/opencode/AGENTS.md"),
-    ("gemini", "Gemini", ".gemini/GEMINI.md"),
+/// 单文件/单目录目标：候选路径按序探测，第一个有真实内容的生效
+/// （grok：v2 topics 目录 → v1 单文件回退；codex：MEMORY.md → summary 回退）。
+struct ImportSpec {
+    source: &'static str,
+    title: &'static str,
+    rel_paths: &'static [&'static str],
+}
+
+const IMPORT_SPECS: &[ImportSpec] = &[
+    ImportSpec { source: "claude", title: "Claude", rel_paths: &[".claude/CLAUDE.md"] },
+    ImportSpec {
+        source: "codex",
+        title: "Codex",
+        rel_paths: &[".codex/AGENTS.md"],
+    },
+    ImportSpec {
+        source: "codex-mem",
+        title: "Codex 记忆",
+        rel_paths: &[".codex/memories/MEMORY.md", ".codex/memories/memory_summary.md"],
+    },
+    ImportSpec {
+        source: "grok",
+        title: "Grok",
+        rel_paths: &[".grok/memory-v2/global/topics", ".grok/memory/MEMORY.md"],
+    },
+    ImportSpec {
+        source: "opencode",
+        title: "OpenCode",
+        rel_paths: &[".config/opencode/AGENTS.md"],
+    },
+    ImportSpec {
+        source: "zcode",
+        title: "ZCode",
+        rel_paths: &[".zcode/AGENTS.md"],
+    },
 ];
 
-fn import_sources_at(home: &Path) -> Vec<ImportSource> {
-    IMPORT_TARGETS
+/// 探测命中：text 已读全（这些文件都小，同步直接文本比对，不依赖 mtime
+/// 粒度——目录里增删文件不再漏刷）。
+struct ScanHit {
+    source: &'static str,
+    title: String,
+    path: String,
+    stable_id: String,
+    bytes: u64,
+    mtime_ms: u64,
+    text: String,
+}
+
+/// 模板骨架不算内容：去掉标题/引用/HTML 注释行后仍空的文本跳过
+/// （grok v1 空模板、没写过的指令文件都是这种）。
+fn has_real_content(text: &str) -> bool {
+    text.lines().any(|l| {
+        let t = l.trim();
+        !t.is_empty() && !t.starts_with('#') && !t.starts_with('>') && !t.starts_with("<!--")
+    })
+}
+
+fn path_mtime(path: &Path) -> u64 {
+    fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// 目录里全部 *.md 按文件名排序拼接（grok v2 的 topics/、claude 无索引的
+/// memory/ 都是这种形态）。空目录 / 全空文件 → None。
+fn concat_markdown_dir(dir: &Path) -> Option<String> {
+    let mut files: Vec<PathBuf> = fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().map_or(false, |x| x == "md"))
+        .collect();
+    if files.is_empty() {
+        return None;
+    }
+    files.sort();
+    let mut parts = Vec::new();
+    for p in &files {
+        if let Ok(t) = fs::read_to_string(p) {
+            if !t.trim().is_empty() {
+                parts.push(t.trim_end().to_string());
+            }
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
+    }
+}
+
+/// 候选路径逐个探测：目录 → 拼 *.md，文件 → 读全文；第一个有真实内容的赢。
+fn read_first_content(home: &Path, rels: &[&str]) -> Option<(PathBuf, u64, u64, String)> {
+    for rel in rels {
+        let path = home.join(rel);
+        let text = match fs::metadata(&path) {
+            Ok(meta) if meta.is_dir() => concat_markdown_dir(&path),
+            Ok(meta) if meta.is_file() => fs::read_to_string(&path).ok(),
+            _ => None,
+        };
+        if let Some(text) = text.filter(|t| has_real_content(t)) {
+            let bytes = text.len() as u64;
+            let mtime = path_mtime(&path);
+            return Some((path, bytes, mtime, text));
+        }
+    }
+    None
+}
+
+/// `D--Myself-Unity-Jingzhe` → `Myself-Unity-Jingzhe`（去盘符前缀与首尾横线）。
+fn pretty_project_slug(slug: &str) -> String {
+    let trimmed = slug.trim_matches('-');
+    let bytes = trimmed.as_bytes();
+    let stripped = if bytes.len() >= 3 && bytes[1] == b'-' && bytes[2] == b'-' && bytes[0].is_ascii() {
+        &trimmed[3..]
+    } else {
+        trimmed
+    };
+    stripped.trim_matches('-').to_string()
+}
+
+/// Claude 自动记忆：`~/.claude/projects/<repo-slug>/memory/`，每项目一条。
+/// 有 MEMORY.md 索引用索引，否则把目录下全部 *.md 拼起来（实测普遍无索引）。
+fn scan_claude_auto(home: &Path) -> Vec<ScanHit> {
+    let projects = match fs::read_dir(home.join(".claude").join("projects")) {
+        Ok(rd) => rd,
+        Err(_) => return Vec::new(),
+    };
+    let mut hits = Vec::new();
+    for entry in projects.filter_map(|e| e.ok()) {
+        let slug_dir = entry.path();
+        if !slug_dir.is_dir() {
+            continue;
+        }
+        let slug = entry.file_name().to_string_lossy().to_string();
+        let memory_dir = slug_dir.join("memory");
+        if !memory_dir.is_dir() {
+            continue;
+        }
+        let index = memory_dir.join("MEMORY.md");
+        let text = if index.is_file() {
+            fs::read_to_string(&index).ok()
+        } else {
+            concat_markdown_dir(&memory_dir)
+        };
+        let Some(text) = text.filter(|t| has_real_content(t)) else {
+            continue;
+        };
+        hits.push(ScanHit {
+            source: "claude-auto",
+            title: format!("Claude 记忆 · {}", pretty_project_slug(&slug)),
+            path: memory_dir.display().to_string(),
+            stable_id: format!("import-claude-auto-{slug}"),
+            bytes: text.len() as u64,
+            mtime_ms: path_mtime(&memory_dir),
+            text,
+        });
+    }
+    hits.sort_by(|a, b| a.title.cmp(&b.title));
+    hits
+}
+
+fn scan_imports_at(home: &Path) -> Vec<ScanHit> {
+    let mut hits: Vec<ScanHit> = IMPORT_SPECS
         .iter()
-        .map(|(source, title, rel)| {
-            let path = home.join(rel);
-            let (exists, bytes, mtime_ms, excerpt) = match fs::metadata(&path) {
-                Ok(meta) => {
-                    let mtime = meta
-                        .modified()
-                        .ok()
-                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                        .map(|d| d.as_millis() as u64)
-                        .unwrap_or(0);
-                    let text = fs::read_to_string(&path).unwrap_or_default();
-                    let excerpt: String = text.lines().find(|l| !l.trim().is_empty()).map(str::to_string).unwrap_or_default();
-                    let excerpt = excerpt.chars().take(80).collect();
-                    (true, meta.len(), mtime, excerpt)
-                }
-                Err(_) => (false, 0, 0, String::new()),
-            };
-            ImportSource {
-                source: source.to_string(),
-                title: title.to_string(),
+        .filter_map(|spec| {
+            read_first_content(home, spec.rel_paths).map(|(path, bytes, mtime_ms, text)| ScanHit {
+                source: spec.source,
+                title: spec.title.to_string(),
                 path: path.display().to_string(),
-                exists,
+                stable_id: format!("import-{}", spec.source),
                 bytes,
                 mtime_ms,
-                excerpt,
-            }
+                text,
+            })
         })
+        .collect();
+    hits.extend(scan_claude_auto(home));
+    hits
+}
+
+fn excerpt_of(text: &str) -> String {
+    text.lines()
+        .find(|l| !l.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_default()
+        .chars()
+        .take(80)
         .collect()
+}
+
+/// 预览行：每个固定源一行（未命中 exists=false、path 显示首选探测路径），
+/// claude-auto 的命中行插在全局 CLAUDE.md 之后。
+fn preview_rows(home: &Path, hits: &[ScanHit]) -> Vec<ImportSource> {
+    let mut out = Vec::new();
+    for spec in IMPORT_SPECS {
+        let hit = hits.iter().find(|h| h.source == spec.source);
+        out.push(ImportSource {
+            source: spec.source.to_string(),
+            title: spec.title.to_string(),
+            path: hit
+                .map(|h| h.path.clone())
+                .unwrap_or_else(|| home.join(spec.rel_paths[0]).display().to_string()),
+            exists: hit.is_some(),
+            bytes: hit.map(|h| h.bytes).unwrap_or(0),
+            mtime_ms: hit.map(|h| h.mtime_ms).unwrap_or(0),
+            excerpt: hit.map(|h| excerpt_of(&h.text)).unwrap_or_default(),
+        });
+        if spec.source == "claude" {
+            out.extend(hits.iter().filter(|h| h.source == "claude-auto").map(|h| ImportSource {
+                source: h.source.to_string(),
+                title: h.title.clone(),
+                path: h.path.clone(),
+                exists: true,
+                bytes: h.bytes,
+                mtime_ms: h.mtime_ms,
+                excerpt: excerpt_of(&h.text),
+            }));
+        }
+    }
+    out
+}
+
+fn import_sources_at(home: &Path) -> Vec<ImportSource> {
+    preview_rows(home, &scan_imports_at(home))
 }
 
 pub fn import_sources() -> Vec<ImportSource> {
@@ -269,8 +466,9 @@ pub fn import_sources() -> Vec<ImportSource> {
     }
 }
 
-/// 导入存在的源：每源一条稳定 id（`import-<source>`）的条目；文件 mtime 没变
-/// 就跳过，变了就整体替换文本。返回给 UI 的摘要。
+/// 导入存在的源：每源一条稳定 id 的条目（固定源 `import-<source>`、claude
+/// 自动记忆 `import-claude-auto-<slug>`）；文本没变就跳过，变了整体替换。
+/// 返回给 UI 的摘要（含未命中源，供面板展示探测结果）。
 pub fn import_run() -> Result<serde_json::Value, String> {
     let (imported, updated, unchanged, sources) = sync_imports()?;
     Ok(json!({
@@ -284,63 +482,79 @@ pub fn import_run() -> Result<serde_json::Value, String> {
 /// 静默同步各家全局记忆。启动面板 / 注入记忆卡前调用。
 fn sync_imports() -> Result<(Vec<String>, Vec<String>, Vec<String>, Vec<ImportSource>), String> {
     let mut store = load();
-    let sources = import_sources();
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from);
+    let hits = home.as_deref().map(scan_imports_at).unwrap_or_default();
     let mut imported = Vec::new();
     let mut updated = Vec::new();
     let mut unchanged = Vec::new();
     let mut dirty = false;
-    for src in sources.iter().filter(|s| s.exists && s.bytes > 0) {
-        let text = fs::read_to_string(&src.path).map_err(|e| format!("读取 {} 失败: {e}", src.path))?;
-        if text.trim().is_empty() {
-            unchanged.push(src.title.clone());
-            continue;
-        }
-        let stable_id = format!("import-{}", src.source);
+    for hit in &hits {
+        let text = hit.text.trim_end();
         // 稳定 id 优先；旧版曾用随机 id 写入，按 source + origin_path 认回。
         let existing = store.entries.iter_mut().find(|e| {
-            e.id == stable_id
-                || (e.source == src.source
-                    && e.origin_path.as_deref() == Some(src.path.as_str()))
+            e.id == hit.stable_id
+                || (e.source == hit.source
+                    && e.origin_path.as_deref() == Some(hit.path.as_str()))
         });
         match existing {
             Some(entry) => {
-                if entry.id != stable_id {
-                    entry.id = stable_id;
+                if entry.id != hit.stable_id {
+                    entry.id = hit.stable_id.clone();
                     dirty = true;
                 }
-                if entry.title != src.title {
-                    entry.title = src.title.clone();
+                if entry.title != hit.title {
+                    entry.title = hit.title.clone();
                     dirty = true;
                 }
-                if entry.origin_mtime_ms == Some(src.mtime_ms) && !entry.text.is_empty() {
-                    unchanged.push(src.title.clone());
+                if entry.text == text && !entry.text.is_empty() {
+                    unchanged.push(hit.title.clone());
                 } else {
-                    entry.text = text.trim_end().to_string();
-                    entry.origin_path = Some(src.path.clone());
-                    entry.origin_mtime_ms = Some(src.mtime_ms);
+                    entry.text = text.to_string();
+                    entry.origin_path = Some(hit.path.clone());
+                    entry.origin_mtime_ms = Some(hit.mtime_ms);
                     entry.updated_at_ms = now_ms();
                     dirty = true;
-                    updated.push(src.title.clone());
+                    updated.push(hit.title.clone());
                 }
             }
             None => {
                 let mut entry = new_entry(
-                    &src.source,
-                    &src.title,
-                    &text,
-                    Some(src.path.clone()),
-                    Some(src.mtime_ms),
+                    hit.source,
+                    &hit.title,
+                    text,
+                    Some(hit.path.clone()),
+                    Some(hit.mtime_ms),
                 );
-                entry.id = stable_id;
+                entry.id = hit.stable_id.clone();
                 store.entries.push(entry);
                 dirty = true;
-                imported.push(src.title.clone());
+                imported.push(hit.title.clone());
             }
         }
+    }
+    // Claude 自动记忆的项目目录没了（改名 / 清理）→ 对应导入条目跟着撤。
+    let live: std::collections::HashSet<&str> = hits
+        .iter()
+        .filter(|h| h.source == "claude-auto")
+        .map(|h| h.path.as_str())
+        .collect();
+    let before = store.entries.len();
+    store.entries.retain(|e| {
+        !(e.id.starts_with("import-claude-auto-")
+            && e.origin_path.as_deref().map_or(true, |p| !live.contains(p)))
+    });
+    if store.entries.len() != before {
+        dirty = true;
     }
     if dirty {
         save(&store)?;
     }
+    let sources = match &home {
+        Some(h) => preview_rows(h, &hits),
+        None => Vec::new(),
+    };
     Ok((imported, updated, unchanged, sources))
 }
 
@@ -523,14 +737,92 @@ mod tests {
     #[test]
     fn import_is_stable_and_idempotent() {
         let home = temp_path("import-home");
+        let _ = fs::remove_dir_all(&home);
         fs::create_dir_all(home.join(".claude")).unwrap();
         fs::write(home.join(".claude").join("CLAUDE.md"), "用户喜欢 pnpm").unwrap();
         let sources = import_sources_at(&home);
-        assert_eq!(sources.len(), 4);
+        assert_eq!(sources.len(), IMPORT_SPECS.len());
         assert!(sources[0].exists);
         assert_eq!(sources[0].excerpt, "用户喜欢 pnpm");
         let stable_id = format!("import-{}", sources[0].source);
         assert!(stable_id.starts_with("import-claude"));
+    }
+
+    #[test]
+    fn scan_collects_auto_grok_zcode_and_skips_templates() {
+        let home = temp_path("scan-rich");
+        let _ = fs::remove_dir_all(&home);
+        // claude-auto：项目记忆目录（无 MEMORY.md 索引 → 拼全部 *.md）
+        let mem = home.join(".claude/projects/D--Myself-Demo/memory");
+        fs::create_dir_all(&mem).unwrap();
+        fs::write(mem.join("stack.md"), "# 技术栈\n\nUnity + React").unwrap();
+        fs::write(mem.join("style.md"), "回复要简短").unwrap();
+        // grok v2 topics 命中时 v1 空模板不参与
+        let topics = home.join(".grok/memory-v2/global/topics");
+        fs::create_dir_all(&topics).unwrap();
+        fs::write(topics.join("preferences.md"), "偏好中文").unwrap();
+        fs::create_dir_all(home.join(".grok/memory")).unwrap();
+        fs::write(
+            home.join(".grok/memory/MEMORY.md"),
+            "# Global Memory\n\n> managed\n\n## Preferences\n\n<!-- add -->\n",
+        )
+        .unwrap();
+        // zcode
+        fs::create_dir_all(home.join(".zcode")).unwrap();
+        fs::write(home.join(".zcode/AGENTS.md"), "全局规则").unwrap();
+
+        let hits = scan_imports_at(&home);
+        let ids: Vec<&str> = hits.iter().map(|h| h.stable_id.as_str()).collect();
+        assert!(ids.contains(&"import-claude-auto-D--Myself-Demo"));
+        assert!(ids.contains(&"import-grok"));
+        assert!(ids.contains(&"import-zcode"));
+        let grok = hits.iter().find(|h| h.source == "grok").unwrap();
+        assert!(grok.text.contains("偏好中文"));
+        let auto = hits.iter().find(|h| h.source == "claude-auto").unwrap();
+        assert!(auto.text.contains("Unity + React") && auto.text.contains("回复要简短"));
+        assert_eq!(auto.title, "Claude 记忆 · Myself-Demo");
+
+        // 预览行：固定源全列（miss 的 exists=false）+ claude-auto 命中行。
+        let rows = import_sources_at(&home);
+        assert_eq!(rows.len(), IMPORT_SPECS.len() + 1);
+        assert!(rows.iter().find(|r| r.source == "zcode").unwrap().exists);
+        assert!(!rows.iter().find(|r| r.source == "codex").unwrap().exists);
+    }
+
+    #[test]
+    fn grok_falls_back_to_v1_when_v2_absent() {
+        let home = temp_path("grok-fallback");
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(home.join(".grok/memory")).unwrap();
+        fs::write(
+            home.join(".grok/memory/MEMORY.md"),
+            "# Global Memory\n\n真实偏好：pnpm",
+        )
+        .unwrap();
+        let hits = scan_imports_at(&home);
+        let grok = hits.iter().find(|h| h.source == "grok").unwrap();
+        assert!(grok.text.contains("真实偏好"));
+        assert!(grok.path.ends_with("memory\\MEMORY.md") || grok.path.ends_with("memory/MEMORY.md"));
+    }
+
+    #[test]
+    fn template_only_files_count_as_miss() {
+        let home = temp_path("template-only");
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(home.join(".claude")).unwrap();
+        // 纯标题/注释骨架的 CLAUDE.md 不算有内容。
+        fs::write(home.join(".claude/CLAUDE.md"), "# 规则\n\n<!-- 待补 -->\n").unwrap();
+        let hits = scan_imports_at(&home);
+        assert!(!hits.iter().any(|h| h.source == "claude"));
+        let rows = import_sources_at(&home);
+        assert!(!rows.iter().find(|r| r.source == "claude").unwrap().exists);
+    }
+
+    #[test]
+    fn pretty_slug_strips_drive_prefix() {
+        assert_eq!(pretty_project_slug("D--Myself-Unity-Jingzhe"), "Myself-Unity-Jingzhe");
+        assert_eq!(pretty_project_slug("-C--Users-c_huang-"), "Users-c_huang");
+        assert_eq!(pretty_project_slug("项目目录"), "项目目录");
     }
 
     #[test]

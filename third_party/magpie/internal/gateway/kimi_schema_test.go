@@ -18,7 +18,9 @@ import (
 // 'properties.options.properties.kinds.anyOf.items': type is not defined"
 // (#886), and the whole request failed. Values of mixed types, a schema
 // with a type, a property called enum and the rest of the body are left as
-// they were; anyone else is sent the tools unchanged.
+// they were; a null among one type's values gives that type and "null",
+// the type array Kimi takes beside an enum. Anyone else is sent the tools
+// unchanged.
 func TestKimiToolEnumTypes(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
@@ -61,6 +63,7 @@ func TestKimiToolEnumTypes(t *testing.T) {
 		`"scale":{"enum"`, `"scale":{"type":"number","enum"`,
 		`"on":{"const"`, `"on":{"type":"boolean","const"`,
 		`"mode":{ "enum"`, `"mode":{"type":"string", "enum"`,
+		`"maybe":{"enum"`, `"maybe":{"type":["string","null"],"enum"`,
 	).Replace(tools)
 	b := got["api.kimi.com"]
 	if !strings.Contains(b, want) {
@@ -71,6 +74,96 @@ func TestKimiToolEnumTypes(t *testing.T) {
 	}
 	if b := got["other.test"]; !strings.Contains(b, tools) {
 		t.Errorf("another provider was sent:\n%s", b)
+	}
+}
+
+// A schema a tool's $ref reaches goes to Kimi with a type: Kimi expands
+// the $ref and refuses a target with none, 400 "At path 'properties.b':
+// detected infinite recursion without termination condition", and Codex on
+// k3 failed outright (chaosy on Discord). Codex sends zod's $defs with a
+// oneOf or allOf def untyped, as captured from Codex 0.162.1 (b, c); raw
+// clients send defs typed by nothing but their keywords, or by nothing at
+// all. Each goes on the chat route, the Anthropic route and from Codex's
+// Responses; a {} def, an anyOf (Kimi refuses a type beside one), a typed
+// def, an unreferenced one and the rest of the body are left as they were,
+// and anyone else is sent the tools unchanged.
+func TestKimiToolRefTypes(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	kimi, err := provider.FromPreset("kimi-code-cn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kimi.ID, kimi.Key, kimi.Models = "kimi", "k", []string{"m"}
+	for _, p := range []provider.Provider{kimi,
+		{ID: "other", Name: "Other", Key: "k", Chat: "https://other.test/v1", Anthropic: "https://other.test", Models: []string{"m"}},
+	} {
+		if err := provider.Save(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := map[string]string{}
+	s := New()
+	s.client = &http.Client{Transport: countTransport(func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		got[r.URL.Host+r.URL.Path] = string(b)
+		return &http.Response{StatusCode: 400, Header: http.Header{"Content-Type": {"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{"error":{"message":"no","type":"invalid_request_error"}}`))}, nil
+	})}
+	schema := `{"type":"object","properties":{"a":{"$ref":"#/$defs/__schema0"},"b":{"$ref":"#/$defs/__schema1"},` +
+		`"c":{"items":{"$ref":"#/$defs/__schema2"},"type":"array"},"d":{"anyOf":[{"$ref":"#/$defs/P"},{"type":"null"}]},` +
+		`"e":{"$ref":"#/$defs/M"},"f":{"$ref":"#/definitions/D"},"g":{"$ref":"#/$defs/R"},"h":{"$ref":"#/$defs/U"},"i":{"$ref":"#/$defs/S"}},` +
+		`"$defs":{"__schema0":{},"__schema1":{"oneOf":[{"type":"string"},{"type":"number"}]},"__schema2":{"allOf":[{"type":"string"}]},` +
+		`"P":{"properties":{"x":{"type":"string"}}},"M":{"minLength":1},"R":{"oneOf":[{"$ref":"#/$defs/P"},{"$ref":"#/definitions/D"}]},` +
+		`"U":{"anyOf":[{"type":"string"},{"$ref":"#/$defs/U"}]},"S":{"type":"string","enum":["x"]},"V":{"oneOf":[{"type":"string"}]}},` +
+		`"definitions":{"D":{"description":"anything"}}}`
+	anything := `["string","number","integer","boolean","object","array","null"]`
+	want := strings.NewReplacer(
+		`"__schema1":{`, `"__schema1":{"type":["string","number"],`,
+		`"__schema2":{`, `"__schema2":{"type":"string",`,
+		`"P":{`, `"P":{"type":"object",`,
+		`"M":{`, `"M":{"type":"string",`,
+		`"R":{`, `"R":{"type":`+anything+`,`,
+		`"D":{`, `"D":{"type":`+anything+`,`,
+	).Replace(schema)
+	routes := []struct{ path, tools, upstream, otherUp string }{
+		{"/v1/chat/completions", `"tools":[{"type":"function","function":{"name":"automation_update","parameters":%s}}]`, "api.kimi.com/coding/v1/chat/completions", "other.test/v1/chat/completions"},
+		{"/v1/messages", `"tools":[{"name":"automation_update","input_schema":%s}]`, "api.kimi.com/coding/v1/messages", "other.test/v1/messages"},
+		{"/v1/responses", `"tools":[{"type":"function","name":"automation_update","parameters":%s}]`, "api.kimi.com/coding/v1/chat/completions", "other.test/v1/chat/completions"},
+	}
+	for _, r := range routes {
+		for _, id := range []string{"kimi", "other"} {
+			clear(got)
+			msgs := `"messages":[{"role":"user","content":"hi"}],"max_tokens":16,`
+			if r.path == "/v1/responses" {
+				msgs = `"input":"hi",`
+			}
+			body := `{"model":"` + id + `/m",` + msgs + strings.Replace(r.tools, "%s", schema, 1) + `}`
+			rec := httptest.NewRecorder()
+			s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", r.path, strings.NewReader(body)))
+			up := r.upstream
+			if id == "other" {
+				up = r.otherUp
+			}
+			b, ok := got[up]
+			if !ok {
+				t.Fatalf("%s %s: nothing sent to %s, only %v (%d %s)", r.path, id, up, got, rec.Code, rec.Body)
+			}
+			if !json.Valid([]byte(b)) {
+				t.Fatalf("%s %s: invalid JSON sent:\n%s", r.path, id, b)
+			}
+			sent := gjson.Get(b, "tools.0.function.parameters")
+			if !sent.Exists() {
+				sent = gjson.Get(b, "tools.0.input_schema")
+			}
+			w := schema
+			if id == "kimi" {
+				w = want
+			}
+			if sent.Raw != w {
+				t.Errorf("%s %s was sent:\n%s\nwant:\n%s", r.path, id, sent.Raw, w)
+			}
+		}
 	}
 }
 

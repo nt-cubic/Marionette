@@ -186,7 +186,7 @@ func matchedLocalLegacy(gateway *rowChunk, chunks []*rowChunk, skip map[rowRef]b
 			if skip[ref] || p.Time.Before(since) {
 				continue
 			}
-			id := c.Strings[p.Text[11]]
+			id := c.Strings[c.text(&p, 11)]
 			if len(byID[id]) > 0 {
 				byRequest[id] = append(byRequest[id], ref)
 			}
@@ -219,7 +219,7 @@ func matchedLocalLegacy(gateway *rowChunk, chunks []*rowChunk, skip map[rowRef]b
 			if skip[ref] || matched[ref] || p.Time.Before(since) {
 				continue
 			}
-			s := c.Strings[p.Text[13]]
+			s := c.Strings[c.text(&p, 13)]
 			if len(bySession[s]) == 0 {
 				continue
 			}

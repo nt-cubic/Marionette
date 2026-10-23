@@ -84,7 +84,7 @@ const context = vm.createContext({
   process: { stdout, stdin: {}, exit: () => { throw Error('unexpected exit') } },
   readline: { createInterface: () => rl },
   options: async () => ({ fetch: async () => context.reply }),
-  info: async () => ({ models: {} }),
+  infoOf: async () => ({ models: {} }),
   sdkHeaders: () => ({}), bodyOf: () => undefined,
   accountKey: () => '',
   via: { run: (_, fn) => fn() }, inScope: (_, key, fn) => fn(),
@@ -121,6 +121,34 @@ async function main() {
     assert.equal(await run('gate.take(64)'), 64)
     run('gate.stop(); gate.add(1)')
     assert.equal(await run('gate.take(64)'), -1, 'stopped gate refuses remaining credit')
+  } else if (name === 'chunk-frames') {
+    const parts = [new Uint8Array([0, 1, 2, 250, 251, 252]), Buffer.from('data: {"a":"\\u00e9 \\"q\\""}\n\n'), new Uint8Array(70 << 10).fill(65)]
+    context.reply.body = (async function* () { for (const p of parts) yield p })()
+    let copies = 0
+    let stringified = 0
+    const realJSON = run('JSON')
+    context.Buffer = new Proxy(Buffer, { get(target, key) {
+      if (key !== 'from') return Reflect.get(target, key)
+      return (...args) => {
+        if (args.length === 1 && ArrayBuffer.isView(args[0])) copies++
+        return target.from(...args)
+      }
+    } })
+    context.JSON = { parse: realJSON.parse, stringify: (v, ...rest) => {
+      if (v && v.event === 'chunk') stringified++
+      return realJSON.stringify(v, ...rest)
+    } }
+    fetchOne()
+    await until(idle, 'streamed fetch settles')
+    context.Buffer = Buffer
+    delete context.JSON
+    const chunks = lines.filter(msg => msg.event === 'chunk')
+    assert.ok(chunks.every(msg => msg.id === 1), 'every frame is the fetch\'s')
+    assert.equal(chunks.length, 4, 'a chunk over 64 KB goes in two frames')
+    assert.deepEqual(Buffer.concat(chunks.map(msg => Buffer.from(msg.data, 'base64'))), Buffer.concat(parts))
+    assert.deepEqual(lines.map(msg => msg.event || 'result'), ['head', 'chunk', 'chunk', 'chunk', 'chunk', 'result'])
+    assert.equal(stringified, 0, 'chunk frames are joined, not stringified')
+    assert.equal(copies, 0, 'chunks are viewed, not copied')
   } else if (name === 'split-chunk') {
     blockOn = 'chunk'
     context.reply.body = (async function* () { yield Buffer.alloc(3 * (64 << 10)) })()
@@ -225,10 +253,13 @@ async function main() {
         if (stage === 'options') { entered = true; await barrier }
         return { fetch: async () => { vendorCalls++; return context.reply } }
       }
-      context.info = async () => {
+      context.infoOf = async () => {
         if (stage === 'info') { entered = true; await barrier }
         return { models: {} }
       }
+      // a request is told the provider only for a chat.headers hook
+      run('hooks.length = 0')
+      if (stage === 'info') run('hooks.push({ spec: "t", hooks: { "chat.headers": async () => {} } })')
       fetchOne()
       await until(() => entered, 'plugin setup entered its deferred await')
       assert.equal(run('inflight.get(1).state'), 'setup')
@@ -239,7 +270,7 @@ async function main() {
       await until(idle, 'cancelled setup finishes')
       assert.equal(vendorCalls, 0, 'cancelled setup never starts vendor')
       context.options = async () => ({ fetch: async () => { vendorCalls++; return context.reply } })
-      context.info = async () => ({ models: {} })
+      context.infoOf = async () => ({ models: {} })
       fetchOne()
       await until(idle, 'healthy fetch after cancelled setup')
       assert.equal(vendorCalls, 1)
@@ -648,6 +679,20 @@ func TestFlowBigReplyProd(t *testing.T) {
 // vendor's head — leave the host able to answer a later request. It is the Go
 // side of the lifecycle: the host's slots come back, and the JS side's own
 // finally (covered by construction) lets each request's controller and gate go.
+// TestHostFramesChunksCheaply: the body's chunks go out as the same frames,
+// but without copying each chunk or stringifying each frame: stringify
+// scanned every base64 byte for something to escape, which cost more than
+// the base64.
+func TestHostFramesChunksCheaply(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("no node on PATH")
+	}
+	if out, err := runHostJSCase(t, node, "chunk-frames"); err != nil {
+		t.Fatalf("chunk frames: %v\n%s", err, out)
+	}
+}
+
 func TestFlowAbortDuringSetupStaysHealthy(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {

@@ -76,7 +76,7 @@ func TestLogGrowingRewriteThenAppend(t *testing.T) {
 			}
 			vias := Vias(time.Time{})
 			for session, input := range map[string]int{"edited-prefix": 73, "appended-tail": 19} {
-				v := vias["codex|"+session]
+				v := vias.Of("codex|" + session)
 				if len(v) != 1 || v[0].Calls != 1 || v[0].Tokens != input {
 					t.Fatalf("%s vias stale: %+v", session, v)
 				}

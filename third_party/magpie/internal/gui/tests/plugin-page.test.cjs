@@ -26,16 +26,21 @@ const entry = (tok, name, title, reads, file = "index.html") => ({
   spec: "/x/" + name, name, key: "plugin-" + name, title, reads,
   url: `/_magpie/plugin/${tok}/${file}`, icon: name === "glance" ? `/_magpie/plugin/${tok}/icon.svg` : "",
 });
+// the example's title by language (magpie.page.titles); none in German,
+// which reads its title
+const TITLES = { zh: "用量速览", "zh-TW": "用量速覽", ja: "使用量の概要" };
 const pages = [
-  entry(GLANCE, "glance", "Usage glance", ["usage:summary"]),
+  { ...entry(GLANCE, "glance", "Usage glance", ["usage:summary"]), titles: TITLES },
   entry(PROBE, "probe", "Probe", []),
   entry(OPEN, "open", "Probe without a policy", []),
   entry(BROKEN, "broken", "Broken", []),
 ];
 
-// what pluginpage.go's pagePolicy sends, for this host
+// what pluginpage.go's pagePolicy sends, for this host: the page's folder
+// under each scheme the window is served on
 const policy = (tok) => {
-  const own = `magpie.test/_magpie/plugin/${tok}/`;
+  const dir = `magpie.test/_magpie/plugin/${tok}/`;
+  const own = `wails://${dir} http://${dir} https://${dir}`;
   return [
     "sandbox allow-scripts", "default-src 'none'", `script-src ${own}`, `style-src ${own} 'unsafe-inline'`,
     `img-src ${own} data:`, `font-src ${own}`, `media-src ${own}`, "connect-src 'none'", "frame-src 'none'",
@@ -45,7 +50,7 @@ const policy = (tok) => {
 
 // a page that tries every way out it has, and tells the window what came
 // of each (its message has no magpie:1, so the window's bridge ignores it)
-const PROBE_HTML = `<!doctype html><meta charset="utf-8"><script src="_magpie/bridge.js"></script><script src="probe.js"></script><p id="p">probe</p>`;
+const PROBE_HTML = `<!doctype html><meta charset="utf-8"><script src="_magpie/bridge.js"></script><script src="probe.js"></script><style>.own { border-radius: 2px; }</style><h1>probe</h1><p id="p">probe</p><button id="b">b</button><button class="own">o</button>`;
 const PROBE_JS = `(async () => {
   const out = {};
   await magpie.ready;
@@ -55,6 +60,9 @@ const PROBE_JS = `(async () => {
   try { out.top = String(parent.document.title); } catch (e) { out.top = "refused"; }
   try { await magpie.read("usage:summary"); out.read = "given"; } catch (e) { out.read = e.message; }
   try { await magpie.read("providers:list"); out.read2 = "given"; } catch (e) { out.read2 = e.message; }
+  // what the page left unstyled is magpie's; what it styled is its own
+  const cs = (q) => getComputedStyle(document.querySelector(q));
+  out.look = { bg: cs("html").backgroundColor, fg: cs("body").color, font: cs("body").fontFamily, h1: cs("h1").fontSize, button: cs("#b").borderRadius, own: cs(".own").borderRadius };
   parent.postMessage({ probe: out }, "*");
 })();`;
 const BROKEN_HTML = `<!doctype html><meta charset="utf-8"><script src="_magpie/bridge.js"></script><script src="app.js"></script><p id="ok">drawn</p>`;
@@ -147,6 +155,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(await tabs.count(), 4, where);
         assert.equal(await page.evaluate(() => { const h = document.querySelector("#nav .nav-gl[data-plugin-pages]"); return [...h.parentElement.children].indexOf(h) > [...h.parentElement.querySelectorAll("button[data-view='plugins']")].map((b) => [...b.parentElement.children].indexOf(b))[0]; }), true, `${where}: after the built-in pages`);
         assert.equal(await tabs.first().locator("img.nav-ic").getAttribute("src"), `/_magpie/plugin/${GLANCE}/icon.svg`, where);
+        // titled in the window's language, else by its title
+        assert.equal(await tabs.first().locator("span").textContent(), TITLES[lang] || "Usage glance", `${where}: the tab's title`);
+        if (lang === "de") {
+          // a new language retitles the tab, and back
+          await page.evaluate(() => setLocale("ja"));
+          await page.waitForFunction(() => document.querySelector("#nav button[data-plugin-page] span").textContent === "使用量の概要");
+          await page.evaluate(() => setLocale("de"));
+          await page.waitForFunction(() => document.querySelector("#nav button[data-plugin-page] span").textContent === "Usage glance");
+        }
         // no frame until the page is looked at
         assert.equal(await page.locator("iframe.plugin-frame").count(), 0, `${where}: nothing loaded unseen`);
 
@@ -182,6 +199,22 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           assert.equal(probe.read2, "Probe doesn't ask to read providers:list", where);
           assert.equal(seen.api.length, 0, `${where}: nothing reached /api`);
           assert.equal(seen.reads.length, 1, `${where}: an undeclared read never reached the server`);
+          // a page with no stylesheet of its own reads as part of the window
+          const win = await page.evaluate(() => {
+            const d = document.createElement("div");
+            d.style.cssText = "background: var(--bg); color: var(--fg)";
+            document.body.append(d);
+            const c = getComputedStyle(d);
+            const r = { bg: c.backgroundColor, fg: c.color };
+            d.remove();
+            return r;
+          });
+          assert.equal(probe.look.bg, win.bg, `${where}: the window's background`);
+          assert.equal(probe.look.fg, win.fg, `${where}: the window's text colour`);
+          assert.match(probe.look.font, /apple-system|SF Pro|system-ui/, `${where}: the window's font, not a serif`);
+          assert.equal(probe.look.h1, "20px", `${where}: magpie's heading`);
+          assert.equal(probe.look.button, "6px", `${where}: magpie's button`);
+          assert.equal(probe.look.own, "2px", `${where}: the page's own rule wins`);
 
           // with the policy gone, what the frame's fetch would send is what
           // apiFramed turns away

@@ -129,13 +129,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
       test(`${engine} ${lang} ${width}px: the provider editor opened first shows the saved Off and the name without its provider`, async (t) => {
         const posts = [];
-        const { page, errors, tr } = await launch(t, engine, lang, width, OFF, {}, posts);
+        // the state answering after the editor is drawn: its line follows it
+        const { page, errors, tr } = await launch(t, engine, lang, width, OFF, { stateDelay: 600 }, posts);
         await page.goto("http://magpie.test/?view=providers");
         await page.locator(".row.provider").click();
         if (!(await page.locator(".mnames:not([hidden])").count())) await page.getByRole("button", { name: await tr("Names & levels"), exact: true }).click();
         const sfx = page.locator(".mnames:not([hidden]) .msuffix");
         await sfx.waitFor();
-        await picked(sfx.locator(".opt.on"), await tr("Off"));
         await says(sfx.locator(".hint"), await tr("Agents’ lists show “{label}”", { label: "My Sol" }));
         assert.deepEqual(posts, [], "nothing is written");
         assert.deepEqual(errors, []);

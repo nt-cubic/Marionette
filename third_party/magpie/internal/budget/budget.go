@@ -102,23 +102,26 @@ func counts(r usage.Record) bool { return !r.IsRejected() && !r.IsReported() && 
 
 // sumsFor is keyID's sums for each window starting at starts, read from
 // usage.jsonl the first time; those of windows no limit counts in now
-// are let go. Called with state held.
+// are let go. A window two limits share (a day and a week on a Monday,
+// a day and a month on the 1st) is kept once, as Append adds a call to
+// each one kept (#2942). Called with state held.
 func sumsFor(keyID string, starts []time.Time) []*sums {
 	k := slot(keyID)
 	kept := state.sums[k]
 	out := make([]*sums, len(starts))
 	var next []*sums
+	at := func(ss []*sums, start time.Time) int {
+		return slices.IndexFunc(ss, func(s *sums) bool { return s.start.Equal(start) })
+	}
 	for i, start := range starts {
-		j := slices.IndexFunc(kept, func(s *sums) bool { return s.start.Equal(start) })
-		if j < 0 {
-			j = slices.IndexFunc(next, func(s *sums) bool { return s.start.Equal(start) })
-			if j >= 0 {
-				out[i] = next[j]
-				continue
-			}
-			out[i] = read(keyID, start)
-		} else {
+		if j := at(next, start); j >= 0 {
+			out[i] = next[j]
+			continue
+		}
+		if j := at(kept, start); j >= 0 {
 			out[i] = kept[j]
+		} else {
+			out[i] = read(keyID, start)
 		}
 		next = append(next, out[i])
 	}

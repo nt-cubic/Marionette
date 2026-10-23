@@ -28,6 +28,31 @@ func enabled() bool {
 	return err == nil && ourLabel.Match(b) && program.Match(b)
 }
 
+// What ServiceManagement's statusForLegacyURL: says of a launch agent
+// (SMAppServiceStatus). Background Task Management keeps it, by the
+// plist's Label, wherever the file is: switched off under Login Items ›
+// Allow in the Background, it is requiresApproval, and stays so when the
+// plist is written anew, or removed and written again. launchctl
+// print-disabled doesn't follow that switch (it went on saying enabled,
+// macOS 26.2), so it isn't asked.
+const (
+	smNotRegistered    = 0
+	smEnabled          = 1
+	smRequiresApproval = 2
+	smNotFound         = 3
+	// the system couldn't be asked: before macOS 13, or a build without cgo
+	smUnknown = -1
+)
+
+// legacyStatus asks the system about the launch agent at path. A var for
+// the tests; a build without cgo can't ask.
+var legacyStatus = func(path string) int { return smUnknown }
+
+// heldBack: the system says the user switched the launch agent off. Only
+// requiresApproval says so; not registered yet, not found, or no answer
+// leave the record's own word.
+func heldBack() bool { return legacyStatus(record()) == smRequiresApproval }
+
 // a launch agent the system loads at the next login: the app itself, run
 // once, not kept alive — quitting magpie quits it until then
 func enable(exe string) error {

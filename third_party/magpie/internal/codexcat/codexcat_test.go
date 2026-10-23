@@ -187,15 +187,16 @@ func TestCodexCatalogSaysTextOnly(t *testing.T) {
 		{ID: "probe/text", Name: "Text"},
 		{ID: "probe/sees", Name: "Sees", Images: true},
 		{ID: "group/words", Name: "Words"},
+		{ID: "auto/found", Name: "Found"}, // a group magpie found, as it is listed
 	}), &got)
-	if len(got.Models) != 3 {
+	if len(got.Models) != 4 {
 		t.Fatalf("%+v", got.Models)
 	}
-	text, sees, group := got.Models[0], got.Models[1], got.Models[2]
+	text, sees, group, found := got.Models[0], got.Models[1], got.Models[2], got.Models[3]
 	if !strings.Contains(text.Description, "text only") || !strings.Contains(text.Description, "Names & levels") || !catalog.MagpieAdded("", text.Slug, text.Description) {
 		t.Errorf("text-only model: %q", text.Description)
 	}
-	if sees.Description != "Sees via magpie" || group.Description != "Words via magpie" {
-		t.Errorf("a model that sees, and a group: %q, %q", sees.Description, group.Description)
+	if sees.Description != "Sees via magpie" || group.Description != "Words via magpie" || found.Description != "Found via magpie" {
+		t.Errorf("a model that sees, a group and a found one: %q, %q, %q", sees.Description, group.Description, found.Description)
 	}
 }

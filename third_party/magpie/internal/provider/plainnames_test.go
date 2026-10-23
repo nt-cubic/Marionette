@@ -39,7 +39,7 @@ func TestPlainNames(t *testing.T) {
 		return out
 	}
 
-	full := []string{"a/sol=My Sol · A", "b/sol=Sol · B", "group/auto-sol=Sol · routing group"}
+	full := []string{"a/sol=My Sol · A", "auto/sol=Sol · routing group", "b/sol=Sol · B"}
 	if got := codex(); !slices.Equal(got, full) {
 		t.Fatalf("by default: %q", got)
 	}
@@ -51,7 +51,7 @@ func TestPlainNames(t *testing.T) {
 		t.Fatalf("agents told %d times, setting %v", touched, settings.Load().PlainNames)
 	}
 	// the group found for sol and b's sol are both "Sol": they keep theirs
-	want := []string{"a/sol=My Sol", "b/sol=Sol · B", "group/auto-sol=Sol · routing group"}
+	want := []string{"a/sol=My Sol", "auto/sol=Sol · routing group", "b/sol=Sol · B"}
 	if got := codex(); !slices.Equal(got, want) {
 		t.Fatalf("plain: %q", got)
 	}
@@ -66,7 +66,7 @@ func TestPlainNames(t *testing.T) {
 	if err := settings.Save(s); err != nil {
 		t.Fatal(err)
 	}
-	if got := codex(); !slices.Equal(got, []string{"a/sol=My Sol", "group/auto-sol=Sol"}) {
+	if got := codex(); !slices.Equal(got, []string{"a/sol=My Sol", "auto/sol=Sol"}) {
 		t.Fatalf("plain, b hidden: %q", got)
 	}
 	if got := other(); !slices.Equal(got, []string{"My Sol", "Sol · B", "Sol · routing group"}) {
@@ -76,7 +76,7 @@ func TestPlainNames(t *testing.T) {
 	if err := SetPlainNames(false); err != nil {
 		t.Fatal(err)
 	}
-	if got := codex(); !slices.Equal(got, []string{"a/sol=My Sol · A", "group/auto-sol=Sol · routing group"}) || touched != 2 {
+	if got := codex(); !slices.Equal(got, []string{"a/sol=My Sol · A", "auto/sol=Sol · routing group"}) || touched != 2 {
 		t.Fatalf("off again: %q, told %d", got, touched)
 	}
 }

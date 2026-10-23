@@ -23,7 +23,9 @@ function page() {
     const usageAcctKey = q => q.provider + "\\n" + (q.user || "").toLowerCase();
     const quotaCycleHolds = new Map(); // past cycles' estimates (#2009), cleared by a refresh
     const t = x => x;
-    const el = () => ({ classList: { add() {} }, setAttribute() {} });
+    const calm = () => true;
+    const document = { querySelectorAll: () => [] };
+    const el = () => ({ dataset: {}, classList: { add() {}, remove() {} }, setAttribute() {} });
     function renderQuotas() {}
     function loadUpstream() {}
     function status(x) { errors.push(x); }

@@ -206,9 +206,10 @@ func TestMirrorFailuresAreTheMirrors(t *testing.T) {
 	defer tampered.Close()
 	missing := httptest.NewServer(http.NotFoundHandler())
 	defer missing.Close()
-	gone := httptest.NewServer(http.NotFoundHandler())
-	gone.Close()
-	for _, m := range []string{tampered.URL + "/", missing.URL + "/", gone.URL + "/"} {
+	// port 1 is refused at once and no test can listen on it, where a
+	// closed server's port can be handed to the next server at once
+	gone := "http://127.0.0.1:1/"
+	for _, m := range []string{tampered.URL + "/", missing.URL + "/", gone} {
 		path := filepath.Join(t.TempDir(), "magpie.new")
 		err := fetch(WithMirror(context.Background(), m), asset, path)
 		if err == nil || MirrorOf(err) != m || !strings.Contains(err.Error(), strings.TrimSuffix(m, "/")) {

@@ -22,7 +22,7 @@ import (
 // agentCLI is a CLI a subscription runs through: how to find it, and the
 // vendor's install one-liners for a POSIX shell and for PowerShell. native,
 // when there is one, does what the shell one does without a shell, for a
-// magpie with none (its Docker image has no bash, curl or wget). setup: the
+// magpie with none (its Docker image had no bash, curl or wget until #2834). setup: the
 // installer ends by running the CLI's own setup, which asks how to sign in;
 // magpie signs in itself once the CLI is there.
 type agentCLI struct {
@@ -148,8 +148,10 @@ func runUntilInstalled(ctx context.Context, cmd *exec.Cmd, c agentCLI) ([]byte, 
 // bash, and curl, which every one-liner (and the scripts behind them)
 // downloads with. magpie's Docker image had none of them, and the install
 // failed there with "exec: bash: not found". Since 7bfe3137 it has bash and
-// busybox's wget but still no curl, and the one-liner failed there too. A
-// var so tests can say there is none.
+// busybox's wget but still no curl, and the one-liner failed there too.
+// Since #2834 it is Debian with bash and curl, and the CLIs the one-liners
+// install find the loader and libraries they link. A var so tests can say
+// there is none.
 var shellInstallerRuns = func() bool {
 	for _, p := range []string{"bash", "curl"} {
 		if _, err := exec.LookPath(p); err != nil {

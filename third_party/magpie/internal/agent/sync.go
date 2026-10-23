@@ -45,9 +45,14 @@ func SyncCatalog() {
 		// the catalog built once for every agent's lists, not for each
 		// look-up of each (thousands at magpie's start, with 30 providers)
 		release := provider.Hold()
+		renaming := setToFoundGroups()
 		for _, a := range All() {
 			if a.Sync != nil {
 				_ = synced(a.Sync)
+			}
+			// a field magpie set to a found group's id before (autoref.go)
+			if renaming[a.ID] {
+				a.renameFoundGroups()
 			}
 		}
 		release()

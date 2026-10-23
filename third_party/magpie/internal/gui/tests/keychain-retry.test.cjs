@@ -26,7 +26,12 @@ function serve(lang, posts, retry) {
     const json = (data) => route.fulfill({ json: data });
     if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:true};` });
     if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
-    if (url.pathname === "/api/state") return json(state);
+    // the state read after the retry is slow, as on a busy machine: the
+    // line goes with the list, and the status is said once the state is in
+    if (url.pathname === "/api/state") {
+      if (read) await new Promise((r) => setTimeout(r, 400));
+      return json(state);
+    }
     if (url.pathname === "/api/providers") return json(providers());
     if (url.pathname === "/api/groups") return json({ groups: [] });
     if (url.pathname === "/api/plugins") return json({ plugins: [] });
@@ -77,6 +82,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await again.click();
       await line.waitFor({ state: "detached" });
       assert.deepEqual(posts, [{ path: "/api/provider/keychain-retry", body: {} }]);
+      // said after the state is read again, which comes after the line goes
+      await page.waitForFunction((done) => document.querySelector("#status")?.textContent === done, w.done).catch(() => {});
       assert.equal(await page.locator("#status").textContent(), w.done);
       assert.deepEqual(errors, []);
     });

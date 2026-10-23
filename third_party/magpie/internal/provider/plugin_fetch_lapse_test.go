@@ -61,3 +61,28 @@ func TestPluginFetchSignInExpiredLapses(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+// Signing in again takes the mark off by the account alone, when the
+// providers' list is empty too: it is, while another magpie's change to
+// plugins.json is read again, and a sign-in finished then left the
+// account saying "sign in again" (#2748).
+func TestPluginSignInClearsLapseWithoutTheList(t *testing.T) {
+	claudeHome(t)
+	saveLogins(t,
+		savedLogin{Agent: "plugin:fakeco", User: "gone@fake", Home: "k-gone", On: true, Lapsed: "gone@fake's FakeCo sign-in has expired — sign in again"},
+		savedLogin{Agent: "plugin:fakeco", User: "other@fake", Home: "k-other", On: true, Lapsed: "other@fake's FakeCo sign-in has expired — sign in again"},
+	)
+	if ps := plugin.Cached(); len(ps) != 0 {
+		t.Fatalf("the list isn't empty: %d", len(ps))
+	}
+	clearPluginLapse(plugin.Saved{Provider: "fakeco", Account: "k-gone"})
+	loginsMu.Lock()
+	ls := readLogins()
+	loginsMu.Unlock()
+	if l := loginOf(t, ls, "plugin:fakeco", "gone@fake"); l.Lapsed != "" {
+		t.Fatalf("signed in again, but still lapsed: %q", l.Lapsed)
+	}
+	if l := loginOf(t, ls, "plugin:fakeco", "other@fake"); l.Lapsed == "" {
+		t.Fatal("the other account's mark went too")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"regexp"
 	"slices"
 	"strconv"
@@ -85,6 +86,7 @@ type aRequest struct {
 		Description  string          `json:"description,omitempty"`
 		InputSchema  json.RawMessage `json:"input_schema,omitempty"`
 		CacheControl json.RawMessage `json:"cache_control,omitempty"`
+		DeferLoading bool            `json:"defer_loading,omitempty"`
 	} `json:"tools,omitempty"`
 	ToolChoice *struct {
 		Type                   string `json:"type"`
@@ -166,7 +168,7 @@ func parseAnthropicRequest(body []byte, clientMarks bool) (*Request, error) {
 					msg.Parts = append(msg.Parts, Part{Kind: ToolCall, ID: anthropicInID(b.ID), Name: b.Name, Args: b.Input})
 				case "tool_result":
 					out, images := toolOutput(b.Content)
-					msg.Parts = append(msg.Parts, Part{Kind: ToolResult, CallID: anthropicInID(b.ToolUseID), Text: out, Images: images, IsError: b.IsError})
+					msg.Parts = append(msg.Parts, Part{Kind: ToolResult, CallID: anthropicInID(b.ToolUseID), Text: out, Images: images, IsError: b.IsError, Loads: toolRefs(b.Content)})
 				case "thinking":
 					msg.Parts = append(msg.Parts, Part{Kind: Thinking, Text: b.Thinking, Signature: b.Signature})
 				case "redacted_thinking":
@@ -217,7 +219,7 @@ func parseAnthropicRequest(body []byte, clientMarks bool) (*Request, error) {
 			// only keeps Anthropic's deferred loading on; never to be called
 			continue
 		}
-		r.Tools = append(r.Tools, Tool{Name: t.Name, Description: t.Description, Schema: t.InputSchema})
+		r.Tools = append(r.Tools, Tool{Name: t.Name, Description: t.Description, Schema: t.InputSchema, Deferred: t.DeferLoading})
 	}
 	if tc := a.ToolChoice; tc != nil {
 		switch tc.Type {
@@ -757,8 +759,36 @@ func AdaptiveThinking(model string) bool { return adaptiveOnly(model) }
 // effortInOutputConfig is a model that takes how hard it thinks from
 // output_config.effort, beside thinking turned on, as ZCode asks it: Z.ai's
 // GLM-5.2 and GLM-5.3 on their Anthropic endpoints. A budget alone leaves
-// them at their own default.
-var effortInOutputConfig = regexp.MustCompile(`(?i)glm-5\.[23](?:$|[-.:/\[])`)
+// them at their own default. MiniMax's MiniMax-M3.1-Flash and its
+// -Preview, which think at low…max (MiniMax Code's catalog: forced_on),
+// are asked the same way as MiniMax Code asks them: a budget alone gave
+// medium to max one budget under an 8192 cap, so the level was lost
+// (shin4 on plugins#316).
+var effortInOutputConfig = regexp.MustCompile(`(?i)glm-5\.[23](?:$|[-.:/\[])|minimax-m3\.1-flash(?:$|[-.:/\[])`)
+
+// deepseekHost is DeepSeek's own API, whose Anthropic endpoint
+// (api.deepseek.com/anthropic) takes the effort in output_config.
+const deepseekHost = "api.deepseek.com"
+
+// deepseekEfforts are the levels DeepSeek's models think at: its thinking
+// guide maps minimal to low, medium and xhigh to high, and ultra to max.
+// A budget a client sent is fitted to them when the model's own list is
+// unknown, so 32000 (max, as budgetOf gives it) asks max, not xhigh,
+// which DeepSeek would read as high.
+var deepseekEfforts = []string{"low", "high", "max"}
+
+// outputEffortAt is effortInOutputConfig for a model at host: those
+// models anywhere, and every model on DeepSeek's own endpoint. DeepSeek's
+// Anthropic API docs (api-docs.deepseek.com/guides/anthropic_api, read
+// 2026-10-23) list thinking as "Supported (budget_tokens is ignored)" and
+// output_config as "Only effort is supported", and its thinking guide
+// (guides/thinking_mode) names output_config.effort as the Anthropic
+// format's effort control: a budget alone left DSH's low and max at
+// DeepSeek's default, high (#3298). Another host serving a DeepSeek model
+// is not covered by those docs and goes as it did.
+func outputEffortAt(host, model string) bool {
+	return host == deepseekHost || effortInOutputConfig.MatchString(model)
+}
 
 // withOutputEffort is body asking, in output_config.effort, for the level
 // of levels nearest the reasoning it asks for; body when it asks for none.
@@ -807,13 +837,14 @@ const interruptedTool = "[The result of this tool call is unavailable: the turn 
 
 // buildAnthropic renders a request for an Anthropic-style upstream.
 func buildAnthropic(r *Request, model string) []byte {
-	return anthropicBody(r, model, false)
+	return anthropicBody(r, model, "", false)
 }
 
 // anthropicBody is buildAnthropic; with replay, for an upstream that wants
 // a turn's thinking back (anthropicReplaysThinking), thinking with no
-// signature goes as its text instead of being left out.
-func anthropicBody(r *Request, model string, replay bool) []byte {
+// signature goes as its text instead of being left out. host is the
+// upstream's (outputEffortAt).
+func anthropicBody(r *Request, model, host string, replay bool) []byte {
 	if r.Format != nil && r.Format.schema() == nil {
 		// output_config.format takes a schema only: any JSON object is
 		// asked for in words
@@ -939,7 +970,7 @@ func anthropicBody(r *Request, model string, replay bool) []byte {
 			maxTokens = budget + 4096
 		}
 		out["thinking"] = map[string]any{"type": "enabled", "budget_tokens": budget}
-		if r.Effort != "" && effortInOutputConfig.MatchString(model) {
+		if r.Effort != "" && outputEffortAt(host, model) {
 			out["output_config"] = map[string]any{"effort": r.Effort}
 		}
 	} else if r.Temp != nil {
@@ -1253,7 +1284,8 @@ func decodeAnthropic(data string, emit func(Event)) error {
 		}
 		emit(Event{Kind: KUsage, Usage: ev.Usage.usage(), SafeguardResults: review, StopDetails: stopDetails(ev.Delta.StopDetails)})
 	case "error":
-		emit(Event{Kind: KError, Text: cmp.Or(ev.Error.Message, ev.Error.Type, streamErrorText(data)), Code: refusedCode(data)})
+		code, status, said := filterRefused(data)
+		emit(Event{Kind: KError, Text: cmp.Or(ev.Error.Message, ev.Error.Type, streamErrorText(data)), Code: code, Status: status, Said: said})
 	}
 	return nil
 }
@@ -1522,7 +1554,12 @@ func (e *anthropicEncoder) event(ev Event) {
 		e.index++
 	case KError:
 		e.close()
-		failed := map[string]any{"type": "api_error", "message": ev.Text}
+		typ := "api_error"
+		if ev.Status == http.StatusRequestEntityTooLarge && ev.Code != "context_length_exceeded" {
+			// the same type a 413 JSON body carries (writeErrorSaid)
+			typ = "request_too_large"
+		}
+		failed := map[string]any{"type": typ, "message": ev.Text}
 		if ev.Code != "" {
 			failed["code"] = ev.Code // preserve the upstream error type, including refusals
 		}

@@ -14,7 +14,7 @@ import (
 )
 
 // healthcheck: magpie healthcheck — exits 0 when a magpie gateway answers
-// at its address (MAGPIE_ADDR, else Settings' Gateway port on 127.0.0.1,
+// at its address (MAGPIE_ADDR, else the port in Settings' Gateway address on 127.0.0.1,
 // 3425 unless set), for a container's
 // HEALTHCHECK, which has no curl to ask it with.
 func healthcheck() error {

@@ -211,6 +211,36 @@ func First(best, n int) []int {
 	return append(append([]int{best}, idx[:best]...), idx[best+1:]...)
 }
 
+// FreeFirst spends what costs nothing before what is paid for: the seats
+// whose model its vendor serves at no cost to the subscription's allowance
+// or credits go first, in their listed order, and the rest after them, also
+// in their listed order. So a request whose model is free somewhere on the
+// pool uses that first, and only when those can't answer does it go to one
+// that spends credits or quota — nothing is left unused that cost nothing.
+//
+// It orders one tier only, unlike Smart: a free seat is not pushed behind a
+// paid one for running low, since the free one spends nothing by running
+// out of. Among the paid, the listed order stands rather than Smart's
+// renewal-weighted one, because what this routing is for is the free tier;
+// set a provider's own routing (Smart, in order, weekly pace) if the paid
+// seats should be spent smartly among themselves — a provider or group in
+// this group keeps its own routing either way.
+//
+// A seat whose model costs nothing nowhere is not free: it goes with the
+// paid ones, so a routing set on a pool without free models behaves as In
+// order.
+var FreeFirst = Strategy{ByFree: true, Order: func(_ string, seats []Seat) []int {
+	free, paid := make([]int, 0, len(seats)), make([]int, 0, len(seats))
+	for i, s := range seats {
+		if s.Free {
+			free = append(free, i)
+		} else {
+			paid = append(paid, i)
+		}
+	}
+	return append(free, paid...)
+}}
+
 // Builtin are the routings besides Smart and their strategies, as
 // plugins/rotation registers them.
 var Builtin = map[string]Strategy{
@@ -219,4 +249,5 @@ var Builtin = map[string]Strategy{
 	provider.LeastUsed: LeastUsed,
 	provider.Pace:      Pace,
 	provider.Weighted:  Weighted,
+	provider.FreeFirst: FreeFirst,
 }

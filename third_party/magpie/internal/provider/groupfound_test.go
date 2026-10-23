@@ -65,7 +65,7 @@ func TestAutoGroupsOff(t *testing.T) {
 	if got := ids(); !slices.Equal(got, []string{"auto-x", "mine"}) {
 		t.Fatalf("off: %v", got)
 	}
-	if got := catalog(); !slices.Equal(got, []string{"group/auto-x", "group/mine"}) {
+	if got := catalog(); !slices.Equal(got, []string{"auto/x", "group/mine"}) {
 		t.Fatalf("off, the catalog's groups: %v", got)
 	}
 	if _, _, ok := FindGroup("group/auto-kimi-k3"); ok {

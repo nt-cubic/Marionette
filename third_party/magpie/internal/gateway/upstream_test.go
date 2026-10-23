@@ -1,9 +1,12 @@
 package gateway
 
 import (
+	"bufio"
+	"bytes"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -135,5 +138,98 @@ func TestUpstreamOf(t *testing.T) {
 		if got := upstreamOf([]byte(in)); got != want {
 			t.Errorf("upstreamOf(%s) = %q; want %q", in, got, want)
 		}
+	}
+}
+
+// clinePassStream is a real ClinePass stream (api.cline.bot, DeepSeek V4.1
+// Flash, 2026-10-02), as captured in wkeking/clinepass-channel-monitor's
+// testdata/plain_success.log (MIT): its last chunk names the provider that
+// answered only in choices[].delta.provider_metadata.gateway.routing.
+func clinePassStream(t *testing.T) []string {
+	t.Helper()
+	b, err := os.ReadFile("testdata/clinepass_stream.sse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	sc := bufio.NewScanner(bytes.NewReader(b))
+	sc.Buffer(nil, 1<<20)
+	for sc.Scan() {
+		if l := sc.Text(); l != "" {
+			lines = append(lines, l)
+		}
+	}
+	return lines
+}
+
+// ClinePass says the provider behind it as finalProvider in a choice's
+// provider_metadata (#2847, smart-lty): under delta in a stream, under
+// message in one body. Only there: the model's own text naming it, or the
+// list of providers tried, says none.
+func TestUpstreamOfClinePass(t *testing.T) {
+	var last string
+	for _, l := range clinePassStream(t) {
+		if d := strings.TrimPrefix(l, "data: "); strings.Contains(d, "finalProvider") {
+			last = d
+		}
+	}
+	if got := upstreamOf([]byte(last)); got != "deepseek" {
+		t.Errorf("real ClinePass chunk: upstreamOf = %q; want deepseek", got)
+	}
+	whole := strings.Replace(last, `"delta":{"provider_metadata"`, `"message":{"role":"assistant","content":"hi","provider_metadata"`, 1)
+	if got := upstreamOf([]byte(whole)); got != "deepseek" {
+		t.Errorf("one body: upstreamOf = %q; want deepseek", got)
+	}
+	for in, want := range map[string]string{
+		`{"choices":[{"delta":{"provider_metadata":{"gateway":{"routing":{"finalProvider":"novita"}}}}}]}`:                                         "novita",
+		`{"choices":[{"delta":{"content":"provider_metadata gateway routing \"finalProvider\":\"deepseek\""}}]}`:                                   "",
+		`{"choices":[{"delta":{"provider_metadata":{"gateway":{"routing":{"modelAttempts":[{"providerAttempts":[{"provider":"deepseek"}]}]}}}}}]}`: "",
+		`{"choices":[{"delta":{"provider_metadata":{"gateway":{"routing":{"finalProvider":{"id":"x"}}}}}}]}`:                                       "",
+		`{"choices":[{"delta":{"tool_calls":[{"function":{"arguments":"{\"finalProvider\":\"x\"}"}}]}}]}`:                                          "",
+		`{"provider":"Novita","choices":[{"delta":{"provider_metadata":{"gateway":{"routing":{"finalProvider":"deepseek"}}}}}]}`:                   "Novita",
+	} {
+		if got := upstreamOf([]byte(in)); got != want {
+			t.Errorf("upstreamOf(%s) = %q; want %q", in, got, want)
+		}
+	}
+}
+
+// The real ClinePass stream's provider reaches the route, its try, the
+// request log and the usage ledger, relayed to a Chat client or translated
+// to a Messages one (#2847).
+func TestClinePassUpstreamRecorded(t *testing.T) {
+	stream := clinePassStream(t)
+	for _, path := range []string{"/v1/chat/completions", "/v1/messages"} {
+		t.Run(path, func(t *testing.T) {
+			fresh(t)
+			up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				for _, l := range stream {
+					io.WriteString(w, l+"\n\n")
+				}
+			}))
+			t.Cleanup(up.Close)
+			p := provider.Provider{ID: "fake", Name: "Fake", Key: "k", Chat: up.URL + "/v1", Models: []string{"sol"}}
+			if err := provider.Save(p); err != nil {
+				t.Fatal(err)
+			}
+			body := `{"model":"fake/sol","max_tokens":100,"stream":true,"messages":[{"role":"user","content":"hi"}]}`
+			s := New()
+			rec := httptest.NewRecorder()
+			s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", path, strings.NewReader(body)))
+			if rec.Code != 200 {
+				t.Fatalf("%d %s", rec.Code, rec.Body)
+			}
+			r := lastRoute(s)
+			if r.Upstream != "deepseek" || len(r.Tries) != 1 || r.Tries[0].Upstream != "deepseek" {
+				t.Errorf("route upstream %q, tries %+v", r.Upstream, r.Tries)
+			}
+			if calls := s.Recent(); len(calls) == 0 || calls[0].Usage.Upstream != "deepseek" {
+				t.Errorf("request log: %+v", calls)
+			}
+			if u := usage.Load(time.Time{}); len(u) != 1 || u[0].Upstream != "deepseek" {
+				t.Errorf("usage %+v", u)
+			}
+		})
 	}
 }

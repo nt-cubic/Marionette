@@ -2,10 +2,13 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"net"
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 
@@ -42,7 +45,7 @@ import (
 //	      "personalModelIds":[…],"modelOrder":[…]}}]},
 //	  "modelConfigRules":{"providerModelRules":[{"providerId":"magpie",
 //	    "modelId":…,"config":{"properties":{"contextWindow":…,
-//	      "inputFormat":{"supportsImage":…}},
+//	      "inputFormat":{"supportsImage":…},"supportsNativeWebSearch":true},
 //	      "optionSpecs":{"maxOutputTokens":{"max":…},"reasoningLevel":{"values":[…]}}}}],
 //	    "manualProviderModelRules":[…]}}}
 //
@@ -55,9 +58,14 @@ import (
 // files (zcodeFormat), and only a provider magpie adds new starts on
 // Anthropic Messages.
 
+// zcodeOS is the OS ZCode's home is found for, so a test can ask for
+// Windows' (appdir.ZCodeHomeOn).
+var zcodeOS = runtime.GOOS
+
 func zcode(home string) *Agent {
-	// where ZCode keeps its data, moved there in its settings or not
-	dir := filepath.Join(appdir.ZCodeDataIn(home), ".zcode")
+	// where ZCode keeps its data, moved there in its settings or not, under
+	// the home ZCode reads (HOME first, on Windows too)
+	dir := filepath.Join(appdir.ZCodeDataIn(appdir.ZCodeHomeOn(zcodeOS, home)), ".zcode")
 	path := filepath.Join(dir, "v2", "config.json")
 	rules := filepath.Join(dir, "v2", "provider_config.json")
 	key := "provider." + magpieID
@@ -103,6 +111,9 @@ func zcode(home string) *Agent {
 					return err
 				}
 				if v == "" {
+					if _, ok := stashLoad()[zcodeSearchedKey]; ok {
+						forget(zcodeSearchedKey)
+					}
 					return edit.DelJSON(path, key)
 				}
 				return edit.SetJSON(path, edit.KV{Path: key, Value: zcodeProviderJSON(path, false)})
@@ -414,22 +425,36 @@ func zcodeRules(path string, on, keep bool) error {
 		}
 		manual = append(manual, r)
 	}
+	// magpie's model rules as they are now, which ZCode's own settings
+	// write a model's edits into while it keeps its recommended config
+	ours := map[any]map[string]any{}
 	for _, r := range zcodeList(mcr, "providerModelRules") {
 		if !mine(r) {
 			models = append(models, r)
+			continue
 		}
+		m := r.(map[string]any)
+		ours[m["modelId"]] = m
 	}
 
 	if on {
+		format := zcodeFormat(filepath.Dir(path))
+		searched, known := zcodeSearched()
 		var ids []string
 		for _, m := range magpieModels("zcode") {
 			ids = append(ids, m.ID)
 			if byHand[m.ID] {
+				// set by hand in ZCode: its own settings, and the default
+				// again should it go back to its recommended config
+				delete(searched, m.ID)
 				continue
 			}
 			props := map[string]any{"inputFormat": map[string]any{"supportsImage": m.Images}}
 			if m.Context > 0 {
 				props["contextWindow"] = m.Context
+			}
+			if v, set := zcodeWebSearch(ours[m.ID], m.ID, format == "anthropic-messages" && known, searched); set {
+				props["supportsNativeWebSearch"] = v
 			}
 			config := map[string]any{"properties": props}
 			// ZCode's own rules give a model it doesn't know 32000 tokens
@@ -449,6 +474,9 @@ func zcodeRules(path string, on, keep bool) error {
 		if ids == nil {
 			ids = []string{}
 		}
+		if known {
+			zcodeSearchedPut(searched, ids)
+		}
 		base, token := gateway.URL(), hereKey()
 		if keep {
 			base, token = zcodeKept(filepath.Dir(path))
@@ -457,7 +485,7 @@ func zcodeRules(path string, on, keep bool) error {
 			"config": map[string]any{
 				"group":            "standard-personal",
 				"access":           map[string]any{"type": "api-key", "apiKey": token},
-				"api":              map[string]any{"type": zcodeFormat(filepath.Dir(path)), "baseUrl": base},
+				"api":              map[string]any{"type": format, "baseUrl": base},
 				"personalModelIds": ids, "modelOrder": ids,
 			}}
 		// turned off in ZCode, it stays off
@@ -505,6 +533,89 @@ func zcodeRules(path string, on, keep bool) error {
 		}
 	}
 	return edit.WriteAtomic(path, out)
+}
+
+// ZCode offers a model its WebSearch tool only where the model's rule says
+// it has native web search (properties.supportsNativeWebSearch, 原生联网搜索
+// in a model's settings), off by default. Its tool then asks the model
+// again with Anthropic's web_search tool, which only an Anthropic Messages
+// provider is sent: on another API format ZCode fails the search. magpie's
+// gateway runs that tool for any of its models, so it turns native web
+// search on for each model it lists while the format is Anthropic Messages
+// (Gearclickist on Discord: every magpie model had to be ticked by hand).
+//
+// ZCode writes a change to a model with its recommended config into the
+// model's rule, magpie's, and leaves a value equal to ZCode's default out of
+// it: unticking native web search takes the key out. So the models magpie
+// turned it on for are kept in the stash (zcodeSearchedKey), and one of
+// them whose rule has no key now was unticked in ZCode and stays off. A
+// value in the rule is kept as it is.
+const zcodeSearchedKey = "zcode.web_search"
+
+// zcodeWebSearch is what magpie's rule for model id, which says old now,
+// says of native web search: v, or nothing when set is false. anthropic is
+// whether ZCode sends the model's provider-native search (the provider's
+// format is Anthropic Messages, and the stash could be read). searched holds
+// the models magpie turned it on for and is updated.
+func zcodeWebSearch(old map[string]any, id string, anthropic bool, searched map[string]bool) (v, set bool) {
+	props, _ := old["config"].(map[string]any)
+	props, _ = props["properties"].(map[string]any)
+	was, had := props["supportsNativeWebSearch"].(bool)
+	switch {
+	case !anthropic:
+		// magpie's on can't be used there; the user's own value stays
+		if had && was && searched[id] {
+			delete(searched, id)
+			return false, false
+		}
+		return was, had
+	case had:
+		if was {
+			searched[id] = true
+		}
+		return was, true
+	case searched[id]:
+		// unticked in ZCode
+		return false, false
+	}
+	searched[id] = true
+	return true, true
+}
+
+// zcodeSearched is the models magpie turned ZCode's native web search on
+// for, and whether the stash could be read: a stash there that can't be
+// read or parsed is unknown, and nothing is turned on.
+func zcodeSearched() (map[string]bool, bool) {
+	out := map[string]bool{}
+	b, err := os.ReadFile(stashPath())
+	if errors.Is(err, fs.ErrNotExist) {
+		return out, true
+	}
+	var m map[string]string
+	if err != nil || json.Unmarshal(b, &m) != nil {
+		return out, false
+	}
+	if v := m[zcodeSearchedKey]; v != "" {
+		for _, id := range strings.Split(v, "\n") {
+			out[id] = true
+		}
+	}
+	return out, true
+}
+
+// zcodeSearchedPut keeps searched in the stash, only for models magpie
+// still lists (ids), and writes it only when that changes it.
+func zcodeSearchedPut(searched map[string]bool, ids []string) {
+	var keep []string
+	for _, id := range ids {
+		if searched[id] {
+			keep = append(keep, id)
+		}
+	}
+	v := strings.Join(keep, "\n")
+	if stashLoad()[zcodeSearchedKey] != v {
+		stash(map[string]string{zcodeSearchedKey: v})
+	}
 }
 
 func zcodeObj(m map[string]any, k string) map[string]any {

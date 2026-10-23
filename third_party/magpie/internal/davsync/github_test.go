@@ -34,6 +34,69 @@ type githubFixture struct {
 	initialBranch string
 	defaultBranch string
 	public        bool
+	// The Git Data API's objects: a branch's head, blobs by SHA, trees
+	// made on a base tree, and commits with their tree and parent.
+	heads   map[string]string
+	blobs   map[string][]byte
+	trees   map[string]fixtureTree
+	commits map[string]fixtureCommit
+	made    int
+	// contentsLimit is the largest file the Contents API's PUT takes;
+	// GitHub answers 422 "too large" over its own (undocumented) limit.
+	contentsLimit int
+	// blobLimit is the largest blob one POST takes. GitHub documents no
+	// request size; it refused a 50.8 MB blob (about 68 MB of base64 body)
+	// with 422 "Sorry, your input was too large to process" (Discord),
+	// and took a 19 MB file's Contents PUT (about 25 MB of body).
+	blobLimit int
+	// biggestBlob is the largest blob a POST sent.
+	biggestBlob int
+	// beforeRef runs, under the lock, before a ref update is judged: a
+	// test commits there as another computer would.
+	beforeRef func()
+	// requests counts each method and path, to show which API wrote.
+	requests []string
+}
+
+type fixtureTree struct {
+	base    string
+	entries []struct {
+		Path string
+		SHA  *string
+	}
+}
+
+type fixtureCommit struct{ tree, parent string }
+
+// head is the branch's head commit, made the first time it is asked for.
+func (f *githubFixture) head(branch string) string {
+	if f.heads[branch] == "" {
+		f.advance(branch)
+	}
+	return f.heads[branch]
+}
+
+// advance commits on the branch outside the Git Data API (the Contents API,
+// or another computer's commit set up by a test).
+func (f *githubFixture) advance(branch string) {
+	f.made++
+	sha := fmt.Sprintf("%040x", f.made)
+	f.commits[sha] = fixtureCommit{tree: "tree-" + sha, parent: f.heads[branch]}
+	f.heads[branch] = sha
+}
+
+// branchAt is the branch a contents read's ref names: a branch, or a
+// commit that is a branch's head now.
+func (f *githubFixture) branchAt(ref string) (string, bool) {
+	for b, h := range f.heads {
+		if h == ref {
+			return b, true
+		}
+	}
+	if _, ok := f.commits[ref]; ok {
+		return "", false // an older commit: the fixture keeps no old trees
+	}
+	return ref, true
 }
 
 type githubTransport struct {
@@ -61,7 +124,8 @@ func githubSHA(b []byte) string {
 
 func newGithubFixture(t *testing.T) *githubFixture {
 	t.Helper()
-	f := &githubFixture{objects: map[string][]byte{}, defaultBranch: "main"}
+	f := &githubFixture{objects: map[string][]byte{}, defaultBranch: "main", heads: map[string]string{},
+		blobs: map[string][]byte{}, trees: map[string]fixtureTree{}, commits: map[string]fixtureCommit{}, contentsLimit: 1 << 20, blobLimit: 24 << 20}
 	srv := httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(srv.Close)
 	target, _ := url.Parse(srv.URL)
@@ -80,6 +144,7 @@ func (f *githubFixture) serve(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(v)
 	}
 	fail := func(status int, message string) { send(status, map[string]string{"message": message}) }
+	f.requests = append(f.requests, r.Method+" "+r.URL.Path)
 	if r.Header.Get("Authorization") != "Bearer fixture-github-token" || r.Header.Get("X-GitHub-Api-Version") != "2022-11-28" {
 		fail(401, "Bad credentials")
 		return
@@ -110,16 +175,25 @@ func (f *githubFixture) serve(w http.ResponseWriter, r *http.Request) {
 			fail(404, "Not Found")
 			return
 		}
-		send(200, map[string]string{"ref": "refs/heads/" + branch})
+		send(200, map[string]any{"ref": "refs/heads/" + branch, "object": map[string]string{"type": "commit", "sha": f.head(branch)}})
+		return
+	}
+	if f.serveGit(w, r, base, send, fail) {
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, base+"/git/blobs/") {
 		sha := strings.TrimPrefix(r.URL.Path, base+"/git/blobs/")
-		for _, b := range f.objects {
-			if githubSHA(b) == sha && r.Header.Get("Accept") == "application/vnd.github.raw+json" {
-				w.Write(b)
-				return
+		// GitHub serves any blob the repository has by its SHA, one a
+		// later commit no longer holds too.
+		b, ok := f.blobs[sha]
+		for _, o := range f.objects {
+			if !ok && githubSHA(o) == sha {
+				b, ok = o, true
 			}
+		}
+		if ok && r.Header.Get("Accept") == "application/vnd.github.raw+json" {
+			w.Write(b)
+			return
 		}
 		fail(404, "Not Found")
 		return
@@ -134,7 +208,11 @@ func (f *githubFixture) serve(w http.ResponseWriter, r *http.Request) {
 			fail(404, "This repository is empty.")
 			return
 		}
-		branch := r.URL.Query().Get("ref")
+		branch, ok := f.branchAt(r.URL.Query().Get("ref"))
+		if !ok {
+			fail(404, "No commit found for the ref")
+			return
+		}
 		b, ok := f.objects[branch+"|"+path]
 		if ok {
 			c := githubContent{Type: "file", SHA: githubSHA(b), Size: int64(len(b)), Encoding: "base64", Content: base64.StdEncoding.EncodeToString(b)}
@@ -178,6 +256,7 @@ func (f *githubFixture) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodDelete {
 		delete(f.objects, key)
+		f.advance(in.Branch)
 		f.writes++
 		send(200, map[string]any{"content": nil})
 		return
@@ -187,7 +266,12 @@ func (f *githubFixture) serve(w http.ResponseWriter, r *http.Request) {
 		fail(422, "Invalid content")
 		return
 	}
+	if len(b) > f.contentsLimit {
+		fail(422, "Sorry, the file is too large to be processed. Consider creating/updating the file in a local clone and pushing it to GitHub.")
+		return
+	}
 	f.objects[key] = b
+	f.advance(in.Branch)
 	f.writes++
 	if f.empty {
 		f.initialBranch = initialBranch
@@ -198,6 +282,123 @@ func (f *githubFixture) serve(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusCreated
 	}
 	send(status, map[string]any{"content": githubContent{Type: "file", SHA: githubSHA(b), Size: int64(len(b))}})
+}
+
+// serveGit answers the Git Data API as GitHub does: blobs, trees on a base
+// tree, commits, and a ref update that refuses anything but a fast-forward.
+func (f *githubFixture) serveGit(w http.ResponseWriter, r *http.Request, base string, send func(int, any), fail func(int, string)) bool {
+	rest, ok := strings.CutPrefix(r.URL.Path, base+"/git/")
+	if !ok || strings.HasPrefix(rest, "blobs/") && r.Method == http.MethodGet {
+		return false
+	}
+	if f.empty {
+		fail(409, "Git Repository is empty.")
+		return true
+	}
+	switch {
+	case rest == "blobs" && r.Method == http.MethodPost:
+		var in struct{ Content, Encoding string }
+		json.NewDecoder(r.Body).Decode(&in)
+		b, err := base64.StdEncoding.DecodeString(in.Content)
+		if err != nil || in.Encoding != "base64" {
+			fail(422, "Invalid blob")
+			return true
+		}
+		if len(b) > f.blobLimit {
+			fail(422, "Sorry, your input was too large to process. Consider creating the blob in a local clone of the repository and then pushing it to GitHub.")
+			return true
+		}
+		f.biggestBlob = max(f.biggestBlob, len(b))
+		f.blobs[githubSHA(b)] = b
+		send(201, map[string]string{"sha": githubSHA(b)})
+	case strings.HasPrefix(rest, "commits/") && r.Method == http.MethodGet:
+		c, ok := f.commits[strings.TrimPrefix(rest, "commits/")]
+		if !ok {
+			fail(404, "Not Found")
+			return true
+		}
+		send(200, map[string]any{"tree": map[string]string{"sha": c.tree}})
+	case rest == "trees" && r.Method == http.MethodPost:
+		var in struct {
+			BaseTree string `json:"base_tree"`
+			Tree     []struct {
+				Path, Mode, Type string
+				SHA              *string
+			}
+		}
+		raw, _ := io.ReadAll(r.Body)
+		if json.Unmarshal(raw, &in) != nil || in.BaseTree == "" || len(in.Tree) == 0 || !strings.Contains(string(raw), `"sha":`) {
+			fail(422, "Invalid tree")
+			return true
+		}
+		var t fixtureTree
+		t.base = in.BaseTree
+		for _, e := range in.Tree {
+			if e.Mode != "100644" || e.Type != "blob" || e.SHA != nil && f.blobs[*e.SHA] == nil {
+				fail(422, "Invalid tree entry")
+				return true
+			}
+			t.entries = append(t.entries, struct {
+				Path string
+				SHA  *string
+			}{e.Path, e.SHA})
+		}
+		f.made++
+		sha := fmt.Sprintf("%040x", f.made)
+		f.trees[sha] = t
+		send(201, map[string]string{"sha": sha})
+	case rest == "commits" && r.Method == http.MethodPost:
+		var in struct {
+			Message, Tree string
+			Parents       []string
+		}
+		json.NewDecoder(r.Body).Decode(&in)
+		if _, ok := f.trees[in.Tree]; !ok || in.Message == "" || len(in.Parents) != 1 {
+			fail(422, "Invalid commit")
+			return true
+		}
+		f.made++
+		sha := fmt.Sprintf("%040x", f.made)
+		f.commits[sha] = fixtureCommit{tree: in.Tree, parent: in.Parents[0]}
+		send(201, map[string]string{"sha": sha})
+	case strings.HasPrefix(rest, "refs/heads/") && r.Method == http.MethodPatch:
+		branch := strings.TrimPrefix(rest, "refs/heads/")
+		var in struct {
+			SHA   string
+			Force *bool
+		}
+		json.NewDecoder(r.Body).Decode(&in)
+		if f.beforeRef != nil {
+			f.beforeRef()
+		}
+		c, ok := f.commits[in.SHA]
+		if f.heads[branch] == "" || !ok {
+			fail(422, "Reference does not exist")
+			return true
+		}
+		if in.Force == nil || *in.Force || c.parent != f.heads[branch] {
+			fail(422, "Update is not a fast forward")
+			return true
+		}
+		t := f.trees[c.tree]
+		if t.base != f.commits[c.parent].tree {
+			fail(422, "the fixture builds only on the parent's tree")
+			return true
+		}
+		for _, e := range t.entries {
+			if e.SHA == nil {
+				delete(f.objects, branch+"|"+e.Path)
+			} else {
+				f.objects[branch+"|"+e.Path] = f.blobs[*e.SHA]
+			}
+		}
+		f.heads[branch] = in.SHA
+		f.writes++
+		send(200, map[string]any{"ref": "refs/heads/" + branch, "object": map[string]string{"sha": in.SHA}})
+	default:
+		fail(404, "Not Found")
+	}
+	return true
 }
 
 func githubConfig() Config {
@@ -313,6 +514,9 @@ func TestGitHubRemote(t *testing.T) {
 	}
 	if err := g.remove(ctx, "computer-2026-10-06.magpie-usage"); err != nil {
 		t.Fatal(err)
+	}
+	if _, ok := f.objects["sync/settings|team/magpie/usage/computer-2026-10-06.magpie-usage"]; ok {
+		t.Fatal("the usage file was not removed")
 	}
 	if err := g.remove(ctx, "computer-2026-10-06.magpie-usage"); err != nil {
 		t.Fatalf("already removed: %v", err)
@@ -574,5 +778,137 @@ func TestGitHubPublicRepositoryRefused(t *testing.T) {
 	}
 	if f.writes != 0 || len(f.objects) != 0 {
 		t.Fatalf("a public repository got the backup: writes %d, files %d", f.writes, len(f.objects))
+	}
+}
+
+// Zhang-Wei's backup (102 skills) passed the Contents API at about 19 MB
+// and then grew past it: GitHub answered 422 "Sorry, the file is too large
+// to be processed". A backup goes up as a blob, one commit per update, and
+// is read back by its blob SHA.
+func TestGitHubLargeBackup(t *testing.T) {
+	f := newGithubFixture(t)
+	f.contentsLimit = 10 << 20
+	g, err := newGitHub(githubConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	small := []byte("an earlier sealed backup")
+	v, err := g.put(ctx, small, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	large := make([]byte, 15<<20) // over the Contents API's, under githubPart
+	for i := range large {
+		large[i] = byte(i*7919 + i>>11)
+	}
+	before := f.writes
+	v, err = g.put(ctx, large, v.ETag)
+	if err != nil {
+		t.Fatalf("a 15 MB backup: %v", err)
+	}
+	if v.ETag != githubSHA(large) || f.writes != before+1 {
+		t.Fatalf("one commit per update, versioned by the blob: %+v, commits %d", v, f.writes-before)
+	}
+	if !bytesEqual(f.objects["main|team/magpie/"+file], large) {
+		t.Fatal("the branch doesn't hold the large backup")
+	}
+	b, got, err := g.get(ctx, version{})
+	if err != nil || got != v || !bytesEqual(b, large) {
+		t.Fatalf("reading the 15 MB backup back: size %d, %+v, %v", len(b), got, err)
+	}
+	if !slices.Contains(f.requests, "GET /repos/alice/private/git/blobs/"+v.ETag) {
+		t.Fatal("a file over 1 MB must be downloaded by its blob SHA")
+	}
+	for _, r := range f.requests {
+		if strings.HasPrefix(r, "PUT ") || strings.HasPrefix(r, "DELETE ") {
+			t.Fatalf("a repository with commits was written through the Contents API: %s", r)
+		}
+	}
+	if _, err := g.put(ctx, small, "old-sha"); !errors.Is(err, errChanged) || !bytesEqual(f.objects["main|team/magpie/"+file], large) {
+		t.Fatalf("a stale version must not replace the backup: %v", err)
+	}
+}
+
+func bytesEqual(a, b []byte) bool { return string(a) == string(b) }
+
+// The ref update refuses a head that moved after it was read. A commit of
+// another file is built on again; one that changed the backup is the
+// normal merge.
+func TestGitHubBranchMovedMeanwhile(t *testing.T) {
+	setup := func(t *testing.T) (*githubFixture, *github, version) {
+		f := newGithubFixture(t)
+		g, err := newGitHub(githubConfig())
+		if err != nil {
+			t.Fatal(err)
+		}
+		v, err := g.put(context.Background(), []byte("first"), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f, g, v
+	}
+	t.Run("another file", func(t *testing.T) {
+		f, g, v := setup(t)
+		f.beforeRef = func() {
+			f.beforeRef = nil
+			f.objects["main|team/magpie/usage/other.magpie-usage"] = []byte("other computer")
+			f.advance("main")
+		}
+		if _, err := g.put(context.Background(), []byte("second"), v.ETag); err != nil {
+			t.Fatal(err)
+		}
+		if string(f.objects["main|team/magpie/"+file]) != "second" || string(f.objects["main|team/magpie/usage/other.magpie-usage"]) != "other computer" {
+			t.Fatal("both commits must be on the branch")
+		}
+	})
+	t.Run("the backup", func(t *testing.T) {
+		f, g, v := setup(t)
+		f.beforeRef = func() {
+			f.beforeRef = nil
+			f.objects["main|team/magpie/"+file] = []byte("other computer's backup")
+			f.advance("main")
+		}
+		if _, err := g.put(context.Background(), []byte("second"), v.ETag); !errors.Is(err, errChanged) {
+			t.Fatalf("another computer's backup must go through the merge: %v", err)
+		}
+		if string(f.objects["main|team/magpie/"+file]) != "other computer's backup" {
+			t.Fatal("another computer's backup was written over")
+		}
+	})
+	t.Run("branch deleted", func(t *testing.T) {
+		f, g, v := setup(t)
+		f.beforeRef = func() { delete(f.heads, "main") }
+		_, err := g.put(context.Background(), []byte("second"), v.ETag)
+		if err == nil || errors.Is(err, errChanged) || !strings.Contains(err.Error(), "Reference does not exist") {
+			t.Fatalf("a deleted branch must be an error, not a merge: %v", err)
+		}
+	})
+}
+
+// An empty repository has no branch for the Git Data API to build on. A
+// first backup too large for the Contents API follows a short note that
+// creates the default branch.
+func TestGitHubEmptyRepositoryLargeBackup(t *testing.T) {
+	f := newGithubFixture(t)
+	f.empty, f.contentsLimit = true, 1<<10
+	g, err := newGitHub(githubConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, _, err := g.get(ctx, version{}); err != nil {
+		t.Fatal(err)
+	}
+	large := []byte(strings.Repeat("sealed ", 1000))
+	v, err := g.put(ctx, large, "")
+	if err != nil {
+		t.Fatalf("a large first backup in an empty repository: %v", err)
+	}
+	if f.writes != 2 || len(f.objects["main|team/magpie/README.md"]) == 0 || string(f.objects["main|team/magpie/"+file]) != string(large) {
+		t.Fatalf("a note, then the backup: commits %d, files %v", f.writes, len(f.objects))
+	}
+	if b, got, err := g.get(ctx, version{}); err != nil || got != v || string(b) != string(large) {
+		t.Fatalf("reading it back: %v", err)
 	}
 }

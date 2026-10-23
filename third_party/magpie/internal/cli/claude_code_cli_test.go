@@ -14,6 +14,7 @@ import (
 
 	"github.com/yetone/magpie/internal/claudecode"
 	"github.com/yetone/magpie/internal/libc"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // claudeCodeOut runs `magpie claude-code args…` and gives what it printed.
@@ -99,5 +100,49 @@ func TestClaudeCodeInstallDownloadsTheRelease(t *testing.T) {
 	}
 	if p, _ := claudecode.Downloaded(); p != "" {
 		t.Errorf("remove left %s", p)
+	}
+}
+
+// `magpie claude-code runs N` is the user's own bound on Claude Code
+// processes (#2956), which the gateway's 503 names; auto gives it back to
+// the machine's memory, and a value that isn't a count is refused and
+// writes nothing.
+func TestClaudeCodeRunsSetsTheUsersOwn(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", os.Getenv("HOME"))
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	out, err := claudeCodeOut(t, "runs", "3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := settings.Load().ClaudeRunsMost; got != 3 {
+		t.Fatalf("claudeRunsMost is %d after `runs 3`", got)
+	}
+	if !strings.Contains(out, "3 Claude Code processes may run at once") || !strings.Contains(out, "your setting") {
+		t.Fatalf("runs 3 said:\n%s", out)
+	}
+	for _, bad := range []string{"0", "-2", "lots", "--yes"} {
+		if _, err := claudeCodeOut(t, "runs", bad); err == nil {
+			t.Fatalf("runs %s was taken", bad)
+		}
+		if got := settings.Load().ClaudeRunsMost; got != 3 {
+			t.Fatalf("runs %s wrote %d", bad, got)
+		}
+	}
+	if _, err := claudeCodeOut(t, "runs", "--help"); err != nil {
+		t.Fatal(err)
+	}
+	if got := settings.Load().ClaudeRunsMost; got != 3 {
+		t.Fatalf("runs --help wrote %d", got)
+	}
+	if _, err := claudeCodeOut(t, "runs", "auto"); err != nil {
+		t.Fatal(err)
+	}
+	if got := settings.Load().ClaudeRunsMost; got != 0 {
+		t.Fatalf("runs auto left %d", got)
+	}
+	out, err = claudeCodeOut(t, "runs")
+	if err != nil || strings.Contains(out, "your setting") {
+		t.Fatalf("runs after auto said (%v):\n%s", err, out)
 	}
 }

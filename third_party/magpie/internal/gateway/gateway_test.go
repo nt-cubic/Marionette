@@ -962,14 +962,15 @@ func TestModelsListReasoning(t *testing.T) {
 			Levels    []struct {
 				Effort string `json:"effort"`
 			} `json:"supported_reasoning_levels"`
+			Flat *[]string `json:"reasoning_levels"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
 	want := map[string]string{
-		"a/sol": "low,medium,high,max", "b/sol": "medium,high", "group/auto-sol": "medium,high",
-		"a/mixed": "low,high", "b/mixed": "", "group/auto-mixed": "low,high", "a/plain": "",
+		"a/sol": "low,medium,high,max", "b/sol": "medium,high", "auto/sol": "medium,high",
+		"a/mixed": "low,high", "b/mixed": "", "auto/mixed": "low,high", "a/plain": "",
 	}
 	// a group reasons when any member does: b/mixed has no levels and a
 	// list that says nothing of reasoning, but a/mixed does, so the group
@@ -977,7 +978,7 @@ func TestModelsListReasoning(t *testing.T) {
 	// at a/mixed's levels: b/mixed is sent no reasoning ask (quiet.go), so
 	// it doesn't take them away (#2127: Codex showed no effort control for
 	// a group with none, and ran it at medium)
-	reasoning := map[string]bool{"group/auto-mixed": true}
+	reasoning := map[string]bool{"auto/mixed": true}
 	for _, m := range response.Data {
 		expected, ok := want[m.ID]
 		if !ok {
@@ -991,9 +992,21 @@ func TestModelsListReasoning(t *testing.T) {
 		if m.Reasoning == nil || *m.Reasoning != (expected != "" || reasoning[m.ID]) || strings.Join(levels, ",") != expected {
 			t.Errorf("%s: reasoning %v, levels %v; want %q", m.ID, m.Reasoning, levels, expected)
 		}
+		// the same levels as plain names, in the same order, for clients
+		// of the Catwalk schema (#2576): [] when there are none, never
+		// null or missing, which such a client reads as "takes no effort"
+		if m.Flat == nil || *m.Flat == nil || strings.Join(*m.Flat, ",") != expected {
+			t.Errorf("%s: reasoning_levels %v; want [%s]", m.ID, m.Flat, expected)
+		}
 	}
 	if len(want) > 0 {
 		t.Errorf("missing models: %v", want)
+	}
+	// one model asked for by its id says them too
+	rec = httptest.NewRecorder()
+	New().Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/v1/models/b/sol", nil))
+	if one := rec.Body.String(); !strings.Contains(one, `"reasoning_levels":["medium","high"]`) {
+		t.Errorf("/v1/models/b/sol: %s; want reasoning_levels [medium high]", one)
 	}
 }
 

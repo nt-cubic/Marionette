@@ -1,6 +1,6 @@
 package provider
 
-// A rule as it is typed: use=<model> tokens=200k images effort=high
+// A rule as it is typed: use=<model> use-effort=low tokens=200k images effort=high
 // agents=a,b intent="…" compact time=09:00-18:00 days=mon-fri
 // folders=~/work,"~/My Project" except-folders=~/work/old, or
 // pause=<model> time=… days=… agents=… folders=… except-folders=… — by
@@ -132,6 +132,11 @@ func ParseRule(g Group, words []string) (r Rule, at int, classifier string, err 
 				v = "on"
 			}
 			r.Effort = strings.ToLower(strings.TrimSpace(v))
+		case "use-effort", "useeffort", "set-effort", "seteffort":
+			r.UseEffort = strings.ToLower(strings.TrimSpace(v))
+			if !slices.Contains(Efforts, r.UseEffort) {
+				return r, 0, "", fmt.Errorf("use-effort is the reasoning the rule's model is asked for: one of %s, not %q", strings.Join(Efforts, ", "), v)
+			}
 		case "agents", "agent":
 			r.Agents = strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' })
 		case "intent", "asks", "about":
@@ -186,11 +191,14 @@ func ParseRule(g Group, words []string) (r Rule, at int, classifier string, err 
 			}
 			at = n
 		default:
-			return r, 0, "", fmt.Errorf(UnknownRuleWord+"%q (use, pause, tokens, images, effort, agents, intent, compact, time, days, folders, except-folders, classifier, at)", w)
+			return r, 0, "", fmt.Errorf(UnknownRuleWord+"%q (use, use-effort, pause, tokens, images, effort, agents, intent, compact, time, days, folders, except-folders, classifier, at)", w)
 		}
 	}
 	if r.Use == "" {
 		return r, 0, "", fmt.Errorf("use=<model> (or pause=<model>) is missing: one of %s", strings.Join(g.Members, ", "))
+	}
+	if r.Pause && r.UseEffort != "" {
+		return r, 0, "", fmt.Errorf("pause=<model> sends nothing, so it takes no use-effort=")
 	}
 	if r.Pause && (r.Tokens > 0 || r.Images || r.Effort != "" || r.Intent != "" || r.Compact) {
 		return r, 0, "", fmt.Errorf("pause=<model> holds by time=, days=, agents=, folders= or except-folders= only")
@@ -269,6 +277,9 @@ func (r Rule) Line() string {
 	out := []string{"use=" + r.Use}
 	if r.Pause {
 		out[0] = "pause=" + r.Use
+	}
+	if r.UseEffort != "" {
+		out = append(out, "use-effort="+r.UseEffort)
 	}
 	if r.Tokens > 0 {
 		out = append(out, fmt.Sprintf("tokens=%d", r.Tokens))

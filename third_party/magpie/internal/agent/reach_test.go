@@ -133,11 +133,19 @@ func TestKeptAddressProbeNeverWaitedFor(t *testing.T) {
 	release := make(chan struct{})
 	slow := reachProbe
 	reachProbe = func(base string) bool { <-release; return slow(base) }
-	start := time.Now()
-	if d := codex(home).Drift(); d != nil {
-		t.Fatalf("drift before any answer: %+v", d)
-	}
-	if time.Since(start) > time.Second {
+	// the probe can't answer before release is closed, below: a Drift that
+	// waited for it would never return, so how long Drift takes on a busy
+	// machine (its files) is no measure of it
+	done := make(chan *Drift, 1)
+	go func() { done <- codex(home).Drift() }()
+	select {
+	case d := <-done:
+		if d != nil {
+			t.Fatalf("drift before any answer: %+v", d)
+		}
+	case <-time.After(30 * time.Second):
+		close(release)
+		<-done
 		t.Fatal("Drift waited for the probe")
 	}
 	close(release)

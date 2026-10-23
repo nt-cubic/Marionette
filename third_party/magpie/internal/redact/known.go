@@ -3,6 +3,7 @@ package redact
 import (
 	"slices"
 	"strings"
+	"sync/atomic"
 )
 
 // A value masked once is masked again wherever it is in a request, as it
@@ -33,6 +34,9 @@ var (
 	// knownBits has a bit for the first four bytes of each known value, so
 	// most places in a text are passed over without a map lookup
 	knownBits [1 << 14]uint64
+	// knownGen changes whenever known does, with mu held; what Scrub
+	// remembers is good only at the knownGen it was made at
+	knownGen atomic.Uint64
 )
 
 func gram(s string, i int) uint32 {
@@ -55,6 +59,7 @@ func addKnown(p, v string) {
 			// first, so it is the same after reindexKnown
 			if p < k.p {
 				known[head][i] = knownValue{v, p, kind}
+				knownGen.Add(1)
 			}
 			return
 		}
@@ -62,6 +67,7 @@ func addKnown(p, v string) {
 	known[head] = append(known[head], knownValue{v, p, kind})
 	g := gram(v, 0)
 	knownBits[g/64] |= 1 << (g % 64)
+	knownGen.Add(1)
 }
 
 // reindexKnown makes known again from values, after some were let go;
@@ -69,6 +75,7 @@ func addKnown(p, v string) {
 func reindexKnown() {
 	known = map[string][]knownValue{}
 	knownBits = [1 << 14]uint64{}
+	knownGen.Add(1)
 	for p, v := range values {
 		addKnown(p, v)
 	}
@@ -96,6 +103,12 @@ var kindCats = func() map[string][]string {
 			if r.cat != "" && !slices.Contains(m[k], r.cat) {
 				m[k] = append(m[k], r.cat)
 			}
+		}
+	}
+	// and the model's: a name it found is personal data, not a secret
+	for _, k := range modelKinds {
+		if c := modelCat(k); c != "" && !slices.Contains(m[k], c) {
+			m[k] = append(m[k], c)
 		}
 	}
 	return m
@@ -144,7 +157,7 @@ func knownSpans(s string, o Options) []span {
 			best = &known[s[i:i+minKnown]][j]
 		}
 		if best != nil {
-			out = append(out, span{i, i + len(best.v), best.kind})
+			out = append(out, span{i, i + len(best.v), best.kind, ByKnown})
 			i += len(best.v) - 1
 		}
 	}

@@ -339,7 +339,7 @@ func anteProviderJSON(gw string) map[string]any {
 // what it reasons at (anteProviderJSON says why), so its levels are left out
 // with the rest of its capabilities.
 func anteModelJSON(m catalog.Model) map[string]any {
-	group := strings.HasPrefix(m.ID, provider.GroupPrefix)
+	group := provider.IsGroupRef(m.ID)
 	e := map[string]any{"id": m.ID}
 	if m.Name != "" && m.Name != m.ID {
 		e["display_name"] = m.Name

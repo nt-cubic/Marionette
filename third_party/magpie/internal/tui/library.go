@@ -6,6 +6,7 @@ package tui
 // the terminal.
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -69,6 +70,8 @@ func (m *model) reloadLibrary() {
 		r := libRow{kind: "skill", name: s.Name, about: s.Description, on: s.Agents, bad: len(s.Problems)}
 		if s.Missing {
 			r.about, r.bad = "its folder is gone", r.bad+1
+		} else if s.Gone != "" {
+			r.about, r.bad = "removed from "+s.Source+" · d takes it out", r.bad+1
 		}
 		m.lib = append(m.lib, r)
 	}
@@ -159,7 +162,15 @@ func (m model) updateLibrary(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.flash, m.flashOK = "fetching "+r.name+" from GitHub again…", true
-		return m, libCmd(func() (*library.Result, error) { return library.UpdateSkill(r.name, false) }, "updated "+r.name)
+		return m, libCmd(func() (*library.Result, error) {
+			res, err := library.UpdateSkill(r.name, false)
+			var gone *library.GoneError
+			if errors.As(err, &gone) {
+				// removed from its source: kept till the user takes it out
+				err = fmt.Errorf("%w · d takes it out", err)
+			}
+			return res, err
+		}, "updated "+r.name)
 	case "i":
 		if r.own {
 			m.flash, m.flashOK = r.name+" is put there by the agent's app itself, each time it starts: it stays as it is", false
@@ -340,12 +351,12 @@ func (m *model) openLibAdd() {
 		input:  newInput("filter"),
 		items: []agent.Option{
 			{Value: "mcp server", Note: "a URL, or a command it runs"},
-			{Value: "skills", Note: "from a GitHub repository, or a folder on this machine"},
+			{Value: "skills", Note: "from GitHub, GitLab or any git repository, or a folder on this machine"},
 		},
 		onPick: func(v string) tea.Cmd {
 			return func() tea.Msg {
 				if v == "skills" {
-					in := newInput("a GitHub link (owner/repo, or a folder in one) or a folder's full path")
+					in := newInput("owner/repo, a GitHub or GitLab link, a git address (git@host:group/repo.git), or a folder's full path")
 					in.CharLimit = 400
 					return askMsg{ask{crumbs: []string{"library", "add", "skills"}, input: in,
 						hint:    "magpie looks there for skills, then you pick one",

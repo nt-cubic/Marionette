@@ -303,6 +303,30 @@ func claudeStandIn(ls []savedLogin) string {
 	return user
 }
 
+// claudeListed is the saved account the Claude Code provider is listed on
+// while Claude Code is signed out: the stand-in, else, with every account's
+// sign-in gone, the one seen last, signed out. Listed without one, Claude
+// Code left the Providers list with every account on it, which read as a
+// ban (LeeHom on Discord: two Claude Pro accounts vanished); listed on a
+// signed-out one, it says to sign in again, and its token says why it
+// can't be used (claudeSavedDir). Never one still Held: Claude Code's own
+// sign-in, which it may have left on disk after a logout, and which would
+// then be served as if signed in (TestClaudeSignedOut). "" with no such
+// account saved.
+func claudeListed(ls []savedLogin) string {
+	if u := claudeStandIn(ls); u != "" {
+		return u
+	}
+	user := ""
+	var seen time.Time
+	for _, l := range ls {
+		if l.Agent == "claude" && !l.Held && claudeSignedOut(l) != "" && (user == "" || l.Seen.After(seen)) {
+			user, seen = l.User, l.Seen
+		}
+	}
+	return user
+}
+
 // claudeLogoutLapse is why the account Claude Code was signed in to can't
 // be used once Claude Code let go of it: logged out, which revokes the
 // sign-in it held, or emptied that sign-in once Anthropic refused it.
@@ -356,12 +380,12 @@ func claudeSignedOut(l savedLogin) string {
 }
 
 // claudeStandInAccount is the Claude Code provider while Claude Code is
-// signed out, on claudeStandIn's account; false with no account saved.
+// signed out, on claudeListed's account; false with no account saved.
 func claudeStandInAccount() (Provider, bool) {
 	loginsMu.Lock()
 	ls := readLogins()
 	loginsMu.Unlock()
-	user := claudeStandIn(ls)
+	user := claudeListed(ls)
 	if user == "" {
 		return Provider{}, false
 	}

@@ -7,7 +7,12 @@
 // place, before the field, with its head, a word that it is looking and
 // cards still to come; let go, its cards come in where those were and the
 // word goes. A search while it waits shows the same. When the ask fails,
-// the section says so with Try again, which asks again. English, Chinese,
+// the section says so with Try again, which asks again. magpie answering
+// with an error beside the list (GitHub unreachable from the reader's
+// desktop: till on Discord, where the section just wasn't there) is said
+// too: with no list, in the section's place with why and Try again, which
+// has magpie ask GitHub at once (?again=1); with the cards it could give,
+// a line over them saying how many more couldn't be read, and why. English, Chinese,
 // Japanese and German, wide and 440px, in Chromium and WebKit; nothing
 // scrolls on a click. MAGPIE_WAIT_ASSETS names an older assets directory,
 // to see this fail on the code before it.
@@ -28,8 +33,9 @@ const LISTINGS = [
 ];
 
 // gh: how /api/plugins/github answers each time it is asked, in turn: a
-// promise held until let go, or "fail"
-function server(lang, gh) {
+// promise held until let go, "fail", or { json } as magpie's answer;
+// urls: each ask's URL
+function server(lang, gh, urls = []) {
   let asked = 0;
   return async (route) => {
     const url = new URL(route.request().url());
@@ -43,6 +49,8 @@ function server(lang, gh) {
     if (url.pathname === "/api/plugins/listings") return json({ listings: LISTINGS });
     if (url.pathname === "/api/plugins/github") {
       const next = gh[asked++] ?? gh.at(-1);
+      urls.push(url.pathname + url.search);
+      if (next?.json) return json(next.json);
       if (next === "fail") return route.fulfill({ status: 502, contentType: "text/plain", body: "GitHub didn't answer" });
       await next;
       return json({ repos: REPOS, topic: "magpie-plugin" }).catch(() => {});
@@ -57,10 +65,10 @@ function server(lang, gh) {
 }
 
 const L = {
-  en: { section: "Unofficial, on GitHub", look: "Looking on GitHub", failed: /Couldn't ask GitHub/, again: "Try again" },
-  zh: { section: "非官方插件 · GitHub", look: "正在 GitHub 上查找", failed: /无法连接 GitHub/, again: "重试" },
-  ja: { section: "非公式 · GitHub", look: "GitHub を検索中", failed: /GitHub に接続できませんでした/, again: "再試行" },
-  de: { section: "Inoffiziell, auf GitHub", look: "Suche auf GitHub", failed: /GitHub nicht erreichbar/, again: "Erneut versuchen" },
+  en: { section: "Unofficial, on GitHub", look: "Looking on GitHub", failed: /Couldn't ask GitHub/, again: "Try again", none: /GitHub found 12 repositories, but none of them could be read/, more: /12 more on GitHub couldn't be read/ },
+  zh: { section: "非官方插件 · GitHub", look: "正在 GitHub 上查找", failed: /无法连接 GitHub/, again: "重试", none: /GitHub 找到了 12 个仓库，但一个都没能读取/, more: /GitHub 上还有 12 个插件没能读取/ },
+  ja: { section: "非公式 · GitHub", look: "GitHub を検索中", failed: /GitHub に接続できませんでした/, again: "再試行", none: /GitHub で 12 件のリポジトリが見つかりましたが/, more: /GitHub 上のほか 12 件を読み込めませんでした/ },
+  de: { section: "Inoffiziell, auf GitHub", look: "Suche auf GitHub", failed: /GitHub nicht erreichbar/, again: "Erneut versuchen", none: /GitHub hat 12 Repositories gefunden/, more: /12 weitere auf GitHub konnten nicht gelesen werden/ },
 };
 
 const shot = async (loc, name) => {
@@ -78,13 +86,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       for (const width of [980, 440]) {
         await t.test(lang + " " + width, async () => {
           const w = L[lang];
-          const open = async (gh) => {
+          const open = async (gh, urls) => {
             const ctx = await browser.newContext({ viewport: { width, height: 860 } });
             const page = await ctx.newPage();
             page.setDefaultTimeout(5000);
             const errors = [];
             page.on("pageerror", (e) => errors.push(e.message));
-            await page.route("**/*", server(lang, gh));
+            await page.route("**/*", server(lang, gh, urls));
             await page.addInitScript(() => { try { localStorage.setItem("magpie.pluginTab", "discover"); } catch {} });
             await page.goto("http://magpie.test/?view=plugins");
             const view = page.locator("#view-plugins");
@@ -152,6 +160,72 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await f.sec.locator(".pm-card:not(.ghost)").first().waitFor();
           assert.equal(await f.sec.locator(".pm-ghnone").count(), 0);
           assert.deepEqual(f.errors, []);
+
+          // magpie answers, but GitHub couldn't give it the list: said in
+          // the section's place with why, never the section gone
+          const why = 'http://raw.githubusercontent.com/a/b/main/package.json: Get "https://raw.githubusercontent.com/a/b/main/package.json": dial tcp: i/o timeout';
+          const urls = [];
+          const later = held();
+          const e = await open([{ json: { repos: [], topic: "magpie-plugin", error: why, missing: 12 } }, later], urls);
+          t.after(() => e.ctx.close());
+          await e.sec.locator(".pm-ghnone").waitFor();
+          const said = await e.sec.locator(".pm-ghnone").innerText();
+          assert.match(said, w.none);
+          assert.ok(said.includes("i/o timeout"), said);
+          // its reason wraps: nothing spills at this width
+          assert.ok(await e.sec.evaluate((s) => s.scrollWidth <= s.clientWidth + 1), "the reason fits");
+          await shot(e.sec, `unread-${engine}-${lang}-${width}`);
+          // the search field's results say it too
+          const eq = e.view.locator(".pm-head .pm-find input");
+          await eq.fill("claude");
+          await e.sec.locator(".pm-ghnone").waitFor();
+          await eq.fill("");
+          await e.sec.locator(".pm-ghnone").waitFor();
+          // Try again has magpie ask GitHub at once (wheeled into sight
+          // first, clear of the window's footer, as a reader would)
+          const eAgain = e.sec.getByRole("button", { name: w.again });
+          await e.page.mouse.move(width / 2, 300);
+          for (let i = 0; i < 4; i++) await e.page.mouse.wheel(0, 400);
+          await eAgain.click();
+          await e.sec.locator(".pm-ghlook").waitFor();
+          later.go();
+          await e.sec.locator(".pm-card:not(.ghost)").first().waitFor();
+          assert.deepEqual(urls, ["/api/plugins/github", "/api/plugins/github?again=1"]);
+          assert.equal(await e.sec.locator(".pm-ghwarn, .pm-ghnone").count(), 0);
+          assert.deepEqual(e.errors, []);
+
+          // some came, some couldn't be read: the cards, and a line over
+          // them saying so with Try again, which keeps the cards meanwhile
+          const urls2 = [];
+          const later2 = held();
+          const m = await open([{ json: { repos: REPOS, topic: "magpie-plugin", error: why, missing: 12 } }, later2], urls2);
+          t.after(() => m.ctx.close());
+          await m.sec.locator(".pm-ghwarn").waitFor();
+          assert.match(await m.sec.locator(".pm-ghwarn").innerText(), w.more);
+          assert.equal(await m.sec.locator(".pm-card:not(.ghost)").count(), 2);
+          assert.ok(await m.sec.evaluate((s) => s.scrollWidth <= s.clientWidth + 1), "the line fits");
+          await shot(m.sec, `partial-${engine}-${lang}-${width}`);
+          const mAgain = m.sec.locator(".pm-ghwarn").getByRole("button", { name: w.again });
+          await m.page.mouse.move(width / 2, 300);
+          for (let i = 0; i < 4; i++) await m.page.mouse.wheel(0, 400);
+          await mAgain.click();
+          assert.equal(await m.sec.locator(".pm-card:not(.ghost)").count(), 2, "cards kept while asking");
+          later2.go();
+          await m.sec.locator(".pm-ghwarn").waitFor({ state: "detached" });
+          assert.equal(await m.sec.locator(".pm-card:not(.ghost)").count(), 2);
+          assert.deepEqual(urls2, ["/api/plugins/github", "/api/plugins/github?again=1"]);
+          assert.deepEqual(m.errors, []);
+
+          // a failed ask after a list was had: the list stands, and the
+          // line says it is from before
+          const k = await open([{ json: { repos: REPOS, topic: "magpie-plugin" } }, { json: { repos: [], topic: "magpie-plugin", error: "GitHub's search: 403 rate limit" } }]);
+          t.after(() => k.ctx.close());
+          await k.sec.locator(".pm-card:not(.ghost)").first().waitFor();
+          await k.page.evaluate(() => window.loadPlugins());
+          await k.sec.locator(".pm-ghwarn").waitFor();
+          assert.match(await k.sec.locator(".pm-ghwarn").innerText(), /403 rate limit/);
+          assert.equal(await k.sec.locator(".pm-card:not(.ghost)").count(), 2);
+          assert.deepEqual(k.errors, []);
         });
       }
     }

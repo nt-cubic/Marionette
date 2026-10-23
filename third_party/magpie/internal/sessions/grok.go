@@ -51,13 +51,31 @@ type grokSummary struct {
 	Kind           string `json:"session_kind"`
 }
 
+// grokSummaryHook, when a test sets it, is told each time a summary.json
+// is read.
+var grokSummaryHook func(path string)
+
 func readGrokSummary(path string) (grokSummary, bool) {
+	if grokSummaryHook != nil {
+		grokSummaryHook(path)
+	}
 	var s grokSummary
 	b, err := os.ReadFile(path)
 	return s, err == nil && json.Unmarshal(b, &s) == nil
 }
 
+// grokKind is what a listing needs of a session's summary.json: whether it
+// is a subagent's, and whose.
+type grokKind struct{ Kind, Parent string }
+
+// grokKinds keeps each summary's kind as the listing last read it: a
+// listing runs on every poll, and reading and decoding every session's
+// summary each time cost more than the rest of the listing together.
+var grokKinds listMemo[grokKind]
+
 func grokFiles() []file {
+	kinds := grokKinds.round()
+	defer kinds.done()
 	root := filepath.Join(GrokDir(), "sessions")
 	paths, _ := filepath.Glob(filepath.Join(root, "*", "*", "updates.jsonl"))
 	// a session's subagents are named in its subagents/ folder too
@@ -83,7 +101,11 @@ func grokFiles() []file {
 			if m.mod.After(f.mod) {
 				f.mod = m.mod
 			}
-			if s, ok := readGrokSummary(m.path); ok && strings.HasPrefix(s.Kind, "subagent") {
+			s, ok := kinds.get(m.path, m.size, m.mod, func() (grokKind, bool) {
+				s, ok := readGrokSummary(m.path)
+				return grokKind{s.Kind, s.Parent}, ok
+			})
+			if ok && strings.HasPrefix(s.Kind, "subagent") {
 				parent := s.Parent
 				if parent == "" {
 					parent = parentOf[id]
@@ -132,78 +154,121 @@ var (
 	grokHook = []byte(`"sessionUpdate":"hook_execution"`)
 )
 
-// parseGrok reads a session's updates whole, with its summary.
-func parseGrok(f file) *state {
-	s := &state{Size: f.size, Mod: f.mod.UnixNano()}
-	var since time.Time
-	model := ""
+// grokCarry is what a read of a Grok Build session's updates carries on
+// with: where it read to, what of its summary the updates were counted
+// under, and its first prompt as far as it was read.
+type grokCarry struct {
+	Tail     *tail     `json:"tail,omitempty"`
+	Created  time.Time `json:"created,omitzero"`
+	Since    time.Time `json:"since,omitzero"`
+	Model    string    `json:"model,omitempty"`
+	Prompt   string    `json:"prompt,omitempty"`
+	InPrompt bool      `json:"in_prompt,omitempty"`
+	// the first prompt, before it is told from a tag
+	Title string `json:"title,omitempty"`
+}
+
+// parseGrok reads a session's updates, with its summary. Grok Build only
+// appends to updates.jsonl, so a session read before is read on from where
+// that read left off; its summary, rewritten as it goes on, is read again
+// each time. When the file was cut short or replaced, or the summary now
+// says another time or model the updates are counted under, it is read
+// whole again.
+func parseGrok(f file, old *state) *state {
+	var c grokCarry
+	var m grokSummary
+	hasM := false
 	if f.manifest != "" {
-		if m, ok := readGrokSummary(f.manifest); ok {
-			s.ID, s.Cwd, model = m.Info.ID, m.Info.Cwd, m.CurrentModel
-			s.Named = title(m.GeneratedTitle)
-			if s.Named == "" {
-				s.Named = title(m.SessionSummary)
-			}
-			created, _ := time.Parse(time.RFC3339Nano, m.CreatedAt)
+		if m, hasM = readGrokSummary(f.manifest); hasM {
+			c.Model = m.CurrentModel
+			c.Created, _ = time.Parse(time.RFC3339Nano, m.CreatedAt)
 			if m.Parent != "" {
 				// what it copied from its source is older than it
-				since = created.Truncate(time.Second)
+				c.Since = c.Created.Truncate(time.Second)
 			}
-			s.saw(created, f.main)
+		} else {
+			m = grokSummary{}
 		}
 	}
-	prompt, inPrompt := "", false
-	scan(f.path, 0, func(b []byte) {
-		at := numTS(b)
-		if !since.IsZero() && at.Before(since) {
-			return
+	var s *state
+	var off int64
+	if o := old; o != nil && o.Grok != nil && o.Grok.Model == c.Model && o.Grok.Created.Equal(c.Created) && o.Grok.Since.Equal(c.Since) && o.Grok.Tail.holds(f.path) {
+		s, c, off = o.clone(), *o.Grok, o.Grok.Tail.Off
+	} else {
+		s = &state{}
+		if hasM {
+			s.saw(c.Created, f.main)
 		}
-		if bytes.Contains(b, grokHook) {
-			// its hooks run as it starts and ends too: a session left open
-			// overnight isn't at work till it is closed
-			return
-		}
-		s.saw(at, f.main)
-		user := f.main && s.Title == "" && bytes.Contains(b, grokUser)
-		if !user && inPrompt {
-			// the first prompt's chunks are over
-			s.Title, inPrompt = title(prompt), false
-		}
-		if !user && !bytes.Contains(b, grokTurn) {
-			return
-		}
-		var l grokLine
-		if json.Unmarshal(b, &l) != nil {
-			return
-		}
-		u := l.Params.Update
-		switch u.SessionUpdate {
-		case "user_message_chunk":
-			if user && u.Content.Type == "text" {
-				prompt += u.Content.Text
-				inPrompt = true
-			}
-		case "turn_completed":
-			if u.Usage == nil {
-				return
-			}
-			date := dateOf(at)
-			if len(u.Usage.ModelUsage) == 0 {
-				s.use(date, cmp.Or(model, "grok"), u.Usage.tokens())
-				return
-			}
-			for name, mu := range u.Usage.ModelUsage {
-				s.use(date, name, mu.tokens())
-			}
-		}
+	}
+	s.Size, s.Mod = f.size, f.mod.UnixNano()
+	s.ID, s.Cwd, s.Named = m.Info.ID, m.Info.Cwd, title(m.GeneratedTitle)
+	if s.Named == "" {
+		s.Named = title(m.SessionSummary)
+	}
+	end, err := scanAt(f.path, off, nil, func(b []byte, _, _ int64) bool {
+		grokUpdate(s, &c, b, f.main)
+		return true
 	})
-	if inPrompt {
-		s.Title = title(prompt)
+	c.Tail = nil
+	if err == nil {
+		c.Tail = markTail(f.path, end, 0, end)
 	}
-	if strings.HasPrefix(s.Title, "<") {
-		s.Title, s.First = "", untagged(s.Title)
+	t := c.Title
+	if c.InPrompt {
+		t = title(c.Prompt)
 	}
+	s.Title, s.First = t, ""
+	if strings.HasPrefix(t, "<") {
+		s.Title, s.First = "", untagged(t)
+	}
+	s.Grok = &c
 	return s
+}
+
+// grokUpdate counts one line of a session's updates.
+func grokUpdate(s *state, c *grokCarry, b []byte, main bool) {
+	at := numTS(b)
+	if !c.Since.IsZero() && at.Before(c.Since) {
+		return
+	}
+	if bytes.Contains(b, grokHook) {
+		// its hooks run as it starts and ends too: a session left open
+		// overnight isn't at work till it is closed
+		return
+	}
+	s.saw(at, main)
+	user := main && c.Title == "" && bytes.Contains(b, grokUser)
+	if !user && c.InPrompt {
+		// the first prompt's chunks are over
+		c.Title, c.Prompt, c.InPrompt = title(c.Prompt), "", false
+	}
+	if !user && !bytes.Contains(b, grokTurn) {
+		return
+	}
+	var l grokLine
+	if json.Unmarshal(b, &l) != nil {
+		return
+	}
+	u := l.Params.Update
+	switch u.SessionUpdate {
+	case "user_message_chunk":
+		if user && u.Content.Type == "text" {
+			c.Prompt += u.Content.Text
+			c.InPrompt = true
+		}
+	case "turn_completed":
+		if u.Usage == nil {
+			return
+		}
+		date := dateOf(at)
+		if len(u.Usage.ModelUsage) == 0 {
+			s.use(date, cmp.Or(c.Model, "grok"), u.Usage.tokens())
+			return
+		}
+		for name, mu := range u.Usage.ModelUsage {
+			s.use(date, name, mu.tokens())
+		}
+	}
 }
 
 var tsKey = []byte(`"timestamp":`)

@@ -1,30 +1,33 @@
 package provider
 
 import (
-	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/plugin"
 )
 
-func TestParseCursorModels(t *testing.T) {
-	out := "\x1b[2K\x1b[GAvailable models\n\nauto - Auto (default)\ngpt-5.3-codex-high - Codex 5.3 High\nclaude-opus-5-thinking-high - Claude Opus 5 Thinking High (current)\n\nTip: use --model <id>\n"
-	ms := parseCursorModels(out)
-	want := [][2]string{{"auto", "Auto"}, {"gpt-5.3-codex-high", "Codex 5.3 High"}, {"claude-opus-5-thinking-high", "Claude Opus 5 Thinking High"}}
-	if len(ms) != len(want) {
-		t.Fatalf("got %d models: %+v", len(ms), ms)
-	}
-	for i, w := range want {
-		if ms[i].ID != w[0] || ms[i].Name != w[1] {
-			t.Errorf("model %d = %q %q, want %q %q", i, ms[i].ID, ms[i].Name, w[0], w[1])
+// parseCursorModels reads `cursor-agent models` as it prints it, the way the
+// retired built-in did: the tests below build their lists from it.
+func parseCursorModels(out string) []catalog.Model {
+	line := regexp.MustCompile(`^([A-Za-z0-9][\w.:-]*) - (.+)$`)
+	var ms []catalog.Model
+	for _, l := range strings.Split(ansi.ReplaceAllString(out, ""), "\n") {
+		m := line.FindStringSubmatch(strings.TrimSpace(l))
+		if m == nil {
+			continue
 		}
+		name := strings.Join(strings.Fields(strings.ReplaceAll(m[2], "\u200b", "")), " ")
+		name = strings.TrimSpace(strings.TrimSuffix(name, "(default)"))
+		name = strings.TrimSpace(strings.TrimSuffix(name, "(current)"))
+		ms = append(ms, catalog.Model{ID: m[1], Name: name, Context: cursorContext(m[1], name)})
 	}
+	return ms
 }
 
 // cursorListed is some of `cursor-agent models`, as it prints it.
@@ -88,54 +91,6 @@ func TestCollapseCursorModels(t *testing.T) {
 	}
 }
 
-// Picks saved before Cursor's efforts were one model name Cursor's own
-// ids: each is the model magpie offers for it now, once, where it was,
-// with its efforts; ids of a family of one, or none, stay.
-func TestCursorLegacyPicks(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
-	was := cursorStatus
-	defer func() { cursorStatus = was }()
-	cursorStatus = &cliIdentity{name: "cursor-test", exe: func() string { return "/bin/sh" }, ask: func() (string, string, bool, error) { return "me@example.com", "Pro", true, nil }}
-	raw := withCursorContexts(parseCursorModels(cursorListed))
-	if err := catalog.SaveLive("cursor", "", raw); err != nil {
-		t.Fatal(err)
-	}
-	for id, want := range map[string]string{"grok-4.7-low": "grok-4.7|low", "grok-4.7-xhigh-fast": "grok-4.7-fast|xhigh",
-		"claude-4.6-opus-high-thinking": "claude-4.6-opus-thinking|high", "gpt-5.5-extra-high": "gpt-5.5|xhigh"} {
-		if b, e, ok := cursorBaseIn(raw, id); !ok || b+"|"+e != want {
-			t.Errorf("%s: %s|%s %v, want %s", id, b, e, ok, want)
-		}
-	}
-	for _, id := range []string{"grok-4.7", "gpt-5.3-codex-high-fast", "composer-2.5", "claude-4.6-sonnet-medium-thinking", "grok-4.7-high", "nope-low"} {
-		if b, _, ok := cursorBaseIn(raw, id); ok {
-			t.Errorf("%s taken for %s", id, b)
-		}
-	}
-	legacy := []string{"grok-4.7-low", "composer-2.5", "grok-4.7-medium", "grok-4.7-low-fast", "grok-4.7-xhigh", "grok-4.7-xhigh-fast", "gpt-5.3-codex-high-fast", "gone-model"}
-	if err := Save(Provider{ID: "cursor", Models: legacy}); err != nil {
-		t.Fatal(err)
-	}
-	p, err := Find("cursor")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"grok-4.7", "composer-2.5", "grok-4.7-fast", "gpt-5.3-codex-high-fast", "gone-model"}
-	if strings.Join(p.Models, ",") != strings.Join(want, ",") {
-		t.Fatalf("picks %v, want %v", p.Models, want)
-	}
-	var got []string
-	for _, m := range p.Exposed() {
-		got = append(got, m.ID+"|"+strings.Join(m.Efforts, ","))
-	}
-	if strings.Join(got, " ") != "grok-4.7|low,medium,xhigh composer-2.5| grok-4.7-fast|low,medium,xhigh gpt-5.3-codex-high-fast| gone-model|" {
-		t.Fatalf("exposed %v", got)
-	}
-}
-
 // Cursor's names say which of its models hold 1M; the rest hold its 200K
 func TestCursorContext(t *testing.T) {
 	for _, c := range []struct {
@@ -154,50 +109,6 @@ func TestCursorContext(t *testing.T) {
 	}
 	if ms := withCursorContexts(parseCursorModels("x-1 - X 1M\n")); ms[0].Context != 1_000_000 {
 		t.Fatalf("%+v", ms)
-	}
-}
-
-// The API is told the installed CLI's version: where its executable lives,
-// else the newest one installed, else one known to work.
-func TestCursorClientVersion(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	exe := CursorExecutable
-	defer func() { CursorExecutable = exe }()
-	CursorExecutable = func() string { return "" }
-	if v := CursorClientVersion(); v != "cli-"+cursorVersionFallback {
-		t.Fatal(v)
-	}
-	versions := filepath.Join(home, ".local", "share", "cursor-agent", "versions")
-	for _, v := range []string{"2026.08.01-abc123", "2026.09.01-def456", "notes"} {
-		os.MkdirAll(filepath.Join(versions, v), 0o755)
-	}
-	if v := CursorClientVersion(); v != "cli-2026.09.01-def456" {
-		t.Fatal(v)
-	}
-	bin := filepath.Join(versions, "2026.08.01-abc123", "cursor-agent")
-	os.WriteFile(bin, nil, 0o755)
-	link := filepath.Join(home, "cursor-agent")
-	if os.Symlink(bin, link) == nil {
-		CursorExecutable = func() string { return link }
-		if v := CursorClientVersion(); v != "cli-2026.08.01-abc123" {
-			t.Fatal(v)
-		}
-	}
-}
-
-func TestTokenExpiry(t *testing.T) {
-	jwt := func(claims string) string {
-		return "e30." + base64.RawURLEncoding.EncodeToString([]byte(claims)) + ".sig"
-	}
-	if got := tokenExpiry(jwt(`{"exp":1790000000}`)); !got.Equal(time.Unix(1790000000, 0)) {
-		t.Fatal(got)
-	}
-	for _, tok := range []string{"", "opaque", jwt(`{"sub":"x"}`), "a.!!.c"} {
-		if !tokenExpiry(tok).IsZero() {
-			t.Fatal(tok)
-		}
 	}
 }
 

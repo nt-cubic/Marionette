@@ -240,7 +240,8 @@ func targetOf(a *agent.Agent) *Target {
 	case "zcode":
 		// ZCode's own servers are its cli/config.json's mcp.servers (the
 		// app's MCP settings write there); AGENTS.md and skills beside it
-		d := filepath.Join(h, ".zcode")
+		// under the home ZCode reads, HOME first on Windows too
+		d := filepath.Join(appdir.ZCodeHome(h), ".zcode")
 		t.Instructions = filepath.Join(d, "AGENTS.md")
 		t.MCP = &mcpFile{Path: filepath.Join(d, "cli", "config.json"), Format: fmtZCode}
 		t.Skills = filepath.Join(d, "skills")
@@ -304,6 +305,11 @@ func targetOf(a *agent.Agent) *Target {
 		// beside its config.json (devin mcp add --scope user)
 		t.MCP = &mcpFile{Path: filepath.Join(a.Dir, "mcp_config.json"), Format: fmtDevin}
 		t.Skills = filepath.Join(a.Dir, "skills")
+		// and its global rules from AGENTS.md there, else the singular
+		// AGENT.md it also reads, at the start of every session (Rules &
+		// AGENTS.md → Global Rules in the docs Devin CLI 3000.11.92 ships,
+		// share/devin/docs/extensibility/rules.mdx, #3151)
+		t.Instructions = firstThere(a.Dir, "AGENTS.md", "AGENT.md")
 	case "grok":
 		// Grok Build reads [mcp_servers.<name>] from its config.toml, as
 		// `grok mcp add` writes them; its user-wide instructions are

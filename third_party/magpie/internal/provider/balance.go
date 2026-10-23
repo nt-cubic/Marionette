@@ -1211,6 +1211,10 @@ func balanceRead(ctx context.Context, p Provider) (amount string, parts, split [
 	ctx = p.Via(ctx)
 	p = keyQueryOf(p)
 	src, ok := balanceSourceOf(p)
+	if !ok && p.Account == nil && p.Key != "" && openCodeZen(p) {
+		// a balance the vendor keeps from the key: said so, not left out
+		return "", nil, nil, nil, true, errOpenCodeNoBalance
+	}
 	if !ok || p.Account != nil || p.Key == "" {
 		return "", nil, nil, nil, false, nil
 	}
@@ -1307,6 +1311,35 @@ func balanceRead(ctx context.Context, p Provider) (amount string, parts, split [
 		split = src.split(b)
 	}
 	return amount, nil, split, nil, true, err
+}
+
+// OpenCodeConsole is where OpenCode shows a workspace's credits: the
+// Credits card on the console's Overview, to its owners and admins.
+const OpenCodeConsole = "https://opencode.ai/console"
+
+// errOpenCodeNoBalance is a Zen key's balance, which OpenCode tells no
+// key: Zen's routes (/zen/v1, the inference API's /inference/v1) have no
+// usage or balance query, only Go's /zen/go/v1/usage, which tells Go's
+// windows and not the credits (proxyInference's paths in sst/opencode's
+// packages/console/app/src/lib/inference-proxy.ts; /zen/v1/usage and
+// /inference/v1/usage answer 404), and its docs give the balance only on
+// the console's Credits card (console/billing.mdx, "Check your balance").
+// The card used to be left out unsaid (ttmrmx on X).
+var errOpenCodeNoBalance = errors.New("OpenCode tells no API key its balance: Zen's pay-as-you-go credits are shown only in the OpenCode console (" + OpenCodeConsole + ", Overview → Credits, to the workspace's owners and admins)")
+
+// openCodeZen says p is at OpenCode Zen, whose credits OpenCode keeps from
+// the key, and not at Go, whose windows are its card (planQuotaSourceOf).
+func openCodeZen(p Provider) bool {
+	zen := false
+	for _, b := range []string{p.Chat, p.Responses, p.Anthropic} {
+		switch openCodeGateway(b) {
+		case "go":
+			return false
+		case "zen":
+			zen = true
+		}
+	}
+	return zen
 }
 
 // balanceMethodOf is the HTTP method a Balance URL is asked with: GET
@@ -1409,11 +1442,12 @@ func KeyBalances(ctx context.Context) []SubscriptionQuota {
 			continue
 		}
 		src, ok := balanceSourceOf(p)
-		if !ok && !clineKeyCard(p) {
+		zen := !ok && openCodeZen(p)
+		if !ok && !clineKeyCard(p) && !zen {
 			continue
 		}
 		others := 0
-		if src.token != "" {
+		if src.token != "" || zen {
 			// the account's balance is the same whichever key asks
 			jobs = append(jobs, job{p, ""})
 			continue
@@ -1472,6 +1506,12 @@ func KeyBalances(ctx context.Context) []SubscriptionQuota {
 			amount, parts, split, ws, _, err := balanceRead(ctx, j.p)
 			if errors.Is(err, errNoBalance) {
 				return // a reply with no balance for this key: no card
+			}
+			if errors.Is(err, errOpenCodeNoBalance) {
+				// nothing to read or keep: where the balance is shown
+				q.Error, q.SeeAt = err.Error(), OpenCodeConsole
+				out[i] = q
+				return
 			}
 			if err != nil {
 				q.Error = err.Error()

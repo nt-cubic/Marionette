@@ -1,8 +1,12 @@
 package sessions
 
 import (
+	"os"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 )
@@ -57,7 +61,7 @@ func TestPiCalls(t *testing.T) {
 	// first
 	for _, f := range piFiles() {
 		if f.key == "pi:"+fork {
-			if st, ok := readPiCalls(f); !ok || len(st.Calls) != 1 {
+			if st := readCalls(f); len(st.Calls) != 1 {
 				t.Errorf("the fork's own calls: %+v", st.Calls)
 			}
 		}
@@ -107,4 +111,117 @@ func TestPiCallsBesideReplies(t *testing.T) {
 			t.Errorf("%s: %+v, want %+v", k, got[k], w)
 		}
 	}
+}
+
+// A Pi session file that grew is read on from where the last read left
+// off, with what its earlier lines said (its cwd, a fork's start, the
+// model in use) carried on, in memory and in the disk shard; a half
+// line waits for the rest, and a file cut shorter or written over is
+// read whole again.
+func TestPiCallsReadOnlyWhatWasAppended(t *testing.T) {
+	claude, _ := setup(t)
+	dir := filepath.Join(filepath.Dir(claude), "pi", "sessions", "--work-grow--")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "2026-10-13T08-00-00-000Z_01a1343b-0000-7000-8000-000000000077.jsonl")
+	t0 := time.Date(2026, 10, 13, 8, 0, 0, 0, time.UTC)
+	// a fork: what was written before its own time is its parent's
+	head := `{"type":"session","version":3,"id":"01a1343b-0000-7000-8000-000000000077","timestamp":"2026-10-13T08:00:00.000Z","cwd":"/work/grow","parentSession":"/p.jsonl"}` + "\n" +
+		`{"type":"model_change","id":"m0","timestamp":"2026-10-13T08:00:00.000Z","provider":"relay","modelId":"deepseek-v4"}` + "\n"
+	// a compaction's usage is on the provider and model in use
+	rec := func(i int) string {
+		at := t0.Add(time.Duration(i) * time.Second).Format("2006-01-02T15:04:05.000Z")
+		return `{"type":"compaction","id":"c` + strconv.Itoa(i+100) + `","timestamp":"` + at + `","usage":{"input":` + strconv.Itoa(20000+i) + `,"output":5,"cacheRead":0,"cacheWrite":0}}`
+	}
+	write := func(lines ...string) {
+		t.Helper()
+		b := head
+		for _, l := range lines {
+			b += l + "\n"
+		}
+		if err := os.WriteFile(path, []byte(b), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(rec(-5), rec(1), rec(2))
+	var mu sync.Mutex
+	var starts []int64
+	scanHook = func(p string, off int64) {
+		if p == path {
+			mu.Lock()
+			starts = append(starts, off)
+			mu.Unlock()
+		}
+	}
+	t.Cleanup(func() { scanHook = nil })
+	read := func(what string, from int64, want ...int) {
+		t.Helper()
+		mu.Lock()
+		starts = nil
+		mu.Unlock()
+		var calls []Call
+		for _, s := range CallSources() {
+			if s.Path == path {
+				calls = ReadCallSource(s)
+			}
+		}
+		mu.Lock()
+		got := append([]int64(nil), starts...)
+		mu.Unlock()
+		if len(got) == 0 {
+			t.Fatalf("%s: not read", what)
+		}
+		for _, off := range got {
+			if off != from {
+				t.Fatalf("%s: read from %d, want %d (%v)", what, off, from, got)
+			}
+		}
+		var in []int
+		for _, c := range calls {
+			if c.Model != "deepseek-v4" || c.Upstream != "relay" || c.Cwd != "/work/grow" || c.Agent != "pi" {
+				t.Fatalf("%s: call %+v lost what the earlier lines said", what, c)
+			}
+			in = append(in, c.Input-20000)
+		}
+		if !slices.Equal(in, want) {
+			t.Fatalf("%s: calls %v, want %v", what, in, want)
+		}
+	}
+	size := func() int64 {
+		t.Helper()
+		st, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st.Size()
+	}
+	read("first read", 0, 1, 2)
+
+	end := size()
+	appendText(t, path, rec(3)+"\n"+rec(-4)+"\n"+rec(5)[:40])
+	read("appended, half a line after", end, 1, 2, 3)
+
+	end += int64(len(rec(3)) + len(rec(-4)) + 2)
+	appendText(t, path, rec(5)[40:]+"\n")
+	read("the half line finished", end, 1, 2, 3, 5)
+
+	// read again after the in-memory reads are gone: from the disk shard,
+	// with what it carried
+	resetCalls()
+	end = size()
+	appendText(t, path, rec(6)+"\n")
+	read("from the disk shard", end, 1, 2, 3, 5, 6)
+
+	// cut shorter: read whole again
+	write(rec(7))
+	read("cut shorter", 0, 7)
+
+	// written over, longer than it was: read whole again
+	write(rec(8), rec(9), rec(10))
+	later := time.Now().Add(time.Hour)
+	if err := os.Chtimes(path, later, later); err != nil {
+		t.Fatal(err)
+	}
+	read("written over", 0, 8, 9, 10)
 }

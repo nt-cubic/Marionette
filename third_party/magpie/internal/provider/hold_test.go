@@ -7,8 +7,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/testenv"
@@ -42,6 +44,99 @@ func TestHoldBuildsOnce(t *testing.T) {
 	}
 	if held.holds != 0 {
 		t.Fatalf("holds left: %d", held.holds)
+	}
+}
+
+// One request after another within heldFor builds the catalog once, as
+// requests that overlap do: each built it again from every provider's
+// files and accounts (a fifth of a request's CPU with 30 providers). A
+// write between them (Changed), or another environment (a test's HOME),
+// has it built again.
+func TestHoldKeptForTheNextRequest(t *testing.T) {
+	defer func(d time.Duration) { heldFor = d }(heldFor)
+	heldFor = time.Minute // a loaded machine's pause between requests isn't the change
+	t.Setenv("MAGPIE_HOLD_TEST", "1")
+	n := 0
+	build := func() int { n++; return n }
+	for range 5 {
+		release := Hold()
+		heldOf("t-next", build)
+		heldOf("t-next", build)
+		release()
+	}
+	if n != 1 {
+		t.Fatalf("five requests one after another: built %d times, want 1", n)
+	}
+	Changed()
+	func() {
+		defer Hold()()
+		if heldOf("t-next", build); n != 2 {
+			t.Fatalf("after a write: built %d times, want 2", n)
+		}
+	}()
+	t.Setenv("MAGPIE_HOLD_TEST", "2")
+	func() {
+		defer Hold()()
+		if heldOf("t-next", build); n != 3 {
+			t.Fatalf("in another environment: built %d times, want 3", n)
+		}
+	}()
+	if heldOf("t-next", build); n != 4 {
+		t.Fatalf("unheld: built %d times, want 4", n)
+	}
+}
+
+// What is held across requests is built again when anything it was built
+// from may have moved: a write that only tells filememo (settings.Save, an
+// account's file), the providers' or the settings' file written by
+// another process (the CLI's "magpie group add"), the groups served or
+// not (GateGroups, ServeGroups), and the models.dev catalog read again.
+func TestHoldKeptUntilAWrite(t *testing.T) {
+	defer func(d time.Duration) { heldFor = d }(heldFor)
+	heldFor = time.Minute // a loaded machine's pause between requests isn't the change
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	n := 0
+	build := func() int { n++; return n }
+	request := func() {
+		defer Hold()()
+		heldOf("t-write", build)
+	}
+	request()
+	request()
+	if n != 1 {
+		t.Fatalf("two requests: built %d times, want 1", n)
+	}
+	for _, c := range []struct {
+		what  string
+		write func()
+	}{
+		{"filememo told", filememo.Forget},
+		{"providers.json written by another process", func() {
+			os.MkdirAll(filepath.Dir(Path()), 0o700)
+			os.WriteFile(Path(), []byte(`{"providers":[]}`), 0o600)
+		}},
+		{"settings.json written by another process", func() {
+			os.MkdirAll(filepath.Dir(settings.Path()), 0o700)
+			os.WriteFile(settings.Path(), []byte(`{}`), 0o600)
+		}},
+		{"the groups gated", func() { GateGroups(nil)() }},
+		// models.dev's catalog read again: the entries' windows and
+		// output limits come from it (Pi's maxTokens, Crush's default)
+		{"the catalog reset", catalog.Reset},
+	} {
+		was := n
+		c.write()
+		request()
+		if n != was+1 {
+			t.Fatalf("%s: built %d times, want 1", c.what, n-was)
+		}
+		request()
+		if n != was+1 {
+			t.Fatalf("%s, then a request: built again", c.what)
+		}
 	}
 }
 

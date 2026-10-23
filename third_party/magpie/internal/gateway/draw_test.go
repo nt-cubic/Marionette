@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
+	"net/http/httputil"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -511,21 +512,31 @@ func TestCodexDrawMovesToNextAccount(t *testing.T) {
 	}
 }
 
-// grokSignedIn gives the test's HOME the Grok CLI's sign-in, and a CLI to find.
+// grokSignedIn gives the test Grok served the way it is now that its built-in
+// is retired: the fake plugin moved onto "grok", its requests sent on to
+// provider.GrokBase as it is when each arrives, so a test points GrokBase at
+// its upstream as it did for the built-in.
 func grokSignedIn(t *testing.T) {
 	t.Helper()
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
-	t.Setenv("GROK_HOME", filepath.Join(home, ".grok"))
-	os.MkdirAll(filepath.Join(home, ".grok"), 0o755)
-	os.WriteFile(filepath.Join(home, ".grok", "auth.json"), mustJSON(map[string]any{
-		"https://auth.x.ai": map[string]any{"key": "k-me", "email": "me@x.ai", "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)}}), 0o600)
-	was := provider.GrokExecutable
-	provider.GrokExecutable = func() string { return "/nonexistent/grok" }
-	t.Cleanup(func() { provider.GrokExecutable = was })
+	t.Setenv("FAKE_RESPONSES", "1")
+	movedFake(t, "grok", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		to, err := url.Parse(provider.GrokBase + strings.TrimPrefix(r.URL.Path, "/v1"))
+		if err == nil && to.Hostname() != "127.0.0.1" {
+			err = fmt.Errorf("GrokBase %s isn't the test's: a test never reaches the network", provider.GrokBase)
+		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		to.RawQuery = r.URL.RawQuery
+		(&httputil.ReverseProxy{Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.Out.URL, pr.Out.Host = to, to.Host
+		}}).ServeHTTP(w, r)
+	}))
+	// the vendor's own host was the built-in's, whose video it fetched from
+	// there; the plugin's host is the fake's, so the test's upstream on
+	// loopback is named as a user names a private host
+	allowPrivate(t, "127.0.0.1")
 }
 
 // A Grok subscription draws at the Imagine API of the backend Grok Build talks
@@ -569,7 +580,9 @@ func TestGrokAccountDraws(t *testing.T) {
 		!strings.Contains(bodies[0], `"response_format":"b64_json"`) || !strings.Contains(bodies[0], `"aspect_ratio":"16:9"`) || strings.Contains(bodies[0], `"size"`) {
 		t.Fatalf("asked %v %v", paths, bodies)
 	}
-	if head.Get("Authorization") != "Bearer k-me" || head.Get("x-grok-client-identifier") != "grok-shell" || !strings.HasPrefix(head.Get("User-Agent"), "grok-shell/") {
+	// the plugin signs the request (the fake with its own key); the real
+	// one's headers are the plugin's to test
+	if head.Get("Authorization") != "Bearer k1" {
 		t.Fatalf("headers %v", head)
 	}
 	mu.Unlock()
@@ -753,5 +766,45 @@ func TestDrawGoesWhereTheVendorPointsIt(t *testing.T) {
 		if !slices.Equal(got, tc.want) {
 			t.Fatalf("%s asked %v, want %v", tc.model, got, tc.want)
 		}
+	}
+}
+
+// An account's own list of models (#474) is picked from the chat models
+// its editor shows, which a ChatGPT account's GPT Image is never among: a
+// list kept for some chat models doesn't turn its drawing away as "set
+// not to be served by any account" (heyiwei5 on X). Each account draws
+// as it did with no list.
+func TestCodexDrawsPastAccountModelLists(t *testing.T) {
+	codexSignedIn(t, "plus@example.com")
+	var mu sync.Mutex
+	var tried []string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		mu.Lock()
+		tried = append(tried, r.Header.Get("chatgpt-account-id"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"created":1,"data":[{"b64_json":"`+base64.StdEncoding.EncodeToString(pngBytes)+`"}]}`)
+	}))
+	defer up.Close()
+	was := provider.CodexBase
+	provider.CodexBase = up.URL + "/backend-api/codex"
+	defer func() { provider.CodexBase = was }()
+	for _, u := range []string{"me@example.com", "plus@example.com"} {
+		if err := provider.SetAccountModels("codex", u, []string{"gpt-5.5"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := New()
+	for _, model := range []string{"codex/gpt-image-2", "codex/gpt-image-2.5"} {
+		code, a, raw := postImages(t, s, "/v1/images/generations", "application/json", `{"model":"`+model+`","prompt":"a magpie"}`)
+		if code != 200 || len(a.Data) != 1 {
+			t.Fatalf("%s: %d %s", model, code, raw)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(tried) != 2 {
+		t.Fatalf("asked %v", tried)
 	}
 }

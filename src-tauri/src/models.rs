@@ -251,6 +251,27 @@ impl AgentConfig {
                     )],
                 ),
             ),
+            // ZCode (Z.ai / BigModel GLM desktop agent) over the community
+            // bridge `zcode-acp-server`: ACP in front of `zcode app-server`
+            // (ZCode Protocol v1). The bridge spawns the ZCode runtime itself;
+            // Marionette only points it at the installed CLI via ZCODE_BIN
+            // (acp.rs) — desktop installs live in arbitrary dirs (D:\Program
+            // Files\ZCode here), off PATH and off the bridge's default probe
+            // list. Skills/plugins/MCP configured in ~/.zcode ride along
+            // natively; auth is the shared desktop login (`zcode login`,
+            // credentials in ~/.zcode/v2).
+            Self::new(
+                "zcode",
+                "ZCode",
+                "zcode-acp-server",
+                vec![],
+                "acp",
+                "stdin",
+                AgentInstallSpec::npm(
+                    "zcode-acp-server",
+                    vec![dependency("zcode", "ZCode CLI (Desktop install)", None)],
+                ),
+            ),
         ]
     }
 

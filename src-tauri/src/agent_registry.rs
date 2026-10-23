@@ -209,6 +209,31 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
             requires_commands: &["dsh"],
             launch_env: &[],
         },
+        // zcode-acp-server (community bridge, Apache-2.0) — ACP over
+        // `zcode app-server` (ZCode Protocol v1). Remote (url) MCP from
+        // session/new rides along per-load next to ZCode's own ~/.zcode
+        // servers and plugins; stdio entries would fail the whole session/new
+        // schema, so accepts_stdio_mcp() filters them; skills/slash commands
+        // live in the ZCode runtime. `zcode` is intentionally NOT in
+        // requires_commands: desktop installs never put it on PATH — acp.rs
+        // discovers the bundled zcode.cjs and hands it over via ZCODE_BIN +
+        // ZCODE_NODE.
+        "zcode" | "zcode-acp" => AgentHarnessMeta {
+            id: "zcode",
+            label: "ZCode",
+            subagent_transcript: false,
+            mcp_wire: McpWirePolicy::Forward,
+            mcp_wire_label: mcp_label(McpWirePolicy::Forward),
+            distribution: DistributionKind::Npx,
+            distribution_label: dist_label(DistributionKind::Npx),
+            cmd: "zcode-acp-server",
+            args: &[],
+            node_required: Some("22.0.0"),
+            uv_required: None,
+            python_pin: None,
+            requires_commands: &[],
+            launch_env: &[],
+        },
         _ => AgentHarnessMeta {
             id: "unknown",
             label: "Agent",
@@ -291,6 +316,15 @@ pub fn should_inject_mcp(agent_id: Option<&str>) -> bool {
     }
 }
 
+/// Whether this agent accepts **stdio** entries in `session/new.mcpServers`.
+/// Every ACP-native agent does. zcode-acp-server is the exception: its
+/// session/new schema only validates remote (url-based) servers, and one
+/// stdio entry makes the whole call fail with -32602 — session creation dies,
+/// not just that server (probed 2026-10-23). Remote entries still ride along.
+pub fn accepts_stdio_mcp(agent_id: Option<&str>) -> bool {
+    !matches!(agent_id, Some("zcode" | "zcode-acp"))
+}
+
 /// Launch env pairs for an agent (empty if none).
 pub fn launch_env_for(agent_id: &str) -> &'static [(&'static str, &'static str)] {
     harness_meta(agent_id).launch_env
@@ -334,6 +368,18 @@ mod tests {
         assert_eq!(harness_meta("pi").mcp_wire, McpWirePolicy::SkipForward);
         assert!(!should_inject_mcp(Some("pi")));
         assert!(should_inject_mcp(Some("codex")));
+    }
+
+    /// zcode-acp-server's session/new schema rejects stdio mcpServers entries
+    /// with -32602 (whole call fails), so only remote servers may be lent.
+    #[test]
+    fn zcode_forwards_remote_mcp_only() {
+        assert!(should_inject_mcp(Some("zcode")), "remote lending stays on");
+        assert!(!accepts_stdio_mcp(Some("zcode")));
+        assert!(!accepts_stdio_mcp(Some("zcode-acp")));
+        assert!(accepts_stdio_mcp(Some("codex")));
+        assert!(accepts_stdio_mcp(Some("deepseek")));
+        assert!(accepts_stdio_mcp(None));
     }
 
     #[test]

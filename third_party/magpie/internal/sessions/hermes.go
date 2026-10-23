@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yetone/magpie/internal/appdir"
@@ -51,7 +52,13 @@ func HermesDirs() []string {
 	return out
 }
 
+// canonicalHook, when a test sets it, runs on each canonicalHermesPath.
+var canonicalHook func()
+
 func canonicalHermesPath(path string) string {
+	if canonicalHook != nil {
+		canonicalHook()
+	}
 	if abs, err := filepath.Abs(path); err == nil {
 		path = abs
 	}
@@ -61,11 +68,16 @@ func canonicalHermesPath(path string) string {
 	return filepath.Clean(path)
 }
 
-func hermesID(path, sid string) string {
-	// Include the store even for the default profile so selecting another home
-	// cannot collide with a previously indexed store or a copied session id.
+func hermesID(path, sid string) string { return hermesStoreID(path) + "-" + sid }
+
+// hermesStoreID is what a store's session ids begin with. Include the store
+// even for the default profile so selecting another home cannot collide
+// with a previously indexed store or a copied session id. Resolving the
+// path walks every folder in it (EvalSymlinks), so it is done once per
+// store, not once per session.
+func hermesStoreID(path string) string {
 	h := sha256.Sum256([]byte(canonicalHermesPath(path)))
-	return "h" + hex.EncodeToString(h[:8]) + "-" + sid
+	return "h" + hex.EncodeToString(h[:8])
 }
 
 type hermesDB struct {
@@ -90,6 +102,141 @@ func hermesRevision(path string) string {
 		parts = append(parts, strconv.FormatInt(info.Size(), 10), strconv.FormatInt(info.ModTime().UnixNano(), 10))
 	}
 	return strings.Join(parts, ":")
+}
+
+// hermesPrinted is each store's sessions' fingerprints, as of the store's
+// revision they were read at.
+var hermesPrinted = struct {
+	sync.Mutex
+	stores map[string]hermesPrintSet
+}{stores: map[string]hermesPrintSet{}}
+
+type hermesPrintSet struct {
+	revision string
+	prints   map[string]string
+}
+
+// hermesPrintsFor is the fingerprint of each session in the store at path,
+// read again only when the store's revision moved. nil when they could not
+// be read: then no session's parse is reused.
+func hermesPrintsFor(path string, h *hermesDB) map[string]string {
+	hermesPrinted.Lock()
+	defer hermesPrinted.Unlock()
+	if set, ok := hermesPrinted.stores[path]; ok && h.revision != "" && set.revision == h.revision {
+		return set.prints
+	}
+	prints := h.fingerprints()
+	if prints != nil && h.revision != "" {
+		hermesPrinted.stores[path] = hermesPrintSet{h.revision, prints}
+	} else {
+		delete(hermesPrinted.stores, path)
+	}
+	return prints
+}
+
+func forgetHermesPrints() {
+	hermesPrinted.Lock()
+	hermesPrinted.stores = map[string]hermesPrintSet{}
+	hermesPrinted.Unlock()
+}
+
+// fingerprints is, for each session, what parseHermes reads of it in a few
+// values: its sessions row, and over its messages and usage rows a count,
+// the ids, and the sums of every read column's values or byte lengths. A
+// row added, removed or rewritten in place (active and compacted flipped
+// by a rewind or a compaction, a tool call's content filled in later)
+// moves it. Any write moves the whole store's revision, and parsing every
+// session again on each one read, de-duplicated and decoded every message
+// Hermes ever kept, again and again while it ran (#2776); this reads only
+// the tables' pages, in SQLite. A rewrite to text of the very same length,
+// with no other column moving, is the one change it can miss. nil when any
+// of it could not be read.
+func (h *hermesDB) fingerprints() map[string]string {
+	if !h.sessions["id"] {
+		return nil
+	}
+	tx, err := h.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return nil
+	}
+	defer tx.Rollback()
+	parts := map[string][]string{}
+	read := func(table, query string) bool {
+		rows, err := tx.Query(query)
+		if err != nil {
+			return false
+		}
+		defer rows.Close()
+		cols, err := rows.Columns()
+		if err != nil {
+			return false
+		}
+		vals := make([]sql.NullString, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		for rows.Next() {
+			if rows.Scan(ptrs...) != nil {
+				return false
+			}
+			var b strings.Builder
+			b.WriteString(table)
+			b.WriteByte(':')
+			for _, v := range vals[1:] {
+				if v.Valid {
+					b.WriteString(strconv.Quote(v.String))
+				} else {
+					b.WriteString("~")
+				}
+				b.WriteByte(',')
+			}
+			parts[vals[0].String] = append(parts[vals[0].String], b.String())
+		}
+		return rows.Err() == nil
+	}
+	// metadata()'s columns, as it reads them
+	if !read("s", "SELECT id, "+hermesSelect(h.sessions, []string{"title", "cwd", "model", "billing_provider"}, "''")+", "+
+		hermesSelect(h.sessions, []string{"started_at", "ended_at", "last_activity_at", "input_tokens", "output_tokens",
+			"cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "api_call_count"}, "0")+" FROM sessions") {
+		return nil
+	}
+	column := func(cols map[string]bool, name string) string {
+		if cols[name] {
+			return name
+		}
+		return "NULL"
+	}
+	if h.messages["session_id"] {
+		q := []string{"session_id", "count(*)", "max(" + hermesExpr(h.messages, "id", "rowid") + ")", "total(" + hermesExpr(h.messages, "id", "rowid") + ")"}
+		for _, c := range []string{"timestamp", "active", "compacted"} {
+			q = append(q, "total("+column(h.messages, c)+")")
+		}
+		for _, c := range []string{"role", "content", "tool_calls", "tool_call_id", "tool_name", "display_kind", "display_metadata"} {
+			q = append(q, "total(octet_length("+column(h.messages, c)+"))")
+		}
+		if !read("m", "SELECT "+strings.Join(q, ", ")+" FROM messages GROUP BY session_id") {
+			return nil
+		}
+	}
+	if h.usage["session_id"] {
+		q := []string{"session_id", "count(*)"}
+		for _, c := range []string{"input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "api_call_count", "last_seen"} {
+			q = append(q, "total("+column(h.usage, c)+")")
+		}
+		for _, c := range []string{"model", "billing_provider", "task"} {
+			q = append(q, "total(octet_length("+column(h.usage, c)+"))", "max("+column(h.usage, c)+")", "min("+column(h.usage, c)+")")
+		}
+		if !read("u", "SELECT "+strings.Join(q, ", ")+" FROM session_model_usage GROUP BY session_id") {
+			return nil
+		}
+	}
+	out := make(map[string]string, len(parts))
+	for sid, p := range parts {
+		sum := sha256.Sum256([]byte(strings.Join(p, "|")))
+		out[sid] = "fp1:" + hex.EncodeToString(sum[:16])
+	}
+	return out
 }
 
 type hermesQuery interface {
@@ -154,6 +301,8 @@ func hermesFiles() []file {
 		if !store.sessions["id"] {
 			continue
 		}
+		prints := hermesPrintsFor(path, store)
+		storeID := hermesStoreID(path)
 		messageLast, usageLast := "0", "0"
 		if store.messages["session_id"] && store.messages["timestamp"] {
 			messageLast = "COALESCE((SELECT MAX(timestamp) FROM messages m WHERE m.session_id = sessions.id), 0)"
@@ -170,21 +319,34 @@ func hermesFiles() []file {
 		if err != nil {
 			continue
 		}
+		// an id stored once as TEXT and once as BLOB is two rows under a
+		// TEXT primary key and one string here: it is one session, as
+		// late as the later of them (#2932)
+		at := map[string]int{}
 		for rows.Next() {
 			var sid string
 			var start, end, last, messageAt, usageAt float64
 			if rows.Scan(&sid, &start, &end, &last, &messageAt, &usageAt) != nil || sid == "" {
 				continue
 			}
-			id := hermesID(path, sid)
+			mod := hermesTime(max(start, end, last, messageAt, usageAt))
+			if i, ok := at[sid]; ok {
+				if mod.After(out[i].mod) {
+					out[i].mod = mod
+				}
+				continue
+			}
+			at[sid] = len(out)
+			id := storeID + "-" + sid
 			out = append(out, file{
 				agent:    "hermes",
 				key:      "hermes:" + id,
 				path:     path + "#" + url.QueryEscape(sid),
 				sid:      sid,
 				main:     true,
-				mod:      hermesTime(max(start, end, last, messageAt, usageAt)),
+				mod:      mod,
 				hermes:   store,
+				rev:      prints[sid], // "" when unknown: parsed again
 				readOnly: true,
 			})
 		}
@@ -462,7 +624,7 @@ func parseHermes(f file) *state {
 			s.Last = at
 		}
 	}
-	s.DBRevision = f.hermes.revision
+	s.DBRevision = f.rev
 	return s
 }
 

@@ -30,6 +30,9 @@ func (tr *tracer) repoOf(s *Skill) string {
 	if s.Source != nil && s.Source.Kind == "github" {
 		return s.Source.Repo
 	}
+	if s.Source != nil && s.Source.Kind == "git" {
+		return remoteRepo(s.Source.Repo) // host/path, as a checkout of it is
+	}
 	if o, ok := ccSwitchOrigin(s); ok {
 		return o.Repo
 	}

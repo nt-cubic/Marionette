@@ -518,46 +518,23 @@ func loopLines(got string) int {
 }
 
 // The reporter's route (#1359): WorkBuddy's DeepSeek v4.1 flash at max
-// effort, from dsh and Pi. A WorkBuddy subscription is served by magpie's
-// built-in, or, once moved, by the community plugin's fetch in the plugin
-// host (AGENTS.md, "Which code actually runs"); the loop is cut on both,
-// on every protocol, and the plugin's request to WorkBuddy is let go.
+// effort, from dsh and Pi. A WorkBuddy subscription is served by the
+// community plugin's fetch in the plugin host (AGENTS.md, "Which code
+// actually runs"); the loop is cut on every protocol, and the plugin's
+// request to WorkBuddy is let go.
 func TestLoopEndsWorkBuddysReply(t *testing.T) {
-	const model = "deepseek-v4.1-flash"
-	routes := []struct {
-		name string
-		on   func(t *testing.T, v *loopingVendor) string // the provider's id
-	}{
-		{"built-in", func(t *testing.T, v *loopingVendor) string {
-			mux := http.NewServeMux()
-			mux.HandleFunc("/v3/config", func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				io.WriteString(w, `{"code":0,"msg":"OK","data":{"agents":[{"name":"cli","models":["`+model+`"]}],"models":[{"id":"`+model+`","name":"DeepSeek-V4.1-Flash","tags":[]}]}}`)
-			})
-			mux.Handle("/", v)
-			return wbSignedIn(t, "workbuddy", "workbuddy-desktop", mux).ID
-		}},
-		{"plugin", func(t *testing.T, v *loopingVendor) string {
+	const model = "deepseek-v4-pro" // the fake plugin's DeepSeek
+	for _, x := range loopAsks {
+		t.Run(x.name, func(t *testing.T) {
+			v := &loopingVendor{letGo: make(chan bool, 4)}
 			t.Setenv("FAKE_DEEPSEEK", "1")
-			return besideFake(t, "workbuddy", v)
-		}},
-	}
-	for _, rt := range routes {
-		for _, x := range loopAsks {
-			t.Run(rt.name+"/"+x.name, func(t *testing.T) {
-				v := &loopingVendor{letGo: make(chan bool, 4)}
-				id := rt.on(t, v)
-				m := model
-				if rt.name == "plugin" {
-					m = "deepseek-v4-pro" // the fake plugin's DeepSeek
-				}
-				gw := httptest.NewServer(New().Handler())
-				t.Cleanup(gw.Close)
-				path := strings.Replace(x.path, "ds/deepseek-v4-max", id+"/"+m, 1)
-				body := strings.Replace(x.body, `"model":"ds/deepseek-v4-max"`, `"model":"`+id+"/"+m+`","reasoning_effort":"max"`, 1)
-				loopCut(t, v, askStream(t, gw.URL+path, body), x.done, x.failed, id, x.asks)
-			})
-		}
+			id := besideFake(t, "workbuddy", v)
+			gw := httptest.NewServer(New().Handler())
+			t.Cleanup(gw.Close)
+			path := strings.Replace(x.path, "ds/deepseek-v4-max", id+"/"+model, 1)
+			body := strings.Replace(x.body, `"model":"ds/deepseek-v4-max"`, `"model":"`+id+"/"+model+`","reasoning_effort":"max"`, 1)
+			loopCut(t, v, askStream(t, gw.URL+path, body), x.done, x.failed, id, x.asks)
+		})
 	}
 }
 

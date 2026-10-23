@@ -278,8 +278,11 @@ func installed(f func(manager) error) error {
 	})
 }
 
-// autostartEnabled is a var for the tests.
-var autostartEnabled = autostart.Enabled
+// autostartEnabled: magpie's own record is there, whether or not the
+// user has it switched off in System Settings for now, since switching
+// it back on there opens the app with the service still installed. A
+// var for the tests.
+var autostartEnabled = func() bool { return autostart.Enabled() != autostart.Off }
 
 // self is the program the service runs: this one, by the name on PATH
 // when that is this same file, so a package manager's link (Homebrew's

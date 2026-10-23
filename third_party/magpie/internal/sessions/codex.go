@@ -277,12 +277,12 @@ func noteCodexIdentity(s *state, identity CodexIdentity, conflict bool) {
 
 // CodexIdentities returns an independent snapshot of the native thread identities.
 func CodexIdentities() map[string]CodexIdentity {
-	dbReadMu.Lock()
-	defer dbReadMu.Unlock()
+	storeMu.RLock()
+	defer storeMu.RUnlock()
 	mu.Lock()
 	defer mu.Unlock()
 	loadCache()
-	defer closeDBs()
+	defer useDBs()()
 	want := append(codexFiles(), wslFiles("codex")...)
 	refresh(want, nil)
 	return codexIdentitySnapshot(want)

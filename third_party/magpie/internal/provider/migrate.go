@@ -14,12 +14,13 @@ package provider
 //     one that fails otherwise goes along untried, since the built-in is
 //     retired and the plugin is where the account is fixed now;
 //  4. the id changes hands: the built-in's saved accounts go out of
-//     logins.json into migrations.json, kept for going back.
+//     logins.json into migrations.json.
 //
 // A failure on the way (the install, the plugin not serving the id, a
-// sign-in it won't import) puts everything back as it was — the plugin's
-// newer tokens included, since a refresh token used once is spent — and
-// the built-in carries on. MoveBack undoes a move the same way.
+// sign-in it won't import) puts the built-in's saved accounts back as they
+// were — the plugin's newer tokens included, since a refresh token used
+// once is spent — for the next try. The built-in serves nothing either
+// way (Retired): MoveCandidates lists the accounts still to move, and why.
 
 import (
 	"context"
@@ -66,8 +67,26 @@ const (
 // 10-16: 陆续把内置Provider下线掉). A tests' list stands in for it.
 var retiring = MovableIDs
 
-// moveRetry is how long a failed move waits before it is tried again.
-const moveRetry = 6 * time.Hour
+// moveRetry is how long a failed move waits before it is tried again,
+// while the built-in carries on. One whose built-in is retired waits
+// retiredRetry: nothing serves its accounts until it moves, so a move that
+// failed for a moment (npm out of reach, the plugin not installed yet) is
+// tried again soon, not hours later.
+const (
+	moveRetry    = 6 * time.Hour
+	retiredRetry = 10 * time.Minute
+)
+
+// retryWait is how long a failed move of id waits before it is tried again.
+func retryWait(id string) time.Duration {
+	if BuiltinRetired(id) {
+		return retiredRetry
+	}
+	return moveRetry
+}
+
+// retryDue says whether a failed move of id, last tried at, is due again.
+func retryDue(id string, at time.Time) bool { return time.Since(at) >= retryWait(id) }
 
 // Migration is where one built-in's move stands.
 type Migration struct {
@@ -143,6 +162,13 @@ func installFailed(pkg string, err error) error {
 
 // nameOf is the built-in id's name, as the providers list shows it.
 func nameOf(id string) string {
+	// a retired built-in is listed no more: the name it had
+	if c, ok := movedCards[id]; ok {
+		return c.name
+	}
+	if id == QoderCNID {
+		return "Qoder CN"
+	}
 	for _, p := range All() {
 		if p.ID == id && !p.IsPlugin() && p.Name != "" {
 			return p.Name
@@ -246,6 +272,36 @@ var errStays = errors.New("stays with the plugin")
 // Movable is whether the built-in id has a plugin it can move to.
 func Movable(id string) bool { return movers[id] != nil }
 
+// BuiltinRetired is whether magpie's built-in id is retired: its plugin serves
+// it, and the built-in serves nothing, moved or not. One whose accounts
+// haven't moved yet (a failed install, an account the plugin turned away)
+// is listed by MoveCandidates with why, until it moves. The built-ins are
+// retired one by one, each with its code (the owner, 10-16: 陆续把内置
+// Provider下线掉), so this is the set retired so far.
+func BuiltinRetired(id string) bool { return Movable(id) && retiredBuiltins[id] }
+
+// retiredBuiltins are the built-in subscriptions whose code is gone.
+var retiredBuiltins = map[string]bool{
+	"zed":             true,
+	"kiro":            true,
+	"cursor":          true,
+	"qoder":           true,
+	QoderCNID:         true,
+	"workbuddy":       true,
+	WorkBuddyAIID:     true,
+	MiMoID:            true,
+	"zcode":           true,
+	"factory":         true,
+	"grok":            true,
+	"devin":           true,
+	CommandCodePlanID: true,
+}
+
+// PluginServes is whether the built-in id's subscription is its plugin's to
+// serve, and magpie's built-in code serves none of it: moved onto its plugin,
+// or retired.
+func PluginServes(id string) bool { return Moved(id) || BuiltinRetired(id) }
+
 // MovableIDs are the built-ins that have a plugin to move to, by id: the
 // page marks them deprecated, moved or not.
 func MovableIDs() []string {
@@ -263,6 +319,9 @@ type MoveCandidate struct {
 	Name     string `json:"name"`
 	Package  string `json:"package"`
 	Accounts int    `json:"accounts"`
+	// Error and Why are the last try's failure, when one failed
+	Error string   `json:"error,omitempty"`
+	Why   *MoveWhy `json:"why,omitempty"`
 }
 
 // MoveCandidates are the built-ins not on their plugins that have accounts
@@ -277,7 +336,11 @@ func MoveCandidates() []MoveCandidate {
 			continue
 		}
 		if accts, err := mv.out(); err == nil && len(accts) > 0 {
-			out = append(out, MoveCandidate{ID: id, Name: nameOf(id), Package: mv.pkg, Accounts: len(accts)})
+			c := MoveCandidate{ID: id, Name: nameOf(id), Package: mv.pkg, Accounts: len(accts)}
+			if m, ok := MigrationOf(id); ok && m.State == MoveFailed {
+				c.Error, c.Why = m.Err, m.Why
+			}
+			out = append(out, c)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -339,7 +402,9 @@ func Moved(id string) bool {
 }
 
 // movedAgent is whether the logins.json agent's accounts are a moved
-// built-in's, its plugin's now.
+// built-in's, its plugin's now. Retired is not enough: a retired
+// built-in's own account, the agent's own sign-in, still has to be listed
+// for its mover to take it (MoveRetiring, MoveCandidates).
 func movedAgent(agent string) bool {
 	for id, mv := range movers {
 		if slices.Contains(mv.agents, agent) && Moved(id) {
@@ -902,7 +967,7 @@ func handBack(ctx context.Context, id string, mv *mover, accts []movedAccount, k
 }
 
 // MoveRetiring moves the built-ins being retired that have accounts, at
-// start-up: once, or again moveRetry after one failed. One an older magpie
+// start-up: once, or again retryWait after one failed. One an older magpie
 // moved back is moved again: there is no way back, as the built-in is
 // going. One whose plugin the user removed waits for them to install it.
 func MoveRetiring(ctx context.Context) map[string]error {
@@ -918,7 +983,7 @@ func MoveRetiring(ctx context.Context) map[string]error {
 			continue
 		case ok && m.State == MoveRemoved:
 			continue
-		case ok && m.State == MoveFailed && time.Since(m.At) < moveRetry:
+		case ok && m.State == MoveFailed && !retryDue(id, m.At):
 			continue
 		}
 		if accts, err := movers[id].out(); err != nil || len(accts) == 0 {
@@ -941,7 +1006,7 @@ func MoveRetiring(ctx context.Context) map[string]error {
 // in use as <id>-plugin's and the id changing would leave agents asking
 // for a provider gone; the add sheet lists it once regardless. One moved
 // whose plugin the user removed is the plugin's again once they install it,
-// its accounts still with the plugin, and a failed move waits moveRetry. No
+// its accounts still with the plugin, and a failed move waits retryWait. No
 // plugin is installed for it: the user's own install is what says to.
 func HandOver(ctx context.Context, accounts bool) map[string]error {
 	if settings.AccountDiscoveryOff() {
@@ -961,7 +1026,7 @@ func HandOver(ctx context.Context, accounts bool) map[string]error {
 			}
 			continue
 		}
-		if ok && (m.State != MoveFailed || time.Since(m.At) < moveRetry) {
+		if ok && (m.State != MoveFailed || !retryDue(id, m.At)) {
 			continue
 		}
 		if !pluginReady(mv) {
@@ -1020,8 +1085,9 @@ func keepMovedCurrent(ctx context.Context) {
 // KeepRetiringMoved moves the built-ins being retired, and hands over
 // those whose plugin the user installed (HandOver), run by the magpie
 // serving the gateway (one magpie, never two at once): a little after it
-// starts, then every hour, so a failed move is tried again once moveRetry
-// has gone. It also keeps each moved built-in's plugin up to date.
+// starts, then every hour, so a failed move is tried again once retryWait
+// has gone; a retired built-in's failed move brings the next run forward
+// to when it is due. It also keeps each moved built-in's plugin up to date.
 func KeepRetiringMoved(ctx context.Context) {
 	t := time.NewTimer(20 * time.Second)
 	defer t.Stop()
@@ -1040,13 +1106,26 @@ func KeepRetiringMoved(ctx context.Context) {
 		maps.Copy(moves, HandOver(ctx, true))
 		for id, err := range moves {
 			if err != nil {
-				log.Printf("moving %s to its plugin: %s (it stays built-in)", id, err)
+				log.Printf("moving %s to its plugin: %s (nothing serves it until it moves)", id, err)
 			} else {
 				log.Printf("moved %s to its plugin, %s", id, MovePackage(id))
 			}
 		}
-		t.Reset(time.Hour)
+		t.Reset(nextRetiringRun())
 	}
+}
+
+// nextRetiringRun is how long KeepRetiringMoved waits before it runs
+// again: an hour, or less when a retired built-in's failed move is due
+// sooner.
+func nextRetiringRun() time.Duration {
+	next := time.Hour
+	for _, id := range MovableIDs() {
+		if m, ok := MigrationOf(id); ok && m.State == MoveFailed && BuiltinRetired(id) {
+			next = min(next, max(time.Until(m.At.Add(retiredRetry)), time.Minute))
+		}
+	}
+	return next
 }
 
 // MovedOnto are the built-ins moved onto the plugin named (its spec or

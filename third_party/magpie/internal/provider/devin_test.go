@@ -1,18 +1,15 @@
 package provider
 
 import (
-	"encoding/json"
-	"github.com/yetone/magpie/internal/catalog"
-	"github.com/yetone/magpie/internal/testenv"
-	"net/http"
-	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/testenv"
 )
 
 func TestParseDevinStatus(t *testing.T) {
@@ -175,183 +172,6 @@ func TestDevinCredentials(t *testing.T) {
 	}
 }
 
-func TestDevinSignIn(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake devin is a shell script")
-	}
-	home := claudeHome(t)
-	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
-
-	// a CLI that answers `auth status` once the exchange wrote its file
-	exe := filepath.Join(home, "devin")
-	testenv.Program(t, exe, "#!/bin/sh\ncat <<'X'\nLogged in (via Devin).\n\nUser:\n  Email:             dev@example.com\n\nAccount:\n  Tier:              Devin Pro\nX\n")
-	oldExe := DevinExecutable
-	DevinExecutable = func() string { return exe }
-	t.Cleanup(func() { DevinExecutable = oldExe })
-
-	var gotCode, gotVerifier, gotRedirect string
-	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]string
-		json.NewDecoder(r.Body).Decode(&body)
-		gotCode, gotVerifier, gotRedirect = body["code"], body["code_verifier"], body["redirect_uri"]
-		json.NewEncoder(w).Encode(map[string]any{
-			"sessionToken":    "devin-session-token$sk-test",
-			"devinWebappHost": "app.devin.ai", "devinApiUrl": "https://api.devin.ai",
-		})
-	}))
-	defer fake.Close()
-	oldTok := devinExchangeURL
-	devinExchangeURL = fake.URL
-	t.Cleanup(func() { devinExchangeURL = oldTok })
-
-	st, err := StartSignIn("devin")
-	if err != nil {
-		t.Fatal(err)
-	}
-	u, _ := url.Parse(st.URL)
-	if u.Host != "app.devin.ai" || u.Path != "/auth/cli/continue" {
-		t.Fatalf("url %s", st.URL)
-	}
-	q := u.Query()
-	if q.Get("prompt") != "select_account" || q.Get("code_challenge") == "" ||
-		q.Get("code_challenge_method") != "S256" || q.Get("redirect_uri") == "" || q.Get("state") == "" {
-		t.Fatalf("params %s", st.URL)
-	}
-	page := finishInBrowser(t, st, "dv-code")
-	if !strings.Contains(page, "signed in") {
-		t.Fatalf("page %s", page)
-	}
-	if st = waitDone(t, st.ID); st.State != "done" || st.User != "dev@example.com" || st.Plan != "Devin Pro" || !st.Using {
-		t.Fatalf("state %+v", st)
-	}
-	if gotCode != "dv-code" || gotVerifier == "" || gotRedirect == "" {
-		t.Fatalf("exchange code=%q verifier=%q redirect=%q", gotCode, gotVerifier, gotRedirect)
-	}
-	// credentials.toml as `devin auth login` would write it
-	b, err := os.ReadFile(DevinCredentialsPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{`windsurf_api_key = "devin-session-token$sk-test"`, `api_server_url = "https://server.codeium.com"`} {
-		if !strings.Contains(string(b), want) {
-			t.Fatalf("credentials %s", b)
-		}
-	}
-	// the CLI's own account, the one in use
-	if ls := Logins("devin"); len(ls) != 1 || ls[0].User != "dev@example.com" || !ls[0].Active {
-		t.Fatalf("logins %v", ls)
-	}
-}
-
-// TestDevinSeveralAccounts signs a second Devin account in beside the CLI's
-// own: it gets a home of magpie's, the CLI's file is left alone, and the
-// gateway can use either.
-func TestDevinSeveralAccounts(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake devin is a shell script")
-	}
-	home := claudeHome(t)
-	data := filepath.Join(home, "data")
-	t.Setenv("XDG_DATA_HOME", data)
-	os.MkdirAll(filepath.Join(data, "devin"), 0o700)
-	own := string(devinCredentials("devin-session-token$own", "", "", ""))
-	os.WriteFile(filepath.Join(data, "devin", "credentials.toml"), []byte(own), 0o600)
-
-	// a CLI that says whose key is in the credentials.toml of its data folder
-	exe := filepath.Join(home, "devin")
-	testenv.Program(t, exe, `#!/bin/sh
-f="$XDG_DATA_HOME/devin/credentials.toml"
-[ -f "$f" ] || { echo "Not logged in"; exit 1; }
-if grep -q own "$f"; then who=dev@example.com; tier="Devin Pro"; else who=two@example.com; tier="Devin Max"; fi
-printf 'Logged in (via Devin).
-
-User:
-  Email:             %s
-
-Account:
-  Tier:              %s
-' "$who" "$tier"
-`)
-	oldExe := DevinExecutable
-	DevinExecutable = func() string { return exe }
-	t.Cleanup(func() { DevinExecutable = oldExe })
-	forgetDevinStatus()
-	t.Cleanup(forgetDevinStatus)
-
-	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{
-			"sessionToken":    "devin-session-token$two",
-			"devinWebappHost": "app.devin.ai", "devinApiUrl": "https://api.devin.ai",
-		})
-	}))
-	defer fake.Close()
-	oldTok := devinExchangeURL
-	devinExchangeURL = fake.URL
-	t.Cleanup(func() { devinExchangeURL = oldTok })
-
-	signIn := func() SignInState {
-		st, err := StartSignIn("devin")
-		if err != nil {
-			t.Fatal(err)
-		}
-		finishInBrowser(t, st, "dv-code")
-		return waitDone(t, st.ID)
-	}
-	if st := signIn(); st.State != "done" || st.User != "two@example.com" || st.Plan != "Devin Max" || st.Using {
-		t.Fatalf("state %+v", st)
-	}
-	// the CLI's own sign-in is as it was
-	if b, _ := os.ReadFile(DevinCredentialsPath()); string(b) != own {
-		t.Fatalf("CLI credentials %s", b)
-	}
-	ls := devinLogins()
-	if len(ls) != 2 || ls[0].User != "dev@example.com" || ls[0].Home != "" || !ls[0].Active ||
-		ls[1].User != "two@example.com" || ls[1].Home == "" || !ls[1].On {
-		t.Fatalf("logins %+v", ls)
-	}
-	if key, _, err := DevinAuthAt(ls[1].Home); err != nil || key != "devin-session-token$two" {
-		t.Fatalf("second key %q %v", key, err)
-	}
-	p, ok := devinAccount()
-	if !ok || p.Account.User != "dev@example.com" || p.Account.Plan != "Devin Pro" {
-		t.Fatalf("account %+v", p.Account)
-	}
-	also := p.AlsoOn()
-	if len(also) != 1 || also[0].Account.User != "two@example.com" || also[0].Account.Home != ls[1].Home {
-		t.Fatalf("also on %+v", also)
-	}
-
-	// signed in again, it is still the one account, in its newer home
-	first := ls[1].Home
-	signIn()
-	if ls = devinLogins(); len(ls) != 2 || ls[1].Home == first {
-		t.Fatalf("again %+v", ls)
-	}
-	if _, err := os.Stat(first); !os.IsNotExist(err) {
-		t.Fatalf("old home kept: %v", err)
-	}
-
-	// switched, the gateway uses it first
-	if err := SwitchLogin("devin", "two@example.com"); err != nil {
-		t.Fatal(err)
-	}
-	if p, _ := devinAccount(); p.Account.User != "two@example.com" || p.Account.Home != ls[1].Home {
-		t.Fatalf("switched %+v", p.Account)
-	}
-	if err := SwitchLogin("devin", "dev@example.com"); err != nil {
-		t.Fatal(err)
-	}
-	if err := ForgetLogin("devin", "two@example.com"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(ls[1].Home); !os.IsNotExist(err) {
-		t.Fatalf("home kept: %v", err)
-	}
-	if ls = devinLogins(); len(ls) != 1 || ls[0].User != "dev@example.com" {
-		t.Fatalf("after forget %+v", ls)
-	}
-}
-
 // devinSigned is the CLI's own report, as `devin auth status` prints it.
 const devinSigned = `printf 'Logged in (via Devin).\n\nUser:\n  Email:             dev@example.com\n\nAccount:\n  Tier:              Devin Pro\n'`
 
@@ -387,7 +207,7 @@ func fakeDevin(t *testing.T, exe string) {
 		devinStatus.Lock()
 		devinStatus.user, devinStatus.plan, devinStatus.ok = "", "", false
 		devinStatus.Unlock()
-		forgetDevinStatus()
+		devinStatus.forget()
 	})
 }
 

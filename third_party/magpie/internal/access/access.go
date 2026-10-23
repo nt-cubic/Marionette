@@ -206,6 +206,12 @@ func List() ([]Key, error) {
 // requests the gateway takes only with a named key; "" while the gateway
 // isn't shared, or that key is off.
 func LANSecret() string {
+	// not shared, the usual case, is told by the settings alone, before
+	// the lock: taken first, every agent's sync (keeping) made and locked
+	// caller-keys.json.lock, ~100 times in a start's first 20s (#1665)
+	if !settings.Load().LAN {
+		return ""
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	s := settings.Load()
@@ -226,6 +232,31 @@ func LANSecret() string {
 		return s.LANKey
 	}
 	return ""
+}
+
+// Default says secret is the sharing key magpie itself made (the default
+// key ConfigureLAN keeps), whether sharing is on now or not: magpie's own,
+// never one the user brought, so a write that keeps "a caller key of the
+// gateway's own the user put there" must not keep it (#2545: with sharing
+// off the key stays enabled in the store, Authenticate still took it, and
+// Rekey could no longer bring gateway.Token back). An older magpie kept it
+// in the settings alone; that value answers too, short of its revoked
+// mirror.
+func Default(secret string) bool {
+	if secret == "" {
+		return false
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	s := settings.Load()
+	keys, err := load()
+	if err == nil {
+		if i := slices.IndexFunc(keys, func(k Key) bool { return k.LAN || k.ID == s.LANKeyID }); i >= 0 {
+			return subtle.ConstantTimeCompare([]byte(secret), []byte(keys[i].Secret)) == 1
+		}
+	}
+	return s.LANKey != "" && !strings.HasPrefix(s.LANKey, revokedLANPrefix) &&
+		subtle.ConstantTimeCompare([]byte(secret), []byte(s.LANKey)) == 1
 }
 
 // Export returns credentials only for the encrypted backup bundle.

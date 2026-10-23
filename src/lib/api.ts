@@ -544,16 +544,22 @@ export async function startAcpSession(
   return invoke<CapabilitySnapshot>("start_acp_session", { sessionId, command, args, cwd });
 }
 
+/**
+ * @param probe true = 本地探针回合（额度刷新发的 /status、/usage）：
+ * Telegram 桥、桌面提醒与 orb 通知在该回合完成时全部静默。
+ */
 export async function sendAcpPrompt(
   sessionId: string,
   text: string,
   imagePaths: string[] = [],
+  probe = false,
 ): Promise<unknown> {
   if (!isTauriRuntime()) return null;
   return invoke("send_acp_prompt", {
     sessionId,
     text,
     imagePaths: imagePaths.length > 0 ? imagePaths : null,
+    probe: probe || null,
   });
 }
 
@@ -1191,6 +1197,41 @@ export async function engineStop(): Promise<void> {
   } catch {
     // stop is best-effort; the popover refreshes state right after anyway.
   }
+}
+
+/** Result of comparing local magpie with GitHub latest stable. */
+export type EngineUpdateInfo = {
+  currentVersion?: string | null;
+  embeddedVersion?: string | null;
+  latestVersion?: string | null;
+  updateAvailable: boolean;
+  canRestoreFactory: boolean;
+  note?: string | null;
+};
+
+/** Check whether a newer stable magpie is on GitHub. */
+export async function engineCheckUpdate(): Promise<EngineUpdateInfo | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await invoke<EngineUpdateInfo>("engine_check_update");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Download GitHub latest stable CLI into ~/.marionette/engine (local authority)
+ * and restart the gateway. UI follows download/state events.
+ */
+export async function engineUpdate(): Promise<EngineStatus | null> {
+  if (!isTauriRuntime()) return null;
+  return await invoke<EngineStatus>("engine_update");
+}
+
+/** Re-extract the factory seed baked into the exe, then restart the gateway. */
+export async function engineRestoreFactory(): Promise<EngineStatus | null> {
+  if (!isTauriRuntime()) return null;
+  return await invoke<EngineStatus>("engine_restore_factory");
 }
 
 /** Agent proxy config: single exit address injected into spawned agents. */

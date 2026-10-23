@@ -75,7 +75,7 @@ func readOpenCodeAuth(path string) ([]AppImport, error) {
 		case strings.TrimSpace(e.Key) == "":
 			skip = "it has no API key"
 		default:
-			it.Provider, skip = imported(name, strings.TrimSpace(e.Key), endpoints{pr.Chat, pr.Responses, pr.Anthropic}, nil)
+			it.Provider, skip = imported(name, strings.TrimSpace(e.Key), endpoints{pr.Chat, pr.Responses, pr.Anthropic, ""}, nil)
 		}
 		if skip != "" {
 			it.Provider, it.Skip = Provider{Name: name}, skip

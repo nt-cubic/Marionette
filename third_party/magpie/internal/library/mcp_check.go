@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/yetone/magpie/internal/mcpauth"
 	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/proc"
+	"github.com/yetone/magpie/internal/wslrun"
 )
 
 // The Library page says of each server whether it works, found the only
@@ -43,7 +45,8 @@ type ServerHealth struct {
 	// Why is the kind of error, for the page to put in its own words:
 	// notfound, start, exited, timeout, http, refused, unreachable,
 	// protocol, novar (a ${NAME} magpie's environment hasn't: Detail names
-	// them)
+	// them), wsldown (a command only agents in WSL start, whose distros,
+	// Detail, aren't running: it wasn't checked)
 	Why    string `json:"why,omitempty"`
 	Code   int    `json:"code,omitempty"`   // the exit code, or the HTTP status
 	Detail string `json:"detail,omitempty"` // the last line it wrote to stderr, or the error's text
@@ -59,7 +62,12 @@ type ServerHealth struct {
 	// SSE server's stream), and Waited how long it was waited for, in ms
 	Step   string `json:"step,omitempty"`
 	Waited int64  `json:"waited,omitempty"`
-	At     int64  `json:"at"` // when it was checked, unix ms
+	// Checked are where a command was started, in order, for one that agents
+	// in WSL have (mcp_check_wsl.go): "" for this machine, a distro's name
+	// for its agents there. A failure is the last one's; none for a
+	// command only this machine's agents start.
+	Checked []string `json:"checked,omitempty"`
+	At      int64    `json:"at"` // when it was checked, unix ms
 }
 
 // Each step of a check (initialize, notifications/initialized, tools/list)
@@ -105,7 +113,12 @@ func healthKey(s *Server) string {
 	c.Name, c.Agents = "", nil
 	b, _ := json.Marshal(c)
 	st := mcpauth.StatusOf(s.Name, s.URL)
-	return fmt.Sprintf("%s|%v|%v|%d", b, st.SignedIn, st.Dead, st.At)
+	// and where a command is started, which its agents decide
+	var sides []string
+	if s.Transport == "stdio" {
+		sides = checkSides(s)
+	}
+	return fmt.Sprintf("%s|%v|%v|%d|%q", b, st.SignedIn, st.Dead, st.At, sides)
 }
 
 // CheckServers checks the library's servers called names (every one when
@@ -423,14 +436,72 @@ func (t *tail) last() string {
 	return l
 }
 
+// checkStdio starts the command where the agents given it start it
+// (checkSides), each place in turn; the first failure is the answer.
 func checkStdio(ctx context.Context, s *Server) ServerHealth {
+	sides := checkSides(s)
+	if len(sides) == 1 && sides[0] == "" {
+		return checkStdioAt(ctx, s, "")
+	}
+	var done, down []string
+	var first *ServerHealth
+	for _, d := range sides {
+		if len(done) > 0 {
+			stepTo(ctx, "initialize")
+		}
+		h := checkStdioAt(ctx, s, d)
+		if h.Why == "wsldown" {
+			down = append(down, d)
+			continue
+		}
+		done = append(done, d)
+		h.Checked = slices.Clone(done)
+		if h.State != "ok" {
+			return h
+		}
+		if first == nil {
+			first = &h
+		}
+	}
+	if first == nil {
+		return failed("wsldown", strings.Join(down, ", "))
+	}
+	first.Checked = done
+	return *first
+}
+
+// checkStdioAt starts the command on this machine, or in WSL distro.
+func checkStdioAt(ctx context.Context, s *Server, distro string) ServerHealth {
 	// started as the agents start it: in the environment magpie has, with
 	// the server's own variables over it
 	env, unset := expandAll(s.Env)
 	if len(unset) > 0 {
 		return failed("novar", strings.Join(unset, ", "))
 	}
-	cmd := proc.Command(s.Command, s.Args...)
+	var cmd *exec.Cmd
+	var t wslrun.Tool
+	stop := func() {}
+	if distro == "" {
+		cmd = proc.Command(s.Command, s.Args...)
+	} else {
+		var err error
+		t, err = wslrun.In(distro, s.Command)
+		switch {
+		case errors.Is(err, wslrun.ErrDown):
+			return failed("wsldown", distro)
+		case errors.Is(err, wslrun.ErrNotFound):
+			return failed("notfound", s.Command)
+		case err != nil:
+			return failed("start", "wsl.exe -d "+distro+": "+err.Error())
+		}
+		// its own context, ended with the check, which ends the run inside
+		// the distro too (killing wsl.exe alone leaves it there); not the
+		// check's, whose timeout is told as one rather than as an exit
+		var rctx context.Context
+		rctx, stop = context.WithCancel(context.WithoutCancel(ctx))
+		cmd = wslCommand(rctx, t, s.Args...)
+	}
+	defer stop()
 	// Agents start MCP servers from a project or home directory. A magpie
 	// launched from a shortcut (Windows Start menu) often has C:\Windows\system32
 	// as its own cwd, which is not writable; inherit that and a server that
@@ -441,12 +512,20 @@ func checkStdio(ctx context.Context, s *Server) ServerHealth {
 		// and PWD with it, as exec does itself only when Env is nil: a
 		// shell-script server that reads $PWD would otherwise see magpie's
 		// own folder while it runs in home (Windows doesn't use PWD)
-		if runtime.GOOS != "windows" {
+		if runtime.GOOS != "windows" && distro == "" {
 			cmd.Env = append(cmd.Env, "PWD="+d)
 		}
 	}
+	var names []string
 	for k, v := range env {
 		cmd.Env = append(cmd.Env, k+"="+v)
+		names = append(names, k)
+	}
+	if distro != "" {
+		// a run in the distro is given the server's own variables, by
+		// WSLENV, and none of Windows' others
+		slices.Sort(names)
+		cmd.Env = t.Env(cmd.Env, names...)
 	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -471,6 +550,7 @@ func checkStdio(ctx context.Context, s *Server) ServerHealth {
 	// the server ends with the check, and whatever it started with it
 	defer func() {
 		stdin.Close()
+		stop()
 		tree.Kill()
 		select {
 		case <-exited:

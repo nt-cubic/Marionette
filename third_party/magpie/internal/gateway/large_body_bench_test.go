@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
@@ -110,8 +111,13 @@ func BenchmarkLargeRequest(b *testing.B) {
 			b.SetBytes(int64(len(body)))
 			b.ResetTimer()
 			for range b.N {
+				// a served request's context ends with it, as a server's
+				// does: one that never ends isn't held (holdBody), and
+				// every reader of it decodes it again
+				ctx, done := context.WithCancel(context.Background())
 				rec := httptest.NewRecorder()
-				s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", tc.path, bytes.NewReader(body)))
+				s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", tc.path, bytes.NewReader(body)).WithContext(ctx))
+				done()
 				if rec.Code != 200 || f.calls == 0 {
 					b.Fatalf("%d %s", rec.Code, rec.Body.String())
 				}

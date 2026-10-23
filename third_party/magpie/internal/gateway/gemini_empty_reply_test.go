@@ -1,16 +1,13 @@
 package gateway
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/yetone/magpie/internal/provider"
 )
@@ -20,8 +17,8 @@ import (
 // agent as an error in its own protocol, never a turn ended as it should
 // (#667: antigravity/gemini-3.8-flash handed pi content [] and zero usage
 // as a normal stop, and the agent's run ended mid-task). Antigravity's
-// Code Assist and Factory's Gemini route share the decoder and translate;
-// Factory's is the one a test can point at a fake upstream.
+// Code Assist and a Gemini API share the decoder and translate; a Gemini
+// API of the user's own is the one a test can point at a fake upstream.
 func TestGeminiEmptyReplyIsAnError(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -33,24 +30,9 @@ func TestGeminiEmptyReplyIsAnError(t *testing.T) {
 	f := &fake{t: t}
 	up := httptest.NewServer(f)
 	t.Cleanup(up.Close)
-	t.Cleanup(provider.FactoryBaseForTest(up.URL, up.URL+"/eu"))
-	auth, _ := json.Marshal(map[string]any{
-		"accessToken": "tok", "refreshToken": "r",
-		"expiresAt": time.Now().Add(time.Hour).UnixMilli(),
-		"orgId":     "org_D", "activeOrganizationId": "fac_D", "email": "d@example.com",
-	})
-	dir := filepath.Dir(provider.Path())
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	raw, _ := json.Marshal([]map[string]any{{
-		"agent": "factory", "user": "d@example.com", "plan": "pro", "on": true, "auth": json.RawMessage(auth),
-	}})
-	if err := os.WriteFile(filepath.Join(dir, "logins.json"), raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	saveGem(t, up.URL, "gemini-3.8-flash")
 
-	const model = "factory/gemini-3.8-flash"
+	const model = "gem/gemini-3.8-flash"
 	asks := []struct{ name, path, body, ended string }{
 		{"chat", "/v1/chat/completions", `{"model":"` + model + `","stream":true,"messages":[{"role":"user","content":"hi"}]}`, `"finish_reason":"stop"`},
 		{"anthropic", "/v1/messages", `{"model":"` + model + `","stream":true,"max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`, `"end_turn"`},
@@ -120,24 +102,9 @@ func TestGeminiEmptyRepliesAskedAgain(t *testing.T) {
 		io.WriteString(w, `data: {"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP"}]}`+"\n\n")
 	}))
 	t.Cleanup(up.Close)
-	t.Cleanup(provider.FactoryBaseForTest(up.URL, up.URL+"/eu"))
-	auth, _ := json.Marshal(map[string]any{
-		"accessToken": "tok", "refreshToken": "r",
-		"expiresAt": time.Now().Add(time.Hour).UnixMilli(),
-		"orgId":     "org_D", "activeOrganizationId": "fac_D", "email": "d@example.com",
-	})
-	dir := filepath.Dir(provider.Path())
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	raw, _ := json.Marshal([]map[string]any{{
-		"agent": "factory", "user": "d@example.com", "plan": "pro", "on": true, "auth": json.RawMessage(auth),
-	}})
-	if err := os.WriteFile(filepath.Join(dir, "logins.json"), raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	saveGem(t, up.URL, "gemini-3.8-flash")
 
-	const model = "factory/gemini-3.8-flash"
+	const model = "gem/gemini-3.8-flash"
 	for _, a := range []struct{ name, path, body string }{
 		{"chat", "/v1/chat/completions", `{"model":"` + model + `","stream":true,"messages":[{"role":"user","content":"hi"}]}`},
 		{"anthropic", "/v1/messages", `{"model":"` + model + `","stream":true,"max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`},
@@ -207,5 +174,13 @@ func TestGeminiEmptyReplyGroupFailover(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// saveGem saves a Gemini API of the user's own at up, serving models.
+func saveGem(t *testing.T, up string, models ...string) {
+	t.Helper()
+	if err := provider.Save(provider.Provider{ID: "gem", Name: "Gem", Key: "AIza-test", Gemini: up + "/v1beta", Models: models}); err != nil {
+		t.Fatal(err)
 	}
 }

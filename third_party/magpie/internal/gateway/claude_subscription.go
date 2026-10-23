@@ -142,12 +142,19 @@ type subscriptionRun struct {
 	exit   error
 	killed bool
 	tmp    string
+	// room frees the process's place in claudeRoom once it has exited,
+	// roomLeft telling it magpie ended it (abort)
+	room     func(left bool)
+	roomLeft bool
 	// schema says the client asked for an answer fitting a JSON schema,
 	// which Claude Code gives as its StructuredOutput call
 	schema bool
 
 	// the tools its agent was told of, as it started and since
 	tools map[string]bool
+	// names is the caller's name of each tool by the name the run's agent
+	// has it under (bridgeToolName), for those it differs: under r.mu
+	names map[string]string
 
 	mu sync.Mutex
 	// sending is held across a send to the segment and taken before it is
@@ -537,6 +544,14 @@ func (c claudeCLI) env(env []string, configDir string) []string {
 	return c.wsl.Env(env, names...)
 }
 
+// proxied is env told the proxy a run for ctx goes through (claudeProxy),
+// a SOCKS one bridged: Claude Code is built with Bun, which takes only
+// http:// and https:// proxies (#2651). One in a WSL distro reaches the
+// bridge only when the distro shares Windows' loopback.
+func (c claudeCLI) proxied(ctx context.Context, env []string) ([]string, error) {
+	return netproxy.EnvForBunWith(claudeProxy(ctx), env, c.wsl == nil || c.wsl.Host == "")
+}
+
 // file is where this Claude Code reads a file of magpie's at path: one in
 // WSL under the distro's mount of the drive.
 func (c claudeCLI) file(path string) string {
@@ -579,7 +594,9 @@ const claudeMCPPath = "/_magpie/claude-mcp/"
 // (FrierenF on Discord).
 func (b *subscriptionBridge) start(ctx context.Context, req *Request, model, configDir, owner string, from *savedSession) (*subscriptionRun, <-chan Event, error) {
 	run, events, err := b.startRun(ctx, req, model, configDir, owner, from)
-	if err != nil && from != nil {
+	var full *claudeFull
+	var refused *cliSchemaRefused
+	if err != nil && from != nil && !errors.As(err, &full) && !errors.As(err, &refused) && ctx.Err() == nil {
 		log.Printf("claude: Claude Code could not go on from the conversation's saved session (%v); a new one is told the whole conversation", err)
 		return b.startRun(ctx, req, model, configDir, owner, nil)
 	}
@@ -596,6 +613,18 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	if err != nil {
 		return nil, nil, err
 	}
+	// a place among the Claude Code processes this machine holds (#2956),
+	// freed as the process exits, or here if it never starts
+	room, err := claudeRoom.take(ctx, "a Claude Code run on "+model)
+	if err != nil {
+		return nil, nil, err
+	}
+	launched := false
+	defer func() {
+		if !launched {
+			room(false)
+		}
+	}()
 	b.sweep.Do(func() {
 		go func() {
 			sweepBridgeProjects(claudeConfigDir(), os.TempDir())
@@ -648,7 +677,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 		args = append(args, "--thinking", "disabled")
 	}
 	if len(req.Format.schema()) > 0 {
-		args = append(args, "--json-schema", string(req.Format.schema()))
+		args = append(args, "--json-schema", string(cliSchema(req.Format.schema())))
 	}
 	work, err := claudeWorkDir()
 	var sessions []string
@@ -696,7 +725,11 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	}
 	cmd := binary.command(context.Background(), args...)
 	cmd.Dir = work
-	env := netproxy.EnvWith(claudeProxy(ctx), cleanClaudeEnv(os.Environ()))
+	env, err := binary.proxied(ctx, cleanClaudeEnv(os.Environ()))
+	if err != nil {
+		cleanup()
+		return nil, nil, err
+	}
 	if req.clientCache != nil {
 		env = append(env, "DISABLE_PROMPT_CACHING=1")
 	}
@@ -727,6 +760,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	cmd.Stdout, cmd.Stderr = stdoutW, stderrW
 
 	run := &subscriptionRun{bridge: b, token: token, model: model, cmd: cmd, tmp: tmp, schema: len(req.Format.schema()) > 0, pending: map[string]chan mcpToolResult{}, stdin: stdin, owner: owner, effort: req.Effort, sessions: sessions}
+	run.names = bridgeNames(req.Tools)
 	run.safeguardBeta = req.SafeguardBeta
 	run.clientMarks = req.clientCache != nil
 	run.lean = req.leanPrompt
@@ -745,7 +779,9 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 
 	run.outputs = []*os.File{stdout, stderr}
 	run.reading.Add(2)
+	run.room = room
 	err = run.launch()
+	launched = err == nil
 	_, _ = stdoutW.Close(), stderrW.Close() // Claude Code has its own
 	if err != nil {
 		_, _ = stdout.Close(), stderr.Close()
@@ -1356,6 +1392,7 @@ func (b *subscriptionBridge) keepIdle(r *subscriptionRun, key, conv string) bool
 	for _, run := range drop {
 		run.abortFor("another run was kept in its place (" + strconv.Itoa(idleMost) + " wait at most)")
 	}
+	claudeRoom.nudge() // an ask waiting for room may let it go
 	return true
 }
 
@@ -2106,6 +2143,7 @@ func (r *subscriptionRun) readOutput(rd io.Reader) {
 		}
 		name, ok := strings.CutPrefix(name, "mcp__magpie__")
 		r.mu.Lock()
+		name = declaredName(r.names, name)
 		search := r.search != nil && name == r.searchName
 		r.mu.Unlock()
 		// magpie answers its own web search, as Claude Code does
@@ -2765,7 +2803,53 @@ func historyEnd(msgs []Message) int {
 // "Bash is disabled for this session, in subagents as well as here.",
 // which the model takes for a fact and gives up (#958).
 func bridgeName(name string) string {
-	return "mcp__magpie__" + name
+	return "mcp__magpie__" + bridgeToolName(name)
+}
+
+// bridgeToolName is the name the MCP helper offers a tool of the caller's
+// under. Claude Code takes an MCP tool's name as [A-Za-z0-9_-] only, with
+// mcp__magpie__ before it in at most 64: it made "spawn.agent" its
+// spawn_agent, which the client never offered (#2649). A name it would
+// change, or one ending as a changed name ends, is told apart by a hash of
+// it, the same in every run, so a resumed session and a conversation's
+// history name the tool as before; declaredName maps it back.
+func bridgeToolName(name string) string {
+	if bridgeToolNameOK.MatchString(name) && !bridgeToolNameHashed.MatchString(name) {
+		return name
+	}
+	sum := sha256.Sum256([]byte(name))
+	short := bridgeToolNameBad.ReplaceAllString(name, "_")
+	if len(short) > 38 {
+		short = short[:38]
+	}
+	return short + "_" + hex.EncodeToString(sum[:6])
+}
+
+var (
+	bridgeToolNameOK     = regexp.MustCompile(`^[A-Za-z0-9_-]{1,51}$`)
+	bridgeToolNameBad    = regexp.MustCompile(`[^A-Za-z0-9_-]`)
+	bridgeToolNameHashed = regexp.MustCompile(`_[0-9a-f]{12}$`)
+)
+
+// bridgeNames is the caller's name of each of tools by the name the MCP
+// helper offers it under, for those that differ (bridgeToolName).
+func bridgeNames(tools []Tool) map[string]string {
+	names := map[string]string{}
+	for _, t := range tools {
+		if b := bridgeToolName(t.Name); b != t.Name {
+			names[b] = t.Name
+		}
+	}
+	return names
+}
+
+// declaredName is the caller's name of the tool the run's agent called
+// name, by the names it was offered under (bridgeNames).
+func declaredName(names map[string]string, name string) string {
+	if n, ok := names[name]; ok {
+		return n
+	}
+	return name
 }
 
 // offeredTools is the names of the caller's tools, whose past calls a run
@@ -3430,6 +3514,7 @@ func (b *subscriptionBridge) mcpCall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	run.mu.Lock()
+	call.Name = declaredName(run.names, call.Name)
 	search, searchName := run.search, run.searchName
 	run.mu.Unlock()
 	if search != nil && call.Name == searchName {
@@ -3574,10 +3659,20 @@ func (r *subscriptionRun) launch() error {
 	go func() {
 		err := t.Wait()
 		r.drain()
+		// exited closes under mu, which abort reads it under: a run it
+		// counts as leaving the room is one whose room is freed here
 		r.mu.Lock()
 		r.exit = err
-		r.mu.Unlock()
 		close(exited)
+		room, left := r.room, r.roomLeft
+		r.room = nil
+		r.mu.Unlock()
+		if room != nil {
+			room(left)
+		}
+		if err := r.schemaEnded(); err != nil {
+			r.emit(Event{Kind: KError, Text: err.Error(), Status: http.StatusBadRequest})
+		}
 		r.finish()
 	}()
 	return nil
@@ -3632,11 +3727,73 @@ func (r *subscriptionRun) endedBefore(what string) error {
 	} else if r.exit != nil {
 		why += " (" + r.exit.Error() + ")"
 	}
-	if said := strings.TrimSpace(r.stderr.String()); said != "" {
+	said := strings.TrimSpace(r.stderr.String())
+	if at := cliSchemaWords.FindStringIndex(said); at != nil {
+		// its words from the flag on, which a long list of Ajv's
+		// errors after them would push out of the tail
+		said = said[at[0]:]
+		if len(said) > 300 {
+			said = strings.ToValidUTF8(said[:300], "") + "…"
+		}
+		return &cliSchemaRefused{why + ": " + said}
+	}
+	if said != "" {
 		why += ": " + clipTail(said, 300)
 	}
 	return errors.New(why)
 }
+
+// schemaEnded is the error of a run whose Claude Code took its input and
+// then ended over its --json-schema, nil for any other end: it checks the
+// schema while it starts, and its input may be taken before it gets to
+// it, so the turn told it heard no answer, and was "ended without an
+// answer", a 502 asked again.
+func (r *subscriptionRun) schemaEnded() error {
+	r.mu.Lock()
+	killed, said := r.killed, r.stderr.String()
+	r.mu.Unlock()
+	if killed || !cliSchemaWords.MatchString(said) {
+		return nil
+	}
+	return r.endedBefore("answered")
+}
+
+// cliSchema is a schema as Claude Code's --json-schema takes it: without
+// its root $schema. Claude Code checks the schema with Ajv's default
+// class, which knows draft-07's meta-schema alone, and exits "no schema
+// with key or ref" over any other a schema names, as Codex's titles name
+// draft 2020-12 (zod's toJSONSchema), before it reads its input (#3036).
+// Without it the schema is read as draft-07. The rest is kept as written:
+// $id, $defs and a $schema below the root pass Ajv as they are.
+func cliSchema(raw json.RawMessage) json.RawMessage {
+	var root map[string]json.RawMessage
+	if json.Unmarshal(raw, &root) != nil {
+		return raw
+	}
+	if _, ok := root["$schema"]; !ok {
+		return raw
+	}
+	delete(root, "$schema")
+	out, err := json.Marshal(root)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+// cliSchemaWords are how Claude Code exits over the --json-schema it was
+// given, before it reads its input: not JSON, not an object, or a schema
+// its Ajv won't compile ("strict mode: unknown keyword" for one only a
+// later draft has).
+var cliSchemaWords = regexp.MustCompile(`--json-schema (is not a valid JSON Schema|is not valid JSON|must be a JSON object)`)
+
+// cliSchemaRefused is a run's Claude Code ending over the request's schema:
+// it ends the same for the same schema on every account and every try,
+// so it is the request's 400, neither asked again nor of the next
+// account, and no account rests for it (#3036: asked three times).
+type cliSchemaRefused struct{ msg string }
+
+func (e *cliSchemaRefused) Error() string { return e.msg }
 
 // clipTail is s's last n bytes at most, cut at a rune, "…" before them
 // where some went.
@@ -3689,6 +3846,11 @@ func (r *subscriptionRun) abort() <-chan struct{} {
 		select {
 		case <-r.exited:
 		default:
+			if !r.killed && r.room != nil {
+				// asks waiting for room count it as ending
+				r.roomLeft = true
+				claudeRoom.leave()
+			}
 			r.killed = true
 		}
 	}
@@ -4076,6 +4238,10 @@ func (s *Server) serveSubscription(w http.ResponseWriter, r *http.Request, from 
 			for _, t := range req.Tools {
 				run.tools[t.Name] = true
 			}
+			if run.names == nil {
+				run.names = map[string]string{}
+			}
+			maps.Copy(run.names, bridgeNames(req.Tools))
 			run.mu.Unlock()
 		}
 		if err == nil {
@@ -4114,7 +4280,17 @@ func (s *Server) serveSubscription(w http.ResponseWriter, r *http.Request, from 
 		}
 	}
 	if err != nil {
-		return writeError(w, from, 502, name+": "+err.Error()), err.Error()
+		// no room for another Claude Code on this machine is no fault of
+		// the account: a 503 passes it to the next (#2956)
+		code := 502
+		var full *claudeFull
+		var refused *cliSchemaRefused
+		if errors.As(err, &full) {
+			code = 503
+		} else if errors.As(err, &refused) {
+			code = 400
+		}
+		return writeError(w, from, code, name+": "+err.Error()), err.Error()
 	}
 	cacheDropped(w, req)
 	run.heard(req.Messages)
@@ -4306,7 +4482,7 @@ func bridgeTools(req *Request) []bridgeTool {
 		if len(schema) == 0 {
 			schema = json.RawMessage(`{"type":"object","properties":{}}`)
 		}
-		tools = append(tools, bridgeTool{Name: t.Name, Description: t.Description, InputSchema: schema})
+		tools = append(tools, bridgeTool{Name: bridgeToolName(t.Name), Description: t.Description, InputSchema: schema})
 	}
 	return tools
 }

@@ -24,6 +24,14 @@ func GitHubToken() (token, from string) { return ghtoken.Token() }
 // GitHub's API (githubAPI's host); it says whether it did.
 func withGitHubToken(req *http.Request) bool { return ghtoken.Authorize(req, githubAPI) }
 
+// doGitHub sends req with send, carrying the token as withGitHubToken
+// does, and says whether the answer is to a request that carried it: an
+// environment token GitHub refuses is dropped and req sent again without
+// it (ghtoken.Do).
+func doGitHub(req *http.Request, send func(*http.Request) (*http.Response, error)) (*http.Response, bool, error) {
+	return ghtoken.Do(req, githubAPI, send)
+}
+
 // errLimited is GitHub turning requests away for a while.
 type errLimited = ghtoken.Limited
 

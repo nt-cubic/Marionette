@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"testing"
 	"time"
 )
 
@@ -66,6 +67,7 @@ func servedOf(id string) string {
 func ours(path string) map[string]time.Time {
 	if servedAt.path != path {
 		servedAt.path, servedAt.m, servedAt.by = path, map[string]time.Time{}, map[string]string{}
+		servedFlush.pending = false // what was noted for the other file isn't this one's
 	}
 	return servedAt.m
 }
@@ -85,14 +87,44 @@ func ServedID(p Provider) string {
 	return p.ID
 }
 
-// NoteServed records that p just answered a request, at at.
+// servedFlushAfter is how long NoteServed waits before it writes the file:
+// what is noted meanwhile goes in the same write, so a gateway answering
+// many requests a second writes it once in a while, not once a request
+// (a read, a write and a rename on every answer). A crash loses what was
+// noted in that last moment; FlushServed, as the gateway ends, loses
+// nothing. In a test binary it is 0, the file written at once, as it
+// was: a write waiting outlived the test that noted it and wrote into its
+// temp folder as the folder was being removed ("directory not empty").
+var servedFlushAfter = writeBehind(2 * time.Second)
+
+// writeBehind is d, or 0 in a test binary: no timer outlives a test.
+func writeBehind(d time.Duration) time.Duration {
+	if testing.Testing() {
+		return 0
+	}
+	return d
+}
+
+// servedFlush is the write NoteServed has waiting, and the one being made.
+var servedFlush struct {
+	sync.Mutex        // one write of the file at a time
+	pending    bool   // a write is waiting (servedAt held to read or set it)
+	writes     uint64 // the writes made, for tests
+}
+
+// NoteServed records that p just answered a request, at at. The file
+// follows within servedFlushAfter (FlushServed): this process's LastServed
+// has it at once.
 func NoteServed(p Provider, at time.Time) {
 	id := ServedID(p)
 	path := servedPath()
 	servedAt.Lock()
-	moved := false
+	moved, now := false, false
 	defer func() {
 		servedAt.Unlock()
+		if now {
+			flushServed(path)
+		}
 		if moved {
 			servedMoved()
 		}
@@ -108,19 +140,51 @@ func NoteServed(p Provider, at time.Time) {
 		moved = true
 		servedAt.by[of] = id
 	}
+	if !servedFlush.pending {
+		servedFlush.pending = true
+		if now = servedFlushAfter <= 0; !now {
+			time.AfterFunc(servedFlushAfter, func() { flushServed(path) })
+		}
+	}
+}
+
+// FlushServed writes what NoteServed noted and hasn't written yet: the
+// gateway calls it as it ends.
+func FlushServed() { flushServed(servedPath()) }
+
+// flushServed writes what this process noted to the file at path, merged
+// with what the file holds (another gateway's), when path is still the one
+// noted for: what a test noted under a HOME of its own isn't written into
+// the next one's.
+func flushServed(path string) {
+	servedFlush.Lock()
+	defer servedFlush.Unlock()
+	servedAt.Lock()
+	if !servedFlush.pending || servedAt.path != path {
+		servedAt.Unlock()
+		return
+	}
+	servedFlush.pending = false
+	mine := make(map[string]time.Time, len(servedAt.m))
+	for k, t := range servedAt.m {
+		mine[k] = t
+	}
+	servedAt.Unlock()
 	m := readServed(path)
+	now := time.Now()
 	for k, t := range mine {
 		if t.After(m[k]) {
 			m[k] = t
 		}
 	}
 	for k, t := range m {
-		if at.Sub(t) > servedKeep {
+		if now.Sub(t) > servedKeep {
 			delete(m, k)
 		}
 	}
 	if b, err := json.Marshal(m); err == nil && os.MkdirAll(filepath.Dir(path), 0o700) == nil {
 		writeFileAtomic(path, b)
+		servedFlush.writes++
 	}
 }
 

@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/yetone/magpie/internal/provider"
 )
@@ -245,5 +247,90 @@ func TestNoSearchAPINoTool(t *testing.T) {
 	}
 	if !canSearch() {
 		t.Fatal("a search API set up, and magpie can't search")
+	}
+}
+
+// DeepSeek's Search API (TJHHHH on Discord) is asked as its docs say
+// (api-docs.deepseek.com/guides/search): POST /v1/tools/search with the
+// key as a Bearer and {query, count}, a query cut to its 128 characters.
+// Its reply's summary is the page's text, since content is empty without
+// need_content; snippet stands in when there is no summary, and its date
+// is the page's age. 402 (no balance) and 429 (5 QPS) are refusals that
+// rest the key as out of credit and rate limited.
+func TestDeepSeekSearchAPI(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var mu sync.Mutex
+	var got []map[string]any
+	var paths, auths []string
+	status := 200
+	f := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		json.Unmarshal(b, &body)
+		mu.Lock()
+		got = append(got, body)
+		paths = append(paths, r.Method+" "+r.URL.Path+" "+r.Header.Get("Content-Type"))
+		auths = append(auths, r.Header.Get("Authorization"))
+		st := status
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch st {
+		case 402:
+			w.WriteHeader(402)
+			io.WriteString(w, `{"error":{"message":"Insufficient Balance","type":"unknown_error","param":null,"code":"invalid_request_error"}}`)
+			return
+		case 429:
+			w.WriteHeader(429)
+			io.WriteString(w, `{"error":{"message":"Rate limit reached","type":"rate_limit_error","param":null,"code":"rate_limit_exceeded"}}`)
+			return
+		}
+		io.WriteString(w, `{"results":[`+
+			`{"rerank_score":2.1,"title":"Go downloads","url":"https://go.dev/dl/","snippet":"Download Go.","summary":"Go 1.27.1 is the latest stable release, with binaries for every platform.","content":"","site_name":"Go","site_icon":"https://go.dev/favicon.ico","date":"2026-10-01T00:00:00+00:00","authority":3},`+
+			`{"rerank_score":1.2,"title":"Go release history","url":"https://go.dev/doc/devel/release","snippet":"Release history of Go.","summary":"","content":"","site_name":null,"site_icon":null,"date":null,"authority":-1}`+
+			`]}`)
+	}))
+	t.Cleanup(f.Close)
+	s := New()
+	a := provider.SearchAPI{Vendor: "deepseek", Key: "sk-ds", URL: f.URL}
+	long := strings.Repeat("搜", 200)
+	for _, q := range []string{"latest go", long} {
+		pages, err := s.askSearchAPI(context.Background(), a, q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(pages) != 2 || pages[0].URL != "https://go.dev/dl/" || pages[0].Title != "Go downloads" ||
+			pages[0].Text != "Go 1.27.1 is the latest stable release, with binaries for every platform." ||
+			pages[0].Age != "2026-10-01T00:00:00+00:00" ||
+			pages[1].Text != "Release history of Go." || pages[1].Age != "" {
+			t.Fatalf("pages %+v", pages)
+		}
+	}
+	if paths[0] != "POST /v1/tools/search application/json" || auths[0] != "Bearer sk-ds" {
+		t.Fatalf("asked %q with %q", paths[0], auths[0])
+	}
+	if got[0]["query"] != "latest go" || got[0]["count"] != float64(searchHits) || len(got[0]) != 2 {
+		t.Fatalf("body %v", got[0])
+	}
+	if q, _ := got[1]["query"].(string); q != strings.Repeat("搜", deepseekQueryMax) {
+		t.Fatalf("a long query went as %d characters", len([]rune(q)))
+	}
+	for _, c := range []struct {
+		status int
+		why    string
+	}{{402, "out of credit"}, {429, "rate limited"}} {
+		mu.Lock()
+		status = c.status
+		mu.Unlock()
+		_, err := s.askSearchAPI(context.Background(), a, "q")
+		var r searchRefused
+		if !errors.As(err, &r) || r.status != c.status {
+			t.Fatalf("%d: %v", c.status, err)
+		}
+		if _, why := searchRestFor("deepseek", c.status, "", time.Now()); why != c.why {
+			t.Errorf("%d rests as %q", c.status, why)
+		}
+	}
+	if v, ok := provider.SearchVendorOf("deepseek"); !ok || v.Base != "https://api.deepseek.com" || v.KeyOptional {
+		t.Errorf("vendor %+v", v)
 	}
 }

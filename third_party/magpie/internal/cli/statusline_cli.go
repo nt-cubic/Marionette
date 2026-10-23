@@ -34,7 +34,7 @@ const statuslineUsage = `usage: magpie statusline [<provider|account>…]
   ~/.claude/settings.json yourself (magpie doesn't write it, a status line such as
   claude-hud may hold it):
     "statusLine": {"type": "command", "command": "magpie statusline"}
-  It asks the gateway on this computer (Settings' Gateway port, or MAGPIE_ADDR), never
+  It asks the gateway on this computer (the port in Settings' Gateway address, or MAGPIE_ADDR), never
   a vendor, and prints nothing when the gateway isn't running.`
 
 // statuslineWait bounds each ask of the gateway: Claude Code shows the line

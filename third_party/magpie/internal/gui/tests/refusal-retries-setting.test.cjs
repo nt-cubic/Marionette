@@ -96,14 +96,25 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // nothing (reproduced with six runs at once)
       const click = async (name) => {
         const button = row.locator(".segs button", { hasText: name });
-        await reach(page, button);
-        // the wheel come to rest: WebKit's went on after reach had the row
-        let before = await at();
-        for (let i = 0; i < 40; i++) {
-          await page.waitForTimeout(100);
-          const now = await at();
-          if (JSON.stringify(now) === JSON.stringify(before)) break;
-          before = now;
+        // the wheel come to rest: WebKit's went on after reach had the row,
+        // and at 420 carried All under the window's foot once Image
+        // generation timeout was drawn above, so it is reached again until
+        // it is still clear when the wheel has stopped
+        let before;
+        for (let tries = 0; tries < 5; tries++) {
+          await reach(page, button);
+          before = await at();
+          for (let i = 0; i < 40; i++) {
+            await page.waitForTimeout(100);
+            const now = await at();
+            if (JSON.stringify(now) === JSON.stringify(before)) break;
+            before = now;
+          }
+          const clear = await button.evaluate((e) => {
+            const b = e.getBoundingClientRect(), hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+            return !!hit && (e === hit || e.contains(hit));
+          });
+          if (clear) break;
         }
         const b = await button.boundingBox();
         await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2);

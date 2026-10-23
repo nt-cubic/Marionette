@@ -17,7 +17,7 @@ import (
 // remembered of when the accounts were last looked at.
 func newProcess() {
 	loginsMu.Lock()
-	loginsSeenAt = time.Time{}
+	loginsSeenAt.Store(0)
 	loginsMu.Unlock()
 }
 

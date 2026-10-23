@@ -169,23 +169,3 @@ func TestClaudePicksOfEveryModelTakeOnesListedSince(t *testing.T) {
 		t.Fatalf("listed after a Save of the same picks: %v", p.PickedFrom)
 	}
 }
-
-// Factory's list is magpie's own too (droid's registry, compiled in): a
-// model a newer magpie adds is served at once, not held out by the copy an
-// older one's fetch kept.
-func TestFactoryServesModelsAddedSinceItsFetch(t *testing.T) {
-	claudeHome(t)
-	p := factoryProvider(factoryLogin{Login: Login{User: "a@example.com"}})
-	if _, err := p.Fetch(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	old := factoryModels
-	t.Cleanup(func() { factoryModels = old })
-	factoryModels = append(slices.Clone(old), factoryModel{"claude-test-added", "Test Added", Anthropic, "anthropic", 200000, 64000, nil, true})
-	if _, ok := p.Fetched(); !ok {
-		t.Fatal("the fetch left no list")
-	}
-	if !slices.Contains(modelIDs(p.Available()), "claude-test-added") {
-		t.Fatalf("a model added since the fetch: %v", modelIDs(p.Available()))
-	}
-}

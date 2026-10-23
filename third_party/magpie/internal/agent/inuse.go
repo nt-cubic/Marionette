@@ -54,7 +54,10 @@ func (a *Agent) Models() []string {
 func modelRef(v string) string {
 	v = strings.TrimSuffix(strings.TrimSpace(v), "[1m]")
 	v = strings.TrimPrefix(v, magpieID+"/")
-	if strings.HasPrefix(v, provider.GroupPrefix) || isMagpie(v) {
+	if provider.IsGroupRef(v) {
+		return provider.CanonicalRef(v) // a found group by one id, whichever it was set to
+	}
+	if isMagpie(v) {
 		return v
 	}
 	return ""

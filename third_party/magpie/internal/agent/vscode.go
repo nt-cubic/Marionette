@@ -122,6 +122,15 @@ func vscodeInsidersAgent(home, cfg string) *Agent { return vscodeOf(vscodeInside
 func vscodium(home, cfg string) *Agent { return vscodeOf(vscodiumKind, home, cfg) }
 
 func vscodeOf(k vscodeKind, home, cfg string) *Agent {
+	if k.exts != "" {
+		k.extDir = filepath.Join(home, k.exts, "extensions")
+	}
+	return vscodeKindAt(k, vscodeUserDir(k, home, cfg))
+}
+
+// vscodeUserDir is the User folder of the VS Code k, where its settings.json
+// is: its extensions' (Zoo Code's) settings too.
+func vscodeUserDir(k vscodeKind, home, cfg string) string {
 	switch runtime.GOOS {
 	case "darwin":
 		cfg = filepath.Join(home, "Library", "Application Support")
@@ -131,10 +140,7 @@ func vscodeOf(k vscodeKind, home, cfg string) *Agent {
 			cfg = filepath.Join(home, "AppData", "Roaming")
 		}
 	}
-	if k.exts != "" {
-		k.extDir = filepath.Join(home, k.exts, "extensions")
-	}
-	return vscodeKindAt(k, filepath.Join(cfg, k.folder, "User"))
+	return filepath.Join(cfg, k.folder, "User")
 }
 
 func vscodeAt(dir string) *Agent { return vscodeKindAt(vscodeStable, dir) }
@@ -195,10 +201,13 @@ func vscodeKindAt(k vscodeKind, dir string) *Agent {
 					}
 				}
 			}
-			if cur, ok := edit.GetJSONItem(lm, vscodeGroupOf(vendor)); ok && sameJSON(cur, v) {
-				continue
+			var want any = v
+			if cur, ok := edit.GetJSONItem(lm, vscodeGroupOf(vendor)); ok {
+				if want = vscodeGroupKept(cur, v); sameJSON(cur, want) {
+					continue
+				}
 			}
-			if err := edit.SetJSONItem(lm, vscodeGroupOf(vendor), v); err != nil {
+			if err := edit.SetJSONItem(lm, vscodeGroupOf(vendor), want); err != nil {
 				return err
 			}
 		}
@@ -445,6 +454,24 @@ func vscodeGroupJSON(k vscodeKind, vendor string) map[string]any {
 		return map[string]any{"name": magpieID, "vendor": vscodeOAI, "models": list}
 	}
 	return map[string]any{"name": magpieID, "vendor": vscodeEndpoint, "apiType": "chat-completions", "models": list}
+}
+
+// vscodeGroupKept is magpie's group v laid over the one in the file, cur,
+// with every key of cur magpie doesn't write kept: VS Code itself writes
+// the reasoning effort picked for a model in Chat's model picker into the
+// group, as settings["<model id>"].reasoningEffort (languageModels.ts
+// setModelConfiguration), and a whole rewrite on each Sync and pick sent
+// that model at its first level (chim3744 on Discord: max went out as
+// low). The settings of a model magpie no longer lists stay too, as the
+// user's. The model list is magpie's whole, so a model gone from the
+// catalog leaves it.
+func vscodeGroupKept(cur string, v map[string]any) any {
+	var have, want map[string]json.RawMessage
+	b, err := json.Marshal(v)
+	if err != nil || json.Unmarshal([]byte(cur), &have) != nil || have == nil || json.Unmarshal(b, &want) != nil || want == nil {
+		return v
+	}
+	return mergeTheirs(have, want, []string{"models"})
 }
 
 // vscodeChatID is Copilot Chat's extension id.

@@ -69,11 +69,18 @@ func mustFind(t *testing.T, id string) *Agent {
 
 func mustApply(t *testing.T, a *Agent, key, v string) {
 	t.Helper()
+	mustApplyAs(t, a, key, v, v)
+}
+
+// mustApplyAs applies v and expects want written: a found group picked by
+// its old id is written as auto/<model>
+func mustApplyAs(t *testing.T, a *Agent, key, v, want string) {
+	t.Helper()
 	if err := a.Apply(key, v); err != nil {
 		t.Fatalf("%s %s=%s: %v", a.ID, key, v, err)
 	}
-	if got := a.Field(key).Get(); got != v {
-		t.Fatalf("%s %s: %q, want %q", a.ID, key, got, v)
+	if got := a.Field(key).Get(); got != want {
+		t.Fatalf("%s %s: %q, want %q", a.ID, key, got, want)
 	}
 }
 
@@ -214,9 +221,12 @@ func TestReseatUnmovable(t *testing.T) {
 func TestReseatFoundGroupsOff(t *testing.T) {
 	reseatHome(t)
 	c, h := mustFind(t, "claude"), mustFind(t, "hermes")
-	mustApply(t, c, "model", "group/auto-gpt-5")
-	mustApply(t, c, "opus", "group/auto-claude-sonnet-4-5")
-	mustApply(t, h, "model", "magpie/group/auto-gpt-5")
+	// picked by the old ids, written as they are listed now. Opus's
+	// auto/claude-sonnet-4.5 is given Claude Code dashed, and with the
+	// group gone reads back as auto/claude-sonnet-4-5: still moved
+	mustApplyAs(t, c, "model", "group/auto-gpt-5", "auto/gpt-5")
+	mustApplyAs(t, c, "opus", "group/auto-claude-sonnet-4-5", provider.PublicRef("group/auto-claude-sonnet-4-5"))
+	mustApplyAs(t, h, "model", "magpie/group/auto-gpt-5", "magpie/auto/gpt-5")
 	moves, err := Reseat(func() error { return provider.SetAutoGroups(false) })
 	if err != nil {
 		t.Fatal(err)
@@ -229,11 +239,47 @@ func TestReseatFoundGroupsOff(t *testing.T) {
 	if got := h.Field("model").Get(); got != "magpie/cop/gpt-5" {
 		t.Errorf("hermes: %q", got)
 	}
-	if len(moves) != 3 || moves[0].From != "group/auto-gpt-5" || moves[0].To != "cop/gpt-5" {
+	if len(moves) != 3 || moves[0].From != "auto/gpt-5" || moves[0].To != "cop/gpt-5" {
 		t.Errorf("moves: %+v", moves)
 	}
 	// on again, nobody is moved back or elsewhere
 	if moves, err = Reseat(func() error { return provider.SetAutoGroups(true) }); err != nil || len(moves) != 0 {
 		t.Fatalf("on again: %+v %v", moves, err)
+	}
+}
+
+// #2671 (timonwong): a provider switched off for a while leaves the found
+// group of a model another provider still serves, so an agent on that
+// group stays on it, rather than being rewritten to the one provider left
+// and not put back when the provider is on again. A model only the
+// switched-off provider served still moves.
+func TestReseatKeepsAFoundGroupWithAProviderOff(t *testing.T) {
+	reseatHome(t)
+	c, h := mustFind(t, "claude"), mustFind(t, "hermes")
+	mustApplyAs(t, c, "model", "group/auto-gpt-5", "auto/gpt-5")
+	mustApply(t, c, "haiku", "cop/only-here")
+	mustApplyAs(t, h, "model", "magpie/group/auto-gpt-5", "magpie/auto/gpt-5")
+	moves, err := Reseat(func() error { return provider.SetOff("cop", true) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Field("model").Get(); got != "auto/gpt-5" {
+		t.Errorf("claude model with cop off: %q", got)
+	}
+	if got := h.Field("model").Get(); got != "magpie/auto/gpt-5" {
+		t.Errorf("hermes with cop off: %q", got)
+	}
+	if len(moves) != 1 || moves[0].Field != "haiku" || moves[0].From != "cop/only-here" {
+		t.Errorf("moves with cop off: %+v", moves)
+	}
+	if _, _, ok := provider.Resolve("group/auto-gpt-5"); !ok {
+		t.Error("group/auto-gpt-5 gone with cop off")
+	}
+	// on again, nobody is moved, and the group has cop in it again
+	if moves, err = Reseat(func() error { return provider.SetOff("cop", false) }); err != nil || len(moves) != 0 {
+		t.Fatalf("on again: %+v %v", moves, err)
+	}
+	if got := c.Field("model").Get(); got != "auto/gpt-5" {
+		t.Errorf("claude model on again: %q", got)
 	}
 }

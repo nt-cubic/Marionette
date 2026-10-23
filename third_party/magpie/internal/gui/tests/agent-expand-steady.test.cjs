@@ -11,6 +11,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { reach } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const model = (id, label) => ({ key: "model", label: "model", value: id, options: [{ value: id, label, ref: "relay/" + id, note: "Relay · via magpie" }] });
@@ -44,7 +45,10 @@ const row = '.row.agent[data-id="codex"]';
 // name's and the switch's offsets, and the opened part's top
 const where = (page) => page.evaluate((r) => {
   const el = document.querySelector(r), top = el.getBoundingClientRect().top;
-  const at = (s) => Math.round(el.querySelector(s)?.getBoundingClientRect().top - top);
+  // to a quarter pixel: a switch centred at 18.5px came out 18.4999 or 18.5
+  // between two layouts that drew it in the same place, and rounding that to
+  // a whole pixel read 18 or 19 (#1583)
+  const at = (s) => Math.round((el.querySelector(s)?.getBoundingClientRect().top - top) * 4) / 4;
   return { height: Math.round(el.getBoundingClientRect().height), line: parseFloat(getComputedStyle(el).borderBottomWidth), who: at(":scope > .who"), sw: at(":scope > .ag-conn"), exp: el.querySelector(".ag-exp") ? at(":scope > .ag-exp") : null };
 }, row);
 // the row's height every frame for a while, from a click on its link
@@ -89,7 +93,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // another row open: the one open slides shut, this one opens
       await page.locator(`${row} .ag-link`).click();
       await page.waitForTimeout(700);
-      await page.locator('.row.agent[data-id="goose"] .ag-link').click();
+      // Codex's opened row holds its own settings, so Goose's is wheeled to
+      const goose = page.locator('.row.agent[data-id="goose"] .ag-link');
+      await reach(page, goose);
+      await goose.click();
       await page.waitForTimeout(1000);
       assert.equal(await page.locator(".row.agent .ag-exp").count(), 1);
       assert.equal(await page.locator('.row.agent[data-id="goose"] .ag-exp').count(), 1);
@@ -97,7 +104,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
       // reduced motion: open at once
       await page.emulateMedia({ reducedMotion: "reduce" });
-      await page.locator('.row.agent[data-id="goose"] .ag-link').click();
+      await reach(page, goose);
+      await goose.click();
       await page.waitForTimeout(500);
       const now = await heights(page, 120);
       assert.equal(now[0], full, "opened at once: " + now);

@@ -37,7 +37,7 @@ func TestClaudeAccountNamedAsItsLogin(t *testing.T) {
 	testenv.Program(t, exe, "#!/bin/sh\necho \"token=$ANTHROPIC_AUTH_TOKEN\" > "+env+"\necho '{\"loggedIn\":true,\"authMethod\":\"oauth_token\",\"apiProvider\":\"firstParty\"}'\n")
 	claudeExecutable = func() string { return exe }
 	loginsMu.Lock()
-	loginsSeenAt = time.Time{}
+	loginsSeenAt.Store(0)
 	loginsMu.Unlock()
 
 	p, ok := claudeAccount()

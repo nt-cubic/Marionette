@@ -74,7 +74,7 @@ func fresh(t *testing.T) {
 // rather than a turn on, or with a failure already counted.
 func forgetRouting() {
 	routed.Lock()
-	routed.used, routed.failures = map[string]tokenUse{}, map[string]int{}
+	routed.used, routed.failures, routed.slow = map[string]tokenUse{}, map[string]int{}, map[string]slowRun{}
 	routed.Unlock()
 	routes.Forget()
 }
@@ -240,7 +240,7 @@ func TestRoutingGroups(t *testing.T) {
 			ids = append(ids, e.ID)
 		}
 	}
-	if got := strings.Join(ids, " "); got != "group/auto-m a/m a/only-a b/vendor/m" {
+	if got := strings.Join(ids, " "); got != "auto/m a/m a/only-a b/vendor/m" {
 		t.Fatalf("catalog: %s", got)
 	}
 	if err := provider.SaveGroup(provider.Group{Name: "Mine", Members: []string{"b/vendor/m", "a/only-a"}, Routing: provider.Ordered}); err != nil {

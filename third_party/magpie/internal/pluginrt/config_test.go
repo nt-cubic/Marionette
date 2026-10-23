@@ -60,19 +60,27 @@ func TestCompose(t *testing.T) {
 	}
 }
 
-// A new install is written Essentials, one that ran before All; the file
-// there is never written over by Settle; Set keeps the other rows and the
-// preset, and the file it replaces is kept beside it.
+// Every install is written All; the file there is never written over by
+// Settle once settled; Set keeps the other rows and the preset, and the
+// file it replaces is kept beside it.
 func TestSettleAndSet(t *testing.T) {
 	home(t)
-	if wrote, err := Settle(true); err != nil || !wrote {
+	if wrote, err := Settle(); err != nil || !wrote {
 		t.Fatalf("settle: %v %v", wrote, err)
 	}
-	if f, there, err := Load(); err != nil || !there || f.Preset != PresetEssentials {
+	if f, there, err := Load(); err != nil || !there || f.Preset != PresetAll || f.Settled != settled {
 		t.Fatalf("after settle: %+v %v %v", f, there, err)
 	}
-	if wrote, _ := Settle(false); wrote {
+	for _, c := range Compose(three, File{Preset: PresetAll}) {
+		if !c.Enabled {
+			t.Fatalf("a new install: %s off", c.ID)
+		}
+	}
+	if wrote, _ := Settle(); wrote {
 		t.Fatal("settled over a plugins.yml there")
+	}
+	if err := SetPreset(PresetEssentials); err != nil {
+		t.Fatal(err)
 	}
 	if err := Set("extra", true); err != nil {
 		t.Fatal(err)
@@ -90,12 +98,40 @@ func TestSettleAndSet(t *testing.T) {
 	if _, err := os.Stat(Path() + ".bak"); err != nil {
 		t.Fatalf("no .bak: %v", err)
 	}
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	if wrote, _ := Settle(false); !wrote {
-		t.Fatal("not settled")
+	// Essentials the user picked is theirs: the next start keeps it
+	if wrote, _ := Settle(); wrote {
+		t.Fatal("settled over the user's own Essentials")
 	}
-	if f, _, _ := Load(); f.Preset != PresetAll {
-		t.Fatalf("an existing user: %+v", f)
+	if f, _, _ := Load(); f.Preset != PresetEssentials {
+		t.Fatalf("the user's Essentials: %+v", f)
+	}
+}
+
+// The Essentials a new install was written before settled 1 becomes
+// All on the next start, and what the user turned off stays off.
+func TestSettleBringsUpAnEssentialsInstall(t *testing.T) {
+	home(t)
+	if err := os.MkdirAll(filepath.Dir(Path()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := "preset: essentials\nplugins:\n  - id: extra\n    enabled: false\n"
+	if err := os.WriteFile(Path(), []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if wrote, err := Settle(); err != nil || !wrote {
+		t.Fatalf("settle: %v %v", wrote, err)
+	}
+	f, _, err := Load()
+	if err != nil || f.Preset != PresetAll || f.Settled != settled {
+		t.Fatalf("after settle: %+v %v", f, err)
+	}
+	for _, c := range Compose(three, f) {
+		if c.Enabled != (c.ID != "extra") {
+			t.Fatalf("%s: %+v", c.ID, c)
+		}
+	}
+	if b, _ := os.ReadFile(Path() + ".bak"); string(b) != old {
+		t.Fatalf("the old file not kept: %q", b)
 	}
 }
 
@@ -116,7 +152,7 @@ func TestBrokenFileIsKept(t *testing.T) {
 	if err := Set("x", true); err == nil {
 		t.Fatal("a broken file written")
 	}
-	if wrote, _ := Settle(true); wrote {
+	if wrote, _ := Settle(); wrote {
 		t.Fatal("a broken file settled over")
 	}
 	if b, _ := os.ReadFile(Path()); string(b) != string(broken) {

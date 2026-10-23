@@ -1,13 +1,14 @@
 package provider
 
-// PLUGIN-SERVED (see AGENTS.md): Grok ("grok") is a deprecated built-in
-// subscription served by its plugin, @magpie-community/opencode-grok-auth,
-// once moved onto it (provider.Moved; the default for a new sign-in). A
-// moved one's sign-ins, models, requests and usage are all the plugin's,
-// never this code's (only the move, in migrate*.go, still reads its
-// accounts). A fix here alone doesn't reach those users; fix the plugin
-// (github.com/magpie-community/plugins, packages/grok) and raise the mover's
-// min in internal/provider/migrate_side.go.
+// PLUGIN-SERVED (see AGENTS.md): Grok ("grok") is a retired built-in
+// subscription, served by its plugin alone,
+// @magpie-community/opencode-grok-auth (provider.BuiltinRetired). Its
+// sign-in, models, requests and usage are the plugin's; what is left here
+// reads the accounts signed in to the built-in for the move onto the plugin
+// (migrate_side.go), installs and finds the Grok CLI the plugin signs in
+// with, and shapes the plugin's request bodies (grokBody). A fix belongs in
+// the plugin (github.com/magpie-community/plugins, packages/grok), with the
+// mover's min raised in internal/provider/migrate_side.go.
 
 // A Grok subscription (SuperGrok, X Premium+) is served straight from the
 // backend xAI's Grok Build CLI talks to, OpenAI's Responses API at
@@ -23,9 +24,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"maps"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,13 +32,11 @@ import (
 	"runtime"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/yetone/magpie/internal/appdir"
-	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/proc"
 )
@@ -159,62 +156,6 @@ func readGrokCredential(home string) (grokCredential, bool) {
 	return grokCredential{}, false
 }
 
-func grokAccount() (Provider, bool) {
-	if GrokExecutable() == "" {
-		return Provider{}, false
-	}
-	ls := grokLogins()
-	if len(ls) == 0 {
-		return Provider{}, false
-	}
-	home := ls[0].Home
-	acct := &Account{Agent: "grok", User: ls[0].User, Plan: ls[0].Plan, Home: home}
-	if home == GrokHome() {
-		acct.Home = "" // the CLI's own, wherever it is
-	}
-	grokSigned(acct, home)
-	acct.body = grokBody
-	acct.models = func() []catalog.Model { return []catalog.Model{{ID: "grok-4.7", Name: "Grok 4.7"}} }
-	acct.fetch = func(ctx context.Context) ([]catalog.Model, error) {
-		ms, err := grokModels(ctx, acct.sign)
-		if err != nil {
-			return nil, err
-		}
-		return ms, catalog.SaveLive("grok", GrokBase, ms)
-	}
-	return Provider{ID: "grok", Name: "Grok (SuperGrok)", Icon: "xai", Website: "https://x.ai/cli", Responses: GrokBase, Account: acct}, true
-}
-
-// grokSigned has the account's requests signed with the sign-in in home.
-func grokSigned(acct *Account, home string) {
-	acct.sign = func(ctx context.Context, req *http.Request, body []byte) error {
-		c, err := grokAccessToken(home, GrokExecutable(), false)
-		if err != nil {
-			return err
-		}
-		grokHeaders(req, c.Key)
-		if m, window := grokWindowed(bodyModel(body)); m != "" {
-			req.Header.Set("x-grok-model-override", m)
-			if window > 0 {
-				// grok-4.7@500k goes as grok-4.7 at that window, as the
-				// CLI's /context-window 500k sends it
-				req.Header.Set("x-grok-context-window", strconv.Itoa(window))
-				nb := withModel(body, m)
-				req.Body = io.NopCloser(bytes.NewReader(nb))
-				req.ContentLength = int64(len(nb))
-				req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(nb)), nil }
-			}
-		}
-		var v struct {
-			Key string `json:"prompt_cache_key"`
-		}
-		if json.Unmarshal(body, &v) == nil && v.Key != "" {
-			req.Header.Set("x-grok-conv-id", v.Key)
-		}
-		return nil
-	}
-}
-
 // grokTools are the tool types Grok's backend takes; it turns the whole
 // request away over another, as over Codex's freeform apply_patch (custom)
 // or a namespace, which groups its sub-agent tools. A namespace's functions
@@ -239,7 +180,16 @@ var grokTools = map[string]bool{"function": true, "web_search": true, "x_search"
 // agent_message (a subagent's task, or its reply in the lead's history),
 // which the backend turns away with 422 "unknown item type", goes as the
 // user's message, its sender and recipient said first (grokAgentMessage).
-func grokBody(body []byte) []byte {
+func grokBody(body []byte) []byte { return grokShaped(body, false) }
+
+// grokPluginBody is grokBody for the Grok plugin, but a tool_choice "none"
+// with no tools stays: a request that turned tools off says so to the
+// plugin, which reads it before adding a tool of its own (x_search) and
+// leaves a lone tool_choice out before the request goes to Grok
+// (@magpie-community/opencode-grok-auth 0.1.18, #3110).
+func grokPluginBody(body []byte) []byte { return grokShaped(body, true) }
+
+func grokShaped(body []byte, keepNone bool) []byte {
 	if !bytes.Contains(body, []byte(`"tools"`)) && !bytes.Contains(body, []byte(`"reasoning"`)) && !bytes.Contains(body, []byte(`"tool_choice"`)) && !bytes.Contains(body, []byte(`"namespace"`)) && !bytes.Contains(body, []byte(`"agent_message"`)) {
 		return body
 	}
@@ -287,7 +237,7 @@ func grokBody(body []byte) []byte {
 			}
 		}
 	}
-	if tools, _ := m["tools"].([]any); len(tools) == 0 {
+	if tools, _ := m["tools"].([]any); len(tools) == 0 && !(keepNone && m["tool_choice"] == "none") {
 		if _, ok := m["tool_choice"]; ok {
 			delete(m, "tool_choice")
 			dirty = true
@@ -597,269 +547,6 @@ func flatCall(it map[string]any) bool {
 		it["name"] = FlatName(space, name)
 	}
 	return true
-}
-
-// grokHeaders say a request comes from the Grok CLI, which the backend
-// wants to know the version of: without it the CLI is "outdated".
-func grokHeaders(req *http.Request, token string) {
-	v := grokVersion()
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("x-grok-client-version", v)
-	req.Header.Set("x-xai-token-auth", "xai-grok-cli")
-	req.Header.Set("x-grok-client-identifier", "grok-shell")
-	req.Header.Set("x-grok-client-mode", "headless")
-	goos, arch := runtime.GOOS, runtime.GOARCH
-	if goos == "darwin" {
-		goos = "macos"
-	}
-	switch arch {
-	case "arm64":
-		arch = "aarch64"
-	case "amd64":
-		arch = "x86_64"
-	}
-	req.Header.Set("User-Agent", "grok-shell/"+v+" ("+goos+"; "+arch+")")
-}
-
-// grokClientVersion is the Grok CLI version magpie says it is, unless the
-// installed one is newer.
-const grokClientVersion = "1.0.41"
-
-var grokVersionCache struct {
-	sync.Mutex
-	v  string
-	at time.Time
-}
-
-var grokSemver = regexp.MustCompile(`\d+\.\d+\.\d+`)
-
-func grokVersion() string {
-	grokVersionCache.Lock()
-	defer grokVersionCache.Unlock()
-	if time.Since(grokVersionCache.at) < 10*time.Minute {
-		return grokVersionCache.v
-	}
-	v := grokClientVersion
-	if exe := GrokExecutable(); exe != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if out, err := proc.ProbeContext(ctx, exe, "--version").Output(); err == nil { // "grok 1.0.41 (4220f3b224a6)"
-			if c := grokSemver.FindString(string(out)); c != "" && compareClaudeVersion(c, v) > 0 {
-				v = c
-			}
-		}
-		cancel()
-	}
-	grokVersionCache.v, grokVersionCache.at = v, time.Now()
-	return v
-}
-
-// grokModels lists what the account can use, with each model's context
-// window and efforts, as the CLI's backend lists them.
-func grokModels(ctx context.Context, sign func(context.Context, *http.Request, []byte) error) ([]catalog.Model, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, GrokBase+"/models", nil)
-	if err != nil {
-		return nil, err
-	}
-	if err := sign(ctx, req, nil); err != nil {
-		return nil, err
-	}
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
-	b, _ := io.ReadAll(io.LimitReader(res.Body, 4<<20))
-	if res.StatusCode != http.StatusOK {
-		return nil, errorf("Grok models: %s", APIError(b, res.Status))
-	}
-	ms := parseGrokModels(b)
-	if len(ms) == 0 {
-		return nil, errorf("Grok listed no models")
-	}
-	return ms, nil
-}
-
-func parseGrokModels(b []byte) []catalog.Model {
-	var v struct {
-		Data []struct {
-			ID      string `json:"id"`
-			Name    string `json:"name"`
-			Context int    `json:"context_window"`
-			Windows []int  `json:"context_windows"`
-			Backend string `json:"api_backend"`
-			Efforts []struct {
-				Value string `json:"value"`
-			} `json:"reasoning_efforts"`
-		} `json:"data"`
-	}
-	if json.Unmarshal(b, &v) != nil {
-		return nil
-	}
-	var ms []catalog.Model
-	for _, d := range v.Data {
-		if d.ID == "" || (d.Backend != "" && d.Backend != "responses") {
-			continue
-		}
-		m := catalog.Model{ID: d.ID, Name: d.Name, Context: d.Context, Images: true, APIs: []string{"responses"}}
-		if m.Name == "" {
-			m.Name = d.ID
-		}
-		// listed hardest first; kept easiest first, as the others are
-		for i := len(d.Efforts) - 1; i >= 0; i-- {
-			if e := d.Efforts[i].Value; e != "" {
-				m.Efforts = append(m.Efforts, e)
-			}
-		}
-		ms = append(ms, grokContextModels(m, d.Windows)...)
-	}
-	return ms
-}
-
-// grokContextModels is one model for each context window Grok lists it at
-// (#1608). context_window is the default and keeps the plain id
-// (grok-4.7), so a saved agent stays where it was; each other size in
-// context_windows is offered beside it (grok-4.7@500k), the way the CLI's
-// /context-window offers it, and asked for with x-grok-context-window
-// (grokWindowed). The same as the grok plugin's windowsOf (plugins#83).
-func grokContextModels(m catalog.Model, listed []int) []catalog.Model {
-	var windows []int
-	for _, w := range listed {
-		if w > 0 && !slices.Contains(windows, w) {
-			windows = append(windows, w)
-		}
-	}
-	if len(windows) == 0 {
-		return []catalog.Model{m}
-	}
-	if !slices.Contains(windows, m.Context) {
-		m.Context = windows[0]
-	}
-	out := []catalog.Model{m}
-	for _, w := range windows {
-		if w == m.Context {
-			continue
-		}
-		at := grokWindowLabel(w)
-		o := m
-		o.ID, o.Name, o.Context = m.ID+"@"+at, m.Name+" @ "+at, w
-		o.Efforts = slices.Clone(m.Efforts)
-		o.APIs = slices.Clone(m.APIs)
-		out = append(out, o)
-	}
-	return out
-}
-
-// grokWindowLabel is a window as an id names it: 500000 is "500k".
-func grokWindowLabel(n int) string {
-	if n%1000 == 0 {
-		return strconv.Itoa(n/1000) + "k"
-	}
-	return strconv.Itoa(n)
-}
-
-// grokWindowed splits a requested id into the model Grok lists and the
-// window the id names: grok-4.7 is grok-4.7 at its default window (0, no
-// header), grok-4.7@500k is grok-4.7 at 500000 tokens. A size no multiple
-// of 1000 is the window itself, as grokWindowLabel writes it (131072).
-func grokWindowed(id string) (string, int) {
-	model, size, ok := strings.Cut(id, "@")
-	if !ok {
-		return id, 0
-	}
-	k, isK := strings.CutSuffix(size, "k")
-	n, err := strconv.Atoi(k)
-	if err != nil || n <= 0 || model == "" {
-		return id, 0
-	}
-	if isK {
-		n *= 1000
-	}
-	return model, n
-}
-
-// grokRefreshMargin is how close to its expiry a borrowed token has the CLI
-// refresh it first.
-const grokRefreshMargin = 5 * time.Minute
-
-var grokRefresh sync.Mutex
-
-// grokAccessToken is the CLI's sign-in, with a token still good. One about
-// to expire is first refreshed by the CLI in its own home: a `grok models`
-// there renews it the way any use of the CLI does; so is one a run has
-// found expired.
-func grokAccessToken(home, binary string, expired bool) (grokCredential, error) {
-	c, ok := readGrokCredential(home)
-	if ok && (expired || time.Until(c.ExpiresAt) < grokRefreshMargin) && binary != "" {
-		grokRefresh.Lock()
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		cmd := proc.CommandContext(ctx, binary, "models")
-		cmd.Dir = filepath.Dir(home)
-		cmd.Env = netproxy.Env(grokOwnEnv(os.Environ(), home))
-		_ = cmd.Run()
-		cancel()
-		grokRefresh.Unlock()
-		c, ok = readGrokCredential(home)
-	}
-	if !ok {
-		return c, errorf("Grok is not signed in; run `grok login`")
-	}
-	if !c.ExpiresAt.IsZero() && time.Until(c.ExpiresAt) <= 0 {
-		return c, errorf("Grok's sign-in has expired; run `grok login`")
-	}
-	return c, nil
-}
-
-// grokOwnEnv runs the CLI as the user runs it, in its own home.
-func grokOwnEnv(env []string, home string) []string {
-	out := make([]string, 0, len(env)+1)
-	for _, e := range env {
-		k, _, _ := strings.Cut(e, "=")
-		switch strings.ToUpper(k) {
-		case "GROK_HOME", "GROK_AUTH_PROVIDER_COMMAND", "GROK_AUTH_EXPIRED":
-			continue
-		}
-		out = append(out, e)
-	}
-	return append(out, "GROK_HOME="+home)
-}
-
-// startGrokSignIn runs `grok login` with its device code, hands its link to
-// the window, and finishes when the CLI says the account is in. With the
-// CLI signed in already, a further account signs in in a home of magpie's,
-// so the CLI's own sign-in stays as it is.
-func startGrokSignIn(s *signInFlow) error {
-	path := GrokExecutable()
-	if path == "" {
-		c, _ := cliFor("grok")
-		manual := c.sh
-		if runtime.GOOS == "windows" {
-			manual = c.ps
-		}
-		return errorf("install Grok Build first: %s", manual)
-	}
-	if _, ok := readGrokCredential(GrokHome()); !ok {
-		return runCLISignIn(s, "grok login", nil, true, nil, func() (string, string, bool) {
-			c, ok := readGrokCredential(GrokHome())
-			return c.Email, "", ok
-		}, nil, path, "login", "--device-auth")
-	}
-	home, err := newGrokHome()
-	if err != nil {
-		return err
-	}
-	err = runCLISignIn(s, "grok login", grokOwnEnv(os.Environ(), home), false, func() { removeGrokHome(home) }, func() (string, string, bool) {
-		user, err := addGrokLogin(home)
-		return user, "", err == nil
-	}, nil, path, "login", "--device-auth")
-	if err != nil {
-		removeGrokHome(home)
-	}
-	return err
-}
-
-// agentCommand runs an agent's CLI with magpie's proxy.
-func agentCommand(ctx context.Context, path string, args ...string) *exec.Cmd {
-	return withProxy(proc.CommandContext(ctx, path, args...))
 }
 
 // agentProbe is agentCommand for asking the CLI something (proc.ProbeContext).

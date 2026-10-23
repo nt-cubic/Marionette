@@ -62,6 +62,7 @@ const resolvers = [];    // the answers, held until the test gives them
 function api(path) {
   return new Promise((res, rej) => { reads.push(path); resolvers.push({ path, res, rej }); });
 }
+function usageZoneQ() { return ""; } // the reader's zone: usage-viewer-zone.test.cjs
 function renderUsage() { drawn.push({ period, usage: usage && usage.tag }); }
 function renderUsageTab() {}
 function renderUsageEvery() {}
@@ -187,6 +188,7 @@ const resolvers = [];    // the answers, held until the test gives them
 function api(path) {
   return new Promise((res, rej) => { reads.push(path); resolvers.push({ path, res, rej }); });
 }
+function usageZoneQ() { return ""; } // the reader's zone: usage-viewer-zone.test.cjs
 // the page's own element: what the loading flag is read and written through
 function $(sel) {
   return {

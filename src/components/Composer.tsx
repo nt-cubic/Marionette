@@ -225,10 +225,11 @@ const OPENCODE_AUTH_AGENTS = new Set(["opencode"]);
 
 /**
  * Native model ids the bridge injects into an agent's own catalog —
- * grok/opencode/pi `marionette/<id>`, DSH `marionette::<id>`. They must exist
- * in the agent's native list (that is how a pinned cross-use preference keeps
- * working after a restart), but the picker never shows them there: the
- * cross-use sections are the single entry point for shared models.
+ * grok/opencode/pi `marionette/<id>`, DSH `marionette::<id>`, zcode
+ * `marionette\<id>`. They must exist in the agent's native list (that is how
+ * a pinned cross-use preference keeps working after a restart), but the
+ * picker never shows them there: the cross-use sections are the single entry
+ * point for shared models.
  */
 
 function formatRecentTime(timestamp: number): string {
@@ -940,10 +941,15 @@ export function Composer({
    * the binding as a native option after a restart — from that point the
    * normal model preference channel takes over. Native id shape per agent:
    * grok/opencode/pi advertise `marionette/<modelId>`, DSH advertises
-   * `marionette::<modelId>` (pi-ai `provider::model`, split on first `::`).
+   * `marionette::<modelId>` (pi-ai `provider::model`, split on first `::`),
+   * zcode advertises `marionette\<modelId>` (adapter configOptions compose
+   * `provider\model`).
    */
-  const nativeBridgeModelId = (modelId: string) =>
-    agent.id === "deepseek" ? `marionette::${modelId}` : `marionette/${modelId}`;
+  const nativeBridgeModelId = (modelId: string) => {
+    if (agent.id === "deepseek") return `marionette::${modelId}`;
+    if (agent.id === "zcode") return `marionette\\${modelId}`;
+    return `marionette/${modelId}`;
+  };
   const bridgeActive =
     bridgeSelection != null && currentModel !== nativeBridgeModelId(bridgeSelection.modelId);
 
@@ -969,15 +975,16 @@ export function Composer({
       setBridgeSelection(model);
       void bridgeBind(sessionId, { entryId: model.entryId, modelId: model.modelId })
         .then(() => {
-          // grok / opencode / dsh / pi：注入是 spawn 级的（owned 表 /
+          // grok / opencode / dsh / pi / zcode：注入是 spawn 级的（owned 表 /
           // OPENCODE_CONFIG provider / dsh llm-pi-ai 路由 / pi models.json
-          // provider），把原生形态的 marionette id 钉成偏好，重启后原生
-          // 目录接管、跨用 chip 退位。
+          // provider / zcode provider_config.json 托管 provider），把原生形态的
+          // marionette id 钉成偏好，重启后原生目录接管、跨用 chip 退位。
           if (
             agent.id === "grok-build" ||
             agent.id === "opencode" ||
             agent.id === "deepseek" ||
-            agent.id === "pi"
+            agent.id === "pi" ||
+            agent.id === "zcode"
           ) {
             persistPrefs({ preferredModel: nativeBridgeModelId(model.modelId) });
           }

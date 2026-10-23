@@ -618,3 +618,68 @@ func TestZCodeKeepsTheUsersSettings(t *testing.T) {
 	}
 	check("pick")
 }
+
+// ZCode reads $HOME before os.homedir() on every OS, so on a Windows where
+// the user set HOME (for Git Bash, MSYS2, Emacs) its providers, settings
+// and moved data folder are under %HOME%\.zcode, not %USERPROFILE%\.zcode,
+// Go's home. magpie wrote its provider under USERPROFILE: connected, no
+// error, and no magpie in ZCode (Gearclickist on Discord).
+func TestZCodeOnWindowsUsesTheHomeZCodeReads(t *testing.T) {
+	profile := syncHome(t)
+	old := zcodeOS
+	zcodeOS = "windows"
+	t.Cleanup(func() { zcodeOS = old })
+	set := t.TempDir()
+	t.Setenv("HOME", set)
+	if err := provider.Save(provider.Provider{ID: "deepseek", Name: "DeepSeek", Chat: "https://api.deepseek.com/v1", Key: "k", Models: []string{"pro"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	want := filepath.Join(set, ".zcode")
+	a := zcode(profile)
+	if a.Dir != want || a.Path != filepath.Join(want, "v2", "config.json") {
+		t.Fatalf("ZCode's folder on Windows with HOME set: %s, %s; want %s", a.Dir, a.Path, want)
+	}
+	if err := a.Field("provider").Set("magpie"); err != nil {
+		t.Fatal(err)
+	}
+	if !zcodeRuled(filepath.Join(want, "v2", "provider_config.json")) {
+		t.Fatalf("no magpie in %s:\n%s", want, readFile(filepath.Join(want, "v2", "provider_config.json")))
+	}
+	if _, ok := edit.GetJSON(filepath.Join(want, "v2", "config.json"), "provider.magpie"); !ok {
+		t.Fatal("no magpie in config.json under HOME")
+	}
+	if _, err := os.Stat(filepath.Join(profile, ".zcode")); err == nil {
+		t.Fatal("written under USERPROFILE, which ZCode doesn't read while HOME is set")
+	}
+
+	// the data folder moved in ZCode's settings is read from the setting.json
+	// under HOME, where ZCode keeps it
+	moved := t.TempDir()
+	setting, _ := json.Marshal(map[string]any{"dataBaseDir": moved})
+	os.WriteFile(filepath.Join(want, "v2", "setting.json"), setting, 0o644)
+	if got := zcode(profile).Dir; got != filepath.Join(moved, ".zcode") {
+		t.Fatalf("moved data folder under HOME's settings: %s", got)
+	}
+	os.Remove(filepath.Join(want, "v2", "setting.json"))
+
+	// no HOME, or one that isn't rooted: USERPROFILE, as ZCode's os.homedir()
+	for _, h := range []string{"", "  ", "relative"} {
+		t.Setenv("HOME", h)
+		if got := zcode(profile).Dir; got != filepath.Join(profile, ".zcode") {
+			t.Fatalf("HOME %q: %s", h, got)
+		}
+	}
+	// a folder that isn't the user's own home (a test's, a WSL distro's) is
+	// ZCode's as given
+	t.Setenv("HOME", set)
+	other := t.TempDir()
+	if got := zcode(other).Dir; got != filepath.Join(other, ".zcode") {
+		t.Fatalf("a given folder that isn't USERPROFILE: %s", got)
+	}
+	// elsewhere Go's home is HOME already: the folder given stays
+	zcodeOS = "darwin"
+	if got := zcode(profile).Dir; got != filepath.Join(profile, ".zcode") {
+		t.Fatalf("darwin: %s", got)
+	}
+}

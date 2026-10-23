@@ -79,7 +79,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const rule = (name) => page.locator("#redactList .row").filter({ has: page.locator(".name", { hasText: new RegExp(`^${name}$`) }) });
         const scroll = () => page.evaluate(() => [scrollX, scrollY, ...[...document.querySelectorAll("*")].filter((e) => e.scrollTop).map((e) => e.scrollTop)]);
         const click = async (loc) => {
-          await loc.scrollIntoViewIfNeeded();
+          // the app undoes a script's scroll, so scroll as a reader does
+          // until the target clears the foot
+          await page.mouse.move(200, 300);
+          for (let i = 0; i < 20; i++) {
+            const [b, top] = await Promise.all([loc.boundingBox(), page.evaluate(() => document.querySelector("footer.foot")?.getBoundingClientRect().top ?? innerHeight)]);
+            if (b.y >= 0 && b.y + b.height <= top - 4) break;
+            await page.mouse.wheel(0, b.y < 0 ? -200 : 200);
+            await page.waitForTimeout(80);
+          }
           const before = await scroll();
           const b = await loc.boundingBox();
           await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2);

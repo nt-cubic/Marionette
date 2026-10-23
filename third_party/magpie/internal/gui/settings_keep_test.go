@@ -135,6 +135,8 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		ModelSameAs:          map[string]string{"p/m": "deepseek-v4.1-flash"},
 		ModelKinds:           map[string]string{"p/m": "video"},
 		RedactRules:          []redact.Rule{{Kind: "prefix", Prefix: "oc_sk_"}},
+		RedactActions:        map[string]string{"API_KEY": "block", "EMAIL": "warn"},
+		RedactAllow:          []string{"team@kelvarn.io"},
 		LAN:                  true,
 		LANKey:               "sk-lan",
 		LANKeyID:             "lan-key-id",
@@ -177,9 +179,12 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		GatewayMode:          "off",
 		QuotaReads:           "asked",
 		NoAccountDiscovery:   true,
+		RedactModel:          true,
 	}
 	was.DesktopSubagentEffort = "high"
 	was.CodexAsyncCompact, was.CodexAsyncCompactPercent = true, 70
+	was.ClaudeRunsMost = 3
+	was.ProxyCustom = "http://me:secret@proxy.example:8080"
 	if err := settings.Save(was); err != nil {
 		t.Fatal(err)
 	}

@@ -19,7 +19,7 @@ import (
 // "provider/model" whose provider answers model at its decision API, on
 // or not. A group, or a member with an effort of its own, is not one.
 func decidingMember(id string) bool {
-	if strings.HasPrefix(id, GroupPrefix) {
+	if IsGroupRef(id) {
 		return false
 	}
 	if IsDecider(id) {

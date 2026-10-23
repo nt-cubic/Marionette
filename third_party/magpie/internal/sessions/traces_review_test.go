@@ -156,15 +156,15 @@ func TestOpenCodeTraceLargeSessionProgressAndIncrementalUpdate(t *testing.T) {
 	for i := 0; i < 12; i++ {
 		budget := int64(8 << 20)
 		// Trace reading must not acquire the Sessions listing mutex.
-		dbReadMu.Lock()
+		storeMu.Lock()
 		done := make(chan []TraceSpan, 1)
 		go func() { done <- r.pollOpenCode(false, &budget) }()
 		var spans []TraceSpan
 		select {
 		case spans = <-done:
-			dbReadMu.Unlock()
+			storeMu.Unlock()
 		case <-time.After(10 * time.Second):
-			dbReadMu.Unlock()
+			storeMu.Unlock()
 			<-done
 			t.Fatal("trace reading blocked on the listing mutex")
 		}

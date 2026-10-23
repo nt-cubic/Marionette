@@ -2,7 +2,9 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -242,6 +244,54 @@ func TestChatRelaySilentAssistantsOnly(t *testing.T) {
 	}
 	for i, w := range want {
 		sameJSON(t, q.Messages[i], w)
+	}
+}
+
+// silentAssistantsOut runs on every attempt of a relayed Chat request, and
+// a long conversation with nothing to leave out costs it a look at the
+// assistant turns, not a decode of every message: it decoded all of a
+// 1.5 MB conversation into maps on each attempt, ~4 MB allocated a request
+// (yg6888 on X). A silent turn at the very end, or written with escapes,
+// is still found.
+func TestSilentAssistantsOutDecodesOnlyAssistants(t *testing.T) {
+	var turns []string
+	for i := range 200 {
+		turns = append(turns, `{"role":"user","content":"`+strings.Repeat("read this file ", 300)+`"}`,
+			`{"role":"assistant","content":"ok `+strings.Repeat("x", i)+`"}`)
+	}
+	body := []byte(`{"model":"m","messages":[` + strings.Join(turns, ",") + `]}`)
+	ctx, done := context.WithCancel(context.Background())
+	defer done()
+	holdBody(ctx, body) // as readRequestBody holds a request's
+	if got := silentAssistantsOut(body); !bytes.Equal(got, body) {
+		t.Fatal("a clean body was rewritten")
+	}
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	const n = 5
+	for range n {
+		silentAssistantsOut(body)
+	}
+	runtime.ReadMemStats(&after)
+	if per := (after.TotalAlloc - before.TotalAlloc) / n; per > uint64(len(body))/8 {
+		t.Fatalf("looking at a %d-byte clean body allocated %d bytes", len(body), per)
+	}
+
+	for _, last := range []string{
+		`{"role":"assistant","content":"","reasoning_content":"cut"}`,
+		`{"role":"assistant","content":null}`,
+		`{"role":"%u0061ssistant","content":null}`,
+		`{"role":"assistant","content":"\n　\t "}`,
+		`{"role":"assistant","content":"\n%u3000\t "}`,
+		`{"content":[{"type":"text","text":" "}],"role":"assistant"}`,
+	} {
+		b := []byte(`{"model":"m","messages":[` + strings.Join(turns, ",") + `,` + strings.ReplaceAll(last, "%u", "\x5cu") + `,{"role":"user","content":"go"}]}`)
+		var q struct {
+			Messages []json.RawMessage `json:"messages"`
+		}
+		if err := json.Unmarshal(silentAssistantsOut(b), &q); err != nil || len(q.Messages) != len(turns)+1 {
+			t.Fatalf("%s: %d messages sent, want %d (%v)", last, len(q.Messages), len(turns)+1, err)
+		}
 	}
 }
 

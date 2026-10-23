@@ -394,3 +394,62 @@ func TestGatewayKeyModelsHoldTheImageAndVideoLists(t *testing.T) {
 		t.Fatalf("a key held to one video model is told of image %v, video %v", image, video)
 	}
 }
+
+// A gateway key held to an account that serves only a chat model must not
+// be told of that provider's image/video models in /v1/models (#2579): the
+// chat catalog already applies accountServes; drawerObjects and
+// videomakerObjects used to list them from modelAllowed alone.
+func TestGatewayKeyAccountsHoldTheImageAndVideoLists(t *testing.T) {
+	grokSignedIn(t)
+	newGrokMedia(t)
+	// the plugin's one account, which grokSignedIn signs in, held to a
+	// chat model of its own
+	p, err := provider.Find("grok")
+	if err != nil || len(p.AccountRefs()) != 1 {
+		t.Fatalf("Grok's accounts: %v, %v", p.AccountRefs(), err)
+	}
+	ref := p.AccountRefs()[0]
+	keys, secrets := newCaller(t, "Held", "Free")
+	if _, err := access.Update("accounts-key", access.Change{Key: keys[0].ID, Accounts: []string{"grok/" + ref}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.SetAccountModels("grok", ref, []string{"fake-1"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = provider.SetAccountModels("grok", ref, nil)
+	})
+	h := New().Handler()
+	listed := func(secret string) (image, video []string) {
+		r := httptest.NewRequest("GET", "/v1/models", nil)
+		if secret != "" {
+			r.Header.Set("Authorization", "Bearer "+secret)
+		}
+		r.Header.Set(provider.DrawersHeader, "1")
+		r.Header.Set(provider.VideomakersHeader, "1")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		var l struct{ Data []struct{ ID, Kind string } }
+		if err := json.Unmarshal(w.Body.Bytes(), &l); err != nil {
+			t.Fatal(w.Body.String())
+		}
+		for _, m := range l.Data {
+			switch m.Kind {
+			case "image":
+				image = append(image, m.ID)
+			case "video":
+				video = append(video, m.ID)
+			}
+		}
+		return image, video
+	}
+	if image, video := listed(""); !slices.Contains(image, "grok/grok-imagine-image") || !slices.Contains(video, "grok/grok-imagine-video") {
+		t.Fatalf("this computer is told of image %v, video %v", image, video)
+	}
+	if image, video := listed(secrets[1]); !slices.Contains(image, "grok/grok-imagine-image") || !slices.Contains(video, "grok/grok-imagine-video") {
+		t.Fatalf("a free key is told of image %v, video %v", image, video)
+	}
+	if image, video := listed(secrets[0]); len(image) != 0 || len(video) != 0 {
+		t.Fatalf("a key whose account serves no image or video model is told of image %v, video %v", image, video)
+	}
+}

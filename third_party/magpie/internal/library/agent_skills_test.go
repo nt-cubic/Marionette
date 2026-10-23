@@ -190,6 +190,39 @@ func TestDroidGrokInstructions(t *testing.T) {
 	}
 }
 
+// Devin CLI reads its global rules from AGENTS.md in its config folder
+// (~/.config/devin, %APPDATA%\devin on Windows), else the singular AGENT.md
+// there (#3151): the library's instructions reach it, after what the user
+// wrote, which stays, and Devin is offered them rather than listed as having
+// no user-wide file.
+func TestDevinInstructions(t *testing.T) {
+	h := sandbox(t)
+	write(t, filepath.Join(h, ".config/devin/config.json"), "{}")
+	tg := targetByID("devin")
+	if tg == nil {
+		t.Fatal("Devin isn't a target")
+	}
+	f := filepath.Join(tg.Agent.Dir, "AGENTS.md")
+	if tg.Instructions != f {
+		t.Fatalf("Devin's instructions: %q, want %q before the file is there", tg.Instructions, f)
+	}
+	write(t, f, "# Mine\n")
+	shared := "Use tabs."
+	ok(t)(SaveInstructions(InstructionsChange{Shared: &shared, Agents: []string{"devin"}}))
+	if s := read(t, f); s != "# Mine\n\n"+blockBegin+"\nUse tabs.\n"+blockEnd+"\n" {
+		t.Fatalf("Devin's AGENTS.md:\n%s", s)
+	}
+
+	// a user who keeps theirs as AGENT.md has it written there instead
+	h = sandbox(t)
+	write(t, filepath.Join(h, ".config/devin/config.json"), "{}")
+	dir := targetByID("devin").Agent.Dir
+	write(t, filepath.Join(dir, "AGENT.md"), "# Mine\n")
+	if tg := targetByID("devin"); tg.Instructions != filepath.Join(dir, "AGENT.md") {
+		t.Fatalf("Devin with AGENT.md: %q", tg.Instructions)
+	}
+}
+
 // Qwen Code reads QWEN.md in its folder ($QWEN_HOME, else ~/.qwen) before
 // every conversation (wongxy on Discord): the library's instructions reach
 // it there, after what the user wrote, which stays; its settings'

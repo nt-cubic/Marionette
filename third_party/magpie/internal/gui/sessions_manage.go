@@ -130,55 +130,58 @@ func sessionManageRoutes(mux *http.ServeMux, w Windows) {
 			Trash: trashJSON(looks), TrashDir: tilde(sessions.TrashDir()), Recording: settings.Load().GatewayConversations,
 			Recorded: sessions.HasGatewayConversations()}
 		want := r.URL.Query().Get("agent")
-		counts := map[string]*manageAgentJSON{}
-		for _, a := range sessions.Agents() {
-			j := manageAgentJSON{AgentCount: a, Name: a.Agent, Icon: "generic"}
-			if l := looks[a.Agent]; l != nil {
-				j.Name, j.Icon = l.SharedName(), l.Icon
-			}
-			counts[a.Agent] = &j
-		}
 		gateway := listedGateway(usage.GatewaySessions(time.Time{}, nil))
-		nativeCounts := map[string]map[string]bool{}
-		for _, s := range sessions.List(sessions.All) {
-			if nativeCounts[s.Agent] == nil {
-				nativeCounts[s.Agent] = map[string]bool{}
-			}
-			nativeCounts[s.Agent][s.ID] = true
+		// a gateway session its agent keeps too is counted once; only the
+		// agents with gateway sessions, and the one shown, are read (#2776)
+		of := map[string]bool{}
+		for _, g := range gateway {
+			of[g.Agent] = true
 		}
-		for _, s := range gateway {
-			if nativeCounts[s.Agent][s.ID] {
-				continue
-			}
-			j := counts[s.Agent]
-			if j == nil {
-				j = &manageAgentJSON{AgentCount: sessions.AgentCount{Agent: s.Agent}, Name: s.Agent, Icon: "generic"}
-				if l := looks[s.Agent]; l != nil {
+		view := sessions.Manage(of, func(agents []sessions.AgentCount, native map[string]map[string]bool) string {
+			counts := map[string]*manageAgentJSON{}
+			for _, a := range agents {
+				j := manageAgentJSON{AgentCount: a, Name: a.Agent, Icon: "generic"}
+				if l := looks[a.Agent]; l != nil {
 					j.Name, j.Icon = l.SharedName(), l.Icon
 				}
-				counts[s.Agent] = j
+				counts[a.Agent] = &j
 			}
-			j.Count++
-			// what magpie keeps of it can be deleted, whatever the agent
-			j.Deletable = true
-		}
-		for _, j := range counts {
-			out.Agents = append(out.Agents, *j)
-		}
-		sort.Slice(out.Agents, func(i, j int) bool {
-			if out.Agents[i].Count != out.Agents[j].Count {
-				return out.Agents[i].Count > out.Agents[j].Count
+			for _, s := range gateway {
+				if native[s.Agent][s.ID] {
+					continue
+				}
+				j := counts[s.Agent]
+				if j == nil {
+					j = &manageAgentJSON{AgentCount: sessions.AgentCount{Agent: s.Agent}, Name: s.Agent, Icon: "generic"}
+					if l := looks[s.Agent]; l != nil {
+						j.Name, j.Icon = l.SharedName(), l.Icon
+					}
+					counts[s.Agent] = j
+				}
+				j.Count++
+				// what magpie keeps of it can be deleted, whatever the agent
+				j.Deletable = true
 			}
-			return out.Agents[i].Agent < out.Agents[j].Agent
+			for _, j := range counts {
+				out.Agents = append(out.Agents, *j)
+			}
+			sort.Slice(out.Agents, func(i, j int) bool {
+				if out.Agents[i].Count != out.Agents[j].Count {
+					return out.Agents[i].Count > out.Agents[j].Count
+				}
+				return out.Agents[i].Agent < out.Agents[j].Agent
+			})
+			if _, ok := counts[want]; ok {
+				return want
+			}
+			if len(out.Agents) > 0 {
+				return out.Agents[0].Agent
+			}
+			return ""
 		})
-		if _, ok := counts[want]; ok {
-			out.Agent = want
-		}
-		if out.Agent == "" && len(out.Agents) > 0 {
-			out.Agent = out.Agents[0].Agent
-		}
+		out.Agent = view.Agent
 		if out.Agent != "" {
-			list := sessions.ListAgent(out.Agent)
+			list := view.Sessions
 			var modelEffort map[string][]sessions.ModelEffort
 			if out.Agent == "codex" {
 				modelEffort = usage.CodexModelEffort(usage.All)
@@ -204,7 +207,7 @@ func sessionManageRoutes(mux *http.ServeMux, w Windows) {
 			vias := usage.Vias(since.Add(-time.Minute))
 			for _, s := range list {
 				s.Path = tilde(s.Path)
-				out.Sessions = append(out.Sessions, managedJSON{Managed: s, Via: vias[s.Agent+"|"+s.ID]})
+				out.Sessions = append(out.Sessions, managedJSON{Managed: s, Via: vias.Of(s.Agent + "|" + s.ID)})
 			}
 			sizes := sessions.GatewaySizes()
 			for _, g := range gateway {
@@ -215,7 +218,7 @@ func sessionManageRoutes(mux *http.ServeMux, w Windows) {
 				addCodexModelEffort(&s, modelEffort)
 				// its size is the conversation text magpie recorded of it
 				m := sessions.Managed{Session: s, Deletable: true, Size: sizes(s.Agent, s.ID)}
-				out.Sessions = append(out.Sessions, managedJSON{Managed: m, Via: vias[s.Agent+"|"+s.ID]})
+				out.Sessions = append(out.Sessions, managedJSON{Managed: m, Via: vias.Of(s.Agent + "|" + s.ID)})
 			}
 			sort.SliceStable(out.Sessions, func(i, j int) bool {
 				return out.Sessions[i].Last.After(out.Sessions[j].Last)
@@ -243,12 +246,7 @@ func sessionManageRoutes(mux *http.ServeMux, w Windows) {
 			return
 		}
 		// the gateway sessions as listed: those with no native session
-		native := map[string]bool{}
-		for _, s := range sessions.List(sessions.All) {
-			if s.Agent == in.Agent {
-				native[s.ID] = true
-			}
-		}
+		native := sessions.NativeIDs(map[string]bool{in.Agent: true})[in.Agent]
 		listed := map[string]usage.GatewaySession{}
 		for _, g := range listedGateway(usage.GatewaySessions(time.Time{}, nil)) {
 			if g.Agent == in.Agent && !native[g.ID] {

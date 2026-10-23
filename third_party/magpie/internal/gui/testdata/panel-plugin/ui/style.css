@@ -1,0 +1,7 @@
+html, body { background: transparent; }
+body { margin: 0; padding: 10px 12px; font: 13px/1.5 var(--magpie-font, system-ui); color: var(--magpie-fg); }
+p { margin: 0 0 4px; }
+.muted { color: var(--magpie-muted); }
+textarea { box-sizing: border-box; width: 100%; min-height: 56px; font: inherit; color: inherit; background: var(--magpie-card); border: 1px solid var(--magpie-line); border-radius: 6px; padding: 6px 8px; resize: vertical; }
+button { font: inherit; color: var(--magpie-accent); background: none; border: 0; padding: 0; cursor: pointer; }
+ol { margin: 0; padding-left: 18px; }

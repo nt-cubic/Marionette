@@ -50,6 +50,10 @@
 .pm-ghbar .segs { flex: none; max-width: 100%; }
 .pm-ghfind { width: min(240px, 100%); }
 .pm-ghnone { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 22px 12px; border-radius: 12px; border: 1px dashed var(--line); font-size: 12px; color: var(--muted); text-align: center; }
+/* what GitHub couldn't give, over the cards it could: a quiet line, its
+   reason wrapping anywhere (a URL in it is one long word) */
+.pm-ghwarn { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 10px; font-size: 12px; color: var(--muted); }
+.pm-ghwarn > span, .pm-ghnone > span { overflow-wrap: anywhere; }
 
 .pm-logo { flex: none; width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; background: var(--pill); color: var(--fg-2); }
 .pm-logo .ic { width: 20px; height: 20px; }
@@ -189,6 +193,11 @@ button.pm-chip:disabled { cursor: default; opacity: .6; }
 
 /* Installed */
 .pm-listhead { margin: 0 0 -10px; padding: 0 2px; }
+/* the plugins with an update, above the list: the sidebar's dot, named */
+.pm-updates { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; padding: 9px 10px 9px 12px; border-radius: 10px; background: var(--accent-soft); font-size: 12px; line-height: 1.35; }
+.pm-updates .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.pm-updates .pm-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.pm-updates .pm-up { flex: none; }
 .pm-list .row { min-height: 54px; padding: 8px 10px 8px 12px; gap: 11px; cursor: default; transition: background .14s var(--ease); }
 .pm-list .row:hover { background: var(--card-2); }
 .pm-list .row + .row { border-top: 1px solid var(--line-2); }

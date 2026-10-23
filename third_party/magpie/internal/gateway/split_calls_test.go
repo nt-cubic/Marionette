@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -117,36 +116,5 @@ func TestResponsesSplitParallelCallsKeepTheirResults(t *testing.T) {
 	want := "message function_call(toolu_a) function_call(toolu_b) function_call_output(toolu_a=A!) function_call_output(toolu_b=B!)"
 	if strings.Join(got, " ") != want {
 		t.Fatalf("input = %s\nwant    %s", strings.Join(got, " "), want)
-	}
-}
-
-// Cursor's built-in answers a reply's calls at the next assistant message,
-// as Chat did.
-func TestCursorSplitParallelCallsKeepTheirResults(t *testing.T) {
-	r := parseSplit(t, splitCalls)
-	b := bytes.Join(cursorMessages(r, bridgeTools(r)), []byte("\n"))
-	if bytes.Contains(b, []byte(devinNoResult)) {
-		t.Fatalf("a call answered as interrupted:\n%s", b)
-	}
-	if !bytes.Contains(b, []byte(`"result":"A!"`)) || !bytes.Contains(b, []byte(`"result":"B!"`)) {
-		t.Fatalf("results lost:\n%s", b)
-	}
-}
-
-// So did Devin's.
-func TestDevinSplitParallelCallsKeepTheirResults(t *testing.T) {
-	d := decodeDevinRequest(t, buildDevin(parseSplit(t, splitCalls), "swe-2-high", "k"))
-	var got []string
-	for _, m := range d.msgs {
-		got = append(got, devinSummary(m))
-	}
-	want := []string{
-		"1:read a and b",
-		`2: call toolu_a/read {"path":"a"} call toolu_b/read {"path":"b"}`,
-		"4:A! for toolu_a",
-		"4:B! for toolu_b",
-	}
-	if strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("got\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }

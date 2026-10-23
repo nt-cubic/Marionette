@@ -17,8 +17,8 @@ import (
 // active.
 //
 // One in use stays on: its switch can't be turned off, and its row says
-// what uses it. A new install starts with the Essentials preset; one that
-// ran before has them all on until the user says otherwise.
+// what uses it. Every install, a new one too, has them all on until the
+// user says otherwise.
 // TestBuiltinsTranslated asks each string of every plugin of every
 // language.
 

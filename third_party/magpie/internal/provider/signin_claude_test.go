@@ -51,7 +51,7 @@ func fakeClaudeLogin(t *testing.T, a fakeClaudeAccount, own string, opens bool) 
 	exe := filepath.Join(dir, "claude")
 	script := fmt.Sprintf(`#!/bin/sh
 if [ "$1 $2" = "auth status" ]; then
-  if [ -n "$CLAUDE_CONFIG_DIR" ]; then cat "$CLAUDE_CONFIG_DIR/status.json"; exit 0; fi
+  if [ -n "$CLAUDE_CONFIG_DIR" ]; then printf '%%s' "$HTTPS_PROXY" > "${0%%/*}/status-proxy"; cat "$CLAUDE_CONFIG_DIR/status.json"; exit 0; fi
   %s
 fi
 [ "$1 $2" = "auth login" ] || exit 2

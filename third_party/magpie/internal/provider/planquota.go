@@ -37,6 +37,12 @@ type planQuotaSource struct {
 func planQuotaSourceOf(p Provider) (planQuotaSource, bool) {
 	for _, base := range []string{p.Chat, p.Anthropic, p.Responses} {
 		coding := strings.Contains(base, "/api/coding/")
+		if openCodeGateway(base) == "go" {
+			// Go at Zen's gateway or at the inference API, the URL
+			// models.dev and Go's docs give since October 2026: the same
+			// key, told its windows at the same usage query
+			return planQuotaSource{"https://opencode.ai/zen/go/v1/usage", true, readOpenCodeGo, true}, true
+		}
 		switch hostOf(base) {
 		case "open.bigmodel.cn":
 			return planQuotaSource{"https://open.bigmodel.cn/api/monitor/usage/quota/limit", false, readZhipuPlan, coding}, true
@@ -55,10 +61,6 @@ func planQuotaSourceOf(p Provider) (planQuotaSource, bool) {
 			// a Coding Plan key (sk-cp-…) is told its windows; a
 			// pay-as-you-go key isn't, and gets no card (#387)
 			return planQuotaSource{"https://" + hostOf(base) + "/v1/token_plan/remains", true, readMiniMaxPlan, false}, true
-		case "opencode.ai":
-			if u := strings.TrimSuffix(base, "/"); strings.HasSuffix(u, "/zen/go") || strings.Contains(u, "/zen/go/") {
-				return planQuotaSource{"https://opencode.ai/zen/go/v1/usage", true, readOpenCodeGo, true}, true
-			}
 		case "ollama.com":
 			// Ollama Cloud's included allowance (#1888); a key with none
 			// gets no card

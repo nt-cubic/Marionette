@@ -70,7 +70,11 @@ var ingestEarliest = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // ingestFields are the fields a reported record may carry, of the ones
 // usage.jsonl has: what a client can know of a call it made itself.
-var ingestFields = []string{"t", "agent", "provider", "model", "in", "out", "cache_read", "cache_write", "cache_write_1h", "reasoning", "ms", "ttft_ms", "status", "rid", "cost", "effort", "session", "err"}
+// first_text_ms and flow_ms (#2637) are what a reply's speed is told by
+// (usage.DecodeOf): without first_text_ms a reply that reasoned tells
+// none, and without flow_ms one its vendor held and let go in a burst
+// isn't told apart from one that streamed.
+var ingestFields = []string{"t", "agent", "provider", "model", "in", "out", "cache_read", "cache_write", "cache_write_1h", "reasoning", "ms", "ttft_ms", "first_text_ms", "flow_ms", "status", "rid", "cost", "effort", "session", "err"}
 
 // ingestFault is what is wrong with one record of a post.
 type ingestFault struct {
@@ -320,6 +324,33 @@ func parseReported(i int, raw json.RawMessage, now time.Time) (usage.Record, *in
 	}
 	if rec.TTFT, f = whole("ttft_ms", ingestMaxMillis, false); f != nil {
 		return rec, f
+	}
+	// first_text_ms is when the reply's first text came, counted as
+	// ttft_ms is: within the call, and never before its first content,
+	// which ttft_ms is (text, reasoning or a tool call). One before it
+	// would read the reasoning as written in no time, and ThinkPace would
+	// never tell an answer let go in a burst.
+	if rec.FirstText, f = whole("first_text_ms", ingestMaxMillis, false); f != nil {
+		return rec, f
+	}
+	hasMs := fields["ms"] != nil && string(fields["ms"]) != "null"
+	if hasMs && rec.FirstText > rec.Millis {
+		return rec, &ingestFault{i, "first_text_ms", "after ms, the end of the call it is in"}
+	}
+	if rec.TTFT > 0 && rec.FirstText > 0 && rec.FirstText < rec.TTFT {
+		return rec, &ingestFault{i, "first_text_ms", "before ttft_ms: the first text is content too, so it can't come before the first content"}
+	}
+	// flow_ms is how long the content took to come, from where the speed
+	// is counted (the first text when it reasoned, else the first
+	// content): the time from a tenth of it to nine tenths, scaled to the
+	// whole (×10/8), as the gateway measures it. Scaled so, a reply that
+	// came evenly over nearly all of the call can read a little over ms,
+	// so the bound is ms scaled the same way.
+	if rec.Flow, f = whole("flow_ms", ingestMaxMillis, false); f != nil {
+		return rec, f
+	}
+	if hasMs && rec.Flow > rec.Millis*10/8+1 {
+		return rec, &ingestFault{i, "flow_ms", "over ms×10/8: the content took longer to come than the call took"}
 	}
 	st, f := whole("status", 599, true)
 	if f != nil {

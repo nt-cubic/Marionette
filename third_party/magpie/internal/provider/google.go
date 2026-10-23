@@ -927,7 +927,7 @@ func (g googleAccount) modelInfo(ctx context.Context) ([]googleModelInfo, error)
 		var res struct {
 			Models map[string]struct {
 				DisplayName     string `json:"displayName"`
-				TagDescription  string `json:"tagDescription"`
+				Model           string `json:"model"` // its enum: MODEL_GOOGLE_GEMINI_2_5_FLASH, MODEL_PLACEHOLDER_M198
 				Disabled        bool   `json:"disabled"`
 				MaxTokens       int    `json:"maxTokens"`
 				MaxOutputTokens int    `json:"maxOutputTokens"`
@@ -1001,25 +1001,33 @@ func (g googleAccount) modelInfo(ctx context.Context) ([]googleModelInfo, error)
 			out = append(out, mi)
 		}
 		// Antigravity lists a model it moved its users off under the name
-		// of the one it moved them to, and tags it with that one's id:
-		// gemini-2.5-flash and gemini-2.5-flash-lite came as "Gemini 3.5
-		// Flash Lite", tagged gemini-3.5-flash-lite, beside
-		// gemini-3.5-flash-lite itself, while each id is still answered by
-		// its own model (modelVersion gemini-2.5-flash), so the editor
+		// of the one it moved them to: gemini-2.5-flash and
+		// gemini-2.5-flash-lite come as "Gemini 3.5 Flash Lite", beside
+		// gemini-3.5-flash-lite itself, while each id is still answered
+		// by its own model (modelVersion gemini-2.5-flash), so the editor
 		// had three chips of one name and the first two weren't it
-		// (#1918, kchen0x). Such a model is named for its own id; a
-		// level of the model its tag names (gemini-3.7-flash-low) keeps
-		// the name it was given.
-		owners := map[string]int{}
+		// (#1918, kchen0x). b68377dae told them by tagDescription, which
+		// then named the model moved to; Google has since left it empty
+		// or made it a notice ("GPT-OSS will be removed…"), and the chips
+		// came back (新v学员 on Discord, 10-20). Such a model is named for
+		// its own id when its enum names that id (MODEL_GOOGLE_GEMINI_2_5_
+		// FLASH, where the models Antigravity names truly are
+		// MODEL_PLACEHOLDER_M…), or when another family's model of that
+		// name is the one its name spells. Levels of one model
+		// (gemini-3.7-flash, -low) keep the name they share.
+		spelled := map[string]bool{}
 		for _, mi := range out {
-			owners[mi.Name]++
+			if antigravityNameSpells(mi.Name, mi.ID) {
+				spelled[mi.Name] = true
+			}
 		}
 		for i, mi := range out {
-			tag := res.Models[mi.ID].TagDescription
-			if mi.Name == "" || owners[mi.Name] < 2 || tag == "" || EffortFamily(tag) == EffortFamily(mi.ID) {
+			if mi.Name == "" || antigravityNameSpells(mi.Name, mi.ID) {
 				continue
 			}
-			out[i].Name = catalog.NameOf(mi.ID) // "" is named later, by its id at the least
+			if spelled[mi.Name] || antigravityEnumNames(res.Models[mi.ID].Model, mi.ID) {
+				out[i].Name = catalog.NameOf(mi.ID) // "" is named later, by its id at the least
+			}
 		}
 		rank := map[string]int{}
 		for _, s := range res.AgentModelSorts {

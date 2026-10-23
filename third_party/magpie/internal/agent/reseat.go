@@ -98,7 +98,7 @@ func Reseat(change func() error) ([]Move, error) {
 		f := p.a.Field(p.key)
 		vals := p.a.Values()
 		// changed already, with another field
-		if f == nil || vals[p.key] != p.val {
+		if f == nil || !p.a.samePick(vals[p.key], p.val) {
 			continue
 		}
 		var to Option
@@ -121,6 +121,22 @@ func Reseat(change func() error) ([]Move, error) {
 	return moves, nil
 }
 
+// samePick: a field's value now is still the pick read before the change.
+// A found group's auto/<model> reads back as written while the group is
+// served, but Claude Code is given a dotted Claude version dashed
+// (ClaudeSpelled), and with the group gone nothing takes
+// auto/claude-sonnet-4-5 back to auto/claude-sonnet-4.5. Both are the one
+// group by its canonical id, so the agent is still moved off it.
+func (a *Agent) samePick(now, before string) bool {
+	if now == before {
+		return true
+	}
+	m1, s1, one1 := a.split(now)
+	m2, s2, one2 := a.split(before)
+	return one1 && one2 && s1 == s2 && provider.IsGroupRef(m1) &&
+		provider.CanonicalRef(m1) == provider.CanonicalRef(m2)
+}
+
 // served: magpie takes requests for the catalog model.
 func served(ref string) bool {
 	_, _, ok := provider.Resolve(ref)
@@ -130,9 +146,10 @@ func served(ref string) bool {
 // sameModel is the option for ref's model from another provider still
 // serving it: the same id, else one that differs only in how it is spelt
 // (claude-sonnet-4.5 and claude-sonnet-4-5-20250929). For a group magpie
-// found (group/auto-…), gone as found groups are turned off or its model is
-// down to one provider, it is that model from the first provider still
-// serving it; none for any other routing group, which is nobody else's.
+// found (group/auto-…), gone as found groups are turned off or its model
+// is down to one provider magpie has, it is that model from the first
+// provider still serving it; none for any other routing group, which is
+// nobody else's.
 func sameModel(opts []Option, ref string) Option {
 	// a group's id carries Claude Code's [1m] mark as a model's does, and
 	// this ref comes from the agent's own settings
@@ -141,7 +158,7 @@ func sameModel(opts []Option, ref string) Option {
 			return Option{}
 		}
 		for _, o := range opts {
-			if o.Ref == "" || strings.HasPrefix(o.Ref, provider.GroupPrefix) || !served(o.Ref) {
+			if o.Ref == "" || provider.IsGroupRef(o.Ref) || !served(o.Ref) {
 				continue
 			}
 			if pid, m, _ := strings.Cut(o.Ref, "/"); provider.AutoGroupOf(pid, m) == gid {
@@ -157,7 +174,7 @@ func sameModel(opts []Option, ref string) Option {
 	want := modelKey(model)
 	var alike Option
 	for _, o := range opts {
-		if o.Ref == "" || strings.HasPrefix(o.Ref, provider.GroupPrefix) || !served(o.Ref) {
+		if o.Ref == "" || provider.IsGroupRef(o.Ref) || !served(o.Ref) {
 			continue
 		}
 		_, m, _ := strings.Cut(o.Ref, "/")

@@ -57,9 +57,14 @@ func (c checkiner) checkinNow(ctx context.Context, soon bool) []WorkBuddyCheckin
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	st := readCheckins(c.path)
 	now := c.now()
 	day := wbCheckinDay(now)
+	st, err := readCheckins(c.path)
+	if err != nil {
+		// unknown, never empty: nothing is asked or written, the file
+		// is left as it is, and each account says why
+		return c.unread(now, err)
+	}
 	var out []WorkBuddyCheckin
 	changed := false
 	// one account signed in twice (the built-in and the plugin) is
@@ -104,8 +109,28 @@ func (c checkiner) checkinNow(ctx context.Context, soon bool) []WorkBuddyCheckin
 		if b, err := json.MarshalIndent(st, "", "  "); err == nil {
 			if err := writePrivate(c.path, append(b, '\n')); err != nil {
 				log.Printf("%s check-in: %v", c.label, err)
+			} else {
+				wroteCheckins(c.path, st)
 			}
 		}
+	}
+	return out
+}
+
+// unread is how the accounts checkinNow would look at stand while its file
+// can't be read (err, logged by readCheckins): each failed with err, at
+// now, so the loop tries again after wbCheckinRetry and a press says why;
+// none was asked.
+func (c checkiner) unread(now time.Time, err error) []WorkBuddyCheckin {
+	var out []WorkBuddyCheckin
+	listed := map[string]bool{}
+	off := checkinOff()
+	for _, a := range c.accounts() {
+		if !a.On || a.key == "" || listed[a.key] || off[a.key] {
+			continue
+		}
+		listed[a.key] = true
+		out = append(out, WorkBuddyCheckin{User: a.User, By: c.by, Day: wbCheckinDay(now), At: now, Outcome: CheckinFailed, Msg: err.Error()})
 	}
 	return out
 }

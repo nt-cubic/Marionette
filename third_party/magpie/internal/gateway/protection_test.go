@@ -67,7 +67,9 @@ func restingNow(t *testing.T) []string {
 // Codex's own model, three ChatGPT accounts on, the backend answering 502
 // "response protection is unavailable" for that history. It is the
 // request, not an account: asked once, not on every account and then the
-// last again, and no account rests for it.
+// last again, and no account rests for it. The compaction goes to the
+// backend as it came only with native compaction on (#2582); off, magpie
+// summarises it, as TestProtectionRefusedCompactionAsText's model is.
 func TestProtectionRefusalAskedOnceNobodyRests(t *testing.T) {
 	for _, said := range []string{
 		`{"error":{"message":"response protection is unavailable","type":"server_error"}}`,
@@ -75,6 +77,7 @@ func TestProtectionRefusalAskedOnceNobodyRests(t *testing.T) {
 	} {
 		t.Run(said, func(t *testing.T) {
 			codexSignedIn(t, "two@example.com", "three@example.com")
+			nativeOn(t, "codex")
 			tried := protectionUp(t, said)
 			code, body := codexPost(t, strings.Replace(protectedCompaction, "%q", `"gpt-5.5"`, 1))
 			if code != http.StatusBadGateway || !strings.Contains(body, "response protection is unavailable") {

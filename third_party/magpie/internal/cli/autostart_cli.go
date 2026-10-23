@@ -22,13 +22,17 @@ func autostartCmd(args []string) error {
 			return fmt.Errorf("usage: magpie autostart [on|off]")
 		}
 	}
-	if autostart.Enabled() {
+	switch autostart.Enabled() {
+	case autostart.NeedsAllowing:
+		// the record is there, and Set(true) can't undo the user's switch
+		fmt.Println("magpie is set to open at login, but it is switched off in System Settings › General › Login Items › Allow in the Background: switch it on there")
+	case autostart.On:
 		if runtime.GOOS == "android" {
 			fmt.Println(green.Render("✓"), "magpie starts the gateway at boot (requires Termux:Boot)")
 		} else {
 			fmt.Println(green.Render("✓"), "magpie opens at login, in the tray")
 		}
-	} else {
+	default:
 		fmt.Println("magpie doesn't open at login")
 	}
 	return nil

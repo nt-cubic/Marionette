@@ -319,3 +319,38 @@ func EnvForBun(env []string) []string {
 	}
 	return out
 }
+
+// EnvForBunWith is EnvWith's env (the proxy choice names, see With) for a
+// Bun-built CLI magpie runs on a provider's behalf — Claude Code, for its
+// subscription's requests, warm-ups, usage and sign-ins — with a SOCKS5
+// proxy bridged as EnvForBun bridges it. Given socks5:// as it was, Claude
+// Code failed every request as UnsupportedProxyProtocol, after minutes of
+// its own retries (#2651). loopback says the CLI reaches this computer's
+// loopback, where a bridge listens; one that doesn't (Claude Code in a
+// WSL distro under NAT) can't be bridged. A SOCKS proxy left in env, there
+// or where the bridge can't start, is an error, at once: the CLI would
+// fail with it every time.
+func EnvForBunWith(choice string, env []string, loopback bool) ([]string, error) {
+	env = EnvWith(choice, env)
+	out := make([]string, 0, len(env))
+	for _, e := range env {
+		k, v, _ := strings.Cut(e, "=")
+		switch strings.ToUpper(k) {
+		case "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY":
+			u, err := Parse(v)
+			if strings.TrimSpace(v) == "" || err != nil || !IsSOCKS(u) {
+				break
+			}
+			if !loopback {
+				return nil, fmt.Errorf("the proxy %s is SOCKS, which Claude Code can't use (UnsupportedProxyProtocol), and magpie's HTTP bridge to it is on this computer's loopback, which Claude Code in WSL doesn't reach: set an http:// proxy for it instead", Redact(v))
+			}
+			a, err := Bridge(u)
+			if err != nil {
+				return nil, fmt.Errorf("the proxy %s is SOCKS, which Claude Code can't use (UnsupportedProxyProtocol), and magpie's HTTP bridge to it didn't start (%v): set an http:// proxy for it instead", Redact(v), err)
+			}
+			e = k + "=" + a
+		}
+		out = append(out, e)
+	}
+	return out, nil
+}

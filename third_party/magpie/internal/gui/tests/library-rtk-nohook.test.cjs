@@ -4,6 +4,10 @@
 // --agent dsh), and the RTK tab left it out, as if magpie hadn't seen it.
 // It is listed now, tagged No RTK hook with why, and its switch can't be
 // turned on; in English and Chinese. No backend: the API is faked here.
+// Discord (新v学员): Grok Build's tag said DeepSeek Harness's reason and
+// linked dsh's rtk-ai/rtk#3847. Each agent's tag says its own reason now:
+// Grok Build's cites rtk-ai/rtk#2136, the request for Grok Build, and says
+// nothing about its hooks.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -15,7 +19,7 @@ const HOME = "/Users/aimer";
 const agent = (id, name) => ({ id, name, icon: "", skills: `${HOME}/.${id}/skills`, mcp: `${HOME}/.${id}/mcp.json` });
 const lib = () => ({
   dir: `${HOME}/.magpie/library`, backups: `${HOME}/.magpie/backups`, home: HOME,
-  agents: [agent("pi", "Pi"), agent("dsh", "DeepSeek Harness")],
+  agents: [agent("pi", "Pi"), agent("dsh", "DeepSeek Harness"), agent("grok", "Grok Build")],
   instructions: { agents: [], sets: [] }, foundServers: [], projects: [], foundSkills: [], skills: [], servers: [],
 });
 const rtkView = () => ({
@@ -23,6 +27,7 @@ const rtkView = () => ({
   agents: [
     { id: "pi", name: "Pi", icon: "", on: false },
     { id: "dsh", name: "DeepSeek Harness", icon: "", on: false, noHook: true, blocked: "RTK has no hook for DeepSeek Harness yet" },
+    { id: "grok", name: "Grok Build", icon: "", on: false, noHook: true, blocked: "RTK has no hook for Grok Build yet" },
   ],
 });
 
@@ -49,8 +54,8 @@ function server(lang, calls) {
 }
 
 const words = {
-  en: { tag: "No RTK hook", why: "DeepSeek Harness's hooks can only allow or deny a command, not change it" },
-  zh: { tag: "RTK 暂不支持", why: "DeepSeek Harness 的 hook 只能放行或拦截命令，不能改写" },
+  en: { tag: "No RTK hook", why: "DeepSeek Harness's hooks can only allow or deny a command, not change it", grok: "RTK's installer has no option for Grok Build" },
+  zh: { tag: "RTK 暂不支持", why: "DeepSeek Harness 的 hook 只能放行或拦截命令，不能改写", grok: "RTK 的安装程序还没有 Grok Build 的选项" },
 };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
@@ -79,6 +84,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const tag = row("DeepSeek Harness").locator(".lib-tag");
         assert.deepEqual(await tag.allTextContents(), [w.tag]);
         assert((await tag.getAttribute("title")).includes(w.why), await tag.getAttribute("title"));
+        assert((await tag.getAttribute("title")).includes("rtk-ai/rtk/issues/3847"));
+        // Grok Build's tag is its own: its issue, not dsh's, and nothing
+        // said about its hooks
+        const gtag = row("Grok Build").locator(".lib-tag");
+        assert.deepEqual(await gtag.allTextContents(), [w.tag]);
+        const gwhy = await gtag.getAttribute("title");
+        assert(gwhy.includes(w.grok) && gwhy.includes("rtk-ai/rtk/issues/2136"), gwhy);
+        assert(!gwhy.includes("3847") && !gwhy.includes("DeepSeek") && !gwhy.includes("hook"), gwhy);
+        assert.equal(await row("Grok Build").locator(".lib-switch").isDisabled(), true);
         const sw = row("DeepSeek Harness").locator(".lib-switch");
         assert.equal(await sw.isDisabled(), true);
         // Pi has a hook: nothing to say, and it can be switched on

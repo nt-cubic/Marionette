@@ -11,9 +11,24 @@ import (
 	"github.com/yetone/magpie/internal/testenv"
 )
 
-// inZone runs the test with the local time zone at a fixed offset.
+// inZone runs the test with the local time zone at a fixed offset. The
+// background cache writer (saveCache) reads time.Local, and one started by
+// this or an earlier test's List can still be running, so it is drained
+// before the zone is swapped and again before it is put back (cleanups run
+// last-in first-out).
 func inZone(t *testing.T, hours int) {
+	savesDone()
 	testenv.Zone(t, time.FixedZone("test", hours*3600))
+	t.Cleanup(savesDone)
+}
+
+// savesDone waits for the background cache writer to finish.
+func savesDone() {
+	saving.Lock()
+	for saving.running {
+		saving.Wait()
+	}
+	saving.Unlock()
 }
 
 // ccMsg is a line of a Claude Code reply at a time.

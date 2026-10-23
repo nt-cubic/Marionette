@@ -657,3 +657,104 @@ func TestClaudeDesktopMSIXChecksTheFoldersDesktopRuns(t *testing.T) {
 		t.Errorf("sonnet: %q", got)
 	}
 }
+
+// Claude-3p is a userData of its own, so Desktop on magpie started in the
+// system's language, not the one picked signed in with Anthropic (memory
+// and Osal on Discord: Chinese gone). The language is carried into
+// Claude-3p's config.json, nothing else of Claude's is, and off takes the
+// file magpie made for it away again.
+func TestClaudeDesktopCarriesTheLanguage(t *testing.T) {
+	home, p := desktopSandbox(t)
+	own := "{\n  \"locale\": \"zh-CN\",\n  \"userThemeMode\": \"dark\"\n}\n"
+	desktopWrite(t, p.app, own)
+	before := desktopTree(t, p)
+
+	f := claudeDesktop(home).Field("provider")
+	if err := f.Set("magpie"); err != nil {
+		t.Fatal(err)
+	}
+	if m := desktopJSON(t, p.app3p); !reflect.DeepEqual(m, map[string]any{"locale": "zh-CN"}) {
+		t.Errorf("Claude-3p's config.json: %v", m)
+	}
+	if b, _ := os.ReadFile(p.app); string(b) != own {
+		t.Errorf("Claude's config.json changed:\n%s", b)
+	}
+	if err := f.Set(""); err != nil {
+		t.Fatal(err)
+	}
+	if after := desktopTree(t, p); !reflect.DeepEqual(after, before) {
+		t.Fatalf("off left:\n%v\nwas:\n%v", after, before)
+	}
+}
+
+// A language already set in 3p mode (Desktop's, or the user's by hand) is
+// theirs: no write of magpie's changes Claude-3p's config.json, on, again,
+// off and on again, and off leaves it there.
+func TestClaudeDesktopKeepsThe3pLanguage(t *testing.T) {
+	home, p := desktopSandbox(t)
+	desktopWrite(t, p.app, `{"locale":"zh-CN"}`)
+	mine := "{\n  \"locale\": \"ja-JP\",\n  \"windowBounds\": {\n    \"width\": 900\n  }\n}\n"
+	desktopWrite(t, p.app3p, mine)
+
+	f := claudeDesktop(home).Field("provider")
+	for i, v := range []string{"magpie", "magpie", "", "magpie"} {
+		if err := f.Set(v); err != nil {
+			t.Fatal(err)
+		}
+		if b, _ := os.ReadFile(p.app3p); string(b) != mine {
+			t.Fatalf("step %d (%q): Claude-3p's config.json is now\n%s", i, v, b)
+		}
+	}
+}
+
+// Wired, and Desktop has written its config.json since: the user then
+// sets the language there by hand. Applying magpie again keeps every key;
+// off keeps the file, which is no longer magpie's alone.
+func TestClaudeDesktopUserEditsThenReapply(t *testing.T) {
+	home, p := desktopSandbox(t)
+	f := claudeDesktop(home).Field("provider")
+	if err := f.Set("magpie"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(p.app3p); err == nil {
+		t.Fatal("config.json written with no language to carry")
+	}
+	desktopWrite(t, p.app, `{"locale":"zh-CN"}`)
+	edited := "{\n  \"locale\": \"zh-TW\",\n  \"hasCompletedOnboarding\": true\n}\n"
+	desktopWrite(t, p.app3p, edited)
+	for _, v := range []string{"magpie", "", "magpie"} {
+		if err := f.Set(v); err != nil {
+			t.Fatal(err)
+		}
+		if b, _ := os.ReadFile(p.app3p); string(b) != edited {
+			t.Fatalf("%q: the user's edit is gone:\n%s", v, b)
+		}
+	}
+}
+
+// Only a language Desktop can name is carried, and a Claude-3p config.json
+// magpie can't read as an object is left as it is, the takeover going on.
+func TestClaudeDesktopLanguageOddValues(t *testing.T) {
+	for _, own := range []string{`{"locale":"../../x"}`, `{"locale":7}`, `{"locale":""}`, `not json`} {
+		home, p := desktopSandbox(t)
+		desktopWrite(t, p.app, own)
+		if err := claudeDesktop(home).Field("provider").Set("magpie"); err != nil {
+			t.Fatal(err)
+		}
+		if b, err := os.ReadFile(p.app3p); err == nil {
+			t.Errorf("%s: carried %s", own, b)
+		}
+	}
+	home, p := desktopSandbox(t)
+	desktopWrite(t, p.app, `{"locale":"zh-CN"}`)
+	desktopWrite(t, p.app3p, `[1]`)
+	if err := claudeDesktop(home).Field("provider").Set("magpie"); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p.app3p); string(b) != `[1]` {
+		t.Errorf("odd config.json written: %s", b)
+	}
+	if m := desktopJSON(t, p.config3p); m["deploymentMode"] != "3p" {
+		t.Errorf("takeover stopped: %v", m)
+	}
+}

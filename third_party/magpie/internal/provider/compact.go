@@ -54,7 +54,8 @@ func CompactFor(s settings.Settings, e Entry, find func(string) (Group, []Member
 // WindowTyped says the window agents are told for a model, by its
 // catalog id (as CompactSet takes it), is one the user typed: the
 // group's own size, a group's smallest member's that the user typed
-// (smallestWindow, #2224), or one set on the provider for the model or
+// (smallestWindow, #2224), its largest member's when it names no size
+// and the user typed that one (largestWindow), or one set on the provider for the model or
 // all of its models. Claude Code then isn't handed magpie's default
 // compaction window for it (CompactFor's rule, as Entry.WindowSet).
 func WindowTyped(id string) bool {
@@ -75,6 +76,8 @@ func WindowTyped(id string) bool {
 		case g.Context == ContextSmallest:
 			_, typed := smallestWindow(entries, membersIn(entries, all, g))
 			return typed
+		case g.Context == 0:
+			return largestWindow(entries, g)
 		}
 		return false
 	}
@@ -111,9 +114,10 @@ func ClaudeGroup(id string) bool {
 }
 
 // catalogID is an agent's model id as the catalog has it: magpie/ and
-// Claude Code's [1m] mark taken off.
+// Claude Code's [1m] mark taken off, a found group's auto/<model> as
+// group/auto-<slug> (CanonicalRef).
 func catalogID(id string) string {
-	return strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(id), "magpie/"), "[1m]")
+	return CanonicalRef(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(id), "magpie/"), "[1m]"))
 }
 
 func compactSet(s settings.Settings, id string, find func(string) (Group, []Member, bool)) int {
@@ -164,14 +168,16 @@ func CompactsOf(providerID string) map[string]int {
 
 // SetModelCompacts makes a provider's thresholds cs, by model id, "*" for
 // all of them, as its editor's Compact at says: those it leaves out are
-// taken away, and every one set has to be a model the provider serves, as
-// for a reply limit (SetModelOutputs). Codex's and Claude Code's lists are
-// written again when anything changed.
+// taken away, and every one set or changed has to be a model the provider
+// serves, as for a reply limit (SetModelOutputs); one sent back as it is
+// for a model the provider no longer lists is kept, not refused (#3305).
+// Codex's and Claude Code's lists are written again when anything changed.
 func SetModelCompacts(providerID string, cs map[string]int) error {
 	p, err := Find(providerID)
 	if err != nil {
 		return err
 	}
+	s := settings.Load()
 	for model, n := range cs {
 		if n < 0 {
 			return errorf("a compaction threshold is a number of tokens, not %d", n)
@@ -179,11 +185,10 @@ func SetModelCompacts(providerID string, cs map[string]int) error {
 		if err := settings.CheckModelKey("a compaction threshold", p.ID+"/"+model); err != nil {
 			return err
 		}
-		if model != "*" && n > 0 && !p.serves(model) {
+		if model != "*" && n > 0 && s.ModelCompacts[p.ID+"/"+model] != n && !p.serves(model) {
 			return errorf("%s has no model %s (magpie provider %s lists them)", p.ID, model, p.ID)
 		}
 	}
-	s := settings.Load()
 	changed := false
 	for k := range s.ModelCompacts {
 		if model, ok := strings.CutPrefix(k, p.ID+"/"); ok && cs[model] <= 0 {

@@ -6,7 +6,7 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
 ## 常用命令
 
 - 启动开发版：`npm run tauri dev`（或 `start-marionette.bat`）
-- 构建便携版：`tools\build-portable.bat`（内置引擎，产物 `release\<版本号>\Marionette.exe`，按版本分目录，运行中的旧版不会挡住新构建）。引擎源码在 `third_party/magpie`，升级用 `tools\import-magpie.ps1 -Tag <v>`。发布：`tools\publish-release.bat`
+- 构建便携版：`tools\build-portable.bat`（内置引擎，产物 `release\<版本号>\Marionette.exe`，按版本分目录，运行中的旧版不会挡住新构建）。默认会先 `import-magpie.ps1` 拉上游 latest 稳定版进 `third_party/magpie`（`SKIP_MAGPIE_IMPORT=1` 跳过；`MAGPIE_TAG=v…` 钉版本）。用户侧也可在「模型共享」里单独更新 magpie。发布：`tools\publish-release.bat`
 - 前端构建：`npm run build`（`tsc && vite build`）
 - Rust 检查：`cargo check`（在 `src-tauri/` 下）
 - 发布版本号：`tools\bump-version.ps1`（或 `tools\bump-version.bat`）
@@ -128,3 +128,64 @@ provider 层，只服务 catalog 描述得出的模型（本机 catalog 在
 catalog 路由横跨 `openai-completions` / `openai-responses` / `anthropic-messages`：补一个 `api` 会把同路由
 里别的模型的协议一起改掉。**上游处方是拆路由**（README「Known Limitations」）：新开一个 catalog 不收录的
 route key，自己声明 `api` + `baseURL` + `apiKeyEnv` + 只列这一个模型——实测有效，且不动原路由上其它模型的协议。
+## 模型共享引擎的凭据源（2026-10-23）
+
+引擎注册（`engine.rs` 的 `register_key_providers`）钥匙来源按优先级：**Marionette 凭据库
+key-plan → ZCode 个人 provider 层（`~/.zcode/v2/provider_config.json` 的
+`access.type=zhipu-coding-plan-api-key` → glm preset）→ opencode 扫描**，同 preset 先到
+先得。两个必记事实：**opencode 凭据已迁 `opencode.db` 的 credential 表**（auth.json 迁移
+后不再更新，只读它会拿到死钥匙；合并逻辑在 `credentials.rs` 的
+`peek_opencode_db_keys_at` / `merge_opencode_key_sources`，active=1 优先）；**ZCode 设置页
+配的 Coding Plan key 不落 v2/config.json**（那里 `options.apiKey` 恒空，本体在个人层）。
+完整踩坑链、额度端点规矩与排查速查：`docs/pitfalls-model-share-quota.md`。
+
+## ZCode 接入（社区适配器 `zcode-acp-server`，2026-10-23 起）
+
+> 完整踩坑集（九雷 + 快速确诊表，含日志证据链）：`docs/pitfalls-zcode-acp.md`。改 zcode 相关代码前先过一遍。
+
+ZCode 官方**没有** ACP（CLI 0.16.x 无 `--acp`，ACP registry 未收录）；走的是社区桥
+`zcode-acp-server`（npm，Apache-2.0，bin `zcode-acp-server`）：ACP ↔ `zcode app-server`
+（ZCode 私有 stdio 协议 "ZCode Protocol v1"，NDJSON、**无 jsonrpc 信封**，`{id, method, params}`）。
+底层协议已实测：`session/create` 需 `workspace{workspacePath,workspaceKey}` 且要应答服务端反向请求
+`session/requestRuntimePreferences`；事件流 `state.updated`（revision 补丁）/`v4/telemetry/event`；
+转录走 `session/messages`。**懒启动**：适配器首个 `session/prompt` 才 spawn 后端。
+
+- **spawn 注入两件事**（`acp.rs` zcode 分支，用户自设 `ZCODE_BIN`/PATH `zcode` 时不覆盖）：
+  1. `ZCODE_BIN` = 桌面版内置 `resources\glm\zcode.cjs`。桌面版可装任意目录、**注册表卸载键不登记**
+     （本机 D:\Program Files\ZCode），探测链：`%LOCALAPPDATA%\Programs\ZCode` → `%ProgramFiles%\ZCode`
+     → 开始菜单/公共桌面 `ZCode.lnk` 里抽 UTF-16 LocalBasePath（`zcode_bin_path()`）。
+  2. `ZCODE_NODE` = 起适配器的那台 node。适配器对 .cjs 型 ZCODE_BIN 自己找 sqlite-capable node，
+     候选链（ZCODE_NODE → unix 路径 → which node → Zed bundle）在 Windows GUI PATH 下全空，
+     最后裸 exec .cjs → **`spawn EFTYPE`**（实测 2026-10-23，0.76.2）。
+- **MCP 借贷只借远程**：适配器 `session/new` 的 zod schema 只收 url 型（http/sse/acp）条目，
+  **stdio 条目让整个 session/new -32602**——所以 `agent_registry::accepts_stdio_mcp("zcode") = false`，
+  stdio 在 `mcp_payload_for_agent` 里跳过并记 note。远程条目 per-load 合并，ZCode 自己 `~/.zcode`
+  的 MCP/插件（node_repl 等）照常加载；实测 http MCP 借出后模型能真实调用工具（E2E
+  PONG:marionette-http-mcp-ok）。反向共通：`context_inventory` 扫 `~/.zcode/cli/config.json`
+  的 `mcp.servers` 与 `~/.zcode/cli/skills`（用户层；插件技能不入清单，与其它 agent 的插件口径一致）。
+- **登录/凭据**：与桌面版共享 `~/.zcode`——provider 密钥在 `v2/config.json`（`provider.*`），
+  OAuth 令牌在加密的 `v2/credentials.json`（`probe_zcode_auth` 探这两个）。登录 = `zcode login`
+  （PATH 没有 zcode 时 `commands.rs` 自动改跑 `node <zcode.cjs> login`，独立控制台）。
+- **configOptions 全广告**（model/mode/thought → 模型/模式/推理档位芯片直出，无需 acpSupplements）；
+  Node ≥ 22（node:sqlite）；ZCode CLI ≥ 0.14.8；权限经 `session/request_permission` 桥接。
+- **跨用桥（2026-10-23，`model_bridge.rs`）**：spawn 时把托管 provider「marionette」
+  （openai-chat-completions → 引擎 `/v1`，apiKey 用引擎常量令牌）合并进 **`~/.zcode/v2/provider_config.json`**
+  ——zcode 的**个人** provider 层（桌面版 3.12+ 新增 provider 的正位；账号层 `v2/config.json`
+  桌面版自己重写不能托管，且适配器的 env 注入只扫账号层、不会被劫持）。三处托管位：
+  `providerOrder`（**追加**尾部，不动默认模型）、`providerConfigRules.providerRules`、
+  `modelConfigRules.providerModelRules`（每模型 contextWindow/maxOutput/图片输入——不写会落
+  内置 `.*` 兜底 200K + 不收图，同 DSH 的 256K 教训）。**个人层 schema 不收内置表那种
+  regex `modelRules`**——一个未知键整层被 zod 拒掉、内存降级空配置（实测，zcode 日志
+  `Personal Provider Config 加载失败`）；按 `providerId` 识别托管条目，幂等、引擎停用即移除。
+  模型 id 广告为 `marionette\<engineId>`（适配器 configOptions 的 `provider\model` 反斜杠拼法，
+  前端钉原生偏好用此前缀，`isBridgeNativeModel`/`modelLabel` 已收 `\` 形态）。E2E 实测：
+  写入后 `model.available` 出现 `marionette\glm-5.3-e2e | ctx:1000000 | out:65536 | img:true`。
+- **会话导入（2026-10-23，`parsers/zcode.rs`）**：ZCode 的对话主库是
+  `~/.zcode/cli/db/db.sqlite`（`ZCODE_HOME` 可挪根）——`session.directory` 做项目
+  过滤；转录在 `message`（时间线事件，role + semantics.kind）+ `part`（内容分片，
+  按 message_id 关联）两表。只导出真实对话轮（user/user_prompt、
+  assistant/assistant_response），system_reminder/todo_reminder/timeline_event 是合成
+  事件跳过；`sess_subagent_*` / 带 parent_id / 已归档的行不进列表。实机冒烟：
+  `cargo test zcode -- --ignored`。
+- **NDJSON 探针**：`npx -y zcode-acp-server`（配 `ZCODE_BIN`/`ZCODE_NODE` env），stdin 发
+  `initialize` → `session/new`（`cwd` 绝对路径），读 `id=2` 的 `configOptions`（id: model/mode/thought）。

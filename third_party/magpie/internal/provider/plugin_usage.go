@@ -59,7 +59,7 @@ var movedNames = map[string]string{CommandCodePlanID: "Command Code Plan"}
 
 // pluginCard is the name and icon pp's usage cards show.
 func pluginCard(pp plugin.Provider) (string, string) {
-	if c, ok := movedCards[pp.ID]; ok && Moved(pp.ID) {
+	if c, ok := movedCards[pp.ID]; ok && PluginServes(pp.ID) {
 		return c.name, c.icon
 	}
 	name := pp.Name

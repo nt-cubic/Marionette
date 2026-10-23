@@ -45,13 +45,14 @@ const (
 // PluginID is the id magpie gives the provider OpenCode calls id: the same,
 // unless a preset or a built-in subscription has it (google, openai,
 // anthropic), or a provider of the user's own made before the plugin was
-// installed (zenmux, #867), when it is id-plugin — but for a built-in moved
+// installed (zenmux, #867), or "auto" or "group", which start the ids of
+// routing groups, when it is id-plugin — but for a built-in moved
 // onto the plugin, whose id the plugin has now.
 func PluginID(id string) string {
-	if Moved(id) {
+	if PluginServes(id) {
 		return id
 	}
-	if slices.Contains(accountIDs, id) || Preset(id) != nil || id == "magpie" || customIDs()[id] {
+	if slices.Contains(accountIDs, id) || Preset(id) != nil || id == "magpie" || id == autoID || id == strings.TrimSuffix(GroupPrefix, "/") || customIDs()[id] {
 		return id + "-plugin"
 	}
 	return id
@@ -114,7 +115,15 @@ func pluginAccounts() []Provider {
 			continue // shown once the move is through (migrate.go)
 		}
 		if ls := pluginLogins(pp); len(ls) > 0 {
-			out = append(out, pluginProvider(pp, ls[0]))
+			// the provider offers what any account switched on serves, as
+			// the requests reach each through its own list (#2554)
+			keys := []string{ls[0].acct.Key}
+			for _, l := range ls[1:] {
+				if l.On {
+					keys = append(keys, l.acct.Key)
+				}
+			}
+			out = append(out, pluginProviderServing(pp, ls[0], keys))
 		}
 	}
 	return out
@@ -190,6 +199,14 @@ func PluginTiers(p Provider, model string) []string {
 	return m.ServiceTiers
 }
 
+// pluginTierOn reports whether the plugin says its vendor serves m at tier,
+// on a Chat or Responses API, where the gateway sends it as service_tier
+// (forwardTranslated); a model on another API is sent no tier.
+func pluginTierOn(provider string, m plugin.Model, tier string) bool {
+	to := pluginProtocol(provider, m)
+	return (to == Chat || to == Responses) && slices.Contains(m.ServiceTiers, tier)
+}
+
 func pluginCatalog(pp plugin.Provider) []catalog.Model {
 	out := make([]catalog.Model, 0, len(pp.Models))
 	for _, m := range pp.Models {
@@ -225,6 +242,10 @@ func pluginCatalog(pp plugin.Provider) []catalog.Model {
 		if c.Name == "" {
 			c.Name = m.ID
 		}
+		// a model that searches the web by itself, asked in plain words
+		if m.Searches {
+			c.WebSearch = "native"
+		}
 		if m.Reasoning {
 			c.Efforts, c.Reasoning = m.Variants, true
 		}
@@ -233,7 +254,7 @@ func pluginCatalog(pp plugin.Provider) []catalog.Model {
 		// So does Cline's plugin, which resells others' models as the
 		// ClinePass built-in does and gives no levels of its own: signed in
 		// through it, ClinePass showed none where its API key showed them
-		if len(c.Efforts) == 0 && (Moved(pp.ID) || pp.ID == "cline") {
+		if len(c.Efforts) == 0 && (PluginServes(pp.ID) || pp.ID == "cline") {
 			c.Efforts = borrowedEfforts(m.ID)
 		}
 		// OpenCode's price of a model it has none for is 0, as the
@@ -304,6 +325,24 @@ func (p Provider) ListError() string {
 	return PluginListError(pp, p.Account.pluginKey)
 }
 
+// pluginServedCatalog is what the accounts at keys serve between them,
+// in the catalog's order: an account the plugin told no list of, or
+// doesn't know, serves all of it.
+func pluginServedCatalog(pp plugin.Provider, keys []string) []catalog.Model {
+	all := pluginCatalog(pp)
+	listed := map[string]bool{}
+	for _, k := range keys {
+		i := slices.IndexFunc(pp.Accounts, func(a plugin.Account) bool { return a.Key == k })
+		if i < 0 || pp.Accounts[i].Models == nil {
+			return all
+		}
+		for _, m := range pp.Accounts[i].Models {
+			listed[m] = true
+		}
+	}
+	return slices.DeleteFunc(all, func(m catalog.Model) bool { return !listed[m.ID] })
+}
+
 // pluginLists is whether a plugin's account serves model, as the plugin
 // last told its list; one it told none of serves all of the provider's.
 func (a *Account) pluginLists(model string) bool {
@@ -322,7 +361,19 @@ func (a *Account) pluginLists(model string) bool {
 // pluginProvider is the provider as one of its accounts, l as the
 // accounts list has it.
 func pluginProvider(pp plugin.Provider, l pluginLogin) Provider {
+	return pluginProviderServing(pp, l, nil)
+}
+
+// pluginProviderServing is pluginProvider offering the models the
+// accounts at keys serve between them; nil keys, l's own.
+func pluginProviderServing(pp plugin.Provider, l pluginLogin, keys []string) Provider {
 	acct, user := l.acct, l.User
+	serves := func(cur plugin.Provider) []catalog.Model {
+		if keys == nil {
+			return pluginAccountCatalog(cur, acct.Key)
+		}
+		return pluginServedCatalog(cur, keys)
+	}
 	id := PluginID(pp.ID)
 	name := pp.Name
 	if name == "" {
@@ -333,8 +384,9 @@ func pluginProvider(pp plugin.Provider, l pluginLogin) Provider {
 		// Codex's namespaced tools go to Grok flat, as the built-in sends
 		// them (#404): the plugin's own rewrite would leave them out; and
 		// a plain agent_message goes as the user's message, as the plugin
-		// itself sends it from 0.1.11
-		a.body = grokBody
+		// itself sends it from 0.1.11. A lone tool_choice "none" stays,
+		// for the plugin to read (grokPluginBody, #3110)
+		a.body = grokPluginBody
 	}
 	if pp.ID == "zed" {
 		// an OpenAI model's request as Zed's cloud reads it: Codex's
@@ -343,9 +395,9 @@ func pluginProvider(pp plugin.Provider, l pluginLogin) Provider {
 	}
 	a.models = func() []catalog.Model {
 		if cur, ok := PluginOf(id); ok {
-			return pluginAccountCatalog(cur, acct.Key)
+			return serves(cur)
 		}
-		return pluginAccountCatalog(pp, acct.Key)
+		return serves(pp)
 	}
 	a.fetch = func(ctx context.Context) ([]catalog.Model, error) {
 		ps, err := plugin.Providers(ctx)
@@ -360,7 +412,7 @@ func pluginProvider(pp plugin.Provider, l pluginLogin) Provider {
 				if e := PluginListError(cur, acct.Key); e != "" {
 					return nil, fmt.Errorf("%s couldn't list its models: %s", name, e)
 				}
-				return catalog.Chat(pluginAccountCatalog(cur, acct.Key)), nil
+				return catalog.Chat(serves(cur)), nil
 			}
 		}
 		return nil, fmt.Errorf("%s's plugin no longer lists it", name)
@@ -368,7 +420,7 @@ func pluginProvider(pp plugin.Provider, l pluginLogin) Provider {
 	a.sign = func(ctx context.Context, req *http.Request, body []byte) error { return nil }
 	a.transport = func(req *http.Request) (*http.Response, error) { return pluginFetch(pp, acct.Key, req) }
 	p := Provider{ID: id, Name: name, Icon: PluginIcon(pp), Account: a}
-	if c, ok := movedCards[pp.ID]; ok && Moved(pp.ID) {
+	if c, ok := movedCards[pp.ID]; ok && PluginServes(pp.ID) {
 		p.Name, p.Icon, p.Website = c.name, c.icon, c.site // as the built-in was
 		m, _ := MigrationOf(pp.ID)
 		a.moved, a.wasHost = true, m.Host

@@ -149,7 +149,12 @@ fn builtin_catalog() -> Vec<ProviderMeta> {
         b(
             "glm",
             "GLM Coding Plan (Zhipu)",
-            &["glm", "zhipu", "bigmodel"],
+            // `zhipuai-coding-plan` 是 opencode `auth login` 写进 auth.json 的键名
+            // （与裸 glm 同走 open.bigmodel.cn 的 coding 端点，见 model_bridge 的
+            // preset_for_opencode_provider）。缺了这个别名，Coding Plan 用户的
+            // 模型 id（zhipuai-coding-plan/glm-…）和 key 都对不上号。按量的
+            // `zhipuai` 仍不收：coding 监控端点只吃套餐 key。
+            &["glm", "zhipu", "bigmodel", "zhipuai-coding-plan"],
             ProbeStrategy::Glm,
         ),
         b(
@@ -1217,7 +1222,7 @@ pub fn probe_provider_usage(model_id: Option<String>) -> ProviderUsageSnapshot {
             Ok(key) => probe_kimi(&key, model_ref),
             Err(e) => Err(e),
         },
-        "glm" | "zhipu" | "bigmodel" => match auth_key_for(&auth, "glm") {
+        "glm" | "zhipu" | "bigmodel" | "zhipuai-coding-plan" => match auth_key_for(&auth, "glm") {
             Ok(key) => probe_glm(&key, model_ref),
             Err(e) => Err(e),
         },
@@ -1671,9 +1676,10 @@ pub fn delete_provider_key(provider: &str, force: bool) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        builtin_catalog, chatgpt_oauth_for, generate_opencode_session_id, glm_reject_message,
-        money, opencode_usage_error, parse_glm_usage, parse_iso8601_utc, parse_kimi_balance,
-        parse_opencode_usage, parse_openai_usage, reset_hint_secs, split_model_id, ProbeStrategy,
+        auth_key_for, builtin_catalog, chatgpt_oauth_for, find_meta, generate_opencode_session_id,
+        glm_reject_message, money, opencode_usage_error, parse_glm_usage, parse_iso8601_utc,
+        parse_kimi_balance, parse_opencode_usage, parse_openai_usage, reset_hint_secs,
+        split_model_id, ProbeStrategy,
     };
     use serde_json::json;
 
@@ -1771,6 +1777,8 @@ mod tests {
         assert_eq!(glm.probe, ProbeStrategy::Glm);
         assert!(glm.key_aliases.iter().any(|a| a == "zhipu"));
         assert!(glm.key_aliases.iter().any(|a| a == "bigmodel"));
+        // opencode 写 auth.json 用的键名也归 glm（Coding Plan 同一端点）。
+        assert!(glm.key_aliases.iter().any(|a| a == "zhipuai-coding-plan"));
 
         // zai is a different vendor (Z.AI ≠ open.bigmodel.cn) — its aliases
         // must not claim the GLM coding-plan keys anymore.
@@ -1784,6 +1792,25 @@ mod tests {
         assert_eq!(ProbeStrategy::parse("glm"), ProbeStrategy::Glm);
         assert_eq!(ProbeStrategy::Glm.as_str(), "glm");
         assert_eq!(ProbeStrategy::Kimi.as_str(), "kimi");
+    }
+
+    #[test]
+    fn glm_probe_resolves_opencode_coding_plan_key() {
+        // opencode `auth login` → 智谱 AI Coding Plan：模型 id 的 provider 段和
+        // auth.json 键名都是 zhipuai-coding-plan，探测得两头都认。
+        let (provider, model) = split_model_id("zhipuai-coding-plan/glm-5.3");
+        assert_eq!(model.as_deref(), Some("glm-5.3"));
+        let meta = find_meta(&provider).expect("alias must resolve to the glm entry");
+        assert_eq!(meta.probe, ProbeStrategy::Glm);
+        assert_eq!(meta.label, "GLM Coding Plan (Zhipu)");
+
+        let auth = json!({ "zhipuai-coding-plan": { "type": "api", "key": "sk-plan" } });
+        assert_eq!(auth_key_for(&auth, &provider).unwrap(), "sk-plan");
+        // 反向：provider 写裸 glm 时，也要能从 coding-plan 键名下取到 key。
+        assert_eq!(auth_key_for(&auth, "glm").unwrap(), "sk-plan");
+
+        let bare = json!({ "glm": { "type": "api", "key": "sk-glm" } });
+        assert_eq!(auth_key_for(&bare, &provider).unwrap(), "sk-glm");
     }
 
     // ─── glm (zhipu coding plan) ────────────────────────────────────────────

@@ -500,6 +500,13 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			res, err = library.InstallSkills(in.Source, in.Paths, in.Agents)
 		case "skills/update":
 			res, err = library.UpdateSkill(in.Name, in.Replace)
+			var gone *library.GoneError
+			if errors.As(err, &gone) {
+				// removed from its source: the page shows it so, not a failure
+				res, err = &library.Result{Changed: []string{}, Problems: []library.Problem{}, Gone: []string{gone.Name}}, nil
+			}
+		case "skills/remove-gone":
+			res, err = library.RemoveGoneSkills(in.Names)
 		case "skills/update-all":
 			res, err = library.UpdateSkills()
 		case "skills/update-some":

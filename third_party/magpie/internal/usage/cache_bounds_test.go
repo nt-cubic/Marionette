@@ -285,7 +285,7 @@ func TestUsageLargeSummaryIsCompleteAndKeptTrimmed(t *testing.T) {
 		t.Fatalf("large summary lost sessions: %d / %d", len(got.Sessions), got.Calls)
 	}
 	summaries.Lock()
-	kept := summaries.entries[All]
+	kept := summaries.entries[summaryKey{All, time.Local}]
 	summaries.Unlock()
 	if len(kept.value.Sessions) != summaryCacheSessions || kept.value.SessionCount != summaryCacheSessions+1 {
 		t.Fatalf("the cache kept %d sessions of %d", len(kept.value.Sessions), kept.value.SessionCount)
@@ -329,7 +329,7 @@ func TestUsageOverBudgetPageIsCached(t *testing.T) {
 	equalPage(t, got, pageFromLedger(All, Filter{}, 0, 100, LedgerOf(All, Filter{})))
 	requestCache.Lock()
 	defer requestCache.Unlock()
-	if _, ok := requestCache.pages[pageKey{All, Filter{}, 0, 100}]; !ok {
+	if _, ok := requestCache.pages[pageKey{All, Filter{}, 0, 100, "2026-09-30"}]; !ok {
 		t.Fatal("page of an over-budget history not cached")
 	}
 }

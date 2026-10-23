@@ -7,6 +7,7 @@ import (
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // TestClaudeContextWindow: Claude Code takes a model it doesn't know for a
@@ -53,14 +54,39 @@ func TestClaudeContextWindow(t *testing.T) {
 		t.Fatalf("a model of no known window keeps the last one's: %q", window())
 	}
 	// a 1M model is marked [1m], which Claude Code takes for 1M whatever
-	// the window says; a tier that isn't is told its own
+	// the window says; beside a tier that isn't, the window told is the
+	// main's own, and the tier compacts by its own (多喝热水 on Discord:
+	// the tier's read as the main's), under Full window and without it
 	set("model", "v/big[1m]")
 	if window() != "" {
 		t.Fatalf("[1m]: %q", window())
 	}
+	budget := func(id string) string { v, _ := edit.GetJSON(path, budgetPath(id)); return v }
+	compact := func() (env, top string) {
+		env, _ = edit.GetJSON(path, "env."+claudeCompactEnv)
+		top, _ = edit.GetJSON(path, "autoCompactWindow")
+		return env, top
+	}
 	set("haiku", "v/small")
-	if window() != "128000" {
-		t.Fatalf("haiku on small beside a [1m] model: %q", window())
+	if e, top := compact(); window() != "1000000" || budget("v/small") != "128000" || budget("v/big[1m]") != "" || e != "" || top != "272000" {
+		t.Fatalf("haiku on small beside a [1m] model: window %q, small %q, big %q, compact env %q, top-level %q",
+			window(), budget("v/small"), budget("v/big[1m]"), e, top)
+	}
+	if err := settings.Save(settings.Settings{FullContext: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if e, top := compact(); window() != "1000000" || budget("v/small") != "128000" || e != "" || top != "" {
+		t.Fatalf("full window: window %q, small %q, compact env %q, top-level %q", window(), budget("v/small"), e, top)
+	}
+	if err := settings.Save(settings.Settings{}); err != nil {
+		t.Fatal(err)
+	}
+	set("haiku", "")
+	if e, top := compact(); window() != "" || budget("v/small") != "" || e != "272000" || top != "" {
+		t.Fatalf("the tier gone: window %q, small %q, compact env %q, top-level %q", window(), budget("v/small"), e, top)
 	}
 	set("model", "v/mid")
 	if window() != "400000" {

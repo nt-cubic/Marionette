@@ -45,15 +45,15 @@ const TURN = {
 const words = {
   en: { cond: "not in ~/big-task", dir: "The agent works in /Users/me/scratch.", none: "The agent didn't say which folder it works in.", label: "not in folder", in: "in folder",
     aside: "a/opus is paused by rule 1 (not in ~/big-task), so it is left out until that ends. The agent works in /Users/me/scratch.",
-    bad: "Rule 1: a folder is a whole path, like ~/work or /Users/me/work", bare: "Rule 1: a pause needs hours, days, agents or folders", edit: "Edit", save: "Save", pause: "pause", send: "send to" },
+    bad: "Rule 1: a folder is a whole path, like ~/work or /Users/me/work", bare: "Rule 1: a pause needs hours, days, agents or folders. Add one with its +, or remove the rule from its ⋯ menu", edit: "Edit", save: "Save", pause: "pause", send: "send to" },
   zh: { cond: "不在 ~/big-task 中", dir: "Agent 的工作目录是 /Users/me/scratch。", none: "Agent 没有说明它的工作目录。", label: "不在文件夹", in: "项目文件夹",
-    bad: "规则 1：文件夹需是完整路径，如 ~/work 或 /Users/me/work", bare: "第 1 条规则：暂停需要设时段、星期、Agent 或文件夹", edit: "编辑", save: "保存", pause: "暂停", send: "先发给" },
+    bad: "规则 1：文件夹需是完整路径，如 ~/work 或 /Users/me/work", bare: "第 1 条规则：暂停需要设时段、星期、Agent 或文件夹。用它的 + 添加，或在它的 ⋯ 菜单里删除这条规则", edit: "编辑", save: "保存", pause: "暂停", send: "先发给" },
   "zh-TW": { cond: "不在 ~/big-task 中", dir: "Agent 的工作目錄是 /Users/me/scratch。", none: "Agent 沒有說明它的工作目錄。", label: "不在資料夾", in: "專案資料夾",
-    bad: "規則 1：資料夾需是完整路徑，如 ~/work 或 /Users/me/work", bare: "第 1 條規則：暫停需要設時段、星期、Agent 或資料夾", edit: "編輯", save: "儲存", pause: "暫停", send: "先發給" },
+    bad: "規則 1：資料夾需是完整路徑，如 ~/work 或 /Users/me/work", bare: "第 1 條規則：暫停需要設時段、星期、Agent 或資料夾。用它的 + 新增，或在它的 ⋯ 選單裡刪除這條規則", edit: "編輯", save: "儲存", pause: "暫停", send: "先發給" },
   ja: { cond: "~/big-task 以外", dir: "エージェントの作業フォルダは /Users/me/scratch です。", none: "エージェントは作業フォルダを伝えていません。", label: "除外フォルダ", in: "フォルダ",
-    bad: "ルール 1：フォルダは ~/work や /Users/me/work のような完全なパスで指定してください", bare: "ルール 1：一時停止には時間帯、曜日、エージェント、またはフォルダが必要です", edit: "編集", save: "保存", pause: "一時停止", send: "送信先" },
+    bad: "ルール 1：フォルダは ~/work や /Users/me/work のような完全なパスで指定してください", bare: "ルール 1：一時停止には時間帯、曜日、エージェント、またはフォルダが必要です。+ で追加するか、⋯ メニューからこのルールを削除してください", edit: "編集", save: "保存", pause: "一時停止", send: "送信先" },
   de: { cond: "nicht in ~/big-task", dir: "Der Agent arbeitet in /Users/me/scratch.", none: "Der Agent hat nicht gesagt, in welchem Ordner er arbeitet.", label: "nicht im Ordner", in: "im Ordner",
-    bad: "Regel 1: Ein Ordner ist ein ganzer Pfad, etwa ~/work oder /Users/me/work", bare: "Regel 1: eine Pause braucht Uhrzeiten, Tage, Agenten oder Ordner", edit: "Bearbeiten", save: "Speichern", pause: "pausieren", send: "senden an" },
+    bad: "Regel 1: Ein Ordner ist ein ganzer Pfad, etwa ~/work oder /Users/me/work", bare: "Regel 1: eine Pause braucht Uhrzeiten, Tage, Agenten oder Ordner. Füge mit ihrem + etwas hinzu oder entferne die Regel über ihr ⋯-Menü", edit: "Bearbeiten", save: "Speichern", pause: "pausieren", send: "senden an" },
 };
 
 function serve(lang, posts, route) {

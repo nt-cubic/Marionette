@@ -48,6 +48,7 @@
     main.hidden = true;
     main.dataset.feature = p.id;
     main.innerHTML = part.html || "";
+    window.magpie?.fillSlots?.(main);
     const anchor = document.querySelector('template[data-slot="page"]');
     if (anchor) anchor.before(main);
     else document.body.append(main);
@@ -94,6 +95,7 @@
     page.broken = null;
     page.mounted = false;
     page.main.innerHTML = page.part.html || "";
+    window.magpie?.fillSlots?.(page.main);
     window.translateStatic?.();
     if (hook !== "mount") run(page, "mount", [page.main]);
     run(page, hook, args);

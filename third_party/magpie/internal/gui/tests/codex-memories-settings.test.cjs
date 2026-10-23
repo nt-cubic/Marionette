@@ -1,12 +1,13 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
-// Settings' "Codex memories model" (#985, Hu9956: the model Codex writes its
+// Codex's "Codex memories model" (#985, Hu9956: the model Codex writes its
 // memories with was only the notebook square on Codex's card, beside the
-// subagent squares, and wasn't found). The row sits under "Codex auto-review
+// subagent squares, and wasn't found), in its settings on its opened row
+// (Settings had them till the owner, 10-20). The row sits under "Codex auto-review
 // model" with its name alone (1ooogle on X); unset it is
 // Codex's own pick. It opens the app's model picker (no native select), and
 // a pick posts Codex's memories field as the card's square does: the square
 // lights with it, and Default picked on the square puts the row back. No
-// Codex with the field: no row. The square's label names it. No click
+// Codex with the field: no row, and Claude Code's settings haven't it. The square's label names it. No click
 // scrolls the page. Chromium and WebKit, en/zh/ja/de, 440px and wide; no
 // backend, the API is faked here.
 const assert = require("node:assert/strict");
@@ -14,7 +15,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
-const { watchSettingsReads, settingsDrawn } = require("./reader.cjs");
+const { watchSettingsReads, openAgentSettings, reach } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const models = [{ value: "gpt-5.5", label: "GPT-5.5", ref: "openai/gpt-5.5" }, { value: "gpt-5.4-mini", label: "GPT-5.4 mini", ref: "openai/gpt-5.4-mini" }];
@@ -25,7 +26,7 @@ const agents = (codex) => codex ? [{
     { key: "subagent", label: "subagents", value: "", options: models },
     { key: "memories", label: "memories", value: "", options: models },
   ],
-}] : [{ id: "claude", name: "Claude Code", path: "/test/settings.json", icon: "claude-color", fields: [{ key: "model", label: "model", value: "", options: [] }] }];
+}] : [{ id: "claude", name: "Claude Code", path: "/test/settings.json", icon: "claude-color", wired: true, fields: [{ key: "model", label: "model", value: "relay/m1", options: [{ value: "relay/m1", label: "m1", ref: "relay/m1" }] }] }];
 
 const settings = (lang) => ({
   theme: "light", lang, tray: "panel", quotaLeft: false, currency: "usd",
@@ -77,12 +78,12 @@ const W = {
   ja: { name: "Codex メモリ整理のモデル", own: null, square: null, def: null },
   de: { name: "Codex-Modell für Erinnerungen", own: null, square: null, def: null },
 };
-const view = (page) => page.locator("#view-settings").evaluate((v) => v.scrollTop);
+const view = (page) => page.locator("#view-agents").evaluate((v) => v.scrollTop);
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
   for (const width of [440, 1100]) {
     for (const lang of ["en", "zh", "ja", "de"]) {
-      test(`${engine} ${width}px ${lang}: Settings picks the model Codex writes its memories with, the card's square in step`, async (t) => {
+      test(`${engine} ${width}px ${lang}: Codex's settings pick the model it writes its memories with, the card's square in step`, async (t) => {
         const w = W[lang];
         const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
         const context = await browser.newContext({ viewport: { width, height: 520 }, reducedMotion: "reduce" });
@@ -99,8 +100,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await browser.close();
         });
         await watchSettingsReads(page);
-        await page.goto("http://magpie.test/?view=settings");
-        await settingsDrawn(page); // rows found are the ones that stay (#1659)
+        await page.goto("http://magpie.test/?view=agents");
+        await openAgentSettings(page);
         const row = page.locator("#codexMemoriesRow");
         const pick = page.locator("#codexMemoriesPick button");
         await pick.waitFor();
@@ -122,12 +123,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
         // scrolled by a wheel till the row is mid-view, so a click that
         // moved the page would show
-        const box = await page.locator("#view-settings").boundingBox();
+        const box = await page.locator("#view-agents").boundingBox();
         await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
         const top = () => pick.evaluate((e) => e.getBoundingClientRect().top);
         for (let i = 0; i < 60 && (await top()) > 200; i++) { await page.mouse.wheel(0, 100); await page.waitForTimeout(30); }
         const before = await view(page);
-        assert(before > 0, "the settings list must scroll to the row");
+        assert(before > 0, "the agents list must scroll to the row");
 
         // the app's model picker, Default first
         await pick.click();
@@ -142,23 +143,22 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.waitForTimeout(300);
         assert.equal(await view(page), before, "picking a model scrolled the page");
 
-        // the card's square is the same setting, and says what it is
-        await page.evaluate(() => show("agents"));
+        // the card's square, on the same opened row, is the same setting,
+        // and says what it is
         const codex = '.row.agent[data-id="codex"]';
-        await page.locator(`${codex} .ag-link`).click();
         const square = page.locator(`${codex} .extras-cell .field.extra.set[data-key="memories"]`);
         await square.waitFor();
         if (w.square) assert.equal(await square.getAttribute("aria-label"), w.square);
         assert.equal(await square.getAttribute("title"), await square.getAttribute("aria-label"));
         assert((await square.getAttribute("title")).startsWith(w.name), "the square's tooltip names it");
+        await reach(page, square);
         await square.click();
         await page.locator("#pop:not([hidden]) #list li").first().waitFor();
         await page.locator("#pop #list li").first().click();
         await page.waitForFunction(() => !document.querySelector('.row.agent[data-id="codex"] .field.extra.set[data-key="memories"]'));
         assert.deepEqual(sets.at(-1), { agent: "codex", field: "memories", value: "" });
 
-        // and Settings shows Codex's own again
-        await page.evaluate(() => show("settings"));
+        // and the row shows Codex's own again
         if (w.own) await page.locator("#codexMemoriesPick button", { hasText: w.own }).waitFor();
         assert.equal(await row.locator(".sub").count(), 0);
         assert.deepEqual(errors, []);
@@ -175,10 +175,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     await page.route("**/*", server("en", [], false));
     t.after(() => browser.close());
     await watchSettingsReads(page);
-    await page.goto("http://magpie.test/?view=settings");
-    await settingsDrawn(page); // rows found are the ones that stay (#1659)
-    await page.locator("#codexAutoReviewPick button").waitFor();
-    await page.waitForTimeout(300);
+    await page.goto("http://magpie.test/?view=agents");
+    await openAgentSettings(page, "claude");
+    await page.locator('.row.agent[data-id="claude"] .ag-prefs #fullContextRow').waitFor();
+    assert.equal(await page.locator(".ag-prefs .row.pref").count(), 1, "Claude Code's settings are Long conversations alone");
     assert.equal(await page.locator("#codexMemoriesRow").isHidden(), true);
     assert.deepEqual(errors, []);
   });

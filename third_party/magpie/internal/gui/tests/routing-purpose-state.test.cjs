@@ -85,10 +85,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.waitForFunction((v) => document.querySelector(".rt-purpose-tools").classList.contains("set") === !!v, value);
         if (await page.locator("#rtPurpose").getAttribute("aria-expanded") === "true") await page.keyboard.press("Escape");
       };
-      const send = async (rs) => {
+      // away: sent while another page is shown, where the page asks for no
+      // more until it is back in sight
+      const send = async (rs, away) => {
         for (let i = 0; i < 100 && !feed.next; i++) await page.waitForTimeout(20);
         assert(feed.next, "trace poll is waiting");
         feed.next(rs);
+        if (away) return;
         // The following poll begins after all of this response was applied.
         for (let i = 0; i < 100 && !feed.next; i++) await page.waitForTimeout(20);
         assert(feed.next, "trace update was applied");
@@ -118,7 +121,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.deepEqual(await counts(), ["4", "1", "2"]);
       // Resume after another page, then a matching new call, both keep the scope.
       await page.evaluate(() => window.show("providers"));
-      await send([req(104, "review")]);
+      await send([req(104, "review")], true);
       await page.evaluate(() => window.show("routing"));
       await story(102);
       await send([req(105, "thread_title")]);

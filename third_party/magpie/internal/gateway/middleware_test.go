@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/yetone/magpie/internal/middleware"
@@ -37,8 +39,7 @@ func TestMiddlewareThroughGateway(t *testing.T) {
 		io.WriteString(w, sse(chunk("hello "), chunk(string(last)), `data: {"id":"c1","model":"m1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}`, "data: [DONE]"))
 	}))
 	defer up.Close()
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	fresh(t) // nothing another test left on "fake" (#3273)
 	// the plugins' list written below reads as changed, and what that
 	// tells the plugins' hooks ends with the test
 	t.Cleanup(plugin.Settle)
@@ -92,6 +93,71 @@ export function onEvent(ev, ctx) {
 	}
 	st := middleware.States()[mw]
 	if st.Failures != 0 || st.Calls < 4 {
+		t.Fatalf("state %+v", st)
+	}
+}
+
+// onProvider changes the body of one try only: a group's first member is
+// sent what the middleware made of it for that member, and the member
+// tried next gets the body onRequest left, not the first try's.
+func TestMiddlewareOnProviderPerTry(t *testing.T) {
+	// no rest, affinity or turn another test left on "a" sends the group
+	// past it (#3273: TestReplyNamesMember's 529 left "a" resting)
+	fresh(t)
+	var mu sync.Mutex
+	sent := map[string]string{}
+	member := func(id string, code int) {
+		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var b struct {
+				System string `json:"system"`
+			}
+			raw, _ := io.ReadAll(r.Body)
+			json.Unmarshal(raw, &b)
+			mu.Lock()
+			sent[id] = b.System
+			mu.Unlock()
+			if code != 200 {
+				http.Error(w, `{"type":"error","error":{"type":"api_error","message":"down"}}`, code)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"id":"m","type":"message","role":"assistant","model":"m1","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+		}))
+		t.Cleanup(up.Close)
+		if err := provider.Save(provider.Provider{ID: id, Name: strings.ToUpper(id), Key: "k", Models: []string{"m1"}, Anthropic: up.URL}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(plugin.Settle)
+	member("a", 500)
+	member("b", 200)
+	if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"a/m1", "b/m1"}, Routing: provider.Ordered}); err != nil {
+		t.Fatal(err)
+	}
+	mw := filepath.Join(t.TempDir(), "per-try.middleware.js")
+	os.WriteFile(mw, []byte(`
+export function onRequest(body) { body.system = "asked"; return body; }
+export function onProvider(body, ctx) {
+  const p = ctx.provider;
+  if (p.id === "a") body.system += " for " + [p.id, p.name, p.model, p.account || "key"].join("/");
+  return body;
+}`), 0o644)
+	b, _ := json.Marshal(plugin.List{Plugins: []plugin.Entry{{Spec: mw}}})
+	os.MkdirAll(settings.Dir(), 0o755)
+	os.WriteFile(filepath.Join(settings.Dir(), "plugins.json"), b, 0o644)
+	middleware.Reload()
+	defer middleware.Reload()
+
+	code, body := post(t, "/v1/messages", `{"model":"group/g","max_tokens":10,"system":"agent's","messages":[{"role":"user","content":"hi"}]}`)
+	if code != 200 {
+		t.Fatalf("%d %s", code, body)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if sent["a"] != "asked for a/A/m1/key" || sent["b"] != "asked" {
+		t.Fatalf("sent %q", sent)
+	}
+	if st := middleware.States()[mw]; st.Error != "" || st.Last != "" || !slices.Contains(st.Hooks, "onProvider") {
 		t.Fatalf("state %+v", st)
 	}
 }

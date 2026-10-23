@@ -92,7 +92,7 @@ func advisorModel(p provider.Provider, model string, wires map[string]string) (s
 	if model == "" {
 		return "", false
 	}
-	if q, m, ok := provider.Resolve(model); ok && !strings.HasPrefix(model, provider.GroupPrefix) {
+	if q, m, ok := provider.Resolve(model); ok && !provider.IsGroupRef(model) {
 		if q.ID != p.ID {
 			return "", false
 		}

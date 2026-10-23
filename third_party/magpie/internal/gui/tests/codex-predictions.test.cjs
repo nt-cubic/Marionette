@@ -1,12 +1,12 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
-// Settings' "Codex composer predictions" (#1970, pluo): the Codex app's
+// Codex's "Codex composer predictions" (#1970, pluo): the Codex app's
 // guess at the user's next message, a hidden turn that reads the whole
 // conversation again, goes where this says. By default Codex's own
 // (ChatGPT); Off answers it with no prediction; the app's menu (no native
 // select) offers magpie's models; a pick posts settings/codex-predictions
 // on its own, the titles' and descriptions' settings untouched, its button
 // shows the choice under a name with no line of its own (as its siblings,
-// 1ooogle on X), and no click scrolls the Settings page.
+// 1ooogle on X), and no click scrolls the Agents page, where Codex's row holds it.
 // Five languages, 1100 and 420 wide, Chromium and WebKit; no backend, the
 // API is faked here.
 const assert = require("node:assert/strict");
@@ -14,7 +14,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
-const { watchSettingsReads, settingsDrawn } = require("./reader.cjs");
+const { watchSettingsReads, agentRow, openAgentSettings } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 
@@ -43,7 +43,9 @@ function server(lang, posted) {
     const json = (data) => route.fulfill({ json: data });
     if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:false};` });
     if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
-    if (url.pathname === "/api/state") return json({ agents: [], profiles: [], settings: { lang, theme: "light" }, fx: cur.fx });
+    // agents below Codex, so its opened row is not the list's end: a choice
+    // that rewraps its row at the very bottom must move the list
+    if (url.pathname === "/api/state") return json({ agents: [agentRow("codex", "Codex"), agentRow("claude", "Claude Code"), agentRow("pi", "Pi")], profiles: [], settings: { lang, theme: "light" }, fx: cur.fx });
     if (url.pathname === "/api/settings/codex-predictions") {
       const body = req.postDataJSON();
       posted.push(["codex-predictions", body]);
@@ -75,12 +77,12 @@ const want = {
   ja: { name: "Codex の入力予測", own: "Codex 自身（ChatGPT）", off: "オフ" },
   de: { name: "Codex-Eingabevorhersagen", own: "Eigene von Codex (ChatGPT)", off: "Aus" },
 };
-const view = (page) => page.locator("#view-settings").evaluate((v) => v.scrollTop);
+const view = (page) => page.locator("#view-agents").evaluate((v) => v.scrollTop);
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
   for (const width of [1100, 420]) {
     for (const lang of Object.keys(want)) {
-      test(`${engine} ${lang} ${width}: Codex's composer predictions go where Settings says`, async (t) => {
+      test(`${engine} ${lang} ${width}: Codex's composer predictions go where Codex's settings say`, async (t) => {
         const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
         const context = await browser.newContext({ viewport: { width, height: 480 }, reducedMotion: "reduce" });
         const page = await context.newPage();
@@ -96,8 +98,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await browser.close();
         });
         await watchSettingsReads(page);
-        await page.goto("http://magpie.test/?view=settings");
-        await settingsDrawn(page); // rows found are the ones that stay (#1659)
+        await page.goto("http://magpie.test/?view=agents");
+        await openAgentSettings(page); // on Codex's opened row, not in Settings (the owner, 10-20)
         const row = page.locator("#codexPredictionsRow");
         const pick = page.locator("#codexPredictionsPick button");
         const shows = (s) => page.locator("#codexPredictionsPick button", { hasText: s }).waitFor();
@@ -116,12 +118,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
         // scrolled by a wheel till the row is mid-view, so a click that
         // moved the page would show
-        const box = await page.locator("#view-settings").boundingBox();
+        const box = await page.locator("#view-agents").boundingBox();
         await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
         const top = () => pick.evaluate((e) => e.getBoundingClientRect().top);
         for (let i = 0; i < 80 && (await top()) > 200; i++) { await page.mouse.wheel(0, 100); await page.waitForTimeout(30); }
         const before = await view(page);
-        assert(before > 0, "the settings list must scroll to the row");
+        assert(before > 0, "the agents list must scroll to the row");
         const pickItem = async (s) => {
           await pick.click();
           await page.locator("#pop:not([hidden]) #list li").first().waitFor();
