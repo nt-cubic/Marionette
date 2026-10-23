@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -60,21 +61,22 @@ func TestFXInState(t *testing.T) {
 }
 
 // The state never waits on the rate's endpoint (#541): with yesterday's
-// rate cached and the endpoint taking 3s, it answers at once with
-// yesterday's, and with the new one once that is in.
+// rate cached and the endpoint not answering, it answers with
+// yesterday's, and with the new one once that is in. The endpoint
+// answers only once the first look is back, so that look coming back
+// at all is the proof, not how long it took on a busy machine.
 func TestFXStateDoesNotWait(t *testing.T) {
 	sandboxHome(t)
 	fx.Reset()
 	release := make(chan struct{})
+	var once sync.Once
+	let := func() { once.Do(func() { close(release) }) }
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		select {
-		case <-time.After(3 * time.Second):
-		case <-release:
-		}
+		<-release
 		w.Write([]byte(`{"result":"success","rates":{"CNY":7.31}}`))
 	}))
 	t.Cleanup(func() {
-		close(release)
+		let()
 		fx.Settle()
 		srv.Close()
 		fx.Reset()
@@ -89,15 +91,19 @@ func TestFXStateDoesNotWait(t *testing.T) {
 	if err := settings.Save(settings.Settings{Currency: "cny"}); err != nil {
 		t.Fatal(err)
 	}
-	start := time.Now()
-	got := state().FX
-	if took := time.Since(start); took > time.Second {
-		t.Fatalf("the state waited %v on the rate", took)
+	first := make(chan fxJSON, 1)
+	go func() { first <- state().FX }()
+	var got fxJSON
+	select {
+	case got = <-first:
+	case <-time.After(time.Minute):
+		t.Fatal("the state waited on the rate's endpoint")
 	}
+	let()
 	if got.Rate != 7.25 || !got.Stale {
 		t.Fatalf("first look: %+v, want yesterday's 7.25, stale", got)
 	}
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+	for deadline := time.Now().Add(time.Minute); ; time.Sleep(100 * time.Millisecond) {
 		if got = state().FX; got.Rate == 7.31 && !got.Stale {
 			break
 		}

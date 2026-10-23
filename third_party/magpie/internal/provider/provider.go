@@ -228,6 +228,15 @@ type Provider struct {
 	// fitting, which a backend that isn't OpenAI's needs (#350).
 	CodexAsSent bool `json:"codexAsSent,omitempty"`
 
+	// AdditionalTools says the provider's Responses API takes an
+	// additional_tools input item, as OpenAI's does: a deferred tool an
+	// Anthropic client's tool search loaded goes to it in such an item
+	// where the search loaded it, not in the top-level tools, which keeps
+	// the prompt's cached prefix (#2660). OpenAI's own API is sent one
+	// without it; another vendor isn't unless this is set, since xAI's
+	// turns the item away (#350).
+	AdditionalTools bool `json:"additionalTools,omitempty"`
+
 	// NativeCompaction has Codex's compaction_trigger go to the provider
 	// as Codex sent it, and the compaction the provider writes back go to
 	// Codex as it came (#1099), where magpie otherwise asks the model for
@@ -251,9 +260,10 @@ type Provider struct {
 	PassUserAgent bool `json:"passUserAgent,omitempty"`
 
 	// PinUpstream, on the Cline API, has its DeepSeek models answered only
-	// by DeepSeek's own API (White Immortal on Discord): Cline routes a
-	// model through an AI gateway that may serve it from any host, and
-	// DeepSeek's own keeps its prompt cache. See ClinePin.
+	// by DeepSeek's own API (White Immortal on Discord) and its GLM models
+	// only by Z.ai's (sdytman on Discord): Cline routes a model through an
+	// AI gateway that may serve it from any host, and the maker's own
+	// keeps its prompt cache. See ClinePin.
 	PinUpstream bool `json:"pinUpstream,omitempty"`
 
 	// AuthHeader is which header the key goes in on a third-party
@@ -359,6 +369,15 @@ type Provider struct {
 	// listed since is served beside picks that held every one listed then
 	// (withNewlyListed), and one listed then and left unpicked stays out.
 	PickedFrom []string `json:"pickedFrom,omitempty"`
+	// Delisted are picks the provider's list stopped listing (dropGonePicks):
+	// out of Models, so not served, until a list has them again, when they
+	// go back among the picks (relistPicks). A plugin's list shrinks for a
+	// while and comes back (多喝热水 on Discord: Our Free Model lists its
+	// account channels' models only once its service has read them after a
+	// restart, and a free pool it finds down leaves its list until it is
+	// up), and the user's picks came back with it no more. Every save keeps
+	// it but for what it picks again; Select none clears it.
+	Delisted []string `json:"delisted,omitempty"`
 	// RefreshEvery, for a provider of the user's own, is how often the
 	// gateway fetches its model list by itself ("6h", "1d"; none, only when
 	// asked), as Fetch models does (#2135). See autolist.go.
@@ -585,6 +604,7 @@ func (p Provider) clone() Provider {
 	p.Fallback = slices.Clone(p.Fallback)
 	p.Models = slices.Clone(p.Models)
 	p.PickedFrom = slices.Clone(p.PickedFrom)
+	p.Delisted = slices.Clone(p.Delisted)
 	p.AutoInclude = slices.Clone(p.AutoInclude)
 	p.Headers = maps.Clone(p.Headers)
 	p.ExtraBody = maps.Clone(p.ExtraBody)
@@ -662,7 +682,7 @@ func allProviders() []Provider {
 // the provider keeps the same settings (#1899: a second WorkBuddy AI
 // account queued 62s with the wait set to 1s).
 func withPicks(a, pk Provider) Provider {
-	a.PickedFrom = pk.PickedFrom
+	a.PickedFrom, a.Delisted = pk.PickedFrom, pk.Delisted
 	a.Models, a.Unlisted, a.Off, a.Fallback, a.Routing, a.Affinity, a.KeepLogin, a.KeepLoginAs, a.Contexts, a.Family = pk.Models, pk.Unlisted, pk.Off, pk.Fallback, pk.Routing, pk.Affinity, pk.KeepLogin, pk.KeepLoginAs, pk.Contexts, pk.Family
 	a.SwitchOnly = pk.SwitchOnly
 	a.Sink, a.NoModels = pk.Sink, pk.NoModels
@@ -771,6 +791,9 @@ func Save(p Provider) error {
 	if p.ID == strings.TrimSuffix(GroupPrefix, "/") {
 		return errors.New(`"group" starts the ids of routing groups; pick another id`)
 	}
+	if p.ID == autoID && !stored(p.ID) { // one saved before keeps it (autoRefsOn)
+		return errAutoID
+	}
 	if err := settings.CheckProxy(p.Proxy); err != nil {
 		return err
 	}
@@ -790,7 +813,7 @@ func Save(p Provider) error {
 		if p.ID == "kiro" {
 			key = p.Key
 		}
-		p = Provider{ID: p.ID, Key: key, Models: p.Models, NoModels: p.NoModels, PickedFrom: p.PickedFrom, Unlisted: p.Unlisted, Off: p.Off, Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, Contexts: p.Contexts, Family: p.Family, Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, AccountNames: p.AccountNames, MaxConcurrency: p.MaxConcurrency, AccountConcurrency: p.AccountConcurrency, QueueLimit: p.QueueLimit, QueueWait: p.QueueWait, MaxRPM: p.MaxRPM, QuotaRest: p.QuotaRest, QuotaResetAt: p.QuotaResetAt, RestCap: p.RestCap, PinUpstream: p.PinUpstream, NativeCompaction: p.NativeCompaction, Hidden: hiddenAccount(p.ID), Quiet: quietAccount(p.ID), Tucked: tuckedAccount(p.ID)}
+		p = Provider{ID: p.ID, Key: key, Models: p.Models, NoModels: p.NoModels, PickedFrom: p.PickedFrom, Delisted: p.Delisted, Unlisted: p.Unlisted, Off: p.Off, Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, Contexts: p.Contexts, Family: p.Family, Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, AccountNames: p.AccountNames, MaxConcurrency: p.MaxConcurrency, AccountConcurrency: p.AccountConcurrency, QueueLimit: p.QueueLimit, QueueWait: p.QueueWait, MaxRPM: p.MaxRPM, QuotaRest: p.QuotaRest, QuotaResetAt: p.QuotaResetAt, RestCap: p.RestCap, PinUpstream: p.PinUpstream, NativeCompaction: p.NativeCompaction, Hidden: hiddenAccount(p.ID), Quiet: quietAccount(p.ID), Tucked: tuckedAccount(p.ID)}
 	} else {
 		p.AccountProxies = keyProxies(p) // a provider of keys proxies each key apart
 		if subscriptionID(p.ID) && !stored(p.ID) {
@@ -827,6 +850,7 @@ func Save(p Provider) error {
 		was = &f.Providers[i]
 	}
 	p.PickedFrom = listedWith(p, was)
+	p.Delisted = delistedWith(p, was)
 	if was != nil {
 		if p.Was == nil {
 			p.Was = was.Was
@@ -863,9 +887,34 @@ func sameStored(a, b Provider) bool {
 	return err == nil && bytes.Equal(x, y)
 }
 
+// delistedWith is what p.Delisted is saved as: what was set aside before,
+// as an editor sends none and couldn't show them to unpick, less what p
+// picks again; none after Select none, or the vendor's list picked in
+// place of picks (no picks saved over some).
+func delistedWith(p Provider, was *Provider) []string {
+	if p.ServesNone() || len(p.Models) == 0 && was != nil && len(was.Models) > 0 {
+		return nil
+	}
+	d := p.Delisted
+	if d == nil && was != nil {
+		d = was.Delisted
+	}
+	d = slices.DeleteFunc(slices.Clone(d), func(id string) bool { return slices.Contains(p.Models, id) })
+	if len(d) == 0 {
+		return nil
+	}
+	return d
+}
+
 // listedWith is what p.PickedFrom is saved as: none without picks; what was
 // kept with the picks when they are the same picks; and the models listed
-// now when the picks are new, as the user picked them from that list.
+// now when the picks are new, as the user picked them from that list. While
+// some picks are set aside, the list is known to be short, so those listed
+// when the picks were saved before are kept too: a model the user saw and
+// left unpicked isn't new when the list that left it out for a while has it
+// again (an Our Free Model channel not read yet when the picks were saved).
+// A list short of no pick is taken as it is: what it left out and lists
+// again later is new (TestClaudePicksOfEveryModelTakeOnesListedSince).
 func listedWith(p Provider, was *Provider) []string {
 	if len(p.Models) == 0 {
 		return nil
@@ -880,6 +929,13 @@ func listedWith(p Provider, was *Provider) []string {
 	var ids []string
 	for _, m := range from.Available() {
 		ids = append(ids, m.ID)
+	}
+	if was != nil && len(ids) > 0 && len(delistedWith(p, was)) > 0 {
+		for _, id := range was.PickedFrom {
+			if !slices.Contains(ids, id) {
+				ids = append(ids, id)
+			}
+		}
 	}
 	return ids
 }
@@ -1228,12 +1284,13 @@ func normalize(p Provider) Provider {
 			p.Decide = pr.Decide
 		}
 	}
-	// an oMLX or MLX-Serve provider saved before its preset had System One (#1641)
-	// asks it where its chat completions are, at whatever port it was given
-	if (p.Preset == OMLXPreset || p.Preset == MLXServePreset) && p.Decide == "" && p.Chat != "" {
+	// an oMLX, MLX-Serve or Ollama provider saved before its preset had
+	// System One (#1641; Nanka on Discord) asks it where its chat
+	// completions are, at whatever address it was given
+	if (p.Preset == OMLXPreset || p.Preset == MLXServePreset || p.Preset == "ollama" || p.Preset == "ollama-cloud") && p.Decide == "" && p.Chat != "" {
 		p.Decide = p.Chat
 	}
-	if p.Routing != Ordered && p.Routing != Rotate && p.Routing != LeastUsed && p.Routing != Pace && p.Routing != Weighted && !PluginRouting(p.Routing) {
+	if p.Routing != Ordered && p.Routing != Rotate && p.Routing != LeastUsed && p.Routing != Pace && p.Routing != Weighted && p.Routing != FreeFirst && !PluginRouting(p.Routing) {
 		p.Routing = ""
 	}
 	if !slices.Contains(Affinities, p.Affinity) {
@@ -1494,6 +1551,10 @@ func claudeModel(model string) bool {
 	return strings.HasPrefix(m, "claude") || bedrockClaude(m)
 }
 
+// ClaudeModel is claudeModel for another package: whether model, after any
+// vendor prefix, is one of Anthropic's Claude models by its name.
+func ClaudeModel(model string) bool { return claudeModel(model) }
+
 // openAIModel is whether model is one of OpenAI's own by its name: a GPT,
 // a Codex or an o-series model, after any vendor prefix.
 func openAIModel(model string) bool {
@@ -1508,11 +1569,11 @@ func openAIModel(model string) bool {
 // OpenAI's API or Copilot's; Anthropic's Messages for a Claude model
 // where that is served; Chat where that is served. "" when every
 // request is translated anyway: a sign-in served through its agent's own
-// API (Claude Code's binary, Cursor, Devin, Kiro, Code Assist).
+// API (Claude Code's binary, Devin, Code Assist).
 func (p Provider) Native(model string) Protocol {
 	if p.Account != nil {
 		switch p.Account.Agent {
-		case "claude", "cursor", "devin", "kiro":
+		case "claude", "devin":
 			return ""
 		}
 	}

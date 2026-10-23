@@ -7,7 +7,9 @@ package provider
 // the account's name in lower case; the vendor's or plugin's sign-in is
 // never written to. It is shown wherever the account is: the Usage page,
 // the menu bar, magpie accounts, magpie quota and /v1/magpie/quotas
-// (SubscriptionQuota.Alias, Quota.Alias).
+// (SubscriptionQuota.Alias, Quota.Alias), the Usage page's Accounts and
+// the request log's Account filter, a gateway key's accounts, and the
+// Routing page (which reads accountNames from /api/providers).
 
 import (
 	"cmp"
@@ -73,6 +75,17 @@ func AccountNameOf(id, user string) string {
 	}
 	return ""
 }
+
+// AccountShown is how the account user of p is shown: by the name the
+// user gave it, else as its vendor names it. Records and lists keep the
+// vendor's name, the key the user's name is kept by, and look this up as
+// they are shown, so a rename reaches what came before it too
+// (magpie-community/plugins#310: a renamed Kiro account read by its old
+// name on the requests after).
+func (p Provider) AccountShown(user string) string { return cmp.Or(p.AccountName(user), user) }
+
+// AccountShownOf is AccountShown for the account user of the provider id.
+func AccountShownOf(id, user string) string { return cmp.Or(AccountNameOf(id, user), user) }
 
 // SetAccountName names the account ref of the subscription id; "" takes
 // the name off.

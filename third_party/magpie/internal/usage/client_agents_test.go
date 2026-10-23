@@ -51,7 +51,7 @@ func TestClientCountedAsAgent(t *testing.T) {
 	if sum.Agents[0].Calls != 3 || sum.Agents[0].Input != 22 {
 		t.Fatalf("Codex's row doesn't hold the bridge's calls: %+v", sum.Agents[0])
 	}
-	if got := Vias(time.Time{}); len(got["codex|thread-1"]) != 1 || len(got["hermes-codex-thread-bridge|thread-1"]) != 0 {
+	if got := Vias(time.Time{}); len(got.Of("codex|thread-1")) != 1 || len(got.Of("hermes-codex-thread-bridge|thread-1")) != 0 {
 		t.Fatalf("Routing's sessions: %v", got)
 	}
 	g, ok := GatewaySessionByID("codex", "thread-1", nil)

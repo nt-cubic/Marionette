@@ -1,14 +1,12 @@
 package provider
 
-// PLUGIN-SERVED (see AGENTS.md): WorkBuddy ("workbuddy" and "workbuddy-ai")
-// is a deprecated built-in subscription served by its plugin,
-// @magpie-community/opencode-workbuddy-auth, once moved onto it
-// (provider.Moved; the default for a new sign-in). A moved one's sign-ins,
-// models, requests and usage are all the plugin's, never this code's (only
-// the move, in migrate*.go, still reads its accounts). A fix here alone
-// doesn't reach those users; fix the plugin
-// (github.com/magpie-community/plugins, packages/workbuddy) and raise the
-// mover's min in internal/provider/migrate_workbuddy.go.
+// PLUGIN-SERVED (see AGENTS.md): WorkBuddy ("workbuddy") and WorkBuddy AI
+// ("workbuddy-ai") are retired built-in subscriptions served by their
+// plugin, @magpie-community/opencode-workbuddy-auth. The check-in here
+// presses 签到 for the plugin's accounts, sent through the plugin's fetch,
+// when the plugin doesn't check in itself. A fix to the plugin's own paths
+// belongs in github.com/magpie-community/plugins (packages/workbuddy), with
+// the movers' min raised in internal/provider/migrate_workbuddy.go.
 
 // WorkBuddy's daily check-in (签到): while its event runs, a WorkBuddy
 // (China) account is given a few credits a day for pressing 签到 in the
@@ -32,8 +30,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"io/fs"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -171,10 +172,67 @@ func wbCheckinPath() string { return filepath.Join(filepath.Dir(Path()), "workbu
 // wbCheckinKey is an account's entry in the file: its site and id.
 func wbCheckinKey(a wbAccount) string { return a.site.id + "|" + a.creds.UID }
 
-func readCheckins(path string) map[string]WorkBuddyCheckin {
+// readCheckins is what a check-in file at path keeps, by entry. A file not
+// there is empty. One there that can't be read or doesn't parse into
+// entries (cut short, zeroed, `[]`) is unknown, never empty: the error
+// says so, and what is given is what last read from it in this process,
+// so a card still shows it. A check-in neither asks nor writes on an
+// error, or it would check an account in twice in a day and write over
+// the entries it couldn't read.
+func readCheckins(path string) (map[string]WorkBuddyCheckin, error) {
 	st := map[string]WorkBuddyCheckin{}
-	if b, err := os.ReadFile(path); err == nil {
-		json.Unmarshal(b, &st)
+	b, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		err = nil
+	case err == nil:
+		if err = json.Unmarshal(b, &st); err != nil || st == nil {
+			if err == nil {
+				err = errors.New("it holds null")
+			}
+			err = fmt.Errorf("%s doesn't parse (%v): magpie leaves it as it is and checks in no account of it until it does", path, err)
+		}
+	default:
+		err = fmt.Errorf("%s can't be read (%v): magpie leaves it as it is and checks in no account of it until it can", path, err)
+	}
+	checkinsReadMu.Lock()
+	defer checkinsReadMu.Unlock()
+	if err != nil {
+		// logged once while it stays the same, not on every card read
+		if checkinsBad[path] != err.Error() {
+			checkinsBad[path] = err.Error()
+			log.Printf("check-in: %v", err)
+		}
+		return maps.Clone(checkinsRead[path]), err
+	}
+	delete(checkinsBad, path)
+	checkinsRead[path] = maps.Clone(st)
+	return st, nil
+}
+
+// checkinsRead is each check-in file's entries as last read, for
+// readCheckins to give when the file can't be read now, and checkinsBad
+// the error last logged for one that can't.
+var (
+	checkinsReadMu sync.Mutex
+	checkinsRead   = map[string]map[string]WorkBuddyCheckin{}
+	checkinsBad    = map[string]string{}
+)
+
+// wroteCheckins notes st as written to path: what last read from it.
+func wroteCheckins(path string, st map[string]WorkBuddyCheckin) {
+	checkinsReadMu.Lock()
+	defer checkinsReadMu.Unlock()
+	delete(checkinsBad, path)
+	checkinsRead[path] = maps.Clone(st)
+}
+
+// shownCheckins is readCheckins for a reader that only shows the entries:
+// on an error, what last read (logged by readCheckins).
+func shownCheckins(path string) map[string]WorkBuddyCheckin {
+	st, _ := readCheckins(path)
+	if st == nil {
+		st = map[string]WorkBuddyCheckin{}
 	}
 	return st
 }
@@ -218,16 +276,8 @@ func (c wbCheckiner) checkiner() checkiner {
 // wbCheckin checks a in for the day as WorkBuddy's 签到 does: the event's
 // status first, and a claim only while it runs and today's isn't in.
 func wbCheckin(ctx context.Context, a wbAccount) WorkBuddyCheckin {
-	var h map[string]string
+	var h map[string]string // the plugin's fetch signs the request
 	do := a.via
-	if do == nil {
-		do = http.DefaultClient.Do
-		creds, err := wbFresh(ctx, a)
-		if err != nil {
-			return wbCheckinFailed(err)
-		}
-		h = wbAuthHeaders(a.site, creds)
-	}
 	var st wbCheckinStatus
 	if err := wbCallVia(ctx, do, http.MethodPost, a.site.api()+"/v2/billing/meter/checkin-activity-status", h, map[string]any{}, &st); err != nil {
 		return wbCheckinUnauthorized(ctx, do, a, h, err)
@@ -322,7 +372,7 @@ func CheckInWorkBuddy(ctx context.Context) []WorkBuddyCheckin {
 // WorkBuddyCheckins is each WorkBuddy (China) account's last check-in, as
 // kept, by its name now; asks nothing.
 func WorkBuddyCheckins() []WorkBuddyCheckin {
-	st := readCheckins(wbCheckinPath())
+	st := shownCheckins(wbCheckinPath())
 	var out []WorkBuddyCheckin
 	listed := map[string]bool{}
 	for _, a := range wbCheckinAccounts() {
@@ -344,10 +394,10 @@ func WorkBuddyCheckins() []WorkBuddyCheckin {
 // those in through the plugin's fetch. qs, which may be the usage cache,
 // is left as it is; nothing is asked.
 func WithCheckins(qs []SubscriptionQuota) []SubscriptionQuota {
-	qs = withCheckins(qs, wbCheckinAccounts(), readCheckins(wbCheckinPath()))
-	qs = markCheckins(qs, traeCards(traeCheckinAccounts()), readCheckins(traeCheckinPath()), "trae")
-	qs = markCheckins(qs, miniMaxCards(miniMaxCheckinAccounts()), readCheckins(miniMaxCheckinPath()), "minimax")
-	qs = markCheckins(qs, qoderCards(qoderCheckinAccounts()), readCheckins(qoderCheckinPath()), "qoder")
+	qs = withCheckins(qs, wbCheckinAccounts(), shownCheckins(wbCheckinPath()))
+	qs = markCheckins(qs, traeCards(traeCheckinAccounts()), shownCheckins(traeCheckinPath()), "trae")
+	qs = markCheckins(qs, miniMaxCards(miniMaxCheckinAccounts()), shownCheckins(miniMaxCheckinPath()), "minimax")
+	qs = markCheckins(qs, qoderCards(qoderCheckinAccounts()), shownCheckins(qoderCheckinPath()), "qoder")
 	return pluginCheckinMarks(qs)
 }
 
@@ -410,24 +460,14 @@ func markCheckins(qs []SubscriptionQuota, on []checkinCard, st map[string]WorkBu
 func HasWorkBuddy() bool { return len(wbCheckinAccounts()) > 0 }
 
 // wbCheckinAccounts are the WorkBuddy (China) accounts checked in: the
-// plugin's once WorkBuddy is moved onto it, checked in through it; not
-// moved, the built-in's, and the plugin's too where it is signed in under
-// its own id, "workbuddy-plugin" (signed in before the move existed, or
-// moved back), whose cards had their credits by day but no check-in
-// (#694, Dazzle-sys on 0.1.774: 没看到).
+// plugin's, checked in through it, unless the plugin checks them in
+// itself.
 func wbCheckinAccounts() []wbAccount {
-	if Moved(wbCN.id) {
-		pp, ok := PluginOf(wbCN.id)
-		if !ok || pluginChecksIn(pp) {
-			return nil
-		}
-		return wbPluginAccounts(pp)
+	pp, ok := PluginOf(wbCN.id)
+	if !ok || pluginChecksIn(pp) {
+		return nil
 	}
-	out := wbLogins(wbCN)
-	if pp, ok := PluginOf(PluginID(wbCN.id)); ok && pp.ID == wbCN.id && !pluginChecksIn(pp) {
-		out = append(out, wbPluginAccounts(pp)...)
-	}
-	return out
+	return wbPluginAccounts(pp)
 }
 
 // wbPluginAccounts are the WorkBuddy plugin's accounts of pp, each sent

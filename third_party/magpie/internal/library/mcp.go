@@ -20,6 +20,7 @@ import (
 	"github.com/tidwall/jsonc"
 	"gopkg.in/yaml.v3"
 
+	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/imagemcp"
@@ -1333,17 +1334,39 @@ type Found struct {
 	Own bool `json:"own,omitempty"`
 }
 
-// appOwned is whether a server runs from inside an app's own install — a
-// Mac app bundle, a Microsoft Store app, the Codex app's runtimes — as the
-// servers an agent's app writes into its config itself do.
-func appOwned(s *Server) bool {
-	if s.Remote() {
+// appOwned is whether a server runs from inside the agent's own app
+// install — its Mac app bundle, its Microsoft Store app, the Codex app's
+// runtimes — as the servers an agent's app writes into its config itself
+// do. Another app's server in the agent's config (Netcatty's, #2635) is
+// one the user added there: it is brought in like any other.
+func appOwned(s *Server, a *agent.Agent) bool {
+	if s.Remote() || a == nil {
 		return false
 	}
 	cmd := strings.ToLower(strings.ReplaceAll(s.Command, `\`, "/"))
-	for _, in := range []string{".app/contents/", "/windowsapps/", "/cua_node/", "/openai/codex/runtimes/"} {
-		if strings.Contains(cmd, in) {
-			return true
+	if a.ID == "codex" && (strings.Contains(cmd, "/cua_node/") || strings.Contains(cmd, "/openai/codex/runtimes/")) {
+		return true
+	}
+	names := []string{strings.ToLower(a.ID), strings.ToLower(a.Name)}
+	if id, _, ok := strings.Cut(names[0], "-"); ok {
+		names = append(names, id)
+	}
+	if n, _, ok := strings.Cut(names[1], " "); ok {
+		names = append(names, n)
+	}
+	segs := strings.Split(cmd, "/")
+	for i, seg := range segs {
+		// an app is a bundle (Codex.app) or a Store package
+		// (WindowsApps/OpenAI.Codex_1.0_x64) the command is inside
+		app := strings.HasSuffix(seg, ".app") && i+1 < len(segs) && segs[i+1] == "contents"
+		app = app || (i > 0 && segs[i-1] == "windowsapps" && i+1 < len(segs))
+		if !app {
+			continue
+		}
+		for _, n := range names {
+			if n != "" && strings.Contains(seg, n) {
+				return true
+			}
 		}
 	}
 	return false
@@ -1372,7 +1395,7 @@ func foundServersOf(l *Library, targets []*Target) []Found {
 			switch {
 			case f == nil:
 				s.Agents = []string{t.Agent.ID}
-				byName[name] = &Found{Server: s, Own: appOwned(s)}
+				byName[name] = &Found{Server: s, Own: appOwned(s, t.Agent)}
 				names = append(names, name)
 			case f.Server.same(s):
 				f.Server.Agents = append(f.Server.Agents, t.Agent.ID)

@@ -50,7 +50,7 @@ func TestPluginsListedAgainWhileRunning(t *testing.T) {
 
 	answers := make(chan []plugin.Provider)
 	asked := make(chan struct{})
-	oldList, oldFirst, oldEvery := relistPlugins, relistFirst, relistEvery
+	oldList, oldFirst, oldEvery, oldSoon := relistPlugins, relistFirst, relistEvery, relistSoon
 	// asked says the loop asks again, so all it did with the last answer
 	// is done
 	relistPlugins = func(ctx context.Context) ([]plugin.Provider, error) {
@@ -69,13 +69,13 @@ func TestPluginsListedAgainWhileRunning(t *testing.T) {
 			return nil, ctx.Err()
 		}
 	}
-	relistFirst, relistEvery = time.Millisecond, time.Millisecond
+	relistFirst, relistEvery, relistSoon = time.Millisecond, time.Millisecond, time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	t.Cleanup(func() {
 		cancel()
 		<-done
-		relistPlugins, relistFirst, relistEvery = oldList, oldFirst, oldEvery
+		relistPlugins, relistFirst, relistEvery, relistSoon = oldList, oldFirst, oldEvery, oldSoon
 	})
 	go func() { defer close(done); KeepPluginsListed(ctx) }()
 	select {

@@ -30,7 +30,7 @@ func TestClaudeAccountsOutliveLogout(t *testing.T) {
 		{"agent": "claude", "user": "two@example.com", "plan": "max", "on": true, "seen": seen.Add(-time.Hour), "auth": oauth("tok-two")},
 	})
 	loginsMu.Lock()
-	loginsSeenAt = time.Time{}
+	loginsSeenAt.Store(0)
 	loginsMu.Unlock()
 	if p, ok := find(All(), "claude"); !ok || p.Account.User != "own@example.com" {
 		t.Fatalf("signed in: %v %+v", ok, p.Account)
@@ -41,7 +41,7 @@ func TestClaudeAccountsOutliveLogout(t *testing.T) {
 	os.Remove(filepath.Join(home, ".claude.json"))
 	forgetClaudeCredential()
 	loginsMu.Lock()
-	loginsSeenAt = time.Time{}
+	loginsSeenAt.Store(0)
 	loginsMu.Unlock()
 
 	// the one Claude Code held went with its /logout, which revokes the
@@ -176,5 +176,74 @@ func TestClaudeSignInWhileLoggedOut(t *testing.T) {
 	}
 	if len(users) != 2 {
 		t.Fatalf("on: %v", users)
+	}
+}
+
+// Every saved Claude account's sign-in gone while Claude Code is signed out
+// (LeeHom on Discord: two Claude Pro accounts vanished from Providers, and
+// were taken for a ban): the one Claude Code held went with its sign-in,
+// and the other had gone the same way before. Claude Code stays on the
+// Providers list, signed out, each account on it saying to sign in again,
+// and its token says so too; none is served as if it could be used.
+func TestClaudeAllSignedOutStaysListed(t *testing.T) {
+	home := claudeHome(t)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	noAnthropic(t)
+	cred := claudeSignIn(t, home, time.Now().Add(time.Hour))
+	writeFile(t, filepath.Join(home, ".claude.json"), map[string]any{"oauthAccount": map[string]any{"emailAddress": "own@example.com"}})
+	far := time.Now().Add(24 * time.Hour).UnixMilli()
+	seen := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	writeFile(t, loginsPath(), []map[string]any{
+		{"agent": "claude", "user": "two@example.com", "plan": "pro", "on": true, "seen": seen, "lapsed": claudeLogoutLapse,
+			"auth": map[string]any{"claudeAiOauth": map[string]any{"accessToken": "tok-two", "refreshToken": "r-two", "expiresAt": far, "subscriptionType": "pro"}}},
+	})
+	loginsMu.Lock()
+	loginsSeenAt.Store(0)
+	loginsMu.Unlock()
+	if p, ok := find(All(), "claude"); !ok || p.Account.User != "own@example.com" {
+		t.Fatalf("signed in: %v %+v", ok, p.Account)
+	} else if p.SignedOut() {
+		t.Fatal("a signed-in Claude Code reads as signed out")
+	}
+
+	// Claude Code lets go of its sign-in: Anthropic refused it, or /logout
+	os.Remove(cred)
+	os.Remove(filepath.Join(home, ".claude.json"))
+	forgetClaudeCredential()
+	loginsMu.Lock()
+	loginsSeenAt.Store(0)
+	loginsMu.Unlock()
+
+	p, ok := find(All(), "claude")
+	if !ok || p.Account == nil {
+		t.Fatalf("Claude Code left the Providers list with every account signed out: %v", ok)
+	}
+	if p.Account.User != "own@example.com" {
+		t.Fatalf("listed as %q; want the one seen last", p.Account.User)
+	}
+	if _, _, err := p.Account.Token(context.Background()); err == nil || err.Error() != claudeLogoutLapse {
+		t.Fatalf("token of a signed-out account: %v", err)
+	}
+	ls := Logins("claude")
+	if len(ls) != 2 {
+		t.Fatalf("logins: %+v", ls)
+	}
+	listedOn := false
+	for _, l := range ls {
+		if l.Lapsed != claudeLogoutLapse {
+			t.Fatalf("not signed out: %+v", l)
+		}
+		listedOn = listedOn || l.On && l.User == "own@example.com"
+	}
+	// the row reads as signed out: the account it names is the one on
+	if !listedOn {
+		t.Fatalf("the listed account isn't on: %+v", ls)
+	}
+	if u := InUseLogin("claude"); u != "own@example.com" && u != "" {
+		t.Fatalf("in use %q", u)
+	}
+	// what magpie providers, the TUI and the app's row say of it
+	if !p.SignedOut() {
+		t.Fatal("listed on a signed-out account, the provider doesn't say it is signed out")
 	}
 }

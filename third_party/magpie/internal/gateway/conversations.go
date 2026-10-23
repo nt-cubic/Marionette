@@ -61,7 +61,7 @@ func (w *conversationWriter) WriteHeader(status int) {
 func recordConversation(w http.ResponseWriter, r *http.Request, proto provider.Protocol, body []byte) (http.ResponseWriter, func()) {
 	id := sessionOf(r.Header)
 	generation := sessions.GatewayRecordingGeneration()
-	if !settings.Load().GatewayConversations || id == "" {
+	if !settings.Shared().GatewayConversations || id == "" {
 		return w, func() {}
 	}
 	at := time.Now()

@@ -58,6 +58,10 @@ func TestResetsZhipu(t *testing.T) {
 		{"hour 25", strings.Replace(zai1308, "20:12:13", "25:12:13", 1), player, 0},
 		{"past", zai1308, time.Date(2026, 10, 15, 12, 13, 0, 0, time.UTC), 0},
 		{"over a week off", zai1308, time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC), 0},
+		// 1310 is a week's or a month's: a month's reset is believed
+		// weeks off, as Ark's is (#3276)
+		{"1310, 9 days off", zai1310, time.Date(2026, 10, 1, 13, 0, 6, 0, time.UTC), 9 * 24 * time.Hour},
+		{"1310, 36 days off", zai1310, time.Date(2026, 9, 4, 13, 0, 6, 0, time.UTC), 0},
 		// another vendor's words, without a zone: not taken as Beijing's
 		{"WorkBuddy without its offset", strings.Replace(wbZh, " UTC+8", "", 1), player, 0},
 		{"a date in passing", "this model is retired at 2026-10-15 20:12:13", player, 0},
@@ -74,7 +78,9 @@ func TestResetsZhipu(t *testing.T) {
 }
 
 // heldClock gives the time with its offset, so a reader on another clock
-// can tell whose it is.
+// can tell whose it is. Each zone is passed in, never set on time.Local:
+// time.Now reads time.Local, and a goroutine an earlier test left running
+// read it while this test wrote it, a race on ubuntu CI (run 39242954115).
 func TestHeldClock(t *testing.T) {
 	cst := time.FixedZone("CST", 8*3600)
 	now := time.Date(2026, 10, 15, 16, 25, 0, 0, cst)
@@ -88,10 +94,7 @@ func TestHeldClock(t *testing.T) {
 		{time.UTC, time.Date(2026, 10, 15, 20, 12, 13, 0, cst), "12:12 UTC+0"},
 		{time.FixedZone("", -(3*3600 + 30*60)), time.Date(2026, 10, 15, 20, 12, 13, 0, cst), "08:42 UTC-3:30"},
 	} {
-		was := time.Local
-		time.Local = c.zone
-		got := heldClock(c.at, now)
-		time.Local = was
+		got := heldClockIn(c.at, now, c.zone)
 		if got != c.want {
 			t.Errorf("%v in %v: %q, want %q", c.at, c.zone, got, c.want)
 		}

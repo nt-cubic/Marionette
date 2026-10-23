@@ -35,28 +35,8 @@ func SetLoginOn(agent, user string, on bool) error {
 		return setPluginLoginOn(pp, user, on)
 	}
 	switch agent {
-	case "grok":
-		return setGrokLoginOn(user, on)
 	case "copilot":
 		return setCopilotLoginOn(user, on)
-	case "zcode":
-		return setZCodeLoginOn(user, on)
-	case "kiro":
-		return setKiroLoginOn(user, on)
-	case "devin":
-		return setDevinLoginOn(user, on)
-	case "workbuddy", WorkBuddyAIID:
-		return setWorkBuddyLoginOn(wbSiteOf(agent), user, on)
-	case CommandCodePlanID:
-		return setCommandCodeLoginOn(user, on)
-	case "qoder", QoderCNID:
-		return setSideLoginOn(agent, user, on, qoderLoginsOf(agent))
-	case "zed":
-		return setZedLoginOn(user, on)
-	case "factory":
-		return setFactoryLoginOn(user, on)
-	case MiMoID:
-		return setMiMoLoginOn(user, on)
 	case ChatGPTAPIID:
 		return setSIWCLoginOn(user, on)
 	case "gemini", "antigravity":
@@ -152,38 +132,8 @@ func (p Provider) alsoOn() []Provider {
 	if p.IsPlugin() {
 		return pluginAlsoOn(*p.Account.plugin)
 	}
-	if p.Account != nil && p.Account.Agent == "grok" && p.Account.token == nil {
-		return grokAlsoOn(p)
-	}
 	if p.Account != nil && p.Account.Agent == "copilot" {
 		return copilotAlsoOn()
-	}
-	if p.Account != nil && p.Account.Agent == "zcode" {
-		return zcodeAlsoOn()
-	}
-	if p.Account != nil && p.Account.Agent == "kiro" {
-		return kiroAlsoOn(p)
-	}
-	if p.Account != nil && p.Account.Agent == "devin" {
-		return devinAlsoOn()
-	}
-	if p.Account != nil && wbSiteOf(p.Account.Agent) != nil {
-		return workBuddyAlsoOn(wbSiteOf(p.Account.Agent))
-	}
-	if p.Account != nil && p.Account.Agent == CommandCodePlanID {
-		return commandCodeAlsoOn()
-	}
-	if p.Account != nil && (p.Account.Agent == "qoder" || p.Account.Agent == QoderCNID) {
-		return qoderAlsoOn(p.Account.Agent)
-	}
-	if p.Account != nil && p.Account.Agent == "zed" {
-		return zedAlsoOn()
-	}
-	if p.Account != nil && p.Account.Agent == "factory" {
-		return factoryAlsoOn()
-	}
-	if p.Account != nil && p.Account.Agent == MiMoID {
-		return mimoAlsoOn()
 	}
 	if p.Account != nil && p.Account.Agent == ChatGPTAPIID {
 		return siwcAlsoOn()

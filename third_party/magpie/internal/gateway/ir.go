@@ -50,6 +50,10 @@ type Part struct {
 	IsError    bool
 	Images     []Part         // the images the tool returned beside its text
 	Standalone map[string]any // native Responses notification with no call ID
+	// Loads are the tools a tool's result loads, by name: Claude Code's
+	// ToolSearch answers with tool_reference blocks naming the deferred
+	// tools it found (#2660)
+	Loads []string
 
 	// thinking: its signature (Anthropic's, or a Gemini thought's). On a
 	// tool call, and on text, Gemini's thoughtSignature: a tool call's
@@ -140,6 +144,10 @@ type Tool struct {
 	Description string
 	Schema      json.RawMessage // JSON schema of the arguments
 	Strict      bool            // the client asked for its arguments held to the schema
+	// Deferred is a tool the client marked defer_loading: Claude Code's
+	// tools that ToolSearch loads, offered from where they were loaded
+	// (Part.Loads), not from the start (#2660)
+	Deferred bool
 }
 
 // Request is a call to a model, whichever API it arrived in.
@@ -244,6 +252,12 @@ type Request struct {
 	// Namespaced are the tools a Responses client offered inside a
 	// namespace, by the flat name the model is offered them under.
 	Namespaced map[string]nsTool
+	// LoadedInPlace has a Responses upstream that takes an additional_tools
+	// item (loadsInPlace) given a deferred tool a result loaded in such an
+	// item right after that result, not in the top-level tools: the tools
+	// and the conversation sent before stay as they were, so its prompt
+	// cache does (#2660). Every other upstream gets them in tools.
+	LoadedInPlace bool
 	// Grok is set when the model asked is one of Grok's, whose calls'
 	// arguments reach the client with their zero fractions dropped
 	// (grok_integral.go).
@@ -460,6 +474,11 @@ type Result struct {
 type collector struct {
 	res  Result
 	args strings.Builder // arguments of the open tool call
+	// text is what the part at textAt-1 has had added to its text since,
+	// written into the part by flush: adding each delta to the part's
+	// string copied the whole reply so far every time
+	text   strings.Builder
+	textAt int
 	// fresh: a KThinkStart said the next reasoning is a block of its own
 	fresh bool
 	err   string
@@ -488,6 +507,25 @@ func (c *collector) open() *Part {
 	return nil
 }
 
+// grow adds s to the text of the part at i, the last one.
+func (c *collector) grow(i int, s string) {
+	if c.textAt != i+1 {
+		c.flush()
+		c.text.WriteString(c.res.Parts[i].Text)
+		c.textAt = i + 1
+	}
+	c.text.WriteString(s)
+}
+
+// flush writes the text grow gathered into its part.
+func (c *collector) flush() {
+	if c.textAt > 0 {
+		c.res.Parts[c.textAt-1].Text = c.text.String()
+		c.text = strings.Builder{}
+		c.textAt = 0
+	}
+}
+
 func (c *collector) closeTool() {
 	if p := c.last(ToolCall); p != nil && p.Args == nil {
 		s := strings.TrimSpace(c.args.String())
@@ -512,7 +550,7 @@ func (c *collector) add(ev Event) {
 		c.res.Usage.add(ev.Usage)
 	case KText:
 		if p := c.last(Text); p != nil {
-			p.Text += ev.Text
+			c.grow(len(c.res.Parts)-1, ev.Text)
 		} else {
 			c.closeTool()
 			c.res.Parts = append(c.res.Parts, Part{Kind: Text, Text: ev.Text})
@@ -522,7 +560,7 @@ func (c *collector) add(ev Event) {
 		return
 	case KThink:
 		if p := c.open(); p != nil {
-			p.Text += ev.Text
+			c.grow(len(c.res.Parts)-1, ev.Text)
 		} else {
 			c.closeTool()
 			c.res.Parts = append(c.res.Parts, Part{Kind: Thinking, Text: ev.Text})
@@ -581,6 +619,7 @@ func (c *collector) add(ev Event) {
 }
 
 func (c *collector) finish() Result {
+	c.flush()
 	c.closeTool()
 	// a reply of tool calls ended "stop" (a relay's end_turn beside its
 	// tool_use blocks, 蓝猫 on Discord) is the client's to run the calls

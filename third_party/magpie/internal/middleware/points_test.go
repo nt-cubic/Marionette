@@ -292,7 +292,7 @@ func TestPointsLoadErrors(t *testing.T) {
 	def := file(t, `export default { strategies: { d: { order: (p, s) => s.map((_, i) => i) } } };`)
 	use(t, none, badName, notFn, notObj, def)
 	st := States()
-	if !strings.Contains(st[none.Spec].Error, "onRequest, onEvent, onResponse, strategies and onUsage") {
+	if !strings.Contains(st[none.Spec].Error, "onRequest, onProvider, onEvent, onResponse, strategies and onUsage") {
 		t.Fatal(st[none.Spec].Error)
 	}
 	for _, e := range []plugin.Entry{badName, notFn, notObj} {

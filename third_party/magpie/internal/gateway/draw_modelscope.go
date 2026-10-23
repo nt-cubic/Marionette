@@ -82,7 +82,7 @@ func (s *Server) modelScopeTask(ctx context.Context, p provider.Provider, base s
 		}
 		select {
 		case <-ctx.Done():
-			return nil, 504, fmt.Errorf("%s didn't answer in %s", p.Name, drawTimeout)
+			return nil, 504, fmt.Errorf("%s didn't answer in %s", p.Name, givenTo(ctx, time.Now()))
 		case <-time.After(modelScopeBusy[i]):
 		}
 	}
@@ -107,7 +107,7 @@ func (s *Server) modelScopeTask(ctx context.Context, p provider.Provider, base s
 	for {
 		select {
 		case <-ctx.Done():
-			return nil, 504, fmt.Errorf("%s didn't finish drawing in %s", p.Name, drawTimeout)
+			return nil, 504, fmt.Errorf("%s didn't finish drawing in %s", p.Name, givenTo(ctx, time.Now()))
 		case <-time.After(modelScopePoll):
 		}
 		b, code, err := s.sendWith(ctx, p, http.MethodGet, base+"/tasks/"+started.TaskID, "", nil, true, task)

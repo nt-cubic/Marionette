@@ -597,3 +597,95 @@ func TestKeyLimitSeveralLimits(t *testing.T) {
 		t.Fatal("the day alone has room:", w.Code, w.Body.String())
 	}
 }
+
+// Limits whose windows start at the same moment (a day and a week on a
+// Monday, a day and a month on the 1st) count a call once in the window
+// they share. budget kept such a window once on the key's first request,
+// and once a limit from its second on, and Append added each call to it
+// that many times: a day and week key was refused on a Monday at half its
+// day, while limit list and Usage showed the right sum (#2942).
+func TestKeyLimitWindowsThatStartTogetherCountACallOnce(t *testing.T) {
+	zone := time.FixedZone("UTC+8", 8*3600)
+	for _, c := range []struct {
+		name string
+		at   time.Time
+		more []string
+	}{
+		{"monday", time.Date(2026, 10, 19, 12, 0, 0, 0, zone), []string{"week"}},
+		{"the 1st", time.Date(2026, 10, 1, 12, 0, 0, 0, zone), []string{"month"}},
+		{"monday the 1st", time.Date(2026, 6, 1, 12, 0, 0, 0, zone), []string{"week", "month"}},
+	} {
+		// the reporter's caps are a cost: 100 input tokens are $1 here
+		for _, cost := range []bool{false, true} {
+			name := c.name + "/tokens"
+			if cost {
+				name = c.name + "/cost"
+			}
+			t.Run(name, func(t *testing.T) {
+				fresh(t)
+				budget.Forget()
+				t.Cleanup(budget.Forget)
+				input, zero := 10_000.0, 0.0
+				if err := settings.Save(settings.Settings{ModelPrices: map[string]settings.ModelPrice{
+					"plan/m1": {Input: &input, Output: &zero, CacheRead: &zero, CacheWrite: &zero},
+				}}); err != nil {
+					t.Fatal(err)
+				}
+				// each call is 100 tokens, $1: the day lets in 400 ($4), the others plenty
+				cap := func(period string, n int) access.Limit {
+					if cost {
+						return access.Limit{Period: period, Cost: float64(n) / 100}
+					}
+					return access.Limit{Period: period, Tokens: int64(n)}
+				}
+				first := cap("day", 400)
+				who := access.Identity{KeyID: "key", KeyName: "Key", Limit: &first}
+				day, _ := access.Window("day", c.at)
+				for _, p := range c.more {
+					if start, _ := access.Window(p, c.at); !start.Equal(day) {
+						t.Fatalf("the %s starts %v, the day %v", p, start, day)
+					}
+					who.More = append(who.More, cap(p, 100_000))
+				}
+				used := func(r *budget.Refusal) float64 {
+					if cost {
+						return r.Cost * 100
+					}
+					return float64(r.Tokens)
+				}
+				call := func() *budget.Refusal {
+					release, refused := budget.Reserve(who, 0, "plan/m1", c.at)
+					if refused != nil {
+						return refused
+					}
+					budget.Append(usage.Record{Time: c.at, Provider: "plan", Model: "m1", Input: 100, Status: 200, CallerKeyID: "key"})
+					release()
+					return nil
+				}
+				for i := range 4 {
+					if refused := call(); refused != nil {
+						t.Fatalf("call %d refused with %d of 400 used; it counts %.0f", i+1, 100*i, used(refused))
+					}
+				}
+				// the day is spent now, and says the 400 it holds
+				refused := call()
+				if refused == nil {
+					t.Fatal("a fifth call let in past the day's 400")
+				}
+				if refused.Period != "day" || used(refused) < 399.5 || used(refused) > 400.5 {
+					t.Fatalf("refused on the %s at %.0f, want the day's 400", refused.Period, used(refused))
+				}
+				// the calls and tokens are counted once too, not only the
+				// cost (xiedekai), as limit list reads them from the file
+				if refused.Calls != 4 || refused.Tokens != 400 {
+					t.Fatalf("refused with %d calls and %d tokens, want 4 and 400", refused.Calls, refused.Tokens)
+				}
+				for _, st := range budget.All(access.Key{ID: who.KeyID, Limit: who.Limit, More: who.More}, c.at) {
+					if st.Calls != refused.Calls || st.Tokens != refused.Tokens {
+						t.Fatalf("the %s's list says %d calls and %d tokens, the gateway %d and %d", st.Period, st.Calls, st.Tokens, refused.Calls, refused.Tokens)
+					}
+				}
+			})
+		}
+	}
+}

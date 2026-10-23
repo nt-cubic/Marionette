@@ -17,14 +17,19 @@ import (
 // the two never differ.
 
 // Names are what an entry answers to in a visibility: its family, and its
-// provider's id or its group's id (as group/<id> too).
+// provider's id or its group's id (as group/<id> too, and a found group's
+// auto/<model>).
 func (e Entry) Names() []string {
 	var out []string
 	if e.Family != "" {
 		out = append(out, e.Family)
 	}
 	if e.Group != "" {
-		return append(out, e.Group, GroupPrefix+e.Group)
+		out = append(out, e.Group, GroupPrefix+e.Group)
+		if e.ID != GroupPrefix+e.Group { // a found group's auto/<model>
+			out = append(out, e.ID)
+		}
+		return out
 	}
 	return append(out, e.Provider.ID)
 }
@@ -90,17 +95,20 @@ func ListedFor(agent string) (listed, kept []Entry) {
 	return InOrder(agent, listed), kept
 }
 
-// HiddenModels are the ids of the entries taken out of agent's lists.
+// HiddenModels are the ids of the entries taken out of agent's lists, a
+// found group saved by its old id, group/auto-<slug>, by the one it is
+// listed by now (PublicRef).
 func HiddenModels(agent string) map[string]bool {
 	ids := heldSettings().HiddenModels[strings.ToLower(agent)]
 	out := make(map[string]bool, len(ids))
 	for _, id := range ids {
-		out[id] = true
+		out[PublicRef(id)] = true
 	}
 	return out
 }
 
-// PickedModels are the only entries agent's lists show, by id, and whether
+// PickedModels are the only entries agent's lists show, by id (a found
+// group by the id it is listed by now, PublicRef), and whether
 // it is shown only those (#1337): a model not among them, one that came
 // after the user switched to it among them, is not shown.
 func PickedModels(agent string) (map[string]bool, bool) {
@@ -110,7 +118,7 @@ func PickedModels(agent string) (map[string]bool, bool) {
 	}
 	out := make(map[string]bool, len(ids))
 	for _, id := range ids {
-		out[id] = true
+		out[PublicRef(id)] = true
 	}
 	return out, true
 }
@@ -308,9 +316,14 @@ func Families() []string {
 }
 
 // ModelOrder is the order the user put agent's models in (OrderedModels),
-// by entry id; none when they never did.
+// by entry id, a found group by the id it is listed by now (PublicRef);
+// none when they never did.
 func ModelOrder(agent string) []string {
-	return slices.Clone(heldSettings().OrderedModels[strings.ToLower(agent)])
+	ids := slices.Clone(heldSettings().OrderedModels[strings.ToLower(agent)])
+	for i, id := range ids {
+		ids[i] = PublicRef(id)
+	}
+	return ids
 }
 
 // SetModelOrder lists agent's models in this order, by entry id: the ones

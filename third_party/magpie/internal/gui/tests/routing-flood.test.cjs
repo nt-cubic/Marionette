@@ -46,7 +46,7 @@ function serve(lang, feed) {
       if (!url.searchParams.get("wait")) return trace(first);
       // the long poll: answered with the next request the test feeds
       while (!feed.q.length && !feed.closed) await new Promise((r) => setTimeout(r, 20));
-      return trace(feed.q.length ? [feed.q.shift()] : []).catch(() => {});
+      return trace(feed.q.splice(0)).catch(() => {}); // every change since, as the gateway answers
     }
     if (url.pathname === "/api/gateway/history") return json({ cut: false, days: [], routes: [] });
     if (url.pathname === "/api/groups") return json({ models: [], groups: [], pools: [] });

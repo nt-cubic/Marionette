@@ -350,6 +350,9 @@ input.lib-setname:focus { border-color: var(--accent); box-shadow: 0 0 0 3px col
 .lib-editor .lib-picks { grid-column: 1 / -1; max-height: 320px; }
 .lib-editor .lib-keep { grid-column: 1 / -1; margin: 0 -6px; }
 .lib-confirm { grid-column: 1 / -1; margin: 0; font-size: 12.5px; line-height: 1.55; color: var(--fg-2); }
+/* the skills a Clean up takes out, by name; one changed here says so */
+.lib-gonelist { grid-column: 1 / -1; margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; max-height: 40vh; overflow-y: auto; }
+.lib-gonelist li { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; font-family: var(--code-font, var(--code)); font-size: 12.5px; color: var(--fg); overflow-wrap: anywhere; }
 .text.danger-fill { background: var(--red); color: #fff; }
 /* one agent's skills or servers on or off at once (#475) */
 .lib-byagent-sheet .lib-byagent-list { grid-column: 1 / -1; max-height: min(52vh, 420px); overflow: auto; }

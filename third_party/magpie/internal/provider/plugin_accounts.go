@@ -345,13 +345,19 @@ func pluginSignInAt() uint64 {
 // a request's 401 that ended clean took the mark off an account the
 // vendor had just refused.
 func notePluginLapseSince(pp plugin.Provider, key string, status int, began uint64) {
+	notePluginLapseOf(pluginAgent(pp), key, status, began, func(user string) string { return lapsedText(pp, user) })
+}
+
+// notePluginLapseOf is notePluginLapseSince by the account's agent, so a
+// mark can be cleared without the plugin's provider at hand.
+func notePluginLapseOf(agent, key string, status int, began uint64, text func(user string) string) {
 	refused := status == http.StatusUnauthorized
 	if !refused && (status < 200 || status > 299) {
 		return
 	}
 	loginsMu.Lock()
 	defer loginsMu.Unlock()
-	said := pluginAgent(pp) + "/" + key
+	said := agent + "/" + key
 	if pluginSignInSaid[said] > began {
 		return
 	}
@@ -362,10 +368,10 @@ func notePluginLapseSince(pp plugin.Provider, key string, status int, began uint
 	pluginSignInSaid[said] = began
 	ls := readLogins()
 	for i, l := range ls {
-		if l.Agent == pluginAgent(pp) && l.Home == key {
+		if l.Agent == agent && l.Home == key {
 			want := ""
 			if refused {
-				want = lapsedText(pp, l.User)
+				want = text(l.User)
 			}
 			if l.Lapsed != want {
 				ls[i].Lapsed = want
@@ -387,11 +393,14 @@ func lapsedText(pp plugin.Provider, user string) string {
 // the built-in's did (#320). The account's kept usage reading goes too: it
 // was read under the old sign-in, and for a minute it would answer the
 // next reading with the old sign-in's "expired" without asking the plugin,
-// and so without marking or clearing anything.
+// and so without marking or clearing anything. The mark goes by the
+// account alone: the providers' list is empty while another magpie's
+// change to plugins.json is read again, and a sign-in finished then left
+// the account saying "sign in again" (#2748).
 func clearPluginLapse(saved plugin.Saved) {
+	notePluginLapseOf("plugin:"+saved.Provider, saved.Account, http.StatusOK, toldNow, nil)
 	for _, pp := range plugin.Cached() {
 		if pp.ID == saved.Provider {
-			notePluginLapse(pp, saved.Account, http.StatusOK)
 			if user := pluginLabels(pp)[saved.Account]; user != "" {
 				StaleAllowance(pluginAgent(pp), user)
 			}

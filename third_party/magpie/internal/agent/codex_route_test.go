@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yetone/magpie/internal/access"
+	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -414,5 +416,44 @@ func TestCodexSyncPutsProviderTableBack(t *testing.T) {
 	}
 	if cfg := read(); cfg != "model = \"gpt-5.5\"\n" {
 		t.Fatalf("own model:\n%s", cfg)
+	}
+}
+
+// #2545: a key made under Gateway keys, put in the provider table's
+// experimental_bearer_token in place of magpie's, goes through magpie all
+// the same, so a model pick keeps it, as a sync keeps one. A key the
+// gateway doesn't take is still wired over.
+func TestCodexPickKeepsAGatewayKeyOfTheUsers(t *testing.T) {
+	home, read := codexHome(t, `{"tokens":{"access_token":"x","id_token":"x.e30.x"}}`,
+		"model = \"gpt-5.5\"\n\n[projects.\"/x\"]\ntrust_level = \"trusted\"\n")
+	cx := codex(home)
+	if err := cx.Fields[0].Set("fake/m1"); err != nil {
+		t.Fatal(err)
+	}
+	if cfg := read(); !strings.Contains(cfg, `experimental_bearer_token = "magpie"`) {
+		t.Fatalf("not wired:\n%s", cfg)
+	}
+	secret, err := access.Update("add-key", access.Change{Name: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, ".codex", "config.toml")
+	if err := edit.SetTOMLKey(path, "model_providers.magpie", "experimental_bearer_token", secret); err != nil {
+		t.Fatal(err)
+	}
+	if err := cx.Fields[0].Set("fake/m1"); err != nil {
+		t.Fatal(err)
+	}
+	if cfg := read(); !strings.Contains(cfg, `experimental_bearer_token = "`+secret+`"`) {
+		t.Fatalf("a model pick wrote over the user's caller key:\n%s", cfg)
+	}
+	if err := edit.SetTOMLKey(path, "model_providers.magpie", "experimental_bearer_token", "sk-not-this-gateways"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cx.Fields[0].Set("fake/m1"); err != nil {
+		t.Fatal(err)
+	}
+	if cfg := read(); strings.Contains(cfg, `experimental_bearer_token = "sk-not-this-gateways"`) {
+		t.Fatalf("a key the gateway doesn't take is kept:\n%s", cfg)
 	}
 }

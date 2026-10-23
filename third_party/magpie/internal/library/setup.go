@@ -253,9 +253,14 @@ func Restore(s *Setup) (*Result, error) {
 // and project folder it keeps, and the shared instructions while an agent
 // gets them. The library built-in plugin stays on while it is
 // more than 0. A library.json that can't be read is an error, never 0.
+//
+// It reads without mu: a sync holds mu for as long as it takes (13s and
+// more with many agents and skills), and boot.js, which the window waits
+// on before it paints, asks this through the built-in plugins (#2774: a
+// white window at start on macOS). library.json is only ever replaced
+// whole (save's edit.WriteAtomic), so a read beside a sync sees the file
+// before or after one of its writes, never half of it.
 func InUse() (int, error) {
-	mu.Lock()
-	defer mu.Unlock()
 	l, err := load()
 	if err != nil {
 		return 0, err

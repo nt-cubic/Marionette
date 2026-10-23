@@ -62,8 +62,8 @@ func errPortTaken(p int) error {
 	return fmt.Errorf("port %d is in use by another program: pick another one", p)
 }
 
-// setPort moves the gateway to port p (0 for the default) — Settings'
-// Gateway port (Magic_zero on Discord: 3425 was taken, and a port of one's
+// setPort moves the gateway to port p (0 for the default) — the port in
+// Settings' Gateway address (Magic_zero on Discord: 3425 was taken, and a port of one's
 // own is easier to tell apart): it checks nothing listens there, saves it,
 // moves the gateway this magpie serves (or starts it, when the port it was
 // on was taken), and then every agent connected to magpie, whose configs

@@ -29,6 +29,7 @@ import (
 	"github.com/yetone/magpie/internal/shortcut"
 	"github.com/yetone/magpie/internal/stats"
 	"github.com/yetone/magpie/internal/update"
+	"github.com/yetone/magpie/internal/webview2env"
 )
 
 //go:embed tray.png
@@ -281,11 +282,17 @@ func (h *host) zoomWindows() {
 // windowsOptions are the app's Windows options. Portable, WebView2 keeps
 // its profile in data\webview2: left to Wails it is %APPDATA%\magpie.exe,
 // a folder a portable magpie must not leave behind (#508). Installed, it
-// stays there, so what the pages kept isn't lost.
+// stays there, so what the pages kept isn't lost. The browser arguments
+// the user set in WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, which Wails' loader
+// blanks before WebView2 can read them, are merged into Wails' own (#2753).
 func windowsOptions() application.WindowsOptions {
+	disabled, enabled, other := webView2Args(webview2env.Args)
 	return application.WindowsOptions{
 		DisableQuitOnLastWindowClosed: true,
 		WebviewUserDataPath:           appdir.WebView(),
+		DisabledFeatures:              disabled,
+		EnabledFeatures:               enabled,
+		AdditionalBrowserArgs:         other,
 	}
 }
 
@@ -368,6 +375,10 @@ func Run(version string, showMain bool, link string) error {
 					log.Println("codex failover:", err)
 				}
 			}
+			// the compactions magpie made in Codex's threads written as
+			// Codex's own, for the threads no Codex has open: with magpie
+			// gone they still go on (LukeMa on X)
+			agent.PortCodexRollouts(3 * time.Second)
 			updates.install(false)
 		},
 		// Wails exits on some webview errors; say why before it does.

@@ -107,7 +107,7 @@ func forgetPluginAccounts(pp plugin.Provider) error {
 		}
 	}
 	loginsMu.Unlock()
-	if Moved(pp.ID) {
+	if PluginServes(pp.ID) {
 		// moving back would bring the accounts forgotten back from the
 		// backup the move set aside
 		mv := movers[pp.ID]

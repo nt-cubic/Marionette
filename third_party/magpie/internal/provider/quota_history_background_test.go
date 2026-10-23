@@ -42,7 +42,7 @@ func TestBackgroundLoginReadNotesQuotaHistory(t *testing.T) {
 	// rememberLogins is memoized for 30s process-wide; another test may
 	// have just run it, and then this account is never saved and read.
 	loginsMu.Lock()
-	loginsSeenAt = time.Time{}
+	loginsSeenAt.Store(0)
 	loginsMu.Unlock()
 
 	// routing's read, no Usage page involved
@@ -126,7 +126,7 @@ func TestHistoryWriteHoldsNoWaiter(t *testing.T) {
 	t.Cleanup(func() { CodexBase = old })
 
 	loginsMu.Lock()
-	loginsSeenAt = time.Time{}
+	loginsSeenAt.Store(0)
 	loginsMu.Unlock()
 
 	release := make(chan struct{})

@@ -33,7 +33,16 @@ var retired struct {
 	at   map[string]time.Time // "provider/model" → when the vendor said it is retired
 	from string               // the file read, and its time then
 	mod  time.Time
+	// checked is when the file was last looked at: within retiredLook it
+	// isn't looked at again. Every answered request asks Unretire, and a
+	// look at the disk each time was a stat per request; this process's
+	// own writes keep retired.at current, and another magpie's is seen
+	// within retiredLook.
+	checked time.Time
+	looks   int // looks at the disk, for tests
 }
+
+var retiredLook = time.Second
 
 func retiredPath() string { return filepath.Join(filepath.Dir(Path()), "retired.json") }
 
@@ -42,6 +51,11 @@ func retiredPath() string { return filepath.Join(filepath.Dir(Path()), "retired.
 // retired held.
 func readRetired() {
 	path := retiredPath()
+	if path == retired.from && !retired.checked.IsZero() && time.Since(retired.checked) < retiredLook {
+		return
+	}
+	retired.looks++
+	retired.checked = time.Now()
 	fi, err := os.Stat(path)
 	if err != nil {
 		if path != retired.from {
@@ -81,7 +95,7 @@ func writeRetired() {
 		return
 	}
 	if fi, err := os.Stat(path); err == nil {
-		retired.from, retired.mod = path, fi.ModTime()
+		retired.from, retired.mod, retired.checked = path, fi.ModTime(), time.Now()
 	}
 }
 

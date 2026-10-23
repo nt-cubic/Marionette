@@ -227,13 +227,22 @@
 .rt-reqs { padding: 4px; max-height: 420px; overflow-y: auto; display: grid; grid-template-columns: auto fit-content(32%) minmax(min(14em, 30%), 1fr) fit-content(40%); }
 .rt-req { grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: center; column-gap: 12px; padding: 6px 8px; font: inherit; font-size: 12px; text-align: left; color: var(--fg-2); background: none; border: 1px solid transparent; border-radius: 8px; cursor: pointer; }
 .rt-req:hover { background: var(--card-2); }
+/* a long list draws only the rows near its sight, between gaps as tall as
+   the rest; a probe is a row unlike any drawn, there for the columns'
+   widths only (#2524) */
+.rt-reqs.win { overflow-anchor: none; }
+.rt-reqs .rt-gap { grid-column: 1 / -1; }
+.rt-req.probe { height: 0; padding-block: 0; border-block-width: 0; overflow: hidden; visibility: hidden; pointer-events: none; }
 .rt-req[aria-pressed="true"] { background: var(--card-2); border-color: var(--line); color: var(--fg); }
 .rt-req .at { font-variant-numeric: tabular-nums; color: var(--muted); }
 .rt-req .asked { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .rt-req .asked i.ag { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--agent); }
 .rt-req .asked .ic, .rt-req .asked .ic img, .rt-req .asked .ic svg { width: 14px; height: 14px; flex: none; }
 .rt-req .m, .rt-req .to span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rt-req .to { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; color: var(--fg); }
+/* the waiting dot's 6px glow fits inside the clip: 6px on its left,
+   1px more above and below, given back outside so nothing moves
+   (#2553, dumplings) */
+.rt-req .to { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; color: var(--fg); padding: 1px 0 1px 6px; margin: -1px 0 -1px -6px; }
 .rt-req .to .said { flex-shrink: 100000; min-width: min(9em, 60%); }
 .rt-req .to .said.split { display: flex; }
 .rt-req .to .said .who { flex: 0 1000 auto; min-width: 2.5em; }
@@ -387,7 +396,9 @@ button.rt-session { cursor: pointer; }
 .rt-act.rt-keys.open .chev { transform: rotate(180deg); }
 .rt-act.rt-keys:focus { outline: none; }
 .rt-act.rt-keys:focus-visible { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent); }
-.rt-livedot { width: 6px; height: 6px; margin-left: 7px; border-radius: 50%; background: var(--green); animation: rtlive 1.8s infinite; --fg: var(--green); }
+.rt-livedot { width: 6px; height: 6px; margin-left: 7px; border-radius: 50%; background: var(--green); --fg: var(--green); }
+/* it pulses while a request is under way only (#2827) */
+.rt-livedot.on { animation: rtlive 1.8s infinite; }
 @media (prefers-reduced-motion: reduce) { .rt-livedot { animation: none; } }
 /* routing groups, and the providers routing over several of their own */
 .rt-gsec { display: grid; gap: 6px; margin-top: 16px; }
@@ -476,7 +487,8 @@ button.rt-session { cursor: pointer; }
 .rt-group.rt-gpick { cursor: default; }
 .rt-group.rt-gpick.on { background: var(--card-2); }
 .rt-gedit { cursor: default; scroll-margin-top: 12px; }
-.rt-gedit .ehead.fold { cursor: pointer; }
+.rt-gedit .ehead.folds { cursor: pointer; }
+.rt-gedit .ehead.folds:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .rt-gedit .segs { max-width: 100%; }
 /* its hint as close under the choices as every other row's: 4px */
 .rt-gedit .ctx-wrap { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
@@ -634,10 +646,14 @@ button.rt-session { cursor: pointer; }
 .rt-addc.wide { width: auto; height: 26px; padding: 0 10px 0 8px; border: 1px dashed var(--line); }
 .rt-addc:hover, .rt-addc.open, .rt-addc:focus-visible { color: var(--fg); background: var(--card-2); }
 .rt-addc.wide:hover, .rt-addc.wide.open { border-color: var(--muted); }
-/* the rule's ⋯: on hover, as the usage rows' */
-.rt-rule > .rt-rmore { align-self: start; opacity: 0; transition: opacity .12s, background .12s, color .12s; }
-.rt-rule:hover > .rt-rmore, .rt-rule > .rt-rmore:focus-visible, .rt-rule > .rt-rmore.open { opacity: 1; }
-@media (hover: none) { .rt-rule > .rt-rmore { opacity: 1; } }
+/* the rule's ⋯, always drawn, in the icons' quiet grey: it is the only
+   way to move or remove a rule, and drawn on hover alone nobody found it
+   (ppBruce on Discord: "a rule added has no delete button") */
+.rt-rule > .rt-rmore { align-self: start; }
+.rt-rule > .rt-rmore.open { background: var(--pill); color: var(--fg); }
+/* why Save refused the rule, under it until it has a condition */
+.rt-rule > .rt-rneed { grid-column: 2 / -1; color: var(--amber, var(--muted)); font-size: 11.5px; }
+.rt-rule > .rt-rneed[hidden] { display: none; }
 /* how a part works, under an ⓘ beside it */
 .rt-info { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; color: var(--muted); cursor: help; outline: none; }
 .rt-info:hover, .rt-info:focus-visible { color: var(--fg); }
@@ -852,3 +868,4 @@ button.rt-session { cursor: pointer; }
 .rt-gtpl-card.off b { color: var(--muted); }
 .rt-gtpl-card .acts { display: flex; align-items: center; gap: 8px; margin-top: auto; padding-top: 4px; }
 .rt-gtplbtn { display: inline-flex; align-items: center; gap: 4px; }
+.rt-log-head .mask-badge { margin-left: 8px; }

@@ -65,8 +65,8 @@ func Closest(asked string, n int) []string {
 		names := slices.Concat(nameWords(e.Name), nameWords(e.Default))
 		model := nameWords(e.Model)
 		var from []string
-		if strings.HasPrefix(e.ID, GroupPrefix) {
-			model = nameWords(strings.TrimPrefix(e.ID, GroupPrefix))
+		if e.Group != "" {
+			model = nameWords(e.Group)
 		} else {
 			from = slices.Concat(nameWords(e.Provider.ID), nameWords(e.Provider.Name))
 		}

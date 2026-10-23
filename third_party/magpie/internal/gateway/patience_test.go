@@ -22,7 +22,7 @@ func TestPatienceIsUsedUp(t *testing.T) {
 		rounds := 0
 		for {
 			list := []busyTry{{c: candidate{p: provider.Provider{ID: "a"}, model: "m"}, ready: time.Now()}}
-			_, wait, ok := replan(list, rounds, time.Now().Add(patience-waited))
+			_, wait, ok := replan(list, rounds, time.Now().Add(-waited), patience)
 			if !ok {
 				break
 			}

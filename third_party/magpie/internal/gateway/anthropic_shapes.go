@@ -409,6 +409,22 @@ func toolLoadedText(name string) string {
 	return "Tool " + name + " is loaded and can be called now."
 }
 
+// toolRefs are the tools a tool_result's content names in tool_reference
+// blocks, as Claude Code's ToolSearch answers, in their order.
+func toolRefs(content json.RawMessage) []string {
+	if !bytes.Contains(content, []byte(`"tool_reference"`)) {
+		return nil
+	}
+	var names []string
+	gjson.ParseBytes(content).ForEach(func(_, b gjson.Result) bool {
+		if n := b.Get("tool_name").String(); b.Get("type").String() == "tool_reference" && n != "" {
+			names = append(names, n)
+		}
+		return true
+	})
+	return names
+}
+
 // refsOnly is a tool_result's content that is tool_reference blocks and
 // nothing else, as ToolSearch answers.
 func refsOnly(c gjson.Result) bool {

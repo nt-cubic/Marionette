@@ -72,6 +72,24 @@ func antigravityNameEffort(name string) (string, string) {
 	return strings.TrimSpace(name[:open]), level
 }
 
+// antigravityNameSpells is whether a name, without the level in brackets,
+// is the id's family written out: "Gemini 3.5 Flash Lite" spells
+// gemini-3.5-flash-lite, "Gemini 3.7 Flash (Low)" gemini-3.7-flash-low;
+// "Gemini 3.5 Flash Lite" doesn't spell gemini-2.5-flash.
+func antigravityNameSpells(name, id string) bool {
+	n, _ := antigravityNameEffort(name)
+	n = strings.Join(strings.Fields(n), "-")
+	return n != "" && strings.EqualFold(n, EffortFamily(id))
+}
+
+// antigravityEnumNames is whether Antigravity's enum for a model names that
+// id itself (MODEL_GOOGLE_GEMINI_2_5_FLASH is gemini-2.5-flash); the
+// models it names for themselves have placeholders (MODEL_PLACEHOLDER_M198).
+func antigravityEnumNames(enum, id string) bool {
+	e, ok := strings.CutPrefix(enum, "MODEL_GOOGLE_")
+	return ok && e != "" && strings.EqualFold(e, strings.NewReplacer("-", "_", ".", "_").Replace(id))
+}
+
 // antigravityFamily is one family of Antigravity's ids.
 type antigravityFamily struct {
 	id       string

@@ -1,18 +1,18 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
-// Settings' "Codex thread descriptions" (#1198, congee949): Codex's
+// Codex's "Codex thread descriptions" (#1198, congee949): Codex's
 // thread_description requests go where this says, apart from the titles'
 // setting. By default Codex's own (ChatGPT); the app's menu (no native
 // select) offers magpie's models; a pick posts settings/codex-descriptions
 // on its own, the titles' setting untouched, its button shows the choice
 // under a name with no line of its own (as the titles' row, 1ooogle on X),
-// and no click scrolls the Settings page.
+// and no click scrolls the Agents page, where Codex's row holds it.
 // English and Chinese, Chromium and WebKit; no backend, the API is faked here.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
-const { watchSettingsReads, settingsDrawn, wheelTo } = require("./reader.cjs");
+const { watchSettingsReads, wheelTo, agentRow, openAgentSettings } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 
@@ -41,7 +41,9 @@ function server(lang, posted) {
     const json = (data) => route.fulfill({ json: data });
     if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:false};` });
     if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
-    if (url.pathname === "/api/state") return json({ agents: [], profiles: [], settings: { lang, theme: "light" }, fx: cur.fx });
+    // agents below Codex, so its opened row is not the list's end: a choice
+    // that rewraps its row at the very bottom must move the list
+    if (url.pathname === "/api/state") return json({ agents: [agentRow("codex", "Codex"), agentRow("claude", "Claude Code"), agentRow("pi", "Pi")], profiles: [], settings: { lang, theme: "light" }, fx: cur.fx });
     if (url.pathname === "/api/settings/codex-descriptions") {
       const body = req.postDataJSON();
       posted.push(["codex-descriptions", body]);
@@ -70,11 +72,11 @@ const want = {
   en: { name: "Codex thread descriptions", own: "Codex’s own (ChatGPT)" },
   zh: { name: "Codex 会话描述", own: "Codex 自带（ChatGPT）" },
 };
-const view = (page) => page.locator("#view-settings").evaluate((v) => v.scrollTop);
+const view = (page) => page.locator("#view-agents").evaluate((v) => v.scrollTop);
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
   for (const lang of ["en", "zh"]) {
-    test(`${engine} ${lang}: Codex's description requests go where Settings says`, async (t) => {
+    test(`${engine} ${lang}: Codex's description requests go where Codex's settings say`, async (t) => {
       const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
       const context = await browser.newContext({ viewport: { width: 900, height: 480 }, reducedMotion: "reduce" });
       const page = await context.newPage();
@@ -90,8 +92,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await browser.close();
       });
       await watchSettingsReads(page);
-      await page.goto("http://magpie.test/?view=settings");
-      await settingsDrawn(page); // rows found are the ones that stay (#1659)
+      await page.goto("http://magpie.test/?view=agents");
+      await openAgentSettings(page); // on Codex's opened row, not in Settings (the owner, 10-20)
       const row = page.locator("#codexDescriptionsRow");
       const pick = page.locator("#codexDescriptionsPick button");
       await pick.waitFor();
@@ -106,7 +108,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // moved the page would show
       await wheelTo(page, pick, 200); // each wheel landed before the next (#2370)
       const before = await view(page);
-      assert(before > 0, "the settings list must scroll to the row");
+      assert(before > 0, "the agents list must scroll to the row");
 
       // the app's menu: Codex's own and magpie's models
       await pick.click();

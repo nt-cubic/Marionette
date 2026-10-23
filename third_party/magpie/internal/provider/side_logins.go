@@ -32,9 +32,24 @@ func (l savedLogin) own() bool {
 // itself is signed in to, "" for no one; usable says a saved one of
 // magpie's is still signed in.
 func sideLogins(agent, ownUser string, usable func(savedLogin) bool) []sideLogin {
-	loginsMu.Lock()
-	defer loginsMu.Unlock()
+	// read without the lock, which is taken only for a change to write:
+	// a list that changes nothing, nearly every one, made and locked
+	// logins.json.lock all the same (#1665: every page's read lists a
+	// dozen agents' accounts, each a lock). logins.json is only ever
+	// replaced whole (writePrivate), so the read is one write's file.
 	ls := readLogins()
+	if _, change := keepSideLogins(ls, agent, ownUser, true); change {
+		loginsMu.Lock()
+		ls, _ = keepSideLogins(readLogins(), agent, ownUser, false)
+		loginsMu.Unlock()
+	}
+	return listSideLogins(ls, agent, ownUser, usable)
+}
+
+// keepSideLogins brings the agent's own sign-in into ls, and writes ls
+// when that changed it; looking (look), it changes and writes nothing, and
+// says whether it would. Written, it is called under loginsMu.
+func keepSideLogins(ls []savedLogin, agent, ownUser string, look bool) ([]savedLogin, bool) {
 	// moved onto its plugin, the agent's own sign-in is the plugin's: its
 	// row, set aside, is kept for going back
 	if ownUser != "" && !movedAgent(agent) {
@@ -44,12 +59,18 @@ func sideLogins(agent, ownUser string, usable func(savedLogin) bool) []sideLogin
 				found = true
 				changed, renamed := false, false
 				if agent == "copilot" && copilotRenamed(ls[i].User, ownUser) {
+					if look {
+						return ls, true
+					}
 					// the same account, its host now in its name (#1220):
 					// kept as it was, hidden or not, its settings with it
 					ls[i].renameTo(ownUser)
 					renamed = renameDue()
 				}
 				if !strings.EqualFold(ls[i].User, ownUser) {
+					if look {
+						return ls, true
+					}
 					ls[i].User, ls[i].Seen = ownUser, time.Now().UTC().Truncate(time.Second)
 					if agent == "copilot" {
 						ls[i].Plan, ls[i].AccessSKU = "", ""
@@ -61,6 +82,9 @@ func sideLogins(agent, ownUser string, usable func(savedLogin) bool) []sideLogin
 				// else by another account
 				if ls[i].Hidden != "" {
 					if m := ownMark(agent); m != "" && m != ls[i].Hidden || m == "" && ls[i].Hidden == hiddenNoMark && changed {
+						if look {
+							return ls, true
+						}
 						ls[i].Hidden = ""
 						changed = true
 					}
@@ -73,6 +97,9 @@ func sideLogins(agent, ownUser string, usable func(savedLogin) bool) []sideLogin
 		// one of magpie's that is the same account stands for it: it took
 		// the agent's own over while that couldn't be read (addSideLogin)
 		if !found && !slices.ContainsFunc(ls, func(l savedLogin) bool { return l.Agent == agent && strings.EqualFold(l.User, ownUser) }) {
+			if look {
+				return ls, true
+			}
 			ls = append(ls, savedLogin{Agent: agent, User: ownUser, Seen: time.Now().UTC().Truncate(time.Second)})
 			_ = writeLogins(ls)
 		}
@@ -80,8 +107,16 @@ func sideLogins(agent, ownUser string, usable func(savedLogin) bool) []sideLogin
 	// a saved account renamed as it was read (nameAlike) is written under
 	// its new name, its settings moved to it, the first time it is listed
 	if agent == "copilot" && renameDue() && slices.ContainsFunc(ls, func(l savedLogin) bool { return l.was != "" }) {
+		if look {
+			return ls, true
+		}
 		_ = writeLogins(slices.Clone(ls)) // sorted there: listed here as added
 	}
+	return ls, false
+}
+
+// listSideLogins is sideLogins' list, of ls as kept.
+func listSideLogins(ls []savedLogin, agent, ownUser string, usable func(savedLogin) bool) []sideLogin {
 	var out []sideLogin
 	first := -1
 	for _, l := range ls {

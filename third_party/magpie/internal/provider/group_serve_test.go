@@ -31,7 +31,7 @@ func TestOwnGroupsWaitOnThePlugin(t *testing.T) {
 		slices.Sort(ids)
 		return ids
 	}
-	both, found := []string{"group/auto-m", "group/mine"}, []string{"group/auto-m"}
+	both, found := []string{"auto/m", "group/mine"}, []string{"auto/m"}
 	check := func(when string, want []string) {
 		t.Helper()
 		if got := listed(); !slices.Equal(got, want) {

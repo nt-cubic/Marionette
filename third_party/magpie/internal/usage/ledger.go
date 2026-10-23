@@ -53,7 +53,10 @@ func (r Record) Failed() bool { return r.Status >= 400 || r.Error != "" }
 // one provider, to the failed calls, and to the rows whose models, provider, host or
 // session hold Query (any case).
 type Filter struct {
-	Day       string // YYYY-MM-DD in the chart's local time zone; "" is the whole period
+	Day string // YYYY-MM-DD in Zone; "" is the whole period
+	// Zone is the reader's time zone (Zone gives it), which the period's
+	// days, the chart's hours and Day are read in; nil is this computer's
+	Zone      *time.Location
 	CallerKey string
 	RouteID   int64
 	Model     string // exact model selected in the ranking
@@ -146,7 +149,7 @@ func (f Filter) keeps(r Record) bool {
 func (f Filter) keepsRecord(r Record, codexIdentity bool, subagent, parentAgent string) bool {
 	if f.Day != "" {
 		var day [len(time.DateOnly)]byte
-		if string(r.Time.In(time.Local).AppendFormat(day[:0], time.DateOnly)) != f.Day {
+		if string(r.Time.In(f.loc()).AppendFormat(day[:0], time.DateOnly)) != f.Day {
 			return false
 		}
 	}
@@ -238,7 +241,7 @@ type Ledgered struct {
 // comes with the calls the agents' session files record that the gateway did
 // not see.
 func LedgerOf(p Period, f Filter) Ledgered {
-	return LedgerOfAt(p, f, Clock())
+	return LedgerOfAt(p, f, Clock().In(f.loc()))
 }
 
 // LedgerOfAt is LedgerOf with the period read at now, for an answer that
@@ -275,7 +278,9 @@ func gatewayRecords(since time.Time) []Record {
 
 // Filtered narrows one snapshot without reloading either log or repricing rows.
 func (l Ledgered) Filtered(f Filter) Ledgered {
-	if f == (Filter{}) {
+	g := f
+	g.Zone = nil // the zone narrows nothing but through Day
+	if g == (Filter{}) {
 		return l
 	}
 	out := Ledgered{Rows: []Row{}, Agents: l.Agents, Providers: l.Providers}

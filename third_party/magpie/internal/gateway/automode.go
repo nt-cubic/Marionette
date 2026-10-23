@@ -73,9 +73,39 @@ func (s *Server) serverReview(p provider.Provider, asked []string, body []byte) 
 // a Claude model (Anthropic's API, a relay in front of it, Bedrock's or
 // Vertex's names for it), or anything on Anthropic's own API. No other
 // vendor runs Anthropic's classifier, and magpie answers none on its
-// behalf.
+// behalf: another subscription's or a plugin's Claude model (Copilot,
+// Kiro, Cursor…) is that vendor's service, which turns the safeguards
+// away (#1756) or drops them, so it isn't reviewed by its name alone.
 func AutoModeReviewed(p provider.Provider, model string) bool {
-	return p.Account != nil && p.Account.Agent == "claude" || anthropicModel.MatchString(model) || provider.HostOf(p.Base(provider.Anthropic)) == "api.anthropic.com"
+	if provider.HostOf(p.Base(provider.Anthropic)) == "api.anthropic.com" {
+		return true
+	}
+	if p.Account != nil {
+		return p.Account.Agent == "claude"
+	}
+	return anthropicModel.MatchString(model)
+}
+
+// AutoModeReviewable reports whether Claude Code, asking for model at p
+// through magpie, can have its actions reviewed: AutoModeReviewed, on a
+// route that reaches the Messages API. A Claude model p serves only on
+// Chat or Responses (a relay with no Anthropic endpoint, or one the user
+// set to be asked on another API) is asked translated, and a translation
+// carries neither the safeguards nor their results (nexnull on Discord).
+// The agent's wiring asks this before a request is made; serverReview,
+// on the Messages route already, asks AutoModeReviewed.
+func AutoModeReviewable(p provider.Provider, model string) bool {
+	if !AutoModeReviewed(p, model) {
+		return false
+	}
+	if p.Account != nil {
+		return true // the Claude subscription, through Claude Code's own binary
+	}
+	if p.Base(provider.Anthropic) == "" {
+		return false
+	}
+	apis := p.APIs(model)
+	return apis == nil || slices.Contains(apis, provider.Anthropic)
 }
 
 // classifierRoom is what a model that reasons is given on top of the

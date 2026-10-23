@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -13,10 +14,13 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	satomic "sync/atomic"
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
 
+	"github.com/yetone/magpie/internal/access"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/codexcat"
 	"github.com/yetone/magpie/internal/edit"
@@ -270,10 +274,47 @@ func codexIn(at place) *Agent {
 		cur, _ := edit.Read(catalogPath)
 		return codexcat.Keep(cur, list())
 	}
+	// listGone: magpie's list is known not to be there; one that can't be
+	// looked at is not taken for gone
+	listGone := func() bool {
+		_, err := os.Stat(catalogPath)
+		return errors.Is(err, fs.ErrNotExist)
+	}
+	// unnameGoneList takes model_catalog_json out of the config where it
+	// names magpie's list and the list is gone, so Codex can load its
+	// config again
+	unnameGoneList := func() error {
+		if !ownCatalog(get("model_catalog_json")) || !listGone() {
+			return nil
+		}
+		return edit.DelTOMLTop(path, "model_catalog_json")
+	}
+	// theirListGone: a model_catalog_json of the user's names no file, as
+	// Codex reads it (relative to its home). In a WSL distro its spelling
+	// is the distro's, which this side can't look at: not taken for gone.
+	theirListGone := func(c string) bool {
+		if at.spell != nil {
+			return false
+		}
+		if !filepath.IsAbs(c) {
+			c = filepath.Join(dir, c)
+		}
+		_, err := os.Stat(c)
+		return errors.Is(err, fs.ErrNotExist)
+	}
 	// dropList takes the list away as magpie steps out as Codex's
 	// provider; one holding what the user added stays, which the config
 	// no longer names, for ownList to keep when magpie is back
+	//
+	// The config never names it once it is gone: Codex reads the file as
+	// it loads its config, and with it missing loads none at all ("No such
+	// file or directory (os error 2)"), the CLI and the ChatGPT app both
+	// (zwaydot on X: Codex didn't open after magpie's Disconnect). The
+	// key was taken out only while model_provider was still magpie's, and
+	// the file went whatever the provider: one moved off magpie by the app,
+	// another tool or a hand edit left the key naming a removed file.
 	dropList := func() {
+		defer unnameGoneList()
 		cur, err := edit.Read(catalogPath)
 		if err != nil {
 			return
@@ -392,12 +433,28 @@ func codexIn(at place) *Agent {
 		s := settings.Load()
 		return codexAsyncSync(path, at.key("codex.async"), routed, s.CodexAsyncCompact, s.CodexAsyncCompactPercent)
 	}
+	// keptBearerToken is the table's bearer token when it is one the
+	// gateway takes: a caller key of the gateway's own the user put in
+	// magpie's token's place goes through magpie all the same, so theirs
+	// stays, as a sync keeps one (keyHolds); only a value the gateway would
+	// refuse is wired over (#2545). The sharing key magpie made is magpie's
+	// own, however much Authenticate takes it, so it never counts as theirs
+	// (Default): sharing going off brings gateway.Token back
+	keptBearerToken := func(table string) string {
+		tok := at.gwKey()
+		if t, err := edit.GetTOMLTable(path, table); err == nil {
+			if v := t["experimental_bearer_token"]; v != tok && keyHolds(v, tok) && !access.Default(v) {
+				return v
+			}
+		}
+		return tok
+	}
 	putProvider := func() error {
 		kvs := []edit.KV{
 			{Path: "name", Value: "magpie"},
 			{Path: "base_url", Value: at.v1()},
 			{Path: "wire_api", Value: "responses"},
-			{Path: "experimental_bearer_token", Value: at.gwKey()},
+			{Path: "experimental_bearer_token", Value: keptBearerToken("model_providers." + magpieID)},
 			// Codex offers its built-in image tool (image_gen.imagegen) and
 			// the other OpenAI-provider tools only to a provider it reads as
 			// the OpenAI actor: one that does not require OpenAI auth but
@@ -548,7 +605,7 @@ func codexIn(at place) *Agent {
 				edit.KV{Path: "name", Value: id},
 				edit.KV{Path: "base_url", Value: at.v1()},
 				edit.KV{Path: "wire_api", Value: "responses"},
-				edit.KV{Path: "experimental_bearer_token", Value: at.gwKey()},
+				edit.KV{Path: "experimental_bearer_token", Value: keptBearerToken("model_providers." + id)},
 			); err != nil {
 				return err
 			}
@@ -927,7 +984,9 @@ func codexIn(at place) *Agent {
 		if p := unstash(at.key("codex.provider")); p != "" && p != magpieID {
 			back = append(back, edit.KV{Path: "model_provider", Value: p})
 		}
-		if c := unstash(at.key("codex.catalog")); c != "" && !ownCatalog(c) {
+		// the catalog of the user's own put back while its file is there:
+		// one removed since would keep Codex from loading its config
+		if c := unstash(at.key("codex.catalog")); c != "" && !ownCatalog(c) && !theirListGone(c) {
 			back = append(back, edit.KV{Path: "model_catalog_json", Value: c})
 		}
 		if e := unstash(at.key("codex.effort")); e != "" {
@@ -1097,6 +1156,12 @@ func codexIn(at place) *Agent {
 			}
 			dropList()
 			forget(at.key("codex.model"), at.key("codex.effort"), at.key("codex.provider"), at.key("codex.catalog"))
+			// its threads go on without magpie: the compactions magpie made
+			// in them written as Codex's own (a distro's Codex locks its
+			// files where this machine's locks can't reach)
+			if at.spell == nil {
+				portCodexHome(dir, codexPortUnwire)
+			}
 			return settle()
 		},
 		// signed in with ChatGPT, Codex reaches magpie by the base URL with
@@ -1158,6 +1223,20 @@ func codexIn(at place) *Agent {
 		},
 		OwnVia: codexOwnViaMagpie,
 		Sync: func() error {
+			// model_catalog_json naming magpie's list with the list gone,
+			// as an older magpie's Disconnect could leave it (zwaydot on
+			// X): Codex loads no config at all then. Connected or not, the
+			// list is written again while magpie is the provider, else the
+			// key goes, at the next start, with no reconnect.
+			if ownCatalog(get("model_catalog_json")) && listGone() {
+				if asProvider() {
+					if err := writeOwnList(catalogPath, ownList()); err != nil {
+						return err
+					}
+				} else if err := unnameGoneList(); err != nil {
+					return err
+				}
+			}
 			if err := asyncCompaction(routed()); err != nil {
 				return err
 			}
@@ -1648,7 +1727,7 @@ func codexOwnViaMagpie(model string) string {
 // codexOwnOf is the model of Codex's own a catalog id serves on a ChatGPT
 // account (codexOwnViaMagpie's way back); "" for any other.
 func codexOwnOf(id string) string {
-	if !isMagpie(id) || strings.HasPrefix(id, provider.GroupPrefix) {
+	if !isMagpie(id) || provider.IsGroupRef(id) {
 		return ""
 	}
 	p, model, ok := provider.Resolve(id)
@@ -1852,13 +1931,72 @@ func codexChatGPT(dir string) bool {
 // newest day of it at most — from the log database the Codex app and the
 // TUI share: the address it opened, and whether that was refused (nothing
 // listening there). Zero when none is logged.
+//
+// Every Drift asks it, so it is read again only when the database or its
+// -wal changed, or the day it covers moved past what it found (#1665: a
+// read per ask was ~2,500 opens of logs_2.sqlite in 25s of a start, each
+// one file system work a Windows filter driver adds its own to).
 func codexReached(dir string, since time.Time) (at time.Time, to string, refused bool) {
 	logs, _ := filepath.Glob(filepath.Join(dir, "logs_*.sqlite"))
 	if len(logs) == 0 {
 		return
 	}
 	slices.Sort(logs)
-	db, err := provider.OpenReadOnly(logs[len(logs)-1])
+	path := logs[len(logs)-1]
+	key := reachedKey{path: path, since: since.Unix(), db: stampOf(path), wal: stampOf(path + "-wal")}
+	reachedMu.Lock()
+	if c, ok := reachedMemo[dir]; ok && c.key == key && time.Since(c.read) < reachedFor &&
+		(c.at.IsZero() || time.Since(c.at) < 24*time.Hour) {
+		reachedMu.Unlock()
+		return c.at, c.to, c.refused
+	}
+	reachedMu.Unlock()
+	at, to, refused = codexReachedRead(path, since)
+	reachedMu.Lock()
+	reachedMemo[dir] = reachedRead{key: key, read: time.Now(), at: at, to: to, refused: refused}
+	reachedMu.Unlock()
+	return
+}
+
+// reachedFor is how long a read of Codex's log stands while its files say
+// nothing changed: a file system whose times are coarse can miss a write
+// that kept the size.
+const reachedFor = 15 * time.Second
+
+type reachedKey struct {
+	path    string
+	since   int64
+	db, wal fileStamp
+}
+
+type fileStamp struct{ size, mod int64 }
+
+func stampOf(path string) fileStamp {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return fileStamp{size: -1}
+	}
+	return fileStamp{size: fi.Size(), mod: fi.ModTime().UnixNano()}
+}
+
+type reachedRead struct {
+	key     reachedKey
+	read    time.Time
+	at      time.Time
+	to      string
+	refused bool
+}
+
+var (
+	reachedMu   sync.Mutex
+	reachedMemo = map[string]reachedRead{}
+	// reachedOpens counts the reads of the database, for the tests
+	reachedOpens satomic.Int64
+)
+
+func codexReachedRead(path string, since time.Time) (at time.Time, to string, refused bool) {
+	reachedOpens.Add(1)
+	db, err := provider.OpenReadOnly(path)
 	if err != nil {
 		return
 	}

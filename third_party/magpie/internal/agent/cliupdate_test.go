@@ -365,6 +365,100 @@ func TestUpdateCLI(t *testing.T) {
 	}
 }
 
+// An opencode 1.19.0's upgrade asks GitHub's API for the newest release,
+// which answers an address 60 times an hour without a token before a 403
+// (ggbdpq: "opencode upgrade: ... 403 GET https://api.github.com/repos/
+// anomalyco/opencode/releases/latest"). magpie gives it the version the row
+// promised, which its installer downloads from the release itself.
+func TestUpdateCLIOpenCodeTakesVersion(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a shell script as the CLI")
+	}
+	tmp, _ := filepath.EvalSymlinks(t.TempDir())
+	verFile := filepath.Join(tmp, "version")
+	os.WriteFile(verFile, []byte("1.19.2\n"), 0o644)
+	oc := file(t, filepath.Join(tmp, "home/.opencode/bin/opencode"), "#!/bin/sh\n/bin/cat "+verFile+"\n")
+	bin := link(t, oc, filepath.Join(tmp, "bin/opencode"))
+	t.Setenv("PATH", filepath.Dir(bin))
+
+	reg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/opencode-ai/latest" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write([]byte(`{"name":"opencode-ai","version":"1.19.3"}`))
+	}))
+	defer reg.Close()
+	oldReg, oldRun := npmRegistry, runUpdate
+	npmRegistry = reg.URL + "/"
+	versions, latests = memo{}, memo{}
+	var ran [][]string
+	runUpdate = func(_ context.Context, u *updater) ([]byte, error) {
+		ran = append(ran, u.cmd)
+		os.WriteFile(verFile, []byte("1.19.3\n"), 0o644)
+		return nil, nil
+	}
+	t.Cleanup(func() { npmRegistry, runUpdate = oldReg, oldRun; versions, latests = memo{}, memo{} })
+
+	a := &Agent{ID: "opencode", Name: "OpenCode", Bin: "opencode"}
+	if c, ok := a.CLI(); !ok || c.Via != "self" || c.Version != "1.19.2" || c.Latest != "1.19.3" || !c.Update {
+		t.Fatalf("before: %+v", c)
+	}
+	if c, err := a.UpdateCLI(); err != nil || c.Version != "1.19.3" || c.Update {
+		t.Fatalf("after: %+v, %v", c, err)
+	}
+	if len(ran) != 1 || !reflect.DeepEqual(ran[0], []string{bin, "upgrade", "1.19.3"}) {
+		t.Errorf("ran %q", ran)
+	}
+}
+
+// An opencode npm installed is updated by npm as it was: the version
+// opencode's own upgrade takes is never put after npm's install, where npm
+// would read it as one more package to install.
+func TestUpdateCLIOpenCodeByNpmTakesNoVersion(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a shell script as the CLI")
+	}
+	tmp, _ := filepath.EvalSymlinks(t.TempDir())
+	prefix := filepath.Join(tmp, "node")
+	verFile := filepath.Join(tmp, "version")
+	os.WriteFile(verFile, []byte("1.19.2\n"), 0o644)
+	file(t, filepath.Join(prefix, "lib/node_modules/opencode-ai/bin/opencode"), "#!/bin/sh\n/bin/cat "+verFile+"\n")
+	file(t, filepath.Join(prefix, "bin/npm"), "#!/bin/sh\nexit 1\n")
+	link(t, "../lib/node_modules/opencode-ai/bin/opencode", filepath.Join(prefix, "bin/opencode"))
+	t.Setenv("PATH", filepath.Join(prefix, "bin"))
+
+	reg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/opencode-ai/latest" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write([]byte(`{"name":"opencode-ai","version":"1.19.3"}`))
+	}))
+	defer reg.Close()
+	oldReg, oldRun := npmRegistry, runUpdate
+	npmRegistry = reg.URL + "/"
+	versions, latests = memo{}, memo{}
+	var ran [][]string
+	runUpdate = func(_ context.Context, u *updater) ([]byte, error) {
+		ran = append(ran, u.cmd)
+		os.WriteFile(verFile, []byte("1.19.3\n"), 0o644)
+		return nil, nil
+	}
+	t.Cleanup(func() { npmRegistry, runUpdate = oldReg, oldRun; versions, latests = memo{}, memo{} })
+
+	a := &Agent{ID: "opencode", Name: "OpenCode", Bin: "opencode"}
+	if c, ok := a.CLI(); !ok || c.Via != "npm" || c.Latest != "1.19.3" || !c.Update {
+		t.Fatalf("before: %+v", c)
+	}
+	if _, err := a.UpdateCLI(); err != nil {
+		t.Fatal(err)
+	}
+	if len(ran) != 1 || !strings.HasSuffix(strings.Join(ran[0], " "), "install -g --prefix "+prefix+" opencode-ai@latest") {
+		t.Errorf("ran %q", ran)
+	}
+}
+
 // An agent's CLI installed with bun is updated by bun add -g, which can't
 // use a SOCKS5 proxy (#1409): it is given the bridge in front of it. npm,
 // which can, is given the proxy as it is.

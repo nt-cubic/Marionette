@@ -106,18 +106,22 @@ func (f *fakeWBCheckin) counts() (int, int) {
 	return f.statuses, f.claims
 }
 
-// wbCheckinFixture is a checkiner for one WorkBuddy account at srv, its
-// clock at *now, its file in a temp folder.
+// wbPluginSigned is the plugin's fetch for the account fakeWBCheckin
+// knows: it signs each request with the account's sign-in.
+func wbPluginSigned(req *http.Request) (*http.Response, error) {
+	req.Header.Set("Authorization", "Bearer wb-access")
+	req.Header.Set("X-User-Id", "u1")
+	return http.DefaultClient.Do(req)
+}
+
+// wbCheckinFixture is a checkiner for one WorkBuddy plugin account at srv,
+// its clock at *now, its file in a temp folder.
 func wbCheckinFixture(t *testing.T, srv *httptest.Server, now *time.Time) wbCheckiner {
 	t.Helper()
-	wbTokens.Lock()
-	wbTokens.m = map[string]wbCreds{}
-	wbTokens.Unlock()
 	endpoint := srv.URL
 	site := &wbSite{id: "workbuddy", name: "WorkBuddy", endpoint: &endpoint}
-	future := time.Now().Add(24 * time.Hour).UnixMilli()
-	a := wbAccount{Login: Login{User: "旅行者", On: true, Active: true}, site: site, own: true,
-		creds: wbCreds{UID: "u1", Access: "wb-access", ExpiresAt: future, Domain: "www.codebuddy.cn"}}
+	a := wbAccount{Login: Login{User: "旅行者", On: true, Active: true}, site: site,
+		creds: wbCreds{UID: "u1"}, via: wbPluginSigned}
 	return wbCheckiner{
 		path:     filepath.Join(t.TempDir(), "workbuddy-checkin.json"),
 		now:      func() time.Time { return *now },
@@ -317,11 +321,7 @@ func TestWorkBuddyCheckinPluginResetRetriesSoon(t *testing.T) {
 			// the reporter's words, as the plugin host passes them on
 			return nil, errors.New("ECONNRESET: The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()")
 		}
-		// the plugin signs it
-		for k, v := range wbAuthHeaders(accts[0].site, accts[0].creds) {
-			req.Header.Set(k, v)
-		}
-		return http.DefaultClient.Do(req)
+		return wbPluginSigned(req)
 	}
 	c.accounts = func() []wbAccount { return accts }
 	ctx := context.Background()
@@ -339,39 +339,6 @@ func TestWorkBuddyCheckinPluginResetRetriesSoon(t *testing.T) {
 		if r := wbCheckinFailed(errors.New(msg)); r.Offline {
 			t.Errorf("%q read as never answered", msg)
 		}
-	}
-}
-
-// The accounts are WorkBuddy's own sign-in and those magpie added, read as
-// the rest of magpie reads them; what is kept is shown by name.
-func TestWorkBuddyCheckinSignedIn(t *testing.T) {
-	home := signIn(t)
-	wbTokens.Lock()
-	wbTokens.m = map[string]wbCreds{}
-	wbTokens.Unlock()
-	future := time.Now().Add(24 * time.Hour).UnixMilli()
-	writeFile(t, wbAuthFile(home), map[string]any{
-		"account": map[string]any{"uid": "u1", "nickname": "旅行者"},
-		"auth":    map[string]any{"accessToken": "wb-access", "refreshToken": "r", "expiresAt": future, "domain": "www.codebuddy.cn"},
-	})
-	f := &fakeWBCheckin{active: true}
-	srv := f.serve(t)
-	old := wbEndpoint
-	wbEndpoint = srv.URL
-	defer func() { wbEndpoint = old }()
-
-	if !HasWorkBuddy() || len(WorkBuddyCheckins()) != 0 {
-		t.Fatalf("before: %v %+v", HasWorkBuddy(), WorkBuddyCheckins())
-	}
-	rs := CheckInWorkBuddy(context.Background())
-	if len(rs) != 1 || rs[0].Outcome != CheckinClaimed || rs[0].User != "旅行者" {
-		t.Fatalf("checked in: %+v", rs)
-	}
-	if _, err := os.Stat(filepath.Join(home, ".config", "magpie", "workbuddy-checkin.json")); err != nil {
-		t.Fatal(err)
-	}
-	if got := WorkBuddyCheckins(); len(got) != 1 || got[0].User != "旅行者" || got[0].Credit != 100 {
-		t.Fatalf("kept: %+v", got)
 	}
 }
 
@@ -437,28 +404,23 @@ func TestWorkBuddyCheckinOnTheCard(t *testing.T) {
 	}
 }
 
-// The WorkBuddy plugin signed in under its own id, not moved (signed in
-// before the move was, or moved back), has its accounts checked in too and
-// its cards ("workbuddy-plugin") say so, beside the built-in's; one account
-// signed in to both is checked in once (#694, Dazzle-sys on 0.1.774: two
-// accounts on the card, credits by day, no check-in).
-func TestWorkBuddyCheckinPluginUnderItsOwnID(t *testing.T) {
+// The WorkBuddy plugin's accounts are checked in, and their cards say so;
+// WorkBuddy AI's are not, and a sign-in magpie kept from the retired
+// built-in, not moved yet, is checked in by nothing (#694, Dazzle-sys on
+// 0.1.774: two accounts on the card, credits by day, no check-in).
+func TestWorkBuddyCheckinPluginAccounts(t *testing.T) {
 	movedPlugin(t, "workbuddy", map[string]map[string]any{
 		"workbuddy":     {"type": "oauth", "access": "a", "refresh": "r", "expires": 0, "accountId": "Ann", "uid": "u1"},
 		"workbuddy#abc": {"type": "oauth", "access": "b", "refresh": "r", "expires": 0, "accountId": "Bob", "uid": "u2"},
 	})
-	_ = setMigration("workbuddy", func(m *Migration) { m.State = MovedBack })
 	loginsMu.Lock()
 	_ = writeLogins([]savedLogin{{Agent: "workbuddy", User: "Cat", On: true, First: true, Auth: []byte(`{"uid":"u3","accessToken":"c"}`)}})
 	loginsMu.Unlock()
-	if Moved("workbuddy") || PluginID("workbuddy") != "workbuddy-plugin" {
-		t.Fatalf("set up as moved: %q", PluginID("workbuddy"))
-	}
 	var users []string
 	for _, a := range wbCheckinAccounts() {
 		users = append(users, a.User)
 	}
-	if strings.Join(users, ",") != "Cat,Ann,Bob" {
+	if strings.Join(users, ",") != "Ann,Bob" {
 		t.Fatalf("accounts checked in: %v", users)
 	}
 	if !HasWorkBuddy() {
@@ -466,23 +428,22 @@ func TestWorkBuddyCheckinPluginUnderItsOwnID(t *testing.T) {
 	}
 	st := map[string]WorkBuddyCheckin{"workbuddy|u2": {Day: "2026-10-04", Outcome: CheckinClaimed, Credit: 100, Streak: 5}}
 	qs := []SubscriptionQuota{
+		{Provider: "workbuddy", User: "Ann"},
+		{Provider: "workbuddy", User: "Bob"},
+		{Provider: "workbuddy-ai", User: "Ann"},
 		{Provider: "workbuddy", User: "Cat"},
-		{Provider: "workbuddy-plugin", User: "Ann"},
-		{Provider: "workbuddy-plugin", User: "Bob"},
-		{Provider: "workbuddy-ai-plugin", User: "Ann"},
-		{Provider: "workbuddy-plugin", User: "Cat"},
 	}
 	got := withCheckins(qs, wbCheckinAccounts(), st)
-	for i, want := range []bool{true, true, true, false, false} {
+	for i, want := range []bool{true, true, false, false} {
 		if got[i].Checkins != want {
 			t.Fatalf("card %d %s %s: checkins %v, want %v", i, got[i].Provider, got[i].User, got[i].Checkins, want)
 		}
 	}
-	if got[2].Checkin == nil || got[2].Checkin.Credit != 100 || got[1].Checkin != nil {
-		t.Fatalf("Bob's check-in: %+v, Ann's %+v", got[2].Checkin, got[1].Checkin)
+	if got[1].Checkin == nil || got[1].Checkin.Credit != 100 || got[0].Checkin != nil {
+		t.Fatalf("Bob's check-in: %+v, Ann's %+v", got[1].Checkin, got[0].Checkin)
 	}
 
-	// the same account on the built-in and the plugin: asked once
+	// the same account listed twice: asked once
 	var asked int
 	via := func(req *http.Request) (*http.Response, error) {
 		asked++

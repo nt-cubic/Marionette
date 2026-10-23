@@ -1,11 +1,8 @@
 package sessions
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
-	"errors"
-	"io"
 	"strings"
 )
 
@@ -37,82 +34,89 @@ func dshCallFiles() []file {
 	return dshFiles()
 }
 
-// readDshCalls reads a dsh session whole: packed in frames, it can't be read
-// on from the middle of one (as parseDsh says).
-func readDshCalls(f file) (*callFile, bool) {
-	r, err := dshOpen(f.path)
-	if err != nil {
-		return &callFile{Path: f.path, Agent: "dsh"}, false
+// readDshCalls reads a dsh session's calls. dsh only appends to a session
+// file, a line at a time or, packed, a frame of lines at a time, so a file
+// read before is read on from where that read left off, a packed one from
+// the frame it left off in (frames.go), as parseDsh reads it. A file cut
+// short or replaced is read whole again, and a line or frame not yet
+// written whole waits for the next read. kept is how many of st's calls
+// were old's.
+func readDshCalls(f file, old *callFile) (st *callFile, kept int, ok bool) {
+	var c dshCarry
+	var off, skip int64
+	if old != nil && old.Dsh != nil && old.Dsh.Tail.holds(f.path) {
+		st = old.clone()
+		c, off, skip = *st.Dsh, st.Dsh.Tail.Off, st.Dsh.Tail.Skip
+		kept = len(st.Calls)
+	} else {
+		st = &callFile{Agent: "dsh", Path: f.path, Session: strings.TrimPrefix(f.key, "dsh:")}
 	}
-	defer r.Close()
-	st := &callFile{Agent: "dsh", Path: f.path, Session: strings.TrimPrefix(f.key, "dsh:")}
-	br := bufio.NewReaderSize(r, 1<<20)
-	var h dshHead
-	// the events a fork was seeded with are the session it came from, not
-	// this one: parseDsh skips them, and counting them here would spend the
-	// same request once per fork (dsh-a's first reply is also dsh-c's and
-	// dsh-d's first lines)
-	var evs []dshEvent
-	var seeds []bool
-	cut := -1
-	for first := true; ; first = false {
-		b, err := br.ReadBytes('\n')
-		if err != nil {
-			// a line still being written, or a frame cut short
-			if !errors.Is(err, io.EOF) || len(bytes.TrimSpace(b)) == 0 {
-				break
-			}
-		}
+	headed := c.Head.Type == "session"
+	ok = true
+	each := func(b []byte) bool {
 		b = bytes.TrimSpace(b)
 		if len(b) == 0 || len(b) > maxLine {
-			if err != nil {
-				break
-			}
-			continue
+			return true
 		}
-		if first {
-			if json.Unmarshal(b, &h) != nil || h.Type != "session" {
-				return st, false
+		if !headed {
+			headed = true
+			if json.Unmarshal(b, &c.Head) != nil || c.Head.Type != "session" {
+				ok = false
+				return false
 			}
 			if st.Session == "" {
-				st.Session = h.ID
+				st.Session = c.Head.ID
 			}
-			continue
+			return true
 		}
 		// only an assistant/message carries a call, and only the ones a
 		// seed ends: every other line is passed over undecoded
-		if bytes.Contains(b, []byte(`"assistant/message"`)) || bytes.Contains(b, []byte(`"session/end-seed"`)) {
-			var e dshEvent
-			if json.Unmarshal(b, &e) == nil && e.Type != "" {
-				evs = append(evs, e)
-				seeds = append(seeds, e.Type == "session/end-seed" && e.Data.Inherited)
+		if !bytes.Contains(b, []byte(`"assistant/message"`)) && !bytes.Contains(b, []byte(`"session/end-seed"`)) {
+			return true
+		}
+		var e dshEvent
+		if json.Unmarshal(b, &e) != nil {
+			return true
+		}
+		switch e.Type {
+		case "session/end-seed":
+			// the events a fork was seeded with are the session it came
+			// from, not this one: parseDsh skips them, and counting them
+			// here would spend the same request once per fork (dsh-a's
+			// first reply is also dsh-c's and dsh-d's first lines). From
+			// format 2 the seed ends with this marker: what came before
+			// it is not this session's.
+			if e.Data.Inherited && c.Head.Version >= 2 && c.Head.IsSeeded {
+				st.Calls, kept = nil, 0
+			}
+		case "assistant/message":
+			// before format 2 the seed is counted in events
+			if c.Head.Version < 2 && e.Seq != nil && *e.Seq < c.Head.SeedLength {
+				return true
+			}
+			if call, ok := dshCall(st, e); ok {
+				st.Calls = append(st.Calls, call)
 			}
 		}
-		if err != nil {
-			break
-		}
+		return true
 	}
-	if h.Version >= 2 && h.IsSeeded {
-		for i, seed := range seeds {
-			if seed {
-				cut = i
-			}
-		}
+	var next, nextSkip, end int64
+	var err error
+	if packed(f.path) {
+		next, nextSkip, end, err = scanFrames(f.path, off, skip, each)
+	} else {
+		next, err = scanAt(f.path, off, nil, func(b []byte, _, _ int64) bool { return each(b) })
+		end = next
 	}
-	for i, e := range evs {
-		if e.Type != "assistant/message" {
-			continue
-		}
-		// before format 2 the seed is counted in events, after it by the
-		// marker it ends with
-		if i <= cut || h.Version < 2 && e.Seq != nil && *e.Seq < h.SeedLength {
-			continue
-		}
-		if c, ok := dshCall(st, e); ok {
-			st.Calls = append(st.Calls, c)
-		}
+	if !ok || err != nil && !headed {
+		return &callFile{Path: f.path, Agent: "dsh"}, 0, false
 	}
-	return st, true
+	c.Tail = nil
+	if err == nil {
+		c.Tail = markTail(f.path, next, nextSkip, end)
+	}
+	st.Dsh = &c
+	return st, kept, true
 }
 
 // dshCall is an assistant/message as a call: its model, its tokens and the

@@ -16,9 +16,10 @@ import (
 // is refused before any provider is asked. A model is held to by its
 // provider's id and its own, "<provider>/<model>", whatever the agent
 // called it. A routing group passes when the key names it, "group/<id>"
-// (or "group/*", every group), and then every member of it does, through
-// it; else only when every model in it does. A group the key names inside
-// one it doesn't counts for its own members.
+// (or "group/*", every group), a group magpie found by its auto/<model>
+// too, either id passing for the other (allows), and then every member of
+// it does, through it; else only when every model in it does. A group the
+// key names inside one it doesn't counts for its own members.
 
 // magpieChoseKey marks, in a request's context, a call magpie makes for a
 // model the user picked in its settings rather than the caller (a web
@@ -52,20 +53,46 @@ func accountHolds(r *http.Request) (access.Identity, bool) {
 	return who, len(who.Accounts) > 0
 }
 
+// allows is who.Allows, a found group named by either of its ids: a key
+// held to auto/<model> (as the model lists give it, any spelling of the
+// model) may use group/auto-<slug>, the id the gateway routes it by, and
+// one held to group/auto-<slug> or group/* the auto/<model> an agent asks
+// for, which the gateway takes back to that id (validateModel). A pattern
+// of auto/ ids ("auto/*") holds to the groups' auto/<model>.
+func allows(who access.Identity, ids ...string) bool {
+	if who.Allows(ids...) {
+		return true
+	}
+	for _, id := range ids {
+		if !strings.HasPrefix(id, provider.GroupPrefix+"auto-") {
+			continue
+		}
+		if pub := provider.PublicRef(id); pub != id && who.Allows(pub) {
+			return true
+		}
+		for _, p := range who.Models {
+			if !strings.Contains(p, "*") && strings.HasPrefix(p, provider.AutoPrefix) && strings.EqualFold(provider.CanonicalRef(p), id) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // modelAllowed says the key may use provider p's model.
 func modelAllowed(who access.Identity, p provider.Provider, model string) bool {
-	return who.Allows(p.ID + "/" + model)
+	return allows(who, p.ID+"/"+model)
 }
 
 // memberAllowed says the key may use a routing group's member: the model,
 // or a group it is reached through that the key names.
 func memberAllowed(who access.Identity, m provider.Member) bool {
-	return who.Allows(append([]string{m.Provider.ID + "/" + m.Model}, m.Path...)...)
+	return allows(who, append([]string{m.Provider.ID + "/" + m.Model}, m.Path...)...)
 }
 
 // groupNamed says the key names the routing group g itself.
 func groupNamed(who access.Identity, g provider.Group) bool {
-	return g.ID != "" && who.Allows(provider.GroupPrefix+g.ID)
+	return g.ID != "" && (allows(who, provider.GroupPrefix+g.ID) || who.Allows(g.Ref()))
 }
 
 // groupAllowed says the key may use the routing group g: it names it, or

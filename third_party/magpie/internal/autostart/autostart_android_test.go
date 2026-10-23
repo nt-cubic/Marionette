@@ -25,13 +25,13 @@ func TestBootScript(t *testing.T) {
 	if err := os.Chmod(record(), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if Enabled() {
+	if Enabled() != Off {
 		t.Fatal("non-executable script reported as enabled")
 	}
 	if err := enable(exe); err != nil {
 		t.Fatal(err)
 	}
-	if !Enabled() {
+	if Enabled() == Off {
 		t.Fatal("enable did not restore executable permission")
 	}
 	if err := exec.Command("/system/bin/sh", record()).Run(); err != nil {

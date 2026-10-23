@@ -342,6 +342,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await settingsDrawn(page); // rows found are the ones that stay (#1659)
           const row = page.locator("#searchList .searcher-row");
           await row.waitFor();
+          // no title before the pointer has come over the help: asked here,
+          // as reach's wheel, from the view's middle, can pass over it (with
+          // Image generation timeout drawn above, it does in Japanese)
+          assert.equal(await row.locator(".sub").getAttribute("title"), null);
           // under Image recognition's MCP address (6c1c0a747) the row is
           // past the window's foot: the reader scrolls down to it
           await reach(page, row.locator("button.searcher-pick"));
@@ -369,7 +373,6 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
             assert.equal(layout.whiteSpace, "nowrap", "desktop help stays on one line");
             assert.equal(layout.textOverflow, "ellipsis");
             assert(layout.overflow > 0, "long help is truncated");
-            assert.equal(await sub.getAttribute("title"), null);
             await sub.hover();
             const full = await sub.evaluate((e) => e.textContent.replace(/\s+/g, " ").trim());
             assert.equal(await sub.getAttribute("title"), full, "hover exposes the complete updated help");

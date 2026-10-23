@@ -1054,6 +1054,17 @@
       ? chart(a.compact.curve || [], r.current, r.best, show, timed)
       : chart([{ value: "5m", cost: r.short }, { value: "1h", cost: r.hour }], r.current, r.best, show);
     if (c) row.append(c);
+    // the leanest band: the windows within 3% of the cheapest on the curve,
+    // the share tune counts as costing the same. Timed, the advice keeps a
+    // window that waits no longer than now, so a window the reader picked
+    // past the band (yapechan on Discord: a larger one) comes back as the
+    // advice and isn't the leanest; it says so, names the band, and offers
+    // the band's largest window, the one of them that compacts least
+    const curve = (a.compact && a.compact.curve) || [];
+    const fewest = curve.length ? Math.min(...curve.map((p) => p.cost)) : 0;
+    const band = curve.filter((p) => p.cost <= fewest * 1.03);
+    const lean = same && timed && band.length && r.cost > fewest * 1.03 ? band[band.length - 1] : null;
+    const bandName = lean ? (band[0] === lean ? show(lean.value) : show(band[0].value) + "–" + show(lean.value)) : "";
 
     const why = el("p", "ctx-tune-why");
     const f = r.facts || {};
@@ -1080,15 +1091,16 @@
     row.append(why);
     // a window advised is weighed by tokens alone: what a compaction loses of
     // the task isn't measured, and a smaller one compacts more often (#1854)
-    if (a.compact && !same) row.append(el("p", "ctx-tune-caveat", timed
+    if (a.compact && (!same || lean)) row.append(el("p", "ctx-tune-caveat", timed
       ? t("Tokens and waiting only: it doesn't measure how well the agent keeps the task after a compaction. The lower the window, the more often it compacts.")
       : t("A token estimate only: it doesn't measure how well the agent keeps the task after a compaction. The lower the window, the more often it compacts.")));
 
     const foot = el("div", "ctx-tune-foot");
-    const verdict = same || applied
+    const verdict = !lean && (same || applied)
       ? el("span", "ctx-chip good", "")
       : el("span", "ctx-chip info", "");
-    verdict.append(el("i"), same ? t("Already the leanest for how you work") : applied ? t("In use") : t("{pct} fewer tokens · {tokens} over the range", { pct: pct(saves), tokens: fmtK(Math.round(r.cost - r.low)) }));
+    verdict.append(el("i"), lean ? t("Not the leanest: {range} spends the fewest tokens", { range: bandName })
+      : same ? t("Already the leanest for how you work") : applied ? t("In use") : t("{pct} fewer tokens · {tokens} over the range", { pct: pct(saves), tokens: fmtK(Math.round(r.cost - r.low)) }));
     foot.append(verdict, el("span", "grow"));
     const note = el("div", "ctx-tune-src");
     title.after(note);
@@ -1123,6 +1135,16 @@
       go.disabled = tuneBusy === key;
       if (set.value && !set.ours) go.dataset.tt = t("Replaces your {value}; Undo puts it back", { value: show(set.value) });
       go.onclick = () => send("apply", best);
+      foot.append(go);
+    }
+    if (lean && !set.locked) {
+      const go = el("button", "text primary", t("Use {value}", { value: show(lean.value) }));
+      go.type = "button";
+      go.disabled = tuneBusy === key;
+      go.dataset.tt = set.value && !set.ours
+        ? t("Replaces your {value}; Undo puts it back", { value: show(set.value) })
+        : t("Fewer tokens, but more compactions to wait on");
+      go.onclick = () => send("apply", lean.value);
       foot.append(go);
     }
     // a window of the reader's own (#1860): one who would spend some tokens

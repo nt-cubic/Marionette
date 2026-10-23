@@ -23,7 +23,6 @@ var notAnAgent = map[string]string{
 	"APPDATA":               "Windows' own folder, which a sandbox sets to one of its own rather than clears",
 	"LOCALAPPDATA":          "the same",
 	"PATH":                  "the process' own",
-	"TZ":                    "the process' own",
 	"USER":                  "the process' own",
 	"XDG_CONFIG_HOME":       "magpie's own folder's, which appdir decides",
 	"XDG_DATA_HOME":         "the same",
@@ -36,6 +35,8 @@ var notAnAgent = map[string]string{
 	"MAGPIE_SITE_ORIGIN":    "a site origin magpie's Omarchy theme answers, to try the site locally",
 	"MAGPIE_PARTNERS":       "where magpie's own partner list is read from (a URL, or off), not a folder",
 	"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "Claude Code's behaviour flag, not an agent's folder",
+	"GIT_SSH":         "the user's own SSH program for git, which a skill fetched with their git keeps",
+	"GIT_SSH_COMMAND": "the same, as a command",
 }
 
 // TestFolderVarsAreListed says every variable the packages that find an

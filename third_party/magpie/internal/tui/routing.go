@@ -34,7 +34,7 @@ func (m *model) reloadGroups() {
 	m.grow = clamp(m.grow, len(m.groups))
 }
 
-var routings = []string{"", provider.Ordered, provider.Rotate, provider.LeastUsed, provider.Pace, provider.Weighted, provider.Manual}
+var routings = []string{"", provider.Ordered, provider.Rotate, provider.LeastUsed, provider.Pace, provider.Weighted, provider.FreeFirst, provider.Manual}
 
 func routingName(v string) string {
 	switch v {
@@ -48,6 +48,8 @@ func routingName(v string) string {
 		return "weekly pace"
 	case provider.Weighted:
 		return "by weight"
+	case provider.FreeFirst:
+		return "free first"
 	case provider.Manual:
 		return "manual"
 	}
@@ -199,7 +201,7 @@ func memberOptions(skip []string, self string) []agent.Option {
 		// agents see too (a provider kept for routing groups, a group's
 		// with listed=no, #1783), as the Routing view's picker offers
 		for _, e := range provider.Served() {
-			if slices.Contains(skip, e.ID) || e.ID == provider.GroupPrefix+self {
+			if slices.Contains(skip, e.ID) || slices.Contains(skip, provider.CanonicalRef(e.ID)) || e.Group != "" && e.Group == self {
 				continue
 			}
 			note := e.Name
@@ -294,6 +296,7 @@ func (m *model) openClassifier(g provider.Group) {
 const ruleHint = `use=<model>, and any of: tokens=200k · images · effort=on|low|medium|high|xhigh|max · agents=codex,claude
 intent="a quick question" (the group's classifier=<model> tells it) · compact
 time=09:00-18:00 (local; 22:00-08:00 runs past midnight) · days=mon-fri · folders=~/work/acme,~/oss · except-folders=~/old · at=<n> for its place
+use-effort=low|medium|high|xhigh|max: the reasoning the model is asked for, whatever the agent asked
 or pause=<model> time=… days=… agents=… folders=… except-folders=…: the model is left out of the group then, not even a fallback`
 
 // openRule asks for a rule: a new one, or rule i (from 0) typed again.
@@ -413,7 +416,7 @@ func (m model) updateGroup(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.openClassifier(g)
 	case "E", "F":
 		// the model's own effort and fast mode, whatever the agent asks
-		if onRule || n == 0 || strings.HasPrefix(g.Members[m.gsel], provider.GroupPrefix) {
+		if onRule || n == 0 || provider.IsGroupRef(g.Members[m.gsel]) {
 			return m, nil
 		}
 		id := g.Members[m.gsel]
@@ -556,7 +559,7 @@ func (m model) viewGroups() string {
 	}
 	nameW, idW := 0, 0
 	for _, g := range m.groups {
-		nameW, idW = max(nameW, lipgloss.Width(dash(g.Name))), max(idW, lipgloss.Width(provider.GroupPrefix+g.ID))
+		nameW, idW = max(nameW, lipgloss.Width(dash(g.Name))), max(idW, lipgloss.Width(g.Ref()))
 	}
 	visible := max(3, m.h-7)
 	start := 0
@@ -575,7 +578,7 @@ func (m model) viewGroups() string {
 		if i == m.grow {
 			marker, name = sCursor.Render("▸ "), sNameOn.Render(padRight(dash(g.Name), nameW))
 		}
-		line := pad + marker + name + "  " + sFaint.Render(padRight(provider.GroupPrefix+g.ID, idW))
+		line := pad + marker + name + "  " + sFaint.Render(padRight(g.Ref(), idW))
 		if g.Hidden {
 			b.WriteString(line + "\n")
 			continue
@@ -611,7 +614,7 @@ func (m model) viewGroup() string {
 	var b strings.Builder
 	b.WriteString(m.header("routing", g.Name))
 	b.WriteString("\n\n")
-	head := []string{provider.GroupPrefix + g.ID, groupRouting(g), staysName(g.Affinity)}
+	head := []string{g.Ref(), groupRouting(g), staysName(g.Affinity)}
 	if g.Context > 0 {
 		head = append(head, "context "+fmtTokens(g.Context))
 	}
@@ -667,6 +670,9 @@ func (m model) viewGroup() string {
 		arrow := " → "
 		if r.Pause {
 			arrow = " → pause "
+		}
+		if r.UseEffort != "" {
+			use += sMuted.Render(" at ") + sText.Render(r.UseEffort)
 		}
 		b.WriteString(pad + marker + sFaint.Render(fmt.Sprintf("%d  ", i+1)) + sMuted.Render(strings.Join(r.Conditions(), " · ")+arrow) + use + "\n")
 	}

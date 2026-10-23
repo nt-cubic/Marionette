@@ -251,3 +251,29 @@ func TestPluginPageWebGuard(t *testing.T) {
 		t.Errorf("/api without the cookie: %d", w.Code)
 	}
 }
+
+// A page's actions (magpie.actions) come with it to the window, one that
+// names no title by the page's own in each language; a plugin switched
+// off adds no item to any menu.
+func TestPluginPageActions(t *testing.T) {
+	on, off := pagePlugins(t)
+	for _, dir := range []string{on, off} {
+		pkg := `{"name":"magpie-usage-glance","magpie":{"page":{"title":"Usage glance","titles":{"zh":"用量速览"},"file":"page/index.html"},
+			"actions":[{"id":"check","menu":"provider","title":"Check balance","titles":{"ja":"残高を確認"}},{"id":"logs","menu":"agent"}]}}`
+		if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(pkg), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var pages []pluginPage
+	w := do(pageMux(), httptest.NewRequest("GET", "/api/plugin-pages", nil))
+	if err := json.Unmarshal(w.Body.Bytes(), &pages); err != nil || len(pages) != 1 {
+		t.Fatalf("pages: %s %v", w.Body, err)
+	}
+	a := pages[0].Actions
+	if len(a) != 2 || a[0].ID != "check" || a[0].Menu != "provider" || a[0].Title != "Check balance" || a[0].Titles["ja"] != "残高を確認" {
+		t.Fatalf("actions %+v", a)
+	}
+	if a[1].ID != "logs" || a[1].Menu != "agent" || a[1].Title != "Usage glance" || a[1].Titles["zh"] != "用量速览" {
+		t.Errorf("an action with no title: %+v, want the page's", a[1])
+	}
+}

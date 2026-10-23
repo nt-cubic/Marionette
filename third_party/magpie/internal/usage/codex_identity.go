@@ -329,7 +329,7 @@ var effortBuilt func()
 // CodexModelEffort reports each Codex thread's own priced ledger consumption.
 func CodexModelEffort(p Period) map[string][]sessions.ModelEffort {
 	if LogCalls != nil { // synthetic logs carry no state to key on
-		return codexModelEffort(LedgerOf(p, Filter{}).Rows)
+		return codexModelEffort(codexEffortRows(p, Clock(), LogCalls))
 	}
 	now := Clock()
 	st := readRequestState(now)
@@ -378,8 +378,69 @@ func CodexModelEffort(p Period) map[string][]sessions.ModelEffort {
 	// Only Codex's own calls carry a Codex thread: a gateway call is told
 	// its thread by the Codex call that has its response id, so the other
 	// agents' session files are not read for this.
-	value = codexModelEffort(ledgerOfAt(p, Filter{}, now, codexCalls).Rows)
+	value = codexModelEffort(codexEffortRows(p, now, codexCalls))
 	return cloneEffort(value)
+}
+
+// codexEffortRows are the rows of ledgerOfAt(p, Filter{}, now, reader) that
+// carry a Codex thread, in the same order, without the rest of the ledger.
+// A gateway call is told its thread only by the session file's call it is
+// paired with, and a session file's call is matched (and so not a row of
+// its own) only by a gateway call with its request id, its session or its
+// response id: only those gateway calls are kept from the log, each read
+// and let go as the log is visited. Over ~720k gateway calls a build held
+// every one of them three times over (a record, a packed row and a priced
+// row) at the start's peak (#2776).
+func codexEffortRows(p Period, now time.Time, reader func(time.Time) []sessions.Call) []Row {
+	since := p.Since(now)
+	gatewaySince := since
+	if !since.IsZero() {
+		gatewaySince = since.Add(-24 * time.Hour)
+	}
+	logs := reader(since)
+	if len(logs) == 0 {
+		return nil
+	}
+	recs := matchingRecords(gatewaySince, logs)
+	matched, pairs, actors, compactions := gatewayMatchesDetails(recs, logs)
+	// only a gateway call paired with a session file's call has a thread
+	paired := make([]Record, 0, len(pairs))
+	byRecord := make(map[int]int, len(pairs))
+	for i, r := range recs {
+		if call, ok := pairs[i]; ok {
+			byRecord[len(paired)] = call
+			paired = append(paired, r)
+		}
+	}
+	rows, _, _, _ := ledgerMatched(since, p.Until(now), Filter{}, paired, logs, nil, matched, byRecord, actors, compactions)
+	return slices.DeleteFunc(rows, func(r Row) bool { return r.codexActor == "" })
+}
+
+// matchingRecords are the gateway's calls from since on that can be matched
+// to one of logs, in the log's order: the ones with a response id, a request
+// id or a session one of them has (an agy call by its agent: agy names no
+// session). Any other gateway call leaves gatewayMatchesDetails' answer for
+// logs as it is.
+func matchingRecords(since time.Time, logs []sessions.Call) []Record {
+	responses, requests, sessionIDs := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	agy := false
+	for _, c := range logs {
+		responses[c.ResponseID] = true
+		requests[c.RequestID] = true
+		sessionIDs[c.Session] = true
+		agy = agy || c.Agent == "agy"
+	}
+	delete(responses, "")
+	delete(requests, "")
+	delete(sessionIDs, "")
+	var out []Record
+	Visit(since, func(r Record) {
+		if responses[r.ResponseID] || requests[r.RequestID] || sessionIDs[r.NativeSession] || sessionIDs[r.Session] ||
+			agy && ReportedAs(r.Agent) == "agy" {
+			out = append(out, r)
+		}
+	})
+	return out
 }
 
 func codexCalls(since time.Time) []sessions.Call { return sessions.AgentCalls(since, "codex") }

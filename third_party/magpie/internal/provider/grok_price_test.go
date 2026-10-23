@@ -119,7 +119,7 @@ func TestCursorGrokFastPrice(t *testing.T) {
 	}
 }
 
-// A window the id names without a k (grokWindowLabel writes a window that
+// A window the id names without a k (the grok plugin writes a window that
 // no multiple of 1000 is as bare digits) is priced as its model, as one
 // spelled with a k is.
 func TestGrokWindowWithoutKListPrice(t *testing.T) {

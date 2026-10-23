@@ -1,17 +1,19 @@
 package provider
 
-// PLUGIN-SERVED (see AGENTS.md): Devin ("devin") is a deprecated built-in
-// subscription served by its plugin, @magpie-community/opencode-devin-auth,
-// once moved onto it (provider.Moved; the default for a new sign-in). A
-// moved one's sign-ins, models, requests and usage are all the plugin's,
-// never this code's (only the move, in migrate*.go, still reads its
-// accounts). A fix here alone doesn't reach those users; fix the plugin
-// (github.com/magpie-community/plugins, packages/devin) and raise the
-// mover's min in internal/provider/migrate_side.go.
+// PLUGIN-SERVED (see AGENTS.md): Devin ("devin") is a retired built-in
+// subscription, served by its plugin alone,
+// @magpie-community/opencode-devin-auth (provider.BuiltinRetired). Its
+// sign-in, requests and usage are the plugin's; what is left here reads
+// the accounts signed in to the built-in for the move onto the plugin
+// (migrate_side.go), installs and runs the Devin CLI the plugin and the
+// devin agent use, and shapes the models listed under "devin" (families,
+// variants, contexts, images). A fix belongs in the plugin
+// (github.com/magpie-community/plugins, packages/devin), with the mover's
+// min raised in internal/provider/migrate_side.go.
 
 // Several Devin subscriptions. The devin CLI keeps one account, in its
-// credentials.toml; magpie signs the CLI in when it has none, and reads it
-// after. Each further account gets a home of magpie's own, laid out as the
+// credentials.toml. Each further account the built-in signed in got a home
+// of magpie's own, laid out as the
 // CLI's data folder, so the CLI itself answers for it (`devin auth status`
 // and `devin models list` run with that home as their data folder) and the
 // CLI's own sign-in is never touched. logins.json names those homes; the
@@ -20,7 +22,6 @@ package provider
 
 import (
 	"context"
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -109,70 +110,8 @@ func devinLogins() []devinLogin {
 	return out
 }
 
-func devinSide() []sideLogin {
-	var out []sideLogin
-	for _, d := range devinLogins() {
-		out = append(out, sideLogin{Login: d.Login})
-	}
-	return out
-}
-
-// devinLoginList is the Devin accounts as Logins lists them.
-func devinLoginList() []Login { return loginsOf(devinSide()) }
-
-// switchDevinLogin puts a Devin account first. The CLI's own sign-in stays
-// as it is: magpie only changes which account its gateway uses first.
-func switchDevinLogin(user string) error { return switchSideLogin("devin", user, devinSide()) }
-
-func setDevinLoginOn(user string, on bool) error {
-	return setSideLoginOn("devin", user, on, devinSide())
-}
-
-// forgetDevinLogin drops an account magpie signed in, with its home. The
-// CLI's own is only hidden (forgetSideLogin).
-func forgetDevinLogin(user string) error {
-	return forgetSideLogin("devin", user, devinSide(),
-		func(l savedLogin) { removeDevinHome(l.Home) })
-}
-
 // newDevinHome makes the home a further Devin account is signed in in.
 func newDevinHome() (string, error) {
 	home := filepath.Join(devinAccountsDir(), strings.ToLower(strings.NewReplacer("-", "", "_", "").Replace(randomToken(9))))
 	return home, os.MkdirAll(filepath.Join(home, "devin"), 0o700)
-}
-
-// removeDevinHome deletes a home magpie made, and nothing else.
-func removeDevinHome(home string) {
-	if rel, err := filepath.Rel(devinAccountsDir(), home); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
-		_ = os.RemoveAll(home)
-	}
-}
-
-// addDevinLogin keeps the account just signed in in home, in use beside
-// the others, once the CLI says whose it is. Signed in again, an account
-// keeps the newer home.
-func addDevinLogin(ctx context.Context, home string) (user, plan string, err error) {
-	user, plan, ok := askDevinIdentityAt(ctx, home)
-	if !ok || user == "" {
-		return "", "", errors.New("signed in, but `devin auth status` doesn't show the account; run it in a terminal to see why")
-	}
-	own, _, ownOK := devinIdentity()
-	if !ownOK {
-		own = ""
-	}
-	return user, plan, keepLogin(ctx, func() error {
-		return addSideLogin(savedLogin{Agent: "devin", User: user, Plan: plan, Home: home}, own,
-			func(l savedLogin) { removeDevinHome(l.Home) })
-	})
-}
-
-// devinAlsoOn is the Devin accounts in use behind the first.
-func devinAlsoOn() []Provider {
-	var out []Provider
-	for _, d := range devinLogins() {
-		if !d.Active && d.On {
-			out = append(out, devinProvider(d))
-		}
-	}
-	return out
 }

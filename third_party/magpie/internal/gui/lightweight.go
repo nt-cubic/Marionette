@@ -200,7 +200,7 @@ func (h *host) lighten() {
 	<-h.ready
 	var ticks [2]int // the main window's, the panel's
 	for range time.Tick(lightEvery) {
-		on := settings.Load().Lightweight
+		on := settings.Load().LightweightOn()
 		var let []*application.WebviewWindow
 		h.winMu.Lock()
 		application.InvokeSync(func() {

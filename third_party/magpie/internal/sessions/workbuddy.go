@@ -40,6 +40,38 @@ func WorkBuddyDir() string {
 // a session's own <id>.jsonl, and a subagent's under <id>/subagents/.
 func workbuddyFiles() []file { return buddyFiles("workbuddy", WorkBuddyDir()) }
 
+// codebuddyFiles are the same under CodeBuddy Code's projects/: the CLI keeps
+// them as its desktop sibling does, one agent's folder apart (#1779). None
+// when its folder is WorkBuddy's, which workbuddyFiles reads already.
+func codebuddyFiles() []file {
+	if codebuddyInWorkBuddy() {
+		return nil
+	}
+	return buddyFiles("codebuddy", CodeBuddyDir())
+}
+
+// codebuddyInWorkBuddy is whether CodeBuddy Code's folder is WorkBuddy's
+// ($CODEBUDDY_CONFIG_DIR set to ~/.workbuddy, or a link to it). Its sessions
+// are then read once, as WorkBuddy's: read as both, each was listed and
+// counted twice, and one refresh took each path twice (#2932).
+func codebuddyInWorkBuddy() bool { return sameFolder(CodeBuddyDir(), WorkBuddyDir()) }
+
+// sameFolder is whether a and b are one folder on disk, however each is
+// spelled (a link, a letter's case where the disk ignores it). A folder
+// that can't be read is no other.
+func sameFolder(a, b string) bool {
+	x, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	y, err := os.Stat(b)
+	return err == nil && os.SameFile(x, y)
+}
+
+// isBuddy is whether agent keeps its sessions the way WorkBuddy does: its
+// own, or CodeBuddy Code's.
+func isBuddy(agent string) bool { return agent == "workbuddy" || agent == "codebuddy" }
+
 // buddyFiles are the sessions under projects/ in dir, as agent's: WorkBuddy's,
 // or CodeBuddy Code's, which keeps them the same way.
 func buddyFiles(agent, dir string) []file {

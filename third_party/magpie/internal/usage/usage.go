@@ -999,18 +999,24 @@ type Via struct {
 
 // Vias is what the gateway sent each session's calls to since a time, by
 // agent id and the session's id ("codex|<id>"), the most calls first.
-func Vias(since time.Time) map[string][]Via {
+func Vias(since time.Time) ViaIndex {
 	return cachedVias(since)
 }
 
-func buildVias(snapshot *logSnapshot, since time.Time) map[string][]Via {
+func buildVias(snapshot *logSnapshot, since time.Time) *viaLists {
 	out := map[string][]Via{}
+	first := map[string]time.Time{}
+	keep := keptStrings{}
 	snapshot.visit(since, func(r Record) {
 		if r.IsRejected() || r.IsReported() || r.Session == "" || r.Model == "" {
 			return
 		}
+		r.Provider, r.Model, r.Effort = keep.of(r.Provider), keep.of(r.Model), keep.of(r.Effort)
 		k := ReportedAs(r.Agent) + "|" + r.Session
 		vs := out[k]
+		if t, seen := first[k]; !seen || r.Time.Before(t) {
+			first[k] = r.Time
+		}
 		i := slices.IndexFunc(vs, func(v Via) bool { return v.Provider == r.Provider && v.Model == r.Model && v.Effort == r.Effort })
 		if i < 0 {
 			vs, i = append(vs, Via{Provider: r.Provider, Model: r.Model, Effort: r.Effort}), len(vs)
@@ -1029,7 +1035,7 @@ func buildVias(snapshot *logSnapshot, since time.Time) map[string][]Via {
 	for _, vs := range out {
 		sort.SliceStable(vs, func(i, j int) bool { return vs[i].Calls > vs[j].Calls })
 	}
-	return out
+	return &viaLists{m: out, first: first}
 }
 
 // Saw notes a request from an agent arriving now.

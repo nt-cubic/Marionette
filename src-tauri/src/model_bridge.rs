@@ -207,6 +207,9 @@ pub fn preset_for_opencode_provider(provider_id: &str) -> Option<&'static Provid
 /// 引擎注册用的归一化：opencode 扫描出的 (provider-id, key) → (preset-id, key)。
 /// 未映射的 provider（anthropic / openai / zai …）过滤掉 —— 它们在
 /// `magpie_provider_for_preset` 里同样无门（registry 计划只吃 preset id）。
+/// 不定序：同 preset 多把 key 时谁先谁后由凭据源层决定（opencode.db 的活
+/// 钥匙排在 auth.json 旧条目前，见 credentials::merge_opencode_key_sources），
+/// registration_plan 先到先得。
 pub fn reference_keys_as_presets(keys: Vec<(String, String)>) -> Vec<(String, String)> {
     keys.into_iter()
         .filter_map(|(provider, key)| {
@@ -240,6 +243,11 @@ pub enum BridgeAgent {
     /// providers.marionette（官方兼容端点机制，见 pi docs/models.md），
     /// 不走 SpawnInjection。
     Pi,
+    /// ZCode（zcode-acp-server 桥，2026-10-23 接入）：注入通道 =
+    /// `~/.zcode/v2/provider_config.json` 个人 provider 层的托管 provider
+    /// 「marionette」（openai-chat-completions → 引擎 /v1，本模块
+    /// refresh_zcode_marionette_route），不走 SpawnInjection。
+    Zcode,
     /// M1 未接线的其余 agent：没有注入通道，列表为空。
     Other,
 }
@@ -254,6 +262,7 @@ pub fn classify_agent(agent_id: &str) -> BridgeAgent {
         "opencode" => BridgeAgent::Opencode,
         "deepseek" | "deepseek-acp" => BridgeAgent::Deepseek,
         "pi" | "pi-acp" => BridgeAgent::Pi,
+        "zcode" | "zcode-acp" => BridgeAgent::Zcode,
         _ => BridgeAgent::Other,
     }
 }
@@ -676,6 +685,272 @@ pub fn refresh_pi_marionette_route() -> Result<bool, String> {
     }
 }
 
+// ─── zcode 原生跨用（2026-10-23）───────────────────────────────────────────
+
+/// `~/.zcode/v2/provider_config.json` — zcode 的**个人** provider 层（桌面版
+/// 与 CLI 共读；适配器把它经 `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE` 显式递给
+/// 后端）。托管写这层而不是账号层 `v2/config.json`（桌面版自己重写账号层，
+/// 托管条会被冲掉；适配器的 env 注入也只扫账号层 → 不会劫持默认 provider）。
+fn zcode_provider_config_path() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
+    Some(
+        std::path::PathBuf::from(home)
+            .join(".zcode")
+            .join("v2")
+            .join("provider_config.json"),
+    )
+}
+
+/// 托管 provider 规则（providerRules 里 providerId = marionette 的一条）。
+/// api 用 openai-chat-completions（zcode 官方模板同款协议，zai-standard-api /
+/// opencode-go-chat 都在用，引擎 /v1 正好兼容）；apiKey 是引擎常量令牌（非
+/// 用户密钥，与 dsh 桥写 .credentials.yaml refs 同口径，值就是 `magpie`）。
+/// 字段形状对齐本机实测的用户自建 provider 规则（group/access/api/
+/// personalModelIds/modelOrder）。
+fn zcode_marionette_provider_rule(port: u16, models: &[CatalogModelRow]) -> serde_json::Value {
+    let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+    serde_json::json!({
+        "providerId": crate::dsh_bridge::MARIONETTE_PROVIDER,
+        "providerName": "Marionette Engine",
+        "enabled": true,
+        "config": {
+            "group": "standard-personal",
+            "access": {
+                "type": "api-key",
+                "apiKey": crate::engine::ENGINE_TOKEN,
+            },
+            "api": {
+                "type": "openai-chat-completions",
+                "baseUrl": format!("http://127.0.0.1:{port}/v1"),
+            },
+            "personalModelIds": ids,
+            "modelOrder": ids,
+        },
+    })
+}
+
+/// 托管 providerModelRules：个人层的每模型元数据（显式 providerId+modelId，
+/// 不是内置表那种 regex modelRules——那个键名会被个人层 zod 整层拒绝，
+/// 实测 2026-10-23：`Unrecognized key: "modelRules"` → 整层降级空配置）。
+/// 不写的话 zcode 对陌生模型落内置 `.*` 兜底（200K 窗口、不收图）——1M
+/// 模型会被显示错、附图被换成占位文本（与 DSH 的 256K/无图教训同源，见
+/// AGENTS.md DSH 节）。形状对齐 zcode-acp-server dist/config/options.js 的
+/// loadPersonalModels 读取面 + 本机用户层实测。
+fn zcode_marionette_model_rules(models: &[CatalogModelRow]) -> Vec<serde_json::Value> {
+    models
+        .iter()
+        .map(|m| {
+            let mut config = serde_json::json!({
+                "enabled": true,
+                "properties": {
+                    "contextWindow": m.context_window,
+                    "inputFormat": {
+                        "supportsText": true,
+                        "supportsImage": m.images,
+                        "supportsVideo": false,
+                        "supportsAudio": false,
+                        "supportsPdf": false,
+                    },
+                    "outputFormat": { "supportsText": true },
+                    "supportsToolCall": true,
+                },
+            });
+            if m.max_output > 0 {
+                config["optionSpecs"] = serde_json::json!({
+                    "maxOutputTokens": { "max": m.max_output }
+                });
+            }
+            serde_json::json!({
+                "providerId": crate::dsh_bridge::MARIONETTE_PROVIDER,
+                "modelId": m.id,
+                "config": config,
+            })
+        })
+        .collect()
+}
+
+/// 纯合并体（测试直接喂夹具）：只动三处托管位 —— providerOrder 里的
+/// marionette（**追加**到尾部，不前插：providerOrder 影响默认选择顺序，
+/// 不能动用户的默认模型）、providerRules 里 providerId=marionette 的一条、
+/// modelConfigRules.providerModelRules 里 providerId=marionette 的条目（按
+/// providerId 识别整体替换，引擎目录换血不留旧条）；用户其余内容（含
+/// manualProviderModelRules 等未知键）原样保留。原文不是合法 JSON object
+/// 就整体替换（该文件无注释语法，serde_json 往返安全）。返回 (文本, 是否
+/// 语义变更)。
+fn zcode_merge_provider_config(
+    existing: Option<&str>,
+    port: u16,
+    models: &[CatalogModelRow],
+) -> (String, bool) {
+    use serde_json::Value;
+    let managed = crate::dsh_bridge::MARIONETTE_PROVIDER;
+    let parsed = existing.and_then(|text| serde_json::from_str::<Value>(text).ok());
+    let mut root = parsed
+        .as_ref()
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    let before = serde_json::to_value(&root).ok();
+
+    root.insert("schemaVersion".to_string(), serde_json::json!(1));
+    let mut config = root
+        .remove("config")
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+
+    let mut order: Vec<Value> = config
+        .remove("providerOrder")
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
+    order.retain(|value| value.as_str() != Some(managed));
+    order.push(Value::String(managed.to_string()));
+    config.insert("providerOrder".to_string(), Value::Array(order));
+
+    let mut provider_rules_root = config
+        .remove("providerConfigRules")
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    let mut provider_rules: Vec<Value> = provider_rules_root
+        .remove("providerRules")
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
+    provider_rules.retain(|rule| {
+        rule.get("providerId").and_then(Value::as_str) != Some(managed)
+    });
+    provider_rules.push(zcode_marionette_provider_rule(port, models));
+    provider_rules_root.insert(
+        "providerRules".to_string(),
+        Value::Array(provider_rules),
+    );
+    config.insert(
+        "providerConfigRules".to_string(),
+        Value::Object(provider_rules_root),
+    );
+
+    let mut model_rules_root = config
+        .remove("modelConfigRules")
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    let mut provider_model_rules: Vec<Value> = model_rules_root
+        .remove("providerModelRules")
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
+    provider_model_rules.retain(|rule| {
+        rule.get("providerId").and_then(Value::as_str) != Some(managed)
+    });
+    provider_model_rules.extend(zcode_marionette_model_rules(models));
+    model_rules_root.insert(
+        "providerModelRules".to_string(),
+        Value::Array(provider_model_rules),
+    );
+    config.insert(
+        "modelConfigRules".to_string(),
+        Value::Object(model_rules_root),
+    );
+
+    root.insert("config".to_string(), Value::Object(config));
+    let changed = before != serde_json::to_value(&root).ok();
+    let text = serde_json::to_string_pretty(&Value::Object(root)).unwrap_or_default();
+    (format!("{text}\n"), changed)
+}
+
+/// 移除托管段（引擎停用时调用，zcode 的模型菜单不留连不上的死条目）。
+/// 返回 (是否动了文件)；文件不存在或本来就没有托管段 → false（零写入）。
+fn zcode_remove_marionette_at(path: &Path) -> Result<bool, String> {
+    use serde_json::Value;
+    let original = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("读取 provider_config.json 失败: {error}")),
+    };
+    if original.trim().is_empty() {
+        return Ok(false);
+    }
+    let mut root = serde_json::from_str::<Value>(&original)
+        .map_err(|e| format!("provider_config.json 解析失败（{e}）— 拒绝写入半截"))?;
+    let Some(root_obj) = root.as_object_mut() else {
+        return Err("provider_config.json 不是 JSON object — 拒绝写入".to_string());
+    };
+    let managed = crate::dsh_bridge::MARIONETTE_PROVIDER;
+    let mut touched = false;
+
+    if let Some(config) = root_obj.get_mut("config").and_then(Value::as_object_mut) {
+        if let Some(order) = config.get_mut("providerOrder").and_then(Value::as_array_mut) {
+            let before = order.len();
+            order.retain(|value| value.as_str() != Some(managed));
+            if order.len() != before {
+                touched = true;
+            }
+        }
+        if let Some(rules) = config
+            .get_mut("providerConfigRules")
+            .and_then(Value::as_object_mut)
+            .and_then(|rules| rules.get_mut("providerRules"))
+            .and_then(Value::as_array_mut)
+        {
+            let before = rules.len();
+            rules.retain(|rule| {
+                rule.get("providerId").and_then(Value::as_str) != Some(managed)
+            });
+            if rules.len() != before {
+                touched = true;
+            }
+        }
+        if let Some(rules) = config
+            .get_mut("modelConfigRules")
+            .and_then(Value::as_object_mut)
+            .and_then(|rules| rules.get_mut("providerModelRules"))
+            .and_then(Value::as_array_mut)
+        {
+            let before = rules.len();
+            rules.retain(|rule| {
+                rule.get("providerId").and_then(Value::as_str) != Some(managed)
+            });
+            if rules.len() != before {
+                touched = true;
+            }
+        }
+    }
+    if !touched {
+        return Ok(false);
+    }
+    let text = serde_json::to_string_pretty(&root).unwrap_or_default();
+    write_text_atomic(path, &format!("{text}\n"))?;
+    Ok(true)
+}
+
+/// spawn 时刻入口（acp.rs 的 zcode 分支），语义与 dsh/pi 桥对齐：
+/// Running 且目录非空 → 写/刷（幂等）→ Ok(true)；Absent/Failed → 移除托管段
+/// → Ok(false)；Starting/Downloading → 不动。模型经 zcode 原生目录广告，id
+/// 形如 `marionette\<engineId>`（适配器 configOptions 的 `provider\model`
+/// 拼法，前端钉原生偏好用这个前缀）。
+pub fn refresh_zcode_marionette_route() -> Result<bool, String> {
+    let path = zcode_provider_config_path().ok_or_else(|| "无法定位用户目录".to_string())?;
+    match crate::engine::status() {
+        crate::engine::EngineStatus::Running { port, .. } => {
+            let models = crate::engine::catalog_direct_entries();
+            if models.is_empty() {
+                return Ok(false);
+            }
+            let existing = match fs::read_to_string(&path) {
+                Ok(text) => Some(text),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(format!("读取 provider_config.json 失败: {error}")),
+            };
+            let (next, changed) = zcode_merge_provider_config(existing.as_deref(), port, &models);
+            if changed {
+                write_text_atomic(&path, &next)?;
+            }
+            Ok(true)
+        }
+        crate::engine::EngineStatus::Starting
+        | crate::engine::EngineStatus::Downloading { .. } => Ok(false),
+        crate::engine::EngineStatus::Absent | crate::engine::EngineStatus::Failed { .. } => {
+            zcode_remove_marionette_at(&path)?;
+            Ok(false)
+        }
+    }
+}
+
 fn list_models_at(
     credentials_path: &Path,
     opencode_scan: &AgentScan,
@@ -732,7 +1007,12 @@ fn list_models_at(
         // `~/.pi/agent/models.json` providers.marionette。原生 id 是
         // `marionette/<engineId>`（pi-acp 按 provider/id 拼、首个 `/` 切分），
         // 与 grok/opencode 的原生前缀同形。
-        BridgeAgent::Opencode | BridgeAgent::Deepseek | BridgeAgent::Pi => {
+        //
+        // zcode（2026-10-23）：同一引擎源姿势，注入面换成本模块的
+        // `~/.zcode/v2/provider_config.json` 托管 provider。原生 id 是
+        // `marionette\<engineId>`（适配器 configOptions 的 `provider\model`
+        // 拼法，反斜杠分隔）。
+        BridgeAgent::Opencode | BridgeAgent::Deepseek | BridgeAgent::Pi | BridgeAgent::Zcode => {
             let mut models = Vec::new();
             let mut truncated = false;
             let mut sources = Vec::new();
@@ -767,7 +1047,7 @@ fn list_models_at(
             models: Vec::new(),
             sources: Vec::new(),
             note: Some(
-                "该 agent 的模型共享还没接（当前支持 Claude Code、Grok、Codex、OpenCode、DeepSeek 与 Pi）"
+                "该 agent 的模型共享还没接（当前支持 Claude Code、Grok、Codex、OpenCode、DeepSeek、Pi 与 ZCode）"
                     .to_string(),
             ),
         },
@@ -2873,6 +3153,14 @@ official_marketplace_auto_installed = true\n";
         assert!(pi.models.is_empty());
         assert_eq!(pi.note.as_deref(), opencode.note.as_deref());
 
+        // zcode（2026-10-23）：同一引擎源通道（注入面 = provider_config.json
+        // 托管 provider，见 refresh_zcode_marionette_route）。
+        assert_eq!(classify_agent("zcode"), BridgeAgent::Zcode);
+        assert_eq!(classify_agent("zcode-acp"), BridgeAgent::Zcode);
+        let zcode = list_models_at(&credentials, &scan, "zcode");
+        assert!(zcode.models.is_empty());
+        assert_eq!(zcode.note.as_deref(), opencode.note.as_deref());
+
         // 其它 agent：没有注入通道，空 + 说明。
         let other = list_models_at(&credentials, &scan, "gemini");
         assert!(other.models.is_empty());
@@ -3526,6 +3814,218 @@ official_marketplace_auto_installed = true\n";
         fs::remove_dir_all(&dir).ok();
     }
 
+    // ─── zcode provider_config.json 托管写入器 ─────────────────────────────
+
+    /// 用户已有自建 provider + 自定义 modelRule：只动三处托管位，别家原样；
+    /// marionette **追加**到 providerOrder 尾部（不前插，不动默认模型）。
+    #[test]
+    fn zcode_merge_preserves_user_layers() {
+        let existing = r#"{
+  "schemaVersion": 1,
+  "config": {
+    "providerOrder": ["58062756-dead-beef", "bigmodel-api"],
+    "providerConfigRules": {
+      "providerRules": [
+        {
+          "providerId": "58062756-dead-beef",
+          "providerName": "Deepseek",
+          "enabled": false,
+          "config": {
+            "group": "standard-personal",
+            "access": { "type": "api-key", "apiKey": "sk-user" },
+            "api": { "type": "anthropic-messages", "baseUrl": "https://api.deepseek.com/anthropic" },
+            "personalModelIds": ["deepseek-v4-pro"],
+            "modelOrder": ["deepseek-v4-pro"]
+          }
+        }
+      ]
+    },
+    "modelConfigRules": {
+      "providerModelRules": [
+        { "providerId": "58062756-dead-beef", "modelId": "deepseek-v4-pro", "config": { "properties": { "contextWindow": 128000 } } }
+      ]
+    }
+  }
+}"#;
+        let models = vec![
+            CatalogModelRow {
+                id: "glm-5.3".to_string(),
+                context_window: 1_000_000,
+                max_output: 65536,
+                images: true,
+            },
+            CatalogModelRow {
+                id: "grok-4.7".to_string(),
+                context_window: 256_000,
+                max_output: 0,
+                images: false,
+            },
+        ];
+        let (merged, changed) = zcode_merge_provider_config(Some(existing), 3425, &models);
+        assert!(changed);
+        let parsed: serde_json::Value = serde_json::from_str(&merged).unwrap();
+
+        // providerOrder：用户顺序在前，marionette 追加在尾。
+        let order: Vec<&str> = parsed["config"]["providerOrder"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(order, vec!["58062756-dead-beef", "bigmodel-api", "marionette"]);
+
+        // 用户 provider 规则原样 + 托管规则在列、字段形状对齐官方模板。
+        let rules = parsed["config"]["providerConfigRules"]["providerRules"]
+            .as_array()
+            .unwrap();
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0]["providerId"], "58062756-dead-beef");
+        assert_eq!(rules[0]["config"]["access"]["apiKey"], "sk-user");
+        let managed = &rules[1];
+        assert_eq!(managed["providerId"], "marionette");
+        assert_eq!(managed["providerName"], "Marionette Engine");
+        assert_eq!(managed["enabled"], true);
+        assert_eq!(managed["config"]["api"]["type"], "openai-chat-completions");
+        assert_eq!(
+            managed["config"]["api"]["baseUrl"],
+            "http://127.0.0.1:3425/v1"
+        );
+        assert_eq!(
+            managed["config"]["access"]["apiKey"],
+            crate::engine::ENGINE_TOKEN
+        );
+        assert_eq!(managed["config"]["personalModelIds"][0], "glm-5.3");
+
+        // 用户 modelRule 保留；托管条目是显式 providerId+modelId（个人层
+        // schema 不收内置表那种 regex modelRules——整层会被 zod 拒掉）。
+        let model_rules = parsed["config"]["modelConfigRules"]["providerModelRules"]
+            .as_array()
+            .unwrap();
+        let managed_rules: Vec<&serde_json::Value> = model_rules
+            .iter()
+            .filter(|r| r["providerId"] == "marionette")
+            .collect();
+        assert_eq!(managed_rules.len(), 2);
+        assert_eq!(
+            model_rules
+                .iter()
+                .filter(|r| r["providerId"] != "marionette")
+                .count(),
+            1,
+            "user's own providerModelRule must survive"
+        );
+        // 窗口/图片按目录行写；max_output=0 → 不写 optionSpecs。
+        let glm_rule = managed_rules
+            .iter()
+            .find(|r| r["modelId"] == "glm-5.3")
+            .unwrap();
+        assert_eq!(glm_rule["config"]["properties"]["contextWindow"], 1_000_000);
+        assert_eq!(
+            glm_rule["config"]["properties"]["inputFormat"]["supportsImage"],
+            true
+        );
+        assert_eq!(glm_rule["config"]["optionSpecs"]["maxOutputTokens"]["max"], 65536);
+        let grok_rule = managed_rules
+            .iter()
+            .find(|r| r["modelId"] == "grok-4.7")
+            .unwrap();
+        assert!(grok_rule["config"].get("optionSpecs").is_none());
+
+        // 语义幂等：同参数再合 → 不再标记变更。
+        let (_, again) = zcode_merge_provider_config(Some(&merged), 3425, &models);
+        assert!(!again);
+        // 引擎目录换血：旧托管条目清掉，用户条目不动。
+        let models2 = vec![CatalogModelRow {
+            id: "glm-5.3".to_string(),
+            context_window: 1_000_000,
+            max_output: 65536,
+            images: true,
+        }];
+        let (next, roster_changed) = zcode_merge_provider_config(Some(&merged), 3425, &models2);
+        assert!(roster_changed);
+        let parsed2: serde_json::Value = serde_json::from_str(&next).unwrap();
+        let rules2 = parsed2["config"]["modelConfigRules"]["providerModelRules"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            rules2
+                .iter()
+                .filter(|r| r["providerId"] == "marionette" && r["modelId"] == "grok-4.7")
+                .count(),
+            0,
+            "stale managed model entry must be swept"
+        );
+        assert_eq!(
+            rules2
+                .iter()
+                .filter(|r| r["providerId"] != "marionette")
+                .count(),
+            1
+        );
+    }
+
+    /// 移除：三处托管位全清、用户内容保真；没文件/没托管段 → no-op。
+    #[test]
+    fn zcode_remove_strips_managed_bits() {
+        let dir = temp_dir("zcode_remove");
+        let path = dir.join("provider_config.json");
+        // 没有文件 → no-op。
+        assert!(!zcode_remove_marionette_at(&path).unwrap());
+
+        let models = vec![CatalogModelRow {
+            id: "glm-5.3".to_string(),
+            context_window: 200_000,
+            max_output: 0,
+            images: false,
+        }];
+        let user_fixture = r#"{
+  "schemaVersion": 1,
+  "config": {
+    "providerOrder": ["user-provider"],
+    "providerConfigRules": {
+      "providerRules": [
+        { "providerId": "user-provider", "providerName": "User", "enabled": true, "config": {} }
+      ]
+    },
+    "modelConfigRules": {
+      "providerModelRules": [
+        { "providerId": "user-provider", "modelId": "user-model", "config": {} }
+      ]
+    }
+  }
+}"#;
+        // 先把用户 fixture 合成托管后的形态（引擎在跑的写入路径）。
+        let (merged, _) = zcode_merge_provider_config(Some(user_fixture), 3425, &models);
+        fs::write(&path, &merged).unwrap();
+        assert!(zcode_remove_marionette_at(&path).unwrap());
+        let after: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let order: Vec<&str> = after["config"]["providerOrder"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(order, vec!["user-provider"]);
+        assert_eq!(
+            after["config"]["providerConfigRules"]["providerRules"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let model_rules: Vec<&str> = after["config"]["modelConfigRules"]["providerModelRules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["modelId"].as_str().unwrap())
+            .collect();
+        assert_eq!(model_rules, vec!["user-model"]);
+        // 再删一次 → no-op。
+        assert!(!zcode_remove_marionette_at(&path).unwrap());
+        fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn opencode_provider_map_is_case_insensitive_and_covers_the_bridge() {
         for (provider, expected) in [
@@ -3573,7 +4073,9 @@ official_marketplace_auto_installed = true\n";
         }
     }
 
-    /// 引擎注册的引用归一化：原始 provider id → preset id；未映射过滤。
+    /// 引擎注册的引用归一化：原始 provider id → preset id；未映射过滤；
+    /// 保序（同 preset 多 key 的优先序由凭据源层保证，见
+    /// credentials::tests::merge_prefers_db_live_keys）。
     #[test]
     fn reference_keys_as_presets_normalizes_for_registration() {
         let out = reference_keys_as_presets(vec![

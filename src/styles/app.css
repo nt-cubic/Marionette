@@ -1417,6 +1417,126 @@ button.file-diff-card__code:hover {
   color: var(--text-faint);
 }
 
+/*
+ * End-of-turn delivery card (交付卡): accent-tinted turn closer that lists
+ * what the turn changed. File rows reuse the .change-badge glyphs from the
+ * Changed Files panel and lazily expand a workspace diff inline.
+ */
+.event-card--turn_delivery {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+  background: color-mix(in srgb, var(--accent) 4%, var(--panel-raised));
+}
+
+.event-card--turn_delivery > .event-card__summary::before {
+  color: var(--accent);
+}
+
+.event-card--turn_delivery .event-card__type {
+  color: var(--accent);
+}
+
+.turn-delivery {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 2px 22px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.turn-delivery__files {
+  display: grid;
+  gap: 2px;
+}
+
+.turn-delivery__row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto 14px;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 26px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+  font: inherit;
+}
+
+.turn-delivery__row.is-expandable {
+  cursor: pointer;
+}
+
+.turn-delivery__row.is-expandable:hover,
+.turn-delivery__row.is-expandable:focus-visible {
+  background: var(--panel-soft);
+}
+
+/* No git changeType (non-git project) — keep the row aligned with a soft dot. */
+.turn-delivery__dot {
+  justify-self: center;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+.turn-delivery__path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11.5px;
+}
+
+.turn-delivery__stats {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: baseline;
+  gap: 5px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.turn-delivery__stat--add {
+  color: var(--green, #73d391);
+}
+
+.turn-delivery__stat--del {
+  color: var(--red, #ef6c73);
+}
+
+.turn-delivery__chevron {
+  color: var(--text-faint);
+  transition: transform 120ms ease;
+}
+
+.turn-delivery__chevron.is-open {
+  transform: rotate(180deg);
+}
+
+.turn-delivery__diff {
+  margin: 0 4px 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+}
+
+.turn-delivery__diff-note {
+  padding: 6px 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.turn-delivery__tally {
+  color: var(--text-faint);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+}
+
 .project-row,
 .session-row,
 .changed-row {
@@ -8912,6 +9032,10 @@ body.is-composer-resizing .composer {
   opacity: 0.55;
 }
 
+.engine-popover {
+  width: 300px;
+}
+
 .engine-popover__status {
   margin: 2px 0 8px;
   font-family: var(--font-mono, ui-monospace, monospace);
@@ -8961,6 +9085,38 @@ body.is-composer-resizing .composer {
 .engine-popover__stop:hover {
   color: #e25555;
   border-color: color-mix(in srgb, #e25555 45%, var(--border));
+}
+
+.engine-popover__update {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.engine-popover__update-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.engine-popover__update-meta {
+  flex: 1;
+  min-width: 0;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-faint);
+}
+
+.engine-popover__update-error {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.4;
+  color: #e25555;
+  word-break: break-word;
 }
 
 .engine-popover__footer {

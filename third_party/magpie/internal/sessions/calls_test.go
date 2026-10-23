@@ -18,7 +18,7 @@ var callT0 = time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)
 // callDirs are the folders a test's calls are read from.
 type callDirs struct{ claude, codex, desktop string }
 
-func setupCalls(t *testing.T) callDirs {
+func setupCalls(t testing.TB) callDirs {
 	t.Helper()
 	dir := t.TempDir()
 	d := callDirs{filepath.Join(dir, "claude"), filepath.Join(dir, "codex"), filepath.Join(dir, "desktop")}

@@ -37,6 +37,8 @@ func CommandContext(ctx context.Context, name string, args ...string) *exec.Cmd 
 	// Output waited for it however long it took (#123) — its pipes are
 	// closed a moment after instead
 	cmd.WaitDelay = waitDelay
+	// on Windows what it started is killed with it (#2341)
+	cancelTree(cmd)
 	batch(cmd)
 	hide(cmd)
 	return cmd

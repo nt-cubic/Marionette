@@ -110,6 +110,14 @@ func TestHeldKeyToldNoAccounts(t *testing.T) {
 			if r := route(from, s, other); (i == 0) != (r != nil) {
 				t.Errorf("%s from %s: another key's session %s: %v", name, from, other, r)
 			}
+			// the whole trace (#2606), every key's routes: this computer
+			// alone, and never a held key, even from here
+			c, b := do("GET", "/v1/magpie/trace", from, s)
+			if want := i == 0 && from == "127.0.0.1:5000"; want != (c == 200) {
+				t.Errorf("%s from %s: the trace: %d %s", name, from, c, b)
+			} else if i > 0 && from == "127.0.0.1:5000" && !strings.Contains(b, provider.KeyHeldCode) {
+				t.Errorf("%s from %s: the trace refused without saying the key is held: %d %s", name, from, c, b)
+			}
 		}
 	}
 }

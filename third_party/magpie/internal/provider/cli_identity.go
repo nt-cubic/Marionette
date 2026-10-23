@@ -26,9 +26,15 @@ import (
 // signed in all the same, as no token is kept (#1278).
 type cliIdentity struct {
 	sync.Mutex
-	name       string
-	exe        func() string
-	ask        func() (user, plan string, ok bool, err error) // err: couldn't tell
+	name string
+	exe  func() string
+	ask  func() (user, plan string, ok bool, err error) // err: couldn't tell
+	// mark, when set, is a cheap fingerprint of where the CLI keeps its
+	// sign-in (a token, a file's size and time): while it reads as it did
+	// at the last answer, nobody can have signed in or out, and the CLI is
+	// asked again only after unchangedAsk
+	mark       func() string
+	markAt     string // mark when the answer served was asked; "" unknown
 	at         time.Time
 	refreshing bool
 	done       chan struct{} // closed when the ask under way has answered
@@ -130,11 +136,23 @@ func (c *cliIdentity) get() (user, plan string, ok bool) {
 			}
 			c.Lock()
 		}
-	} else if time.Since(c.at) > max(time.Minute, c.retry) {
+	} else if since := time.Since(c.at); since > max(time.Minute, c.retry) && !c.unchanged(since) {
 		c.refresh()
 	}
 	return c.user, c.plan, c.ok
 }
+
+// unchanged says the CLI's sign-in reads as it did when the answer served
+// was asked, and that was less than unchangedAsk ago. Called with c locked.
+func (c *cliIdentity) unchanged(since time.Duration) bool {
+	return c.mark != nil && c.markAt != "" && since < unchangedAsk && c.mark() == c.markAt
+}
+
+// unchangedAsk is how often a CLI whose sign-in reads the same is asked
+// anyway, for a plan changed on the vendor's side. Asked every minute,
+// cursor-agent alone, a Node program asking Cursor's servers, took ~0.5s of
+// CPU and 200 MB each time, for as long as magpie ran (#3185).
+const unchangedAsk = 30 * time.Minute
 
 // firstAsk is how long a look waits for a CLI never answered before.
 var firstAsk = 3 * time.Second
@@ -154,7 +172,13 @@ func (c *cliIdentity) refresh() chan struct{} {
 	}
 	c.refreshing, c.done = true, make(chan struct{})
 	gen, done := c.gen, c.done
+	mark := c.mark
 	go func() {
+		// read before the ask, so a sign-in during it is asked again
+		var m string
+		if mark != nil {
+			m = mark()
+		}
 		start := time.Now()
 		u, p, ok, err := c.ask()
 		slow := time.Since(start) >= slowAsk
@@ -173,77 +197,14 @@ func (c *cliIdentity) refresh() chan struct{} {
 			c.retry = 0
 		}
 		if err != nil {
-			return // what was served stays
+			c.markAt = "" // couldn't tell: asked on the next minute's look
+			return        // what was served stays
 		}
+		c.markAt = m
 		c.user, c.plan, c.ok = u, p, ok
 		c.keep()
 	}()
 	return done
-}
-
-// cliIdentities are the CLIs asked who is signed in.
-func cliIdentities() []*cliIdentity { return []*cliIdentity{cursorStatus, devinStatus} }
-
-// awaitIdentities waits, at most timeout, for each CLI being asked who is
-// signed in for the first time: waited, if one was, and unknown, if one
-// still hasn't answered. FetchNew asks for the lists of the accounts known:
-// at the start of a magpie with nothing kept from before, `cursor-agent
-// about` (which asks Cursor's servers) answered after a look's 3s, and
-// Cursor's list wasn't asked for at all (#1789).
-func awaitIdentities(timeout time.Duration) (waited, unknown bool) {
-	deadline := time.After(timeout)
-	for _, c := range cliIdentities() {
-		pending, done := c.asking()
-		if !pending {
-			continue
-		}
-		waited = true
-		select {
-		case <-done:
-		case <-deadline:
-			return true, true
-		}
-	}
-	return waited, false
-}
-
-// asking says whether the CLI is being asked who is signed in for the
-// first time, and the channel closed when it has answered.
-func (c *cliIdentity) asking() (pending bool, done chan struct{}) {
-	c.Lock()
-	defer c.Unlock()
-	return c.at.IsZero() && c.refreshing, c.done
-}
-
-// identitiesUnsettled says whether a CLI never answered who is signed in
-// is being asked, or would be asked and waited for by the next look:
-// listing the accounts then may wait on it, as FetchNew does, which a page
-// doesn't (#541). Not while discovery is off, as no look asks then.
-func identitiesUnsettled() bool {
-	if settings.AccountDiscoveryOff() {
-		return false
-	}
-	for _, c := range cliIdentities() {
-		c.Lock()
-		unsettled := c.at.IsZero() && (c.refreshing || !c.waited)
-		c.Unlock()
-		if unsettled {
-			return true
-		}
-	}
-	return false
-}
-
-// identitiesAnswered is how many CLIs have answered who is signed in.
-func identitiesAnswered() (n int) {
-	for _, c := range cliIdentities() {
-		c.Lock()
-		if !c.at.IsZero() {
-			n++
-		}
-		c.Unlock()
-	}
-	return n
 }
 
 // forget has the next look ask the CLI and wait for it: after a sign-in or
@@ -254,5 +215,6 @@ func (c *cliIdentity) forget() {
 	c.gen++
 	c.refreshing, c.waited = false, false
 	c.retry = 0
+	c.markAt = ""
 	c.Unlock()
 }

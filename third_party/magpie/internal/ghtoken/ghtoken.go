@@ -9,15 +9,23 @@
 // files or a mirror (source.Do sends no request with Authorization to one),
 // and is never written to a log or an error. The library's skills and the
 // Plugins page's git plugins both ask GitHub through here (#1942).
+//
+// A token from the environment that GitHub refuses (401) is one the user
+// may not know is there, often stale: the request is asked again without
+// it, and the token isn't sent again while magpie runs (till on Discord).
+// The token set in Settings is the user's own choice, so a refusal of it
+// is said (Refused).
 package ghtoken
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yetone/magpie/internal/settings"
@@ -29,32 +37,95 @@ var Env = []string{"GITHUB_TOKEN", "GH_TOKEN"}
 
 // Token is the token requests to GitHub's API carry, and where it came
 // from: "settings", the environment variable's name, or "" for none.
+// An environment variable's token GitHub refused isn't one: the next
+// variable's is, or none.
 func Token() (token, from string) {
 	if t := strings.TrimSpace(settings.Load().GitHubToken); t != "" {
 		return t, "settings"
 	}
 	for _, k := range Env {
-		if t := strings.TrimSpace(os.Getenv(k)); t != "" {
+		if t := strings.TrimSpace(os.Getenv(k)); t != "" && !isRefused(t) {
 			return t, k
 		}
 	}
 	return "", ""
 }
 
+// refused holds the environment's tokens GitHub answered 401, for as long
+// as magpie runs: keyed by the token, so a variable set to another one is
+// tried afresh.
+var refused = struct {
+	sync.Mutex
+	m map[string]bool
+}{m: map[string]bool{}}
+
+func isRefused(t string) bool {
+	refused.Lock()
+	defer refused.Unlock()
+	return refused.m[t]
+}
+
+func markRefused(t string) {
+	refused.Lock()
+	refused.m[t] = true
+	refused.Unlock()
+}
+
+// Do sends req with send, carrying the token as Authorize does, and says
+// whether the answer given back is to a request that carried it. When
+// GitHub refuses (401) a token from the environment, that token is
+// dropped for the rest of the run and req is sent again without it: the
+// anonymous answer is the one given back. A refused token from Settings
+// is answered as GitHub answered, for the caller to say Refused().
+func Do(req *http.Request, api string, send func(*http.Request) (*http.Response, error)) (*http.Response, bool, error) {
+	t, from := authorize(req, api)
+	resp, err := send(req)
+	if err != nil || t == "" || from == "settings" || resp.StatusCode != http.StatusUnauthorized {
+		return resp, t != "" && err == nil, err
+	}
+	again := req.Clone(req.Context())
+	if req.Body != nil && req.Body != http.NoBody {
+		if req.GetBody == nil {
+			return resp, true, nil
+		}
+		b, err := req.GetBody()
+		if err != nil {
+			return resp, true, nil
+		}
+		again.Body = b
+	}
+	markRefused(t)
+	io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	resp.Body.Close()
+	again.Header.Del("Authorization")
+	resp, err = send(again)
+	return resp, false, err
+}
+
 // Authorize has req carry the token, if there is one and req goes to the
 // host of api (GitHub's API's base URL, which tests move); it says whether
 // it did.
+//
+// Do is Authorize with an environment token GitHub refuses dropped for an
+// anonymous request; a caller sends through it rather than this.
 func Authorize(req *http.Request, api string) bool {
+	t, _ := authorize(req, api)
+	return t != ""
+}
+
+// authorize is Authorize, saying which token req carries and where it came
+// from, or "" for none.
+func authorize(req *http.Request, api string) (token, from string) {
 	u, err := url.Parse(api)
 	if err != nil || u.Host == "" || req.URL == nil || req.URL.Host == "" || !strings.EqualFold(req.URL.Host, u.Host) {
-		return false
+		return "", ""
 	}
-	t, _ := Token()
+	t, from := Token()
 	if t == "" {
-		return false
+		return "", ""
 	}
 	req.Header.Set("Authorization", "Bearer "+t)
-	return true
+	return t, from
 }
 
 // Refused is the error for a 401 from GitHub to a request that carried the

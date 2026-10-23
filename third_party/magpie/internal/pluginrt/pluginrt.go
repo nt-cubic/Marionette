@@ -38,8 +38,8 @@ type Manifest struct {
 	// Requires are services it can't run without; Provides those it gives
 	// others ("router.strategy/groups")
 	Requires, Provides []string
-	// Essential plugins are on in the Essentials preset a new install
-	// starts with; every built-in is on for a magpie that ran before
+	// Essential plugins are on in the Essentials preset, when the user
+	// picks it; every built-in is on otherwise, a new install's too
 	Essential bool
 	// Name and Sub say what it is, in English; the window translates them
 	Name, Sub string

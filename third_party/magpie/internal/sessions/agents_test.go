@@ -18,8 +18,8 @@ const (
 )
 
 // setupAgents is setup with ZCode's database made and dsh's, Cline's,
-// Qoder's, Grok Build's and WorkBuddy's sessions put in the home folder,
-// where each keeps them.
+// Qoder's, Grok Build's, WorkBuddy's and CodeBuddy Code's sessions put in the
+// home folder, where each keeps them.
 func setupAgents(t *testing.T) (home string) {
 	claude, _ := setup(t)
 	home = filepath.Join(filepath.Dir(claude), "home")
@@ -80,6 +80,49 @@ func count(ss []Session, agent string) int {
 		}
 	}
 	return n
+}
+
+// CodeBuddy Code's own sessions are listed as its own agent's, read from
+// ~/.codebuddy/projects as WorkBuddy's are from ~/.workbuddy/projects
+// (#1779): the two `codebuddy -p` runs in testdata/codebuddy, one on a model
+// of the user's own, one on a model magpie wired.
+func TestCodeBuddy(t *testing.T) {
+	inZone(t, 0)
+	setupAgents(t)
+	ss := List(0)
+	if n := count(ss, "codebuddy"); n != 2 {
+		t.Fatalf("want 2 CodeBuddy Code sessions, got %d", n)
+	}
+	for _, w := range []struct {
+		id  string
+		cwd string
+	}{{"01a12fea-4cae-78ac-8b2b-a1c0f9da9b1c", "/Users/me/work"}, {"01a12fed-6117-7b70-934b-2d2c05250180", "/Users/me/wired"}} {
+		s := find(t, ss, "codebuddy", w.id)
+		// the only line that names a folder is the session's own
+		if s.Cwd != w.cwd || s.Title != "Read /etc/hosts and tell me what it names" {
+			t.Fatalf("%s: %+v", w.id, s)
+		}
+		// a run's two lines — the tool call's and the text after it — carry
+		// the same cumulative usage: 27017 in, of them 26496 read from the cache,
+		// and 115 out. Each is counted once, as WorkBuddy's summary does
+		want := Tokens{Input: 2 * (27017 - 26496), Output: 2 * 115, CacheRead: 2 * 26496}
+		if m := model(s, "fake-m1"); m.Tokens != want {
+			t.Fatalf("%s, fake-m1: %+v", w.id, m)
+		}
+		// picked up again by its CLI in its folder, as Claude Code's are
+		run := "codebuddy --resume " + w.id
+		wantResume := "cd '" + w.cwd + "' && " + run
+		if runtime.GOOS == "windows" {
+			wantResume = "Set-Location -LiteralPath '" + w.cwd + "'; " + run
+		}
+		if s.Resume != wantResume {
+			t.Fatalf("%s: resume %q, want %q", w.id, s.Resume, wantResume)
+		}
+	}
+	// its files are its own, so the Sessions page can move them to the trash
+	if !Deletable("codebuddy") {
+		t.Fatal("CodeBuddy Code's sessions are not deletable")
+	}
 }
 
 func TestZCode(t *testing.T) {
@@ -278,7 +321,7 @@ func TestDirsMore(t *testing.T) {
 	home := setupAgents(t)
 	d := Dirs()
 	want := []string{filepath.Join(home, ".zcode"), filepath.Join(home, ".dsh"), filepath.Join(home, ".cline", "data", "sessions"), filepath.Join(home, ".qoder"), filepath.Join(home, ".qoder-cn"),
-		filepath.Join(home, ".grok"), filepath.Join(home, ".workbuddy"), filepath.Join(home, ".omp", "agent")}
+		filepath.Join(home, ".grok"), filepath.Join(home, ".workbuddy"), filepath.Join(home, ".codebuddy"), filepath.Join(home, ".omp", "agent")}
 	if len(d) != 2+len(want) {
 		t.Fatalf("dirs %v", d)
 	}

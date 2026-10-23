@@ -666,6 +666,13 @@ export function App() {
    * on turn/complete so that turn's invisible end stays quiet.
    */
   const silentTurnRef = useRef<Set<string>>(new Set());
+  /**
+   * Sessions whose live turn is a usage probe (`/status` / `/usage` sent by the
+   * usage panel refresh). Consumed on turn/complete: no chime / desktop notice,
+   * and no after-turn usage re-probe (the probe itself just delivered fresh
+   * data — re-probing made every refresh click fire twice).
+   */
+  const probeTurnRef = useRef<Set<string>>(new Set());
   /** Set each render so turn/complete can drain the queue without stale closures. */
   const drainQueuedSendRef = useRef<(sessionId: string) => void>(() => undefined);
   /**
@@ -2366,8 +2373,10 @@ export function App() {
         // queued follow-up can cancel the intermediate completion alert.
         // A silent turn (hidden `/always-approve` replay) completes with nothing
         // on screen — chiming for it would be noise the user cannot explain.
+        // Same for a usage probe (`/status` card): refresh ≠ a reply.
         const silentTurnEnded = silentTurnRef.current.delete(payload.sessionId);
-        if (wasRunning && stopReason !== "cancelled" && !silentTurnEnded) {
+        const probeTurnEnded = probeTurnRef.current.delete(payload.sessionId);
+        if (wasRunning && stopReason !== "cancelled" && !silentTurnEnded && !probeTurnEnded) {
           const sess = sessionsRef.current.find((s) => s.id === payload.sessionId);
           const label = sess?.label?.trim() || "Session";
           const isDelegateChild = delegateMetaRef.current.has(payload.sessionId);
@@ -2449,6 +2458,7 @@ export function App() {
         pendingSendsRef.current.delete(payload.sessionId);
         flushingSendRef.current.delete(payload.sessionId);
         silentTurnRef.current.delete(payload.sessionId);
+        probeTurnRef.current.delete(payload.sessionId);
         setQueuedStripTick((t) => t + 1);
         // Zombie Ask / Plan / Permission cards block the composer — clear for this session.
         setAskPrompt((cur) => (cur?.sessionId === payload.sessionId ? null : cur));
@@ -3614,7 +3624,9 @@ export function App() {
       active &&
       (active.status === "running" || active.status === "waiting")
     ) {
-      void sendAcpPrompt(sid, limitCommand).catch((error) => {
+      probeTurnRef.current.add(sid);
+      void sendAcpPrompt(sid, limitCommand, [], true).catch((error) => {
+        probeTurnRef.current.delete(sid);
         pushDebug({
           sessionId: sid,
           level: "warn",
@@ -3733,6 +3745,9 @@ export function App() {
   const refreshUsageAfterTurn = useCallback(
     (sessionId: string) => {
       if (!sessionId || sessionId !== currentSessionIdRef.current) return;
+      // The turn that just ended was itself the usage probe — the panel already
+      // has the freshest data; probing again doubles the transcript noise.
+      if (probeTurnRef.current.has(sessionId)) return;
       const session = sessionsRef.current.find((candidate) => candidate.id === sessionId);
       const model = activeModelId ?? sessionCapabilities?.currentModel ?? null;
       if (session?.agentId === "opencode" && isChatgptUsageModel(model)) return;

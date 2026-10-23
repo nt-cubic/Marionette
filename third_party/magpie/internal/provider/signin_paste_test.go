@@ -174,11 +174,12 @@ func TestPastedAddressAndCallbackFinishOnce(t *testing.T) {
 
 // Every built-in sign-in that comes back to a port here takes the address
 // pasted instead; one that doesn't come back through the browser's address
-// bar doesn't offer it. Claude's is Claude Code's own (signin_claude_test.go).
+// bar doesn't offer it. Claude's is Claude Code's own (signin_claude_test.go);
+// Command Code's, whose key is posted, is its plugin's (TestLoopbackPorts).
 func TestLoopbackSignInsTakePastedAddress(t *testing.T) {
 	claudeHome(t)
 	fakeCodexTokens(t, nil)
-	for _, agent := range []string{"codex", "gemini", "antigravity", "kiro", "zed"} {
+	for _, agent := range []string{"codex", "gemini", "antigravity"} {
 		st, err := StartSignIn(agent)
 		if err != nil {
 			t.Fatalf("%s: %v", agent, err)
@@ -187,13 +188,5 @@ func TestLoopbackSignInsTakePastedAddress(t *testing.T) {
 		if !st.PasteCallback {
 			t.Errorf("%s: no pasted address", agent)
 		}
-	}
-	st, err := StartSignIn(CommandCodePlanID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	CancelSignIn(st.ID)
-	if st.PasteCallback {
-		t.Error("Command Code's key is posted, never in an address to paste")
 	}
 }

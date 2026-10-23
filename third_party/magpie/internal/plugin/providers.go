@@ -29,6 +29,8 @@ type Method struct {
 	// Placeholder is the hint an "api" method gives in its key's field
 	// (magpie's own field: OpenCode's says "API key")
 	Placeholder string `json:"placeholder,omitempty"`
+	// Keyless skips personal-key entry; authorize supplies the credential.
+	Keyless bool `json:"keyless,omitempty"`
 }
 
 // KeyTitle is what an "api" method's key is asked as: its label, as
@@ -103,6 +105,10 @@ type Model struct {
 	// not named jev-…, Clef or a vendor's own). It counts only where the
 	// provider says it serves a decision API (Provider.Decide).
 	Decides bool `json:"decides,omitempty"`
+	// Searches is set by the plugin on a model that searches the web by
+	// itself when asked in plain words (m.searches: Trae's search model),
+	// which magpie may then search with for other models.
+	Searches bool `json:"searches,omitempty"`
 }
 
 // Provider is a provider a plugin signs in to.
@@ -147,6 +153,8 @@ type Provider struct {
 	// Accounts are the accounts signed in to it, the one kept under its
 	// own id first; SignedIn, AuthType and AccountID are that one's.
 	Accounts []Account `json:"accounts"`
+	// Single is the auth hook declaring that sign-in replaces one identity.
+	Single bool `json:"single,omitempty"`
 	// MaxConcurrency is how many requests the plugin says each of its
 	// accounts takes at once (magpie's own field, which OpenCode ignores:
 	// the auth hook's maxConcurrency, else package.json's
@@ -810,6 +818,9 @@ type Authorization struct {
 	URL          string `json:"url"`
 	Instructions string `json:"instructions"`
 	Method       string `json:"method"`
+	// Opened is a page the plugin (its vendor's CLI) opened already, not
+	// to be opened again
+	Opened bool `json:"opened"`
 }
 
 // NewAccount is the account a sign-in goes to when it is a new one: the

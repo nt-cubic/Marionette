@@ -15,7 +15,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
-const { watchSettingsReads, settingsDrawn } = require("./reader.cjs");
+const { watchSettingsReads, settingsDrawn, reach } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const vendors = [
@@ -115,7 +115,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const b = await loc.boundingBox();
         await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2);
       };
-      const before = await where();
+      let before = await where();
       // SearXNG: its address
       await click(head.locator("button.search-vendor"));
       await click(page.locator(".proto-menu .pm-item", { hasText: "SearXNG" }));
@@ -177,6 +177,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await list.locator(".row.search-api").nth(1).locator("button.search-eye").count(), 0);
       assert.equal(await tavily.locator(".sub").innerText(), "tvly…abcd");
       const sent = posted.length;
+      // the clicks so far moved nothing; Image generation timeout, drawn
+      // above, puts the saved keys past the window's foot at 420, so the
+      // reader wheels down to them, and the clicks from there move nothing
+      assert.deepEqual(await where(), before, "the clicks moved nothing");
+      await reach(page, tavily.locator("button.search-eye"));
+      before = await where();
       await click(tavily.locator("button.search-eye"));
       await page.waitForFunction(() => document.querySelector("#searchList .row.search-api .sub.revealed"));
       assert.equal(await tavily.locator(".sub").innerText(), "tvly-dev-0123456789abcd");

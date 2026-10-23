@@ -10,6 +10,8 @@ if /I "%~1"=="--help" (
   echo.
   echo  Writes release\^<version^>\Marionette.exe ^(embedded magpie, UPX^).
   echo  Env: SKIP_UPX=1  REQUIRE_UPX=1  INSTALL_UPX=1  NOPAUSE=1
+  echo       SKIP_MAGPIE_IMPORT=1  ^(reuse third_party\magpie as-is^)
+  echo       MAGPIE_TAG=v0.1.xxxx  ^(pin engine seed; default = GitHub latest stable^)
   echo.
   exit /b 0
 )
@@ -207,9 +209,24 @@ exit /b 1
 
 :prepare_embed
 echo.
+if /I "%SKIP_MAGPIE_IMPORT%"=="1" (
+  echo  [engine] SKIP_MAGPIE_IMPORT=1 — keeping third_party\magpie as-is
+) else (
+  echo  [engine] importing latest stable magpie into third_party\magpie ...
+  if defined MAGPIE_TAG (
+    echo  [engine] MAGPIE_TAG=!MAGPIE_TAG!
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0import-magpie.ps1" -Tag "!MAGPIE_TAG!"
+  ) else (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0import-magpie.ps1"
+  )
+  if errorlevel 1 (
+    echo  [error] import-magpie.ps1 failed — set SKIP_MAGPIE_IMPORT=1 to reuse existing vendor, or MAGPIE_TAG=v... to pin
+    exit /b 1
+  )
+)
 echo  [engine] building nogui magpie from third_party\magpie ...
 if not exist "third_party\magpie\main.go" (
-  echo  [error] third_party\magpie missing - first run: powershell -File tools\import-magpie.ps1
+  echo  [error] third_party\magpie missing - run: powershell -File tools\import-magpie.ps1
   exit /b 1
 )
 set "GO_BIN="

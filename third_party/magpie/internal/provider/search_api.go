@@ -59,6 +59,7 @@ var SearchVendors = []SearchVendor{
 	{ID: "exa", Name: "Exa", Base: "https://api.exa.ai", KeysURL: "https://dashboard.exa.ai/api-keys"},
 	{ID: "firecrawl", Name: "Firecrawl", Base: "https://api.firecrawl.dev", KeysURL: "https://www.firecrawl.dev/app/api-keys"},
 	{ID: "you", Name: "You.com", Base: "https://ydc-index.io", KeysURL: "https://you.com/platform", KeyOptional: true},
+	{ID: "deepseek", Name: "DeepSeek", Base: "https://api.deepseek.com", KeysURL: "https://platform.deepseek.com/api_keys"},
 	{ID: "searxng", Name: "SearXNG", KeyOptional: true},
 }
 

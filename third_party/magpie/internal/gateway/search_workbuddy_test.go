@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -88,88 +87,10 @@ func (s *wbSearchSite) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// askClaudeCodeWebSearch sends model what Claude Code's WebSearch tool
-// sends (2.1.285): the server tool alone, under its own system prompt.
-func askClaudeCodeWebSearch(t *testing.T, model string) string {
-	t.Helper()
-	body, _ := json.Marshal(map[string]any{
-		"model": model, "max_tokens": 32000, "stream": true,
-		"system":   []map[string]any{{"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."}, {"type": "text", "text": "You are an assistant for performing a web search tool use"}},
-		"metadata": map[string]any{"user_id": `{"device_id":"d1","account_uuid":"","session_id":"s1"}`},
-		"messages": []map[string]any{{"role": "user", "content": "Perform a web search for the query: Go 1.26 release notes"}},
-		"tools":    []map[string]any{{"type": "web_search_20250305", "name": "web_search", "max_uses": 8}},
-	})
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/messages?beta=true", strings.NewReader(string(body)))
-	req.Header.Set("User-Agent", "claude-cli/2.1.285 (external, cli)")
-	req.Header.Set("X-App", "cli")
-	req.Header.Set("Anthropic-Beta", "claude-code-20250219")
-	New().Handler().ServeHTTP(rec, req)
-	if rec.Code != 200 {
-		t.Fatalf("%d %s", rec.Code, rec.Body.String())
-	}
-	return rec.Body.String()
-}
-
-// Claude Code's WebSearch on a WorkBuddy model, with nothing else in
-// magpie that searches, is searched by WorkBuddy's own search service, as
-// WorkBuddy's client searches, and Claude Code gets its results (#1798).
-// Before, the server tool was taken away and WebSearch came back empty.
-// The service's refusal is told, not taken for no results; with provider
-// search off in Settings it isn't asked.
-func TestWorkBuddySearchesForItsModels(t *testing.T) {
-	site := &wbSearchSite{}
-	p := wbSignedIn(t, "workbuddy", "workbuddy-desktop", site)
-	if canSearch() {
-		t.Fatal("something else searches")
-	}
-	if _, err := p.Fetch(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	out := askClaudeCodeWebSearch(t, "workbuddy/hy3")
-	for _, want := range []string{`"type":"web_search_tool_result"`, `"url":"https://go.dev/doc/go1.26"`, "Go 1.26 is out."} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("reply lacks %s: %s", want, out)
-		}
-	}
-	site.mu.Lock()
-	if len(site.searched) != 1 {
-		t.Fatalf("searched %v", site.searched)
-	}
-	q, h := site.searched[0], site.heads[0]
-	if q["query"] != "Go 1.26 release notes" || q["type"] != "text2text" || q["max_results"] != float64(5) {
-		t.Errorf("asked %v", q)
-	}
-	if h.Get("Authorization") != "Bearer tok" || h.Get("X-User-Id") != "u1" || !strings.HasPrefix(h.Get("User-Agent"), "WorkBuddy/") ||
-		h.Get("X-Requested-With") != "XMLHttpRequest" || h.Get("X-Request-ID") == "" {
-		t.Errorf("headers %v", h)
-	}
-	if len(site.results) != 1 || !strings.Contains(site.results[0], "Go 1.26 Release Notes - The Go Programming Language — https://go.dev/doc/go1.26") ||
-		!strings.Contains(site.results[0], "绿茶GC") {
-		t.Errorf("tool results %q", site.results)
-	}
-	// its search quota spent: said, not an empty result
-	site.searched, site.results = nil, nil
-	site.refusal = `{"code":15001,"msg":"web search quota exhausted"}`
-	site.mu.Unlock()
-	_, _, err := New().wbSearch(context.Background(), p, "Go 1.26 release notes")
-	if err == nil || !strings.Contains(err.Error(), "web search quota exhausted (15001)") {
-		t.Fatalf("refusal: %v", err)
-	}
-
-	// provider search off: WorkBuddy's isn't asked either
-	st := settings.Load()
-	st.Searcher = "off"
-	if err := settings.Save(st); err != nil {
-		t.Fatal(err)
-	}
-	if searchesOwn(p) {
-		t.Fatal("searches with provider search off")
-	}
-}
-
-// A WorkBuddy moved onto its plugin searches the same way: magpie shapes
-// the request, the plugin's fetch signs and sends it.
+// WorkBuddy searches for its models with its own search service, as
+// WorkBuddy's client does (#1798): magpie shapes the request, the plugin's
+// fetch signs and sends it. The service's refusal is told, not taken for
+// no results; with provider search off in Settings it isn't asked.
 func TestWorkBuddyPluginSearches(t *testing.T) {
 	site := &wbSearchSite{}
 	pid := besideFake(t, "workbuddy", site)
@@ -188,5 +109,24 @@ func TestWorkBuddyPluginSearches(t *testing.T) {
 	defer site.mu.Unlock()
 	if len(site.searched) != 1 || site.searched[0]["query"] != "Go 1.26 release notes" {
 		t.Fatalf("searched %v", site.searched)
+	}
+
+	// its search quota spent: said, not an empty result
+	site.refusal = `{"code":15001,"msg":"web search quota exhausted"}`
+	site.mu.Unlock()
+	_, _, err = New().ownSearch(searchingOn(context.Background(), *p), *p, "Go 1.26 release notes")
+	site.mu.Lock()
+	if err == nil || !strings.Contains(err.Error(), "web search quota exhausted (15001)") {
+		t.Fatalf("refusal: %v", err)
+	}
+
+	// provider search off: WorkBuddy's isn't asked either
+	st := settings.Load()
+	st.Searcher = "off"
+	if err := settings.Save(st); err != nil {
+		t.Fatal(err)
+	}
+	if searchesOwn(*p) {
+		t.Fatal("searches with provider search off")
 	}
 }

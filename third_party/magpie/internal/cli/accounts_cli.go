@@ -438,7 +438,7 @@ func addAccount(agentID string) error {
 			return fmt.Errorf("sign-in canceled")
 		}
 	}
-	if _, plug := provider.PluginOf(agentID); plug || provider.Moved(agentID) {
+	if _, plug := provider.PluginOf(agentID); plug || provider.PluginServes(agentID) {
 		return pluginLogin(context.Background(), agentID, "")
 	}
 	if p, _ := claudeCode.downloaded(); agentID == "claude" && runtime.GOOS != "windows" && claudeCode.own() == "" && p == "" {
@@ -530,7 +530,8 @@ const importUsage = "usage: magpie accounts import <codex|claude|antigravity|fac
 // Cockpit Tools', CLIProxyAPI's and Sub2API's exports for ChatGPT; Claude
 // Code's .credentials.json and
 // CLIProxyAPI's for Claude; Antigravity Cockpit's, Antigravity Manager's
-// and CLIProxyAPI's for Antigravity; Factory API keys. The files are only
+// and CLIProxyAPI's for Antigravity (Factory's API keys go to its plugin,
+// with accounts add factory). The files are only
 // read. What importing does to the tool the file came from is said first,
 // and nothing is imported until that is agreed to (--yes agrees).
 func importAccounts(args []string) error {
@@ -556,10 +557,7 @@ func importAccounts(args []string) error {
 	case "antigravity", "ag":
 		id = "antigravity"
 	case "factory", "droid":
-		id = "factory"
-		if provider.Moved(id) {
-			return fmt.Errorf("Factory runs on its plugin now: add the key with magpie accounts add factory")
-		}
+		return fmt.Errorf("Factory runs on its plugin now: add the key with magpie accounts add factory")
 	default:
 		return fmt.Errorf("%q: accounts can be imported for codex, claude, antigravity and factory\n%s", rest[0], importUsage)
 	}
@@ -593,8 +591,6 @@ func importAccounts(args []string) error {
 			"The files are only read, never changed."}
 	case "antigravity":
 		say = []string{provider.AntigravityRisk, "Each account's sign-in is refreshed with Google before it is added."}
-	case "factory":
-		say = []string{"Each key is asked whose Factory account it is before it is added."}
 	}
 	for _, s := range say {
 		fmt.Println(bold.Render("!"), s)
@@ -618,8 +614,6 @@ func importAccounts(args []string) error {
 		res, err = provider.ImportLogins(ctx, id, files)
 	case "antigravity":
 		res, err = provider.ImportGoogleAccounts(ctx, id, files)
-	case "factory":
-		res, err = provider.ImportFactoryKeys(ctx, files)
 	}
 	if err != nil {
 		if len(paths) == 1 {

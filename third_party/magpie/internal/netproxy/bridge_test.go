@@ -280,3 +280,62 @@ func TestEnvForBunBridgesSystemSOCKS(t *testing.T) {
 		t.Fatalf("an http proxy: %q", got)
 	}
 }
+
+// #2651: a Bun-built CLI run on a provider's behalf (Claude Code) is given
+// the bridge in front of the provider's SOCKS proxy, the bridge carrying
+// to it. Where the CLI can't reach the bridge (WSL under NAT), or the
+// bridge can't start, it is an error at once, never socks5:// handed on
+// for the CLI to fail with on every try.
+func TestEnvForBunWithBridgesTheProvidersSOCKS(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	socks, n := fakeSOCKS(t, "", "")
+	env, err := EnvForBunWith(socks.String(), []string{"PATH=/bin", "HTTPS_PROXY=http://old:1"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bridge string
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		switch strings.ToUpper(k) {
+		case "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY":
+			if !strings.HasPrefix(v, "http://127.0.0.1:") {
+				t.Fatalf("the CLI is given %s", kv)
+			}
+			bridge = v
+		}
+	}
+	if bridge == "" || !slices.Contains(env, "PATH=/bin") {
+		t.Fatalf("env: %q", env)
+	}
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok") }))
+	defer plain.Close()
+	pu, _ := url.Parse(bridge)
+	res, err := (&http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(pu)}}).Get(plain.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if string(b) != "ok" || n.Load() != 1 {
+		t.Fatalf("through the bridge: %q, the SOCKS proxy carried %d", b, n.Load())
+	}
+
+	// an http:// proxy, and "direct", are EnvWith's as they are
+	for _, c := range []string{"http://127.0.0.1:7890", "direct"} {
+		got, err := EnvForBunWith(c, []string{"PATH=/bin"}, false)
+		if want := EnvWith(c, []string{"PATH=/bin"}); err != nil || strings.Join(got, "\n") != strings.Join(want, "\n") {
+			t.Fatalf("%s: %q %v, want %q", c, got, err, want)
+		}
+	}
+
+	if _, err := EnvForBunWith("socks5://u:secret@10.0.0.2:1080", []string{"PATH=/bin"}, false); err == nil ||
+		!strings.Contains(err.Error(), "UnsupportedProxyProtocol") || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("out of the bridge's reach: %v", err)
+	}
+	old := listenLoopback
+	listenLoopback = func() (net.Listener, error) { return nil, io.ErrClosedPipe }
+	t.Cleanup(func() { listenLoopback = old })
+	if _, err := EnvForBunWith("socks5://10.0.0.3:1080", []string{"PATH=/bin"}, true); err == nil || !strings.Contains(err.Error(), "didn't start") {
+		t.Fatalf("no bridge: %v", err)
+	}
+}

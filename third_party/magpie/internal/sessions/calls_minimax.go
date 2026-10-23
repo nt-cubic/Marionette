@@ -106,7 +106,7 @@ func readMiniMaxCalls(f file) (*callFile, bool) {
 	}
 	defer r.Close()
 	st := &callFile{Agent: "minimax-code", Path: f.path, Session: strings.TrimPrefix(f.key, "minimax-code:")}
-	br := bufio.NewReaderSize(r, 1<<20)
+	br := bufio.NewReaderSize(r, scanBuffer(r, 0))
 	for {
 		b, err := br.ReadBytes('\n')
 		if err != nil && (!errors.Is(err, io.EOF) || len(bytes.TrimSpace(b)) == 0) {

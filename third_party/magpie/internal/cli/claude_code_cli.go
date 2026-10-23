@@ -4,16 +4,20 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/yetone/magpie/internal/claudecode"
+	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/proc"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 const claudeCodeUsage = "usage: magpie claude-code                  which Claude Code the Claude subscription runs\n" +
 	"       magpie claude-code install [--yes]  download Anthropic's own build of Claude Code for magpie (a server or container without one)\n" +
-	"       magpie claude-code remove           delete the Claude Code magpie downloaded"
+	"       magpie claude-code remove           delete the Claude Code magpie downloaded\n" +
+	"       magpie claude-code runs [N|auto]    how many Claude Code processes may run at once (auto: what this machine's memory holds)"
 
 // claudeCodeCmd: magpie claude-code [install [--yes]|remove]. A Claude
 // subscription is answered by Claude Code, and signed in to through it; a
@@ -46,11 +50,59 @@ func claudeCodeCmd(args []string) error {
 		}
 		fmt.Println(green.Render("✓"), "removed Claude Code", v, muted.Render("("+claudecode.Root()+")"))
 		return nil
+	case "runs":
+		return claudeCodeRuns(args[1:])
 	case "-h", "--help", "help":
 		fmt.Println(claudeCodeUsage)
 		return nil
 	}
 	return fmt.Errorf("magpie claude-code: unknown %q\n%s", args[0], claudeCodeUsage)
+}
+
+// claudeCodeRuns: magpie claude-code runs [N|auto]. Each Claude
+// subscription conversation, test and /usage read is a Claude Code process
+// of about 100 MiB; a 512 MiB service ran 16 and the kernel killed them
+// (#2956). magpie holds them to what the machine's memory holds unless the
+// user says how many (claudeRunsMost).
+func claudeCodeRuns(args []string) error {
+	s := settings.Load()
+	switch {
+	case len(args) > 1:
+		return fmt.Errorf("magpie claude-code runs takes one value\n%s", claudeCodeUsage)
+	case len(args) == 1 && (args[0] == "-h" || args[0] == "--help"):
+		fmt.Println(claudeCodeUsage)
+		return nil
+	case len(args) == 1:
+		n := 0
+		if args[0] != "auto" {
+			v, err := strconv.Atoi(args[0])
+			if err != nil || v < 1 {
+				return fmt.Errorf("magpie claude-code runs takes a number from 1, or auto, not %q", args[0])
+			}
+			n = v
+		}
+		s.ClaudeRunsMost = n
+		if err := settings.Save(s); err != nil {
+			return err
+		}
+	}
+	auto, why := gateway.ClaudeMemRuns()
+	autoSaid := "no bound: this machine's memory isn't known to magpie"
+	if auto > 0 {
+		autoSaid = why
+	}
+	if s.ClaudeRunsMost > 0 {
+		fmt.Println(green.Render("●"), s.ClaudeRunsMost, "Claude Code processes may run at once", muted.Render("· your setting"))
+		fmt.Println(muted.Render("  auto would be " + autoSaid + " · magpie claude-code runs auto"))
+		return nil
+	}
+	if auto > 0 {
+		fmt.Println(green.Render("●"), auto, "Claude Code processes may run at once", muted.Render("· "+why))
+	} else {
+		fmt.Println(green.Render("●"), "any number of Claude Code processes may run", muted.Render("· "+autoSaid))
+	}
+	fmt.Println(muted.Render("  magpie claude-code runs N sets how many"))
+	return nil
 }
 
 // claudeCode is what the command reads of the machine; tests stand in for it.

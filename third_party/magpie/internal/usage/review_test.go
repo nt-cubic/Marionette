@@ -158,12 +158,12 @@ func TestZeroTokenFailuresDeduplicateAndRejectedStayVisible(t *testing.T) {
 		t.Fatal("local rejection consumed a real API call")
 	}
 	Append(r)
-	if len(Vias(time.Time{})) != 0 {
+	if Vias(time.Time{}).Len() != 0 {
 		t.Fatal("rejected request appears as a session provider")
 	}
 	Append(Record{Time: at, Agent: "claude", Provider: "relay", Model: "m", Session: "s", Status: 200})
 	Append(Record{Time: at, Agent: "claude", Model: "m", Session: "s", Status: 400}) // legacy rejection
-	if vias := Vias(time.Time{}); len(vias) != 1 || len(vias["claude|s"]) != 1 || vias["claude|s"][0].Calls != 1 {
+	if vias := Vias(time.Time{}); vias.Len() != 1 || len(vias.Of("claude|s")) != 1 || vias.Of("claude|s")[0].Calls != 1 {
 		t.Fatalf("session via includes a local rejection: %+v", vias)
 	}
 	var out bytes.Buffer

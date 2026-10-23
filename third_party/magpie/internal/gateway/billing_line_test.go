@@ -188,32 +188,3 @@ func TestBillingLineKeptForClaude(t *testing.T) {
 		}
 	}
 }
-
-// Command Code's plan, the reporter's route: a vendor's model on its
-// Provider API (Messages) and on the Go plan's /alpha/generate both go
-// without the line.
-func TestBillingLineLeftOutOnCommandCode(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	var provided []string
-	gen := newCmdUpstream(t, cmdLines(`{"type":"text-delta","text":"ok"}`, cmdFinish))
-	for _, cch := range []string{"aaaaa", "bbbbb"} {
-		body := claudeCodeTurn("deepseek/deepseek-v4.1-flash", cch)
-		if status, msg, _, _ := cmdAttempt(t, cmdAccount(gen, "go"), provider.Anthropic, "deepseek/deepseek-v4.1-flash", body); status != 200 {
-			t.Fatalf("go: %d %q", status, msg)
-		}
-		if sys := gjson.GetBytes(gen.body, "params.system").String(); strings.Contains(sys, "billing") || !strings.HasPrefix(sys, "You are a Claude agent") {
-			t.Fatalf("go system: %q", sys)
-		}
-		u, url := newBillingUpstream(t)
-		p := cmdAccount(gen, "pro")
-		p.Anthropic = url
-		if status, msg, _, _ := cmdAttempt(t, p, provider.Anthropic, "deepseek/deepseek-v4.1-flash", body); status != 200 {
-			t.Fatalf("pro: %d %q", status, msg)
-		}
-		provided = append(provided, u.last(t))
-	}
-	if strings.Contains(provided[0], "billing") || provided[0] != provided[1] {
-		t.Fatalf("provider API:\n%s\n%s", provided[0], provided[1])
-	}
-}

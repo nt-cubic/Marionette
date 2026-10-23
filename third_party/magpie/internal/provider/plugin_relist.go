@@ -9,6 +9,11 @@ package provider
 // the user's picks too, as Refetch does for a built-in's. A list that
 // fell back (the vendor's couldn't be read) is the one told before
 // (plugin.keepListed): nothing is dropped for it.
+//
+// A pick that leaves is set aside (Delisted), not forgotten, and comes back
+// when a list has it again: Our Free Model's list is short for a while
+// after its service starts and while a free pool is down, and each magpie
+// update left its user to pick every model again (多喝热水 on Discord).
 
 import (
 	"context"
@@ -20,10 +25,13 @@ import (
 )
 
 // relistEvery is how often the gateway's magpie lists the plugins'
-// models again; relistFirst is how long after it starts it first does.
+// models again; relistFirst is how long after it starts it first does;
+// relistSoon is how soon it asks again after a list left out a pick, as
+// a plugin's service just started may not have listed everything yet.
 var (
 	relistEvery = time.Hour
 	relistFirst = time.Minute
+	relistSoon  = 5 * time.Minute
 )
 
 // relistPlugins asks the plugins for their providers and models again,
@@ -53,6 +61,7 @@ func KeepPluginsListed(ctx context.Context) {
 		if len(before) == 0 {
 			before = plugin.Cached()
 		}
+		next := relistEvery
 		c, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		now, err := relistPlugins(c)
 		cancel()
@@ -60,11 +69,12 @@ func KeepPluginsListed(ctx context.Context) {
 			log.Printf("listing the plugins' models again: %s (the last lists stay)", err)
 		} else if now != nil {
 			for id, gone := range dropGonePluginPicks(before, now) {
-				log.Printf("%s: %v left its plugin's list, and its picks", id, gone)
+				log.Printf("%s: %v left its plugin's list, and its picks until it lists them again", id, gone)
+				next = relistSoon
 			}
 			before = keptListed(before, now)
 		}
-		t.Reset(relistEvery)
+		t.Reset(next)
 	}
 }
 
@@ -91,12 +101,10 @@ func pluginListedIDs(ps []plugin.Provider) map[string]map[string]bool {
 func dropGonePluginPicks(before, now []plugin.Provider) map[string][]string {
 	was, is := pluginListedIDs(before), pluginListedIDs(now)
 	out := map[string][]string{}
-	for id, b := range was {
-		n, ok := is[id]
-		if !ok {
-			continue // not listed now, or fell back: nothing is known gone
-		}
-		dropped, err := dropGonePicks(id, b, n)
+	// by what is listed now: not listed now, or fell back, nothing is known
+	// gone; listed now and not before, a pick set aside may come back
+	for id, n := range is {
+		dropped, err := dropGonePicks(id, was[id], n)
 		if err != nil {
 			log.Println(id + ": " + err.Error())
 		}

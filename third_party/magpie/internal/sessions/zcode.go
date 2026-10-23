@@ -15,7 +15,11 @@ import (
 // subagent's work is a session whose parent is the one it ran in, as in
 // OpenCode. ZCode is a desktop app: no command picks a session up again.
 
-// ZCodeDir is ZCode's folder, ~/.zcode.
+// ZCodeDir is ZCode's folder, ~/.zcode, under Go's home. Its CLI's
+// database stays there, USERPROFILE on Windows, even where the app keeps
+// the rest under a HOME the user set (appdir.ZCodeHome): ZCode 3.14.3 for
+// Windows, run with both, wrote cli\db\db.sqlite under USERPROFILE and
+// v2 under HOME.
 func ZCodeDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".zcode")

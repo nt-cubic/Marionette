@@ -21,6 +21,9 @@ type Result struct {
 	// fetched again and the ones that couldn't be (What is skill:<name>)
 	Updated   []string  `json:"updated,omitempty"`
 	Unupdated []Problem `json:"unupdated,omitempty"`
+	// Gone are, for an update of skills, the ones their sources no longer
+	// have: removed there, not failed (skill_gone.go)
+	Gone []string `json:"gone,omitempty"`
 	// Unimported are, for skills brought in together, the ones that
 	// couldn't be (What is skill:<name>)
 	Unimported []Problem `json:"unimported,omitempty"`
@@ -326,7 +329,7 @@ type SkillView struct {
 	Name        string            `json:"name"`
 	Description string            `json:"description"`
 	Source      string            `json:"source,omitempty"`
-	Kind        string            `json:"kind"`             // github, folder, or "" for one kept in the library
+	Kind        string            `json:"kind"`             // github, git, folder, or "" for one kept in the library
 	Origin      string            `json:"origin,omitempty"` // on GitHub, as CC Switch installed it: it can be updated from there
 	Repo        string            `json:"repo,omitempty"`   // the repository it came from, however it came in, for the page to group by
 	Icon        string            `json:"icon,omitempty"`
@@ -344,6 +347,9 @@ type SkillView struct {
 	// in the library or in an agent's copy: an update replaces that, so
 	// the page asks first (#1449)
 	Edited bool `json:"edited,omitempty"`
+	// Gone is when its source was found without it: removed there, the
+	// page offers to take it out (skill_gone.go)
+	Gone string `json:"gone,omitempty"`
 }
 
 // View is the Library page.
@@ -513,6 +519,7 @@ func readView(problems []Problem, glance bool) (*View, error) {
 		}
 		sv.Check = lastCheck(s.Name)
 		sv.Edited, _ = l.editState(s, targets)
+		sv.Gone = s.Gone
 		v.Skills = append(v.Skills, sv)
 	}
 	v.FoundServers = foundServersOf(l, targets)

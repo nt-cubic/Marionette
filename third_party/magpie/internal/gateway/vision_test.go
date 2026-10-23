@@ -1,6 +1,8 @@
 package gateway
 
 import (
+	"encoding/base64"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -209,5 +211,29 @@ func TestSeerPicksAModelThatSees(t *testing.T) {
 	noVision(t)
 	if _, ok := seer(); ok {
 		t.Fatal("seer with vision off")
+	}
+}
+
+// A long conversation sends every past screenshot again on each turn
+// (fflake33, Discord: hundreds of them). Each is described once, not again
+// on the next turn once there are more than 256.
+func TestManyImagesDescribedOnce(t *testing.T) {
+	s, u := eyed(t)
+	const n = 300
+	var parts []string
+	for i := range n {
+		img := base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("screenshot %d", i)))
+		parts = append(parts, `{"type":"input_image","image_url":"data:image/png;base64,`+img+`"}`)
+	}
+	body := `{"model":"probe/text","input":[{"role":"user","content":[{"type":"input_text","text":"read"},` + strings.Join(parts, ",") + `]}]}`
+	for turn := 1; turn <= 2; turn++ {
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/responses", strings.NewReader(body)))
+		if rec.Code != 200 {
+			t.Fatalf("turn %d: %d %.300s", turn, rec.Code, rec.Body.String())
+		}
+	}
+	if got := len(u.sent("eye")); got != n {
+		t.Fatalf("%d images described %d times over two turns, want each once", n, got)
 	}
 }

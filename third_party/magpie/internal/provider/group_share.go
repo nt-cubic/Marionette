@@ -241,7 +241,7 @@ func ImportGroup(text string) (Imported, error) {
 // (AutoGroupOf) under the first provider here that serves it, in the
 // Providers order; "" when none does. A member's own effort goes with it.
 func memberHere(entries []Entry, all []Group, m string) string {
-	m = strings.TrimPrefix(strings.TrimSpace(m), "magpie/")
+	m = CanonicalRef(strings.TrimPrefix(strings.TrimSpace(m), "magpie/"))
 	model, effort := memberEffortIn(entries, m)
 	if gid, ok := strings.CutPrefix(model, GroupPrefix); ok {
 		if slices.ContainsFunc(all, func(g Group) bool { return g.ID == gid && !g.Hidden }) {

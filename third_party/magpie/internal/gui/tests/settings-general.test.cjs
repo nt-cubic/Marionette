@@ -7,10 +7,16 @@
 // rows show only there), with the API faked:
 // - the rows whose names say enough have no line under them, and the lines
 //   kept are each one line, not cut short on a wide window;
+// - Codex's and Claude Code's own settings aren't here: they are on the
+//   agents' rows (the owner, 10-20);
 // - Language is a button (never a native <select>) showing the language;
 //   its menu, the app's own, lists all six, and a pick saves lang and
 //   draws the page in it, the button staying under the pointer;
-// - no row has a coloured stripe down its left.
+// - no row has a coloured stripe down its left;
+// - every row past the first has its line, the one after the agents' empty
+//   link box too, and as much room above and below its words as any other:
+//   the window's 7px left a row with a line under its name cramped, and the
+//   one-line rows of one height (the owner, 10-22).
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -23,9 +29,9 @@ const names = { en: "English", zh: "简体中文", "zh-TW": "繁體中文", ja: 
 const appearance = { en: "Appearance", zh: "外观", "zh-TW": "外觀", ja: "外観", de: "Darstellung" };
 const system = { en: "System", zh: "跟随系统", "zh-TW": "跟隨系統", ja: "システム", de: "System" };
 // the rows whose name says enough, found by the control they hold
-const bare = ["#themeSegs", "#colorblindSegs", "#langPick", "#textSizeSegs", "#traySegs", "#plainNamesSegs", "#codexTitlesPick", "#codexAutoReviewPick", "#loginSegs", "#dockSegs"];
+const bare = ["#themeSegs", "#colorblindSegs", "#langPick", "#textSizeSegs", "#traySegs", "#plainNamesSegs", "#loginSegs", "#dockSegs"];
 // the rows that keep a line, one each
-const kept = ["#fullContextSegs", "#lightweightSegs", "#keepAwakeSegs", "#sessionTerminalRow .sess-pick"];
+const kept = ["#lightweightSegs", "#keepAwakeSegs", "#sessionTerminalRow .sess-pick"];
 
 function serve(lang, posted, st) {
   const settings = () => ({ lang, theme: "light", searchVendors: [], searchAPIs: [], ...st });
@@ -81,9 +87,17 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           }),
           stripes: [...document.querySelectorAll("#setPage-general .row")].filter((r) => parseFloat(getComputedStyle(r).borderLeftWidth) > 1).length,
           sideways: document.documentElement.scrollWidth > innerWidth,
+          rule: [...document.querySelectorAll("#setPage-general .row.pref")].filter((r) => r.getClientRects().length).map((r, i) => {
+            const b = r.getBoundingClientRect(), w = r.querySelector(".who").getBoundingClientRect(), line = parseFloat(getComputedStyle(r).borderTopWidth);
+            const oneLine = ![...r.querySelectorAll(".who .sub")].some((s) => s.getClientRects().length && s.textContent.trim());
+            return { id: r.id || r.querySelector(".name").textContent, lined: i === 0 || line >= 1, above: w.top - b.top - line, below: b.bottom - w.bottom, height: Math.round(b.height - line), oneLine };
+          }),
         };
       }, [bare, kept]);
       for (const [sel, subs] of rows.bare) assert.deepEqual(subs, [], `${sel}'s row says its name alone`);
+      // Long conversations stays here with no Codex or Claude Code, as in
+      // this fixture (agent-prefs.test.cjs)
+      assert.equal(await page.locator("#view-settings :is(#codexAgentsV1Row, #codexAsyncRow, #codexTitlesRow, #codexDescriptionsRow, #codexPredictionsRow, #codexAutoReviewRow, #codexMemoriesRow)").count(), 0, "an agent's own settings are on its row");
       for (const [sel, sub] of rows.kept) {
         assert.equal(typeof sub, "object", `${sel}: ${sub}`);
         assert.ok(sub.text.trim() && sub.lines <= 1, `${sel}: ${JSON.stringify(sub)}`);
@@ -91,6 +105,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       }
       assert.equal(rows.stripes, 0, "a row has a stripe down its left");
       assert.equal(rows.sideways, false, "the page scrolls sideways");
+      for (const r of rows.rule) {
+        assert.ok(r.lined, `${r.id} has no line above it`);
+        assert.ok(r.above >= 11.5 && r.below >= 11.5, `${r.id}'s words sit close to its lines: ${JSON.stringify(r)}`);
+      }
+      if (width === 1000) assert.equal(new Set(rows.rule.filter((r) => r.oneLine).map((r) => r.height)).size, 1, `one-line rows of more than one height: ${JSON.stringify(rows.rule)}`);
 
       // Language: one button showing the language, the app's menu listing all six
       const pick = page.locator("#langPick");

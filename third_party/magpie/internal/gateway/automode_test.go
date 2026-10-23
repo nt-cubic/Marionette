@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/testenv"
@@ -308,6 +310,13 @@ func TestAutoModeReviewedRoutes(t *testing.T) {
 	anthropic := provider.Provider{ID: "anthropic", Anthropic: "https://api.anthropic.com", Key: "k"}
 	relay := provider.Provider{ID: "or", Chat: "https://openrouter.ai/api/v1", Anthropic: "https://openrouter.ai/api", Key: "k"}
 	deepseek := provider.Provider{ID: "ds", Anthropic: "https://api.deepseek.com/anthropic", Key: "k"}
+	// another vendor's subscription or a plugin serves Claude models as
+	// its own service: Copilot turns the safeguards away (#1756), Kiro and
+	// Cursor translate the request, and none answers with a review
+	copilot := provider.Provider{ID: "copilot", Anthropic: "https://api.githubcopilot.com", Account: &provider.Account{Agent: "copilot", User: "u"}}
+	kiro := provider.Provider{ID: "kiro", Account: &provider.Account{Agent: "kiro", User: "u"}}
+	plugin := provider.Provider{ID: "x-plugin", Account: &provider.Account{Agent: "plugin", User: "u"}}
+	pluginOnAnthropic := provider.Provider{ID: "y-plugin", Anthropic: "https://api.anthropic.com", Account: &provider.Account{Agent: "plugin", User: "u"}}
 	for _, c := range []struct {
 		p     provider.Provider
 		model string
@@ -324,9 +333,75 @@ func TestAutoModeReviewedRoutes(t *testing.T) {
 		{deepseek, "deepseek-v4", false},
 		{relay, "openai/gpt-6", false},
 		{relay, "claudette-7", false},
+		{copilot, "claude-sonnet-5", false},
+		{kiro, "claude-sonnet-5", false},
+		{plugin, "claude-opus-4-8", false},
+		{pluginOnAnthropic, "claude-opus-4-8", true},
 	} {
 		if got := AutoModeReviewed(c.p, c.model); got != c.want {
 			t.Errorf("%s/%s: %v, want %v", c.p.ID, c.model, got, c.want)
+		}
+	}
+}
+
+// TestAutoModeReviewableAsksOnMessages: what Claude Code's wiring keeps
+// the review on for (nexnull on Discord) is a reviewed model that is asked
+// on the Messages API. A Claude model on a relay with only a Chat URL is
+// translated, and a translation carries no safeguards and gets no
+// results back, so it is not; the Claude subscription, Anthropic's API, a
+// relay's or Bedrock's Anthropic endpoint are.
+func TestAutoModeReviewableAsksOnMessages(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	sub := provider.Provider{ID: "claude", Account: &provider.Account{Agent: "claude", User: "u"}}
+	anthropic := provider.Provider{ID: "anthropic", Anthropic: "https://api.anthropic.com", Key: "k"}
+	relay := provider.Provider{ID: "or", Chat: "https://openrouter.ai/api/v1", Anthropic: "https://openrouter.ai/api", Key: "k"}
+	chatOnly := provider.Provider{ID: "cr", Chat: "https://relay.example/v1", Key: "k"}
+	bedrock := provider.Provider{ID: "bedrock", Preset: "bedrock", Anthropic: "https://bedrock-runtime.us-east-1.amazonaws.com", Key: "k"}
+	for _, c := range []struct {
+		p     provider.Provider
+		model string
+		want  bool
+	}{
+		{sub, "claude-opus-4-8", true},
+		{anthropic, "claude-sonnet-5", true},
+		{relay, "anthropic/claude-sonnet-5", true},
+		{bedrock, "us.anthropic.claude-opus-4-8-v1:0", true},
+		{chatOnly, "claude-sonnet-5", false},
+		{chatOnly, "deepseek-v4.1-flash", false},
+		{relay, "openai/gpt-6", false},
+	} {
+		if got := AutoModeReviewable(c.p, c.model); got != c.want {
+			t.Errorf("%s/%s: %v, want %v", c.p.ID, c.model, got, c.want)
+		}
+	}
+}
+
+// Claude Code asks for the review on every auto-mode request. A Claude
+// model on another vendor's subscription (Copilot here, which answers the
+// safeguards with "Extra inputs are not permitted", #1756) is sent neither
+// the beta nor the safeguards, so it isn't refused and asked again; the
+// Claude subscription and Anthropic's API get both.
+func TestAutoModeReviewLeftOffOtherSubscriptions(t *testing.T) {
+	s := &Server{}
+	asked := []string{"dangerous-tool-use-2026-09-03", "interleaved-thinking-2025-05-14"} // as askedBetas splits them
+	body := []byte(`{"model":"claude-sonnet-5","safeguards":[{"type":"dangerous_tool_use"}],"messages":[]}`)
+	for _, c := range []struct {
+		p    provider.Provider
+		want bool
+	}{
+		{provider.Provider{ID: "copilot", Anthropic: "https://api.githubcopilot.com", Account: &provider.Account{Agent: "copilot", User: "u"}}, false},
+		{provider.Provider{ID: "claude", Account: &provider.Account{Agent: "claude", User: "u"}}, true},
+		{provider.Provider{ID: "anthropic", Anthropic: "https://api.anthropic.com", Key: "k"}, true},
+	} {
+		betas, out := s.serverReview(c.p, asked, body)
+		beta := slices.ContainsFunc(betas, isServerReviewBeta)
+		guards := gjson.GetBytes(out, "safeguards").Exists()
+		if beta != c.want || guards != c.want {
+			t.Errorf("%s: beta %v, safeguards %v, want %v", c.p.ID, beta, guards, c.want)
+		}
+		if !slices.Contains(betas, "interleaved-thinking-2025-05-14") {
+			t.Errorf("%s: another beta went too: %v", c.p.ID, betas)
 		}
 	}
 }

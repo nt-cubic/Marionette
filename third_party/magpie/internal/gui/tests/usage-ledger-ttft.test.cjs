@@ -51,8 +51,8 @@ function server(lang) {
 
 const L = {
   en: { head: "TTFT", detail: "First token", duration: "Duration", hint: "Sent, Effort, the first token and the cache are in each row's details" },
-  zh: { head: "首响", detail: "首响", duration: "耗时", hint: "窗口较窄：发送模型、推理强度、首响和缓存在每行的详情里" },
-  "zh-TW": { head: "首響", detail: "首響", duration: "耗時", hint: "視窗較窄：傳送模型、推理強度、首響和快取在每行的詳情裡" },
+  zh: { head: "首字耗时", detail: "首字耗时", duration: "耗时", hint: "窗口较窄：发送模型、推理强度、首字和缓存在每行的详情里" },
+  "zh-TW": { head: "首字耗時", detail: "首字耗時", duration: "耗時", hint: "視窗較窄：傳送模型、推理強度、首字和快取在每行的詳情裡" },
   ja: { head: "TTFT", detail: "最初のトークン", duration: "所要時間", hint: "ウィンドウが狭いため、送信したモデル・推論レベル・最初のトークン・キャッシュは各行の詳細にあります" },
   de: { head: "TTFT", detail: "Erstes Token", duration: "Dauer", hint: "Schmales Fenster: Gesendet, Effort, erstes Token und Cache stehen in den Details jeder Zeile" },
 };

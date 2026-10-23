@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"net/http"
 	"slices"
 
@@ -30,12 +31,16 @@ func (s *Server) serveAgent(w http.ResponseWriter, r *http.Request, from provide
 		return
 	}
 	info := gwmw.Info{Protocol: string(from), Model: modelOf(body), Stream: streamOf(body), Path: r.URL.Path, Agent: agentOf(r)}
+	var tried []gwmw.Tried
 	for _, a := range agents {
 		run := a.Begin(info)
 		if run == nil {
 			continue
 		}
 		defer run.End()
+		if t, ok := run.(gwmw.Tried); ok {
+			tried = append(tried, t)
+		}
 		var turned *gwmw.Reject
 		body, turned = run.Request(body)
 		if turned != nil {
@@ -46,7 +51,28 @@ func (s *Server) serveAgent(w http.ResponseWriter, r *http.Request, from provide
 		w, done = run.Wrap(w)
 		defer done()
 	}
+	if len(tried) > 0 {
+		r = r.WithContext(context.WithValue(r.Context(), triedKey{}, tried))
+	}
 	s.serve(w, r, from, body)
+}
+
+type triedKey struct{}
+
+// triedOn is body as it goes to model on p, in the agent's API: what each
+// middleware of the request that is also gwmw.Tried (the JS chain's
+// onProvider) made of it for that provider. Each try starts from the body
+// it is given, so a change for one provider never reaches another's.
+func triedOn(ctx context.Context, p provider.Provider, model string, body []byte) []byte {
+	tried, _ := ctx.Value(triedKey{}).([]gwmw.Tried)
+	if len(tried) == 0 {
+		return body
+	}
+	to := gwmw.To{ID: p.ID, Name: p.Name, Account: accountAgent(p), Model: model}
+	for _, t := range tried {
+		body = t.Tried(body, to)
+	}
+	return body
 }
 
 // middlewareWanted: plugins.json has a JS middleware on, so plugins/middleware

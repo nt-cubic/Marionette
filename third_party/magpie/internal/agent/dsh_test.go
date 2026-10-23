@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -319,6 +320,56 @@ func TestDshSetEffortWritesALegacyEntryWithTheCatalog(t *testing.T) {
 	for _, want := range []string{"# mine", "- id: llm-deepseek # magpie", "reasoningEffort: high", `- id: "deepseek/pro"`, `- id: "deepseek/flash"`} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("missing %q in\n%s", want, s)
+		}
+	}
+}
+
+// MisakaNatsuxun on Discord (10-23): a custom OpenAI-compatible provider
+// serving deepseek-v4.1-flash-free, set to 1M for all of its models in the
+// editor's Advanced → Context window, still had dsh told 200K, the window
+// models.dev gives that id under opencode alone. The relay's list says no
+// window, so the user's 1M is what dsh is told, and maxTokens follows from
+// it (dshMaxTokens). The models.dev bytes are opencode's own entry.
+func TestDshToldTheWindowSetForACustomProvider(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("DSH_HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	if err := os.MkdirAll(filepath.Dir(catalog.CachePath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(catalog.CachePath(), []byte(`{"opencode":{"models":{
+	  "deepseek-v4.1-flash-free":{"id":"deepseek-v4.1-flash-free","name":"DeepSeek V4.1 Flash Free","reasoning":true,"tool_call":true,
+	    "modalities":{"input":["text"],"output":["text"]},"limit":{"context":200000,"output":32000}}}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	catalog.Reset()
+	t.Cleanup(catalog.Reset)
+	for _, c := range []struct {
+		cx            map[string]int
+		window, limit int
+	}{
+		{nil, 200000, 32000},
+		{map[string]int{"*": 1000000}, 1000000, 32000},
+		{map[string]int{"deepseek-v4.1-flash-free": 1000000}, 1000000, 32000},
+		{map[string]int{"*": 128000}, 128000, 32000},
+	} {
+		if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Chat: "https://relay.test/v1", Key: "k",
+			Models: []string{"deepseek-v4.1-flash-free"}, Contexts: c.cx}); err != nil {
+			t.Fatal(err)
+		}
+		r := dshRouteConfig(magpieModels("dsh"), "", gateway.URL())
+		if len(r.Models) != 1 || r.Models[0].ID != "relay/deepseek-v4.1-flash-free" {
+			t.Fatalf("%v: models %+v", c.cx, r.Models)
+		}
+		if m := r.Models[0]; m.ContextWindow != c.window || m.MaxTokens != c.limit {
+			t.Errorf("%v: dsh told contextWindow %d, maxTokens %d; want %d, %d", c.cx, m.ContextWindow, m.MaxTokens, c.window, c.limit)
+		}
+		lines := strings.Join(dshProviderLines("high", magpieModels("dsh"), gateway.URL()), "\n") + "\n"
+		if !strings.Contains(lines, "contextWindow: "+strconv.Itoa(c.window)+"\n") {
+			t.Errorf("%v: llm-deepseek entry, want contextWindow: %d:\n%s", c.cx, c.window, lines)
 		}
 	}
 }

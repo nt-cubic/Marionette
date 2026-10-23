@@ -108,7 +108,19 @@ func StatsFor(days int) Stats {
 // StatsAt is StatsFor as if it were now.
 func StatsAt(days int, now time.Time) Stats { return statsAt(days, now) }
 
-func statsAt(days int, now time.Time) Stats {
+// StatsAndNative is StatsFor, and the agent|id of every session List would
+// list, with no limit: what tells a gateway session the agent keeps too
+// from one only magpie saw. Both come of one pass over the files, as the
+// overview asks for both on every poll (#2776).
+func StatsAndNative(days int) (Stats, map[string]bool) {
+	native := map[string]bool{}
+	return statsIn(days, time.Now(), native), native
+}
+
+func statsAt(days int, now time.Time) Stats { return statsIn(days, now, nil) }
+
+// statsIn is statsAt, filling native as StatsAndNative says when not nil.
+func statsIn(days int, now time.Time, native map[string]bool) Stats {
 	now = now.In(time.Local)
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 	var since time.Time
@@ -119,18 +131,31 @@ func statsAt(days int, now time.Time) Stats {
 	}
 	out := Stats{From: from, To: today.Format(time.DateOnly), Days: []Day{}, Sessions: []Summary{}, Keys: []string{}}
 
-	dbReadMu.Lock()
-	defer dbReadMu.Unlock()
+	storeMu.RLock()
+	defer storeMu.RUnlock()
 	mu.Lock()
 	defer mu.Unlock()
 	loadCache()
-	defer closeDBs()
+	defer useDBs()()
 	files := allFiles()
 	// every changed file, whatever the range, so a wider range picked later
 	// finds them read rather than starting another run
 	refresh(files, files)
 	identities := codexIdentitySnapshot(files)
 	taskTitles := codexSubagentTaskTitles(files)
+	if native != nil {
+		groups := map[string][]file{}
+		for _, f := range files {
+			groups[f.key] = append(groups[f.key], f)
+		}
+		price := pricer()
+		for _, fs := range groups {
+			// as List: a session nothing was said in is not listed
+			if s, ok := assembleListed(fs, price); ok {
+				native[s.Agent+"|"+s.ID] = true
+			}
+		}
+	}
 	var want []file
 	for _, f := range files {
 		if !f.mod.Before(since) {
@@ -311,7 +336,7 @@ func statsAt(days int, now time.Time) Stats {
 		if len(sh.dates) == 0 {
 			continue
 		}
-		s, ok := assemble(groups[key], price)
+		s, ok := assembleListed(groups[key], price)
 		if !ok {
 			continue
 		}

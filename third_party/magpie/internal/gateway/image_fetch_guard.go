@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/yetone/magpie/internal/netguard"
 	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
@@ -51,6 +52,20 @@ import (
 //     it can't resolve it to another (an https:// CONNECT, SOCKS, or a
 //     plain http:// request whose Host is then the address too);
 //   - each redirect goes through the same, at most imageRedirects of them.
+//
+// One more shape is let through, a fake-IP resolver's (Clash's TUN with
+// fake-ip, Clash Verge, Surge's enhanced mode, Loon; #2593): a name whose
+// every answer is in 198.18.0.0/15 (netguard.FakeIP). Pure TUN, no proxy:
+// the fake address is pinned and dialled, and the TUN carries it to the
+// host the name stands for. Through a proxy on this computer (loopback or
+// localhost), the proxy is given the name, never the fake address, which
+// it can't route; through a proxy elsewhere it is refused. An address
+// literal in the range, or an answer with any other address beside the
+// fake ones, is judged as ever. What the name stands for is then the
+// fake-IP resolver's to decide, where magpie can't see: a name that
+// really points at the user's network is reached if that resolver's
+// rules send it there. The same holds for a provider's icon
+// (internal/provider/icon.go), which shares netguard.
 
 // imageRedirects is how many redirects a caller's image URL is followed
 // through.
@@ -144,56 +159,9 @@ var lookupIP = func(ctx context.Context, host string) ([]netip.Addr, error) {
 	return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 }
 
-// specialNets are ranges no caller's image is fetched from beyond those
-// net/netip names (loopback, private, link-local, multicast, unspecified).
-var specialNets = func() []netip.Prefix {
-	var out []netip.Prefix
-	for _, s := range []string{
-		"0.0.0.0/8",       // "this" network
-		"100.64.0.0/10",   // CGNAT, Tailscale
-		"192.0.0.0/24",    // IETF protocol assignments
-		"192.0.2.0/24",    // documentation
-		"198.18.0.0/15",   // benchmarking
-		"198.51.100.0/24", // documentation
-		"203.0.113.0/24",  // documentation
-		"240.0.0.0/4",     // reserved, broadcast
-		"::/96",           // IPv4-compatible (deprecated)
-		"100::/64",        // discard
-		"2001::/32",       // Teredo
-		"2001:db8::/32",   // documentation
-		"fec0::/10",       // site-local (deprecated)
-		"64:ff9b:1::/48",  // local-use NAT64
-	} {
-		out = append(out, netip.MustParsePrefix(s))
-	}
-	return out
-}()
-
-// publicAddr says a may be fetched a caller's image from.
-func publicAddr(a netip.Addr) bool {
-	a = a.Unmap() // ::ffff:127.0.0.1 is 127.0.0.1
-	if !a.IsValid() || a.IsLoopback() || a.IsPrivate() || a.IsUnspecified() ||
-		a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() || a.IsInterfaceLocalMulticast() || a.IsMulticast() {
-		return false
-	}
-	for _, n := range specialNets {
-		if n.Contains(a) {
-			return false
-		}
-	}
-	if a.Is6() {
-		b := a.As16()
-		// an IPv4 address inside an IPv6 one: NAT64 (64:ff9b::/96) and
-		// 6to4 (2002::/16) reach it
-		if netip.MustParsePrefix("64:ff9b::/96").Contains(a) {
-			return publicAddr(netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]}))
-		}
-		if b[0] == 0x20 && b[1] == 0x02 {
-			return publicAddr(netip.AddrFrom4([4]byte{b[2], b[3], b[4], b[5]}))
-		}
-	}
-	return true
-}
+// publicAddr says a may be fetched a caller's image from: netguard's rule,
+// shared with a provider's icon.
+func publicAddr(a netip.Addr) bool { return netguard.Public(a) }
 
 // guardDialer dials only addresses ok allows, checked on the address the
 // socket is about to connect to.
@@ -209,6 +177,12 @@ func guardDialer(ok func(netip.Addr) bool) *net.Dialer {
 			return nil
 		},
 	}
+}
+
+// dialPinned is how a direct request's pinned address is dialled; a test
+// stands a local server in for a TUN behind an address it can't reach.
+var dialPinned = func(ctx context.Context, d *net.Dialer, network, addr string) (net.Conn, error) {
+	return d.DialContext(ctx, network, addr)
 }
 
 // privateDialer dials only public addresses.
@@ -233,11 +207,13 @@ func (pt publicTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	var addrs []netip.Addr
+	literal := false
 	if a, err := netip.ParseAddr(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")); err == nil {
-		addrs = []netip.Addr{a}
+		addrs, literal = []netip.Addr{a}, true
 	} else if addrs, err = lookupIP(req.Context(), host); err != nil {
 		return nil, err
 	}
+	addrs = dropLoon(addrs)
 	if len(addrs) == 0 {
 		return nil, fmt.Errorf("%s resolves to no address", host)
 	}
@@ -247,11 +223,22 @@ func (pt publicTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	allow := allowFor(pt.also)
 	named := allow.host(host, port)
-	for _, a := range addrs {
-		if !named && !allow.addr(a) {
+	// a name a fake-IP resolver answered (fakeAnswer) is carried by the
+	// TUN when dialled directly, its address pinned, or by a proxy on
+	// this computer given the name, never the address (byName)
+	fake := !literal && fakeAnswer(addrs)
+	if !named && !allAllowed(allow, addrs) {
+		if !fake {
+			return nil, errPrivateAddress
+		}
+		if proxy != nil && !onThisComputer(proxy) {
+			// a proxy elsewhere has no fake-IP resolver of ours to ask:
+			// neither the name nor the address is known to reach the
+			// host the name stands for
 			return nil, errPrivateAddress
 		}
 	}
+	byName := fake && proxy != nil && onThisComputer(proxy)
 	var tc *tls.Config
 	if upstreamTLS != nil {
 		tc = upstreamTLS.Clone()
@@ -269,12 +256,23 @@ func (pt publicTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	if proxy == nil {
 		pinned := addrs[0].Unmap()
-		t.DialContext = guardDialer(func(a netip.Addr) bool {
-			return allow.addr(a) || named && a.Unmap() == pinned
-		}).DialContext
+		d := guardDialer(func(a netip.Addr) bool {
+			return allow.addr(a) || (named || fake) && a.Unmap() == pinned
+		})
+		t.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return dialPinned(ctx, d, network, addr)
+		}
 	}
 	out := req.Clone(req.Context())
-	out.URL.Host = net.JoinHostPort(addrs[0].Unmap().String(), port)
+	if byName {
+		// the proxy resolves the name itself: it is the fake-IP resolver
+		// (or carried by it), and a fake address pinned here is one it
+		// can't route (h4rk8s on #2593: CONNECT by the name went through,
+		// by its 198.18 address didn't)
+		out.URL.Host = net.JoinHostPort(host, port)
+	} else {
+		out.URL.Host = net.JoinHostPort(addrs[0].Unmap().String(), port)
+	}
 	out.Host = req.Host
 	if out.Host == "" {
 		out.Host = req.URL.Host
@@ -282,11 +280,61 @@ func (pt publicTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// a plain http:// URL through an HTTP proxy is sent to it whole, its
 	// host taken from Host: the proxy would resolve the name again, so it
 	// is given the address instead (a site that serves only by name won't
-	// answer it; https://, and any URL through SOCKS, keep the name)
+	// answer it; https://, and any URL through SOCKS, keep the name). The
+	// name given on purpose (byName) is the one checked, never a Host of
+	// the caller's own.
 	if proxy != nil && req.URL.Scheme == "http" && (proxy.Scheme == "http" || proxy.Scheme == "https") {
 		out.Host = out.URL.Host
 	}
 	return t.RoundTrip(out)
+}
+
+// allAllowed says every address may be fetched from (public, or the
+// user's fetchPrivate).
+func allAllowed(allow fetchAllow, addrs []netip.Addr) bool {
+	for _, a := range addrs {
+		if !allow.addr(a) {
+			return false
+		}
+	}
+	return true
+}
+
+// fakeAnswer says every address a name resolved to is a fake-IP
+// resolver's (netguard.FakeIP). One real address beside them, private or
+// public, is not that resolver's answer alone, and is judged as any is.
+func fakeAnswer(addrs []netip.Addr) bool {
+	for _, a := range addrs {
+		if !netguard.FakeIP(a) {
+			return false
+		}
+	}
+	return len(addrs) > 0
+}
+
+// dropLoon leaves out the AAAA records Loon synthesizes for an A answer
+// in the same reply (netguard.LoonPaired): the A answer is judged, and
+// pinned, in their place.
+func dropLoon(addrs []netip.Addr) []netip.Addr {
+	var out []netip.Addr
+	for _, a := range addrs {
+		if !netguard.LoonPaired(a, addrs) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// onThisComputer says proxy listens on this computer (Clash's
+// 127.0.0.1:7890, Surge's 127.0.0.1:6152): a loopback address, or
+// localhost.
+func onThisComputer(proxy *url.URL) bool {
+	h := strings.ToLower(proxy.Hostname())
+	if h == "localhost" {
+		return true
+	}
+	a, err := netip.ParseAddr(h)
+	return err == nil && a.Unmap().IsLoopback()
 }
 
 // publicClient downloads a URL magpie didn't choose: from public

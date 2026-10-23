@@ -100,6 +100,7 @@
   <section class="panel-quota" id="panelQuota" hidden></section>
   <section class="panel-routing" id="panelRouting" data-feature="routing" hidden></section>
   <section class="panel-usage" id="panelUsage" hidden></section>
+  <div class="plugin-slot" data-slot="agents" hidden></div>
 </main>
 
 <main class="view" id="view-providers" hidden>
@@ -138,6 +139,7 @@
     <button type="button" role="tab" id="setTab-privacy" data-set="privacy" aria-controls="setPage-privacy" data-t>Privacy</button>
     <button type="button" role="tab" id="setTab-otel" data-set="otel" aria-controls="setPage-otel" data-feature="otel" data-t>Observability</button>
     <button type="button" role="tab" id="setTab-sync" data-set="sync" aria-controls="setPage-sync" data-t>Sync and backup</button>
+    <button type="button" role="tab" id="setTab-plugins" data-set="plugins" aria-controls="setPage-plugins" data-t hidden>Plugins</button>
     <button type="button" role="tab" id="setTab-about" data-set="about" aria-controls="setPage-about" data-t>About</button>
   </div><input class="sess-filter set-q" id="setQ" type="search" spellcheck="false" autocomplete="off" placeholder="Find a setting" aria-label="Find a setting" data-tp></div>
   <p class="set-none" id="setNone" role="status" hidden></p>
@@ -191,38 +193,8 @@
         <div class="who"><div class="name" data-t>Provider in model names</div></div>
         <div id="plainNamesSegs"></div>
       </div>
-      <div class="row pref">
-        <div class="who"><div class="name" data-t>Codex subagents on any model</div><div class="sub" data-t>A GPT lead spawns subagents on magpie’s other models. New threads only; Codex’s own multi_agent_v2 still wins</div><div class="sub err" id="codexAgentsV1Warn" hidden></div></div>
-        <div id="codexAgentsV1Segs"></div>
-      </div>
-      <div class="row pref">
-        <div class="who"><div class="name" data-t>Long conversations</div><div class="sub" data-t>Codex and Claude Code compact at 272K (non-Claude [1m] too) or the size typed; full window: slower, costlier</div></div>
-        <div id="fullContextSegs"></div>
-      </div>
-      <div class="row pref" id="codexAsyncRow">
-        <div class="who"><div class="name" data-t>Codex background compaction</div><div class="sub" data-t>Codex 0.163 and later summarise while a turn goes on, past the share of the window typed (65% when empty); a value set in its own config stays</div></div>
-        <div id="codexAsyncSegs"></div>
-      </div>
-      <div class="row pref" id="codexTitlesRow">
-        <div class="who"><div class="name" data-t>Codex thread titles</div></div>
-        <div class="val" id="codexTitlesPick"></div>
-      </div>
-      <div class="row pref" id="codexDescriptionsRow">
-        <div class="who"><div class="name" data-t>Codex thread descriptions</div></div>
-        <div class="val" id="codexDescriptionsPick"></div>
-      </div>
-      <div class="row pref" id="codexPredictionsRow">
-        <div class="who"><div class="name" data-t>Codex composer predictions</div></div>
-        <div class="val" id="codexPredictionsPick"></div>
-      </div>
-      <div class="row pref" id="codexAutoReviewRow">
-        <div class="who"><div class="name" data-t>Codex auto-review model</div></div>
-        <div class="val" id="codexAutoReviewPick"></div>
-      </div>
-      <div class="row pref" id="codexMemoriesRow" hidden>
-        <div class="who"><div class="name" data-t>Codex memories model</div></div>
-        <div class="val" id="codexMemoriesPick"></div>
-      </div>
+      <!-- Codex's and Claude Code's own settings are on the Agents page (AGENT_PREFS); while searching, a row here says where -->
+      <div id="agentPrefLinks"></div>
       <div class="row pref" id="loginRow">
         <div class="who"><div class="name" data-t>Open at login</div></div>
         <div id="loginSegs"></div>
@@ -402,7 +374,18 @@
     <div class="list prefs" id="disabledModelsList"></div>
   </section>
   <section class="set-page" id="setPage-privacy" role="tabpanel" aria-labelledby="setTab-privacy">
+    <div class="mask-obs" id="maskObs"></div>
+    <div class="mask-recs" id="maskRecs" hidden></div>
+    <div class="row-head"><span class="label" data-t>What to mask</span></div>
     <div class="list prefs" id="redactList"></div>
+    <div class="row-head"><span class="label" data-t>When a value is found</span></div>
+    <div class="list prefs" id="maskActList"></div>
+    <div class="row-head"><span class="label" data-t>Try it</span></div>
+    <div class="list prefs" id="maskTryList"></div>
+    <div class="row-head"><span class="label" data-t>How it's found</span></div>
+    <div class="list prefs" id="findList"></div>
+    <div class="row-head"><span class="label" data-t>Sharing</span></div>
+    <div class="list prefs" id="shareList"></div>
     <div class="row-head"><span class="label" data-t>Agents' sign-ins</span></div>
     <div class="list prefs" id="discoveryList"></div>
   </section>
@@ -411,6 +394,9 @@
   </section>
   <section class="set-page" id="setPage-sync" role="tabpanel" aria-labelledby="setTab-sync">
     <div class="list prefs" id="syncList"></div>
+  </section>
+  <section class="set-page" id="setPage-plugins" role="tabpanel" aria-labelledby="setTab-plugins">
+    <div class="plugin-slot" data-slot="settings" hidden></div>
   </section>
   <section class="set-page" id="setPage-about" role="tabpanel" aria-labelledby="setTab-about">
     <div class="list prefs" id="about"></div>
@@ -447,6 +433,41 @@
   </div>
 </div>
 
+<!-- an agent's own settings, drawn here and shown in its sheet or opened row (AGENT_PREFS) -->
+<div id="agentPrefRows" hidden>
+  <div class="row pref" id="codexAgentsV1Row">
+    <div class="who"><div class="name" data-t>Codex subagents on any model</div><div class="sub" data-t>A GPT lead spawns subagents on magpie’s other models. New threads only; Codex’s own multi_agent_v2 still wins</div><div class="sub err" id="codexAgentsV1Warn" hidden></div></div>
+    <div id="codexAgentsV1Segs"></div>
+  </div>
+  <div class="row pref" id="fullContextRow">
+    <div class="who"><div class="name" data-t>Long conversations</div><div class="sub" data-t>Codex and Claude Code compact at 272K (non-Claude [1m] too) or the size typed; full window: slower, costlier</div></div>
+    <div id="fullContextSegs"></div>
+  </div>
+  <div class="row pref" id="codexAsyncRow">
+    <div class="who"><div class="name" data-t>Codex background compaction</div><div class="sub" data-t>Codex 0.163 and later summarise while a turn goes on, past the share of the window typed (65% when empty); a value set in its own config stays</div></div>
+    <div id="codexAsyncSegs"></div>
+  </div>
+  <div class="row pref" id="codexTitlesRow">
+    <div class="who"><div class="name" data-t>Codex thread titles</div></div>
+    <div class="val" id="codexTitlesPick"></div>
+  </div>
+  <div class="row pref" id="codexDescriptionsRow">
+    <div class="who"><div class="name" data-t>Codex thread descriptions</div></div>
+    <div class="val" id="codexDescriptionsPick"></div>
+  </div>
+  <div class="row pref" id="codexPredictionsRow">
+    <div class="who"><div class="name" data-t>Codex composer predictions</div></div>
+    <div class="val" id="codexPredictionsPick"></div>
+  </div>
+  <div class="row pref" id="codexAutoReviewRow">
+    <div class="who"><div class="name" data-t>Codex auto-review model</div></div>
+    <div class="val" id="codexAutoReviewPick"></div>
+  </div>
+  <div class="row pref" id="codexMemoriesRow" hidden>
+    <div class="who"><div class="name" data-t>Codex memories model</div></div>
+    <div class="val" id="codexMemoriesPick"></div>
+  </div>
+</div>
 <script src="i18n.js"></script>
 <script src="kernel.js"></script>
 <!-- the built-in plugins' own scripts (pluginrt.Manifest.Client) -->

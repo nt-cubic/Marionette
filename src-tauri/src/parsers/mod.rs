@@ -17,6 +17,7 @@ mod opencode;
 pub(crate) mod path_norm;
 mod pi;
 pub(crate) mod util;
+mod zcode;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -89,6 +90,7 @@ fn make_parser(source: &str) -> Option<Box<dyn AgentParser>> {
         "hermes" => Box::new(hermes::HermesParser),
         "cursor" => Box::new(cursor::CursorParser),
         "deepseek" => Box::new(deepseek::DeepSeekParser),
+        "zcode" => Box::new(zcode::ZcodeParser),
         _ => return None,
     })
 }
@@ -108,6 +110,7 @@ const SOURCES: &[&str] = &[
     "hermes",
     "cursor",
     "deepseek",
+    "zcode",
 ];
 
 /// Each parser runs on its own thread. One source failing does not fail the rest.

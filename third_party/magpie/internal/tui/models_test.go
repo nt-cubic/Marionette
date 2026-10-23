@@ -1,12 +1,14 @@
 package tui
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -17,47 +19,45 @@ import (
 	"github.com/yetone/magpie/internal/provider"
 )
 
-// fakeCursor signs a Cursor account in through a cursor-agent of the test's
-// own, the way the real CLI answers `about` and `models`. While down is
-// there, `models` fails, as a CLI with no network does.
-func fakeCursor(t *testing.T, h string) (down string) {
+// fakeCodex signs a ChatGPT account in to Codex, its models listed by a
+// server of the test's own the way ChatGPT's backend answers. While down is
+// there, the list fails, as with no network.
+func fakeCodex(t *testing.T, h string) (down string) {
 	t.Helper()
-	cli := filepath.Join(h, "cursor-agent")
-	down = filepath.Join(h, "cursor-down")
-	write(t, cli, `#!/bin/sh
-case "$1" in
-about) echo '{"userEmail":"cursor@example.com","subscriptionTier":"pro"}' ;;
-models) [ -e '`+down+`' ] && { echo 'network error' >&2; exit 1; }
-	printf 'Available models\n\nauto - Auto (default)\ncomposer-2.5 - Composer 2.5\ngpt-5.2 - GPT-5.2\ngpt-5.5 - GPT-5.5\n' ;;
-*) exit 1 ;;
-esac
-`)
-	if err := os.Chmod(cli, 0o755); err != nil {
-		t.Fatal(err)
+	down = filepath.Join(h, "codex-down")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := os.Stat(down); err == nil || r.URL.Path != "/backend-api/codex/models" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		var ms []map[string]any
+		for i, id := range []string{"gpt-5.5", "gpt-6-luna"} {
+			ms = append(ms, map[string]any{"slug": id, "display_name": id, "visibility": "list", "priority": i + 1})
+		}
+		b, _ := json.Marshal(map[string]any{"models": ms})
+		w.Write(b)
+	}))
+	old := provider.CodexBase
+	provider.CodexBase = srv.URL + "/backend-api/codex"
+	jwt := func(claims map[string]any) string {
+		b, _ := json.Marshal(claims)
+		return "e30." + base64.RawURLEncoding.EncodeToString(b) + ".sig"
 	}
-	old := provider.CursorExecutable
-	provider.CursorExecutable = func() string { return cli }
+	b, _ := json.Marshal(map[string]any{"auth_mode": "chatgpt", "tokens": map[string]any{
+		"id_token": jwt(map[string]any{"email": "me@example.com",
+			"https://api.openai.com/auth": map[string]any{"chatgpt_plan_type": "pro", "chatgpt_account_id": "acct-1"}}),
+		"access_token":  jwt(map[string]any{"exp": float64(time.Now().Add(24 * time.Hour).Unix())}),
+		"refresh_token": "r", "account_id": "acct-1",
+	}})
+	write(t, filepath.Join(h, ".codex", "auth.json"), string(b))
 	provider.ForgetAccounts()
 	t.Cleanup(func() {
-		provider.CursorExecutable = old
+		provider.CodexBase = old
+		srv.Close()
 		provider.ForgetAccounts()
 	})
-	// signed in once `about` has answered: a look waits 3s for it, which
-	// a loaded machine's shell can take longer than, and an ask past its
-	// own 10s (a new script's first run, under load) is asked again only a
-	// minute later, so it is asked afresh here once that 10s is over
-	asked := time.Now()
-	for deadline := asked.Add(2 * time.Minute); ; time.Sleep(20 * time.Millisecond) {
-		if p, err := provider.Find("cursor"); err == nil && p.Account != nil && p.Ready() {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the fake cursor-agent's account never signed in")
-		}
-		if time.Since(asked) > 15*time.Second {
-			provider.ForgetAccounts()
-			asked = time.Now()
-		}
+	if p, err := provider.Find("codex"); err != nil || p.Account == nil || !p.Ready() {
+		t.Fatalf("the ChatGPT account isn't signed in: %v", err)
 	}
 	// a cold models.dev sync answered here: no test request leaves this
 	// process
@@ -67,35 +67,33 @@ esac
 	return down
 }
 
-// Cursor's list exists only at Cursor: the terminal asks for it at start
-// and fills a model picker opened before it came, with no m on the
-// Providers page (#1789, reyoung: Routing offered cursor/auto alone).
+// A subscription's list exists only at its vendor: the terminal asks for it
+// at start and fills a model picker opened before it came, with no m on the
+// Providers page (#1789, reyoung: Routing offered cursor/auto alone, from
+// Cursor's built-in, since retired; Codex's ChatGPT account stands in).
 func TestTUIFetchesSubscriptionModels(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake cursor-agent is a shell script")
-	}
 	for _, view := range []string{"routing", "routing with catalog sync", "routing with catalog sync last", "provider", "classifier", "agent"} {
 		t.Run(view, func(t *testing.T) {
-			fakeCursor(t, home(t))
+			fakeCodex(t, home(t))
 			m := model{w: 120, h: 40, syncing: strings.Contains(view, "sync")}
 			init := m.Init()
 			m, want := openModelPicker(t, m, view)
-			m = typeIn(m, "auto")
-			// GPT-5.5 is served by b too, so the list fetched adds a group
-			// sorting before cursor/auto under this filter: the model on
-			// the cursor stays, not its row
+			m = typeIn(m, "gpt-5.5")
+			// the list fetched adds codex/gpt-5.5 under this filter: the
+			// model on the cursor stays, not its row
+			// (Codex's own picker has none before its list: nothing to hold)
 			selected, _ := m.pk.choice()
-			if selected == "" {
-				t.Fatalf("Cursor's fallback Auto is not in the picker\n%s", m.View())
+			if selected == "" && view != "provider" {
+				t.Fatalf("no GPT-5.5 in the picker\n%s", m.View())
 			}
 			m, _ = runModelsCmd(m, init, strings.HasSuffix(view, "last"))
-			if got, _ := m.pk.choice(); got != selected || m.pk.input.Value() != "auto" || m.mode != modePick {
+			if got, _ := m.pk.choice(); selected != "" && got != selected || m.pk.input.Value() != "gpt-5.5" || m.mode != modePick {
 				t.Fatalf("the list arriving changed the open picker: choice %q, filter %q, mode %v", got, m.pk.input.Value(), m.mode)
 			}
-			m.pk.input.SetValue("composer-2.5")
+			m.pk.input.SetValue("gpt-6-luna")
 			m.pk.refilter()
 			if got, _ := m.pk.choice(); got != want {
-				t.Fatalf("Cursor's picker left on Auto alone: got %q, want %q\n%s", got, want, m.View())
+				t.Fatalf("the picker hasn't Codex's listed model: got %q, want %q\n%s", got, want, m.View())
 			}
 		})
 	}
@@ -104,10 +102,7 @@ func TestTUIFetchesSubscriptionModels(t *testing.T) {
 // A list that couldn't be had at start (no network yet) is asked for again
 // while the terminal stays open, not only after a restart.
 func TestTUIAsksAgainForAMissingList(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake cursor-agent is a shell script")
-	}
-	down := fakeCursor(t, home(t))
+	down := fakeCodex(t, home(t))
 	write(t, down, "")
 	old := modelsRetry
 	modelsRetry = 0
@@ -116,17 +111,17 @@ func TestTUIAsksAgainForAMissingList(t *testing.T) {
 	m, _ := openModelPicker(t, model{w: 120, h: 40}, "routing")
 	m, retry := runModelsCmd(m, m.Init(), false)
 	if retry == nil {
-		t.Fatal("Cursor's list failed and nothing asks for it again")
+		t.Fatal("Codex's list failed and nothing asks for it again")
 	}
 	if err := os.Remove(down); err != nil {
 		t.Fatal(err)
 	}
 	provider.ForgetAccounts() // the minute FetchNew waits after a failure
 	m, again := runModelsCmd(m, retry, false)
-	m.pk.input.SetValue("composer-2.5")
+	m.pk.input.SetValue("gpt-6-luna")
 	m.pk.refilter()
-	if got, _ := m.pk.choice(); got != "cursor/composer-2.5" {
-		t.Fatalf("asked again, still no Composer: %q\n%s", got, m.View())
+	if got, _ := m.pk.choice(); got != "codex/gpt-6-luna" {
+		t.Fatalf("asked again, still no gpt-6-luna: %q\n%s", got, m.View())
 	}
 	if again != nil {
 		t.Fatal("asks again with every list there")
@@ -134,7 +129,7 @@ func TestTUIAsksAgainForAMissingList(t *testing.T) {
 }
 
 // openModelPicker opens one of the terminal's four pickers of models, and
-// says what Composer 2.5 is called in it.
+// says what Codex's gpt-6-luna is called in it.
 func openModelPicker(t *testing.T, m model, view string) (model, string) {
 	t.Helper()
 	switch view {
@@ -142,12 +137,12 @@ func openModelPicker(t *testing.T, m model, view string) (model, string) {
 		m.page = pageProviders
 		m.reloadProviders()
 		for i, p := range m.provs {
-			if p.ID == "cursor" {
+			if p.ID == "codex" {
 				m.prow = i
 			}
 		}
-		m.openProviderModels("cursor")
-		return m, "composer-2.5"
+		m.openProviderModels("codex")
+		return m, "gpt-6-luna"
 	case "classifier":
 		m.page = pageGroups
 		m.openClassifier(provider.Group{ID: "test", Name: "Test"})
@@ -159,11 +154,12 @@ func openModelPicker(t *testing.T, m model, view string) (model, string) {
 		m.agents = []*agent.Agent{a}
 		m.reload()
 		m.openFieldPicker()
+		return m, "gpt-6-luna" // Codex's own account: its models bare
 	default:
 		m.page = pageGroups
 		m.openMemberPicker(pickMsg{newGroup: "Test"})
 	}
-	return m, "cursor/composer-2.5"
+	return m, "codex/gpt-6-luna"
 }
 
 // runModelsCmd runs what Init or a retry returned and hands its messages to
@@ -196,6 +192,9 @@ func runModelsCmd(m model, cmd tea.Cmd, reverse bool) (model, tea.Cmd) {
 type modelsTransport struct{}
 
 func (modelsTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.URL.Hostname() == "127.0.0.1" {
+		return http.DefaultTransport.RoundTrip(r) // the test's own vendor
+	}
 	if r.URL.String() != "https://models.dev/api.json" {
 		return nil, fmt.Errorf("unexpected request to %s", r.URL.Host)
 	}

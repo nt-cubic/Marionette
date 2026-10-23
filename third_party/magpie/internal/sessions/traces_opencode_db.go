@@ -12,7 +12,7 @@ import (
 
 // These connections belong to the trace reader, not the Sessions listing cache.
 // Updates are read in timestamp/ID order in bounded batches; large histories
-// neither hold dbReadMu nor force the entire conversation to be re-exported.
+// neither hold storeMu nor force the entire conversation to be re-exported.
 type ocTraceState struct {
 	messages      map[string]ocTraceMessage
 	order         []string

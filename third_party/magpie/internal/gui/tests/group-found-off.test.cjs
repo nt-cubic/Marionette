@@ -121,7 +121,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
       const missing = await page.evaluate(() => [
         "Find groups on their own", "Found groups are on", "Found groups are off: only yours are listed and served",
-        "A model two or more of your providers serve becomes a group of them (auto-…). Switch it off to list and serve only the groups you made or changed.",
+        "A model two or more of your providers serve becomes a group of them (auto/…). Switch it off to list and serve only the groups you made or changed.",
         "Off: only the groups you made or changed are listed and served. An agent set to a found group is moved to its model from one provider, and a request still naming one goes there too.",
         "No group yet. New group makes one of any models you like.",
       ].filter((k) => !I18N.zh[k]));

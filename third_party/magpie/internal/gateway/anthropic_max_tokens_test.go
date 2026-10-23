@@ -7,11 +7,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 
-	"github.com/tidwall/gjson"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/provider"
 )
@@ -106,47 +104,5 @@ func TestAnthropicMaxTokensIsTheModels(t *testing.T) {
 	budget, _ := th["budget_tokens"].(float64)
 	if got != 8192 || th["type"] != "enabled" || budget <= 0 || int(budget) >= got {
 		t.Fatalf("max_tokens %d, thinking %v", got, q["thinking"])
-	}
-}
-
-// A Zed subscription's Claude is asked in Anthropic's request inside Zed's
-// envelope, so a turn naming no limit takes the model's own there too.
-func TestZedClaudeMaxTokensIsTheModels(t *testing.T) {
-	fresh(t)
-	var got []int64
-	zedUpstream(t, "anthropic", func(w http.ResponseWriter, b []byte, _ string) {
-		got = append(got, gjson.GetBytes(b, "provider_request.max_tokens").Int())
-		zedLines(w,
-			zedEvent(`{"type":"message_start","message":{"id":"m","role":"assistant","usage":{"input_tokens":1,"output_tokens":0}}}`),
-			zedEvent(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
-			zedEvent(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`),
-			zedEvent(`{"type":"content_block_stop","index":0}`),
-			zedEvent(`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`),
-			zedEvent(`{"type":"message_stop"}`),
-			zedEnded)
-	})
-	// a provider of the user's stands in for the subscription in the
-	// catalog ("zed" itself is the built-in's id), saved after zedUpstream
-	// moves the config folder
-	if err := provider.Save(provider.Provider{ID: "zz", Name: "Zz", Key: "k", Models: []string{"claude-sonnet-4-5"}, Anthropic: "http://zed.invalid/v1"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := provider.SetModelOutput("zz/claude-sonnet-4-5", 40000); err != nil {
-		t.Fatal(err)
-	}
-	s := New()
-	for _, body := range []string{
-		`{"model":"zz/claude-sonnet-4-5","input":"hi"}`,
-		`{"model":"zz/claude-sonnet-4-5","input":"hi","max_output_tokens":1000}`,
-	} {
-		w := httptest.NewRecorder()
-		var u Usage
-		p := provider.Provider{ID: "zz", Account: &provider.Account{Agent: "zed", User: "octo"}}
-		if status, msg := s.serveZed(w, httptest.NewRequest("POST", "/", strings.NewReader(body)), provider.Responses, p, "claude-sonnet-4-5", []byte(body), &u); status != 200 {
-			t.Fatalf("%s: %d %q\n%s", body, status, msg, w.Body.String())
-		}
-	}
-	if len(got) != 2 || got[0] != 40000 || got[1] != 1000 {
-		t.Fatalf("max_tokens %v, want [40000 1000]", got)
 	}
 }

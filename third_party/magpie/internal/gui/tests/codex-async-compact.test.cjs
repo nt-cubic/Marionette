@@ -1,5 +1,5 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
-// Settings → Long conversations' Codex background compaction (#2490): Off /
+// Codex's settings, on its opened row: background compaction (#2490): Off /
 // On, and with it on the share of the window Codex starts at, typed as a
 // percent (empty: Codex's own 65%). Each posts settings/codex-async-compact
 // on its own, a value that isn't 0 to 100 is refused before anything is
@@ -10,6 +10,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { watchSettingsReads, agentRow, openAgentSettings } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 
@@ -23,7 +24,7 @@ function serve(lang, posts) {
     const json = (data) => route.fulfill({ json: data });
     if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:${JSON.stringify(lang)},theme:"light",web:true};` });
     if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
-    if (url.pathname === "/api/state") return json({ agents: [], profiles: [], settings: { lang, theme: "light" } });
+    if (url.pathname === "/api/state") return json({ agents: [agentRow("codex", "Codex")], profiles: [], settings: { lang, theme: "light" } });
     if (url.pathname === "/api/providers") return json(providers);
     if (url.pathname === "/api/groups") return json({ groups: [], models: [] });
     if (url.pathname.startsWith("/api/provider/")) {
@@ -71,13 +72,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const errors = [], posts = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", serve(lang, posts));
-      await page.goto("http://magpie.test/?view=settings");
+      await watchSettingsReads(page);
+      await page.goto("http://magpie.test/?view=agents");
+      await openAgentSettings(page);
       const row = page.locator("#codexAsyncRow");
       await row.getByText(w.name, { exact: true }).waitFor();
       assert.equal(await row.locator("select").count(), 0, "no native select");
       const num = row.locator("input.compact-num");
       assert(await num.isHidden(), "no threshold while off");
-      const view = () => page.locator("#view-settings").evaluate((v) => v.scrollTop);
+      const view = () => page.locator("#view-agents").evaluate((v) => v.scrollTop);
       const before = await view();
       await row.getByText(w.on, { exact: true }).click();
       await page.waitForFunction(() => document.querySelector("#codexAsyncRow input.compact-num")?.hidden === false);

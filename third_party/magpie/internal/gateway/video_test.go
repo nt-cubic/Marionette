@@ -572,7 +572,7 @@ func TestVideoModelByItsBareName(t *testing.T) {
 	for name, c := range map[string]struct {
 		code int
 		want string
-	}{"nothing": {404, "knows no model"}, "grok-4.7": {400, "can't make videos"}} {
+	}{"nothing": {404, "knows no model"}, "fake-1": {400, "can't make videos"}} { // fake-1: a chat model the (fake) Grok plugin lists
 		code, obj, raw, _ := request(t, s, "POST", "/v1/videos", "application/json", `{"prompt":"a kite","model":"`+name+`"}`)
 		if code != c.code || !strings.Contains(errorOf(obj), c.want) {
 			t.Errorf("%s: %d %s", name, code, raw)
@@ -627,6 +627,7 @@ func TestVideoSecondsAndResolutionAsAsked(t *testing.T) {
 // user's settings.json "fetchPrivate" names it.
 func TestVideoContentAtPrivateAddressNotFetched(t *testing.T) {
 	grokSignedIn(t)
+	allowPrivate(t) // grokSignedIn names loopback; here no private host is named
 	inside, hits := secret(t, "secret-bytes")
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

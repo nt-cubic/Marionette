@@ -90,7 +90,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           };
           const chip = (n) => editor.locator(".mchips .mchip", { has: page.locator(`span:text-is("${n}")`) });
           const picked = () => editor.locator(".mchips .mchip.on").evaluateAll((cs) => cs.map((c) => c.firstChild.textContent));
-          const ticked = () => editor.locator(".mchips .mchip").evaluateAll((cs) => cs.filter((c) => getComputedStyle(c, "::before").content.includes("✓")).length);
+          const ticked = () => editor.locator(".mchips .mchip").evaluateAll((cs) => cs.filter((c) => { const b = getComputedStyle(c, "::before"); return b.content.includes("✓") && b.visibility === "visible"; }).length);
 
           // untouched and saved: no picks written, as before
           await open();

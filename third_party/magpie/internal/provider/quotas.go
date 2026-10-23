@@ -16,6 +16,28 @@ func Quotas(ctx context.Context) []SubscriptionQuota {
 	return cardsServed(subs, plans, balances, LastServed())
 }
 
+// InProviderOrder is qs in the order the user put the providers in on the
+// Providers page (SetOrder), each provider's cards as they came; a card of
+// no provider here (a remote magpie's) after them all. The window's Usage
+// page and the tray panel's Allowances tab draw them so, where the user
+// hasn't arranged the cards themselves (Zhenbao TONG on Discord: the
+// providers moved in the window, the tray kept its own order).
+func InProviderOrder(qs []SubscriptionQuota) []SubscriptionQuota {
+	at := map[string]int{}
+	for i, p := range All() {
+		at[p.ID] = i
+	}
+	rank := func(q SubscriptionQuota) int {
+		if i, ok := at[q.Provider]; ok {
+			return i
+		}
+		return len(at)
+	}
+	out := slices.Clone(qs)
+	slices.SortStableFunc(out, func(a, b SubscriptionQuota) int { return rank(a) - rank(b) })
+	return out
+}
+
 // Allotted is Quotas without the keys' balances: the accounts and plans
 // whose allowance runs out and starts again, which is what magpie quota
 // wait waits on; no key's balance is asked for.

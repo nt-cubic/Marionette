@@ -77,7 +77,7 @@ func bareTarget(shown []Entry, all []Group, entries []Entry, id string) int {
 	if !strings.Contains(id, "/") {
 		if gid, ok := groupForIn(all, id); ok {
 			for i, e := range shown {
-				if e.ID == gid {
+				if e.ID == gid || e.Group != "" && GroupPrefix+e.Group == gid {
 					return i
 				}
 			}

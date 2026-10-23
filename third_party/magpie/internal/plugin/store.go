@@ -472,7 +472,7 @@ func notPlugin(target string) error {
 	if f, _ := Agent(target); f != "" {
 		return nil
 	}
-	if p, _ := WindowPage(target); p != nil {
+	if w, _ := Window(target); w != nil {
 		return nil
 	}
 	var pkg struct {
@@ -720,6 +720,7 @@ func install(ctx context.Context, spec string) error {
 	}
 	if err == nil {
 		pruneDist()
+		pruneInstallCache()
 	}
 	return err
 }

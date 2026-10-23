@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,7 +25,9 @@ import (
 
 // A community plugin's own page in magpie's window (P4 of
 // docs/subsystems/plugin-runtime.md): package.json's magpie.page, shown in
-// a sandboxed frame (pluginpages.js). Its files are served under
+// a sandboxed frame (pluginpages.js), and its panels in magpie's own pages
+// (magpie.panels, P5), each in a frame of its own shut in the same way.
+// Their files are served under
 // pluginPagePrefix and a token only this run of magpie hands out, with a
 // policy that lets the page load nothing but its own files and reach
 // nothing over the network; it has no way to magpie's /api (apiFramed),
@@ -61,31 +64,63 @@ func pageToken(spec string) string {
 
 // pluginPage is a plugin's page, of a plugin that is on.
 type pluginPage struct {
-	Spec  string   `json:"spec"`
-	Name  string   `json:"name"`  // its package's
-	Key   string   `json:"key"`   // the window's page key
-	Title string   `json:"title"` // the page's, or the package's short name
-	URL   string   `json:"url"`   // the page, under pluginPagePrefix
-	Icon  string   `json:"icon,omitempty"`
-	Reads []string `json:"reads"` // what it may read, of plugin.PageReads
-	token string
-	spec  *plugin.PageSpec
+	Spec  string `json:"spec"`
+	Name  string `json:"name"`  // its package's
+	Key   string `json:"key"`   // the window's page key
+	Title string `json:"title"` // the page's, or the package's short name
+	// Titles are its title by the window's language (plugin.PageSpec)
+	Titles map[string]string `json:"titles,omitempty"`
+	URL    string            `json:"url"` // the page, under pluginPagePrefix
+	Icon   string            `json:"icon,omitempty"`
+	// Replaces is the built-in page whose place it takes: the first
+	// plugin's in plugins.json's order to ask for it
+	Replaces string   `json:"replaces,omitempty"`
+	Reads    []string `json:"reads"` // what it may read, of plugin.PageReads
+	// Actions are its items in magpie's menus (plugin.ActionSpec); each
+	// opens this page
+	Actions []pluginAction `json:"actions,omitempty"`
+	token   string
+	dir     string
+}
+
+// pluginAction is an item a plugin's page adds to one of magpie's menus.
+type pluginAction struct {
+	ID     string            `json:"id"`
+	Menu   string            `json:"menu"`  // of plugin.ActionMenus
+	Title  string            `json:"title"` // its own, or its page's
+	Titles map[string]string `json:"titles,omitempty"`
+}
+
+// pluginPanel is a panel a plugin that is on adds to one of magpie's own
+// pages (plugin.PanelSlots).
+type pluginPanel struct {
+	Spec   string            `json:"spec"`
+	Name   string            `json:"name"`  // its package's
+	Key    string            `json:"key"`   // the panel's, among every plugin's
+	Slot   string            `json:"slot"`  // the page it is in
+	Title  string            `json:"title"` // the panel's, or the package's short name
+	Titles map[string]string `json:"titles,omitempty"`
+	URL    string            `json:"url"`   // the panel, under pluginPagePrefix
+	Reads  []string          `json:"reads"` // what it may read, of plugin.PageReads
+	token  string
+	dir    string
 }
 
 // pageKeyChars are what a window page's key can't have
 var pageKeyChars = strings.NewReplacer("@", "", "/", "-", ".", "-", "_", "-", " ", "-")
 
-// pluginPages are the pages of the plugins that are on, in plugins.json's
-// order. A plugin switched off has none: its files aren't served.
-func pluginPages() []pluginPage {
-	var out []pluginPage
+// windowParts are the pages and the panels of the plugins that are on, in
+// plugins.json's order. A plugin switched off has none: its files aren't
+// served.
+func windowParts() (pages []pluginPage, panels []pluginPanel) {
 	seen := map[string]bool{}
+	replaced := map[string]bool{}
 	for _, e := range plugin.Load().Plugins {
 		if e.Off {
 			continue
 		}
-		spec, _ := plugin.WindowPage(plugin.Target(e.Spec))
-		if spec == nil {
+		w, _ := plugin.Window(plugin.Target(e.Spec))
+		if w == nil {
 			continue
 		}
 		name := plugin.PackageName(e.Spec)
@@ -100,31 +135,70 @@ func pluginPages() []pluginPage {
 			key = fmt.Sprintf("%s-%d", k, n)
 		}
 		seen[key] = true
-		tok := pageToken(e.Spec)
-		rel, _ := filepath.Rel(spec.Dir, spec.File)
-		p := pluginPage{Spec: e.Spec, Name: name, Key: key, Title: spec.Title, Reads: spec.Reads, token: tok, spec: spec,
-			URL: pluginPagePrefix + tok + "/" + filepath.ToSlash(rel)}
-		if p.Title == "" {
-			p.Title = plugin.ShortName(name)
+		reads := w.Reads
+		if reads == nil {
+			reads = []string{}
 		}
-		if p.Reads == nil {
-			p.Reads = []string{}
+		if spec := w.Page; spec != nil {
+			tok := pageToken(e.Spec)
+			rel, _ := filepath.Rel(spec.Dir, spec.File)
+			p := pluginPage{Spec: e.Spec, Name: name, Key: key, Title: spec.Title, Titles: spec.Titles, Reads: reads, token: tok, dir: spec.Dir,
+				URL: pluginPagePrefix + tok + "/" + filepath.ToSlash(rel)}
+			if p.Title == "" {
+				p.Title = plugin.ShortName(name)
+			}
+			if spec.Icon != "" {
+				p.Icon = pluginPagePrefix + tok + "/" + spec.Icon
+			}
+			if r := spec.Replaces; r != "" && !replaced[r] {
+				replaced[r] = true
+				p.Replaces = r
+			}
+			for _, a := range w.Actions {
+				act := pluginAction{ID: a.ID, Menu: a.Menu, Title: a.Title, Titles: a.Titles}
+				// one that names no title is the page's own, in each language
+				if act.Title == "" {
+					act.Title, act.Titles = p.Title, p.Titles
+				}
+				p.Actions = append(p.Actions, act)
+			}
+			pages = append(pages, p)
 		}
-		if spec.Icon != "" {
-			p.Icon = pluginPagePrefix + tok + "/" + spec.Icon
+		for i, spec := range w.Panels {
+			tok := pageToken(e.Spec + "\x00panel\x00" + strconv.Itoa(i))
+			rel, _ := filepath.Rel(spec.Dir, spec.File)
+			p := pluginPanel{Spec: e.Spec, Name: name, Key: fmt.Sprintf("%s-%d", key, i), Slot: spec.Slot, Title: spec.Title, Titles: spec.Titles, Reads: reads,
+				token: tok, dir: spec.Dir, URL: pluginPagePrefix + tok + "/" + filepath.ToSlash(rel)}
+			if p.Title == "" {
+				p.Title = plugin.ShortName(name)
+			}
+			panels = append(panels, p)
 		}
-		out = append(out, p)
 	}
-	return out
+	return pages, panels
 }
 
-func pageOf(spec string) (pluginPage, bool) {
-	for _, p := range pluginPages() {
+// pluginPages are the pages of the plugins that are on.
+func pluginPages() []pluginPage {
+	pages, _ := windowParts()
+	return pages
+}
+
+// windowOf is a plugin that is on and adds a page or a panel to the
+// window: its package's name and the reads it declared.
+func windowOf(spec string) (name string, reads []string, ok bool) {
+	pages, panels := windowParts()
+	for _, p := range pages {
 		if p.Spec == spec {
-			return p, true
+			return p.Name, p.Reads, true
 		}
 	}
-	return pluginPage{}, false
+	for _, p := range panels {
+		if p.Spec == spec {
+			return p.Name, p.Reads, true
+		}
+	}
+	return "", nil, false
 }
 
 // pagePolicy is what a plugin's page may load and reach: its own files,
@@ -173,14 +247,20 @@ func servePluginPage(rw http.ResponseWriter, r *http.Request) {
 		http.NotFound(rw, r)
 		return
 	}
-	var page *pluginPage
-	for _, p := range pluginPages() {
+	// the page's or the panel's folder, by its token
+	dir := ""
+	pages, panels := windowParts()
+	for _, p := range pages {
 		if hmac.Equal([]byte(p.token), []byte(tok)) {
-			page = &p
-			break
+			dir = p.dir
 		}
 	}
-	if page == nil {
+	for _, p := range panels {
+		if hmac.Equal([]byte(p.token), []byte(tok)) {
+			dir = p.dir
+		}
+	}
+	if dir == "" {
 		http.NotFound(rw, r)
 		return
 	}
@@ -197,7 +277,7 @@ func servePluginPage(rw http.ResponseWriter, r *http.Request) {
 		http.ServeContent(rw, r, "bridge.js", time.Time{}, strings.NewReader(string(pageBridgeJS)))
 		return
 	}
-	file, ok := page.spec.PageFile(rel)
+	file, ok := plugin.FileIn(dir, rel)
 	if !ok {
 		http.NotFound(rw, r)
 		return
@@ -246,8 +326,15 @@ func pluginPageRoutes(mux *http.ServeMux) {
 		}
 		writeJSON(rw, out)
 	})
-	// what a page asked the window to read: only what its package
-	// declared, and never a secret
+	mux.HandleFunc("GET /api/plugin-panels", func(rw http.ResponseWriter, r *http.Request) {
+		_, out := windowParts()
+		if out == nil {
+			out = []pluginPanel{}
+		}
+		writeJSON(rw, out)
+	})
+	// what a page or a panel asked the window to read: only what its
+	// package declared, and never a secret
 	mux.HandleFunc("POST /api/plugin-pages/read", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Spec   string         `json:"spec"`
@@ -258,15 +345,15 @@ func pluginPageRoutes(mux *http.ServeMux) {
 			fail(rw, err)
 			return
 		}
-		p, ok := pageOf(in.Spec)
+		name, reads, ok := windowOf(in.Spec)
 		if !ok {
 			fail(rw, errors.New("no plugin page "+in.Spec))
 			return
 		}
-		if !slices.Contains(p.Reads, in.Read) {
+		if !slices.Contains(reads, in.Read) {
 			rw.Header().Set("Content-Type", "application/json")
 			rw.WriteHeader(http.StatusForbidden)
-			_ = json.NewEncoder(rw).Encode(map[string]string{"error": fmt.Sprintf("%s's package doesn't ask to read %q", p.Name, in.Read)})
+			_ = json.NewEncoder(rw).Encode(map[string]string{"error": fmt.Sprintf("%s's package doesn't ask to read %q", name, in.Read)})
 			return
 		}
 		v, err := pageRead(in.Read, in.Params)
@@ -276,7 +363,8 @@ func pluginPageRoutes(mux *http.ServeMux) {
 		}
 		writeJSON(rw, v)
 	})
-	// a page's own options, as plugins.json keeps them: no other plugin's
+	// a page's or a panel's own options, as plugins.json keeps them: no
+	// other plugin's
 	mux.HandleFunc("POST /api/plugin-pages/options", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Spec    string          `json:"spec"`
@@ -286,7 +374,7 @@ func pluginPageRoutes(mux *http.ServeMux) {
 			fail(rw, err)
 			return
 		}
-		if _, ok := pageOf(in.Spec); !ok {
+		if _, _, ok := windowOf(in.Spec); !ok {
 			fail(rw, errors.New("no plugin page "+in.Spec))
 			return
 		}

@@ -196,103 +196,132 @@ var (
 	kimiCounts = [][]byte{kimiUsageRecord, []byte(`"turn.prompt"`), []byte(`"step.end"`), []byte(`"tool.call"`)}
 )
 
-// parseKimi reads one agent's wire file of a session whole, with the
-// session's state.json for its own.
-func parseKimi(f file) *state {
-	s := &state{Size: f.size, Mod: f.mod.UnixNano()}
-	var since time.Time
-	forked := false
-	if st, ok := kimiStateOf(f.path); ok {
-		created := kimiTime(st.CreatedAt)
-		forked = st.ForkedFrom != ""
-		if forked {
-			since = created
-		}
-		if f.main {
-			s.Cwd = cmp.Or(st.Cwd, st.WorkDir, kimiIndexedWorkDir(f.path))
-			s.Custom, s.Named = st.names()
-			s.Custom, s.Named = title(s.Custom), title(s.Named)
-			s.saw(created, true)
+// kimiCarry is what a read of a Kimi Code wire file carries on with:
+// where it read to, what of state.json its records were counted under,
+// and the time before which a fork's records are its source's.
+type kimiCarry struct {
+	Tail    *tail     `json:"tail,omitempty"`
+	Created time.Time `json:"created,omitzero"`
+	Forked  bool      `json:"forked,omitempty"`
+	Since   time.Time `json:"since,omitzero"`
+}
+
+// parseKimi reads one agent's wire file of a session, with the session's
+// state.json for its own. Kimi only appends to a wire file, so one read
+// before is read on from where that read left off; state.json, rewritten
+// as the session goes on, is read again each time. A file cut short or
+// replaced, or a state.json that now says another creation or fork, is
+// read whole again.
+func parseKimi(f file, old *state) *state {
+	var c kimiCarry
+	var st kimiState
+	hasSt := false
+	if st, hasSt = kimiStateOf(f.path); hasSt {
+		c.Created = kimiTime(st.CreatedAt)
+		c.Forked = st.ForkedFrom != ""
+		if c.Forked {
+			c.Since = c.Created
 		}
 	}
-	// a fork's copy of its source ends at its last marker
-	skip := 0
-	if forked {
-		n := 0
-		scan(f.path, 0, func(b []byte) {
-			n++
-			if bytes.Contains(b, kimiForked) {
-				var r kimiWire
-				if json.Unmarshal(b, &r) == nil && r.Type == "forked" {
-					skip, since = n, time.Time{}
-				}
-			}
-		})
+	fresh := func() *state {
+		s := &state{}
+		if hasSt && f.main {
+			s.saw(c.Created, true)
+		}
+		return s
 	}
-	n := 0
-	scan(f.path, 0, func(b []byte) {
-		n++
-		if n <= skip {
-			return
-		}
-		count := false
-		for _, k := range kimiCounts {
-			if bytes.Contains(b, k) {
-				count = true
-				break
+	var s *state
+	var off int64
+	if o := old; o != nil && o.Kimi != nil && o.Kimi.Created.Equal(c.Created) && o.Kimi.Forked == c.Forked && o.Kimi.Tail.holds(f.path) {
+		s, c, off = o.clone(), *o.Kimi, o.Kimi.Tail.Off
+	} else {
+		s = fresh()
+	}
+	end, err := scanAt(f.path, off, nil, func(b []byte, _, _ int64) bool {
+		if c.Forked && bytes.Contains(b, kimiForked) {
+			var r kimiWire
+			if json.Unmarshal(b, &r) == nil && r.Type == "forked" {
+				// a fork's copy of its source ends at its last marker:
+				// what was counted before it is its source's
+				s, c.Since = fresh(), time.Time{}
+				return true
 			}
 		}
-		var r kimiWire
-		if !count {
-			// only its time: a light read of the rest
-			var t struct {
-				Time int64 `json:"time"`
-			}
-			if json.Unmarshal(b, &t) == nil {
-				if at := ms(t.Time); !at.IsZero() && !at.Before(since) {
-					s.saw(at, f.main)
-				}
-			}
-			return
-		}
-		if json.Unmarshal(b, &r) != nil {
-			return
-		}
-		at := ms(r.Time)
-		if at.IsZero() || at.Before(since) {
-			return
-		}
-		s.saw(at, f.main)
-		switch r.Type {
-		case "usage.record":
-			if u := r.Usage; u != nil && u.InputOther >= 0 && u.Output >= 0 && u.InputCacheRead >= 0 && u.InputCacheCreation >= 0 {
-				model := cmp.Or(strings.TrimPrefix(r.Model, kimiGateway), "kimi")
-				s.use(dateOf(at), model, Tokens{Input: u.InputOther, Output: u.Output, CacheRead: u.InputCacheRead, CacheWrite: u.InputCacheCreation})
-			}
-		case "turn.prompt":
-			if !f.main || r.Origin.Kind != "user" {
-				return
-			}
-			s.day(dateOf(at)).Prompts++
-			if s.Title == "" {
-				var text []string
-				for _, p := range r.Input {
-					if p.Type == "text" {
-						text = append(text, p.Text)
-					}
-				}
-				s.Title = title(strings.Join(text, " "))
-			}
-		case "context.append_loop_event":
-			switch r.Event.Type {
-			case "step.end":
-				if f.main && r.Event.FinishReason == "end_turn" {
-					s.day(dateOf(at)).Replies++
-				}
-			case "tool.call":
-				s.tool(at, r.Event.Name, "")
-			}
-		}
+		kimiCount(s, b, c.Since, f.main)
+		return true
 	})
+	c.Tail = nil
+	if err == nil {
+		c.Tail = markTail(f.path, end, 0, end)
+	}
+	s.Size, s.Mod = f.size, f.mod.UnixNano()
+	if hasSt && f.main {
+		s.Cwd = cmp.Or(st.Cwd, st.WorkDir, kimiIndexedWorkDir(f.path))
+		s.Custom, s.Named = st.names()
+		s.Custom, s.Named = title(s.Custom), title(s.Named)
+	}
+	s.Kimi = &c
 	return s
+}
+
+// kimiCount counts one record of a wire file, none before since.
+func kimiCount(s *state, b []byte, since time.Time, main bool) {
+	count := false
+	for _, k := range kimiCounts {
+		if bytes.Contains(b, k) {
+			count = true
+			break
+		}
+	}
+	var r kimiWire
+	if !count {
+		// only its time: a light read of the rest
+		var t struct {
+			Time int64 `json:"time"`
+		}
+		if json.Unmarshal(b, &t) == nil {
+			if at := ms(t.Time); !at.IsZero() && !at.Before(since) {
+				s.saw(at, main)
+			}
+		}
+		return
+	}
+	if json.Unmarshal(b, &r) != nil {
+		return
+	}
+	at := ms(r.Time)
+	if at.IsZero() || at.Before(since) {
+		return
+	}
+	s.saw(at, main)
+	switch r.Type {
+	case "usage.record":
+		if u := r.Usage; u != nil && u.InputOther >= 0 && u.Output >= 0 && u.InputCacheRead >= 0 && u.InputCacheCreation >= 0 {
+			model := cmp.Or(strings.TrimPrefix(r.Model, kimiGateway), "kimi")
+			s.use(dateOf(at), model, Tokens{Input: u.InputOther, Output: u.Output, CacheRead: u.InputCacheRead, CacheWrite: u.InputCacheCreation})
+		}
+	case "turn.prompt":
+		if !main || r.Origin.Kind != "user" {
+			return
+		}
+		s.day(dateOf(at)).Prompts++
+		if s.Title == "" {
+			var text []string
+			for _, p := range r.Input {
+				if p.Type == "text" {
+					text = append(text, p.Text)
+				}
+			}
+			s.Title = title(strings.Join(text, " "))
+		}
+	case "context.append_loop_event":
+		switch r.Event.Type {
+		case "step.end":
+			if main && r.Event.FinishReason == "end_turn" {
+				s.day(dateOf(at)).Replies++
+			}
+		case "tool.call":
+			s.tool(at, r.Event.Name, "")
+		}
+	}
 }

@@ -76,13 +76,15 @@ func TestGeminiCompatRelayEndedShort(t *testing.T) {
 		t.Errorf("a cut reply given a finish_reason: %s", body)
 	}
 
-	// whole, with [DONE] or without it, it goes as it came
+	// whole, with [DONE] or without it, it goes as it came, its one
+	// finish_reason "tool_calls" as it made a call (chatTidy, 喜欢一个人
+	// on Discord), never a second one added
 	for what, reply := range map[string]string{
 		"whole":            compatCall + compatStop + compatDone,
 		"whole, no [DONE]": compatCall + compatStop,
 	} {
 		code, body := compatServer(t, "gemini-4-argon", reply, "/v1/chat/completions", ask)
-		if code != 200 || strings.Contains(body, "ended before") || strings.Count(body, `"finish_reason":"`) != 1 || !strings.Contains(body, `"finish_reason":"stop"`) {
+		if code != 200 || strings.Contains(body, "ended before") || strings.Count(body, `"finish_reason":"`) != 1 || !strings.Contains(body, `"finish_reason":"tool_calls"`) {
 			t.Errorf("%s: %d %s", what, code, body)
 		}
 	}

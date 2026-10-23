@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -105,8 +106,14 @@ func searchesItself(p provider.Provider, proto provider.Protocol) bool {
 	saidTo := p.Searches && (proto == provider.Anthropic || proto == provider.Responses) && p.Base(proto) != ""
 	if p.Account != nil {
 		// Grok by its id: moved to its plugin, its account is the plugin's;
-		// its plugin beside the built-in (grok-plugin) by the plugin's id
-		return (p.Account.Agent == "codex" || p.ID == "grok" || p.PluginProvider() == "grok") && proto == provider.Responses ||
+		// its plugin beside the built-in (grok-plugin) by the plugin's id.
+		// Copilot's /responses runs web_search itself for every model it
+		// serves there: gpt-5.3-codex, gpt-5.4-mini, gpt-6-luna, grok-4.7
+		// and mai-code-1.1-flash each answered a request offering it with
+		// web_search_call items and cited pages (2026-10-17, a real
+		// account). Translated for magpie's search instead, Codex's every
+		// turn on Copilot lost the relay (echo_ts on Discord).
+		return (p.Account.Agent == "codex" || p.Account.Agent == "copilot" || p.ID == "grok" || p.PluginProvider() == "grok") && proto == provider.Responses ||
 			p.IsPlugin() && saidTo
 	}
 	if saidTo {
@@ -193,6 +200,50 @@ func modelSearches(p provider.Provider, proto provider.Protocol, model string) b
 	return slices.Contains(searchModels[id][proto], model)
 }
 
+// modelSearchesAny is whether model of p searches by itself on one of
+// p's APIs (modelSearches), where the gateway sends a search for it.
+func modelSearchesAny(p provider.Provider, model string) bool {
+	return slices.ContainsFunc(p.Speaks(), func(proto provider.Protocol) bool { return modelSearches(p, proto, model) })
+}
+
+// pluginSearches is whether p's plugin says model searches the web by
+// itself when asked in plain words (m.searches, as catalog.Model's
+// WebSearch "native"): the gateway asks it with no search tool, and takes
+// what it says with the links in it (searchWith).
+func pluginSearches(p provider.Provider, model string) bool {
+	if !p.IsPlugin() {
+		return false
+	}
+	i := slices.IndexFunc(p.Available(), func(m catalog.Model) bool { return m.ID == model })
+	return i >= 0 && p.Available()[i].WebSearch == searchNative
+}
+
+// searchesAlone is whether model of p searches by itself where the rest
+// of p's models don't: one of searchModels, or a plugin's it marks.
+func searchesAlone(p provider.Provider, model string) bool {
+	return modelSearchesAny(p, model) || pluginSearches(p, model)
+}
+
+// partSearcher is a provider of searchModels that searches by itself for
+// those of its models alone, on no API for every model, or a plugin's
+// that marks some of its models as ones that search (pluginSearches): one
+// magpie may search with, with those models only (searchableModel).
+// Command Code's searched for themselves but were left out of the
+// searcher picker and magpie's own pick (01huadalang on Discord), and so
+// was every plugin's, Trae's search model among them (01huadalang, 10-20).
+func partSearcher(p provider.Provider) bool {
+	if p.IsPlugin() {
+		return slices.ContainsFunc(p.Available(), func(m catalog.Model) bool { return m.WebSearch == searchNative })
+	}
+	if p.Account != nil || slices.ContainsFunc([]provider.Protocol{provider.Anthropic, provider.Responses, provider.Chat}, func(proto provider.Protocol) bool { return searchesItself(p, proto) }) {
+		return false
+	}
+	if _, ok := searchModels[p.Preset]; ok {
+		return true
+	}
+	return slices.ContainsFunc(p.Speaks(), func(proto provider.Protocol) bool { return searchModelsHosts[provider.HostOf(p.Base(proto))] != "" })
+}
+
 // searchHosts are the APIs that search by themselves: OpenAI's, xAI's,
 // DeepSeek's, Zhipu's and Z.ai's web_search tool (Zhipu's on its Responses
 // API only, DeepSeek's on its Responses and Anthropic APIs: their Chat APIs
@@ -209,11 +260,22 @@ var searchHosts = map[provider.Protocol][]string{
 // searchAsked is whether a body offers the model web search, looked for
 // cheaply before it is parsed.
 func searchAsked(proto provider.Protocol, body []byte) bool {
-	if !strings.Contains(string(body), "web_search") && !strings.Contains(string(body), "oogle_search") && !strings.Contains(string(body), "googleSearch") {
+	// bytes, not string(body): each conversion copied the whole body, three
+	// times a request (a 200KB body: 640KB and 3ms)
+	if !bytes.Contains(body, []byte("web_search")) && !bytes.Contains(body, []byte("oogle_search")) && !bytes.Contains(body, []byte("googleSearch")) {
 		return false
 	}
 	req, err := parse(proto, body)
 	return err == nil && req.WebSearch
+}
+
+// searchedForIt is whether a relayed request's web search is done by magpie
+// for the provider, which can't be relayed: a body offering it to a model
+// that doesn't search by itself. What is known of the provider is asked
+// first: Codex offers web_search on every turn, and each relayed turn was
+// parsed whole to learn it, for a provider that searches by itself.
+func searchedForIt(p provider.Provider, from provider.Protocol, model string, body []byte) bool {
+	return (from == provider.Chat && !p.IsRemoteMagpie() || !searchesModel(p, from, model)) && searchAsked(from, body)
 }
 
 // searcher is the model magpie searches with: the one Settings names, while
@@ -242,11 +304,17 @@ func searchRank(p provider.Provider) int {
 		return 0
 	case p.Account != nil && p.Account.Agent == "codex":
 		return 1
+	case p.Account != nil && p.Account.Agent == "copilot":
+		// it searches for its own models only: another's searches would
+		// spend its premium requests, which no one asked for
+		return -1
 	case searchesItself(p, provider.Anthropic):
 		return 2
 	case searchesItself(p, provider.Responses):
 		return 3
 	case searchesItself(p, provider.Chat):
+		return 4
+	case partSearcher(p) && slices.ContainsFunc(p.Available(), func(m catalog.Model) bool { return searchesAlone(p, m.ID) }):
 		return 4
 	case googleAccount(p):
 		// Gemini on a Google sign-in, by googleSearch (#757)
@@ -370,7 +438,7 @@ func Searchers() []SearcherChoice {
 		}
 		var ms []catalog.Model
 		for _, m := range p.Available() {
-			if !strings.HasPrefix(m.ID, provider.GroupPrefix) && searchableModel(p, m.ID) {
+			if !provider.IsGroupRef(m.ID) && searchableModel(p, m.ID) {
 				ms = append(ms, m)
 			}
 		}
@@ -429,6 +497,38 @@ func smallModel(p provider.Provider, keep func(catalog.Model) bool) string {
 // recognition kept describing with an account out of its allowance, each
 // image refused 429).
 func smallReady(p provider.Provider, keep func(catalog.Model) bool, from provider.Protocol) (string, bool) {
+	c, ready := smallReadyOf(p, smallCands(p, keep), from)
+	return c.id, ready
+}
+
+// smallReadyOf is smallReady of cs, ranked as rankSmall ranks them: the
+// first with allowance left, each asked in turn, else the first.
+// spentModel weighs every account and key of the provider, and was asked
+// of each of its models before one was picked: a quarter of
+// AutoVision's allocations.
+func smallReadyOf(p provider.Provider, cs []smallCand, from provider.Protocol) (smallCand, bool) {
+	if len(cs) == 0 {
+		return smallCand{}, false
+	}
+	now := time.Now()
+	for _, c := range cs {
+		if _, spent := spentModel(p, c.id, from, now); !spent {
+			return c, true
+		}
+	}
+	return cs[0], false
+}
+
+// smallCand is a model smallModel may pick, and what it costs: input and
+// output a million tokens, 1e9 when it has no price.
+type smallCand struct {
+	id   string
+	cost float64
+}
+
+// smallCands is the provider's models smallModel picks among, of those
+// keep holds, in the order it picks them (rankSmall).
+func smallCands(p provider.Provider, keep func(catalog.Model) bool) []smallCand {
 	var ms []catalog.Model
 	for _, m := range p.Exposed() {
 		if keep != nil && !keep(m) {
@@ -436,54 +536,83 @@ func smallReady(p provider.Provider, keep func(catalog.Model) bool, from provide
 		}
 		l := strings.ToLower(m.ID)
 		// a subscription's list can have what magpie wrote into its agent
-		if strings.HasPrefix(m.ID, provider.GroupPrefix) || (p.Account != nil && strings.Contains(m.ID, "/")) ||
+		if strings.HasPrefix(m.ID, provider.GroupPrefix) || strings.HasPrefix(m.ID, provider.AutoPrefix) || (p.Account != nil && strings.Contains(m.ID, "/")) ||
 			strings.ContainsAny(l, ":~") || slices.ContainsFunc([]string{"nano", "lite", "image", "audio", "tts", "embed", "free"}, func(w string) bool { return strings.Contains(l, w) }) {
 			continue
 		}
 		ms = append(ms, m)
 	}
-	now := time.Now()
-	ready := slices.DeleteFunc(slices.Clone(ms), func(m catalog.Model) bool {
-		_, spent := spentModel(p, m.ID, from, now)
-		return spent
-	})
-	if id := pickSmall(ready); id != "" {
-		return id, true
-	}
-	return pickSmall(ms), false
+	return rankSmall(ms)
 }
 
-// pickSmall is smallModel's pick of ms.
-func pickSmall(ms []catalog.Model) string {
-	// on a router, a model of the big vendors
-	if big := slices.DeleteFunc(slices.Clone(ms), func(m catalog.Model) bool {
+// smallKept is the providers' smallCands, kept by provider.StampNow:
+// AutoVision and the searcher's pick built every provider's list again
+// each time they were asked, for every agent's list of models.
+var smallKept stamped[smallKey, []smallCand]
+
+// smallKey is what smallCands are of: a provider (an account's, by who is
+// signed in) and which keep.
+type smallKey struct {
+	kind, id, agent, user, plan, home string
+}
+
+// keptSmallCands is smallCands, kept (smallKept); kind names keep, which
+// must hold of a model by the model and the provider alone.
+func keptSmallCands(p provider.Provider, kind string, keep func(catalog.Model) bool) []smallCand {
+	k := smallKey{kind: kind, id: p.ID}
+	if a := p.Account; a != nil {
+		k.agent, k.user, k.plan, k.home = a.Agent, a.User, a.Plan, a.Home
+	}
+	return smallKept.get(k, func() []smallCand { return smallCands(p, keep) })
+}
+
+// rankSmall is ms in the order smallModel picks them, each one's pick of
+// those after it: on a router, a model of the big vendors first; then a
+// small one; then the cheaper; then the one listed first.
+func rankSmall(ms []catalog.Model) []smallCand {
+	type ranked struct {
+		smallCand
+		router, large bool // of a vendor not big; not small
+	}
+	rs := make([]ranked, len(ms))
+	for i, m := range ms {
 		v, _, ok := strings.Cut(m.ID, "/")
-		return ok && !slices.Contains([]string{"anthropic", "openai", "google", "x-ai"}, v)
-	}); len(big) > 0 {
-		ms = big
-	}
-	cost := func(m catalog.Model) float64 {
-		if m.Price == nil {
-			return 1e9
-		}
-		return m.Price.Input + m.Price.Output
-	}
-	cheapest := func(ms []catalog.Model) string {
-		if len(ms) == 0 {
-			return ""
-		}
-		return slices.MinFunc(ms, func(a, b catalog.Model) int { return cmp.Compare(cost(a), cost(b)) }).ID
-	}
-	small := slices.DeleteFunc(slices.Clone(ms), func(m catalog.Model) bool {
 		// "gemini" has a "mini" in it, which made every Gemini small and
 		// the first of them, a Pro, the one picked (#757)
 		l := strings.ReplaceAll(strings.ToLower(m.ID), "gemini", "")
-		return !strings.Contains(l, "haiku") && !strings.Contains(l, "mini") && !strings.Contains(l, "flash")
-	})
-	if id := cheapest(small); id != "" {
-		return id
+		cost := 1e9
+		if m.Price != nil {
+			cost = m.Price.Input + m.Price.Output
+		}
+		rs[i] = ranked{smallCand{m.ID, cost},
+			ok && !slices.Contains([]string{"anthropic", "openai", "google", "x-ai"}, v),
+			!strings.Contains(l, "haiku") && !strings.Contains(l, "mini") && !strings.Contains(l, "flash")}
 	}
-	return cheapest(ms)
+	slices.SortStableFunc(rs, func(a, b ranked) int {
+		if c := falseFirst(a.router, b.router); c != 0 {
+			return c
+		}
+		if c := falseFirst(a.large, b.large); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.cost, b.cost)
+	})
+	out := make([]smallCand, len(rs))
+	for i, r := range rs {
+		out[i] = r.smallCand
+	}
+	return out
+}
+
+// falseFirst orders false before true.
+func falseFirst(a, b bool) int {
+	switch {
+	case a == b:
+		return 0
+	case a:
+		return 1
+	}
+	return -1
 }
 
 // searcherModel is the model p searches with when none is named: its
@@ -496,10 +625,14 @@ func searcherModel(p provider.Provider) string {
 // searcherReady is searcherModel, and whether it has allowance left
 // (smallReady).
 func searcherReady(p provider.Provider) (string, bool) {
-	if googleAccount(p) || p.IsRemoteMagpie() {
-		return smallReady(p, func(m catalog.Model) bool { return searchableModel(p, m.ID) }, provider.Anthropic)
+	// what searchableModel says of a model is the model's and the
+	// provider's list's, which keptSmallCands is kept by
+	var keep func(catalog.Model) bool
+	if googleAccount(p) || p.IsRemoteMagpie() || partSearcher(p) {
+		keep = func(m catalog.Model) bool { return searchableModel(p, m.ID) }
 	}
-	return smallReady(p, nil, provider.Anthropic)
+	c, ready := smallReadyOf(p, keptSmallCands(p, "search", keep), provider.Anthropic)
+	return c.id, ready
 }
 
 // searchTool is the tool a model that can't search is given, under a name
@@ -1079,13 +1212,13 @@ func (s *Server) askTranslated(p provider.Provider, to provider.Protocol, model 
 		if !sse {
 			b, _ := io.ReadAll(io.LimitReader(rd, 1<<20))
 			res.Body.Close()
-			return nil, 502, p.Name + " did not stream: " + provider.APIError(b, "unexpected reply")
+			return nil, 502, p.Name + " " + didNotStream + ": " + provider.APIError(b, "unexpected reply")
 		}
 		events := make(chan Event, 16)
 		go func() {
 			defer close(events)
 			defer res.Body.Close()
-			dec := decoder(actual)
+			dec := decoderFor(p, actual)
 			send := func(ev Event) error {
 				select {
 				case events <- ev:

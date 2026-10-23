@@ -89,14 +89,24 @@ func dshRead(path string) (*dshPatches, error) {
 	if s == "" {
 		return p, nil
 	}
+	opened := false // a "---" or "[]" came before the first entry
 	for _, l := range strings.Split(s, "\n") {
 		t := strings.TrimSpace(l)
 		switch {
 		case strings.HasPrefix(l, "- ") || l == "-":
 			p.items = append(p.items, []string{l})
 		case len(p.items) == 0:
-			if t != "" && !strings.HasPrefix(t, "#") && t != "[]" {
+			// "---" is YAML's document start marker: a patch list may open
+			// with one (#2667), and it stays in the head it is written back
+			// with, so the file keeps it. Only at the left edge and before
+			// anything but comments: a second one starts a second
+			// document, which is no list magpie can edit.
+			marker := dshDocStart(l) && !opened
+			if t != "" && !strings.HasPrefix(t, "#") && t != "[]" && !marker {
 				return nil, fmt.Errorf("%s is not a list of entries magpie can edit", path)
+			}
+			if t != "" && !strings.HasPrefix(t, "#") {
+				opened = true
 			}
 			if t != "[]" {
 				p.head = append(p.head, l)
@@ -347,4 +357,21 @@ func dshYAML(indent, k string, v any) []string {
 	enc.SetEscapeHTML(false)
 	enc.Encode(v)
 	return []string{key + " " + strings.TrimSpace(b.String())}
+}
+
+// dshDocStart says whether l is YAML's document start marker, "---" at the
+// left edge with at most a comment after it.
+func dshDocStart(l string) bool {
+	r, ok := strings.CutPrefix(l, "---")
+	if !ok {
+		return false
+	}
+	if r == "" {
+		return true
+	}
+	if r[0] != ' ' && r[0] != '\t' {
+		return false
+	}
+	r = strings.TrimSpace(r)
+	return r == "" || strings.HasPrefix(r, "#")
 }

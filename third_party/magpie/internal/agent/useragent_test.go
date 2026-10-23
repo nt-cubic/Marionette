@@ -29,9 +29,10 @@ func TestAgentOf(t *testing.T) {
 		"atomcode/5.2.1":                           "atomcode",
 		"cline ai-sdk/openai-compatible/3.0.37":    "cline",
 		"Vibecoding Client/1.3.104 (darwin; arm64; go1.26.2)": "mothx",
-		"minimax-code": "minimax-code", // what magpie's entry sends
-		"MiniMaxCode":  "minimax-code", // 0.6.8's own (#1605)
-		"":             "other",
+		"ZooCode/3.90.0": "zoo-code",
+		"minimax-code":   "minimax-code", // what magpie's entry sends
+		"MiniMaxCode":    "minimax-code", // 0.6.8's own (#1605)
+		"":               "other",
 	}
 	for ua, want := range cases {
 		if got := usage.AgentOf(ua); got != want {

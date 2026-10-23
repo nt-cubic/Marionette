@@ -55,19 +55,21 @@ func ServeGroups() (remove func()) {
 	return holdGate(&groupGate.served)
 }
 
-// holdGate holds n until the func it gives is called. Nothing built from
-// the groups is kept past one call (only the file is, while a request
-// holds it), so the next lookup sees the change.
+// holdGate holds n until the func it gives is called. What is built from
+// the groups and held across requests (heldOf) is dropped either way, so
+// the next lookup sees the change.
 func holdGate(n *int) func() {
 	groupGate.Lock()
 	*n++
 	groupGate.Unlock()
+	dropHeld()
 	var once sync.Once
 	return func() {
 		once.Do(func() {
 			groupGate.Lock()
 			*n--
 			groupGate.Unlock()
+			dropHeld()
 		})
 	}
 }

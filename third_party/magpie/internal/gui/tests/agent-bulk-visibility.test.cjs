@@ -75,6 +75,22 @@ for (const engine of process.env.BROWSER ? [process.env.BROWSER] : ['chromium', 
       const dialog = page.getByRole('dialog'), search = dialog.locator('input[type=search]');
       const button = (name) => dialog.getByRole('button', { name, exact: true });
       assert.equal(await dialog.getByRole('checkbox').count(), 4, 'hidden and folded agents are manageable');
+      // a name's text sits beside its icon, not at the row's far end (the
+      // owner's screenshot: .editor label's right alignment reached the
+      // rows of a wide window), wide and narrow
+      for (const width of [1240, 560]) {
+        await page.setViewportSize({width, height:760});
+        await page.waitForFunction((w) => window.innerWidth === w, width);
+        const gaps = await dialog.locator('.ag-manage-row').evaluateAll((rows) => rows.map((r) => {
+          const range = document.createRange();
+          range.selectNodeContents(r.querySelector('.ag-manage-name'));
+          return Math.round(range.getBoundingClientRect().left - r.querySelector('.ic').getBoundingClientRect().right);
+        }));
+        assert(gaps.every((g) => g >= 4 && g <= 14), `name beside its icon at ${width}: ${gaps}`);
+        if (process.env.ROW_SHOT && lang === 'zh') await dialog.screenshot({path:`${process.env.ROW_SHOT}-${engine}-${width}.png`});
+      }
+      await page.setViewportSize({width:lang === 'en' ? 1240 : 560, height:760});
+      await page.waitForFunction((w) => window.innerWidth === w, lang === 'en' ? 1240 : 560);
       assert(await button(hide).isDisabled());
       await search.fill('not-an-agent');
       assert.equal(await dialog.getByRole('checkbox').count(), 0);

@@ -1,12 +1,9 @@
 package sessions
 
 import (
-	"bufio"
 	"bytes"
 	"cmp"
 	"encoding/json"
-	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -88,35 +85,27 @@ type kimiRecord struct {
 
 var kimiUsageRecord = []byte(`"usage.record"`)
 
-// readKimiCalls reads one agent's wire file whole.
-func readKimiCalls(f file) (*callFile, bool) {
-	r, err := os.Open(f.path)
-	if err != nil {
-		return &callFile{Path: f.path, Agent: "kimi"}, false
+// kimiCallsBegin starts an agent's wire file read from its start. Kimi Code
+// only appends to it, each record a line of its own, so readCalls reads one
+// that grew on from where it left off (lineCallReaders).
+func kimiCallsBegin(st *callFile, f file) {
+	st.Session = strings.TrimPrefix(f.key, "kimi:")
+}
+
+// kimiCallLine reads one line of an agent's wire file: a usage.record is a
+// call.
+func kimiCallLine(st *callFile, b []byte) {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || len(b) > maxLine || !bytes.Contains(b, kimiUsageRecord) {
+		return
 	}
-	defer r.Close()
-	agentDir := filepath.Base(filepath.Dir(f.path))
-	st := &callFile{Agent: "kimi", Path: f.path, Session: strings.TrimPrefix(f.key, "kimi:")}
-	br := bufio.NewReaderSize(r, 1<<20)
-	for {
-		b, err := br.ReadBytes('\n')
-		if err != nil && (!errors.Is(err, io.EOF) || len(bytes.TrimSpace(b)) == 0) {
-			break
-		}
-		b = bytes.TrimSpace(b)
-		if len(b) > 0 && len(b) <= maxLine && bytes.Contains(b, kimiUsageRecord) {
-			var rec kimiRecord
-			if json.Unmarshal(b, &rec) == nil {
-				if c, ok := kimiCall(st, agentDir, rec); ok {
-					st.Calls = append(st.Calls, c)
-				}
-			}
-		}
-		if err != nil {
-			break
-		}
+	var rec kimiRecord
+	if json.Unmarshal(b, &rec) != nil {
+		return
 	}
-	return st, true
+	if c, ok := kimiCall(st, filepath.Base(filepath.Dir(st.Path)), rec); ok {
+		st.Calls = append(st.Calls, c)
+	}
 }
 
 // kimiCall is a usage.record as a call.

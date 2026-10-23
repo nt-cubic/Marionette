@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -175,8 +178,8 @@ func TestKimiCodeForkCountsOnce(t *testing.T) {
 	// and two subagents of one session whose 1.5 records name themselves:
 	// the same call in two agents' files is two calls
 	sub := strings.Replace(kimiRecordLine, `"agentId":"main"`, `"agentId":"agent-0"`, 1)
-	writeKimiWire(t, home, "session_agents", "agent-0", sub)
-	writeKimiWire(t, home, "session_agents", "main", kimiRecordLine)
+	writeKimiWire(t, home, "session_agents", "agent-0", sub, "")
+	writeKimiWire(t, home, "session_agents", "main", kimiRecordLine, "")
 
 	tot := kimiTotals(kimiCalls())
 	if got := tot["session_169766c9-86f5-4577-97a3-a51d402db5b9"]; got != kimiWant["session_169766c9-86f5-4577-97a3-a51d402db5b9"] {
@@ -231,4 +234,90 @@ func TestKimiCodeBrokenFiles(t *testing.T) {
 			t.Errorf("%s: %+v, want no calls", s, got)
 		}
 	}
+}
+
+// A Kimi Code wire file that grew is read on from where the last read of
+// its calls left off, not whole again; a half-written last line waits for
+// the rest; a file cut shorter or written over is read whole again. Before
+// this, every poll after an append decoded the whole file again.
+func TestKimiCodeCallsReadOnlyWhatWasAppended(t *testing.T) {
+	home := kimiHome(t)
+	rec := func(i int) string {
+		r := strings.Replace(kimiRecordLine, `1791696952640`, strconv.FormatInt(1791696900000+int64(i)*1000, 10), 1)
+		return strings.Replace(r, `"inputOther":20257`, `"inputOther":`+strconv.Itoa(20000+i), 1)
+	}
+	writeKimiWire(t, home, "session_grow", "main", rec(1), rec(2), rec(3), "")
+	path := filepath.Join(home, "sessions", "wd_test_000000000009", "session_grow", "agents", "main", "wire.jsonl")
+	// the listing folds state.json's size into the main wire file's
+	if err := os.WriteFile(filepath.Join(home, "sessions", "wd_test_000000000009", "session_grow", "state.json"), []byte(`{"title":"Grow","cwd":"/work/grow"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var starts []int64
+	scanHook = func(p string, off int64) {
+		if p == path {
+			mu.Lock()
+			starts = append(starts, off)
+			mu.Unlock()
+		}
+	}
+	t.Cleanup(func() { scanHook = nil })
+	read := func(what string, from int64, want ...int) {
+		t.Helper()
+		mu.Lock()
+		starts = nil
+		mu.Unlock()
+		var calls []Call
+		for _, s := range CallSources() {
+			if s.Path == path {
+				calls = ReadCallSource(s)
+			}
+		}
+		mu.Lock()
+		got := append([]int64(nil), starts...)
+		mu.Unlock()
+		if len(got) == 0 {
+			t.Fatalf("%s: not read", what)
+		}
+		for _, off := range got {
+			if off != from {
+				t.Fatalf("%s: read from %d, want %d (%v)", what, off, from, got)
+			}
+		}
+		var in []int
+		for _, c := range calls {
+			in = append(in, c.Input-20000)
+		}
+		if !slices.Equal(in, want) {
+			t.Fatalf("%s: calls %v, want %v", what, in, want)
+		}
+	}
+	size := func() int64 {
+		t.Helper()
+		st, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st.Size()
+	}
+	read("first read", 0, 1, 2, 3)
+
+	end := size()
+	appendText(t, path, rec(4)+"\n"+rec(5)[:40])
+	read("appended, half a line after", end, 1, 2, 3, 4)
+
+	appendText(t, path, rec(5)[40:]+"\n")
+	read("the half line finished", end+int64(len(rec(4))+1), 1, 2, 3, 4, 5)
+
+	// cut shorter: read whole again
+	writeKimiWire(t, home, "session_grow", "main", rec(7), "")
+	read("cut shorter", 0, 7)
+
+	// written over, longer than it was: read whole again
+	writeKimiWire(t, home, "session_grow", "main", rec(8), rec(9), "")
+	later := time.Now().Add(time.Hour)
+	if err := os.Chtimes(path, later, later); err != nil {
+		t.Fatal(err)
+	}
+	read("written over", 0, 8, 9)
 }

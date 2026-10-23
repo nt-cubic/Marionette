@@ -1,15 +1,10 @@
 package gateway
 
 import (
-	"encoding/json"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/yetone/magpie/internal/provider"
 )
 
 // An image model's picture reaches a Gemini client's generateContent: the
@@ -30,23 +25,7 @@ func TestGeminiImageModelReturnsItsImage(t *testing.T) {
 		`]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":1567}}` + "\n\n"}
 	up := httptest.NewServer(f)
 	t.Cleanup(up.Close)
-	t.Cleanup(provider.FactoryBaseForTest(up.URL, up.URL+"/eu"))
-
-	auth, _ := json.Marshal(map[string]any{
-		"accessToken": "tok", "refreshToken": "r",
-		"expiresAt": time.Now().Add(time.Hour).UnixMilli(),
-		"orgId":     "org_D", "activeOrganizationId": "fac_D", "email": "d@example.com",
-	})
-	dir := filepath.Dir(provider.Path())
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	raw, _ := json.Marshal([]map[string]any{{
-		"agent": "factory", "user": "d@example.com", "plan": "pro", "on": true, "auth": json.RawMessage(auth),
-	}})
-	if err := os.WriteFile(filepath.Join(dir, "logins.json"), raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	saveGem(t, up.URL, "gemini-3.1-pro-preview")
 
 	const ask = `{"contents":[{"role":"user","parts":[{"text":"draw a cat"}]}]}`
 	check := func(kind, body string) {
@@ -62,12 +41,12 @@ func TestGeminiImageModelReturnsItsImage(t *testing.T) {
 		}
 	}
 
-	// Factory's Gemini route decodes with Antigravity's decoder.
-	code, body := post(t, "/v1beta/models/factory/gemini-3.1-pro-preview:generateContent", ask)
+	// a Gemini API's stream decodes with Antigravity's decoder
+	code, body := post(t, "/v1beta/models/gem/gemini-3.1-pro-preview:generateContent", ask)
 	if code != 200 || strings.HasPrefix(body, "data:") {
 		t.Fatalf("json %d %s", code, body)
 	}
-	if f.path != "/api/llm/g/v1/generate" {
+	if f.path != "/v1beta/models/gemini-3.1-pro-preview:streamGenerateContent" {
 		t.Fatalf("upstream %s", f.path)
 	}
 	check("generateContent", body)

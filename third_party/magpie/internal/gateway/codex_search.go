@@ -123,11 +123,12 @@ func chatGPTSearchers(r *http.Request, model string) ([]provider.Provider, strin
 // with why returned.
 func (s *Server) alphaSearchOn(w http.ResponseWriter, r *http.Request, body []byte, model string, ons []provider.Provider) (bool, string) {
 	start := time.Now()
-	w, body, unmask, err := redacted(w, body)
+	w, body, unmask, hits, err := redactedHits(w, body)
 	defer unmask()
 	if err != nil {
 		return false, err.Error()
 	}
+	noteMasked(r, "search", hits, string(body), 0, "openai", model)
 	var errs []string
 	for _, on := range ons {
 		who := "OpenAI (" + on.Account.User + "): "

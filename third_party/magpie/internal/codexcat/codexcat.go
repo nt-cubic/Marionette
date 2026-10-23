@@ -239,7 +239,7 @@ func entriesAt(ms []catalog.Model, after int, effort string) []any {
 		}
 		if m.Images {
 			e.Modalities = append(e.Modalities, "image")
-		} else if !strings.HasPrefix(m.ID, "group/") {
+		} else if !strings.HasPrefix(m.ID, "group/") && !strings.HasPrefix(m.ID, "auto/") { // a routing group, a found one as auto/<model>
 			// Codex turns a pasted image away itself, saying only that the
 			// model doesn't take images; /model says where that is changed
 			// (KimYx0207 on X). The description still ends " via magpie",
