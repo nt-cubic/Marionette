@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Default capabilities for Marionette",
-  "windows": ["*"],
+  "windows": ["main", "detached-*"],
   "permissions": [
     "core:default",
     "core:event:default",

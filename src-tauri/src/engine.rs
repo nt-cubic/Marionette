@@ -678,6 +678,48 @@ fn sweep_engine_temp_files(dir: &Path, keep: &Path) {
     }
 }
 
+/// `replace_engine_exe` 的 target→aside / temp→target 两步之间崩溃的恢复：
+/// target 缺位但 aside（挪到一边的旧镜像）还在时，把旧镜像改回 target。
+/// 旧版本能跑，胜过「内嵌引擎落位后仍不完整」的必死错误。
+fn recover_interrupted_replace(dir: &Path) {
+    let target = exe_path(dir);
+    if target.is_file() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut asides: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .map(|name| {
+                    let name = name.to_string_lossy();
+                    name.starts_with("magpie.exe.") && name.ends_with(".old")
+                })
+                .unwrap_or(false)
+        })
+        .collect();
+    // 最新挪开的一份优先（同进程多次替换的极端情形）。
+    asides.sort_by_key(|path| {
+        std::fs::metadata(path)
+            .and_then(|meta| meta.modified())
+            .ok()
+    });
+    if let Some(aside) = asides.last() {
+        if std::fs::rename(aside, &target).is_ok() {
+            crate::debug_log::append(
+                "engine",
+                "warn",
+                "",
+                "recovered magpie.exe from a replacement aside left by a crash",
+                Some(&format!("target={}", target.display())),
+            );
+        }
+    }
+}
+
 /// 把落位好的临时文件换成 `magpie.exe`。Windows 不允许覆盖**正在运行**的
 /// 镜像（上一个实例的孤儿 serve 还从这个路径跑着，rename 直接 os error 5）：
 /// 运行中的镜像可以改名，先把它挪到 `magpie.exe.<pid>.old` 再落位新的。
@@ -2082,6 +2124,10 @@ pub fn enable() -> Result<EngineStatus, String> {
 }
 
 fn enable_pipeline(dir: &Path) -> Result<(), String> {
+    // 0. replace_engine_exe 两步 rename 之间崩溃会把 magpie.exe 挪走（target
+    //    缺位、aside 里躺着旧镜像）。先把旧镜像找回来，避免「内嵌引擎落位后
+    //    仍不完整」的必死错误和状态倒退到工厂版本。
+    recover_interrupted_replace(dir);
     // 1. 用户自装实例在默认端口上跑着 → 直接复用（不是我们的进程，不杀）。
     //    但旧实例不能把新构建的版本拖回去：比内嵌还旧就忽略它，自己在下一个
     //    空闲端口起最新引擎（典型场景：上一个实例的 magpie 还占着端口）。
@@ -2169,7 +2215,30 @@ fn enable_pipeline(dir: &Path) -> Result<(), String> {
         version,
         reused: false,
     });
-    // 5. 空闲回收巡检（无绑定 + 30 分钟无需求 → 停 serve；见 idle_watchdog）。
+    // 5. 桥文件（dsh cordis patch / zcode provider_config）里的引擎 baseURL
+    //    立即刷新到新端口——引擎每次重启端口都变，等下一次 spawn 才重写的话，
+    //    这期间的菜单/会话看到的是上一代引擎的死地址。
+    for (what, refresh) in [
+        (
+            "pi marionette route",
+            crate::model_bridge::refresh_pi_marionette_route as fn() -> Result<bool, String>,
+        ),
+        (
+            "zcode marionette route",
+            crate::model_bridge::refresh_zcode_marionette_route as fn() -> Result<bool, String>,
+        ),
+    ] {
+        if let Err(error) = refresh() {
+            crate::debug_log::append(
+                "engine",
+                "warn",
+                "",
+                &format!("{what} refresh after engine start failed"),
+                Some(&error),
+            );
+        }
+    }
+    // 6. 空闲回收巡检（无绑定 + 30 分钟无需求 → 停 serve；见 idle_watchdog）。
     let _ = std::thread::Builder::new()
         .name("engine-idle-watchdog".into())
         .spawn(idle_watchdog);

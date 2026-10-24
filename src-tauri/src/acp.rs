@@ -1,14 +1,14 @@
 use agent_client_protocol_schema::v1 as acp_schema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
@@ -22,6 +22,74 @@ const TIMEOUT_PERMISSION_SECS: u64 = 120;
 const TIMEOUT_QUESTION_SECS: u64 = 300;
 /// Plan approval (human-paced review).
 const TIMEOUT_PLAN_APPROVAL_SECS: u64 = 600;
+
+// ── 到期任务表 ───────────────────────────────────────────────────────────
+// 所有「睡全时长再自动拒绝/取消」的卡（permission / question / elicitation /
+// plan approval）以前各自起一个睡 TTL 的线程——一个挂起高峰就是几十个闲置
+// 线程。现在合流到一个常驻 worker + 按到期时刻排队的 BTreeMap。
+
+type TimerTask = Box<dyn FnOnce() + Send + 'static>;
+
+static TIMER_QUEUE: OnceLock<(Mutex<BTreeMap<Instant, Vec<TimerTask>>>, Condvar)> = OnceLock::new();
+
+/// 到期后执行 task。worker 在首个任务到来时才 spawn。
+fn schedule_timeout(timeout: Duration, task: TimerTask) {
+    let (queue, cond) = TIMER_QUEUE.get_or_init(|| {
+        let pair: (Mutex<BTreeMap<Instant, Vec<TimerTask>>>, Condvar) =
+            (Mutex::new(BTreeMap::new()), Condvar::new());
+        thread::Builder::new()
+            .name("acp-timer".into())
+            .spawn(timer_worker)
+            .expect("spawn acp timer worker");
+        pair
+    });
+    let at = Instant::now() + timeout;
+    queue
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .entry(at)
+        .or_default()
+        .push(task);
+    // notify_all：新任务可能比 worker 正在等的期限更早，必须打断重排。
+    cond.notify_all();
+}
+
+fn timer_worker() {
+    let Some((queue, cond)) = TIMER_QUEUE.get() else {
+        return;
+    };
+    loop {
+        let task = {
+            let mut guard = queue.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            loop {
+                let Some((&at, _)) = guard.iter().next() else {
+                    guard = cond.wait(guard).unwrap_or_else(|poisoned| poisoned.into_inner());
+                    continue;
+                };
+                let now = Instant::now();
+                if now < at {
+                    let (g, _timed_out) = cond
+                        .wait_timeout(guard, at.saturating_duration_since(now))
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard = g;
+                    // 可能有更早的期限插了队，重新取队首。
+                    continue;
+                }
+                let Some(tasks) = guard.get_mut(&at) else {
+                    continue;
+                };
+                let Some(task) = tasks.pop() else {
+                    continue;
+                };
+                if tasks.is_empty() {
+                    guard.remove(&at);
+                }
+                break task;
+            }
+        };
+        task();
+    }
+}
 
 // ─── Capability Types ──────────────────────────────────────────────────────
 
@@ -4092,36 +4160,38 @@ fn handle_agent_request(
             let timeout_session = session_id.to_string();
             let timeout_req = request_id;
             let timeout_perms = Arc::clone(permissions);
-            thread::spawn(move || {
-                thread::sleep(Duration::from_secs(TIMEOUT_PERMISSION_SECS));
-                let pending = {
-                    let Ok(mut map) = timeout_perms.lock() else {
-                        return;
+            schedule_timeout(
+                Duration::from_secs(TIMEOUT_PERMISSION_SECS),
+                Box::new(move || {
+                    let pending = {
+                        let Ok(mut map) = timeout_perms.lock() else {
+                            return;
+                        };
+                        map.remove(&timeout_req)
                     };
-                    map.remove(&timeout_req)
-                };
-                if let Some(pending) = pending {
-                    let option_id = pick_reject_option(&pending.options)
-                        .unwrap_or_else(|| "cancel".to_string());
-                    write_response(
-                        &pending.process,
-                        pending.rpc_id,
-                        json!({
-                            "outcome": {
-                                "outcome": "selected",
-                                "optionId": option_id
-                            }
-                        }),
-                    );
-                    emit_event(
-                        &timeout_app,
-                        &timeout_session,
-                        "system",
-                        Some("permission/timeout"),
-                        json!({ "requestId": timeout_req, "optionId": option_id }),
-                    );
-                }
-            });
+                    if let Some(pending) = pending {
+                        let option_id = pick_reject_option(&pending.options)
+                            .unwrap_or_else(|| "cancel".to_string());
+                        write_response(
+                            &pending.process,
+                            pending.rpc_id,
+                            json!({
+                                "outcome": {
+                                    "outcome": "selected",
+                                    "optionId": option_id
+                                }
+                            }),
+                        );
+                        emit_event(
+                            &timeout_app,
+                            &timeout_session,
+                            "system",
+                            Some("permission/timeout"),
+                            json!({ "requestId": timeout_req, "optionId": option_id }),
+                        );
+                    }
+                }),
+            );
         }
         // Grok Build mid-turn multi-choice (also used heavily in Plan mode).
         // Wire shape: method `x.ai/ask_user_question` (also `_x.ai/` prefix),
@@ -4172,30 +4242,32 @@ fn handle_agent_request(
             let timeout_session = session_id.to_string();
             let timeout_req = request_id;
             let timeout_qs = Arc::clone(questions);
-            thread::spawn(move || {
-                thread::sleep(Duration::from_secs(TIMEOUT_QUESTION_SECS));
-                let pending = {
-                    let Ok(mut map) = timeout_qs.lock() else {
-                        return;
+            schedule_timeout(
+                Duration::from_secs(TIMEOUT_QUESTION_SECS),
+                Box::new(move || {
+                    let pending = {
+                        let Ok(mut map) = timeout_qs.lock() else {
+                            return;
+                        };
+                        map.remove(&timeout_req)
                     };
-                    map.remove(&timeout_req)
-                };
-                if let Some(pending) = pending {
-                    // Same shape as user Skip — Grok requires `outcome`.
-                    write_response(
-                        &pending.process,
-                        pending.rpc_id,
-                        json!({ "outcome": "cancelled" }),
-                    );
-                    emit_event(
-                        &timeout_app,
-                        &timeout_session,
-                        "system",
-                        Some("question/timeout"),
-                        json!({ "requestId": timeout_req }),
-                    );
-                }
-            });
+                    if let Some(pending) = pending {
+                        // Same shape as user Skip — Grok requires `outcome`.
+                        write_response(
+                            &pending.process,
+                            pending.rpc_id,
+                            json!({ "outcome": "cancelled" }),
+                        );
+                        emit_event(
+                            &timeout_app,
+                            &timeout_session,
+                            "system",
+                            Some("question/timeout"),
+                            json!({ "requestId": timeout_req }),
+                        );
+                    }
+                }),
+            );
         }
         // Form elicitation (Plan request_user_input, MCP approvals, OpenCode
         // multiple-choice / web-search, …). Advertised for every agent.
@@ -4257,29 +4329,31 @@ fn handle_agent_request(
                     let timeout_session = session_id.to_string();
                     let timeout_req = request_id;
                     let timeout_el = Arc::clone(elicitations);
-                    thread::spawn(move || {
-                        thread::sleep(Duration::from_secs(TIMEOUT_QUESTION_SECS));
-                        let pending = {
-                            let Ok(mut map) = timeout_el.lock() else {
-                                return;
+                    schedule_timeout(
+                        Duration::from_secs(TIMEOUT_QUESTION_SECS),
+                        Box::new(move || {
+                            let pending = {
+                                let Ok(mut map) = timeout_el.lock() else {
+                                    return;
+                                };
+                                map.remove(&timeout_req)
                             };
-                            map.remove(&timeout_req)
-                        };
-                        if let Some(pending) = pending {
-                            write_response(
-                                &pending.process,
-                                pending.rpc_id,
-                                crate::elicitation::elicitation_decline(),
-                            );
-                            emit_event(
-                                &timeout_app,
-                                &timeout_session,
-                                "system",
-                                Some("permission/timeout"),
-                                json!({ "requestId": timeout_req }),
-                            );
-                        }
-                    });
+                            if let Some(pending) = pending {
+                                write_response(
+                                    &pending.process,
+                                    pending.rpc_id,
+                                    crate::elicitation::elicitation_decline(),
+                                );
+                                emit_event(
+                                    &timeout_app,
+                                    &timeout_session,
+                                    "system",
+                                    Some("permission/timeout"),
+                                    json!({ "requestId": timeout_req }),
+                                );
+                            }
+                        }),
+                    );
                 }
                 crate::elicitation::ElicitationPlan::Questions(questions) => {
                     let qs = crate::elicitation::questions_for_ui(&questions);
@@ -4311,29 +4385,31 @@ fn handle_agent_request(
                     let timeout_session = session_id.to_string();
                     let timeout_req = request_id;
                     let timeout_el = Arc::clone(elicitations);
-                    thread::spawn(move || {
-                        thread::sleep(Duration::from_secs(TIMEOUT_QUESTION_SECS));
-                        let pending = {
-                            let Ok(mut map) = timeout_el.lock() else {
-                                return;
+                    schedule_timeout(
+                        Duration::from_secs(TIMEOUT_QUESTION_SECS),
+                        Box::new(move || {
+                            let pending = {
+                                let Ok(mut map) = timeout_el.lock() else {
+                                    return;
+                                };
+                                map.remove(&timeout_req)
                             };
-                            map.remove(&timeout_req)
-                        };
-                        if let Some(pending) = pending {
-                            write_response(
-                                &pending.process,
-                                pending.rpc_id,
-                                crate::elicitation::elicitation_decline(),
-                            );
-                            emit_event(
-                                &timeout_app,
-                                &timeout_session,
-                                "system",
-                                Some("question/timeout"),
-                                json!({ "requestId": timeout_req }),
-                            );
-                        }
-                    });
+                            if let Some(pending) = pending {
+                                write_response(
+                                    &pending.process,
+                                    pending.rpc_id,
+                                    crate::elicitation::elicitation_decline(),
+                                );
+                                emit_event(
+                                    &timeout_app,
+                                    &timeout_session,
+                                    "system",
+                                    Some("question/timeout"),
+                                    json!({ "requestId": timeout_req }),
+                                );
+                            }
+                        }),
+                    );
                 }
             }
         }
@@ -4374,29 +4450,31 @@ fn handle_agent_request(
             let timeout_session = session_id.to_string();
             let timeout_req = request_id;
             let timeout_plans = Arc::clone(plan_approvals);
-            thread::spawn(move || {
-                thread::sleep(Duration::from_secs(TIMEOUT_PLAN_APPROVAL_SECS));
-                let pending = {
-                    let Ok(mut map) = timeout_plans.lock() else {
-                        return;
+            schedule_timeout(
+                Duration::from_secs(TIMEOUT_PLAN_APPROVAL_SECS),
+                Box::new(move || {
+                    let pending = {
+                        let Ok(mut map) = timeout_plans.lock() else {
+                            return;
+                        };
+                        map.remove(&timeout_req)
                     };
-                    map.remove(&timeout_req)
-                };
-                if let Some(pending) = pending {
-                    write_response(
-                        &pending.process,
-                        pending.rpc_id,
-                        exit_plan_mode_disconnect_response(),
-                    );
-                    emit_event(
-                        &timeout_app,
-                        &timeout_session,
-                        "system",
-                        Some("plan/timeout"),
-                        json!({ "requestId": timeout_req }),
-                    );
-                }
-            });
+                    if let Some(pending) = pending {
+                        write_response(
+                            &pending.process,
+                            pending.rpc_id,
+                            exit_plan_mode_disconnect_response(),
+                        );
+                        emit_event(
+                            &timeout_app,
+                            &timeout_session,
+                            "system",
+                            Some("plan/timeout"),
+                            json!({ "requestId": timeout_req }),
+                        );
+                    }
+                }),
+            );
         }
         // Off-thread for the same reason dispatch is: this is disk I/O, and the
         // reader it would run on is the only thing draining the agent's stdout.

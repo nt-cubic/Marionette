@@ -3,6 +3,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fs;
 use std::hash::{Hash, Hasher};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -929,22 +930,33 @@ impl StorageService {
         if !path.exists() {
             return Ok(Vec::new());
         }
-        let content = fs::read_to_string(&path)
+        // 逐行流式读：超长转录不再整文件 materialize 成 String 再拆行。
+        let file = std::fs::File::open(&path)
             .map_err(|error| format!("Read transcript failed: {error}"))?;
+        let reader = BufReader::new(file);
         let mut events = Vec::new();
-        for (index, line) in content.lines().enumerate() {
+        let mut corrupt = 0usize;
+        for line in reader.lines() {
+            let line =
+                line.map_err(|error| format!("Read transcript line failed: {error}"))?;
             let line = line.trim();
             if line.is_empty() {
                 continue;
             }
             match serde_json::from_str::<serde_json::Value>(line) {
                 Ok(value) => events.push(value),
-                Err(error) => {
-                    // Skip corrupt lines rather than failing the whole load.
-                    let _ = error;
-                    let _ = index;
-                }
+                // 跳过坏行而不是整份失败，但要有痕迹可查。
+                Err(_) => corrupt += 1,
             }
+        }
+        if corrupt > 0 {
+            crate::debug_log::append(
+                "storage",
+                "warn",
+                session_id,
+                &format!("transcript load skipped {corrupt} corrupt line(s)"),
+                None,
+            );
         }
         Ok(events)
     }

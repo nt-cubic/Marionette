@@ -42,7 +42,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::SyncSender;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -84,6 +84,10 @@ const PAIRING_TTL: Duration = Duration::from_secs(300);
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(60);
 const BACKOFF_409_START: Duration = Duration::from_secs(15);
+/// 出站队列容量：正常时近空；长故障期满了就丢新消息（见 try_enqueue）。
+const OUTBOUND_QUEUE_CAP: usize = 64;
+/// 队列满以来丢弃的消息总数（留痕用）。
+static OUTBOUND_DROPS: AtomicU64 = AtomicU64::new(0);
 
 /// 前端收文本路由的事件名（App.tsx 监听 → performSend → ack）。
 pub const INBOUND_EVENT: &str = "telegram-remote-inbound";
@@ -637,7 +641,7 @@ impl LiveConfig {
 struct Telegram {
     app: AppHandle,
     acp: AcpService,
-    outbound: Sender<Outbound>,
+    outbound: SyncSender<Outbound>,
     /// 发送线程的接收端。惰性取走：线程第一次拉起时 move 进去。
     inbound_rx: Mutex<Option<std::sync::mpsc::Receiver<Outbound>>>,
     inner: Mutex<Inner>,
@@ -681,7 +685,7 @@ pub fn start(app: AppHandle, acp: AcpService) {
         prefs: settings.prefs.clone(),
     };
 
-    let (tx, rx) = std::sync::mpsc::channel::<Outbound>();
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Outbound>(OUTBOUND_QUEUE_CAP);
     let telegram = Telegram {
         app,
         acp,
@@ -1692,7 +1696,8 @@ fn push_simple(live: &LiveConfig, session_id: &str, icon: &str, head: &str, deta
 }
 
 /// 投递到发送线程。fire-and-forget：通道断了（进程退出）就直接丢，
-/// 绝不反压事件收口。
+/// 绝不反压事件收口。队列满时同样丢新消息——长故障期宁可丢通知，
+/// 也不能让 poller/事件线程堵在 send 上。
 fn enqueue_send(
     live: &LiveConfig,
     text: String,
@@ -1701,8 +1706,7 @@ fn enqueue_send(
     reply_to: Option<i64>,
 ) {
     let _ = live;
-    let Some(slot) = TELEGRAM.get() else { return };
-    let _ = slot.outbound.send(Outbound::Send {
+    try_enqueue(Outbound::Send {
         text,
         buttons,
         route_for_session,
@@ -1723,8 +1727,7 @@ fn enqueue_send_md_with_plain(
     reply_to: Option<i64>,
 ) {
     let _ = live;
-    let Some(slot) = TELEGRAM.get() else { return };
-    let _ = slot.outbound.send(Outbound::Send {
+    try_enqueue(Outbound::Send {
         text: md,
         buttons,
         route_for_session,
@@ -1732,6 +1735,21 @@ fn enqueue_send_md_with_plain(
         md: true,
         plain: Some(plain),
     });
+}
+
+/// 有界队列投递：满则丢 + 按 2 的幂次低频留痕（1,2,4,8…次时各记一条）。
+fn try_enqueue(job: Outbound) {
+    let Some(slot) = TELEGRAM.get() else { return };
+    if slot.outbound.try_send(job).is_err() {
+        let n = OUTBOUND_DROPS.fetch_add(1, Ordering::Relaxed) + 1;
+        if n.is_power_of_two() {
+            log(
+                "warn",
+                &format!("telegram outbound queue full — dropped {n} messages so far"),
+                None,
+            );
+        }
+    }
 }
 
 // ─── 发送线程 ──────────────────────────────────────────────────────────────

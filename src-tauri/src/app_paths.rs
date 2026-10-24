@@ -6,6 +6,7 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 pub const DIR_NAME: &str = ".marionette";
 pub const LEGACY_DIR_NAME: &str = ".agentshell";
@@ -28,15 +29,61 @@ pub fn project_dir(project_root: &Path) -> PathBuf {
 
 /// If only the legacy folder exists, rename it to the new name. Prefer the new
 /// path when both exist (do not delete legacy automatically).
+///
+/// 双开竞态：两个实例同时首启时，一个在 rename、另一个可能已经
+/// `create_dir_all` 出空的新目录，旧数据就永远留在 `.agentshell`（数据分叉）。
+/// 所以「检查 + rename」用父目录里一把 `create_new` 迁移锁包成跨进程原子段，
+/// 拿不到锁的一方有界轮询等迁移完成。
 fn migrate_dir_once(parent: PathBuf) -> PathBuf {
     let neu = parent.join(DIR_NAME);
     let old = parent.join(LEGACY_DIR_NAME);
-    if !neu.exists() && old.exists() {
-        // Best-effort one-shot migrate from AgentShell layout. Ignore errors —
-        // callers create_dir_all on the new path as needed.
-        let _ = fs::rename(&old, &neu);
+    if old.exists() && !neu.exists() {
+        let lock_path = parent.join(format!("{DIR_NAME}.migrate.lock"));
+        if try_acquire_migrate_lock(&lock_path).is_ok() {
+            if !neu.exists() && old.exists() {
+                // Best-effort one-shot migrate from AgentShell layout. Ignore
+                // errors — callers create_dir_all on the new path as needed.
+                let _ = fs::rename(&old, &neu);
+            }
+            let _ = fs::remove_file(&lock_path);
+        } else {
+            // 另一实例正在迁移：等它完成（有界，不无限自旋）。
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while Instant::now() < deadline {
+                if !old.exists() || neu.exists() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
     }
     neu
+}
+
+/// 创建即占用的迁移锁；已存在 = 别的实例持有（或持有者崩溃留下的——超龄回收）。
+fn try_acquire_migrate_lock(lock_path: &Path) -> Result<fs::File, ()> {
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(lock_path)
+    {
+        Ok(file) => Ok(file),
+        Err(_) => {
+            let stale = fs::metadata(lock_path)
+                .and_then(|meta| meta.modified())
+                .map(|modified| modified.elapsed().unwrap_or_default() > Duration::from_secs(30))
+                .unwrap_or(true);
+            if stale {
+                let _ = fs::remove_file(lock_path);
+                return fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(lock_path)
+                    .map_err(|_| ());
+            }
+            Err(())
+        }
+    }
 }
 
 /// Ensure project data subdirs exist (sessions / transcripts / handoff).
