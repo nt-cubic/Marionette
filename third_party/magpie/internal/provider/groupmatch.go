@@ -23,7 +23,8 @@ import (
 )
 
 // RegexpPrefix starts a member that is a regular expression over the whole
-// "provider/model" id: "re:openrouter/.*:(free|beta)".
+// "provider/model" id, in any case as a glob is: "re:openrouter/.*:(free|beta)".
+// "(?-i)" in it makes case matter from there on: "re:(?-i)openrouter/.*:FREE".
 const RegexpPrefix = "re:"
 
 // IsPattern reports whether a member as typed is a pattern rather than a
@@ -36,13 +37,14 @@ func IsPattern(s string) bool {
 
 // compilePattern is a pattern as the regexp it means. A glob's "*" is any
 // run of characters, "/" too, and the rest is the id as spelt, in any case
-// ("openrouter/*:free", "*-free"); a regexp must match the whole id.
+// ("openrouter/*:free", "*-free"); a regexp must match the whole id, in any
+// case as a glob does unless it says "(?-i)" (usrname1833 on Discord).
 func compilePattern(p string) (*regexp.Regexp, error) {
 	if re, ok := strings.CutPrefix(p, RegexpPrefix); ok {
 		if strings.TrimSpace(re) == "" {
 			return nil, fmt.Errorf("%q has no regular expression after %s", p, RegexpPrefix)
 		}
-		x, err := regexp.Compile("^(?:" + re + ")$")
+		x, err := regexp.Compile("(?i)^(?:" + re + ")$")
 		if err != nil {
 			return nil, fmt.Errorf("%q is not a regular expression magpie can read: %v", p, err)
 		}

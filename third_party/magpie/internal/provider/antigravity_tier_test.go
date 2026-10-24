@@ -88,7 +88,7 @@ func TestAntigravityProAccountNamesItsTier(t *testing.T) {
 	if err := addGoogleLogin("antigravity", "pro@example.com", "", auth); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := antigravityModelIDs(t, "antigravity"), []string{"claude-opus-5-5", "claude-sonnet-5-5", "gemini-3.8-flash-high"}; !slices.Equal(got, want) {
+	if got, want := antigravityModelIDs(t, "antigravity"), []string{"claude-opus-5-5", "gemini-3.8-flash-high"}; !slices.Equal(got, want) {
 		t.Fatalf("models %v, want %v", got, want)
 	}
 	if len(f.fetches) != 1 || fmt.Sprint(f.fetches[0]["entitlement"]) != "map[userTier:g1-pro-tier]" || f.fetches[0]["project"] != "aicode-consumers" {
@@ -98,7 +98,7 @@ func TestAntigravityProAccountNamesItsTier(t *testing.T) {
 	for _, w := range []string{
 		`loadCodeAssist at ` + codeAssistProd + `: current tier standard-tier (Antigravity) gcp-tos, paid tier g1-pro-tier (Google AI Pro), project "aicode-consumers", ineligible free-tier (VALIDATION_REQUIRED: Verify your account to continue.)`,
 		`fetchAvailableModels at ` + codeAssistDaily + ` (antigravity/hub/3.1.4 `,
-		`project "aicode-consumers", current tier "standard-tier", paid tier "g1-pro-tier", entitlement "g1-pro-tier"): 4 models, 3 kept; left out 1 not for chat [tab_flash_lite_preview], 0 completion-only []; disabled [claude-sonnet-5-5]; Claude [claude-opus-5-5 claude-sonnet-5-5]`,
+		`project "aicode-consumers", current tier "standard-tier", paid tier "g1-pro-tier", entitlement "g1-pro-tier"): 4 models, 2 kept; left out 1 not for chat [tab_flash_lite_preview], 0 completion-only []; disabled [claude-sonnet-5-5]; Claude [claude-opus-5-5]`,
 	} {
 		if !strings.Contains(out, w) {
 			t.Errorf("log lacks %q:\n%s", w, out)
@@ -169,6 +169,32 @@ func TestAntigravityTierFreeAndKeptProject(t *testing.T) {
 	}
 }
 
+// A model Antigravity marks disabled isn't served: a real account's
+// fetchAvailableModels had gemini-4-argon-disabled with disabled true,
+// magpie listed it, DeepSeek Harness offered it, and asking for it was a
+// 404 "Requested entity was not found" (kwanyu on Discord, 10-24). It is
+// left out of the list for every client; the models beside it, and their
+// ids, are as Google sent them.
+func TestAntigravityDisabledModelLeftOut(t *testing.T) {
+	f := &fakeGoogle{load: `{"currentTier":{"id":"free-tier","name":"Antigravity"},"cloudaicompanionProject":"aicode-consumers"}`, models: `{"models":{
+		"gemini-3.8-flash-high":{"displayName":"Gemini 3.8 Flash (High)","maxTokens":1048576,"quotaInfo":{"remainingFraction":1}},
+		"gemini-4-argon-disabled":{"displayName":"Gemini 4 Argon","maxTokens":1048576,"disabled":true,"quotaInfo":{"remainingFraction":1}},
+		"claude-opus-4-6-thinking":{"displayName":"Claude Opus 4.6 (Thinking)","maxTokens":200000,"quotaInfo":{"remainingFraction":0.5}},
+		"gpt-oss-120b-medium":{"displayName":"GPT-OSS 120B (Medium)","maxTokens":131072,"disabled":false}}}`}
+	googleSandbox(t, f)
+	buf := captureLog(t)
+	auth := googleAuth{AccessToken: "tok", RefreshToken: "rt-argon", Expiry: time.Now().Add(time.Hour).UnixMilli()}
+	if err := addGoogleLogin("antigravity", "argon@example.com", "", auth); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := antigravityModelIDs(t, "antigravity"), []string{"claude-opus-4-6-thinking", "gemini-3.8-flash-high", "gpt-oss-120b-medium"}; !slices.Equal(got, want) {
+		t.Fatalf("models %v, want %v", got, want)
+	}
+	if w := "4 models, 3 kept; left out 0 not for chat [], 0 completion-only []; disabled [gemini-4-argon-disabled]; Claude [claude-opus-4-6-thinking]"; !strings.Contains(buf.String(), w) {
+		t.Errorf("log lacks %q:\n%s", w, buf.String())
+	}
+}
+
 // #1553 (AnxForever): a Google AI Pro account that loadCodeAssist has on
 // free-tier, paying for g1-pro-tier, in aicode-consumers. Google answered
 // its fetchAvailableModels with g1-pro-tier named "Request contains an
@@ -202,7 +228,7 @@ func TestAntigravityProInvalidTierAsksWithoutOne(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ms) != 3 || !slices.ContainsFunc(ms, func(m catalog.Model) bool { return m.ID == "claude-opus-5-5" }) {
+	if len(ms) != 2 || !slices.ContainsFunc(ms, func(m catalog.Model) bool { return m.ID == "claude-opus-5-5" }) { // claude-sonnet-5-5 is disabled
 		t.Fatalf("models %v", ms)
 	}
 	f.mu.Lock()
@@ -214,7 +240,7 @@ func TestAntigravityProInvalidTierAsksWithoutOne(t *testing.T) {
 	for _, w := range []string{
 		`antigravity paid@gmail.com: loadCodeAssist at ` + codeAssistProd + `: current tier free-tier (Antigravity), paid tier g1-pro-tier (Google AI Pro), project "aicode-consumers"`,
 		`antigravity paid@gmail.com: fetchAvailableModels with entitlement g1-pro-tier: Antigravity: Request contains an invalid argument.; asking with none next`,
-		`project "aicode-consumers", current tier "free-tier", paid tier "g1-pro-tier", entitlement ""): 4 models, 3 kept`,
+		`project "aicode-consumers", current tier "free-tier", paid tier "g1-pro-tier", entitlement ""): 4 models, 2 kept`,
 	} {
 		if !strings.Contains(buf.String(), w) {
 			t.Errorf("log lacks %q:\n%s", w, buf.String())
@@ -227,12 +253,12 @@ func TestAntigravityProInvalidTierAsksWithoutOne(t *testing.T) {
 	f.mu.Unlock()
 	buf.Reset()
 	ms, err = p.Fetch(context.Background())
-	if err != nil || len(ms) != 3 {
+	if err != nil || len(ms) != 2 {
 		t.Fatalf("kept: %v, %v", ms, err)
 	}
 	for _, w := range []string{
 		`antigravity paid@gmail.com: fetchAvailableModels at ` + codeAssistDaily + ` (project "aicode-consumers", no entitlement): Antigravity: The service is currently unavailable.`,
-		`antigravity paid@gmail.com: models not refreshed: Antigravity: The service is currently unavailable.; keeping the 3 it listed before`,
+		`antigravity paid@gmail.com: models not refreshed: Antigravity: The service is currently unavailable.; keeping the 2 it listed before`,
 	} {
 		if !strings.Contains(buf.String(), w) {
 			t.Errorf("log lacks %q:\n%s", w, buf.String())

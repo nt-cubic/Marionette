@@ -122,6 +122,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(await rows.count(), 100);
 
         // the folder's box and the bar pick every session, drawn or not
+        await view.locator(".sm-select").click();
         await view.locator(".sm-folder-check").first().check();
         assert.equal(await view.locator(".sm-bar .sm-count").textContent(), w.picked);
         await view.locator(".sm-bar .sm-check").check();

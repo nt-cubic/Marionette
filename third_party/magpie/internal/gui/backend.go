@@ -118,7 +118,9 @@ func serveGateway() *gateway.Server {
 func serveGatewayLocked() *gateway.Server {
 	// handing over, the one there is this one's predecessor, which lets go
 	// once this one listens beside it
-	if !gateway.Handover {
+	// so is the one that handed this one its socket, still finishing its
+	// requests on it (gui/handover.go)
+	if !gateway.Handover && !gateway.Inherited() {
 		if o := gateway.ServedBy(); o.Running {
 			if update.Newer(gateway.Version, o.Version) {
 				log.Printf("gateway: magpie %s serves %s, older than this one (%s); agents' requests go through it until it quits", o.Version, gateway.URL(), gateway.Version)

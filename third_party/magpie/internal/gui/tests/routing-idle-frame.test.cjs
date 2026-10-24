@@ -98,7 +98,9 @@ const init = () => {
   // the live dot's pulse, running or not
   window.__pulses = () => [...document.querySelectorAll(".rt-livedot")].filter((d) => d.getAnimations().some((a) => a.playState === "running")).length;
   window.requestAnimationFrame = (cb) => {
-    const self = typeof cb === "function" && /requestAnimationFrame\s*\(\s*([A-Za-z_$][\w$]*)/.test(cb.toString()) && new RegExp(`\\b${RegExp.$1}\\s*\\(`).test(cb.toString());
+    // a loop of the core's (app.js's sidebar spring, navTopStep) is a
+    // global; the Routing plugin's is in its own scope
+    const self = typeof cb === "function" && window[cb.name] !== cb && /requestAnimationFrame\s*\(\s*([A-Za-z_$][\w$]*)/.test(cb.toString()) && new RegExp(`\\b${RegExp.$1}\\s*\\(`).test(cb.toString());
     if (typeof cb === "function" && (cb.name === "frame" || self)) window.__seenFrame = true;
     return raf((ts) => { if (cb.name === "step") window.__steps++; if (typeof cb === "function" && (cb.name === "frame" || self)) window.__frames++; cb(ts); });
   };

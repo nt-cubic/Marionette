@@ -392,3 +392,52 @@ func TestNoticePartners(t *testing.T) {
 		t.Fatalf("after a fetch: acme %v gamma %v", PartnerNoticed("acme"), PartnerNoticed("gamma"))
 	}
 }
+
+// The magpie serving the gateway fetches the list when it starts and
+// again when it is due, with no page asking: an app left open on another
+// page still learns of a partner added within the hour.
+func TestPartnersKeptFreshUnasked(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	resetPartners()
+	t.Cleanup(resetPartners)
+	was := partnerEvery
+	partnerEvery = 50 * time.Millisecond
+	t.Cleanup(func() { partnerEvery = was })
+	var asked atomic.Int32
+	var body atomic.Value
+	body.Store(`{"partners":[]}`)
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		asked.Add(1)
+		_, _ = rw.Write([]byte(body.Load().(string)))
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("MAGPIE_PARTNERS", srv.URL)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); KeepPartnersFresh(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+
+	waitFor := func(what string, ok func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(20 * time.Second)
+		for !ok() {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: asked %d times", what, asked.Load())
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	waitFor("fetched on start", func() bool { return asked.Load() >= 1 })
+	body.Store(`{"partners":[{"id":"acme","name":"Acme","chat":"https://a.example/v1"}]}`)
+	n := asked.Load()
+	waitFor("fetched again when due", func() bool { return asked.Load() > n })
+	// the fetch counted may still be storing its list
+	claimPartnerFetch()
+	partnerMu.Unlock()
+	waitFor("the partner added is held", func() bool {
+		partnerMu.Lock()
+		defer partnerMu.Unlock()
+		return partnerState != nil && partnerIDs(partnerState.Partners) == "acme"
+	})
+}

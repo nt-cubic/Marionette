@@ -983,7 +983,15 @@ func (g googleAccount) modelInfo(ctx context.Context) ([]googleModelInfo, error)
 				continue
 			}
 			if m.Disabled {
-				disabled = append(disabled, id) // still listed, as before
+				// Antigravity marks a model it won't serve the account
+				// disabled, and asking for it is a 404 "Requested entity
+				// was not found": gemini-4-argon-disabled on a real
+				// account, which DeepSeek Harness offered from magpie's
+				// list (kwanyu on Discord, 10-24). It is left out, as the
+				// chat_/tab_ ids are, and comes back on the refresh after
+				// Google enables it.
+				disabled = append(disabled, id)
+				continue
 			}
 			if strings.HasPrefix(id, "claude") {
 				claude = append(claude, id)

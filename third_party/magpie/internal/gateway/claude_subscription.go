@@ -3539,6 +3539,11 @@ func (b *subscriptionBridge) mcpCall(w http.ResponseWriter, r *http.Request) {
 	run := b.runs[token]
 	b.mu.Unlock()
 	if run == nil {
+		// a run of the magpie this one took the gateway over from, its
+		// turn under way when the gateway changed hands (handover.go)
+		if forwardCallback(w, r) {
+			return
+		}
 		http.Error(w, "unknown or expired Claude run", http.StatusNotFound)
 		return
 	}
@@ -4104,6 +4109,7 @@ func (b *subscriptionBridge) whyCallsLost(req *Request) string {
 }
 
 func (s *Server) serveClaudeSubscription(w http.ResponseWriter, r *http.Request, from provider.Protocol, p provider.Provider, model string, body []byte, usage *Usage) (int, string) {
+	defer s.bridgeTurn()()
 	owner := p.ID
 	if p.Account != nil {
 		owner += "\x00" + p.Account.User

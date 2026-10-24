@@ -386,6 +386,17 @@ func (s *Server) codexTitleOff(w http.ResponseWriter, r *http.Request, body []by
 // Routing and Usage views say of it, the request kept there as what it
 // was, answered by magpie.
 func (s *Server) sentNowhere(w http.ResponseWriter, r *http.Request, body []byte, who, why string, out []any) {
+	s.answeredHere(r, provider.Responses, body, who, why, func() {
+		writeTitleReply(w, fmt.Sprintf("resp_magpie_%d", time.Now().UnixNano()), out, nil)
+	})
+}
+
+// answeredHere records a request magpie answered itself with write,
+// sending it nowhere: the Routing view has it tried on magpie alone, who
+// naming why, and the Recent calls and the usage ledger have it as
+// answered by magpie, rejected, with why as its error, so Usage and the
+// Sessions it belongs to say what became of it.
+func (s *Server) answeredHere(r *http.Request, from provider.Protocol, body []byte, who, why string, write func()) {
 	start := time.Now()
 	usage.Saw(agentOf(r))
 	metadata := requestSessionMetadata(r.Header, body)
@@ -394,13 +405,13 @@ func (s *Server) sentNowhere(w http.ResponseWriter, r *http.Request, body []byte
 	seat := Weighed{ID: "magpie", Provider: "magpie", Name: "magpie", Who: who, Kind: "provider", Model: model}
 	tr := s.trace.beginFor(r, Route{Time: start, Agent: agentOf(r), Session: sessionOf(r.Header), ParentSession: titleParentSession(r.Header, metadata, kind),
 		Kind: kind, Model: model, Provider: "magpie", Order: []Weighed{seat}, Tries: []Try{{ID: seat.ID, Model: model, Start: start}}})
-	writeTitleReply(w, fmt.Sprintf("resp_magpie_%d", start.UnixNano()), out, nil)
+	write()
 	ms := time.Since(start).Milliseconds()
 	s.trace.update(tr, func(t *Route) {
 		t.Tries[0].Done, t.Tries[0].Status, t.Tries[0].Millis, t.Tries[0].Error = true, 200, ms, why
 		t.Done, t.Status, t.Error, t.Millis = true, 200, why, ms
 	})
-	s.record(Call{Route: tr.ID, Time: start, From: provider.Responses, To: provider.Responses, Model: model, Provider: "magpie",
+	s.record(Call{Route: tr.ID, Time: start, From: from, To: from, Model: model, Provider: "magpie",
 		Agent: agentOf(r), Kind: kind, Status: 200, Millis: ms, Error: why})
 	appendUsage(r, usage.Record{RouteID: tr.ID, Time: start, Agent: agentOf(r), Provider: "magpie", Model: model, Requested: model,
 		Millis: ms, Status: 200, Rejected: true, Error: why, Session: sessionOf(r.Header), NativeSession: nativeSessionOf(r.Header),

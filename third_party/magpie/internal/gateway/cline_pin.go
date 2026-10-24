@@ -14,7 +14,9 @@ import (
 // gets providerOptions.gateway.only, which that gateway reads to serve the
 // model from that host alone, as ClinePass + ProviderPin set it
 // (linux.do/t/topic/2918145); one it sends through OpenRouter gets
-// provider.only, OpenRouter's own field (sdytman on Discord). A body
+// provider.only, OpenRouter's own field (sdytman on Discord). A ClinePass
+// DeepSeek model's carries the gateway's has filter beside only, which
+// ClinePass needs for the pin to hold (provider.ClinePassHas). A body
 // naming provider or providerOptions itself is left as the client sent
 // it. The field goes at the end, so the prefix a cache keys on doesn't
 // change.
@@ -31,7 +33,11 @@ func clinePin(p provider.Provider, to provider.Protocol, body []byte) []byte {
 	if end < 0 || start < 0 || start > end {
 		return body
 	}
-	key, opts := "providerOptions", map[string]any{"gateway": map[string]any{"only": []string{up}}}
+	gw := map[string]any{"only": []string{up}}
+	if has := p.ClinePassHas(gjson.GetBytes(body, "model").String(), chatImages(body)); has != nil {
+		gw["has"] = has
+	}
+	key, opts := "providerOptions", map[string]any{"gateway": gw}
 	if openRouter {
 		key, opts = "provider", map[string]any{"only": []string{up}}
 	}
@@ -46,4 +52,19 @@ func clinePin(p provider.Provider, to provider.Protocol, body []byte) []byte {
 	out = append(out, `":`...)
 	out = append(out, val...)
 	return append(out, body[end:]...)
+}
+
+// chatImages is whether a Chat body carries an image part
+func chatImages(body []byte) bool {
+	found := false
+	gjson.GetBytes(body, "messages").ForEach(func(_, m gjson.Result) bool {
+		m.Get("content").ForEach(func(_, part gjson.Result) bool {
+			if t := part.Get("type").String(); t == "image_url" || t == "image" || t == "input_image" {
+				found = true
+			}
+			return !found
+		})
+		return !found
+	})
+	return found
 }

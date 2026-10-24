@@ -207,6 +207,13 @@ func (p Provider) ClinePin(model string) (upstream string, openRouter bool) {
 	if !p.PinUpstream || !p.ClinePinnable() || strings.HasPrefix(model, clineFreePrefix) {
 		return "", false
 	}
+	// the Cline plugin pins ClinePass's DeepSeek models itself, by default,
+	// with ClinePassHas's filter and a way back when the pin can't be
+	// served (opencode-cline-auth 0.1.11). It keeps a body's own
+	// providerOptions, so magpie's only alone would stand in its place.
+	if p.PluginProvider() == "cline" && clinePassDeepSeek(model) {
+		return "", false
+	}
 	name := strings.ToLower(model[strings.LastIndex(model, "/")+1:])
 	for _, m := range clineMakers {
 		if m.exact && name == m.name || !m.exact && strings.HasPrefix(name, m.name) {
@@ -214,4 +221,34 @@ func (p Provider) ClinePin(model string) (upstream string, openRouter bool) {
 		}
 	}
 	return "", false
+}
+
+// clinePassDeepSeek is a ClinePass DeepSeek model: cline-pass/deepseek-…
+func clinePassDeepSeek(model string) bool {
+	return strings.HasPrefix(strings.ToLower(model), "cline-pass/deepseek")
+}
+
+// ClinePassHas is the capability filter (providerOptions.gateway.has) a
+// pinned request for model carries beside only, or nil. On ClinePass the
+// server's own routing for a DeepSeek model wins over only alone, and a
+// fake upstream in only was served all the same; with has beside it the
+// request went to DeepSeek and a fake upstream was refused "no matching
+// upstream" (hy125245 on X, 10-23). The upstream must cache a repeated
+// prefix by itself, and, for a model that takes images (images: the
+// fetched list says so, or the request carries one), take them: a
+// text-only model asked "vision" (deepseek-v4-pro) would have no upstream
+// left. The Cline plugin's provider has none here: the plugin writes it.
+func (p Provider) ClinePassHas(model string, images bool) []string {
+	if up, _ := p.ClinePin(model); up == "" || !clinePassDeepSeek(model) {
+		return nil
+	}
+	if !images {
+		if ms := p.liveByID(model); len(ms) > 0 {
+			images = ms[0].Images
+		}
+	}
+	if images {
+		return []string{"vision", "implicit-caching"}
+	}
+	return []string{"implicit-caching"}
 }

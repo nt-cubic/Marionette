@@ -69,7 +69,17 @@ func TestCodexThreadsComeBackOffMagpie(t *testing.T) {
 		before = "019a0000-0000-7000-8000-0000000000a3"
 	)
 	t.Run("disconnect", func(t *testing.T) {
-		home, _ := codexHome(t, "", "model = \"gpt-5.4\"\n")
+		// run after the TempDir's removal: what it couldn't remove (#3422)
+		var home string
+		t.Cleanup(func() {
+			filepath.Walk(home, func(p string, fi os.FileInfo, err error) error {
+				if err == nil && p != home {
+					t.Logf("left after the test: %s (%v)", p, fi.ModTime())
+				}
+				return nil
+			})
+		})
+		home, _ = codexHome(t, "", "model = \"gpt-5.4\"\n")
 		dir := filepath.Join(home, ".codex")
 		cx := codex(home)
 		if err := cx.Fields[0].Set("fake/m1"); err != nil {

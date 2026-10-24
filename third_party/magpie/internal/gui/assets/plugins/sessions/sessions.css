@@ -31,13 +31,32 @@
 .sm-check { flex: none; margin: 0; width: 14px; height: 14px; accent-color: var(--accent); }
 .sm-tree { display: flex; flex-direction: column; gap: 8px; }
 .sm-group .skeleton.sk-line { width: 60%; height: 12px; }
-.row.sm-folder { min-height: 34px; gap: 8px; }
-.row.sm-folder .fold { color: var(--fg-2); font-weight: 500; flex: none; max-width: 45%; }
-.row.sm-folder .fold .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.row.sm-folder .sm-path { flex: 0 1 auto; min-width: 0; margin: 0; font-family: var(--code-font, var(--code)); font-size: 10.5px; color: var(--faint); }
-:where(html[data-fonts]) .row.sm-folder .sm-path { font-style: var(--code-style, inherit); font-weight: var(--code-weight, inherit); font-stretch: var(--code-stretch, 100%); }
-.row.sm-folder .grow { flex: 1; }
-.row.sm-folder .note { flex: none; font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.sm-select.on { background: var(--pill); color: var(--fg); }
+/* the folders are one list, parted by hairlines, never a card each; the
+   sessions of an open one go on in it, set in under its name */
+.sm-folders > .sm-group + .sm-group, .sm-folders > .sm-group + .sm-more-folders,
+.sm-others > .sm-group, .sm-others > .sm-more-folders { border-top: 1px solid var(--line-2); }
+.sm-group > .row.sm-folder + .sm-item { border-top: 1px solid var(--line-2); }
+.sm-tree .sm-more-folders { margin: 6px 11px; }
+.row.sm-folder, .row.sm-others-row { min-height: 44px; gap: 8px; }
+.row.sm-folder .fold, .row.sm-others-row .fold { flex: 1; min-width: 0; margin: 0 0 0 -4px; padding: 4px 6px 4px 4px; gap: 8px; text-align: left; color: var(--faint); }
+.row.sm-folder .fold:hover, .row.sm-others-row .fold:hover { background: none; }
+.row.sm-folder:hover, .row.sm-others-row:hover { background: color-mix(in srgb, var(--pill) 40%, transparent); }
+.sm-fwords { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 1px; }
+.sm-fline { min-width: 0; display: flex; align-items: baseline; gap: 8px; }
+.sm-fline .name, .sm-others-row .name { flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 500; color: var(--fg); }
+.row.sm-folder .sm-path { flex: 0 1 auto; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--faint); }
+.sm-latest { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
+.sm-when { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
+.sm-when .sm-ago { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.row.sm-folder .note, .row.sm-others-row .note { flex: none; font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* what can be done to a whole folder waits under ⋯ until the row is pointed at */
+.sm-folder-more { flex: none; opacity: 0; transition: opacity .12s; }
+.row.sm-folder:hover .sm-folder-more, .row.sm-folder:focus-within .sm-folder-more, .sm-folder-more.open { opacity: 1; }
+@media (hover: none) { .sm-folder-more { opacity: 1; } }
+.sm-group .row.sm-sess { padding-left: 29px; }
+body.window .sm-group .row.sm-sess { padding-left: 32px; }
+.sm-others { margin-top: 4px; }
 .row.sm-sess { min-height: 44px; }
 .sm-item .sess-detail { padding-left: 34px; }
 .row.sess .sm-del:hover { color: var(--red); background: var(--red-soft); }
@@ -67,11 +86,12 @@
   .row.sess.sm-sess { gap: 8px; }
 }
 @media (max-width: 420px) {
-  .sm-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; row-gap: 6px; }
+  .sm-head { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; row-gap: 6px; }
   .sm-switch { grid-column: 1 / -1; }
   .sm-agent-pick { max-width: 100%; }
-  .sm-filter { width: 100%; min-width: 0; }
-  .sm-trash-btn { grid-column: 2; justify-self: end; }
+  .sm-filter { grid-column: 1; grid-row: 2; width: 100%; min-width: 0; }
+  .sm-select { grid-column: 2; grid-row: 2; }
+  .sm-trash-btn { grid-column: 3; grid-row: 2; justify-self: end; }
 }
 /* Codex sessions made with another provider, hidden from Codex's history (#887) */
 .row.sm-provider { gap: 10px; min-height: 40px; padding: 8px 11px; height: auto; }

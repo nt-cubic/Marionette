@@ -353,8 +353,9 @@ function gatewayModels() {
   // all say works but a request to it turns away (the same off gate the
   // backend's providerEntries and the fallback picker already honour).
   // the levels agents are offered: those kept, else all it has; one whose
-  // levels aren't known (given) offers only those it was given
-  const offered = (m) => m.kept?.length || m.given ? m.kept || [] : m.efforts || [];
+  // levels aren't known (given) offers only those it was given; one sent
+  // no reasoning field (reasonless) offers none
+  const offered = (m) => m.reasonless ? [] : m.kept?.length || m.given ? m.kept || [] : m.efforts || [];
   for (const p of providers.providers) { if (p.off) continue; for (const m of p.models) if (m.on) out.push({ id: `${p.id}/${m.id}`, name: m.name, provider: p, context: m.context, output: m.output, efforts: offered(m), images: !!m.images }); }
   return out;
 }

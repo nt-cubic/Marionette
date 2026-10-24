@@ -23,6 +23,11 @@ func (s *Server) serveAgent(w http.ResponseWriter, r *http.Request, from provide
 	withGatewaySession(w, r)
 	w, recorded := recordConversation(w, r, from, body)
 	defer recorded()
+	// a conversation going round one tool call is answered here, before
+	// anything of it is asked of a hook, a middleware or a provider
+	if s.stoppedToolLoop(w, r, from, body) {
+		return
+	}
 	w, body, hooked := gatewayHooks(w, r, from, body)
 	defer hooked()
 	agents := gwmw.AgentsWanted(middlewareWanted)

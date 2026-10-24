@@ -183,3 +183,25 @@ func TestPatternSyntax(t *testing.T) {
 		t.Error("IsPattern")
 	}
 }
+
+// A re: pattern matches in any case as a glob does, for a group and for a
+// provider's auto-include rules alike (both compile through
+// compilePattern), and (?-i) inside it makes case matter again.
+func TestRegexpPatternIgnoresCase(t *testing.T) {
+	for _, c := range []struct {
+		p, id string
+		ok    bool
+	}{
+		{"re:openrouter/.*:(free|beta)", "OpenRouter/Meta/Llama-4:FREE", true},
+		{"re:GPT-.*", "gpt-5.5", true},
+		{"re:gpt-.*", "GPT-5.5", true},
+		{"re:(?-i)gpt-.*", "GPT-5.5", false},
+		{"re:(?-i)gpt-.*", "gpt-5.5", true},
+		{"re:openrouter/(?-i)x", "OPENROUTER/x", true},
+		{"re:openrouter/(?-i)x", "openrouter/X", false},
+	} {
+		if got := PatternMatches(c.p, c.id); got != c.ok {
+			t.Errorf("%s ~ %s: %v, want %v", c.p, c.id, got, c.ok)
+		}
+	}
+}

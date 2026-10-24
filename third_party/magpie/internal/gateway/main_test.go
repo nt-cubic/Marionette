@@ -82,6 +82,8 @@ func isolatedTests(m *testing.M) (int, error) {
 	// The fakes of ChatGPT's backend read turns plain; codex_zstd_test's
 	// send them zstd, as the real one is sent.
 	provider.CodexZstdForTests(false)
+	// and speak HTTP: codex_socket_test's fakes speak the WebSocket
+	codexSocketOff.Store(true)
 	// Finding an inert CLI also prevents discovery from falling back to
 	// one installed at an absolute system path. Tests can prepend their
 	// own fakes, as fakeClaude does, and still use ordinary shell tools.

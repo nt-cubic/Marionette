@@ -56,8 +56,8 @@ const providerUsage = `usage:
                                           have the gateway (magpie serve, the app) fetch the list again by itself
                                           once it is that old (at least 10m; off: only when asked)
   magpie provider auto-include <id> [rule…|none]
-                                          rules over a model's id (a glob with *, e.g. 'gpt-*' '*claude*', or
-                                          're:…' a regular expression): the listed models one matches are exposed
+                                          rules over a model's id, in any case (a glob with *, e.g. 'gpt-*' '*claude*',
+                                          or 're:…' a regular expression, where (?-i) makes case matter): the listed models one matches are exposed
                                           now, and each one a later fetch newly lists; picks are only added to
   magpie provider account-models <id> [account|key [ids…|all]]
                                           the models one account or key alone serves; all: every model the provider has

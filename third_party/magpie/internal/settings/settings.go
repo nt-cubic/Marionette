@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"net/url"
 	"os"
@@ -651,7 +652,10 @@ type Settings struct {
 	ModelNames map[string]string `json:"modelNames,omitempty"`
 	// ModelEfforts are the reasoning levels the user keeps of a model's,
 	// by "<provider id>/<model id>": the lists magpie hands out offer only
-	// those (see provider.SetModelEfforts).
+	// those, while the vendor is still asked at any level it has; for a
+	// model with no levels known they are the levels given it, and the
+	// gateway fits a request to them (see provider.SetModelEfforts,
+	// magpie model spec).
 	ModelEfforts map[string][]string `json:"modelEfforts,omitempty"`
 	// ModelReasonless are the models the user said take no reasoning ask,
 	// by "<provider id>/<model id>": magpie offers them no levels and
@@ -708,6 +712,15 @@ type Settings struct {
 	// that model's maker's price (provider.SamePriceIn, #2344). Absent
 	// leaves it to its id.
 	ModelSameAs map[string]string `json:"modelSameAs,omitempty"`
+	// UsageAliases are the model ids the user counts as one in Usage and
+	// Sessions, from an id to the name it is counted under
+	// ("deepseek-v4.1-flash": "deepseek-flash", SlouchyQuill507 on
+	// Discord): what spent the same model under two names is one row there.
+	// Only how usage is grouped and shown changes: no request, model list
+	// or price reads it (provider.SetUsageAlias). Keyed by a bare model id,
+	// not "<provider>/<model>", so it is not named Model* and is not one
+	// of the per-model maps a provider's rename moves. Absent is none.
+	UsageAliases map[string]string `json:"usageAliases,omitempty"`
 	// ModelKinds is what the user said a model makes, by "<provider
 	// id>/<model id>": "image" or "video", for a provider set up with a
 	// base URL whose own model list doesn't say so (shen-joe, #1399).
@@ -1351,6 +1364,29 @@ func EditCheckinOff(edit func([]string) []string) error {
 		off = nil
 	}
 	s.CheckinOff = off
+	return save(s, false)
+}
+
+// EditUsageAliases changes UsageAliases alone, as edit returns them from
+// what the file holds now, so a save elsewhere from an older snapshot isn't
+// undone. A settings file that can't be read is left as it is, with the
+// error: what it holds is unknown, not "no aliases". edit is given a copy,
+// and an error from it saves nothing.
+func EditUsageAliases(edit func(map[string]string) (map[string]string, error)) error {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+	s, err := loadChecked()
+	if err != nil {
+		return err
+	}
+	m, err := edit(maps.Clone(s.UsageAliases))
+	if err != nil {
+		return err
+	}
+	if len(m) == 0 {
+		m = nil
+	}
+	s.UsageAliases = m
 	return save(s, false)
 }
 

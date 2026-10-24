@@ -2,6 +2,9 @@
 // kernel adds them to i18n.js's (magpie.strings).
 magpie.strings({
   zh: {
+    "Bar chart": "柱状图",
+    "Line chart": "折线图",
+    "Chart style": "图表样式",
     "(prompt not recorded)": "（未记录提示词）",
     "Gateway session": "网关会话",
     "Seen only through the gateway: the agent kept no session file magpie can read. Turn on Record gateway conversations in Sessions to keep its prompts.": "只经网关看到：agent 没有留下 magpie 能读的会话文件。在「会话」里开启「记录网关对话」可保留它的提示词。",
@@ -200,6 +203,9 @@ magpie.strings({
     "Sent upstream as {to}, as the agent spoke it": "以 {to} 协议发往上游，与 agent 所用协议相同",
   },
   "zh-TW": {
+    "Bar chart": "長條圖",
+    "Line chart": "折線圖",
+    "Chart style": "圖表樣式",
     "(prompt not recorded)": "（未記錄提示詞）",
     "Gateway session": "閘道會話",
     "Seen only through the gateway: the agent kept no session file magpie can read. Turn on Record gateway conversations in Sessions to keep its prompts.": "只經閘道看到：agent 沒有留下 magpie 能讀的會話檔案。在「會話」裡開啟「記錄閘道對話」可保留它的提示詞。",
@@ -398,6 +404,9 @@ magpie.strings({
     "Sent upstream as {to}, as the agent spoke it": "以 {to} 協議發往上游，與 agent 所用協議相同",
   },
   ja: {
+    "Bar chart": "棒グラフ",
+    "Line chart": "折れ線グラフ",
+    "Chart style": "グラフの種類",
     "(prompt not recorded)": "（プロンプト未記録）",
     "Gateway session": "ゲートウェイのセッション",
     "Seen only through the gateway: the agent kept no session file magpie can read. Turn on Record gateway conversations in Sessions to keep its prompts.": "ゲートウェイ経由でのみ確認：エージェントは magpie が読めるセッションファイルを残していません。「セッション」で「ゲートウェイの会話を記録」をオンにするとプロンプトが残ります。",
@@ -596,6 +605,9 @@ magpie.strings({
     "Sent upstream as {to}, as the agent spoke it": "エージェントと同じ {to} で上流へ送信",
   },
   de: {
+    "Bar chart": "Balkendiagramm",
+    "Line chart": "Liniendiagramm",
+    "Chart style": "Diagrammart",
     "(prompt not recorded)": "(Prompt nicht aufgezeichnet)",
     "Gateway session": "Gateway-Sitzung",
     "Seen only through the gateway: the agent kept no session file magpie can read. Turn on Record gateway conversations in Sessions to keep its prompts.": "Nur über das Gateway gesehen: Der Agent hat keine Sitzungsdatei hinterlassen, die magpie lesen kann. Schalte unter Sitzungen „Gateway-Gespräche aufzeichnen“ ein, um seine Prompts zu behalten.",

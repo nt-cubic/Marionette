@@ -639,6 +639,10 @@ try {
   const m = localStorage.getItem("magpie.ledMetric");
   if (["tokens", "cost", "calls", "speed"].includes(m)) ledMetric = m;
 } catch {}
+// Columns or lines (molvqingtai on Discord), kept per viewer as the metric
+// is; anything but "line", or a read that fails, is columns.
+let ledLine = false;
+try { ledLine = localStorage.getItem("magpie.ledChart") === "line"; } catch {}
 
 // The filters a click set for the reader rather than one they picked in a
 // filter's menu: someone in the chart's ranking or a day of its columns
@@ -1130,6 +1134,91 @@ function renderLedgerDash(l) {
   drawLedTrend();
 }
 
+// the chart's two looks, as a pair of icons beside the metrics: columns
+// (the default) or lines
+const LED_STYLES = [["bars", "Bar chart", "M3.5 13V8.5M8 13V3.5M12.5 13V6.5"], ["line", "Line chart", "M2.5 11.5 6 7.5l3 2.5 4.5-6"]];
+function ledStyle(host) {
+  const cur = ledLine ? "line" : "bars";
+  host.setAttribute("role", "group");
+  host.setAttribute("aria-label", t("Chart style"));
+  host.replaceChildren();
+  for (const [id, name, d] of LED_STYLES) {
+    const b = el("button", "opt" + (id === cur ? " on" : ""));
+    b.type = "button";
+    b.dataset.style = id;
+    b.title = t(name);
+    b.setAttribute("aria-label", t(name));
+    b.setAttribute("aria-pressed", id === cur ? "true" : "false");
+    b.append(svg(d, 14, 1.7));
+    b.onclick = () => {
+      if (id === cur) return;
+      ledLine = id === "line";
+      try { localStorage.setItem("magpie.ledChart", id); } catch {}
+      drawLedTrend();
+    };
+    host.append(b);
+  }
+  slide(host, "ledStyle");
+}
+
+// The chart as lines (drawLedColumns' box.drawn): the columns drawn on its
+// axis are taken away and each one told apart becomes a line through its
+// points. Tokens, cost and requests stay stacked, each line where its part
+// of the column ended, with its band softly filled under it, so the top
+// line is the total as the column's top was; speeds don't add up, so each
+// model's line is at its own speed, broken where it had none, over the
+// point's own speed dashed. The tooltip, the hover, a day's pick and the
+// ranking's emphasis are drawLedColumns' own, over the same slots.
+function ledLines(g, Y, x0, slot, segs) {
+  const l = ledger, pts = l?.series || [], metric = ledMetric, split = ledSplit;
+  for (const r of segs) r.remove();
+  segs.length = 0;
+  if (!l) return;
+  const speed = metric === "speed";
+  const { top } = ledCategories(l.chartBy ? { by: l.chartBy } : l, split, metric);
+  const X = (i) => x0 + slot * i, dot = slot >= 12 ? 4.5 : 3;
+  const xy = (i, v) => X(i).toFixed(1) + " " + Y(v).toFixed(1);
+  // stacked, each one goes under those before it, so a band never covers
+  // the line under it
+  let head = null;
+  const totals = pts.map((p) => ledValue(metric, p));
+  // one series: its line, the dots at its points and the band under it
+  const series = (key, color, vals, base, dashed) => {
+    const s = sv("g", { class: "col ln", "data-k": key, "data-day": l.day || "", "data-color": color }, { stroke: color });
+    let line = "", dots = "", up = "", down = "", run = false;
+    vals.forEach((v, i) => {
+      if (v == null) return void (run = false);
+      line += (run ? "L" : "M") + xy(i, v);
+      if (!dashed && (v > (base?.[i] || 0) || speed)) dots += "M" + xy(i, v) + "h0";
+      run = true;
+    });
+    if (!line) return;
+    if (base) {
+      vals.forEach((v, i) => { up += (i ? "L" : "M") + xy(i, v); });
+      for (let i = vals.length - 1; i >= 0; i--) down += "L" + xy(i, base[i]);
+      s.append(sv("path", { d: up + down + "Z", class: "band" }, { fill: color }));
+    }
+    s.append(sv("path", { d: line, class: "line" + (dashed ? " all" : "") }));
+    if (dots) s.append(sv("path", { d: dots, class: "dots" }, { strokeWidth: dot }));
+    head = g.insertBefore(s, speed ? null : head);
+    segs.push(s);
+  };
+  if (speed) {
+    series("\0all", "var(--muted)", totals.map((v) => (v > 0 ? v : null)), null, true);
+    for (const c of top) series(c.id, c.color, pts.map((p) => ledSpeed(p.by?.[split]?.[c.id]) || null));
+    return;
+  }
+  // from the bottom up: each one's part on what is under it, "Other" last
+  let under = pts.map(() => 0);
+  const parts = top.map((c) => [c.id, c.color, pts.map((p) => ledPart(metric, p.by?.[split]?.[c.id] || {}))]);
+  parts.push(["\0other", "var(--faint)", pts.map((p, i) => Math.max(0, totals[i] - parts.reduce((a, x) => a + x[2][i], 0)))]);
+  for (const [key, color, vs] of parts) {
+    const over = under.map((u, i) => u + vs[i]);
+    if (vs.some((v) => v > 0)) series(key, color, over, under);
+    under = over;
+  }
+}
+
 function drawLedTrend() {
   const l = ledger;
   if (!l || $("#ledDash").hidden) return;
@@ -1144,10 +1233,12 @@ function drawLedTrend() {
     slide(host, key);
   };
   pill($("#ledMetric"), "ledMetric", LED_TREND, ledMetric, (id) => { ledMetric = id; try { localStorage.setItem("magpie.ledMetric", id); } catch {} drawLedTrend(); });
+  ledStyle($("#ledStyle"));
   const keyed = (l.callerKeys || []).length > 0;
   if (ledSplit === "callerKey" && !keyed) ledSplit = "model";
   pill($("#ledSplit"), "ledSplit", LED_SPLITS.filter(([id]) => id !== "callerKey" || keyed), ledSplit, (id) => { ledSplit = id; drawLedTrend(); });
   const chart = $("#ledChart"), rank = $("#ledRank");
+  chart.drawn = ledLine ? ledLines : null;
   drawLedColumns(chart, l, ledSplit, ledMetric, false, (day) => {
     ledDay = ledDay === day ? "" : day;
     ledLent.add("day");

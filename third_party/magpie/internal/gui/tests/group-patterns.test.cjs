@@ -95,6 +95,19 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await pbox.locator("input").fill("*-free");
       await pbox.locator("button", { hasText: w.add }).click();
       assert.deepEqual(await names(), ["claude-opus-5-5", "a:free", "c:free", "d-free"]);
+      // a re: pattern matches in any case, as a glob does, and (?-i) makes
+      // case matter (provider.compilePattern; usrname1833 on Discord)
+      await pbox.locator("input").fill("re:(?-i)OR/B");
+      await pbox.locator("button", { hasText: w.add }).click();
+      assert.equal(await pbox.locator(".fbrow.none", { hasText: "re:(?-i)OR/B" }).count(), 1, "(?-i) keeps case");
+      assert.deepEqual(await names(), ["claude-opus-5-5", "a:free", "c:free", "d-free"]);
+      await pbox.locator("input").fill("re:OR/B");
+      await pbox.locator("button", { hasText: w.add }).click();
+      assert.deepEqual(await names(), ["claude-opus-5-5", "a:free", "b", "c:free", "d-free"], "re: in any case, in the catalog's order");
+      for (const p of ["re:OR/B", "re:(?-i)OR/B"]) {
+        await pbox.locator(".fbrow", { has: page.locator("code", { hasText: new RegExp("^" + p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$") }) }).locator("button", { hasText: w.remove }).click();
+      }
+      assert.deepEqual(await names(), ["claude-opus-5-5", "a:free", "c:free", "d-free"]);
       // one that is no pattern is refused, the box keeping it
       await pbox.locator("input").fill("or/b");
       await pbox.locator("button", { hasText: w.add }).click();

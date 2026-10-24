@@ -72,6 +72,7 @@ magpie.plugin("usage", (ctx) => {
       <section class="led-trend">
         <div class="led-bar">
           <div class="segs" id="ledMetric"></div>
+          <div class="segs led-style" id="ledStyle"></div>
           <span class="grow"></span>
           <span class="led-split"><span class="led-by" data-t>Split by</span><span class="segs" id="ledSplit"></span></span>
         </div>

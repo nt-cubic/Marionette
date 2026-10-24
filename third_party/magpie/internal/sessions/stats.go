@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/yetone/magpie/internal/provider"
 )
 
 // Stats is what every session spent, day by day: all of them, not only the
@@ -121,6 +123,16 @@ func statsAt(days int, now time.Time) Stats { return statsIn(days, now, nil) }
 
 // statsIn is statsAt, filling native as StatsAndNative says when not nil.
 func statsIn(days int, now time.Time, native map[string]bool) Stats {
+	// read before the locks: it reads settings.json
+	alias := provider.UsageAlias()
+	st := statsRead(days, now, native)
+	if alias != nil {
+		st = aliasStats(st, alias)
+	}
+	return st
+}
+
+func statsRead(days int, now time.Time, native map[string]bool) Stats {
 	now = now.In(time.Local)
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 	var since time.Time

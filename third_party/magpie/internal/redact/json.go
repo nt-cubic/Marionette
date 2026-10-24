@@ -369,6 +369,7 @@ func jsonEscape(s string) string {
 // placeholder: either way the text no longer matched its signature, and
 // Anthropic answers 400 "Invalid `signature` in `thinking` block".
 func MaskJSON(body []byte, o Options) ([]byte, int) {
+	o.sent = true
 	signed, args, defs := scan(body)
 	masked := func(path, key, s string) bool {
 		return !keepIn(path, key, s, args, defs) && (signed == nil || !under(path, signed))
@@ -427,7 +428,7 @@ func MaskJSON(body []byte, o Options) ([]byte, int) {
 		// number or an address the vendor wrote of its own can be one
 		// masked in another conversation (13800138000 is in many), and
 		// masked, its text would no longer match its signature
-		t, n := apply(t, knownSpans(t, Options{Secrets: o.Secrets}), placeholder, o)
+		t, n := apply(t, sentKnownSpans(t, Options{Secrets: o.Secrets}), placeholder, o)
 		total += n
 		return t
 	})

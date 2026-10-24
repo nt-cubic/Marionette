@@ -106,6 +106,21 @@ func TestClinePluginPinsDeepSeekAndGLM(t *testing.T) {
 	if p, err = provider.Find(pid); err != nil || !p.PinUpstream {
 		t.Fatalf("the tick wasn't kept: %+v, %v", p, err)
 	}
+	// ClinePass's own DeepSeek models the plugin pins itself, with the
+	// has filter that holds them on DeepSeek and a way back (0.1.11), and
+	// it keeps a body's own providerOptions: magpie's only alone would
+	// take the plugin's place, so the tick leaves them to it
+	for _, m := range []string{"cline-pass/deepseek-v4-pro", "cline-pass/deepseek-v4.1-flash", "cline-pass/deepseek-v4.1-flash-1017"} {
+		if up, _ := p.ClinePin(m); up != "" {
+			t.Errorf("%s: magpie pinned it to %q ahead of the plugin", m, up)
+		}
+		if has := p.ClinePassHas(m, true); has != nil {
+			t.Errorf("%s: magpie sent has %v ahead of the plugin", m, has)
+		}
+	}
+	if up, _ := p.ClinePin("cline-pass/glm-5.3"); up != "zai" {
+		t.Errorf("cline-pass/glm-5.3: pinned to %q, want zai", up)
+	}
 	got := ask()
 	for i, q := range got[:4] {
 		want := `{"gateway":{"only":["deepseek"]}}`

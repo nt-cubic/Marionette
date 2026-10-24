@@ -67,4 +67,6 @@ html.omarchy .icon.winclose:hover { background: var(--red-soft); color: var(--re
 html.omarchy ::selection { background: var(--om-sel); color: var(--accent); }
 html.omarchy body.side-nav :is(#nav button[data-view], #prefs).on { background: var(--om-sel); box-shadow: inset 0 0 0 1px var(--om-sel-line); color: var(--accent); }
 html.omarchy .nav-hl { background: var(--om-sel); }
+html.omarchy body.side-nav #nav > .nav-top-hl { background: var(--om-sel); box-shadow: inset 0 0 0 1px var(--om-sel-line); }
+html.omarchy body.side-nav #nav.hl-on button[data-view].on { background: transparent; box-shadow: none; }
 html.omarchy .nav-s.cur { color: var(--accent); }

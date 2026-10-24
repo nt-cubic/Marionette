@@ -1,6 +1,9 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
-// Optional SOCKS credentials survive saving/reloading, never appear in the
-// address or status, and typing between fields cannot save a partial login.
+// A proxy's optional username and password, in fields of their own for
+// every kind of proxy (SOCKS, and HTTP for 微雨南山 on Discord), survive
+// saving/reloading, never appear in the address or status, and typing
+// between fields cannot save a partial login. A login saved in the address
+// before loads into the fields.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -51,7 +54,7 @@ const labels = {
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
   for (const lang of Object.keys(labels)) {
     const l = labels[lang];
-    test(`${engine} ${lang}: optional SOCKS credentials in settings`, async (t) => {
+    test(`${engine} ${lang}: optional proxy credentials in settings`, async (t) => {
       const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
       t.after(() => browser.close());
       const context = await browser.newContext({ viewport: { width: 1100, height: 760 }, reducedMotion: "reduce" });
@@ -133,18 +136,78 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await pass.inputValue(), "p%FFss");
       await saved(() => box.getByRole("button", { name: l.save, exact: true }).click(), "socks5://name:p%FFss@127.0.0.1:1080");
 
-      // HTTP and bare addresses still work; a hidden SOCKS login isn't attached.
+      // An HTTP proxy has the same fields (微雨南山 on Discord): its login
+      // is typed as it is, @ : / % # and spaces included, and each part is
+      // encoded into the address, which keeps no slash or port of URL's.
       await address.fill("http://127.0.0.1:7890");
-      assert.equal(await user.isVisible(), false);
+      assert.equal(await user.isVisible(), true, "an HTTP proxy has a username field");
+      assert.equal(await pass.isVisible(), true, "an HTTP proxy has a password field");
+      await user.fill("");
+      await pass.fill("");
       await saved(() => address.press("Enter"), "http://127.0.0.1:7890");
+      await user.fill("me@corp:x");
+      await pass.fill("p@ss:w/rd% #1 x");
+      // the bytes internal/netproxy's TestProxyLoginWithReservedCharacters signs in with
+      const httpLogin = "http://me%40corp%3Ax:p%40ss%3Aw%2Frd%25%20%231%20x@127.0.0.1:7890";
+      await saved(() => pass.press("Enter"), httpLogin);
+      await page.reload();
+      assert.equal(await address.inputValue(), "http://127.0.0.1:7890");
+      assert.equal(await user.inputValue(), "me@corp:x");
+      assert.equal(await pass.inputValue(), "p@ss:w/rd% #1 x");
+      assert.equal(await pass.getAttribute("type"), "password");
+      for (const secret of ["p@ss", "p%40ss", "corp"]) assert(!(await page.locator("#proxySub").innerText()).includes(secret), `status shows ${secret}`);
+      for (const width of [560, 375]) {
+        await page.setViewportSize({ width, height: 760 });
+        for (const field of [address, user, pass]) {
+          const rect = await field.boundingBox();
+          assert(rect && rect.x >= 0 && rect.x + rect.width <= width, `HTTP proxy field outside ${width}px window`);
+        }
+        if (process.env.ARTIFACT_DIR) await page.screenshot({ path: path.join(process.env.ARTIFACT_DIR, `${engine}-${lang}-http-proxy-${width}.png`) });
+      }
+      await page.setViewportSize({ width: 1100, height: 760 });
+
+      // A bare host:port stays as typed, with or without a login.
+      await user.fill("");
+      await pass.fill("");
       await address.fill("127.0.0.1:7891");
       await saved(() => page.locator("#proxySub").click(), "127.0.0.1:7891");
+      await user.fill("u");
+      await pass.fill("p w");
+      await saved(() => pass.press("Enter"), "u:p%20w@127.0.0.1:7891");
+      await page.reload();
+      assert.equal(await address.inputValue(), "127.0.0.1:7891");
+      assert.equal(await pass.inputValue(), "p w");
 
       await address.fill("socks5://127.0.0.1:1080");
       await user.fill("unsaved-user");
       await pass.fill("unsaved-password");
       await saved(() => box.getByRole("button", { name: l.off, exact: true }).click(), "direct");
       await saved(() => box.getByRole("button", { name: l.auto, exact: true }).click(), "");
+      assert.deepEqual(errors, []);
+    });
+
+    test(`${engine} ${lang}: an HTTP proxy saved with its login in the address loads into the fields`, async (t) => {
+      const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
+      t.after(() => browser.close());
+      const context = await browser.newContext({ viewport: { width: 375, height: 760 }, reducedMotion: "reduce" });
+      const page = await context.newPage();
+      page.setDefaultTimeout(4000);
+      const posts = [], errors = [];
+      page.on("pageerror", (e) => errors.push(e.message));
+      // as one typed whole before: a raw @ in the password, as Go reads it
+      await page.route("**/*", server(lang, posts, "https://al%20ice:se@cr%23et@proxy.example:8443"));
+      await page.goto("http://magpie.test/?view=settings&tab=network");
+      const box = page.locator("#proxySegs");
+      assert.equal(await box.locator("input.proxy").inputValue(), "https://proxy.example:8443");
+      assert.equal(await box.getByRole("textbox", { name: l.user, exact: true }).inputValue(), "al ice");
+      const pass = box.getByLabel(l.pass, { exact: true });
+      assert.equal(await pass.inputValue(), "se@cr#et");
+      assert.equal(await pass.getAttribute("type"), "password");
+      const sub = await page.locator("#proxySub").innerText();
+      assert(!sub.includes("se@cr") && !sub.includes("al%20ice"), `status shows the login: ${sub}`);
+      // left as it was, it is saved as it was
+      await pass.press("Enter");
+      assert.equal(posts.length, 0, "an unchanged login is not saved again");
       assert.deepEqual(errors, []);
     });
   }

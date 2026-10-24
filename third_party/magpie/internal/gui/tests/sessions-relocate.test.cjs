@@ -1,7 +1,7 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
 // A Claude Code project folder renamed or moved (#1131): its row on the
-// Sessions page has Relocate project, which opens magpie's own dialog (never
-// prompt()) with the old path and a field for the new one. Preview posts
+// Sessions page has Relocate project in its ⋯ menu, which opens magpie's
+// own dialog (never prompt()) with the old path and a field for the new one. Preview posts
 // sessions/relocate-claude with no token and says what would move; the same
 // button then confirms with the preview's token, and editing the path first
 // asks for a new preview. A folder with a session magpie can't write, or a
@@ -98,14 +98,18 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           assert.deepEqual(missing, [], `${lang} has every string`);
         }
 
+        // Relocate is in the folder's ⋯ menu; a read-only folder has none
         const relocate = await tr("Relocate project");
-        assert.equal(await folder("desk").getByRole("button", { name: relocate }).count(), 0, "no Relocate where a session is read-only");
-        const move = folder("old-app").getByRole("button", { name: relocate, exact: true });
-        await move.scrollIntoViewIfNeeded();
-        const box = await move.boundingBox();
-        assert(box && box.x + box.width <= width, "Relocate fits in the row");
+        assert.equal(await folder("desk").locator(".sm-folder-more").count(), 0, "no Relocate where a session is read-only");
+        const more = folder("old-app").locator(".sm-folder-more");
+        await more.scrollIntoViewIfNeeded();
+        await folder("old-app").hover();
+        const box = await more.boundingBox();
+        assert(box && box.x + box.width <= width, "the ⋯ fits in the row");
         const open0 = await folder("old-app").locator(".fold").getAttribute("aria-expanded");
         const y0 = await page.evaluate(() => document.querySelector("#view-sessions").scrollTop);
+        await more.click();
+        const move = page.locator(".row-menu").getByRole("menuitem", { name: relocate, exact: true });
         await move.click();
         const ask = page.locator("#modal .sm-ask");
         await ask.waitFor();

@@ -12,8 +12,14 @@ import (
 // magpie can't bind the port, which is how it learns one already serves.
 var Handover bool
 
-// Listen listens on addr, beside another process when Handover is on.
+// Listen listens on addr, beside another process when Handover is on;
+// or takes the socket the magpie before this one handed over (Inherit)
+// when it listens there.
 func Listen(addr string) (net.Listener, error) {
+	if ln, ack := takeInherited(addr); ln != nil {
+		setAck(ack)
+		return ln, nil
+	}
 	if !Handover {
 		return net.Listen("tcp", addr)
 	}

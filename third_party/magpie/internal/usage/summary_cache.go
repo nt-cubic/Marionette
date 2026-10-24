@@ -123,9 +123,12 @@ func usagePriceCacheKey(now time.Time) string {
 	// Sign-ins and plugin lists can change independently of providers.json.
 	// Their identity and price feeds affect both grouping and historical costs.
 	h := sha256.New()
-	prices, _ := json.Marshal(settings.Load().ModelPrices)
+	st := settings.Load()
+	prices, _ := json.Marshal(st.ModelPrices)
 	aliases, _ := json.Marshal(provider.Renamed())
-	fmt.Fprint(h, string(prices), string(aliases))
+	// and the names models' usage is counted under, which the groups key on
+	usageAliases, _ := json.Marshal(st.UsageAliases)
+	fmt.Fprint(h, string(prices), string(aliases), string(usageAliases))
 	for _, current := range provider.All() {
 		fmt.Fprintf(h, "%q:%q:%v:%t:%t:%t;", current.ID, current.Where(), current.Catalogs(), current.IsPlugin(), current.Account == nil, current.Key != "")
 		fmt.Fprint(h, statKey(catalog.LivePath(current.ID)))

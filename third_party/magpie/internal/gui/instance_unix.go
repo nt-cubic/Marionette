@@ -10,11 +10,15 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // heldInstance is the open lock file of the magpie that holds its
 // instance; it stays open, so locked, until this process ends.
 var heldInstance *os.File
+
+// heldPath is the lock heldInstance holds.
+var heldPath string
 
 // instanceLock is where the magpie running exe on the config in dir holds
 // its lock. A copy elsewhere (the owner's magpie-dev) has its own, but
@@ -62,6 +66,35 @@ func holdInstance(path string) (bool, error) {
 		f.Close()
 		return false, err
 	}
-	heldInstance = f
+	heldInstance, heldPath = f, path
 	return true, nil
+}
+
+// releaseInstance lets go of the instance lock, for the new version a
+// restart hands the gateway to (handover.go) to take as it starts.
+func releaseInstance() {
+	if heldInstance != nil {
+		heldInstance.Close()
+		heldInstance = nil
+	}
+}
+
+// retakeInstance takes the lock again after a handover that didn't
+// happen; a new version that took it meanwhile keeps it.
+func retakeInstance() {
+	if heldInstance != nil || heldPath == "" {
+		return
+	}
+	for i := 0; i < 10; i++ {
+		if held, err := holdInstance(heldPath); held || err != nil {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// handoffAlive is whether the process pid runs.
+func handoffAlive(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }

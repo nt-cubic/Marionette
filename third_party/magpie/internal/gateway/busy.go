@@ -17,10 +17,18 @@ import (
 // apart, a turn waiting on them being in Tools. Last is when the last
 // counted request ended, so a caller can tell a tool chain's gap — the
 // agent running a tool between two requests — from the end of its turn.
+//
+// Bridge and BridgeLast are the same for the bridge's turns alone, which
+// a restart that hands the gateway over (handover.go) still waits for:
+// their Claude Code lives in this process, and only here can the turn go
+// on. Every other request finishes in the magpie that hands over while
+// the new one takes the next.
 type Busy struct {
-	Requests int       `json:"requests"`
-	Tools    int       `json:"tools"`
-	Last     time.Time `json:"-"`
+	Requests   int       `json:"requests"`
+	Tools      int       `json:"tools"`
+	Last       time.Time `json:"-"`
+	Bridge     int       `json:"-"`
+	BridgeLast time.Time `json:"-"`
 }
 
 // Any is whether there is anything in flight.
@@ -28,11 +36,24 @@ func (b Busy) Any() bool { return b.Requests > 0 || b.Tools > 0 }
 
 // Busy says what is in flight at the gateway now.
 func (s *Server) Busy() Busy {
-	b := Busy{Requests: int(s.inFlight.Load()), Tools: s.subscription.parked()}
+	b := Busy{Requests: int(s.inFlight.Load()), Tools: s.subscription.parked(), Bridge: int(s.bridgeInFlight.Load())}
 	if n := s.lastDone.Load(); n != 0 {
 		b.Last = time.Unix(0, n)
 	}
+	if n := s.bridgeDone.Load(); n != 0 {
+		b.BridgeLast = time.Unix(0, n)
+	}
 	return b
+}
+
+// bridgeTurn counts a turn served through the subscription bridge for
+// Busy.Bridge until done is called.
+func (s *Server) bridgeTurn() (done func()) {
+	s.bridgeInFlight.Add(1)
+	return func() {
+		s.bridgeDone.Store(time.Now().UnixNano())
+		s.bridgeInFlight.Add(-1)
+	}
 }
 
 // counted is h with its requests counted for Busy.
@@ -64,6 +85,9 @@ type busyCounters struct {
 	inFlight atomic.Int64
 	lastDone atomic.Int64 // unix ns
 	active   inflights    // what each is, for /v1/magpie/concurrency
+	// the subscription bridge's turns among them, and when the last ended
+	bridgeInFlight atomic.Int64
+	bridgeDone     atomic.Int64 // unix ns
 }
 
 // parked is how many runs wait on their caller's tool results.

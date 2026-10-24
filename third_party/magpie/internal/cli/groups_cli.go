@@ -77,7 +77,8 @@ const groupUsage = `usage:
            Anthropic key for Opus 4.8 and 5; a model without one is refused (codex/gpt-6.1-sol:high:fast)
            a pattern puts in every model it matches, as magpie models lists them now and later: a glob, where
            * is any run of characters, / too, over the provider/model id in any case (openrouter/*:free,
-           *-free, opencode-zen/*), or re:<regexp> matching the whole id (re:openrouter/.*:(free|beta)).
+           *-free, opencode-zen/*), or re:<regexp> matching the whole id, in any case too (re:openrouter/.*:(free|beta));
+           (?-i) in the regexp makes case matter (re:(?-i)openrouter/.*:FREE).
            Quote it for the shell. The group keeps the pattern, not its models: one the vendor adds joins,
            one it drops leaves. The models you name come first, in your order, then those the patterns
            match, in the order magpie models lists them; one both named and matched keeps its named place.

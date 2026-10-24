@@ -14,7 +14,8 @@ var upstreamTLS *tls.Config
 
 // upstreamTransport is the gateway's transport to the vendors: a provider
 // with a proxy of its own is sent through a transport kept for that proxy
-// (#237), and the ChatGPT backend over HTTP/1.1 (netproxy.HTTP1). Every
+// (#237), and the ChatGPT backend over HTTP/1.1 (netproxy.HTTP1), a
+// streamed turn to it over its WebSocket (codexSocket). Every
 // other vendor is spoken HTTP/2 to wherever it offers it. A request that
 // finds its kept-alive connection dropped is sent again on a new one
 // (replayable). A vendor is given upstreamHeaderWait to begin answering,
@@ -23,7 +24,7 @@ var upstreamTLS *tls.Config
 // Image generation timeout gives it (drawWithin), up to 60 minutes.
 func upstreamTransport() http.RoundTripper {
 	return drawsApart{
-		any:   replayable{netproxy.Dispatch(vendorTransport(upstreamHeaderWait))},
+		any:   codexSocket{replayable{netproxy.Dispatch(vendorTransport(upstreamHeaderWait))}},
 		draws: replayable{netproxy.Dispatch(vendorTransport(0))},
 	}
 }

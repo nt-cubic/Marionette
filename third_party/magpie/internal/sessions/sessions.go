@@ -1105,6 +1105,18 @@ func Reset() {
 // List reads the latest sessions of every agent, the most recently active
 // first, at most limit of them (Limit when 0).
 func List(limit int) []Session {
+	// read before the locks: it reads settings.json
+	alias := provider.UsageAlias()
+	out := listSessions(limit)
+	if alias != nil {
+		for i := range out {
+			aliasSession(&out[i], alias)
+		}
+	}
+	return out
+}
+
+func listSessions(limit int) []Session {
 	storeMu.RLock()
 	defer storeMu.RUnlock()
 	if limit <= 0 {
@@ -1962,7 +1974,16 @@ func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''
 // it: the Sessions page shows it, and its conversation, Markdown and
 // Terminal open from it as from any other (#2273).
 func Find(agent, id string) (Session, bool) {
-	for _, s := range List(0) {
+	alias := provider.UsageAlias()
+	s, ok := findListed(agent, id)
+	if ok && alias != nil {
+		aliasSession(&s, alias)
+	}
+	return s, ok
+}
+
+func findListed(agent, id string) (Session, bool) {
+	for _, s := range listSessions(0) {
 		if s.Agent == agent && s.ID == id {
 			return s, true
 		}
@@ -2055,7 +2076,11 @@ func Titles(keys []string) map[string]string {
 // Get is the session whose files are grouped under key (a Summary's Key),
 // however long ago it was at work.
 func Get(key string) (Session, bool) {
+	alias := provider.UsageAlias()
 	s, ok, _ := get(key)
+	if ok && alias != nil {
+		aliasSession(&s, alias)
+	}
 	return s, ok
 }
 

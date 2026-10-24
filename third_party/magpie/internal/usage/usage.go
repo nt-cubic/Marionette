@@ -801,6 +801,9 @@ func summarize(p Period, now time.Time, recs []Record) Summary {
 
 func summarizeFrom(p Period, now time.Time, first time.Time, historicalKeys map[string]bool, read func(func(Record))) Summary {
 	renamed := provider.Renamed()
+	// the names models' usage is counted under (SlouchyQuill507): a model's
+	// row sums its ids, each call priced by its own id first
+	alias := provider.UsageAlias()
 	normalizedKeys := map[string]bool{}
 	for id := range historicalKeys {
 		if next, ok := renamed[id]; ok {
@@ -886,13 +889,17 @@ func summarizeFrom(p Period, now time.Time, first time.Time, historicalKeys map[
 			agents[id] = a
 		}
 		a.add(r, pr)
-		k, host := r.Provider+"/"+r.Model, ""
+		model := r.Model
+		if alias != nil {
+			model = alias(model)
+		}
+		k, host := r.Provider+"/"+model, ""
 		if w := who(r.Host); w != "" && (len(hosts[r.Provider]) > 1 || w != goesNow[r.Provider]) {
 			k, host = k+" @ "+w, w
 		}
 		m := models[k]
 		if m == nil {
-			m = &Group{ID: k, Provider: r.Provider, Model: r.Model, Host: host}
+			m = &Group{ID: k, Provider: r.Provider, Model: model, Host: host}
 			models[k] = m
 		}
 		m.add(r, pr)
