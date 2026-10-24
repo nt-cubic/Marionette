@@ -2444,6 +2444,16 @@ fn install_test_seams(seams: Seams) -> TestHandle {
     TestHandle { _serial: serial }
 }
 
+/// 测试用「引擎必然 Absent」守卫：与 [`test_running`] 共享同一把串行锁。
+/// 拿到守卫即没有 TestHandle 存活（其 Drop 已把状态归零），断言窗口内
+/// `status()` 恒为 Absent——model_bridge 那些断言「引擎未运行」的测试用它
+/// 杜绝并行测试的 Running 缝互踩。持锁期间不要调用 `test_running`（同一把
+/// 锁，会自死锁）；需要中途切 Running 的测试先 `drop` 守卫。
+#[cfg(test)]
+pub(crate) fn test_absent_guard() -> std::sync::MutexGuard<'static, ()> {
+    TEST_SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// 便捷入口：把引擎摆成 Running + 指定目录缓存 + 对 model_bridge 可见
 /// （model_bridge 的引擎接线测试用）。
 #[cfg(test)]

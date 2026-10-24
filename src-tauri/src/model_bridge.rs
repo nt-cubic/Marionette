@@ -679,6 +679,15 @@ pub fn refresh_pi_marionette_route() -> Result<bool, String> {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
                 Err(error) => return Err(format!("读取 models.json 失败: {error}")),
             };
+            // 半写坏 / 非 object 的原文不能静默整体替换（用户自建 provider
+            // 会丢）——先改名留档，再当作新文件合并。
+            let existing = match existing {
+                Some(text) if !is_mergeable_object(&text) => {
+                    archive_corrupt(&path)?;
+                    None
+                }
+                other => other,
+            };
             let (next, changed) = pi_merge_models_json(existing.as_deref(), port, &models);
             if changed {
                 write_text_atomic(&path, &next)?;
@@ -978,6 +987,15 @@ pub fn refresh_zcode_marionette_route() -> Result<bool, String> {
                 Ok(text) => Some(text),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
                 Err(error) => return Err(format!("读取 provider_config.json 失败: {error}")),
+            };
+            // 半写坏 / 非 object 的原文不能静默整体替换（用户自建 provider
+            // 会丢）——先改名留档，再当作新文件合并。
+            let existing = match existing {
+                Some(text) if !is_mergeable_object(&text) => {
+                    archive_corrupt(&path)?;
+                    None
+                }
+                other => other,
             };
             let (next, changed) = zcode_merge_provider_config(existing.as_deref(), port, &models);
             if changed {
@@ -1605,9 +1623,9 @@ pub struct BindingFile {
     pub bindings: HashMap<String, BridgeSelection>,
 }
 
-/// 损坏的绑定文件改名留档（`bridge-bindings.corrupt-<ts>.json`）。绑定是可
-/// 重选的状态而非密钥，但立场仍与 credentials 一致：不覆盖原始字节、不静默
-/// 清空，留档排查。
+/// 损坏的桥配置改名留档（`<stem>.corrupt-<ts>.json`）。绑定是可重选的
+/// 状态而非密钥，但立场仍与 credentials 一致：不覆盖原始字节、不静默清空，
+/// 留档排查。zcode/pi 的托管合并入口在「原文半写坏要整体重写」前也走这里。
 fn archive_corrupt(path: &Path) -> Result<PathBuf, String> {
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1625,8 +1643,16 @@ fn archive_corrupt(path: &Path) -> Result<PathBuf, String> {
         n += 1;
     }
     fs::rename(path, &candidate)
-        .map_err(|e| format!("bridge-bindings.json 已损坏且留档失败（{e}）— 已中止"))?;
+        .map_err(|e| format!("{name} 已损坏且留档失败（{e}）— 已中止"))?;
     Ok(candidate)
+}
+
+/// 现有桥配置是否是可合并的 JSON object。空文件（新装，还没写过）不算损坏。
+fn is_mergeable_object(text: &str) -> bool {
+    text.trim().is_empty()
+        || serde_json::from_str::<serde_json::Value>(text)
+            .map(|value| value.is_object())
+            .unwrap_or(false)
 }
 
 fn empty_bindings() -> BindingFile {
@@ -3131,6 +3157,9 @@ official_marketplace_auto_installed = true\n";
         // 假 home 下没有 opencode auth.json → 扫描恒空：这里只验 store 侧的
         // 去重；reference 并入由 list_models_merges_scanned_references 验。
         let scan = crate::credentials::scan_opencode_at(&dir);
+        // note/目录断言依赖「引擎未 Running」。absent 守卫与 test_running
+        // 共享串行锁：拿不到就等，杜绝并行测试的 Running 缝互踩。
+        let _absent = crate::engine::test_absent_guard();
 
         // claude / grok：看到两个 key-plan 的模型。glm 的静态兜底是套餐主打
         // 两模型（2026-10-17 端点实测；动态 /models 拉取为主、静态兜底）。
@@ -3319,7 +3348,9 @@ official_marketplace_auto_installed = true\n";
         let credentials = dir.join("credentials.json");
         let scan = crate::credentials::scan_opencode_at(&dir);
 
-        // 不 Running（测试缝默认关）→ 与 M1 结果一致，engine 源不出现。
+        // 不 Running → 与 M1 结果一致，engine 源不出现。absent 守卫确保断言
+        // 窗口内没有并行测试的 Running 缝（TestHandle 与守卫共享串行锁）。
+        let absent = crate::engine::test_absent_guard();
         let result = list_models_at(&credentials, &scan, "claude-code");
         assert!(
             !result
@@ -3328,6 +3359,7 @@ official_marketplace_auto_installed = true\n";
                 .any(|s| s.entry_id == crate::engine::ENGINE_ENTRY_ID),
             "引擎未就绪时不能出现 engine 源"
         );
+        drop(absent);
 
         // Running → engine 源出现，模型挂在 engine entry 上。
         let _engine = crate::engine::test_running(vec![
@@ -3424,6 +3456,8 @@ official_marketplace_auto_installed = true\n";
         let grok_config = dir.join("config.toml");
 
         // 不 Running：绑定拒绝、文件不动；注入解析走降级路径（Err 带指引）。
+        // absent 守卫确保断言窗口内没有并行测试的 Running 缝。
+        let absent = crate::engine::test_absent_guard();
         let error = bind_session_at(
             &bindings,
             &credentials,
@@ -3441,6 +3475,7 @@ official_marketplace_auto_installed = true\n";
         assert!(binding_for_at(&bindings, "s1").unwrap().is_none());
         let error = injection_for_agent_at(&credentials, &scan, "claude-code", "engine", "x").unwrap_err();
         assert!(error.contains("降级"), "unexpected: {error}");
+        drop(absent);
 
         // Running：绑定成功（不落 store、无 lastUsedAt 可记）。
         let _engine = crate::engine::test_running(Vec::new());
@@ -3504,7 +3539,8 @@ official_marketplace_auto_installed = true\n";
         let credentials = dir.join("credentials.json");
         let scan = crate::credentials::scan_opencode_at(&dir);
 
-        // 不 Running：空目录 + 指引 note。
+        // 不 Running：空目录 + 指引 note。absent 守卫杜绝并行 Running 缝。
+        let absent = crate::engine::test_absent_guard();
         let result = list_models_at(&credentials, &scan, "codex");
         assert!(result.sources.is_empty() && result.models.is_empty());
         assert!(
@@ -3512,6 +3548,7 @@ official_marketplace_auto_installed = true\n";
             "unexpected note: {:?}",
             result.note
         );
+        drop(absent);
 
         // Running：engine 源 + 引擎模型，别名 codex-acp 也归同一桶。
         let _engine = crate::engine::test_running(vec![
@@ -4255,6 +4292,8 @@ official_marketplace_auto_installed = true\n";
         use std::io::{Read, Write};
         use std::net::TcpListener;
         let _fetch_guard = CATALOG_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // note 断言依赖引擎 Absent；与 test_running 共享串行锁防互踩。
+        let _absent = crate::engine::test_absent_guard();
         let dir = temp_dir("dyncat");
         let home = fixture_opencode_home(&dir);
         let scan = crate::credentials::scan_opencode_at(&home);
@@ -4380,6 +4419,8 @@ Connection: close
     #[test]
     fn list_models_merges_scanned_references() {
         let _fetch_guard = CATALOG_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // 目录/来源断言依赖引擎 Absent；与 test_running 共享串行锁防互踩。
+        let _absent = crate::engine::test_absent_guard();
         let dir = temp_dir("reflist");
         let home = fixture_opencode_home(&dir);
         let scan = crate::credentials::scan_opencode_at(&home);
@@ -4490,6 +4531,8 @@ Connection: close
     #[test]
     fn zhipu_coding_plan_reference_reaches_claude_menu() {
         let _fetch_guard = CATALOG_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // sources.len()==1 断言依赖引擎 Absent；与 test_running 共享串行锁。
+        let _absent = crate::engine::test_absent_guard();
         let dir = temp_dir("zhipu-ref");
         let home = dir.join("opencode-home");
         let auth = home.join(".local").join("share").join("opencode").join("auth.json");
