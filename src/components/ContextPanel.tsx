@@ -151,16 +151,35 @@ type UsageGroup = {
   tone: ReturnType<typeof meterTone>;
 };
 
-/** `OpenCode Go · 7 days` → source `OpenCode Go`; engine rows carry it in the id. */
-function usageSource(window: UsageWindow): { key: string; name: string } {
+/**
+ * Which source a window belongs to. Engine rows carry it in the id
+ * (`OpenCode Go · 7 days`); the dialog's own agent reports its limits as bare
+ * `5-hour limit` / `codex Weekly limit`, so those group under the agent's name.
+ */
+function usageSource(window: UsageWindow, agentLabel: string): { key: string; name: string } {
+  if (window.id.startsWith("engine:")) {
+    const name = window.label.split(" · ")[0] || window.label;
+    return { key: window.id.split(":")[1] ?? name, name };
+  }
+  if (window.kind === "rate_limit") return { key: "agent", name: agentLabel || "当前 agent" };
   const name = window.label.split(" · ")[0] || window.label;
-  if (window.id.startsWith("engine:")) return { key: window.id.split(":")[1] ?? name, name };
   return { key: `label:${name}`, name };
 }
 
-/** What is left of the label once the source name is gone (`7 days`, `MCP · Month`). */
-function usagePeriod(label: string, source: string): string {
-  return label.startsWith(`${source} · `) ? label.slice(source.length + 3) : label;
+/**
+ * The window's own part of the label: `7 days`, `MCP · Month`; an agent's
+ * `codex 5-hour limit` reads `5 hours`, `Weekly (Opus)` reads `Weekly · Opus`.
+ */
+function usagePeriod(window: UsageWindow, source: string): string {
+  const label = window.label;
+  if (label.startsWith(`${source} · `)) return label.slice(source.length + 3);
+  if (window.kind !== "rate_limit" || window.id.startsWith("engine:")) return label;
+  return label
+    .replace(/^(?:codex|chatgpt|claude|grok)\s+/i, "")
+    .replace(/\s*limit$/i, "")
+    .replace(/^(\d+)[\s-]*h(?:ours?)?$/i, (_, n: string) => `${n} hours`)
+    .replace(/\s*\(([^()]+)\)\s*$/, " · $1")
+    .trim() || label;
 }
 
 /** Rough window length in hours for ordering; unknown keeps its place. */
@@ -174,11 +193,11 @@ function periodHours(period: string): number | null {
   return null;
 }
 
-function groupUsageBySource(windows: UsageWindow[]): UsageGroup[] {
+function groupUsageBySource(windows: UsageWindow[], agentLabel: string): UsageGroup[] {
   const groups: UsageGroup[] = [];
   const byKey = new Map<string, UsageGroup>();
   for (const window of windows) {
-    const { key, name } = usageSource(window);
+    const { key, name } = usageSource(window, agentLabel);
     let group = byKey.get(key);
     if (!group) {
       group = { key, name, windows: [], peak: null, tone: "none" };
@@ -188,7 +207,7 @@ function groupUsageBySource(windows: UsageWindow[]): UsageGroup[] {
     group.windows.push(window);
   }
   for (const group of groups) {
-    const order = group.windows.map((w, i) => ({ w, i, h: periodHours(usagePeriod(w.label, group.name)) }));
+    const order = group.windows.map((w, i) => ({ w, i, h: periodHours(usagePeriod(w, group.name)) }));
     order.sort((x, y) => (x.h != null && y.h != null ? x.h - y.h : x.i - y.i));
     group.windows = order.map((entry) => entry.w);
     const percents = group.windows
@@ -223,7 +242,8 @@ function formatPrimary(window: UsageWindow): string {
     }
     return "N/A";
   }
-  return `${window.percentage}%`;
+  // At most one decimal: providers report 30.3395… and it pushed the column out.
+  return `${Math.round(window.percentage * 10) / 10}%`;
 }
 
 function changeBadge(changeType: ChangedFile["changeType"]): string {
@@ -440,7 +460,7 @@ export const ContextPanel = memo(function ContextPanel({
 
   // Group windows by their source so one provider's 5 hours / 7 days / month
   // read together, shortest first; a source with one window keeps the plain row.
-  const usageGroups = groupUsageBySource(usage.windows);
+  const usageGroups = groupUsageBySource(usage.windows, usage.agentLabel);
   const usageFooter = [usage.note, usage.refreshedAt || "尚未刷新"]
     .filter((part, i, all): part is string => Boolean(part) && all.indexOf(part) === i)
     .join(" · ");
@@ -678,7 +698,7 @@ export const ContextPanel = memo(function ContextPanel({
                   </div>
                   {group.windows.map((window) => {
                     const tone = meterTone(window);
-                    const period = usagePeriod(window.label, group.name);
+                    const period = usagePeriod(window, group.name);
                     if (window.percentage == null) {
                       return (
                         <div className="usage-line usage-line--text" key={window.id} title={window.detail ?? undefined}>

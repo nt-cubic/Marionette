@@ -183,14 +183,34 @@
  * Model sharing: a full-width entry above the footer icons (state at a glance)
  * and a three-part panel — status + primary action, engine version, navigation.
  */
+/*
+ * Rail bottom block: the model-sharing entry over the footer icons. One
+ * top hairline separates it from the chat list; the entry spans the same
+ * width as the chat section above.
+ */
+.sidebar-dock {
+  flex-shrink: 0;
+  margin-top: auto;
+  padding: 8px 0 0;
+  border-top: 1px solid var(--border);
+}
+
+/* Entry spans the rail like the chat section; icons inset 8px so the first
+   glyph centres on the entry's icon (10px padding + half the 13px glyph). */
+.sidebar-dock .sidebar-footer {
+  margin-top: 0;
+  padding: 6px 8px;
+  border-top: 0;
+}
+
 .engine-entry {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: calc(100% - 12px);
-  min-height: 28px;
-  margin: 0 6px 4px;
-  padding: 0 8px;
+  width: 100%;
+  min-height: 30px;
+  margin: 0;
+  padding: 0 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--text);
@@ -200,6 +220,15 @@
   text-align: left;
   cursor: pointer;
   transition: border-color var(--dur-fast, 120ms) ease, background-color var(--dur-fast, 120ms) ease;
+}
+
+.engine-entry:focus:not(:focus-visible) {
+  outline: none;
+}
+
+.engine-entry:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 1px;
 }
 
 .engine-entry:hover,
@@ -819,15 +848,17 @@
 .model-library-dialog__toolbar { position: sticky; top: 0; z-index: 1; background: var(--panel); padding: 8px 0; }
 .model-library-dialog__toolbar input { flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--border); padding: 8px 10px; color: var(--text); border-radius: var(--radius); }
 .model-library-dialog__toolbar button { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
-.model-library-dialog__group { border: 1px solid var(--border); border-radius: var(--radius); margin-top: 10px; overflow: hidden; }
-.model-library-dialog__provider { padding: 8px 10px; background: var(--panel-raised); }
-.model-library-dialog__provider strong { font-size: 13px; }
-.model-library-dialog__provider label, .model-library-dialog__model label { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
+/* One list; sources separated by hairlines, not stacked cards. */
+.model-library-dialog__list { margin-top: 8px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.model-library-dialog__group + .model-library-dialog__group { border-top: 1px solid var(--border); }
+.model-library-dialog__provider { min-height: 34px; padding: 0 10px 0 6px; background: var(--panel-raised); }
+.model-library-dialog__provider strong { font-size: 12.5px; font-weight: 600; color: var(--text-strong); white-space: nowrap; }
+.model-library-dialog__proto { color: var(--text-faint); font-size: 11px; }
+.model-library-dialog__agent { padding: 0 6px; border-radius: 999px; background: var(--panel-soft); color: var(--text-muted); font-size: 10.5px; line-height: 17px; white-space: nowrap; }
+.model-library-dialog__provider label, .model-library-dialog__model label { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; overflow: hidden; }
 .model-library-dialog input[type="checkbox"] { accent-color: var(--accent); width: 14px; height: 14px; flex-shrink: 0; }
-.model-library-dialog__count { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.model-library-dialog__provider button, .model-library-dialog__model button { display: grid; place-items: center; background: transparent; color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 4px; cursor: pointer; }
-/* Reorder arrows are secondary: show them while the row is under the pointer
-   or focused, so a long list reads as models rather than as controls. */
+.model-library-dialog__count { font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.model-library-dialog__provider button, .model-library-dialog__model button { display: grid; place-items: center; background: transparent; color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 3px; cursor: pointer; }
 .model-library-dialog__order { display: flex; gap: 4px; flex-shrink: 0; opacity: 0; transition: opacity .12s ease; }
 .model-library-dialog__provider:hover .model-library-dialog__order,
 .model-library-dialog__model:hover .model-library-dialog__order,
@@ -836,15 +867,32 @@
 .model-library-dialog__disclosure svg { transition: transform .12s ease; }
 .model-library-dialog__disclosure svg.is-open { transform: rotate(90deg); }
 .model-library-dialog button:disabled { opacity: .35; cursor: default; }
-.model-library-dialog__origin { padding: 6px 12px 8px; font-size: 11px; line-height: 1.5; color: var(--text-muted); overflow-wrap: anywhere; background: var(--panel-raised); border-top: 1px solid var(--border); }
-.model-library-dialog__origin > div + div { margin-top: 2px; }
-.model-library-dialog__model { padding: 6px 10px; border-top: 1px solid var(--border); min-height: 34px; }
-.model-library-dialog__model:hover { background: var(--hover); }
-.model-library-dialog__model label span { overflow-wrap: anywhere; font-size: 12px; }
-.model-library-dialog__model small { display: block; color: var(--text-muted); font-size: 10px; font-family: var(--font-mono, ui-monospace, monospace); }
-.model-library-dialog__more { width: 100%; padding: 6px 10px; border: none; border-top: 1px solid var(--border); background: transparent; color: var(--accent); font-size: 11px; text-align: left; cursor: pointer; }
-.model-library-dialog__more:hover { background: var(--hover); }
+/* Where the source lives: one quiet line, full paths in the tooltip. */
+.model-library-dialog__origin { display: flex; gap: 10px; min-width: 0; padding: 0 10px 6px 54px; background: var(--panel-raised); color: var(--text-faint); font-size: 11px; white-space: nowrap; }
+.model-library-dialog__origin > span { overflow: hidden; text-overflow: ellipsis; }
+.model-library-dialog__origin > span:first-child { flex: 0 0 auto; font-family: var(--font-mono, ui-monospace, monospace); }
+.model-library-dialog__issue { padding: 6px 10px 8px 54px; background: var(--panel-raised); }
+.model-library-dialog__models { border-top: 1px solid var(--border); }
+.model-library-dialog__model { min-height: 30px; padding: 0 10px 0 32px; }
+.model-library-dialog__model + .model-library-dialog__model { border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
+.model-library-dialog__model:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+.model-library-dialog__name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text); }
+.model-library-dialog__name em { margin-left: 8px; color: var(--text-faint); font-size: 11px; font-style: normal; }
+.model-library-dialog__model small { flex: 0 1 auto; min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); font-size: 10.5px; font-family: var(--font-mono, ui-monospace, monospace); }
+.model-library-dialog__more { width: 100%; min-height: 28px; padding: 0 10px 0 32px; border: none; border-top: 1px solid var(--border); background: transparent; color: var(--accent); font-size: 11.5px; text-align: left; cursor: pointer; }
+.model-library-dialog__more:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+.model-library-dialog__group.is-hidden .model-library-dialog__provider strong,
 .model-library-dialog__group.is-hidden .model-library-dialog__models { opacity: .55; }
+/* Many "注册失败" lines fold into one strip with a retry. */
+.model-library-dialog__warn { margin: 0 0 4px; border: 1px solid color-mix(in srgb, var(--orange) 35%, var(--border)); border-radius: var(--radius); background: color-mix(in srgb, var(--orange) 7%, var(--panel)); font-size: 12px; }
+.model-library-dialog__warn summary { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 10px; cursor: pointer; list-style: none; color: var(--text); }
+.model-library-dialog__warn summary::-webkit-details-marker { display: none; }
+.model-library-dialog__warn-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--orange); flex: 0 0 auto; }
+.model-library-dialog__warn-more { color: var(--text-faint); font-size: 11px; }
+.model-library-dialog__warn[open] .model-library-dialog__warn-more { visibility: hidden; }
+.model-library-dialog__warn > div { padding: 0 10px 4px 24px; color: var(--text-muted); font-size: 11.5px; }
+.model-library-dialog__warn > div:last-child { padding-bottom: 8px; }
+.model-library-dialog__link { margin-left: auto; padding: 0; border: 0; background: transparent; color: var(--accent); font: inherit; font-size: 11.5px; cursor: pointer; }
 .model-library-dialog__error { color: var(--red); font-size: 12px; }
 .credentials-dialog__source-detail { font-size: 12px; line-height: 1.6; padding: 8px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
 .credentials-dialog__source-detail div { color: var(--text-muted); }

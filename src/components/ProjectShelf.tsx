@@ -1669,6 +1669,7 @@ export function ProjectShelf({
         </section>
       )}
 
+      <div className="sidebar-dock">
       {gatewayRow}
       <div className="sidebar-footer">
         {themeButton}
@@ -1678,6 +1679,7 @@ export function ProjectShelf({
         <button className="pill-action pill-action--icon pill-action--sm sidebar-footer__button sidebar-footer__button--collapse" type="button" title={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} aria-label={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} onClick={collapsed ? onExpand : onCollapse}>
           {collapsed ? <PanelLeftOpen size={13} /> : <PanelLeftClose size={13} />}
         </button>
+      </div>
       </div>
       {proxyOpen && proxyAnchor && (
         <div
