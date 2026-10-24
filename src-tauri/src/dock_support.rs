@@ -42,3 +42,28 @@ pub fn set_background_mode(enabled: bool) {
 pub fn quit_app(app: AppHandle) {
     crate::shutdown_and_exit(&app);
 }
+
+/// True while a fullscreen D3D app or a presentation mode owns the screen —
+/// the dock sliver must not slide its strip over those (plan §1 全屏抑制).
+/// Query failures read as "not fullscreen" (fail open for expansion).
+#[tauri::command]
+pub fn fullscreen_active() -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::Shell::{
+            QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN,
+            QUERY_USER_NOTIFICATION_STATE, SHQueryUserNotificationState,
+        };
+        let mut state: QUERY_USER_NOTIFICATION_STATE = 0;
+        // S_OK == 0; any failure means "unknown", treat as not fullscreen.
+        if unsafe { SHQueryUserNotificationState(&mut state) } != 0 {
+            return false;
+        }
+        matches!(
+            state,
+            QUNS_RUNNING_D3D_FULL_SCREEN | QUNS_PRESENTATION_MODE | QUNS_BUSY
+        )
+    }
+    #[cfg(not(windows))]
+    false
+}

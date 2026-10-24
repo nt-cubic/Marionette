@@ -81,7 +81,7 @@ import {
   scheduleDesktopNotify,
   setDesktopNotifyEnabled,
 } from "../lib/desktopNotify";
-import { readDockPrefs, subscribeDockPrefs, syncBackgroundMode, toggleAutoHideOnClose } from "../lib/dockMode";
+import { enterDock, getDockState, initDockMode, readDockPrefs, subscribeDockPrefs, subscribeDockState, syncBackgroundMode, toggleAutoHideOnClose, undock } from "../lib/dockMode";
 import { parseAvailableCommandsUpdate } from "../lib/slashCommands";
 import type { PlanEntry } from "../lib/acpPlan";
 import { parseAcpPlanUpdate } from "../lib/acpPlan";
@@ -493,6 +493,8 @@ export function App() {
   const [desktopNotifyOn, setDesktopNotifyOn] = useState(() => isDesktopNotifyEnabled());
   /** Edge dock stage 0: close = retract to background instead of quitting. */
   const [autoHideOnClose, setAutoHideOnClose] = useState(() => readDockPrefs().autoHideOnClose);
+  /** Edge dock stage 1: main window is parked at a screen edge. */
+  const [dockActive, setDockActive] = useState(false);
   /** Sessions that finished a turn while this window was looking at another dialog. */
   const [doneUnreadIds, setDoneUnreadIds] = useState<Set<string>>(() => new Set());
   /** Agent proxy config (single exit address), loaded on mount. */
@@ -923,6 +925,17 @@ export function App() {
   useEffect(() => {
     void syncBackgroundMode();
     return subscribeDockPrefs((prefs) => setAutoHideOnClose(prefs.autoHideOnClose));
+  }, []);
+
+  // Edge dock stage 1: dock engine bindings (close handoff, sliver hover,
+  // focus tracking) + footer button state.
+  useEffect(() => {
+    const disposeEngine = initDockMode();
+    const unsubState = subscribeDockState((state) => setDockActive(state !== "floating"));
+    return () => {
+      disposeEngine();
+      unsubState();
+    };
   }, []);
 
   // Drop marks for sessions that no longer exist.
@@ -7343,6 +7356,9 @@ export function App() {
     onQuitApp: useLatestCallback(() => {
       void quitApp();
     }),
+    onDockToEdge: useLatestCallback(() => {
+      void (getDockState() === "floating" ? enterDock() : undock());
+    }),
     onCollapse: useLatestCallback(() => setLeftCollapsed(true)),
     onExpand: useLatestCallback(() => setLeftCollapsed(false)),
     onToggleTheme: useLatestCallback(() => withViewTransition(() => {
@@ -7704,6 +7720,8 @@ export function App() {
             onToggleDesktopNotify={shelfStable.onToggleDesktopNotify}
             onToggleAutoHideClose={shelfStable.onToggleAutoHideClose}
             onQuitApp={shelfStable.onQuitApp}
+            dockActive={dockActive}
+            onDockToEdge={shelfStable.onDockToEdge}
             onCollapse={shelfStable.onCollapse}
             onExpand={shelfStable.onExpand}
             onToggleTheme={shelfStable.onToggleTheme}

@@ -370,18 +370,23 @@ fn main() {
                     if (is_main || visible <= 1) && !background {
                         shutdown_and_exit(window.app_handle());
                     } else {
-                        let _ = window.hide();
                         if is_main {
-                            // Background mode: main hidden, awaiting a second
-                            // launch (single-instance handoff shows it again).
+                            // Background mode + edge dock (stage 1): hand the
+                            // close to the frontend — dockMode retracts the
+                            // window to the edge sliver (or hides itself as
+                            // fallback when docking is unavailable). No hide
+                            // here; the window is never hidden while docking.
+                            use tauri::Emitter as _;
+                            let _ = window.emit_to(label.as_str(), "marionette-main-close", ());
                             crate::debug_log::append(
                                 "window",
                                 "info",
                                 "",
-                                "hid main window (background mode)",
-                                Some("close = retract to background; quit via footer"),
+                                "main close handed to frontend (background mode)",
+                                Some("dockMode retracts to edge; fallback hide is its own"),
                             );
                         } else {
+                            let _ = window.hide();
                             // Frontend reaper blanks excess hidden shells (memory).
                             // Detached SPA flushes transcript then releases ACP
                             // ownership — do not steal the stream here or main
@@ -560,7 +565,8 @@ fn main() {
             open_target::open_external,
             open_target::reveal_in_file_manager,
             dock_support::set_background_mode,
-            dock_support::quit_app
+            dock_support::quit_app,
+            dock_support::fullscreen_active
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|error| {
