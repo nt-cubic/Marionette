@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Bell, BellOff, ChevronRight, CloudMoon, Dock, Folder, FolderOpen, Globe, GripVertical, KeyRound, LogOut, MessageSquare, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, SlidersHorizontal, SunMedium, Trash2, X, Zap } from "lucide-react";
+import { Bell, BellOff, ChevronRight, CloudMoon, Dock, Folder, FolderOpen, Globe, GripVertical, KeyRound, LogOut, MessageSquare, Network, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, SlidersHorizontal, SunMedium, Trash2, X, Zap } from "lucide-react";
 // Refresh on a project row folds CLI history into the normal session list.
 import type { AgentConfig, Project, ProxyConfig, ProxyTestResult, Session } from "../lib/types";
 import { themeToggleTitle, type ThemeMode } from "../lib/theme";
@@ -120,6 +120,9 @@ type ProjectShelfProps = {
   onToggleAutoHideClose?: () => void;
   /** Real exit — only reachable while close-to-background is on. */
   onQuitApp?: () => void;
+  /** Edge dock stage 1: dock the window to a screen edge / release it back. */
+  dockActive?: boolean;
+  onDockToEdge?: () => void;
   onAddProject: () => void;
   onNewSession: (projectId: string) => void;
   onProjectSelect: (projectId: string) => void;
@@ -269,6 +272,8 @@ export function ProjectShelf({
   autoHideOnClose = true,
   onToggleAutoHideClose,
   onQuitApp,
+  dockActive = false,
+  onDockToEdge,
   onDeleteSession,
   onToggleSessionPin,
   onDeleteProject,
@@ -937,6 +942,27 @@ export function ProjectShelf({
       onClick={onToggleAutoHideClose}
     >
       <Dock size={13} />
+    </button>
+  ) : null;
+
+  const edgeDockButton = onDockToEdge ? (
+    <button
+      className={
+        dockActive
+          ? "pill-action pill-action--icon pill-action--sm sidebar-footer__button is-dock-on"
+          : "pill-action pill-action--icon pill-action--sm sidebar-footer__button"
+      }
+      type="button"
+      title={
+        dockActive
+          ? "解除贴边 · 恢复普通窗口（尺寸与停靠前一致）"
+          : "贴边收起 · 窗口并入屏幕边缘，鼠标触碰边缘拉出，关闭窗口也收起到边缘"
+      }
+      aria-label={dockActive ? "解除贴边" : "贴边收起"}
+      aria-pressed={dockActive}
+      onClick={onDockToEdge}
+    >
+      {dockActive ? <PanelRightOpen size={13} /> : <PanelRightClose size={13} />}
     </button>
   ) : null;
 
@@ -1706,6 +1732,7 @@ export function ProjectShelf({
         {proxyButton}
         {telegramButton}
         {dockButton}
+        {edgeDockButton}
         {autoHideOnClose && onQuitApp && (
           <button
             className="pill-action pill-action--icon pill-action--sm sidebar-footer__button sidebar-footer__button--quit"

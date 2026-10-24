@@ -1,0 +1,50 @@
+/*
+ * Edge dock (docs/plan-edge-dock.md §3): the main window's docked mode.
+ * Class variants (never @media — repo convention):
+ *   .dock-mode             window is docked (hidden or expanded)
+ *   .dock-mode--left/right which screen edge the strip is parked at
+ *   .edge-hidden           docked-hidden: only the sliver is on screen
+ *
+ * Stage 1 carries the window mechanics (sliver indicator + relaxed min
+ * width); the narrow-strip layout lands with stage 2 in this same file.
+ */
+
+/* Parked strip: highlight the on-screen edge so the 4px reads as grabbable.
+   Wider than the 4 physical px so the hit cue survives 150% DPI. */
+#dock-sliver {
+  display: none;
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  z-index: 2147483646; /* above content, below nothing else */
+  background: linear-gradient(
+    to var(--dock-sliver-dir, right),
+    color-mix(in srgb, var(--accent) 72%, transparent),
+    color-mix(in srgb, var(--accent) 18%, transparent)
+  );
+  pointer-events: none; /* expand signal is the viewport mouseenter itself */
+}
+
+.dock-mode.edge-hidden #dock-sliver {
+  display: block;
+}
+
+.dock-mode.edge-hidden.dock-mode--right {
+  --dock-sliver-dir: right;
+}
+.dock-mode.edge-hidden #dock-sliver {
+  left: 0;
+}
+.dock-mode.edge-hidden.dock-mode--left {
+  --dock-sliver-dir: left;
+}
+.dock-mode.edge-hidden.dock-mode--left #dock-sliver {
+  left: auto;
+  right: 0;
+}
+
+/* tokens.css pins body min-width at 960; the strip is 320-480. */
+.dock-mode body {
+  min-width: 0;
+}
