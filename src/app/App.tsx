@@ -3,9 +3,6 @@ import { ChevronLeft, ChevronRight, FolderOpen, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, memo, type CSSProperties } from "react";
 import { agents, projects, sessions } from "../lib/mockData";
 import {
-  applyAcpPartToEvents,
-  coalesceAdjacentAssistantFragments,
-  coalesceAdjacentThoughts,
   collapseIntermediateAssistantAsThought,
   extractAcpSessionTitle,
   extractAcpUpdateText,
@@ -15,8 +12,8 @@ import {
   sealOpenAssistantReplies,
   turnEndedSilently,
   userMessageEvent,
-  type AcpTextPart,
 } from "../lib/acpTranscript";
+import { useSessionRails } from "./useSessionRails";
 import {
   chunkKindFromRole,
   flushShadowsIntoPaintSet,
@@ -526,9 +523,6 @@ export function App() {
       effortConfigId: "effort",
     } as unknown as CapabilitySnapshot;
   });
-  const eventsBySessionRef = useRef(new Map<string, SessionEvent[]>());
-  const shadowBySessionRef = useRef(new Map<string, SessionEvent[]>());
-  const livePaintSetRef = useRef<Set<string>>(new Set());
   const [eventsTick, setEventsTick] = useState<Record<string, number>>({});
   /** Per-session usage from ACP `usage_update` + opportunistic rate-limit text. */
   const [sessionUsageById, setSessionUsageById] = useState<Record<string, SessionUsageState>>({});
@@ -1023,116 +1017,27 @@ export function App() {
     });
   };
 
-  const armTranscriptTimer = (sessionId: string) => {
-    if (!isTauriRuntime()) return;
-    if (!ownsAcpSession(sessionId)) return;
-    if (reloadingSessionsRef.current.has(sessionId)) return;
-    const prev = transcriptSaveTimers.current.get(sessionId);
-    if (prev) clearTimeout(prev);
-    const timer = setTimeout(() => {
-      transcriptSaveTimers.current.delete(sessionId);
-      if (!ownsAcpSession(sessionId)) return;
-      if (reloadingSessionsRef.current.has(sessionId)) return;
-      const events = persistableEventsForSession(
-        shadowBySessionRef.current.get(sessionId) ?? EMPTY_EVENTS,
-        sessionId,
-      );
-      void writeTranscript(sessionId, events).catch((error) => {
-        pushDebugRef.current({
-          sessionId,
-          level: "warn",
-          source: "transcript",
-          summary: "write transcript failed",
-          detail: error instanceof Error ? error.message : String(error),
-        });
-      });
-    }, 450);
-    transcriptSaveTimers.current.set(sessionId, timer);
-  };
-
-  const updateSessionEvents = (
-    sessionId: string,
-    fn: (current: SessionEvent[]) => SessionEvent[],
-    opts?: { publish?: boolean },
-  ): SessionEvent[] => {
-    const prev = shadowBySessionRef.current.get(sessionId) ?? EMPTY_EVENTS;
-    const next = fn(prev);
-    if (next === prev) return prev;
-    shadowBySessionRef.current.set(sessionId, next);
-    armTranscriptTimer(sessionId);
-    const publish = opts?.publish ?? livePaintSetRef.current.has(sessionId);
-    if (publish) {
-      eventsBySessionRef.current.set(sessionId, next);
-      bumpEventsTick([sessionId]);
-    }
-    return next;
-  };
-
-  const dropSessionRails = (ids: Iterable<string>) => {
-    const bumped: string[] = [];
-    for (const id of ids) {
-      if (shadowBySessionRef.current.has(id) || eventsBySessionRef.current.has(id)) {
-        shadowBySessionRef.current.delete(id);
-        eventsBySessionRef.current.delete(id);
-        bumped.push(id);
-      }
-    }
-    bumpEventsTick(bumped);
-  };
-
-  const applyStreamPart = (
-    current: SessionEvent[],
-    sid: string,
-    extracted: AcpTextPart,
-  ): SessionEvent[] => {
-    const prevIdx = findLastIndexForSession(current, sid);
-    const prevLast = prevIdx >= 0 ? current[prevIdx] : undefined;
-    const prevLen = current.length;
-    let next = applyAcpPartToEvents(current, sid, extracted);
-    if (extracted.role === "assistant") {
-      const newIdx = findLastIndexForSession(next, sid);
-      const newLast = newIdx >= 0 ? next[newIdx] : undefined;
-      if (
-        newLast?.type === "assistant_message" &&
-        newLast.sessionId === sid &&
-        (prevLast?.type !== "assistant_message" || prevLast.sessionId !== sid) &&
-        !turnStartedAtRef.current[sid]
-      ) {
-        turnStartedAtRef.current[sid] = Date.now();
-        sendMetaRef.current = null;
-      }
-    }
-    if (
-      next.length > prevLen &&
-      (extracted.role === "thought" || extracted.role === "assistant")
-    ) {
-      next = coalesceAdjacentThoughts(next, sid);
-      if (extracted.role === "assistant") {
-        next = coalesceAdjacentAssistantFragments(next, sid);
-      }
-    }
-    return next;
-  };
-
-  const publishedEventsForView = (sessionId: string): SessionEvent[] => {
-    const parent = eventsBySessionRef.current.get(sessionId) ?? EMPTY_EVENTS;
-    const childIds = new Set<string>();
-    for (const [childId, meta] of delegateMetaRef.current) {
-      if (meta.parentId === sessionId) childIds.add(childId);
-    }
-    for (const e of parent) {
-      if (e.type === "subtask_started" || e.type === "subtask_result") {
-        childIds.add(e.childSessionId);
-      }
-    }
-    if (childIds.size === 0) return parent;
-    const out = parent.slice();
-    for (const id of childIds) {
-      const rail = eventsBySessionRef.current.get(id);
-      if (rail?.length) out.push(...rail);
-    }
-    return out;
-  };
+  // 每会话事件 rail 库（审计「App.tsx 事件管线」抽出）：rails 本体、落盘
+  // 定时、流式合并与视图拼装都在 useSessionRails 里；这里只解构同名符号，
+  // 组件其余部分零改动。
+  const {
+    eventsBySessionRef,
+    shadowBySessionRef,
+    livePaintSetRef,
+    updateSessionEvents,
+    dropSessionRails,
+    applyStreamPart,
+    publishedEventsForView,
+  } = useSessionRails({
+    transcriptSaveTimers,
+    ownsAcpSession,
+    reloadingSessionsRef,
+    pushDebugRef,
+    bumpEventsTick,
+    delegateMetaRef,
+    turnStartedAtRef,
+    sendMetaRef,
+  });
 
   /**
    * One workspace baseline per prompt. The delivery card's git truth is
