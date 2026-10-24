@@ -40,3 +40,8 @@ _research/repos/
 # --- Local scratch ---
 # Verification harnesses / diagnostics written while checking a change
 fortest/
+# One-off build wrapper, agent diagnostics, browser-preview transcript
+/build-now.ps1
+/zdiag*.ps1
+/zdiag*.txt
+/preview-transcript*.jsonl
