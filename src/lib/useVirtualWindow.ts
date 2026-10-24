@@ -92,7 +92,7 @@ export function useVirtualWindow(
     let first = 0;
     while (lo <= hi) {
       const mid = (lo + hi) >> 1;
-      if (offsets[mid + 1] > viewStart) {
+      if (offsets[mid + 1]! > viewStart) {
         first = mid;
         hi = mid - 1;
       } else {
@@ -105,7 +105,7 @@ export function useVirtualWindow(
     let last = itemCount - 1;
     while (lo <= hi) {
       const mid = (lo + hi) >> 1;
-      if (offsets[mid] < viewEnd) {
+      if (offsets[mid]! < viewEnd) {
         last = mid;
         lo = mid + 1;
       } else {

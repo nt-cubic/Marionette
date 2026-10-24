@@ -293,7 +293,7 @@ function ModelChipLabel({ text, effort }: { text: string; effort: string | null 
 }
 
 function displayModeSafe(caps: CapabilitySnapshot): string | null {
-  return caps.currentMode ?? (caps.modes.length > 0 ? caps.modes[0].id : null);
+  return caps.currentMode ?? (caps.modes.length > 0 ? caps.modes[0]!.id : null);
 }
 
 
@@ -1586,12 +1586,12 @@ export function Composer({
         (p, i, arr) => arr.indexOf(p) === i,
       );
       const droppedInText = dropped.filter((p) => text.includes(p));
-      const sentWith = currentModel ?? (caps && caps.models.length > 0 ? caps.models[0].id : null);
+      const sentWith = currentModel ?? (caps && caps.models.length > 0 ? caps.models[0]!.id : null);
       if (sentWith) recordModelUsage(sentWith);
 
       // Snapshot chips the user actually sees (optimistic currentMode/currentModel),
       // not parent sessionCapabilities — mode switch delays caps reload on purpose.
-      const modeId = currentMode ?? (caps && caps.modes.length > 0 ? caps.modes[0].id : null);
+      const modeId = currentMode ?? (caps && caps.modes.length > 0 ? caps.modes[0]!.id : null);
       const modeLabel =
         (modeId && caps?.modes.find((m) => m.id === modeId)?.label) || modeId || null;
       // Cross-use pick: snapshot shows the bridged model the chip displays, not
@@ -1707,8 +1707,9 @@ export function Composer({
           .filter((p) => !existing.has(p.toLowerCase()))
           .map(attachmentFromPath);
         // Auto-open annotator for the first new image.
-        if (added[0]) {
-          requestAnimationFrame(() => setAnnotatingId(added[0].id));
+        const firstAdded = added[0];
+        if (firstAdded) {
+          requestAnimationFrame(() => setAnnotatingId(firstAdded.id));
         }
         return [...current, ...added];
       });
@@ -2070,9 +2071,9 @@ export function Composer({
   }, [menu, hasEffort]);
 
   const displayModel =
-    currentModel ?? (caps && caps.models.length > 0 ? caps.models[0].id : null);
+    currentModel ?? (caps && caps.models.length > 0 ? caps.models[0]!.id : null);
   const displayMode =
-    currentMode ?? (caps && caps.modes.length > 0 ? caps.modes[0].id : null);
+    currentMode ?? (caps && caps.modes.length > 0 ? caps.modes[0]!.id : null);
 
   useEffect(() => {
     onActiveModelChange?.(displayModel);
@@ -3456,7 +3457,7 @@ export function Composer({
                               如何安装
                             </button>
                           )}
-                          {!ready && !needsManualSetup && preflightById[candidate.id] && !preflightById[candidate.id].passed && (
+                          {!ready && !needsManualSetup && preflightById[candidate.id] && !preflightById[candidate.id]!.passed && (
                             <button
                               className="composer-agent-row__install composer-agent-row__install--manual"
                               type="button"
