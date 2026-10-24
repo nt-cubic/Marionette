@@ -313,6 +313,11 @@ pub struct AgentCommandStatus {
     /// Labels of the pieces that are not on PATH (bridge and/or its CLIs).
     #[serde(default)]
     pub missing: Vec<String>,
+    /// Install must stay hidden: a missing local runtime cannot be
+    /// npm-installed (ZCode's engine ships with the desktop app only).
+    /// Carries the setup guidance; None when the agent is not gated.
+    #[serde(default)]
+    pub runtime_gate: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]

@@ -315,12 +315,14 @@ pub fn auto_update_agents_in_background() {
     });
 }
 
-/// ZCode desktop footprint: the app maintains ~/.zcode/v2 wherever it was
-/// installed, while the CLI itself rarely lands on PATH.
+/// ZCode desktop install: the runtime zcode.cjs is discoverable (fixed roots
+/// or Start-Menu/Desktop shortcut). `~/.zcode/v2` is NOT a footprint — the
+/// cross-use bridge itself writes provider_config.json there (model_bridge),
+/// so the dir also exists on machines that never installed the desktop app,
+/// which made the status read "installed" while every prompt would die with
+/// "backend dead" (2026-10-24).
 fn zcode_desktop_present() -> bool {
-    home_dir()
-        .map(|h| h.join(".zcode").join("v2").is_dir())
-        .unwrap_or(false)
+    crate::acp::zcode_bin_path().is_some()
 }
 
 /// Is the agent's own command on PATH, and are the CLIs it drives present too?
@@ -376,6 +378,13 @@ fn agent_command_status(agent: &AgentConfig) -> AgentCommandStatus {
         }
     }
 
+    // ZCode runtime gate — applied last so its guidance wins over the generic
+    // "needs CLI" wording. Without a local engine the in-app installer can
+    // only add the ACP translator, and the agent stays dead ("zcode backend
+    // reader exited"); the UI must not offer that dead-end install.
+    let (installable, message, runtime_gate) =
+        apply_runtime_gate(&agent.id, zcode_runtime_available(), installable, message);
+
     AgentCommandStatus {
         id: agent.id.clone(),
         // "installed" only when the whole chain can actually run.
@@ -388,7 +397,37 @@ fn agent_command_status(agent: &AgentConfig) -> AgentCommandStatus {
         message,
         installable,
         missing,
+        runtime_gate,
     }
+}
+
+/// Is a ZCode engine reachable: a user-set `ZCODE_BIN`, `zcode` on PATH, or a
+/// discoverable desktop install (fixed roots / Start-Menu / Desktop shortcut)?
+/// `zcode_bin_path()` alone ignores a deliberate `ZCODE_BIN`, and the spawn
+/// path in acp.rs honors exactly these three, so the gate must match them.
+fn zcode_runtime_available() -> bool {
+    std::env::var_os("ZCODE_BIN").is_some()
+        || matches!(resolve_command("zcode"), Ok(Some(_)))
+        || zcode_desktop_present()
+}
+
+const ZCODE_RUNTIME_GATE_GUIDANCE: &str = "ZCode 需要本机运行时：先安装 ZCode 桌面版\
+（任意目录均可，通过开始菜单/桌面快捷方式自动发现），或自行设置 ZCODE_BIN 指向 zcode.cjs。\
+应用内只能安装 ACP 适配器（翻译层），没有引擎装了也无法使用。";
+
+/// Hide the install affordance when a missing local runtime cannot be
+/// npm-installed. Currently only ZCode: the engine ships with the desktop
+/// app, so `install zcode-acp-server` alone always ends in a dead agent.
+fn apply_runtime_gate(
+    agent_id: &str,
+    runtime_available: bool,
+    installable: bool,
+    message: String,
+) -> (bool, String, Option<String>) {
+    if agent_id == "zcode" && !runtime_available {
+        return (false, ZCODE_RUNTIME_GATE_GUIDANCE.to_string(), Some(ZCODE_RUNTIME_GATE_GUIDANCE.to_string()));
+    }
+    (installable, message, None)
 }
 
 /// Install the agent's ACP command (and optionally the CLIs it drives) with npm.
@@ -477,6 +516,21 @@ fn install_agent_blocking(
     }))
 }
 
+/// Global-install args for one agent package. `zcode-acp-server`'s postinstall
+/// is Unix-only (`node dist/remote/hub-upgrade-notify.js 2>/dev/null || true` —
+/// cmd has neither `/dev/null` nor `true`), so on Windows it always fails and
+/// npm rolls the install back to an empty package dir (2026-10-24). The adapter
+/// runs fine without its lifecycle scripts (probed: initialize + session/new),
+/// so skip them for this package only — opencode-ai and friends need theirs.
+fn npm_install_args(package: &str) -> Vec<String> {
+    let mut args = vec!["install".to_string(), "-g".to_string()];
+    if package == "zcode-acp-server" {
+        args.push("--ignore-scripts".to_string());
+    }
+    args.push(package.to_string());
+    args
+}
+
 fn npm_install_global(agent_id: &str, package: &str) -> Result<(), String> {
     use std::process::Command;
 
@@ -494,7 +548,7 @@ fn npm_install_global(agent_id: &str, package: &str) -> Result<(), String> {
 
     let mut command = Command::new(&resolved.program);
     resolved.apply_to(&mut command);
-    command.args(["install", "-g", package]);
+    command.args(npm_install_args(package));
     // Ensure npm's child processes can find `node` even when the desktop-launched
     // app inherited a stale/minimal PATH.
     command.env(
@@ -3314,6 +3368,48 @@ pub fn dsh_plugin_remove(name: String) -> Result<(), String> {
 mod tests {
     use super::resolve_command;
     use crate::process_util::resolve_spawn_command;
+
+    #[test]
+    fn zcode_acp_server_installs_without_lifecycle_scripts() {
+        let args = super::npm_install_args("zcode-acp-server");
+        assert!(
+            args.iter().any(|a| a == "--ignore-scripts"),
+            "args: {args:?}"
+        );
+        assert_eq!(args.last().map(String::as_str), Some("zcode-acp-server"));
+    }
+
+    #[test]
+    fn other_agents_keep_default_install_args() {
+        assert_eq!(
+            super::npm_install_args("opencode-ai"),
+            vec!["install".to_string(), "-g".to_string(), "opencode-ai".to_string()]
+        );
+    }
+
+    /// ZCode without a local runtime: the install affordance must be hidden
+    /// and the message replaced with the desktop-setup guidance — installing
+    /// the npm translator alone produces a dead agent ("backend dead",
+    /// 2026-10-24). Runtime present, or any other agent: pass through.
+    #[test]
+    fn zcode_runtime_gate_hides_install() {
+        let (installable, message, gate) =
+            super::apply_runtime_gate("zcode", false, true, "ZCode needs: ZCode CLI".into());
+        assert!(!installable, "install button must not be offered");
+        assert!(gate.is_some());
+        assert!(message.contains("桌面版"), "guidance must name the desktop install");
+
+        let (installable, message, gate) = super::apply_runtime_gate("zcode", true, true, "ok".into());
+        assert!(installable);
+        assert!(gate.is_none());
+        assert_eq!(message, "ok");
+
+        let (installable, message, gate) =
+            super::apply_runtime_gate("opencode", false, true, "keep".into());
+        assert!(installable, "other agents are never gated");
+        assert!(gate.is_none());
+        assert_eq!(message, "keep");
+    }
 
     #[test]
     fn detects_a_command_available_on_path() {
