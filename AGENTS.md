@@ -19,6 +19,36 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
 - 验证脚本：`scripts/`（清单见 `scripts/README.md`）；Windows 启动/构建/发布：`tools/`（清单见 `tools/README.md`）
 - 根目录只保留 `start-marionette.bat` 一个入口；改 `tools/` 里的脚本时，仓库根一律用 `%~dp0..`
 
+## 贴边停靠 edge dock（2026-10-24 落地，阶段 0–3）
+
+设计稿 `docs/plan-edge-dock.md`（含与实现的偏差记录），行为描述在 `docs/CURRENT.md`。改这块前先记四条红线：
+
+- **停靠期间绝不 `hide()` / `destroy()` / `setFocus()`**（tao 0.35 paint assert 红线的延伸）。
+  窗口只是**停在屏外留 4px**（真实客户区，DOM mouseenter 即弹出信号）；弹出/收回全是
+  `setPosition` 9 步 ~160ms 滑动；聚焦只来自用户点击或单实例交接（交接聚焦 4px sliver 会
+  由 dockMode 的 onFocusChanged 转成 expand，不会出现「亮一条 4px」）。全部几何用**物理像素**
+  （Tauri `Monitor.workArea` 是物理的；混合 DPI 下 Logical 会错）。
+- **关闭路径**：`main.rs` CloseRequested 里 background mode（Rust AtomicBool，前端启动时从
+  localStorage `marionette-dock-prefs` 的 `autoHideOnClose` 镜像过来）开 → 主窗 `emit_to`
+  `marionette-main-close` 交给前端 `dockMode.handleCloseFromRust`（停靠或兜底 hide），detached 窗
+  照旧 hide；关 → `shutdown_and_exit`。**prefs 的 `mode:"dock"` 是活窗态，不跨启动**——启动时
+  normalize 回 "off"，别把上次会话的停靠当成本次的。
+- **能力命名**：capability 是 `core:window:allow-set-skip-taskbar`（不是 `allow-skip-taskbar`，
+  ACL 校验在 build script 里直接报错）。`monitors_work_areas` 命令**不存在**——Tauri 2.8
+  `Monitor.workArea` 自带工作区，显示器信息全走 JS API（`availableMonitors`/`currentMonitor`），
+  Rust 侧只有 `dock_support.rs` 的 `set_background_mode` / `quit_app` / `fullscreen_active`
+  （`SHQueryUserNotificationState`，D3D 全屏/演示模式抑制弹出）。
+- **收纳盒**（`memos.rs` → `~/.marionette/memos/`）：`index.json`（原子写、读失败 fail-open 成
+  空表、500 条上限）+ `files/`（内容哈希命名，重拖同内容 = 同一条目；文件夹整树复制不去重）。
+  收纳盒 → Composer 拖拽是**页内 HTML5 DnD**（自定义 type `application/x-marionette-memo` +
+  `text/plain`=绝对路径）；Composer 的 HTML5 drop 守卫只为该自定义 type 放行（Tauri 运行时），
+  OS 级文件拖放仍走 tao 的 `onDragDropEvent`（物理像素，除以 devicePixelRatio）。
+
+前端结构：`src/lib/dockMode.ts`（状态机 + 窗口编排 + prefs）、`src/components/DockChrome.tsx`
+（窄条上下铬）、`src/components/MemoBox.tsx`（收纳盒覆盖层）、`src/styles/dock.css`
+（`.dock-mode` 变体：单列网格、左右栏转覆盖层 `dock-drawer-open`/`dock-context-open`、
+标签横滑、body min-width 放开）。分屏在 dock 态禁用（提示解除贴边），overlay 在收回时自动关。
+
 ## 排查「卡退」（崩溃/闪退）—— 第一件事
 
 **用户报「卡退」时，先看 `%USERPROFILE%\.marionette\logs\dev.log`（开发者日志）。**

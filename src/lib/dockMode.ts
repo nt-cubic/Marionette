@@ -166,8 +166,19 @@ const stateListeners = new Set<StateListener>();
 let dockState: DockState = "floating";
 let dockEdge: DockEdge = "right";
 
-/** Work area (physical px) of the monitor the dock is bound to. */
-type DockArea = { x: number; y: number; w: number; h: number; scale: number; name: string | null };
+/** Work area + full bounds (physical px) of the monitor the dock is bound to. */
+type DockArea = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  scale: number;
+  name: string | null;
+  mx: number;
+  my: number;
+  mw: number;
+  mh: number;
+};
 let dockArea: DockArea | null = null;
 let dockWidthPhys = 0;
 
@@ -242,7 +253,30 @@ function monitorToArea(monitor: Monitor): DockArea {
     h: wa.size.height,
     scale: monitor.scaleFactor,
     name: monitor.name,
+    mx: monitor.position.x,
+    my: monitor.position.y,
+    mw: monitor.size.width,
+    mh: monitor.size.height,
   };
+}
+
+/**
+ * Which screen edge the taskbar occupies on this monitor ("left"/"right", or
+ * null for bottom/top/auto-hidden). Used to suggest the opposite edge when
+ * picking a default (plan §5 阶段 4: 同边不拦，默认对边).
+ */
+function taskbarSide(area: DockArea): DockEdge | null {
+  if (area.x - area.mx >= Math.max(8, area.mw * 0.02)) return "left";
+  if (area.mx + area.mw - (area.x + area.w) >= Math.max(8, area.mw * 0.02)) return "right";
+  return null;
+}
+
+/** Default edge avoids a lateral taskbar; an explicit choice always wins. */
+function resolveEdge(requested: DockEdge | undefined, prefs: DockPrefs, area: DockArea): DockEdge {
+  if (requested) return requested;
+  const taskbar = taskbarSide(area);
+  if (taskbar && prefs.edge === taskbar) return taskbar === "left" ? "right" : "left";
+  return prefs.edge;
 }
 
 /**
@@ -335,7 +369,7 @@ export async function enterDock(edge?: DockEdge): Promise<boolean> {
   } catch {
     return false;
   }
-  const useEdge = edge ?? prefs.edge;
+  const useEdge = resolveEdge(edge, prefs, area);
   const widthPhys = Math.round(prefs.width * area.scale);
   try {
     await win.setAlwaysOnTop(true);
