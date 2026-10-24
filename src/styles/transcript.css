@@ -1431,6 +1431,61 @@
   margin-left: 2px;
 }
 
+.activity-group {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, var(--text-muted));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--panel-soft) 88%, transparent);
+}
+
+.activity-group.is-live {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+}
+
+.activity-group > .activity-panel {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.activity-trace {
+  padding: 9px 10px 0;
+}
+
+.activity-trace__heading {
+  margin-bottom: 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* Once a thought appears, this four-line viewport keeps the same height for
+   the rest of the run. Tool starts and short thoughts never collapse it. */
+.activity-thought {
+  margin: 0 10px;
+  padding: 0 0 8px;
+  border-bottom: 1px solid var(--border);
+  min-width: 0;
+}
+
+.activity-thought__heading {
+  margin-bottom: 5px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.activity-thought__body .clipped-body__content {
+  height: 72px;
+}
+
+.activity-thought__body .md-body {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+
 /*
  * Run timeline inside an open fold: lanes per kind on one time axis.
  * Same gray family as the cards — thinking is the light bar, tools the

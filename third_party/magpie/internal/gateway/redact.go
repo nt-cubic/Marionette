@@ -4,9 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/yetone/magpie/internal/gwmw"
 	"github.com/yetone/magpie/internal/masking"
+	"github.com/yetone/magpie/internal/maskrec"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
 )
@@ -32,6 +34,7 @@ func redactedHits(w http.ResponseWriter, body []byte) (http.ResponseWriter, []by
 		b []byte
 		h maskHits
 	}
+	began := time.Now()
 	o, err := gwmw.Safely(func() out {
 		if t, ok := m.(gwmw.Teller); ok {
 			b, hits := t.JSONHits(body)
@@ -40,6 +43,7 @@ func redactedHits(w http.ResponseWriter, body []byte) (http.ResponseWriter, []by
 		b, n := m.JSON(body)
 		return out{b, maskHits{n: n}}
 	})
+	o.h.took = time.Since(began)
 	if err == nil {
 		err = blocked(o.h)
 	}
@@ -50,7 +54,23 @@ func redactedHits(w http.ResponseWriter, body []byte) (http.ResponseWriter, []by
 		return w, body, func() {}, o.h, nil
 	}
 	rw, done := m.Writer(w)
+	done = toldBack(rw, done, &o.h)
 	return rw, o.b, done, o.h, nil
+}
+
+// toldBack is done, which then tells the request's record what rw put
+// back in the answer, where rw counts it and the request was recorded.
+func toldBack(rw http.ResponseWriter, done func(), h *maskHits) func() {
+	c, ok := rw.(interface{ Put() map[string]int })
+	if !ok {
+		return done
+	}
+	key := new(int64)
+	h.key = key
+	return func() {
+		done()
+		maskrec.Restored(*key, c.Put())
+	}
 }
 
 // redactedPrompt masks a parsed image or video prompt before any vendor
@@ -71,6 +91,7 @@ func redactedPromptHits(w http.ResponseWriter, prompt string) (http.ResponseWrit
 		return w, prompt, func() {}, h, nil
 	}
 	rw, done := m.Writer(w)
+	done = toldBack(rw, done, &h)
 	return rw, masked, done, h, nil
 }
 
@@ -92,6 +113,7 @@ func maskTextHits(s string) (gwmw.Masker, string, maskHits, error) {
 		s string
 		h maskHits
 	}
+	began := time.Now()
 	o, err := gwmw.Safely(func() out {
 		if t, ok := m.(gwmw.Teller); ok {
 			got, hits := t.TextHits(s)
@@ -100,6 +122,7 @@ func maskTextHits(s string) (gwmw.Masker, string, maskHits, error) {
 		got, n := m.Text(s)
 		return out{got, maskHits{n: n}}
 	})
+	o.h.took = time.Since(began)
 	if err == nil {
 		err = blocked(o.h)
 	}

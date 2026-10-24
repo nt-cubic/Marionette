@@ -166,6 +166,10 @@ func boolInt(b bool) int {
 // read is the piece with its JSON laid out to be read: indented, or a
 // string's text when the JSON is a string.
 func (pc PromptPiece) read() PromptPiece {
+	if pc.img != nil {
+		pc.Src = promptImageSrc(pc.img)
+		pc.img = nil
+	}
 	if pc.raw == nil {
 		return pc
 	}
@@ -190,6 +194,58 @@ func (pc PromptPiece) read() PromptPiece {
 		pc.Text = string(raw)
 	}
 	return pc
+}
+
+// promptImageSrc is an image's source as a data: URL the GUI can draw: an
+// Anthropic source ({type: base64, media_type, data}), an image_url (a
+// string, or {url}) or Gemini's inlineData ({mimeType, data}). "" for an
+// image that is a link, a file id, or anything but base64 PNG, JPEG, GIF
+// or WebP: the GUI never fetches a picture from elsewhere, and an SVG
+// could carry script.
+func promptImageSrc(raw []byte) string {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return dataImage(s)
+	}
+	var src struct {
+		URL       string `json:"url"`
+		MediaType string `json:"media_type"`
+		MimeType  string `json:"mimeType"`
+		Data      string `json:"data"`
+	}
+	if json.Unmarshal(raw, &src) != nil {
+		return ""
+	}
+	if src.URL != "" {
+		return dataImage(src.URL)
+	}
+	mt := src.MediaType
+	if mt == "" {
+		mt = src.MimeType
+	}
+	return dataImage("data:" + mt + ";base64," + src.Data)
+}
+
+// dataImage is u when it is a base64 data: URL of a picture the GUI
+// draws, else "".
+func dataImage(u string) string {
+	head, data, ok := strings.Cut(u, ",")
+	if !ok || data == "" {
+		return ""
+	}
+	switch strings.ToLower(head) {
+	case "data:image/png;base64", "data:image/jpeg;base64", "data:image/jpg;base64",
+		"data:image/gif;base64", "data:image/webp;base64":
+	default:
+		return ""
+	}
+	for i := 0; i < len(data); i++ {
+		c := data[i]
+		if !('A' <= c && c <= 'Z' || 'a' <= c && c <= 'z' || '0' <= c && c <= '9' || c == '+' || c == '/' || c == '=') {
+			return ""
+		}
+	}
+	return u
 }
 
 // promptPieces reads a request's prompt keeping each item's text.

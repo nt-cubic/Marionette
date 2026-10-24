@@ -44,6 +44,7 @@ import {
   formatStepDuration,
   groupConsecutiveByKind,
   summarizeActivity,
+  tailActivityFoldKey,
   summarizeKindGroup,
   toolKindVerb,
   toolMainText,
@@ -61,7 +62,7 @@ import { loadDetailsVisible, saveDetailsVisible } from "../lib/uiRestore";
 import { SplitBesideMenu, type OpenBesideEdge } from "./SplitBesideMenu";
 import type { DropEdge } from "../lib/splitWorkspace";
 import type { AgentConfig, Session, SessionEvent, SessionStatus } from "../lib/types";
-import { ActivityKindGroup, ActivityPanel, ActivityTimeline } from "./ActivityPanel";
+import { ActivityKindGroup, ActivityPanel, ActivityTimeline, LiveActivityTimeline, LiveThoughtPreview } from "./ActivityPanel";
 import { StreamPromptCard, type StreamPromptHandlers } from "./StreamPromptCard";
 import { ClippedBody } from "./ClippedBody";
 import { ExpandableBody } from "./ExpandableBody";
@@ -1537,6 +1538,19 @@ function CleanPlaceholder({
   void freezeGen;
   const displayEvents = frozenEventsRef.current ?? events;
   const selectionLocked = frozenEventsRef.current != null;
+  /**
+   * Liveness as the rail should see it during a selection. A live fold closes
+   * when its turn settles, and the live thought card folds back to one line —
+   * both would tear the DOM out from under a caret mid-copy. Freezing the flag
+   * (the events are already frozen) keeps the open state as it was; thawing
+   * re-evaluates and the fold collapses then.
+   */
+  const liveRunningRef = useRef(isRunning);
+  useEffect(() => {
+    if (selectionLocked) return;
+    liveRunningRef.current = isRunning;
+  }, [isRunning, selectionLocked]);
+  const viewRunning = selectionLocked ? liveRunningRef.current : isRunning;
 
   // Workspace file changes already live in the right-side Changed Files panel.
   // Keep them in the transcript/history data, but do not create an empty
@@ -1581,7 +1595,7 @@ function CleanPlaceholder({
     const clustered: TranscriptUnit[] = detailsVisible
       ? flat.map((unit) => ({ kind: "row" as const, ...unit }))
       : clusterActivityRuns(flat);
-    const deliveries = buildTurnDeliveries(displayEvents, session.id, session.cwd, isRunning);
+    const deliveries = buildTurnDeliveries(displayEvents, session.id, session.cwd, viewRunning);
     if (deliveries.length === 0) return clustered;
     const merged: (TranscriptUnit | TurnDeliveryUnit)[] = [];
     let di = 0;
@@ -1597,7 +1611,7 @@ function CleanPlaceholder({
     }
     pushDue(Number.MAX_SAFE_INTEGER);
     return merged;
-  }, [presentationItems, detailsVisible, displayEvents, session.id, session.cwd, isRunning]);
+  }, [presentationItems, detailsVisible, displayEvents, session.id, session.cwd, viewRunning, visibleEvents]);
   /**
    * Virtual window for long rails only. Short chats stay fully mounted (simpler
    * selection / stick-to-bottom). Threshold matches heavy tool-heavy sessions
@@ -1627,11 +1641,34 @@ function CleanPlaceholder({
   const [expandedThoughtKeys, setExpandedThoughtKeys] = useState<Set<string>>(() => new Set());
   /** Last row the user opened — only that body plays the reveal, never a remount. */
   const justOpenedRef = useRef<{ key: string; at: number } | null>(null);
-  /** User-expanded activity / kind-group folds. Live force-open is not stored. */
-  const [expandedActivityKeys, setExpandedActivityKeys] = useState<Set<string>>(() => new Set());
+  /**
+   * Explicit detail-fold choices, independent of the live timeline above.
+   * Bodies stay closed until clicked and reset when the turn ends.
+   */
+  const [activityFoldPins, setActivityFoldPins] = useState<Map<string, boolean>>(
+    () => new Map(),
+  );
   const [expandedKindKeys, setExpandedKindKeys] = useState<Set<string>>(() => new Set());
+  const previousRunningRef = useRef(viewRunning);
+  useEffect(() => {
+    const finished = previousRunningRef.current && !viewRunning;
+    previousRunningRef.current = viewRunning;
+    if (!finished) return;
+    setActivityFoldPins(new Map());
+    setExpandedKindKeys(new Set());
+    setExpandedThoughtKeys(new Set());
+    setExpandedToolKeys(new Set());
+  }, [viewRunning]);
+
   /** toolKey set that was force-open (working/stall) on the previous events pass. */
   const prevForcedToolKeysRef = useRef<Set<string>>(new Set());
+
+  /**
+   * Keep the trailing time chart visible between steps until the run ends.
+   * The detail fold underneath is independent and closed by default.
+   * Selections freeze liveness, see `viewRunning`.
+   */
+  const tailFoldKey = useMemo(() => tailActivityFoldKey(renderUnits), [renderUnits]);
 
   // After send: last card is still You → show ghost "Waiting for agent…"
   const lastVisible = visibleEvents[visibleEvents.length - 1];
@@ -1760,7 +1797,7 @@ function CleanPlaceholder({
     setFreezeGen((g) => g + 1);
     setExpandedToolKeys(new Set());
     setExpandedThoughtKeys(new Set());
-    setExpandedActivityKeys(new Set());
+    setActivityFoldPins(new Map());
     setExpandedKindKeys(new Set());
     prevAwaitingRef.current = awaitingRef.current;
     window.getSelection()?.removeAllRanges();
@@ -1951,7 +1988,7 @@ function CleanPlaceholder({
         }
         onClick={() => {
           if (detailsVisible) {
-            setExpandedActivityKeys(new Set());
+            setActivityFoldPins(new Map());
             setExpandedKindKeys(new Set());
             setExpandedToolKeys(new Set());
             setExpandedThoughtKeys(new Set());
@@ -2033,6 +2070,9 @@ function CleanPlaceholder({
           const renderEvent = (
             event: SessionEvent,
             index: number,
+            /** Compact feed row: never force a live thought body open; the
+             *  trace stays one line per step. */
+            compact = false,
           ) => {
           // @-delegate cards: skip started if we already have a result for the same child.
           if (event.type === "subtask_started") {
@@ -2223,7 +2263,7 @@ function CleanPlaceholder({
           const toolRunning =
             event.type === "tool_call" &&
             isToolInProgress(event.status) &&
-            isRunning;
+            viewRunning;
 
           // Thought is "live" only while the session is running and nothing
           // (tool / reply / newer thought) has followed it in this turn.
@@ -2251,7 +2291,7 @@ function CleanPlaceholder({
                 break;
               }
             }
-            thoughtLive = isRunning && !followed;
+            thoughtLive = viewRunning && !followed;
             if (Number.isFinite(startMs) && startMs > 0) {
               thoughtStartMs = startMs;
               if (endMs != null) {
@@ -2404,7 +2444,9 @@ function CleanPlaceholder({
           // Tool: collapsed by default. Only shell / subagent tools auto-expand
           // into a tall "working" block while in_progress; ordinary read/edit stay
           // one-line. Stall still forces open so the user can see what hung.
-          // Closed eye ("fold all"): never auto-expand — the summary stays one line.
+          // Folded (closed eye) keeps every finished row to one line, but the
+          // live thought still streams — otherwise the text appears all at once
+          // when the step completes, which reads as a layout snap.
           // Bodies are lazy-mounted: closed cards keep only the one-line summary
           // (critical for tool-heavy Grok sessions with 500+ tools).
           // User / assistant: always fully visible.
@@ -2429,8 +2471,9 @@ function CleanPlaceholder({
               !foldAll && longRunningTool && isLatestOpenTool,
             );
             const forceOpen =
-              !foldAll &&
-              (thoughtLive || showWorkingBlock || (isLatestOpenTool && (toolStuck || toolStalled)));
+              (!compact && thoughtLive) ||
+              showWorkingBlock ||
+              (!foldAll && isLatestOpenTool && (toolStuck || toolStalled));
             const toolKey =
               event.type === "tool_call" ? toolExpandKey(event, index) : null;
             const thoughtKey =
@@ -2501,7 +2544,15 @@ function CleanPlaceholder({
                   }
                 }}
               >
-                <summary className="event-card__summary" title={previewFull || label}>
+                <summary
+                  className="event-card__summary"
+                  title={previewFull || label}
+                  onClick={(e) => {
+                    // Force-open (live) rows own their state: a click must not
+                    // leave the DOM closed while React still renders it open.
+                    if (forceOpen) e.preventDefault();
+                  }}
+                >
                   <span className="event-card__type">
                     {labelNode}
                     {thoughtLive && <span className="event-card__live-dot" aria-hidden />}
@@ -2806,62 +2857,72 @@ function CleanPlaceholder({
               unit.items,
               visibleEvents,
               session.id,
-              isRunning,
+              viewRunning,
             );
             const liveEvent = liveItem?.event ?? null;
-            const open = expandedActivityKeys.has(unit.key);
+            // The live time chart sits ABOVE a separate, closed detail fold.
+            // Tool/thought transitions never open the detail body.
+            const live = liveItem != null || (unit.key === tailFoldKey && viewRunning);
+            const open = activityFoldPins.get(unit.key) ?? false;
             const groups = groupConsecutiveByKind(unit.items);
-            // Laid out only while open — a closed fold never pays for it.
-            const timeline =
-              open && unit.items.length > 1
-                ? activityTimeline(unit.items, isRunning ? Date.now() : undefined)
-                : null;
+            const timeline = open && !live ? activityTimeline(unit.items) : null;
             const liveIcon = <NineDotSpinner compact />;
             return (
               <ActivityPanel
                 key={unit.key}
-                id={unit.key}
                 summary={summarizeActivity(unit.items, { liveEvent })}
                 open={open}
-                live={Boolean(liveItem)}
+                live={live}
                 liveIcon={liveIcon}
+                trace={live ? (
+                  <>
+                    <LiveActivityTimeline items={unit.items} />
+                    <LiveThoughtPreview items={unit.items} thinking={liveEvent?.type === "thought"} />
+                  </>
+                ) : null}
                 onToggle={(isOpen) =>
-                  toggleSetKey(setExpandedActivityKeys, unit.key, isOpen)
+                  setActivityFoldPins((current) => {
+                    const next = new Map(current);
+                    next.set(unit.key, isOpen);
+                    return next;
+                  })
                 }
               >
                 {timeline ? <ActivityTimeline data={timeline} /> : null}
-                {groups.map((group) => {
-                  const groupKey = `${unit.key}-${group.bucket}-${group.items[0]!.index}`;
-                  const groupHasLive =
-                    liveItem != null &&
-                    group.items.some((it) => it.index === liveItem.index);
-                  const groupOpen = expandedKindKeys.has(groupKey);
-                  const cards = group.items.map((it) =>
-                    renderEvent(it.event, it.index),
-                  );
-                  if (!(groups.length > 1 && group.items.length > 1)) {
-                    return (
-                      <div key={groupKey} className="activity-panel__items">
-                        {cards}
+                {unit.items.length === 1
+                  ? unit.items.map((item) => (
+                      <div key={`${unit.key}-step-${item.index}`} className="activity-panel__items">
+                        {renderEvent(item.event, item.index, true)}
                       </div>
-                    );
-                  }
-                  return (
-                    <ActivityKindGroup
-                      key={groupKey}
-                      id={groupKey}
-                      summary={summarizeKindGroup(group)}
-                      open={groupOpen}
-                      live={groupHasLive}
-                      liveIcon={liveIcon}
-                      onToggle={(isOpen) =>
-                        toggleSetKey(setExpandedKindKeys, groupKey, isOpen)
+                    ))
+                  : groups.map((group) => {
+                      const groupKey = `${unit.key}-${group.bucket}-${group.items[0]!.index}`;
+                      const groupOpen = expandedKindKeys.has(groupKey);
+                      const cards = group.items.map((it) =>
+                        renderEvent(it.event, it.index, true),
+                      );
+                      if (!(groups.length > 1 && group.items.length > 1)) {
+                        return (
+                          <div key={groupKey} className="activity-panel__items">
+                            {cards}
+                          </div>
+                        );
                       }
-                    >
-                      {cards}
-                    </ActivityKindGroup>
-                  );
-                })}
+                      return (
+                        <ActivityKindGroup
+                          key={groupKey}
+                          summary={summarizeKindGroup(group)}
+                          open={groupOpen}
+                          live={false}
+                          liveIcon={liveIcon}
+                          onToggle={(isOpen) =>
+                            toggleSetKey(setExpandedKindKeys, groupKey, isOpen)
+                          }
+                        >
+                          {cards}
+                        </ActivityKindGroup>
+                      );
+                    })}
               </ActivityPanel>
             );
           };

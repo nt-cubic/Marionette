@@ -9,7 +9,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
-const { watchSettingsReads, settingsDrawn } = require("./reader.cjs");
+const { wheelTo, watchSettingsReads, settingsDrawn } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const settings = (lang) => ({ lang, theme: "light", redact: true, redactRules: [{ kind: "GATEWAY_KEY", prefix: "oc_sk_" }] });
@@ -53,7 +53,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const row = page.locator("#redactList .row.rule-row");
         await row.waitFor();
         await settingsDrawn(page); // the row found is the one that stays (#1653)
-        await row.scrollIntoViewIfNeeded();
+        // the local model's section is above it: wheel it up, clear of the
+        // bar along a phone-width page's foot
+        await wheelTo(page, row, 300);
 
         const m = await row.evaluate((r) => {
           const box = (e) => { const b = e.getBoundingClientRect(); return { l: b.left, r: b.right, t: b.top, b: b.bottom, mid: (b.top + b.bottom) / 2 }; };

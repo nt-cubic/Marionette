@@ -28,6 +28,10 @@ func TestSwappedClineServingName(t *testing.T) {
 		{"cline-pass/glm-5.3", "vmc/glm-5p3-flash"},
 		{"deepseek/deepseek-v4.1-flash", "vmc/deepseek-v4p1-flash"},
 		{"cline-pass/deepseek-v4.1-flash", "other/deepseek-v4p1-flash"},
+		{"cline-pass/deepseek-v4.1-flash-1017", "vmc/deepseek-v4p1-flash-1017-contributor-fallbacks"},
+		{"cline-pass/deepseek-v4.1-flash", "vmc/deepseek-v4p1-flash-contributor-fallbacks"},
+		{"cline-pass/deepseek-v4.1-flash-1017", "vmc/deepseek-v4p1-flash-1017-contributor"},
+		{"cline-pass/deepseek-v4.1-flash-1017", "vmc/deepseek-v4p1-flash-1017-fallbacks"},
 	} {
 		if !Swapped(c[0], c[1]) {
 			t.Errorf("%s answered as %s is another model", c[0], c[1])

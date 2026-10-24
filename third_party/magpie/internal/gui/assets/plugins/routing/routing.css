@@ -465,6 +465,11 @@ button.rt-session { cursor: pointer; }
 .rt-group .tag { font-size: 11px; line-height: 18px; padding: 0 8px; border-radius: 999px; box-shadow: inset 0 0 0 1px var(--line); color: var(--muted); white-space: nowrap; }
 .rt-group .tag.bad { color: var(--red); }
 .rt-group .tag.idle { opacity: .55; }
+/* the routing tag is a pop-up button for the group's routings (#3450) */
+.rt-group button.tag.rt-groute { display: inline-flex; align-items: center; gap: 3px; height: auto; margin: 0; padding: 0 6px 0 8px; border: 0; background: transparent; font: inherit; font-size: 11px; line-height: 18px; color: var(--muted); cursor: pointer; transition: color .12s, background .12s; }
+.rt-group button.tag.rt-groute svg { flex: none; opacity: .7; }
+.rt-group button.tag.rt-groute:hover, .rt-group button.tag.rt-groute.open { color: var(--fg); background: var(--card-2); }
+.rt-group button.tag.rt-groute:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent); }
 /* a manual group's members on its card: the one picked, marked by a dot */
 .rt-picks { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
 .rt-pick { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; min-width: 0; height: 22px; padding: 0 8px 0 6px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--muted); font: inherit; font-size: 11.5px; cursor: pointer; transition: background .12s, color .12s, border-color .12s; }
@@ -520,7 +525,8 @@ button.rt-session { cursor: pointer; }
 .rt-pool .ctl { display: grid; grid-template-columns: auto auto; align-items: center; justify-items: start; gap: 6px 8px; }
 .rt-pool .lab { display: contents; }
 .rt-pool .lab small { font-size: 11px; color: var(--muted); }
-@media (max-width: 560px) { body:not(.web) .rt-group .tags { display: none; } }
+/* narrow, a row keeps only its routing, which switches from here */
+@media (max-width: 560px) { body:not(.web) .rt-group .tags > :not(.rt-groute) { display: none; } }
 @media (max-width: 760px), (pointer: coarse) and (max-width: 1024px) {
   body.web .rt-group {
     display: grid; grid-template-columns: auto minmax(0, 1fr) auto; /* the logos as wide as they are */

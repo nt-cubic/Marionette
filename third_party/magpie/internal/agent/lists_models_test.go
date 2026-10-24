@@ -49,6 +49,9 @@ func TestEveryPickerOfMagpiesModelsCanBeNarrowed(t *testing.T) {
 		// Claude Desktop's tier pickers list the catalog once it is
 		// connected (desktopTierFields), and the sandbox has no Desktop
 		case refs, a.ID == "claude-desktop":
+		// Kiro Crew's models are its harness's: the agent it runs (Codex,
+		// Claude Code…), whose own row narrows them
+		case a.ID == "kirocrew":
 		case a.ListsModels:
 			menus = append(menus, a.ID)
 		case magpie:

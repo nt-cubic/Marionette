@@ -74,7 +74,10 @@ function serve(lang, ctl) {
       const all = url.searchParams.has("all");
       ctl.asked.push(all ? "all" : "start");
       const show = ctl.upgraded && !ctl.seen && !all;
-      return json({ show, current: "0.1.604", releases: show || (all && ctl.upgraded) ? RELEASES : all ? [RELEASES[0]] : [] });
+      const releases = show || (all && ctl.upgraded) ? RELEASES : all ? [RELEASES[0]] : [];
+      // Settings' ask: the app puts every release up to the waiting update
+      // first, marked pending (小八: 0.1.1399 to 0.1.1408 were missing)
+      return json({ show, current: "0.1.604", releases: all && ctl.ahead ? [...ctl.ahead, ...releases] : releases });
     }
     if (url.pathname === "/api/whatsnew/seen") { ctl.seen++; return route.fulfill({ status: 204 }); }
     if (url.pathname === "/api/whatsnew/today") { (ctl.today ||= []).push(req.postDataJSON().on); return route.fulfill({ status: 204 }); }
@@ -87,8 +90,8 @@ function serve(lang, ctl) {
 }
 
 const words = {
-  en: { heads: ["Bug Fixes", "Improvements"], heads603: ["Bug Fixes", "Bug Fixes", "Thanks"], headPending: "Features", quiet: "Don't show again today", title: "What's new in v0.1.604", pendingTitle: "What's new in v0.1.605", close: "Close", again: "What's new", open: "Open", pending: "Not installed yet" },
-  zh: { heads: ["错误修复", "改进"], heads603: ["错误修复", "错误修复", "Thanks"], headPending: "新功能", quiet: "今天不再弹出", title: "v0.1.604 更新内容", pendingTitle: "v0.1.605 更新内容", close: "关闭", again: "更新内容", open: "打开", pending: "尚未安装" },
+  en: { heads: ["Bug Fixes", "Improvements"], heads603: ["Bug Fixes", "Bug Fixes", "Thanks"], headPending: "Features", quiet: "Don't show again today", title: "What's new in v0.1.604", pendingTitle: "What's new in v0.1.607", close: "Close", again: "What's new", open: "Open", pending: "Not installed yet" },
+  zh: { heads: ["错误修复", "改进"], heads603: ["错误修复", "错误修复", "Thanks"], headPending: "新功能", quiet: "今天不再弹出", title: "v0.1.604 更新内容", pendingTitle: "v0.1.607 更新内容", close: "关闭", again: "更新内容", open: "打开", pending: "尚未安装" },
 };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
@@ -216,7 +219,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await dialog(page).count(), 0, "shown once");
 
       // Settings → What's new → Open opens them again, the waiting update's first
-      ctl.update = { state: "ready", current: "0.1.604", latest: "0.1.605", notes: "## New Features\n\n- A new thing. (#470)", url: "https://github.com/yetone/magpie-releases/releases/tag/v0.1.605" };
+      ctl.update = { state: "ready", current: "0.1.604", latest: "0.1.607", notes: "## New Features\n\n- A new thing. (#470)", url: "https://github.com/yetone/magpie-releases/releases/tag/v0.1.607" };
+      ctl.ahead = [
+        { version: "0.1.607", notes: ctl.update.notes, url: ctl.update.url, pending: true },
+        { version: "0.1.606", notes: "- Six.", pending: true },
+        { version: "0.1.605", notes: "- Five.", pending: true },
+      ];
       await watchSettingsReads(page);
       await page.goto("http://magpie.test/?view=settings&tab=about");
       await settingsDrawn(page); // rows found are the ones that stay (#1659)
@@ -240,8 +248,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await dialog(page).waitFor();
       assert.equal(await view.evaluate((v) => v.scrollTop), at, "the click moved the page");
       assert.equal(await dialog(page).locator(".ehead b").textContent(), w.pendingTitle);
-      assert.deepEqual(await dialog(page).locator(".wn-ver b").allTextContents(), ["v0.1.605", "v0.1.604", "v0.1.603"]);
-      assert.equal(await dialog(page).locator(".wn-rel").first().locator(".badge").textContent(), w.pending);
+      assert.deepEqual(await dialog(page).locator(".wn-ver b").allTextContents(), ["v0.1.607", "v0.1.606", "v0.1.605", "v0.1.604", "v0.1.603"]);
+      assert.deepEqual(await dialog(page).locator(".wn-rel .badge").allTextContents(), [w.pending, w.pending, w.pending], "every release up to the update is not installed yet");
       assert.deepEqual(await dialog(page).locator(".wn-rel").first().locator(".wn-h").allTextContents(), [w.headPending]);
       assert.equal(ctl.asked.at(-1), "all");
       assert.equal(ctl.seen, 1, "asking again isn't a first showing");

@@ -51,6 +51,9 @@ func TestWarmDue(t *testing.T) {
 			win("7 days", week, 0, now.Add(2*24*time.Hour)), true},
 		{"reset early: no window running", warmWindow{ResetsAt: now.Add(2 * 24 * time.Hour), Used: 70}, true, idleNow, true},
 		{"an unused window sliding on", warmWindow{ResetsAt: now.Add(week - 5*time.Minute)}, true, idleNow, false},
+		{"reset early, nothing used before", warmWindow{ResetsAt: now.Add(5 * 24 * time.Hour)}, true, idleNow, true},
+		{"reset early, nothing used before, left out", warmWindow{ResetsAt: now.Add(5 * 24 * time.Hour)}, true, win("7 days", week, 0, time.Time{}), true},
+		{"running, nothing used yet", warmWindow{ResetsAt: now.Add(5 * 24 * time.Hour)}, true, win("7 days", week, 0, now.Add(5*24*time.Hour)), false},
 		{"a stale read past its reset", warmWindow{ResetsAt: now.Add(-time.Minute), Used: 50}, true,
 			win("7 days", week, 50, now.Add(-time.Minute)), true},
 		{"a failed warm-up", warmWindow{Pending: true, Failed: 1}, true, running, true},
@@ -133,6 +136,7 @@ func TestCodexWarmOncePerReset(t *testing.T) {
 	// OpenAI resets b early: its use falls to nothing before its reset
 	f.ws["b@example.com"][0].Used = 0
 	f.now = f.now.Add(5 * time.Minute)
+	bWarmed := f.now
 	if rs := f.run(t, path, "week"); len(rs) != 1 || rs[0].User != "b@example.com" {
 		t.Fatalf("early reset: %+v", rs)
 	}
@@ -149,8 +153,10 @@ func TestCodexWarmOncePerReset(t *testing.T) {
 	if rs := f.run(t, path, "week"); len(rs) != 0 {
 		t.Fatalf("the 5-hour window, weekly only: %+v", rs)
 	}
-	f.ws["a@example.com"][1] = win("7 days", week, 0, f.now.Add(week))
-	f.ws["b@example.com"][0] = win("7 days", week, 0, f.now.Add(week))
+	// both weeks running from their warm-ups, nothing used: each reset a
+	// week from its warm-up, as the backend reports a started window
+	f.ws["a@example.com"][1] = win("7 days", week, 0, resets.Add(time.Minute+week))
+	f.ws["b@example.com"][0] = win("7 days", week, 0, bWarmed.Add(week))
 	var hours []string
 	for _, r := range f.run(t, path, "all") {
 		hours = append(hours, r.User+":"+strings.Join(r.Windows, "+"))
@@ -158,6 +164,89 @@ func TestCodexWarmOncePerReset(t *testing.T) {
 	// a's week is running (warmed above, its reset a week off): only its 5 hours
 	if strings.Join(hours, ",") != "a@example.com:5 hours" {
 		t.Fatalf("all: %v", hours)
+	}
+}
+
+// shangyuan0818 (10-24): a reset card spent on a weekly window, the
+// warm-up after it, nothing used since, then OpenAI resets everyone's
+// limits. The window had no use to fall from and its old reset hadn't
+// come, so the official reset went without a warm-up.
+func TestWarmAfterResetCardThenOfficialReset(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		which  string
+		window string
+		span   time.Duration
+		expect []QuotaWindow
+		// left out: the backend leaves a window not started out of its read
+		// (Anthropic), rather than reporting its reset a whole span away
+		leftOut bool
+	}{
+		{"codex week", "week", "7 days", week, nil, false},
+		{"codex 5 hours", "all", "5 hours", fiveHours, nil, false},
+		{"claude week, left out", "week", "7 days", week, claudeWindowsExpected, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "codex-warmup.json")
+			start := time.Date(2026, 10, 22, 9, 0, 0, 0, time.UTC)
+			f := &fakeWarm{now: start, errs: map[string]error{}}
+			idleAt := func(now time.Time) QuotaWindow {
+				if c.leftOut {
+					return QuotaWindow{}
+				}
+				return win(c.window, c.span, 0, now.Add(c.span))
+			}
+			set := func(w QuotaWindow) {
+				if w.Span == 0 {
+					f.ws["a@example.com"] = nil
+				} else {
+					f.ws["a@example.com"] = []QuotaWindow{w}
+				}
+			}
+			f.ws = map[string][]QuotaWindow{
+				"a@example.com": {win(c.window, c.span, 55, start.Add(c.span/2))},
+				// another account, running all along: never sent one
+				"b@example.com": {win(c.window, c.span, 20, start.Add(c.span*9/10))},
+			}
+			w := f.warmer(path)
+			w.expect = c.expect
+			run := func() { w.warmNow(context.Background(), c.which, nil) }
+			run()
+			// a reset card is spent: the window starts over, at nothing used
+			f.now = start.Add(5 * time.Minute)
+			set(idleAt(f.now))
+			run()
+			if strings.Join(f.sent, ",") != "a@example.com" {
+				t.Fatalf("after the reset card, sent %v", f.sent)
+			}
+			// the warm-up started it; nothing is used after
+			warmed := f.now
+			set(win(c.window, c.span, 0, warmed.Add(c.span)))
+			for f.now.Before(warmed.Add(c.span / 3)) {
+				f.now = f.now.Add(codexWarmEvery)
+				run()
+			}
+			if len(f.sent) != 1 {
+				t.Fatalf("a running window sent again: %v", f.sent)
+			}
+			// OpenAI resets everyone's limits: not started again
+			official := f.now
+			f.now = official.Add(codexWarmEvery)
+			set(idleAt(f.now))
+			run()
+			if strings.Join(f.sent, ",") != "a@example.com,a@example.com" {
+				t.Fatalf("after the official reset, sent %v", f.sent)
+			}
+			// that one started it: once
+			set(win(c.window, c.span, 0, f.now.Add(c.span)))
+			for range 12 {
+				f.now = f.now.Add(codexWarmEvery)
+				run()
+			}
+			if len(f.sent) != 2 {
+				t.Fatalf("sent again after the window started: %v", f.sent)
+			}
+		})
 	}
 }
 

@@ -23,15 +23,9 @@ type idOf struct{ id, typ string }
 
 func (t *idTidy) write(b []byte) []byte {
 	t.buf = append(t.buf, b...)
-	var out []byte
-	for {
-		n := eventEnd(t.buf)
-		if n < 0 {
-			return out
-		}
-		out = append(out, t.event(t.buf[:n])...)
-		t.buf = t.buf[n:]
-	}
+	out, rest := tidyEvents(t.buf, t.event)
+	t.buf = rest
+	return out
 }
 
 func (t *idTidy) flush() []byte {
@@ -43,7 +37,7 @@ func (t *idTidy) flush() []byte {
 func (t *idTidy) event(ev []byte) []byte {
 	data := eventData(ev)
 	if len(data) == 0 || !gjson.ValidBytes(data) {
-		return append([]byte(nil), ev...)
+		return ev
 	}
 	e := gjson.ParseBytes(data)
 	at := e.Get("output_index")
@@ -55,23 +49,23 @@ func (t *idTidy) event(ev []byte) []byte {
 			}
 			t.ids[at.Int()] = idOf{id, e.Get("item.type").String()}
 		}
-		return append([]byte(nil), ev...)
+		return ev
 	case typ == "response.completed" || typ == "response.incomplete" || typ == "response.failed":
 		return t.ended(ev, data, e)
 	case !at.Exists():
-		return append([]byte(nil), ev...)
+		return ev
 	}
 	was, ok := t.ids[at.Int()]
 	if !ok {
-		return append([]byte(nil), ev...)
+		return ev
 	}
 	itemID, itemIn := e.Get("item_id"), e.Get("item.id")
 	if (!itemID.Exists() || itemID.String() == was.id) && (!itemIn.Exists() || itemIn.String() == was.id) {
-		return append([]byte(nil), ev...)
+		return ev
 	}
 	var m map[string]any
 	if decodeNumbers(data, &m) != nil {
-		return append([]byte(nil), ev...)
+		return ev
 	}
 	if itemID.Exists() {
 		m["item_id"] = was.id
@@ -81,7 +75,7 @@ func (t *idTidy) event(ev []byte) []byte {
 	}
 	nb, err := marshalPlain(m)
 	if err != nil {
-		return append([]byte(nil), ev...)
+		return ev
 	}
 	return withData(ev, nb)
 }
@@ -97,11 +91,11 @@ func (t *idTidy) ended(ev, data []byte, e gjson.Result) []byte {
 		}
 	}
 	if !differs {
-		return append([]byte(nil), ev...)
+		return ev
 	}
 	var m map[string]any
 	if decodeNumbers(data, &m) != nil {
-		return append([]byte(nil), ev...)
+		return ev
 	}
 	res, _ := m["response"].(map[string]any)
 	out, _ := res["output"].([]any)
@@ -117,7 +111,7 @@ func (t *idTidy) ended(ev, data []byte, e gjson.Result) []byte {
 	}
 	nb, err := marshalPlain(m)
 	if err != nil {
-		return append([]byte(nil), ev...)
+		return ev
 	}
 	return withData(ev, nb)
 }

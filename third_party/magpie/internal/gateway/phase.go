@@ -42,6 +42,28 @@ func unphased(it map[string]any) bool {
 	return p == ""
 }
 
+// anyUnphased reports whether a reply's output has an item unphased
+// would give a phase, read in place: a reply whose messages all have one
+// (OpenAI's own) goes as it came without being decoded whole.
+func anyUnphased(output gjson.Result) bool {
+	if !output.IsArray() {
+		return false
+	}
+	found := false
+	output.ForEach(func(_, it gjson.Result) bool {
+		typ, role, phase := it.Get("type"), it.Get("role"), it.Get("phase")
+		if typ.Type != gjson.String || typ.Str != "message" {
+			return true
+		}
+		if role.Exists() && (role.Type != gjson.String || role.Str != "assistant") {
+			return true
+		}
+		found = phase.Type != gjson.String || phase.Str == ""
+		return !found
+	})
+	return found
+}
+
 // phaseOutput gives each assistant message in a reply's output its phase,
 // and reports whether it gave any. done is whether the reply ended
 // completed: only then is the last message the final answer.
@@ -87,15 +109,29 @@ func (t *phaseTidy) write(b []byte) []byte {
 	if !t.sse {
 		return nil
 	}
-	var out []byte
+	out, rest := tidyEvents(t.buf, t.event)
+	t.buf = rest
+	return out
+}
+
+// tidyEvents is each whole event in buf through event, and buf's part of
+// an event that hasn't ended, moved to buf's front so the next write
+// appends into the same bytes. What event gives may be its ev, a slice of
+// buf, so it is copied out before buf is written again.
+func tidyEvents(buf []byte, event func(ev []byte) []byte) (out, rest []byte) {
+	at := 0
 	for {
-		n := eventEnd(t.buf)
+		n := eventEnd(buf[at:])
 		if n < 0 {
-			return out
+			break
 		}
-		out = append(out, t.event(t.buf[:n])...)
-		t.buf = t.buf[n:]
+		if out == nil {
+			out = make([]byte, 0, len(buf))
+		}
+		out = append(out, event(buf[at:at+n])...)
+		at += n
 	}
+	return out, append(buf[:0], buf[at:]...)
 }
 
 func (t *phaseTidy) flush() []byte {
@@ -113,19 +149,32 @@ func (t *phaseTidy) flush() []byte {
 	return append(out, b...)
 }
 
-// eventData is an event's data, joined as SSE joins it.
+// eventData is an event's data, joined as SSE joins it. An event of one
+// data line, as nearly every upstream's is, gets ev's own bytes, so what
+// it gives is only read.
 func eventData(ev []byte) []byte {
-	var data []byte
+	var data, first []byte
 	n := 0
-	for _, line := range bytes.Split(ev, []byte("\n")) {
-		line = bytes.TrimRight(line, "\r")
-		if d, ok := bytes.CutPrefix(line, []byte("data:")); ok {
-			if n > 0 {
-				data = append(data, '\n')
-			}
-			data = append(data, bytes.TrimPrefix(d, []byte(" "))...)
-			n++
+	for rest := ev; len(rest) > 0; {
+		var line []byte
+		line, rest, _ = bytes.Cut(rest, []byte("\n"))
+		d, ok := bytes.CutPrefix(bytes.TrimRight(line, "\r"), []byte("data:"))
+		if !ok {
+			continue
 		}
+		d = bytes.TrimPrefix(d, []byte(" "))
+		switch n {
+		case 0:
+			first = d
+		case 1:
+			data = append(append(append([]byte(nil), first...), '\n'), d...)
+		default:
+			data = append(append(data, '\n'), d...)
+		}
+		n++
+	}
+	if n == 1 {
+		return first
 	}
 	return data
 }
@@ -177,7 +226,7 @@ func (t *phaseTidy) event(ev []byte) []byte {
 	case "response.incomplete":
 		return t.ended(ev, data, false)
 	}
-	return append([]byte(nil), ev...)
+	return ev
 }
 
 func (t *phaseTidy) hold(ev []byte) []byte {
@@ -207,18 +256,21 @@ func (t *phaseTidy) release(phase string) []byte {
 // ended is the reply's last event, its output's messages given their phase
 // as the stream gave them.
 func (t *phaseTidy) ended(ev, data []byte, done bool) []byte {
+	if !anyUnphased(gjson.GetBytes(data, "response.output")) {
+		return ev
+	}
 	var e map[string]any
 	if decodeNumbers(data, &e) != nil {
-		return append([]byte(nil), ev...)
+		return ev
 	}
 	res, _ := e["response"].(map[string]any)
 	out, _ := res["output"].([]any)
 	if !phaseOutput(out, done) {
-		return append([]byte(nil), ev...)
+		return ev
 	}
 	nb, err := marshalPlain(e)
 	if err != nil {
-		return append([]byte(nil), ev...)
+		return ev
 	}
 	return withData(ev, nb)
 }

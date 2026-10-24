@@ -15,11 +15,11 @@ const { wheelTo, watchSettingsReads, settingsDrawn } = require("./reader.cjs");
 const assets = path.resolve(__dirname, "../assets");
 const size = 1637572192;
 const words = {
-  en: { name: "Find with a local model", on: "On", gpu: "On, on the GPU (MTL0)" },
-  zh: { name: "用本地模型查找", on: "开启", gpu: "已开启，运行在 GPU（MTL0）" },
-  "zh-TW": { name: "用本機模型查找", on: "開啟", gpu: "已開啟，執行於 GPU（MTL0）" },
-  ja: { name: "ローカルモデルで検出", on: "オン", gpu: "オン、GPU で実行中（MTL0）" },
-  de: { name: "Mit lokalem Modell finden", on: "An", gpu: "An, auf der GPU (MTL0)" },
+  en: { name: "Find with a local model", badge: "New", on: "On", gpu: "On, on the GPU (MTL0)" },
+  zh: { name: "用本地模型查找", badge: "新", on: "开启", gpu: "已开启，运行在 GPU（MTL0）" },
+  "zh-TW": { name: "用本機模型查找", badge: "新", on: "開啟", gpu: "已開啟，執行於 GPU（MTL0）" },
+  ja: { name: "ローカルモデルで検出", badge: "新着", on: "オン", gpu: "オン、GPU で実行中（MTL0）" },
+  de: { name: "Mit lokalem Modell finden", badge: "Neu", on: "An", gpu: "An, auf der GPU (MTL0)" },
 };
 
 // model is the page's /api/privacy-model: a POST is recorded and moves it
@@ -72,13 +72,14 @@ async function open(engine, lang, width, masking, model, posts) {
   return { browser, page, errors };
 }
 
-// what the row shows: its words, whether they are cut, and that it is
-// inside the list
+// what the row shows: its words and its New mark, whether they are cut,
+// that it is inside the list, and that it is the page's first setting
 const look = (page) => page.evaluate(() => {
   const r = document.querySelector("#privacyModelRow"), list = r.closest(".list").getBoundingClientRect();
   const sub = r.querySelector(".sub"), b = r.getBoundingClientRect(), v = r.querySelector(".val").getBoundingClientRect();
   return {
-    name: r.querySelector(".name").textContent, sub: sub.textContent,
+    name: r.querySelector(".name").firstChild.textContent, badge: r.querySelector(".name .badge.new")?.textContent, sub: sub.textContent,
+    first: r === document.querySelector("#setPage-privacy .list.prefs > .row"),
     on: r.querySelector(".segs .opt.on")?.textContent, buttons: [...r.querySelectorAll("button.text")].map((x) => x.textContent),
     cut: sub.scrollWidth > sub.clientWidth + 1 || sub.scrollHeight > sub.clientHeight + 1,
     inside: b.left >= list.left - 1 && b.right <= list.right + 1 && v.right <= b.right + 1,
@@ -98,6 +99,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await row.locator(".segs").waitFor();
         let m = await look(page);
         assert.equal(m.name, w.name);
+        assert.equal(m.badge, w.badge);
+        assert(m.first, "the model is the first setting under the card");
         assert(m.sub.includes("1.6 GB"), `says what it downloads: ${m.sub}`);
         if (lang !== "en") assert(!/no rule can find|Turning it on/.test(m.sub), `translated: ${m.sub}`);
         assert(!m.cut && m.inside && !m.wide, `shown in full and inside: ${JSON.stringify(m)}`);
@@ -155,13 +158,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     const { browser, page, errors } = await open(engine, "en", 1100, false, { supported: true, size }, []);
     t.after(() => browser.close());
     await page.locator("#redactList .row", { hasText: "Mask personal data" }).waitFor();
-    // How it's found: the rules first, then the model, both waiting on
-    // something to mask, with nothing to press
+    // How it's found, before What to mask: the model first, marked new,
+    // then the rules, both waiting on something to mask, with nothing to
+    // press
     const found = await page.$$eval("#findList > .row", (rs) => rs.map((r) => [r.id, r.querySelector(".name").textContent, r.querySelector(".sub").textContent, r.querySelectorAll("button").length]));
     assert.deepEqual(found, [
+      ["privacyModelRow", "Find with a local model" + "New", "Turn on Mask secrets or Mask personal data first", 0],
       ["maskRulesRow", "Rules", "Turn on Mask secrets or Mask personal data first", 0],
-      ["privacyModelRow", "Find with a local model", "Turn on Mask secrets or Mask personal data first", 0],
     ]);
+    assert(await page.evaluate(() => document.querySelector("#findList").compareDocumentPosition(document.querySelector("#redactList")) & Node.DOCUMENT_POSITION_FOLLOWING), "How it's found comes before What to mask");
     assert.equal(await page.locator("#privacyModelRow.pm-wait").count(), 1);
     await browser.close();
 

@@ -160,21 +160,69 @@ func loginsOf(ls []sideLogin) []Login {
 	return out
 }
 
-// editSideLogin changes the saved account of user.
+// editSideLogin changes the saved account of user: one shown before one
+// hidden of the same name, the agent's own removed in magpie, which only
+// a slot (Home) tells apart (dev on Discord: Remove on a ZCode account took
+// the hidden one beside it).
 func editSideLogin(agent, user string, f func(ls []savedLogin, i int) ([]savedLogin, error)) error {
+	return editSavedLogin(agent, user, func(l savedLogin) bool {
+		return l.Agent == agent && strings.EqualFold(l.User, user)
+	}, f)
+}
+
+// editListedLogin changes the account of user in ls, the list the user
+// picked it from: the very one saved, where ls knows it, not the first of
+// its name.
+func editListedLogin(agent, user string, ls []sideLogin, f func(ls []savedLogin, i int) ([]savedLogin, error)) error {
+	return editSavedLogin(agent, user, listedMatch(agent, user, ls), f)
+}
+
+func editSavedLogin(agent, user string, match func(savedLogin) bool, f func(ls []savedLogin, i int) ([]savedLogin, error)) error {
 	loginsMu.Lock()
 	defer loginsMu.Unlock()
 	ls := readLogins()
-	for i := range ls {
-		if ls[i].Agent == agent && strings.EqualFold(ls[i].User, user) {
-			ls, err := f(ls, i)
-			if err != nil {
-				return err
-			}
-			return writeLogins(ls)
+	i := pickSaved(ls, match)
+	if i < 0 {
+		return fmt.Errorf("no %s account %q", agent, user)
+	}
+	ls, err := f(ls, i)
+	if err != nil {
+		return err
+	}
+	return writeLogins(ls)
+}
+
+// pickSaved is the saved account match takes, one shown before one
+// hidden; -1 for none.
+func pickSaved(ls []savedLogin, match func(savedLogin) bool) int {
+	i := -1
+	for j := range ls {
+		if match(ls[j]) && (i < 0 || ls[i].Hidden != "" && ls[j].Hidden == "") {
+			i = j
 		}
 	}
-	return fmt.Errorf("no %s account %q", agent, user)
+	return i
+}
+
+// listedMatch tells the saved account of user in ls: by its slot and
+// whether it is the agent's own where ls has what was saved of it (a
+// plugin's account by its key), else by its name.
+func listedMatch(agent, user string, ls []sideLogin) func(savedLogin) bool {
+	i := slices.IndexFunc(ls, func(l sideLogin) bool { return strings.EqualFold(l.User, user) })
+	if i < 0 || ls[i].saved.Agent == "" {
+		return func(l savedLogin) bool { return l.Agent == agent && strings.EqualFold(l.User, user) }
+	}
+	want := ls[i].saved
+	return func(l savedLogin) bool { return sameSaved(l, want) }
+}
+
+// sameSaved says two saved accounts are one: a plugin's by its key, an
+// agent's own or one of magpie's with no home of its own by its name.
+func sameSaved(a, b savedLogin) bool {
+	if a.Agent != b.Agent || a.Home != b.Home || a.own() != b.own() {
+		return false
+	}
+	return a.Home != "" || strings.EqualFold(a.User, b.User)
 }
 
 func activeOf(ls []sideLogin) string {
@@ -190,10 +238,15 @@ func activeOf(ls []sideLogin) string {
 // it is: magpie only changes which account its gateway uses first.
 func switchSideLogin(agent, user string, ls []sideLogin) error {
 	was := activeOf(ls)
-	return editSideLogin(agent, user, func(saved []savedLogin, i int) ([]savedLogin, error) {
+	isWas := listedMatch(agent, was, ls)
+	return editListedLogin(agent, user, ls, func(saved []savedLogin, i int) ([]savedLogin, error) {
+		w := -1
+		if was != "" {
+			w = pickSaved(saved, isWas)
+		}
 		for j := range saved {
 			if saved[j].Agent == agent {
-				if j != i && strings.EqualFold(saved[j].User, was) {
+				if j != i && j == w {
 					saved[j].On = true // the one it replaces is next in line
 				}
 				saved[j].First = j == i
@@ -207,7 +260,7 @@ func setSideLoginOn(agent, user string, on bool, ls []sideLogin) error {
 	if !on && strings.EqualFold(activeOf(ls), user) {
 		return fmt.Errorf("magpie uses %s first; put another account first to stop using it", user)
 	}
-	return editSideLogin(agent, user, func(saved []savedLogin, i int) ([]savedLogin, error) {
+	return editListedLogin(agent, user, ls, func(saved []savedLogin, i int) ([]savedLogin, error) {
 		saved[i].On = on
 		return saved, nil
 	})
@@ -238,10 +291,15 @@ func forgetSideLogin(agent, user string, ls []sideLogin, gone func(savedLogin)) 
 		mark = firstNonEmpty(ownMark(agent), hiddenNoMark)
 	}
 	var old savedLogin
-	err := editSideLogin(agent, user, func(saved []savedLogin, i int) ([]savedLogin, error) {
+	isNext := listedMatch(agent, next, ls)
+	err := editListedLogin(agent, user, ls, func(saved []savedLogin, i int) ([]savedLogin, error) {
+		n := -1
+		if next != "" {
+			n = pickSaved(saved, isNext)
+		}
 		for j := range saved {
 			if next != "" && j != i && saved[j].Agent == agent {
-				saved[j].First = strings.EqualFold(saved[j].User, next)
+				saved[j].First = j == n
 				saved[j].On = saved[j].On || saved[j].First
 			}
 		}

@@ -70,7 +70,7 @@ export function PluginsSection({ activeAgentId }: { activeAgentId?: string | nul
   const list = Array.isArray(plugins) ? plugins : [];
 
   return (
-    <section className="context-card">
+    <section className="context-card" id="context-plugins">
       <div className="context-card__heading">
         <span>插件</span>
         <div className="context-card__heading-actions">

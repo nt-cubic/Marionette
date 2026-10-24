@@ -21,6 +21,7 @@ type Writer struct {
 	buf     bytes.Buffer
 	pending *held
 	done    bool
+	put     map[string]int // placeholders put back, each place counted
 }
 
 const (
@@ -41,6 +42,17 @@ type held struct {
 func NewWriter(w http.ResponseWriter) *Writer { return &Writer{w: w} }
 
 func (rw *Writer) Header() http.Header { return rw.w.Header() }
+
+// Put is how many places of each placeholder the answer had put back,
+// so far: for the record of what masking did.
+func (rw *Writer) Put() map[string]int { return rw.put }
+
+func (rw *Writer) count() map[string]int {
+	if rw.put == nil {
+		rw.put = map[string]int{}
+	}
+	return rw.put
+}
 
 // Unwrap is for http.ResponseController.
 func (rw *Writer) Unwrap() http.ResponseWriter { return rw.w }
@@ -159,14 +171,14 @@ func (rw *Writer) Finish() {
 	rw.done = true
 	switch rw.mode {
 	case whole:
-		rw.w.Write(RestoreJSON(rw.buf.Bytes()))
+		rw.w.Write(restoreJSON(rw.buf.Bytes(), rw.count()))
 	case stream:
 		if rw.pending != nil {
 			rw.w.Write(rw.pending.full)
 			rw.pending = nil
 		}
 		if rw.buf.Len() > 0 {
-			rw.w.Write([]byte(Restore(rw.buf.String(), false)))
+			rw.w.Write([]byte(restore(rw.buf.String(), false, rw.count())))
 		}
 	}
 	rw.Flush()
@@ -179,7 +191,7 @@ func (rw *Writer) event(ev []byte) error {
 		if err := rw.release(); err != nil {
 			return err
 		}
-		_, err := rw.w.Write([]byte(Restore(string(ev), false)))
+		_, err := rw.w.Write([]byte(restore(string(ev), false, rw.count())))
 		return err
 	}
 	ctx := name + "|" + eventCtx(data)
@@ -215,7 +227,9 @@ func (rw *Writer) event(ev []byte) error {
 			tailPath, tail = path, s[len(s)-n:]
 			cut = Restore(s[:len(s)-n], asJSON(key, typ))
 		}
-		return Restore(s, asJSON(key, typ))
+		// counted here only: cut is s again without its tail, and
+		// whichever of the two goes out, the places are these
+		return restore(s, asJSON(key, typ), rw.count())
 	})
 	full := rebuild(pre, restored, post)
 	if tail == "" {

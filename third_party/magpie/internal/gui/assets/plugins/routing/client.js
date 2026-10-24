@@ -370,7 +370,10 @@ function routingPage(part) {
     // Input excludes both cache tiers. Include writes in the denominator,
     // and every billable try, as the request's cost does. Older history
     // without the tiers cannot tell a hit rate, even when it has tokens.
+    // A vendor that counts no cache tokens (cache_unknown: Kiro tells
+    // credits only) has no hit rate, not 0%.
     for (const u of r.usage || []) {
+      if (u.cache_unknown) continue;
       read += u.cache_read || 0;
       prompt += (u.in || 0) + (u.cache_read || 0) + (u.cache_write || 0);
     }
@@ -579,6 +582,29 @@ function routingPage(part) {
   // an agent's subagents that magpie put a subagent on in its place
   const wentOn = (r) => (r.subagent && !r.subagent.kept ? r.subagent.to : r.model);
 
+  // the routing of the group x's place is in: the innermost group in the
+  // group (via), else the group asked for; "" when no group was
+  const placeRouting = (r, x) => {
+    const via = x.via || [];
+    return via.length ? r.group?.subs?.find((s) => s.id === via[via.length - 1])?.routing || "" : r.group?.routing || "";
+  };
+  // a group routed in order or by weight tries each member whole, in its
+  // place, over its own accounts or keys as its provider routes them
+  // (planLevel): its members aren't weighed against each other
+  const wholeMembers = (r, x) => !!r.group && ["order", "weight"].includes(placeRouting(r, x));
+  // weighedWith is the rows x was weighed against, x among them: in a
+  // group routed in order or by weight, its own member's; else every one
+  // in its place (the group's own, or one group in it). A fallback is
+  // weighed with its own provider's alone (plan). bitssly on X: an In
+  // order group said its later members, whose allowance isn't known, went
+  // after the first because the first's was
+  function weighedWith(r, x) {
+    const via = (y) => (y.via || []).join(">");
+    const whole = wholeMembers(r, x);
+    return r.order.filter((y) => !!y.fallback === !!x.fallback && via(y) === via(x)
+      && (!(x.fallback || whole) || (y.provider === x.provider && y.model === x.model && (y.fixed || "") === (x.fixed || "") && !!y.fast === !!x.fast)));
+  }
+
   // why routing put the first where it did
   function firstWhy(r) {
     const f = r.order[0];
@@ -595,6 +621,17 @@ function routingPage(part) {
     if (f.fallback) {
       const name = r.order.find((x) => !x.fallback)?.name || r.provider;
       return t("{name} is resting, so its fallback {fb} goes first.", { name, fb: `${f.provider}/${f.model}` });
+    }
+    if (wholeMembers(r, f)) {
+      // first as the group's member: by its place, or the round's pick;
+      // weighed only against its own member's others, if any
+      const own = weighedWith(r, f);
+      if (own.length > 1) return firstWhy({ ...r, order: own, group: null });
+      if (placeRouting(r, f) === "weight") return t("By weight: it's {who}'s share — each model takes requests as the weight set beside it says.", { who: w });
+      const ahead = r.order.filter((x) => x !== f && x.rest).map(who);
+      return ahead.length
+        ? t("In order: with {rested} resting after a failure, {who} is the first that can answer.", { rested: ahead.join(", "), who: w })
+        : t("In order: {who} is first, and answers everything while it can.", { who: w });
     }
     const peers = r.order.filter((x) => x !== f && !x.fallback && !x.rest);
     const someKnown = r.order.some((x) => x.known);
@@ -651,9 +688,38 @@ function routingPage(part) {
     return t("{who} goes first, in the order given: when its allowance renews isn't known.", { who: w });
   }
 
+  // memberSplit: the group that put x behind f, when it is one that takes
+  // its members whole (by weight, in order) and f and x are of different
+  // members of it — with the names of those members and the group; null
+  // when they are of one member, or of a group that pools its members'
+  // accounts (Smart and the rest), where what x has left is why
+  function memberSplit(r, f, x) {
+    if (!r.group) return null;
+    const fv = f.via || [], xv = x.via || [];
+    const subOf = (id) => r.group.subs?.find((s) => s.id === id);
+    const at = (w, v, i) => i < v.length ? "group/" + v[i] : `${w.provider}/${w.model}${w.fixed ? ":" + w.fixed : ""}`;
+    const named = (w, v, i) => i < v.length ? subOf(v[i])?.name || v[i] : w.name || w.provider;
+    let g = r.group;
+    for (let i = 0; i <= Math.max(fv.length, xv.length); i++) {
+      const a = at(f, fv, i), b = at(x, xv, i);
+      if (a !== b) {
+        const routing = g?.routing || "";
+        if (routing !== "weight" && routing !== "order") return null;
+        // the first there by the round's pick, or by the order, not kept
+        // on for its conversation or sent there by a rule
+        if (routing === "weight" ? !f.turn : r.affinity?.kept || r.rule && !r.rule.bare) return null;
+        return { routing, member: named(x, xv, i), first: named(f, fv, i), group: g.name || g.id };
+      }
+      if (i >= fv.length || i >= xv.length) return null; // one member
+      g = subOf(fv[i]);
+    }
+    return null;
+  }
+
   // asides: the others' places, where they say something
   function asides(r) {
     const out = [];
+    const told = new Set(); // the members told as behind by weight or order
     const aff = affWhy(r, true) ? null : affWhy(r, false);
     if (aff) out.push(aff);
     const cls = classWhy(r.rule);
@@ -675,15 +741,30 @@ function routingPage(part) {
       if (p.byFolder) out[out.length - 1] += " " + (p.folder ? t("The agent works in {folder}.", { folder: p.folder }) : t("The agent didn't say which folder it works in."));
     }
     const smart = (x) => !x.routing && (x.kind === "account" || x.known);
-    const someKnown = r.order.some((x) => x.known);
+    // weighed with one known: its place among them is what Smart says
+    const someKnown = (x) => weighedWith(r, x).some((y) => y !== x && y.known);
+    const f0 = r.order[0];
     for (const x of r.order.slice(1)) {
+      // behind the first by a group's weights or its order, which take
+      // each member whole: not by what x has left (Creat.wu: a group in
+      // a group by weight, its accounts at 91%, read as passed over)
+      const by = !x.rest && !x.sunk && f0 ? memberSplit(r, f0, x) : null;
+      if (by && smart(x) && (x.known ? group(x) === "low" : someKnown(x))) {
+        if (!told.has(by.member)) {
+          told.add(by.member);
+          out.push(by.routing === "weight"
+            ? t("{member} isn't passed over for being near its limit: by weight this request was {first}'s share, and {member} takes its own share of the requests while it can answer.", { member: by.member, first: by.first })
+            : t("{member} isn't passed over for being near its limit: it comes after {first} in {group}'s order.", { member: by.member, first: by.first, group: by.group }));
+        }
+        continue;
+      }
       if (x.sunk && !x.rest) out.push(t("{who} was rate limited at {time} while it had quota left, so it went to the back: it comes round again once those ahead of it are rate limited in turn.", { who: who(x), time: clock(x.sunk) }));
       else if (x.rest) out.push(t("{who} is resting — {why}, {when} — so it waits at the back.", { who: who(x), why: `${x.rest.status} · ${failWord(x.rest.why)}`, when: restWhen(x.rest, at(r.time)) }));
       else if (smart(x) && x.known && group(x) === "spent" && x.credits) out.push(t("{who} is at {n} of its allowance but goes on on its credits — ahead of those used up with nothing to go on with, after those with allowance left.", { who: who(x), n: pct(x.used) }));
-      else if (smart(x) && x.known && group(x) === "spent") out.push(t("{who} is at {n} — all but used up, it answers only when nothing else can.", { who: who(x), n: pct(x.used) }));
-      else if (smart(x) && x.known && group(x) === "low") out.push(t("{who} is at {n} — kept for when the others can't.", { who: who(x), n: pct(x.used) }));
-      else if (smart(x) && x.learns && someKnown) out.push(t("{who}: what it has left isn't known yet, and its answer tells, so it goes before those known.", { who: who(x) }));
-      else if (smart(x) && !x.known && someKnown) out.push(t("{who}: what it has left isn't known yet, so it goes after those known.", { who: who(x) }));
+      else if (smart(x) && x.known && group(x) === "spent" && weighedWith(r, x).length > 1) out.push(t("{who} is at {n} — all but used up, it answers only when nothing else can.", { who: who(x), n: pct(x.used) }));
+      else if (smart(x) && x.known && group(x) === "low" && weighedWith(r, x).length > 1) out.push(t("{who} is at {n} — kept for when the others can't.", { who: who(x), n: pct(x.used) }));
+      else if (smart(x) && x.learns && someKnown(x)) out.push(t("{who}: what it has left isn't known yet, and its answer tells, so it goes before those known.", { who: who(x) }));
+      else if (smart(x) && !x.known && someKnown(x)) out.push(t("{who}: what it has left isn't known yet, so it goes after those known.", { who: who(x) }));
     }
     const pooled = r.order.find((x) => !x.aside && x.kind === "key");
     for (const x of r.order.filter((x) => x.aside)) out.push(t("{who} is made for {api}, not {other} as the keys routed over are, so it isn't one of them: it's tried after them.", { who: who(x), api: API[x.speaks] || x.speaks || t("any API"), other: API[pooled?.speaks] || pooled?.speaks || t("any API") }));
@@ -2280,11 +2361,27 @@ function routingPage(part) {
   // for: a vendor serving a cheaper model in its place, which only the
   // reply's model field tells (its dated name is the same model)
   function swapTag(tr, short) {
-    const k = el("span", "swap", short ? t("served {served}", { served: tr.served }) : t("requested {sent} · served {served}", { sent: tr.model, served: tr.served }));
+    const route = clineRoute(tr);
+    const k = el("span", "swap", short ? t(route ? "ClinePass route {served}" : "served {served}", { served: tr.served })
+      : t(route ? "requested {sent} · ClinePass route {served}" : "requested {sent} · served {served}", { sent: tr.model, served: tr.served }));
     k.title = swapWhy(tr);
     return k;
   }
-  const swapWhy = (tr) => t("The vendor was asked for {sent}, but its reply says {served} answered: likely another model. The same model under a dated name or spelled otherwise isn't marked.", { sent: tr.model, served: tr.served });
+  // ClinePass names a reply by the route it picked (its VMC,
+  // vmc/deepseek-v4p1-flash-1017-contributor-fallbacks), not by a model:
+  // such a reply is said as its route, with what was asked of it and
+  // whether it said who answered (zRain on Discord, 10-24). pin is the
+  // provider the try asked for; a Usage row doesn't keep it (pinUnknown).
+  const clineRoute = (tr) => /^vmc\//.test(tr.served || "") && /(^|\/)cline-pass\//.test(tr.model || "");
+  function swapWhy(tr, o = {}) {
+    if (!clineRoute(tr)) return t("The vendor was asked for {sent}, but its reply says {served} answered: likely another model. The same model under a dated name or spelled otherwise isn't marked.", { sent: tr.model, served: tr.served });
+    const s = t("ClinePass answered {sent} through {served}, a route it picks itself: the name is the route's, not another model's.", { sent: tr.model, served: tr.served });
+    if (tr.upstream) return s + " " + t("Its reply says {upstream} answered.", { upstream: tr.upstream });
+    if (o.pinUnknown) return s + " " + t("Its reply didn't say which provider answered.");
+    if (tr.pin) return s + " " + t("{pin} was asked for, but its reply didn't say which provider answered, so whether ClinePass kept to it is unknown.", { pin: tr.pin });
+    const tick = /(^|\/)cline-pass\/(deepseek|glm)/i.test(tr.model) ? " " + t("To ask for the maker's own API, tick “{tick}” in the provider's settings.", { tick: t("DeepSeek and GLM models only from their makers' own APIs") }) : "";
+    return s + " " + t("No provider was asked for, and its reply didn't say which one answered.") + tick;
+  }
   window.swapWhy = swapWhy; // the Usage page's Requests say it too
   // a try that asked a remote magpie for one of its routing groups: the
   // reply names the member the group routed to, which is the group
@@ -4649,7 +4746,7 @@ function routingPage(part) {
     }
     const m = withJS(GROUP_ROUTE_OPTS, g.routing).find(([id]) => id === (g.routing || "")) || ROUTE_OPTS[0];
     const tags = el("span", "tags");
-    tags.append(el("span", "tag", t(m[1])));
+    tags.append(routeTag(g, m));
     if (g.affinity) tags.append(el("span", "tag", t(AFF_OPTS.find(([id]) => id === g.affinity)?.[1] || "")));
     if (g.sink && sinkable(g.routing || "")) {
       const k = el("span", "tag sink", t("Rate limited to the back"));
@@ -4695,6 +4792,36 @@ function routingPage(part) {
       row.append(sw);
     }
     return row;
+  }
+  // routeTag: a group's routing on its row, a button that opens the
+  // routings the editor offers, the current one checked (MoChou, #3450).
+  // Picking one saves the group as the editor's Save would with only its
+  // routing changed: Manual keeps the pick it had, the gateway's first
+  // member when it had none (provider.cleanGroup), as the editor does.
+  function routeTag(g, m) {
+    const cur = g.routing || "";
+    const b = el("button", "tag rt-groute");
+    b.type = "button";
+    b.setAttribute("aria-haspopup", "menu");
+    b.setAttribute("aria-expanded", "false");
+    b.setAttribute("aria-label", t("Routing") + " · " + g.name + " · " + t(m[1]));
+    b.title = t("How {name} routes: click to change it", { name: g.name });
+    b.append(el("span", "", t(m[1])), svg(CHEV, 10, 1.8));
+    b.onclick = (e) => {
+      e.stopPropagation(); // the card opens the editor; this its routing
+      if (b.classList.contains("open")) return closeProtoMenu();
+      const opts = withJS(GROUP_ROUTE_OPTS, cur);
+      openProtoMenu(b, opts.map(([id, n]) => ({ v: id, name: n, note: "", title: GROUP_HINT[id] ? t(GROUP_HINT[id]) : modeOf(id)[1] })), cur, async (v) => {
+        closeProtoMenu();
+        if (v === cur || (groupDirty() && !(await confirmDiscard()))) return b.focus({ preventScroll: true });
+        const n = opts.find(([id]) => id === v)?.[1] || v;
+        await groupAction("save", { id: g.id, name: g.name, members: namedOf(g), match: g.match || [], routing: v, pick: g.pick || "", affinity: g.affinity || "", sink: !!g.sink && sinkable(v), firstToken: g.firstToken || 0, patience: g.patience || 0, rules: g.rules || [], effort: g.effort || "", classifier: g.classifier || "", context: g.context || 0, levels: g.levels || [], family: g.family || "", fast: g.fast || [], off: g.off || [], weights: g.weights || {}, unlists: !!g.unlists },
+          t("{name}: {routing}", { name: g.name, routing: t(n) }));
+        // the rows were drawn anew: the keyboard stays on this one's routing
+        gList.querySelector(`.rt-group[data-id="${CSS.escape(g.id)}"] .rt-groute`)?.focus({ preventScroll: true });
+      }, "Routing", "", "right");
+    };
+    return b;
   }
   // groupHandle is a group row's logos, which are also its handle, as an
   // agent row's logo is (#779): drag it to move the row, click it (or

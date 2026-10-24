@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/appdir"
+	"github.com/yetone/magpie/internal/lastgood"
 	"github.com/yetone/magpie/internal/source"
 )
 
@@ -68,9 +70,17 @@ type partnerFeed struct {
 // partner ever listed, so a provider added from one that has since left
 // still finds its preset (its endpoints, regions and key page).
 type partnerCache struct {
-	At       time.Time          `json:"at"`
-	Partners []Partner          `json:"partners"`
-	Seen     map[string]Partner `json:"seen,omitempty"`
+	At       time.Time `json:"at"`
+	Partners []Partner `json:"partners"`
+	// Tried is when the last fetch started, and Error how it ended, ""
+	// once it got the list (At is then its time) or while it is still
+	// out. So the file tells a fetch that failed (Error) from one that
+	// never came back (Tried after At, no Error) and from none asked
+	// (Tried old): an app that kept an old list for days left nothing to
+	// tell them apart (#3362).
+	Tried time.Time          `json:"tried,omitzero"`
+	Error string             `json:"error,omitempty"`
+	Seen  map[string]Partner `json:"seen,omitempty"`
 	// Noticed are the partners the add sheet has listed to the user; one
 	// listed since is new, and the add button says so (NoticePartners).
 	Noticed []string `json:"noticed,omitempty"`
@@ -81,6 +91,7 @@ var (
 	partnerState   *partnerCache // nil until read from disk
 	partnerNext    time.Time     // the next fetch, when none is running
 	partnerFetches bool
+	partnerLogged  string // the failure logged last, so a long one is logged once
 )
 
 // A list is fetched again after partnerEvery, so a partner added reaches
@@ -227,11 +238,19 @@ func loadPartners() {
 }
 
 // refreshPartners fetches the list and keeps it; on a failure the list
-// held stays, and it is tried again in ten minutes.
+// held stays, and it is tried again in ten minutes. When it started and
+// how it ended are kept with the list (Tried, Error), and a failure is
+// logged once until the list is fetched again.
 func refreshPartners() {
+	partnerMu.Lock()
+	loadPartners()
+	partnerState.Tried, partnerState.Error = time.Now(), ""
+	savePartners()
+	partnerMu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	list, err := fetchPartners(ctx, partnersSource())
+	src := partnersSource()
+	list, err := fetchPartners(ctx, src)
 	if err == nil {
 		for i := range list {
 			list[i].Icon = partnerIcon(ctx, list[i])
@@ -243,7 +262,17 @@ func refreshPartners() {
 	loadPartners()
 	if err != nil {
 		partnerNext = time.Now().Add(partnerRetry)
+		partnerState.Error = partnerError(err)
+		savePartners()
+		if partnerState.Error != partnerLogged {
+			partnerLogged = partnerState.Error
+			log.Printf("partners: the list couldn't be fetched from %s, asked again in %s: %s", src, partnerRetry, partnerLogged)
+		}
 		return
+	}
+	if partnerLogged != "" {
+		partnerLogged = ""
+		log.Printf("partners: the list is fetched again from %s", src)
 	}
 	now := time.Now()
 	partnerState.At, partnerState.Partners = now, list
@@ -254,10 +283,28 @@ func refreshPartners() {
 	savePartners()
 }
 
+// partnerError is err as the list keeps it: its text, cut to a size
+// that stays readable in the file.
+func partnerError(err error) string {
+	msg := strings.Join(strings.Fields(err.Error()), " ")
+	if r := []rune(msg); len(r) > 500 {
+		msg = string(r[:500]) + "…"
+	}
+	return msg
+}
+
 // savePartners writes what is held to disk; partnerMu held.
 func savePartners() {
 	b, err := json.Marshal(partnerState)
 	if err != nil {
+		return
+	}
+	// loadPartners reads a file that doesn't parse as no list and no Seen:
+	// it is kept aside before it is written over, and not written over
+	// when it can't be read. Every try writes the file (Tried, #3362), so
+	// without this the first one, offline too, lost the presets of the
+	// partners no longer listed that providers added from them still use.
+	if lastgood.KeepUnparsed(partnerCacheFile(), lastgood.Into[partnerCache]) != nil {
 		return
 	}
 	_ = os.MkdirAll(filepath.Dir(partnerCacheFile()), 0o755)
@@ -418,6 +465,27 @@ func partnerIcon(ctx context.Context, p Partner) string {
 
 var fetchPartnerIcon = FetchIcon
 
+// keptPartnerIcons are the pictures the partners listed now show, which
+// pruneIcons leaves (#3424): no provider points at a partner's logo until
+// one is added from it, so the prune after any save of providers.json
+// took it once it was an hour old, and the add sheet showed the partner
+// with the generic icon until the next fetch got the logo again.
+func keptPartnerIcons() []string {
+	if partnersSource() == "off" {
+		return nil
+	}
+	partnerMu.Lock()
+	defer partnerMu.Unlock()
+	loadPartners()
+	var out []string
+	for _, p := range partnerState.Partners {
+		if name, ok := strings.CutPrefix(p.Icon, iconPrefix); ok {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 // partnerPreset is the preset of a partner listed now or before, for a
 // provider added from it: one no longer listed isn't Sponsored.
 func partnerPreset(id string) *PresetDef {
@@ -446,7 +514,7 @@ func partnerPreset(id string) *PresetDef {
 // so it is waited for first.
 func resetPartners() {
 	claimPartnerFetch()
-	partnerState, partnerNext, partnerFetches = nil, time.Time{}, false
+	partnerState, partnerNext, partnerFetches, partnerLogged = nil, time.Time{}, false, ""
 	partnerMu.Unlock()
 }
 

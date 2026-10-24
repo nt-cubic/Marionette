@@ -3,7 +3,9 @@ package gateway
 // The request archive: with it on (settings' RequestArchive), each call the
 // gateway serves is kept — the headers and bodies both ways, every secret
 // taken out first — in the user's own S3 bucket, the one sync keeps its
-// backup in, at <prefix>/magpie/archive/<date>/<id>.json: the call's date,
+// backup in, at <prefix>/magpie/archive/<date>/<id>.json, or, while sync
+// has no bucket and RequestArchiveLocal is on, in the same file on this
+// computer (archive_local.go): the call's date,
 // in UTC, and an id of its own, sent back on the response as
 // X-Magpie-Archive-Id. The call, and its rows in the usage log, carry
 // "<date>/<id>", for the Gateway and Usage pages to read it back by.
@@ -41,6 +43,7 @@ type Putter interface {
 
 // ArchiveBucket is the bucket the archive goes to, and false when there is
 // none (sync is off, or to a WebDAV folder): set by main to the S3 sync's.
+// With none, the archive is this computer's (archiveDest).
 var ArchiveBucket func() (Putter, bool)
 
 // ArchiveHeader carries a call's archive id on its response.
@@ -76,15 +79,33 @@ type wire struct {
 	to           Putter
 }
 
-// archiving is r's wire when the archive is on and has a bucket, nil
-// otherwise: nothing is kept, and nothing sent. body is the request's, as
-// Recent calls has it before the first 256 KB is cut from it.
-func archiving(r *http.Request, res *captureResponseWriter, start time.Time, body []byte) *wire {
-	if ArchiveBucket == nil || !settings.Load().RequestArchive {
-		return nil
+// archiveDest is where a call is archived, and false when it isn't: the S3
+// bucket sync is to while RequestArchive is on, or, with no bucket, this
+// computer's folder while RequestArchiveLocal is on (archive_local.go). A
+// bucket that goes away never sends calls to the disk in its place: that
+// takes the local switch, turned on at this computer.
+func archiveDest() (Putter, bool) {
+	s := settings.Load()
+	if !s.RequestArchive && !s.RequestArchiveLocal {
+		return nil, false // off, as it is unless turned on: sync's file isn't read
 	}
-	to, ok := ArchiveBucket()
-	if !ok || to == nil {
+	if ArchiveBucket != nil {
+		if b, ok := ArchiveBucket(); ok && b != nil {
+			return b, s.RequestArchive
+		}
+	}
+	if s.RequestArchiveLocal {
+		return LocalArchive(), true
+	}
+	return nil, false
+}
+
+// archiving is r's wire when the archive is on, nil otherwise: nothing is
+// kept, and nothing sent. body is the request's, as Recent calls has it
+// before the first 256 KB is cut from it.
+func archiving(r *http.Request, res *captureResponseWriter, start time.Time, body []byte) *wire {
+	to, ok := archiveDest()
+	if !ok {
 		return nil
 	}
 	b := make([]byte, 8)

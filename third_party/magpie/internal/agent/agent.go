@@ -176,6 +176,11 @@ type Agent struct {
 	// "" for none: Connect keeps the agent on that model through magpie
 	// where it can't Join (#940: Codex went to an unrelated model).
 	OwnVia func(model string) string
+	// AppOut reports magpie made Codex's provider for a ChatGPT sign-in
+	// whose account is used up (codex.out): the Codex app, which reads
+	// its sign-in only as it opens, sends nothing on it till it is opened
+	// again (MasterYi on Discord).
+	AppOut func() bool
 	// Routed reports that the agent's config sends whatever model it
 	// names to magpie's gateway (Codex's openai_base_url or magpie as its
 	// provider), so a model's name the gateway takes as a routing group

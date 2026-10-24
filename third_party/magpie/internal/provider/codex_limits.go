@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"slices"
 	"strings"
 	"time"
 )
@@ -30,6 +31,11 @@ type CodexLimit struct {
 func NoteCodexLimits(agent, user string, heard []CodexLimit) {
 	if len(heard) == 0 || user == "" {
 		return
+	}
+	// a window full: Codex's own account may be out, which the Codex app
+	// is told only as it opens (CodexMayBeUsedUp)
+	if agent == "codex" && slices.ContainsFunc(heard, func(h CodexLimit) bool { return h.Used >= 100 }) {
+		CodexMayBeUsedUp(user)
 	}
 	key := agent + "/" + strings.ToLower(user)
 	c := &loginUsageCache

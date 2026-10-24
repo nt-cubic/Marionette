@@ -535,6 +535,9 @@ func init() { provider.OnRenewed(renewed) }
 // staleAllowance is provider.StaleAllowance, swapped in tests.
 var staleAllowance = provider.StaleAllowance
 
+// codexMayBeUsedUp is provider.CodexMayBeUsedUp, swapped in tests.
+var codexMayBeUsedUp = provider.CodexMayBeUsedUp
+
 // awaitAllowance is provider.AwaitAllowance, swapped in tests.
 var awaitAllowance = provider.AwaitAllowance
 
@@ -1042,6 +1045,11 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	// by the plugin's provider ("plugin:grok"), not by "plugin"
 	if a := c.p.Account; a != nil && why != failOther && why != failVerify && why != failRestricted {
 		staleAllowance(a.UsageAgent(), a.User) // ask again what it has left
+		if why == failQuota && a.UsageAgent() == "codex" {
+			// the account Codex is signed in to may be out: the Codex app
+			// greys its Send till it knows magpie is its provider
+			codexMayBeUsedUp(a.User)
+		}
 	} else if a == nil && why != failOther && why != failVerify && why != failRestricted {
 		staleKeyAllowance(c.p) // a key that reads its windows, too
 	}

@@ -82,9 +82,9 @@ import {
   setDesktopNotifyEnabled,
 } from "../lib/desktopNotify";
 import { enterDock, getDockState, initDockMode, readDockPrefs, subscribeDockPrefs, subscribeDockState, syncBackgroundMode, toggleAutoHideOnClose, undock } from "../lib/dockMode";
-import { DockChrome } from "../components/DockChrome";
+import { DockChrome, type DockPage } from "../components/DockChrome";
 import { MemoBox } from "../components/MemoBox";
-import { memoList } from "../lib/memos";
+import { memoList, memoPrompt } from "../lib/memos";
 import { parseAvailableCommandsUpdate } from "../lib/slashCommands";
 import type { PlanEntry } from "../lib/acpPlan";
 import { parseAcpPlanUpdate } from "../lib/acpPlan";
@@ -180,7 +180,7 @@ import {
   type SplitWorkspaceState,
 } from "../lib/splitWorkspace";
 import type { QuotePin } from "../lib/quoteComment";
-import { canPark, shouldAutoSuspend } from "../lib/sessionSuspend";
+import { canPark, lastActiveMs, shouldAutoSuspend } from "../lib/sessionSuspend";
 import { forkCopyEvents, forkCutIndex } from "../lib/sessionFork";
 import { type AskQuestionPrompt } from "../components/AskQuestionCard";
 import { Composer, transferEmptyDraft } from "../components/Composer";
@@ -498,12 +498,12 @@ export function App() {
   const [autoHideOnClose, setAutoHideOnClose] = useState(() => readDockPrefs().autoHideOnClose);
   /** Edge dock stage 1: main window is parked at a screen edge. */
   const [dockActive, setDockActive] = useState(false);
-  /** Edge dock stage 2: shelf drawer / ContextPanel overlays inside the strip. */
-  const [dockShelfOpen, setDockShelfOpen] = useState(false);
-  const [dockContextOpen, setDockContextOpen] = useState(false);
+  /** Edge dock: the page covering the strip below its title bar (all dialogs / usage / memo box). */
+  const [dockPage, setDockPage] = useState<DockPage | null>(null);
   /** Edge dock stage 3: memo inbox overlay + its count badge. */
-  const [memoOpen, setMemoOpen] = useState(false);
   const [memoCount, setMemoCount] = useState(0);
+  /** Floating-window 收纳盒 page (docked mode uses dockPage === "memo"). */
+  const [memoOpen, setMemoOpen] = useState(false);
   /** Sessions that finished a turn while this window was looking at another dialog. */
   const [doneUnreadIds, setDoneUnreadIds] = useState<Set<string>>(() => new Set());
   /** Agent proxy config (single exit address), loaded on mount. */
@@ -952,17 +952,31 @@ export function App() {
     const disposeEngine = initDockMode();
     const unsubState = subscribeDockState((state) => {
       setDockActive(state !== "floating");
-      if (state !== "docked-expanded") {
-        setDockShelfOpen(false);
-        setDockContextOpen(false);
-        setMemoOpen(false);
-      }
+      // A floating page cannot stay open across the mode switch.
+      setMemoOpen(false);
+      if (state !== "docked-expanded") setDockPage(null);
     });
     return () => {
       disposeEngine();
       unsubState();
     };
   }, []);
+
+  // Edge dock: Esc is 返回 (the memo box handles its own Esc: select mode
+  // first), and picking a dialog from the full list goes back to it.
+  useEffect(() => {
+    if (!dockPage || dockPage === "memo") return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      setDockPage(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [dockPage]);
+
+  useEffect(() => {
+    setDockPage((page) => (page === "shelf" ? null : page));
+  }, [currentSessionId]);
 
   // Drop marks for sessions that no longer exist.
   useEffect(() => {
@@ -3970,6 +3984,26 @@ export function App() {
     () => availableSessions.filter((session) => session.projectId === CHAT_PROJECT_ID),
     [availableSessions]
   );
+
+  /**
+   * Edge dock strip (instead of tabs): every dialog still holding a process,
+   * plus the one in view, newest first.
+   */
+  const dockActiveSessions = useMemo(
+    () =>
+      dockActive
+        ? availableSessions
+            .filter((session) => canPark(session) || session.id === currentSessionId)
+            .sort((a, b) => lastActiveMs(b) - lastActiveMs(a))
+        : [],
+    [availableSessions, currentSessionId, dockActive]
+  );
+
+  // Strip sliver: the parked handle breathes while any dialog is working.
+  const dockAnyBusy = dockActive && availableSessions.some((s) => s.status === "running" || s.status === "starting");
+  useEffect(() => {
+    document.documentElement.classList.toggle("dock-live", dockAnyBusy);
+  }, [dockAnyBusy]);
 
   // ProjectShelf 的项目列表（memo 化：内联 filter 会让引用每渲染都变，击穿 memo）。
   const shelfProjects = useMemo(
@@ -7641,6 +7675,7 @@ export function App() {
           agents={availableAgents}
           sessionId={session.id}
           sessionStatus={session.status}
+          docked={dockActive}
           onRestartAgentSession={handleRestartAgentSession}
           autoFocus={
             composerAutoFocus &&
@@ -7734,11 +7769,31 @@ export function App() {
     );
   };
 
+  /**
+   * 收纳盒 page — shared by the docked strip (dockPage === "memo") and the
+   * floating window (left sidebar entry). Using a note opens a dialog in the
+   * project in view; plain context can go to a chat when no project is open.
+   */
+  const renderMemoBox = (close: () => void, floating: boolean) => (
+    <MemoBox
+      onClose={close}
+      showClose={floating}
+      onChanged={setMemoCount}
+      onUse={(picked, intent) => {
+        const projectId = currentProjectId && currentProjectId !== CHAT_PROJECT_ID ? currentProjectId : null;
+        void (projectId ? createSessionForProject(projectId) : handleCreateChatSession()).then((session) => {
+          if (!session) return;
+          setComposerPrefill({ sessionId: session.id, text: memoPrompt(picked, intent), token: Date.now() });
+        });
+      }}
+    />
+  );
+
   return (
     <main className="app-shell">
       <div
         ref={workspaceGridRef}
-        className={`workspace-grid${leftCollapsed || IS_DETACHED_WINDOW ? " is-left-collapsed" : ""}${rightCollapsed ? " is-right-collapsed" : ""}${IS_DETACHED_WINDOW ? " is-detached" : ""}${dockActive ? " is-docked" : ""}${dockActive && dockShelfOpen ? " dock-drawer-open" : ""}${dockActive && dockContextOpen ? " dock-context-open" : ""}`}
+        className={`workspace-grid${leftCollapsed || IS_DETACHED_WINDOW ? " is-left-collapsed" : ""}${rightCollapsed ? " is-right-collapsed" : ""}${IS_DETACHED_WINDOW ? " is-detached" : ""}${dockActive ? " is-docked" : ""}${dockActive && dockPage === "shelf" ? " dock-drawer-open" : ""}${dockActive && dockPage === "context" ? " dock-context-open" : ""}`}
         style={
           {
             "--left-panel-width": `${leftWidth}px`,
@@ -7760,15 +7815,10 @@ export function App() {
             collapsed={leftCollapsed}
             theme={theme}
             desktopNotifyEnabled={desktopNotifyOn}
-            autoHideOnClose={autoHideOnClose}
             proxyConfig={proxyConfig}
             onSaveProxy={handleSaveProxy}
             onTestProxy={handleTestProxy}
             onToggleDesktopNotify={shelfStable.onToggleDesktopNotify}
-            onToggleAutoHideClose={shelfStable.onToggleAutoHideClose}
-            onQuitApp={shelfStable.onQuitApp}
-            dockActive={dockActive}
-            onDockToEdge={shelfStable.onDockToEdge}
             onCollapse={shelfStable.onCollapse}
             onExpand={shelfStable.onExpand}
             onToggleTheme={shelfStable.onToggleTheme}
@@ -7790,6 +7840,7 @@ export function App() {
             chatSessions={chatSessions}
             onChatSessionSelect={openChatSession}
             onNewChat={shelfStable.onNewChat}
+            onOpenMemo={dockActive ? undefined : () => setMemoOpen(true)}
           />
           )}
           {!leftCollapsed && !IS_DETACHED_WINDOW && (
@@ -7875,6 +7926,25 @@ export function App() {
                     document.documentElement.dataset.theme = next;
                     setTheme(next);
                   }),
+              },
+              {
+                id: "dock-edge",
+                label: dockActive ? "解除贴边" : "贴边收起",
+                hint: dockActive ? "恢复普通窗口" : "也可以把窗口拖到屏幕左右边缘",
+                run: shelfStable.onDockToEdge,
+              },
+              {
+                id: "auto-hide-close",
+                label: autoHideOnClose
+                  ? "关闭窗口时：收起到边缘（点此改为退出）"
+                  : "关闭窗口时：退出（点此改为收起到边缘）",
+                run: shelfStable.onToggleAutoHideClose,
+              },
+              {
+                id: "quit-app",
+                label: "退出 Marionette",
+                hint: "停止引擎与全部会话",
+                run: shelfStable.onQuitApp,
               },
             ]}
           />
@@ -8036,15 +8106,19 @@ export function App() {
       {/* Edge dock stage 2: strip chrome bands + overlay backdrops. */}
       {dockActive && (
         <>
-          <DockChrome            onNewChat={() => void handleCreateChatSession()}
-            onOpenShelf={() => setDockShelfOpen((open) => !open)}
-            onOpenContext={() => setDockContextOpen((open) => !open)}
-            shelfOpen={dockShelfOpen}
-            contextOpen={dockContextOpen}
+          <DockChrome
+            page={dockPage}
+            onPage={setDockPage}
+            onNewChat={() => void handleCreateChatSession()}
             memoCount={memoCount}
-            onOpenMemo={() => setMemoOpen(true)}
             quotaRows={engineQuotaRows}
-            onQuotaRefresh={() => refreshEngineQuota(true)}
+            active={dockActiveSessions}
+            totalSessions={availableSessions.length}
+            currentSessionId={currentSessionId}
+            doneUnreadIds={doneUnreadIds}
+            onOpenSession={openSession}
+            onSuspendSession={handleSuspendSession}
+            onOpenPalette={() => setPaletteOpen(true)}
             onUndock={() => void undock()}
             onQuit={() => void quitApp()}
             updateAvailable={Boolean(appUpdate?.updateAvailable)}
@@ -8054,21 +8128,10 @@ export function App() {
             onUpdateAndRelaunch={handleUpdateAndRelaunch}
             splitPaused={dockSplitPaused}
           />
-          {(dockShelfOpen || dockContextOpen) && (
-            <div
-              className="dock-backdrop"
-              role="presentation"
-              onClick={() => {
-                setDockShelfOpen(false);
-                setDockContextOpen(false);
-              }}
-            />
-          )}
-          {memoOpen && (
-            <MemoBox onClose={() => setMemoOpen(false)} onChanged={setMemoCount} />
-          )}
+          {dockPage === "memo" && renderMemoBox(() => setDockPage(null), false)}
         </>
       )}
+      {!dockActive && memoOpen && renderMemoBox(() => setMemoOpen(false), true)}
       {permissionPrompt && (
         <PermissionDialog
           prompt={permissionPrompt}

@@ -51,4 +51,10 @@ func TestRouteKeptClineServingNameNotSwapped(t *testing.T) {
 	if !r.Swapped || !r.Tries[0].Swapped {
 		t.Fatalf("a real swap was cleared: %+v", r)
 	}
+	// a contributor-fallbacks config is another deployment (plugins#351)
+	r = &Route{Swapped: true, Served: "vmc/deepseek-v4p1-flash-1017-contributor-fallbacks", Tries: []Try{{Model: "cline-pass/deepseek-v4.1-flash-1017", Served: "vmc/deepseek-v4p1-flash-1017-contributor-fallbacks", Swapped: true}}}
+	r.routedAgain()
+	if !r.Swapped || !r.Tries[0].Swapped {
+		t.Fatalf("a contributor-fallbacks route was cleared: %+v", r)
+	}
 }

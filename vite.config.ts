@@ -9,8 +9,9 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     watch: {
-      // Rust compilation creates and locks executables in this directory on Windows.
-      ignored: ["**/src-tauri/target/**"]
+      // Rust compilation creates and locks executables in this directory on Windows;
+      // fortest/ holds isolated-instance WebView2 profiles whose locked files kill the watcher (EBUSY).
+      ignored: ["**/src-tauri/target/**", "**/fortest/**"]
     }
   },
   envPrefix: ["VITE_", "TAURI_"]

@@ -997,9 +997,20 @@ func anthropicBody(r *Request, model, host string, replay bool) []byte {
 		// auto mode's review, which Claude alone does (automode.go)
 		out["safeguards"] = r.Safeguards
 	}
-	if len(r.Tools) > 0 || r.WebSearch {
+	// a history of calls with no tools to go with it, which Anthropic
+	// turns away ("must define tools", undeclared_tools.go): each tool
+	// it called is declared, and none of them may be called
+	rTools := r.Tools
+	stubbed := false
+	if len(rTools) == 0 && !r.WebSearch {
+		for _, n := range historyCallNames(r) {
+			rTools = append(rTools, Tool{Name: n, Description: stubToolDescription})
+			stubbed = true
+		}
+	}
+	if len(rTools) > 0 || r.WebSearch {
 		var tools []map[string]any
-		for _, t := range r.Tools {
+		for _, t := range rTools {
 			schema := t.Schema
 			if len(schema) == 0 {
 				schema = json.RawMessage(`{"type":"object","properties":{}}`)
@@ -1017,14 +1028,14 @@ func anthropicBody(r *Request, model, host string, replay bool) []byte {
 		out["tools"] = tools
 		var tc map[string]any
 		switch {
+		case stubbed || r.ToolChoice == "none":
+			tc = map[string]any{"type": "none"}
 		case r.ToolChoice == "auto" || r.ToolChoice == "":
 			if r.Parallel != nil && !*r.Parallel {
 				tc = map[string]any{"type": "auto"}
 			}
 		case r.ToolChoice == "required":
 			tc = map[string]any{"type": "any"}
-		case r.ToolChoice == "none":
-			tc = map[string]any{"type": "none"}
 		case strings.HasPrefix(r.ToolChoice, "name:"):
 			tc = map[string]any{"type": "tool", "name": strings.TrimPrefix(r.ToolChoice, "name:")}
 		}
@@ -1299,6 +1310,11 @@ type aUsage struct {
 	// which Anthropic bills apart: 1.25× input for 5 minutes, 2× for an
 	// hour
 	CacheCreation *aCacheCreation `json:"cache_creation,omitempty"`
+	// CacheUnknown: a plugin's usage saying its vendor gave no cache
+	// counts (magpie_cache_unknown), so the zero above is not a miss:
+	// Kiro caches but tells only credits, never tokens (zeewell on X).
+	// It is read, never told: anthropic() leaves it false.
+	CacheUnknown bool `json:"magpie_cache_unknown,omitempty"`
 }
 
 type aCacheCreation struct {
@@ -1307,7 +1323,7 @@ type aCacheCreation struct {
 }
 
 func (u aUsage) usage() Usage {
-	out := Usage{Input: u.InputTokens, Output: u.OutputTokens, CacheRead: u.CacheReadInputTokens, CacheWrite: u.CacheCreationInputTokens}
+	out := Usage{Input: u.InputTokens, Output: u.OutputTokens, CacheRead: u.CacheReadInputTokens, CacheWrite: u.CacheCreationInputTokens, cacheUnknown: u.CacheUnknown}
 	if c := u.CacheCreation; c != nil {
 		out.cacheCreationReported = true
 		out.cacheCreationHasCounts = c.Ephemeral5m+c.Ephemeral1h > 0

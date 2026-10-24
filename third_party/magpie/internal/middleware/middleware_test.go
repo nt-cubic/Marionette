@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -486,3 +487,43 @@ type discard struct{}
 func (discard) Header() http.Header         { return http.Header{"Content-Type": {"text/event-stream"}} }
 func (discard) Write(p []byte) (int, error) { return len(p), nil }
 func (discard) WriteHeader(int)             {}
+
+// A request whose reply is streaming holds its runtimes, and they hold
+// neither its body as the hooks were given it nor what they made of it:
+// a long context's body was kept alive until the reply ended, ~10 MB of a
+// 7 MB body a request, and with many agents' requests streaming at once,
+// hundreds of MB (#3383). What a hook put in ctx.state stays.
+func TestStreamingRequestHoldsNoBody(t *testing.T) {
+	use(t, file(t, `export function onRequest(body, ctx) { ctx.state.n = body.messages.length; }
+export function onProvider(body, ctx) { ctx.state.p = ctx.provider.id; }
+export function onEvent(ev, ctx) { ev.n = ctx.state.n; return ev; }`))
+	body := []byte(`{"model":"m1","messages":[` + strings.Repeat(`{"role":"user","content":"`+strings.Repeat("x", 1000)+`"},`, 8000) + `{"role":"user","content":"y"}]}`)
+	heap := func() int64 {
+		runtime.GC()
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+		return int64(m.HeapAlloc)
+	}
+	before := heap()
+	runs := make([]*Run, 8)
+	for i := range runs {
+		runs[i] = Begin(info())
+		runs[i].Request(body)
+		runs[i].Tried(body, gwmw.To{ID: "p1", Model: "m1"})
+	}
+	held := heap() - before
+	for _, r := range runs {
+		rec := httptest.NewRecorder()
+		w, done := r.Wrap(rec)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"a\":1}\n\n"))
+		done()
+		if !strings.Contains(rec.Body.String(), `"n":8001`) {
+			t.Errorf("ctx.state was lost: %s", rec.Body)
+		}
+		r.End()
+	}
+	if held > int64(len(body)) {
+		t.Fatalf("8 streaming requests hold %d MB, their body is %d MB", held>>20, len(body)>>20)
+	}
+}

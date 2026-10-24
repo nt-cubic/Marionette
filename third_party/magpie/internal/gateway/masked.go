@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/yetone/magpie/internal/gwmw"
@@ -28,11 +29,16 @@ type Masked struct {
 type maskHits struct {
 	n    int
 	hits []gwmw.Hit
+	took time.Duration // how long masking took
+	// key is where noteMasked puts the record's key, for the answer's
+	// writer to tell it what it put back once it is done (redactedHits)
+	key *int64
 }
 
 func (h *maskHits) add(o maskHits) {
 	h.n += o.n
 	h.hits = append(h.hits, o.hits...)
+	h.took += o.took
 }
 
 // noteMasked records what masking swapped in a request that went to a
@@ -49,7 +55,12 @@ func noteMasked(r *http.Request, what string, h maskHits, sent string, route int
 	}
 	rec.Values = valuesOf(h.hits)
 	rec.Snips = snipsOf(sent, h.hits)
+	rec.Took = h.took.Microseconds()
+	rec.Sent = sent
 	rec = maskrec.Add(rec)
+	if h.key != nil {
+		*h.key = rec.Key
+	}
 	m := &Masked{N: rec.N, Key: rec.Key}
 	for _, v := range rec.Values {
 		if v.Action == "warn" {

@@ -15,6 +15,7 @@
   let listings = null;   // /api/plugins/listings: the plugins suggested
   let tagged = null;     // /api/plugins/github: repositories their authors tagged magpie-plugin, as listings
   let taggedErr = "";    // why the list isn't GitHub's whole answer: it couldn't be asked, or...
+  let taggedKind = "";   // its kind: "slow", "limited" or ""
   let taggedMissing = 0; // ...this many repositories it named couldn't be read
   let topic = "magpie-plugin";
   const npm = {};        // /api/plugins/npm: package → what npm says of it
@@ -182,10 +183,12 @@
       const got = (r.repos || []).map(ghListing);
       if (!(r.error && !got.length && tagged?.length)) tagged = got;
       taggedErr = r.error || "";
+      taggedKind = r.why || "";
       taggedMissing = r.missing || 0;
       if (r.topic) topic = r.topic;
     } catch (e) {
       taggedErr = e.message || String(e);
+      taggedKind = "";
       taggedMissing = 0;
       tagged = tagged || [];
     }
@@ -526,7 +529,7 @@
     const sum = el("p", "pm-sum", summary(l));
     const meta = el("div", "pm-meta");
     meta.append(kindChip(kindOf(l)));
-    if (l.github) meta.append(unofficial(), stars(l.github.stars));
+    if (l.github) meta.append(stars(l.github.stars));
     if (l.npm?.weekly) {
       const d = el("span", "pm-dl");
       d.append(glyph(DOWN, 11, 1.5), el("span", "", t("{n}/week", { n: count(l.npm.weekly) })));
@@ -552,13 +555,6 @@
     return c;
   }
 
-  // a repository's author put it here, nobody reviewed it: said on its card
-  function unofficial() {
-    const u = el("span", "pm-chip warn");
-    u.append(el("span", "dot"), el("span", "", t("Unofficial")));
-    u.title = t("Tagged {topic} on GitHub by its author. Nobody at magpie has read it: read its code before you install it", { topic });
-    return u;
-  }
   function stars(n) {
     const d = el("span", "pm-dl");
     d.append(glyph(STAR, 11, 1.4), el("span", "", count(n)));
@@ -653,10 +649,16 @@
     replaceKeeping(ghSec, [ghHead, skeleton(3)]);
     return ghSec;
   }
-  // why the list isn't GitHub's whole answer; kept: cards are shown
-  const ghWhy = (kept) => taggedMissing
-    ? t(kept ? "{n} more on GitHub couldn't be read: {error}" : "GitHub found {n} repositories, but none of them could be read: {error}", { n: taggedMissing, error: taggedErr })
-    : t(kept ? "Couldn't ask GitHub, so these are from before: {error}" : "Couldn't ask GitHub: {error}", { error: taggedErr });
+  // why the list isn't GitHub's whole answer; kept: cards are shown. A
+  // known kind in the reader's words, the raw error as its hover
+  const ghWhy = (kept) => {
+    const error = { slow: t("GitHub didn't answer in time"), limited: t("GitHub is turning requests away for now") }[taggedKind] || taggedErr;
+    const s = el("span", "", taggedMissing
+      ? t(kept ? "{n} more on GitHub couldn't be read: {error}" : "GitHub found {n} repositories, but none of them could be read: {error}", { n: taggedMissing, error })
+      : t(kept ? "Couldn't ask GitHub, so these are from before: {error}" : "Couldn't ask GitHub: {error}", { error }));
+    if (error !== taggedErr) s.title = taggedErr;
+    return s;
+  };
   // and one GitHub couldn't be asked of says so, with another go
   function ghFailed() {
     ghHead.replaceChildren(...ghTitle());
@@ -671,7 +673,7 @@
       drawBody();
       loadTagged(true).then(drawBody);
     };
-    box.append(el("span", "", ghWhy(false)), again);
+    box.append(ghWhy(false), again);
     replaceKeeping(ghSec, [ghHead, box]);
     return ghSec;
   }
@@ -686,7 +688,7 @@
       again.disabled = true;
       loadTagged(true).then(drawBody);
     };
-    note.append(el("span", "", ghWhy(true)), again);
+    note.append(ghWhy(true), again);
     return note;
   }
   function ghSection(list) {
@@ -739,7 +741,7 @@
     // what's installed, on both sides of it: a reader looks for what to
     // add as much as for what they have
     if (both) {
-      const pick = segs([["", t("All") + " · " + n(ghKind, "")], ["have", t("Installed") + " · " + n(ghKind, "have")], ["none", t("Not installed") + " · " + n(ghKind, "none")]], ghHave, (h) => { ghHave = h; drawGh(); });
+      const pick = segs([["", t("All")], ["have", t("Installed") + " · " + n(ghKind, "have")], ["none", t("Not installed") + " · " + n(ghKind, "none")]], ghHave, (h) => { ghHave = h; drawGh(); });
       pick.classList.add("pm-ghhave");
       pick.setAttribute("role", "group");
       pick.setAttribute("aria-label", t("Installed or not"));

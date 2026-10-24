@@ -1,20 +1,18 @@
 /**
- * Memo inbox overlay (edge dock stage 3, docs/plan-edge-dock.md §4).
+ * Memo inbox overlay (edge dock stage 3, docs/plan-edge-dock.md §4 / §4.1;
+ * layout per docs/design/edge-dock.html ③④).
  *
- * Three intake channels (v1):
- *  - Explorer drag-in: tauri onDragDropEvent hit-tested against this overlay
- *    (same pattern as Composer's field), paths land in memo_save_paths;
- *  - Ctrl+V anywhere in the overlay: text / bare URL → memo_save_text;
- *  - drag OUT to the composer: file/image rows are HTML5-draggable and carry
- *    their absolute path — the composer accepts in-page memo drags.
- *
- * The §4.1 karakeep-lite layer (multi-select, AI tags, organize-into-doc,
- * new-dialog-from-picked) is the follow-up on top of this deterministic box.
+ * 收 — Explorer drag-in (tauri onDragDropEvent hit-tested against this overlay)
+ *      and Ctrl+V of text / a bare URL.
+ * 找 — search + kind filters.
+ * 用 — drag a file row onto the composer, or pick several (选择 / Ctrl-click)
+ *      and hand them to a new dialog: as context, or to be organized into a
+ *      note under docs/notes/. Both only prefill the composer.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { File as FileIcon, Image as ImageIcon, Link2, Search, Trash2, Type, X } from "lucide-react";
+import { Check, File as FileIcon, FileText, Image as ImageIcon, Link2, MessageSquarePlus, Search, Trash2, Type, X } from "lucide-react";
 import { isTauriRuntime } from "../lib/api";
 import {
   formatMemoAge,
@@ -27,6 +25,7 @@ import {
   type MemoEntry,
   type MemoKind,
 } from "../lib/memos";
+import { showToast } from "../lib/toast";
 
 const FILTERS: ReadonlyArray<{ id: MemoKind | "all"; label: string }> = [
   { id: "all", label: "全部" },
@@ -43,25 +42,54 @@ function kindIcon(kind: MemoKind) {
   return <FileIcon size={12} />;
 }
 
-function kindTag(kind: MemoKind): string {
-  if (kind === "link") return "URL";
-  if (kind === "image") return "IMG";
-  if (kind === "text") return "TXT";
-  return "FILE";
+/** One quiet meta line: host for links, size for files, first words for text. */
+function metaLine(entry: MemoEntry): string {
+  if (entry.kind === "link") {
+    try {
+      return new URL(entry.content ?? "").host;
+    } catch {
+      return entry.content ?? "";
+    }
+  }
+  if (entry.kind === "text") {
+    // The title is the text's first line; show what follows it.
+    const flat = (entry.content ?? "").replace(/\s+/g, " ").trim();
+    const rest = flat.startsWith(entry.title) ? flat.slice(entry.title.length).replace(/^[\s/·,，。:：-]+/, "") : flat;
+    return rest.slice(0, 80);
+  }
+  return [formatMemoSize(entry.size), entry.source].filter(Boolean).join(" · ");
 }
 
-export function MemoBox({ onClose, onChanged }: { onClose: () => void; onChanged: (count: number) => void }) {
+type Props = {
+  onClose: () => void;
+  onChanged: (count: number) => void;
+  /** Hand the picked entries to a new dialog (prefilled, not sent). */
+  onUse: (entries: MemoEntry[], intent: "dialog" | "doc") => void;
+  /** Floating window: no dock title bar, so the page carries its own close. */
+  showClose?: boolean;
+};
+
+export function MemoBox({ onClose, onChanged, onUse, showClose = false }: Props) {
   const [entries, setEntries] = useState<MemoEntry[]>([]);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<MemoKind | "all">("all");
   const [dropActive, setDropActive] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [selecting, setSelecting] = useState(false);
+  const [picked, setPicked] = useState<ReadonlySet<string>>(() => new Set());
   const rootRef = useRef<HTMLDivElement>(null);
+  const selectingRef = useRef(selecting);
+  selectingRef.current = selecting;
 
   const publish = useCallback(
     (next: MemoEntry[]) => {
       setEntries(next);
       onChanged(next.length);
+      setPicked((prev) => {
+        if (prev.size === 0) return prev;
+        const alive = new Set(next.map((entry) => entry.id));
+        return new Set([...prev].filter((id) => alive.has(id)));
+      });
     },
     [onChanged],
   );
@@ -76,11 +104,15 @@ export function MemoBox({ onClose, onChanged }: { onClose: () => void; onChanged
     };
   }, [publish]);
 
-  // Esc closes; the overlay keeps keyboard focus so Ctrl+V lands here.
+  // Esc leaves select mode first, then closes; focus stays here for Ctrl+V.
   useEffect(() => {
     rootRef.current?.focus();
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key !== "Escape") return;
+      if (selectingRef.current) {
+        setSelecting(false);
+        setPicked(new Set());
+      } else onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -119,7 +151,7 @@ export function MemoBox({ onClose, onChanged }: { onClose: () => void; onChanged
           setBusy(true);
           void memoSavePaths(payload.paths, "拖入")
             .then(publish)
-            .catch(() => undefined)
+            .catch((error) => showToast({ text: "没能存进收纳盒", detail: String(error), tone: "error" }))
             .finally(() => setBusy(false));
         }
       })
@@ -136,14 +168,20 @@ export function MemoBox({ onClose, onChanged }: { onClose: () => void; onChanged
 
   const onPaste = useCallback(
     (event: React.ClipboardEvent) => {
+      // The search box keeps its own paste.
+      if ((event.target as HTMLElement).tagName === "INPUT") return;
       const text = event.clipboardData.getData("text/plain").trim();
       if (!text) return;
       event.preventDefault();
       setBusy(true);
       void memoSaveText(text, undefined, "粘贴")
-        .then(() => memoList())
-        .then(publish)
-        .catch(() => undefined)
+        .then((saved) => {
+          if (!saved) {
+            showToast({ text: "没能存进收纳盒", tone: "error" });
+            return;
+          }
+          return memoList().then(publish);
+        })
         .finally(() => setBusy(false));
     },
     [publish],
@@ -161,104 +199,187 @@ export function MemoBox({ onClose, onChanged }: { onClose: () => void; onChanged
 
   const counts = useMemo(() => {
     const map = new Map<MemoKind | "all", number>([["all", entries.length]]);
-    for (const entry of entries) {
-      map.set(entry.kind, (map.get(entry.kind) ?? 0) + 1);
-    }
+    for (const entry of entries) map.set(entry.kind, (map.get(entry.kind) ?? 0) + 1);
     return map;
   }, [entries]);
 
   const remove = (id: string) => {
-    void memoDelete(id).then(publish);
+    void memoDelete(id).then((next) => {
+      if (next) publish(next);
+      else showToast({ text: "删除失败，条目还在", tone: "error" });
+    });
+  };
+
+  const toggle = (id: string) => {
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const exitSelect = () => {
+    setSelecting(false);
+    setPicked(new Set());
+  };
+
+  const use = (intent: "dialog" | "doc") => {
+    const chosen = entries.filter((entry) => picked.has(entry.id));
+    if (!chosen.length) return;
+    onUse(chosen, intent);
+    onClose();
   };
 
   return (
     <div
       ref={rootRef}
-      className={dropActive ? "memo-box is-drop-active" : "memo-box"}
+      className={`memo-box${dropActive ? " is-drop-active" : ""}${selecting ? " is-selecting" : ""}`}
       role="dialog"
       aria-label="收纳盒"
       tabIndex={-1}
       onPaste={onPaste}
     >
+      {/* Title and 返回 live in the strip's title bar. */}
       <div className="memo-box__head">
-        <strong>收纳盒</strong>
-        <span className="memo-box__count">{entries.length} 条</span>
-        <span className="memo-box__spacer" />
-        <button type="button" className="memo-box__close" aria-label="关闭收纳盒" onClick={onClose}>
-          <X size={13} />
-        </button>
-      </div>
-      <div className="memo-box__toolbar">
-        <Search size={12} />
-        <input
-          type="search"
-          placeholder="搜索标题、内容、路径…"
-          aria-label="搜索收纳盒"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-        />
-      </div>
-      <div className="memo-box__filters">
-        {FILTERS.map((chip) => (
+        {showClose && <strong className="memo-box__title-label">收纳盒</strong>}
+        <label className="memo-box__search">
+          <Search size={12} />
+          <input
+            type="search"
+            placeholder="搜索标题、内容、路径"
+            aria-label="搜索收纳盒"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          {busy && <span className="memo-box__busy">存入中…</span>}
+        </label>
+        {entries.length > 0 && (
           <button
-            key={chip.id}
             type="button"
-            className={filter === chip.id ? "memo-box__chip is-on" : "memo-box__chip"}
-            onClick={() => setFilter(chip.id)}
+            className={selecting ? "memo-box__text-btn is-on" : "memo-box__text-btn"}
+            onClick={() => (selecting ? exitSelect() : setSelecting(true))}
           >
-            {chip.label} <b>{counts.get(chip.id) ?? 0}</b>
+            {selecting ? "完成" : "选择"}
           </button>
-        ))}
-        {busy && <span className="memo-box__busy">处理中…</span>}
-      </div>
-      <div className="memo-box__list custom-scrollbar">
-        {filtered.length === 0 ? (
-          <p className="memo-box__empty">{entries.length === 0 ? "空收纳盒 · 拖文件到这里或 Ctrl+V 粘贴文字/链接" : "没有匹配的条目"}</p>
-        ) : (
-          filtered.map((entry) => (
-            <div
-              key={entry.id}
-              className="memo-box__row"
-              draggable={entry.kind === "file" || entry.kind === "image"}
-              onDragStart={(event) => {
-                if (!entry.path) return;
-                event.dataTransfer.setData(MEMO_DRAG_TYPE, entry.id);
-                event.dataTransfer.setData("text/plain", entry.path);
-                event.dataTransfer.effectAllowed = "copy";
-              }}
-              title={
-                entry.kind === "link" || entry.kind === "text"
-                  ? entry.content ?? entry.title
-                  : entry.path ?? entry.title
-              }
-            >
-              <span className="memo-box__icon">{kindIcon(entry.kind)}</span>
-              <span className="memo-box__body">
-                <span className="memo-box__title">{entry.title}</span>
-                <span className="memo-box__meta">
-                  <i>{kindTag(entry.kind)}</i>
-                  {formatMemoSize(entry.size)}
-                  {entry.source ? ` · ${entry.source}` : ""}
-                  {(entry.kind === "file" || entry.kind === "image") && " · 可拖到输入框"}
-                </span>
-              </span>
-              <span className="memo-box__age">{formatMemoAge(entry.createdAt)}</span>
-              <button
-                type="button"
-                className="memo-box__delete"
-                aria-label={`删除 ${entry.title}`}
-                title="删除"
-                onClick={() => remove(entry.id)}
-              >
-                <Trash2 size={12} />
-              </button>
-            </div>
-          ))
+        )}
+        {showClose && (
+          <button
+            type="button"
+            className="memo-box__close"
+            title="关闭 · Esc"
+            aria-label="关闭收纳盒"
+            onClick={onClose}
+          >
+            <X size={13} />
+          </button>
         )}
       </div>
-      <div className={dropActive ? "memo-box__drop is-active" : "memo-box__drop"}>
-        拖文件/文件夹到这里存进收纳盒 · Ctrl V 粘贴文字或链接
+      {entries.length > 0 && (
+        <div className="memo-box__filters">
+          {FILTERS.filter((chip) => chip.id === "all" || (counts.get(chip.id) ?? 0) > 0).map((chip) => (
+            <button
+              key={chip.id}
+              type="button"
+              className={filter === chip.id ? "memo-box__chip is-on" : "memo-box__chip"}
+              onClick={() => setFilter(chip.id)}
+            >
+              {chip.label}
+              <b>{counts.get(chip.id) ?? 0}</b>
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="memo-box__list custom-scrollbar">
+        {entries.length === 0 ? (
+          <div className="memo-box__empty">
+            <strong>还没有东西</strong>
+            <span>把文件、文件夹拖到这里，或 Ctrl V 粘贴文字和链接。</span>
+            <span>之后可以多选，交给新对话，或整理成一篇笔记。</span>
+          </div>
+        ) : filtered.length === 0 ? (
+          <p className="memo-box__none">没有匹配的条目</p>
+        ) : (
+          filtered.map((entry) => {
+            const isPicked = picked.has(entry.id);
+            const draggable = !selecting && (entry.kind === "file" || entry.kind === "image") && Boolean(entry.path);
+            return (
+              <div
+                key={entry.id}
+                className={isPicked ? "memo-box__row is-picked" : "memo-box__row"}
+                draggable={draggable}
+                onDragStart={(event) => {
+                  if (!entry.path) return;
+                  event.dataTransfer.setData(MEMO_DRAG_TYPE, entry.id);
+                  event.dataTransfer.setData("text/plain", entry.path);
+                  event.dataTransfer.effectAllowed = "copy";
+                }}
+                onClick={(event) => {
+                  if (selecting) toggle(entry.id);
+                  else if (event.ctrlKey || event.metaKey) {
+                    setSelecting(true);
+                    toggle(entry.id);
+                  }
+                }}
+                title={
+                  entry.kind === "link" || entry.kind === "text"
+                    ? (entry.content ?? entry.title)
+                    : `${entry.path ?? entry.title}${draggable ? "\n可拖到输入框" : ""}`
+                }
+              >
+                <span className="memo-box__icon" aria-hidden>
+                  {selecting ? (
+                    <span className={isPicked ? "memo-box__check is-on" : "memo-box__check"}>
+                      {isPicked && <Check size={10} strokeWidth={3} />}
+                    </span>
+                  ) : (
+                    kindIcon(entry.kind)
+                  )}
+                </span>
+                <span className="memo-box__body">
+                  <span className="memo-box__title">{entry.title}</span>
+                  {metaLine(entry) && <span className="memo-box__meta">{metaLine(entry)}</span>}
+                </span>
+                <span className="memo-box__age">{formatMemoAge(entry.createdAt)}</span>
+                {!selecting && (
+                  <button
+                    type="button"
+                    className="memo-box__delete"
+                    aria-label={`删除 ${entry.title}`}
+                    title="删除"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      remove(entry.id);
+                    }}
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                )}
+              </div>
+            );
+          })
+        )}
       </div>
+      {selecting ? (
+        <div className="memo-box__selbar">
+          <span>
+            已选 <b>{picked.size}</b>
+          </span>
+          <span className="memo-box__spacer" />
+          <button type="button" className="memo-box__act" disabled={!picked.size} onClick={() => use("doc")}>
+            <FileText size={12} />
+            整理成文档
+          </button>
+          <button type="button" className="memo-box__act is-primary" disabled={!picked.size} onClick={() => use("dialog")}>
+            <MessageSquarePlus size={12} />
+            开新对话
+          </button>
+        </div>
+      ) : (
+        <div className={dropActive ? "memo-box__drop is-active" : "memo-box__drop"}>
+          {dropActive ? "松开即存入" : "拖入文件 · Ctrl V 粘贴 · Ctrl 点击多选"}
+        </div>
+      )}
     </div>
   );
 }

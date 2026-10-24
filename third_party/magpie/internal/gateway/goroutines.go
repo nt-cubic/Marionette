@@ -1,0 +1,82 @@
+package gateway
+
+// GET /v1/magpie/goroutines: every goroutine of the process serving the
+// gateway, with its stack and how long it has waited, for a report of
+// magpie stuck at something while it goes on running. An app that kept
+// the partner list it had for three days could only be read by killing
+// it, which ends what was stuck (#3362); `magpie goroutines` asks the
+// running process instead and writes the file the user sends.
+//
+// The dump is runtime/pprof's "goroutine" profile at debug=2, the form a
+// crash prints: each goroutine's state, its wait ("[select, 4320
+// minutes]"), its frames with source lines, and who started it. A frame's
+// arguments are words in hex, never what they point at, so it holds no
+// keys, prompts or messages; it names the source files magpie was built
+// from and the program's path.
+
+import (
+	"bytes"
+	"encoding/json"
+	"log"
+	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
+	"runtime/pprof"
+	"time"
+
+	"github.com/yetone/magpie/internal/provider"
+)
+
+// GoroutinesPath is where the gateway answers a goroutine dump.
+const GoroutinesPath = "/v1/magpie/goroutines"
+
+// GoroutineStatsHeader carries GoroutineStats, as JSON, beside the dump.
+const GoroutineStatsHeader = "X-Magpie-Goroutine-Stats"
+
+// GoroutineStats says which process the dump is of.
+type GoroutineStats struct {
+	PID        int    `json:"pid"`
+	Program    string `json:"program"`
+	Version    string `json:"version"`
+	Window     bool   `json:"window"` // the app's window or magpie web serves the gateway
+	Uptime     string `json:"uptime"`
+	Goroutines int    `json:"goroutines"`
+}
+
+// goroutinesRefused says why r may not have the goroutine dump, "" when it
+// may: the same callers as the heap profile (heapRefused).
+func goroutinesRefused(r *http.Request) string {
+	return profileRefused(r, "goroutine dump", "magpie goroutines")
+}
+
+// goroutineDump answers GoroutinesPath: the dump as text, with
+// GoroutineStats in GoroutineStatsHeader.
+func (s *Server) goroutineDump(w http.ResponseWriter, r *http.Request) {
+	if why := goroutinesRefused(r); why != "" {
+		log.Printf("refused %s %s from %s: %s", r.Method, r.URL.Path, r.RemoteAddr, why)
+		writeError(w, provider.Chat, http.StatusForbidden, why)
+		return
+	}
+	goroutines := runtime.NumGoroutine()
+	var buf bytes.Buffer
+	if err := pprof.Lookup("goroutine").WriteTo(&buf, 2); err != nil {
+		writeError(w, provider.Chat, http.StatusInternalServerError, "the goroutine dump couldn't be written: "+err.Error())
+		return
+	}
+	exe, _ := os.Executable()
+	stats, _ := json.Marshal(GoroutineStats{
+		PID:        os.Getpid(),
+		Program:    filepath.Base(exe),
+		Version:    Version,
+		Window:     Window,
+		Uptime:     time.Since(processStarted).Round(time.Second).String(),
+		Goroutines: goroutines,
+	})
+	h := w.Header()
+	h.Set("Content-Type", "text/plain; charset=utf-8")
+	h.Set("Content-Disposition", `attachment; filename="magpie-goroutines.txt"`)
+	h.Set("Cache-Control", "no-store")
+	h.Set(GoroutineStatsHeader, string(stats))
+	w.Write(buf.Bytes())
+}

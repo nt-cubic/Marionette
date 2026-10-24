@@ -17,7 +17,7 @@ func TestSystemProxySetAfterStartIsTakenSoon(t *testing.T) {
 	var p atomic.Value
 	p.Store(Proxy{})
 	oldRead, oldNone := readSystem, noneKeep
-	readSystem = func() Proxy { return p.Load().(Proxy) }
+	readSystem = func() (Proxy, bool) { return p.Load().(Proxy), true }
 	noneKeep = 50 * time.Millisecond
 	sysCache.Lock()
 	sysCache.at, sysCache.p = time.Time{}, Proxy{}

@@ -158,6 +158,17 @@ type Settings struct {
 	// RequestArchiveMaxMB is how much of each body the archive keeps, in
 	// MiB: 0 for 32, at most 1024 (#447)
 	RequestArchiveMaxMB int `json:"requestArchiveMaxMB,omitempty"`
+	// RequestArchiveLocal keeps the request archive on this computer's disk,
+	// in magpie's folder (gateway/archive_local.go), while sync has no S3
+	// bucket for it (CyberCaius on Discord). Its own switch, separate from
+	// RequestArchive, which sync carries to every computer: this computer's
+	// own (KeepOwn), so a request body is written to a disk only where the
+	// user turned it on.
+	RequestArchiveLocal bool `json:"requestArchiveLocal,omitempty"`
+	// RequestArchiveLocalMB is how large the archive on this computer grows
+	// before its oldest calls are removed, in MiB: 0 for 1024. In
+	// settings.json only; this computer's own (KeepOwn).
+	RequestArchiveLocalMB int `json:"requestArchiveLocalMB,omitempty"`
 	// GatewayConversations is local, opt-in recording of session traffic.
 	// Only SetGatewayConversations changes it; other saves keep local consent.
 	GatewayConversations bool `json:"gatewayConversations,omitempty"`
@@ -1080,6 +1091,7 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.SessionTerminal = cur.SessionTerminal
 	s.RedactModel = cur.RedactModel
 	s.ClaudeRunsMost = cur.ClaudeRunsMost
+	s.RequestArchiveLocal, s.RequestArchiveLocalMB = cur.RequestArchiveLocal, cur.RequestArchiveLocalMB
 }
 
 // RenamePerModel moves what the user said of a provider's models to the id

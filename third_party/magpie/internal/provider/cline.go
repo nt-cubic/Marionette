@@ -223,6 +223,23 @@ func (p Provider) ClinePin(model string) (upstream string, openRouter bool) {
 	return "", false
 }
 
+// ClinePassAsked is the upstream a request for model asks the Cline API
+// to serve it from on p, "" when it asks for none: ClinePin's, sent with
+// the Upstream tick, or, on the Cline plugin's provider, DeepSeek for a
+// ClinePass DeepSeek model, which opencode-cline-auth 0.1.11 pins by
+// itself unless its pinUpstream option is set off. The Routing page says
+// it beside a reply that names no provider, so a route ClinePass picked
+// reads as asked for DeepSeek or not (zRain on Discord, 10-24).
+func (p Provider) ClinePassAsked(model string) string {
+	if up, _ := p.ClinePin(model); up != "" {
+		return up
+	}
+	if p.PluginProvider() == "cline" && clinePassDeepSeek(model) {
+		return "deepseek"
+	}
+	return ""
+}
+
 // clinePassDeepSeek is a ClinePass DeepSeek model: cline-pass/deepseek-…
 func clinePassDeepSeek(model string) bool {
 	return strings.HasPrefix(strings.ToLower(model), "cline-pass/deepseek")

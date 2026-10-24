@@ -10,11 +10,13 @@ import {
   X,
 } from "lucide-react";
 import { memo, useState } from "react";
+import { createPortal } from "react-dom";
 import { openExternal, revealInFileManager } from "../lib/api";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { MemorySection } from "./MemorySection";
 import { PluginsSection } from "./PluginsSection";
 import { SessionStatsSection } from "./SessionStatsSection";
+import { dockFooterHost, useDocked } from "../lib/dockFooter";
 import type { PlanEntry } from "../lib/acpPlan";
 import type { SessionStats } from "../lib/sessionStats";
 import type { TodoItem, TodoMergePreview, TodoStatus } from "../lib/todos";
@@ -389,6 +391,8 @@ export const ContextPanel = memo(function ContextPanel({
 }: ContextPanelProps) {
   const planList = planEntries && planEntries.length > 0 ? planEntries : null;
   const [draftTodo, setDraftTodo] = useState("");
+  /** Docked: the update control joins the strip's footer bar below the composer. */
+  const docked = useDocked();
   const [mergePreview, setMergePreview] = useState<TodoMergePreview | null>(null);
   const [mergeError, setMergeError] = useState<string | null>(null);
   const [riskyOpenPath, setRiskyOpenPath] = useState<string | null>(null);
@@ -504,6 +508,20 @@ export const ContextPanel = memo(function ContextPanel({
     );
   };
 
+  /** Right rail's only footer control besides collapse; docked it moves below. */
+  const updateButton = onCheckAppUpdate ? (
+    <button
+      className={`pill-action pill-action--icon pill-action--sm context-panel__button--update${appUpdateAvailable ? " is-update-ready" : ""}`}
+      type="button"
+      title={appUpdateAvailable ? "有新版本可用 — 点击检查" : "检查更新"}
+      aria-label={appUpdateAvailable ? "有新版本可用 — 点击检查" : "检查更新"}
+      disabled={checkAppUpdateBusy}
+      onClick={onCheckAppUpdate}
+    >
+      <ArrowUpCircle size={13} strokeWidth={2.25} />
+    </button>
+  ) : null;
+
   return (
     <aside className={`context-panel custom-scrollbar scrollbar-autohide${collapsed ? " is-collapsed" : ""}`} aria-label="Context panel">
       {onResizeStart && (
@@ -518,7 +536,7 @@ export const ContextPanel = memo(function ContextPanel({
           }}
         />
       )}
-      <section className="context-card" aria-label="Tasks">
+      <section className="context-card" id="context-tasks" aria-label="Tasks">
         <div className="context-card__heading">
           <span>任务</span>
         </div>
@@ -673,7 +691,7 @@ export const ContextPanel = memo(function ContextPanel({
           )}
         </div>
       </section>
-      <section className="context-card">
+      <section className="context-card" id="context-usage">
         <div className="context-card__heading">
           <span>用量</span>
           <button className="pill-action pill-action--icon pill-action--sm" type="button" title="Refresh usage" aria-label="Refresh usage" onClick={onUsageRefresh}>
@@ -735,7 +753,7 @@ export const ContextPanel = memo(function ContextPanel({
 
       <PluginsSection activeAgentId={activeAgentId} />
 
-      <section className="context-card">
+      <section className="context-card" id="context-changes">
         <div className="context-card__heading">
           <span>改动文件 · 项目</span>
           <div className="context-card__heading-actions">
@@ -784,7 +802,7 @@ export const ContextPanel = memo(function ContextPanel({
         {fileActionNote ? <p className="changed-files-note">{fileActionNote}</p> : null}
       </section>
 
-      <section className="context-card">
+      <section className="context-card" id="context-project">
         <div className="context-card__heading">
           <span>项目上下文</span>
           {onRescanProjectContext && (
@@ -945,18 +963,7 @@ export const ContextPanel = memo(function ContextPanel({
         <button className="pill-action pill-action--icon pill-action--sm" type="button" title={collapsed ? "Pin information panel open" : "Collapse information panel"} aria-label={collapsed ? "Pin information panel open" : "Collapse information panel"} onClick={collapsed ? onExpand : onCollapse}>
           {collapsed ? <PanelRightOpen size={13} /> : <PanelRightClose size={13} />}
         </button>
-        {onCheckAppUpdate && (
-          <button
-            className={`pill-action pill-action--icon pill-action--sm context-panel__button--update${appUpdateAvailable ? " is-update-ready" : ""}`}
-            type="button"
-            title={appUpdateAvailable ? "有新版本可用 — 点击检查" : "检查更新"}
-            aria-label={appUpdateAvailable ? "有新版本可用 — 点击检查" : "检查更新"}
-            disabled={checkAppUpdateBusy}
-            onClick={onCheckAppUpdate}
-          >
-            <ArrowUpCircle size={13} strokeWidth={2.25} />
-          </button>
-        )}
+        {docked && updateButton ? createPortal(updateButton, dockFooterHost()) : updateButton}
       </div>
     </aside>
   );

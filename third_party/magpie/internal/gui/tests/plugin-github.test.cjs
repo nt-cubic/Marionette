@@ -126,8 +126,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           assert.equal(await cards.nth(2).locator(".pm-logo img").count(), 0);
           // a provider and a middleware part by hue (yetone: 中间件和供应商稍微有点区分吧)
           assert.equal(await c.locator(".pm-chip.kind.pv").count(), 1);
-          assert.equal((await c.locator(".pm-chip.warn").innerText()).trim(), w.chip);
-          assert.match(await c.locator(".pm-chip.warn").getAttribute("title"), /magpie-plugin/);
+          // unofficial is said by the section's head, once, not by a chip on
+          // every card in it (the Kiko03O1 reply on X: ui 设计能不能好看点)
+          assert.equal(await sec.locator(".pm-chip.warn").count(), 0);
+          assert.equal(await sec.locator(".pm-meta", { hasText: w.chip }).count(), 0);
           assert.equal((await c.locator(".pm-dl").innerText()).trim(), "1.3k");
           assert.equal((await c.locator(".pm-ver").innerText()).trim(), "v2.2.1");
           // installed by its page's URL: Installed all the same
@@ -203,7 +205,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await page.waitForFunction(() => document.querySelectorAll("#view-plugins .pm-sec .pm-card").length === 1);
           assert.deepEqual(await found.locator(".pm-name b").allInnerTexts(), ["opencode-quota"]);
           await view.locator(".pm-find input").fill("nothing-like-it");
-          await page.waitForFunction(() => !document.querySelector("#view-plugins .pm-sec .pm-card .pm-chip.warn"));
+          await page.waitForFunction(() => !document.querySelector("#view-plugins .pm-ghsec .pm-card"));
 
           assert.equal(asked.filter(([k]) => k === "fetched").length, 0, "nothing fetched from outside: " + JSON.stringify(asked.filter(([k]) => k === "fetched")));
           assert.deepEqual(errors, []);

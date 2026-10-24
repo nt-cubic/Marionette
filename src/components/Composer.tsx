@@ -222,6 +222,12 @@ type ComposerProps = {
    * Parent dedupes in-flight creates.
    */
   onEmptyActivate?: () => void;
+  /**
+   * Docked strip: height follows the content (no remembered inline height, no
+   * drag-resize), so the composer sits directly on the footer bar instead of
+   * carrying a tall empty slab from the last floating-window size.
+   */
+  docked?: boolean;
 };
 
 /**
@@ -533,6 +539,7 @@ export function Composer({
   autoFocus = false,
   isFocused = true,
   onEmptyActivate,
+  docked = false,
 }: ComposerProps) {
   /**
    * Offline-first controls: the last catalog this agent advertised, with this
@@ -600,6 +607,17 @@ export function Composer({
   const [draft, setDraft] = useState(() => readDraftCache(sessionId));
   /** Image attachments as Codex-style pills (not raw paths in the textarea). */
   const [imageAttachments, setImageAttachments] = useState<ImageAttachment[]>([]);
+  const attachmentsRef = useRef<HTMLDivElement>(null);
+  /**
+   * Height the attachment pills add inside .composer__field. The field's
+   * fixed-height grid otherwise pushes the toolbar below the composer and
+   * clips it; growing the composer upward keeps every control where it was
+   * (2026-10-24).
+   */
+  const [attachmentsHeight, setAttachmentsHeight] = useState(0);
+  const attachmentsExtra = imageAttachments.length > 0 ? attachmentsHeight + 6 : 0;
+  const attachmentsExtraRef = useRef(0);
+  attachmentsExtraRef.current = attachmentsExtra;
   const [annotatingId, setAnnotatingId] = useState<string | null>(null);
   /** Draft snapshot right after a file drop — treats path-only draft as "empty" for chips. */
   const [draftAfterDrop, setDraftAfterDrop] = useState<string | null>(null);
@@ -785,6 +803,21 @@ export function Composer({
     [agent.id, applyCaps],
   );
 
+  // Measure the attachment strip before paint so adding/removing an image
+  // never flashes a clipped toolbar. The composer grows upward by this much.
+  useLayoutEffect(() => {
+    const el = attachmentsRef.current;
+    if (!el) {
+      setAttachmentsHeight(0);
+      return;
+    }
+    const apply = () => setAttachmentsHeight(el.offsetHeight);
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [imageAttachments.length]);
+
   // Persist composer height.
   useEffect(() => {
     try {
@@ -815,8 +848,11 @@ export function Composer({
         if (!el) return;
         const bottom = el.getBoundingClientRect().bottom;
         const next = clampComposerHeight(bottom - event.clientY);
-        composerHeightRef.current = next;
-        el.style.height = `${next}px`;
+        // Persist the base height without the attachment strip; the strip is
+        // added on top when pills are present.
+        const base = clampComposerHeight(next - attachmentsExtraRef.current);
+        composerHeightRef.current = base;
+        el.style.height = `${base + attachmentsExtraRef.current}px`;
       });
     };
     const onUp = () => {
@@ -2267,6 +2303,57 @@ export function Composer({
     };
   }, [menu]);
 
+  /**
+   * Keep every composer popover inside the window.
+   *
+   * Chips flow left to right, but the model / agent / send menus are anchored
+   * `right: 0` on their own chip. In the 400px docked strip the model chip sits
+   * near x=8, so a 328px menu opened further left and WebView clipped almost
+   * all of it (the list "disappeared outside the sidebar"). Measure after the
+   * menu paints and pin its left edge inside an 8px viewport gutter; the same
+   * pass also rescues menus that would spill over the right edge.
+   */
+  useLayoutEffect(() => {
+    if (!menu) return;
+    const root = composerRef.current;
+    if (!root) return;
+    const clamp = () => {
+      const vw = window.innerWidth;
+      const margin = 8;
+      for (const el of root.querySelectorAll<HTMLElement>(".composer-menu")) {
+        el.style.left = "";
+        el.style.right = "";
+        const rect = el.getBoundingClientRect();
+        let dx = 0;
+        if (rect.left < margin) dx = margin - rect.left;
+        else if (rect.right > vw - margin) dx = vw - margin - rect.right;
+        if (dx === 0) continue;
+        const parent = el.offsetParent as HTMLElement | null;
+        const base = parent?.getBoundingClientRect().left ?? 0;
+        el.style.left = `${rect.left + dx - base}px`;
+        el.style.right = "auto";
+      }
+    };
+    clamp();
+    const frames = [
+      window.requestAnimationFrame(clamp),
+      window.requestAnimationFrame(() => window.requestAnimationFrame(clamp)),
+    ];
+    const ro = new ResizeObserver(clamp);
+    ro.observe(root);
+    for (const el of root.querySelectorAll<HTMLElement>(".composer-menu")) ro.observe(el);
+    window.addEventListener("resize", clamp);
+    return () => {
+      for (const frame of frames) window.cancelAnimationFrame(frame);
+      ro.disconnect();
+      window.removeEventListener("resize", clamp);
+      for (const el of root.querySelectorAll<HTMLElement>(".composer-menu")) {
+        el.style.left = "";
+        el.style.right = "";
+      }
+    };
+  }, [menu]);
+
   // Which agents can actually run — probed when the switcher opens, so the list
   // never offers a harness that would fail with "command not found" on send.
   const refreshAgentStatuses = useCallback(async () => {
@@ -2485,11 +2572,12 @@ export function Composer({
         isWarming ? "is-warming" : "",
         resizingComposer ? "is-resizing" : "",
         hasModes ? "has-mode" : "",
+        docked ? "is-docked" : "",
       ]
         .filter(Boolean)
         .join(" ")}
       data-mode-tone={tone}
-      style={{ height: composerHeight }}
+      style={docked ? undefined : { height: composerHeight + attachmentsExtra }}
       aria-label="Composer"
       onPointerDown={activateEmpty}
     >
@@ -2577,7 +2665,7 @@ export function Composer({
         {dropActive && <div className="composer__drop-hint">Drop to insert file path</div>}
         {/* Pills live inside the field (Codex-style), not above it next to suggestions. */}
         {imageAttachments.length > 0 && (
-          <div className="composer__attachments" aria-label="Image attachments">
+          <div ref={attachmentsRef} className="composer__attachments" aria-label="Image attachments">
             {imageAttachments.map((att) => (
               <span key={att.id} className="composer__attachment-pill">
                 <ComposerAttachmentThumb path={att.path} name={att.name} />
@@ -2670,7 +2758,7 @@ export function Composer({
                 ? "Message the Agent (Enter to send · Shift+Enter newline) · / commands · Tab cycles mode"
                 : "Message the Agent (Ctrl+Enter to send) · / commands · Tab cycles mode"
           }
-          rows={isTall ? 10 : 2}
+          rows={docked ? 2 : isTall ? 10 : 2}
           value={draft}
           onFocus={() => {
             activateEmpty();

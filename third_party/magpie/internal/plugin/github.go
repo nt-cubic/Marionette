@@ -101,6 +101,10 @@ func taggedOnDisk() []Tagged {
 	return l
 }
 
+// ErrNoAnswer is GitHub not answering a read before the page stopped
+// waiting for it.
+var ErrNoAnswer = errors.New("no answer")
+
 // TaggedMissing is the error TaggedRepos gives when GitHub's search
 // answered but repositories it named couldn't be read: Missing of them
 // aren't in the list, for Why.
@@ -357,7 +361,7 @@ func askTagged(ctx context.Context, last []Tagged) (l []Tagged, whole bool, miss
 		w := why
 		mu.Unlock()
 		if w == nil {
-			w = fmt.Errorf("no answer in %s", taggedWait)
+			w = fmt.Errorf("%w in %s", ErrNoAnswer, taggedWait)
 		}
 		missing = &TaggedMissing{Missing: gone, Why: w}
 	}

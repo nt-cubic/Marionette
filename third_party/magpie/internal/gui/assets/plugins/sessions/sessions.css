@@ -12,6 +12,7 @@
 .sm-agent-pick .ic { width: 13px; height: 13px; flex: none; }
 .sm-agent-pick em, .sm-agents em, .sm-trash-btn em { font-style: normal; font-size: 10.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
 .pop.proto-menu.sm-agent-menu { width: min(280px, calc(100vw - 16px)); max-height: min(360px, 70vh); overflow-y: auto; background: var(--card); }
+.sm-agent-menu .pm-item { align-items: center; }
 .sm-agent-menu .pm-words { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: 1; }
 .sm-agent-menu .pm-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sm-agent-menu .pm-note { flex: none; font-variant-numeric: tabular-nums; }

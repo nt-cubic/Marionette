@@ -72,6 +72,20 @@ func (r *Run) End() {
 	}
 }
 
+// letGo lets the runtimes drop the request's body as its hooks were
+// given it, and what they made of it: a runtime is the request's until its
+// reply has streamed, minutes on a long one, and kept a long context's
+// body alive all that time, ~10 MB a 7 MB body (#3383). ctx, and what
+// ctx.state holds, stay. Not after each onEvent: an event is small, and
+// its hooks run a thousand times a reply.
+func (r *Run) letGo() {
+	for _, in := range r.insts {
+		if in != nil {
+			in.rt.ReleaseCallData()
+		}
+	}
+}
+
 // acquire is middleware i's runtime for this request and its ctx: the
 // request's Info, the plugin's options, a state of its own and reject.
 func (r *Run) acquire(i int) (*inst, moejs.Value, error) {
@@ -130,6 +144,7 @@ func (r *Run) Request(body []byte) ([]byte, *Reject) {
 	if r == nil {
 		return body, nil
 	}
+	defer r.letGo()
 	for i, m := range r.set.list {
 		if !m.hasReq {
 			continue
@@ -159,6 +174,7 @@ func (r *Run) Tried(body []byte, to gwmw.To) []byte {
 	if r == nil {
 		return body
 	}
+	defer r.letGo()
 	b, _ := json.Marshal(to)
 	for i, m := range r.set.list {
 		if !m.hasProv {

@@ -145,6 +145,7 @@ func builtins(home, cfg string) []*Agent {
 		pencil(home),
 		openPencil(home, cfg),
 		raycast(home),
+		kiroCrew(home),
 		t3code(home),
 		hanako(home),
 		atomcode(home),

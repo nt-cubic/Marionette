@@ -1,5 +1,6 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Bell, BellOff, ChevronRight, CloudMoon, Dock, Folder, FolderOpen, Globe, GripVertical, KeyRound, LogOut, MessageSquare, Network, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, SlidersHorizontal, SunMedium, Trash2, X, Zap } from "lucide-react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+import { Archive, Bell, BellOff, ChevronRight, CloudMoon, Folder, FolderOpen, Globe, GripVertical, KeyRound, MessageSquare, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, SlidersHorizontal, SunMedium, Trash2, X, Zap } from "lucide-react";
 // Refresh on a project row folds CLI history into the normal session list.
 import type { AgentConfig, Project, ProxyConfig, ProxyTestResult, Session } from "../lib/types";
 import { themeToggleTitle, type ThemeMode } from "../lib/theme";
@@ -29,6 +30,16 @@ import { CredentialsDialog } from "./CredentialsDialog";
 import { ModelLibraryDialog } from "./ModelLibraryDialog";
 import { SplitBesideMenu, type OpenBesideEdge } from "./SplitBesideMenu";
 import type { DropEdge } from "../lib/splitWorkspace";
+import { dockFooterHost, useDocked } from "../lib/dockFooter";
+
+/**
+ * Docked mode: the footer buttons are portaled below the composer. Their
+ * popovers travel with them — inside a `translateX(100%)` rail overlay a
+ * `position: fixed` popover would be parked off-screen too.
+ */
+function DockedLayer({ docked, children }: { docked: boolean; children: ReactNode }) {
+  return docked ? createPortal(children, document.body) : <>{children}</>;
+}
 
 /** Visible sessions per project before "Show more". Projects always list fully. */
 const SESSION_LIST_PREVIEW = 5;
@@ -115,14 +126,6 @@ type ProjectShelfProps = {
   /** Desktop attention (taskbar flash + sound) for agent events and stalls. */
   desktopNotifyEnabled?: boolean;
   onToggleDesktopNotify?: () => void;
-  /** Edge dock stage 0: closing the window retracts to background (engine and sessions keep running). */
-  autoHideOnClose?: boolean;
-  onToggleAutoHideClose?: () => void;
-  /** Real exit — only reachable while close-to-background is on. */
-  onQuitApp?: () => void;
-  /** Edge dock stage 1: dock the window to a screen edge / release it back. */
-  dockActive?: boolean;
-  onDockToEdge?: () => void;
   onAddProject: () => void;
   onNewSession: (projectId: string) => void;
   onProjectSelect: (projectId: string) => void;
@@ -162,6 +165,8 @@ type ProjectShelfProps = {
   onChatSessionSelect?: (session: Session) => void;
   /** Create a new chat session. */
   onNewChat?: () => void;
+  /** Open the memo page from the entry above the Chat section. */
+  onOpenMemo?: () => void;
   /** Scan this project's agent CLI stores into the normal session list. */
   externalScanning?: boolean;
   onRefreshExternal?: (projectId: string) => void;
@@ -269,11 +274,6 @@ export function ProjectShelf({
   onToggleTheme,
   desktopNotifyEnabled = true,
   onToggleDesktopNotify,
-  autoHideOnClose = true,
-  onToggleAutoHideClose,
-  onQuitApp,
-  dockActive = false,
-  onDockToEdge,
   onDeleteSession,
   onToggleSessionPin,
   onDeleteProject,
@@ -288,6 +288,7 @@ export function ProjectShelf({
   chatSessions = [],
   onChatSessionSelect,
   onNewChat,
+  onOpenMemo,
   externalScanning = false,
   onRefreshExternal,
 }: ProjectShelfProps) {
@@ -924,48 +925,6 @@ export function ProjectShelf({
     </button>
   ) : null;
 
-  const dockButton = onToggleAutoHideClose ? (
-    <button
-      className={
-        autoHideOnClose
-          ? "pill-action pill-action--icon pill-action--sm sidebar-footer__button is-dock-on"
-          : "pill-action pill-action--icon pill-action--sm sidebar-footer__button is-dock-off"
-      }
-      type="button"
-      title={
-        autoHideOnClose
-          ? "关闭窗口 = 收起到后台 · 引擎与会话继续运行，再次启动 Marionette 唤起；真正退出用退出按钮"
-          : "关闭窗口 = 退出 Marionette · 点此改为收起到后台"
-      }
-      aria-label={autoHideOnClose ? "关闭时收起到边缘（已开）" : "关闭时收起到边缘（已关）"}
-      aria-pressed={autoHideOnClose}
-      onClick={onToggleAutoHideClose}
-    >
-      <Dock size={13} />
-    </button>
-  ) : null;
-
-  const edgeDockButton = onDockToEdge ? (
-    <button
-      className={
-        dockActive
-          ? "pill-action pill-action--icon pill-action--sm sidebar-footer__button is-dock-on"
-          : "pill-action pill-action--icon pill-action--sm sidebar-footer__button"
-      }
-      type="button"
-      title={
-        dockActive
-          ? "解除贴边 · 恢复普通窗口（尺寸与停靠前一致）"
-          : "贴边收起 · 窗口并入屏幕边缘，鼠标触碰边缘拉出，关闭窗口也收起到边缘"
-      }
-      aria-label={dockActive ? "解除贴边" : "贴边收起"}
-      aria-pressed={dockActive}
-      onClick={onDockToEdge}
-    >
-      {dockActive ? <PanelRightOpen size={13} /> : <PanelRightClose size={13} />}
-    </button>
-  ) : null;
-
   const proxyButton = (
     <button
       ref={proxyBtnRef}
@@ -1111,6 +1070,29 @@ export function ProjectShelf({
     >
       <Send size={13} />
     </button>
+  );
+
+  /**
+   * The rail's bottom block. Docked it is portaled into the strip's footer bar
+   * (below the composer); the collapse chevron only makes sense in the rail, so
+   * it stays here.
+   */
+  const docked = useDocked();
+  const dockFooter = (
+    <div className="sidebar-dock">
+      {gatewayRow}
+      <div className="sidebar-footer">
+        {themeButton}
+        {notifyButton}
+        {proxyButton}
+        {telegramButton}
+        {!docked && (
+          <button className="pill-action pill-action--icon pill-action--sm sidebar-footer__button sidebar-footer__button--collapse" type="button" title={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} aria-label={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} onClick={collapsed ? onExpand : onCollapse}>
+            {collapsed ? <PanelLeftOpen size={13} /> : <PanelLeftClose size={13} />}
+          </button>
+        )}
+      </div>
+    </div>
   );
 
   const searching = Boolean(query.trim()) || activeStatusFilter != null;
@@ -1556,6 +1538,13 @@ export function ProjectShelf({
         })}
       </div>
 
+      {onOpenMemo && (
+        <button className="shelf-memo-entry" type="button" onClick={onOpenMemo}>
+          <Archive size={13} aria-hidden />
+          收纳盒
+        </button>
+      )}
+
       {/* ── Chat section ── */}
       {onChatSessionSelect && (
         <section className="chat-section">
@@ -1724,31 +1713,8 @@ export function ProjectShelf({
         </section>
       )}
 
-      <div className="sidebar-dock">
-      {gatewayRow}
-      <div className="sidebar-footer">
-        {themeButton}
-        {notifyButton}
-        {proxyButton}
-        {telegramButton}
-        {dockButton}
-        {edgeDockButton}
-        {autoHideOnClose && onQuitApp && (
-          <button
-            className="pill-action pill-action--icon pill-action--sm sidebar-footer__button sidebar-footer__button--quit"
-            type="button"
-            title="退出 Marionette · 停止引擎与全部会话"
-            aria-label="退出 Marionette"
-            onClick={onQuitApp}
-          >
-            <LogOut size={13} />
-          </button>
-        )}
-        <button className="pill-action pill-action--icon pill-action--sm sidebar-footer__button sidebar-footer__button--collapse" type="button" title={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} aria-label={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} onClick={collapsed ? onExpand : onCollapse}>
-          {collapsed ? <PanelLeftOpen size={13} /> : <PanelLeftClose size={13} />}
-        </button>
-      </div>
-      </div>
+      {docked ? null : dockFooter}
+      <DockedLayer docked={docked}>
       {proxyOpen && proxyAnchor && (
         <div
           ref={proxyPopRef}
@@ -2177,8 +2143,10 @@ export function ProjectShelf({
           )}
         </div>
       )}
+      </DockedLayer>
       </div>
     </section>
+    {docked ? createPortal(dockFooter, dockFooterHost()) : null}
     {credentialsOpen && (
       <CredentialsDialog agents={agents} onClose={() => setCredentialsOpen(false)} />
     )}

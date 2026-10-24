@@ -49,11 +49,12 @@ export async function memoSaveText(text: string, title?: string, source?: string
   }
 }
 
-export async function memoDelete(id: string): Promise<MemoEntry[]> {
+/** Returns the refreshed list, or null when the delete failed (keep what is shown). */
+export async function memoDelete(id: string): Promise<MemoEntry[] | null> {
   try {
     return await invoke<MemoEntry[]>("memo_delete", { id });
   } catch {
-    return [];
+    return null;
   }
 }
 
@@ -80,4 +81,31 @@ export function formatMemoAge(createdAt: string): string {
   return sameYear
     ? `${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
     : `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/**
+ * Composer text for picked memos (§4.1 收/找/用). `dialog` hands the items to a
+ * new dialog as context; `doc` asks the agent to organize them into a note
+ * under the project's docs/notes/. Prefilled only — the user sends it.
+ */
+export function memoPrompt(entries: MemoEntry[], intent: "dialog" | "doc"): string {
+  const lines = entries.map((entry) => {
+    if (entry.kind === "link") return `- 链接：${entry.title} ${entry.content ?? ""}`.trimEnd();
+    if (entry.kind === "text") {
+      const body = (entry.content ?? entry.title).trim().replace(/\n/g, "\n  > ");
+      return `- 摘录：\n  > ${body}`;
+    }
+    return `- ${entry.kind === "image" ? "图片" : "文件"}：${entry.path ?? entry.title}`;
+  });
+  const list = lines.join("\n");
+  if (intent === "doc") {
+    const date = new Date().toISOString().slice(0, 10);
+    return [
+      `把下面 ${entries.length} 条收纳盒材料整理成一篇笔记：按主题分节，每节先给结论再列出处；链接保留原 URL，文件按需读取。`,
+      `存到项目的 docs/notes/${date}-<主题>.md，写完告诉我文件路径。`,
+      "",
+      list,
+    ].join("\n");
+  }
+  return [`参考下面 ${entries.length} 条材料：`, "", list, "", ""].join("\n");
 }

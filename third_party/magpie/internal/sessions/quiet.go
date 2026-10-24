@@ -24,6 +24,14 @@ var (
 // quietReaders is how many files the warm-up reads at once.
 func quietReaders() int { return max(1, runtime.NumCPU()/4) }
 
+// scanReaders is how many files the index reads at once with a page
+// waiting. It was twice the cores, up to 32, as if the reading waited on
+// the disk; it doesn't on an SSD, decoding and parsing is the work, and a
+// first read of 15 GB of Codex sessions held 22 of 32 cores (2154%) while
+// the page waited, the machine's other apps slowed beside it (#3238). Half
+// the cores leaves the other half to them.
+func scanReaders() int { return max(2, runtime.NumCPU()/2) }
+
 // Warm runs fn, the reads nobody waits on yet, with few readers.
 func Warm(fn func()) {
 	warming.Add(1)

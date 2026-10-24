@@ -159,3 +159,53 @@ func TestGeminiCompatFinishAfterPartialLine(t *testing.T) {
 		t.Errorf("the finish_reason began inside the line still pending: %q", body)
 	}
 }
+
+// Gemini's OpenAI-compatible API sends a call with no index (Linka's
+// frames), where the OpenAI contract has one on every fragment. The AI
+// SDK's OpenAI provider, which Cursor's Private Inference reads Chat with,
+// turned the chunk away ("expected number, received undefined" at
+// tool_calls[0].index), and the call was never made (#3386). Relayed,
+// every call has its index: Linka's call 0, a second call in a chunk of
+// its own 1, and #3386's chunk, with no id either, 0 and an id.
+func TestGeminiCompatRelayedCallsHaveAnIndex(t *testing.T) {
+	const ask = `{"model":"MODEL","stream":true,"messages":[{"role":"user","content":"hi"}]}`
+	second := strings.NewReplacer(`"call_1"`, `"call_2"`, `run()`, `two()`).Replace(compatCall)
+	reported := `data: {"choices":[{"delta":{"role":"assistant","tool_calls":[{"extra_content":{"google":{"thought_signature":"c2ln"}},"function":{"arguments":"{\"code\":\"run()\"}","name":"codemode"}}]},"index":0}],"model":"models/gemini-4-argon","object":"chat.completion.chunk"}` + "\n\n"
+	for _, c := range []struct {
+		name, reply string
+		ids         []string // how each call's id starts
+	}{
+		{"Linka's call", compatCall + compatStop + compatDone, []string{"call_1"}},
+		{"a second call", compatCall + second + compatStop + compatDone, []string{"call_1", "call_2"}},
+		{"#3386's chunk", reported + compatStop + compatDone, []string{"call_"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			code, body := compatServer(t, "gemini-4-argon", c.reply, "/v1/chat/completions", ask)
+			if code != 200 {
+				t.Fatalf("status %d: %s", code, body)
+			}
+			var calls []map[string]any
+			for _, ev := range events(body) {
+				chs, _ := ev["choices"].([]any)
+				for _, ch := range chs {
+					d, _ := ch.(map[string]any)["delta"].(map[string]any)
+					tcs, _ := d["tool_calls"].([]any)
+					for _, tc := range tcs {
+						calls = append(calls, tc.(map[string]any))
+					}
+				}
+			}
+			if len(calls) != len(c.ids) {
+				t.Fatalf("%d calls, want %d: %s", len(calls), len(c.ids), body)
+			}
+			for i, call := range calls {
+				if n, ok := call["index"].(float64); !ok || n != float64(i) {
+					t.Errorf("call %d went with index %v, want %d: %s", i, call["index"], i, body)
+				}
+				if id, _ := call["id"].(string); !strings.HasPrefix(id, c.ids[i]) {
+					t.Errorf("call %d went with id %q, want one starting %q", i, id, c.ids[i])
+				}
+			}
+		})
+	}
+}

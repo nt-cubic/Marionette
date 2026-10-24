@@ -225,7 +225,7 @@ body.is-panel-resizing .context-panel {
   position: relative;
   grid-row: 2;
   display: grid;
-  /* Composer row is auto-sized so expand can grow without a fixed 104px trap. */
+  /* transcript | composer */
   grid-template-rows: minmax(0, 1fr) auto;
   min-width: 0;
   min-height: 0;
@@ -320,6 +320,7 @@ body.is-panel-resizing .context-panel {
 .session-pane__body {
   display: grid;
   flex: 1;
+  /* conversation | composer */
   grid-template-rows: minmax(0, 1fr) auto;
   min-width: 0;
   min-height: 0;

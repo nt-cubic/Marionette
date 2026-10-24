@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -145,8 +146,15 @@ func hasReply(msgs []Message) bool {
 
 // fitAutoModeClassifier asks a model that isn't Claude, for Claude Code's
 // auto mode classifier, to reason least — none when it can go without, its
-// lowest level otherwise, left to the vendor when its levels aren't known —
-// with room for that reasoning and the verdict.
+// lowest level otherwise — with room for that reasoning and the verdict.
+// A model whose levels aren't known (one on a relay the user added, under
+// the relay's own name for it) is asked for none too, as magpie's own ask
+// (OwnEffort): left to the vendor, a model that reasons did so at its
+// default over the whole policy and transcript, and Claude Code, which
+// waits 60 seconds an attempt for the verdict (2.1.310), closed the
+// request first (CyberCaius on Discord: every classifier request 499 on
+// a new-api relay's gpt6.1-sol). One that turns none away is asked at
+// low, and one that takes no effort at all without it (forwardTranslated).
 func fitAutoModeClassifier(p provider.Provider, model string, req *Request) {
 	if anthropicModel.MatchString(model) || !autoModeClassifier(req) {
 		return
@@ -157,19 +165,48 @@ func fitAutoModeClassifier(p provider.Provider, model string, req *Request) {
 	if req.Effort == "" {
 		if levels := p.Efforts(model); len(levels) > 0 {
 			req.Effort = fitEffort("none", levels)
+		} else {
+			req.Effort, req.OwnEffort = "none", true
 		}
 	}
+}
+
+// ownEffortField is the effort magpie added (OwnEffort), remembered in
+// unfit for a model whose upstream turned the field away.
+func ownEffortField(model string) string { return "own effort\x00" + model }
+
+var (
+	// effortFieldUnknown is an upstream that doesn't know the effort's
+	// field: OpenAI's "Unrecognized request argument supplied:
+	// reasoning_effort", a validator's "Extra inputs are not permitted"
+	effortFieldUnknown = regexp.MustCompile(`(?i)(?:unrecogni[sz]ed|unknown|unsupported|unexpected|extra)\s+(?:request\s+)?(?:argument|parameter|field|property|name|key)s?(?:\s+supplied)?\W{0,4}reasoning(?:[._]effort)?\b|\breasoning(?:[._]effort)?['"\x60]?\W{0,4}(?:extra inputs are not permitted|is not (?:supported|allowed|permitted)|unsupported)`)
+)
+
+// ownEffortRefused reads a 400 to the effort magpie added (OwnEffort) as
+// turned away, and whether it was the level sent (value) rather than the
+// field. Anything else is the request's own fault and reaches the client.
+func ownEffortRefused(status int, body []byte, sent string) (refused, value bool) {
+	if !badRequest(status) || sent == "" {
+		return false, false
+	}
+	_, named := effortRefused(body, sent)
+	if !named && !effortFieldUnknown.Match(body) {
+		return false, false
+	}
+	low := strings.ToLower(string(body))
+	for _, q := range []string{"'", `"`, "`", `\"`} {
+		if strings.Contains(low, q+sent+q) {
+			return true, true
+		}
+	}
+	return true, false
 }
 
 // autoModeClassifierBody is fitAutoModeClassifier for a request relayed to
 // an Anthropic endpoint as it was sent: a model that isn't Claude gets the
 // room to reason in. The rest of the body is left alone.
 func autoModeClassifierBody(model string, body []byte) []byte {
-	if anthropicModel.MatchString(model) || !bytes.Contains(body, []byte("<transcript>")) || !bytes.Contains(body, []byte("<block>")) && !bytes.Contains(body, []byte("<severity>")) {
-		return body
-	}
-	req, err := parseAnthropic(body)
-	if err != nil || !autoModeClassifier(req) {
+	if anthropicModel.MatchString(model) || !autoModeClassifierAsk(body) {
 		return body
 	}
 	asked := gjson.GetBytes(body, "max_tokens").Int()
@@ -177,4 +214,35 @@ func autoModeClassifierBody(model string, body []byte) []byte {
 		return body
 	}
 	return withFields(body, map[string]any{"max_tokens": asked + classifierRoom})
+}
+
+// autoModeClassifierAsk reports whether body, a Messages API request, is
+// Claude Code's auto mode classifier asking about an action. The bytes
+// are looked at before the body is parsed: every request passes here.
+func autoModeClassifierAsk(body []byte) bool {
+	if !bytes.Contains(body, []byte("<transcript>")) || !bytes.Contains(body, []byte("<block>")) && !bytes.Contains(body, []byte("<severity>")) {
+		return false
+	}
+	req, err := parseAnthropic(body)
+	return err == nil && autoModeClassifier(req)
+}
+
+// ClassifierStandIn is the model Claude Code's auto mode classifier goes
+// to in place of the tier's it named, while that tier follows a main model
+// /model has moved since magpie wrote it; "" leaves it as asked. Set by
+// main (agent.ClassifierStandIn).
+var ClassifierStandIn func(agent, model string) string
+
+// classifierStandIn is ClassifierStandIn for a request Claude Code sent,
+// when it is the auto mode classifier: Claude Code names its sonnet tier
+// for it, not the session's model, so the first one after a switch in
+// /model went to the model before it until magpie moved the tier.
+func classifierStandIn(agent string, from provider.Protocol, asked string, body []byte) string {
+	if ClassifierStandIn == nil || agent != "claude" || from != provider.Anthropic || !autoModeClassifierAsk(body) {
+		return ""
+	}
+	if m := ClassifierStandIn(agent, asked); m != asked {
+		return m
+	}
+	return ""
 }

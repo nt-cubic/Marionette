@@ -194,6 +194,12 @@ type Request struct {
 	// built); one that turns the field away is asked again without it
 	// (optionalFields)
 	OwnTier bool
+	// OwnEffort is set when Effort is magpie's own ask, not the client's:
+	// auto mode's classifier asked to reason least of a model whose levels
+	// aren't known (fitAutoModeClassifier). An upstream that turns it away
+	// is asked at low, or without it, as it would have been
+	// (ownEffortRefused)
+	OwnEffort bool
 	// CacheKey is the client's prompt_cache_key (Codex sends its thread's
 	// id), which OpenAI, and relays in front of it, route a conversation by
 	// to where its prompt is cached.
@@ -359,6 +365,9 @@ type Usage struct {
 	// cacheCreationHasCounts describes the parsed update's own split.
 	// It is never accumulated from earlier usage.
 	cacheCreationHasCounts bool
+	// cacheUnknown: the reply said its vendor counts no cache tokens
+	// (a plugin's magpie_cache_unknown), so a CacheRead of 0 is not a miss
+	cacheUnknown bool
 
 	Reasoning int `json:"reasoning"`
 	// Served: the model the vendor's reply says answered, when it named
@@ -430,6 +439,7 @@ func (u *Usage) add(v Usage) {
 		u.CacheWrite1h = v.CacheWrite1h
 	}
 	u.cacheCreationReported = u.cacheCreationReported || v.cacheCreationReported
+	u.cacheUnknown = u.cacheUnknown || v.cacheUnknown
 	if v.Reasoning > 0 {
 		u.Reasoning = v.Reasoning
 	}

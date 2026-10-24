@@ -54,8 +54,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", serve(lang));
       await page.goto("http://magpie.test/?view=providers");
-      await page.locator("#addProvider").click();
-      await page.locator("#addSheet .tile", { hasText: "Kimi Code" }).click();
+      // with no provider the page opens its add sheet itself once the list
+      // is in, and its add button goes away: a press before that opens it
+      // instead (on a slow machine the list came first, and the press
+      // waited for a button that was gone)
+      const tile = page.locator("#addSheet .tile", { hasText: "Kimi Code" });
+      await tile.waitFor();
+      await tile.click();
       const d = page.locator("#modal .editor");
       const opts = d.locator(".segs.regions .opt");
       await opts.nth(3).waitFor();

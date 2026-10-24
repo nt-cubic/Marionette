@@ -38,7 +38,17 @@ import (
 // error, and what it leaves in dst, are encoding/json's own. So does a dst
 // that already holds something, which encoding/json decodes into in ways
 // of its own (a slice's old elements are decoded over, not replaced).
-func decodeJSON(data []byte, dst any) error {
+func decodeJSON(data []byte, dst any) error { return decodeJSONIn(data, dst, false) }
+
+// decodeJSONView is decodeJSON for a reader that keeps nothing it decodes
+// past its return and writes none of it: every raw value shares data's
+// bytes, capped, where decodeJSON copies what isn't a big share of a held
+// body. A body a route has rewritten is held by nobody, so each reader of
+// a rewritten Codex request copied its whole input to look at it: 1.4 of
+// the 16.4 MB a 680 KB request allocated (#3383).
+func decodeJSONView(data []byte, dst any) error { return decodeJSONIn(data, dst, true) }
+
+func decodeJSONIn(data []byte, dst any, share bool) error {
 	v := reflect.ValueOf(dst)
 	if v.Kind() != reflect.Pointer || v.IsNil() || !v.Elem().IsZero() {
 		return json.Unmarshal(data, dst)
@@ -60,7 +70,7 @@ func decodeJSON(data []byte, dst any) error {
 		// of the value's opening and its close.
 		return json.Unmarshal(append(data[:start+1:start+1], close), dst)
 	}
-	if err := fillJSONIn(trimJSON(data), v.Elem(), members); err != nil {
+	if err := fillJSONIn(trimJSON(data), v.Elem(), members, share); err != nil {
 		v.Elem().SetZero()
 		return json.Unmarshal(data, dst)
 	}
@@ -279,14 +289,15 @@ func (f *fastFields) field(key []byte) int {
 
 // fillJSON decodes raw, a whole valid JSON value, into v; errSlowJSON or
 // another error leaves it to encoding/json.
-func fillJSON(raw []byte, v reflect.Value) error { return fillJSONIn(raw, v, nil) }
+func fillJSON(raw []byte, v reflect.Value, share bool) error { return fillJSONIn(raw, v, nil, share) }
 
 // fillJSONIn is fillJSON with where raw's members are, when known
-// (longBody): a struct or map at raw's top is filled from them.
-func fillJSONIn(raw []byte, v reflect.Value, members []memberSpan) error {
+// (longBody): a struct or map at raw's top is filled from them. share
+// is decodeJSONView's: every raw value is raw's own bytes.
+func fillJSONIn(raw []byte, v reflect.Value, members []memberSpan, share bool) error {
 	t := v.Type()
 	if t == rawMessageType {
-		if inHeldBody(raw) {
+		if share || inHeldBody(raw) {
 			// the request's own body, which nothing writes to: shared,
 			// and capped so an append to it can't write over the body
 			v.SetBytes(raw[:len(raw):len(raw)])
@@ -312,7 +323,7 @@ func fillJSONIn(raw []byte, v reflect.Value, members []memberSpan) error {
 		if v.IsNil() {
 			v.Set(reflect.New(t.Elem()))
 		}
-		return fillJSONIn(raw, v.Elem(), members)
+		return fillJSONIn(raw, v.Elem(), members, share)
 	case reflect.String:
 		if null {
 			return nil
@@ -348,27 +359,36 @@ func fillJSONIn(raw []byte, v reflect.Value, members []memberSpan) error {
 		if f.err != nil {
 			return f.err
 		}
-		var seen []bool
+		// seen is a bit a field, in few or in many when a struct has more
+		// than 64: a []bool made for each struct decoded was one of a
+		// request's commonest allocations
+		var few uint64
+		var many []bool
 		var err error
 		eachMemberIn(raw, members, func(key, val []byte) bool {
-			name, ok := unquoteJSON(key)
+			name, ok := keyName(key)
 			if !ok {
 				err = errSlowJSON
 				return false
 			}
-			i := f.field([]byte(name))
+			i := f.field(name)
 			if i < 0 {
 				return true
 			}
-			if seen == nil {
-				seen = make([]bool, len(f.names))
+			twice := false
+			if len(f.names) <= 64 {
+				twice, few = few&(1<<i) != 0, few|1<<i
+			} else {
+				if many == nil {
+					many = make([]bool, len(f.names))
+				}
+				twice, many[i] = many[i], true
 			}
-			if seen[i] {
+			if twice {
 				err = errSlowJSON // a key twice: encoding/json merges them
 				return false
 			}
-			seen[i] = true
-			err = fillJSON(val, v.Field(f.index[i]))
+			err = fillJSON(val, v.Field(f.index[i]), share)
 			return err == nil
 		})
 		return err
@@ -390,7 +410,7 @@ func fillJSONIn(raw []byte, v reflect.Value, members []memberSpan) error {
 		})
 		s := reflect.MakeSlice(t, len(elems), len(elems))
 		for i, el := range elems {
-			if err := fillJSON(el, s.Index(i)); err != nil {
+			if err := fillJSON(el, s.Index(i), share); err != nil {
 				return err
 			}
 		}
@@ -418,7 +438,7 @@ func fillJSONIn(raw []byte, v reflect.Value, members []memberSpan) error {
 				return false
 			}
 			el := reflect.New(t.Elem()).Elem()
-			if err = fillJSON(val, el); err != nil {
+			if err = fillJSON(val, el, share); err != nil {
 				return false
 			}
 			v.SetMapIndex(reflect.ValueOf(name), el)
@@ -556,6 +576,26 @@ func elementsOf(raw []byte) []json.RawMessage {
 	return out
 }
 
+// inputList is a request's input list, raw from a decoded body (so valid
+// JSON), for a reader that looks at its items and keeps none past its
+// return: elementsOf, so no item is copied. Decoding it as a
+// []json.RawMessage copied every item, since each is under a sixteenth of
+// the body (heldShareMost): 3.7 of the 20 MB a 680 KB Codex request
+// allocated went to such copies (#3383). ok is what that decode's error
+// was: false when the input is missing or neither a list nor null.
+func inputList(raw json.RawMessage) ([]json.RawMessage, bool) {
+	raw = trimJSON(raw)
+	switch {
+	case len(raw) == 0:
+		return nil, false
+	case raw[0] == '[':
+		return elementsOf(raw), true
+	case string(raw) == "null":
+		return nil, true
+	}
+	return nil, false
+}
+
 // skipJSONString is the end of the valid JSON string at i.
 func skipJSONString(data []byte, i int) int {
 	i++
@@ -608,6 +648,23 @@ func skipJSONValue(data []byte, i int) int {
 		i++
 	}
 	return i
+}
+
+// keyName is a member's key as unquoteJSON reads it, without making a
+// string of it: a plain ASCII key, the kind nearly every key is, is the
+// bytes between its quotes.
+func keyName(key []byte) ([]byte, bool) {
+	if len(key) < 2 || key[0] != '"' || key[len(key)-1] != '"' {
+		return nil, false
+	}
+	k := key[1 : len(key)-1]
+	for _, c := range k {
+		if c == '\\' || c == '"' || c < ' ' || c >= utf8.RuneSelf {
+			name, ok := unquoteJSON(key)
+			return []byte(name), ok
+		}
+	}
+	return k, true
 }
 
 // unquoteJSON is the string a valid JSON string literal holds, as

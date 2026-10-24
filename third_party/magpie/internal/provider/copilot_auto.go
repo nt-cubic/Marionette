@@ -407,9 +407,7 @@ func copilotAutoSign(ctx context.Context, app copilotApp, req *http.Request, bod
 	}
 	m["model"], _ = json.Marshal(a.Model)
 	nb, _ := json.Marshal(m)
-	req.Body = io.NopCloser(bytes.NewReader(nb))
-	req.ContentLength = int64(len(nb))
-	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(nb)), nil }
+	SetBody(req, nb)
 	if a.Token != "" {
 		req.Header.Set("Copilot-Session-Token", a.Token)
 	}

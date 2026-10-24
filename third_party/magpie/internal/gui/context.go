@@ -284,7 +284,7 @@ func contextOf(routes []gateway.Route, days int) ctxJSON {
 		}
 		acc.a.Requests++
 		acc.prompts = append(acc.prompts, p.Tokens)
-		acc.bases = append(acc.bases, partTokens(p, gateway.PartSystem, gateway.PartTools, gateway.PartMemory))
+		acc.bases = append(acc.bases, partTokens(p, gateway.PartSystem, gateway.PartTools, gateway.PartSkills, gateway.PartMemory))
 		acc.mcps = append(acc.mcps, mcpTokens(p))
 		for _, x := range p.Parts {
 			acc.parts[x.Kind] += x.Tokens
