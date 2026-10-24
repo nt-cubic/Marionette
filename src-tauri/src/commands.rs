@@ -2204,27 +2204,31 @@ pub fn read_image_data_url(path: String) -> Result<serde_json::Value, String> {
 
     let resolved = resolve_image_path(&path)?;
     let p = resolved.as_path();
+    // Images only (audit P1-C): this feeds <img> previews and the annotator;
+    // a non-image file has no business being base64'd into model context via
+    // the preview path, whatever named it.
+    let ext = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    const IMAGE_EXTS: [&str; 7] = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"];
+    if !IMAGE_EXTS.contains(&ext.as_str()) {
+        return Err(format!("not an image file: .{ext}"));
+    }
     let meta = fs::metadata(p).map_err(|e| format!("stat failed: {e}"))?;
     const MAX_BYTES: u64 = 12 * 1024 * 1024;
     if meta.len() > MAX_BYTES {
         return Err(format!("image too large (max 12 MB)"));
     }
     let bytes = fs::read(p).map_err(|e| format!("read failed: {e}"))?;
-    let lower = resolved.to_string_lossy().to_ascii_lowercase();
-    let mime = if lower.ends_with(".png") {
-        "image/png"
-    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
-        "image/jpeg"
-    } else if lower.ends_with(".gif") {
-        "image/gif"
-    } else if lower.ends_with(".webp") {
-        "image/webp"
-    } else if lower.ends_with(".bmp") {
-        "image/bmp"
-    } else if lower.ends_with(".svg") {
-        "image/svg+xml"
-    } else {
-        "application/octet-stream"
+    let mime = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        _ => "image/svg+xml",
     };
     let data = B64.encode(&bytes);
     Ok(serde_json::json!({
@@ -2266,10 +2270,19 @@ fn resolve_image_path(path: &str) -> Result<std::path::PathBuf, String> {
         return Err(not_found());
     }
     let wanted = name.to_lowercase();
+    let is_image_name = |file: &str| -> bool {
+        const IMAGE_EXTS: [&str; 7] = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"];
+        file.rsplit_once('.')
+            .map(|(_, ext)| IMAGE_EXTS.contains(&ext))
+            .unwrap_or(false)
+    };
     let mut same_name: Vec<PathBuf> = Vec::new();
     let mut name_suffix: Vec<PathBuf> = Vec::new();
     for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
         let candidate = entry.file_name().to_string_lossy().to_lowercase();
+        if !is_image_name(&candidate) {
+            continue;
+        }
         if candidate == wanted {
             same_name.push(entry.path());
         } else if candidate.ends_with(&wanted) {
@@ -3568,6 +3581,11 @@ mod tests {
         // A two-letter name would match half the folder — never guessed at.
         fs::write(root.join("ab.png"), b"png").unwrap();
         assert!(resolve_image_path(root.join("b.png").to_str().unwrap()).is_err());
+        // Near-miss matching only considers image files: a same-suffix text
+        // file must never be handed back to the preview reader.
+        fs::write(root.join("notes_21-3.1_rest.txt"), b"no").unwrap();
+        let near_txt = root.join("21-3.1_rest.txt");
+        assert!(resolve_image_path(near_txt.to_str().unwrap()).is_err());
         let _ = fs::remove_dir_all(&root);
     }
 }
