@@ -11,6 +11,9 @@
 > ✅ SidebarCallbacks 收敛（`aeb83eb`：ProjectShelf/SessionTabs memo + useLatestCallback 稳定回调）
 > ✅ P2 快赢两批（`e522af3` Rust：where/which 超时 kill、porcelain 切片边界、lossy 读、
 > grok 毒锁恢复、stop_all 实数、删假 SessionManager；`7e10e0c` 前端 lib：反扫、Set、rAF 清理等）
+> ✅ P2 长尾二批（`303d727` Rust：memory tmp 兜底恢复、context.json 损坏留档、Destroyed 走
+> shutdown_and_exit、启动失败改原生对话框、http_client 粘滞、acp Disconnected 误报/迟到应答留痕、
+> telegram not-ok 退避、三处原子写 sync_all、terminal clear_session 杀 PTY；idle_watchdog wait 核对已覆盖）
 > ⬜ 巨型文件本体拆分（acp_transport/capabilities、App.tsx 事件管线等）与 P2 剩余长尾未动。
 > 两处审计项经核对已过时：`turnDelivery memoize`——现实现已在 SessionView 的完整依赖 useMemo 内，
 > 无需再改；`Composer localStorage 草稿防抖`——草稿缓存现已是内存 Map（非 localStorage），无需防抖。
@@ -184,29 +187,36 @@ z-index 三套量级混用（个位数/1200/9990+）无分层文档；`app.css:9
 合成 id 可撞；`vite.config.ts` 无 manualChunks；`index.html` 与 `theme.ts` 退役主题映射双写。
 
 **Rust ACP 核心 / 入口**：`acp.rs:4037-4066`（另 4117/4202/4256/4319）每个 permission/question/
-elicitation/plan 起一个睡全时长的线程，应单定时器 + 到期队列；`acp.rs:3553-3556` stdin 写线程退出
-被误报成 "timed out"；`acp.rs:3773-3777` 迟到应答静默丢弃无痕迹；`main.rs:405-407`
-`StorageService::new().expect` 在 panic=abort + windows_subsystem 下是无对话框静默退出（与
-data_dir_gate 兜底哲学相悖）；`main.rs:388-400` `Destroyed` 安全网不跑 `stop_all` → agent 孤儿；
+elicitation/plan 起一个睡全时长的线程，应单定时器 + 到期队列；✅`acp.rs:3553-3556` stdin 写线程退出
+被误报成 "timed out"（已按 Timeout/Disconnected 分流，`303d727`）；✅`acp.rs:3773-3777` 迟到应答
+静默丢弃无痕迹（已记 debug_log 痕迹，`303d727`）；✅`main.rs:405-407`
+`StorageService::new().expect` 在 panic=abort + windows_subsystem 下是无对话框静默退出（已改
+dev.log + 原生对话框 exit，`303d727`）；✅`main.rs:388-400` `Destroyed` 安全网不跑 `stop_all` →
+agent 孤儿（已改走 shutdown_and_exit，`303d727`）；
 `debug_log.rs:74-78` 轮转只留一代且每条 append 都重新 metadata；✅`session_manager.rs:19,37`
 map 值从不读取（已整模块删除——mark_started/mark_exited 零调用，is_live 恒 false，`e522af3`）；
 `app_paths.rs:31-39` 目录迁移发生在单实例锁之前，双开竞态
 可数据分叉；✅`acp.rs:1219-1229` `stop_all` 虚报成功数（已改按实际 stop 成功计数，`e522af3`）；
-`main.rs:541-542` `run().expect` 同为静默 abort。
+✅`main.rs:541-542` `run().expect` 同为静默 abort（已改 dev.log + 原生对话框 exit，`303d727`）。
 
 **Rust 模型 / 引擎 / 凭据**：`engine.rs:685-688` `replace_engine_exe` 两步间镜像缺位，失败可恢复但
-状态倒退（应自动触发工厂恢复）；`engine.rs:1746-1761` idle_watchdog `kill()` 后不 `wait()` 回收，
-且重启端口变更使外部 baseUrl 失效；`model_bridge.rs:1351`、`http_client.rs:36-38` HTTP 响应无大小
-上限（该请求带 Bearer key）；三处原子写 rename 前无 `sync_all`（掉电可落空文件）；
+状态倒退（应自动触发工厂恢复）；✅`engine.rs:1746-1761` idle_watchdog `kill()` 后不 `wait()` 回收
+（`ChildHandle::kill` 已内含 kill+wait，核对覆盖）；重启端口变更使外部 baseUrl 失效仍待；
+`model_bridge.rs:1351`、`http_client.rs:36-38` HTTP 响应无大小
+上限（该请求带 Bearer key）；✅三处原子写 rename 前无 `sync_all`（掉电可落空文件；
+memory/todos/credentials 已补，`303d727`）；
 `model_bridge.rs:1968,1980`、`model_sources.rs:354` `last_mut().unwrap()` 依赖隐式不变量；
-`http_client.rs:11-16` `OnceLock<Result>` 初始化失败永久粘滞；`engine.rs:504-532` 流式下载有 sha256
+✅`http_client.rs:11-16` `OnceLock<Result>` 初始化失败永久粘滞（已改只缓存成功值，`303d727`）；
+`engine.rs:504-532` 流式下载有 sha256
 但无体积上限。
 
 **Rust 命令面 / 终端 / Telegram / 用量**：`telegram_remote.rs:1705,1727,1401+1843-1850` outbound
-无界 mpsc，长故障期队列无上界（应 sync_channel + 丢旧合并 Dashboard）；`telegram_remote.rs:2201-2209`
-getUpdates ok:false 分支固定 15s 重试无退避增长（[核] 传输/HTTP 错误走 Err 分支，本就有 1s→60s
-指数退避，2243；401/403 的真缺口是永不停用无限重试，应停用并提示）；`terminal_runtime.rs:375-383`
-`clear_session` 不清仍在跑的 PTY 进程与 map 条目；`terminal_runtime.rs:332-337` 二进制垃圾输出逐字节
+无界 mpsc，长故障期队列无上界（应 sync_channel + 丢旧合并 Dashboard）；✅`telegram_remote.rs:2201-2209`
+getUpdates ok:false 分支固定 15s 重试无退避增长（已改 15s→60s 翻倍退避，`303d727`；传输/HTTP 错误
+走 Err 分支本就有 1s→60s 指数退避，401/403 已由 auth_parked 停用等待换 token）；
+✅`terminal_runtime.rs:375-383`
+`clear_session` 不清仍在跑的 PTY 进程与 map 条目（已按 UI 会话 id 反向清理 kill，`303d727`）；
+`terminal_runtime.rs:332-337` 二进制垃圾输出逐字节
 drain + 整体 clone 重解析；`provider_usage.rs:244-267` `find_meta` 每次重读盘解析 catalog；
 `telegram_remote.rs:2918-2926` Permission 回调未回传校验 option_label。（原列「`commands.rs:2034` 起
 `install_agent` 是同步 command，分钟级 npm 安装占池槽，应改 async + spawn_blocking」经二次复核为
@@ -218,10 +228,13 @@ UTF-8，一个坏字节整份会话静默跳过（已改 lossy 读，`e522af3`�
 `storage.rs:947-956` `load_transcript` 整读进内存；
 ✅`git_service.rs:827-828` porcelain `&line[..2]` 字节切片理论 panic 面（已加 char boundary 守卫，`e522af3`）；
 ✅`grok_dialect.rs:525` 生产路径
-`lock().unwrap()`（已改毒锁 into_inner 恢复，`e522af3`）；`context_inventory.rs:681,695` context.json 损坏静默重置并覆盖原文件（应先备份）；
-`context_inventory.rs:940` 忽略写失败；✅`process_util.rs:48-51,67` where.exe/which 无超时（已走
+`lock().unwrap()`（已改毒锁 into_inner 恢复，`e522af3`）；✅`context_inventory.rs:681,695` context.json
+损坏静默重置并覆盖原文件（已先留档 .corrupt 再重建，`303d727`）；
+✅`context_inventory.rs:940` 忽略写失败（已记 debug_log warn，`303d727`）；
+✅`process_util.rs:48-51,67` where.exe/which 无超时（已走
 output_with_kill_timeout 10s 上限，`e522af3`）；
-`memory.rs:137-139` remove+rename 两步间崩溃缺 tmp 兜底恢复。
+✅`memory.rs:137-139` remove+rename 两步间崩溃缺 tmp 兜底恢复（已 load 侧恢复 tmp + rename 前
+sync_all，`303d727`）。
 
 **脚本 / 构建**：`package.json:9` `verify:text` 对 .mjs 传无效 flag `--experimental-strip-types`；
 `start-marionette.bat:46-49` 按 `:5173` 盲杀任意 PID；`src-tauri/capabilities/default.json:4`
