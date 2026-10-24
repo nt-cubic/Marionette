@@ -3582,10 +3582,15 @@ fn request_with_timeout(
                 .quiet_ids
                 .lock()
                 .map(|mut quiet_ids| quiet_ids.remove(&id));
-            Err(format!(
-                "ACP request `{method}` timed out after {}s: {error}",
-                timeout.as_secs()
-            ))
+            // Disconnected 不是超时：是应答通道关闭（agent stdin 写线程已退出/
+            // 进程已死）。以前统一报 "timed out"，排障时方向全错。
+            let reason = match error {
+                RecvTimeoutError::Timeout => format!("timed out after {}s", timeout.as_secs()),
+                RecvTimeoutError::Disconnected => {
+                    "response channel closed before answering (agent gone?)".to_string()
+                }
+            };
+            Err(format!("ACP request `{method}` {reason}"))
         }
     }
 }
@@ -3805,6 +3810,16 @@ fn read_stdout(
                 if let Ok(mut pending) = pending.lock() {
                     if let Some(sender) = pending.remove(&id) {
                         let _ = sender.send(result);
+                    } else {
+                        // 超时被移出 pending 后的迟到应答：留一条痕迹，
+                        // 别让「请求石沉大海」只能靠猜。
+                        crate::debug_log::append(
+                            "acp",
+                            "warn",
+                            &session_id,
+                            "late JSON-RPC response dropped (no waiter)",
+                            Some(&format!("id={id}")),
+                        );
                     }
                 }
                 continue;

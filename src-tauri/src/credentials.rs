@@ -276,6 +276,16 @@ fn write_store_atomic(path: &Path, store: &CredentialStore) -> Result<(), String
         .map_err(|e| format!("序列化 credentials.json 失败: {e}"))?;
     let temp_path = temp_sibling(path);
     fs::write(&temp_path, format!("{body}\n")).map_err(|e| format!("写入临时文件失败: {e}"))?;
+    // rename 前落盘：掉电时 rename 已完成而数据未落盘会得到空 credentials。
+    // Windows 的 FlushFileBuffers 要求句柄带写权限，所以不能只读 File::open。
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&temp_path)
+        .and_then(|file| file.sync_all())
+        .map_err(|error| {
+            let _ = fs::remove_file(&temp_path);
+            format!("临时文件落盘失败: {error}")
+        })?;
     if let Err(error) = fs::rename(&temp_path, path) {
         let _ = fs::remove_file(&temp_path);
         return Err(format!("重命名临时文件失败: {error}"));

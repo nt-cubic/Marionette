@@ -55,6 +55,8 @@ struct TerminalSnapshot {
 struct TerminalInstance {
     /// ACP agent session id (from create request / process), not UI session id.
     agent_session_id: String,
+    /// Marionette UI session id（create 时传入）——clear_session 靠它反向清理。
+    marionette_session_id: String,
     output_limit: usize,
     child: Mutex<Option<Child>>,
     snapshot: Mutex<TerminalSnapshot>,
@@ -62,9 +64,15 @@ struct TerminalInstance {
 }
 
 impl TerminalInstance {
-    fn new(agent_session_id: String, output_limit: usize, child: Child) -> Self {
+    fn new(
+        agent_session_id: String,
+        marionette_session_id: String,
+        output_limit: usize,
+        child: Child,
+    ) -> Self {
         Self {
             agent_session_id,
+            marionette_session_id,
             output_limit,
             child: Mutex::new(Some(child)),
             snapshot: Mutex::new(TerminalSnapshot::default()),
@@ -376,10 +384,26 @@ impl TerminalRuntime {
         if let Ok(mut map) = self.session_cwd.lock() {
             map.remove(marionette_session_id);
         }
-        // Kill terminals whose agent session id matches any stored under this
-        // UI session is hard without a reverse map; release_all is called with
-        // agent_session_id from process when available. Best-effort: kill all
-        // if no agent id — caller uses release_all_for_agent.
+        // 杀掉该 UI 会话名下仍跑着的 PTY 并移除条目。以前这里只清 cwd 映射，
+        // 依赖 stop 路径先按 agent_session_id 调 release_all_for_agent ——
+        // 而 create 早于 process 定案时终端记的是 UI 会话 id，agent 侧对不上，
+        // 进程就成了孤儿。
+        let removed: Vec<Arc<TerminalInstance>> = {
+            let Ok(mut map) = self.terminals.lock() else {
+                return;
+            };
+            let ids: Vec<String> = map
+                .iter()
+                .filter(|(_, t)| t.marionette_session_id == marionette_session_id)
+                .map(|(id, _)| id.clone())
+                .collect();
+            ids.into_iter()
+                .filter_map(|id| map.remove(&id))
+                .collect()
+        };
+        for term in removed {
+            let _ = term.kill_command();
+        }
     }
 
     pub fn release_all_for_agent(&self, agent_session_id: &str) {
@@ -488,6 +512,7 @@ impl TerminalRuntime {
         let stderr = child.stderr.take();
         let terminal = Arc::new(TerminalInstance::new(
             agent_session_id,
+            marionette_session_id.to_string(),
             output_limit,
             child,
         ));
@@ -799,6 +824,7 @@ mod tests {
             .expect("spawn long-running child");
         let term = Arc::new(TerminalInstance::new(
             "agent-wait-kill-test".to_string(),
+            "ui-session-wait-kill-test".to_string(),
             DEFAULT_OUTPUT_BYTE_LIMIT,
             child,
         ));

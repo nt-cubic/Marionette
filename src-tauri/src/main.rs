@@ -381,28 +381,37 @@ fn main() {
                     }
                 }
                 // Safety net if something still destroys a window without
-                // CloseRequested. Never try to paint/teardown here — exit.
+                // CloseRequested. Never try to paint/teardown here — hand the
+                // exit to the shared shutdown path so agents don't orphan
+                // (a bare exit(0) here used to skip stop_all entirely).
                 tauri::WindowEvent::Destroyed => {
                     let app = window.app_handle();
-                    crate::engine::kill_engine();
-                    if window.label() == "main" {
-                        std::process::exit(0);
-                    }
                     let any_visible = app
                         .webview_windows()
                         .values()
                         .any(|w| w.is_visible().unwrap_or(false));
-                    if !any_visible {
-                        std::process::exit(0);
+                    if window.label() == "main" || !any_visible {
+                        shutdown_and_exit(&app);
                     }
                 }
                 _ => {}
             }
         })
         .manage(AppState {
-            storage: Mutex::new(
-                StorageService::new().expect("failed to initialize Marionette storage"),
-            ),
+            storage: Mutex::new(StorageService::new().unwrap_or_else(|error| {
+                // panic=abort 下 expect 是「无对话框静默退出」；与 data_dir_gate
+                // 同款哲学：写 dev.log 再弹原生对话框，用户看得见失败。
+                crate::debug_log::append(
+                    "bootstrap",
+                    "error",
+                    "",
+                    "failed to initialize Marionette storage",
+                    Some(&error),
+                );
+                crate::data_dir_gate::prompt_and_exit(&format!(
+                    "Marionette 无法初始化存储：{error}"
+                ));
+            })),
             acp: AcpService::new(),
         })
         .invoke_handler(tauri::generate_handler![
@@ -535,5 +544,14 @@ fn main() {
             open_target::reveal_in_file_manager
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Marionette");
+        .unwrap_or_else(|error| {
+            crate::debug_log::append(
+                "bootstrap",
+                "error",
+                "",
+                "tauri run failed",
+                Some(&error.to_string()),
+            );
+            crate::data_dir_gate::prompt_and_exit(&format!("Marionette 启动失败：{error}"));
+        });
 }

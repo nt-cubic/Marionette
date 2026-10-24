@@ -110,6 +110,12 @@ fn store_path() -> Option<PathBuf> {
 }
 
 fn load_at(path: &Path) -> MemoryStore {
+    // remove+rename 两步之间崩溃会把最新内容留在 tmp（原文件已删）——
+    // 先恢复 tmp，别让一次崩溃把记忆静默清零。
+    let tmp = path.with_extension("json.tmp");
+    if !path.exists() && tmp.exists() {
+        let _ = fs::rename(&tmp, path);
+    }
     match fs::read_to_string(path) {
         Ok(text) if !text.trim().is_empty() => match serde_json::from_str(&text) {
             Ok(store) => store,
@@ -134,6 +140,16 @@ fn save_at(path: &Path, store: &MemoryStore) -> Result<(), String> {
     let tmp = path.with_extension("json.tmp");
     let body = serde_json::to_string_pretty(store).map_err(|e| e.to_string())?;
     fs::write(&tmp, body).map_err(|e| format!("Write memory tmp failed: {e}"))?;
+    // rename 前把 tmp 刷到盘：否则掉电可能得到「rename 已完成、数据还在缓存」的空文件。
+    // Windows 的 FlushFileBuffers 要求句柄带写权限，所以不能只读 File::open。
+    if let Err(error) = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&tmp)
+        .and_then(|file| file.sync_all())
+    {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("Flush memory tmp failed: {error}"));
+    }
     if path.exists() {
         let _ = fs::remove_file(path);
     }

@@ -678,9 +678,14 @@ pub fn load_selection(project_root: &Path) -> ContextSelection {
             ..Default::default()
         };
     };
-    serde_json::from_str(&raw).unwrap_or(ContextSelection {
-        version: SELECTION_VERSION,
-        ..Default::default()
+    serde_json::from_str(&raw).unwrap_or_else(|_| {
+        // 损坏不静默覆盖：留档原文件再重建默认选择，用户还能从留档救回手动配置。
+        let backup = path.with_extension(format!("json.corrupt-{}", now_millis()));
+        let _ = fs::copy(&path, &backup);
+        ContextSelection {
+            version: SELECTION_VERSION,
+            ..Default::default()
+        }
     })
 }
 
@@ -935,9 +940,27 @@ pub fn ensure_grok_folder_trust(project_root: &Path) {
     }
 
     if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
+        if let Err(error) = fs::create_dir_all(parent) {
+            crate::debug_log::append(
+                "context_inventory",
+                "warn",
+                "",
+                "ensure_grok_folder_trust: create dir failed",
+                Some(&error.to_string()),
+            );
+            return;
+        }
     }
-    let _ = fs::write(&path, raw);
+    if let Err(error) = fs::write(&path, raw) {
+        // 以前静默吞掉：信任目录没写进去，Grok 却一直问授权，用户无从排查。
+        crate::debug_log::append(
+            "context_inventory",
+            "warn",
+            "",
+            "ensure_grok_folder_trust: write trusted_folders.toml failed",
+            Some(&error.to_string()),
+        );
+    }
 }
 
 fn normalize_trust_path(project_root: &Path) -> String {
