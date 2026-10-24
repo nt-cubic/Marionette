@@ -1803,7 +1803,15 @@ impl AcpService {
         let mut image_count = 0usize;
         // 跨 agent 共享记忆：每个会话进程的首条 prompt 前注入一次记忆卡。
         // 放在最前，阅读顺序是「记忆 → 图片 → 用户的话」。
-        if !process.memory_card_sent.swap(true, Ordering::Relaxed) {
+        // 斜杠 prompt（Grok /always-approve 静默回放等 agent 本体命令）不注入、
+        // 也不消耗首条标记：记忆卡拼在前面后整条消息不以 / 开头，Grok 不再按
+        // 内置命令拦截，会为它真跑一轮模型（点一下 Always approve 就自己开跑）。
+        let prompt_is_slash = text.trim_start().starts_with('/');
+        if !prompt_is_slash
+            && !process
+                .memory_card_sent
+                .swap(true, Ordering::Relaxed)
+        {
             if let Some(card) = crate::memory::compose_card() {
                 prompt_blocks.push(json!({ "type": "text", "text": card }));
             }
