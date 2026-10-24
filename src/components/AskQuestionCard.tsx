@@ -1,5 +1,5 @@
 import { HelpCircle } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export type AskQuestionOption = {
   label: string;
@@ -67,9 +67,11 @@ export function AskQuestionCard({
   const [picks, setPicks] = useState<string[][]>(() => questions.map(() => []));
   const [otherText, setOtherText] = useState<string[]>(() => questions.map(() => ""));
 
+  const questionsRef = useRef(questions);
+  questionsRef.current = questions;
   useEffect(() => {
-    setPicks(prompt.questions.map(() => []));
-    setOtherText(prompt.questions.map(() => ""));
+    setPicks(questionsRef.current.map(() => []));
+    setOtherText(questionsRef.current.map(() => ""));
   }, [prompt.requestId]); // only reset on new request
 
   const allReady = useMemo(() => {

@@ -116,8 +116,10 @@ function matchModel(
     return { modelId: hits[0].id, modelLabel: hits[0].label, unique: true };
   }
   if (hits.length === 0) {
-    // exact id allow even if not cached
-    return { modelId: modelQuery, unique: true };
+    console.warn(
+      `[delegate] unknown model "${modelQuery}" for agent ${agentId} — falling back to the agent's current default`
+    );
+    return { unique: true };
   }
   return { unique: false };
 }

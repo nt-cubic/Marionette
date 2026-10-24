@@ -187,7 +187,11 @@ if errorlevel 1 (
     goto fail
   )
   set "SHIP=%OUTDIR%\Marionette.new.exe"
+  del /q "%STAGE%" >nul 2>&1
+  echo  [error] Marionette.exe was in use - a Marionette.new.exe was left behind
   if /I "%REQUIRE_UPX%"=="1" goto fail
+  if /I not "%NOPAUSE%"=="1" pause
+  exit /b 1
 )
 del /q "%STAGE%" >nul 2>&1
 

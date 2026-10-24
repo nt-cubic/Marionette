@@ -36,7 +36,7 @@ export function PlanApprovalCard({
   onPermissionChoose,
 }: PlanApprovalCardProps) {
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [changesOpen, setChangesOpen] = useState(false);
   const [feedback, setFeedback] = useState("");
   const inFlight = useRef(false);
@@ -51,12 +51,12 @@ export function PlanApprovalCard({
       if (inFlight.current) return;
       inFlight.current = true;
       setSubmitting(true);
-      setError(false);
+      setError(null);
       try {
         await onAnswer(decision, fb);
         // Parent clears the prompt on success; keep disabled if unmount lags.
-      } catch {
-        setError(true);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
         setSubmitting(false);
         inFlight.current = false;
       }
@@ -175,7 +175,7 @@ export function PlanApprovalCard({
       )}
 
       {error && (
-        <p className="plan-approval-card__error">提交失败，请重试</p>
+        <p className="plan-approval-card__error">提交失败，请重试：{error}</p>
       )}
     </div>
   );

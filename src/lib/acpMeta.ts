@@ -36,8 +36,9 @@ export type CodexRetryInfo = {
   httpStatus?: number | null;
 };
 
-/** Module-level goal occurrence counter (per app session is fine). */
+/** Module-level goal occurrence counter; random suffix keeps ids unique across windows. */
 let goalOccurrence = 0;
+const goalOccurrenceSuffix = Math.random().toString(36).slice(2, 10);
 
 function asRecord(v: unknown): Record<string, unknown> | null {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
@@ -78,7 +79,7 @@ export function parseCodexGoalUpdate(update: Record<string, unknown>): CodexGoal
   goalOccurrence += 1;
   return {
     toolName,
-    toolCallId: `codex-goal-${goalOccurrence}`,
+    toolCallId: `codex-goal-${goalOccurrence}-${goalOccurrenceSuffix}`,
     title: `Goal updated (${status}): ${objective}`,
     objective,
     status,
