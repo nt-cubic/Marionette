@@ -1,0 +1,292 @@
+/*
+ * Motion & live-state layer.
+ *
+ * Shared easing/duration tokens plus the few motions the app uses: live
+ * shimmer, arrival of new transcript rows, disclosure, overlays, press.
+ *
+ * Rules this file keeps:
+ * - Only transform / opacity travel. Nothing resizes on a timer, so the
+ *   virtual window's measurements never go stale mid-animation.
+ * - Loops (shimmer) run only on live elements, never on history.
+ * - Arrival motion is gated in SessionView (useArrivalStamps): only units that
+ *   join while the dialog is on screen play it; remounts and history loads don't.
+ * - Every animation has a reduced-motion branch at the bottom.
+ */
+
+:root {
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  /* A settle with one small overshoot, for things that pop into place. */
+  --ease-settle: linear(0, 0.42 10%, 0.8 21%, 0.98 32%, 1.04 43%, 1.02 56%, 1 74%, 1);
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --dur-slow: 280ms;
+
+  --shimmer-base: color-mix(in srgb, var(--accent) 62%, var(--text-muted));
+  --shimmer-hi: color-mix(in srgb, var(--accent) 35%, var(--text-strong));
+}
+
+/* ------------------------------------------------------------------
+ * Transcript rows
+ * ------------------------------------------------------------------ */
+
+/* Verbs are already sentence case ("Ran a command"); capitalize made "Ran A Command". */
+.event-card--collapsible .event-card__type {
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------------
+ * Disclosure
+ * ------------------------------------------------------------------ */
+
+.event-card__summary::before,
+.activity-panel__summary::before,
+.activity-kind .activity-panel__summary::before {
+  display: inline-block;
+  transition: transform var(--dur-base) var(--ease-out);
+}
+
+/* One glyph that turns, instead of swapping ▸ for ▾. */
+.event-card--collapsible[open] > .event-card__summary::before,
+.activity-panel[open] > .activity-panel__summary::before,
+.activity-kind[open] > .activity-panel__summary::before {
+  content: "▸";
+  transform: rotate(90deg);
+}
+
+.turn-delivery__fold {
+  transition: transform var(--dur-base) var(--ease-out);
+}
+
+/* Body of a row the user just opened. */
+.event-card--collapsible.is-revealing > .event-card__expand-slot {
+  animation: m-reveal var(--dur-base) var(--ease-out) backwards;
+}
+
+/* ------------------------------------------------------------------
+ * Live labels: a calm light across the words while work is ongoing
+ * ------------------------------------------------------------------ */
+
+.event-card.is-tool-running:not(.is-tool-stalled) .event-card__type,
+.event-card.is-thought-live .event-card__type,
+.activity-panel.is-live > .activity-panel__summary .activity-panel__title,
+.activity-kind.is-live > .activity-panel__summary .activity-panel__title {
+  color: transparent;
+  background-image: linear-gradient(
+    100deg,
+    var(--shimmer-base) 0 38%,
+    var(--shimmer-hi) 50%,
+    var(--shimmer-base) 62% 100%
+  );
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: m-shimmer 2.4s linear infinite;
+}
+
+/* ------------------------------------------------------------------
+ * Arrival: units that join the rail while it is on screen
+ * ------------------------------------------------------------------ */
+
+.event-list__virt-item {
+  position: relative;
+}
+
+.event-list__virt-item.is-arriving {
+  animation: m-arrive var(--dur-slow) var(--ease-out) backwards;
+}
+
+/* The receipt prints line by line. */
+.event-list__virt-item.is-arriving .turn-delivery__row {
+  animation: m-arrive var(--dur-slow) var(--ease-out) backwards;
+}
+
+.event-list__virt-item.is-arriving .turn-delivery__row:nth-child(2) { animation-delay: 30ms; }
+.event-list__virt-item.is-arriving .turn-delivery__row:nth-child(3) { animation-delay: 60ms; }
+.event-list__virt-item.is-arriving .turn-delivery__row:nth-child(4) { animation-delay: 90ms; }
+.event-list__virt-item.is-arriving .turn-delivery__row:nth-child(5) { animation-delay: 120ms; }
+.event-list__virt-item.is-arriving .turn-delivery__row:nth-child(n + 6) { animation-delay: 150ms; }
+
+.turn-delivery__headline,
+.turn-delivery__stats,
+.event-card__tool-diff {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------------
+ * Overlays: say where they came from
+ * ------------------------------------------------------------------ */
+
+.project-dialog-backdrop,
+.permission-dialog-backdrop,
+.image-annotator-backdrop,
+.image-lightbox {
+  animation: m-fade var(--dur-base) var(--ease-standard) backwards;
+}
+
+.project-dialog,
+.diff-dialog,
+.permission-dialog,
+.image-annotator {
+  animation: m-pop var(--dur-slow) var(--ease-out) backwards;
+}
+
+.composer-menu,
+.link-menu,
+.split-beside-menu,
+.engine-popover,
+.proxy-popover {
+  animation: m-menu var(--dur-base) var(--ease-out) backwards;
+}
+
+/* Composer menus and the shelf popovers open upward from their anchor. */
+.composer-menu,
+.engine-popover,
+.proxy-popover {
+  transform-origin: bottom center;
+}
+
+.link-menu,
+.split-beside-menu {
+  transform-origin: top left;
+}
+
+.scroll-to-bottom {
+  animation: m-pill-in var(--dur-slow) var(--ease-settle) backwards;
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard);
+}
+
+.scroll-to-bottom:active {
+  transform: scale(0.95);
+}
+
+/* ------------------------------------------------------------------
+ * Press & selection feedback
+ * ------------------------------------------------------------------ */
+
+.pill-action {
+  transition:
+    opacity var(--dur-fast) ease,
+    color var(--dur-fast) ease,
+    background var(--dur-fast) ease,
+    border-color var(--dur-fast) ease,
+    transform var(--dur-fast) var(--ease-out);
+}
+
+.pill-action:active {
+  transform: scale(0.92);
+}
+
+.session-row,
+.session-row__select {
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard);
+}
+
+/* The accent bar drops in when a tab becomes active. */
+.editor-tab.is-active {
+  animation: m-tab-ink var(--dur-slow) var(--ease-out);
+}
+
+/* ------------------------------------------------------------------
+ * Keyframes
+ * ------------------------------------------------------------------ */
+
+@keyframes m-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@keyframes m-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+
+@keyframes m-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes m-pop {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
+  }
+}
+
+@keyframes m-menu {
+  from {
+    opacity: 0;
+    transform: translateY(3px) scale(0.98);
+  }
+}
+
+@keyframes m-pill-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.92);
+  }
+}
+
+@keyframes m-tab-ink {
+  from {
+    box-shadow: inset 0 0 0 var(--accent);
+  }
+}
+
+@keyframes m-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  70%,
+  100% {
+    background-position: 0 0;
+  }
+}
+
+@keyframes m-draw {
+  from {
+    stroke-dashoffset: 24;
+  }
+}
+
+@keyframes m-settle-tint {
+  from {
+    color: var(--accent);
+    opacity: 1;
+  }
+}
+
+/* ------------------------------------------------------------------
+ * Reduced motion: keep every state, drop travel and loops
+ * ------------------------------------------------------------------ */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .event-card.is-tool-running:not(.is-tool-stalled) .event-card__type,
+  .event-card.is-thought-live .event-card__type,
+  .activity-panel.is-live > .activity-panel__summary .activity-panel__title,
+  .activity-kind.is-live > .activity-panel__summary .activity-panel__title {
+    color: var(--accent);
+    background: none;
+  }
+}

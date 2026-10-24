@@ -113,6 +113,64 @@ function meterTone(window: UsageWindow): "ok" | "warn" | "hot" | "none" {
   return "ok";
 }
 
+type UsageGroup = {
+  key: string;
+  name: string;
+  windows: UsageWindow[];
+  /** Highest used % across the source's windows. */
+  peak: number | null;
+  tone: ReturnType<typeof meterTone>;
+};
+
+/** `OpenCode Go · 7 days` → source `OpenCode Go`; engine rows carry it in the id. */
+function usageSource(window: UsageWindow): { key: string; name: string } {
+  const name = window.label.split(" · ")[0] || window.label;
+  if (window.id.startsWith("engine:")) return { key: window.id.split(":")[1] ?? name, name };
+  return { key: `label:${name}`, name };
+}
+
+/** What is left of the label once the source name is gone (`7 days`, `MCP · Month`). */
+function usagePeriod(label: string, source: string): string {
+  return label.startsWith(`${source} · `) ? label.slice(source.length + 3) : label;
+}
+
+/** Rough window length in hours for ordering; unknown keeps its place. */
+function periodHours(period: string): number | null {
+  const p = period.toLowerCase();
+  const n = Number(/(\d+(?:\.\d+)?)/.exec(p)?.[1] ?? 1);
+  if (/hour|小时/.test(p)) return n;
+  if (/day|天/.test(p)) return n * 24;
+  if (/week|周/.test(p)) return n * 24 * 7;
+  if (/month|月/.test(p)) return 24 * 31;
+  return null;
+}
+
+function groupUsageBySource(windows: UsageWindow[]): UsageGroup[] {
+  const groups: UsageGroup[] = [];
+  const byKey = new Map<string, UsageGroup>();
+  for (const window of windows) {
+    const { key, name } = usageSource(window);
+    let group = byKey.get(key);
+    if (!group) {
+      group = { key, name, windows: [], peak: null, tone: "none" };
+      byKey.set(key, group);
+      groups.push(group);
+    }
+    group.windows.push(window);
+  }
+  for (const group of groups) {
+    const order = group.windows.map((w, i) => ({ w, i, h: periodHours(usagePeriod(w.label, group.name)) }));
+    order.sort((x, y) => (x.h != null && y.h != null ? x.h - y.h : x.i - y.i));
+    group.windows = order.map((entry) => entry.w);
+    const percents = group.windows
+      .filter((w) => w.percentage != null && w.kind !== "cost")
+      .map((w) => w.percentage as number);
+    group.peak = percents.length > 0 ? Math.max(...percents) : null;
+    group.tone = group.peak == null ? "none" : group.peak >= 90 ? "hot" : group.peak >= 75 ? "warn" : "ok";
+  }
+  return groups;
+}
+
 function formatPrimary(window: UsageWindow): string {
   // cost and tokens rows carry their whole message in `detail` (no % to show).
   if ((window.kind === "cost" || window.kind === "tokens") && window.detail) {
@@ -351,6 +409,52 @@ export function ContextPanel({
     setMergeError(null);
   };
 
+  // Group windows by their source so one provider's 5 hours / 7 days / month
+  // read together, shortest first; a source with one window keeps the plain row.
+  const usageGroups = groupUsageBySource(usage.windows);
+  const usageFooter = [usage.note, usage.refreshedAt || "尚未刷新"]
+    .filter((part, i, all): part is string => Boolean(part) && all.indexOf(part) === i)
+    .join(" · ");
+  const renderUsageRow = (window: UsageWindow) => {
+    const tone = meterTone(window);
+    const primary = formatPrimary(window);
+    // tokens rows (Last turn / Session total) carry their whole
+    // message as the value; inline it overflows the row, so the
+    // value drops to a small line under the label instead.
+    const stacked = window.kind === "tokens" && window.detail != null;
+    const isEmpty =
+      primary === "N/A" &&
+      !window.detail &&
+      window.percentage == null;
+    const detailLine = stacked
+      ? primary
+      : window.detail && window.kind !== "cost" && window.kind !== "tokens"
+        ? window.detail
+        : null;
+    return (
+      <div className={`usage-row usage-row--${tone}`} key={window.id}>
+        <span>{window.label}</span>
+        {!stacked && (
+          <strong className={isEmpty ? "usage-row__muted" : undefined}>
+            {primary}
+          </strong>
+        )}
+        {detailLine != null && (
+          <span className="usage-row__detail">{detailLine}</span>
+        )}
+        {window.percentage !== null && (
+          <div className="usage-meter__track">
+            <span
+              style={{
+                width: `${Math.min(100, Math.max(0, window.percentage))}%`,
+              }}
+            />
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <aside className={`context-panel custom-scrollbar scrollbar-autohide${collapsed ? " is-collapsed" : ""}`} aria-label="Context panel">
       {onResizeStart && (
@@ -534,50 +638,46 @@ export function ContextPanel({
           </p>
         ) : (
           <div className="usage-list">
-            {usage.windows.map((window) => {
-              const tone = meterTone(window);
-              const primary = formatPrimary(window);
-              // tokens rows (Last turn / Session total) carry their whole
-              // message as the value; inline it overflows the row, so the
-              // value drops to a small line under the label instead.
-              const stacked = window.kind === "tokens" && window.detail != null;
-              const isEmpty =
-                primary === "N/A" &&
-                !window.detail &&
-                window.percentage == null;
-              const detailLine = stacked
-                ? primary
-                : window.detail && window.kind !== "cost" && window.kind !== "tokens"
-                  ? window.detail
-                  : null;
-              return (
-                <div className={`usage-row usage-row--${tone}`} key={window.id}>
-                  <span>{window.label}</span>
-                  {!stacked && (
-                    <strong className={isEmpty ? "usage-row__muted" : undefined}>
-                      {primary}
-                    </strong>
-                  )}
-                  {detailLine != null && (
-                    <span className="usage-row__detail">{detailLine}</span>
-                  )}
-                  {window.percentage !== null && (
-                    <div className="usage-meter__track">
-                      <span
-                        style={{
-                          width: `${Math.min(100, Math.max(0, window.percentage))}%`,
-                        }}
-                      />
-                    </div>
-                  )}
+            {usageGroups.map((group) =>
+              group.windows.length === 1 ? (
+                renderUsageRow(group.windows[0])
+              ) : (
+                <div className="usage-group" key={group.key}>
+                  <div className={`usage-group__head usage-row--${group.tone}`}>
+                    <span>{group.name}</span>
+                    {group.peak != null && <strong>{Math.round(group.peak)}%</strong>}
+                  </div>
+                  {group.windows.map((window) => {
+                    const tone = meterTone(window);
+                    const period = usagePeriod(window.label, group.name);
+                    if (window.percentage == null) {
+                      return (
+                        <div className="usage-line usage-line--text" key={window.id} title={window.detail ?? undefined}>
+                          <span className="usage-line__period">{period || window.label}</span>
+                          <span className="usage-line__value">{formatPrimary(window)}</span>
+                        </div>
+                      );
+                    }
+                    return (
+                      <div className={`usage-line usage-row--${tone}`} key={window.id} title={window.detail ?? undefined}>
+                        <span className="usage-line__period">{period}</span>
+                        <span className="usage-meter__track">
+                          <span style={{ width: `${Math.min(100, Math.max(0, window.percentage))}%` }} />
+                        </span>
+                        <strong className="usage-line__value">{formatPrimary(window)}</strong>
+                        {(tone === "hot" || tone === "warn") && window.detail && (
+                          <span className="usage-row__detail">{window.detail}</span>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
-              );
-            })}
+              ),
+            )}
           </div>
         )}
         <small className="usage-updated" title={usage.note ?? undefined}>
-          {usage.note ? `${usage.note} · ` : ""}
-          {usage.refreshedAt || "尚未刷新"}
+          {usageFooter}
         </small>
         {sessionStats && <SessionStatsSection stats={sessionStats} />}
       </section>

@@ -2082,6 +2082,23 @@ body.is-project-reordering .project-list {
   font-weight: 650;
 }
 
+.project-tree .session-row__select {
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+}
+
+/* Last active, quiet; the hover actions float over it. */
+.project-tree .session-row__time {
+  color: var(--text-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.project-tree .session-row:hover .session-row__time,
+.project-tree .session-row:focus-within .session-row__time {
+  visibility: hidden;
+}
+
 /* Actions float over the metadata only when the row is being inspected. */
 .project-tree .session-row__actions {
   position: absolute;
@@ -2301,6 +2318,16 @@ body.is-project-reordering .project-list {
 .editor-tab__mergeback:hover,
 .editor-tab__split:hover {
   color: var(--text);
+}
+
+/*
+ * Split / pop-out belong to the tab you are on or pointing at; on every other
+ * tab they only crowd the title. Close stays put so the next × still lands
+ * under the cursor after a close.
+ */
+.editor-tab:not(.is-active):not(:hover):not(:focus-within) .editor-tab__split,
+.editor-tab:not(.is-active):not(:hover):not(:focus-within) .editor-tab__popout {
+  display: none;
 }
 
 .split-beside-menu {
@@ -3631,10 +3658,46 @@ body.is-tab-detaching .floating-trigger {
   color: var(--text-muted);
 }
 
+/* Closed card: the first file names, so "3 个文件已更改" says which. */
+.turn-delivery__peek {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+/* Add/del split of a file (or the whole turn) as one thin two-tone bar. */
+.turn-delivery__ratio {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-self: center;
+  width: 28px;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--border) 60%, transparent);
+}
+
+.turn-delivery__ratio i {
+  display: block;
+  height: 100%;
+}
+
+.turn-delivery__ratio i.is-add {
+  background: var(--green, #73d391);
+}
+
+.turn-delivery__ratio i.is-del {
+  background: var(--red, #ef6c73);
+}
+
 .turn-delivery__totals {
   display: inline-flex;
   flex: 0 0 auto;
-  align-items: baseline;
+  align-items: center;
   gap: 6px;
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
   font-size: 11px;
@@ -3685,11 +3748,9 @@ body.is-tab-detaching .floating-trigger {
 .turn-delivery {
   display: grid;
   gap: 6px;
-  margin: 10px 0 0;
-  padding: 6px;
-  border: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
-  border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--panel-muted) 72%, var(--panel-raised));
+  margin: 8px 0 0;
+  padding: 6px 0 0;
+  border-top: 1px solid var(--border);
 }
 
 .turn-delivery__files {
@@ -3740,10 +3801,14 @@ body.is-tab-detaching .floating-trigger {
   font-size: 11.5px;
 }
 
+.turn-delivery__dir {
+  color: var(--text-faint);
+}
+
 .turn-delivery__stats {
   display: inline-flex;
   flex: 0 0 auto;
-  align-items: baseline;
+  align-items: center;
   gap: 5px;
   font-family: "Cascadia Mono", Consolas, monospace;
   font-size: 10px;
@@ -3963,6 +4028,16 @@ body.is-tab-detaching .floating-trigger {
   color: var(--accent);
 }
 
+/* Run wall time beside the tally, ahead of the diff badge. */
+.activity-panel__elapsed {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .activity-panel__preview-wrap {
   position: relative;
   flex: 1 1 0%;
@@ -4013,6 +4088,85 @@ body.is-tab-detaching .floating-trigger {
 
 .activity-panel .nine-dot-spinner.is-compact {
   margin-left: 2px;
+}
+
+/*
+ * Run timeline inside an open fold: lanes per kind on one time axis.
+ * Same gray family as the cards — thinking is the light bar, tools the
+ * darker one; accent only for a step still running, red for a failure.
+ */
+.activity-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0 0 8px;
+  padding: 0 0 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.activity-timeline__lane {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) 24px;
+  gap: 8px;
+  align-items: center;
+  height: 12px;
+}
+
+.activity-timeline__label,
+.activity-timeline__count,
+.activity-timeline__axis {
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.activity-timeline__count {
+  text-align: right;
+}
+
+.activity-timeline__track {
+  position: relative;
+  height: 6px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--border) 45%, transparent);
+}
+
+.activity-timeline__span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 2px;
+  border-radius: 1px;
+}
+
+.activity-timeline__span.is-thought {
+  background: color-mix(in srgb, var(--text-muted) 38%, transparent);
+}
+
+.activity-timeline__span.is-tool {
+  background: color-mix(in srgb, var(--text-muted) 85%, var(--border));
+}
+
+.activity-timeline__span.is-failed {
+  background: var(--red);
+}
+
+.activity-timeline__span.is-open {
+  background: var(--accent);
+}
+
+.activity-timeline__span:hover {
+  outline: 1px solid var(--text);
+  outline-offset: 1px;
+}
+
+.activity-timeline__axis {
+  display: flex;
+  justify-content: space-between;
+  margin: 1px 32px 0 64px;
+  font-weight: 500;
 }
 
 .event-card__icon {
@@ -4366,6 +4520,23 @@ body.is-tab-detaching .floating-trigger {
 
 .event-card__timestamp:hover {
   color: var(--text-muted);
+}
+
+/*
+ * Interim replies (not the turn's last): their tags and time repeat the final
+ * reply, so they wait for hover. Opacity only — the card keeps its height.
+ */
+.event-card--assistant_message.is-interim .event-card__meta,
+.event-card--assistant_message.is-interim .event-card__timestamp {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.event-card--assistant_message.is-interim:hover .event-card__meta,
+.event-card--assistant_message.is-interim:hover .event-card__timestamp,
+.event-card--assistant_message.is-interim:focus-within .event-card__meta,
+.event-card--assistant_message.is-interim:focus-within .event-card__timestamp {
+  opacity: 1;
 }
 
 /* Reply footer: meta tags left, Copy right */
@@ -4919,6 +5090,63 @@ body.is-tab-detaching .floating-trigger {
 .usage-list {
   display: grid;
   gap: 10px;
+}
+
+/*
+ * One block per quota source: name + its peak %, then one line per window
+ * (shortest first). Reset time shows only where it matters (75%+); the rest
+ * keep it in the tooltip.
+ */
+.usage-group {
+  display: grid;
+  gap: 4px;
+}
+
+.usage-group__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.usage-group__head strong {
+  color: var(--text);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-line {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr) 34px;
+  gap: 2px 8px;
+  align-items: center;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.usage-line--text {
+  grid-template-columns: 76px minmax(0, 1fr);
+}
+
+.usage-line__period {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-line__value {
+  color: var(--text-muted);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.usage-line .usage-row__detail {
+  grid-column: 2 / -1;
 }
 
 .usage-row {
@@ -6464,20 +6692,21 @@ body.is-tab-detaching .floating-trigger {
   text-transform: uppercase;
 }
 
+/* Tinted, not filled: the letter carries the state without outshouting the path. */
 .change-modified {
-  color: #16180f;
-  background: var(--yellow);
+  color: var(--yellow);
+  background: color-mix(in srgb, var(--yellow) 18%, transparent);
 }
 
 .change-added,
 .change-untracked {
-  color: #0f1712;
-  background: var(--green);
+  color: var(--green);
+  background: color-mix(in srgb, var(--green) 18%, transparent);
 }
 
 .change-deleted {
-  color: #1d0f11;
-  background: var(--red);
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 16%, transparent);
 }
 
 .handoff-block {
@@ -7461,10 +7690,33 @@ body.is-composer-resizing .composer {
 }
 
 .composer-select--model {
-  max-width: 168px;
+  max-width: 260px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* Source gives way first; the model name is what the chip is for. */
+.composer-select__source,
+.composer-select__name,
+.composer-select__effort {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.composer-select__source {
+  flex: 0 100 auto;
+  color: var(--text-faint);
+}
+
+.composer-select__name {
+  flex: 0 1 auto;
+}
+
+.composer-select__effort {
+  flex: 0 0 auto;
+  color: var(--text-faint);
 }
 
 .composer__error-toast {
@@ -7569,6 +7821,32 @@ body.is-composer-resizing .composer {
   flex-direction: column;
   gap: 1px;
   padding-bottom: 4px;
+}
+
+/* Model row: name, then its facts / origin as quiet meta, then the check slot. */
+.composer-menu__group > button {
+  display: flex;
+  align-items: center;
+}
+
+.composer-menu__model-meta {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 48%;
+  margin-left: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.composer-menu__model-check {
+  display: inline-grid;
+  flex: 0 0 14px;
+  place-items: center;
+  margin-left: 6px;
+  color: var(--accent);
 }
 
 .composer-menu__group + .composer-menu__group {
@@ -8043,6 +8321,18 @@ body.is-composer-resizing .composer {
   color: var(--text);
   background: var(--panel-raised);
   border-color: var(--border);
+}
+
+/* Something to send: the one control that acts, in the accent. Empty stays gray. */
+.send-button.is-ready {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.send-button.is-ready:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: color-mix(in srgb, var(--accent) 20%, var(--panel-raised));
 }
 
 .send-button.is-interrupting {

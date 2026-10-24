@@ -136,7 +136,11 @@ export function extractCommandText(event: ToolCallEvent): string {
     );
     if (values.length === 1) return values[0].trim();
   } catch {
-    // Not JSON — plain string input.
+    // Not JSON, or JSON clipped mid-string upstream (`{"variant":"Bash","command":"powershell -NoProfi`).
+    const clipped = /"(?:command|cmd|script|query|pattern|path|filePath|file_path|url)"\s*:\s*"((?:[^"\\]|\\.)*)/.exec(input);
+    if (clipped?.[1]?.trim()) {
+      return clipped[1].replace(/\\(["\\/])/g, "$1").replace(/\\[nrt]/g, " ").trim();
+    }
   }
   return input.replace(/^\{|\}$/g, "").trim();
 }
@@ -211,6 +215,8 @@ export type ActivityKindGroup = {
 export type ActivitySummary = {
   title: string;
   preview: string;
+  /** Wall time of a finished run (`3m 33s`); empty while live or untimed. */
+  elapsed?: string;
   diff: { add: number; del: number } | null;
 };
 
@@ -465,9 +471,86 @@ export function summarizeActivity(
     };
   }
   const tally = formatActivityTally(items);
+  const span = activityTimeline(items);
   return {
     title: tally || "Activity",
     preview: "",
+    elapsed: span && span.durationMs >= 1000 ? formatSpanDuration(span.durationMs) : "",
     diff: sumDiffStats(items),
   };
+}
+
+export type ActivitySpan = {
+  bucket: ActivityKindBucket;
+  /** ms from the run's first event. */
+  start: number;
+  end: number;
+  failed: boolean;
+  /** Still open (no terminal status yet). */
+  open: boolean;
+  event: SessionEvent;
+};
+
+export type ActivityTimelineData = {
+  durationMs: number;
+  /** Buckets in first-seen order — the same order as the closed tally. */
+  lanes: ActivityKindBucket[];
+  spans: ActivitySpan[];
+};
+
+function eventMs(value: string | undefined): number | null {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * Time layout of one thought/tool run for the fold's timeline strip.
+ * A step ends at its own terminal stamp (`completedAt` / `endedAt`), else
+ * where the next step starts. Null when the run carries no usable times.
+ */
+export function activityTimeline(
+  items: ActivityDetailItem[],
+  nowMs?: number,
+): ActivityTimelineData | null {
+  const starts = items.map((item) => eventMs(item.event.createdAt));
+  const first = starts.find((ms): ms is number => ms != null);
+  if (first == null) return null;
+  // Next known start per step, filled back to front so the run stays O(n).
+  const nextStart: (number | null)[] = new Array(items.length).fill(null);
+  for (let i = items.length - 2; i >= 0; i -= 1) nextStart[i] = starts[i + 1] ?? nextStart[i + 1];
+  const lanes: ActivityKindBucket[] = [];
+  const spans: ActivitySpan[] = [];
+  let last = first;
+  items.forEach((item, i) => {
+    const bucket = activityBucket(item.event);
+    const start = starts[i];
+    if (!bucket || start == null) return;
+    if (!lanes.includes(bucket)) lanes.push(bucket);
+    const ev = item.event;
+    const status = ev.type === "tool_call" ? String(ev.status ?? "") : "";
+    const open = ev.type === "tool_call" && (status === "pending" || status === "in_progress");
+    const own =
+      ev.type === "tool_call"
+        ? eventMs(ev.completedAt)
+        : ev.type === "thought"
+          ? eventMs(ev.endedAt)
+          : null;
+    const next = nextStart[i];
+    let end = own ?? next ?? (open && nowMs != null ? nowMs : start);
+    if (end < start) end = start;
+    last = Math.max(last, end);
+    spans.push({ bucket, start: start - first, end: end - first, failed: status === "failed", open, event: ev });
+  });
+  if (spans.length === 0) return null;
+  return { durationMs: last - first, lanes, spans };
+}
+
+/** `48s` under a minute, `2m 10s` after — same unit style as `Thought · 17s`. */
+export function formatSpanDuration(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return rest ? `${m}m ${rest}s` : `${m}m`;
 }
