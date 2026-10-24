@@ -277,8 +277,9 @@ func iconExt(b []byte) string {
 }
 
 // pruneIcons removes pictures no provider points at any more, nor a plugin
-// gave its provider (PluginIcon). One picked in the editor is stored
-// before its provider is saved, so a fresh one stays.
+// gave its provider (PluginIcon), nor a partner listed now shows. One
+// picked in the editor is stored before its provider is saved, so a fresh
+// one stays.
 func pruneIcons(f file) {
 	used := map[string]bool{}
 	for _, p := range f.Providers {
@@ -287,6 +288,9 @@ func pruneIcons(f file) {
 		}
 	}
 	for _, name := range keptPluginIcons() {
+		used[name] = true
+	}
+	for _, name := range keptPartnerIcons() {
 		used[name] = true
 	}
 	ents, _ := os.ReadDir(IconDir())

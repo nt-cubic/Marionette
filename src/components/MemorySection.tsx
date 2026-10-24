@@ -118,7 +118,7 @@ export const MemorySection = memo(function MemorySection({ activeSessionId }: { 
   const entries = store?.entries ?? [];
 
   return (
-    <section className="context-card">
+    <section className="context-card" id="context-memory">
       <div className="context-card__heading">
         <span>记忆</span>
         <div className="context-card__heading-actions">

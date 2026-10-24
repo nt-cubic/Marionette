@@ -359,11 +359,12 @@ magpie.plugin("sessions", (ctx) => {
       pick.onclick = (e) => {
         e.stopPropagation();
         if (pick.classList.contains("open")) return closeProtoMenu();
-        const opts = data.agents.map((x) => ({ v: x.agent, name: x.name, note: String(x.count), literalName: true }));
+        const opts = data.agents.map((x) => ({ v: x.agent, name: x.name, icon: x.icon, note: String(x.count), literalName: true }));
         openProtoMenu(pick, opts, data.agent, (name) => {
           pick.focus({ preventScroll: true });
           chooseAgent(name);
         }, "Agent", "sm-agent-menu");
+        iconItems(opts);
       };
     }
     wrap.append(tabs, pick);
@@ -1081,6 +1082,8 @@ magpie.plugin("sessions", (ctx) => {
 
   // agentOf is an agent as the page names it: of those with sessions, else
   // by its id
+  // iconItems gives each agent in the menu just opened its icon, as its button has
+  const iconItems = (opts) => document.querySelectorAll(".proto-menu .pm-item").forEach((b, i) => opts[i]?.icon && b.firstChild.after(icon(opts[i].icon)));
   const agentOf = (id) => data?.agents.find((x) => x.agent === id) || { agent: id, name: id, icon: id };
 
   // carryPick is the other agents that can carry a session on from its
@@ -1098,9 +1101,9 @@ magpie.plugin("sessions", (ctx) => {
       if (b.classList.contains("open")) return closeProtoMenu();
       const opts = [];
       for (const c of s.carry) {
-        const name = agentOf(c.agent).name;
-        opts.push({ v: "copy\x01" + c.agent, name, literalName: true, note: "Copy the command", title: c.command });
-        if (data.terminal) opts.push({ v: "term\x01" + c.agent, name, literalName: true, note: "Open in session terminal", title: c.command });
+        const { name, icon: ic } = agentOf(c.agent);
+        opts.push({ v: "copy\x01" + c.agent, name, icon: ic, literalName: true, note: "Copy the command", title: c.command });
+        if (data.terminal) opts.push({ v: "term\x01" + c.agent, name, icon: ic, literalName: true, note: "Open in session terminal", title: c.command });
       }
       openProtoMenu(b, opts, "", (v) => {
         b.focus({ preventScroll: true });
@@ -1110,6 +1113,7 @@ magpie.plugin("sessions", (ctx) => {
         if (how === "copy") copy(c.command, t("Command"));
         else api("sessions/terminal", { agent: s.agent, id: s.id, in: to }).then(() => status(t("Opening in session terminal"), "ok"), (err) => status(err.message, "err"));
       }, "Continue in another agent", "sess-carry-menu", "right");
+      iconItems(opts);
     };
     return b;
   }

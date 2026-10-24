@@ -98,7 +98,8 @@ const drawn = (p) => p.evaluate(() => {
 // the top of a stacked line chart, at the hour every model has a part in:
 // the highest line ends where the column's top did, the total's height
 const topAt = (p, h) => p.evaluate((h) => {
-  const at = [...document.querySelectorAll("#ledChart g.ln .line")].map((x) => x.getAttribute("d").split(/[ML]/).filter(Boolean).map((s) => s.split(" ").map(Number))[h]);
+  // the points a line passes through: each command's last x y
+  const at = [...document.querySelectorAll("#ledChart g.ln .line")].map((x) => x.getAttribute("d").split(/[MLC]/).filter(Boolean).map((s) => s.split(" ").map(Number).slice(-2))[h]);
   return at.reduce((a, b) => (b[1] < a[1] ? b : a));
 }, h);
 // the top of the column whose middle is at x
@@ -196,7 +197,16 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
               // a model's line breaks where it had no speed: luna starts at 10:00
               const luna = await p.locator('#ledChart g.ln[data-k="gpt-6-luna"] .line').getAttribute("d");
               assert.equal(luna.split("M").length - 1, 1, "one run: " + luna);
-              assert.equal(luna.split(/[ML]/).filter(Boolean).length, 14, "10:00 to 23:00");
+              assert.equal(luna.split(/[MLC]/).filter(Boolean).length, 14, "10:00 to 23:00");
+              assert.equal(luna.split("C").length - 1, 13, "drawn as curves between its points: " + luna);
+              // the curves bend between points but never past them: no line
+              // reaches over its highest point or under its lowest
+              const past = await p.evaluate(() => [...document.querySelectorAll("#ledChart g.ln .line")].map((x) => {
+                const ys = x.getAttribute("d").split(/[MLC]/).filter(Boolean).map((s) => +s.split(" ").at(-1));
+                const b = x.getBBox();
+                return [b.y - Math.min(...ys), Math.max(...ys) - (b.y + b.height)];
+              }).filter(([a, b]) => a < -0.5 || b < -0.5));
+              assert.deepEqual(past, [], "a curve overshoots its points");
 
               // the tooltip over the lines, and the ranking's emphasis
               await p.locator("#ledMetric .opt").nth(0).click();

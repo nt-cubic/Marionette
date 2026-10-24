@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -243,5 +245,81 @@ func TestWhatsNewTodayRoute(t *testing.T) {
 	}
 	if c := post(`nope`); c != http.StatusBadRequest {
 		t.Fatalf("bad body: %d", c)
+	}
+}
+
+// Settings' What's new with an update waiting lists every release after
+// the one running up to it, not the update's alone (小八 on Discord: on
+// 0.1.1398 with 0.1.1409 waiting, it showed 0.1.1409 and then 0.1.1398 and
+// older). The site's list is the shape magpie-releases had that day, with
+// 0.1.1407 never released and each note's Install section.
+func TestWhatsNewListsEveryReleaseUpToTheWaitingUpdate(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", home)
+	var list []update.Note
+	for v := 1411; v >= 1396; v-- {
+		if v == 1407 {
+			continue
+		}
+		s := strconv.Itoa(v)
+		list = append(list, update.Note{
+			Version: "0.1." + s,
+			Notes:   "## Bug Fixes\n\n- fix " + s + "\n\n## Install\n\n- macOS: [magpie-0.1." + s + "-mac-arm64.dmg](https://github.com/yetone/magpie-releases/releases/download/v0.1." + s + "/magpie-0.1." + s + "-mac-arm64.dmg)",
+			URL:     "https://github.com/yetone/magpie-releases/releases/tag/v0.1." + s,
+		})
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"releases": list})
+	}))
+	defer srv.Close()
+	t.Setenv("MAGPIE_NOTES_FEED", srv.URL)
+	t.Setenv("MAGPIE_UPDATE_FEED", "http://127.0.0.1:1/")
+	oldV, oldNews, oldUp := Version, news, updates
+	t.Cleanup(func() { Version, news, updates = oldV, oldNews, oldUp })
+	Version = "0.1.1398"
+	// upgraded to 0.1.1398 from 0.1.1395 earlier: those since are kept too
+	news = &whatsNew{after: "0.1.1395", pending: true, shown: true}
+	mux := http.NewServeMux()
+	whatsNewRoutes(mux)
+	ask := func() whatsNewJSON {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest("GET", "/api/whatsnew?all=1&lang=en", nil))
+		var j whatsNewJSON
+		if err := json.Unmarshal(rec.Body.Bytes(), &j); err != nil {
+			t.Fatal(rec.Code, rec.Body.String(), err)
+		}
+		return j
+	}
+	got := func(j whatsNewJSON) (vs []string, pending []string) {
+		for _, r := range j.Releases {
+			vs = append(vs, r.Version)
+			if r.Pending {
+				pending = append(pending, r.Version)
+			}
+		}
+		return
+	}
+	for _, state := range []string{"ready", "available", "downloading", "found"} {
+		updates = &updater{state: state, notesIn: "en", latest: &update.Release{Version: "0.1.1409", Notes: "## Bug Fixes\n\n- fix 1409"}}
+		vs, pending := got(ask())
+		want := []string{"0.1.1409", "0.1.1408", "0.1.1406", "0.1.1405", "0.1.1404", "0.1.1403", "0.1.1402", "0.1.1401", "0.1.1400", "0.1.1399"}
+		if !slices.Equal(pending, want) {
+			t.Fatalf("%s: pending %v, want %v", state, pending, want)
+		}
+		if want = append(want, "0.1.1398", "0.1.1397", "0.1.1396"); !slices.Equal(vs, want) {
+			t.Fatalf("%s: listed %v, want %v", state, vs, want)
+		}
+	}
+	// the site out of reach: the update's own notes, then the kept ones
+	news.notes = map[string][]update.Note{"en": {{Version: "0.1.1398", Notes: "- fix 1398"}}}
+	srv.Close()
+	updates = &updater{state: "ready", notesIn: "en", latest: &update.Release{Version: "0.1.1409", Notes: "## Bug Fixes\n\n- fix 1409", URL: "u"}}
+	if vs, pending := got(ask()); !slices.Equal(vs, []string{"0.1.1409", "0.1.1398"}) || !slices.Equal(pending, []string{"0.1.1409"}) {
+		t.Fatalf("offline: %v pending %v", vs, pending)
+	}
+	// nothing waiting: the version's own, none pending
+	updates = &updater{state: "latest", notesIn: "en"}
+	if vs, pending := got(ask()); !slices.Equal(vs, []string{"0.1.1398"}) || pending != nil {
+		t.Fatalf("latest: %v pending %v", vs, pending)
 	}
 }

@@ -22,13 +22,20 @@ import (
 // pluginAgent is what logins.json lists a plugin provider's accounts as.
 func pluginAgent(pp plugin.Provider) string { return "plugin:" + pp.ID }
 
-// pluginLabels names each account: its id, else the end of its key, else
-// what it signed in with; a name two share gets the account's slot.
-func pluginLabels(pp plugin.Provider) map[string]string {
+// pluginLabels names each account: by named (the agent's own, as the
+// agent is signed in now), else its id, else the end of its key, else what
+// it signed in with; a name two share gets the account's slot. The slot
+// goes on after the own name, so the own account never reads as another
+// signed in to the same one (dev on Discord: ZCode's, its id "ZCode",
+// named as one magpie signed in, and Remove on that one took the own).
+func pluginLabels(pp plugin.Provider, named map[string]string) map[string]string {
 	out := map[string]string{}
 	seen := map[string]int{}
 	for _, a := range pp.Accounts {
-		l := a.AccountID
+		l := named[a.Key]
+		if l == "" {
+			l = a.AccountID
+		}
 		if l == "" && a.Hint != "" {
 			l = "API key …" + a.Hint
 		}
@@ -49,6 +56,36 @@ func pluginLabels(pp plugin.Provider) map[string]string {
 		}
 	}
 	return out
+}
+
+// pluginNames is pluginLabels as the accounts list names them, the
+// agent's own as the agent is signed in now.
+func pluginNames(pp plugin.Provider) map[string]string {
+	_, named := pluginOwnNames(pp)
+	return pluginLabels(pp, named)
+}
+
+// pluginOwnNames tells the provider's accounts that are the agent's own,
+// and names them as the agent is signed in now, where that can be read.
+func pluginOwnNames(pp plugin.Provider) (own map[string]bool, named map[string]string) {
+	own, named = map[string]bool{}, map[string]string{}
+	listed := map[string]bool{}
+	for _, a := range pp.Accounts {
+		listed[a.Key] = true
+	}
+	for k, a := range plugin.Auths(pp.ID) {
+		if listed[k] && pluginOwn(pp.ID, a) {
+			own[k] = true
+		}
+	}
+	if len(own) > 0 {
+		if u := pluginOwnUser(pp.ID); u != "" {
+			for k := range own {
+				named[k] = u
+			}
+		}
+	}
+	return own, named
 }
 
 type pluginLogin struct {
@@ -125,26 +162,16 @@ func pluginLogins(pp plugin.Provider) []pluginLogin {
 		return nil
 	}
 	agent := pluginAgent(pp)
-	labels := pluginLabels(pp)
 	byKey := map[string]plugin.Account{}
 	for _, a := range pp.Accounts {
 		byKey[a.Key] = a
 	}
-	own := map[string]bool{}
-	for k, a := range plugin.Auths(pp.ID) {
-		if _, ok := byKey[k]; ok && pluginOwn(pp.ID, a) {
-			own[k] = true
-		}
-	}
+	own, named := pluginOwnNames(pp)
 	mark := ""
 	if len(own) > 0 {
-		if u := pluginOwnUser(pp.ID); u != "" {
-			for k := range own {
-				labels[k] = u
-			}
-		}
 		mark = ownMark(pp.ID)
 	}
+	labels := pluginLabels(pp, named)
 	loginsMu.Lock()
 	ls := readLogins()
 	changed := false
@@ -252,10 +279,15 @@ func forgetPluginLogin(pp plugin.Provider, user string) error {
 		}
 	}
 	key := ls[i].saved.Home
-	err := editSideLogin(agent, user, func(saved []savedLogin, j int) ([]savedLogin, error) {
+	isNext := listedMatch(agent, next, ls)
+	err := editListedLogin(agent, user, ls, func(saved []savedLogin, j int) ([]savedLogin, error) {
+		n := -1
+		if next != "" {
+			n = pickSaved(saved, isNext)
+		}
 		for k := range saved {
 			if saved[k].Agent == agent && (first || k == j) {
-				saved[k].First = next != "" && strings.EqualFold(saved[k].User, next)
+				saved[k].First = k == n
 			}
 		}
 		if own {
@@ -401,7 +433,7 @@ func clearPluginLapse(saved plugin.Saved) {
 	notePluginLapseOf("plugin:"+saved.Provider, saved.Account, http.StatusOK, toldNow, nil)
 	for _, pp := range plugin.Cached() {
 		if pp.ID == saved.Provider {
-			if user := pluginLabels(pp)[saved.Account]; user != "" {
+			if user := pluginNames(pp)[saved.Account]; user != "" {
 				StaleAllowance(pluginAgent(pp), user)
 			}
 		}

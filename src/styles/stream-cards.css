@@ -1285,7 +1285,7 @@
   position: relative;
   display: grid;
   /* textarea | toolbar — pills optional via .has-attachments */
-  grid-template-rows: minmax(44px, 1fr) 26px;
+  grid-template-rows: minmax(36px, 1fr) auto;
   gap: 6px;
   width: 100%;
   min-width: 0;
@@ -1298,7 +1298,7 @@
 }
 
 .composer__field.has-attachments {
-  grid-template-rows: auto minmax(36px, 1fr) 26px;
+  grid-template-rows: auto minmax(36px, 1fr) auto;
 }
 
 .composer__field.is-drop-target {

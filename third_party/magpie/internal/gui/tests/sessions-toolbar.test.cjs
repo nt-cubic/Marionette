@@ -115,6 +115,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await menu.waitFor();
         await menu.evaluate((e) => Promise.all(e.getAnimations().map((a) => a.finished.catch(() => {}))));
         assert.equal(await menu.getByRole("menuitemradio").count(), agents.length);
+        // each agent in the menu shows its icon, as the picker does, level with its name
+        const marks = await menu.locator(".pm-item").evaluateAll((items) => items.map((b) => {
+          const ic = b.querySelector(":scope > .ic"), n = b.querySelector(".pm-name");
+          const i = ic?.getBoundingClientRect(), r = n.getBoundingClientRect();
+          return { icon: ic?.dataset.icon, w: i?.width, mid: i ? Math.abs(i.top + i.height / 2 - (r.top + r.height / 2)) : 99, before: i ? i.right <= r.left : false };
+        }));
+        assert.deepEqual(marks.map((m) => m.icon), agents.map((a) => a.icon), "every agent in the menu has its icon");
+        assert(marks.every((m) => m.w === 16 && m.mid <= 1 && m.before), `icons sit 16px wide, level with and before the name: ${JSON.stringify(marks)}`);
         assert.equal(await picker.getAttribute("aria-expanded"), "true");
         const mb = await menu.boundingBox();
         assert(mb.x >= 0 && mb.x + mb.width <= 320, "the open menu fits a narrow window");

@@ -95,8 +95,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.evaluate(() => { window.__hold = true; });
       const r = await row.boundingBox();
 
-      // held at the start: a strip of the dialog over the row
-      await row.locator(".name, .who").first().click();
+      // held at the start: a strip of the dialog over the row, pressed on
+      // its logo, the row's handle (it rose from below, 10-24)
+      await row.locator(".pv-handle").click();
       await page.locator("#modal:not([hidden]) > .dialog").waitFor();
       const start = await shown(page, 0);
       assert.match(start.clip, /^inset\(/, `${engine} ${width}: the opening clips the dialog: ${start.clip}`);
@@ -151,12 +152,23 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.locator("#modal").waitFor({ state: "hidden" });
       assert.equal(await page.locator("#modal > .dialog").evaluate((d) => d.style.clipPath), "", "no clip left behind");
 
-      // opened again: it grows from the row again
+      // opened again from past its name: it grows from where it was
+      // pressed (the owner, 10-24: 应该从点击处放大), and folds back there
       await page.evaluate(() => { window.__hold = true; });
-      await row.locator(".name, .who").first().click();
+      const px = r.width * .62;
+      await row.click({ position: { x: px, y: r.height / 2 } });
       await page.locator("#modal:not([hidden]) > .dialog").waitFor();
       const again = await shown(page, 0);
       near(again.top, r.y, "again: the strip's top on the row's");
+      near(again.bottom, r.y + r.height, "again: the strip's bottom on the row's");
+      near((again.left + again.right) / 2, r.x + px, "again: the strip centred on the press");
+      near(again.right - again.left, start.right - start.left, "again: as wide as the icon and name were");
+      assert(again.left >= r.x - 1 && again.right <= r.x + r.width + 1, `${engine} ${width}: again inside the row: ${JSON.stringify(again)}`);
+      await page.evaluate(() => { for (const a of document.querySelector("#modal").getAnimations({ subtree: true })) a.finish(); });
+      await page.keyboard.press("Escape");
+      await page.locator("#modal.out").waitFor({ state: "attached" });
+      const back = await shown(page, 1);
+      near((back.left + back.right) / 2, r.x + px, "closed again: back where it was pressed");
       assert.deepEqual(errors, []);
     });
   }

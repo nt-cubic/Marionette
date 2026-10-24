@@ -14,6 +14,7 @@ import (
 
 	"github.com/yetone/magpie/internal/davsync"
 	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // fakeArchive is a bucket of archived calls in memory; size, when set,
@@ -143,5 +144,52 @@ func TestArchiveOldPreview(t *testing.T) {
 	json.Unmarshal(rec.Body.Bytes(), &p)
 	if rec.Code != 200 || p.Request == nil || p.Request.Body != "{}" || !p.Request.Truncated || p.Request.Size != 2 || p.Response.Body != "ok" {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+}
+
+// With sync not to S3 the switch turns on the archive on this computer,
+// its own setting, not the S3 one sync carries; the page is told the folder
+// and its size, and a call kept there is read back and downloaded from it
+// (CyberCaius on Discord).
+func TestArchiveSwitchKeepsOnThisComputer(t *testing.T) {
+	h := archiveHome(t, fakeArchive{objs: map[string][]byte{}})
+	archiveBucket = func() (archiveStore, bool) { return nil, false }
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/settings/archive", strings.NewReader(`{"on":true}`)))
+	var a archiveJSON
+	json.Unmarshal(rec.Body.Bytes(), &a)
+	if rec.Code != 200 || !a.On || a.Bucket != "" || !strings.HasSuffix(a.Folder, "request-archive") || a.Cap != 1<<30 {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	if s := settings.Load(); !s.RequestArchiveLocal || s.RequestArchive {
+		t.Fatalf("switched local %v, synced %v", s.RequestArchiveLocal, s.RequestArchive)
+	}
+	obj := archivedCall(t, `{"q":"here"}`, `{"a":"kept"}`)
+	if err := gateway.LocalArchive().Put(context.Background(), archiveObject, obj); err != nil {
+		t.Fatal(err)
+	}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/archive"+archiveQuery, nil))
+	var p archivePreview
+	json.Unmarshal(rec.Body.Bytes(), &p)
+	if rec.Code != 200 || p.Request == nil || p.Request.Body != `{"q":"here"}` || p.Bytes != int64(len(obj)) {
+		t.Fatalf("read back %d %s", rec.Code, rec.Body)
+	}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/archive/file"+archiveQuery, nil))
+	if rec.Code != 200 || !bytes.Equal(rec.Body.Bytes(), obj) {
+		t.Fatalf("download %d, %d bytes", rec.Code, rec.Body.Len())
+	}
+	// one it never kept says so in this computer's words
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/archive?date=2026-10-02&id=101010-00000000000000bb", nil))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "Not in the archive on this computer") {
+		t.Fatalf("missing: %d %s", rec.Code, rec.Body)
+	}
+	// and off again
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/settings/archive", strings.NewReader(`{"on":false}`)))
+	if s := settings.Load(); rec.Code != 200 || s.RequestArchiveLocal {
+		t.Fatalf("off: %d %s", rec.Code, rec.Body)
 	}
 }

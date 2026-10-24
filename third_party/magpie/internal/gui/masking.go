@@ -15,6 +15,9 @@ import (
 // previewMax is how much text the preview masks.
 const previewMax = 64 << 10
 
+// valuesMax is how many placeholders one /api/masking/values asks for.
+const valuesMax = 2000
+
 // maskedRecord is a record as the page shows it: each value says whether
 // the masker still knows what it stood for, so the page offers to show it
 // only where it can.
@@ -53,12 +56,19 @@ func shownRecord(r maskrec.Record, t gwmw.Teller) maskedRecord {
 
 // maskingRoutes are Settings → Privacy's record of what masking swapped:
 //   - GET /api/masking/summary?days= is maskrec.Sum;
-//   - GET /api/masking/records?before=&limit=&kind=&by=&agent=&provider=
-//     a page of records, newest first;
+//   - GET /api/masking/records?before=&limit=&kind=&by=&agent=&provider=&blocked=
+//     a page of records, newest first (kind may list several, split by
+//     commas; blocked=1 keeps the requests held back);
 //   - GET /api/masking/record?key= one record;
 //   - GET /api/masking/value?p= what a placeholder stood for, while this
 //     magpie's masker remembers it (404 after a restart: it is never on
 //     disk);
+//   - GET /api/masking/sent?key= the body a record's request went to its
+//     vendor with, masked, while this magpie keeps it (the latest
+//     maskrec keeps; 404 after a restart);
+//   - POST /api/masking/values {ps} what each placeholder stood for, of
+//     those the masker still remembers, for the page to show the request
+//     as the agent sent it;
 //   - POST /api/masking/preview {text} the text as a vendor would get it
 //     under the settings now, and what was found, each told by its kind
 //     and hint, never its value; nothing of it is remembered (#1977).
@@ -97,7 +107,7 @@ func maskingRoutes(mux *http.ServeMux) {
 		q := r.URL.Query()
 		before, _ := strconv.ParseInt(q.Get("before"), 10, 64)
 		limit, _ := strconv.Atoi(q.Get("limit"))
-		rs, more := maskrec.List(before, min(max(limit, 1), 200), maskrec.Filter{Kind: q.Get("kind"), By: q.Get("by"), Agent: q.Get("agent"), Provider: q.Get("provider")})
+		rs, more := maskrec.List(before, min(max(limit, 1), 200), maskrec.Filter{Kind: q.Get("kind"), By: q.Get("by"), Agent: q.Get("agent"), Provider: q.Get("provider"), Blocked: q.Get("blocked") == "1"})
 		t, _ := teller()
 		out := []maskedRecord{}
 		for _, rec := range rs {
@@ -128,5 +138,34 @@ func maskingRoutes(mux *http.ServeMux) {
 			return
 		}
 		writeJSON(rw, map[string]string{"value": v})
+	})
+	mux.HandleFunc("GET /api/masking/sent", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Cache-Control", "no-store")
+		key, _ := strconv.ParseInt(r.URL.Query().Get("key"), 10, 64)
+		body, ok := maskrec.SentOf(key)
+		if !ok {
+			http.NotFound(rw, r)
+			return
+		}
+		writeJSON(rw, map[string]string{"body": body})
+	})
+	mux.HandleFunc("POST /api/masking/values", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Cache-Control", "no-store")
+		var in struct {
+			Ps []string `json:"ps"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		out := map[string]string{}
+		if t, ok := teller(); ok {
+			for _, p := range in.Ps[:min(len(in.Ps), valuesMax)] {
+				if v, ok := t.Value(p); ok {
+					out[p] = v
+				}
+			}
+		}
+		writeJSON(rw, map[string]any{"values": out})
 	})
 }

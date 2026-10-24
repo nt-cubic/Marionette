@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/ghtoken"
 	"github.com/yetone/magpie/internal/middleware"
 	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/provider"
@@ -522,6 +524,11 @@ func pluginRoutes(mux *http.ServeMux, w Windows) {
 			if errors.As(err, &m) {
 				out["error"], out["missing"] = m.Why.Error(), m.Missing
 			}
+			// and what kind of why, for the page to say in the reader's
+			// language (the raw error stays its hover)
+			if w := taggedWhyKind(err); w != "" {
+				out["why"] = w
+			}
 		}
 		writeJSON(rw, out)
 	})
@@ -792,4 +799,20 @@ func pluginAgentOf(spec string, errs map[string]string) *pluginAgentJSON {
 		}
 	}
 	return nil
+}
+
+// taggedWhyKind is what kind of failure keeps GitHub's list from being
+// whole: "slow" when GitHub didn't answer in time, "limited" when it
+// turned magpie away for its rate limit, "" for anything else (the page
+// shows that error as it is).
+func taggedWhyKind(err error) string {
+	var lim ghtoken.Limited
+	var ne net.Error
+	switch {
+	case errors.As(err, &lim):
+		return "limited"
+	case errors.Is(err, plugin.ErrNoAnswer), errors.Is(err, context.DeadlineExceeded), errors.As(err, &ne) && ne.Timeout():
+		return "slow"
+	}
+	return ""
 }

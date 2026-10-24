@@ -2,18 +2,62 @@ package proc
 
 import (
 	"context"
-	"os/exec"
 	"strings"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
-// listCommand asks WMI, through PowerShell, for the processes named
-// prefix*, one "pid command line" line each; a process whose command line
-// isn't readable (another user's) prints its id alone.
-func listCommand(ctx context.Context, prefix string) *exec.Cmd {
-	filter := ""
-	if prefix != "" {
-		filter = ` -Filter "Name like '` + strings.ReplaceAll(prefix, "'", "''") + `%'"`
+// list walks a Toolhelp snapshot for the processes named prefix*, case
+// aside, and reads each one's command line from the process itself. It
+// used to ask WMI through a new PowerShell each time, which cost a .NET
+// start and a WMI query every few seconds while a Codex daemon was
+// watched (#3467); this takes no child process and no WMI. A process
+// whose command line isn't readable (another user's, a protected one)
+// is listed with its id alone, as WMI listed it.
+func list(ctx context.Context, prefix string) ([]Process, error) {
+	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return nil, err
 	}
-	return CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command",
-		`Get-CimInstance Win32_Process`+filter+` | ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }`)
+	defer windows.CloseHandle(snap)
+	prefix = strings.ToLower(prefix)
+	var ps []Process
+	e := windows.ProcessEntry32{Size: uint32(unsafe.Sizeof(windows.ProcessEntry32{}))}
+	for err = windows.Process32First(snap, &e); err == nil; err = windows.Process32Next(snap, &e) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		name := windows.UTF16ToString(e.ExeFile[:])
+		if e.ProcessID == 0 || !strings.HasPrefix(strings.ToLower(name), prefix) {
+			continue
+		}
+		ps = append(ps, Process{PID: int(e.ProcessID), Args: commandLine(e.ProcessID)})
+	}
+	if err != windows.ERROR_NO_MORE_FILES {
+		return nil, err
+	}
+	return ps, nil
+}
+
+// commandLine is a process's command line as it was started, "" when it
+// can't be read.
+func commandLine(pid uint32) string {
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return ""
+	}
+	defer windows.CloseHandle(h)
+	// the answer is a UNICODE_STRING followed by its text; ask for the
+	// size first, since a command line can run to 32K characters
+	var n uint32
+	_ = windows.NtQueryInformationProcess(h, windows.ProcessCommandLineInformation, nil, 0, &n)
+	if n < uint32(unsafe.Sizeof(windows.NTUnicodeString{})) {
+		return ""
+	}
+	buf := make([]byte, n)
+	if err := windows.NtQueryInformationProcess(h, windows.ProcessCommandLineInformation, unsafe.Pointer(&buf[0]), n, &n); err != nil {
+		return ""
+	}
+	return strings.TrimSpace((*windows.NTUnicodeString)(unsafe.Pointer(&buf[0])).String())
 }

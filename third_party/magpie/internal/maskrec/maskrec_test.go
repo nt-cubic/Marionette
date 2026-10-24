@@ -14,7 +14,7 @@ func sandbox(t *testing.T, now time.Time) string {
 	oldDir, oldClock, oldOwn := Dir, clock, ownTest
 	Dir, clock, ownTest = func() string { return dir }, func() time.Time { return now }, true
 	store.mu.Lock()
-	store.days, store.snips, store.last, store.pruned = nil, nil, 0, time.Time{}
+	store.days, store.snips, store.sent, store.sentBytes, store.last, store.pruned = nil, nil, nil, 0, 0, time.Time{}
 	store.mu.Unlock()
 	t.Cleanup(func() { Dir, clock, ownTest = oldDir, oldClock, oldOwn })
 	return dir
@@ -98,6 +98,10 @@ func TestSum(t *testing.T) {
 	if rs, more := List(0, 10, Filter{By: "model"}); len(rs) != 1 || more || rs[0].Agent != "codex" {
 		t.Fatalf("filtered: %+v", rs)
 	}
+	// several kinds, split by commas
+	if rs, _ := List(0, 10, Filter{Kind: "EMAIL,API_KEY"}); len(rs) != 2 || rs[0].Agent != "claude" {
+		t.Fatalf("kinds: %+v", rs)
+	}
 	rs, more := List(0, 2, Filter{})
 	if len(rs) != 2 || !more || !rs[0].Time.Equal(now) {
 		t.Fatalf("page: %+v %v", rs, more)
@@ -142,5 +146,9 @@ func TestSumWarnedAndBlocked(t *testing.T) {
 	}
 	if got, _ := List(0, 1, Filter{}); len(got) != 1 || !got[0].Blocked || got[0].Values[0].Action != "block" {
 		t.Fatalf("record: %+v", got)
+	}
+	// only the requests held back
+	if got, _ := List(0, 10, Filter{Blocked: true}); len(got) != 2 || !got[0].Blocked || !got[1].Blocked {
+		t.Fatalf("held back: %+v", got)
 	}
 }

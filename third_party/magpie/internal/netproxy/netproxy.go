@@ -453,33 +453,78 @@ type Proxy struct {
 
 var sysCache struct {
 	sync.Mutex
-	at time.Time
-	p  Proxy
+	at     time.Time // when the last read ended; zero: nothing read yet
+	p      Proxy
+	failed bool // the last read failed, so p is from one before it
+	// reading is closed when the read under way, begun at since, ends;
+	// nil while none is
+	reading chan struct{}
+	since   time.Time
 }
 
 // How long a system proxy read stands: a proxy that is set, 15 seconds;
 // none, 2. magpie started at login comes up before the proxy app does
 // (#1518), and its requests went direct for up to 15 seconds after the
-// proxy app had set the system's proxy.
+// proxy app had set the system's proxy. A request waits for a read until
+// readWait after the read began, then takes what was read before: a
+// scutil that never answered held every request that asked for the
+// system's proxy for as long as it hung (#3421).
 var (
 	systemKeep = 15 * time.Second
 	noneKeep   = 2 * time.Second
+	readWait   = 2 * time.Second
 	readSystem = system
 )
 
 // System reads the system proxy, at most every 15 seconds while one is
-// set and every 2 while none is.
+// set and every 2 while none is. One read runs at a time, outside the
+// lock. A read that fails keeps what was read before, and the one after
+// it holds nobody.
 func System() Proxy {
 	sysCache.Lock()
-	defer sysCache.Unlock()
 	keep := systemKeep
 	if sysCache.p.URL == "" {
 		keep = noneKeep
 	}
-	if sysCache.at.IsZero() || time.Since(sysCache.at) > keep {
-		sysCache.p, sysCache.at = readSystem(), time.Now()
+	if !sysCache.at.IsZero() && time.Since(sysCache.at) <= keep {
+		p := sysCache.p
+		sysCache.Unlock()
+		return p
 	}
+	if sysCache.reading == nil {
+		sysCache.reading, sysCache.since = make(chan struct{}), time.Now()
+		go refreshSystem(sysCache.reading)
+	}
+	var wait time.Duration
+	if sysCache.at.IsZero() || !sysCache.failed {
+		wait = time.Until(sysCache.since.Add(readWait))
+	}
+	done := sysCache.reading
+	sysCache.Unlock()
+	if wait > 0 {
+		t := time.NewTimer(wait)
+		select {
+		case <-done:
+		case <-t.C:
+		}
+		t.Stop()
+	}
+	sysCache.Lock()
+	defer sysCache.Unlock()
 	return sysCache.p
+}
+
+// refreshSystem reads the system proxy into sysCache, then closes done.
+// A read that fails keeps what was read before, if anything was.
+func refreshSystem(done chan struct{}) {
+	p, ok := readSystem()
+	sysCache.Lock()
+	if ok || sysCache.at.IsZero() {
+		sysCache.p = p
+	}
+	sysCache.at, sysCache.failed, sysCache.reading = time.Now(), !ok, nil
+	sysCache.Unlock()
+	close(done)
 }
 
 func loopback(host string) bool {

@@ -74,6 +74,8 @@ function serve(lang) {
 async function open(browser, lang, width, height) {
   const context = await browser.newContext({ viewport: { width, height } });
   const page = await context.newPage();
+  // the block grid, the look these cells are drawn in (the map is the default)
+  await page.addInitScript(() => { try { localStorage.setItem("magpie.ctxLook", "grid"); } catch {} });
   // folded is the reader's own choice, kept in magpie.ctxShut; set once, so a reload keeps what the page stores
   await page.addInitScript(() => { try { if (!sessionStorage.getItem("seeded")) { sessionStorage.setItem("seeded", "1"); localStorage.setItem("magpie.ctxShut", "1"); } } catch {} });
   page.setDefaultTimeout(5000);
@@ -122,9 +124,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           assert.equal(await fold.innerText(), words[lang]);
           assert.equal(await box.locator(".ctx-short").innerText(), "186K / 272K · 68%");
           assert.match(await box.locator(".ctx-crumbs").textContent(), /#112$/);
-          // a bar of what fills the window, a part each (this prompt has no memory)
+          // a bar of what fills the window, a part each (this prompt has no skills or memory)
           assert.deepEqual(await box.locator(".ctx-stack > i").evaluateAll((is) => is.map((i) => i.className + " " + i.style.width)),
-            ["k-system 3.31%", "k-tools 4.41%", "k-memory 0%", "k-files 28.68%", "k-results 16.18%", "k-chat 15.81%"]);
+            ["k-system 3.31%", "k-tools 4.41%", "k-skills 0%", "k-memory 0%", "k-files 28.68%", "k-results 16.18%", "k-chat 15.81%"]);
           const at = await page.evaluate(() => {
             const r = (s) => document.querySelector(s).getBoundingClientRect();
             const card = r(".rt-ctx .ctx-card"), head = r(".rt-ctx .ctx-head"), bar = r(".rt-ctx .ctx-stack"), c = document.querySelector(".rt-ctx .ctx-card");

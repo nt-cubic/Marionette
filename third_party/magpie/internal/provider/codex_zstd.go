@@ -1,8 +1,6 @@
 package provider
 
 import (
-	"bytes"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -77,9 +75,7 @@ func CodexCompressed(req *http.Request, body []byte) int {
 		return len(body) // already encoded: as Codex, never twice
 	}
 	z := codexZstd.EncodeAll(body, make([]byte, 0, len(body)/8+64))
-	req.Body = io.NopCloser(bytes.NewReader(z))
-	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(z)), nil }
-	req.ContentLength = int64(len(z))
+	SetBody(req, z)
 	req.Header.Del("Content-Length")
 	req.Header.Set("Content-Encoding", "zstd")
 	return len(z)

@@ -377,7 +377,27 @@ type requestIndex struct {
 	// for it rather than reading the whole history beside it (a refresh
 	// pressed while a 750k-call All was still being read, Vantiboo1ean)
 	flights map[flightKey]*pageFlight
+	// heats are the heatmap's last pages, kept while the agents' session
+	// files are all that changed (heatFresh)
+	heats map[pageKey]heatPage
 }
+
+// heatPage is a heatmap's page, of the gateway log's snapshot version,
+// worked out at.
+type heatPage struct {
+	page    RequestPage
+	version uint64
+	at      time.Time
+}
+
+// heatFresh is how long a heatmap is kept while only the agents' session
+// files change. A live agent writes its session file all the time, so the
+// page's key changed for every ask, and the Requests tab's refresh worked
+// out a year of calls again each time: seconds of CPU over a long history
+// (#3493). A year's calendar is the same a few seconds on; a change to
+// what prices or names a call, or a call through magpie, is still shown at
+// once.
+var heatFresh = 30 * time.Second
 
 // building, in tests, is told each time a page is worked out.
 var building func()
@@ -418,7 +438,11 @@ func recordHash(path string, n int64) string {
 // requestState is what the calls read at now depend on: the gateway log's
 // snapshot, the agents' call files, other computers' days, Codex's thread
 // identities and what prices and names a call. A change to meta drops the
-// request index's chunks; a change to key, its pages.
+// request index's chunks; a change to key, its pages. Codex's thread
+// identities are in key alone: a chunk's rows don't hold them, the page
+// gives them to its rows as it is built, and every new Codex thread, a
+// subagent's too, dropped every chunk, so the next page read the whole
+// history again (#3493).
 type requestState struct {
 	sources         []sessions.CallSource
 	codexIdentities map[string]sessions.CodexIdentity
@@ -444,7 +468,7 @@ func readRequestState(now time.Time) requestState {
 	cfg := settings.Load()
 	prices, _ := json.Marshal(cfg.ModelPrices)
 	wires, _ := json.Marshal(cfg.ModelWires)
-	meta := fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s|%s", ids, codexIdentityKey, renamed, prices, wires, statKey(provider.Path()), statKey(catalog.CachePath()), clientAgentsKey())
+	meta := fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s", ids, renamed, prices, wires, statKey(provider.Path()), statKey(catalog.CachePath()), clientAgentsKey())
 	h := sha256.New()
 	for _, current := range provider.All() {
 		fmt.Fprintf(h, "%q:%q:%v:%t:%t:%t;", current.ID, current.Where(), current.Catalogs(), current.IsPlugin(), current.Account == nil, current.Key != "")
@@ -462,6 +486,7 @@ func readRequestState(now time.Time) requestState {
 	h.Reset()
 	snapshot := readLogSnapshot()
 	fmt.Fprint(h, meta, snapshot.version, now.In(time.Local).Format("2006-01-02 MST"))
+	h.Write(codexIdentityKey)
 	for _, s := range sources {
 		fmt.Fprintf(h, "%s:%d:%d;", s.Path, s.Size, s.Modified.UnixNano())
 	}
@@ -500,6 +525,7 @@ func queryPage(p Period, f Filter, offset, limit int, readSource func(sessions.C
 		idx.root, idx.meta = root, meta
 		idx.chunks = map[string]*rowChunk{}
 		idx.pages = nil
+		idx.heats = nil
 		idx.key = ""
 	}
 	if idx.key != key {
@@ -511,6 +537,11 @@ func queryPage(p Period, f Filter, offset, limit int, readSource func(sessions.C
 		idx.Unlock()
 		return page
 	}
+	if h, ok := idx.heats[q]; ok && h.version == version && time.Since(h.at) < heatFresh {
+		idx.Unlock()
+		return h.page
+	}
+	began := time.Now()
 	fk := flightKey{key, q}
 	if fl := idx.flights[fk]; fl != nil {
 		idx.Unlock()
@@ -539,12 +570,24 @@ func queryPage(p Period, f Filter, offset, limit int, readSource func(sessions.C
 		chunks: maps.Clone(idx.chunks)}
 	shared.Unlock()
 	price := Pricer()
+	// Swapped's names are a few hundred pairs over thousands of files' calls,
+	// and its regexps were a third of reading them again (#3493)
+	swapped := map[[2]string]bool{}
 	priceRow := func(r Record, source string) Row {
 		sent := r.Model
 		if source == "" {
 			sent = provider.SentNameIn(cfg.ModelWires, r.Provider, r.Model, r.Effort)
 		}
-		row := Row{Record: r, Source: source, Swapped: r.Served != "" && Swapped(sent, r.Served), Routed: GroupRouted(sent, r.Served)}
+		row := Row{Record: r, Source: source, Routed: GroupRouted(sent, r.Served)}
+		if r.Served != "" {
+			k := [2]string{sent, r.Served}
+			s, ok := swapped[k]
+			if !ok {
+				s = Swapped(sent, r.Served)
+				swapped[k] = s
+			}
+			row.Swapped = s
+		}
 		if pr := price(r); pr != nil && r.Input+r.Output > 0 {
 			row.Priced = true
 			row.Cost = r.CostAt(*pr)
@@ -699,6 +742,12 @@ func queryPage(p Period, f Filter, offset, limit int, readSource func(sessions.C
 		shared.pages = map[pageKey]RequestPage{}
 	}
 	shared.pages[q] = page
+	if p == heatmapPeriod {
+		if shared.heats == nil || len(shared.heats) >= 16 {
+			shared.heats = map[pageKey]heatPage{}
+		}
+		shared.heats[q] = heatPage{page: page, version: version, at: began}
+	}
 	// The session files' chunks are bounded; the gateway's index is not
 	// counted here, as it is kept whatever its size (log_index.go).
 	var bytes int64
@@ -1016,6 +1065,20 @@ func buildRequestBlocksWithCodex(p Period, f Filter, offset, limit int, now time
 		}
 	}
 	out := RequestPage{Rows: []Row{}, Agents: []string{}, Providers: []string{}, Purposes: []string{}, By: map[string][]Share{}}
+	chartFilter := f
+	chartFilter.Day = ""
+	// The heatmap's page is only its days, all HeatmapOf reads: over its
+	// year the groups, shares and series below took seconds a call (#3493).
+	if p == heatmapPeriod {
+		out.Heat = heatmapOf(since, now, func(add func(Row)) {
+			visit(func(_ rowRef, r Row) {
+				if chartFilter.keepsRow(r) {
+					add(r)
+				}
+			})
+		})
+		return out
+	}
 	agents, providers := map[string]bool{}, map[string]bool{}
 	kinds := map[string]bool{}
 	callers := map[string]*Group{}
@@ -1041,13 +1104,11 @@ func buildRequestBlocksWithCodex(p Period, f Filter, offset, limit int, now time
 		take = offset + min(limit, maxRows-offset)
 	}
 	selected := newestHeap{}
-	chartFilter := f
-	chartFilter.Day = ""
 	// the two source cells' own numbers, counted without the source pick
 	viaFilter := f
 	viaFilter.Through = ""
 	var first time.Time
-	// the rows the chart and the heatmap count, kept as the first pass
+	// the rows the chart counts, kept as the first pass
 	// finds them so that theirs needn't read every row of the period again
 	var charted []rowRef
 	visit(func(ref rowRef, r Row) {
@@ -1214,13 +1275,6 @@ func buildRequestBlocksWithCodex(p Period, f Filter, offset, limit int, now time
 			part.add(r)
 			pt.By[d][k] = part
 		}
-	}
-	if p == heatmapPeriod {
-		out.Heat = heatmapOf(since, now, func(add func(Row)) {
-			for _, ref := range charted {
-				add(ref.row())
-			}
-		})
 	}
 	// Match LedgerSeries's top-24 selection on the filtered data, not facets.
 	for _, d := range Dimensions {

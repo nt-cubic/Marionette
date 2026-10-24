@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -184,6 +185,39 @@ func (n *whatsNew) get(ctx context.Context, all bool, lang string) whatsNewJSON 
 	return j
 }
 
+// withWaiting puts first, in Settings' What's new while an update waits,
+// the notes of every release after this one up to it, marked not installed
+// yet. Only the update's own notes were (小八 on Discord: on 0.1.1398 with
+// 0.1.1409 waiting, 0.1.1399 to 0.1.1408 were missing), so they come from
+// the site as the restart's dialog has them (update/notes), with the
+// update's own when the site can't say.
+func withWaiting(ctx context.Context, list []update.Note, u updateJSON, lang string) []update.Note {
+	switch u.State {
+	case "ready", "available", "downloading", "found":
+	default:
+		return list
+	}
+	if !update.Released(Version) || u.Latest == "" || !update.Newer(u.Latest, Version) {
+		return list
+	}
+	ahead, _ := fetchNotes(ctx, Version, u.Latest, lang)
+	if len(ahead) == 0 && strings.TrimSpace(u.Notes) != "" {
+		ahead = []update.Note{{Version: u.Latest, Notes: u.Notes, URL: u.URL}}
+	}
+	out := make([]update.Note, 0, len(ahead)+len(list))
+	for _, r := range ahead {
+		if !slices.ContainsFunc(list, func(o update.Note) bool { return o.Version == r.Version }) {
+			r.Pending = true
+			out = append(out, r)
+		}
+	}
+	out = append(out, list...)
+	if len(out) > update.MaxNotes {
+		out = out[:update.MaxNotes]
+	}
+	return out
+}
+
 func (n *whatsNew) seen() {
 	n.mu.Lock()
 	n.shown = true
@@ -240,7 +274,12 @@ func askedLang(r *http.Request) string {
 
 func whatsNewRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/whatsnew", func(rw http.ResponseWriter, r *http.Request) {
-		writeJSON(rw, news.get(r.Context(), r.URL.Query().Get("all") != "", pageLang(r)))
+		all, lang := r.URL.Query().Get("all") != "", pageLang(r)
+		j := news.get(r.Context(), all, lang)
+		if all {
+			j.Releases = withWaiting(r.Context(), j.Releases, updates.jsonIn(askedLang(r)), lang)
+		}
+		writeJSON(rw, j)
 	})
 	mux.HandleFunc("POST /api/whatsnew/seen", func(rw http.ResponseWriter, r *http.Request) {
 		news.seen()

@@ -36,7 +36,6 @@ func TestCPUProfileOnlyToThisComputer(t *testing.T) {
 	cpuSecond = time.Millisecond
 	t.Cleanup(func() { cpuSecond = old })
 	srv := New()
-	chrome := []string{"User-Agent", "Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15 Version/27.2 Safari/605.1.15", "Sec-Fetch-Site", "cross-site", "Sec-Fetch-Mode", "cors"}
 	call := func(guarded bool, remote, host string, hdr ...string) *httptest.ResponseRecorder {
 		t.Helper()
 		r := httptest.NewRequest("GET", CPUPath+"?seconds=5", nil)
@@ -53,26 +52,7 @@ func TestCPUProfileOnlyToThisComputer(t *testing.T) {
 		h.ServeHTTP(w, r)
 		return w
 	}
-	refused := []struct {
-		name         string
-		remote, host string
-		hdr          []string
-	}{
-		{"a foreign page", "127.0.0.1:50123", "127.0.0.1:3425", append([]string{"Origin", "https://evil.example"}, chrome...)},
-		{"Origin null", "127.0.0.1:50123", "127.0.0.1:3425", append([]string{"Origin", "null"}, chrome...)},
-		{"Origin null with a key", "127.0.0.1:50123", "127.0.0.1:3425", append([]string{"Origin", "null", "Authorization", "Bearer " + key}, chrome...)},
-		{"a page on localhost", "127.0.0.1:50123", "127.0.0.1:3425", append([]string{"Origin", "http://localhost:5173"}, chrome...)},
-		{"a localhost subdomain", "127.0.0.1:50123", "127.0.0.1:3425", append([]string{"Origin", "http://evil.localhost"}, chrome...)},
-		{"a listed page with its key", "127.0.0.1:50123", "127.0.0.1:3425", append([]string{"Origin", "https://listed.example", "Authorization", "Bearer " + key}, chrome...)},
-		{"a rebound page's GET", "127.0.0.1:50123", "rebind.attacker.example:3425", chrome},
-		{"a rebound page with a key", "127.0.0.1:50123", "rebind.attacker.example:3425", append([]string{"Authorization", "Bearer " + key}, chrome...)},
-		{"a call to another name", "127.0.0.1:50123", "rebind.attacker.example:3425", []string{"User-Agent", "curl/8"}},
-		{"a localhost subdomain as Host", "127.0.0.1:50123", "wails.localhost:3425", []string{"User-Agent", "curl/8"}},
-		{"another machine", "192.168.1.20:50123", "192.168.1.10:3425", nil},
-		{"another machine with a key", "192.168.1.20:50123", "192.168.1.10:3425", []string{"Authorization", "Bearer " + key}},
-		{"a proxy's client", "127.0.0.1:50123", "127.0.0.1:3425", []string{"X-Forwarded-For", "203.0.113.9"}},
-		{"a proxy's client with a key", "127.0.0.1:50123", "127.0.0.1:3425", []string{"Cf-Connecting-IP", "203.0.113.9", "Authorization", "Bearer " + key}},
-	}
+	refused := profileCallersRefused(key)
 	for _, c := range refused {
 		for _, guarded := range []bool{true, false} {
 			w := call(guarded, c.remote, c.host, c.hdr...)

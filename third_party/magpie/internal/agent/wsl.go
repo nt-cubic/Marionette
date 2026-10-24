@@ -1150,6 +1150,28 @@ func wslClaudeStandIn(model string) string {
 	return ""
 }
 
+// wslClaudeClassifier is ClassifierStandIn for a Claude Code in a running
+// distro, known by the same User-Agent.
+func wslClaudeClassifier(model string) string {
+	wsl.Lock()
+	wslRunningLocked()
+	var ds []distro
+	for _, n := range wsl.names {
+		if d := wsl.seen[n]; d != nil && wsl.running[n] && wslKindOf("claude").found(*d) {
+			ds = append(ds, *d)
+		}
+	}
+	wsl.Unlock()
+	cfg := wslConfig()
+	for _, d := range ds {
+		d.mirror(cfg)
+		if m := claudeClassifierIn(d.place("claude@wsl:"+d.Name), model); m != "" {
+			return m
+		}
+	}
+	return ""
+}
+
 // wslList is the names wsl.exe lists with args; ok is false when it
 // couldn't say (no WSL, or none installed).
 func wslList(args ...string) (names []string, ok bool) {

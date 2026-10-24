@@ -255,7 +255,7 @@ func pluginUsing(saved plugin.Saved, user string) bool {
 func pluginUser(saved plugin.Saved) string {
 	for _, pp := range plugin.Cached() {
 		if pp.ID == saved.Provider {
-			return pluginLabels(pp)[saved.Account]
+			return pluginNames(pp)[saved.Account]
 		}
 	}
 	return ""

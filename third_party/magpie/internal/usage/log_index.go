@@ -21,6 +21,10 @@ import (
 const (
 	logBlockRows   = 512
 	logStampSettle = time.Second
+	// logFineSettle is logStampSettle for a change time with a fraction of
+	// a second, from a clock that ticks in milliseconds: APFS's in
+	// nanoseconds, Linux's coarse clock in 1 to 10 ms, NTFS's in ~15.6 ms.
+	logFineSettle = 100 * time.Millisecond
 )
 
 // The blocks are always kept, however long the history: they are the index
@@ -292,9 +296,21 @@ func oldInfo(s *logSnapshot) os.FileInfo {
 
 // A read in the change stamp's clock tick cannot prove that a later equal
 // stamp still names the same bytes. Decide before reading, not at reuse time.
+//
+// A stamp in whole seconds (HFS+, FAT, a share that keeps no fraction) may
+// share its second with a write after the read. One with a fraction comes
+// from a clock that ticks in milliseconds, past which a write has a later
+// stamp, so it settles in logFineSettle. Under steady traffic each read
+// came within a second of the gateway's last append, so each one hashed
+// the whole log again: 1.8 times the log for each append and read, so a
+// 100 MB history cost ~180 MB of SHA-256 for every request (#3394).
 func settledLogStamp(info os.FileInfo, start time.Time) bool {
 	c := logChangeTime(info)
-	return !c.IsZero() && c.Before(start.Add(-logStampSettle))
+	settle := logStampSettle
+	if c.Nanosecond() != 0 {
+		settle = logFineSettle
+	}
+	return !c.IsZero() && c.Before(start.Add(-settle))
 }
 
 func sameLogInfo(a, b os.FileInfo) bool {

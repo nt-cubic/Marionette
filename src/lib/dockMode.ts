@@ -4,9 +4,9 @@
  *
  * Stage 0 — background residency: with `autoHideOnClose` on, closing the
  * window retracts it to the edge instead of exiting (engine, sessions and the
- * Telegram bridge keep running); true exit is the footer's 退出 button
- * (`quit_app`). The Rust side mirrors the flag so its CloseRequested branch
- * knows the path.
+ * Telegram bridge keep running); true exit is 退出 in the strip's ⋯ menu or
+ * the Ctrl K palette (`quit_app`). The Rust side mirrors the flag so its
+ * CloseRequested branch knows the path.
  *
  * Stage 1 — the dock engine, a three-state machine over the main window:
  *
@@ -65,8 +65,12 @@ const DEFAULT_PREFS: DockPrefs = {
 const WIDTH_MIN = 320;
 const WIDTH_MAX = 480;
 
-/** On-screen part of the parked window, physical px (plan §1: 只留 4px). */
-const SLIVER_PX = 4;
+/**
+ * On-screen part of the parked window, logical px (plan §1 said 4 physical;
+ * at 150% that is under 3 CSS px — too thin to see or hit). The handle pill
+ * drawn in it is #dock-sliver in dock.css.
+ */
+const SLIVER_LOGICAL = 6;
 /** Slide-in/out: 9 equal set_position steps over ~160ms (plan §1: 整窗重绘不做更长). */
 const ANIM_STEPS = 9;
 const ANIM_MS = 160;
@@ -75,6 +79,14 @@ const RETRACT_DELAY_MS = 300;
 /** Floating-window minimum, mirrors tauri.conf.json minWidth/minHeight. */
 const FLOATING_MIN = { width: 960, height: 640 };
 const DOCK_MIN = { width: WIDTH_MIN, height: 200 };
+/** How close to a screen side a dragged window has to come to dock (logical). */
+const SNAP_LOGICAL = 20;
+/** Movement must settle this long before we look (onMoved fires per frame). */
+const SNAP_IDLE_MS = 160;
+/** Then hold at the edge this long before committing the dock. */
+const SNAP_CONFIRM_MS = 220;
+/** Dragging the strip this far off its edge undocks it (QQ-style). */
+const DOCK_OUT_LOGICAL = 48;
 
 type Listener = (prefs: DockPrefs) => void;
 
@@ -182,6 +194,53 @@ type DockArea = {
 let dockArea: DockArea | null = null;
 let dockWidthPhys = 0;
 
+/**
+ * Invisible frame around the client area, physical px. tao keeps a resize /
+ * shadow border on undecorated windows (WM_NCCALCSIZE insets ~8px left, right
+ * and bottom), and outerPosition/setPosition address that outer rect. Placing
+ * by the outer rect parked the client fully off-screen — nothing to see and
+ * no pixel for the pointer to enter — and left a dead gap when expanded. All
+ * placement below targets the client rect instead.
+ */
+type Insets = { left: number; top: number; right: number; bottom: number };
+let insets: Insets = { left: 0, top: 0, right: 0, bottom: 0 };
+
+async function measureInsets(): Promise<Insets> {
+  const win = getCurrentWindow();
+  try {
+    const [outerPos, innerPos, outerSize, innerSize] = await Promise.all([
+      win.outerPosition(),
+      win.innerPosition(),
+      win.outerSize(),
+      win.innerSize(),
+    ]);
+    const left = Math.max(0, innerPos.x - outerPos.x);
+    const top = Math.max(0, innerPos.y - outerPos.y);
+    return {
+      left,
+      top,
+      right: Math.max(0, outerSize.width - innerSize.width - left),
+      bottom: Math.max(0, outerSize.height - innerSize.height - top),
+    };
+  } catch {
+    return { left: 0, top: 0, right: 0, bottom: 0 };
+  }
+}
+
+/**
+ * Client size of the strip. Tauri's `setSize` maps to tao's `set_inner_size`
+ * (the client rect), so this is exactly the strip width × work-area height —
+ * adding the invisible frame here made every docked window 16px too wide and
+ * pushed its right edge past the screen (2026-10-24).
+ */
+function clientSize(area: DockArea): PhysicalSize {
+  return new PhysicalSize(dockWidthPhys, area.h);
+}
+
+function outerY(area: DockArea): number {
+  return area.y - insets.top;
+}
+
 /** Floating geometry (physical) to restore on undock. */
 let floating: { x: number; y: number; width: number; height: number; maximized: boolean } | null = null;
 
@@ -190,6 +249,24 @@ let animToken = 0;
 let retractTimer: ReturnType<typeof setTimeout> | null = null;
 let focused = true;
 let pointerInside = false;
+/** Our own setPosition calls also emit onMoved — never read them as a drag. */
+let suppressAutoDockUntil = 0;
+/** Latest outer size, kept for edge detection without an IPC on every move. */
+let outerSizeCache: PhysicalSize | null = null;
+let snapTimer: ReturnType<typeof setTimeout> | null = null;
+let snapConfirmTimer: ReturnType<typeof setTimeout> | null = null;
+let snapHintEdge: DockEdge | null = null;
+let dockOutTimer: ReturnType<typeof setTimeout> | null = null;
+/** Bumped whenever the window moves; stale async edge checks bail out. */
+let snapSeq = 0;
+/**
+ * Set only by `beginDockBarDrag` (a press on the strip's title bar). Undock-on-
+ * drag is driven by this positive signal instead of "the window moved away from
+ * its parked spot", because our own expand/retract slides also move it and a
+ * timing-based suppression could read a half-finished slide as a drag.
+ */
+let dockBarDrag = false;
+let dockBarDragTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function getDockState(): DockState {
   return dockState;
@@ -311,14 +388,17 @@ async function refreshWorkArea(): Promise<void> {
   }
 }
 
-/** Parked: whole strip off-screen except the sliver. */
+/** Parked: the client is off-screen except the sliver (outer x returned). */
 function hiddenX(area: DockArea, widthPhys: number, edge: DockEdge): number {
-  return edge === "right" ? area.x + area.w - SLIVER_PX : area.x - widthPhys + SLIVER_PX;
+  const sliver = Math.max(4, Math.round(SLIVER_LOGICAL * area.scale));
+  const clientX = edge === "right" ? area.x + area.w - sliver : area.x - widthPhys + sliver;
+  return clientX - insets.left;
 }
 
-/** Expanded: flush against the work-area edge, taskbar never covered. */
+/** Expanded: client flush against the work-area edge, taskbar never covered. */
 function expandedX(area: DockArea, widthPhys: number, edge: DockEdge): number {
-  return edge === "right" ? area.x + area.w - widthPhys : area.x;
+  const clientX = edge === "right" ? area.x + area.w - widthPhys : area.x;
+  return clientX - insets.left;
 }
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -326,7 +406,7 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 async function slideTo(targetX: number): Promise<void> {
   const token = ++animToken;
   const win = getCurrentWindow();
-  const y = dockArea?.y ?? 0;
+  const y = dockArea ? outerY(dockArea) : 0;
   try {
     const from = (await win.outerPosition()).x;
     const delta = targetX - from;
@@ -346,13 +426,18 @@ async function slideTo(targetX: number): Promise<void> {
 }
 
 /**
- * Dock the main window to an edge and retract it to the sliver. Returns false
- * when docking is unavailable (non-tauri, detached SPA, no monitors) — callers
- * fall back to hiding (stage 0 behavior).
+ * Dock the main window to an edge. By default it retracts to the sliver;
+ * `expanded` leaves it flush against the edge instead (the drag-to-edge
+ * gesture: the strip stays visible under the pointer, then retracts on blur).
+ * Returns false when docking is unavailable (non-tauri, detached SPA, no
+ * monitors) — callers fall back to hiding (stage 0 behavior).
  */
-export async function enterDock(edge?: DockEdge): Promise<boolean> {
+export async function enterDock(edge?: DockEdge, options?: { expanded?: boolean }): Promise<boolean> {
   if (!isTauriRuntime() || readDetachedSessionId()) return false;
   if (dockState !== "floating") return true;
+  suppressAutoDockUntil = Date.now() + 1200; // our own setPosition moves are not a drag
+  cancelSnap();
+  cancelDockBarDrag();
   const win = getCurrentWindow();
   const prefs = readDockPrefs();
   const area = await pickWorkArea();
@@ -364,40 +449,51 @@ export async function enterDock(edge?: DockEdge): Promise<boolean> {
     const wasMaximized = await win.isMaximized();
     if (wasMaximized) await win.unmaximize();
     const pos = await win.outerPosition();
-    const size = await win.outerSize();
+    const size = await win.innerSize();
     saved = { x: pos.x, y: pos.y, width: size.width, height: size.height, maximized: wasMaximized };
   } catch {
     return false;
   }
   const useEdge = resolveEdge(edge, prefs, area);
   const widthPhys = Math.round(prefs.width * area.scale);
+  dockWidthPhys = widthPhys;
   try {
     await win.setAlwaysOnTop(true);
     await win.setSkipTaskbar(true);
     await win.setResizable(false);
     await win.setMinSize(new LogicalSize(DOCK_MIN.width, DOCK_MIN.height));
-    await win.setSize(new PhysicalSize(widthPhys, area.h));
+    // Insets depend on DPI, not size: measure after the style changes land.
+    insets = await measureInsets();
+    await win.setSize(clientSize(area));
   } catch {
     return false;
   }
   floating = saved;
   dockArea = area;
-  dockWidthPhys = widthPhys;
   dockEdge = useEdge;
   patchDockPrefs({ mode: "dock", edge: useEdge });
+  const expanded = options?.expanded === true;
   try {
-    await win.setPosition(new PhysicalPosition(hiddenX(area, widthPhys, useEdge), area.y));
+    await win.setPosition(
+      new PhysicalPosition(
+        expanded ? expandedX(area, widthPhys, useEdge) : hiddenX(area, widthPhys, useEdge),
+        outerY(area),
+      ),
+    );
   } catch {
     // best effort — the strip is already docked-sized; expand() repositions
   }
   ensureSliver();
-  setState("docked-hidden");
+  if (expanded) pointerInside = true;
+  cancelRetract();
+  setState(expanded ? "docked-expanded" : "docked-hidden");
   return true;
 }
 
 /** Slide the strip into the work area. No setFocus — click inside to focus. */
 export async function expand(): Promise<void> {
   if (dockState !== "docked-hidden" || !dockArea) return;
+  cancelDockBarDrag();
   try {
     if (await invoke<boolean>("fullscreen_active")) return; // D3D / presentation: stay retracted
   } catch {
@@ -405,10 +501,11 @@ export async function expand(): Promise<void> {
   }
   await refreshWorkArea();
   if (!dockArea) return;
+  suppressAutoDockUntil = Date.now() + 320; // slide moves are not a drag (slide ≈ 160ms)
   setState("docked-expanded"); // optimistic: a re-enter mid-slide cancels back
   cancelRetract();
   try {
-    await getCurrentWindow().setSize(new PhysicalSize(dockWidthPhys, dockArea.h));
+    await getCurrentWindow().setSize(clientSize(dockArea));
   } catch {
     // ignore — position below is the visible part
   }
@@ -418,17 +515,36 @@ export async function expand(): Promise<void> {
 /** Slide the strip back out, leaving only the sliver on screen. */
 export async function retract(): Promise<void> {
   if (!dockArea || (dockState !== "docked-expanded" && dockState !== "docked-hidden")) return;
+  cancelDockBarDrag();
   setState("docked-hidden"); // optimistic: a re-enter mid-slide cancels back
   cancelRetract();
   await slideTo(hiddenX(dockArea, dockWidthPhys, dockEdge));
 }
 
-/** Leave dock mode: restore the floating geometry and default window params. */
-export async function undock(): Promise<void> {
+/**
+ * Leave dock mode: restore the floating geometry and default window params.
+ *
+ * `keepPosition` is the drag-out gesture: the user already placed the strip
+ * with the pointer, so the restored window keeps that spot (clamped into the
+ * work area) instead of teleporting back to where it was docked from.
+ */
+export async function undock(options?: { keepPosition?: boolean }): Promise<void> {
   if (dockState === "floating") return;
+  suppressAutoDockUntil = Date.now() + 1200; // restoring geometry is not a drag
+  cancelSnap();
+  cancelDockBarDrag();
   animToken++; // stop any in-flight slide
   cancelRetract();
   const win = getCurrentWindow();
+  const area = dockArea;
+  let anchor: PhysicalPosition | null = null;
+  if (options?.keepPosition) {
+    try {
+      anchor = await win.outerPosition();
+    } catch {
+      anchor = null;
+    }
+  }
   try {
     await win.setAlwaysOnTop(false);
     await win.setSkipTaskbar(false);
@@ -436,8 +552,29 @@ export async function undock(): Promise<void> {
     await win.setMinSize(new LogicalSize(FLOATING_MIN.width, FLOATING_MIN.height));
     if (floating) {
       await win.setSize(new PhysicalSize(floating.width, floating.height));
-      await win.setPosition(new PhysicalPosition(floating.x, floating.y));
-      if (floating.maximized) await win.maximize();
+      if (anchor && area) {
+        // Place by the *outer* rect (what setPosition addresses) and clamp with
+        // the measured outer size — using the client width here would push the
+        // invisible frame past the work area again (the 2026-10-24 bug).
+        let outer = new PhysicalSize(floating.width, floating.height);
+        try {
+          outer = await win.outerSize();
+        } catch {
+          // fall back to the client size
+        }
+        const x = Math.min(
+          Math.max(anchor.x, area.x),
+          Math.max(area.x, area.x + area.w - outer.width),
+        );
+        const y = Math.min(
+          Math.max(anchor.y, area.y),
+          Math.max(area.y, area.y + area.h - outer.height),
+        );
+        await win.setPosition(new PhysicalPosition(x, y));
+      } else {
+        await win.setPosition(new PhysicalPosition(floating.x, floating.y));
+        if (floating.maximized) await win.maximize();
+      }
     }
   } catch {
     // best effort — params that did land still apply
@@ -446,6 +583,32 @@ export async function undock(): Promise<void> {
   dockArea = null;
   patchDockPrefs({ mode: "off" });
   setState("floating");
+}
+
+function cancelDockBarDrag(): void {
+  dockBarDrag = false;
+  if (dockBarDragTimer != null) {
+    clearTimeout(dockBarDragTimer);
+    dockBarDragTimer = null;
+  }
+}
+
+/**
+ * DockChrome calls this just before `startDragging()` on the strip's title bar.
+ * Arms the drag-out check; a click that never moves disarms itself.
+ */
+export function beginDockBarDrag(): void {
+  if (dockState !== "docked-expanded") return;
+  dockBarDrag = true;
+  armDockBarDragSafety();
+}
+
+function armDockBarDragSafety(): void {
+  if (dockBarDragTimer != null) clearTimeout(dockBarDragTimer);
+  dockBarDragTimer = setTimeout(() => {
+    dockBarDragTimer = null;
+    dockBarDrag = false;
+  }, 15_000);
 }
 
 function cancelRetract(): void {
@@ -461,6 +624,123 @@ function scheduleRetract(): void {
     retractTimer = null;
     if (!pointerInside && !focused && dockState === "docked-expanded") void retract();
   }, RETRACT_DELAY_MS);
+}
+
+// ── Drag-to-edge snap (QQ-style) ─────────────────────────────────────────
+// The titlebar drag is native (DockChrome calls startDragging; the pointerup
+// happens inside Windows' move loop), so JS never sees the release. `onMoved`
+// is the signal we do get: when movement settles with a window side on a
+// screen side, show the edge hint, then dock. The strip is left expanded so
+// the user sees where it went; focus/pointer tracking then retracts it like
+// any other expanded dock.
+
+function setSnapHint(edge: DockEdge | null): void {
+  if (edge === snapHintEdge) return;
+  snapHintEdge = edge;
+  const root = document.documentElement;
+  root.classList.toggle("dock-snap-left", edge === "left");
+  root.classList.toggle("dock-snap-right", edge === "right");
+}
+
+function cancelSnap(): void {
+  snapSeq += 1;
+  if (snapTimer != null) {
+    clearTimeout(snapTimer);
+    snapTimer = null;
+  }
+  if (snapConfirmTimer != null) {
+    clearTimeout(snapConfirmTimer);
+    snapConfirmTimer = null;
+  }
+  if (dockOutTimer != null) {
+    clearTimeout(dockOutTimer);
+    dockOutTimer = null;
+  }
+  setSnapHint(null);
+}
+
+/** Which screen side (if any) the floating window is resting against. */
+async function edgeNear(pos: PhysicalPosition): Promise<DockEdge | null> {
+  if (!outerSizeCache || outerSizeCache.width <= 0) return null;
+  try {
+    if (await getCurrentWindow().isMaximized()) return null;
+    const monitors = await availableMonitors();
+    if (monitors.length === 0) return null;
+    // Pick the monitor the window overlaps most (its center can be off-screen
+    // while it is parked against an edge).
+    let monitor = monitors[0]!;
+    let bestOverlap = -1;
+    for (const m of monitors) {
+      const left = Math.max(pos.x, m.position.x);
+      const right = Math.min(pos.x + outerSizeCache.width, m.position.x + m.size.width);
+      const top = Math.max(pos.y, m.position.y);
+      const bottom = Math.min(pos.y + outerSizeCache.height, m.position.y + m.size.height);
+      const overlap = Math.max(0, right - left) * Math.max(0, bottom - top);
+      if (overlap > bestOverlap) {
+        bestOverlap = overlap;
+        monitor = m;
+      }
+    }
+    // A near-full-screen window is not a strip; docking it would just trap it.
+    if (outerSizeCache.width >= monitor.size.width * 0.92) return null;
+    const threshold = Math.max(14, Math.round(SNAP_LOGICAL * monitor.scaleFactor));
+    const leftGap = pos.x - monitor.position.x;
+    const rightGap = monitor.position.x + monitor.size.width - (pos.x + outerSizeCache.width);
+    const leftHit = leftGap >= -threshold && leftGap <= threshold;
+    const rightHit = rightGap >= -threshold && rightGap <= threshold;
+    if (leftHit && rightHit) return Math.abs(leftGap) <= Math.abs(rightGap) ? "left" : "right";
+    return leftHit ? "left" : rightHit ? "right" : null;
+  } catch {
+    return null;
+  }
+}
+
+async function considerSnap(): Promise<void> {
+  if (dockState !== "floating" || Date.now() < suppressAutoDockUntil) {
+    setSnapHint(null);
+    return;
+  }
+  const seq = snapSeq;
+  let pos: PhysicalPosition;
+  try {
+    pos = await getCurrentWindow().outerPosition();
+  } catch {
+    return;
+  }
+  if (seq !== snapSeq || dockState !== "floating") return;
+  const edge = await edgeNear(pos);
+  if (seq !== snapSeq || dockState !== "floating") return;
+  setSnapHint(edge);
+  if (!edge) return;
+  snapConfirmTimer = setTimeout(() => {
+    snapConfirmTimer = null;
+    if (seq !== snapSeq || dockState !== "floating") {
+      setSnapHint(null);
+      return;
+    }
+    setSnapHint(null);
+    void enterDock(edge, { expanded: true });
+  }, SNAP_CONFIRM_MS);
+}
+
+async function considerDockOut(): Promise<void> {
+  if (dockState !== "docked-expanded" || !dockArea) return;
+  const area = dockArea;
+  if (!dockBarDrag) return;
+  let pos: PhysicalPosition;
+  try {
+    pos = await getCurrentWindow().outerPosition();
+  } catch {
+    return;
+  }
+  if (dockState !== "docked-expanded") return;
+  const threshold = Math.max(48, Math.round(DOCK_OUT_LOGICAL * area.scale));
+  const expectedX = expandedX(area, dockWidthPhys, dockEdge);
+  const expectedY = outerY(area);
+  const movedAway =
+    Math.abs(pos.x - expectedX) > threshold || Math.abs(pos.y - expectedY) > threshold;
+  cancelDockBarDrag(); // one drag, one judgement
+  if (movedAway) void undock({ keepPosition: true });
 }
 
 /** Rust CloseRequested in background mode lands here: close = retract (dock if still floating). */
@@ -487,6 +767,8 @@ async function handleCloseFromRust(): Promise<void> {
 export function initDockMode(): () => void {
   if (!isTauriRuntime() || readDetachedSessionId()) return () => {};
   const win = getCurrentWindow();
+  // The first layout/position events at launch are not a drag.
+  suppressAutoDockUntil = Date.now() + 1500;
   // Docking is live window state, not a launch state — a stale "dock" from
   // the previous run must not shrink the fresh 1280×820 window.
   if (readDockPrefs().mode === "dock") patchDockPrefs({ mode: "off" });
@@ -506,6 +788,46 @@ export function initDockMode(): () => void {
           } else {
             scheduleRetract();
           }
+        }),
+      );
+      outerSizeCache = await win.outerSize();
+      unlisteners.push(
+        await win.onResized(async () => {
+          try {
+            outerSizeCache = await win.outerSize();
+          } catch {
+            // window gone — keep the last known size
+          }
+        }),
+      );
+      unlisteners.push(
+        await win.onMoved(() => {
+          if (dockState === "docked-expanded") {
+            // Only a drag that started on the title bar can undock; our own
+            // expand/retract slides also emit Moved and must be ignored.
+            if (!dockBarDrag) return;
+            armDockBarDragSafety(); // a long drag keeps the flag alive
+            if (dockOutTimer != null) clearTimeout(dockOutTimer);
+            dockOutTimer = setTimeout(() => {
+              dockOutTimer = null;
+              void considerDockOut();
+            }, SNAP_IDLE_MS);
+            return;
+          }
+          if (Date.now() < suppressAutoDockUntil) return;
+          if (dockState !== "floating") return;
+          snapSeq += 1;
+          setSnapHint(null);
+          if (snapTimer != null) clearTimeout(snapTimer);
+          if (snapConfirmTimer != null) {
+            clearTimeout(snapConfirmTimer);
+            snapConfirmTimer = null;
+          }
+          // Position is re-read in considerSnap; this only marks "moved".
+          snapTimer = setTimeout(() => {
+            snapTimer = null;
+            void considerSnap();
+          }, SNAP_IDLE_MS);
         }),
       );
     } catch {
@@ -545,5 +867,6 @@ export function initDockMode(): () => void {
     root.removeEventListener("mouseleave", onPointerLeave);
     window.removeEventListener("wheel", onWheel);
     cancelRetract();
+    cancelSnap();
   };
 }

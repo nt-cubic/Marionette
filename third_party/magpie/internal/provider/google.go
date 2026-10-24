@@ -1114,6 +1114,14 @@ func (g googleAccount) models(ctx context.Context) ([]catalog.Model, error) {
 		}
 		return g.flags(ctx, p.id).offered(preview), nil
 	}
+	return g.antigravityList(infos), nil
+}
+
+// antigravityList is an Antigravity account's catalog from what its
+// fetchAvailableModels listed (models), the fallback list when it listed
+// none.
+func (g googleAccount) antigravityList(infos []googleModelInfo) []catalog.Model {
+	infos = slices.Clone(infos)
 	fallback := g.fallbackModels()
 	names := map[string]string{}
 	for _, m := range fallback {
@@ -1145,9 +1153,9 @@ func (g googleAccount) models(ctx context.Context) ([]catalog.Model, error) {
 		out = append(out, m)
 	}
 	if len(out) == 0 {
-		return fallback, nil
+		return fallback
 	}
-	return out, nil
+	return out
 }
 
 func (g googleAccount) fallbackModels() []catalog.Model {
@@ -1170,6 +1178,13 @@ func (g googleAccount) quota(ctx context.Context, plan string) SubscriptionQuota
 	if err != nil {
 		q.Error = err.Error()
 		return q
+	}
+	if g.app.agent == "antigravity" && len(infos) > 0 {
+		// the reading lists the account's models too: a model Google gave
+		// it since its list was fetched joins the account's list and the
+		// subscription's, for the picker, routing and its bar, without a
+		// probe or a sync (01huadalang on Discord)
+		noteAntigravityList(g.user, g.app.base, g.antigravityList(infos))
 	}
 	for _, mi := range infos {
 		if mi.remaining < 0 {
@@ -1374,9 +1389,7 @@ func googleProvider(g googleAccount, plan string) Provider {
 		if err != nil {
 			return err
 		}
-		req.Body = io.NopCloser(bytes.NewReader(out))
-		req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(out)), nil }
-		req.ContentLength = int64(len(out))
+		SetBody(req, out)
 		req.Header.Set("Authorization", "Bearer "+tok)
 		req.Header.Set("User-Agent", g.app.userAgent(model))
 		req.Header.Del("Accept")

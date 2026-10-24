@@ -243,7 +243,7 @@ export function isSubagentEvent(event: SessionEvent): boolean {
 
 /**
  * Consecutive thought + tool_call runs become one activity fold.
- * A lone thought/tool stays a row (its own card already folds).
+ * Even the first step is a group, with a stable key as the live run grows.
  */
 export function clusterActivityRuns(
   units: { key: string; event: SessionEvent; index: number }[],
@@ -261,19 +261,32 @@ export function clusterActivityRuns(
     i += 1;
     while (i < units.length && isActivityEvent(units[i]!.event)) i += 1;
     const slice = units.slice(start, i);
-    if (slice.length === 1) {
-      clustered.push({ kind: "row", ...slice[0]! });
-    } else {
-      clustered.push({
-        kind: "activity",
-        // Start index only — the run grows as tools stream in; a key that
-        // included the last index remounted the fold on every new tool.
-        key: `act-${slice[0]!.index}`,
-        items: slice.map(({ event, index }) => ({ event, index })),
-      });
-    }
+    clustered.push({
+      kind: "activity",
+      // Start index only — the run grows as tools stream in; a key that
+      // included the last index remounted the fold on every new tool.
+      key: `act-${slice[0]!.index}`,
+      items: slice.map(({ event, index }) => ({ event, index })),
+    });
   }
   return clustered;
+}
+
+/** Minimal unit shape needed to find the trailing run (no event payload). */
+export type ActivityTailUnit = { kind: "row" | "activity" | "delivery"; key: string };
+
+/**
+ * Key of the activity run at the very end of the rail, skipping delivery cards
+ * anchored after it. Its time chart stays visible between steps while the
+ * turn is running; the detail fold underneath stays closed by default.
+ */
+export function tailActivityFoldKey(units: readonly ActivityTailUnit[]): string | null {
+  for (let i = units.length - 1; i >= 0; i -= 1) {
+    const unit = units[i];
+    if (!unit || unit.kind === "delivery") continue;
+    return unit.kind === "activity" ? unit.key : null;
+  }
+  return null;
 }
 
 /** Consecutive same-kind runs (Read, Read, Edit → two groups). */
@@ -414,27 +427,32 @@ export function formatActivityTally(items: ActivityDetailItem[]): string {
 
 /**
  * Headline for a consecutive thought/tool run.
- * Live: current step so the closed row tracks the work.
- * Done: count + type tally (`1 think, 2 read, 3 edit`).
+ *
+ * The title is always the count+type tally (`5 thoughts, 2 reads`), so the
+ * panel reads as one group whether it is open or folded. While a step is
+ * still streaming its one-line gist rides in the preview slot next to the
+ * tally; once every card settles the preview clears and the group folds to
+ * the tally alone.
  */
 export function summarizeActivity(
   items: ActivityDetailItem[],
   opts?: { liveEvent?: SessionEvent | null },
 ): ActivitySummary {
   const live = opts?.liveEvent;
+  const tally = formatActivityTally(items);
   if (live?.type === "thought") {
-    return { title: "Thinking…", preview: "", diff: sumDiffStats(items) };
+    // The live thought is already represented in the chart above the tally.
+    return { title: tally || "Thought", preview: "", diff: sumDiffStats(items) };
   }
   if (live?.type === "tool_call") {
     const verb = toolKindVerb(classifyToolCall(live));
     const main = toolMainText(live);
     return {
-      title: main ? `${verb} ${main}` : verb,
-      preview: "",
+      title: tally || verb,
+      preview: main ? `${verb} ${main}` : verb,
       diff: sumDiffStats(items),
     };
   }
-  const tally = formatActivityTally(items);
   const span = activityTimeline(items);
   return {
     title: tally || "Activity",
@@ -494,7 +512,6 @@ export function activityTimeline(
     if (!lanes.includes(bucket)) lanes.push(bucket);
     const ev = item.event;
     const status = ev.type === "tool_call" ? String(ev.status ?? "") : "";
-    const open = ev.type === "tool_call" && (status === "pending" || status === "in_progress");
     const own =
       ev.type === "tool_call"
         ? eventMs(ev.completedAt)
@@ -502,6 +519,9 @@ export function activityTimeline(
           ? eventMs(ev.endedAt)
           : null;
     const next = nextStart[i];
+    const open = ev.type === "tool_call"
+      ? (status === "pending" || status === "in_progress")
+      : ev.type === "thought" && own == null && next == null && nowMs != null;
     let end = own ?? next ?? (open && nowMs != null ? nowMs : start);
     if (end < start) end = start;
     last = Math.max(last, end);

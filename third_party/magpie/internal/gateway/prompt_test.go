@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -98,6 +99,75 @@ func TestPromptOfClaudeCode(t *testing.T) {
 	}
 }
 
+// Claude Code 2.1's skills, listed in its environment message as the
+// agent sent it (testdata/workdir): they are skills, apart from the
+// environment notes around them, and memory has none of them.
+func TestPromptOfClaudeCodeSkills(t *testing.T) {
+	p := fixturePrompt(t, "../workdir/claude-code-2.1.296.json", provider.Anthropic)
+	sk, ok := itemOf(p, PartSkills, "skills")
+	if !ok || sk.Tokens < 1000 {
+		t.Fatalf("skills %+v", partOf(p, PartSkills))
+	}
+	env, ok := itemOf(p, PartSystem, "environment")
+	if !ok || env.Tokens > 1000 {
+		t.Fatalf("the environment notes still hold the skills %+v", env)
+	}
+	if _, ok := itemOf(p, PartMemory, "skills"); ok {
+		t.Fatalf("the skills are memory too %+v", partOf(p, PartMemory))
+	}
+	var kinds []string
+	for _, x := range p.Parts {
+		kinds = append(kinds, x.Kind)
+	}
+	if !slices.Equal(kinds[:3], []string{PartSystem, PartTools, PartSkills}) {
+		t.Fatalf("parts %v", kinds)
+	}
+}
+
+// The list runs to the next blank line, and what follows it stays where
+// it was.
+func TestSplitSkillsEnds(t *testing.T) {
+	b := newPromptBuilder()
+	rest := b.splitSkills("Notes.\n\n"+skillsList+"\n\n- a: one\n  more of a\n- b: two\n\nToday's date is 2026-10-24.", "user")
+	if rest != "Notes.\n\nToday's date is 2026-10-24." {
+		t.Fatalf("rest %q", rest)
+	}
+	if it, ok := itemOf(b.prompt(), PartSkills, "skills"); !ok || it.Tokens != tokensOf(skillsList+"\n\n- a: one\n  more of a\n- b: two") {
+		t.Fatalf("skills %+v", it)
+	}
+	if rest := b.splitSkills("no list here", "user"); rest != "no list here" {
+		t.Fatalf("no list %q", rest)
+	}
+}
+
+// A prompt kept when the skills were memory is read with them apart, and
+// a memory part they made up alone goes.
+func TestSkillsApartOfKeptPrompt(t *testing.T) {
+	p := &Prompt{Tokens: 60, Parts: []PromptPart{
+		{Kind: PartTools, Tokens: 10, Items: []PromptItem{{Name: "Bash", Tokens: 10}}},
+		{Kind: PartMemory, Tokens: 30, Items: []PromptItem{{Name: "skills", Tag: "skills", Tokens: 20}, {Name: "/p/AGENTS.md", Tag: "project", Tokens: 10}}},
+		{Kind: PartChat, Tokens: 20, Items: []PromptItem{{Name: "1", Tag: "turn", Tokens: 20}}},
+	}}
+	p.skillsApart()
+	var got []string
+	for _, x := range p.Parts {
+		got = append(got, x.Kind+":"+strconv.Itoa(x.Tokens))
+	}
+	if !slices.Equal(got, []string{"tools:10", "skills:20", "memory:10", "chat:20"}) {
+		t.Fatalf("parts %v", got)
+	}
+	if _, ok := itemOf(p, PartMemory, "skills"); ok {
+		t.Fatal("still memory")
+	}
+	alone := &Prompt{Parts: []PromptPart{{Kind: PartMemory, Tokens: 20, Items: []PromptItem{{Name: "skills", Tag: "skills", Tokens: 20}}}}}
+	alone.skillsApart()
+	if len(alone.Parts) != 1 || alone.Parts[0].Kind != PartSkills {
+		t.Fatalf("alone %+v", alone.Parts)
+	}
+	var none *Prompt
+	none.skillsApart()
+}
+
 // A Codex request, as Codex 0.1xx sends ChatGPT's backend: its tools come
 // in additional_tools, its own functions one by one and any other
 // namespace as one; AGENTS.md comes as a user message; the skills list as
@@ -107,8 +177,11 @@ func TestPromptOfCodex(t *testing.T) {
 	if it, ok := itemOf(p, PartMemory, "/home/dev/proj/AGENTS.md"); !ok || it.Tag != "project" {
 		t.Fatalf("AGENTS.md %+v", partOf(p, PartMemory))
 	}
-	if it, ok := itemOf(p, PartMemory, "skills"); !ok || it.Tag != "skills" {
-		t.Fatalf("skills %+v", partOf(p, PartMemory))
+	if it, ok := itemOf(p, PartSkills, "skills"); !ok || it.Tag != "skills" {
+		t.Fatalf("skills %+v", partOf(p, PartSkills))
+	}
+	if _, ok := itemOf(p, PartMemory, "skills"); ok {
+		t.Fatalf("the skills are memory too %+v", partOf(p, PartMemory))
 	}
 	if it, ok := itemOf(p, PartTools, "collaboration"); !ok || it.Tag != "namespace" || it.N < 2 {
 		t.Fatalf("collaboration %+v", partOf(p, PartTools))

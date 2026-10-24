@@ -811,7 +811,7 @@ function ledServed(r) {
   }
   if (!r.swapped) return el("span", "model-value", r.served);
   const k = el("span", "swap", r.served);
-  k.title = window.swapWhy ? window.swapWhy({ model: r.model, served: r.served }) : "";
+  k.title = window.swapWhy ? window.swapWhy({ model: r.model, served: r.served, upstream: r.upstream }, { pinUnknown: true }) : "";
   return k;
 }
 
@@ -1169,6 +1169,30 @@ function ledStyle(host) {
 // model's line is at its own speed, broken where it had none, over the
 // point's own speed dashed. The tooltip, the hover, a day's pick and the
 // ranking's emphasis are drawLedColumns' own, over the same slots.
+// A smooth line through points [x, y], as d3's curveMonotoneX draws it
+// (Fritsch–Carlson): it bends between points but never past one, so a
+// quiet hour isn't drawn dipping under zero or a peak over its value.
+// "from" starts it ("M", or "L" to go on from where a path is).
+function ledCurve(ps, from = "M") {
+  const n = ps.length, f = (v) => v.toFixed(1);
+  if (!n) return "";
+  let d = from + f(ps[0][0]) + " " + f(ps[0][1]);
+  if (n === 1) return d;
+  const s = [], m = [];
+  for (let i = 0; i < n - 1; i++) s.push((ps[i + 1][1] - ps[i][1]) / (ps[i + 1][0] - ps[i][0]));
+  for (let i = 1; i < n - 1; i++) {
+    const h0 = ps[i][0] - ps[i - 1][0], h1 = ps[i + 1][0] - ps[i][0], p = (s[i - 1] * h1 + s[i] * h0) / (h0 + h1);
+    m[i] = s[i - 1] * s[i] <= 0 ? 0 : (Math.sign(s[i - 1]) + Math.sign(s[i])) * Math.min(Math.abs(s[i - 1]), Math.abs(s[i]), Math.abs(p) / 2);
+  }
+  m[0] = n > 2 ? (3 * s[0] - m[1]) / 2 : s[0];
+  m[n - 1] = n > 2 ? (3 * s[n - 2] - m[n - 2]) / 2 : s[0];
+  for (let i = 0; i < n - 1; i++) {
+    const [xa, ya] = ps[i], [xb, yb] = ps[i + 1], dx = (xb - xa) / 3;
+    d += "C" + f(xa + dx) + " " + f(ya + dx * m[i]) + " " + f(xb - dx) + " " + f(yb - dx * m[i + 1]) + " " + f(xb) + " " + f(yb);
+  }
+  return d;
+}
+
 function ledLines(g, Y, x0, slot, segs) {
   const l = ledger, pts = l?.series || [], metric = ledMetric, split = ledSplit;
   for (const r of segs) r.remove();
@@ -1177,7 +1201,7 @@ function ledLines(g, Y, x0, slot, segs) {
   const speed = metric === "speed";
   const { top } = ledCategories(l.chartBy ? { by: l.chartBy } : l, split, metric);
   const X = (i) => x0 + slot * i, dot = slot >= 12 ? 4.5 : 3;
-  const xy = (i, v) => X(i).toFixed(1) + " " + Y(v).toFixed(1);
+  const at = (i, v) => [X(i), Y(v)];
   // stacked, each one goes under those before it, so a band never covers
   // the line under it
   let head = null;
@@ -1185,17 +1209,20 @@ function ledLines(g, Y, x0, slot, segs) {
   // one series: its line, the dots at its points and the band under it
   const series = (key, color, vals, base, dashed) => {
     const s = sv("g", { class: "col ln", "data-k": key, "data-day": l.day || "", "data-color": color }, { stroke: color });
-    let line = "", dots = "", up = "", down = "", run = false;
-    vals.forEach((v, i) => {
-      if (v == null) return void (run = false);
-      line += (run ? "L" : "M") + xy(i, v);
-      if (!dashed && (v > (base?.[i] || 0) || speed)) dots += "M" + xy(i, v) + "h0";
-      run = true;
-    });
+    // each unbroken run is one smooth curve; a point alone in its run has
+    // no line to sit on, so it is a dot
+    let line = "", dots = "", run = [];
+    const end = () => {
+      if (run.length === 1 && !dashed) dots += "M" + run[0][0].toFixed(1) + " " + run[0][1].toFixed(1) + "h0";
+      line += ledCurve(run);
+      run = [];
+    };
+    vals.forEach((v, i) => { if (v == null) end(); else run.push(at(i, v)); });
+    end();
     if (!line) return;
     if (base) {
-      vals.forEach((v, i) => { up += (i ? "L" : "M") + xy(i, v); });
-      for (let i = vals.length - 1; i >= 0; i--) down += "L" + xy(i, base[i]);
+      const up = ledCurve(vals.map((v, i) => at(i, v)));
+      const down = ledCurve(base.map((v, i) => at(i, v)).reverse(), "L");
       s.append(sv("path", { d: up + down + "Z", class: "band" }, { fill: color }));
     }
     s.append(sv("path", { d: line, class: "line" + (dashed ? " all" : "") }));
@@ -2017,6 +2044,48 @@ function sessUsageDetail(d, s, line) {
 // one place a session's calls went through magpie, in words
 function viaText(v) {
   return `${v.provider}/${v.model}` + (v.effort ? " · " + v.effort : "") + " · " + t("{n} calls", { n: v.calls });
+}
+
+const ledExpanded = new WeakSet();
+const LED_KINDS = { tool_use: "Tool call", tool_result: "Tool result", thinking: "Thinking", context: "Context", image: "Image" };
+const LED_ROLES = { user: "You", assistant: "Assistant", tool: "Tool" };
+
+// one thing said: who said it, and its words in a box; long ones show a part and
+// unroll, and reasoning and what the agent put in itself are folded; model,
+// when given, is said muted after it (a session's reader names the model
+// of each reply, #2253)
+function ledSaid(p, model) {
+  const head = el("div", "cx-h");
+  head.append(el("span", "cx-role " + p.role, t(LED_KINDS[p.kind] || LED_ROLES[p.role] || p.role)));
+  if (p.name) head.append(el("code", "cx-name", p.name));
+  if (model) {
+    const m = el("span", "cx-model", model);
+    m.title = t("Model") + ": " + model;
+    head.append(m);
+  }
+  const words = el("pre", "cx-t", p.text);
+  if (p.cut) words.append(el("em", "cx-cut", "\n" + t("… {n} more characters not shown", { n: ledNum(p.cut) })));
+  if (p.kind === "thinking" || p.kind === "context") {
+    const d = el("details", "cx-part fold");
+    const sum = el("summary");
+    sum.append(head);
+    d.append(sum, words);
+    return d;
+  }
+  const part = el("div", "cx-part");
+  part.append(head, words);
+  if (p.text.length > 700 || p.text.split("\n").length > 9) {
+    part.classList.toggle("clamp", !ledExpanded.has(p));
+    const more = el("button", "text cx-more", t(ledExpanded.has(p) ? "Collapse content" : "Show full content"));
+    more.type = "button";
+    more.onclick = () => {
+      const clamped = part.classList.toggle("clamp");
+      if (clamped) ledExpanded.delete(p); else ledExpanded.add(p);
+      more.textContent = t(clamped ? "Show full content" : "Collapse content");
+    };
+    part.append(more);
+  }
+  return part;
 }
 
 const USAGE_TABS = [["usage", "Overview"], ["requests", "Requests"], ["sessions", "Sessions"], ["context", "Context"]];

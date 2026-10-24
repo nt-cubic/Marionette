@@ -21,7 +21,7 @@ const latest = {
   parts: [
     { kind: "system", tokens: 5200, items: [{ name: "prompt", tokens: 4900 }, { name: "environment_context", tokens: 300 }] },
     { kind: "tools", tokens: 5000, items: [{ name: "multi_agent_v1", tag: "namespace", n: 5, tokens: 2900 }, { name: "exec_command", tokens: 2100 }] },
-    { kind: "memory", tokens: 3300, items: [{ name: "skills", tag: "skills", tokens: 3300 }] },
+    { kind: "skills", tokens: 3300, items: [{ name: "skills", tag: "skills", tokens: 3300 }] },
     { kind: "files", tokens: 5900, items: [{ name: "/work/app/prompt.go", tag: "shell", tokens: 2950 }, { name: "/work/app/context.go", tag: "shell", tokens: 2950 }] },
     { kind: "results", tokens: 1200, items: [{ name: "exec_command", tag: "result", n: 4, tokens: 1200 }] },
     { kind: "chat", tokens: 800, items: [{ name: "turn", tag: "turn", n: 3, tokens: 800 }] },
@@ -57,7 +57,7 @@ const texts = {
     { name: "exec_command", tokens: 2100, pieces: [{ role: "tool", name: "exec_command", text: "{\n  \"name\": \"exec_command\",\n  \"description\": \"Runs a command in a PTY\"\n}" }] }],
   files: [{ name: "/work/app/prompt.go", tag: "shell", tokens: 2950, pieces: [{ role: "result", name: "exec_command", text: "package gateway // prompt.go" }] },
     { name: "/work/app/context.go", tag: "shell", tokens: 2950, pieces: [{ role: "result", name: "exec_command", text: "package gui // context.go" }] }],
-  memory: [{ name: "skills", tag: "skills", tokens: 3300, pieces: [{ role: "system", text: "## Skills" }] }],
+  skills: [{ name: "skills", tag: "skills", tokens: 3300, pieces: [{ role: "system", text: "## Skills" }] }],
   results: [{ name: "exec_command", tag: "result", n: 4, tokens: 1200, pieces: [{ role: "result", name: "exec_command", text: "ok" }] }],
   chat: [{ name: "1", tag: "turn", tokens: 300, pieces: [{ role: "user", text: "port the parser" }, { role: "thinking", text: "", size: 900 }, { role: "call", name: "exec_command", text: "{\"cmd\": \"ls\"}" }] },
     { name: "2", tag: "turn", tokens: 500, pieces: [{ role: "image" }, { role: "assistant", text: "Done." }] }],
@@ -144,7 +144,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const errors = [], asked = [];
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", serve(lang, asked));
-        await page.addInitScript(() => { try { if (!sessionStorage.getItem("set")) { localStorage.clear(); localStorage.setItem("magpie.usageTab", "context"); sessionStorage.setItem("set", "1"); } } catch {} });
+        await page.addInitScript(() => { try { if (!sessionStorage.getItem("set")) { localStorage.clear(); localStorage.setItem("magpie.usageTab", "context"); localStorage.setItem("magpie.ctxLook", "grid"); sessionStorage.setItem("set", "1"); } } catch {} });
         await page.goto("http://magpie.test/?view=usage");
         const row = page.locator(".ctx-sess-row", { hasText: "Port the parser" });
         await row.waitFor();

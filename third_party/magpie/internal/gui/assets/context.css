@@ -1,12 +1,13 @@
 /* Context windows: a request's prompt as a card (Routing, the Usage page's
    Context tab) and each agent's score and tags. */
 :root {
-  --k-system: var(--c6); --k-tools: var(--c2); --k-memory: var(--c4);
+  --k-system: var(--c6); --k-tools: var(--c2); --k-skills: var(--c7); --k-memory: var(--c4);
   --k-files: var(--c3); --k-results: var(--c5); --k-chat: var(--c1);
   --k-free: color-mix(in srgb, var(--fg) 7%, transparent);
 }
 .k-system { --k: var(--k-system); }
 .k-tools { --k: var(--k-tools); }
+.k-skills { --k: var(--k-skills); }
 .k-memory { --k: var(--k-memory); }
 .k-files { --k: var(--k-files); }
 .k-results { --k: var(--k-results); }
@@ -68,7 +69,7 @@ i.dot.free { background: var(--k-free); box-shadow: inset 0 0 0 1px color-mix(in
 .ctx-waffle > i.free { --k: var(--k-free); }
 @keyframes ctx-cell { from { opacity: 0; transform: scale(.4); } }
 .ctx-waffle[data-f] > i { opacity: .16; }
-.ctx-waffle[data-f="system"] > i.k-system, .ctx-waffle[data-f="tools"] > i.k-tools,
+.ctx-waffle[data-f="system"] > i.k-system, .ctx-waffle[data-f="tools"] > i.k-tools, .ctx-waffle[data-f="skills"] > i.k-skills,
 .ctx-waffle[data-f="memory"] > i.k-memory, .ctx-waffle[data-f="files"] > i.k-files,
 .ctx-waffle[data-f="results"] > i.k-results, .ctx-waffle[data-f="chat"] > i.k-chat,
 .ctx-waffle[data-f="free"] > i.free, .ctx-waffle[data-f="item"] > i.on { opacity: 1; }
@@ -338,3 +339,61 @@ i.dot.free { background: var(--k-free); box-shadow: inset 0 0 0 1px color-mix(in
 .ctx-text { margin: 0; width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--pill); font-family: var(--code-font, var(--code)); font-size: 11.5px; line-height: 1.5; color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
 .ctx-text-more[hidden] { display: none; }
 .ctx-view-all { margin-right: auto; }
+
+/* the window as a map (flohoeller's context map): each item a tile sized
+   by its tokens inside its part's, the free space hatched. The tiles glide
+   to their sizes as a live request grows; context.js lays them out */
+.ctx-viz { position: relative; }
+.ctx-viz[data-look="map"] > .ctx-waffle, .ctx-viz[data-look="grid"] > .ctx-map { display: none; }
+.ctx-map { position: relative; width: 100%; aspect-ratio: 3.1 / 1; min-height: 132px; max-height: 232px; margin: -1.5px 0; }
+:where(.ctx-card.max520) .ctx-map { aspect-ratio: 2 / 1; }
+.ctx-tile {
+  --t-ease: cubic-bezier(.32, .72, 0, 1);
+  position: absolute; box-sizing: border-box; overflow: hidden; display: flex; flex-direction: column; gap: 1px;
+  padding: 7px 9px; border-radius: 7px; cursor: pointer;
+  background: color-mix(in srgb, var(--k) 11%, var(--card));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--k) 24%, transparent);
+  transition: left .62s var(--t-ease), top .62s var(--t-ease), width .62s var(--t-ease), height .62s var(--t-ease),
+    background-color .22s ease, box-shadow .22s ease, opacity .24s ease;
+}
+.ctx-tile .n { font-size: 11.5px; font-weight: 550; line-height: 1.25; color: color-mix(in srgb, var(--k) 72%, var(--fg)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctx-tile .v { font-size: 10.5px; line-height: 1.25; color: color-mix(in srgb, var(--k) 42%, var(--muted)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctx-tile.low { padding-top: 5px; padding-bottom: 5px; }
+.ctx-tile.low .v { display: none; }
+.ctx-tile.bare > * { visibility: hidden; }
+.ctx-tile:hover, .ctx-tile.on {
+  background: color-mix(in srgb, var(--k) 19%, var(--card));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--k) 48%, transparent);
+}
+.ctx-tile.free {
+  --k: var(--fg); cursor: default;
+  background: repeating-linear-gradient(-45deg, color-mix(in srgb, var(--fg) 5.5%, transparent) 0 1px, transparent 1px 6px), color-mix(in srgb, var(--fg) 1.5%, var(--card));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 9%, transparent);
+}
+.ctx-tile.free .n { color: var(--muted); font-weight: 500; }
+.ctx-tile.free .v { color: color-mix(in srgb, var(--muted) 78%, transparent); }
+.ctx-tile.gone { pointer-events: none; }
+.ctx-map[data-f] > .ctx-tile { opacity: .32; }
+.ctx-map[data-f="system"] > .k-system, .ctx-map[data-f="tools"] > .k-tools, .ctx-map[data-f="skills"] > .k-skills,
+.ctx-map[data-f="memory"] > .k-memory, .ctx-map[data-f="files"] > .k-files,
+.ctx-map[data-f="results"] > .k-results, .ctx-map[data-f="chat"] > .k-chat,
+.ctx-map[data-f="free"] > .free, .ctx-map[data-f="tile"] > .on { opacity: 1; }
+.ctx-pane.still .ctx-tile { transition: none; }
+@media (prefers-reduced-motion: reduce) { .ctx-tile { transition: background-color .2s, box-shadow .2s, opacity .2s; } }
+.ctx-tip-head b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctx-tip-sub { color: #a1a1aa; font-size: 11px; }
+
+/* the look: the map or the grid, the reader's pick */
+.ctx-look { display: inline-flex; gap: 2px; margin-left: auto; padding: 2px; border-radius: 7px; background: var(--pill); align-self: center; }
+.ctx-look-b { display: inline-grid; place-items: center; width: 24px; height: 20px; padding: 0; border: 0; border-radius: 5px; background: none; color: var(--faint); cursor: pointer; transition: background-color .2s ease, color .2s ease, box-shadow .2s ease; }
+.ctx-look-b svg { fill: currentColor; }
+.ctx-look-b:hover { color: var(--fg-2); }
+.ctx-look-b.on { background: var(--card); color: var(--fg); box-shadow: 0 1px 2px rgba(0, 0, 0, .12), 0 0 0 .5px color-mix(in srgb, var(--fg) 10%, transparent); }
+
+/* an image the request carried, in its text */
+.ctx-pic { display: block; width: fit-content; max-width: 100%; margin: 4px 0 2px; padding: 0; border: 0; border-radius: 10px; overflow: hidden; background: color-mix(in srgb, var(--fg) 4%, transparent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--fg) 9%, transparent); cursor: zoom-in; transform-origin: top left; opacity: 0; transition: opacity .4s ease; }
+.ctx-pic.in { opacity: 1; }
+.ctx-pic img { display: block; max-width: min(100%, 420px); max-height: 240px; width: auto; height: auto; object-fit: contain; }
+.ctx-pic.open { cursor: zoom-out; }
+.ctx-pic.open img { max-width: 100%; max-height: none; }
+@media (prefers-reduced-motion: reduce) { .ctx-pic { transition: none; } }

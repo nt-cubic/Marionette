@@ -10,7 +10,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
-const { watchSettingsReads, settingsDrawn } = require("./reader.cjs");
+const { reach, wheelTo, watchSettingsReads, settingsDrawn } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const words = {
@@ -62,6 +62,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const row = page.locator("#redactWordsAnyCaseRow");
         await row.waitFor();
         await settingsDrawn(page);
+        // the local model's section is above it: wheel it up, clear of the
+        // bar along a phone-width page's foot
+        await wheelTo(page, row, 300);
 
         const m = await row.evaluate((r) => {
           const sub = r.querySelector(".sub"), list = document.querySelector("#redactList").getBoundingClientRect(), b = r.getBoundingClientRect();
@@ -94,6 +97,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
         // another choice on the page keeps it
         const p = page.locator("#redactList .row").nth(1).locator(".segs .opt", { hasText: w.on });
+        await reach(page, p); // above it now, maybe under the tabs
         await p.click();
         await page.waitForFunction(() => document.querySelector("#redactList .row:nth-child(2) .segs .opt.on")?.textContent === t("On"));
         await new Promise((r) => setTimeout(r, 300));

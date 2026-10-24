@@ -920,7 +920,11 @@ var placeholderBody = regexp.MustCompile(`[A-Za-z][A-Za-z0-9_]*_[A-Za-z2-7]{8}`)
 // braces, or changes the case. Any of those is put back too when what is
 // left names a placeholder this magpie made: its kind and the 8 of its
 // hash, which no other text has by chance (shensmart on Discord).
-func Restore(s string, escaped bool) string {
+func Restore(s string, escaped bool) string { return restore(s, escaped, nil) }
+
+// restore is Restore, counting in put, when it isn't nil, each
+// placeholder it put a value back for.
+func restore(s string, escaped bool, put map[string]int) string {
 	if !strings.Contains(s, "_") {
 		return s
 	}
@@ -936,13 +940,17 @@ func Restore(s string, escaped bool) string {
 		if a < last || a > 0 && isWordByte(s[a-1]) || z < len(s) && isWordByte(s[z]) {
 			continue
 		}
-		v, ok := values[canonical(s[a:z])]
+		p := canonical(s[a:z])
+		v, ok := values[p]
 		if !ok {
 			continue
 		}
 		a, z = braces(s, a, z)
 		if a < last {
 			continue
+		}
+		if put != nil {
+			put[p]++
 		}
 		b.WriteString(s[last:a])
 		if escaped {

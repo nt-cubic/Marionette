@@ -1,9 +1,11 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
 // The request archive (Jorben on Discord): its switch sits at the top right
 // of the Usage page's request list, beside the requests' sum, off unless
-// turned on; with sync not set up with an s3:// bucket it can't be turned on
-// and says why, with one it posts settings/archive and its tooltip says the
-// bucket; a failed upload is said beside it. The Gateway page has no switch
+// turned on; with sync not set up with an s3:// bucket it turns on all the
+// same and keeps calls on this computer, its tooltip the folder and the size
+// they are kept under (CyberCaius on Discord), with one its tooltip says the
+// bucket; a failed upload, or a failed save on this computer, is said
+// beside it. The Gateway page has no switch
 // any more, and its recent calls show their own bodies with nothing of the
 // archive under them, even one it kept: reading a call back from the archive
 // is the Usage page's (request-archive-usage.test.cjs). No click moves the
@@ -32,7 +34,8 @@ const ROWS = [row(0, "kept", KEPT), row(1, "plain")];
 
 function serve(lang, seen) {
   const where = "bkt/team on https://s3.example.com";
-  const gateway = { running: true, window: true, mine: true, url: "http://127.0.0.1:3999", groups: [], archive: { on: false },
+  const here = { folder: "~/.config/magpie/request-archive", cap: 1 << 30 };
+  const gateway = { running: true, window: true, mine: true, url: "http://127.0.0.1:3999", groups: [], archive: { on: false, ...here },
     calls: [call(0, "fixture/kept", KEPT), call(1, "fixture/plain")] };
   const providers = { providers: [{ id: "fixture", name: "Fixture", icon: "generic", models: [{ id: "kept", name: "Kept", on: true }], agents: [] }], gateway };
   return async (route) => {
@@ -54,8 +57,7 @@ function serve(lang, seen) {
       const body = route.request().postDataJSON();
       seen.push(["switch", body]);
       await new Promise((r) => setTimeout(r, 80));
-      if (body.on && !seen.bucket) return json({ error: "The request archive goes to the S3 bucket sync keeps its backup in: set up Sync and backup in Settings with an s3:// address first" }, 400);
-      gateway.archive = { on: body.on, ...(seen.bucket ? { bucket: where } : {}), ...(body.on && seen.failing ? { error: "HTTP 403" } : {}) };
+      gateway.archive = { on: body.on, ...(seen.bucket ? { bucket: where } : here), ...(body.on && seen.failing ? { error: seen.bucket ? "HTTP 403" : "disk full" } : {}) };
       return json(gateway.archive);
     }
     if (url.pathname === "/api/archive") {
@@ -78,14 +80,14 @@ function serve(lang, seen) {
 const words = {
   en: {
     name: "Request archive", fetch: "Fetch from archive", failed: "Upload failed", failedWhy: "Last upload failed: HTTP 403",
-    setup: "Set up Sync and backup in Settings with an s3:// address first",
-    refused: "The request archive goes to the S3 bucket sync keeps its backup in: set up Sync and backup in Settings with an s3:// address first",
+    notSaved: "Not saved", notSavedWhy: "Last save failed: disk full",
+    local: "Keeps each call’s headers and bodies, secrets taken out, on this computer in ~/.config/magpie/request-archive, the oldest removed past 1.1 GB",
     bucket: "Keeps each call’s headers and bodies, secrets taken out, in bkt/team on https://s3.example.com",
   },
   zh: {
     name: "请求存档", fetch: "从存档取回", failed: "上传失败", failedWhy: "上次上传失败：HTTP 403",
-    setup: "请先在设置的“同步与备份”中填写 s3:// 地址",
-    refused: "请求存档会上传到同步备份所用的 S3 存储桶：请先在设置的“同步与备份”中填写 s3:// 地址",
+    notSaved: "未保存", notSavedWhy: "上次保存失败：disk full",
+    local: "每次调用的请求/响应头和正文去除密钥后存到本机的 ~/.config/magpie/request-archive，超过 1.1 GB 时先删除最早的",
     bucket: "每次调用的请求/响应头和正文去除密钥后存到 bkt/team on https://s3.example.com",
   },
 };
@@ -137,24 +139,29 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await sw.getAttribute("role"), "switch");
       assert.equal(await sw.innerText(), w.name);
       assert.equal(await sw.getAttribute("aria-checked"), "false", "off unless turned on");
-      assert((await sw.getAttribute("title")).includes(w.setup));
+      assert.equal(await sw.getAttribute("title"), w.local, "no bucket: kept on this computer");
       const [swBox, sumBox, listBox] = await Promise.all([sw, page.locator("#ledSum"), page.locator("#ledWrap")].map((l) => l.boundingBox()));
       assert(Math.abs(swBox.x + swBox.width - (listBox.x + listBox.width)) <= 4, `the switch ends at the list's right edge: ${JSON.stringify([swBox, listBox])}`);
       assert(swBox.y + swBox.height <= listBox.y, "the switch is over the list");
       assert(Math.abs(swBox.y + swBox.height / 2 - (sumBox.y + sumBox.height / 2)) <= 3, "on the line of the requests' sum");
 
-      // no bucket: turning it on is refused, and it stays off
+      // no bucket: on all the same, kept on this computer, and off again
       await press(sw, "#view-usage");
       await wait(1);
       assert.deepEqual(seen[0], ["switch", { on: true }]);
-      await page.waitForFunction((s) => document.querySelector("#status").textContent === s, w.refused);
+      const onHere = page.locator('#ledArchive .led-arch-sw[aria-checked="true"]:not([disabled])');
+      await onHere.waitFor();
+      assert.equal(await onHere.getAttribute("title"), w.local);
+      assert.equal(await page.locator("#ledArchive .led-arch-err").count(), 0);
+      await press(onHere, "#view-usage");
+      await wait(2);
+      assert.deepEqual(seen[1], ["switch", { on: false }]);
       await page.locator('#ledArchive .led-arch-sw[aria-checked="false"]:not([disabled])').waitFor();
-
       // with one: on, the bucket in its tooltip
       seen.bucket = true;
       await press(page.locator("#ledArchive .led-arch-sw"), "#view-usage");
-      await wait(2);
-      assert.deepEqual(seen[1], ["switch", { on: true }]);
+      await wait(3);
+      assert.deepEqual(seen[2], ["switch", { on: true }]);
       const on = page.locator('#ledArchive .led-arch-sw[aria-checked="true"]');
       await on.waitFor();
       assert.equal(await on.getAttribute("title"), w.bucket);
@@ -167,29 +174,41 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
       // turned off again
       await press(on, "#view-usage");
-      await wait(3);
-      assert.deepEqual(seen[2], ["switch", { on: false }]);
+      await wait(4);
+      assert.deepEqual(seen[3], ["switch", { on: false }]);
       await page.locator('#ledArchive .led-arch-sw[aria-checked="false"]:not([disabled])').waitFor();
 
       // an upload that failed is said beside it, why in its tooltip
       seen.failing = true;
       await press(page.locator("#ledArchive .led-arch-sw"), "#view-usage");
-      await wait(4);
+      await wait(5);
       const err = page.locator("#ledArchive .led-arch-err");
       await err.waitFor();
       assert.equal(await err.innerText(), w.failed);
       assert.equal(await err.getAttribute("title"), w.failedWhy);
+
+      // and a save on this computer that failed says so in its own words
+      seen.bucket = false;
+      await press(page.locator("#ledArchive .led-arch-sw"), "#view-usage");
+      await wait(6);
+      assert.deepEqual(seen[5], ["switch", { on: false }]);
+      await page.locator('#ledArchive .led-arch-sw[aria-checked="false"]:not([disabled])').waitFor();
+      await press(page.locator("#ledArchive .led-arch-sw"), "#view-usage");
+      await wait(7);
+      assert.deepEqual(seen[6], ["switch", { on: true }]);
+      await page.waitForFunction((s) => document.querySelector("#ledArchive .led-arch-err")?.textContent === s, w.notSaved);
+      assert.equal(await page.locator("#ledArchive .led-arch-err").getAttribute("title"), w.notSavedWhy);
       assert.equal(seen.filter(([k]) => k === "fetch").length, 0, "nothing was read from the archive");
 
       const border = await page.evaluate(() => [...document.querySelectorAll(".led-head, .led-head *")].map((e) => getComputedStyle(e).borderLeftWidth).filter((b) => parseFloat(b) > 1));
       assert.deepEqual(border, [], "no left-border accent");
       const missing = await page.evaluate(() => [
-        "Request archive", "Upload failed", "Last upload failed: {e}",
+        "Request archive", "Upload failed", "Last upload failed: {e}", "Not saved", "Last save failed: {e}",
         "Keeps each call’s headers and bodies, secrets taken out, in {where}",
-        "Keeps each call’s headers and bodies, secrets taken out, in your S3 bucket. Set up Sync and backup in Settings with an s3:// address first",
-        "The request archive goes to the S3 bucket sync keeps its backup in: set up Sync and backup in Settings with an s3:// address first",
-      ].filter((k) => !I18N.zh[k]));
-      assert.deepEqual(missing, [], "every string has its Chinese");
+        "Keeps each call’s headers and bodies, secrets taken out, on this computer in {where}, the oldest removed past {size}",
+        "Not in the archive on this computer: it is saved just after the call, the oldest are removed past the archive's size, or the save failed (magpie's log says why)",
+      ].flatMap((k) => ["zh", "zh-TW", "ja", "de"].filter((l) => !I18N[l][k]).map((l) => l + " " + k)));
+      assert.deepEqual(missing, [], "every string has its Chinese, Japanese and German");
       assert.deepEqual(errors, []);
     });
   }

@@ -274,6 +274,16 @@ func allowedCandidates(who access.Identity, cs []candidate, pl planned, members 
 	}
 	pl.held = slices.DeleteFunc(slices.Clone(pl.held), gone)
 	pl.capped = slices.DeleteFunc(slices.Clone(pl.capped), gone)
+	// nor one whose own list lacks the model, asked once those that list
+	// it refused the model (unlistedNext)
+	var unlisted []candidate
+	var unlistedW []Weighed
+	for i, c := range pl.unlisted {
+		if !gone(c) {
+			unlisted, unlistedW = append(unlisted, c), append(unlistedW, pl.unlistedW[i])
+		}
+	}
+	pl.unlisted, pl.unlistedW = unlisted, unlistedW
 	return out, pl, held && len(out) == 0
 }
 

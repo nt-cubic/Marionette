@@ -106,25 +106,29 @@ func TestAutoModeClassifierOnAReasoningModel(t *testing.T) {
 	}
 }
 
-// With its levels unknown, the reasoning is left to the vendor, but the
-// room is given all the same; a conversation's own turn is left alone.
+// With its levels unknown, the room is given all the same, and the model
+// asked for none (TestAutoModeClassifierReasonsLeastOnAnUnknownModel); a
+// conversation's own turn is left alone.
 func TestAutoModeClassifierOnlyTheClassifier(t *testing.T) {
 	f := &fake{t: t, reply: sse(
-		`event: response.completed` + "\n" + `data: {"type":"response.completed","response":{"id":"r1","model":"m1","status":"completed","usage":{"input_tokens":4,"output_tokens":2}}}`)}
+		`event: response.created`+"\n"+`data: {"type":"response.created","response":{"id":"r1","model":"m1","usage":{"input_tokens":0,"output_tokens":0}}}`,
+		`event: response.output_text.delta`+"\n"+`data: {"type":"response.output_text.delta","delta":"<block>no"}`,
+		`event: response.completed`+"\n"+`data: {"type":"response.completed","response":{"id":"r1","model":"m1","status":"completed","usage":{"input_tokens":4,"output_tokens":2}}}`)}
 	setup(t, provider.Responses, f)
 	if code, body := post(t, "/v1/messages", autoModeAsk("m1")); code != 200 {
 		t.Fatalf("%d %s", code, body)
 	}
 	var asked map[string]any
 	json.Unmarshal(f.got, &asked)
-	if asked["max_output_tokens"] != float64(64+classifierRoom) || asked["reasoning"] != nil {
+	if r, _ := asked["reasoning"].(map[string]any); asked["max_output_tokens"] != float64(64+classifierRoom) || r["effort"] != "none" {
 		t.Errorf("unknown levels: %s", f.got)
 	}
 	if code, body := post(t, "/v1/messages", `{"model":"m1","max_tokens":64,"thinking":{"type":"disabled"},"system":"be brief","messages":[{"role":"user","content":"a title for this"}]}`); code != 200 {
 		t.Fatalf("%d %s", code, body)
 	}
+	asked = nil
 	json.Unmarshal(f.got, &asked)
-	if asked["max_output_tokens"] != float64(64) {
+	if asked["max_output_tokens"] != float64(64) || asked["reasoning"] != nil {
 		t.Errorf("a title ask was changed: %s", f.got)
 	}
 }
@@ -821,5 +825,213 @@ func TestClaudeBridgeSafeguardConcurrentHandoff(t *testing.T) {
 	req.Messages[1].Parts[0].CallID = "b"
 	if next, _ := b.findRun(req); next != run || !next.claimResume() {
 		t.Fatal("claim not released at segment end")
+	}
+}
+
+// classifierAsk is auto mode's first stage as Claude Code 2.1.310 sends
+// it to a model it doesn't know: no stream (a sideQuery), stopping at
+// </block>, thinking turned off and 64 tokens, or (thinking left out)
+// 64 and 2048 more for a model that can't turn it off.
+func classifierAsk(model string, off bool) string {
+	thinking, tokens := `"thinking":{"type":"disabled"},`, "64"
+	if !off {
+		thinking, tokens = "", "2112"
+	}
+	return `{"model":"` + model + `","max_tokens":` + tokens + `,"temperature":0,` + thinking + `
+	  "system":[{"type":"text","text":"You are a security monitor for an autonomous coding agent.\n## Output Format\nAnswer <block>yes</block> to block the action, else <block>no</block>."}],
+	  "stop_sequences":["</block>"],
+	  "messages":[{"role":"user","content":[{"type":"text","text":"<transcript>\nUser: tidy up the build\nAction: Bash rm -rf build/\n</transcript>\n"}]}]}`
+}
+
+// classifierUpstream is a fake upstream for proto answering the
+// classifier's "no".
+func classifierUpstream(t *testing.T, proto provider.Protocol) *fake {
+	if proto == provider.Responses {
+		return &fake{t: t, reply: sse(
+			`event: response.created`+"\n"+`data: {"type":"response.created","response":{"id":"r1","model":"gpt6.1-sol","usage":{"input_tokens":0,"output_tokens":0}}}`,
+			`event: response.output_text.delta`+"\n"+`data: {"type":"response.output_text.delta","delta":"<block>no"}`,
+			`event: response.completed`+"\n"+`data: {"type":"response.completed","response":{"id":"r1","model":"gpt6.1-sol","status":"completed","usage":{"input_tokens":4,"output_tokens":2}}}`)}
+	}
+	return &fake{t: t, reply: sse(
+		`data: {"id":"c1","model":"gpt6.1-sol","choices":[{"delta":{"role":"assistant","content":"<block>no"}}]}`,
+		`data: {"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}]}`,
+		`data: [DONE]`)}
+}
+
+// askedEffort is the reasoning effort an upstream request for proto asked.
+func askedEffort(proto provider.Protocol, body []byte) any {
+	var up map[string]any
+	json.Unmarshal(body, &up)
+	if proto == provider.Responses {
+		r, _ := up["reasoning"].(map[string]any)
+		return r["effort"]
+	}
+	return up["reasoning_effort"]
+}
+
+// classifierProvider saves an OpenAI-compatible relay the user added by
+// its address, serving gpt6.1-sol, a model whose levels magpie doesn't
+// know, on proto (CyberCaius on Discord: a new-api relay).
+func classifierProvider(t *testing.T, proto provider.Protocol, f *fake) {
+	t.Helper()
+	noRests()
+	t.Cleanup(noRests)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	up := httptest.NewServer(f)
+	t.Cleanup(up.Close)
+	p := provider.Provider{ID: "relay", Name: "Relay", Key: "k", Models: []string{"gpt6.1-sol"}}
+	if proto == provider.Responses {
+		p.Responses = up.URL + "/v1"
+	} else {
+		p.Chat = up.URL + "/v1"
+	}
+	if err := provider.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	if levels := p.Efforts("gpt6.1-sol"); len(levels) > 0 {
+		t.Fatalf("levels known: %v", levels)
+	}
+}
+
+// askClassifier sends Claude Code's classifier ask to s, as Claude Code does:
+// waiting for the whole reply.
+func askClassifier(t *testing.T, s *Server, body string) (int, string) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body)))
+	return rec.Code, rec.Body.String()
+}
+
+// Auto mode's classifier waits 60 seconds for its verdict (Claude Code
+// 2.1.310, per attempt). A reasoning model whose levels magpie doesn't
+// know, asked with no effort, reasoned at its vendor's default over the
+// whole policy and transcript, past those 60 seconds, and Claude Code
+// closed the request (CyberCaius on Discord: every classifier request
+// ended 499 on a new-api relay's gpt6.1-sol). It is asked to reason
+// least, whether Claude Code turned thinking off or left it out.
+func TestAutoModeClassifierReasonsLeastOnAnUnknownModel(t *testing.T) {
+	for _, proto := range []provider.Protocol{provider.Chat, provider.Responses} {
+		for _, off := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/off=%v", proto, off), func(t *testing.T) {
+				f := classifierUpstream(t, proto)
+				classifierProvider(t, proto, f)
+				code, body := askClassifier(t, New(), classifierAsk("relay/gpt6.1-sol", off))
+				if code != 200 || !saidNo(body) {
+					t.Fatalf("%d %s", code, body)
+				}
+				if got := askedEffort(proto, f.got); got != "none" {
+					t.Errorf("effort %v, want none: %s", got, f.got)
+				}
+			})
+		}
+	}
+}
+
+// The effort magpie adds is its own ask, not the client's: an upstream
+// that takes no none is asked at low, one that takes no reasoning effort
+// at all is asked without it, as it was before, and each is remembered,
+// so the next classifier ask goes once.
+func TestAutoModeClassifierEffortRefusedGoesWithout(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		proto  provider.Protocol
+		refuse func(effort any) string
+		want   any
+	}{{
+		name:  "levels named",
+		proto: provider.Chat,
+		refuse: func(e any) string {
+			return map[bool]string{true: `{"error":{"message":"Invalid value: 'none'. Supported values are: 'low', 'medium', and 'high'.","param":"reasoning_effort"}}`}[e == "none"]
+		},
+		want: "low",
+	}, {
+		name:  "chat field unknown",
+		proto: provider.Chat,
+		refuse: func(e any) string {
+			return map[bool]string{true: `{"error":{"message":"Unrecognized request argument supplied: reasoning_effort","type":"invalid_request_error"}}`}[e != nil]
+		},
+		want: nil,
+	}, {
+		name:  "responses field unsupported",
+		proto: provider.Responses,
+		refuse: func(e any) string {
+			return map[bool]string{true: `{"error":{"message":"Unsupported parameter: 'reasoning.effort' is not supported with this model.","param":"reasoning.effort"}}`}[e != nil]
+		},
+		want: nil,
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := classifierUpstream(t, tc.proto)
+			f.refuse = func(body []byte) (int, string) {
+				if msg := tc.refuse(askedEffort(tc.proto, body)); msg != "" {
+					return 400, msg
+				}
+				return 0, ""
+			}
+			classifierProvider(t, tc.proto, f)
+			s := New()
+			for i := range 2 {
+				f.calls = 0
+				code, body := askClassifier(t, s, classifierAsk("relay/gpt6.1-sol", true))
+				if code != 200 || !saidNo(body) {
+					t.Fatalf("ask %d: %d %s", i, code, body)
+				}
+				if got := askedEffort(tc.proto, f.got); got != tc.want {
+					t.Errorf("ask %d: effort %v, want %v: %s", i, got, tc.want, f.got)
+				}
+				if i == 1 && f.calls != 1 {
+					t.Errorf("the next ask took %d requests, want 1", f.calls)
+				}
+			}
+		})
+	}
+}
+
+// CyberCaius on Discord: after a switch in /model, the first auto mode
+// classifier request went to the model before it. Claude Code names its
+// sonnet tier for the classifier, and that tier followed the old main
+// model until magpie moved it. The classifier goes to the model the tier
+// follows now (ClassifierStandIn); a turn of the conversation naming the
+// same model, another session still on it, goes as asked.
+func TestAutoModeClassifierFollowsTheSwitchedModel(t *testing.T) {
+	setHome(t, t.TempDir())
+	f := &fake{t: t, reply: sse(
+		`event: response.created`+"\n"+`data: {"type":"response.created","response":{"id":"r1","model":"m1","usage":{"input_tokens":0,"output_tokens":0}}}`,
+		`event: response.output_text.delta`+"\n"+`data: {"type":"response.output_text.delta","delta":"<block>no"}`,
+		`event: response.completed`+"\n"+`data: {"type":"response.completed","response":{"id":"r1","model":"m1","status":"completed","usage":{"input_tokens":4,"output_tokens":2}}}`)}
+	setup(t, provider.Responses, f)
+	p, _ := provider.Find("fake")
+	p.Models = []string{"m1", "m2"}
+	if err := provider.Save(*p); err != nil {
+		t.Fatal(err)
+	}
+	var asked []string
+	ClassifierStandIn = func(agent, model string) string {
+		asked = append(asked, agent+" "+model)
+		if model == "fake/m1" {
+			return "fake/m2"
+		}
+		return ""
+	}
+	t.Cleanup(func() { ClassifierStandIn = nil })
+	send := func(body string) {
+		t.Helper()
+		f.got = nil
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body))
+		req.Header.Set("User-Agent", "claude-cli/2.1.310 (external, cli)")
+		req.Header.Set("x-api-key", Token+"-claude")
+		New().Handler().ServeHTTP(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("%d %s", rec.Code, rec.Body.String())
+		}
+	}
+	send(autoModeAsk("fake/m1"))
+	if got := modelOf(f.got); got != "m2" {
+		t.Fatalf("the classifier went to %q, want the switched-to m2 (asked %v)", got, asked)
+	}
+	send(`{"model":"fake/m1","max_tokens":64,"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"Bash","input_schema":{"type":"object"}}]}`)
+	if got := modelOf(f.got); got != "m1" {
+		t.Fatalf("a conversation's turn went to %q, want m1 as asked", got)
 	}
 }

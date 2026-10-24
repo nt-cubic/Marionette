@@ -13,19 +13,13 @@ type Process struct {
 	Args string
 }
 
-// List lists the running processes (Windows: only those named prefix*,
-// since asking for all is slow there; elsewhere prefix is ignored). An
-// error says the system couldn't be asked, not that nothing runs.
-func List(ctx context.Context, prefix string) ([]Process, error) {
-	out, err := listCommand(ctx, prefix).Output()
-	if err != nil {
-		return nil, err
-	}
-	return parseList(string(out)), nil
-}
+// List lists the running processes (Windows: only those named prefix*;
+// elsewhere prefix is ignored). An error says the system couldn't be
+// asked, not that nothing runs.
+func List(ctx context.Context, prefix string) ([]Process, error) { return list(ctx, prefix) }
 
-// parseList reads lines of "pid command line", as ps -o pid=,args= and the
-// PowerShell listing print them; a line without a pid is skipped.
+// parseList reads lines of "pid command line", as ps -o pid=,args= prints
+// them; a line without a pid is skipped.
 func parseList(out string) []Process {
 	var ps []Process
 	for _, line := range strings.Split(out, "\n") {

@@ -18,6 +18,8 @@ type Note struct {
 	Version string `json:"version"` // no v
 	Notes   string `json:"notes"`   // markdown, its Install section taken out
 	URL     string `json:"url,omitempty"`
+	// Pending: a release after the one running, up to the update waiting
+	Pending bool `json:"pending,omitempty"`
 }
 
 // NotesFeed is where the notes of past releases are listed: beside the

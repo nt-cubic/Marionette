@@ -24,10 +24,32 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
 设计稿 `docs/plan-edge-dock.md`（含与实现的偏差记录），行为描述在 `docs/CURRENT.md`。改这块前先记四条红线：
 
 - **停靠期间绝不 `hide()` / `destroy()` / `setFocus()`**（tao 0.35 paint assert 红线的延伸）。
-  窗口只是**停在屏外留 4px**（真实客户区，DOM mouseenter 即弹出信号）；弹出/收回全是
+  窗口只是**停在屏外留 6 逻辑 px**（真实客户区，画成淡轨 + 中间一根把手；DOM mouseenter 即弹出信号）；弹出/收回全是
   `setPosition` 9 步 ~160ms 滑动；聚焦只来自用户点击或单实例交接（交接聚焦 4px sliver 会
-  由 dockMode 的 onFocusChanged 转成 expand，不会出现「亮一条 4px」）。全部几何用**物理像素**
-  （Tauri `Monitor.workArea` 是物理的；混合 DPI 下 Logical 会错）。
+  由 dockMode 的 onFocusChanged 转成 expand，不会出现「亮一条 4px」）。全部几何用**物理像素**，且**按客户区定位**：tao 给无边框窗留了 ~8px 不可见边框（`calculate_insets_for_dpi`，左/右/下），
+  `outerPosition`/`setPosition` 是外框坐标——按外框停靠时客户区整个落在屏外（看不见、鼠标也进不去，2026-10-24 实锤），
+  `dockMode.ts` 的 `measureInsets()` 量出 inner/outer 差值后再算位置与尺寸
+  （Tauri `Monitor.workArea` 是物理的；混合 DPI 下 Logical 会错）。**但 `setSize` 是 inner size**
+  （tao `set_inner_size`）：给尺寸加 insets 会让停靠窗宽出 16px、右缘戳出屏幕（2026-10-24 实锤，
+  表现为额度卡最右一列被屏幕切掉），所以 `clientSize()` 只返回 `width × workArea.height`；
+  浮动窗恢复也用 `innerSize()`，别用 `outerSize()`。
+- **吸附入口**：floating 时监听 `onMoved`，移动停稳 160ms 后判断窗口外缘离屏幕左右边 ≤20 逻辑 px
+  → 亮 `dock-snap-left/right` 提示 → 再停 220ms 调用 `enterDock(edge, { expanded: true })`（保持展开，
+  让用户看见吸附结果）；把展开的窄条拖离边缘 >48 逻辑 px、停 160ms 会 `undock({ keepPosition: true })`
+  （QQ 式拖出，窗口留在松手处，不弹回贴边前的位置）。
+  `setPosition`/滑入滑出自己触发的 onMoved 用 `suppressAutoDockUntil` 屏蔽（floating 吸附路径）；
+  窄条拖出**不用时间窗**，而是 `DockChrome` 在 `startDragging()` 前调 `beginDockBarDrag()` 置一个
+  positive 标志，只有该标志在时才判 `considerDockOut`（否则 expand/retract 的半程位置会被当成拖出）。
+  **窄条标题栏不要用 Tauri 的 `data-tauri-drag-region`**：它的注入脚本只在 mousedown 目标本身带属性时
+  才拖，且双击会 `toggle_maximize`——400px 窄条会被最大化。`DockChrome` 自己在 `.dock-bar` 上
+  `startDragging()`（跳过 button/input），并 `stopPropagation()` 挡住注入脚本。
+  footer 不再放贴边/常驻后台/退出按钮，退出只在窄条 ⋯ 与 Ctrl K 面板；窄条右上角也不放用量图标
+  （用量与项目收进 ⋯）。
+- **底栏（输入框下面那一栏）**：贴边时左右侧栏都是整页覆盖层，所以两侧栏把各自 footer 子树
+  **portal** 到 body 级的 `#dock-footer`（`src/lib/dockFooter.ts` 的 `useDocked` / `dockFooterHost`）：
+  ProjectShelf 出模型共享入口 + 主题/通知/代理/Telegram，ContextPanel 出检查更新；它们的 popover
+  也必须一起 portal（`DockedLayer`），否则 `translateX(100%)` 的 rail 会连 `position: fixed` 的浮层
+  一起藏掉。`.dock-mode .app-shell` 预留 40px，整页 bottom 也收 40px。
 - **关闭路径**：`main.rs` CloseRequested 里 background mode（Rust AtomicBool，前端启动时从
   localStorage `marionette-dock-prefs` 的 `autoHideOnClose` 镜像过来）开 → 主窗 `emit_to`
   `marionette-main-close` 交给前端 `dockMode.handleCloseFromRust`（停靠或兜底 hide），detached 窗
@@ -45,9 +67,33 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
   OS 级文件拖放仍走 tao 的 `onDragDropEvent`（物理像素，除以 devicePixelRatio）。
 
 前端结构：`src/lib/dockMode.ts`（状态机 + 窗口编排 + prefs）、`src/components/DockChrome.tsx`
-（窄条上下铬）、`src/components/MemoBox.tsx`（收纳盒覆盖层）、`src/styles/dock.css`
+（窄条顶部铬：标题栏/操作/额度计量卡/进行中列表，高度量进 `--dock-chrome-top`；无标签行；全部对话/用量/收纳盒是带「返回」的整页）、`src/lib/dockFooter.ts` + `src/components/MemoBox.tsx`
+（底栏 portal / 收纳盒覆盖层）、`src/styles/dock.css`
 （`.dock-mode` 变体：单列网格、左右栏转覆盖层 `dock-drawer-open`/`dock-context-open`、
-标签横滑、body min-width 放开）。分屏在 dock 态禁用（提示解除贴边），overlay 在收回时自动关。
+标签行隐藏、body min-width 放开）。分屏在 dock 态禁用（提示解除贴边），整页在收回时自动关。
+普通窗口的收纳盒入口在**左侧栏「聊天」栏目正上方**（`ProjectShelf.tsx` 的
+`.shelf-memo-entry`），点开同一个 `MemoBox` 页面（`showClose`，`top: 34px`）。
+聊天内容上方不放收纳盒或「能力与上下文」工具栏，分屏也不重复添加入口。
+`.center-workspace` 与 `.session-pane__body` 都是「对话 1fr | composer auto」两行；
+分屏时 `.center-workspace` 只有 SplitWorkspace，行改成 `1fr`。贴边入口仍由 DockChrome 提供。
+**贴边 composer** 由 `<Composer docked>` 关掉 inline 高度与拖拽/展开按钮，改由内容撑高（`.dock-mode .composer`
+auto + min/max），底边正好压在 footer 上沿；普通窗口仍用记住的 inline 高度。
+**Composer 下拉夹边**：`Composer.tsx` 的 menu 布局 effect 会在打开后测量每个 `.composer-menu`，按视口
+8px 边距改写 `left/right`（400px 窄条里右对齐的模型菜单原先向左溢出，被 WebView 裁到只剩一条）。
+
+**对话轨迹（clean view）**：连续 thought/tool 从**第一步**起就是一张组卡（稳定 `act-起点` key，
+单步也分组）。运行时**上方实时轨迹面板**（`LiveActivityTimeline` → `ActivityTimeline`，
+thought / other / search 等泳道与时间条），**下方默认关闭的 tally 详情折叠**。
+**时间图必须在 details 外面**，不能再用 live 步骤列表代替，也不能等 open / 回合完成才渲染。
+500ms 时钟局限在图表子组件，第一条未结束 thought 也随时钟增长；工具间 settle 保留尾段图表。
+运行段结束（后续发言 / idle）移除实时图，留下折叠 tally；整轮结束清掉详情和步骤开合状态，
+保证手动展开过的卡也自动折好。历史卡手动展开仍显示时间图和按类型分组；子步骤用
+`renderEvent(..., true)` 禁掉工具/thought 卡片正文自动展开。
+按用户后续要求，轨迹图与 tally 之间另有 `LiveThoughtPreview`：固定四行（72px 正文）显示最新
+非空 thought；切工具时保留并标「最近思考」，下一段 thought 原地替换，新段空 chunk 不清空旧文字。
+预览不驱动 details 开合，不给它按 thought id 加 key，也不随短 think 改高度；长文内部滚动，
+尊重用户滚离底部。运行段结束随实时图一起移除。不要恢复旧的自动展开整张 thought 卡或 200px 槽。
+`tailActivityFoldKey` 只找列表尾（跳过 delivery），`summarizeActivity` 的 title 永远是 tally。
 
 ## 排查「卡退」（崩溃/闪退）—— 第一件事
 

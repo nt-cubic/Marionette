@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -96,4 +97,64 @@ func mergeAntigravityModels(out, ms []catalog.Model) []catalog.Model {
 		next++
 	}
 	return out
+}
+
+// antigravityNoted serialises noteAntigravityList's read, merge and save of
+// the pooled list, for two accounts' readings at once not to save over
+// each other's.
+var antigravityNoted sync.Mutex
+
+// noteAntigravityList keeps what an On account's quota reading listed as
+// its own list, and the pooled list merged again from every On account's
+// own, when the account's models changed: the reading runs for every
+// account on its own schedule, and a model the account was given since its
+// list was fetched (the first listing, a probe, a sync) was otherwise left
+// out of the picker, of routing to it and of its bar until one. Only the
+// models' ids are compared, as the reading's list is the one models() makes
+// of the same reply.
+func noteAntigravityList(user, base string, ms []catalog.Model) {
+	if len(ms) == 0 {
+		return
+	}
+	on := false
+	var accounts []googleLogin
+	for _, l := range googleLogins("antigravity") {
+		if l.On {
+			accounts = append(accounts, l)
+			on = on || strings.EqualFold(l.User, user)
+		}
+	}
+	if !on {
+		return
+	}
+	antigravityNoted.Lock()
+	defer antigravityNoted.Unlock()
+	key := accountModels("antigravity", user)
+	if had, _, ok := catalog.Live(key); ok && sameModelIDs(had, ms) {
+		return
+	}
+	if err := catalog.SaveLive(key, base, ms); err != nil {
+		log.Printf("antigravity %s: models listed by its reading not kept: %v", user, err)
+		return
+	}
+	pooled, _, listed := catalog.Live("antigravity")
+	if !listed {
+		return // not listed yet: the first listing pools every account
+	}
+	var out []catalog.Model
+	for _, l := range accounts {
+		own, _, _ := catalog.Live(accountModels("antigravity", l.User))
+		out = mergeAntigravityModels(out, own)
+	}
+	if len(out) == 0 || sameModelIDs(out, pooled) {
+		return
+	}
+	if err := catalog.SaveLive("antigravity", codeAssistDaily, out); err != nil {
+		log.Printf("antigravity: pooled models not kept: %v", err)
+	}
+}
+
+// sameModelIDs says two lists name the same models in the same order.
+func sameModelIDs(a, b []catalog.Model) bool {
+	return slices.EqualFunc(a, b, func(x, y catalog.Model) bool { return x.ID == y.ID })
 }

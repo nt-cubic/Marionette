@@ -62,6 +62,13 @@ var history struct {
 type counted struct {
 	size int64
 	n    int
+	// a day's .jsonl, still written to: the bytes tallied, up to the end
+	// of its last whole line, and where each of its lines starts, so a
+	// look reads only what was added since and parses only the latest
+	// lines (#3383: a busy day's file is 350 MB and was read whole at every
+	// look, every 15s while the Routing view was open)
+	off    int64
+	starts []int64
 }
 
 const dayForm = "2006-01-02"
@@ -270,27 +277,43 @@ func History(day string) (days []HistoryDay, routes []Route, cut bool) {
 	if history.counts == nil {
 		history.counts = map[string]counted{}
 	}
+	total := 0
 	for _, d := range historyFiles(HistoryDir()) {
-		// a day is read only when it is the one asked for, or it has
+		// a .gz is read only when it is the one asked for, or it has
 		// changed since it was counted: thirty days gzipped are not read
-		// again at every look
+		// again at every look; a .jsonl only past what was tallied
 		c, ok := history.counts[d.path]
-		if d.day == day || !ok || c.size != d.size {
-			n := 0
-			readDay(d.path, func(line []byte) bool {
-				n++
-				if d.day != day {
-					return true
+		if !strings.HasSuffix(d.path, ".gz") {
+			c = tally(d, c)
+			if d.day == day {
+				// the lines before the latest historyMax aren't parsed: a
+				// route is written as it is done, so the file is nearly in
+				// time order, and historySlack more cover one done late
+				from := int64(0)
+				if k := len(c.starts) - historyMax - historySlack; k > 0 {
+					from = c.starts[k]
 				}
-				var r Route
-				if json.Unmarshal(line, &r) == nil {
-					r.routedAgain()
-					routes = append(routes, r)
+				readDayFrom(d.path, from, func(line []byte) bool {
+					routes = appendRoute(routes, line)
+					return true
+				})
+			}
+		} else if d.day == day || !ok || c.size != d.size {
+			n, skip := 0, -1
+			if d.day == day && ok && c.size == d.size {
+				skip = c.n - historyMax - historySlack
+			}
+			readDay(d.path, func(line []byte) bool {
+				if n++; d.day == day && n > skip {
+					routes = appendRoute(routes, line)
 				}
 				return true
 			})
-			c = counted{d.size, n}
-			history.counts[d.path] = c
+			c = counted{size: d.size, n: n}
+		}
+		history.counts[d.path] = c
+		if d.day == day {
+			total += c.n
 		}
 		if n := c.n; n > 0 {
 			if len(days) > 0 && days[0].Day == d.day {
@@ -302,9 +325,73 @@ func History(day string) (days []HistoryDay, routes []Route, cut bool) {
 	}
 	sort.SliceStable(routes, func(i, j int) bool { return routes[i].Time.Before(routes[j].Time) })
 	if len(routes) > historyMax {
-		routes, cut = routes[len(routes)-historyMax:], true
+		routes = routes[len(routes)-historyMax:]
 	}
-	return days, routes, cut
+	return days, routes, cut || total > historyMax
+}
+
+// historySlack: the lines read past a day's latest historyMax, for a
+// route done after the later ones began.
+const historySlack = 200
+
+func appendRoute(routes []Route, line []byte) []Route {
+	var r Route
+	if json.Unmarshal(line, &r) != nil {
+		return routes
+	}
+	r.routedAgain()
+	r.Prompt.skillsApart()
+	return append(routes, r)
+}
+
+// tally counts a day's .jsonl past what c has tallied: only its whole
+// lines, a last one without its newline yet maybe half written. A file
+// smaller than what was tallied was written over, and is counted again
+// from its start.
+func tally(d dayFile, c counted) counted {
+	if d.size < c.off || c.size > d.size {
+		c = counted{}
+	}
+	if d.size == c.size {
+		return c
+	}
+	f, err := os.Open(d.path)
+	if err != nil {
+		return counted{size: d.size}
+	}
+	defer f.Close()
+	if _, err := f.Seek(c.off, io.SeekStart); err != nil {
+		return counted{size: d.size}
+	}
+	buf := make([]byte, 256<<10)
+	at, start, full := c.off, c.off, false
+	tail := false
+	for {
+		k, err := f.Read(buf)
+		for i, b := range buf[:k] {
+			switch b {
+			case '\n':
+				if full {
+					c.starts = append(c.starts, start)
+				}
+				start, full = at+int64(i)+1, false
+				c.off = start
+			case ' ', '\t', '\r':
+			default:
+				full = true
+			}
+		}
+		at += int64(k)
+		if err != nil {
+			tail = full
+			break
+		}
+	}
+	c.size, c.n = d.size, len(c.starts)
+	if tail {
+		c.n++ // counted as a line, as readDay reads it, but tallied again
+	}
+	return c
 }
 
 // routedAgain reads a route kept before Routed was: a try that asked
@@ -332,12 +419,21 @@ func (r *Route) routedAgain() {
 }
 
 // readDay calls f with each line of a day's file.
-func readDay(path string, f func([]byte) bool) {
+func readDay(path string, f func([]byte) bool) { readDayFrom(path, 0, f) }
+
+// readDayFrom calls f with each line of a day's file from byte off of a
+// .jsonl, a line's start.
+func readDayFrom(path string, off int64, f func([]byte) bool) {
 	file, err := os.Open(path)
 	if err != nil {
 		return
 	}
 	defer file.Close()
+	if off > 0 {
+		if _, err := file.Seek(off, io.SeekStart); err != nil {
+			return
+		}
+	}
 	var r io.Reader = file
 	if strings.HasSuffix(path, ".gz") {
 		z, err := gzip.NewReader(file)
@@ -375,6 +471,7 @@ func HistoryRoute(id int64, day time.Time) (Route, bool) {
 					return true
 				}
 				found.routedAgain()
+				found.Prompt.skillsApart()
 				return false
 			})
 			if found.ID != 0 {

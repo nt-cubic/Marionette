@@ -604,6 +604,33 @@
   border-top: 1px solid var(--border);
 }
 
+/* Single memo-page entry directly above the sidebar Chat section. */
+.shelf-memo-entry {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  width: 100%;
+  padding: 8px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.shelf-memo-entry svg {
+  color: var(--accent);
+}
+
+.shelf-memo-entry:hover {
+  background: var(--panel-soft);
+}
+
 /* ── Chat section ── */
 
 .chat-section {
@@ -852,23 +879,7 @@
   opacity: 0.55;
 }
 
-/* Edge dock stage 0: close = retract to background (same on/off language). */
-.sidebar-footer__button.is-dock-on {
-  opacity: 1;
-  color: color-mix(in srgb, var(--accent) 85%, var(--text-muted));
-}
-
-.sidebar-footer__button.is-dock-off {
-  color: var(--text-faint);
-  opacity: 0.55;
-}
-
-/* Quit stays quiet next to the service icons; red only on intent. */
-.sidebar-footer__button--quit:hover {
-  color: var(--red);
-  opacity: 1;
-}
-
+/* Edge dock is a drag gesture now; no footer toggle to style. */
 .sidebar-footer__button--collapse {
   margin-left: auto;
 }
@@ -876,15 +887,13 @@
 /* On-state pip: which footer service is running reads without hovering. */
 .sidebar-footer__button.is-notify-on,
 .sidebar-footer__button.is-proxy-on,
-.sidebar-footer__button.is-engine-on,
-.sidebar-footer__button.is-dock-on {
+.sidebar-footer__button.is-engine-on {
   position: relative;
 }
 
 .sidebar-footer__button.is-notify-on::after,
 .sidebar-footer__button.is-proxy-on::after,
-.sidebar-footer__button.is-engine-on::after,
-.sidebar-footer__button.is-dock-on::after {
+.sidebar-footer__button.is-engine-on::after {
   content: "";
   position: absolute;
   top: 1px;

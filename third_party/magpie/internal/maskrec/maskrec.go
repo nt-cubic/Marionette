@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -33,7 +34,14 @@ const (
 	// keepSnips is how many of the latest records memory keeps, with the
 	// text around their values
 	keepSnips = 400
-	dayForm   = "2006-01-02"
+	// keepSent is how many of the latest requests memory keeps whole, as
+	// the vendor got them, up to sentMax each: the 脱敏 page shows a
+	// request's text from it, its values put back from the masker's
+	// memory, and sentBudget in all
+	keepSent   = 100
+	sentMax    = 4 << 20
+	sentBudget = 64 << 20
+	dayForm    = "2006-01-02"
 )
 
 // Value is one value a request had masked, as often as it had it.
@@ -67,6 +75,14 @@ type Record struct {
 	// Snips: by placeholder, the text around its first place as the
 	// vendor saw it; in memory only
 	Snips map[string]string `json:"snips,omitempty"`
+	// Took is how long masking the request took, in microseconds
+	Took int64 `json:"took,omitempty"`
+	// Back: by placeholder, the places the answer had it put back; in
+	// memory only, told once the answer is done (Restored)
+	Back map[string]int `json:"back,omitempty"`
+	// Sent is the request as the vendor got it; in memory only, for the
+	// latest keepSent, and never in a list (SentOf)
+	Sent string `json:"-"`
 }
 
 // Dir is where the days are kept.
@@ -81,6 +97,15 @@ var store struct {
 	pruned time.Time
 	days   map[string]*dayAgg // a day's file → what it holds, as of its size
 	snips  []Record           // the latest records, with their snips
+	sent   []kept             // the records whose Sent memory keeps, oldest first
+	// sentBytes is their Sent in all
+	sentBytes int
+}
+
+// kept is a record whose Sent memory keeps, and its length.
+type kept struct {
+	key int64
+	n   int
 }
 
 // inTest says Add writes nothing: in a test binary testenv isolated, a
@@ -109,15 +134,31 @@ func Add(r Record) Record {
 		r.Key = store.last + 1
 	}
 	store.last = r.Key
+	if len(r.Sent) > sentMax {
+		r.Sent = ""
+	}
+	if r.Sent != "" {
+		store.sent = append(store.sent, kept{r.Key, len(r.Sent)})
+		store.sentBytes += len(r.Sent)
+	}
+	for len(store.sent) > keepSent || store.sentBytes > sentBudget {
+		drop := store.sent[0]
+		store.sent = store.sent[1:]
+		store.sentBytes -= drop.n
+		if i := at(drop.key); i >= 0 {
+			store.snips[i].Sent = ""
+		}
+	}
 	store.snips = append(store.snips, r)
 	if len(store.snips) > keepSnips {
 		store.snips = append([]Record(nil), store.snips[len(store.snips)-keepSnips:]...)
 	}
+	r.Sent = ""
 	if inTest() {
 		return r
 	}
 	disk := r
-	disk.Snips = nil
+	disk.Snips, disk.Back = nil, nil
 	b, err := json.Marshal(disk)
 	if err != nil {
 		return r
@@ -240,30 +281,73 @@ func read(path string, each func(Record)) int64 {
 	return size
 }
 
-// withSnips is r with the snips memory has for it.
+// at is where memory has the record of key, -1 where it hasn't.
+func at(key int64) int {
+	i := sort.Search(len(store.snips), func(i int) bool { return store.snips[i].Key >= key })
+	if i < len(store.snips) && store.snips[i].Key == key {
+		return i
+	}
+	return -1
+}
+
+// withSnips is r with what memory has for it: its snips and what the
+// answer put back.
 func withSnips(r Record) Record {
-	i := sort.Search(len(store.snips), func(i int) bool { return store.snips[i].Key >= r.Key })
-	if i < len(store.snips) && store.snips[i].Key == r.Key {
-		r.Snips = store.snips[i].Snips
+	if i := at(r.Key); i >= 0 {
+		r.Snips, r.Back = store.snips[i].Snips, store.snips[i].Back
 	}
 	return r
 }
 
-// Filter narrows List: by kind, by finder, by agent or provider; "" is
-// any.
+// Restored tells the record of key what its answer put back: by
+// placeholder, the places. Memory only, as the snips are.
+func Restored(key int64, put map[string]int) {
+	if key == 0 || len(put) == 0 {
+		return
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if i := at(key); i >= 0 {
+		back := map[string]int{}
+		for p, n := range store.snips[i].Back {
+			back[p] = n
+		}
+		for p, n := range put {
+			back[p] += n
+		}
+		store.snips[i].Back = back
+	}
+}
+
+// SentOf is the request of key as the vendor got it, while memory keeps
+// it.
+func SentOf(key int64) (string, bool) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if i := at(key); i >= 0 && store.snips[i].Sent != "" {
+		return store.snips[i].Sent, true
+	}
+	return "", false
+}
+
+// Filter narrows List: by kind (one, or several split by commas), by
+// finder, by agent or provider, "" is any; Blocked keeps only the requests
+// masking held back.
 type Filter struct {
 	Kind, By, Agent, Provider string
+	Blocked                   bool
 }
 
 func (f Filter) takes(r Record) bool {
-	if f.Agent != "" && r.Agent != f.Agent || f.Provider != "" && r.Provider != f.Provider {
+	if f.Agent != "" && r.Agent != f.Agent || f.Provider != "" && r.Provider != f.Provider || f.Blocked && !r.Blocked {
 		return false
 	}
 	if f.Kind == "" && f.By == "" {
 		return true
 	}
+	kinds := strings.Split(f.Kind, ",")
 	for _, v := range r.Values {
-		if (f.Kind == "" || v.Kind == f.Kind) && (f.By == "" || v.By == f.By) {
+		if (f.Kind == "" || slices.Contains(kinds, v.Kind)) && (f.By == "" || v.By == f.By) {
 			return true
 		}
 	}
@@ -316,8 +400,10 @@ func List(before int64, limit int, f Filter) ([]Record, bool) {
 func Get(key int64) (Record, bool) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if i := sort.Search(len(store.snips), func(i int) bool { return store.snips[i].Key >= key }); i < len(store.snips) && store.snips[i].Key == key {
-		return store.snips[i], true
+	if i := at(key); i >= 0 {
+		r := store.snips[i]
+		r.Sent = ""
+		return r, true
 	}
 	day := time.Unix(0, key).Local().Format(dayForm)
 	var got Record

@@ -65,10 +65,10 @@ function server(lang, gh, urls = []) {
 }
 
 const L = {
-  en: { section: "Unofficial, on GitHub", look: "Looking on GitHub", failed: /Couldn't ask GitHub/, again: "Try again", none: /GitHub found 12 repositories, but none of them could be read/, more: /12 more on GitHub couldn't be read/ },
-  zh: { section: "非官方插件 · GitHub", look: "正在 GitHub 上查找", failed: /无法连接 GitHub/, again: "重试", none: /GitHub 找到了 12 个仓库，但一个都没能读取/, more: /GitHub 上还有 12 个插件没能读取/ },
-  ja: { section: "非公式 · GitHub", look: "GitHub を検索中", failed: /GitHub に接続できませんでした/, again: "再試行", none: /GitHub で 12 件のリポジトリが見つかりましたが/, more: /GitHub 上のほか 12 件を読み込めませんでした/ },
-  de: { section: "Inoffiziell, auf GitHub", look: "Suche auf GitHub", failed: /GitHub nicht erreichbar/, again: "Erneut versuchen", none: /GitHub hat 12 Repositories gefunden/, more: /12 weitere auf GitHub konnten nicht gelesen werden/ },
+  en: { section: "Unofficial, on GitHub", look: "Looking on GitHub", failed: /Couldn't ask GitHub/, again: "Try again", none: /GitHub found 12 repositories, but none of them could be read/, more: /12 more on GitHub couldn't be read/, slow: /7 more on GitHub couldn't be read: GitHub didn't answer in time/ },
+  zh: { section: "非官方插件 · GitHub", look: "正在 GitHub 上查找", failed: /无法连接 GitHub/, again: "重试", none: /GitHub 找到了 12 个仓库，但一个都没能读取/, more: /GitHub 上还有 12 个插件没能读取/, slow: /GitHub 上还有 7 个插件没能读取：GitHub 响应超时/ },
+  ja: { section: "非公式 · GitHub", look: "GitHub を検索中", failed: /GitHub に接続できませんでした/, again: "再試行", none: /GitHub で 12 件のリポジトリが見つかりましたが/, more: /GitHub 上のほか 12 件を読み込めませんでした/, slow: /GitHub の応答がタイムアウトしました/ },
+  de: { section: "Inoffiziell, auf GitHub", look: "Suche auf GitHub", failed: /GitHub nicht erreichbar/, again: "Erneut versuchen", none: /GitHub hat 12 Repositories gefunden/, more: /12 weitere auf GitHub konnten nicht gelesen werden/, slow: /GitHub hat nicht rechtzeitig geantwortet/ },
 };
 
 const shot = async (loc, name) => {
@@ -215,6 +215,22 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           assert.equal(await m.sec.locator(".pm-card:not(.ghost)").count(), 2);
           assert.deepEqual(urls2, ["/api/plugins/github", "/api/plugins/github?again=1"]);
           assert.deepEqual(m.errors, []);
+
+          // GitHub too slow, as magpie tells it (why: "slow"): the line
+          // says so in the reader's language, not Go's "no answer in 8s"
+          // in the middle of the page, and the error as it came is its
+          // hover (the Kiko03O1 reply on X: ui 设计能不能好看点); Try
+          // again reads as a button, in the accent
+          const s = await open([{ json: { repos: REPOS, topic: "magpie-plugin", error: "no answer in 8s", why: "slow", missing: 7 } }]);
+          t.after(() => s.ctx.close());
+          const sLine = s.sec.locator(".pm-ghwarn");
+          await sLine.waitFor();
+          assert.match(await sLine.innerText(), w.slow);
+          assert.doesNotMatch(await sLine.innerText(), /no answer/);
+          assert.equal(await sLine.locator("span").first().getAttribute("title"), "no answer in 8s");
+          const tone = (v) => s.page.evaluate((v) => { const d = document.createElement("div"); d.style.color = `var(${v})`; document.body.append(d); const c = getComputedStyle(d).color; d.remove(); return c; }, v);
+          assert.equal(await sLine.getByRole("button", { name: w.again }).evaluate((b) => getComputedStyle(b).color), await tone("--accent"));
+          assert.deepEqual(s.errors, []);
 
           // a failed ask after a list was had: the list stands, and the
           // line says it is from before

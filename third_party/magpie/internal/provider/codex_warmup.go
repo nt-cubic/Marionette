@@ -6,7 +6,9 @@ package provider
 // its next week end a day later too. So, while the setting is on, whichever
 // magpie runs the gateway looks at each account's windows every few minutes
 // and, when one has started over — its reset time passed, or its use fell
-// back (OpenAI resetting everyone's limits early) — and nothing has used it
+// back (OpenAI resetting everyone's limits early), or, unused, it is no
+// longer started and resets later than it ran to (a reset that follows a
+// reset card's with nothing used in between) — and nothing has used it
 // since, sends that account one tiny request, as the gateway sends any.
 // Once per reset: what it saw and did is kept in codex-warmup.json, so a
 // restart doesn't send it again. A window still not started after one —
@@ -319,7 +321,9 @@ func asOf(w QuotaWindow, now time.Time) QuotaWindow {
 // warmDue says whether a window seen as p (seen false the first time) and
 // now as cur wants starting: it is unused, and has started over since p —
 // or is seen for the first time. Use falling back is a reset whatever the
-// window says, OpenAI resetting everyone's limits early among them. One
+// window says, OpenAI resetting everyone's limits early among them; so is
+// a window seen running, unused, that now isn't started and resets later
+// than it was to, which has no use to fall from. One
 // whose warm-up failed is still due, and one still not started is due
 // again once its Retry comes, even with a reset time reported.
 func warmDue(p warmWindow, seen bool, cur QuotaWindow, now time.Time) bool {
@@ -332,12 +336,33 @@ func warmDue(p warmWindow, seen bool, cur QuotaWindow, now time.Time) bool {
 		return !now.Before(p.Retry)
 	case p.Used-cur.Used >= 1:
 		return true
+	case !p.ResetsAt.IsZero() && idle(cur, now) && movedOn(p, cur):
+		// not started now, its reset gone from the one it ran to: started
+		// over with nothing to fall from, as a window a reset was spent on
+		// and a warm-up started, unused since, when OpenAI then resets
+		// everyone's limits early
+		return true
 	case !p.ResetsAt.IsZero() && !now.Before(p.ResetsAt):
 		return idle(cur, now)
 	case p.ResetsAt.IsZero() && p.Used == 0:
 		return idle(cur, now) && !now.Before(p.Retry)
 	}
 	return false
+}
+
+// movedOn says whether a window seen as p now resets (cur) later than
+// both the reset it was seen running to and the end of a window magpie's
+// last warm-up started: one that has started over since. A window left
+// out of the read, or with no reset, hasn't started at all.
+func movedOn(p warmWindow, cur QuotaWindow) bool {
+	if cur.ResetsAt == nil {
+		return true
+	}
+	if cur.ResetsAt.Sub(p.ResetsAt) < warmSlack {
+		return false
+	}
+	// a read that kept the old reset, then the window the warm-up started
+	return p.Warmed.IsZero() || cur.ResetsAt.Sub(p.Warmed.Add(cur.Span)) >= warmSlack
 }
 
 // idle says whether a window (as of now) hasn't started: nothing used,

@@ -111,7 +111,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           // two of them, a provider and a middleware, are already here, as
           // the page's own cards say
           const have = sec.locator(".pm-ghhave .opt");
-          const wantHave = async (rs) => [await tr("All") + " · " + rs.length, await tr("Installed") + " · " + rs.filter(here).length, await tr("Not installed") + " · " + rs.filter((r) => !here(r)).length];
+          const wantHave = async (rs) => [await tr("All"), await tr("Installed") + " · " + rs.filter(here).length, await tr("Not installed") + " · " + rs.filter((r) => !here(r)).length];
           assert.deepEqual(await have.allTextContents(), await wantHave(GH.repos));
           assert.equal(await sec.locator(".pm-ghhave .opt.on").textContent(), (await wantHave(GH.repos))[0]);
           assert.deepEqual((await sec.locator(".pm-card.have .pm-name b").allInnerTexts()).sort(), names(GH.repos.filter(here)));

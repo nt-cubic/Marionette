@@ -494,3 +494,31 @@ func TestCodexModelEffortReadsLedgerOnlyWhenCallsChange(t *testing.T) {
 		t.Fatalf("a new gateway call did not read the ledger again: built %d", built)
 	}
 }
+
+// A new Codex thread, a subagent's too, keeps the chunks of the files read
+// before (#3493): a thread's identity is given to its rows as the page is
+// built, so a child read before its parent's file names the parent's
+// session once that file is there, and nothing else is read again.
+func TestCodexNewThreadKeepsReadChunks(t *testing.T) {
+	pageHome(t)
+	now := holdClock(t, time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC))
+	dir := filepath.Join(sessions.CodexDir(), "sessions", "2026", "09", "30")
+	var read []string
+	reader := func(s sessions.CallSource) []sessions.Call {
+		read = append(read, filepath.Base(s.Path))
+		return sessions.ReadCallSource(s)
+	}
+	writeCodexCall(t, filepath.Join(dir, "rollout-2026-09-30T10-00-00-child-b.jsonl"), "child-b", "shared-b", `{"subagent":{"thread_spawn":{"parent_thread_id":"main-a"}}}`, "resp-b", "m", "low", now.Add(-time.Hour), 100, 10)
+	if p := queryPage(Today, Filter{}, 0, 100, reader); p.Total != 1 {
+		t.Fatalf("%d rows", p.Total)
+	}
+	read = nil
+	writeCodexCall(t, filepath.Join(dir, "rollout-2026-09-30T10-00-00-main-a.jsonl"), "main-a", "shared-a", `"vscode"`, "resp-a", "m", "low", now.Add(-2*time.Hour), 300, 30)
+	p := queryPage(Today, Filter{}, 0, 100, reader)
+	if len(read) != 1 || read[0] != "rollout-2026-09-30T10-00-00-main-a.jsonl" {
+		t.Fatalf("a new thread read again %v", read)
+	}
+	if row, ok := findRowByResponse(p.Rows, "resp-b"); !ok || row.SessionRole != "subagent" || row.Session != "main-a" {
+		t.Fatalf("the child's row doesn't name its parent's session: %+v, found=%t", row, ok)
+	}
+}

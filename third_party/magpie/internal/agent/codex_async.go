@@ -14,10 +14,27 @@ package agent
 // What magpie writes is kept in the stash, so a value the user set there
 // (by hand, or a value they changed since) is theirs: never written over,
 // and left when the setting is turned off.
+//
+// The table form is read only from Codex 0.163.0-alpha.8 on. Before it,
+// every [features] entry Codex doesn't know is a bool, and a table there
+// stops Codex from loading its config at all ("invalid type: map, expected
+// a boolean": 0.162.1's FeaturesToml, and the Codex app on Windows of
+// 多喝热水 on Discord, which wouldn't open). The bare async_compaction =
+// true every Codex reads: an older one ignores it, a newer one turns the
+// feature on at its own 65%. So the table, which the threshold needs, is
+// written only when every Codex that reads this config is known to be new
+// enough (codexReaders), and the bare key otherwise; a table magpie wrote
+// before is taken back out where it no longer is.
 
 import (
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strings"
+	"sync"
 
 	"github.com/pelletier/go-toml/v2"
 
@@ -27,13 +44,121 @@ import (
 const (
 	codexAsyncTable   = "features.async_compaction"
 	codexAsyncPercent = "model_async_compact_threshold_percent"
+	// codexAsyncTableFrom is the first Codex whose [features] takes
+	// async_compaction as a table (FeatureToml<AsyncCompactionConfigToml>
+	// in codex-rs/features, rust-v0.163.0-alpha.8; alpha.5 has none)
+	codexAsyncTableFrom = "0.163.0-alpha.8"
 )
+
+// CodexReader is a Codex that reads a config: what it is ("cli", "app",
+// "ide", "wsl") and its version, "" when that isn't known.
+type CodexReader struct {
+	Kind    string `json:"kind"`
+	Version string `json:"version,omitempty"`
+}
+
+// codexReaders are the Codexes that read the config at at: the CLI on
+// PATH, the desktop app's own (its bundled codex-cli on a Mac; the Store
+// app's on Windows, whose version magpie can't read), the editor
+// extension's, or a WSL distro's CLI. A var so tests can name them.
+var codexReaders = func(at place) []CodexReader {
+	if at.spell != nil {
+		return []CodexReader{{Kind: "wsl", Version: at.version}}
+	}
+	var out []CodexReader
+	if bin, _ := (&Agent{ID: "codex", Bin: "codex"}).cliBin(); bin != "" {
+		real, _ := throughShim(bin)
+		out = append(out, CodexReader{Kind: "cli", Version: installedVersion(real)})
+	}
+	app := desktopApps["codex"]
+	switch runtime.GOOS {
+	case "darwin":
+		for _, bundle := range macBundles(app) {
+			if v, ok := bundledCodexVersion(bundle, app.id); ok {
+				out = append(out, CodexReader{Kind: "app", Version: v})
+			}
+		}
+	case "windows":
+		if storeAppVersion(windowsStorePackages(), app.store, app.publisher) != "" {
+			out = append(out, CodexReader{Kind: "app"})
+		}
+	}
+	if extensionHere(at.home, "openai.chatgpt") {
+		out = append(out, CodexReader{Kind: "ide"})
+	}
+	return out
+}
+
+var codexPackageVersionRe = regexp.MustCompile(`"version"\s*:\s*"([^"]+)"`)
+
+// bundledCodexVersion is the version of the codex a Codex app bundle
+// ships (Contents/Resources/codex-cli/codex-package.json, "version":
+// "0.163.0-alpha.10.2" in ChatGPT.app 26.1013); ok is false for a bundle
+// that is no Codex app, "" for one whose version can't be read.
+func bundledCodexVersion(bundle, id string) (v string, ok bool) {
+	if b, err := os.ReadFile(filepath.Join(bundle, "Contents", "Resources", "codex-cli", "codex-package.json")); err == nil {
+		if m := codexPackageVersionRe.FindSubmatch(b); m != nil {
+			return strings.TrimSpace(string(m[1])), true
+		}
+		return "", true
+	}
+	b, err := os.ReadFile(filepath.Join(bundle, "Contents", "Info.plist"))
+	if err != nil {
+		return "", false
+	}
+	m := plistIDRe.FindSubmatch(b)
+	return "", m != nil && strings.TrimSpace(string(m[1])) == id
+}
+
+// codexAsyncBlocked are the readers that keep the table out: one older
+// than codexAsyncTableFrom, or of no known version. None at all is
+// unknown as well: a Codex magpie can't see may read the config.
+func codexAsyncBlocked(rs []CodexReader) []CodexReader {
+	if len(rs) == 0 {
+		return []CodexReader{{Kind: "cli"}}
+	}
+	var out []CodexReader
+	for _, r := range rs {
+		if r.Version == "" || Newer(codexAsyncTableFrom, r.Version) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// codexAsyncHeld is what kept the table out of this machine's config at
+// its last sync, for Settings' row to say; nil when nothing did.
+var codexAsyncHeld struct {
+	sync.Mutex
+	rs []CodexReader
+}
+
+// CodexAsyncHeld is the Codexes here that kept the background
+// compaction's table, and with it its threshold, out at the last sync:
+// one too old for the feature, or one whose version isn't known.
+func CodexAsyncHeld() []CodexReader {
+	codexAsyncHeld.Lock()
+	defer codexAsyncHeld.Unlock()
+	return codexAsyncHeld.rs
+}
+
+// codexAsyncTableOK says whether the table may be written at at.
+func codexAsyncTableOK(at place) bool {
+	held := codexAsyncBlocked(codexReaders(at))
+	if at.spell == nil {
+		codexAsyncHeld.Lock()
+		codexAsyncHeld.rs = held
+		codexAsyncHeld.Unlock()
+	}
+	return len(held) == 0
+}
 
 // codexAsyncStash is what magpie wrote.
 type codexAsyncStash struct {
 	Enabled bool `json:"enabled,omitempty"` // enabled = true
 	Percent int  `json:"percent,omitempty"` // the threshold
 	Cap     bool `json:"cap,omitempty"`     // capabilities = { remote_compaction = "v2" }
+	Bool    bool `json:"bool,omitempty"`    // [features] async_compaction = true
 }
 
 // codexAsyncNow is how the config has them: the async_compaction value
@@ -55,10 +180,13 @@ func codexAsyncNow(path string) (feature any, provider map[string]any, err error
 
 // codexAsyncSync puts the setting into the Codex config at path, where
 // Codex is routed through magpie or not: on is the setting, percent its
-// threshold (0 leaves Codex's own). key is the stash's. The capability is
-// written for a feature the user turned on in the config themselves too:
-// on magpie's provider it would never run without it (#2493).
-func codexAsyncSync(path, key string, routed, on bool, percent int) error {
+// threshold (0 leaves Codex's own). key is the stash's. tableOK: every
+// Codex reading the config takes the table (codexAsyncTableOK); without
+// it the bare key is written, and a table of magpie's taken out. The
+// capability is written for a feature the user turned on in the config
+// themselves too: on magpie's provider it would never run without it
+// (#2493).
+func codexAsyncSync(path, key string, routed, on bool, percent int, tableOK bool) error {
 	feature, provider, err := codexAsyncNow(path)
 	var bad *toml.DecodeError
 	if errors.As(err, &bad) {
@@ -73,8 +201,24 @@ func codexAsyncSync(path, key string, routed, on bool, percent int) error {
 	}
 	was := st
 	want := routed && on
-	if !want {
+	useTable := want && tableOK
+	if !useTable {
 		percent = 0
+	}
+
+	// the bare async_compaction = true magpie wrote, where the table is
+	// to go instead or nothing is: still as written, it goes; changed, it
+	// is the user's
+	if st.Bool && (!want || useTable) {
+		if feature == true {
+			if err := edit.DelTOMLKey(path, "features", "async_compaction"); err != nil {
+				return err
+			}
+			if feature, _, err = codexAsyncNow(path); err != nil {
+				return err
+			}
+		}
+		st.Bool = false
 	}
 
 	// [features.async_compaction]: written only as that table, which a
@@ -96,12 +240,15 @@ func codexAsyncSync(path, key string, routed, on bool, percent int) error {
 			st.Enabled = false // set, or changed since, by the user
 		}
 		switch {
-		case want && !hasEnabled && table["enabled"] == nil:
+		case useTable && !hasEnabled && table["enabled"] == nil:
 			if err := edit.SetTOMLKey(path, codexAsyncTable, "enabled", true); err != nil {
 				return err
 			}
 			st.Enabled = true
-		case !want && st.Enabled:
+		case !useTable && st.Enabled:
+			// off, or a Codex here too old for the table: the table magpie
+			// wrote goes (a table left with nothing of the user's goes
+			// whole, so an old Codex loads its config again)
 			if err := edit.DelTOMLKey(path, codexAsyncTable, "enabled"); err != nil {
 				return err
 			}
@@ -127,6 +274,21 @@ func codexAsyncSync(path, key string, routed, on bool, percent int) error {
 		}
 	} else {
 		st.Enabled, st.Percent = false, 0
+	}
+
+	// the bare key, where a Codex here can't take the table: every Codex
+	// reads it, and only one new enough acts on it
+	if feature, _, err = codexAsyncNow(path); err != nil {
+		return err
+	}
+	switch {
+	case want && !useTable && feature == nil:
+		if err := edit.SetTOMLKey(path, "features", "async_compaction", true); err != nil {
+			return err
+		}
+		st.Bool = true
+	case st.Bool && feature != true:
+		st.Bool = false // changed since by the user
 	}
 
 	// capabilities on magpie's provider table, when there is one: one the

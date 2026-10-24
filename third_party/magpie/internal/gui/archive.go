@@ -27,6 +27,10 @@ var archiveBucket = func() (archiveStore, bool) {
 	return b, ok
 }
 
+// localArchive is the archive on this computer, kept while sync has no S3
+// bucket (gateway/archive_local.go).
+var localArchive = func() archiveStore { return gateway.LocalArchive() }
+
 // archivePreviewBody is the most of a body the page is sent to show; a
 // longer one is left out, for the file to be downloaded (#447). Its size
 // is told here, so a large body never reaches the page.
@@ -66,16 +70,24 @@ func preview(p gateway.ArchivePart) *previewPart {
 }
 
 // openArchive is the call named by r's ?date= and ?id=, as it is read from
-// the bucket, its size, and "<date>-<id>"; the error is the page's to show.
+// this computer's archive, or else the bucket, its size, and "<date>-<id>";
+// the error is the page's to show. A call kept here while sync had no
+// bucket is read here after one is set up, and the other way round.
 func openArchive(r *http.Request) (io.ReadCloser, int64, string, error) {
 	date, id := r.URL.Query().Get("date"), r.URL.Query().Get("id")
 	name, ok := gateway.ArchiveName(date, id)
 	if !ok {
 		return nil, 0, "", fmt.Errorf("%s/%s is not a request archive's date and id", date, id)
 	}
+	if body, size, err := localArchive().Open(r.Context(), name); !errors.Is(err, gateway.ErrNotArchived) {
+		if err != nil {
+			return nil, 0, "", err
+		}
+		return body, size, date + "-" + id, nil
+	}
 	b, ok := archiveBucket()
 	if !ok {
-		return nil, 0, "", errors.New("The request archive goes to the S3 bucket sync keeps its backup in, and sync isn't set up with one")
+		return nil, 0, "", errors.New("Not in the archive on this computer: it is saved just after the call, the oldest are removed past the archive's size, or the save failed (magpie's log says why)")
 	}
 	body, size, err := b.Open(r.Context(), name)
 	if errors.Is(err, davsync.ErrNoObject) {
@@ -87,9 +99,12 @@ func openArchive(r *http.Request) (io.ReadCloser, int64, string, error) {
 	return body, size, date + "-" + id, nil
 }
 
-// archiveRoutes are the request archive: its switch on the Gateway page, a
-// call read back from the bucket by its date and id, for the Gateway and
-// Usage pages, and its file, downloaded whole (gateway/archive.go).
+// archiveRoutes are the request archive: its switch on the Usage page, a
+// call read back from this computer or the bucket by its date and id, for
+// the Usage and Routing pages, and its file, downloaded whole
+// (gateway/archive.go). With sync to an S3 bucket the switch is
+// RequestArchive, which sync carries to every computer; with none it is
+// RequestArchiveLocal, this computer's own, and calls are kept on its disk.
 func archiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/settings/archive", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct{ On bool }
@@ -97,12 +112,12 @@ func archiveRoutes(mux *http.ServeMux) {
 			fail(rw, err)
 			return
 		}
-		if _, ok := davsync.S3Bucket(); in.On && !ok {
-			fail(rw, errors.New("The request archive goes to the S3 bucket sync keeps its backup in: set up Sync and backup in Settings with an s3:// address first"))
-			return
-		}
 		s := settings.Load()
-		s.RequestArchive = in.On
+		if _, ok := davsync.S3Bucket(); ok {
+			s.RequestArchive = in.On
+		} else {
+			s.RequestArchiveLocal = in.On
+		}
 		if err := settings.Save(s); err != nil {
 			fail(rw, err)
 			return
@@ -200,19 +215,25 @@ func saveDownload(dir, stem, ext string, r io.Reader) (string, error) {
 	return name, nil
 }
 
-// archiveJSON is the request archive as the Gateway page shows it: on or
-// off, the bucket it goes to (none when sync isn't to S3), and why the last
-// upload failed, if it did.
+// archiveJSON is the request archive as the Usage page shows it: on or
+// off, the bucket it goes to, or, when sync isn't to S3, the folder on this
+// computer and the size it is kept under, and why the last upload or save
+// failed, if it did.
 type archiveJSON struct {
 	On     bool   `json:"on"`
 	Bucket string `json:"bucket,omitempty"`
+	Folder string `json:"folder,omitempty"`
+	Cap    int64  `json:"cap,omitempty"` // bytes
 	Error  string `json:"error,omitempty"`
 }
 
 func archiveState() archiveJSON {
-	a := archiveJSON{On: settings.Load().RequestArchive}
+	s := settings.Load()
+	var a archiveJSON
 	if b, ok := davsync.S3Bucket(); ok {
-		a.Bucket = b.Where()
+		a.On, a.Bucket = s.RequestArchive, b.Where()
+	} else {
+		a.On, a.Folder, a.Cap = s.RequestArchiveLocal, tilde(gateway.LocalArchive().Dir), gateway.LocalArchiveCap()
 	}
 	if a.On {
 		a.Error, _ = gateway.ArchiveError()

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"slices"
 	"strings"
@@ -52,11 +53,20 @@ import (
 // the calls not run (喜欢一个人 on Discord, a relay in front of
 // deepseek-v4.1-flash), as the translations' collector already has it.
 //
+// And Gemini's OpenAI-compatible API sends its tool calls with no "index"
+// (Linka's frames in gemini_compat_cut_test.go), where the contract has
+// one on every fragment. The AI SDK's OpenAI provider, which Cursor's
+// Private Inference reads Chat with, turns such a chunk away ("expected
+// number, received undefined" at tool_calls[0].index), and the call is
+// never made (#3386). A fragment with none is given its call's: a new id,
+// or a later place in its delta, is the next call.
+//
 // Lines pass whole, as they came, unless one has any of them.
 type chatTidy struct {
-	buf    []byte
-	ids    streamCallIDs
-	called map[int]bool // the choices that made a call
+	buf     []byte
+	ids     streamCallIDs
+	indexes streamCallIndexes
+	called  map[int]bool // the choices that made a call
 }
 
 var (
@@ -167,6 +177,13 @@ func (t *chatTidy) line(line []byte) []byte {
 			delete(delta, "tool_calls")
 			inDelta = true
 		} else if ok {
+			if t.indexes == nil {
+				t.indexes = streamCallIndexes{}
+			}
+			if given, chg := t.indexes.give(choice, calls); chg {
+				calls, delta["tool_calls"] = given, given
+				inDelta = true
+			}
 			if t.ids == nil {
 				t.ids = streamCallIDs{}
 			}
@@ -223,6 +240,64 @@ func withoutEmptyNames(raw json.RawMessage) (json.RawMessage, bool) {
 		}
 		delete(fn, "name")
 		call["function"], _ = json.Marshal(fn)
+		changed = true
+	}
+	if !changed {
+		return raw, false
+	}
+	out, err := json.Marshal(calls)
+	if err != nil {
+		return raw, false
+	}
+	return out, true
+}
+
+// streamCallIndexes is what chatTidy keeps to give a streamed tool call
+// the upstream sent no index for one: each choice's open call.
+type streamCallIndexes map[int]*openCall
+
+// openCall is a choice's open tool call: its id, the index it goes by,
+// and the next index to give.
+type openCall struct {
+	open        bool
+	id          string
+	index, next int
+}
+
+// give gives each fragment of a delta's tool_calls with no index (none,
+// or null) the index of the call it belongs to, and reports whether it
+// gave any. A fragment with an id other than the open call's, or after
+// the first in its delta, starts the next call, as chatDecoder reads a
+// call with a new id; any other goes on with the open one. So two calls
+// in chunks of their own are 0 and 1: given both 0, by their place, OpenAI's
+// node SDK merged them into one call. A fragment with an index keeps it,
+// and the next one given comes after it.
+func (s streamCallIndexes) give(choice int, raw json.RawMessage) (json.RawMessage, bool) {
+	var calls []map[string]json.RawMessage
+	if decodeJSON(raw, &calls) != nil {
+		return raw, false
+	}
+	o := s[choice]
+	if o == nil {
+		o = &openCall{}
+		s[choice] = o
+	}
+	changed := false
+	for k, c := range calls {
+		id := callID(c["id"])
+		if v, ok := c["index"]; ok && string(v) != "null" {
+			var n int
+			if decodeJSON(v, &n) == nil {
+				o.open, o.id, o.index = true, cmp.Or(id, o.id), n
+				o.next = max(o.next, n+1)
+			}
+			continue
+		}
+		if !o.open || k > 0 || id != "" && id != o.id {
+			o.open, o.id, o.index = true, id, o.next
+			o.next++
+		}
+		c["index"], _ = marshalPlain(o.index)
 		changed = true
 	}
 	if !changed {
