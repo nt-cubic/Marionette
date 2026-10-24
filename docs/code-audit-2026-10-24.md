@@ -14,6 +14,9 @@
 > ✅ P2 长尾二批（`303d727` Rust：memory tmp 兜底恢复、context.json 损坏留档、Destroyed 走
 > shutdown_and_exit、启动失败改原生对话框、http_client 粘滞、acp Disconnected 误报/迟到应答留痕、
 > telegram not-ok 退避、三处原子写 sync_all、terminal clear_session 杀 PTY；idle_watchdog wait 核对已覆盖）
+> ✅ P2 长尾三批（`8d688e4` Rust：Bearer/registry 响应 16MiB 上限、engine 下载 512MiB 止损、
+> last_mut().unwrap() 清零、find_meta mtime 缓存、终端解码去 clone + 整序列 drain、
+> permission 回传 optionLabel、debug_log 三代轮转）
 > ⬜ 巨型文件本体拆分（acp_transport/capabilities、App.tsx 事件管线等）与 P2 剩余长尾未动。
 > 两处审计项经核对已过时：`turnDelivery memoize`——现实现已在 SessionView 的完整依赖 useMemo 内，
 > 无需再改；`Composer localStorage 草稿防抖`——草稿缓存现已是内存 Map（非 localStorage），无需防抖。
@@ -193,7 +196,8 @@ elicitation/plan 起一个睡全时长的线程，应单定时器 + 到期队列
 `StorageService::new().expect` 在 panic=abort + windows_subsystem 下是无对话框静默退出（已改
 dev.log + 原生对话框 exit，`303d727`）；✅`main.rs:388-400` `Destroyed` 安全网不跑 `stop_all` →
 agent 孤儿（已改走 shutdown_and_exit，`303d727`）；
-`debug_log.rs:74-78` 轮转只留一代且每条 append 都重新 metadata；✅`session_manager.rs:19,37`
+✅`debug_log.rs:74-78` 轮转只留一代且每条 append 都重新 metadata（写线程早前已修；轮转已改
+三代保留，`8d688e4`）；✅`session_manager.rs:19,37`
 map 值从不读取（已整模块删除——mark_started/mark_exited 零调用，is_live 恒 false，`e522af3`）；
 `app_paths.rs:31-39` 目录迁移发生在单实例锁之前，双开竞态
 可数据分叉；✅`acp.rs:1219-1229` `stop_all` 虚报成功数（已改按实际 stop 成功计数，`e522af3`）；
@@ -202,13 +206,14 @@ map 值从不读取（已整模块删除——mark_started/mark_exited 零调用
 **Rust 模型 / 引擎 / 凭据**：`engine.rs:685-688` `replace_engine_exe` 两步间镜像缺位，失败可恢复但
 状态倒退（应自动触发工厂恢复）；✅`engine.rs:1746-1761` idle_watchdog `kill()` 后不 `wait()` 回收
 （`ChildHandle::kill` 已内含 kill+wait，核对覆盖）；重启端口变更使外部 baseUrl 失效仍待；
-`model_bridge.rs:1351`、`http_client.rs:36-38` HTTP 响应无大小
-上限（该请求带 Bearer key）；✅三处原子写 rename 前无 `sync_all`（掉电可落空文件；
+✅`model_bridge.rs:1351`、`http_client.rs:36-38` HTTP 响应无大小
+上限（该请求带 Bearer key；已加 16MiB 读上限，`8d688e4`）；✅三处原子写 rename 前无 `sync_all`（掉电可落空文件；
 memory/todos/credentials 已补，`303d727`）；
-`model_bridge.rs:1968,1980`、`model_sources.rs:354` `last_mut().unwrap()` 依赖隐式不变量；
+✅`model_bridge.rs:1968,1980`、`model_sources.rs:354` `last_mut().unwrap()` 依赖隐式不变量（已改
+惰性序言块 / get_mut + 留痕跳过，`8d688e4`）；
 ✅`http_client.rs:11-16` `OnceLock<Result>` 初始化失败永久粘滞（已改只缓存成功值，`303d727`）；
-`engine.rs:504-532` 流式下载有 sha256
-但无体积上限。
+✅`engine.rs:504-532` 流式下载有 sha256
+但无体积上限（已加 512MiB 止损，`8d688e4`）。
 
 **Rust 命令面 / 终端 / Telegram / 用量**：`telegram_remote.rs:1705,1727,1401+1843-1850` outbound
 无界 mpsc，长故障期队列无上界（应 sync_channel + 丢旧合并 Dashboard）；✅`telegram_remote.rs:2201-2209`
@@ -216,9 +221,11 @@ getUpdates ok:false 分支固定 15s 重试无退避增长（已改 15s→60s �
 走 Err 分支本就有 1s→60s 指数退避，401/403 已由 auth_parked 停用等待换 token）；
 ✅`terminal_runtime.rs:375-383`
 `clear_session` 不清仍在跑的 PTY 进程与 map 条目（已按 UI 会话 id 反向清理 kill，`303d727`）；
-`terminal_runtime.rs:332-337` 二进制垃圾输出逐字节
-drain + 整体 clone 重解析；`provider_usage.rs:244-267` `find_meta` 每次重读盘解析 catalog；
-`telegram_remote.rs:2918-2926` Permission 回调未回传校验 option_label。（原列「`commands.rs:2034` 起
+✅`terminal_runtime.rs:332-337` 二进制垃圾输出逐字节
+drain + 整体 clone 重解析（已改借用解码 + 整坏序列 drain，`8d688e4`）；
+✅`provider_usage.rs:244-267` `find_meta` 每次重读盘解析 catalog（已改 user 文件 mtime 缓存，`8d688e4`）；
+✅`telegram_remote.rs:2918-2926` Permission 回调未回传校验 option_label（respond_permission 已从
+pending options 自查 label 回传，`8d688e4`）。（原列「`commands.rs:2034` 起
 `install_agent` 是同步 command，分钟级 npm 安装占池槽，应改 async + spawn_blocking」经二次复核为
 **误报撤回**：75b952c 当时它就已是 `pub async fn` + `spawn_blocking`（时 commands.rs:403/409），
 所引 2034 行实为 `start_acp_session`。）
