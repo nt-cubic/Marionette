@@ -1907,10 +1907,19 @@ export function Composer({
     return [];
   };
 
-  // Browser mock: HTML5 DnD. Desktop (Tauri) uses onDragDropEvent below for absolute paths.
+  // Browser mock: HTML5 DnD. Desktop (Tauri) uses onDragDropEvent below for
+  // absolute paths — EXCEPT in-page memo drags, which never cross the OS/OLE
+  // boundary and only exist as HTML5 events (must match lib/memos.ts).
+  const isMemoDrag = (dt: DataTransfer) =>
+    Array.from(dt.types).includes("application/x-marionette-memo");
+
   const onComposerDragEnter = (event: ReactDragEvent) => {
-    if (isTauriRuntime()) return;
-    if (![...event.dataTransfer.types].some((t) => t === "Files" || t === "text/uri-list" || t === "text/plain")) {
+    if (isTauriRuntime() && !isMemoDrag(event.dataTransfer)) return;
+    if (
+      ![...event.dataTransfer.types].some(
+        (t) => t === "Files" || t === "text/uri-list" || t === "text/plain" || t === "application/x-marionette-memo",
+      )
+    ) {
       return;
     }
     event.preventDefault();
@@ -1919,8 +1928,12 @@ export function Composer({
   };
 
   const onComposerDragOver = (event: ReactDragEvent) => {
-    if (isTauriRuntime()) return;
-    if (![...event.dataTransfer.types].some((t) => t === "Files" || t === "text/uri-list" || t === "text/plain")) {
+    if (isTauriRuntime() && !isMemoDrag(event.dataTransfer)) return;
+    if (
+      ![...event.dataTransfer.types].some(
+        (t) => t === "Files" || t === "text/uri-list" || t === "text/plain" || t === "application/x-marionette-memo",
+      )
+    ) {
       return;
     }
     event.preventDefault();
@@ -1928,14 +1941,14 @@ export function Composer({
   };
 
   const onComposerDragLeave = (event: ReactDragEvent) => {
-    if (isTauriRuntime()) return;
+    if (isTauriRuntime() && !isMemoDrag(event.dataTransfer)) return;
     event.preventDefault();
     dropDepth.current = Math.max(0, dropDepth.current - 1);
     if (dropDepth.current === 0) setDropActive(false);
   };
 
   const onComposerDrop = (event: ReactDragEvent) => {
-    if (isTauriRuntime()) return;
+    if (isTauriRuntime() && !isMemoDrag(event.dataTransfer)) return;
     event.preventDefault();
     dropDepth.current = 0;
     setDropActive(false);
