@@ -35,8 +35,23 @@ pub fn get_json(url: &str) -> Result<serde_json::Value, String> {
         .timeout(std::time::Duration::from_secs(12))
         .call()
         .map_err(|e| format!("GET {url}: {e}"))?;
-    let text = resp
-        .into_string()
-        .map_err(|e| format!("Read {url}: {e}"))?;
+    let text = {
+        // 读取加硬上限：注册表 JSON 正常远小于 16MiB，别让远端塞爆内存。
+        const MAX_REGISTRY_BYTES: u64 = 16 * 1024 * 1024;
+        use std::io::Read;
+        let reader = resp.into_reader();
+        let mut text = String::new();
+        let mut capped = reader.take(MAX_REGISTRY_BYTES + 1);
+        capped
+            .read_to_string(&mut text)
+            .map_err(|e| format!("Read {url}: {e}"))?;
+        if text.len() as u64 > MAX_REGISTRY_BYTES {
+            return Err(format!(
+                "Response from {url} exceeds {} MiB limit",
+                MAX_REGISTRY_BYTES / (1024 * 1024)
+            ));
+        }
+        text
+    };
     serde_json::from_str(&text).map_err(|e| format!("JSON from {url}: {e}"))
 }

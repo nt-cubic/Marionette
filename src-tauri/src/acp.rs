@@ -1644,16 +1644,27 @@ impl AcpService {
             map.remove(request_id)
         };
         if let Some(pending) = classic {
-            write_response(
-                &pending.process,
-                pending.rpc_id,
-                json!({
-                    "outcome": {
-                        "outcome": "selected",
-                        "optionId": option_id
-                    }
-                }),
-            );
+            // 回传 optionLabel：agent 端可据此校验用户选的确实是菜单里的选项。
+            let option_label = pending
+                .options
+                .as_array()
+                .and_then(|options| {
+                    options.iter().find(|o| {
+                        o.get("optionId")
+                            .or_else(|| o.get("option_id"))
+                            .and_then(Value::as_str)
+                            == Some(option_id)
+                    })
+                })
+                .and_then(|o| o.get("name").and_then(Value::as_str));
+            let mut outcome = serde_json::json!({
+                "outcome": "selected",
+                "optionId": option_id
+            });
+            if let Some(label) = option_label {
+                outcome["optionLabel"] = serde_json::json!(label);
+            }
+            write_response(&pending.process, pending.rpc_id, json!({ "outcome": outcome }));
             return Ok(());
         }
 

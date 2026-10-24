@@ -57,6 +57,8 @@ const ASSET_NAME: &str = "magpie-cli-windows-amd64.exe";
 const USER_AGENT: &str = "Marionette/0.1 (engine)";
 /// 48MB 下载的整体预算（慢网络 + 断点重来一次）。
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
+/// 下载体积上限：真实 magpie ~48MB，10 倍余量防「无限流」把磁盘写穿。
+const MAX_MAGPIE_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
 /// serve 起来后等 /v1/models 变健康的窗口（discovery 首启可能慢）。
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(30);
 const HEALTH_POLL: Duration = Duration::from_millis(300);
@@ -521,6 +523,16 @@ fn download_once(plan: &ReleasePlan, dir: &Path) -> Result<(), String> {
         file.write_all(&buffer[..n])
             .map_err(|e| format!("写入下载流失败: {e}"))?;
         downloaded += n as u64;
+        // 体积上限：sha256 只保证「内容对」，不保证不是 20GB 的假镜像。
+        // 超限立刻止损，别把磁盘写穿。
+        if downloaded > MAX_MAGPIE_DOWNLOAD_BYTES {
+            drop(file);
+            let _ = std::fs::remove_file(&temp);
+            return Err(format!(
+                "下载超过 {} MiB 上限 — 不像 magpie.exe（~48MB）",
+                MAX_MAGPIE_DOWNLOAD_BYTES / (1024 * 1024)
+            ));
+        }
         // 进度节流：状态机每 250ms 刷一次，事件同频（UI 不需要更密）。
         if last_event.elapsed() >= Duration::from_millis(250) {
             set_status(EngineStatus::Downloading { downloaded, total });

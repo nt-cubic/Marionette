@@ -322,14 +322,14 @@ impl Discovery {
             issue = Some("未找到可共享的 API key 或环境变量引用".into());
         }
         let origin = format!("{agent} · {}#{route}", path.display());
-        let source = if let Some(i) = self.sources.iter().position(|s| {
+        let index = if let Some(i) = self.sources.iter().position(|s| {
             s.view.id == id
                 || (key_result.as_ref().ok() == Some(&s.key)
                     && s.view.endpoint == endpoint
                     && s.view.protocol == protocol
                     && s.headers == headers)
         }) {
-            &mut self.sources[i]
+            i
         } else {
             let label = authority
                 .trim_start_matches("api.")
@@ -351,7 +351,19 @@ impl Discovery {
                 headers,
                 env_names: env_names.clone(),
             });
-            self.sources.last_mut().unwrap()
+            self.sources.len() - 1
+        };
+        let Some(source) = self.sources.get_mut(index) else {
+            // 逻辑上不可达（push 之后必有元素）；留痕跳过本条目，
+            // 别让 last_mut().unwrap() 的隐式不变量在 panic=abort 下杀进程。
+            crate::debug_log::append(
+                "sources",
+                "error",
+                "",
+                "source registry lost entry right after push",
+                None,
+            );
+            return;
         };
         for name in missing_env {
             if !source.view.missing_env.contains(&name) { source.view.missing_env.push(name); }
