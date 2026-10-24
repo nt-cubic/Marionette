@@ -22,7 +22,9 @@ export function pinStamp(session: Session): number | null {
   const asNum = Number(raw);
   if (Number.isFinite(asNum) && asNum > 1e11) return asNum;
   const parsed = Date.parse(raw);
-  return Number.isFinite(parsed) ? parsed : 0;
+  // A corrupt pinnedAt must not masquerade as "pinned at epoch 0" — null
+  // keeps the dialog in the unpinned group, sorted by activity instead.
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 /**

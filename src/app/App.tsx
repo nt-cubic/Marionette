@@ -3180,10 +3180,12 @@ export function App() {
     if (!isTauriRuntime()) return;
     const timer = setInterval(() => {
       const now = Date.now();
-      const pendingSessionIds = [permissionPrompt, askPrompt, planApproval]
-        .map((prompt) => prompt?.sessionId)
-        .filter((id): id is string => Boolean(id));
-      const queuedSessionIds = [...pendingSendsRef.current.keys()];
+      const pendingSessionIds = new Set(
+        [permissionPrompt, askPrompt, planApproval]
+          .map((prompt) => prompt?.sessionId)
+          .filter((id): id is string => Boolean(id)),
+      );
+      const queuedSessionIds = new Set(pendingSendsRef.current.keys());
       for (const session of sessionsRef.current) {
         if (
           !shouldAutoSuspend(session, now, {

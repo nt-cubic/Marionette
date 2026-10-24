@@ -23,9 +23,9 @@ export type SuspendRules = {
   /** The dialog this window is showing — never parked under the user. */
   currentSessionId?: string | null;
   /** Sessions with a question / plan / permission card still waiting. */
-  pendingSessionIds?: readonly string[];
+  pendingSessionIds?: ReadonlySet<string>;
   /** Sessions with a queued follow-up that has not gone out yet. */
-  queuedSessionIds?: readonly string[];
+  queuedSessionIds?: ReadonlySet<string>;
 };
 
 /** `lastActiveAt` is an epoch-ms string on new rows and ISO on legacy ones. */
@@ -90,8 +90,8 @@ export function suspendControl(
 export function isSuspendable(session: SuspendableSession, rules: SuspendRules = {}): boolean {
   if (session.status !== "waiting") return false;
   if (session.id === rules.currentSessionId) return false;
-  if (rules.pendingSessionIds?.includes(session.id)) return false;
-  if (rules.queuedSessionIds?.includes(session.id)) return false;
+  if (rules.pendingSessionIds?.has(session.id)) return false;
+  if (rules.queuedSessionIds?.has(session.id)) return false;
   return true;
 }
 
