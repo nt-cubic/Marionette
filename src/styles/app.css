@@ -1,3 +1,41 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   Mode-tone palette — single source of truth
+   The six session-mode accent tones, defined once. Every component hook
+   (event-card rail, meta tags, composer rail/chip, mode menu dot) maps
+   data-mode-tone to one of these tokens instead of re-declaring colors.
+   Theme variants are preserved via var() indirection (--orange/--accent/
+   --text-faint resolve per theme), so computed values are unchanged.
+   ────────────────────────────────────────────────────────────────────────── */
+:root {
+  --mode-tone-plan: #a78bfa;
+  --mode-tone-ask: #60a5fa;
+  --mode-tone-debug: var(--orange);
+  --mode-tone-build: var(--accent);
+  --mode-tone-minimal: #2dd4bf;
+  --mode-tone-default: var(--text-faint);
+}
+
+/* ── z-index layering scale (documentation only — no values changed) ────────
+   Three tiers; stay inside one when adding new rules:
+   • 0-99     Component-local stacking (resizers, cards, chips, in-flow
+              decorations; e.g. .panel-resizer = 8). Scoped to the nearest
+              stacking context.
+   • 1200     Fixed floating popovers above all app content
+              (e.g. .proxy-popover = 1200).
+   • 9980+    App-chrome top layer, strictly ordered, all position:fixed:
+              9980 shelf hover peek (.shelf-peek)
+              9985 toasts (with --toast-depth ordering)
+              9990 pane split-drop overlay (.split-drop-overlay)
+              9995 split-beside context menu (.split-beside-menu)
+              10000 tab tear-off ghost (.tab-tear-ghost) — topmost
+   ────────────────────────────────────────────────────────────────────────/* ── prefers-reduced-motion：用户要求减少动效时关停全部动画/过渡 ──────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
 #root {
   height: 100vh;
 }
@@ -158,8 +196,8 @@ body.is-panel-resizing .workspace-grid {
 }
 
 body.is-panel-resizing {
-  cursor: col-resize !important;
-  user-select: none !important;
+  cursor: col-resize;
+  user-select: none;
   /* Avoid expensive hover/paint work while dragging rails. */
   pointer-events: none;
 }
@@ -169,8 +207,8 @@ body.is-panel-resizing .panel-resizer {
 }
 
 body.is-panel-resizing * {
-  cursor: col-resize !important;
-  user-select: none !important;
+  cursor: col-resize;
+  user-select: none;
 }
 
 /* During resize, skip layout thrash from nested scroll/reflow paints. */
@@ -337,8 +375,8 @@ body.is-panel-resizing .context-panel {
 }
 
 body.is-pane-splitting {
-  cursor: col-resize !important;
-  user-select: none !important;
+  cursor: col-resize;
+  user-select: none;
 }
 
 body.is-pane-splitting-y {
@@ -5043,12 +5081,12 @@ body.is-tab-detaching .floating-trigger {
   z-index: 1;
 }
 
-.event-card--user_message[data-mode-tone="plan"]::before    { background: #a78bfa; }
-.event-card--user_message[data-mode-tone="ask"]::before     { background: #60a5fa; }
-.event-card--user_message[data-mode-tone="debug"]::before   { background: var(--orange); }
-.event-card--user_message[data-mode-tone="build"]::before   { background: var(--accent); }
-.event-card--user_message[data-mode-tone="minimal"]::before { background: #2dd4bf; }
-.event-card--user_message[data-mode-tone="default"]::before { background: var(--text-faint); }
+.event-card--user_message[data-mode-tone="plan"]::before    { background: var(--mode-tone-plan); }
+.event-card--user_message[data-mode-tone="ask"]::before     { background: var(--mode-tone-ask); }
+.event-card--user_message[data-mode-tone="debug"]::before   { background: var(--mode-tone-debug); }
+.event-card--user_message[data-mode-tone="build"]::before   { background: var(--mode-tone-build); }
+.event-card--user_message[data-mode-tone="minimal"]::before { background: var(--mode-tone-minimal); }
+.event-card--user_message[data-mode-tone="default"]::before { background: var(--mode-tone-default); }
 
 /* Timestamp — top-right of the type row */
 .event-card__timestamp {
@@ -5281,17 +5319,17 @@ body.is-tab-detaching .floating-trigger {
 }
 
 .meta-tag--mode[data-mode-tone="plan"],
-.meta-tag__symbol[data-mode-tone="plan"]    { --mode-chip: #a78bfa; }
+.meta-tag__symbol[data-mode-tone="plan"]    { --mode-chip: var(--mode-tone-plan); }
 .meta-tag--mode[data-mode-tone="ask"],
-.meta-tag__symbol[data-mode-tone="ask"]     { --mode-chip: #60a5fa; }
+.meta-tag__symbol[data-mode-tone="ask"]     { --mode-chip: var(--mode-tone-ask); }
 .meta-tag--mode[data-mode-tone="debug"],
-.meta-tag__symbol[data-mode-tone="debug"]   { --mode-chip: var(--orange); }
+.meta-tag__symbol[data-mode-tone="debug"]   { --mode-chip: var(--mode-tone-debug); }
 .meta-tag--mode[data-mode-tone="build"],
-.meta-tag__symbol[data-mode-tone="build"]   { --mode-chip: var(--accent); }
+.meta-tag__symbol[data-mode-tone="build"]   { --mode-chip: var(--mode-tone-build); }
 .meta-tag--mode[data-mode-tone="minimal"],
-.meta-tag__symbol[data-mode-tone="minimal"] { --mode-chip: #2dd4bf; }
+.meta-tag__symbol[data-mode-tone="minimal"] { --mode-chip: var(--mode-tone-minimal); }
 .meta-tag--mode[data-mode-tone="default"],
-.meta-tag__symbol[data-mode-tone="default"] { --mode-chip: var(--text-faint); }
+.meta-tag__symbol[data-mode-tone="default"] { --mode-chip: var(--mode-tone-default); }
 
 /* Duration — monospace numbers */
 .meta-tag--duration {
@@ -8172,27 +8210,27 @@ body.is-composer-resizing .composer {
 /* ── Mode rail (left accent bar, OpenCode-like) ─────────────────────── */
 /* Tone drives both the left rail and the toolbar mode chip (single source). */
 .composer[data-mode-tone="plan"] {
-  --mode-chip: #a78bfa;
+  --mode-chip: var(--mode-tone-plan);
 }
 
 .composer[data-mode-tone="ask"] {
-  --mode-chip: #60a5fa;
+  --mode-chip: var(--mode-tone-ask);
 }
 
 .composer[data-mode-tone="debug"] {
-  --mode-chip: var(--orange);
+  --mode-chip: var(--mode-tone-debug);
 }
 
 .composer[data-mode-tone="build"] {
-  --mode-chip: var(--accent);
+  --mode-chip: var(--mode-tone-build);
 }
 
 .composer[data-mode-tone="minimal"] {
-  --mode-chip: #2dd4bf;
+  --mode-chip: var(--mode-tone-minimal);
 }
 
 .composer[data-mode-tone="default"] {
-  --mode-chip: var(--text-faint);
+  --mode-chip: var(--mode-tone-default);
 }
 
 .composer__mode-rail {
@@ -8318,27 +8356,27 @@ body.is-composer-resizing .composer {
 }
 
 .composer-menu button[data-mode-tone="plan"] .composer-menu__mode-dot {
-  background: #a78bfa;
+  background: var(--mode-tone-plan);
 }
 
 .composer-menu button[data-mode-tone="ask"] .composer-menu__mode-dot {
-  background: #60a5fa;
+  background: var(--mode-tone-ask);
 }
 
 .composer-menu button[data-mode-tone="debug"] .composer-menu__mode-dot {
-  background: var(--orange);
+  background: var(--mode-tone-debug);
 }
 
 .composer-menu button[data-mode-tone="build"] .composer-menu__mode-dot {
-  background: var(--accent);
+  background: var(--mode-tone-build);
 }
 
 .composer-menu button[data-mode-tone="minimal"] .composer-menu__mode-dot {
-  background: #2dd4bf;
+  background: var(--mode-tone-minimal);
 }
 
 .composer-menu button[data-mode-tone="default"] .composer-menu__mode-dot {
-  background: var(--text-faint);
+  background: var(--mode-tone-default);
 }
 
 .composer textarea {
