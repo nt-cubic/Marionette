@@ -1234,13 +1234,11 @@ export function ProjectShelf({
                     const statusMark = busy ? (
                       <span
                         className={`session-row__pulse is-${session.status}`}
-                        title={session.status}
                         aria-label={session.status}
                       />
                     ) : doneUnread ? (
                       <span
                         className="session-row__dot is-done"
-                        title="任务已完成"
                         aria-label="任务已完成"
                       />
                     ) : (
@@ -1302,13 +1300,7 @@ export function ProjectShelf({
                           <button
                             className="session-row__select"
                             type="button"
-                            title={
-                              doneUnread
-                                ? `${session.label} · 任务已完成`
-                                : busy
-                                  ? `${agentLabel(session.agentId)} · ${session.status} · double-click or pencil to rename`
-                                  : `${agentLabel(session.agentId)} · double-click or pencil to rename`
-                            }
+                            aria-label={`${agentLabel(session.agentId)} · ${session.label}`}
                             onClick={() => onSessionSelect(session)}
                             onDoubleClick={(e) => {
                               e.preventDefault();
@@ -1321,7 +1313,7 @@ export function ProjectShelf({
                               {pinned && <PinnedMark className="session-row__pin" />}
                               <strong>{session.label}</strong>
                             </span>
-                            <span className="session-row__time" title={new Date(session.lastActiveAt).toLocaleString()}>
+                            <span className="session-row__time">
                               {shelfRecency(session.lastActiveAt, Date.now())}
                             </span>
                           </button>
@@ -2060,8 +2052,15 @@ export function ProjectShelf({
               hour: "2-digit",
               minute: "2-digit",
             })}
-            {" · "}最近 {shelfRecency(hoverCard.session.lastActiveAt, Date.now())}
+            {" · "}最近{" "}
+            {new Date(hoverCard.session.lastActiveAt).toLocaleString(undefined, {
+              month: "numeric",
+              day: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+            })}
           </div>
+          <div className="shelf-peek__meta shelf-peek__hint">双击或铅笔图标重命名 · 右键分屏打开</div>
         </div>
       )}
     {besideMenu && onOpenBeside && (
