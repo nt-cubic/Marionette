@@ -1,6 +1,12 @@
 import { useEffect, useState } from "react";
-import { ChevronDown, Undo2 } from "lucide-react";
-import { CHAT_PROJECT_ID, getFileDiff, restoreTurnFiles } from "../lib/api";
+import { ChevronDown, ExternalLink, FolderOpen, Undo2 } from "lucide-react";
+import {
+  CHAT_PROJECT_ID,
+  getFileDiff,
+  openExternal,
+  restoreTurnFiles,
+  revealInFileManager,
+} from "../lib/api";
 import type { TurnDelivery, TurnDeliveryChangeType, TurnDeliveryFile } from "../lib/turnDelivery";
 import { formatDeliveryHeadline } from "../lib/turnDelivery";
 import { showToast } from "../lib/toast";
@@ -31,6 +37,13 @@ function splitPath(relPath: string): { dir: string; name: string } {
   return cut < 0 ? { dir: "", name: norm } : { dir: norm.slice(0, cut + 1), name: norm.slice(cut + 1) };
 }
 
+/** Folder of a workspace path — the reveal target for a deleted file. */
+function parentDir(path: string): string {
+  const norm = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  const cut = norm.lastIndexOf("/");
+  return cut <= 0 ? norm : norm.slice(0, cut);
+}
+
 /** Add/del split of changed lines as one thin two-tone bar (green, then red). */
 function DiffRatio({ add, del }: { add: number; del: number }) {
   const total = add + del;
@@ -46,16 +59,44 @@ function DiffRatio({ add, del }: { add: number; del: number }) {
 function DeliveryFileRow({
   file,
   projectId,
+  cwd,
 }: {
   file: TurnDeliveryFile;
   projectId?: string;
+  cwd?: string | null;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [diff, setDiff] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [riskyConfirm, setRiskyConfirm] = useState(false);
 
   const canDiff = Boolean(projectId) && projectId !== CHAT_PROJECT_ID && Boolean(file.path);
+  const deleted = file.changeType === "deleted";
+
+  const openFile = async (force = false) => {
+    if (deleted) return;
+    try {
+      const result = await openExternal(file.path, cwd, force);
+      if (result.reason === "risky") {
+        setRiskyConfirm(true);
+        return;
+      }
+      if (!result.opened) {
+        showToast({ text: result.message ?? "无法打开这个文件。", tone: "error" });
+      }
+    } catch (err) {
+      showToast({ text: err instanceof Error ? err.message : String(err), tone: "error" });
+    }
+  };
+
+  const reveal = async () => {
+    try {
+      await revealInFileManager(deleted ? parentDir(file.path) : file.path, cwd);
+    } catch (err) {
+      showToast({ text: err instanceof Error ? err.message : String(err), tone: "error" });
+    }
+  };
 
   useEffect(() => {
     if (!expanded) return;
@@ -99,13 +140,7 @@ function DeliveryFileRow({
 
   return (
     <>
-      <button
-        type="button"
-        className={`turn-delivery__row${canDiff ? " is-expandable" : ""}`}
-        title={title}
-        onClick={canDiff ? () => setExpanded((value) => !value) : undefined}
-        aria-expanded={canDiff ? expanded : undefined}
-      >
+      <div className={`turn-delivery__row${canDiff ? " is-expandable" : ""}`}>
         {file.changeType ? (
           <span className={`change-badge change-${file.changeType}`}>
             {badgeLetter(file.changeType)}
@@ -113,27 +148,70 @@ function DeliveryFileRow({
         ) : (
           <span className="turn-delivery__dot" aria-hidden />
         )}
-        <span className="turn-delivery__path">
-          {path.dir && <span className="turn-delivery__dir">{path.dir}</span>}
-          {path.name}
-        </span>
-        <span className="turn-delivery__stats">
-          {file.add != null && file.add > 0 && (
-            <span className="turn-delivery__stat turn-delivery__stat--add">+{file.add}</span>
+        <button
+          type="button"
+          className="turn-delivery__main"
+          title={canDiff ? `${title}\n点击查看 diff` : title}
+          onClick={canDiff ? () => setExpanded((value) => !value) : () => void openFile()}
+          aria-expanded={canDiff ? expanded : undefined}
+        >
+          <span className="turn-delivery__path">
+            {path.dir && <span className="turn-delivery__dir">{path.dir}</span>}
+            {path.name}
+          </span>
+          <span className="turn-delivery__stats">
+            {file.add != null && file.add > 0 && (
+              <span className="turn-delivery__stat turn-delivery__stat--add">+{file.add}</span>
+            )}
+            {file.del != null && file.del > 0 && (
+              <span className="turn-delivery__stat turn-delivery__stat--del">−{file.del}</span>
+            )}
+            <DiffRatio add={file.add ?? 0} del={file.del ?? 0} />
+          </span>
+          {canDiff && (
+            <ChevronDown
+              size={12}
+              className={`turn-delivery__chevron${expanded ? " is-open" : ""}`}
+              aria-hidden
+            />
           )}
-          {file.del != null && file.del > 0 && (
-            <span className="turn-delivery__stat turn-delivery__stat--del">−{file.del}</span>
-          )}
-          <DiffRatio add={file.add ?? 0} del={file.del ?? 0} />
-        </span>
-        {canDiff && (
-          <ChevronDown
-            size={12}
-            className={`turn-delivery__chevron${expanded ? " is-open" : ""}`}
-            aria-hidden
-          />
-        )}
-      </button>
+        </button>
+        <div className="turn-delivery__actions">
+          <button
+            type="button"
+            className="pill-action pill-action--icon pill-action--sm turn-delivery__action"
+            title={deleted ? "文件已删除，无法打开" : "用默认程序打开"}
+            aria-label={deleted ? "文件已删除，无法打开" : "用默认程序打开"}
+            disabled={deleted}
+            onClick={() => void openFile()}
+          >
+            <ExternalLink size={11} />
+          </button>
+          <button
+            type="button"
+            className="pill-action pill-action--icon pill-action--sm turn-delivery__action"
+            title={deleted ? "在资源管理器中打开所在文件夹" : "在资源管理器中显示"}
+            aria-label={deleted ? "在资源管理器中打开所在文件夹" : "在资源管理器中显示"}
+            onClick={() => void reveal()}
+          >
+            <FolderOpen size={11} />
+          </button>
+        </div>
+      </div>
+      {riskyConfirm && (
+        <ConfirmDialog
+          title="打开可执行文件"
+          itemName={file.path}
+          description="这类文件会被系统直接运行。确认要用默认程序打开吗？"
+          confirmLabel="打开"
+          cancelLabel="取消"
+          onCancel={() => setRiskyConfirm(false)}
+          onConfirm={() => {
+            setRiskyConfirm(false);
+            void openFile(true);
+          }}
+        />
+      )}
       {expanded && (
         <div className="turn-delivery__diff">
           {loading && diff === null && (
@@ -161,12 +239,15 @@ function DeliveryFileRow({
 export function TurnDeliveryCard({
   delivery,
   projectId,
+  cwd,
   undone = false,
   onUndone,
   onRestored,
 }: {
   delivery: TurnDelivery;
   projectId?: string;
+  /** Session working dir (project root) — resolves file paths for 打开/显示. */
+  cwd?: string | null;
   undone?: boolean;
   onUndone?: () => void;
   onRestored?: () => void;
@@ -280,7 +361,7 @@ export function TurnDeliveryCard({
             {fileCount > 0 ? (
               <div className="turn-delivery__files">
                 {(showAll ? delivery.files : delivery.files.slice(0, FILES_SHOWN)).map((file) => (
-                  <DeliveryFileRow key={file.path} file={file} projectId={projectId} />
+                  <DeliveryFileRow key={file.path} file={file} projectId={projectId} cwd={cwd} />
                 ))}
                 {!showAll && fileCount > FILES_SHOWN && (
                   <button type="button" className="turn-delivery__more" onClick={() => setShowAll(true)}>

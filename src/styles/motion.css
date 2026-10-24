@@ -68,7 +68,6 @@
  * Live labels: a calm light across the words while work is ongoing
  * ------------------------------------------------------------------ */
 
-.run-pill__label,
 .event-card.is-tool-running:not(.is-tool-stalled) .event-card__type,
 .event-card.is-thought-live .event-card__type,
 .activity-panel.is-live > .activity-panel__summary .activity-panel__title,
@@ -285,7 +284,6 @@
     scroll-behavior: auto !important;
   }
 
-  .run-pill__label,
   .event-card.is-tool-running:not(.is-tool-stalled) .event-card__type,
   .event-card.is-thought-live .event-card__type,
   .activity-panel.is-live > .activity-panel__summary .activity-panel__title,

@@ -1790,32 +1790,6 @@ function CleanPlaceholder({
     });
   }, [visibleEvents]);
   const midTurn = isRunning && !awaitingFirstChunk;
-  const showRunPill = isRunning && !awaitingFirstChunk;
-  /** What the run pill says: the open tool, else the phase the stream is in. */
-  const runActivityLabel = useMemo(() => {
-    if (!isRunning) return "";
-    if (openTool) {
-      const main = toolMainText(openTool);
-      const verb = toolKindDoing(classifyToolCall(openTool));
-      return main ? `${verb} ${main}` : verb;
-    }
-    const last = visibleEvents[visibleEvents.length - 1];
-    if (last?.type === "thought") return "Thinking";
-    if (last?.type === "assistant_message") return "Writing the reply";
-    return "Working";
-  }, [isRunning, awaitingFirstChunk, openTool, visibleEvents]);
-  /** The live turn began at its opening message. */
-  const turnStartMs = useMemo(() => {
-    if (!isRunning) return null;
-    for (let i = visibleEvents.length - 1; i >= 0; i -= 1) {
-      const e = visibleEvents[i];
-      if (e.type === "user_message" || e.type === "handoff_prepared") {
-        const ms = Date.parse(e.createdAt);
-        return Number.isFinite(ms) ? ms : null;
-      }
-    }
-    return null;
-  }, [isRunning, visibleEvents]);
   // Mount banner only while a turn is live; it returns null when healthy mid-turn.
   const showStallBanner = isRunning;
 
@@ -2083,14 +2057,6 @@ function CleanPlaceholder({
         {detailsVisible ? <Eye size={14} /> : <EyeOff size={14} />}
       </button>
       <div className="clean-surface__body">
-      {/* Before the first chunk the in-list waiting card already says so. */}
-      {showRunPill && (
-        <RunStatusPill
-          label={runActivityLabel}
-          startMs={turnStartMs}
-          onInterrupt={onInterrupt}
-        />
-      )}
       {!atBottom && visibleEvents.length > 0 && (
         <button
           type="button"
@@ -2105,7 +2071,7 @@ function CleanPlaceholder({
       )}
       <div
         ref={listRef}
-        className={`event-list${isLongTranscript ? " is-long" : ""}${showRunPill ? " has-run-pill" : ""} scrollbar-hidden`}
+        className={`event-list${isLongTranscript ? " is-long" : ""} scrollbar-hidden`}
         onScroll={onListScroll}
       >
         {/* Quote UI is isolated so its setState does not re-render cards (keeps selection).
@@ -3022,6 +2988,7 @@ function CleanPlaceholder({
                   key={unit.key}
                   delivery={unit.delivery}
                   projectId={projectId}
+                  cwd={session.cwd || null}
                   undone={undoneDeliveryKeys.has(`${session.id}:${unit.key}`)}
                   onUndone={() =>
                     setUndoneDeliveryKeys((current) => {
@@ -3401,73 +3368,6 @@ const ThoughtDurationLabel = memo(function ThoughtDurationLabel({
 });
 
 /** Mid-turn / first-chunk stall card with clear severity + interrupt CTA. */
-/** Present-tense verb for the run pill ("Reading", "Running"), past tense lives on the cards. */
-function toolKindDoing(kind: ReturnType<typeof classifyToolCall>): string {
-  switch (kind) {
-    case "read":
-      return "Reading";
-    case "edit":
-      return "Editing";
-    case "write":
-      return "Writing";
-    case "command":
-      return "Running";
-    case "search":
-      return "Searching";
-    case "web":
-      return "Fetching";
-    case "agent":
-      return "Running a task";
-    default:
-      return "Using a tool";
-  }
-}
-
-function formatElapsed(ms: number): string {
-  const total = Math.max(0, Math.floor(ms / 1000));
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${m}:${String(s).padStart(2, "0")}`;
-}
-
-/**
- * Live run pill (bottom-left, mirroring Latest): what the agent is doing now,
- * how long this turn has run, and a stop control. Its own one-second clock —
- * never a parent ticker, which would re-render the cards and wipe selection.
- */
-function RunStatusPill({
-  label,
-  startMs,
-  onInterrupt,
-}: {
-  label: string;
-  startMs: number | null;
-  onInterrupt?: () => void | Promise<void>;
-}) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(id);
-  }, []);
-  return (
-    <div className="run-pill" role="status" aria-live="off" title={label}>
-      <span className="run-pill__dot" aria-hidden />
-      <span className="run-pill__label">{label}</span>
-      {startMs != null && <span className="run-pill__time">{formatElapsed(now - startMs)}</span>}
-      {onInterrupt && (
-        <button
-          type="button"
-          className="run-pill__stop"
-          title="Stop (or press Esc twice)"
-          aria-label="Stop the turn"
-          onClick={() => void onInterrupt()}
-        >
-          <Square size={9} fill="currentColor" />
-        </button>
-      )}
-    </div>
-  );
-}
 
 function StallBanner({
   status,
