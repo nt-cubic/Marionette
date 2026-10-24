@@ -2160,6 +2160,8 @@ fn reply_markup(keyboard: &[Vec<TgButton>]) -> Value {
 fn poller_loop(slot: &'static Telegram) {
     let mut offset: i64 = 0;
     let mut backoff = BACKOFF_MIN;
+    // 连续 not-ok 应答计数：跟 Err 分支同款指数退避，别固定 15s 敲到天荒地老。
+    let mut not_ok_streak: u32 = 0;
     // 401/403 期间只记一条警告（last_error 持续可见），不随退避节奏刷屏。
     let mut auth_parked = false;
     let mut parked_token: Option<String> = None;
@@ -2207,14 +2209,21 @@ fn poller_loop(slot: &'static Telegram) {
                 }
                 if value.get("ok").and_then(Value::as_bool) != Some(true) {
                     // API 层错误对象（409 之外的 4xx 也长这样）。
+                    not_ok_streak = not_ok_streak.saturating_add(1);
                     let desc = value
                         .pointer("/description")
                         .and_then(Value::as_str)
                         .unwrap_or("unknown");
                     log("warn", "getUpdates returned not-ok", Some(desc));
-                    thread::sleep(BACKOFF_409_START);
+                    // 15s 起、翻倍、60s 封顶（streak 1→15s, 2→30s, ≥3→60s）。
+                    let wait = BACKOFF_409_START
+                        .checked_mul(1u32 << not_ok_streak.saturating_sub(1).min(3))
+                        .unwrap_or(BACKOFF_MAX)
+                        .min(BACKOFF_MAX);
+                    thread::sleep(wait);
                     continue;
                 }
+                not_ok_streak = 0;
                 let updates = value
                     .get("result")
                     .and_then(Value::as_array)

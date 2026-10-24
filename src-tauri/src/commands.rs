@@ -2842,6 +2842,16 @@ fn write_todos_atomic(path: &Path, body: &str) -> Result<(), String> {
         std::process::id()
     ));
     fs::write(&temp, body).map_err(|e| format!("Write todos temp failed: {e}"))?;
+    // rename 前落盘：掉电可能得到「rename 已完成、数据还在缓存」的空文件。
+    // Windows 的 FlushFileBuffers 要求句柄带写权限，所以不能只读 File::open。
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&temp)
+        .and_then(|file| file.sync_all())
+        .map_err(|error| {
+            let _ = fs::remove_file(&temp);
+            format!("Flush todos temp failed: {error}")
+        })?;
     if let Err(error) = fs::rename(&temp, path) {
         let _ = fs::remove_file(&temp);
         return Err(format!("Rename todos failed: {error}"));
