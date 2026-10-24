@@ -1,0 +1,562 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Marionette 贴边长条 · 设计稿</title>
+<style>
+/* Tokens copied from src/styles/tokens.css: 浅夜 (default) and 纯白. */
+:root{
+  --bg:#1e2329;--panel:#252b32;--panel-raised:#2c333b;--panel-soft:#343c45;--panel-muted:#222830;
+  --border:#3d4650;--border-strong:#515b67;--text-strong:#f0f3f6;--text:#cfd6de;--text-muted:#8b97a4;--text-faint:#6b7682;
+  --accent:#67d7bd;--accent-soft:rgba(103,215,189,.14);--orange:#f0a15f;--red:#ef6c73;--yellow:#e7c86a;--green:#73d391;--blue:#72a7ff;
+  --radius:3px;--radius-sm:2px;--composer-bg:#1c2126;--desk:#0f1317;--desk2:#18202a;
+  --mono:"Cascadia Mono",Consolas,monospace;
+  --ease-out:cubic-bezier(.22,1,.36,1);
+}
+:root[data-theme="white"]{
+  --bg:#fff;--panel:#f4f4f5;--panel-raised:#fff;--panel-soft:#ececee;--panel-muted:#f7f7f8;--border:#e2e2e6;--border-strong:#c8c8ce;
+  --text-strong:#111113;--text:#2c2c30;--text-muted:#5c5c63;--text-faint:#8a8a92;--accent:#1f8a76;--accent-soft:rgba(31,138,118,.10);
+  --orange:#c26420;--red:#c03d45;--yellow:#9a7410;--green:#2d7d42;--blue:#3b6fbe;--composer-bg:#fff;--desk:#cfd6de;--desk2:#e6eaee;
+}
+*{box-sizing:border-box}
+body{margin:0;background:#0b0e11;color:var(--text);font:13px/1.45 Inter,"Segoe UI","Microsoft YaHei UI",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+:root[data-theme="white"] body{background:#d9dde2}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer}
+.page{max-width:1400px;margin:0 auto;padding:22px 24px 40px}
+.top{display:flex;align-items:baseline;gap:14px;margin-bottom:6px;color:var(--text-strong)}
+.top h1{margin:0;font-size:17px;font-weight:600}
+.top .sub{color:var(--text-muted);font-size:12.5px}
+.top .sp{flex:1}
+.chipbtn{height:26px;padding:0 10px;border:1px solid var(--border);border-radius:999px;color:var(--text-muted);font-size:12px}
+.chipbtn:hover{color:var(--text);border-color:var(--border-strong)}
+.lead{max-width:880px;color:var(--text-muted);font-size:12.5px;margin:0 0 18px}
+
+.stages{display:grid;grid-template-columns:repeat(auto-fit,minmax(440px,1fr));gap:18px}
+.stage h2{margin:0 0 4px;color:var(--text-strong);font-size:13px;font-weight:600}
+.stage p{margin:0 0 10px;color:var(--text-muted);font-size:12px;min-height:34px}
+
+/* A desktop with the strip docked on its right edge. */
+.screen{position:relative;height:860px;border-radius:6px;overflow:hidden;
+  background:linear-gradient(160deg,var(--desk2),var(--desk));border:1px solid var(--border)}
+.screen .win{position:absolute;left:18px;top:24px;width:58%;height:46%;border-radius:4px;background:var(--panel-muted);opacity:.55;border:1px solid var(--border)}
+.screen .win.b{left:30%;top:52%;width:44%;height:30%;opacity:.4}
+.taskbar{position:absolute;left:0;right:0;bottom:0;height:34px;background:color-mix(in srgb,var(--panel) 85%,transparent);border-top:1px solid var(--border)}
+
+/* docked-hidden: only a 4px sliver stays on screen. */
+.sliver{position:absolute;left:-1px;top:0;bottom:0;width:4px;z-index:3;background:color-mix(in srgb,var(--accent) 70%,transparent);
+  box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 25%,transparent);cursor:pointer}
+.sliver::after{content:"";position:absolute;right:4px;top:50%;width:3px;height:42px;margin-top:-21px;border-radius:2px 0 0 2px;background:var(--accent);opacity:.9}
+.sliver .badge{position:absolute;right:8px;top:calc(50% - 46px);min-width:16px;height:16px;padding:0 4px;border-radius:999px;background:var(--green);color:#0f1712;font-size:10px;font-weight:700;line-height:16px;text-align:center}
+
+/* The strip itself: the main window in dock mode, 400 wide, work-area tall. */
+.strip{position:absolute;right:0;top:0;bottom:34px;width:min(360px,86%);display:flex;flex-direction:column;
+  background:var(--panel);border-left:1px solid var(--border-strong);box-shadow:-14px 0 34px rgba(0,0,0,.28);
+  transform:translateX(0);transition:transform 160ms steps(9,end)}
+.strip.is-out{transform:translateX(calc(100% - 4px))}
+.strip.is-out .strip__body{visibility:hidden}
+
+.titlebar{display:flex;align-items:center;gap:6px;height:30px;padding:0 6px 0 10px;border-bottom:1px solid var(--border);background:var(--panel-muted)}
+.brand{display:flex;align-items:center;gap:6px;color:var(--text-strong);font-size:12px;font-weight:600}
+.brand i{width:12px;height:12px;border-radius:3px;background:var(--accent);display:inline-block}
+.titlebar .sp{flex:1}
+.ib{width:24px;height:24px;display:grid;place-items:center;border-radius:999px;color:var(--text-faint);position:relative}
+.ib:hover{color:var(--text);background:var(--panel-soft)}
+.ib svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.ib .n{position:absolute;right:0;top:0;min-width:13px;height:13px;padding:0 3px;border-radius:999px;background:var(--accent);color:#0f1712;font-size:9px;font-weight:700;line-height:13px}
+
+.strip__body{flex:1;display:flex;flex-direction:column;min-height:0}
+
+/* 1. action row */
+.actions{display:flex;gap:6px;padding:8px 8px 6px}
+.btn{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border:1px solid var(--border);border-radius:var(--radius);background:var(--panel-raised);font-size:12px;color:var(--text)}
+.btn:hover{border-color:var(--border-strong)}
+.btn.primary{flex:1;color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,var(--border));background:var(--accent-soft);font-weight:500}
+.btn .k{margin-left:auto;color:var(--text-faint);font-size:10.5px;font-family:var(--mono)}
+.btn .cnt{color:var(--text-faint);font-variant-numeric:tabular-nums}
+
+/* 2. balance chip: one line, worst first, opens the grouped usage */
+.quota{display:flex;align-items:center;gap:10px;margin:0 8px 6px;padding:6px 8px;border:1px solid var(--border);border-radius:var(--radius);background:var(--panel-soft);font-size:11.5px;color:var(--text-muted);white-space:nowrap;overflow:hidden}
+.q{display:inline-flex;align-items:center;gap:5px;min-width:0}
+.q b{font-weight:500;color:var(--text)}
+.q.hot b{color:var(--red)}
+.q .bar{width:24px;height:3px;border-radius:2px;background:var(--border);overflow:hidden}
+.q .bar i{display:block;height:100%;background:var(--accent)}
+.q.hot .bar i{background:var(--red)}
+.quota .more{margin-left:auto;color:var(--text-faint)}
+
+/* 3. shelf: status filters + compact sessions */
+.shelf{margin:0 8px;border-top:1px solid var(--border);padding-top:6px}
+.filters{display:flex;gap:4px;margin-bottom:4px}
+.fchip{display:inline-flex;align-items:center;gap:5px;height:21px;padding:0 7px;border:1px solid transparent;border-radius:999px;color:var(--text-muted);font-size:11px}
+.fchip .d{width:6px;height:6px;border-radius:50%}
+.fchip.is-on{border-color:color-mix(in srgb,var(--accent) 35%,var(--border));background:var(--accent-soft);color:var(--text-strong)}
+.fchip span.c{color:var(--text-faint)}
+.proj{display:flex;align-items:center;gap:6px;height:26px;padding:0 4px;color:var(--text-strong);font-weight:600;font-size:12px}
+.proj .chev{color:var(--text-faint);font-size:10px;display:inline-block;transform:rotate(90deg)}
+.proj .c{margin-left:auto;color:var(--text-faint);font-weight:400;font-size:11px}
+.day{margin:3px 0 1px 22px;color:var(--text-faint);font-size:10.5px;font-weight:600}
+.sess{display:grid;grid-template-columns:10px minmax(0,1fr) auto;gap:8px;align-items:center;height:25px;padding:0 6px 0 14px;border-left:2px solid transparent;border-radius:var(--radius-sm);font-size:12px;color:var(--text)}
+.sess:hover{background:color-mix(in srgb,var(--text) 5%,transparent)}
+.sess.on{border-left-color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,var(--panel))}
+.sess .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sess .r{color:var(--text-faint);font-size:11px;font-variant-numeric:tabular-nums}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--text-faint);opacity:.5}
+.dot.run{background:var(--accent);opacity:1;animation:pulse 1.2s ease-in-out infinite}
+.dot.wait{background:var(--yellow);opacity:.85}
+.dot.done{background:var(--green);opacity:1;box-shadow:0 0 0 3px color-mix(in srgb,var(--green) 30%,transparent)}
+@keyframes pulse{0%,100%{opacity:.35;transform:scale(.9)}50%{opacity:1;transform:scale(1.15)}}
+.more-link{padding:2px 0 4px 32px;color:var(--text-muted);font-size:11.5px}
+
+/* 4. open dialogs: tabs + transcript + composer, as in the main window */
+/* Open dialogs scroll sideways (wheel or drag); the far edge fades so the cut reads as "more". */
+.tabs{display:flex;align-items:stretch;height:28px;margin-top:6px;border-top:1px solid var(--border);border-bottom:1px solid var(--border);background:var(--panel-muted);
+  overflow-x:auto;overflow-y:hidden;scrollbar-width:none;scroll-behavior:smooth;
+  -webkit-mask-image:linear-gradient(to right,#000 calc(100% - 28px),transparent);mask-image:linear-gradient(to right,#000 calc(100% - 28px),transparent)}
+.tabs::-webkit-scrollbar{display:none}
+.tabs.at-end{-webkit-mask-image:none;mask-image:none}
+.tab{display:flex;flex:0 0 auto;align-items:center;gap:6px;min-width:0;max-width:150px;padding:0 9px;color:var(--text-muted);font-size:11.5px;border-right:1px solid var(--border)}
+.tab .dt{width:5px;height:5px;border-radius:50%;flex:0 0 auto}
+.tab .dt.run{background:var(--accent)}.tab .dt.done{background:var(--green)}
+.tab span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tab.on{color:var(--text-strong);background:var(--panel-raised);box-shadow:inset 0 2px 0 var(--accent)}
+.transcript{flex:1;min-height:0;overflow:hidden;padding:8px;display:flex;flex-direction:column;gap:6px;background:var(--panel)}
+.card{border:1px solid var(--border);border-radius:var(--radius);background:var(--panel-raised);padding:8px 10px}
+.card .ty{color:var(--text-muted);font-size:11.5px;font-weight:700;margin-bottom:2px}
+.card p{margin:0;color:var(--text);font-size:12.5px;line-height:1.55}
+.meta{display:flex;gap:9px;margin-top:5px;color:var(--text-faint);font-size:11px}
+.meta .mode{color:var(--accent)}
+.fold{display:flex;align-items:center;gap:8px;padding:6px 10px;border:1px solid color-mix(in srgb,var(--border) 80%,var(--text-muted));border-radius:var(--radius);background:color-mix(in srgb,var(--panel-soft) 88%,transparent);font-size:12px}
+.fold .tl{color:var(--text-muted);font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fold .el{color:var(--text-faint);font-weight:500}
+.fold .add{color:var(--green);font-family:var(--mono);font-size:10px;font-weight:700}
+.fold .del{color:var(--red);font-family:var(--mono);font-size:10px;font-weight:700}
+.fold .fail{margin-left:auto;color:var(--red);font-size:11px;font-weight:600}
+.fold.live .tl{color:var(--accent)}
+.shimmer{color:transparent!important;background:linear-gradient(100deg,color-mix(in srgb,var(--accent) 62%,var(--text-muted)) 0 38%,color-mix(in srgb,var(--accent) 35%,var(--text-strong)) 50%,color-mix(in srgb,var(--accent) 62%,var(--text-muted)) 62% 100%) 0 0/300% 100%;-webkit-background-clip:text;background-clip:text;animation:sh 2.4s linear infinite}
+@keyframes sh{0%{background-position:100% 0}70%,100%{background-position:0 0}}
+.deliv{display:flex;align-items:center;gap:8px;padding:7px 10px;border:1px solid var(--border);border-left:3px solid color-mix(in srgb,var(--text-muted) 72%,var(--border));border-radius:var(--radius);background:var(--panel-soft);font-size:12px}
+.deliv b{color:var(--text-strong);font-weight:600;white-space:nowrap}
+.deliv .ratio{width:24px;height:4px;border-radius:2px;overflow:hidden;display:inline-flex;background:var(--border)}
+.deliv .ratio i{display:block;height:100%}
+.deliv .peek{color:var(--text-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.deliv .undo{margin-left:auto;color:var(--text-muted);font-size:11px;white-space:nowrap}
+.composer{border-top:1px solid var(--border);background:var(--composer-bg);border-left:3px solid var(--accent)}
+.composer .ta{height:52px;padding:8px 10px;color:var(--text-faint);font-size:12.5px}
+.composer .tb{display:flex;align-items:center;gap:6px;padding:0 6px 6px 8px;font-size:11.5px}
+.mchip{height:20px;padding:0 6px;border-radius:var(--radius-sm);display:inline-flex;align-items:center}
+.mchip.mode{color:var(--accent);background:var(--accent-soft)}
+.mchip.full{color:var(--orange);background:color-mix(in srgb,var(--orange) 14%,transparent)}
+.model{display:inline-flex;gap:5px;min-width:0;overflow:hidden;white-space:nowrap;color:var(--text-muted)}
+.model .src{color:var(--text-faint)}
+.send{margin-left:auto;width:26px;height:22px;display:grid;place-items:center;border-radius:var(--radius-sm);color:var(--accent);background:var(--accent-soft)}
+.send svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:2}
+
+/* 5. footer: model sharing row, icons, upgrade / undock / quit */
+.engine{display:flex;align-items:center;gap:8px;margin:6px 6px 4px;padding:0 8px;height:27px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--panel-raised);font-size:12px}
+.engine .lab{font-weight:500}
+.engine .d{width:6px;height:6px;border-radius:50%;background:var(--accent);margin-left:auto}
+.engine .h{color:var(--text-faint);font-size:11px;font-variant-numeric:tabular-nums}
+.foot{display:flex;align-items:center;gap:2px;padding:0 6px 6px}
+.foot .sp{flex:1}
+.foot .txt{height:24px;padding:0 8px;border-radius:999px;color:var(--text-muted);font-size:11.5px}
+.foot .txt:hover{color:var(--text);background:var(--panel-soft)}
+.foot .txt.upd{color:var(--accent)}
+.foot .txt.quit:hover{color:var(--red)}
+.pip{position:absolute;right:3px;top:3px;width:5px;height:5px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 1.5px var(--panel)}
+
+/* Memo box overlay (phase 3): slides over the strip's middle. */
+.memo{position:absolute;left:8px;right:8px;top:72px;bottom:118px;display:none;flex-direction:column;border:1px solid var(--border-strong);border-radius:var(--radius);background:var(--panel-raised);box-shadow:0 14px 34px rgba(0,0,0,.3);animation:pop 180ms var(--ease-out) backwards;z-index:5}
+.memo.is-open{display:flex}
+@keyframes pop{from{opacity:0;transform:translateY(-4px) scale(.985)}}
+.memo__head{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border)}
+.memo__head b{color:var(--text-strong);font-size:12.5px}
+.memo__head .c{color:var(--text-faint);font-size:11px}
+.memo__search{margin:8px 8px 4px;height:26px;padding:0 8px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--panel);color:var(--text-faint);font-size:11.5px;display:flex;align-items:center;gap:6px}
+.memo__filters{display:flex;gap:4px;padding:2px 8px 4px;flex-wrap:wrap}
+.mf{height:20px;padding:0 7px;border-radius:999px;color:var(--text-muted);font-size:11px;display:inline-flex;align-items:center;gap:4px;border:1px solid transparent}
+.mf b{color:var(--text-faint);font-weight:400}
+.mf.on{color:var(--text-strong);border-color:color-mix(in srgb,var(--accent) 35%,var(--border));background:var(--accent-soft)}
+.memo__list{flex:1;overflow:hidden;padding:2px 6px}
+.mrow{position:relative;display:grid;grid-template-columns:0 22px minmax(0,1fr) auto;gap:0 8px;align-items:start;padding:6px 4px;border-radius:var(--radius-sm);transition:background-color 120ms ease}
+.mrow:hover{background:var(--panel-soft)}
+.mrow .ck{width:13px;height:13px;margin-top:4px;border:1px solid var(--border-strong);border-radius:3px;opacity:0;transition:opacity 120ms ease}
+.mrow.is-picked{background:var(--accent-soft)}
+.mrow.is-picked .ck{border-color:var(--accent);background:var(--accent);box-shadow:inset 0 0 0 2px var(--panel-raised)}
+.memo.is-selecting .mrow{grid-template-columns:13px 22px minmax(0,1fr) auto}
+.memo.is-selecting .mrow .ck{opacity:1}
+.mrow .ic{width:22px;height:22px;border-radius:var(--radius-sm);display:grid;place-items:center;background:var(--panel-soft);color:var(--text-muted);font-size:9.5px;font-weight:700;font-family:var(--mono)}
+.mrow .ic.img{background:linear-gradient(135deg,#5b6f86,#3a4a5c);color:#e8eef5}
+.mrow .tt{min-width:0;overflow:hidden;font-size:12px;color:var(--text)}
+.mrow .tt>span:first-child{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mrow .ds{display:block;color:var(--text-faint);font-size:10.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mrow .tags{display:flex;gap:4px;margin-top:3px;flex-wrap:wrap}
+.mrow .tags i{font-style:normal;font-size:10px;color:var(--text-muted);padding:0 5px;border-radius:999px;background:var(--panel-soft);line-height:16px}
+.mrow:hover .tags i,.mrow.is-picked .tags i{background:var(--panel-raised)}
+.mrow .tm{color:var(--text-faint);font-size:10.5px;padding-top:2px}
+.mlink{color:var(--text-muted);font-size:11.5px;padding:0 4px}
+.mlink:hover,.mlink.on{color:var(--accent)}
+/* Selection toolbar (Arc selection-toolbar): appears with a count, sinks away when cleared. */
+.seltool{display:none;align-items:center;gap:6px;margin:0 8px 8px;padding:6px 6px 6px 10px;border:1px solid var(--border-strong);border-radius:var(--radius);background:var(--panel-soft);box-shadow:0 8px 20px rgba(0,0,0,.18);animation:rise 200ms var(--ease-out) backwards}
+.memo.is-selecting .seltool{display:flex}
+.memo.is-selecting .drop{display:none}
+@keyframes rise{from{opacity:0;transform:translateY(8px) scale(.98)}}
+.seltool .n{color:var(--text-strong);font-size:12px;font-weight:600;font-variant-numeric:tabular-nums;margin-right:auto}
+.act{height:24px;padding:0 9px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--panel-raised);color:var(--text);font-size:11.5px;white-space:nowrap}
+.act:hover{border-color:var(--border-strong)}
+.act.primary{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 45%,var(--border));background:var(--accent-soft);font-weight:500}
+/* "整理成文档" result: a draft doc the user saves or keeps editing in a dialog. */
+.doc{position:absolute;inset:0;display:none;flex-direction:column;background:var(--panel-raised);border-radius:var(--radius);animation:pop 180ms var(--ease-out) backwards;z-index:2}
+.doc.is-open{display:flex}
+.doc__head{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border)}
+.doc__head b{color:var(--text-strong);font-size:12.5px}
+.doc__meta{padding:6px 10px 0;color:var(--text-faint);font-size:11px}
+.doc__name{margin:6px 10px 0;padding:5px 8px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--panel);font-family:var(--mono);font-size:11.5px;color:var(--text)}
+.doc__body{flex:1;overflow:hidden;margin:8px 10px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--panel);font-size:12px;color:var(--text);line-height:1.55}
+.doc__body h4{margin:6px 0 3px;color:var(--text-strong);font-size:12.5px}
+.doc__body h4:first-child{margin-top:0}
+.doc__body ul{margin:0 0 4px;padding-left:16px}
+.doc__body .src{color:var(--text-faint);font-size:10.5px}
+.doc__body .todo{list-style:none;padding-left:2px}
+.doc__body .todo li::before{content:"☐ ";color:var(--text-faint)}
+.doc__foot{display:flex;align-items:center;gap:6px;padding:0 10px 10px;flex-wrap:wrap}
+.doc__where{flex-basis:100%;margin-bottom:2px;color:var(--text-muted);font-size:11px}
+.doc__foot .act:first-of-type{margin-left:auto}
+.doc__where b{color:var(--text);font-family:var(--mono);font-weight:400}
+/* New dialog seeded from picked items: they ride in as attachments. */
+.atts{display:flex;gap:4px;padding:6px 8px 0;flex-wrap:wrap}
+.att{display:inline-flex;align-items:center;gap:5px;height:22px;max-width:150px;padding:0 7px 0 4px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--panel-raised);font-size:11px;color:var(--text)}
+.att span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.att .k{font:700 8.5px var(--mono);color:var(--text-muted);padding:1px 3px;border-radius:2px;background:var(--panel-soft)}
+.empty-new{margin:auto 0;padding:18px 10px;color:var(--text-muted);font-size:12px;text-align:center}
+.empty-new b{display:block;color:var(--text-strong);font-size:13px;margin-bottom:4px}
+.drop{margin:6px 8px 8px;padding:10px;border:1px dashed color-mix(in srgb,var(--accent) 45%,var(--border));border-radius:var(--radius);color:var(--text-muted);font-size:11.5px;text-align:center;background:color-mix(in srgb,var(--accent) 5%,transparent)}
+
+/* Finished-while-hidden toast, same chrome as the app's toast stack. */
+.toast{position:absolute;right:16px;bottom:50px;display:flex;align-items:center;gap:8px;width:250px;padding:8px 10px;border:1px solid var(--border-strong);border-radius:var(--radius);background:var(--panel-raised);box-shadow:0 10px 26px rgba(0,0,0,.25);font-size:12px}
+.toast .d{width:7px;height:7px;border-radius:50%;background:var(--green)}
+.toast small{display:block;color:var(--text-faint);font-size:11px}
+
+.notes{margin-top:22px;display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:18px}
+.note{padding:12px 14px;border:1px solid var(--border);border-radius:6px;background:var(--panel)}
+.note h3{margin:0 0 6px;color:var(--text-strong);font-size:12.5px;font-weight:600}
+.note ul{margin:0;padding-left:16px;color:var(--text-muted);font-size:12px}
+.note li{margin:3px 0}
+.note code{font-family:var(--mono);font-size:11px;color:var(--text)}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="top">
+    <h1>贴边长条 · 设计稿</h1>
+    <span class="sub">依据 docs/plan-edge-dock.md §1 / §3 / §4 · 不接功能</span>
+    <span class="sp"></span>
+    <button class="chipbtn" id="theme">切换 浅夜 / 纯白</button>
+  </div>
+  <p class="lead">停靠是主窗本身变窄变高，不是第二个窗口：开着的对话、草稿、进行中的回合原地保留。下面六屏：收起、展开，以及收纳盒的浏览、多选、整理成文档、用选中的开新对话。第一屏可以把鼠标移到右边那条 4px 上，看它滑出来（约 160ms，9 步，和计划里的整窗 set_position 步进一致）。</p>
+
+  <div class="stages">
+    <!-- 1. docked-hidden -->
+    <div class="stage">
+      <h2>① 收起（docked-hidden）</h2>
+      <p>只剩 4px 高亮边。后台完成的任务在边上挂一个计数，同时走现有桌面通知；不抢焦点。</p>
+      <div class="screen" id="s1">
+        <div class="win"></div><div class="win b"></div>
+        <div class="toast"><span class="d"></span><div>「修复模型列表高度溢出」已完成<small>Grok Build · 3 个文件已更改</small></div></div>
+        <div class="taskbar"></div>
+        <div class="strip is-out" id="strip1">
+          <div class="sliver" id="sliver"><span class="badge">1</span></div>
+          <div class="strip__body"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2. docked-expanded -->
+    <div class="stage">
+      <h2>② 展开（docked-expanded）</h2>
+      <p>自上而下：操作行 → 余额 → 工程对话 → 开着的对话和输入框 → 模型共享与设置。离开 300ms 且失焦后收回。</p>
+      <div class="screen">
+        <div class="win"></div><div class="win b"></div>
+        <div class="taskbar"></div>
+        <div class="strip" id="strip2"></div>
+      </div>
+    </div>
+
+    <!-- 3. memo box -->
+    <div class="stage">
+      <h2>③ 收纳盒 · 浏览</h2>
+      <p>链接、文字、图片、文件都往里扔。按类型筛、按标题 / 内容 / 标签搜；标签由「模型共享」里最便宜的模型自动打，可改可删。</p>
+      <div class="screen">
+        <div class="win"></div><div class="win b"></div>
+        <div class="taskbar"></div>
+        <div class="strip" id="strip3"></div>
+      </div>
+    </div>
+
+    <!-- 4. multi-select -->
+    <div class="stage">
+      <h2>④ 收纳盒 · 多选</h2>
+      <p>点「选择」进入多选；底部浮出选择栏：已选数、整理成文档、开新对话。点行就勾选，Esc 或 × 退出。</p>
+      <div class="screen">
+        <div class="win"></div><div class="win b"></div>
+        <div class="taskbar"></div>
+        <div class="strip" id="strip4"></div>
+      </div>
+    </div>
+
+    <!-- 5. organize into a document -->
+    <div class="stage">
+      <h2>⑤ 一键整理成文档</h2>
+      <p>选中的条目（或整盒）交给模型按主题归并、去重、列出待办，先出草稿；确认后存进项目的 docs/notes/，原条目留在盒里。</p>
+      <div class="screen">
+        <div class="win"></div><div class="win b"></div>
+        <div class="taskbar"></div>
+        <div class="strip" id="strip5"></div>
+      </div>
+    </div>
+
+    <!-- 6. new dialog from picked items -->
+    <div class="stage">
+      <h2>⑥ 用选中的开新对话</h2>
+      <p>新开一个对话标签，选中的条目作为附件挂在输入框上（文件给路径、图片给图、链接给标题和网址），你补一句话就能发。</p>
+      <div class="screen">
+        <div class="win"></div><div class="win b"></div>
+        <div class="taskbar"></div>
+        <div class="strip" id="strip6"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <div class="note">
+      <h3>沿用的现有语言</h3>
+      <ul>
+        <li>色值取自 <code>tokens.css</code>，3px 直角、同一组灰，青绿只表示「进行中 / 可操作」。</li>
+        <li>会话行、状态过滤胶囊、活动折叠、交付卡、输入框芯片、「模型共享」入口行，都和主窗现在的组件一模一样，只是排进 360–400px。</li>
+        <li>标签页和分屏：dock 态只保留横向标签，分屏禁用（计划 §3.4）。</li>
+      </ul>
+    </div>
+    <div class="note">
+      <h3>从 Arc 借的</h3>
+      <ul>
+        <li>余额 chip：同一行按「最紧张的在前」排，红色只给 ≥90%，点开就是右栏那套按来源分组的额度（Usage meter）。</li>
+        <li>收起时完成的任务：边上挂计数 + 右下角结果提示（Toast stack），不弹窗、不抢焦点。</li>
+        <li>收纳盒：一行一条，悬停才露操作，底部一块虚线放置区（Knowledge base 的列表 + File dropzone）。</li>
+      </ul>
+    </div>
+    <div class="note">
+      <h3>动效约定</h3>
+      <ul>
+        <li>滑出 / 收回：窗口按 9 步滑动，约 160ms；长条内部内容不再另做动画，免得整窗重绘时卡顿。</li>
+        <li>收纳盒覆盖层：180ms 淡入，带一点点缩放；关闭直接消失。</li>
+        <li>运行中的折叠标题用现有的文字微光；状态点用现有的脉动；系统「减少动态效果」时全部变成瞬时。</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<template id="strip-tpl">
+  <div class="titlebar">
+    <span class="brand"><i></i>Marionette</span>
+    <span class="sp"></span>
+    <button class="ib" title="命令面板 Ctrl K"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></button>
+    <button class="ib" title="解除贴边"><svg viewBox="0 0 24 24"><path d="M9 4v6l-2 4h10l-2-4V4M12 14v6M8 4h8"/></svg></button>
+  </div>
+  <div class="strip__body">
+    <div class="actions">
+      <button class="btn primary"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>新建对话<span class="k">Ctrl N</span></button>
+      <button class="btn memo-btn"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7h18v13H3zM3 7l3-4h12l3 4M9 12h6"/></svg>收纳盒<span class="cnt">5</span></button>
+    </div>
+    <div class="quota" title="点开看按来源分组的额度">
+      <span class="q hot"><span>OpenCode</span><span class="bar"><i style="width:95%"></i></span><b>95%</b></span>
+      <span class="q hot"><span>Grok</span><span class="bar"><i style="width:94%"></i></span><b>94%</b></span>
+      <span class="q"><span>DeepSeek</span><b>¥60.84</b></span>
+      <span class="more">+4 ›</span>
+    </div>
+    <div class="shelf">
+      <div class="filters">
+        <span class="fchip"><span class="d" style="background:var(--accent)"></span>运行中<span class="c">1</span></span>
+        <span class="fchip"><span class="d" style="background:var(--yellow)"></span>等你<span class="c">1</span></span>
+        <span class="fchip"><span class="d" style="background:var(--green)"></span>已完成<span class="c">1</span></span>
+      </div>
+      <div class="proj"><span class="chev">▸</span>Marionette<span class="c">203</span></div>
+      <div class="day">今天</div>
+      <div class="sess on"><span class="dot run"></span><span class="t">Fix Claude Code plan rendering</span><span class="r">now</span></div>
+      <div class="sess"><span class="dot wait"></span><span class="t">看看文档，里面应该有个学习QQ的…</span><span class="r">4m</span></div>
+      <div class="sess"><span class="dot done"></span><span class="t">修复模型列表高度溢出隐藏搜索</span><span class="r">22m</span></div>
+      <div class="day">昨天</div>
+      <div class="sess"><span class="dot"></span><span class="t">为啥我现在安装了Zcode，却没…</span><span class="r">1d</span></div>
+      <div class="more-link">还有 198 个对话</div>
+    </div>
+    <div class="tabs">
+      <div class="tab on"><span class="dt run"></span><span>Fix Claude Code plan rendering</span></div>
+      <div class="tab"><span class="dt done"></span><span>修复模型列表高度溢出</span></div>
+      <div class="tab"><span>split workspace</span></div>
+      <div class="tab"><span>看看文档，学习QQ</span></div>
+      <div class="tab"><span>Zcode 安装排查</span></div>
+      <div class="tab"><span>Enabling Always-Approve</span></div>
+    </div>
+    <div class="transcript">
+      <div class="card"><div class="ty">Reply</div><p>结构已经清楚了：把 Plan / Ask 写成对话流事件，卡片留在时间线里。</p>
+        <div class="meta"><span class="mode">▣ Build</span><span>Grok Build</span><span>Grok 4.6</span><span>High</span></div></div>
+      <div class="fold"><span class="tl">16 searches, 5 thoughts, 1 read</span><span class="el">1m 27s</span><span class="add">+399</span><span class="del">−50</span></div>
+      <div class="fold live"><span class="tl shimmer">Searching handlePlanApproval</span><span class="fail">1 failed</span></div>
+      <div class="deliv"><b>3 个文件已更改</b><span class="add" style="color:var(--green);font:700 10px var(--mono)">+218</span><span class="ratio"><i style="width:88%;background:var(--green)"></i><i style="width:12%;background:var(--red)"></i></span><span class="peek">SessionView.tsx、app.css 等</span><span class="undo">↶ 撤销</span></div>
+    </div>
+    <div class="composer">
+      <div class="ta">Message the Agent (Ctrl+Enter to send)</div>
+      <div class="tb">
+        <span class="mchip mode">Standard</span>
+        <span class="mchip full">Full access</span>
+        <span class="model"><span class="src">OpenCode Go</span><span>deepseek-v4.1-flash</span></span>
+        <span class="send"><svg viewBox="0 0 24 24"><path d="M4 12h14M13 6l6 6-6 6"/></svg></span>
+      </div>
+    </div>
+    <button class="engine"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8"><circle cx="12" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/><path d="M12 7v5M12 12l-6 5M12 12l6 5"/></svg><span class="lab">模型共享</span><span class="d"></span><span class="h">运行中 · 3425</span></button>
+    <div class="foot">
+      <button class="ib" title="主题"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg></button>
+      <button class="ib" title="通知（已开）"><svg viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l2 2H4zM10 21h4"/></svg><span class="pip"></span></button>
+      <button class="ib" title="代理"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg></button>
+      <button class="ib" title="Telegram"><svg viewBox="0 0 24 24"><path d="m21 4-18 7 6 2 2 6 3-4 5 4z"/></svg></button>
+      <span class="sp"></span>
+      <button class="txt upd">升级 0.4.8</button>
+      <button class="txt">解除贴边</button>
+      <button class="txt quit">退出</button>
+    </div>
+  </div>
+  <div class="memo">
+    <div class="memo__head"><b>收纳盒</b><span class="c">12 条</span><span style="flex:1"></span><button class="mlink sel-toggle">选择</button><button class="ib memo-close" title="关闭"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+    <div class="memo__search"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>搜索标题、内容、标签…</div>
+    <div class="memo__filters"><span class="mf on">全部 <b>12</b></span><span class="mf">链接 <b>4</b></span><span class="mf">文字 <b>3</b></span><span class="mf">图片 <b>2</b></span><span class="mf">文件 <b>3</b></span></div>
+    <div class="memo__list">
+      <div class="mrow" data-i="1"><span class="ck"></span><span class="ic">URL</span><span class="tt"><span>Agent timeline · Arc UI</span><span class="ds">uiarc.dev · 多个 agent 共享时间轴，回放思考与工具调用</span><span class="tags"><i>#UI参考</i><i>#动效</i></span></span><span class="tm">2m</span></div>
+      <div class="mrow" data-i="2"><span class="ck"></span><span class="ic">URL</span><span class="tt"><span>karakeep-app/karakeep</span><span class="ds">github.com · 自托管的「收藏一切」：链接、笔记、图片，AI 打标签</span><span class="tags"><i>#收纳盒</i><i>#参考</i></span></span><span class="tm">8m</span></div>
+      <div class="mrow" data-i="3"><span class="ck"></span><span class="ic img">IMG</span><span class="tt"><span>报错截图 2026-10-24</span><span class="ds">1.2 MB · 来自剪贴板</span><span class="tags"><i>#模型共享</i><i>#bug</i></span></span><span class="tm">1h</span></div>
+      <div class="mrow" data-i="4"><span class="ck"></span><span class="ic">TXT</span><span class="tt"><span>「把 Plan/Ask 写成对话流事件，卡片留在时间线里」</span><span class="ds">文字 · 来自 Fix Claude Code plan rendering</span><span class="tags"><i>#设计决定</i></span></span><span class="tm">3h</span></div>
+      <div class="mrow" data-i="5"><span class="ck"></span><span class="ic">MD</span><span class="tt"><span>plan-edge-dock.md</span><span class="ds">docs · 复制进盒 · 11 KB</span><span class="tags"><i>#贴边</i><i>#计划</i></span></span><span class="tm">昨天</span></div>
+      <div class="mrow" data-i="6"><span class="ck"></span><span class="ic">ZIP</span><span class="tt"><span>release-0.4.7.zip</span><span class="ds">48 MB</span><span class="tags"><i>#发布</i></span></span><span class="tm">周二</span></div>
+    </div>
+    <div class="drop">拖文件到这里存进收纳盒 · Ctrl V 粘贴文字或链接</div>
+    <div class="seltool"><span class="n">已选 <span class="pick-n">0</span></span><button class="act act-doc">整理成文档</button><button class="act primary act-chat">开新对话</button><button class="ib sel-clear" title="退出多选"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+    <div class="doc">
+      <div class="doc__head"><b>整理成文档</b><span style="flex:1"></span><button class="ib doc-close" title="返回收纳盒"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+      <div class="doc__meta">deepseek-v4.1-flash（模型共享）· 3 条 · 4.2s · 草稿，可改</div>
+      <div class="doc__name">UI 参考与收纳盒方向 · 2026-10-24.md</div>
+      <div class="doc__body">
+        <h4>UI 参考</h4>
+        <ul><li>多 agent 运行用共享时间轴表达先后与并行 <span class="src">· Agent timeline</span></li><li>状态只用一套：运行、等你、完成、失败 <span class="src">· Agent timeline</span></li></ul>
+        <h4>收纳盒方向</h4>
+        <ul><li>收链接 / 文字 / 图片 / 文件，AI 自动打标签 <span class="src">· karakeep</span></li><li>只做「收、找、用」，不做网页存档与浏览器插件</li></ul>
+        <h4>待办</h4>
+        <ul class="todo"><li>模型共享报错截图里的启动失败再查一次</li><li>收纳盒多选后开新对话</li></ul>
+      </div>
+      <div class="doc__foot"><span class="doc__where">存到 <b>Marionette/docs/notes/</b></span><button class="act">在对话里继续改</button><button class="act primary">存为文档</button></div>
+    </div>
+  </div>
+</template>
+
+<script>
+  const tpl = document.getElementById("strip-tpl");
+  for (const id of ["strip1", "strip2", "strip3", "strip4", "strip5", "strip6"]) {
+    const host = document.getElementById(id);
+    const body = host.querySelector(".strip__body");
+    const frag = tpl.content.cloneNode(true);
+    if (body) body.replaceWith(...frag.childNodes);
+    else host.appendChild(frag);
+  }
+  const memoOf = (id) => document.querySelector(`#${id} .memo`);
+  const syncCount = (memo) => {
+    memo.querySelector(".pick-n").textContent = memo.querySelectorAll(".mrow.is-picked").length;
+  };
+  // ③ browse · ④ multi-select with three picked · ⑤ organized draft open.
+  memoOf("strip3").classList.add("is-open");
+  const m4 = memoOf("strip4");
+  m4.classList.add("is-open", "is-selecting");
+  m4.querySelector(".sel-toggle").classList.add("on");
+  m4.querySelectorAll('.mrow[data-i="1"], .mrow[data-i="2"], .mrow[data-i="3"]').forEach((r) => r.classList.add("is-picked"));
+  syncCount(m4);
+  const m5 = memoOf("strip5");
+  m5.classList.add("is-open");
+  m5.querySelector(".doc").classList.add("is-open");
+
+  // ⑥ a fresh dialog seeded with the picked items.
+  const s6 = document.getElementById("strip6");
+  s6.querySelector(".tabs").insertAdjacentHTML(
+    "afterbegin",
+    '<div class="tab on"><span>整理：3 条收纳</span></div>',
+  );
+  s6.querySelectorAll(".tabs .tab")[1].classList.remove("on");
+  s6.querySelector(".transcript").innerHTML =
+    '<div class="empty-new"><b>新对话 · Grok Build</b>3 条收纳已挂在输入框上，补一句你想让它做什么。</div>';
+  const comp = s6.querySelector(".composer");
+  comp.insertAdjacentHTML(
+    "afterbegin",
+    '<div class="atts"><span class="att"><span class="k">URL</span><span>Agent timeline · Arc UI</span></span><span class="att"><span class="k">URL</span><span>karakeep</span></span><span class="att"><span class="k">IMG</span><span>报错截图 2026-10-24</span></span></div>',
+  );
+  comp.querySelector(".ta").textContent = "参考这几条，帮我把收纳盒的第一版范围定下来…";
+  comp.querySelector(".ta").style.color = "var(--text)";
+
+  // Interactions on every strip: open/close the box, pick rows, the two actions.
+  document.querySelectorAll(".memo-btn").forEach((btn) =>
+    btn.addEventListener("click", () => btn.closest(".strip").querySelector(".memo").classList.toggle("is-open")),
+  );
+  document.querySelectorAll(".memo").forEach((memo) => {
+    memo.querySelector(".memo-close").addEventListener("click", () => memo.classList.remove("is-open"));
+    memo.querySelector(".sel-toggle").addEventListener("click", (e) => {
+      memo.classList.toggle("is-selecting");
+      e.currentTarget.classList.toggle("on");
+      if (!memo.classList.contains("is-selecting")) memo.querySelectorAll(".mrow").forEach((r) => r.classList.remove("is-picked"));
+      syncCount(memo);
+    });
+    memo.querySelector(".sel-clear").addEventListener("click", () => {
+      memo.classList.remove("is-selecting");
+      memo.querySelector(".sel-toggle").classList.remove("on");
+      memo.querySelectorAll(".mrow").forEach((r) => r.classList.remove("is-picked"));
+    });
+    memo.querySelectorAll(".mrow").forEach((row) =>
+      row.addEventListener("click", () => {
+        if (!memo.classList.contains("is-selecting")) {
+          memo.classList.add("is-selecting");
+          memo.querySelector(".sel-toggle").classList.add("on");
+        }
+        row.classList.toggle("is-picked");
+        syncCount(memo);
+      }),
+    );
+    memo.querySelector(".act-doc").addEventListener("click", () => memo.querySelector(".doc").classList.add("is-open"));
+    memo.querySelector(".doc-close").addEventListener("click", () => memo.querySelector(".doc").classList.remove("is-open"));
+  });
+
+  // Tabs: wheel scrolls sideways; the fade disappears at the far end.
+  document.querySelectorAll(".tabs").forEach((bar) => {
+    const edge = () => bar.classList.toggle("at-end", bar.scrollLeft + bar.clientWidth >= bar.scrollWidth - 2);
+    bar.addEventListener("wheel", (e) => {
+      if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+        bar.scrollLeft += e.deltaY;
+        e.preventDefault();
+      }
+    }, { passive: false });
+    bar.addEventListener("scroll", edge);
+    edge();
+  });
+
+  // ① touch the sliver → slide out; leave for 300ms → slide back.
+  const strip1 = document.getElementById("strip1");
+  const sliver = document.getElementById("sliver");
+  let retract = 0;
+  sliver.addEventListener("mouseenter", () => {
+    clearTimeout(retract);
+    strip1.classList.remove("is-out");
+    sliver.querySelector(".badge")?.remove();
+  });
+  strip1.addEventListener("mouseenter", () => clearTimeout(retract));
+  strip1.addEventListener("mouseleave", () => {
+    retract = setTimeout(() => strip1.classList.add("is-out"), 300);
+  });
+  document.getElementById("theme").addEventListener("click", () => {
+    const root = document.documentElement;
+    root.dataset.theme = root.dataset.theme === "white" ? "" : "white";
+  });
+</script>
+</body>
+</html>

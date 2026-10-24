@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { TriangleAlert } from "lucide-react";
+import { DialogShell } from "./DialogShell";
 
 type ConfirmDialogProps = {
   /** Dialog title, e.g. "删除对话" */
@@ -40,10 +41,7 @@ export function ConfirmDialog({
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onCancel();
-      } else if (event.key === "Enter" && event.target instanceof HTMLElement) {
+      if (event.key === "Enter" && event.target instanceof HTMLElement) {
         // Let buttons handle Enter natively; plain text focus confirms.
         const tag = event.target.tagName;
         if (tag !== "BUTTON" && tag !== "INPUT" && tag !== "TEXTAREA" && tag !== "SELECT") {
@@ -54,23 +52,16 @@ export function ConfirmDialog({
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onCancel, onConfirm]);
+  }, [onConfirm]);
 
   return (
-    <div
+    <DialogShell
       className="project-dialog-backdrop confirm-dialog-backdrop"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onCancel();
-      }}
+      dialogClassName="project-dialog confirm-dialog"
+      role="alertdialog"
+      label={title}
+      onClose={onCancel}
     >
-      <div
-        className="project-dialog confirm-dialog"
-        role="alertdialog"
-        aria-modal="true"
-        aria-label={title}
-        onMouseDown={(event) => event.stopPropagation()}
-      >
         <div className="project-dialog__header confirm-dialog__header">
           <span className="confirm-dialog__icon" aria-hidden>
             <TriangleAlert size={16} />
@@ -106,7 +97,6 @@ export function ConfirmDialog({
             {confirmLabel}
           </button>
         </div>
-      </div>
-    </div>
+    </DialogShell>
   );
 }

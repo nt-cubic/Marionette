@@ -15,7 +15,6 @@ import { createPortal } from "react-dom";
 import {
   compactGrokWaitDetail,
   isAssistantNotice,
-  parseBackgroundSubagentStart,
   userMessageAnchorId,
 } from "../lib/acpTranscript";
 import {
@@ -44,13 +43,11 @@ import {
   extractDiffStats,
   formatStepDuration,
   groupConsecutiveByKind,
-  groupSubagentRuns,
   summarizeActivity,
   summarizeKindGroup,
   toolKindVerb,
   toolMainText,
   type ActivityClusterUnit,
-  type ActivityDetailItem,
 } from "../lib/turnActivity";
 import {
   applyScrollSnap,
@@ -1451,120 +1448,6 @@ function ToolCallBody({
   );
 }
 
-function subagentBoxMeta(event: ToolCallEvent): string {
-  const bits: string[] = [];
-  if (event.status && !/^(pending|updated)$/i.test(event.status)) {
-    bits.push(isToolInProgress(event.status) ? "进行中" : event.status);
-  }
-  const hay = `${event.input ?? ""}\n${event.detail ?? ""}`;
-  const model = hay.match(/(?:^|\n)(?:Explore|Task|Plan|General)\s*·\s*(\S+)/)?.[1];
-  if (model) bits.push(model);
-  const id = hay.match(/subagent_id:\s*(\S+)/i)?.[1];
-  if (id) bits.push(id.slice(0, 8));
-  return bits.join(" · ");
-}
-
-/** Last meaningful line a subagent printed — its current step, or why it failed. */
-function subagentLastLine(body: string): string {
-  const lines = body.replace(/\r\n?/g, "\n").split("\n");
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const line = lines[i]!.replace(/\s+/g, " ").trim();
-    if (line && !/^[-=*_`]{3,}$/.test(line)) return line.length > 120 ? `${line.slice(0, 119)}…` : line;
-  }
-  return "";
-}
-
-/** Finished: how long it took; running: how long so far. */
-function subagentElapsed(event: ToolCallEvent, live: boolean): string {
-  const start = Date.parse(event.createdAt);
-  const end = live ? Date.now() : event.completedAt ? Date.parse(event.completedAt) : NaN;
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return "";
-  return formatStepDuration(end - start);
-}
-
-function SubagentGroupPanel({
-  items,
-  cwd,
-  projectId,
-  running,
-}: {
-  items: ActivityDetailItem[];
-  cwd?: string | null;
-  projectId?: string;
-  running: boolean;
-}) {
-  const [openKeys, setOpenKeys] = useState<Set<string>>(() => new Set());
-  return (
-    <div className="subagent-grid" role="group" aria-label={`${items.length} 个并行子代理`}>
-      {items.map(({ event, index }) => {
-        if (event.type !== "tool_call") return null;
-        const key = toolExpandKey(event, index);
-        const live = running && isToolInProgress(event.status);
-        const open = live || openKeys.has(key);
-        const body = event.detail || event.text || "";
-        const stub = Boolean(parseBackgroundSubagentStart(body));
-        const title = event.title || event.toolName || "Subagent";
-        const failed = /fail|error|cancel/i.test(event.status ?? "");
-        const lastLine = stub ? "" : subagentLastLine(body);
-        const elapsed = subagentElapsed(event, live);
-        return (
-          <article
-            key={key}
-            className={`subagent-box${live ? " is-running" : ""}${
-              /fail|error|cancel/i.test(event.status ?? "") ? " is-failed" : ""
-            }`}
-          >
-            <button
-              type="button"
-              className="subagent-box__head"
-              onClick={() => toggleSetKey(setOpenKeys, key, !openKeys.has(key))}
-              title={title}
-            >
-              {live ? (
-                <NineDotSpinner compact />
-              ) : (
-                <span className="subagent-box__glyph" aria-hidden>
-                  {/fail|error|cancel/i.test(event.status ?? "") ? "✕" : "✓"}
-                </span>
-              )}
-              <span className="subagent-box__title">{title}</span>
-              <span className="subagent-box__meta">
-                {[subagentBoxMeta(event) || (live ? "进行中" : ""), elapsed].filter(Boolean).join(" · ")}
-              </span>
-            </button>
-            {!open && lastLine && (
-              <div className={`subagent-box__line${failed ? " is-failed" : ""}`} title={lastLine}>
-                {lastLine}
-              </div>
-            )}
-            {open && (
-              <div className="subagent-box__body">
-                {live && stub ? (
-                  <div className="tool-running-panel tool-running-panel--subtask">
-                    <NineDotSpinner label="Subagent working…" />
-                    <p className="tool-running-panel__hint">
-                      Nested agent is running. Its report lands in this box when it finishes.
-                    </p>
-                  </div>
-                ) : (
-                  <ToolCallBody
-                    event={event}
-                    body={body}
-                    projectId={projectId}
-                    cwd={cwd}
-                    open
-                    running={live}
-                  />
-                )}
-              </div>
-            )}
-          </article>
-        );
-      })}
-    </div>
-  );
-}
-
 function CleanPlaceholder({
   agent,
   session,
@@ -1695,7 +1578,9 @@ function CleanPlaceholder({
         });
       }
     }
-    const clustered = detailsVisible ? groupSubagentRuns(flat) : clusterActivityRuns(flat);
+    const clustered: TranscriptUnit[] = detailsVisible
+      ? flat.map((unit) => ({ kind: "row" as const, ...unit }))
+      : clusterActivityRuns(flat);
     const deliveries = buildTurnDeliveries(displayEvents, session.id, session.cwd, isRunning);
     if (deliveries.length === 0) return clustered;
     const merged: (TranscriptUnit | TurnDeliveryUnit)[] = [];
@@ -2916,17 +2801,6 @@ function CleanPlaceholder({
           );
         };
 
-          const renderSubagentGroup = (
-            unit: Extract<TranscriptUnit, { kind: "subagent_group" }>,
-          ) => (
-            <SubagentGroupPanel
-              items={unit.items}
-              cwd={session.cwd}
-              projectId={projectId}
-              running={isRunning}
-            />
-          );
-
           const renderActivity = (unit: TranscriptActivity) => {
             const liveItem = findLiveDetail(
               unit.items,
@@ -3022,8 +2896,6 @@ function CleanPlaceholder({
                 />
               ) : unit.kind === "activity" ? (
                 renderActivity(unit)
-              ) : unit.kind === "subagent_group" ? (
-                renderSubagentGroup(unit)
               ) : (
                 renderEvent(unit.event, unit.index)
               );

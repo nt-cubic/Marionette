@@ -6,6 +6,7 @@ import {
   upsertProviderMeta,
 } from "../lib/api";
 import type { ProviderInfo } from "../lib/types";
+import { DialogShell } from "./DialogShell";
 
 type Props = {
   onClose: () => void;
@@ -156,11 +157,14 @@ export function ProviderConfigDialog({ onClose, onKeysChanged, restartPending }:
   const busy = saving || deleting !== null;
 
   return (
-    <div className="project-dialog-backdrop" onClick={busy ? undefined : onClose}>
-      <div
-        className="project-dialog provider-dialog"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <DialogShell
+      className="project-dialog-backdrop"
+      dialogClassName="project-dialog provider-dialog"
+      label="OpenCode 服务商 Key"
+      onClose={() => {
+        if (!busy) onClose();
+      }}
+    >
         <div className="project-dialog__header">OpenCode 服务商 Key</div>
         <div className="project-dialog__body">
           <p className="provider-dialog__lead">
@@ -369,7 +373,6 @@ export function ProviderConfigDialog({ onClose, onKeysChanged, restartPending }:
             </button>
           )}
         </div>
-      </div>
-    </div>
+    </DialogShell>
   );
 }

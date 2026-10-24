@@ -86,7 +86,7 @@ const thought = {
   createdAt: "t0",
 };
 
-check("parallel spawn_subagent tools become a dedicated grid", () => {
+check("parallel spawn_subagent tools fold like any other activity", () => {
   const units = [0, 1, 2, 3, 4, 5, 6].map((index) => ({
     key: `spawn-${index}`,
     event: tool({
@@ -99,8 +99,8 @@ check("parallel spawn_subagent tools become a dedicated grid", () => {
   }));
   const clustered = clusterActivityRuns(units);
   assert.equal(clustered.length, 1);
-  assert.equal(clustered[0].kind, "subagent_group");
-  if (clustered[0].kind === "subagent_group") {
+  assert.equal(clustered[0].kind, "activity");
+  if (clustered[0].kind === "activity") {
     assert.equal(clustered[0].items.length, 7);
   }
 });

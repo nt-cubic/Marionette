@@ -2380,21 +2380,49 @@ pub fn catalog() -> Vec<String> {
 /// 进菜单只有困惑（「auto-grok-4-7 完全不懂」）。想要时仍可用自定义模型
 /// 输入 `group/…` id。桥的所有消费点（跨用菜单 / opencode 配置 / dsh 路由 /
 /// pi models.json）统一走这里。
+///
+/// 顺序规矩（2026-10-24 事故加）：按量计费（balance key）来源的条目一律
+/// 沉底。引擎目录原样透传时 `auto/deepseek-v4-pro` 顶在首位，成了 zcode
+/// personalModelIds/modelOrder 的第一位 = 新会话的静默默认模型，主对话
+/// 672 次调用把官方按量余额从 ¥60 烧到 ¥29.6（auto 组在套餐渠道月配额
+/// 用尽后落到按量 key）。沉底不是禁用：手动仍可选，只是不再是任何
+/// 「第一位」默认（dsh 默认模型兜底 `models[0]` 同享此保护）。
 pub fn catalog_direct() -> Vec<String> {
-    catalog()
-        .into_iter()
-        .filter(|id| !id.starts_with("group/"))
-        .collect()
+    pay_per_use_last(
+        catalog()
+            .into_iter()
+            .filter(|id| !id.starts_with("group/"))
+            .collect(),
+        |id| id.as_str(),
+    )
 }
 
 /// 同 `catalog_direct`，但带窗口/输出上限——dsh 桥写 `contextWindow`/
 /// `maxTokens` 用（llm-pi-ai 对缺声明的模型落 256K 兜底，见
 /// model_bridge::CatalogModelRow）。
 pub fn catalog_direct_entries() -> Vec<crate::model_bridge::CatalogModelRow> {
-    catalog_entries()
-        .into_iter()
-        .filter(|row| !row.id.starts_with("group/"))
-        .collect()
+    pay_per_use_last(
+        catalog_entries()
+            .into_iter()
+            .filter(|row| !row.id.starts_with("group/"))
+            .collect(),
+        |row| row.id.as_str(),
+    )
+}
+
+/// 按量计费来源的模型 id：官方 DeepSeek provider 直供条目（`deepseek/…`），
+/// 以及可能路由到它的 auto 组条目（`auto/deepseek…`——组内套餐渠道配额
+/// 用尽时会落到官方按量 key）。opencode-go 下的 deepseek 是套餐渠道，
+/// 不在列。
+fn pay_per_use_model(id: &str) -> bool {
+    id.starts_with("deepseek/") || id.starts_with("auto/deepseek")
+}
+
+/// 稳定分区：按量条目沉底，其余保序。
+fn pay_per_use_last<T>(items: Vec<T>, id: impl Fn(&T) -> &str) -> Vec<T> {
+    let mut items = items;
+    items.sort_by_key(|item| pay_per_use_model(id(item)));
+    items
 }
 
 fn fetch_catalog() -> Vec<crate::model_bridge::CatalogModelRow> {
@@ -2674,6 +2702,38 @@ mod tests {
             }
         });
         port
+    }
+
+    // ─── catalog ordering ────────────────────────────────────────────────────
+
+    #[test]
+    fn pay_per_use_models_sink_to_tail_stably() {
+        // 2026-10-24 事故回归：auto/deepseek-v4-pro 顶在引擎目录首位 →
+        // zcode personalModelIds/modelOrder 首位 → 新会话默认吃官方按量 key。
+        // 按量条目必须沉底，其余条目保持引擎目录原序（稳定分区）。
+        let ids = vec![
+            "auto/deepseek-v4-pro",
+            "auto/glm-5.1",
+            "opencode-go/glm-5.3",
+            "deepseek/deepseek-flash",
+            "zhipu/glm-5.3",
+            "opencode-go/deepseek-v4.1-flash",
+        ];
+        let sorted = pay_per_use_last(
+            ids.into_iter().map(str::to_string).collect(),
+            |id| id.as_str(),
+        );
+        assert_eq!(
+            sorted,
+            vec![
+                "auto/glm-5.1".to_string(),
+                "opencode-go/glm-5.3".to_string(),
+                "zhipu/glm-5.3".to_string(),
+                "opencode-go/deepseek-v4.1-flash".to_string(),
+                "auto/deepseek-v4-pro".to_string(),
+                "deepseek/deepseek-flash".to_string(),
+            ]
+        );
     }
 
     // ─── manifest ───────────────────────────────────────────────────────────

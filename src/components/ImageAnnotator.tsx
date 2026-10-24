@@ -7,6 +7,7 @@ import {
   type ImageMark,
 } from "../lib/imageAttachments";
 import { isTauriRuntime, readImageDataUrl } from "../lib/api";
+import { DialogShell } from "./DialogShell";
 
 type Props = {
   attachment: ImageAttachment;
@@ -152,13 +153,12 @@ export function ImageAnnotator({ attachment, onClose, onSave }: Props) {
     })();
 
   return (
-    <div className="image-annotator-backdrop" role="presentation">
-      <div
-        className="image-annotator"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="image-annotator-title"
-      >
+    <DialogShell
+      className="image-annotator-backdrop"
+      dialogClassName="image-annotator"
+      labelledBy="image-annotator-title"
+      onClose={onClose}
+    >
         <div className="image-annotator__header">
           <div>
             <strong id="image-annotator-title">{attachment.name}</strong>
@@ -270,6 +270,7 @@ export function ImageAnnotator({ attachment, onClose, onSave }: Props) {
                   onChange={(e) => setComment(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === "Escape") {
+                      e.stopPropagation();
                       setPending(null);
                       setComment("");
                     }
@@ -347,7 +348,6 @@ export function ImageAnnotator({ attachment, onClose, onSave }: Props) {
             完成
           </button>
         </div>
-      </div>
-    </div>
+    </DialogShell>
   );
 }

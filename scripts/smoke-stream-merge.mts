@@ -898,8 +898,8 @@ console.log("OpenCode v2 child-session streams stay off the parent Reply");
     })),
   );
   assert.equal(clustered.length, 1);
-  assert.equal(clustered[0].kind, "subagent_group");
-  if (clustered[0].kind === "subagent_group") {
+  assert.equal(clustered[0].kind, "activity");
+  if (clustered[0].kind === "activity") {
     assert.equal(clustered[0].items.length, 3);
   }
 }

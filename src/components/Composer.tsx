@@ -1010,6 +1010,24 @@ export function Composer({
   };
   const bridgeActive =
     bridgeSelection != null && currentModel !== nativeBridgeModelId(bridgeSelection.modelId);
+  /**
+   * Truth check for adapters that surface shared models natively (zcode
+   * `marionette\…`, opencode/pi `marionette/…`, dsh `marionette::…`): they
+   * report the live id as currentModel, so currentModel is ground truth. When
+   * it names a different shared model than the pick, the binding never took
+   * effect — e.g. a fresh zcode session silently fell back to its
+   * modelOrder[0] default. Showing the pick anyway is how the 2026-10-24
+   * incident hid pay-per-use DeepSeek behind a chip that said GLM 5.3.
+   */
+  const reportedSharedModelId =
+    currentModel != null && /^(?:marionette\\|marionette::|marionette\/)/.test(currentModel)
+      ? currentModel
+      : null;
+  const bridgeStale =
+    bridgeActive &&
+    bridgeSelection != null &&
+    reportedSharedModelId != null &&
+    reportedSharedModelId !== nativeBridgeModelId(bridgeSelection.modelId);
 
   /**
    * Cross-use pick (§4.8): never sends session/set_model from here — the
@@ -1595,11 +1613,14 @@ export function Composer({
       const modeLabel =
         (modeId && caps?.modes.find((m) => m.id === modeId)?.label) || modeId || null;
       // Cross-use pick: snapshot shows the bridged model the chip displays, not
-      // the native id the agent still reports underneath.
+      // the native id the agent still reports underneath — unless the agent
+      // reports a *different* shared id (bridgeStale): then the binding never
+      // took effect and the snapshot must tell the truth (2026-10-24 incident:
+      // chip said GLM 5.3 while the session ran pay-per-use deepseek-v4-pro).
       const modelId =
-        bridgeActive && bridgeSelection ? bridgeSelection.modelId : sentWith;
+        bridgeActive && bridgeSelection && !bridgeStale ? bridgeSelection.modelId : sentWith;
       const modelLabel =
-        bridgeActive && bridgeSelection
+        bridgeActive && bridgeSelection && !bridgeStale
           ? bridgeSelection.label
           : (sentWith && caps?.models.find((m) => m.id === sentWith)?.label) || sentWith || null;
       const effortOpts = caps?.effortOptions ?? [];
@@ -1649,6 +1670,7 @@ export function Composer({
       imageAttachments,
       bridgeActive,
       bridgeSelection,
+      bridgeStale,
     ],
   );
 
@@ -2091,7 +2113,7 @@ export function Composer({
   // migrate them against this catalog so hiding and order survive the merge.
   const effectiveModelPreferences = useMemo(() => expandHiddenProviders(modelPreferences, allLibraryGroups), [modelPreferences, allLibraryGroups]);
   const displayLibraryModel = allLibraryGroups.flatMap(group => group.rows.map(row => ({ group, row }))).find(({ row }) =>
-    bridgeActive && bridgeSelection ? row.bridge?.entryId === bridgeSelection.entryId && row.bridge.modelId === bridgeSelection.modelId
+    bridgeActive && bridgeSelection && !bridgeStale ? row.bridge?.entryId === bridgeSelection.entryId && row.bridge.modelId === bridgeSelection.modelId
       : row.native?.id === displayModel || (row.bridge != null && displayModel === nativeBridgeModelId(row.bridge.modelId)));
   const displayModelDef =
     displayModel && caps?.models
@@ -2108,11 +2130,13 @@ export function Composer({
         .filter((value, index, list) => value && list.indexOf(value) === index)
         .join("\n")
     : (displayModelFull ?? "Choose model");
-  /** Cross-use chip display — local state, independent of agent advertisement. */
+  /** Cross-use chip display — local state, independent of agent advertisement.
+   *  Stale bindings (agent reports a different shared id) hide the chip so the
+   *  generic model chip shows what is actually running. */
   const bridgeChipLabel =
-    bridgeActive && bridgeSelection ? (displayLibraryModel ? `${displayLibraryModel.group.label} · ${displayLibraryModel.row.label}` : bridgeSelection.label) : null;
+    bridgeActive && bridgeSelection && !bridgeStale ? (displayLibraryModel ? `${displayLibraryModel.group.label} · ${displayLibraryModel.row.label}` : bridgeSelection.label) : null;
   const bridgeChipTitle =
-    bridgeActive && bridgeSelection
+    bridgeActive && bridgeSelection && !bridgeStale
       ? [`共享 · ${bridgeSelection.label}`, bridgeSelection.preset, bridgeSelection.modelId].join("\n")
       : null;
   const displayModeLabel =

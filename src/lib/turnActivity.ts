@@ -235,7 +235,7 @@ export function isActivityEvent(event: SessionEvent): boolean {
 export type ActivityClusterUnit =
   | { kind: "row"; key: string; event: SessionEvent; index: number }
   | { kind: "activity"; key: string; items: ActivityDetailItem[] }
-  | { kind: "subagent_group"; key: string; items: ActivityDetailItem[] };
+;
 
 export function isSubagentEvent(event: SessionEvent): boolean {
   return event.type === "tool_call" && isSubagentTool(event.toolName, event.title);
@@ -252,22 +252,6 @@ export function clusterActivityRuns(
   let i = 0;
   while (i < units.length) {
     const unit = units[i]!;
-    if (isSubagentEvent(unit.event)) {
-      const start = i;
-      i += 1;
-      while (i < units.length && isSubagentEvent(units[i]!.event)) i += 1;
-      const slice = units.slice(start, i);
-      if (slice.length >= 2) {
-        clustered.push({
-          kind: "subagent_group",
-          key: `subg-${slice[0]!.index}`,
-          items: slice.map(({ event, index }) => ({ event, index })),
-        });
-      } else {
-        clustered.push({ kind: "row", ...slice[0]! });
-      }
-      continue;
-    }
     if (!isActivityEvent(unit.event)) {
       clustered.push({ kind: "row", ...unit });
       i += 1;
@@ -275,13 +259,7 @@ export function clusterActivityRuns(
     }
     const start = i;
     i += 1;
-    while (
-      i < units.length &&
-      isActivityEvent(units[i]!.event) &&
-      !isSubagentEvent(units[i]!.event)
-    ) {
-      i += 1;
-    }
+    while (i < units.length && isActivityEvent(units[i]!.event)) i += 1;
     const slice = units.slice(start, i);
     if (slice.length === 1) {
       clustered.push({ kind: "row", ...slice[0]! });
@@ -296,35 +274,6 @@ export function clusterActivityRuns(
     }
   }
   return clustered;
-}
-
-/** Consecutive nested-agent tools become a parallel grid, even with details open. */
-export function groupSubagentRuns(
-  units: { key: string; event: SessionEvent; index: number }[],
-): ActivityClusterUnit[] {
-  const grouped: ActivityClusterUnit[] = [];
-  let i = 0;
-  while (i < units.length) {
-    if (!isSubagentEvent(units[i]!.event)) {
-      grouped.push({ kind: "row", ...units[i]! });
-      i += 1;
-      continue;
-    }
-    const start = i;
-    i += 1;
-    while (i < units.length && isSubagentEvent(units[i]!.event)) i += 1;
-    const slice = units.slice(start, i);
-    if (slice.length >= 2) {
-      grouped.push({
-        kind: "subagent_group",
-        key: `subg-${slice[0]!.index}`,
-        items: slice.map(({ event, index }) => ({ event, index })),
-      });
-    } else {
-      grouped.push({ kind: "row", ...slice[0]! });
-    }
-  }
-  return grouped;
 }
 
 /** Consecutive same-kind runs (Read, Read, Edit → two groups). */
