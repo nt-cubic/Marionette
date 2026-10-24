@@ -1,5 +1,17 @@
 # 全库代码摸底报告（2026-10-24）
 
+> **落地进度（2026-10-24 晚，处理顺序 1–5 批全部完成）：**
+> ✅ P0 token 清洗 + 401/403 停用（`45b488d`）
+> ✅ 快赢工程卫生（`6b4e8b1`，noUncheckedIndexedAccess 除外——419 处需逐个定兜底，递延）
+> ✅ Rust 假死面一批（`e89a139`：debug_log 写线程、storage 原子写+恢复、git/npm/CLI 超时 kill、桥互斥、poller 出网）
+> ✅ 前端热路径一批（`e297dbe`：reportStreamInterests 浅比较、diff 1000 行上限、图片缓存 LRU）
+> ✅ 安全边界收紧（`e297dbe` + `bd56d7b`：urlTransform 协议白名单、CSP、read_image 只收图片）
+> ⬜ 巨型文件拆分（第 6 批）与 P2 长尾未动。
+> 两处审计项经核对已过时：`turnDelivery memoize`——现实现已在 SessionView 的完整依赖 useMemo 内，
+> 无需再改；`Composer localStorage 草稿防抖`——草稿缓存现已是内存 Map（非 localStorage），无需防抖。
+> `read_image`/assetProtocol 未按「cwd 白名单」收窄：拖拽附件与 annotator 读用户自选的任意目录文件，
+> 收窄即破功能；改为图片格式白名单（`bd56d7b`），取舍已在提交信息记录。
+
 > 一次性全面体检的存档记录。方法：约 10 万行第一方代码切成 10 个子系统块，10 个 GLM-5.3 只读子代理
 > 并行评审（grep 先行、限读片段、限工具调用；其中 1 个因 Zhipu 限流重跑成功），主代理对每份报告的
 > 关键 file:line 论断逐条抽查——抽查 20+ 处全部属实，两处措辞修正、一处文件存在性修正
@@ -10,6 +22,7 @@
 > app.css 9564→10678、Composer.tsx 3661→3717、MarkdownBody.tsx 310→371（urlTransform 267→328）、
 > acpTranscript.ts 1859→1885（`[...current]` 复制点 1461/1470/1515→1493/1505/1585）、App.tsx 8050→8125、
 > acp.rs 7074→7082、commands.rs ≈+37（npm_install_global 531-533→570）。动手前先按内容 grep 定位，勿直接跳行号。
+> **落地修复（同日晚）又使行号继续漂移；本文件的行号仅对 75b952c 有意义。**
 >
 > **状态约定：修复后在对应条目前加 ✅ 并注明提交号；条目全部处理完后本文件挪 `archive/`。**
 
@@ -38,7 +51,7 @@
 
 ## 🔴 P0 — 立即处理
 
-### Telegram bot token 明文落 `dev.log`（两处泄漏点，同一根因）
+### ✅ Telegram bot token 明文落 `dev.log`（两处泄漏点，同一根因）—— 修于 `45b488d`
 
 - **点 1** `src-tauri/src/telegram_remote.rs:2184`：poller 对 getUpdates 响应直接
   `.map_err(|e| e.to_string())`。
@@ -57,7 +70,7 @@
 
 ## 🟠 P1 — 显著问题（按主题分组，关键行均已亲验）
 
-### A. 前端热路径性能 —— 「事件洪泛→假死」的结构性根源
+### A. 前端热路径性能 —— 部分修复（`e297dbe`：reportStreamInterests、diff 上限、图片缓存 LRU；turnDelivery 已在 useMemo 内无需改）
 
 App 层的 50ms 批处理（`ACP_EVENT_FLUSH_MS = 50`，批内逐事件 try/catch 隔离）只是降级；
 lib/组件层单次成本仍随数据量线性/平方放大，流式 20-50Hz 时被乘出来。
@@ -83,7 +96,7 @@ lib/组件层单次成本仍随数据量线性/平方放大，流式 20-50Hz 时
 | `src/components/UnifiedDiffView.tsx:58-111` | diff 无行数上限：单卡可达数千行 × 6-7 span → 数万 DOM；ClippedBody 只裁视口不裁 DOM | parse 后截断（如前 1000 行 + 省略提示） |
 | `src/components/MarkdownBody.tsx:88` | 模块级图片 base64 缓存无上限、无 LRU，长会话内存单调涨 | 条目上限（如 50 张 LRU）或随会话清理 |
 
-### B. Rust 热路径 / 假死面
+### B. Rust 热路径 / 假死面 —— 已修一批（`e89a139`：debug_log 写线程、storage 原子写、git/npm/CLI 超时、agent_update kill、桥互斥、poller 出网改线程 + enqueue；acp.rs start() 锁内 I/O 未动，随拆分批次处理）
 
 | 位置 | 问题 | 建议 |
 |---|---|---|
@@ -96,7 +109,7 @@ lib/组件层单次成本仍随数据量线性/平方放大，流式 20-50Hz 时
 | `src-tauri/src/telegram_remote.rs:2342, 2373-2389, 2413` | poller 线程内同步 `send_message`（阻塞 HTTP），每条未知命令把长轮询串行卡住；已有专用 sender 线程（1739）却未走 | 回复全部改 `enqueue_send` |
 | `src-tauri/src/model_bridge.rs:1549-1560` | bindings / zcode 的 load→merge→save 序列无进程内互斥：两会话并发 spawn 触发两次外科手术，后写覆盖前写 | 桥写入入口加 Mutex 串行化 read-modify-write |
 
-### C. 安全与信任边界
+### C. 安全与信任边界 —— 已修（`e297dbe`：urlTransform 协议白名单 + CSP；`bd56d7b`：read_image 图片格式白名单；assetProtocol 维持 `**`，理由见文首落地进度注）
 
 | 位置 | 问题 | 建议 |
 |---|---|---|
@@ -105,14 +118,14 @@ lib/组件层单次成本仍随数据量线性/平方放大，流式 20-50Hz 时
 | `src-tauri/tauri.conf.json:29-31` | assetProtocol 启用且 scope `["**"]`，整个文件系统经 asset: 可读 | 收窄到会话/图片目录白名单 |
 | `src-tauri/src/commands.rs:2155-2240` | `read_image_data_url` 接受任意绝对路径无根约束，≤12MB 任意本地文件可 base64 进模型上下文；`resolve_image_path` 后缀模糊匹配可能命中别的文件 | 限定 session cwd + `~/.marionette/` 白名单 |
 
-### D. 数据安全 / 存储耐久
+### D. 数据安全 / 存储耐久 —— 已修（`e89a139`：storage 全部索引写走 write_atomic + .bak 恢复 + .corrupt 留尸；model_bridge.rs:801 的 from_str 失败即整体替换随拆分批次复查）
 
 | 位置 | 问题 | 建议 |
 |---|---|---|
 | `src-tauri/src/storage.rs:1126-1139`（配合 45-52, 35） | `write_sessions`/`write_projects` 非原子 `fs::write`：断电截断 `projects.json` 后 `from_global_dir` 直接 Err，无备份无修复 → 存储整体变砖 | `.tmp` + rename（参考 `memory.rs:130-141` 的仓库最佳实践）；启动损坏从 `.bak` 恢复 |
 | `src-tauri/src/model_bridge.rs:801-805` | zcode 合并时 `from_str(...).ok()` 失败即 `unwrap_or_default()`：用户 provider_config.json 半写坏后被静默整体替换、自建 provider 丢失且无留档——与 credentials.rs:289-308 的留档纪律不一致 | 整体替换前先 rename 留档（复用 archive_corrupt 模式） |
 
-### E. 工程卫生与基建
+### E. 工程卫生与基建 —— 已修一批（`6b4e8b1`：typecheck/test/verify 脚本、verify:text flag、noUnusedLocals/Parameters + 11 处死代码清理、build-now 挪 tools/、UPX fail-fast、quick 脚本、根目录残留删除含 19.8GB `.tmp-build.log`；`noUncheckedIndexedAccess` 419 处递延）
 
 | 位置 | 问题 | 建议 |
 |---|---|---|
