@@ -24,12 +24,25 @@ if errorlevel 1 (
 if not exist "node_modules\" (
   echo  [npm] installing dependencies...
   call npm install
+  if errorlevel 1 (
+    echo  [error] npm install failed - aborting.
+    pause
+    exit /b 1
+  )
 )
 
 echo  Starting Vite on 127.0.0.1:5173 ...
 start "Marionette Vite" /D "%~dp0.." cmd /c "npm run dev"
 
-timeout /t 2 /nobreak >nul
+echo  [wait] polling for Vite on 127.0.0.1:5173 ...
+set "VITE_UP="
+for /l %%i in (1,1,30) do (
+  if not defined VITE_UP (
+    netstat -ano 2>nul | findstr ":5173" | findstr "LISTENING" >nul 2>&1 && set "VITE_UP=1"
+    if not defined VITE_UP timeout /t 1 /nobreak >nul
+  )
+)
+if not defined VITE_UP echo  [warn] Vite did not report LISTENING within 30s - starting the exe anyway.
 
 echo  Starting marionette.exe
 start "" "%EXE%"

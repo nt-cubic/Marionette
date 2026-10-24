@@ -447,7 +447,9 @@ export function App() {
   const [composerAutoFocus, setComposerAutoFocus] = useState(false);
   /** Manual rename wins over any later title emitted by an agent. */
   const manuallyRenamedSessionIdsRef = useRef<Set<string>>(new Set());
-  const [viewMode, setViewMode] = useState<SessionViewMode>("clean");
+  // View-mode state is write-only now: SessionView dropped the prop, and every
+  // call site only ever resets to "clean" (kept for the reset semantics).
+  const [, setViewMode] = useState<SessionViewMode>("clean");
   const [leftCollapsed, setLeftCollapsed] = useState(IS_DETACHED_WINDOW);
   /** Ctrl+K palette: jump to any dialog / project, or run a shell action. */
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -3973,11 +3975,6 @@ export function App() {
     return eventsBySessionRef.current.get(displaySession.id) ?? EMPTY_EVENTS;
   }, [eventsTick, displaySession.id]);
 
-  const viewAllEvents = useMemo(() => {
-    void eventsTick[displaySession.id];
-    return publishedEventsForView(displaySession.id);
-  }, [eventsTick, displaySession.id]);
-
   const sessionRunning =
     displaySession.status === "running" || displaySession.status === "starting";
 
@@ -4470,7 +4467,6 @@ export function App() {
     if (agent?.transport !== "acp") return;
     void ensureAcpReady(sid).catch(() => undefined);
   }, [ensureAcpReady]);
-  const warmActiveAcp = useCallback(() => warmAcp(), [warmAcp]);
 
   /**
    * Hidden turn: an agent-side slash replay (Grok `/always-approve`) still needs
@@ -7378,8 +7374,6 @@ export function App() {
           agent={agent}
           events={events}
           session={session}
-          viewMode={viewMode}
-          openSessions={openSessions}
           lastActivityAt={lastActivityById[session.id] ?? null}
           authBanner={agentBanner[agent.id]?.message ?? null}
           bannerKind={agentBanner[agent.id]?.kind ?? "auth"}
@@ -7534,7 +7528,6 @@ export function App() {
           key={`${session.id}:${session.agentId}`}
           agent={agent}
           agents={availableAgents}
-          currentAgentId={session.agentId}
           sessionId={session.id}
           sessionStatus={session.status}
           onRestartAgentSession={handleRestartAgentSession}
@@ -7550,7 +7543,6 @@ export function App() {
               void handleCreateChatSession(session.agentId);
             }
           }}
-          lastActivityAt={lastActivityById[session.id] ?? null}
           onProviderKeysChanged={handleProviderKeysChanged}
           onAgentBinaryUpdated={handleAgentBinaryUpdated}
           onAgentsReload={async () => {

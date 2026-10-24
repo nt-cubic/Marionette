@@ -12,8 +12,10 @@ echo.
 echo  === Marionette quick rebuild ===
 echo.
 
-echo  [1/3] Stopping running Marionette instance...
-taskkill /IM marionette.exe /F >nul 2>&1
+echo  [1/3] Stopping running Marionette instance (this repo only)...
+rem Kill only instances whose exe lives under this repo - a portable build
+rem from release\ or another checkout must survive a quick rebuild.
+powershell -NoProfile -Command "$root=(Resolve-Path '%~dp0..').Path; Get-Process marionette -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($root,[StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force" >nul 2>&1
 timeout /t 1 /nobreak >nul
 
 echo  [2/3] Rebuilding debug binary (incremental)...

@@ -42,7 +42,6 @@ import {
   getBridgeModels,
   invalidateBridgeModels,
   resolveBridgeSources,
-  stripBridgeGroupPrefix,
   subscribeBridgeModels,
 } from "../lib/bridge";
 import {
@@ -116,7 +115,6 @@ import type {
 type ComposerProps = {
   agent: AgentConfig;
   agents: AgentConfig[];
-  currentAgentId: string;
   sessionId: string;
   sessionStatus: SessionStatus;
   /**
@@ -183,8 +181,6 @@ type ComposerProps = {
    * invisible and the user's next send is refused as "already in flight".
    */
   onSilentPrompt?: (text: string) => Promise<unknown>;
-  /** Last stream activity (ms) — escalates busy strip when the turn goes quiet. */
-  lastActivityAt?: number | null;
   /**
    * Provider keys were edited. The agent process reads auth.json only at
    * startup, so the parent must replace it for the new key to take effect.
@@ -506,7 +502,6 @@ export function transferEmptyDraft(toSessionId: string): void {
 export function Composer({
   agent,
   agents,
-  currentAgentId,
   sessionId,
   sessionStatus,
   capabilities: capabilitiesProp,
@@ -523,7 +518,6 @@ export function Composer({
   onWarmAgent,
   onEnsureAgentReady,
   onSilentPrompt,
-  lastActivityAt = null,
   onProviderKeysChanged,
   onAgentBinaryUpdated,
   onAgentsReload,
