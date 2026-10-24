@@ -18,6 +18,7 @@ import {
 import { BRIDGE_PRESETS, invalidateBridgeModels } from "../lib/bridge";
 import { refreshModelSources, useModelLibrary } from "../lib/modelLibrary";
 import type { AgentConfig } from "../lib/types";
+import { DialogShell } from "./DialogShell";
 
 type Props = {
   agents: AgentConfig[];
@@ -225,8 +226,14 @@ export function CredentialsDialog({ agents, onClose }: Props) {
   });
 
   return (
-    <div className="project-dialog-backdrop" onClick={busy ? undefined : onClose}>
-      <div className="project-dialog provider-dialog credentials-dialog" onClick={(e) => e.stopPropagation()}>
+    <DialogShell
+      className="project-dialog-backdrop"
+      dialogClassName="project-dialog provider-dialog credentials-dialog"
+      label="API 与登录凭证"
+      onClose={() => {
+        if (!busy) onClose();
+      }}
+    >
         <div className="project-dialog__header">API 与登录凭证</div>
         <div className="project-dialog__body">
           <p className="provider-dialog__lead">
@@ -460,7 +467,6 @@ export function CredentialsDialog({ agents, onClose }: Props) {
             {saving ? "保存中…" : "保存 API"}
           </button>}
         </div>
-      </div>
-    </div>
+    </DialogShell>
   );
 }

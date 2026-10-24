@@ -188,6 +188,7 @@ import { type PlanApprovalPrompt } from "../components/PlanApprovalCard";
 import { UnifiedDiffView } from "../components/UnifiedDiffView";
 import { ProjectShelf } from "../components/ProjectShelf";
 import { CommandPalette } from "../components/CommandPalette";
+import { withViewTransition } from "../lib/viewTransition";
 import { ToastStack } from "../components/ToastStack";
 import { SessionTabs, SessionView, type ForkAnchor, type UserMessageAnchor } from "../components/SessionView";
 // 侧栏/标签栏是流式期间的重渲大户：memo 化 + useLatestCallback 稳定回调，
@@ -7327,7 +7328,12 @@ export function App() {
     }),
     onCollapse: useLatestCallback(() => setLeftCollapsed(true)),
     onExpand: useLatestCallback(() => setLeftCollapsed(false)),
-    onToggleTheme: useLatestCallback(() => setTheme((current) => nextTheme(current))),
+    onToggleTheme: useLatestCallback(() => withViewTransition(() => {
+      const next = nextTheme(theme);
+      // Paint the new palette inside the transition, not a frame later in the effect.
+      document.documentElement.dataset.theme = next;
+      setTheme(next);
+    })),
     onAddProject: useLatestCallback(() => {
       setProjectDialogOpen(true);
       setProjectError("");
@@ -7775,7 +7781,16 @@ export function App() {
                 label: leftCollapsed ? "展开左侧栏" : "收起左侧栏",
                 run: () => setLeftCollapsed((value) => !value),
               },
-              { id: "theme", label: "切换主题", run: () => setTheme((current) => nextTheme(current)) },
+              {
+                id: "theme",
+                label: "切换主题",
+                run: () =>
+                  withViewTransition(() => {
+                    const next = nextTheme(theme);
+                    document.documentElement.dataset.theme = next;
+                    setTheme(next);
+                  }),
+              },
             ]}
           />
         )}

@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Bell, BellOff, ChevronDown, ChevronRight, CloudMoon, Folder, FolderOpen, Globe, GripVertical, KeyRound, MessageSquare, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, SlidersHorizontal, SunMedium, Trash2, X, Zap } from "lucide-react";
+import { Bell, BellOff, ChevronRight, CloudMoon, Folder, FolderOpen, Globe, GripVertical, KeyRound, MessageSquare, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, SlidersHorizontal, SunMedium, Trash2, X, Zap } from "lucide-react";
 // Refresh on a project row folds CLI history into the normal session list.
 import type { AgentConfig, Project, ProxyConfig, ProxyTestResult, Session } from "../lib/types";
 import { themeToggleTitle, type ThemeMode } from "../lib/theme";
@@ -959,22 +959,49 @@ export function ProjectShelf({
     }
   })();
 
-  const gatewayButton = (
+  /** running → on, downloading/starting → busy, failed → fail, else off. */
+  const engineTone =
+    engineState?.state === "running"
+      ? "on"
+      : engineBusyTransient
+        ? "busy"
+        : engineState?.state === "failed"
+          ? "fail"
+          : "off";
+  const engineHeadline =
+    engineTone === "on"
+      ? "运行中"
+      : engineState?.state === "downloading"
+        ? "下载中"
+        : engineState?.state === "starting"
+          ? "启动中"
+          : engineTone === "fail"
+            ? "启动失败"
+            : "未启动";
+  const engineEntryHint = (() => {
+    if (!engineState) return "";
+    switch (engineState.state) {
+      case "running":
+        return `运行中 · ${engineState.port}`;
+      case "downloading":
+        return engineState.total > 0
+          ? `下载 ${Math.min(100, Math.round((engineState.downloaded / engineState.total) * 100))}%`
+          : "下载中…";
+      case "starting":
+        return "启动中…";
+      case "failed":
+        return "启动失败";
+      default:
+        return "点击启动";
+    }
+  })();
+
+  const gatewayRow = (
     <button
       ref={engineBtnRef}
       type="button"
-      className={
-        engineRunning
-          ? "pill-action pill-action--icon pill-action--sm sidebar-footer__button is-engine-on"
-          : "pill-action pill-action--icon pill-action--sm sidebar-footer__button is-engine-off"
-      }
-      title={
-        engineRunning
-          ? `模型共享 ${engineStatusLine} · 点此查看`
-          : "模型共享未运行 · 点击启动并查看"
-      }
-      aria-label={engineRunning ? "模型共享（运行中）" : "模型共享（未运行）"}
-      aria-pressed={engineRunning}
+      className={`engine-entry is-${engineTone}${engineOpen ? " is-open" : ""}`}
+      aria-label={`模型共享 · ${engineHeadline}`}
       aria-haspopup="dialog"
       aria-expanded={engineOpen}
       onClick={() => {
@@ -989,12 +1016,15 @@ export function ProjectShelf({
             // The popover may be gone by now; say how the start went.
             if (snapshot?.state === "running") showToast({ text: "模型共享已启动", tone: "ok" });
             else if (snapshot === null || snapshot.state === "failed")
-              showToast({ text: "模型共享没能启动", detail: "点左下角互联图标查看原因", tone: "error" });
+              showToast({ text: "模型共享没能启动", detail: "点左下角「模型共享」查看原因", tone: "error" });
           });
         }
       }}
     >
-      <Network size={13} />
+      <Network size={13} aria-hidden className="engine-entry__icon" />
+      <span className="engine-entry__label">模型共享</span>
+      <span className="engine-entry__dot" aria-hidden />
+      <span className="engine-entry__hint">{engineEntryHint}</span>
     </button>
   );
 
@@ -1184,7 +1214,7 @@ export function ProjectShelf({
                   <span className="project-row__grip project-row__grip--spacer" aria-hidden />
                 )}
                 <button className="project-row__toggle" type="button" title={projectExpanded ? "Collapse project" : "Expand project"} aria-label={projectExpanded ? `Collapse ${project.name}` : `Expand ${project.name}`} aria-expanded={projectExpanded} onClick={() => toggleProject(project.id)}>
-                  {projectExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                  <ChevronRight size={13} className={`project-row__chev${projectExpanded ? " is-open" : ""}`} />
                 </button>
                 <button
                   className="project-row__select"
@@ -1639,11 +1669,11 @@ export function ProjectShelf({
         </section>
       )}
 
+      {gatewayRow}
       <div className="sidebar-footer">
         {themeButton}
         {notifyButton}
         {proxyButton}
-        {gatewayButton}
         {telegramButton}
         <button className="pill-action pill-action--icon pill-action--sm sidebar-footer__button sidebar-footer__button--collapse" type="button" title={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} aria-label={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} onClick={collapsed ? onExpand : onCollapse}>
           {collapsed ? <PanelLeftOpen size={13} /> : <PanelLeftClose size={13} />}
@@ -1728,7 +1758,7 @@ export function ProjectShelf({
       {engineOpen && engineAnchor && (
         <div
           ref={enginePopRef}
-          className="proxy-popover engine-popover"
+          className="proxy-popover engine-panel"
           role="dialog"
           aria-label="模型共享"
           style={{ left: engineAnchor.left, bottom: window.innerHeight - engineAnchor.top + 6 }}
@@ -1744,22 +1774,43 @@ export function ProjectShelf({
               <X size={12} />
             </button>
           </div>
-          <p className="engine-popover__status" data-state={engineState?.state ?? "unknown"}>
-            {engineStatusLine}
-          </p>
-          {engineRunning ? (
-            <>
-              <div className="proxy-popover__hint">
-                已连接模型共享。可在「模型与来源」查看已发现的配置和可用模型。
+
+          {/* Status, and the one action that matters right now. */}
+          <section className={`engine-panel__status is-${engineTone}`}>
+            <div className="engine-panel__state">
+              <span className="engine-panel__dot" aria-hidden />
+              <strong>{engineHeadline}</strong>
+              {engineState?.state === "running" && (
+                <span className="engine-panel__where">127.0.0.1:{engineState.port}</span>
+              )}
+            </div>
+            {engineState?.state === "running" && (
+              <p className="engine-panel__note">
+                {engineState.reused
+                  ? "复用本机已在运行的实例 · 由它自己的终端管理"
+                  : `magpie ${engineState.version ?? ""} · 已接入的 agent 可直接用共享模型`.replace("  ", " ")}
+              </p>
+            )}
+            {engineState?.state === "downloading" && (
+              <div className="engine-panel__progress" aria-label={engineStatusLine}>
+                <i
+                  style={{
+                    width: `${engineState.total > 0 ? Math.min(100, (engineState.downloaded / engineState.total) * 100) : 8}%`,
+                  }}
+                />
               </div>
-              {engineState?.reused ? (
-                <div className="proxy-popover__hint">
-                  复用的自装实例不由 Marionette 停止（在它自己的终端里管理）。
-                </div>
-              ) : (
+            )}
+            {engineState?.state === "failed" && (
+              <p className="engine-panel__error">{engineState.error.slice(0, 240)}</p>
+            )}
+            {(!engineState || engineState.state === "absent") && (
+              <p className="engine-panel__note">把各家 agent 的模型与密钥汇到一个本地网关，任何已接入的 agent 都能用。</p>
+            )}
+            {engineRunning ? (
+              !engineState?.reused && (
                 <button
                   type="button"
-                  className="engine-popover__stop"
+                  className="engine-panel__action is-quiet"
                   title="停止网关进程；正在用共享模型的会话会断流，随时可从左下角再次启动"
                   onClick={() => {
                     void engineStop().then(() => refreshEngine());
@@ -1767,98 +1818,127 @@ export function ProjectShelf({
                 >
                   停止网关
                 </button>
-              )}
-            </>
-          ) : (
-            <button
-              type="button"
-              className="engine-popover__start"
-              disabled={engineBusyTransient}
-              onClick={() => {
-                void engineEnable().then((snapshot) => {
-                  if (snapshot) setEngineState(snapshot);
-                  refreshEngine();
-                });
-              }}
-            >
-              {engineBusyTransient ? "准备中…" : engineState?.state === "failed" ? "重试启动" : "启动网关"}
-            </button>
-          )}
-          <div className="engine-popover__update">
-            <div className="engine-popover__update-row">
-              <span className="engine-popover__update-meta">
-                {engineUpdateInfo
-                  ? `本机 ${engineUpdateInfo.currentVersion ?? "未安装"}${
-                      engineUpdateInfo.latestVersion
-                        ? ` · 最新 ${engineUpdateInfo.latestVersion}`
-                        : ""
-                    }${
-                      engineUpdateInfo.embeddedVersion
-                        ? ` · 出厂 ${engineUpdateInfo.embeddedVersion}`
-                        : ""
-                    }`
-                  : "可检查 magpie 稳定版更新（约 48 MB）"}
-              </span>
+              )
+            ) : (
               <button
                 type="button"
-                className="engine-popover__link"
+                className="engine-panel__action"
+                disabled={engineBusyTransient}
+                onClick={() => {
+                  void engineEnable().then((snapshot) => {
+                    if (snapshot) setEngineState(snapshot);
+                    refreshEngine();
+                  });
+                }}
+              >
+                {engineBusyTransient ? "准备中…" : engineState?.state === "failed" ? "重试启动" : "启动网关"}
+              </button>
+            )}
+          </section>
+
+          {/* Engine version: where it stands, and how to move it. */}
+          <section className="engine-panel__section">
+            <div className="engine-panel__section-head">
+              <span>引擎版本</span>
+              <button
+                type="button"
+                className="engine-panel__link"
                 disabled={engineUpdateBusy !== null || engineBusyTransient}
                 onClick={() => void handleEngineCheckUpdate()}
               >
-                <RefreshCw size={11} aria-hidden />
+                <RefreshCw size={11} aria-hidden className={engineUpdateBusy === "check" ? "is-spinning" : undefined} />
                 {engineUpdateBusy === "check" ? "检查中…" : "检查更新"}
               </button>
             </div>
-            {engineUpdateInfo?.updateAvailable && (
-              <button
-                type="button"
-                className="engine-popover__start"
-                disabled={engineUpdateBusy !== null || engineBusyTransient}
-                title="从 GitHub 下载最新稳定版，成为本机权威引擎"
-                onClick={() => void handleEngineUpdate()}
-              >
-                {engineUpdateBusy === "update"
-                  ? "更新中…"
-                  : `更新到 ${engineUpdateInfo.latestVersion}`}
-              </button>
+            {engineUpdateInfo ? (
+              <dl className="engine-panel__kv">
+                <dt>本机</dt>
+                <dd>{engineUpdateInfo.currentVersion ?? "未安装"}</dd>
+                {engineUpdateInfo.latestVersion && (
+                  <>
+                    <dt>最新</dt>
+                    <dd className={engineUpdateInfo.updateAvailable ? "is-new" : undefined}>
+                      {engineUpdateInfo.latestVersion}
+                    </dd>
+                  </>
+                )}
+                {engineUpdateInfo.embeddedVersion && (
+                  <>
+                    <dt>出厂</dt>
+                    <dd>{engineUpdateInfo.embeddedVersion}</dd>
+                  </>
+                )}
+              </dl>
+            ) : (
+              <p className="engine-panel__note">可检查 magpie 稳定版更新（约 48 MB）</p>
             )}
-            {engineUpdateInfo?.canRestoreFactory && (
-              <button
-                type="button"
-                className="engine-popover__stop"
-                disabled={engineUpdateBusy !== null || engineBusyTransient}
-                title="用本应用内嵌的出厂 magpie 覆盖本机引擎"
-                onClick={() => void handleEngineRestoreFactory()}
-              >
-                {engineUpdateBusy === "restore" ? "恢复中…" : "恢复出厂引擎"}
-              </button>
+            {(engineUpdateInfo?.updateAvailable || engineUpdateInfo?.canRestoreFactory) && (
+              <div className="engine-panel__row">
+                {engineUpdateInfo?.updateAvailable && (
+                  <button
+                    type="button"
+                    className="engine-panel__action is-small"
+                    disabled={engineUpdateBusy !== null || engineBusyTransient}
+                    title="从 GitHub 下载最新稳定版，成为本机权威引擎"
+                    onClick={() => void handleEngineUpdate()}
+                  >
+                    {engineUpdateBusy === "update" ? "更新中…" : `更新到 ${engineUpdateInfo.latestVersion}`}
+                  </button>
+                )}
+                {engineUpdateInfo?.canRestoreFactory && (
+                  <button
+                    type="button"
+                    className="engine-panel__link"
+                    disabled={engineUpdateBusy !== null || engineBusyTransient}
+                    title="用本应用内嵌的出厂 magpie 覆盖本机引擎"
+                    onClick={() => void handleEngineRestoreFactory()}
+                  >
+                    {engineUpdateBusy === "restore" ? "恢复中…" : "恢复出厂引擎"}
+                  </button>
+                )}
+              </div>
             )}
             {engineUpdateError && (
-              <p className="engine-popover__update-error" role="status">
+              <p className="engine-panel__error" role="status">
                 {engineUpdateError}
               </p>
             )}
-          </div>
-          <div className="engine-popover__footer">
-            <button type="button" className="engine-popover__link" onClick={() => { setEngineOpen(false); setModelLibraryOpen(true); }}>
-              <SlidersHorizontal size={11} aria-hidden /> 模型与来源 · 显示和排序…
+          </section>
+
+          {/* Where the models and keys are managed. */}
+          <nav className="engine-panel__nav">
+            <button
+              type="button"
+              className="engine-panel__nav-row"
+              onClick={() => {
+                setEngineOpen(false);
+                setModelLibraryOpen(true);
+              }}
+            >
+              <SlidersHorizontal size={12} aria-hidden />
+              <span>模型与来源</span>
+              <small>显示和排序</small>
+              <ChevronRight size={12} aria-hidden />
             </button>
             <button
               type="button"
-              className="engine-popover__link"
+              className="engine-panel__nav-row"
               onClick={() => {
                 setEngineOpen(false);
                 setCredentialsOpen(true);
               }}
             >
-              <KeyRound size={11} aria-hidden /> 管理密钥与来源…
+              <KeyRound size={12} aria-hidden />
+              <span>密钥与来源</span>
+              <small>添加、扫描</small>
+              <ChevronRight size={12} aria-hidden />
             </button>
-            {engineRunning && (
-              <p className="engine-popover__credit">
-                {magpieCredit(engineState?.state === "running" ? engineState.version : undefined)}
-              </p>
-            )}
-          </div>
+          </nav>
+          {engineRunning && (
+            <p className="engine-panel__credit">
+              {magpieCredit(engineState?.state === "running" ? engineState.version : undefined)}
+            </p>
+          )}
         </div>
       )}
       {tgOpen && tgAnchor && (

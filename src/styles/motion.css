@@ -55,8 +55,37 @@
   transform: rotate(90deg);
 }
 
-.turn-delivery__fold {
+.turn-delivery__fold,
+.project-row__chev {
   transition: transform var(--dur-base) var(--ease-out);
+}
+
+.project-row__chev.is-open {
+  transform: rotate(90deg);
+}
+
+/* A delivery card's file list, opened by hand (it is local state, so a
+   virtual remount comes back closed and never replays this). */
+.turn-delivery {
+  animation: m-reveal var(--dur-base) var(--ease-out) backwards;
+}
+
+/* ------------------------------------------------------------------
+ * Data that changes in place: bars follow the number instead of jumping
+ * ------------------------------------------------------------------ */
+
+.usage-meter__track span {
+  transition: width var(--dur-slow) var(--ease-out);
+}
+
+/* ------------------------------------------------------------------
+ * Theme switch: the whole window cross-fades (withViewTransition)
+ * ------------------------------------------------------------------ */
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 220ms;
+  animation-timing-function: var(--ease-standard);
 }
 
 /* Body of a row the user just opened. */
@@ -137,14 +166,12 @@
 .composer-menu,
 .link-menu,
 .split-beside-menu,
-.engine-popover,
 .proxy-popover {
   animation: m-menu var(--dur-base) var(--ease-out) backwards;
 }
 
 /* Composer menus and the shelf popovers open upward from their anchor. */
 .composer-menu,
-.engine-popover,
 .proxy-popover {
   transform-origin: bottom center;
 }
