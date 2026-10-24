@@ -316,7 +316,7 @@ export function SessionTabs({
     setRenamingId(null);
   };
 
-  const clearTabDragUi = () => {
+  const clearTabDragUi = useCallback(() => {
     setDraggingTabId(null);
     setGhost(null);
     ghostRef.current = null;
@@ -327,10 +327,10 @@ export function SessionTabs({
       void setMergeHighlight(false);
     }
     document.body.classList.remove("is-tab-detaching");
-  };
+  }, [setDraggingTabId, setGhost, setMergeHighlight]);
 
   /** Throttled check: is the pointer over the main window (merge drop target)? */
-  const pollMergeTarget = () => {
+  const pollMergeTarget = useCallback(() => {
     const poll = mergePollRef.current;
     const now = Date.now();
     if (poll.inFlight || now - poll.last < 100) return;
@@ -349,9 +349,9 @@ export function SessionTabs({
       .finally(() => {
         poll.inFlight = false;
       });
-  };
+  }, [setMergeHover, setMergeHighlight]);
 
-  const placeGhost = (s: Session, clientX: number, clientY: number) => {
+  const placeGhost = useCallback((s: Session, clientX: number, clientY: number) => {
     const next: TearGhost = {
       session: s,
       x: clientX - GHOST_OFFSET_X,
@@ -359,9 +359,9 @@ export function SessionTabs({
     };
     ghostRef.current = next;
     setGhost(next);
-  };
+  }, [setGhost]);
 
-  const onTabPointerDown = (openSession: Session, event: ReactPointerEvent<HTMLButtonElement>) => {
+  const onTabPointerDown = useCallback((openSession: Session, event: ReactPointerEvent<HTMLButtonElement>) => {
     if (renamingId || event.button !== 0) return;
     if (detachedMode) {
       if (!onTabMergeBack) return;
@@ -380,9 +380,9 @@ export function SessionTabs({
     } catch {
       /* optional */
     }
-  };
+  }, [renamingId, detachedMode, onTabMergeBack, onTabPopOut, onTabDragEnd]);
 
-  const onTabPointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
+  const onTabPointerMove = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
     const drag = tabDragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
 
@@ -421,9 +421,9 @@ export function SessionTabs({
         void setMergeHighlight(false);
       }
     }
-  };
+  }, [onTabDragPreview, onTabMergeBack, placeGhost, pollMergeTarget, setDraggingTabId, setGhost, setMergeHover, setMergeHighlight]);
 
-  const onTabPointerUp = (event: ReactPointerEvent<HTMLButtonElement>) => {
+  const onTabPointerUp = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
     const drag = tabDragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     try {
@@ -459,9 +459,9 @@ export function SessionTabs({
 
     // Pure click (no drag) → select.
     if (!wasArmed) onTabSelect(target);
-  };
+  }, [clearTabDragUi, onTabDragEnd, onTabMergeBack, onTabPopOut, onTabSelect]);
 
-  const onTabPointerCancel = (event: ReactPointerEvent<HTMLButtonElement>) => {
+  const onTabPointerCancel = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
     const drag = tabDragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     const target = drag.session;
@@ -469,7 +469,7 @@ export function SessionTabs({
     tabDragRef.current = null;
     clearTabDragUi();
     if (wasArmed) onTabDragEnd?.(target, event.clientX, event.clientY, true);
-  };
+  }, [clearTabDragUi, onTabDragEnd]);
 
   useEffect(() => {
     if (!draggingTabId || detachedMode) return;
@@ -486,12 +486,32 @@ export function SessionTabs({
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [draggingTabId, detachedMode, onTabDragEnd]);
+  }, [draggingTabId, detachedMode, onTabDragEnd, clearTabDragUi]);
 
-  const releaseCloseFreeze = () => {
+  const releaseCloseFreeze = useCallback(() => {
     if (frozenTabWidthRef.current == null) return;
     setFrozenTabWidth(null);
-  };
+  }, [setFrozenTabWidth]);
+
+  const tabClassById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const openSession of openSessions) {
+      map.set(
+        openSession.id,
+        [
+          "editor-tab",
+          `is-${openSession.status}`,
+          openSession.id === session.id ? "is-active" : "",
+          draggingTabId === openSession.id ? "is-dragging-out" : "",
+          ghost?.session.id === openSession.id ? "is-tear-source" : "",
+          doneUnreadIds?.has(openSession.id) ? "is-done" : "",
+        ]
+          .filter(Boolean)
+          .join(" "),
+      );
+    }
+    return map;
+  }, [openSessions, session.id, draggingTabId, ghost, doneUnreadIds]);
 
   return (
     <>
@@ -514,22 +534,11 @@ export function SessionTabs({
         const busy =
           openSession.status === "running" || openSession.status === "starting";
         const isRenaming = renamingId === openSession.id;
-        const isDragging = draggingTabId === openSession.id;
-        const isGhostSource = ghost?.session.id === openSession.id;
         const doneUnread = doneUnreadIds?.has(openSession.id) ?? false;
         return (
             <div
               key={openSession.id}
-              className={[
-                "editor-tab",
-                `is-${openSession.status}`,
-                openSession.id === session.id ? "is-active" : "",
-                isDragging ? "is-dragging-out" : "",
-                isGhostSource ? "is-tear-source" : "",
-                doneUnread ? "is-done" : "",
-              ]
-                .filter(Boolean)
-                .join(" ")}
+              className={tabClassById.get(openSession.id)}
               role="tab"
               aria-selected={openSession.id === session.id}
               data-tauri-drag-region="false"
@@ -1621,7 +1630,9 @@ function CleanPlaceholder({
   /** Per-dialog list camera — survives tab switches in this shell. */
   const scrollSnapsRef = useRef<Map<string, TranscriptScrollSnap>>(new Map());
   const sessionIdRef = useRef(session.id);
-  sessionIdRef.current = session.id;
+  useLayoutEffect(() => {
+    sessionIdRef.current = session.id;
+  }, [session.id]);
   const isRunning = session.status === "running";
 
   /**
@@ -1634,7 +1645,9 @@ function CleanPlaceholder({
    * Thaw bumps freezeGen so the list catches up to the live stream.
    */
   const eventsRef = useRef(events);
-  eventsRef.current = events;
+  useLayoutEffect(() => {
+    eventsRef.current = events;
+  }, [events]);
   const selectingRef = useRef(false);
   const frozenEventsRef = useRef<SessionEvent[] | null>(null);
   const [freezeGen, setFreezeGen] = useState(0);
@@ -1978,21 +1991,28 @@ function CleanPlaceholder({
 
   // Non-virtual cards (markdown / images) grow after first layout. Observe
   // children so a tail pin survives that growth the same way ClippedBody does.
+  const pinIfNeeded = useCallback(() => {
+    const el = listRef.current;
+    if (!el) return;
+    if (selectionLocked) return;
+    if (!stickToBottomRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [selectionLocked]);
+
   useLayoutEffect(() => {
     const el = listRef.current;
     if (!el) return;
-    const pinIfNeeded = () => {
-      if (selectionLocked) return;
-      if (!stickToBottomRef.current) return;
-      el.scrollTop = el.scrollHeight;
-    };
     pinIfNeeded();
     if (typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(pinIfNeeded);
     ro.observe(el);
     for (const child of el.children) ro.observe(child);
     return () => ro.disconnect();
-  }, [scrollKey, selectionLocked, renderUnits.length, virtual.totalSize]);
+  }, [session.id, renderUnits.length, pinIfNeeded]);
+
+  useLayoutEffect(() => {
+    pinIfNeeded();
+  }, [virtual.totalSize, pinIfNeeded]);
 
   // Outline jump when the target card is not mounted (virtual window).
   useEffect(() => {

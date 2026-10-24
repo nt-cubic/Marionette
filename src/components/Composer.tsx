@@ -112,6 +112,14 @@ import type {
   SessionStatus,
 } from "../lib/types";
 
+let suggestionsEnabledCache: boolean | undefined;
+const suggestionsEnabledCached = (): boolean => {
+  if (suggestionsEnabledCache === undefined) {
+    suggestionsEnabledCache = suggestionsEnabled();
+  }
+  return suggestionsEnabledCache;
+};
+
 type ComposerProps = {
   agent: AgentConfig;
   agents: AgentConfig[];
@@ -781,8 +789,8 @@ export function Composer({
   useEffect(() => {
     try {
       window.localStorage.setItem(COMPOSER_HEIGHT_KEY, String(composerHeight));
-    } catch {
-      // ignore
+    } catch (error) {
+      console.warn("[Composer] failed to persist composer height", error);
     }
   }, [composerHeight]);
 
@@ -790,8 +798,8 @@ export function Composer({
   useEffect(() => {
     try {
       window.localStorage.setItem(SEND_ON_ENTER_KEY, sendOnEnter ? "1" : "0");
-    } catch {
-      // ignore
+    } catch (error) {
+      console.warn("[Composer] failed to persist send-on-enter preference", error);
     }
   }, [sendOnEnter]);
 
@@ -1644,16 +1652,20 @@ export function Composer({
     ],
   );
 
-  const submit = () => {
+  const submit = useCallback(() => {
     // Empty draft is OK when parent has quote-pins (App merges on send).
     submitText(draft);
-  };
+  }, [submitText, draft]);
 
-  const suggestRound = suggestionRoundKey(sessionId, sessionEvents);
+  const suggestRound = useMemo(
+    () => suggestionRoundKey(sessionId, sessionEvents),
+    [sessionId, sessionEvents],
+  );
   const suggestions: Suggestion[] = useMemo(() => {
-    if (!suggestionsEnabled()) return [];
+    if (!suggestionsEnabledCached()) return [];
     if (isComposing) return [];
     if (dismissedSuggestKey === suggestRound) return [];
+    if (draft.trim() && !(draftAfterDrop != null && draft === draftAfterDrop)) return [];
     return suggestFor({
       events: sessionEvents,
       sessionStatus,
