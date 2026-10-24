@@ -2,6 +2,9 @@
 // kernel adds them to i18n.js's (magpie.strings).
 magpie.strings({
   zh: {
+    "Other folders": "其他文件夹",
+    "Temporary folders, the disk's root and apps' hidden folders": "临时文件夹、磁盘根目录和应用的隐藏文件夹",
+    "Delete all sessions": "删除全部会话",
     "{n} subagent": "{n} 个子代理",
     "{n} subagents": "{n} 个子代理",
     "Relocate project": "迁移项目会话",
@@ -71,6 +74,9 @@ magpie.strings({
     "Searched what was said in the latest {n} of {total} sessions.": "已搜索最近 {n} 个会话的对话内容（共 {total} 个）。",
   },
   "zh-TW": {
+    "Other folders": "其他資料夾",
+    "Temporary folders, the disk's root and apps' hidden folders": "暫存資料夾、磁碟根目錄和應用程式的隱藏資料夾",
+    "Delete all sessions": "刪除全部會話",
     "{n} subagent": "{n} 個子代理",
     "{n} subagents": "{n} 個子代理",
     "Relocate project": "遷移專案會話",
@@ -140,6 +146,9 @@ magpie.strings({
     "Searched what was said in the latest {n} of {total} sessions.": "已搜尋最近 {n} 個會話的對話內容（共 {total} 個）。",
   },
   ja: {
+    "Other folders": "その他のフォルダ",
+    "Temporary folders, the disk's root and apps' hidden folders": "一時フォルダ、ディスクのルート、アプリの隠しフォルダ",
+    "Delete all sessions": "すべてのセッションを削除",
     "{n} subagent": "{n} 個のサブエージェント",
     "{n} subagents": "{n} 個のサブエージェント",
     "Relocate project": "プロジェクトを移動",
@@ -209,6 +218,9 @@ magpie.strings({
     "Searched what was said in the latest {n} of {total} sessions.": "最新 {n} 件の会話の内容を検索しました（全 {total} 件）。",
   },
   de: {
+    "Other folders": "Weitere Ordner",
+    "Temporary folders, the disk's root and apps' hidden folders": "Temporäre Ordner, das Stammverzeichnis und versteckte Ordner von Apps",
+    "Delete all sessions": "Alle Sitzungen löschen",
     "{n} subagent": "{n} Subagent",
     "{n} subagents": "{n} Subagenten",
     "Relocate project": "Projekt verschieben",

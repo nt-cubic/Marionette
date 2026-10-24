@@ -247,26 +247,9 @@ func setModelEfforts(ref string, efforts []string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	all := p.Known(model)
-	var keep []string
-	for _, e := range efforts {
-		e = strings.ToLower(strings.TrimSpace(e))
-		if e == "" {
-			continue
-		}
-		if len(all) == 0 && !slices.Contains(Levels, e) {
-			return false, fmt.Errorf("%q is not a reasoning level (they are %s)", e, strings.Join(Levels, ", "))
-		}
-		if len(all) > 0 && !slices.Contains(all, e) {
-			return false, fmt.Errorf("%s/%s has no reasoning level %q (it has %s)", p.ID, model, e, strings.Join(all, ", "))
-		}
-		if !slices.Contains(keep, e) {
-			keep = append(keep, e)
-		}
-	}
-	keep = effortsKept(all, keep) // in the vendor's order
-	if len(keep) == len(all) {
-		keep = nil
+	keep, err := keptEfforts(p, model, efforts)
+	if err != nil {
+		return false, err
 	}
 	s := settings.Load()
 	key := p.ID + "/" + model
@@ -289,6 +272,35 @@ func setModelEfforts(ref string, efforts []string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// keptEfforts is the levels a user keeps of p's model as ModelEfforts
+// holds them: those given, checked against the model's own (or Levels, for
+// a model with none known), in the vendor's order, and none when they are
+// all of them.
+func keptEfforts(p *Provider, model string, efforts []string) ([]string, error) {
+	all := p.Known(model)
+	var keep []string
+	for _, e := range efforts {
+		e = strings.ToLower(strings.TrimSpace(e))
+		if e == "" {
+			continue
+		}
+		if len(all) == 0 && !slices.Contains(Levels, e) {
+			return nil, fmt.Errorf("%q is not a reasoning level (they are %s)", e, strings.Join(Levels, ", "))
+		}
+		if len(all) > 0 && !slices.Contains(all, e) {
+			return nil, fmt.Errorf("%s/%s has no reasoning level %q (it has %s)", p.ID, model, e, strings.Join(all, ", "))
+		}
+		if !slices.Contains(keep, e) {
+			keep = append(keep, e)
+		}
+	}
+	keep = effortsKept(all, keep) // in the vendor's order
+	if len(keep) == len(all) {
+		keep = nil
+	}
+	return keep, nil
 }
 
 // SetModelReasonless says whether a provider's model, spelt

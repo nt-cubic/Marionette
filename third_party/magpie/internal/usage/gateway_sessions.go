@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/sessions"
 )
 
@@ -92,7 +93,7 @@ func GatewaySessions(since time.Time, nativeKeys map[string]bool) []GatewaySessi
 	}
 	// any other start is read from the log, and not kept
 	snapshot := readLogSnapshot()
-	out, _ := buildGatewaySessions(snapshot, since, nativeKeys)
+	out, _ := buildGatewaySessions(snapshot, since, nativeKeys, provider.UsageAlias())
 	return out
 }
 
@@ -201,12 +202,14 @@ var gatewayCache struct {
 func gatewayProjection() gatewayProjectionEntry {
 	snapshot := readLogSnapshot()
 	meta := usagePriceCacheKey(time.Now())
+	// read before the lock: it reads settings.json
+	alias := provider.UsageAlias()
 	gatewayCache.Lock()
 	defer gatewayCache.Unlock()
 	if e := gatewayCache.entry; e != nil && e.version == snapshot.version && e.meta == meta && e.zone == time.Local {
 		return *e
 	}
-	ss, _ := buildGatewaySessions(snapshot, time.Time{}, nil)
+	ss, _ := buildGatewaySessions(snapshot, time.Time{}, nil, alias)
 	e := gatewayProjectionEntry{version: snapshot.version, meta: meta, zone: time.Local, sessions: ss, byID: make(map[string]int, len(ss))}
 	for i, s := range ss {
 		e.byID[s.Agent+"|"+s.ID] = i
@@ -270,7 +273,10 @@ func gatewayDays(ss []GatewaySession) []GatewayDayUsage {
 // gatewayBuilds counts the projections built from the log, for tests.
 var gatewayBuilds atomic.Int64
 
-func buildGatewaySessions(snapshot *logSnapshot, since time.Time, nativeKeys map[string]bool) ([]GatewaySession, []GatewayDayUsage) {
+// alias is the name each model's usage is counted under (provider.UsageAlias),
+// nil for each its own id: a call is priced by the id it was made under
+// first, then counted under the alias.
+func buildGatewaySessions(snapshot *logSnapshot, since time.Time, nativeKeys map[string]bool, alias func(string) string) ([]GatewaySession, []GatewayDayUsage) {
 	gatewayBuilds.Add(1)
 	priceOf := Pricer()
 	type key struct{ agent, id string }
@@ -314,11 +320,15 @@ func buildGatewaySessions(snapshot *logSnapshot, since time.Time, nativeKeys map
 			}
 		}
 		tokens := sessions.Tokens{Input: r.Input, Output: r.Output, CacheRead: r.CacheRead, CacheWrite: r.CacheWrite, CacheWrite1h: r.CacheWrite1h}
-		dk := dayKey{r.Time.In(time.Local).Format(time.DateOnly), a, r.Model}
+		model := r.Model // priced above by the id it was made under
+		if alias != nil {
+			model = keep.of(alias(model))
+		}
+		dk := dayKey{r.Time.In(time.Local).Format(time.DateOnly), a, model}
 		for _, kept := range []map[dayKey]*GatewayDayUsage{daily, perSession[k]} {
 			d := kept[dk]
 			if d == nil {
-				d = &GatewayDayUsage{Date: dk.date, Agent: a, Model: r.Model, Priced: true}
+				d = &GatewayDayUsage{Date: dk.date, Agent: a, Model: model, Priced: true}
 				kept[dk] = d
 			}
 			d.Input += tokens.Input
@@ -340,10 +350,10 @@ func buildGatewaySessions(snapshot *logSnapshot, since time.Time, nativeKeys map
 		s.CacheRead += r.CacheRead
 		s.CacheWrite += r.CacheWrite
 		s.CacheWrite1h += r.CacheWrite1h
-		m := models[k][r.Model]
+		m := models[k][model]
 		if m == nil {
-			m = &GatewayModel{Model: r.Model, Priced: true}
-			models[k][r.Model] = m
+			m = &GatewayModel{Model: model, Priced: true}
+			models[k][model] = m
 		}
 		m.addRecord(r, p)
 	})

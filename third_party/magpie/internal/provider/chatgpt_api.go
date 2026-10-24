@@ -32,11 +32,11 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/filelock"
 )
 
 // ChatGPTAPIID is the subscription's id, as a provider and in logins.json.
@@ -373,9 +373,11 @@ func siwcFromToken(tok siwcTokenReply, c siwcCreds) (siwcCreds, error) {
 var siwcDead = []string{"invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired",
 	"refresh_token_invalidated", "refresh_token_reused"}
 
-// siwcRefreshing keeps two requests from refreshing at once: the refresh
-// token rotates, and the second would send the one the first used up.
-var siwcRefreshing sync.Mutex
+// siwcRefreshing keeps two requests from refreshing at once, in this
+// magpie and across magpies (two run at once while a restart hands the
+// gateway over): the refresh token rotates, and the second would send the
+// one the first used up. The account is looked up again once it is held.
+var siwcRefreshing = filelock.Mutex{Path: func() string { return loginsPath() + ".siwc.lock" }}
 
 // siwcFresh is an account's credentials with an access token that isn't
 // about to expire, refreshed when it is, or when force is set (OpenAI

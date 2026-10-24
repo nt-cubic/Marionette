@@ -9,8 +9,10 @@ import (
 
 // A restart to update ends the gateway this process serves, and with it
 // whatever the agents have in flight through it (#577: an agent's reply
-// streaming, a Claude Code turn waiting on its caller's tool results). So a
-// restart asked for while the gateway is busy waits until it is idle:
+// streaming, a Claude Code turn waiting on its caller's tool results). On
+// a Mac or Linux it hands the gateway over instead (handover.go), and only
+// the Claude subscription's turns would be cut short (restartBusy). So a
+// restart asked for while those are busy waits until they are idle:
 // nothing in flight, no turn waiting on tools, and nothing ended in the
 // last idleSettle — the gap of a tool chain, an agent running a tool
 // between one request and the next. It waits waitMost at most; then the
@@ -41,7 +43,7 @@ func idleAt(b gateway.Busy, now time.Time) bool {
 }
 
 // idle is whether the gateway is idle now.
-func (u *updater) idle() bool { return idleAt(gatewayBusy(), time.Now()) }
+func (u *updater) idle() bool { return idleAt(restartBusy(), time.Now()) }
 
 // waitIdle has restart run once the gateway is idle; a wait under way
 // takes the newer restart (the window as it is now).
@@ -84,7 +86,7 @@ func (u *updater) waitingFor() (bool, gateway.Busy) {
 	if !w {
 		return false, gateway.Busy{}
 	}
-	return true, gatewayBusy()
+	return true, restartBusy()
 }
 
 func (u *updater) told() {
@@ -114,7 +116,7 @@ func (u *updater) waitFor(gen int) {
 			return
 		}
 		u.mu.Unlock()
-		b := gatewayBusy()
+		b := restartBusy()
 		if b.Requests != last.Requests || b.Tools != last.Tools {
 			last = b
 			u.told()

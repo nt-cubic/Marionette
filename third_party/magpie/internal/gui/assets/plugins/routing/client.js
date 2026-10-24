@@ -21,6 +21,7 @@ magpie.plugin("routing", (ctx) => {
     title: "Routing",
     html: `
     <div class="row-head"><span class="label" data-t>Routing</span><span class="rt-livedot" aria-hidden="true"></span><span class="note" data-t>live, as the gateway decides</span><span class="grow"></span>
+      <button class="text rt-gogroups" id="rtGoGroups" type="button" data-tt="Go to the routing groups, below the requests"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v9.5M4 8.5l4 4 4-4"/></svg><span data-t>Routing groups</span></button>
       <button class="text rt-newgroup" id="rtNewGroup" type="button" data-feature="groups" data-tt="Make a routing group of any models you like — agents pick it as one model"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9"/></svg><span data-t>New group</span></button>
       <button class="text rt-mask" id="rtMask" aria-pressed="false" data-tt="Mask the accounts on this page — email addresses and account names — for a screenshot to share"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.9 4.2A10.4 10.4 0 0 1 12 4c6.5 0 10 8 10 8a17.6 17.6 0 0 1-2.2 3.2M6.6 6.6C3.9 8.4 2 12 2 12s3.5 8 10 8a9.7 9.7 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2M2 2l20 20"/></svg><span data-t>Hide accounts</span></button></div>
     <section class="rt" id="rt"></section>
@@ -4003,6 +4004,7 @@ function routingPage(part) {
       "This routing group will no longer be available to agents.")) return;
     try {
       groups = groupsFrom(await api("groups/" + action, body));
+      if (action === "save" && gEdit) { gMorph = [gEdit.id, body.id]; gSaved = body.id; }
       gEdit = null;
       renderGroups();
       // The editor closed on its Save, and the page is shorter by its height: the
@@ -4015,7 +4017,7 @@ function routingPage(part) {
       // opens under (backToReader, app.js, guards the same way).
       const saved = body.id || body.from || "";
       const row = saved && document.querySelector(`#view-routing .rt-group[data-id="${CSS.escape(saved)}"]`);
-      const view = row && document.getElementById("view-routing");
+      const view = row && gFolded !== saved && document.getElementById("view-routing");
       if (view) {
         const rr = row.getBoundingClientRect(), vb = view.getBoundingClientRect();
         if (rr.bottom > vb.bottom || rr.top < vb.top) { readerScrolls(1000); row.scrollIntoView({ block: "nearest" }); }
@@ -4040,15 +4042,32 @@ function routingPage(part) {
   const deciderOf = (id) => groups?.deciders?.find((m) => m.id === splitMember(id)[0]);
   const modelOf = (id) => groups?.models.find((m) => m.id === id) || groups?.models.find((m) => m.id === splitMember(id)[0]) || deciderOf(id);
   // a group's patterns (#766, provider.IsPattern): a glob, * any run of
-  // characters over the provider/model id in any case, or re:<regexp> over
-  // the whole id. The group keeps them, and the models they match now
-  // follow those it names, in the catalog's order (Group.Matched)
+  // characters over the provider/model id, or re:<regexp> over the whole
+  // id, both in any case (provider.compilePattern). The group keeps them,
+  // and the models they match now follow those it names, in the catalog's
+  // order (Group.Matched)
   const isPattern = (s) => s.startsWith("re:") || s.includes("*");
   function patternRe(p) {
     try {
-      if (p.startsWith("re:")) return p.length > 3 ? new RegExp("^(?:" + p.slice(3) + ")$") : null;
+      if (p.startsWith("re:")) return goRe(p.slice(3));
       return new RegExp("^" + p.split("*").map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$", "i");
     } catch { return null; }
+  }
+  // goRe is a re: pattern's regexp as Go reads it, in any case: Go's
+  // leading flag group, "(?-i)" to make case matter, is JS's flags (U,
+  // ungreedy, changes no whole-id match). null when it has none or JS
+  // can't read it.
+  function goRe(src) {
+    if (!src.trim()) return null;
+    const flags = new Set(["i"]);
+    const lead = /^\(\?([imsU]*)(?:-([imsU]*))?\)/.exec(src);
+    if (lead) {
+      if (!lead[1] && !lead[2]) return null;
+      for (const f of lead[1]) if (f !== "U") flags.add(f);
+      for (const f of lead[2] || "") flags.delete(f);
+      src = src.slice(lead[0].length);
+    }
+    return new RegExp("^(?:" + src + ")$", [...flags].join(""));
   }
   // the models served now the patterns match, but those the group names
   // (at any reasoning): as provider.matchesIn finds them
@@ -4233,8 +4252,108 @@ function routingPage(part) {
       rows.push(h);
     }
     // the import box's text stays in the page as the list is drawn again
+    const was = slotsOf();
     replaceKeeping(gList, rows);
+    morphSlots(was);
     renderPools();
+  }
+  // A group's row opens into its editor and folds back into it, as a cell
+  // does on iOS (the owner, 10-23): its slot goes from the height it had to
+  // its new one, on a spring as it opens and on iOS's ease as it folds, the
+  // list below moving with it, and what is in it comes in as it does. A
+  // group saved shows it with a check by its name.
+  // gMorph: the editor's slot to the group's row after a Save, which may
+  // name the group anew (a new group, an id changed); gSaved: the group just
+  // saved
+  // gFolded: the slot whose fold keeps itself in sight, as groupAction
+  // would after a Save
+  let gMorph = null, gSaved = null, gFolded = null;
+  const slotKey = (n) => n.dataset?.gslot;
+  function slotsOf() {
+    const m = new Map(), vt = document.getElementById("view-routing").getBoundingClientRect().top;
+    for (const n of gList.children) {
+      const k = slotKey(n);
+      if (k === undefined) continue;
+      const b = n.getBoundingClientRect();
+      m.set(k, { n, h: b.height, top: b.top - vt, ed: n.classList.contains("rt-gedit") });
+    }
+    return m;
+  }
+  function morphSlots(was) {
+    const alias = gMorph, saved = gSaved;
+    gMorph = gSaved = gFolded = null;
+    if (still() || !shown()) return;
+    for (const n of gList.children) {
+      const k = slotKey(n);
+      if (k === undefined) continue;
+      const ed = n.classList.contains("rt-gedit");
+      const old = was.get(k) || (alias && alias[1] === k ? was.get(alias[0]) : undefined);
+      if (old?.n === n) continue;
+      // a new group's editor grows out of nothing at the list's top
+      const from = old ? (old.ed === ed ? null : old.h) : ed && k === "" ? 0 : null;
+      if (from != null) slotMorph(n, from, ed, old?.top);
+      if (!ed && saved === k) savedMark(n);
+    }
+  }
+  function slotMorph(n, from, opening, top) {
+    const to = n.getBoundingClientRect().height;
+    if (Math.abs(to - from) < 1) return false;
+    const shape = opening ? { duration: 570, easing: SPRING } : { duration: 420, easing: IOS_EASE };
+    n.style.overflow = "hidden";
+    const grow = n.animate([{ height: from + "px" }, { height: to + "px" }], shape);
+    grow.finished.then(() => { n.style.overflow = ""; }, () => { n.style.overflow = ""; });
+    if (!opening && top < 0) foldInSight(n, grow, from, to, top);
+    if (opening) {
+      // its parts come in from just above, one after another; those past
+      // the first dozen together
+      let i = 0;
+      for (const c of n.children) {
+        c.animate([{ opacity: 0, transform: "translateY(-6px)" }, { opacity: 1, transform: "none" }],
+          { duration: 420, delay: 40 + Math.min(i++, 12) * 18, easing: IOS_EASE, fill: "backwards" });
+      }
+    } else {
+      for (const c of n.children) c.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 300, delay: 90, easing: "ease-out", fill: "backwards" });
+    }
+  }
+  // foldInSight: an editor folded from its foot (Save and Cancel are there)
+  // would leave the page shorter under the reader, and the browser's clamp
+  // would land them at the list's foot with the row above the window. The
+  // page goes up with the fold instead, step for step with the slot's
+  // height, until the row's top is the window's — as the reader's own
+  // scroll, since it answers their click. top is how far the editor's top
+  // was above the window's; the page's scroll is read once the redraw
+  // has put it back (steady).
+  function foldInSight(n, grow, from, to, top) {
+    const view = document.getElementById("view-routing");
+    readerScrolls(1000);
+    let s0, target;
+    const step = () => {
+      if (s0 === undefined) { s0 = view.scrollTop; target = s0 + top; }
+      if (!n.isConnected) return;
+      const p = grow.playState === "finished" ? 1 : Math.min(1, Math.max(0, (from - n.getBoundingClientRect().height) / (from - to)));
+      view.scrollTop = s0 + (target - s0) * p;
+      if (p < 1 && grow.playState === "running") requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+    gFolded = n.dataset.gslot;
+  }
+  // savedMark: the row of the group just saved lights up and a check pops
+  // in by its name, then both go
+  function savedMark(row) {
+    row.animate([{ backgroundColor: "color-mix(in srgb, var(--accent) 16%, transparent)" }, { backgroundColor: "color-mix(in srgb, var(--accent) 16%, transparent)", offset: 0.35 }, { backgroundColor: "transparent" }],
+      { duration: 1400, easing: "ease-out" });
+    const nm = row.querySelector(".nm");
+    if (!nm) return;
+    const ok = el("span", "rt-gsaved");
+    ok.setAttribute("aria-hidden", "true");
+    ok.append(svg(CHECK, 11, 2));
+    nm.append(ok);
+    ok.animate([{ opacity: 0, transform: "scale(.4)" }, { opacity: 1, transform: "none" }], { duration: 570, easing: SPRING });
+    const path = ok.querySelector("path");
+    const len = path.getTotalLength?.() || 14;
+    path.animate([{ strokeDasharray: len, strokeDashoffset: len }, { strokeDasharray: len, strokeDashoffset: 0 }], { duration: 360, delay: 120, easing: IOS_EASE, fill: "backwards" });
+    ok.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 400, delay: 1500, easing: "ease-in", fill: "forwards" })
+      .finished.then(() => ok.remove(), () => ok.remove());
   }
   // Copy to share (laincatx on X): the group as text, its models, routing
   // and rules and no key (provider.ShareGroup), for anyone to paste into
@@ -4502,7 +4621,7 @@ function routingPage(part) {
   }
   function groupRow(g) {
     const row = el("div", "rt-group" + (g.ready ? "" : " off") + (g.disabled ? " disabled" : ""));
-    row.dataset.id = g.id;
+    row.dataset.id = row.dataset.gslot = g.id;
     const ics = groupHandle(g, row);
     const main = el("div", "main");
     const nm = el("div", "nm");
@@ -4713,6 +4832,7 @@ function routingPage(part) {
     for (const k of ["members", "match", "matched", "fast", "off", "rules"]) if (!Array.isArray(d[k])) d[k] = [];
     if (!d.weights || typeof d.weights !== "object") d.weights = {};
     const ed = el("div", "editor rt-gedit");
+    ed.dataset.gslot = g ? g.id : "";
     const h = el("div", "ehead");
     h.append(el("b", "", g ? g.name : t("New group")));
     if (g?.auto) h.append(el("span", "note", t("found by magpie — saving a change makes it yours")));
@@ -5869,6 +5989,38 @@ function routingPage(part) {
     if (!groups) await loadGroups();
     if (groups) newGroup(ev);
   };
+  // the head's Routing groups: the groups sit below the stage, the story
+  // and every request, a long scroll down with many models (shihh on
+  // Discord). Its click brings them to the top of the view, and the focus
+  // with them, so Tab goes on from there; the page is laid out as before
+  gsec.tabIndex = -1;
+  const headGo = $("#rtGoGroups");
+  if (headGo) headGo.onclick = (ev) => {
+    if (!window.scrollOnPurpose?.(ev)) return;
+    gsec.scrollIntoView({ block: "start", behavior: still() ? "auto" : "smooth" });
+    gsec.focus({ preventScroll: true });
+  };
+  // fitGo: it takes only room the head has spare, so nothing else in the
+  // head moves or wraps for it: named where its name fits, its arrow alone
+  // where only that does, and left out of a head with no room (a phone's)
+  const goHead = headGo?.parentElement, goGrow = goHead?.querySelector(".grow");
+  function fitGo() {
+    if (!goGrow || !goHead.offsetParent) return;
+    headGo.dataset.fit = "none";
+    const room = goGrow.getBoundingClientRect().width, gap = parseFloat(getComputedStyle(goHead).columnGap) || 0;
+    for (const fit of ["full", "icon"]) {
+      headGo.dataset.fit = fit;
+      if (room >= headGo.getBoundingClientRect().width + 6 + gap) return;
+    }
+    headGo.dataset.fit = "none";
+  }
+  let goFitting = 0;
+  const fitGoSoon = () => { if (!goFitting) goFitting = requestAnimationFrame(() => { goFitting = 0; fitGo(); }); };
+  if (goHead) {
+    const ro = new ResizeObserver(fitGoSoon);
+    for (const n of [goHead, ...goHead.querySelectorAll(".label, .note")]) ro.observe(n);
+    new MutationObserver(fitGoSoon).observe(document.documentElement, { attributes: true, attributeFilter: ["lang"] });
+  }
   const askedGroup = document.body.classList.contains("window") && params.get("newgroup");
   if (askedGroup) loadGroups().then(() => window.newGroupWith(askedGroup, ""));
   else loadGroups();

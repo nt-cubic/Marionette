@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"runtime"
 	"sort"
 	"sync"
@@ -117,18 +118,21 @@ func sessionManageRoutes(mux *http.ServeMux, w Windows) {
 	mux.HandleFunc("GET /api/sessions/manage", func(rw http.ResponseWriter, r *http.Request) {
 		looks := agentLooks()
 		out := struct {
-			Agents    []manageAgentJSON `json:"agents"`
-			Agent     string            `json:"agent"`
-			Sessions  []managedJSON     `json:"sessions"`
-			Terminal  bool              `json:"terminal"`
-			Trash     []trashedJSON     `json:"trash"`
-			TrashDir  string            `json:"trashDir"`
-			Recording bool              `json:"recording"`
+			Agents   []manageAgentJSON `json:"agents"`
+			Agent    string            `json:"agent"`
+			Sessions []managedJSON     `json:"sessions"`
+			Terminal bool              `json:"terminal"`
+			Trash    []trashedJSON     `json:"trash"`
+			TrashDir string            `json:"trashDir"`
+			// Home: the home folder, which a folder's row says as ~
+			Home      string `json:"home,omitempty"`
+			Recording bool   `json:"recording"`
 			// Recorded: some gateway conversation text is kept, to delete
 			Recorded bool `json:"recorded"`
 		}{Agents: []manageAgentJSON{}, Sessions: []managedJSON{}, Terminal: runtime.GOOS == "darwin" && !isWeb(w),
 			Trash: trashJSON(looks), TrashDir: tilde(sessions.TrashDir()), Recording: settings.Load().GatewayConversations,
 			Recorded: sessions.HasGatewayConversations()}
+		out.Home, _ = os.UserHomeDir()
 		want := r.URL.Query().Get("agent")
 		gateway := listedGateway(usage.GatewaySessions(time.Time{}, nil))
 		// a gateway session its agent keeps too is counted once; only the

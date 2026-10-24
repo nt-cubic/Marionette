@@ -97,7 +97,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // grouped as seen through the gateway, with no path
       const folder = view.locator(".sm-folder").first();
       assert.equal((await folder.locator(".fold .name").textContent()).trim(), await tr(KEYS.seen));
-      assert.equal((await folder.locator(".sm-path").textContent()).trim(), "");
+      assert.equal(await folder.locator(".sm-path").count(), 0);
       // what magpie recorded is its size; nothing recorded says no size at all
       const subA = (await rowA.locator(".sub").first().textContent());
       assert(subA.includes(await tr(KEYS.size, { size: "2 KB" })) || subA.includes(await tr(KEYS.size, { size: "2.0 KB" })), `recorded size in ${subA}`);

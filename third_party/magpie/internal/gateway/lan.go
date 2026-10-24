@@ -324,6 +324,13 @@ func ownCallback(r *http.Request) bool {
 	if !ok || token == "" {
 		return false
 	}
+	// while the magpie this one took the gateway over from finishes, a
+	// token this one doesn't have may be one of that one's runs: it is
+	// passed on there (forwardCallback), and that magpie judges it as it
+	// would its own
+	if forwarding() {
+		return true
+	}
 	callbacks.Lock()
 	defer callbacks.Unlock()
 	found := false

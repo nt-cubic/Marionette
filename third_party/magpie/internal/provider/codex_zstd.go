@@ -90,3 +90,7 @@ func codexTurnURL(u *url.URL) bool {
 	base, err := url.Parse(CodexBase)
 	return err == nil && u != nil && strings.EqualFold(u.Host, base.Host) && u.Path == base.Path+"/responses"
 }
+
+// CodexTurnURL says whether u is CodexBase's /responses, where Codex sends
+// a turn.
+func CodexTurnURL(u *url.URL) bool { return codexTurnURL(u) }

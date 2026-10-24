@@ -36,6 +36,7 @@ import (
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/claudecode"
+	"github.com/yetone/magpie/internal/filelock"
 	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/settings"
@@ -955,7 +956,13 @@ func CodexTokenURLForTest(u string) func() {
 // can point it elsewhere.
 var CodexBase = "https://chatgpt.com/backend-api/codex"
 
-var codexMu sync.Mutex
+// codexMu keeps two refreshes of a Codex sign-in from running at once,
+// in this magpie and across magpies: the refresh token rotates, and the
+// second would send the one the first spent (refresh_token_reused). Two
+// magpies run at once while a restart hands the gateway over (xuanwo on
+// X), and beside a magpie run from a terminal. The sign-in is read after
+// it is taken, so one refreshed meanwhile is used as it is.
+var codexMu = filelock.Mutex{Path: func() string { return loginsPath() + ".codex.lock" }}
 
 type codexAuth struct {
 	AuthMode string `json:"auth_mode"`

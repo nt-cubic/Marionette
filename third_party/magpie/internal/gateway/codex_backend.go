@@ -235,6 +235,11 @@ func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
 		var recorded, hooked func()
 		w, recorded = recordConversation(w, r, provider.Responses, body)
 		defer recorded()
+		// and the tool loop it may be stuck in spends that sign-in's
+		// allowance as it would a magpie model's
+		if s.stoppedToolLoop(w, r, provider.Responses, body) {
+			return
+		}
 		// Codex's own sign-in: the request hooks, not the middleware
 		w, body, hooked = gatewayHooks(w, r, provider.Responses, body)
 		defer hooked()

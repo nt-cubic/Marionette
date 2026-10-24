@@ -62,6 +62,9 @@ type Options struct {
 
 	// found are the spans Model found, by text, for one request's texts
 	found map[string][]Found
+	// sent is masking for a vendor (Mask, MaskJSON): a text masked
+	// before has the known values it had then (sentKnownSpans)
+	sent bool
 }
 
 // covers says o masks what a rule of category cat finds: "" are the
@@ -478,6 +481,7 @@ func anyCase(w string) *regexp.Regexp {
 
 // Mask swaps what o covers in s for placeholders, and says how many.
 func Mask(s string, o Options) (string, int) {
+	o.sent = true
 	return mask(s, withModel(o, []string{s}), placeholder, false)
 }
 
@@ -603,7 +607,11 @@ func mask(raw string, o Options, put func(kind, v string) string, escaped bool) 
 	// after the rules', so where a rule finds the same value it keeps the
 	// kind it has always had
 	found = append(found, modelSpans(raw, o)...) // the model was asked about raw
-	found = append(found, knownSpans(s, o)...)
+	if o.sent {
+		found = append(found, sentKnownSpans(s, o)...)
+	} else {
+		found = append(found, knownSpans(s, o)...)
+	}
 	if escaped {
 		found = outsideEscapes(raw, found)
 	}

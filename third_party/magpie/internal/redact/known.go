@@ -1,8 +1,11 @@
 package redact
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 )
 
@@ -197,4 +200,81 @@ func standsAlone(kind, s string, a, b int) bool {
 		return !is(after, ".-") || b+1 >= len(s) || !is(s[b+1], alnum)
 	}
 	return !(is(before, alnum) && is(s[a], alnum)) && !(is(after, alnum) && is(s[b-1], alnum))
+}
+
+// A text sent before goes again as it went: the known values found in it
+// the first time it was masked are the ones masked in it from then on,
+// and a value that became known since is masked in new text only.
+//
+// An agent sends its whole conversation on every turn, and a vendor
+// caches it by its bytes up to a mark (Anthropic's cache_control, the
+// prefix OpenAI and DeepSeek cache on their own). A value found by a rule
+// in a turn's tool output became known, and the next turn masked it again
+// in the system prompt and every earlier message that had it as written:
+// the prefix changed at its first block, and a 400K-token conversation was
+// written to the cache whole instead of read (audie on Discord: cache_read
+// 0 and cache_write 412,081 to 426,782 on four turns, ten seconds apart).
+// Masking it there keeps nothing from the vendor, which was sent that text
+// as written already.
+//
+// What is remembered is a hash of the text and of what o covers, and the
+// places of the known values in it; nothing of a value. A text no longer
+// remembered (sentEntries, or magpie started again) is masked with what is
+// known then.
+const sentEntries = 1 << 16
+
+var sentKnown struct {
+	sync.Mutex
+	cur, old map[[32]byte][]span
+}
+
+// sentKnownSpans is knownSpans for text going to a vendor: the same as the
+// first time s was masked under what o covers.
+func sentKnownSpans(s string, o Options) []span {
+	if !o.Secrets && !o.Personal || len(s) < minKnown {
+		return nil
+	}
+	h := sha256.New()
+	fmt.Fprintf(h, "%t\x00%t\x00", o.Secrets, o.Personal)
+	kinds := make([]string, 0, len(o.Kinds))
+	for k, on := range o.Kinds {
+		kinds = append(kinds, fmt.Sprintf("%s=%t", k, on))
+	}
+	slices.Sort(kinds)
+	fmt.Fprintf(h, "%s\x00", strings.Join(kinds, ","))
+	h.Write([]byte(s))
+	var k [32]byte
+	h.Sum(k[:0])
+	sentKnown.Lock()
+	sp, ok := sentKnown.cur[k]
+	if !ok {
+		if sp, ok = sentKnown.old[k]; ok {
+			sentKnownAdd(k, sp) // still in use: kept past the next turnover
+		}
+	}
+	sentKnown.Unlock()
+	if ok {
+		return slices.Clone(sp)
+	}
+	sp = knownSpans(s, o)
+	sentKnown.Lock()
+	sentKnownAdd(k, slices.Clone(sp))
+	sentKnown.Unlock()
+	return sp
+}
+
+// sentKnownAdd is called with sentKnown held. Two generations, as
+// scrubMemo keeps: when the newer is full it becomes the older.
+func sentKnownAdd(k [32]byte, sp []span) {
+	if sentKnown.cur == nil || len(sentKnown.cur) >= sentEntries {
+		sentKnown.old, sentKnown.cur = sentKnown.cur, make(map[[32]byte][]span)
+	}
+	sentKnown.cur[k] = sp
+}
+
+// resetSent forgets the texts sent (a test starts from nothing).
+func resetSent() {
+	sentKnown.Lock()
+	defer sentKnown.Unlock()
+	sentKnown.cur, sentKnown.old = nil, nil
 }

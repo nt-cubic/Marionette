@@ -171,7 +171,7 @@ func TestGatewayWindowsShareOneProjection(t *testing.T) {
 		t.Fatalf("built %d projections for one log and %d ranges, want 1 kept and shared by them all", built, len(backs))
 	}
 	for _, back := range backs {
-		want, _ := buildGatewaySessions(readLogSnapshot(), day(back), nil)
+		want, _ := buildGatewaySessions(readLogSnapshot(), day(back), nil, nil)
 		g, w := key(got[back]), key(want)
 		if len(g) != len(w) {
 			t.Fatalf("from %d days back: %d sessions, want %d: %+v", back, len(g), len(w), got[back])

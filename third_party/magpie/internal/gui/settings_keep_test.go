@@ -133,6 +133,7 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		ModelWires:           map[string]string{"p/m": "vendor-c/m"},
 		ModelAPIs:            map[string]string{"p/m": "anthropic"},
 		ModelSameAs:          map[string]string{"p/m": "deepseek-v4.1-flash"},
+		UsageAliases:         map[string]string{"deepseek-v4.1-flash": "deepseek-flash"},
 		ModelKinds:           map[string]string{"p/m": "video"},
 		RedactRules:          []redact.Rule{{Kind: "prefix", Prefix: "oc_sk_"}},
 		RedactActions:        map[string]string{"API_KEY": "block", "EMAIL": "warn"},

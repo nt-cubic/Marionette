@@ -85,11 +85,10 @@ var (
 
 // A list is fetched again after partnerEvery, so a partner added reaches
 // an app left running within the hour; the list is a couple of KB and its
-// icons aren't fetched again (partnerIcon).
-const (
-	partnerEvery = time.Hour
-	partnerRetry = 10 * time.Minute
-)
+// icons aren't fetched again (partnerIcon). A var, so a test can shorten it.
+var partnerEvery = time.Hour
+
+const partnerRetry = 10 * time.Minute
 
 var partnerID = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,40}$`)
 
@@ -156,6 +155,42 @@ func PartnersNow(wait time.Duration) []Partner {
 		}
 	}
 	return Partners()
+}
+
+// KeepPartnersFresh fetches the partner list when the magpie serving the
+// gateway starts, and again whenever it is due (every hour, ten minutes
+// after a failed fetch), whether or not a page asks for it, so a partner
+// added reaches an app left running within the hour, and the list kept on
+// disk is fresh for the next start.
+func KeepPartnersFresh(ctx context.Context) {
+	if partnersSource() == "off" {
+		return
+	}
+	t := time.NewTimer(0)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		partnerMu.Lock()
+		loadPartners()
+		due := !partnerFetches && !time.Now().Before(partnerNext)
+		if due {
+			partnerFetches = true
+		}
+		partnerMu.Unlock()
+		if due {
+			refreshPartners()
+		}
+		partnerMu.Lock()
+		wait := time.Until(partnerNext)
+		partnerMu.Unlock()
+		// a fetch Partners started is still running when partnerNext
+		// has passed: look again in a second
+		t.Reset(max(wait, time.Second))
+	}
 }
 
 // loadPartners reads the list kept on disk the first time it's asked for;

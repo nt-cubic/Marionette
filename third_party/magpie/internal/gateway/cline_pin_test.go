@@ -65,11 +65,22 @@ func TestClinePinsDeepSeekAndGLM(t *testing.T) {
 	chat := func(model, extra string) string {
 		return ask("/v1/chat/completions", `{"model":"`+model+`","messages":[{"role":"user","content":"Say pong"}]`+extra+`}`)
 	}
-	const pinned = `{"gateway":{"only":["deepseek"]}}`
+	// DeepSeek's only alone left ClinePass free to pick another upstream;
+	// has ["implicit-caching"] beside it is what held a request on
+	// DeepSeek (hy125245 on X, 10-23), and "vision" joins it when the
+	// request carries an image
+	const pinned = `{"gateway":{"has":["implicit-caching"],"only":["deepseek"]}}`
 	for _, m := range []string{"cline/cline-pass/deepseek-v4-pro", "cline/cline-pass/deepseek-v4.1-flash", "cline/cline-pass/deepseek-v4.1-flash-1017"} {
 		if got := chat(m, ""); got != pinned || orPin() != "" {
 			t.Errorf("%s: providerOptions %s provider %s, want providerOptions %s alone (sent %s)", m, got, orPin(), pinned, sent)
 		}
+	}
+	const seeing = `{"gateway":{"has":["vision","implicit-caching"],"only":["deepseek"]}}`
+	if got := ask("/v1/chat/completions", `{"model":"cline/cline-pass/deepseek-v4.1-flash","messages":[{"role":"user","content":[{"type":"text","text":"What is this?"},{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}]}]}`); got != seeing {
+		t.Errorf("an image: providerOptions %s, want %s", got, seeing)
+	}
+	if got := ask("/v1/chat/completions", `{"model":"cline/cline-pass/deepseek-v4.1-flash","messages":[{"role":"user","content":[{"type":"text","text":"Say \"image_url\""}]}]}`); got != pinned {
+		t.Errorf("the word image_url in text: providerOptions %s, want %s", got, pinned)
 	}
 	if got := ask("/v1/messages", `{"model":"cline/cline-pass/deepseek-v4-pro","max_tokens":64,"messages":[{"role":"user","content":"Say pong"}]}`); got != pinned {
 		t.Errorf("messages: providerOptions %s, want %s", got, pinned)

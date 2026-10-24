@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"io/fs"
 	"net/http"
@@ -352,8 +353,10 @@ func InstallAsAdmin(staged, bundle string) error {
 // Relaunch opens bundle again once this process (pid) has exited: with its
 // window when window is set, else only its menu bar icon (`tray`, as a
 // login launch), which a restart by itself uses while no window was up.
+// Each try, and what it came to, is written to relaunch.log in magpie's
+// own folder.
 func Relaunch(bundle string, window bool) error {
-	return runAfterExit(os.Getpid(), relaunchCommand(bundle, window))
+	return runAfterExit(os.Getpid(), relaunchCommand(bundle, window, relaunchLog()))
 }
 
 // openWaits are the pauses, in seconds, between tries of the relaunch's
@@ -363,10 +366,83 @@ func Relaunch(bundle string, window bool) error {
 // once, nothing started magpie again until the user did, nine hours later.
 var openWaits = []string{"0.5", "1", "1", "2", "2", "3", "4"}
 
+// relaunchLogName is the file in magpie's folder the relaunch writes each
+// try of its open to, and the start it falls back to: the shell that runs
+// them has no output anyone sees, and a magpie that never came back left
+// only the system log to say why.
+const relaunchLogName = "relaunch.log"
+
+// relaunchLog is the relaunch's log file, made ready to append to; once it
+// is past 64KB the last one is kept as relaunch.log.old. "" when magpie's
+// folder can't be made: the tries then go unwritten.
+func relaunchLog() string {
+	h, err := appdir.Home()
+	if err != nil || h == "" {
+		return ""
+	}
+	dir := appdir.Config()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return ""
+	}
+	p := filepath.Join(dir, relaunchLogName)
+	if fi, err := os.Stat(p); err == nil && fi.Size() > 64<<10 {
+		os.Rename(p, p+".old")
+	}
+	return p
+}
+
 // relaunchCommand is the shell command Relaunch runs once magpie has
-// exited: open, tried again while it fails.
-func relaunchCommand(bundle string, window bool) string {
-	return retried(relaunchOpen(bundle, window), openWaits)
+// exited: open, tried again while it fails, and, when it never worked,
+// the bundle's own executable run straight, as the login launch agent
+// runs it. With the screen locked, magpie stayed closed after an update
+// even with the 13s of tries (molvqingtai, after fb23bca5c): LaunchServices
+// can go on refusing the open for as long as the session is locked, and a
+// program run by its path needs nothing from it to start.
+func relaunchCommand(bundle string, window bool, log string) string {
+	return relaunchScript(bundle, window, log, openWaits)
+}
+
+// relaunchScript is relaunchCommand with the pauses between opens.
+func relaunchScript(bundle string, window bool, log string, waits []string) string {
+	if log == "" {
+		log = os.DevNull
+	}
+	exe := filepath.Join(bundle, "Contents", "MacOS", bundleExecutable(bundle))
+	run := shellQuote(exe)
+	for _, a := range RelaunchArgs(window, "") {
+		run += " " + shellQuote(a)
+	}
+	var b strings.Builder
+	b.WriteString("log=" + shellQuote(log) + "; ")
+	b.WriteString(`note() { echo "$(date '+%Y-%m-%d %H:%M:%S %z') $*" >> "$log" 2>/dev/null; }; `)
+	// open's own exit status and what it said, on one line
+	b.WriteString(`try() { n=$((n+1)); e=$(` + relaunchOpen(bundle, window) + ` 2>&1 >/dev/null); s=$?; note "open try $n: exit $s $(printf '%s' "$e" | tr '\n' ' ')"; return $s; }; `)
+	b.WriteString("n=0; note " + shellQuote("magpie has exited; opening "+bundle) + "; ")
+	b.WriteString(retried("try", waits))
+	b.WriteString(" || { note \"open gave up after $n tries; starting \"" + shellQuote(run) + "; ")
+	b.WriteString("[ -x " + shellQuote(exe) + " ] || { note \"no executable at \"" + shellQuote(exe) + "; exit 1; }; ")
+	b.WriteString("exec " + run + " </dev/null >/dev/null 2>&1; }")
+	return b.String()
+}
+
+// bundleExecutableKey finds the program an app's Info.plist names.
+var bundleExecutableKey = regexp.MustCompile(`<key>CFBundleExecutable</key>\s*<string>([^<]+)</string>`)
+
+// bundleExecutable is the name of the program in bundle's Contents/MacOS:
+// the one its Info.plist names, else this one's own when it runs from
+// that bundle, else magpie.
+func bundleExecutable(bundle string) string {
+	if b, err := os.ReadFile(filepath.Join(bundle, "Contents", "Info.plist")); err == nil {
+		if m := bundleExecutableKey.FindSubmatch(b); m != nil {
+			if name := strings.TrimSpace(html.UnescapeString(string(m[1]))); name != "" && !strings.ContainsRune(name, '/') {
+				return name
+			}
+		}
+	}
+	if exe, err := Executable(); err == nil && filepath.Dir(exe) == filepath.Join(bundle, "Contents", "MacOS") {
+		return filepath.Base(exe)
+	}
+	return "magpie"
 }
 
 // retried is a shell command that runs command until it succeeds, sleeping
@@ -393,12 +469,21 @@ func runAfterExit(pid int, command string) error {
 	return cmd.Start()
 }
 
-// relaunchOpen is the open command Relaunch runs for bundle.
+// relaunchOpen is the open command Relaunch runs for bundle. -n asks
+// LaunchServices for a new instance: without it, open looks the app up
+// among those running first, and just after magpie exits LaunchServices
+// can still have the gone process registered as magpie. open then sends
+// it a reopen Apple event (aevt/rapp) rather than launching the bundle,
+// and fails with -600, procNotFound ("Specified target process … does
+// not exist", "LAUNCH: Launch failed in CSUI"; Linka's log on Discord,
+// macOS 27.0.1, v0.1.1308), as often as it is tried. A magpie that is in
+// fact up still has the one instance: the new process finds the instance
+// lock held and hands over to it (runningAlready in internal/gui).
 func relaunchOpen(bundle string, window bool) string {
 	if window {
-		return fmt.Sprintf("open %q", bundle)
+		return fmt.Sprintf("open -n %q", bundle)
 	}
-	return fmt.Sprintf("open %q --args tray", bundle)
+	return fmt.Sprintf("open -n %q --args tray", bundle)
 }
 
 // ReplaceBinary puts the release's build for this binary where the
@@ -860,3 +945,31 @@ func (c *counter) Read(p []byte) (int, error) {
 
 // Alive reports whether the process pid is still running.
 func Alive(pid int) bool { return alive(pid) }
+
+// OpenBeside opens bundle now, a new instance beside this one (open -n),
+// tried again while open fails: a restart that hands the gateway over
+// (internal/handoff) starts the new version before this one quits. With
+// window, its window; else its menu bar icon only, as Relaunch.
+func OpenBeside(bundle string, window bool) error {
+	cmd := proc.Command("/bin/sh", "-c", retried(openBeside(bundle, window), openWaits))
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
+	detach(cmd)
+	return cmd.Start()
+}
+
+// openBeside is the open command OpenBeside runs for bundle.
+func openBeside(bundle string, window bool) string {
+	if window {
+		return fmt.Sprintf("open -n %q", bundle)
+	}
+	return fmt.Sprintf("open -n %q --args tray", bundle)
+}
+
+// StartBeside starts exe now, beside this process, as RelaunchBinary's
+// args say: the new version of a restart that hands the gateway over. It
+// isn't told to wait for this one (MAGPIE_REPLACES): it takes the gateway
+// from it while it runs.
+func StartBeside(exe string, window bool, view string) error {
+	_, _, err := launch(exe, RelaunchArgs(window, view), os.Environ())
+	return err
+}

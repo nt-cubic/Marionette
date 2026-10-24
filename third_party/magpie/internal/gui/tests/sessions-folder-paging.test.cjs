@@ -111,6 +111,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await page.mouse.move(width / 2, 320);
           await page.mouse.wheel(0, -40000);
           await page.waitForFunction(() => document.querySelector("#view-sessions").scrollTop === 0);
+          await view.locator(".sm-select").click();
           await view.locator(".sm-bar .sm-check").check();
           assert.equal(await view.locator(".sm-bar .sm-count").textContent(), w.all);
           await view.locator(".sm-bar .sm-check").uncheck();

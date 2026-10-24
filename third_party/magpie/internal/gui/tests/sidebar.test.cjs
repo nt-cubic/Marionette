@@ -84,7 +84,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.mouse.move(box.x + box.width + 400, box.y);
         await page.mouse.up();
         assert.equal(tf, "none", `${sel} pressed is not squeezed`);
-        assert.notEqual(pressed, bg, `${sel} pressed darkens`);
+        // a page's row has the open page's shape come to it instead
+        // (sidebar-glide.test.cjs); Settings, at the foot, darkens
+        if (sel === "#prefs") assert.notEqual(pressed, bg, `${sel} pressed darkens`);
       }
 
       // the gateway's address at the foot, read once the window has settled
