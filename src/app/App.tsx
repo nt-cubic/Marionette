@@ -83,6 +83,8 @@ import {
 } from "../lib/desktopNotify";
 import { enterDock, getDockState, initDockMode, readDockPrefs, subscribeDockPrefs, subscribeDockState, syncBackgroundMode, toggleAutoHideOnClose, undock } from "../lib/dockMode";
 import { DockChrome } from "../components/DockChrome";
+import { MemoBox } from "../components/MemoBox";
+import { memoList } from "../lib/memos";
 import { parseAvailableCommandsUpdate } from "../lib/slashCommands";
 import type { PlanEntry } from "../lib/acpPlan";
 import { parseAcpPlanUpdate } from "../lib/acpPlan";
@@ -499,6 +501,9 @@ export function App() {
   /** Edge dock stage 2: shelf drawer / ContextPanel overlays inside the strip. */
   const [dockShelfOpen, setDockShelfOpen] = useState(false);
   const [dockContextOpen, setDockContextOpen] = useState(false);
+  /** Edge dock stage 3: memo inbox overlay + its count badge. */
+  const [memoOpen, setMemoOpen] = useState(false);
+  const [memoCount, setMemoCount] = useState(0);
   /** Sessions that finished a turn while this window was looking at another dialog. */
   const [doneUnreadIds, setDoneUnreadIds] = useState<Set<string>>(() => new Set());
   /** Agent proxy config (single exit address), loaded on mount. */
@@ -933,6 +938,12 @@ export function App() {
     return subscribeDockPrefs((prefs) => setAutoHideOnClose(prefs.autoHideOnClose));
   }, []);
 
+  // Edge dock stage 3: memo count for the strip's badge (fetch once; the
+  // overlay publishes the live count while open).
+  useEffect(() => {
+    void memoList().then((rows) => setMemoCount(rows.length));
+  }, []);
+
   // Edge dock stage 1: dock engine bindings (close handoff, sliver hover,
   // focus tracking) + footer button state. Stage 2: overlays only live while
   // the strip is expanded — closing them on retract keeps the hidden state
@@ -944,6 +955,7 @@ export function App() {
       if (state !== "docked-expanded") {
         setDockShelfOpen(false);
         setDockContextOpen(false);
+        setMemoOpen(false);
       }
     });
     return () => {
@@ -8024,12 +8036,13 @@ export function App() {
       {/* Edge dock stage 2: strip chrome bands + overlay backdrops. */}
       {dockActive && (
         <>
-          <DockChrome
-            onNewChat={() => void handleCreateChatSession()}
+          <DockChrome            onNewChat={() => void handleCreateChatSession()}
             onOpenShelf={() => setDockShelfOpen((open) => !open)}
             onOpenContext={() => setDockContextOpen((open) => !open)}
             shelfOpen={dockShelfOpen}
             contextOpen={dockContextOpen}
+            memoCount={memoCount}
+            onOpenMemo={() => setMemoOpen(true)}
             quotaRows={engineQuotaRows}
             onQuotaRefresh={() => refreshEngineQuota(true)}
             onUndock={() => void undock()}
@@ -8050,6 +8063,9 @@ export function App() {
                 setDockContextOpen(false);
               }}
             />
+          )}
+          {memoOpen && (
+            <MemoBox onClose={() => setMemoOpen(false)} onChanged={setMemoCount} />
           )}
         </>
       )}

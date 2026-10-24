@@ -18,6 +18,9 @@ type Props = {
   onOpenContext: () => void;
   shelfOpen: boolean;
   contextOpen: boolean;
+  /** Memo inbox (stage 3): count badge + open. */
+  memoCount: number;
+  onOpenMemo: () => void;
   /** Subscription families from `magpie quota`; worst-first summary chip. */
   quotaRows: EngineQuotaEntry[];
   onQuotaRefresh: () => void;
@@ -86,6 +89,8 @@ export const DockChrome = memo(function DockChrome({
   onOpenContext,
   shelfOpen,
   contextOpen,
+  memoCount,
+  onOpenMemo,
   quotaRows,
   onQuotaRefresh,
   onUndock,
@@ -105,9 +110,15 @@ export const DockChrome = memo(function DockChrome({
             <Plus size={13} />
             新建对话
           </button>
-          <button type="button" className="dock-chrome__btn" disabled title="收纳盒 · 即将到来">
+          <button
+            type="button"
+            className="dock-chrome__btn"
+            onClick={onOpenMemo}
+            title="收纳盒 · 拖入文件 / Ctrl V 粘贴文字与链接"
+          >
             <Archive size={13} />
             收纳盒
+            {memoCount > 0 && <span className="dock-chrome__badge">{memoCount > 99 ? "99+" : memoCount}</span>}
           </button>
           <button
             type="button"

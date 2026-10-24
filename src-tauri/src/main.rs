@@ -22,6 +22,7 @@ mod grok_dialect;
 mod handoff;
 mod http_client;
 mod memory;
+mod memos;
 mod models;
 mod model_bridge;
 mod model_sources;
@@ -566,7 +567,11 @@ fn main() {
             open_target::reveal_in_file_manager,
             dock_support::set_background_mode,
             dock_support::quit_app,
-            dock_support::fullscreen_active
+            dock_support::fullscreen_active,
+            memos::memo_list,
+            memos::memo_save_paths,
+            memos::memo_save_text,
+            memos::memo_delete
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|error| {
