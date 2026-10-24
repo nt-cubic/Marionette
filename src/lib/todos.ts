@@ -200,7 +200,7 @@ export function parseMarionetteTodoFence(
   const m = text.match(/```marionette-todo\s*([\s\S]*?)```/i);
   if (!m) return null;
   try {
-    const raw = JSON.parse(m[1].trim()) as unknown;
+    const raw = JSON.parse(m[1]!.trim()) as unknown;
     if (!Array.isArray(raw)) return null;
     const out: Array<{ text: string; status: TodoStatus }> = [];
     for (const item of raw) {

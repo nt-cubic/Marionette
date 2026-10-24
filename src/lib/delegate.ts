@@ -65,8 +65,8 @@ export function delegateQueryAtCursor(
   // Match from line start: optional spaces, @, then non-space run (agent[/model partial]).
   const m = line.match(/^(\s*)@([^\s]*)$/);
   if (!m) return null;
-  const lead = m[1].length;
-  const raw = m[2];
+  const lead = m[1]!.length;
+  const raw = m[2]!;
   const start = lineStart + lead;
   const slash = raw.indexOf("/");
   const agentQuery = (slash >= 0 ? raw.slice(0, slash) : raw).toLowerCase();
@@ -92,7 +92,7 @@ export function resolveAgentId(token: string): string | null {
     .filter(([alias]) => alias.startsWith(key))
     .map(([, id]) => id);
   const all = [...new Set([...hits, ...aliasHits])];
-  if (all.length === 1) return all[0];
+  if (all.length === 1) return all[0]!;
   if (ids.has(key)) return key;
   return null;
 }
@@ -113,7 +113,7 @@ function matchModel(
       (m.label && m.label.toLowerCase().includes(q)),
   );
   if (hits.length === 1) {
-    return { modelId: hits[0].id, modelLabel: hits[0].label, unique: true };
+    return { modelId: hits[0]!.id, modelLabel: hits[0]!.label, unique: true };
   }
   if (hits.length === 0) {
     console.warn(
@@ -136,12 +136,12 @@ export function parseDelegateLine(
   if (!rawLine) return null;
   // Only first line is the directive; rest can be task body
   const lines = rawLine.split("\n");
-  const first = lines[0];
+  const first = lines[0]!;
   if (/^\s*@@/.test(first)) return null;
   const m = first.match(/^\s*@(\S+)(?:\s+([\s\S]*))?$/);
   if (!m) return null;
 
-  const head = m[1];
+  const head = m[1]!;
   let rest = (m[2] ?? "").trim();
   const restLines = lines.slice(1).join("\n").trim();
   if (restLines) rest = rest ? `${rest}\n${restLines}` : restLines;
@@ -175,7 +175,7 @@ export function parseDelegateLine(
   if (!modelId && rest) {
     const parts = rest.split(/\s+/);
     if (parts.length >= 2) {
-      const maybeModel = parts[0];
+      const maybeModel = parts[0]!;
       const matched = matchModel(agentId, maybeModel);
       if (matched.unique && matched.modelId && maybeModel.length >= 2) {
         const caps = cachedCapabilitiesFor(agentId);

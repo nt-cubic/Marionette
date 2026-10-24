@@ -18,7 +18,7 @@ export function stripForceWebSearchPrefix(text: string): string {
   if (i >= 0) return t.slice(i + sep.length);
   // Fallback: drop first line block until blank line
   const m = t.match(/^【联网检索】[\s\S]*?\n\n---\n\n?([\s\S]*)$/);
-  return m ? m[1] : text;
+  return m ? m[1]! : text;
 }
 
 export function detectForceWebSearchInText(text: string): boolean {

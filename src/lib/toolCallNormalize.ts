@@ -69,8 +69,8 @@ export function normalizeToolName(raw: string | null | undefined): string {
   if (!raw) return "";
   const stripped = stripNoise(raw);
   const key = stripped.toLowerCase().replace(/-/g, "_");
-  if (EXACT_ALIASES[key]) return EXACT_ALIASES[key];
-  if (EXACT_ALIASES[stripped.toLowerCase()]) return EXACT_ALIASES[stripped.toLowerCase()];
+  if (EXACT_ALIASES[key]) return EXACT_ALIASES[key]!;
+  if (EXACT_ALIASES[stripped.toLowerCase()]) return EXACT_ALIASES[stripped.toLowerCase()]!;
   // Compact form without underscores for table lookup
   const compact = key.replace(/_/g, "");
   for (const [alias, canon] of Object.entries(EXACT_ALIASES)) {

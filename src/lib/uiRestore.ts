@@ -282,7 +282,7 @@ export function pickRestoredSession(
   const ids = tabIdsFromTree(tree);
   if (ids.length === 0) return null;
   const focusId = focusedSessionId(tree) || ids[0];
-  const session = byId.get(focusId) ?? byId.get(ids[0]);
+  const session = byId.get(focusId!) ?? byId.get(ids[0]!);
   if (!session) return null;
   return { session, openSessionIds: ids, splitState: tree };
 }

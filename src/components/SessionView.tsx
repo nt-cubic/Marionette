@@ -1166,13 +1166,13 @@ function findLiveDetail(
 ): { event: SessionEvent; index: number } | null {
   if (!running) return null;
   for (let i = items.length - 1; i >= 0; i -= 1) {
-    const item = items[i];
+    const item = items[i]!;
     const { event, index } = item;
     if (event.type === "tool_call" && isToolInProgress(event.status)) return item;
     if (event.type !== "thought") continue;
     let followed = false;
     for (let j = index + 1; j < visibleEvents.length; j += 1) {
-      const next = visibleEvents[j];
+      const next = visibleEvents[j]!;
       if (next.sessionId !== sessionId) continue;
       if (
         next.type === "thought" ||
@@ -1468,7 +1468,7 @@ function subagentBoxMeta(event: ToolCallEvent): string {
 function subagentLastLine(body: string): string {
   const lines = body.replace(/\r\n?/g, "\n").split("\n");
   for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const line = lines[i].replace(/\s+/g, " ").trim();
+    const line = lines[i]!.replace(/\s+/g, " ").trim();
     if (line && !/^[-=*_`]{3,}$/.test(line)) return line.length > 120 ? `${line.slice(0, 119)}…` : line;
   }
   return "";
@@ -1701,13 +1701,13 @@ function CleanPlaceholder({
     const merged: (TranscriptUnit | TurnDeliveryUnit)[] = [];
     let di = 0;
     const pushDue = (minIndex: number) => {
-      while (di < deliveries.length && deliveries[di].anchorIndex <= minIndex) {
-        merged.push(deliveries[di]);
+      while (di < deliveries.length && deliveries[di]!.anchorIndex <= minIndex) {
+        merged.push(deliveries[di]!);
         di += 1;
       }
     };
     for (const unit of clustered) {
-      pushDue(unit.kind === "row" ? unit.index : unit.items[0].index);
+      pushDue(unit.kind === "row" ? unit.index : unit.items[0]!.index);
       merged.push(unit);
     }
     pushDue(Number.MAX_SAFE_INTEGER);
@@ -1763,7 +1763,7 @@ function CleanPlaceholder({
     // Only meaningful mid-turn; ignore orphan pending tools in saved history.
     if (!isRunning) return null;
     for (let i = visibleEvents.length - 1; i >= 0; i -= 1) {
-      const e = visibleEvents[i];
+      const e = visibleEvents[i]!;
       if (e.type === "tool_call" && isToolInProgress(e.status)) {
         return e;
       }
@@ -1780,7 +1780,7 @@ function CleanPlaceholder({
   useEffect(() => {
     const forcedNow = new Set<string>();
     for (let i = 0; i < visibleEvents.length; i += 1) {
-      const e = visibleEvents[i];
+      const e = visibleEvents[i]!;
       if (e.type !== "tool_call") continue;
       if (!isToolInProgress(e.status)) continue;
       if (!isLongRunningToolKind(e)) continue;
@@ -2352,7 +2352,7 @@ function CleanPlaceholder({
             let endMs: number | null = null;
             let followed = false;
             for (let j = index + 1; j < visibleEvents.length; j++) {
-              const n = visibleEvents[j];
+              const n = visibleEvents[j]!;
               if (n.sessionId !== session.id) continue;
               if (
                 n.type === "thought" ||
@@ -2525,20 +2525,21 @@ function CleanPlaceholder({
           // User / assistant: always fully visible.
           if (isCollapsible) {
             const foldAll = !detailsVisible;
+            const isToolEvent = event.type === "tool_call" ? event : null;
             const longRunningTool =
-              event.type === "tool_call" && isLongRunningToolKind(event);
+              isToolEvent != null && isLongRunningToolKind(isToolEvent);
             // Only the latest in-flight shell/subagent tool gets the tall block —
             // older pending rows (stale status) stay one-line summaries.
             const isLatestOpenTool =
               toolRunning &&
               openTool != null &&
-              event.type === "tool_call" &&
-              ((event.toolCallId &&
+              isToolEvent != null &&
+              ((isToolEvent.toolCallId &&
                 openTool.toolCallId &&
-                event.toolCallId === openTool.toolCallId) ||
-                (!event.toolCallId &&
-                  event.createdAt === openTool.createdAt &&
-                  event.text === openTool.text));
+                isToolEvent.toolCallId === openTool.toolCallId) ||
+                (!isToolEvent.toolCallId &&
+                  isToolEvent.createdAt === openTool.createdAt &&
+                  isToolEvent.text === openTool.text));
             const showWorkingBlock = Boolean(
               !foldAll && longRunningTool && isLatestOpenTool,
             );
@@ -2956,7 +2957,7 @@ function CleanPlaceholder({
               >
                 {timeline ? <ActivityTimeline data={timeline} /> : null}
                 {groups.map((group) => {
-                  const groupKey = `${unit.key}-${group.bucket}-${group.items[0].index}`;
+                  const groupKey = `${unit.key}-${group.bucket}-${group.items[0]!.index}`;
                   const groupHasLive =
                     liveItem != null &&
                     group.items.some((it) => it.index === liveItem.index);
@@ -3070,7 +3071,7 @@ function CleanPlaceholder({
             status={session.status}
             midTurn={midTurn}
             awaitingFirstChunk={awaitingFirstChunk}
-            openToolTitle={openTool?.title ?? null}
+            openToolTitle={openTool != null && openTool.type === "tool_call" ? openTool.title : null}
             openToolIsSubagent={openToolIsSubagent}
             lastActivityAt={lastActivityAt}
             onInterrupt={onInterrupt}

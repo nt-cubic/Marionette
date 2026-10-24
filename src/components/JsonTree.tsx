@@ -17,7 +17,7 @@ export function splitJsonTail(text: string): { lead: string; value: Json } | nul
   if (!trimmed) return null;
   const lines = trimmed.split("\n");
   for (let i = 0; i < lines.length && i < 6; i += 1) {
-    const head = lines[i].trimStart();
+    const head = lines[i]!.trimStart();
     if (!head.startsWith("{") && !head.startsWith("[")) continue;
     const tail = lines.slice(i).join("\n");
     try {

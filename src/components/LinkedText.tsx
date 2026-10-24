@@ -102,7 +102,7 @@ export function LinkedText({ text, className }: { text: string; className?: stri
 
   const segments = splitLinkSegments(text);
 
-  if (segments.length === 1 && segments[0].type === "text") {
+  if (segments.length === 1 && segments[0]!.type === "text") {
     return <>{text}</>;
   }
 

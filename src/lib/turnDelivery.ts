@@ -158,20 +158,20 @@ export function buildTurnDeliveries(
   let visibleCounter = 0;
   for (let i = 0; i < events.length; i += 1) {
     visibleIndexAt[i] = visibleCounter;
-    if (events[i].type !== "file_change") visibleCounter += 1;
+    if (events[i]!.type !== "file_change") visibleCounter += 1;
   }
 
   // Turn slices in the raw array: user_message / handoff_prepared open a turn.
   const boundaries: number[] = [];
   for (let i = 0; i < events.length; i += 1) {
-    const event = events[i];
+    const event = events[i]!;
     if (event.sessionId !== sessionId) continue;
     if (isTurnBoundary(event)) boundaries.push(i);
   }
 
   const units: TurnDeliveryUnit[] = [];
   for (let b = 0; b < boundaries.length; b += 1) {
-    const start = boundaries[b];
+    const start = boundaries[b]!;
     const nextBoundary = boundaries[b + 1];
     // A queued follow-up only enters the transcript at flush time (after the
     // live turn completes), so a next boundary always implies this turn ended.
@@ -181,7 +181,7 @@ export function buildTurnDeliveries(
     if (!complete) {
       let sealed = false;
       for (let i = start; i < events.length; i += 1) {
-        const event = events[i];
+        const event = events[i]!;
         if (event.sessionId !== sessionId) continue;
         if (event.type === "assistant_message" && event.durationMs != null) {
           sealed = true;
@@ -225,7 +225,7 @@ export function buildTurnDeliveries(
     };
 
     for (let i = start; i < endExclusive; i += 1) {
-      const event = events[i];
+      const event = events[i]!;
       if (event.sessionId !== sessionId) continue;
       if (event.type === "tool_call") {
         tallyItems.push({ event, index: i });
@@ -278,14 +278,14 @@ export function buildTurnDeliveries(
       }
     }
 
-    const opener = events[start];
+    const opener = events[start]!;
     const openerAnchor =
       opener.type === "user_message" ? opener.messageId ?? opener.createdAt : opener.createdAt;
     const anchorSource = nextBoundary !== undefined ? nextBoundary : -1;
     units.push({
       kind: "delivery",
       key: `delivery-${openerAnchor}-${start}`,
-      anchorIndex: anchorSource >= 0 ? visibleIndexAt[anchorSource] : Number.MAX_SAFE_INTEGER,
+      anchorIndex: anchorSource >= 0 ? visibleIndexAt[anchorSource]! : Number.MAX_SAFE_INTEGER,
       delivery: {
         files: orderedFiles,
         totalDiff: anyStats ? { add: totalAdd, del: totalDel } : null,

@@ -117,10 +117,10 @@ export function slashQueryAtCursor(
   // Match `/cmd` or bare `/` at the start of the line (optional leading spaces).
   const m = line.match(/^(\s*)\/([^\s]*)$/);
   if (!m) return null;
-  const lead = m[1].length;
+  const lead = m[1]!.length;
   const start = lineStart + lead;
   return {
-    query: m[2].toLowerCase(),
+    query: m[2]!.toLowerCase(),
     start,
     end: cursor,
   };

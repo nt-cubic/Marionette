@@ -21,13 +21,13 @@ const RETIRED_THEMES: Record<string, ThemeMode> = {
 
 export function parseStoredTheme(raw: string | null | undefined): ThemeMode {
   if (raw && THEME_SET.has(raw)) return raw as ThemeMode;
-  if (raw && RETIRED_THEMES[raw]) return RETIRED_THEMES[raw];
+  if (raw && RETIRED_THEMES[raw]) return RETIRED_THEMES[raw]!;
   return DEFAULT_THEME;
 }
 
 export function nextTheme(current: ThemeMode): ThemeMode {
   const index = THEME_MODES.indexOf(current);
-  return THEME_MODES[(index + 1) % THEME_MODES.length];
+  return THEME_MODES[(index + 1) % THEME_MODES.length]!;
 }
 
 export function themeColorScheme(theme: ThemeMode): "dark" | "light" {

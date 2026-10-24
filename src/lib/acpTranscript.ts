@@ -262,10 +262,10 @@ function renderTextDiff(path: string, oldText: string, newText: string): string 
     );
     for (let i = oldMiddle.length - 1; i >= 0; i -= 1) {
       for (let j = newMiddle.length - 1; j >= 0; j -= 1) {
-        table[i][j] =
+        table[i]![j] =
           oldMiddle[i] === newMiddle[j]
-            ? table[i + 1][j + 1] + 1
-            : Math.max(table[i + 1][j], table[i][j + 1]);
+            ? table[i + 1]![j + 1]! + 1
+            : Math.max(table[i + 1]![j]!, table[i]![j + 1]!);
       }
     }
     let i = 0;
@@ -275,7 +275,7 @@ function renderTextDiff(path: string, oldText: string, newText: string): string 
         operations.push(` ${oldMiddle[i]}`);
         i += 1;
         j += 1;
-      } else if (j < newMiddle.length && (i === oldMiddle.length || table[i][j + 1] >= table[i + 1][j])) {
+      } else if (j < newMiddle.length && (i === oldMiddle.length || table[i]![j + 1]! >= table[i + 1]![j]!)) {
         operations.push(`+${newMiddle[j]}`);
         j += 1;
       } else {
@@ -1193,7 +1193,7 @@ export function metaFromLastUser(events: SessionEvent[], sessionId: string):
   | { agentId?: string; agentLabel?: string; modelId?: string; modelLabel?: string; modeLabel?: string; effortLabel?: string }
   | undefined {
   for (let i = events.length - 1; i >= 0; i--) {
-    const e = events[i];
+    const e = events[i]!;
     if (e.sessionId === sessionId && e.type === "user_message") {
       if (e.agentId || e.agentLabel || e.modelId || e.modelLabel || e.modeLabel || e.effortLabel) {
         return {
@@ -1261,12 +1261,12 @@ function findNestedSubagentCard(
 ): number {
   let lastUser = -1;
   for (let i = 0; i < events.length; i += 1) {
-    if (events[i].sessionId === sessionId && events[i].type === "user_message") lastUser = i;
+    if (events[i]!.sessionId === sessionId && events[i]!.type === "user_message") lastUser = i;
   }
   const open: number[] = [];
   let titled = -1;
   for (let i = lastUser + 1; i < events.length; i += 1) {
-    const e = events[i];
+    const e = events[i]!;
     if (e.sessionId !== sessionId || e.type !== "tool_call") continue;
     if (!isSubagentTool(e.toolName, e.title)) continue;
     const hay = `${e.input ?? ""}\n${e.detail ?? ""}\n${e.toolCallId ?? ""}\n${e.title ?? ""}`;
@@ -1275,7 +1275,7 @@ function findNestedSubagentCard(
     if (isToolInProgress(e.status)) open.push(i);
   }
   if (titled >= 0) return titled;
-  if (fallbackSingle && open.length === 1) return open[0];
+  if (fallbackSingle && open.length === 1) return open[0]!;
   return -1;
 }
 
@@ -1289,7 +1289,7 @@ function applySubagentResultPatches(
     if (!row.output.trim()) continue;
     const idx = findNestedSubagentCard(next, sessionId, row.id, row.title);
     if (idx < 0) continue;
-    const prev = next[idx];
+    const prev = next[idx]!;
     if (prev.type !== "tool_call") continue;
     if (
       prev.detail &&
@@ -1345,7 +1345,7 @@ export function findLastIndexForSession(
   sessionId: string,
 ): number {
   for (let i = events.length - 1; i >= 0; i -= 1) {
-    if (events[i].sessionId === sessionId) return i;
+    if (events[i]!.sessionId === sessionId) return i;
   }
   return -1;
 }
@@ -1360,7 +1360,7 @@ export function turnEndedSilently(
   sessionId: string,
 ): boolean {
   const index = findLastIndexForSession(events, sessionId);
-  return index < 0 || events[index].type !== "assistant_message";
+  return index < 0 || events[index]!.type !== "assistant_message";
 }
 
 /**
@@ -1418,7 +1418,7 @@ function openReplyIndexAcrossThoughts(
   if (isOpenAssistantStream(last, sessionId)) return lastIdx;
   if (last.type !== "thought") return -1;
   for (let i = lastIdx - 1; i >= 0; i -= 1) {
-    const e = events[i];
+    const e = events[i]!;
     if (e.sessionId !== sessionId) continue; // foreign window interleave
     if (e.type === "thought") continue; // same Reply's thinking burst
     if (e.type === "assistant_message" && e.durationMs == null) return i;
@@ -1433,7 +1433,7 @@ function findLastThoughtInTurn(events: SessionEvent[], sessionId: string): numbe
   // the last user message. (Was two full forward scans; the rail is long.)
   let found = -1;
   for (let i = events.length - 1; i >= 0; i -= 1) {
-    const e = events[i];
+    const e = events[i]!;
     if (e.sessionId !== sessionId) continue;
     if (e.type === "user_message") break;
     if (e.type === "thought") found = i;
@@ -1447,7 +1447,7 @@ function patchThoughtAt(
   text: string,
   messageId?: string,
 ): SessionEvent[] {
-  const prev = events[index];
+  const prev = events[index]!;
   if (prev.type !== "thought") return events;
   if (prev.text === text && (!messageId || prev.messageId === messageId)) return events;
   const next = [...events];
@@ -1483,7 +1483,7 @@ export function applyAcpPartToEvents(
     // a new card — never absorb the next turn.
     const appendIdx = openReplyIndexAcrossThoughts(current, sessionId, last, lastIdx);
     const appendTarget =
-      appendIdx >= 0 && current[appendIdx].type === "assistant_message"
+      appendIdx >= 0 && current[appendIdx]!.type === "assistant_message"
         ? current[appendIdx]
         : undefined;
     // Whitespace-only tokens (" ", "\n") must still append onto an open Reply.
@@ -1562,7 +1562,7 @@ export function applyAcpPartToEvents(
     if (noise) {
       const thoughtIdx = findLastThoughtInTurn(current, sessionId);
       if (thoughtIdx >= 0) {
-        const prev = current[thoughtIdx];
+        const prev = current[thoughtIdx]!;
         if (prev.type === "thought") {
           const nextText = mergeStreamText(prev.text, text, true);
           return patchThoughtAt(current, thoughtIdx, nextText, part.messageId ?? prev.messageId);
@@ -1612,7 +1612,7 @@ export function applyAcpPartToEvents(
       // 都从 0 全量 findIndex（长会话 × 高频分块 = 平方级）。
       let idx = -1;
       for (let i = base.length - 1; i >= 0; i -= 1) {
-        const e = base[i];
+        const e = base[i]!;
         if (
           e.type === "tool_call" &&
           e.sessionId === sessionId &&
@@ -1632,7 +1632,7 @@ export function applyAcpPartToEvents(
         idx = findNestedSubagentCard(base, sessionId, part.toolCallId, nestTitleHint);
       }
       if (idx >= 0) {
-        const prev = base[idx];
+        const prev = base[idx]!;
         if (prev.type !== "tool_call") return base;
         // Subagent stream: append; Grok finish / wait MultiResult: replace;
         // normal updates: replace empty/keep prior.

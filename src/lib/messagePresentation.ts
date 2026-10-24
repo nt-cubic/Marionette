@@ -114,7 +114,7 @@ function eventSnapshot(event: SessionEvent): string {
 function dedupeExactAdjacentEvents(events: SessionEvent[]): IndexedSessionEvent[] {
   const out: IndexedSessionEvent[] = [];
   for (let index = 0; index < events.length; index += 1) {
-    const event = events[index];
+    const event = events[index]!;
     const previous = out[out.length - 1];
     if (
       previous &&
@@ -131,7 +131,7 @@ function dedupeExactAdjacentEvents(events: SessionEvent[]): IndexedSessionEvent[
 
 function lastValue<T>(events: AssistantEvent[], key: keyof AssistantEvent): T | undefined {
   for (let i = events.length - 1; i >= 0; i -= 1) {
-    const value = events[i][key];
+    const value = events[i]![key];
     if (value !== undefined && value !== null && value !== "") return value as T;
   }
   return undefined;
@@ -215,7 +215,7 @@ export function buildMessagePresentation(
       return;
     }
 
-    const first = buffer[0];
+    const first = buffer[0]!;
     output.push({
       kind: "reply_group",
       key: `reply-${eventIdentity(first.event, first.index)}-${first.index}`,

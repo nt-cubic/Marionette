@@ -90,7 +90,7 @@ const HTTP_URL_RE = /^https?:\/\//i;
 function safeUrl(url: string): string {
   const schemeMatch = /^\s*([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(url);
   if (!schemeMatch) return url; // relative path: no scheme
-  const scheme = schemeMatch[1].toLowerCase();
+  const scheme = schemeMatch[1]!.toLowerCase();
   // Single-letter "schemes" are Windows drive paths (`D:\x`, `C:/y`).
   if (scheme.length === 1) return url;
   if (scheme === "http" || scheme === "https") return url;

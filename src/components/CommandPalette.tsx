@@ -39,7 +39,7 @@ function matchScore(text: string, query: string): number {
   const hay = text.toLowerCase();
   const at = hay.indexOf(query);
   if (at === 0) return 3;
-  if (at > 0) return /[\s/\\·_-]/.test(hay[at - 1]) ? 2 : 1;
+  if (at > 0) return /[\s/\\·_-]/.test(hay[at - 1]!) ? 2 : 1;
   const words = query.split(/\s+/).filter(Boolean);
   return words.length > 1 && words.every((w) => hay.includes(w)) ? 1 : 0;
 }

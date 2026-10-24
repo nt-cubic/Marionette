@@ -30,7 +30,7 @@ export function foldLocalSingleGroups(groups: LibraryGroup[]): MenuGroup[] {
       out.push(group);
       continue;
     }
-    const row: MenuRow = { ...group.rows[0], hint: group.label.trim() };
+    const row: MenuRow = { ...group.rows[0]!, hint: group.label.trim() };
     if (!local) {
       local = { key: `local:${group.key}`, label: "本机", rows: [] };
       out.push(local);
@@ -40,7 +40,7 @@ export function foldLocalSingleGroups(groups: LibraryGroup[]): MenuGroup[] {
   // A lone local endpoint keeps its own header — nothing to fold.
   return out.map((group) =>
     group.key.startsWith("local:") && group.rows.length === 1
-      ? { key: group.key.slice("local:".length), label: group.rows[0].hint ?? group.label, rows: [{ ...group.rows[0], hint: undefined }] }
+      ? { key: group.key.slice("local:".length), label: group.rows[0]!.hint ?? group.label, rows: [{ ...group.rows[0]!, hint: undefined }] }
       : group,
   );
 }
@@ -52,5 +52,5 @@ export function foldLocalSingleGroups(groups: LibraryGroup[]): MenuGroup[] {
 export function splitModelMeta(label: string): { name: string; meta: string } {
   const match = /^(.*\S)\s*\(([^()]+)\)\s*$/.exec(label);
   if (!match) return { name: label, meta: "" };
-  return { name: match[1], meta: match[2].trim() };
+  return { name: match[1]!, meta: match[2]!.trim() };
 }
