@@ -3,6 +3,11 @@
 改完代码后的自检脚本，都在仓库根目录下运行。Node 24 自带 type stripping，
 `.mts` 可以直接 `node` 跑；用 `npx tsx` 也可以。
 
+**聚合入口：`npm run verify`**（`scripts/verify-all.mjs`）跑全部离线脚本
+（`.mts` 自动经 `npx tsx` 起动，`.mjs` 直接 node）；需要活体环境的
+`check-ui.mjs`（CDP 窗口）、`verify-model-source-engine.mjs`（引擎二进制）、
+`patch-zcode-acp-personal-models.mjs`（改全局安装）不在此列。
+
 | 脚本 | 跑法 | 检查什么 |
 |---|---|---|
 | `verify-model-library.mjs` | `node scripts/verify-model-library.mjs` | 原生/共享模型按真实来源合并、不同账号同名模型保留、provider 与模型隐藏/排序/搜索、凭据扫描返回格式兼容 |

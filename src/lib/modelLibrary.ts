@@ -136,7 +136,6 @@ export function libraryGroups(agentId: string, native: ModelDef[], catalog: Brid
   // says another agent copied that sign-in into its own auth store (OpenCode's
   // OAuth `openai`), whose listing would repeat the same models.
   const owner = accounts.find(a => a.kind === "owner" && a.agent === agentId && !a.provider);
-  const ownerKey = owner ? aliases[`engine:${owner.engine}`] ?? `engine:${owner.engine}` : null;
   // A merged group is named the way an agent names the vendor; a bare host
   // ("deepseek.com") only stands in when no agent lists that account. The name
   // comes from any agent, so every agent's menu shows the same header.

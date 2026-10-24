@@ -14,9 +14,7 @@ import {
 import { createPortal } from "react-dom";
 import {
   compactGrokWaitDetail,
-  extractAcpUpdateText,
   isAssistantNotice,
-  mergeStreamText,
   parseBackgroundSubagentStart,
   userMessageAnchorId,
 } from "../lib/acpTranscript";
@@ -65,7 +63,7 @@ import { isCursorOverWindow, setMergeHighlight } from "../lib/detachedWindow";
 import { loadDetailsVisible, saveDetailsVisible } from "../lib/uiRestore";
 import { SplitBesideMenu, type OpenBesideEdge } from "./SplitBesideMenu";
 import type { DropEdge } from "../lib/splitWorkspace";
-import type { AgentConfig, Session, SessionEvent, SessionStatus, SessionViewMode } from "../lib/types";
+import type { AgentConfig, Session, SessionEvent, SessionStatus } from "../lib/types";
 import { ActivityKindGroup, ActivityPanel, ActivityTimeline } from "./ActivityPanel";
 import { StreamPromptCard, type StreamPromptHandlers } from "./StreamPromptCard";
 import { ClippedBody } from "./ClippedBody";
@@ -93,8 +91,6 @@ type SessionViewProps = {
   agent: AgentConfig;
   events: SessionEvent[];
   session: Session;
-  viewMode: SessionViewMode;
-  openSessions: Session[];
   /** Sticky auth / outdated-CLI warning for the active agent. */
   authBanner?: string | null;
   bannerKind?: "auth" | "upgrade";
@@ -710,8 +706,6 @@ export function SessionView({
   agent,
   events,
   session,
-  viewMode,
-  openSessions,
   authBanner = null,
   bannerKind = "auth",
   onSignIn,

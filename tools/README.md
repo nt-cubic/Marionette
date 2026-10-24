@@ -15,8 +15,10 @@
 | `ensure-msvc.bat` | 检查 MSVC / Windows SDK，缺失时可经 winget 安装 |
 | `ensure-rust.bat` | 检查 Rust 工具链，缺失时可经 rustup 安装 |
 | `demo-instance.bat` / `.ps1` | 起一个隔离的演示实例：`USERPROFILE` 与 `WEBVIEW2_USER_DATA_FOLDER` 都指向临时 profile，只看得见预置的 `demo-app`，用于截图与试用 |
+| `build-now.ps1` | 本地快捷打便携版（设 `SKIP_MAGPIE_IMPORT=1` + `NOPAUSE=1` 后转发 `build-portable.bat`）；路径基于 `$PSScriptRoot`，可从任意工作目录调用 |
 
 `ensure-*.bat` 由其它脚本 `call`，一般不单独双击。
+`REQUIRE_UPX=1` 现在同时拦「UPX 未安装」和「压缩失败」：两种情况都直接 fail，不再静默发出未压缩产物；exe 被占用写 `.new.exe` 时该模式也会 fail（发布管线要的是真产物）。
 
 ## 演示实例（截图用）
 

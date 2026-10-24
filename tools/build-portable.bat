@@ -165,6 +165,10 @@ set "UPX="
 echo  [upx] compressing: %SHIP%
 "!UPX_BIN!" --best --lzma -q "%STAGE%"
 if errorlevel 1 (
+  if /I "%REQUIRE_UPX%"=="1" (
+    echo  [error] UPX failed and REQUIRE_UPX=1 - refusing to ship uncompressed
+    goto fail
+  )
   echo  [warn] UPX failed - leaving uncompressed
   set "UPX_NOTE=FAILED"
   copy /Y "%SRC%" "%STAGE%" >nul
@@ -177,8 +181,13 @@ copy /Y "%STAGE%" "%SHIP%" >nul
 if errorlevel 1 (
   echo  [warn] Marionette.exe is in use - wrote Marionette.new.exe instead
   echo         close the running app and rename it
-  copy /Y "%STAGE%" "%OUTDIR%\Marionette.new.exe" >nul
+  copy /Y "%STAGE%" "%OUTDIR%\Marionette.new.exe" >nul 2>&1
+  if errorlevel 1 (
+    echo  [error] could not ship the build at all - both targets failed
+    goto fail
+  )
   set "SHIP=%OUTDIR%\Marionette.new.exe"
+  if /I "%REQUIRE_UPX%"=="1" goto fail
 )
 del /q "%STAGE%" >nul 2>&1
 

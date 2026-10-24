@@ -1077,7 +1077,6 @@ export function parseGrokBilling(data: unknown): {
     (typeof period?.type === "string" && period.type) ||
     (typeof config.periodType === "string" && config.periodType) ||
     "";
-  const isWeekly = /weekly/i.test(periodType) || !periodType;
   const isMonthly = /monthly/i.test(periodType);
   const id = isMonthly ? "monthly" : "weekly";
   const label = isMonthly ? "Monthly limit" : "Weekly limit";
