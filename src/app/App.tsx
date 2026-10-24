@@ -1,6 +1,6 @@
 import { emit, listen } from "@tauri-apps/api/event";
 import { ChevronLeft, ChevronRight, FolderOpen, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, memo, type CSSProperties } from "react";
 import { agents, projects, sessions } from "../lib/mockData";
 import {
   applyAcpPartToEvents,
@@ -27,6 +27,7 @@ import {
 import { engineQuota as fetchEngineQuota, type EngineQuotaEntry } from "../lib/api";
 import { TELEGRAM_COMMAND_EVENT, telegramRemoteResult, type TelegramCommand } from "../lib/api";
 import { invalidateBridgeModels } from "../lib/bridge";
+import { useLatestCallback } from "../lib/useLatestCallback";
 import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, beginWorkspaceSnapshot, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, discardWorkspaceSnapshot, downloadAppUpdate, endWorkspaceSnapshot, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, type TurnSnapshotEnd, type TurnSnapshotStart, CHAT_PROJECT_ID } from "../lib/api";
 import {
   bindDetachedWindowReaper,
@@ -192,6 +193,10 @@ import { ProjectShelf } from "../components/ProjectShelf";
 import { CommandPalette } from "../components/CommandPalette";
 import { ToastStack } from "../components/ToastStack";
 import { SessionTabs, SessionView, type ForkAnchor, type UserMessageAnchor } from "../components/SessionView";
+// 侧栏/标签栏是流式期间的重渲大户：memo 化 + useLatestCallback 稳定回调，
+// eventsTick（20-50Hz）bump 时不再波及整棵侧栏树（审计 2026-10-24 P1-A）。
+const MemoProjectShelf = memo(ProjectShelf);
+const MemoSessionTabs = memo(SessionTabs);
 import {
   SplitWorkspace,
   collectDropGeometry,
@@ -3953,6 +3958,12 @@ export function App() {
     [availableSessions]
   );
 
+  // ProjectShelf 的项目列表（memo 化：内联 filter 会让引用每渲染都变，击穿 memo）。
+  const shelfProjects = useMemo(
+    () => availableProjects.filter((p) => p.id !== CHAT_PROJECT_ID),
+    [availableProjects]
+  );
+
   const currentSession = useMemo(
     () =>
       availableSessions.find((session) => session.id === currentSessionId) ??
@@ -7307,9 +7318,10 @@ export function App() {
     edgeHoverTimers.current.right = setTimeout(() => setRightEdgeHover(false), 600);
   }, []);
 
-  const tabGhostHint = ghostHintForDrop(tabDropPreview, {
-    atMax: leafCount(splitState) >= MAX_PANES,
-  });
+  const tabGhostHint = useMemo(
+    () => ghostHintForDrop(tabDropPreview, { atMax: leafCount(splitState) >= MAX_PANES }),
+    [tabDropPreview, splitState],
+  );
 
   const handleTabDragPreview = (session: Session, clientX: number, clientY: number) => {
     const drop = hitTestTabDrop(session, clientX, clientY);
@@ -7354,6 +7366,60 @@ export function App() {
     } else {
       void createSessionForProject(session.projectId || currentProject?.id || "");
     }
+  };
+
+  // ── 侧栏/标签栏稳定回调（审计 2026-10-24 P1-A）─────────────────────────
+  // MemoProjectShelf / MemoSessionTabs 靠这些引用稳定的包装器在流式
+  // eventsTick（20-50Hz）重渲时跳过整棵侧栏树。useLatestCallback 每次渲染
+  // 把最新闭包写进 ref——引用不变、内容不过期，不引入过期闭包风险。
+  const shelfStable = {
+    onToggleDesktopNotify: useLatestCallback(() => {
+      setDesktopNotifyOn((current) => {
+        const next = !current;
+        setDesktopNotifyEnabled(next);
+        return next;
+      });
+    }),
+    onCollapse: useLatestCallback(() => setLeftCollapsed(true)),
+    onExpand: useLatestCallback(() => setLeftCollapsed(false)),
+    onToggleTheme: useLatestCallback(() => setTheme((current) => nextTheme(current))),
+    onAddProject: useLatestCallback(() => {
+      setProjectDialogOpen(true);
+      setProjectError("");
+    }),
+    onNewSession: useLatestCallback((projectId: string) => {
+      createSessionForProject(projectId);
+    }),
+    onProjectSelect: useLatestCallback((projectId: string) => {
+      setCurrentProjectId(projectId);
+      const nextSession = availableSessions.find((session) => session.projectId === projectId);
+      if (nextSession) {
+        openSession(nextSession);
+      } else {
+        // Selecting a project with no sessions should still get a usable dialog.
+        void createSessionForProject(projectId);
+      }
+    }),
+    onSessionSelect: useLatestCallback(openSession),
+    onDeleteSession: useLatestCallback(deleteSession),
+    onDeleteProject: useLatestCallback(handleDeleteProject),
+    onOpenBeside: useLatestCallback(handleOpenBeside),
+    onRevealProject: useLatestCallback((project: Project) => {
+      void revealInFileManager(project.rootPath).catch(() => undefined);
+    }),
+    onNewChat: useLatestCallback(() => {
+      void handleCreateChatSession();
+    }),
+  };
+
+  const tabStable = {
+    onTabSelect: useLatestCallback(openSession),
+    onTabClose: useLatestCallback(closeSessionTab),
+    onNewTab: useLatestCallback(() => newTabForSession(displaySession)),
+    onTabPopOut: useLatestCallback((s: Session, viaDrag?: boolean) => void handleTabPopOut(s, viaDrag === true)),
+    onTabMergeBack: useLatestCallback((s: Session, viaDrag?: boolean) => void handleMergeBack(s, viaDrag === true)),
+    onTabDragPreview: useLatestCallback(handleTabDragPreview),
+    onTabDragEnd: useLatestCallback(handleTabDragEnd),
   };
 
   const renderConversation = (session: Session) => {
@@ -7652,9 +7718,9 @@ export function App() {
         {/* Left sidebar: full height (spans both rows) */}
         <aside className={leftCollapsed || IS_DETACHED_WINDOW ? "left-rail is-collapsed" : "left-rail"} aria-label="Projects and sessions">
           {!IS_DETACHED_WINDOW && (
-          <ProjectShelf
+          <MemoProjectShelf
             agents={availableAgents}
-            projects={availableProjects.filter((p) => p.id !== CHAT_PROJECT_ID)}
+            projects={shelfProjects}
             sessions={availableSessions}
             currentProjectId={currentProjectId}
             currentSessionId={displaySession.id}
@@ -7666,49 +7732,28 @@ export function App() {
             proxyConfig={proxyConfig}
             onSaveProxy={handleSaveProxy}
             onTestProxy={handleTestProxy}
-            onToggleDesktopNotify={() => {
-              setDesktopNotifyOn((current) => {
-                const next = !current;
-                setDesktopNotifyEnabled(next);
-                return next;
-              });
-            }}
-            onCollapse={() => setLeftCollapsed(true)}
-            onExpand={() => setLeftCollapsed(false)}
-            onToggleTheme={() => setTheme((current) => nextTheme(current))}
-            onAddProject={() => { setProjectDialogOpen(true); setProjectError(""); }}
-            onNewSession={(projectId) => {
-              createSessionForProject(projectId);
-            }}
-            onProjectSelect={(projectId) => {
-              setCurrentProjectId(projectId);
-              const nextSession = availableSessions.find((session) => session.projectId === projectId);
-              if (nextSession) {
-                openSession(nextSession);
-              } else {
-                // Selecting a project with no sessions should still get a usable dialog.
-                void createSessionForProject(projectId);
-              }
-            }}
-            onSessionSelect={openSession}
-            onOpenBeside={handleOpenBeside}
+            onToggleDesktopNotify={shelfStable.onToggleDesktopNotify}
+            onCollapse={shelfStable.onCollapse}
+            onExpand={shelfStable.onExpand}
+            onToggleTheme={shelfStable.onToggleTheme}
+            onAddProject={shelfStable.onAddProject}
+            onNewSession={shelfStable.onNewSession}
+            onProjectSelect={shelfStable.onProjectSelect}
+            onSessionSelect={shelfStable.onSessionSelect}
+            onOpenBeside={shelfStable.onOpenBeside}
             externalScanning={externalScanning}
             onRefreshExternal={handleRefreshExternal}
-            onDeleteSession={deleteSession}
-            onDeleteProject={handleDeleteProject}
+            onDeleteSession={shelfStable.onDeleteSession}
+            onDeleteProject={shelfStable.onDeleteProject}
             onRenameSession={handleRenameSession}
             onSuspendSession={handleSuspendSession}
             onToggleSessionPin={handleToggleSessionPin}
             onReorderProjects={handleReorderProjects}
-            onRevealProject={(project) => {
-              void revealInFileManager(project.rootPath).catch(() => undefined);
-            }}
+            onRevealProject={shelfStable.onRevealProject}
             defaultFolderPath={defaultFolderPath}
             chatSessions={chatSessions}
             onChatSessionSelect={openChatSession}
-            onNewChat={() => {
-              void handleCreateChatSession();
-            }}
+            onNewChat={shelfStable.onNewChat}
           />
           )}
           {!leftCollapsed && !IS_DETACHED_WINDOW && (
@@ -7730,7 +7775,7 @@ export function App() {
           <CommandPalette
             sessions={availableSessions}
             chatSessions={chatSessions}
-            projects={availableProjects.filter((p) => p.id !== CHAT_PROJECT_ID)}
+            projects={shelfProjects}
             currentSessionId={displaySession.id}
             doneUnreadIds={doneUnreadIds}
             agentLabel={(agentId) => availableAgents.find((a) => a.id === agentId)?.label ?? agentId}
@@ -7793,30 +7838,30 @@ export function App() {
         {/* Shared titlebar across center + right columns */}
         <div className="workspace-titlebar">
           {!workspaceSplit ? (
-          <SessionTabs
+          <MemoSessionTabs
             openSessions={openSessions}
             session={displaySession}
             doneUnreadIds={doneUnreadIds}
-            onTabSelect={openSession}
-            onTabClose={closeSessionTab}
-            onNewTab={() => newTabForSession(displaySession)}
+            onTabSelect={tabStable.onTabSelect}
+            onTabClose={tabStable.onTabClose}
+            onNewTab={tabStable.onNewTab}
             onRenameSession={handleRenameSession}
             onTabPopOut={
               IS_DETACHED_WINDOW
                 ? undefined
-                : (s, viaDrag) => void handleTabPopOut(s, viaDrag)
+                : tabStable.onTabPopOut
             }
             onTabMergeBack={
               IS_DETACHED_WINDOW
-                ? (s, viaDrag) => void handleMergeBack(s, viaDrag)
+                ? tabStable.onTabMergeBack
                 : undefined
             }
             mergeDropActive={IS_DETACHED_WINDOW ? false : mergeTargetActive}
             detachedMode={IS_DETACHED_WINDOW}
-            onTabDragPreview={IS_DETACHED_WINDOW ? undefined : handleTabDragPreview}
-            onTabDragEnd={IS_DETACHED_WINDOW ? undefined : handleTabDragEnd}
+            onTabDragPreview={IS_DETACHED_WINDOW ? undefined : tabStable.onTabDragPreview}
+            onTabDragEnd={IS_DETACHED_WINDOW ? undefined : tabStable.onTabDragEnd}
             ghostHint={tabGhostHint}
-            onOpenBeside={IS_DETACHED_WINDOW ? undefined : handleOpenBeside}
+            onOpenBeside={IS_DETACHED_WINDOW ? undefined : shelfStable.onOpenBeside}
             titlebarDragRegion
           />
           ) : (
