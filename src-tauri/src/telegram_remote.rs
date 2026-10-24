@@ -2160,17 +2160,24 @@ fn reply_markup(keyboard: &[Vec<TgButton>]) -> Value {
 fn poller_loop(slot: &'static Telegram) {
     let mut offset: i64 = 0;
     let mut backoff = BACKOFF_MIN;
+    // 401/403 期间只记一条警告（last_error 持续可见），不随退避节奏刷屏。
+    let mut auth_parked = false;
+    let mut parked_token: Option<String> = None;
     loop {
         let live = slot.live.lock().ok().map(|l| l.clone());
         let Some(live) = live else {
             thread::sleep(Duration::from_secs(5));
             continue;
         };
-        // 有 token 就轮询：未配对时也要能收到第一条消息（配对依赖它）。
+        // token 换新 = 用户对 401 停用的回应，恢复轮询。
         let Some(token) = live.token.clone() else {
             thread::sleep(Duration::from_secs(2));
             continue;
         };
+        if auth_parked && parked_token.as_deref() != Some(token.as_str()) {
+            auth_parked = false;
+            log("info", "telegram token replaced — resuming polling", None);
+        }
 
         let url = format!(
             "{API_BASE}/bot{token}/getUpdates?timeout={POLL_TIMEOUT_SECS}&offset={offset}&allowed_updates=%5B%22message%22%2C%22callback_query%22%5D"
@@ -2181,7 +2188,7 @@ fn poller_loop(slot: &'static Telegram) {
                     .get(&url)
                     .timeout(Duration::from_secs(POLL_HTTP_TIMEOUT_SECS))
                     .call()
-                    .map_err(|e| e.to_string())
+                    .map_err(|e| sanitize_error("getUpdates", &e.to_string()))
             })
             .and_then(|resp| {
                 resp.into_string()
@@ -2222,6 +2229,26 @@ fn poller_loop(slot: &'static Telegram) {
             }
             Err(error) => {
                 let is_conflict = error.contains("409") || error.contains("Conflict");
+                // token 被吊销/无权限：再试一万次也是 401。停用轮询等待换 token
+                // （上面 token 变化检测恢复），不随退避节奏刷屏。
+                let is_auth_reject =
+                    !is_conflict && (error.contains("401") || error.contains("403"));
+                if is_auth_reject && !auth_parked {
+                    auth_parked = true;
+                    parked_token = Some(token.clone());
+                    log(
+                        "warn",
+                        "telegram rejected the bot token (401/403) — polling parked; replace the token in settings to resume",
+                        Some(&error),
+                    );
+                }
+                if auth_parked {
+                    if let Ok(mut inner) = slot.inner.lock() {
+                        inner.last_error = Some(error.clone());
+                    }
+                    thread::sleep(BACKOFF_MAX);
+                    continue;
+                }
                 if let Ok(mut inner) = slot.inner.lock() {
                     inner.last_error = Some(error.clone());
                 }
@@ -3222,6 +3249,23 @@ fn emit_resolved(slot: &'static Telegram, session_id: &str, method: &str, reques
 
 // ─── Telegram HTTP ─────────────────────────────────────────────────────────
 
+/// ureq 2.12 的 `Error` Display 会把完整请求 URL 拼进错误文本（Status 打
+/// `response.get_url()`、Transport 打 `transport.url`，重定向历史还会再带
+/// 一个），URL 形如 `…/bot<TOKEN>/method`。任何可能来自 ureq 的错误串进
+/// 日志/`last_error` 前必须过这里把 token 段换成 `<redacted>`（token 字符集
+/// 不含 `/`，下一个 `/` 即方法名边界）。
+fn sanitize_error(method: &str, error: &str) -> String {
+    let mut out = error.to_string();
+    let mut scanned = 0usize;
+    while let Some(rel) = out[scanned..].find("/bot") {
+        let at = scanned + rel + 4;
+        let end = out[at..].find('/').map(|off| at + off).unwrap_or(out.len());
+        out.replace_range(scanned + rel..end, "/bot<redacted>");
+        scanned = scanned + rel + "/bot<redacted>".len();
+    }
+    format!("{method}: {out}")
+}
+
 /// POST JSON；非 ok 一律带上下文报错。token 绝不进错误文本（url 不外泄）。
 fn tg_call(token: &str, method: &str, body: &Value, timeout: Duration) -> Result<Value, String> {
     if token.is_empty() {
@@ -3254,7 +3298,7 @@ fn tg_call(token: &str, method: &str, body: &Value, timeout: Duration) -> Result
                     format!("HTTP {code} · {method}: {desc}")
                 }
             }
-            other => format!("{method}: {other}"),
+            other => sanitize_error(method, &other.to_string()),
         })?;
     let status = response.status();
     let text = response
@@ -4139,6 +4183,36 @@ mod tests {
         assert_eq!(update_kind(&json!({ "type": "tool_call" })), "tool_call");
         assert_eq!(update_kind(&json!({ "kind": "plan" })), "plan");
         assert_eq!(update_kind(&json!({})), "");
+    }
+
+    /// ureq 2.12 的 Display 会把 `bot<TOKEN>` 带进错误文本（Status 打
+    /// `url: status code N`、Transport 打 `url: kind: msg`，重定向再带一个）。
+    /// 清洗后任何形态都不得残留 token。
+    #[test]
+    fn sanitize_error_strips_token_from_all_ureq_shapes() {
+        let token = "8123456789:AAEhBOweik6ad9r_QXMENQjcrGbqCr4K-3c";
+        // Status 形态（getUpdates 经 .map_err(e.to_string()) 直通）。
+        let status = format!("https://api.telegram.org/bot{token}/getUpdates: status code 401");
+        assert_eq!(
+            sanitize_error("getUpdates", &status),
+            "getUpdates: https://api.telegram.org/bot<redacted>/getUpdates: status code 401"
+        );
+        // Transport 形态（tg_call 的 other 分支）。
+        let transport =
+            format!("https://api.telegram.org/bot{token}/sendMessage: Dns: whois failed");
+        assert_eq!(
+            sanitize_error("sendMessage", &transport),
+            "sendMessage: https://api.telegram.org/bot<redacted>/sendMessage: Dns: whois failed"
+        );
+        // 重定向历史再带一个 URL 的形态。
+        let redirected = format!(
+            "https://api.telegram.org/bot{token}/getMe: status code 302 (redirected from https://api.telegram.org/bot{token}/login)"
+        );
+        let cleaned = sanitize_error("getMe", &redirected);
+        assert!(!cleaned.contains(token), "token must not survive: {cleaned}");
+        assert_eq!(cleaned.matches("<redacted>").count(), 2);
+        // 无 URL 的错误原样透传（只加方法名前缀）。
+        assert_eq!(sanitize_error("getMe", "no token"), "getMe: no token");
     }
 
     #[test]
