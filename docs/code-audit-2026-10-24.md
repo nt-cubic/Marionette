@@ -1,12 +1,17 @@
 # 全库代码摸底报告（2026-10-24）
 
-> **落地进度（2026-10-24 晚，处理顺序 1–5 批全部完成）：**
+> **落地进度（2026-10-24 晚，处理顺序 1–5 批全部完成；第 6 批部分落地）：**
 > ✅ P0 token 清洗 + 401/403 停用（`45b488d`）
 > ✅ 快赢工程卫生（`6b4e8b1`，noUncheckedIndexedAccess 除外——419 处需逐个定兜底，递延）
 > ✅ Rust 假死面一批（`e89a139`：debug_log 写线程、storage 原子写+恢复、git/npm/CLI 超时 kill、桥互斥、poller 出网）
 > ✅ 前端热路径一批（`e297dbe`：reportStreamInterests 浅比较、diff 1000 行上限、图片缓存 LRU）
 > ✅ 安全边界收紧（`e297dbe` + `bd56d7b`：urlTransform 协议白名单、CSP、read_image 只收图片）
-> ⬜ 巨型文件拆分（第 6 批）与 P2 长尾未动。
+> ✅ 第 6 批第一批（`bebc699`：acp.rs start() 锁内 I/O 移出锁、zcode/pi 桥损坏原文先留档、
+> 修复 test_running 全局态并行竞态——10x 全量压测 0 失败）
+> ✅ SidebarCallbacks 收敛（`aeb83eb`：ProjectShelf/SessionTabs memo + useLatestCallback 稳定回调）
+> ✅ P2 快赢两批（`e522af3` Rust：where/which 超时 kill、porcelain 切片边界、lossy 读、
+> grok 毒锁恢复、stop_all 实数、删假 SessionManager；`7e10e0c` 前端 lib：反扫、Set、rAF 清理等）
+> ⬜ 巨型文件本体拆分（acp_transport/capabilities、App.tsx 事件管线等）与 P2 剩余长尾未动。
 > 两处审计项经核对已过时：`turnDelivery memoize`——现实现已在 SessionView 的完整依赖 useMemo 内，
 > 无需再改；`Composer localStorage 草稿防抖`——草稿缓存现已是内存 Map（非 localStorage），无需防抖。
 > `read_image`/assetProtocol 未按「cwd 白名单」收窄：拖拽附件与 annotator 读用户自选的任意目录文件，
@@ -70,7 +75,7 @@
 
 ## 🟠 P1 — 显著问题（按主题分组，关键行均已亲验）
 
-### A. 前端热路径性能 —— 部分修复（`e297dbe`：reportStreamInterests、diff 上限、图片缓存 LRU；turnDelivery 已在 useMemo 内无需改）
+### A. 前端热路径性能 —— 已修一批（`e297dbe`：reportStreamInterests、diff 上限、图片缓存 LRU；turnDelivery 已在 useMemo 内无需改；`aeb83eb`：SidebarCallbacks 收敛——ProjectShelf/SessionTabs memo + useLatestCallback 稳定回调 + shelfProjects/tabGhostHint memo）
 
 App 层的 50ms 批处理（`ACP_EVENT_FLUSH_MS = 50`，批内逐事件 try/catch 隔离）只是降级；
 lib/组件层单次成本仍随数据量线性/平方放大，流式 20-50Hz 时被乘出来。
@@ -96,7 +101,7 @@ lib/组件层单次成本仍随数据量线性/平方放大，流式 20-50Hz 时
 | `src/components/UnifiedDiffView.tsx:58-111` | diff 无行数上限：单卡可达数千行 × 6-7 span → 数万 DOM；ClippedBody 只裁视口不裁 DOM | parse 后截断（如前 1000 行 + 省略提示） |
 | `src/components/MarkdownBody.tsx:88` | 模块级图片 base64 缓存无上限、无 LRU，长会话内存单调涨 | 条目上限（如 50 张 LRU）或随会话清理 |
 
-### B. Rust 热路径 / 假死面 —— 已修一批（`e89a139`：debug_log 写线程、storage 原子写、git/npm/CLI 超时、agent_update kill、桥互斥、poller 出网改线程 + enqueue；acp.rs start() 锁内 I/O 未动，随拆分批次处理）
+### B. Rust 热路径 / 假死面 —— 已修一批（`e89a139`：debug_log 写线程、storage 原子写、git/npm/CLI 超时、agent_update kill、桥互斥、poller 出网改线程 + enqueue；`bebc699`：acp.rs start() 锁内 I/O 移出锁——锁只包查重+spawn+插入，PATH 扫描/引擎唤醒/桥手术/DPAPI 全部挪锁外，锁内二次查重吸收并发 start）
 
 | 位置 | 问题 | 建议 |
 |---|---|---|
@@ -118,7 +123,7 @@ lib/组件层单次成本仍随数据量线性/平方放大，流式 20-50Hz 时
 | `src-tauri/tauri.conf.json:29-31` | assetProtocol 启用且 scope `["**"]`，整个文件系统经 asset: 可读 | 收窄到会话/图片目录白名单 |
 | `src-tauri/src/commands.rs:2155-2240` | `read_image_data_url` 接受任意绝对路径无根约束，≤12MB 任意本地文件可 base64 进模型上下文；`resolve_image_path` 后缀模糊匹配可能命中别的文件 | 限定 session cwd + `~/.marionette/` 白名单 |
 
-### D. 数据安全 / 存储耐久 —— 已修（`e89a139`：storage 全部索引写走 write_atomic + .bak 恢复 + .corrupt 留尸；model_bridge.rs:801 的 from_str 失败即整体替换随拆分批次复查）
+### D. 数据安全 / 存储耐久 —— 已修（`e89a139`：storage 全部索引写走 write_atomic + .bak 恢复 + .corrupt 留尸；`bebc699`：model_bridge zcode/pi 桥合并入口在原文解析失败/非 object 时先 archive_corrupt 留档再当新文件合并，不再静默整体替换用户自建 provider）
 
 | 位置 | 问题 | 建议 |
 |---|---|---|
@@ -146,14 +151,16 @@ lib/组件层单次成本仍随数据量线性/平方放大，流式 20-50Hz 时
 ## 🟡 P2 — 摘要（按子系统，位置均经报告给出、抽样核对属实）
 
 **前端 lib / App / Composer**：`acpTranscript.ts:118/324/529/1067` JSON.parse 失败静默回退无痕迹；
-`acpTranscript.ts:1400` `findLastThoughtInTurn` 正向全量扫（应从尾反向）；`sessionSuspend.ts:93`
-数组 `includes` 应传 Set；`sessionOrder.ts:25` 坏 pinnedAt 返 0 应返 null；`sessionFork.ts:45`
-`as` 断言可造非法联合变体；`useVirtualWindow.ts:121` rAF 句柄无卸载清理；`bridge.ts:48` 无 in-flight
+✅`acpTranscript.ts:1400` `findLastThoughtInTurn` 正向全量扫（已改单遍反扫，`7e10e0c`）；✅`sessionSuspend.ts:93`
+数组 `includes`（已改 ReadonlySet，`7e10e0c`）；✅`sessionOrder.ts:25` 坏 pinnedAt 返 0（已改返 null，`7e10e0c`）；
+`sessionFork.ts:45`
+`as` 断言可造非法联合变体；✅`useVirtualWindow.ts:121` rAF 句柄无卸载清理（已补卸载 cancel，`7e10e0c`）；
+`bridge.ts:48` 无 in-flight
 去重可致重试风暴；`sessionBus.ts:60` unlisten 竞态泄漏 Tauri listener；`App.tsx:1356/1361/1337/7127`
 静默 catch；`App.tsx:2911-2929` flush 批内不分片，重放/追赶仍可长阻塞；`App.tsx:3967-3970`
 `void eventsTick[]` 依赖 hack；`App.tsx:991-998` 全会话共享一个 eventsTick 互相放大；
-`Composer.tsx:755/764` + `App.tsx:3900` localStorage 空 catch；`slashCommands.ts:138-140`
-冗余分支；`Composer.tsx:1618` 高频内联函数。
+`Composer.tsx:755/764` + `App.tsx:3900` localStorage 空 catch；✅`slashCommands.ts:138-140`
+冗余分支（已删 startsWith 冗余臂，`7e10e0c`）；`Composer.tsx:1618` 高频内联函数。
 
 **前端面板组件**：`SessionView.tsx:1216` 每行 new 一个 ResizeObserver（满载 ~72 个）；
 `SessionView.tsx:1909-1923` observer churn（totalSize 在依赖里反复 disconnect/re-observe）；
@@ -181,9 +188,11 @@ elicitation/plan 起一个睡全时长的线程，应单定时器 + 到期队列
 被误报成 "timed out"；`acp.rs:3773-3777` 迟到应答静默丢弃无痕迹；`main.rs:405-407`
 `StorageService::new().expect` 在 panic=abort + windows_subsystem 下是无对话框静默退出（与
 data_dir_gate 兜底哲学相悖）；`main.rs:388-400` `Destroyed` 安全网不跑 `stop_all` → agent 孤儿；
-`debug_log.rs:74-78` 轮转只留一代且每条 append 都重新 metadata；`session_manager.rs:19,37`
-map 值从不读取（假状态，应 HashSet）；`app_paths.rs:31-39` 目录迁移发生在单实例锁之前，双开竞态
-可数据分叉；`acp.rs:1219-1229` `stop_all` 虚报成功数；`main.rs:541-542` `run().expect` 同为静默 abort。
+`debug_log.rs:74-78` 轮转只留一代且每条 append 都重新 metadata；✅`session_manager.rs:19,37`
+map 值从不读取（已整模块删除——mark_started/mark_exited 零调用，is_live 恒 false，`e522af3`）；
+`app_paths.rs:31-39` 目录迁移发生在单实例锁之前，双开竞态
+可数据分叉；✅`acp.rs:1219-1229` `stop_all` 虚报成功数（已改按实际 stop 成功计数，`e522af3`）；
+`main.rs:541-542` `run().expect` 同为静默 abort。
 
 **Rust 模型 / 引擎 / 凭据**：`engine.rs:685-688` `replace_engine_exe` 两步间镜像缺位，失败可恢复但
 状态倒退（应自动触发工厂恢复）；`engine.rs:1746-1761` idle_watchdog `kill()` 后不 `wait()` 回收，
@@ -204,11 +213,14 @@ drain + 整体 clone 重解析；`provider_usage.rs:244-267` `find_meta` 每次�
 **误报撤回**：75b952c 当时它就已是 `pub async fn` + `spawn_blocking`（时 commands.rs:403/409），
 所引 2034 行实为 `start_acp_session`。）
 
-**Rust 存储 / 解析器 / git**：`util.rs:112`、`gemini.rs:25`、`codex.rs:64` `read_to_string` 严格
-UTF-8，一个坏字节整份会话静默跳过（应 lossy 变体）；`storage.rs:947-956` `load_transcript` 整读进内存；
-`git_service.rs:827-828` porcelain `&line[..2]` 字节切片理论 panic 面；`grok_dialect.rs:525` 生产路径
-`lock().unwrap()`；`context_inventory.rs:681,695` context.json 损坏静默重置并覆盖原文件（应先备份）；
-`context_inventory.rs:940` 忽略写失败；`process_util.rs:48-51,67` where.exe/which 无超时；
+**Rust 存储 / 解析器 / git**：✅`gemini.rs:25`、`codex.rs:64` `read_to_string` 严格
+UTF-8，一个坏字节整份会话静默跳过（已改 lossy 读，`e522af3`；`util.rs:112` 所指文件已不存在）；
+`storage.rs:947-956` `load_transcript` 整读进内存；
+✅`git_service.rs:827-828` porcelain `&line[..2]` 字节切片理论 panic 面（已加 char boundary 守卫，`e522af3`）；
+✅`grok_dialect.rs:525` 生产路径
+`lock().unwrap()`（已改毒锁 into_inner 恢复，`e522af3`）；`context_inventory.rs:681,695` context.json 损坏静默重置并覆盖原文件（应先备份）；
+`context_inventory.rs:940` 忽略写失败；✅`process_util.rs:48-51,67` where.exe/which 无超时（已走
+output_with_kill_timeout 10s 上限，`e522af3`）；
 `memory.rs:137-139` remove+rename 两步间崩溃缺 tmp 兜底恢复。
 
 **脚本 / 构建**：`package.json:9` `verify:text` 对 .mjs 传无效 flag `--experimental-strip-types`；
@@ -260,6 +272,10 @@ UTF-8，一个坏字节整份会话静默跳过（应 lossy 变体）；`storage
    EventRow memo、ProjectShelf 预聚合、Composer 草稿防抖、diff 行数上限。
 5. **安全边界收紧**——MarkdownBody 协议白名单、CSP、assetProtocol/read_image 收窄。
 6. **巨型文件拆分**——按-touch 渐进，每拆一块跑回归（`npx tsx scripts/verify-*.mts` + `cargo test`）。
+   已落地：acp.rs start() 锁内 I/O 移出（`bebc699`）、SidebarCallbacks 收敛 + memo（`aeb83eb`，
+   收益/风险比最高的一步）、P2 快赢两批（`e522af3`/`7e10e0c`）。未动：巨型文件本体拆分
+   （acp_transport / acp_capabilities、App.tsx 事件管线抽 hook、app.css 六分）与 P2 剩余长尾
+   ——继续按-touch 渐进，每批独立提交。
 
 ## 亮点（保持项，别在重构中丢掉）
 
