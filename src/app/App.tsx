@@ -234,7 +234,8 @@ function readStoredPanelWidth(key: "leftWidth" | "rightWidth", fallback: number,
     const parsed = JSON.parse(raw) as { leftWidth?: number; rightWidth?: number };
     const value = parsed[key];
     return typeof value === "number" && Number.isFinite(value) ? clamp(value, min, max) : fallback;
-  } catch {
+  } catch (err) {
+    console.warn("[layout] persisted layout read failed — using fallback", err);
     return fallback;
   }
 }
@@ -2921,6 +2922,9 @@ export function App() {
     // ACP_EVENT_FLUSH_MS 统一应用一次:同一次 flush 里的全部 setState 会被
     // React 18 合并成一个渲染批次,而文本到达延迟仍远低于感知阈值。
     const ACP_EVENT_FLUSH_MS = 50;
+    // 每片最多同步消化的事件数：重放/追赶可能一次塞进几千条，单循环照旧
+    // 打满主线程（假死根因的变体）——每片之间让出事件循环。
+    const ACP_FLUSH_CHUNK = 200;
     const acpInbox: AcpEvent[] = [];
     let acpFlushTimer: number | undefined;
     const flushAcpInbox = () => {
@@ -2930,7 +2934,7 @@ export function App() {
         return;
       }
       if (acpInbox.length === 0) return;
-      const batch = acpInbox.splice(0, acpInbox.length);
+      const batch = acpInbox.splice(0, ACP_FLUSH_CHUNK);
       livePaintSetRef.current = currentPaintSet();
       // One bad event must not drop the rest of the batch.
       for (const payload of batch) {
@@ -2962,6 +2966,10 @@ export function App() {
       // Delegate children finishing / pane structure changed mid-stream both
       // show up here; the reporter itself is change-detected.
       reportStreamInterestsRef.current();
+      // 还有积压：下一片在事件循环里继续（0ms 让出主线程）。
+      if (acpInbox.length > 0) {
+        acpFlushTimer = window.setTimeout(flushAcpInbox, 0);
+      }
     };
     const scheduleAcpFlush = () => {
       if (acpFlushTimer === undefined) {
@@ -3176,9 +3184,31 @@ export function App() {
    * per dialog, and a shelf of untouched dialogs is memory the user is not
    * spending on anything.
    */
+  // 提示卡状态走 ref：挂起巡检的 60s 窗口不随提示出现/消失被重置
+  // （键盘监听同理——见下方 Esc effect）。
+  const escPromptRef = useRef({
+    permissionPrompt,
+    askPrompt,
+    planApproval,
+    diffPreview,
+    projectDialogOpen,
+    projectAdding,
+  });
+  const layoutPersistWarnedRef = useRef(false);
+  useEffect(() => {
+    escPromptRef.current = {
+      permissionPrompt,
+      askPrompt,
+      planApproval,
+      diffPreview,
+      projectDialogOpen,
+      projectAdding,
+    };
+  });
   useEffect(() => {
     if (!isTauriRuntime()) return;
     const timer = setInterval(() => {
+      const { permissionPrompt, askPrompt, planApproval } = escPromptRef.current;
       const now = Date.now();
       const pendingSessionIds = new Set(
         [permissionPrompt, askPrompt, planApproval]
@@ -3200,7 +3230,7 @@ export function App() {
       }
     }, 60_000);
     return () => clearInterval(timer);
-  }, [askPrompt, handleSuspendSession, permissionPrompt, planApproval]);
+  }, [handleSuspendSession]);
 
   /**
    * Fork: copy the dialog up to one reply into a new session and open it.
@@ -3924,8 +3954,12 @@ export function App() {
           LAYOUT_STORAGE_KEY,
           JSON.stringify({ leftWidth: nextLeft, rightWidth: nextRight })
         );
-      } catch {
-        // ignore quota / private mode
+      } catch (err) {
+        // ignore quota / private mode — but say it once, not per pointermove.
+        if (!layoutPersistWarnedRef.current) {
+          layoutPersistWarnedRef.current = true;
+          console.warn("[layout] persist failed (quota / private mode)", err);
+        }
       }
       setResizingSide(null);
     };
@@ -3997,10 +4031,11 @@ export function App() {
     [availableAgents, displaySession]
   );
 
+  // 只订阅本会话的 tick 值：别的会话在流式输出时不再重算本会话的事件表。
+  const displaySessionTick = eventsTick[displaySession.id];
   const currentEvents = useMemo(() => {
-    void eventsTick[displaySession.id];
     return eventsBySessionRef.current.get(displaySession.id) ?? EMPTY_EVENTS;
-  }, [eventsTick, displaySession.id]);
+  }, [displaySessionTick, displaySession.id]);
 
   const sessionRunning =
     displaySession.status === "running" || displaySession.status === "starting";
@@ -5788,6 +5823,15 @@ export function App() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       if (event.defaultPrevented) return;
+      // 经 ref 读最新提示卡状态：监听器挂一次，不再随提示出现/消失反复卸载重挂。
+      const {
+        permissionPrompt,
+        askPrompt,
+        planApproval,
+        diffPreview,
+        projectDialogOpen,
+        projectAdding,
+      } = escPromptRef.current;
 
       // Layered dismiss first — single Esc should not interrupt.
       if (permissionPrompt) {
@@ -5848,12 +5892,6 @@ export function App() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
-    permissionPrompt,
-    askPrompt,
-    planApproval,
-    diffPreview,
-    projectDialogOpen,
-    projectAdding,
     handleInterrupt,
     handlePermissionChoose,
     handleAskDecline,
@@ -7178,7 +7216,8 @@ export function App() {
           return next;
         });
         setPathGrantPrompt(null);
-        await performSend(
+        // 经 ref 走最新 performSend（闭包不随渲染过期；telegram 管线同款做法）。
+        await telegramPerformSendRef.current(
           prompt.sessionId,
           prompt.text,
           prompt.imageAttachments ?? [],
@@ -7188,7 +7227,6 @@ export function App() {
         setPathGrantBusy(false);
       }
     },
-    // performSend is defined below in the same component scope
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [pathGrantPrompt, pathGrantBusy, currentProjectId, pushDebug, refreshProjectContext, setSessionStatusById]
   );
