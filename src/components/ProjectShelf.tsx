@@ -34,6 +34,22 @@ import type { DropEdge } from "../lib/splitWorkspace";
 const SESSION_LIST_PREVIEW = 5;
 const EMPTY_DONE_UNREAD: ReadonlySet<string> = new Set();
 
+/** Per-project memo cache: a keyed derived value recomputes only when a dep changes. */
+function memoPerProject<T>(
+  cache: Map<string, { deps: unknown[]; value: unknown }>,
+  key: string,
+  deps: unknown[],
+  compute: () => T,
+): T {
+  const hit = cache.get(key);
+  if (hit && hit.deps.length === deps.length && hit.deps.every((dep, i) => dep === deps[i])) {
+    return hit.value as T;
+  }
+  const value = compute();
+  cache.set(key, { deps, value });
+  return value;
+}
+
 function magpieCredit(version?: string | null): string {
   const raw = version?.trim();
   if (!raw) return "由 magpie 强力驱动";
@@ -660,6 +676,11 @@ export function ProjectShelf({
   } | null>(null);
   const dropHintRef = useRef<DropHint | null>(null);
   dropHintRef.current = dropHint;
+  /** Latest grip pointer position; the drop-target check runs once per frame. */
+  const gripPointRef = useRef({ clientX: 0, clientY: 0 });
+  const dragFrameRef = useRef(0);
+  /** Per-project derived-list cache (filter+sort once per input change, not per render). */
+  const projectShelfCacheRef = useRef(new Map<string, { deps: unknown[]; value: unknown }>());
 
   useEffect(() => {
     if (!renamingId) return;
@@ -748,6 +769,10 @@ export function ProjectShelf({
   const endProjectDrag = (commit: boolean) => {
     const drag = projectDragRef.current;
     projectDragRef.current = null;
+    if (dragFrameRef.current) {
+      window.cancelAnimationFrame(dragFrameRef.current);
+      dragFrameRef.current = 0;
+    }
     const fromId = drag?.fromId ?? null;
     const hint = dropHintRef.current;
     setDraggingProjectId(null);
@@ -787,16 +812,19 @@ export function ProjectShelf({
     setDropHint(null);
     dropHintRef.current = null;
     document.body.classList.add("is-project-reordering");
+    if (dragFrameRef.current) {
+      window.cancelAnimationFrame(dragFrameRef.current);
+      dragFrameRef.current = 0;
+    }
   };
 
-  const onProjectGripPointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
+  const computeGripDropHint = () => {
+    dragFrameRef.current = 0;
     const drag = projectDragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    const dist = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
-    if (!drag.armed && dist < 4) return;
-    drag.armed = true;
+    if (!drag || !drag.armed) return;
+    const { clientX, clientY } = gripPointRef.current;
     // elementFromPoint under capture still sees targets below the grip.
-    const el = document.elementFromPoint(event.clientX, event.clientY);
+    const el = document.elementFromPoint(clientX, clientY);
     const group = el?.closest("[data-project-id]") as HTMLElement | null;
     const overId = group?.dataset.projectId ?? null;
     if (!overId || overId === drag.fromId) {
@@ -811,12 +839,25 @@ export function ProjectShelf({
     const rowEl = group?.querySelector(".project-row") as HTMLElement | null;
     const box = (rowEl ?? group)!.getBoundingClientRect();
     const place: "before" | "after" =
-      event.clientY < box.top + box.height / 2 ? "before" : "after";
+      clientY < box.top + box.height / 2 ? "before" : "after";
     const next: DropHint = { targetId: overId, place };
     const prev = dropHintRef.current;
     if (!prev || prev.targetId !== next.targetId || prev.place !== next.place) {
       dropHintRef.current = next;
       setDropHint(next);
+    }
+  };
+
+  const onProjectGripPointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const drag = projectDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const dist = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
+    if (!drag.armed && dist < 4) return;
+    drag.armed = true;
+    // Keep the latest pointer position; the drop-target computation coalesces per frame.
+    gripPointRef.current = { clientX: event.clientX, clientY: event.clientY };
+    if (dragFrameRef.current === 0) {
+      dragFrameRef.current = window.requestAnimationFrame(computeGripDropHint);
     }
   };
 
@@ -1069,21 +1110,30 @@ export function ProjectShelf({
           </div>
         )}
         {allVisibleProjects.map((project) => {
-          const rawSessions =
-            filtered.sessionsByProject?.get(project.id) ??
-            sessions.filter((session) => session.projectId === project.id);
-          // Pinned first, then recency — click-to-select must not jump the row.
-          const projectSessions = sortSessionsNewestFirst(rawSessions);
+          const derivedShelf = memoPerProject(
+            projectShelfCacheRef.current,
+            project.id,
+            [filtered.sessionsByProject, sessions, unreadDone, sessionsExpandedByProject, searching, Math.floor(Date.now() / 60000)],
+            () => {
+              const rawSessions =
+                filtered.sessionsByProject?.get(project.id) ??
+                sessions.filter((session) => session.projectId === project.id);
+              // Pinned first, then recency — click-to-select must not jump the row.
+              const projectSessions = sortSessionsNewestFirst(rawSessions);
+              const sessionsFullyExpanded = searching || sessionsExpandedByProject.has(project.id);
+              const shouldCollapseSessions =
+                !sessionsFullyExpanded && projectSessions.length > SESSION_LIST_PREVIEW;
+              const visibleSessions = shouldCollapseSessions
+                ? collapsedShelfSessions(projectSessions, SESSION_LIST_PREVIEW, unreadDone)
+                : projectSessions;
+              const hiddenSessionCount = Math.max(0, projectSessions.length - visibleSessions.length);
+              // Long, fully listed projects get 今天 / 昨天 / 本周 / 更早 labels.
+              const dayHeads = shelfDayHeaders(visibleSessions, Date.now(), SESSION_LIST_PREVIEW);
+              return { projectSessions, visibleSessions, hiddenSessionCount, dayHeads };
+            },
+          );
+          const { projectSessions, visibleSessions, hiddenSessionCount, dayHeads } = derivedShelf;
           const projectExpanded = isProjectExpanded(project.id);
-          const sessionsFullyExpanded = searching || sessionsExpandedByProject.has(project.id);
-          const shouldCollapseSessions =
-            !sessionsFullyExpanded && projectSessions.length > SESSION_LIST_PREVIEW;
-          const visibleSessions = shouldCollapseSessions
-            ? collapsedShelfSessions(projectSessions, SESSION_LIST_PREVIEW, unreadDone)
-            : projectSessions;
-          const hiddenSessionCount = Math.max(0, projectSessions.length - visibleSessions.length);
-          // Long, fully listed projects get 今天 / 昨天 / 本周 / 更早 labels.
-          const dayHeads = shelfDayHeaders(visibleSessions, Date.now(), SESSION_LIST_PREVIEW);
 
           const showLineBefore =
             dropHint?.targetId === project.id &&
@@ -1372,7 +1422,7 @@ export function ProjectShelf({
                     );
                   })}
 
-                  {shouldCollapseSessions && hiddenSessionCount > 0 && (
+                  {hiddenSessionCount > 0 && (
                     <div className="shelf-clip shelf-clip--sessions">
                       <div className="shelf-clip__fade" aria-hidden />
                       <button

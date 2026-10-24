@@ -57,10 +57,30 @@ export async function listenSessionPatches(
 ): Promise<UnlistenFn> {
   if (!isTauriRuntime()) return () => undefined;
   const origin = await sessionBusOrigin();
-  return listen<SessionPatch>(SESSION_PATCH_EVENT, (event) => {
+  const ready = listen<SessionPatch>(SESSION_PATCH_EVENT, (event) => {
     const patch = event.payload;
     if (!patch?.sessionId) return;
     if (patch.origin && patch.origin === origin) return;
     onPatch(patch);
   });
+  let resolved: UnlistenFn | null = null;
+  let disposed = false;
+  void ready.then(
+    (fn) => {
+      if (disposed) {
+        fn();
+        return;
+      }
+      resolved = fn;
+    },
+    () => undefined
+  );
+  const teardown: UnlistenFn = () => {
+    if (disposed) return;
+    resolved?.();
+    resolved = null;
+    disposed = true;
+  };
+  await ready;
+  return teardown;
 }

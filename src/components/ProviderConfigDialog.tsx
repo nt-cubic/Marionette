@@ -43,8 +43,9 @@ export function ProviderConfigDialog({ onClose, onKeysChanged, restartPending }:
         if (current && list.some((p) => p.provider === current)) return current;
         return list[0]?.provider ?? "";
       });
-    } catch {
-      // Silently fail — the add form still works.
+    } catch (err) {
+      // 目录加载失败也要提示；添加表单仍然可用。
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoaded(true);
     }

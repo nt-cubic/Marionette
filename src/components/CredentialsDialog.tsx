@@ -92,8 +92,11 @@ export function CredentialsDialog({ agents, onClose }: Props) {
       if (!isTauriRuntime()) throw new Error("请在桌面应用中检测");
       const result = await invoke<{ state: string; detail: string }>("model_library_check_source", { id });
       setChecks(previous => ({ ...previous, [id]: result }));
-    } catch {
-      setChecks(previous => ({ ...previous, [id]: { state: "检测失败", detail: "请重试" } }));
+    } catch (e) {
+      setChecks(previous => ({
+        ...previous,
+        [id]: { state: "检测失败", detail: e instanceof Error ? e.message : String(e) },
+      }));
     }
   };
 
@@ -150,6 +153,8 @@ export function CredentialsDialog({ agents, onClose }: Props) {
     try {
       const snapshot = await engineEnable();
       if (snapshot) setEngine(snapshot);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSaving(false);
     }

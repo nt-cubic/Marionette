@@ -88,11 +88,12 @@ const activeAudio = new Set<HTMLAudioElement>();
 
 function readEnabled(): boolean {
   try {
-    const raw =
-      window.localStorage.getItem(STORAGE_KEY) ??
-      window.localStorage.getItem("agentshell-desktop-notify");
-    if (raw === null) return true; // default on — useful out of the box
-    return raw === "1" || raw === "true";
+    const own = window.localStorage.getItem(STORAGE_KEY);
+    if (own !== null) return own === "1" || own === "true";
+    const legacy = window.localStorage.getItem("agentshell-desktop-notify");
+    if (legacy === null) return true; // default on — useful out of the box
+    window.localStorage.removeItem("agentshell-desktop-notify");
+    return legacy === "1" || legacy === "true";
   } catch {
     return true;
   }

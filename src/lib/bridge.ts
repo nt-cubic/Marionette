@@ -23,6 +23,7 @@ type CacheEntry = {
 };
 
 const cache = new Map<string, CacheEntry>();
+const inFlight = new Map<string, Promise<BridgeModelsResult>>();
 
 /**
  * Mounted pickers subscribe here so an invalidation reaches open dialogs.
@@ -48,7 +49,13 @@ export function subscribeBridgeModels(listener: () => void): () => void {
 export async function getBridgeModels(agentId: string): Promise<BridgeModelsResult> {
   const hit = cache.get(agentId);
   if (hit && Date.now() - hit.savedAt < 15_000) return { models: hit.models, sources: hit.sources, note: hit.note };
-  const result = await bridgeListModels(agentId);
+  const inFlightRequest = inFlight.get(agentId);
+  if (inFlightRequest) return inFlightRequest;
+  const request = bridgeListModels(agentId).finally(() => {
+    inFlight.delete(agentId);
+  });
+  inFlight.set(agentId, request);
+  const result = await request;
   cache.set(agentId, {
     models: result.models,
     sources: result.sources ?? null,

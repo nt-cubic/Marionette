@@ -1,4 +1,5 @@
 const STORAGE_KEY = "marionette-recent-models";
+const LEGACY_KEY = "agentshell-recent-models";
 const MAX_ENTRIES = 5;
 
 type RecentModelEntry = {
@@ -84,9 +85,11 @@ export function getLastUsedDefaults(agentId: string): LastUsedDefaults | null {
 /** Record a model usage (push to front, deduplicate, trim to MAX_ENTRIES). */
 export function recordModelUsage(modelId: string): void {
   try {
-    const raw =
-      localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem("agentshell-recent-models");
+    const own = localStorage.getItem(STORAGE_KEY);
+    const legacy = own === null ? localStorage.getItem(LEGACY_KEY) : null;
+    const raw = own ?? legacy;
     const parsed: unknown = raw ? JSON.parse(raw) : [];
+    if (legacy !== null) localStorage.removeItem(LEGACY_KEY);
     // Start fresh on a corrupt value instead of throwing into the catch below,
     // which would leave the bad entry in place and stop recording for good.
     const entries: RecentModelEntry[] = Array.isArray(parsed) ? parsed : [];
@@ -109,11 +112,13 @@ export function getRecentModels(
   validModelIds: ReadonlySet<string>,
 ): RecentModelEntry[] {
   try {
-    const raw =
-      localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem("agentshell-recent-models");
+    const own = localStorage.getItem(STORAGE_KEY);
+    const legacy = own === null ? localStorage.getItem(LEGACY_KEY) : null;
+    const raw = own ?? legacy;
     if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
+    if (legacy !== null) localStorage.removeItem(LEGACY_KEY);
     return parsed
       .filter(
         (e): e is RecentModelEntry =>

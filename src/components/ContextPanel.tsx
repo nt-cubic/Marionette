@@ -9,7 +9,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { useState } from "react";
+import { memo, useState } from "react";
 import { openExternal, revealInFileManager } from "../lib/api";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { MemorySection } from "./MemorySection";
@@ -329,7 +329,7 @@ function ChangedFileRow({
   );
 }
 
-export function ContextPanel({
+export const ContextPanel = memo(function ContextPanel({
   collapsed,
   onCollapse,
   onExpand,
@@ -940,4 +940,4 @@ export function ContextPanel({
       </div>
     </aside>
   );
-}
+});

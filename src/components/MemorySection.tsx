@@ -1,5 +1,5 @@
 import { Pencil, RefreshCw, Sparkles, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useState } from "react";
 import {
   memoryAdd,
   memoryDelete,
@@ -33,7 +33,7 @@ function sourceLabel(source: string): string {
  * 跨 agent 共享记忆面板。
  * 打开即同步各家全局记忆；勾选 = 注入新会话；保留「从会话提炼」。
  */
-export function MemorySection({ activeSessionId }: { activeSessionId?: string | null }) {
+export const MemorySection = memo(function MemorySection({ activeSessionId }: { activeSessionId?: string | null }) {
   const [store, setStore] = useState<MemoryStore | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -59,8 +59,8 @@ export function MemorySection({ activeSessionId }: { activeSessionId?: string | 
       .then(({ sources }) => {
         if (alive) setProbed(sources);
       })
-      .catch(() => {
-        if (alive) setProbed([]);
+      .catch((error) => {
+        if (alive) setNote(error instanceof Error ? error.message : String(error));
       });
     return () => {
       alive = false;
@@ -246,7 +246,7 @@ export function MemorySection({ activeSessionId }: { activeSessionId?: string | 
       ) : null}
     </section>
   );
-}
+});
 
 function MemoryRow({
   entry,

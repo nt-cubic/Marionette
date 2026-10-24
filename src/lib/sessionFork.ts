@@ -29,6 +29,25 @@ export function forkCutIndex(events: SessionEvent[], anchor: ForkAnchor): number
 const FORK_SKIPPED = new Set(["subtask_started", "subtask_result", "handoff_prepared"]);
 
 /**
+ * Re-key one event to the fork's target session — only through known union
+ * variants, dropping anything unrecognized instead of fabricating a row.
+ */
+function rekeyForkedEvent(event: SessionEvent, sessionId: string): SessionEvent | null {
+  switch (event.type) {
+    case "user_message":
+    case "assistant_message":
+    case "thought":
+    case "tool_call":
+    case "file_change":
+    case "plan_prompt":
+    case "ask_prompt":
+      return { ...event, sessionId };
+    default:
+      return null;
+  }
+}
+
+/**
  * The new dialog's transcript: every row up to and including that reply,
  * re-keyed to `targetSessionId`. Null when the anchor no longer exists.
  */
@@ -42,6 +61,7 @@ export function forkCopyEvents(
   const kept = events
     .slice(0, cut + 1)
     .filter((event) => !FORK_SKIPPED.has(event.type))
-    .map((event) => ({ ...event, sessionId: targetSessionId }) as SessionEvent);
+    .map((event) => rekeyForkedEvent(event, targetSessionId))
+    .filter((event): event is SessionEvent => event !== null);
   return kept.length > 0 ? kept : null;
 }
