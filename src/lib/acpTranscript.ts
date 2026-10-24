@@ -115,7 +115,9 @@ export function compactGrokWaitDetail(detail: string): string | null {
     const rows = parseGrokTaskOutputResults(JSON.parse(detail.slice(start)) as unknown);
     if (!rows) return null;
     return rows.map((row) => `${row.status}: ${row.title || row.id}`).join("\n");
-  } catch {
+  } catch (err) {
+    // 静默回退要有痕迹，否则坏转录读起来像「没有输出」。
+    console.warn("[acpTranscript] compactGrokWaitDetail JSON parse failed", err);
     return null;
   }
 }
@@ -321,7 +323,8 @@ function pathFromRawInput(rawInput: unknown): string | undefined {
     if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
       try {
         return pathFromRawInput(JSON.parse(trimmed));
-      } catch {
+      } catch (err) {
+        console.warn("[acpTranscript] pathFromRawInput JSON parse failed", err);
         return undefined;
       }
     }
@@ -1044,8 +1047,7 @@ function formatListAgentsRoster(text: string): string {
           : null;
     if (!Array.isArray(agents) || agents.length === 0) return text;
     return agents
-      .map((item, i) => {
-        const a = asRecord(item) ?? {};
+      .map((item, i) => {        const a = asRecord(item) ?? {};
         const name =
           (typeof a.name === "string" && a.name) ||
           (typeof a.id === "string" && a.id) ||
@@ -1064,7 +1066,8 @@ function formatListAgentsRoster(text: string): string {
         return report ? `${head}\n${report}` : head;
       })
       .join("\n\n");
-  } catch {
+  } catch (err) {
+    console.warn("[acpTranscript] formatListAgentsRoster JSON parse failed", err);
     return text;
   }
 }
@@ -1605,9 +1608,20 @@ export function applyAcpPartToEvents(
     const base = current;
 
     if (part.toolCallId) {
-      let idx = base.findIndex(
-        (e) => e.type === "tool_call" && e.sessionId === sessionId && e.toolCallId === part.toolCallId,
-      );
+      // 正在更新的工具卡几乎总在 rail 尾部附近：从尾反向找，别每个分块
+      // 都从 0 全量 findIndex（长会话 × 高频分块 = 平方级）。
+      let idx = -1;
+      for (let i = base.length - 1; i >= 0; i -= 1) {
+        const e = base[i];
+        if (
+          e.type === "tool_call" &&
+          e.sessionId === sessionId &&
+          e.toolCallId === part.toolCallId
+        ) {
+          idx = i;
+          break;
+        }
+      }
       // OpenCode child streams use the child session id, not the parent Task
       // toolCallId. Grok `_x.ai/session/update` uses child_session_id the same way.
       const nestTitleHint =
@@ -1743,17 +1757,13 @@ export function coalesceAdjacentThoughts(
 ): SessionEvent[] {
   if (events.length < 2) return events;
   const out: SessionEvent[] = [];
+  // 本会话最后一个事件在 out 里的下标：增量维护，不再每个 thought 反向扫 out
+  //（长 rail + 每次 flush 调用时最坏平方级）。
+  let lastSameSession = -1;
 
   for (const e of events) {
     if (e.sessionId === sessionId && e.type === "thought") {
-      // Last event of *this* session in `out` (ignore foreign sessions between).
-      let prevIdx = -1;
-      for (let i = out.length - 1; i >= 0; i -= 1) {
-        if (out[i].sessionId === sessionId) {
-          prevIdx = i;
-          break;
-        }
-      }
+      const prevIdx = lastSameSession;
       const prev = prevIdx >= 0 ? out[prevIdx] : undefined;
       if (prev && prev.type === "thought") {
         // Adjacent thoughts with no same-session tool between → broken stream.
@@ -1775,7 +1785,10 @@ export function coalesceAdjacentThoughts(
       }
     }
     out.push(e);
+    if (e.sessionId === sessionId) lastSameSession = out.length - 1;
   }
+  // 什么都没合并：返回原数组引用，避免无谓的整 rail 复制 + 触发下游重渲。
+  if (out.length === events.length) return events;
   return out;
 }
 
@@ -1791,6 +1804,8 @@ export function coalesceAdjacentAssistantFragments(
 ): SessionEvent[] {
   if (events.length < 2) return events;
   const out: SessionEvent[] = [];
+  // 增量维护本会话最后事件下标（同 coalesceAdjacentThoughts）。
+  let lastSameSession = -1;
 
   for (const e of events) {
     if (
@@ -1798,13 +1813,7 @@ export function coalesceAdjacentAssistantFragments(
       e.type === "assistant_message" &&
       e.durationMs == null
     ) {
-      let prevIdx = -1;
-      for (let i = out.length - 1; i >= 0; i -= 1) {
-        if (out[i].sessionId === sessionId) {
-          prevIdx = i;
-          break;
-        }
-      }
+      const prevIdx = lastSameSession;
       const prev = prevIdx >= 0 ? out[prevIdx] : undefined;
       if (
         prev &&
@@ -1822,7 +1831,9 @@ export function coalesceAdjacentAssistantFragments(
       }
     }
     out.push(e);
+    if (e.sessionId === sessionId) lastSameSession = out.length - 1;
   }
+  if (out.length === events.length) return events;
   return out;
 }
 
