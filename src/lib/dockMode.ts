@@ -492,10 +492,24 @@ export function initDockMode(): () => void {
   root.addEventListener("mouseenter", onPointerEnter);
   root.addEventListener("mouseleave", onPointerLeave);
 
+  // Strip tabs side-scroll on a plain wheel too (design: `.tabs` wheel rule) —
+  // the equal-width floating tabs never overflow, so gate by dock state.
+  const onWheel = (event: WheelEvent) => {
+    if (dockState === "floating" || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+    const target = event.target instanceof Element ? event.target : null;
+    const strip = target?.closest(".editor-tabs__tablist");
+    if (strip) {
+      strip.scrollLeft += event.deltaY;
+      event.preventDefault();
+    }
+  };
+  window.addEventListener("wheel", onWheel, { passive: false });
+
   return () => {
     for (const un of unlisteners) un();
     root.removeEventListener("mouseenter", onPointerEnter);
     root.removeEventListener("mouseleave", onPointerLeave);
+    window.removeEventListener("wheel", onWheel);
     cancelRetract();
   };
 }

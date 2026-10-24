@@ -48,3 +48,252 @@
 .dock-mode body {
   min-width: 0;
 }
+
+/* ── Stage 2: the strip layout ───────────────────────────────────────────
+ *
+ * The grid drops to one column (titlebar + center). The side rails leave the
+ * grid entirely and become full-strip overlays opened from DockChrome; the
+ * fixed chrome bands sit above and below, cleared by app-shell padding.
+ */
+
+.dock-mode .app-shell {
+  padding-top: var(--dock-chrome-top, 66px);
+  padding-bottom: var(--dock-chrome-bottom, 30px);
+}
+
+.dock-mode .workspace-grid {
+  grid-template-columns: minmax(0, 1fr);
+  transition: none;
+}
+
+.dock-mode .workspace-titlebar {
+  grid-column: 1 / -1;
+}
+
+/* Rails as overlays: slide in from their own side, latest on top of the
+   center but below the strip's own popovers. */
+.dock-mode .left-rail,
+.dock-mode .context-panel {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 70;
+  transform: translateX(-102%);
+  transition: transform 160ms steps(9, end);
+  box-shadow: 0 0 34px rgba(0, 0, 0, 0.35);
+  background: var(--bg);
+}
+
+.dock-mode .context-panel {
+  transform: translateX(102%);
+}
+
+.dock-mode .workspace-grid.dock-drawer-open .left-rail,
+.dock-mode .workspace-grid.dock-context-open .context-panel {
+  transform: translateX(0);
+}
+
+/* Click-away layer under the overlays, over the center. */
+.dock-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 68;
+  background: rgba(8, 10, 12, 0.32);
+}
+
+/* The floating rail toggles and resizers have no seams to hug in the strip.
+   Two-class selector outranks the single-class base rule. */
+.dock-mode .floating-trigger,
+.dock-mode .panel-resizer {
+  display: none;
+}
+
+/* Tabs: equal-width flex tabs crush at 400px — fixed-width, side-scroll. */
+.dock-mode .editor-tabs__tablist {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
+}
+
+.dock-mode .editor-tabs__tablist::-webkit-scrollbar {
+  display: none;
+}
+
+.dock-mode .editor-tab {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 140px;
+}
+
+/* ── DockChrome bands ──────────────────────────────────────────────────── */
+
+.dock-chrome {
+  position: fixed;
+  left: 0;
+  right: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--panel);
+}
+
+.dock-chrome--top {
+  top: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.dock-chrome--bottom {
+  bottom: 0;
+  justify-content: flex-end;
+  border-top: 1px solid var(--border);
+}
+
+.dock-chrome__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.dock-chrome__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  color: var(--text);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.dock-chrome__btn:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+
+.dock-chrome__btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.dock-chrome__btn.is-on {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: var(--accent-soft);
+}
+
+.dock-chrome__btn--primary {
+  flex: 1;
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: var(--accent-soft);
+  font-weight: 500;
+}
+
+.dock-chrome__hint {
+  color: var(--text-faint);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Quota chip: one line, worst first (Arc balance-bar language). */
+.dock-quota {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-soft);
+  color: var(--text-muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.dock-quota__empty {
+  color: var(--text-faint);
+}
+
+.dock-quota__q {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.dock-quota__q b {
+  font-weight: 500;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.dock-quota__q.is-hot b {
+  color: var(--red);
+}
+
+.dock-quota__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dock-quota__bar {
+  width: 22px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.dock-quota__bar span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.dock-quota__q.is-hot .dock-quota__bar span {
+  background: var(--red);
+}
+
+.dock-chrome__txt {
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.dock-chrome__txt:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--panel-soft);
+}
+
+.dock-chrome__txt.is-update {
+  color: var(--accent);
+}
+
+.dock-chrome__txt--quit:hover {
+  color: var(--red);
+}
+
+/* Fixed banners land above the bottom band, not under it. */
+.dock-mode .update-banner {
+  bottom: calc(var(--dock-chrome-bottom, 30px) + 10px);
+}
