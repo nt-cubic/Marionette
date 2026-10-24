@@ -47,6 +47,15 @@ export async function takeLaunchOpenPath(): Promise<string | null> {
 /** Event name when a second process hands off an open-here path. */
 export const OPEN_PATH_EVENT = "marionette-open-path";
 
+/**
+ * Real exit (edge dock stage 0): engine kill + agent stop + exit(0) on the
+ * Rust side — the only legitimate quit path while close-to-background is on.
+ */
+export function quitApp(): Promise<void> {
+  if (!isTauriRuntime()) return Promise.resolve();
+  return invoke("quit_app");
+}
+
 /** Virtual project ID for chat sessions. */
 export const CHAT_PROJECT_ID = "project-chat";
 

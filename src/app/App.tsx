@@ -25,7 +25,7 @@ import { engineQuota as fetchEngineQuota, type EngineQuotaEntry } from "../lib/a
 import { TELEGRAM_COMMAND_EVENT, telegramRemoteResult, type TelegramCommand } from "../lib/api";
 import { invalidateBridgeModels } from "../lib/bridge";
 import { useLatestCallback } from "../lib/useLatestCallback";
-import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, beginWorkspaceSnapshot, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, discardWorkspaceSnapshot, downloadAppUpdate, endWorkspaceSnapshot, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, type TurnSnapshotEnd, type TurnSnapshotStart, CHAT_PROJECT_ID } from "../lib/api";
+import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, beginWorkspaceSnapshot, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, discardWorkspaceSnapshot, downloadAppUpdate, endWorkspaceSnapshot, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, quitApp, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, type TurnSnapshotEnd, type TurnSnapshotStart, CHAT_PROJECT_ID } from "../lib/api";
 import {
   bindDetachedWindowReaper,
   DETACHED_HIDDEN_EVENT,
@@ -81,6 +81,7 @@ import {
   scheduleDesktopNotify,
   setDesktopNotifyEnabled,
 } from "../lib/desktopNotify";
+import { readDockPrefs, subscribeDockPrefs, syncBackgroundMode, toggleAutoHideOnClose } from "../lib/dockMode";
 import { parseAvailableCommandsUpdate } from "../lib/slashCommands";
 import type { PlanEntry } from "../lib/acpPlan";
 import { parseAcpPlanUpdate } from "../lib/acpPlan";
@@ -490,6 +491,8 @@ export function App() {
   });
   /** Taskbar flash + chime when AI replies / may be stuck. Completion also chimes while focused. */
   const [desktopNotifyOn, setDesktopNotifyOn] = useState(() => isDesktopNotifyEnabled());
+  /** Edge dock stage 0: close = retract to background instead of quitting. */
+  const [autoHideOnClose, setAutoHideOnClose] = useState(() => readDockPrefs().autoHideOnClose);
   /** Sessions that finished a turn while this window was looking at another dialog. */
   const [doneUnreadIds, setDoneUnreadIds] = useState<Set<string>>(() => new Set());
   /** Agent proxy config (single exit address), loaded on mount. */
@@ -913,6 +916,14 @@ export function App() {
       return next;
     });
   }, [currentSessionId]);
+
+  // Edge dock stage 0: mirror the persisted autoHideOnClose into the Rust
+  // close-path branch at launch (the flag resets every process start), and
+  // keep the toggle in sync with pref writes from any window.
+  useEffect(() => {
+    void syncBackgroundMode();
+    return subscribeDockPrefs((prefs) => setAutoHideOnClose(prefs.autoHideOnClose));
+  }, []);
 
   // Drop marks for sessions that no longer exist.
   useEffect(() => {
@@ -7326,6 +7337,12 @@ export function App() {
         return next;
       });
     }),
+    onToggleAutoHideClose: useLatestCallback(() => {
+      setAutoHideOnClose(toggleAutoHideOnClose());
+    }),
+    onQuitApp: useLatestCallback(() => {
+      void quitApp();
+    }),
     onCollapse: useLatestCallback(() => setLeftCollapsed(true)),
     onExpand: useLatestCallback(() => setLeftCollapsed(false)),
     onToggleTheme: useLatestCallback(() => withViewTransition(() => {
@@ -7680,10 +7697,13 @@ export function App() {
             collapsed={leftCollapsed}
             theme={theme}
             desktopNotifyEnabled={desktopNotifyOn}
+            autoHideOnClose={autoHideOnClose}
             proxyConfig={proxyConfig}
             onSaveProxy={handleSaveProxy}
             onTestProxy={handleTestProxy}
             onToggleDesktopNotify={shelfStable.onToggleDesktopNotify}
+            onToggleAutoHideClose={shelfStable.onToggleAutoHideClose}
+            onQuitApp={shelfStable.onQuitApp}
             onCollapse={shelfStable.onCollapse}
             onExpand={shelfStable.onExpand}
             onToggleTheme={shelfStable.onToggleTheme}
