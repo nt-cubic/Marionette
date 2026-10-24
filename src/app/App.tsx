@@ -82,6 +82,7 @@ import {
   setDesktopNotifyEnabled,
 } from "../lib/desktopNotify";
 import { enterDock, getDockState, initDockMode, readDockPrefs, subscribeDockPrefs, subscribeDockState, syncBackgroundMode, toggleAutoHideOnClose, undock } from "../lib/dockMode";
+import { DockChrome } from "../components/DockChrome";
 import { parseAvailableCommandsUpdate } from "../lib/slashCommands";
 import type { PlanEntry } from "../lib/acpPlan";
 import { parseAcpPlanUpdate } from "../lib/acpPlan";
@@ -495,6 +496,9 @@ export function App() {
   const [autoHideOnClose, setAutoHideOnClose] = useState(() => readDockPrefs().autoHideOnClose);
   /** Edge dock stage 1: main window is parked at a screen edge. */
   const [dockActive, setDockActive] = useState(false);
+  /** Edge dock stage 2: shelf drawer / ContextPanel overlays inside the strip. */
+  const [dockShelfOpen, setDockShelfOpen] = useState(false);
+  const [dockContextOpen, setDockContextOpen] = useState(false);
   /** Sessions that finished a turn while this window was looking at another dialog. */
   const [doneUnreadIds, setDoneUnreadIds] = useState<Set<string>>(() => new Set());
   /** Agent proxy config (single exit address), loaded on mount. */
@@ -851,7 +855,9 @@ export function App() {
   currentProjectIdRef.current = currentProjectId;
   openSessionIdsRef.current = openSessionIds;
 
-  const workspaceSplit = !IS_DETACHED_WINDOW && leafCount(splitState) > 1;
+  const workspaceSplit = !IS_DETACHED_WINDOW && !dockActive && leafCount(splitState) > 1;
+  /** Split panes would be unreadable at strip width — paused while docked. */
+  const dockSplitPaused = dockActive && leafCount(splitState) > 1;
 
   const commitSplit = (next: SplitWorkspaceState) => {
     splitStateRef.current = next;
@@ -928,10 +934,18 @@ export function App() {
   }, []);
 
   // Edge dock stage 1: dock engine bindings (close handoff, sliver hover,
-  // focus tracking) + footer button state.
+  // focus tracking) + footer button state. Stage 2: overlays only live while
+  // the strip is expanded — closing them on retract keeps the hidden state
+  // free of stale drawers.
   useEffect(() => {
     const disposeEngine = initDockMode();
-    const unsubState = subscribeDockState((state) => setDockActive(state !== "floating"));
+    const unsubState = subscribeDockState((state) => {
+      setDockActive(state !== "floating");
+      if (state !== "docked-expanded") {
+        setDockShelfOpen(false);
+        setDockContextOpen(false);
+      }
+    });
     return () => {
       disposeEngine();
       unsubState();
@@ -1444,6 +1458,27 @@ export function App() {
       }
     })();
   }, [appUpdateBusy, pushDebug]);
+
+  /** Download the announced update and relaunch (footer 升级 / update banner). */
+  const handleUpdateAndRelaunch = useCallback(() => {
+    if (appUpdateBusy) return;
+    void (async () => {
+      setAppUpdateBusy(true);
+      try {
+        await downloadAppUpdate();
+        await applyAppUpdateAndRelaunch();
+      } catch (error) {
+        pushDebug({
+          sessionId: currentSessionId ?? "",
+          level: "error",
+          source: "update",
+          summary: "app update failed",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+        setAppUpdateBusy(false);
+      }
+    })();
+  }, [appUpdateBusy, currentSessionId, pushDebug]);
 
   /**
    * Explorer "在此处打开 Marionette" / `--open-path`:
@@ -7691,7 +7726,7 @@ export function App() {
     <main className="app-shell">
       <div
         ref={workspaceGridRef}
-        className={`workspace-grid${leftCollapsed || IS_DETACHED_WINDOW ? " is-left-collapsed" : ""}${rightCollapsed ? " is-right-collapsed" : ""}${IS_DETACHED_WINDOW ? " is-detached" : ""}`}
+        className={`workspace-grid${leftCollapsed || IS_DETACHED_WINDOW ? " is-left-collapsed" : ""}${rightCollapsed ? " is-right-collapsed" : ""}${IS_DETACHED_WINDOW ? " is-detached" : ""}${dockActive ? " is-docked" : ""}${dockActive && dockShelfOpen ? " dock-drawer-open" : ""}${dockActive && dockContextOpen ? " dock-context-open" : ""}`}
         style={
           {
             "--left-panel-width": `${leftWidth}px`,
@@ -7943,7 +7978,7 @@ export function App() {
         </section>
 
         <ContextPanel
-          collapsed={rightCollapsed}
+          collapsed={rightCollapsed && !dockActive}
           onCollapse={() => setRightCollapsed(true)}
           onExpand={() => setRightCollapsed(false)}
           usage={usage}
@@ -7986,6 +8021,38 @@ export function App() {
         />
       </div>
       {/* Window-level: draw as soon as the prompt exists. Do not wait for pane focus. */}
+      {/* Edge dock stage 2: strip chrome bands + overlay backdrops. */}
+      {dockActive && (
+        <>
+          <DockChrome
+            onNewChat={() => void handleCreateChatSession()}
+            onOpenShelf={() => setDockShelfOpen((open) => !open)}
+            onOpenContext={() => setDockContextOpen((open) => !open)}
+            shelfOpen={dockShelfOpen}
+            contextOpen={dockContextOpen}
+            quotaRows={engineQuotaRows}
+            onQuotaRefresh={() => refreshEngineQuota(true)}
+            onUndock={() => void undock()}
+            onQuit={() => void quitApp()}
+            updateAvailable={Boolean(appUpdate?.updateAvailable)}
+            updateLabel={appUpdate?.latestVersion ?? null}
+            updateBusy={appUpdateBusy}
+            onCheckUpdate={handleCheckAppUpdate}
+            onUpdateAndRelaunch={handleUpdateAndRelaunch}
+            splitPaused={dockSplitPaused}
+          />
+          {(dockShelfOpen || dockContextOpen) && (
+            <div
+              className="dock-backdrop"
+              role="presentation"
+              onClick={() => {
+                setDockShelfOpen(false);
+                setDockContextOpen(false);
+              }}
+            />
+          )}
+        </>
+      )}
       {permissionPrompt && (
         <PermissionDialog
           prompt={permissionPrompt}
@@ -8022,24 +8089,7 @@ export function App() {
                 type="button"
                 className="update-banner__btn"
                 disabled={appUpdateBusy}
-                onClick={() => {
-                  void (async () => {
-                    setAppUpdateBusy(true);
-                    try {
-                      await downloadAppUpdate();
-                      await applyAppUpdateAndRelaunch();
-                    } catch (error) {
-                      pushDebug({
-                        sessionId: currentSessionId ?? "",
-                        level: "error",
-                        source: "update",
-                        summary: "app update failed",
-                        detail: error instanceof Error ? error.message : String(error),
-                      });
-                      setAppUpdateBusy(false);
-                    }
-                  })();
-                }}
+                onClick={handleUpdateAndRelaunch}
               >
                 {appUpdateBusy ? "下载中…" : "下载并重启"}
               </button>
