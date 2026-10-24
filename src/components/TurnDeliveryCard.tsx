@@ -20,6 +20,25 @@ function badgeLetter(changeType: TurnDeliveryChangeType): string {
   }
 }
 
+/** `src/lib/api.ts` → dir `src/lib/`, name `api.ts`: the name is what you scan for. */
+function splitPath(relPath: string): { dir: string; name: string } {
+  const norm = relPath.replace(/\\/g, "/");
+  const cut = norm.lastIndexOf("/");
+  return cut < 0 ? { dir: "", name: norm } : { dir: norm.slice(0, cut + 1), name: norm.slice(cut + 1) };
+}
+
+/** Add/del split of changed lines as one thin two-tone bar (green, then red). */
+function DiffRatio({ add, del }: { add: number; del: number }) {
+  const total = add + del;
+  if (total === 0) return null;
+  return (
+    <span className="turn-delivery__ratio" aria-hidden>
+      <i className="is-add" style={{ width: `${(add / total) * 100}%` }} />
+      <i className="is-del" style={{ width: `${(del / total) * 100}%` }} />
+    </span>
+  );
+}
+
 function DeliveryFileRow({
   file,
   projectId,
@@ -70,6 +89,7 @@ function DeliveryFileRow({
     };
   }, [expanded, projectId, file.path]);
 
+  const path = splitPath(file.relPath);
   const title =
     file.touched > 1 ? `${file.path} · 本轮编辑 ${file.touched} 次` : file.path;
 
@@ -89,7 +109,10 @@ function DeliveryFileRow({
         ) : (
           <span className="turn-delivery__dot" aria-hidden />
         )}
-        <span className="turn-delivery__path">{file.relPath}</span>
+        <span className="turn-delivery__path">
+          {path.dir && <span className="turn-delivery__dir">{path.dir}</span>}
+          {path.name}
+        </span>
         <span className="turn-delivery__stats">
           {file.add != null && file.add > 0 && (
             <span className="turn-delivery__stat turn-delivery__stat--add">+{file.add}</span>
@@ -97,6 +120,7 @@ function DeliveryFileRow({
           {file.del != null && file.del > 0 && (
             <span className="turn-delivery__stat turn-delivery__stat--del">−{file.del}</span>
           )}
+          <DiffRatio add={file.add ?? 0} del={file.del ?? 0} />
         </span>
         {canDiff && (
           <ChevronDown
@@ -157,6 +181,12 @@ export function TurnDeliveryCard({
     Boolean(projectId) &&
     projectId !== CHAT_PROJECT_ID;
   const title = delivery.files.map((f) => f.relPath).join("\n");
+  // Closed card still says *which* files: the first two names, then a count.
+  const peekNames = delivery.files.slice(0, 2).map((f) => splitPath(f.relPath).name);
+  const peek =
+    peekNames.length === 0
+      ? ""
+      : `${peekNames.join("、")}${fileCount > 2 ? ` 等 ${fileCount} 个` : ""}`;
 
   const runUndo = async () => {
     if (!projectId || fileCount === 0) return;
@@ -215,8 +245,10 @@ export function TurnDeliveryCard({
                     −{delivery.totalDiff.del}
                   </span>
                 )}
+                <DiffRatio add={delivery.totalDiff.add} del={delivery.totalDiff.del} />
               </span>
             )}
+            {!open && peek && <span className="turn-delivery__peek">{peek}</span>}
           </button>
           {canUndo && (
             <button

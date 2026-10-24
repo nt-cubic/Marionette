@@ -144,6 +144,20 @@ type ProjectShelfProps = {
 
 type DropHint = { targetId: string; place: "before" | "after" };
 
+/** Shelf recency: `now`, `5m`, `3h`, `2d`, then `Oct 18` — fits the row's tail. */
+function shelfRecency(iso: string | undefined, nowMs: number): string {
+  const ms = iso ? Date.parse(iso) : NaN;
+  if (!Number.isFinite(ms)) return "";
+  const min = Math.floor((nowMs - ms) / 60_000);
+  if (min < 1) return "now";
+  if (min < 60) return `${min}m`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h`;
+  const day = Math.floor(hr / 24);
+  if (day < 7) return `${day}d`;
+  return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
 function sessionIsBusy(status: Session["status"]): boolean {
   return status === "running" || status === "starting";
 }
@@ -1177,6 +1191,9 @@ export function ProjectShelf({
                             <span className="session-row__content">
                               {pinned && <PinnedMark className="session-row__pin" />}
                               <strong>{session.label}</strong>
+                            </span>
+                            <span className="session-row__time" title={new Date(session.lastActiveAt).toLocaleString()}>
+                              {shelfRecency(session.lastActiveAt, Date.now())}
                             </span>
                           </button>
                         )}

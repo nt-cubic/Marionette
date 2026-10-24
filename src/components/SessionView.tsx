@@ -40,6 +40,7 @@ import { buildTurnDeliveries, type TurnDeliveryUnit } from "../lib/turnDelivery"
 import { modeTone } from "../lib/modeTone";
 import { diffTargetPath, isWorkspaceDiffPath, splitToolBody } from "../lib/toolBody";
 import {
+  activityTimeline,
   classifyToolCall,
   clusterActivityRuns,
   extractDiffStats,
@@ -64,7 +65,7 @@ import { loadDetailsVisible, saveDetailsVisible } from "../lib/uiRestore";
 import { SplitBesideMenu, type OpenBesideEdge } from "./SplitBesideMenu";
 import type { DropEdge } from "../lib/splitWorkspace";
 import type { AgentConfig, Session, SessionEvent, SessionStatus, SessionViewMode } from "../lib/types";
-import { ActivityKindGroup, ActivityPanel } from "./ActivityPanel";
+import { ActivityKindGroup, ActivityPanel, ActivityTimeline } from "./ActivityPanel";
 import { StreamPromptCard, type StreamPromptHandlers } from "./StreamPromptCard";
 import { ClippedBody } from "./ClippedBody";
 import { LinkCwdContext, LinkedText } from "./LinkedText";
@@ -1201,10 +1202,12 @@ function toggleSetKey(
 function VirtItem({
   index,
   measureRef,
+  className,
   children,
 }: {
   index: number;
   measureRef: (index: number, node: HTMLElement | null) => void;
+  className?: string;
   children: ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -1218,11 +1221,35 @@ function VirtItem({
     return () => ro.disconnect();
   }, [index, measureRef]);
   return (
-    <div ref={ref} className="event-list__virt-item">
+    <div ref={ref} className={className ? `event-list__virt-item ${className}` : "event-list__virt-item"}>
       {children}
     </div>
   );
 }
+
+/** Units that join a live rail inside this window get the arrival motion. */
+const ARRIVAL_WINDOW_MS = 420;
+/** More new units than this in one render is a hydrate / mode switch, not a stream. */
+const ARRIVAL_BATCH_MAX = 6;
+
+/**
+ * Remember when each unit key first rendered. Keys seen on the first paint of
+ * a dialog (or after a details toggle) are stamped 0, so virtual remounts,
+ * tab switches and history loads never replay the arrival motion.
+ */
+function useArrivalStamps(keys: string[], scope: string): Map<string, number> {
+  const ref = useRef<{ scope: string; stamps: Map<string, number> } | null>(null);
+  const current = ref.current;
+  if (!current || current.scope !== scope || (current.stamps.size === 0 && keys.length > 0)) {
+    ref.current = { scope, stamps: new Map(keys.map((key) => [key, 0])) };
+    return ref.current.stamps;
+  }
+  const fresh = keys.filter((key) => !current.stamps.has(key));
+  const at = fresh.length > ARRIVAL_BATCH_MAX ? 0 : Date.now();
+  for (const key of fresh) current.stamps.set(key, at);
+  return current.stamps;
+}
+
 
 /**
  * Older transcripts only persisted the one-line diff summary. For those
@@ -1583,6 +1610,26 @@ function CleanPlaceholder({
     () => displayEvents.filter((event) => event.type !== "file_change"),
     [displayEvents],
   );
+  /**
+   * Interim replies: every Reply in a turn except the last one with the same
+   * agent / model / mode / effort. Their footer tags and timestamp repeat the
+   * turn's final reply, so they stay quiet until hovered.
+   */
+  const interimReplyIndexes = useMemo(() => {
+    const quiet = new Set<number>();
+    let pending: { index: number; key: string } | null = null;
+    visibleEvents.forEach((event, index) => {
+      if (event.type === "user_message") {
+        pending = null;
+        return;
+      }
+      if (event.type !== "assistant_message") return;
+      const key = [event.agentLabel, event.modelLabel, event.modeLabel, event.effortLabel].join("|");
+      if (pending && pending.key === key) quiet.add(pending.index);
+      pending = { index, key };
+    });
+    return quiet;
+  }, [visibleEvents]);
   const presentationItems = useMemo(
     () => buildMessagePresentation(visibleEvents, session.id),
     [session.id, visibleEvents],
@@ -1639,6 +1686,10 @@ function CleanPlaceholder({
    * selection / stick-to-bottom). Threshold matches heavy tool-heavy sessions
    * (hundreds of cards) that otherwise freeze WebView2 on open.
    */
+  const arrivalStamps = useArrivalStamps(
+    useMemo(() => renderUnits.map((unit) => unit.key), [renderUnits]),
+    `${session.id}|${detailsVisible ? "details" : "clean"}`,
+  );
   const useVirtual = renderUnits.length >= 48;
   const isLongTranscript = useVirtual;
   const virtual = useVirtualWindow(listRef, useVirtual ? renderUnits.length : 0, {
@@ -1657,6 +1708,8 @@ function CleanPlaceholder({
   const [undoneDeliveryKeys, setUndoneDeliveryKeys] = useState<Set<string>>(() => new Set());
   /** User-expanded thought cards (lazy body mount). */
   const [expandedThoughtKeys, setExpandedThoughtKeys] = useState<Set<string>>(() => new Set());
+  /** Last row the user opened — only that body plays the reveal, never a remount. */
+  const justOpenedRef = useRef<{ key: string; at: number } | null>(null);
   /** User-expanded activity / kind-group folds. Live force-open is not stored. */
   const [expandedActivityKeys, setExpandedActivityKeys] = useState<Set<string>>(() => new Set());
   const [expandedKindKeys, setExpandedKindKeys] = useState<Set<string>>(() => new Set());
@@ -2459,7 +2512,14 @@ function CleanPlaceholder({
               event.type === "tool_call" ? toolOpen : thoughtOpen;
             return (
               <details
-                className={`event-card event-card--collapsible event-card--${event.type}${toolRunning ? " is-tool-running" : ""}${showWorkingBlock ? " is-tool-working-block" : ""}${toolStalled && isLatestOpenTool ? " is-tool-stalled" : ""}${toolStuck && isLatestOpenTool ? " is-tool-stuck" : ""}${thoughtLive ? " is-thought-live" : ""}`}
+                className={`event-card event-card--collapsible event-card--${event.type}${toolRunning ? " is-tool-running" : ""}${showWorkingBlock ? " is-tool-working-block" : ""}${toolStalled && isLatestOpenTool ? " is-tool-stalled" : ""}${toolStuck && isLatestOpenTool ? " is-tool-stuck" : ""}${thoughtLive ? " is-thought-live" : ""}${
+                  detailOpen &&
+                  justOpenedRef.current != null &&
+                  justOpenedRef.current.key === (toolKey ?? thoughtKey) &&
+                  Date.now() - justOpenedRef.current.at < ARRIVAL_WINDOW_MS
+                    ? " is-revealing"
+                    : ""
+                }`}
                 // Remount when thought/tool leaves "live force-open" so the
                 // browser details widget cannot keep a stale open=true.
                 key={`${event.type}-${event.createdAt}-${index}${
@@ -2477,6 +2537,16 @@ function CleanPlaceholder({
                 onToggle={(e) => {
                   if (forceOpen) return;
                   const isOpen = (e.currentTarget as HTMLDetailsElement).open;
+                  const rowKey = toolKey ?? thoughtKey;
+                  // Remounted open rows fire toggle too — only a real open reveals.
+                  if (
+                    isOpen &&
+                    rowKey &&
+                    !expandedToolKeys.has(rowKey) &&
+                    !expandedThoughtKeys.has(rowKey)
+                  ) {
+                    justOpenedRef.current = { key: rowKey, at: Date.now() };
+                  }
                   if (event.type === "tool_call" && toolKey != null) {
                     setExpandedToolKeys((current) => {
                       const next = new Set(current);
@@ -2571,7 +2641,9 @@ function CleanPlaceholder({
 
           return (
             <article
-              className={`event-card event-card--${event.type}${isEditing ? " is-editing" : ""}`}
+              className={`event-card event-card--${event.type}${isEditing ? " is-editing" : ""}${
+                event.type === "assistant_message" && interimReplyIndexes.has(index) ? " is-interim" : ""
+              }`}
               key={`${event.type}-${event.createdAt}-${index}`}
               id={isUser ? userKey : undefined}
               {...(tone ? { "data-mode-tone": tone } : {})}
@@ -2809,6 +2881,11 @@ function CleanPlaceholder({
             const liveEvent = liveItem?.event ?? null;
             const open = expandedActivityKeys.has(unit.key);
             const groups = groupConsecutiveByKind(unit.items);
+            // Laid out only while open — a closed fold never pays for it.
+            const timeline =
+              open && unit.items.length > 1
+                ? activityTimeline(unit.items, isRunning ? Date.now() : undefined)
+                : null;
             const liveIcon = <NineDotSpinner compact />;
             return (
               <ActivityPanel
@@ -2822,6 +2899,7 @@ function CleanPlaceholder({
                   toggleSetKey(setExpandedActivityKeys, unit.key, isOpen)
                 }
               >
+                {timeline ? <ActivityTimeline data={timeline} /> : null}
                 {groups.map((group) => {
                   const groupKey = `${unit.key}-${group.bucket}-${group.items[0].index}`;
                   const groupHasLive =
@@ -2861,8 +2939,14 @@ function CleanPlaceholder({
           const slice = useVirtual
             ? renderUnits.slice(virtual.start, virtual.end)
             : renderUnits;
+          const now = Date.now();
           const nodes = slice.map((unit, sliceIndex) => {
             const absoluteIndex = useVirtual ? virtual.start + sliceIndex : sliceIndex;
+            let rowClass = "";
+            const arrivedAt = arrivalStamps.get(unit.key) ?? 0;
+            if (arrivedAt > 0 && now - arrivedAt < ARRIVAL_WINDOW_MS) {
+              rowClass = "is-arriving";
+            }
             const node =
               unit.kind === "delivery" ? (
                 <TurnDeliveryCard
@@ -2886,12 +2970,23 @@ function CleanPlaceholder({
               ) : (
                 renderEvent(unit.event, unit.index)
               );
-            if (!node || !useVirtual) return node;
+            if (!node) return node;
+            if (!useVirtual) {
+              return (
+                <div
+                  key={unit.key}
+                  className={rowClass ? `event-list__virt-item ${rowClass}` : "event-list__virt-item"}
+                >
+                  {node}
+                </div>
+              );
+            }
             return (
               <VirtItem
                 key={unit.key}
                 index={absoluteIndex}
                 measureRef={virtual.measureRef}
+                className={rowClass}
               >
                 {node}
               </VirtItem>

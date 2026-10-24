@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { Expand, Plus, Search, SendHorizontal, Settings2, Shrink, Square } from "lucide-react";
+import { Check, Expand, Plus, Search, SendHorizontal, Settings2, Shrink, Square } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -60,6 +60,7 @@ import {
 import { detectCapabilityDrift } from "../lib/capabilityDrift";
 import { ensureModelSources, expandHiddenProviders, libraryGroups, refreshModelSources, visibleLibraryGroups, useModelLibrary } from "../lib/modelLibrary";
 import { modeTone } from "../lib/modeTone";
+import { foldLocalSingleGroups, splitModelMeta } from "../lib/modelMenu";
 import {
   modelProviderGroup,
   modelRowLabel,
@@ -251,6 +252,40 @@ function effortLabel(value: number): string {
 
 function shortTriggerLabel(label: string | null, id: string | null): string {
   return prettyModelTrigger(label, id);
+}
+
+/** Menu row: the model's name, its parenthetical facts and origin as quiet trailing meta, a check when chosen. */
+function ModelMenuName({ label, hint, selected }: { label: string; hint?: string; selected: boolean }) {
+  const { name, meta } = splitModelMeta(label);
+  // Inside 本机 the host already says it is local.
+  const facts = hint ? meta.split(/,\s*/).filter((part) => !/^local$/i.test(part)).join(", ") : meta;
+  const tail = [facts, hint].filter(Boolean).join(" · ");
+  return (
+    <>
+      <span className="composer-menu__model-name">{name}</span>
+      {tail && <span className="composer-menu__model-meta">{tail}</span>}
+      <span className="composer-menu__model-check" aria-hidden>
+        {selected ? <Check size={12} strokeWidth={2.5} /> : null}
+      </span>
+    </>
+  );
+}
+
+/**
+ * Closed model chip as spans (text nodes in a flex chip never ellipsize):
+ * the source shrinks first, the model name holds, effort trails quietly.
+ */
+function ModelChipLabel({ text, effort }: { text: string; effort: string | null }) {
+  const cut = text.indexOf(" · ");
+  const source = cut > 0 ? text.slice(0, cut) : "";
+  const name = cut > 0 ? text.slice(cut + 3) : text;
+  return (
+    <>
+      {source && <span className="composer-select__source">{source}</span>}
+      <span className="composer-select__name">{name}</span>
+      {effort && <span className="composer-select__effort">{effort}</span>}
+    </>
+  );
 }
 
 function displayModeSafe(caps: CapabilitySnapshot): string | null {
@@ -2058,7 +2093,9 @@ export function Composer({
   const displayModelFull = displayModelDef?.label || displayModel;
   const displayModelLabel = displayLibraryModel ? `${displayLibraryModel.group.label} · ${displayLibraryModel.row.label}` : displayModelDef
     ? prettyModelChip(displayModelDef)
-    : shortTriggerLabel(displayModelFull, displayModel);
+    : displayModelFull
+      ? shortTriggerLabel(displayModelFull, displayModel)
+      : null;
   const displayModelTitle = displayModelDef
     ? [modelProviderGroup(displayModelDef), displayModelDef.label || displayModelDef.id, displayModelDef.id]
         .filter((value, index, list) => value && list.indexOf(value) === index)
@@ -2106,6 +2143,7 @@ export function Composer({
   };
 
   const modelGroups = useMemo(() => visibleLibraryGroups(allLibraryGroups, effectiveModelPreferences, modelQuery), [allLibraryGroups, effectiveModelPreferences, modelQuery]);
+  const menuGroups = useMemo(() => foldLocalSingleGroups(modelGroups), [modelGroups]);
   const recentModels = useMemo(() => {
     const shown = visibleLibraryGroups(allLibraryGroups, effectiveModelPreferences);
     const ids = new Set(shown.flatMap(group => group.rows.flatMap(row => row.native ? [row.native.id] : [])));
@@ -2917,8 +2955,10 @@ export function Composer({
                   aria-expanded={menu === "model" || menu === "effort"}
                   onClick={() => setMenu(menu === "model" ? null : "model")}
                 >
-                  {bridgeChipLabel ?? displayModelLabel ?? "default"}
-                  {displayEffort != null && hasEffort ? ` · ${displayEffort}` : ""}
+                  <ModelChipLabel
+                    text={bridgeChipLabel ?? displayModelLabel ?? "Choose model"}
+                    effort={displayEffort != null && hasEffort ? String(displayEffort) : null}
+                  />
                 </button>
 
                 {menu === "model" && (
@@ -3019,7 +3059,7 @@ export function Composer({
                               {modelGroups.length === 0 && crossSections.customSources.length === 0 && (
                                 <div className="composer-menu__empty">{modelQuery ? `没有匹配“${modelQuery}”的模型` : "没有显示的模型，可在模型共享中调整显示设置"}</div>
                               )}
-                              {modelGroups.map(group => (
+                              {menuGroups.map(group => (
                                 <div className="composer-menu__group" key={group.key}>
                                   <span className="composer-menu__label">{group.label}</span>
                                   {group.rows.map(row => {
@@ -3038,7 +3078,7 @@ export function Composer({
                                           void commitUpdate({ model: m.id }, () => { unpinOption("model"); setCurrentModel(prev); });
                                         } else if (shared) { void pickBridgeModel(shared); }
                                       }}>
-                                      <span className="composer-menu__model-name">{m ? modelRowLabel(m) : row.label}</span>
+                                      <ModelMenuName label={m ? modelRowLabel(m) : row.label} hint={row.hint} selected={selected} />
                                     </button>;
                                   })}
                                 </div>
@@ -3455,7 +3495,9 @@ export function Composer({
                 className={
                   isBusy && canCancel && !draft.trim() && imageAttachments.length === 0
                     ? "send-button is-interrupting"
-                    : "send-button"
+                    : draft.trim() || imageAttachments.length > 0
+                      ? "send-button is-ready"
+                      : "send-button"
                 }
                 type="button"
                 title={
