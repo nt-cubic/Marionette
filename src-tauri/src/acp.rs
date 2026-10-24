@@ -336,19 +336,8 @@ impl AcpService {
                 .sessions
                 .lock()
                 .map_err(|_| "ACP session lock poisoned".to_string())?;
-            if let Some(process) = sessions.get(&session_id) {
-                let alive = process
-                    .child
-                    .lock()
-                    .ok()
-                    .and_then(|mut child| child.try_wait().ok())
-                    .map(|status| status.is_none())
-                    .unwrap_or(false);
-                if alive {
-                    if let Some(caps) = self.get_capabilities(&session_id) {
-                        return Ok(caps);
-                    }
-                }
+            if let Some(caps) = self.alive_session_caps(&sessions, &session_id) {
+                return Ok(caps);
             }
         }
         // Dead process, missing caps, or partial warm — kill and restart
@@ -394,11 +383,6 @@ impl AcpService {
                 }),
             },
         );
-
-        let mut sessions = self
-            .sessions
-            .lock()
-            .map_err(|_| "ACP session lock poisoned".to_string())?;
 
         // Windows npm shims (`opencode` without .exe) fail with "program not found"
         // under CreateProcess. Resolve to a real executable (or cmd.exe /C .cmd).
@@ -821,6 +805,19 @@ impl AcpService {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             child_command.creation_flags(CREATE_NO_WINDOW);
         }
+        // Take the sessions lock only for the final dedup + spawn + insert.
+        // Everything above (PATH scans, engine wake, bridge file surgery,
+        // DPAPI key reads, proxy config) can take seconds and must not queue
+        // other sessions' start/stop/cancel behind it. Re-check under the
+        // lock: a concurrent start may have landed a live process for this
+        // session while this one was preparing env.
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| "ACP session lock poisoned".to_string())?;
+        if let Some(caps) = self.alive_session_caps(&sessions, &session_id) {
+            return Ok(caps);
+        }
         let mut child = child_command.spawn().map_err(|error| {
             format!(
                 "Start ACP agent failed: {error} (resolved `{}` → `{}`)",
@@ -1241,6 +1238,29 @@ impl AcpService {
         let sessions = self.sessions.lock().ok()?;
         let process = sessions.get(session_id)?;
         process.agent_session_id.lock().ok().and_then(|guard| guard.clone())
+    }
+
+    /// Caps of a live process for this session, if any. The caller must hold
+    /// the sessions lock — `start()` uses this before and after env prep to
+    /// avoid double-spawning the same session.
+    fn alive_session_caps(
+        &self,
+        sessions: &HashMap<String, Arc<AcpProcess>>,
+        session_id: &str,
+    ) -> Option<CapabilitySnapshot> {
+        let process = sessions.get(session_id)?;
+        let alive = process
+            .child
+            .lock()
+            .ok()
+            .and_then(|mut child| child.try_wait().ok())
+            .map(|status| status.is_none())
+            .unwrap_or(false);
+        if alive {
+            self.get_capabilities(session_id)
+        } else {
+            None
+        }
     }
 
     pub fn get_capabilities(&self, session_id: &str) -> Option<CapabilitySnapshot> {
