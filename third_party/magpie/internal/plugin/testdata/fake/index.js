@@ -214,6 +214,14 @@ export const FakePlugin = async ({ client }) => ({
       }
       if (a.refresh === "r-kept") return { error: "sign in again to see usage", signIn: "kept" }
       if (a.refresh === "r-renewed") return { error: "usage is down", signIn: "renewed" }
+      // $FAKE_WINDOWS: a JSON file of each account's windows, read at
+      // each reading, as a vendor's usage page says them now (Factory's
+      // plugin with Standard usage only, plugins#349)
+      if (process.env.FAKE_WINDOWS) {
+        const fs = await import("node:fs")
+        const ws = JSON.parse(fs.readFileSync(process.env.FAKE_WINDOWS, "utf8"))[a.accountId]
+        if (ws) return { plan: "Fake Pro", windows: ws }
+      }
       const full = a.accountId === "full@fake"
       return {
         plan: "Fake Pro",

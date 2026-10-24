@@ -17731,10 +17731,9 @@ function checkinRow(q, first, subs) {
         text = t("Checked in today") + (r.credit ? " +" + r.credit : "") + (r.streak ? " · " + t("{n}-day streak", { n: r.streak }) : "");
         break;
       case "ineligible":
-        text = t("Not eligible for the daily check-in") + (r.again ? " · " + t("magpie asks again later") : "");
-        break;
       case "inactive":
-        text = t("No check-in event now") + (r.again ? " · " + t("magpie asks again later") : "");
+        text = t(r.outcome === "inactive" ? "No check-in event now" : "Not eligible for the daily check-in") + (r.msg ? " · " + r.msg : "") + (r.again ? " · " + t("magpie asks again later") : "");
+        if (r.msg) row.dataset.why = "";
         break;
       case "captcha":
         // the vendor wants a captcha, which magpie never solves
@@ -18250,7 +18249,7 @@ function quotaWindows(sub) {
     n.title = w.historyMissing ? text : text + "\n" + t(quotaLeft ? "Show how much of each window is used" : "Show how much of each window is left");
     n.disabled = !!w.historyMissing;
     n.onclick = () => setQuotaLeft(!quotaLeft);
-    labels.append(el("span", "", t(w.name)), n);
+    labels.append(el("span", "quota-name", t(w.name)), n);
     const track = el("div", "quota-track");
     const fill = el("i");
     fill.style.width = w.historyMissing ? "0%" : `${quotaFill(w)}%`;
@@ -23629,9 +23628,8 @@ function wbCheckinLine(r) {
       return t("{user} checked in today", { user: r.user }) + (r.credit ? " +" + r.credit : "")
         + (r.streak ? ", " + t("{n}-day streak", { n: r.streak }) : "");
     case "ineligible":
-      return t("{user} is not eligible", { user: r.user });
     case "inactive":
-      return t("{user}: no check-in event now", { user: r.user });
+      return t(r.outcome === "inactive" ? "{user}: no check-in event now" : "{user} is not eligible", { user: r.user }) + (r.msg ? " · " + r.msg : "");
     case "captcha":
       return t("{user} is asked for a captcha; check in in the app", { user: r.user });
     case "own-app":

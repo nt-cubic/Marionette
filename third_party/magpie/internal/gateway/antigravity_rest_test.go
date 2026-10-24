@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -533,5 +534,64 @@ func TestAntigravityTurnedAwayHintIsTheRoutingPages(t *testing.T) {
 	}
 	if !strings.Contains(string(b), quote(antigravityTurnedAwayHint)) {
 		t.Fatal("plugins/routing/client.js doesn't know the note the gateway adds to Antigravity's refusal")
+	}
+}
+
+// Antigravity's 429 for a model's quota used up says when it is back,
+// "Your quota will reset after 3h19m30s.", and the account rests that long:
+// read as a quota that says nothing, it rested 15 minutes, and the account
+// first in order was asked again, and refused, every quarter of an hour
+// while the next ticked one had all its quota left (Dani Ariyanto on
+// Discord, 10-24: OpenCode on Gemini 3.8 Flash, seven accounts).
+func TestAntigravityQuotaRestsUntilItsReset(t *testing.T) {
+	var asked []string
+	s, _ := antigravityGroupFor(t, []string{"u1@example.com", "u2@example.com"}, "gemini-3.8-flash", func(w http.ResponseWriter, r *http.Request) {
+		who := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		asked = append(asked, who)
+		if who == "u1@example.com" {
+			w.WriteHeader(http.StatusTooManyRequests)
+			io.WriteString(w, antigravityQuota)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse(`data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"from u2"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":3}}}`))
+	})
+	turn := func(n int) (int, string) {
+		body := fmt.Sprintf(`{"model":"antigravity/gemini-3.8-flash","stream":false,"messages":[{"role":"system","content":"You are opencode, an interactive CLI tool."},{"role":"user","content":"hi %d"}]}`, n)
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body)))
+		return rec.Code, rec.Body.String()
+	}
+	if code, out := turn(1); code != 200 || !strings.Contains(out, "from u2") || !slices.Equal(asked, []string{"u1@example.com", "u2@example.com"}) {
+		t.Fatalf("the turn: %d %s, asked %v", code, out, asked)
+	}
+	r := lastRoute(s)
+	if len(r.Tries) != 2 || r.Tries[0].Fail != failQuota || r.Tries[0].Rest == nil {
+		t.Fatalf("the used-up try: %+v", r.Tries)
+	}
+	want := 3*time.Hour + 19*time.Minute + 30*time.Second
+	if d := time.Until(r.Tries[0].Rest.Until); r.Tries[0].Rest.By != "resets" || d < want-time.Minute || d > want {
+		t.Fatalf("u1 rests %v by %q, not the %v its quota resets after", d, r.Tries[0].Rest.By, want)
+	}
+	asked = nil
+	if code, _ := turn(2); code != 200 || !slices.Equal(asked, []string{"u2@example.com"}) {
+		t.Fatalf("the next turn: %d, asked %v", code, asked)
+	}
+
+	for _, c := range []struct {
+		body string
+		want time.Duration
+	}{
+		{antigravityQuota, want},
+		{`{"error":{"code":429,"message":"You have exhausted your capacity on this model. Your quota will reset after 45m2s.","status":"RESOURCE_EXHAUSTED"}}`, 45*time.Minute + 2*time.Second},
+		{`{"error":{"code":429,"message":"You have exhausted your capacity on this model. Your quota will reset after 26s.","status":"RESOURCE_EXHAUSTED"}}`, 26 * time.Second},
+		{`{"error":{"code":429,"message":"You have exhausted your capacity on this model. Your quota will reset after 155h2m1s.","status":"RESOURCE_EXHAUSTED"}}`, 155*time.Hour + 2*time.Minute + time.Second},
+		{`{"error":{"code":429,"message":"Your quota will reset after 200h0m0s.","status":"RESOURCE_EXHAUSTED"}}`, 0}, // past longestWritten
+		{`{"error":{"code":429,"message":"You have exhausted your capacity on this model. Your quota will reset after ","status":"RESOURCE_EXHAUSTED"}}`, 0},
+		{turnedAway, 0},
+	} {
+		if got := resetsAfter([]byte(c.body)); got != c.want {
+			t.Errorf("%s: %v, want %v", c.body, got, c.want)
+		}
 	}
 }

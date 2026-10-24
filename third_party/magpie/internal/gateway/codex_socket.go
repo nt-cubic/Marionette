@@ -42,7 +42,16 @@ import (
 //
 // Anything the socket can't do falls back to the HTTP request as it was:
 // a refused handshake (and that host is spoken HTTP for codexSocketShun),
-// a connection limit, a body that isn't a streamed turn.
+// a connection limit, a body that isn't a streamed turn, and a socket
+// that ends, or won't take the message, before any of the reply was
+// handed on. That last one is Lamrfu's (Discord): chatgpt.com closed the
+// socket 1009 (message too big) on a long conversation's turn, and the
+// turn was a 502. Codex's own client sends a turn on a kept socket as a
+// delta after previous_response_id, so its messages stay small, and falls
+// back to HTTP for the session when the socket keeps failing; magpie
+// opens a socket per turn and sends the whole body. A message as big as
+// one refused 1009 goes straight over HTTP to that host for
+// codexSocketShun (codexTooBig).
 
 // codexSocketOff turns the socket off: the gateway's tests' fakes of the
 // ChatGPT backend speak HTTP, so TestMain sets it, and codex_socket_test
@@ -67,7 +76,42 @@ const codexSocketPrelude = 8
 var (
 	codexShunMu sync.Mutex
 	codexShun   = map[string]time.Time{}
+	// codexTooBig is the smallest message a host closed 1009 on, and
+	// until when messages that big go to it over HTTP; under codexShunMu.
+	codexTooBig = map[string]tooBig{}
 )
+
+type tooBig struct {
+	size  int
+	until time.Time
+}
+
+// codexMessageTooBig says whether a message of size bytes is as big as
+// one host refused, and so goes over HTTP.
+func codexMessageTooBig(host string, size int) bool {
+	codexShunMu.Lock()
+	defer codexShunMu.Unlock()
+	tb, ok := codexTooBig[host]
+	if ok && time.Now().After(tb.until) {
+		delete(codexTooBig, host)
+		return false
+	}
+	return ok && size >= tb.size
+}
+
+func refusedTooBig(host string, size int) {
+	codexShunMu.Lock()
+	tb, was := codexTooBig[host]
+	if !was || size < tb.size || time.Now().After(tb.until) {
+		tb.size = size
+	}
+	tb.until = time.Now().Add(codexSocketShun)
+	codexTooBig[host] = tb
+	codexShunMu.Unlock()
+	if !was {
+		log.Printf("codex: %s closed the WebSocket on a %d-byte turn as too big; turns that big go over HTTP for %s", host, size, codexSocketShun)
+	}
+}
 
 func codexShunned(host string) bool {
 	codexShunMu.Lock()
@@ -100,7 +144,7 @@ func (t codexSocket) RoundTrip(req *http.Request) (*http.Response, error) {
 		return t.next.RoundTrip(req)
 	}
 	msg, ok := codexSocketMessage(req)
-	if !ok {
+	if !ok || codexMessageTooBig(req.URL.Host, len(msg)) {
 		return t.next.RoundTrip(req)
 	}
 	res, err := t.socket(req, msg)
@@ -264,7 +308,7 @@ func (t codexSocket) socket(req *http.Request, msg []byte) (*http.Response, erro
 		if req.Context().Err() != nil {
 			return nil, req.Context().Err()
 		}
-		return nil, fmt.Errorf("codex websocket: %w", err)
+		return nil, codexSocketEnded(u.Host, len(msg), err)
 	}
 	header := http.Header{}
 	for k, vs := range hs.Header {
@@ -285,10 +329,8 @@ func (t codexSocket) socket(req *http.Request, msg []byte) (*http.Response, erro
 			if req.Context().Err() != nil {
 				return nil, req.Context().Err()
 			}
-			if errors.Is(err, io.EOF) && len(body.pending) == 0 {
-				return nil, errors.New("codex websocket: closed before the reply began")
-			}
-			return nil, err
+			// nothing of the reply has been handed on yet
+			return nil, codexSocketEnded(u.Host, len(msg), err)
 		}
 		if frame == nil { // dropped
 			continue
@@ -330,6 +372,20 @@ func (t codexSocket) socket(req *http.Request, msg []byte) (*http.Response, erro
 		ContentLength: -1,
 		Request:       req,
 	}, nil
+}
+
+// codexSocketEnded is the turn going over HTTP after the socket ended,
+// or failed to take the message, before any of the reply was handed on:
+// whatever the close (1009 message too big, 1011, 1012, 1013, a dropped
+// connection, a normal close with no reply), nothing has reached the
+// caller and the backend has begun no reply, so the same body is asked
+// over HTTP, which answers as the route does. A 1009 is remembered for
+// that host (refusedTooBig).
+func codexSocketEnded(host string, size int, err error) error {
+	if websocket.CloseStatus(err) == websocket.StatusMessageTooBig {
+		refusedTooBig(host, size)
+	}
+	return errCodexSocketFallBack
 }
 
 // codexSocketError is the HTTP reply an error frame that comes ahead of

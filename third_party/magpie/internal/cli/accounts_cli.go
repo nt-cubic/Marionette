@@ -718,10 +718,7 @@ func refreshAccounts(asJSON bool) error {
 func checkinWorkBuddy(asJSON bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	rs := append(provider.CheckInWorkBuddy(ctx), provider.CheckInTrae(ctx)...)
-	rs = append(rs, provider.CheckInMiniMax(ctx)...)
-	rs = append(rs, provider.CheckInQoder(ctx)...)
-	rs = append(rs, provider.CheckInPlugins(ctx)...)
+	rs := checkinAll(ctx)
 	if rs == nil {
 		rs = []provider.WorkBuddyCheckin{}
 	}
@@ -772,10 +769,12 @@ func checkinWorkBuddy(asJSON bool) error {
 				line += muted.Render(" · already")
 			}
 			fmt.Println(line)
+		// why, in the vendor's or plugin's words, beside the label: a bare
+		// "no check-in event now" left the user guessing (plugins#304)
 		case provider.CheckinIneligible:
-			fmt.Println(muted.Render("·"), r.User, muted.Render("not eligible for the check-in"+later))
+			fmt.Println(muted.Render("·"), r.User, muted.Render("not eligible for the check-in"+checkinWhy(r.Msg)+later))
 		case provider.CheckinInactive:
-			fmt.Println(muted.Render("·"), r.User, muted.Render("no check-in event now"+later))
+			fmt.Println(muted.Render("·"), r.User, muted.Render("no check-in event now"+checkinWhy(r.Msg)+later))
 		case provider.CheckinCaptcha:
 			fmt.Println(muted.Render("·"), r.User, muted.Render(strings.TrimSpace("asks for a captcha: check in in its own app "+r.Msg)))
 		case provider.CheckinOwnApp:
@@ -801,6 +800,24 @@ func checkinWorkBuddy(asJSON bool) error {
 		return fmt.Errorf("%d of %d accounts couldn't check in", failed, len(rs))
 	}
 	return nil
+}
+
+// checkinAll checks in every account that has a daily check-in: the
+// built-ins' and each plugin's; a test's seam.
+var checkinAll = func(ctx context.Context) []provider.WorkBuddyCheckin {
+	rs := append(provider.CheckInWorkBuddy(ctx), provider.CheckInTrae(ctx)...)
+	rs = append(rs, provider.CheckInMiniMax(ctx)...)
+	rs = append(rs, provider.CheckInQoder(ctx)...)
+	return append(rs, provider.CheckInPlugins(ctx)...)
+}
+
+// checkinWhy is why a check-in had nothing to claim, in the vendor's or
+// plugin's own words, set after its label (plugins#304); empty without.
+func checkinWhy(msg string) string {
+	if msg = strings.TrimSpace(msg); msg != "" {
+		return " · " + msg
+	}
+	return ""
 }
 
 // accountNamed is the saved account of agent that user names: its name as
