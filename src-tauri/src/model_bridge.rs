@@ -787,10 +787,10 @@ fn zcode_marionette_model_rules(models: &[CatalogModelRow]) -> Vec<serde_json::V
 /// marionette（**追加**到尾部，不前插：providerOrder 影响默认选择顺序，
 /// 不能动用户的默认模型）、providerRules 里 providerId=marionette 的一条、
 /// modelConfigRules.providerModelRules 里 providerId=marionette 的条目（按
-/// providerId 识别整体替换，引擎目录换血不留旧条）；用户其余内容（含
-/// manualProviderModelRules 等未知键）原样保留。原文不是合法 JSON object
-/// 就整体替换（该文件无注释语法，serde_json 往返安全）。返回 (文本, 是否
-/// 语义变更)。
+/// providerId 识别整体替换，引擎目录换血不留旧条）；用户其余内容原样保留
+/// （唯一例外：manualProviderModelRules 缺失/非数组时补空数组，见实现处
+/// 注释）。原文不是合法 JSON object 就整体替换（该文件无注释语法，
+/// serde_json 往返安全）。返回 (文本, 是否语义变更)。
 fn zcode_merge_provider_config(
     existing: Option<&str>,
     port: u16,
@@ -856,6 +856,22 @@ fn zcode_merge_provider_config(
         "providerModelRules".to_string(),
         Value::Array(provider_model_rules),
     );
+    // 新版桌面 schema 把 manualProviderModelRules 也当**必填数组**：桥从头
+    // 建文件（重装后 ~/.zcode 全新、桌面还没写过个人层）时缺这个键，整层
+    // 个人配置 zod 拒载、内存降级为空——桌面宿主每分钟报 `expected array,
+    // received undefined`，会话 turn 全部死在 model_creation 的「Select a
+    // model before continuing」（2026-10-24 实测；与雷 7 的未知键/0 窗口
+    // 同一失效模式）。已有值原样保留；非数组（null 等）同样兜底回空数组。
+    let manual_rules_is_array = model_rules_root
+        .get("manualProviderModelRules")
+        .map(Value::is_array)
+        .unwrap_or(false);
+    if !manual_rules_is_array {
+        model_rules_root.insert(
+            "manualProviderModelRules".to_string(),
+            Value::Array(Vec::new()),
+        );
+    }
     config.insert(
         "modelConfigRules".to_string(),
         Value::Object(model_rules_root),
@@ -4068,6 +4084,80 @@ official_marketplace_auto_installed = true\n";
         // 再删一次 → no-op。
         assert!(!zcode_remove_marionette_at(&path).unwrap());
         fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 新版桌面 schema 要求 modelConfigRules.manualProviderModelRules 是
+    /// 必填数组（2026-10-24 重装后桥从头建文件缺该键 → 整层个人配置拒载、
+    /// 内存降级为空 → turn 死在 model_creation「Select a model before
+    /// continuing」）。缺失/非数组补空数组，已有值原样保留。
+    #[test]
+    fn zcode_merge_backfills_manual_provider_model_rules() {
+        let models = vec![CatalogModelRow {
+            id: "glm-5.3".to_string(),
+            context_window: 200_000,
+            max_output: 0,
+            images: false,
+        }];
+
+        // 从头建文件（无既有内容，重装后首次 spawn 的场景）→ 键存在且为数组。
+        let (fresh, changed) = zcode_merge_provider_config(None, 3425, &models);
+        assert!(changed);
+        let parsed: serde_json::Value = serde_json::from_str(&fresh).unwrap();
+        assert!(parsed["config"]["modelConfigRules"]["manualProviderModelRules"].is_array());
+
+        // 桌面写过的文件带 manualProviderModelRules 条目 → 合并后原样保留。
+        let desktop_fixture = r#"{
+  "schemaVersion": 1,
+  "config": {
+    "providerOrder": ["user-provider"],
+    "providerConfigRules": {
+      "providerRules": [
+        { "providerId": "user-provider", "providerName": "User", "enabled": true, "config": {} }
+      ]
+    },
+    "modelConfigRules": {
+      "providerModelRules": [
+        { "providerId": "user-provider", "modelId": "user-model", "config": {} }
+      ],
+      "manualProviderModelRules": [
+        { "providerId": "user-provider", "modelId": "manual-model", "config": {} }
+      ]
+    }
+  }
+}"#;
+        let (merged, _) = zcode_merge_provider_config(Some(desktop_fixture), 3425, &models);
+        let parsed: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        let manual: Vec<&str> = parsed["config"]["modelConfigRules"]["manualProviderModelRules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["modelId"].as_str().unwrap())
+            .collect();
+        assert_eq!(manual, vec!["manual-model"]);
+
+        // 旧版文件缺该键 → 合并时补空数组（桌面 zod 必填）。
+        let legacy_fixture = r#"{
+  "schemaVersion": 1,
+  "config": {
+    "providerConfigRules": {
+      "providerRules": [
+        { "providerId": "user-provider", "providerName": "User", "enabled": true, "config": {} }
+      ]
+    },
+    "modelConfigRules": {
+      "providerModelRules": [
+        { "providerId": "user-provider", "modelId": "user-model", "config": {} }
+      ]
+    }
+  }
+}"#;
+        let (merged, changed) = zcode_merge_provider_config(Some(legacy_fixture), 3425, &models);
+        assert!(changed);
+        let parsed: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(
+            parsed["config"]["modelConfigRules"]["manualProviderModelRules"],
+            serde_json::json!([])
+        );
     }
 
     #[test]

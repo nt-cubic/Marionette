@@ -387,6 +387,7 @@ lifecycle script。
 | 跨用 opencode-go 模型全 401 `api_key_expired`，opencode agent 自己正常 | `magpie providers` 指纹 vs opencode.db active=1 行 vs auth.json | 雷 11 |
 | 桌面版能选的 key，ACP 模型菜单里一条都没有 | `provider_config.json` 里该 provider 有没有 `providerModelRules`（模板建的 provider 通常没有） | 雷 12 |
 | `npm ls -g` 显示 `zcode-acp-server@`（空版本）/ 包目录空壳、agent 起不来 | postinstall 是否 Unix-only；用 `--ignore-scripts` 重装 | 雷 13 |
+| 重装桌面版后每条 prompt 报 `Select a model before continuing (CONFIGURATION_ERROR)` | zcode 日志 `加载失败` 的 path 是否 `manualProviderModelRules`；`provider_config.json` 的 `modelConfigRules` 有无该键 | 雷 14 |
 
 ---
 
@@ -468,3 +469,41 @@ bigmodel-api  access.type=zhipu-coding-plan-api-key  personalModelIds: []  provi
 都收 `›`，并且 `\` 优先于 `/`（`marionette\zhipu/glm-5.3` 的 provider 段是
 `marionette` 而不是 `marionette\zhipu`）。副作用是账号层那条 UUID provider 也从
 「裸 UUID 分组」变成 `DeepSeek`。
+
+---
+
+## 雷 14：`manualProviderModelRules` 必填——桥从头建文件缺该键，整层拒载、turn 死在 model_creation（2026-10-24）
+
+**症状**：重装 ZCode 桌面版后（`~/.zcode` 全新、个人层只剩跨用桥写的条目），Marionette 的
+ZCode 会话**每条 prompt** 都报
+`ZCode turn failed: CONFIGURATION_ERROR Select a model before continuing (Model creation failed)`。
+zcode 协议日志（`~/.zcode/cli/log/zcode-<日期>.jsonl`）里 `turn.failed` 的
+`turnPhase: "model_creation"`，且 `session/create` 的 `hasInitialModel: false`。
+
+**根因**：桌面宿主的个人层 zod schema 把 `config.modelConfigRules.manualProviderModelRules`
+当**必填数组**。跨用桥（`model_bridge.rs::zcode_merge_provider_config`）在文件不存在时从头
+建 JSON，只写 `providerOrder / providerRules / providerModelRules`。10-23 之前没事，是因为
+桌面写过的文件里本来就有这个键、合并路径会原样保留未知键；重装后桥先写，键缺失 → 每次读层
+`Invalid input: expected array, received undefined` → **整层个人配置内存降级为空** → 后端
+注册表里连 `marionette` provider 都没有 → 会话没有任何可选模型（适配器侧 configOptions
+也空、无 currentValue 兜底）。
+
+**证据**：`~/.zcode/v2/logs/<日期>.log` 每分钟一条
+`[provider-config] Personal Provider Config 加载失败，已保留磁盘状态并以内存空配置降级` +
+ZodError（`"path": ["manualProviderModelRules"]`，12:06 起持续到修复）。schema 形状的最好
+参照仍是适配器 `dist/settings/provider-config.js` 的空文件默认：
+`{ providerConfigRules: { providerRules: [] }, modelConfigRules: { providerModelRules: [], manualProviderModelRules: [] } }`。
+
+**修复**：合并体对 `manualProviderModelRules` 缺失/非数组补 `[]`（已有值原样保留），回归
+测试 `zcode_merge_backfills_manual_provider_model_rules`。现场恢复：给
+`provider_config.json` 的 `modelConfigRules` 补 `"manualProviderModelRules": []` 即可——
+桌面有文件监听/周期重读（本机 12:26 补上，12:25:41 起每分钟告警即停），随后探针
+session/new 直接得到 67 条模型 + `currentValue: "marionette\auto/deepseek-v4-pro"` 默认值，
+不选芯片直接 prompt PONG。
+
+**附带观察**：重装后账号层 `~/.zcode/v2/config.json` 不存在（桌面还没写过），适配器
+`loadAllModels` 的账号层来源为空、启动时报 `provider-registry: sync threw (ENOENT ...
+v2\config.json)`——非致命，桥模型照常工作；桌面设置页动一次 provider 后该文件才会出现。
+
+**快速确诊**：zcode 日志 grep `manualProviderModelRules`；`provider_config.json` 的
+`modelConfigRules` 里有没有 `"manualProviderModelRules"` 键。
