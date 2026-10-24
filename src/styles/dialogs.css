@@ -1,0 +1,939 @@
+/* dialogs.css — Provider config / credentials dialogs, model dropdown, recent models, image lightbox, annotator. Split verbatim from app.css (order preserved); edit here, not there. */
+
+/* ── Provider Config Dialog ────────────────────────────────────────────── */
+.provider-dialog {
+  min-width: 400px;
+}
+
+.provider-dialog__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.provider-dialog__label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.provider-dialog__select,
+.provider-dialog__input {
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-secondary);
+  color: var(--text-primary);
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.provider-dialog__select:focus,
+.provider-dialog__input:focus {
+  border-color: var(--accent);
+}
+
+.provider-dialog__error {
+  color: var(--danger);
+  font-size: 13px;
+  padding: 6px 0;
+}
+
+.provider-dialog__section {
+  margin-bottom: 16px;
+}
+
+.provider-dialog__section-title {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-tertiary);
+  margin-bottom: 8px;
+}
+
+.provider-dialog__empty {
+  font-size: 13px;
+  color: var(--text-tertiary);
+  padding: 8px 0 16px;
+}
+
+.provider-dialog__list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.provider-dialog__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--surface-secondary);
+}
+
+.provider-dialog__item-name {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.provider-dialog__item-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green, #22c55e);
+  flex-shrink: 0;
+}
+
+.provider-dialog__delete-btn {
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--danger, #ef4444);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.provider-dialog__delete-btn:hover {
+  background: color-mix(in srgb, var(--danger, #ef4444) 10%, transparent);
+}
+
+.provider-dialog__delete-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Second click arms the actual delete — filled so it cannot be mistaken. */
+.provider-dialog__delete-btn.is-confirming {
+  background: var(--danger, #ef4444);
+  border-color: var(--danger, #ef4444);
+  color: #fff;
+}
+
+/* Marks an `opencode auth login` entry: deleting it needs a re-login. */
+.provider-dialog__item-badge {
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  /* A narrow dialog used to break these into "引 / 用" stacked cells. */
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.provider-dialog__warning {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--danger, #ef4444) 40%, var(--border));
+  background: color-mix(in srgb, var(--danger, #ef4444) 8%, transparent);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.provider-dialog__warning code {
+  font-size: 11px;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--bg-tertiary, rgba(127, 127, 127, 0.15));
+}
+
+.provider-dialog__note {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--bg-tertiary, rgba(127, 127, 127, 0.12));
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.provider-dialog__item-badge--muted {
+  opacity: 0.75;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.provider-dialog__item-id {
+  margin-left: 4px;
+  color: var(--text-faint, var(--text-tertiary));
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.provider-dialog__lead,
+.provider-dialog__hint {
+  margin: 0 0 10px;
+  color: var(--text-muted, var(--text-secondary));
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.provider-dialog__lead code,
+.provider-dialog__hint code {
+  font-size: 10px;
+}
+
+.provider-dialog__link {
+  display: inline-block;
+  margin: 0 0 8px;
+  padding: 0;
+  border: 0;
+  color: var(--accent);
+  background: transparent;
+  font-size: 11px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.provider-dialog__link:hover {
+  text-decoration: underline;
+}
+
+/* ── Credentials (跨用凭据) Dialog ─────────────────────────────────────── */
+.credentials-dialog {
+  /* Wide enough for `引用`/`扫描` badges to sit on one line beside a long name. */
+  width: min(560px, calc(100vw - 40px));
+  min-width: 440px;
+}
+
+.credentials-dialog__scan {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.credentials-dialog__scan-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--surface-secondary);
+}
+
+.credentials-dialog__scan-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.credentials-dialog__scan-status {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.credentials-dialog__scan-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.credentials-dialog__scan-dot.is-found {
+  background: var(--green, #22c55e);
+}
+
+.credentials-dialog__scan-dot.is-missing {
+  background: var(--text-faint);
+}
+
+.credentials-dialog__scan-dot.is-restricted {
+  background: var(--yellow, #e7c86a);
+}
+
+/* Subscription / reference rows: not ours to delete — muted marker. */
+.credentials-dialog__dot--borrowed {
+  background: var(--text-faint);
+}
+
+.credentials-dialog__masked {
+  color: var(--text-faint);
+  font-size: 10px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  letter-spacing: 0.02em;
+}
+
+/* ── Cross-use (跨用) note in the model menu ──────────────────────────── */
+.composer-menu__bridge-note {
+  padding: 6px 7px 4px;
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* Scan-origin badge on a cross-use group title: reference entries found by
+   the credential scan, as opposed to keys the user added manually. */
+.composer-menu__bridge-scan-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 15px;
+  vertical-align: 1px;
+  letter-spacing: 0;
+}
+
+/* Cross-use group headers: provider name left, 右上角跨用 mark. */
+.composer-menu__label--cross {
+  display: flex;
+  align-items: center;
+}
+
+.composer-menu__cross-mark {
+  margin-left: auto;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 15px;
+  white-space: nowrap;
+}
+
+/* Placeholder for a cross-use source whose model list is not enumerable —
+   custom model ids are the only way to use it (e.g. openrouter). */
+.composer-menu__bridge-empty {
+  padding: 2px 8px 3px;
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* ── Cross-use (跨用) custom model id — entry + inline input ─────────── */
+/* Weakened vs regular rows: the preset list stays the primary path. */
+.composer-menu__bridge-custom-trigger {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 4px 8px;
+  border: none;
+  background: none;
+  color: var(--text-faint);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+  border-radius: 4px;
+}
+
+.composer-menu__bridge-custom {
+  display: flex;
+  align-items: center;
+  margin: 1px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+}
+
+.composer-menu__bridge-custom input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  padding: 5px 7px;
+}
+
+.composer-menu__bridge-custom input::placeholder {
+  color: var(--text-faint);
+  font-family: inherit;
+}
+
+/* ── Model Dropdown Empty State ────────────────────────────────────────── */
+.composer-menu__empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 24px 16px;
+  text-align: center;
+}
+
+.composer-menu__empty-icon {
+  font-size: 28px;
+  line-height: 1;
+}
+
+.composer-menu__empty-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.composer-menu__empty-desc {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin-bottom: 4px;
+}
+
+.composer-menu__add-key-btn {
+  padding: 6px 16px;
+  border-radius: 6px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.composer-menu__add-key-btn:hover {
+  opacity: 0.9;
+}
+
+/* ── Recent Models ─────────────────────────────────────────────────────── */
+.composer-menu__search,
+.composer-menu__add-key-item,
+.composer-menu__divider,
+.composer-menu__empty-state {
+  flex-shrink: 0;
+}
+
+.composer-menu__recent {
+  flex: 0 0 auto;
+  padding: 2px 0 0;
+}
+
+.composer-menu__recent .composer-menu__label {
+  display: block;
+  padding: 4px 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-tertiary);
+}
+
+.composer-menu__recent button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  background: none;
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  border-radius: 4px;
+}
+
+.composer-menu__recent button:hover,
+.composer-menu__recent button.is-selected {
+  background: var(--hover);
+}
+
+.composer-menu__model-recent-hint {
+  display: flex;
+  flex-shrink: 0;
+  align-items: baseline;
+  gap: 6px;
+  margin-left: 8px;
+  white-space: nowrap;
+}
+
+.composer-menu__model-source {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.composer-menu__model-recent-time {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.composer-menu__recent button.is-selected .composer-menu__model-source,
+.composer-menu__recent button:hover .composer-menu__model-source {
+  color: var(--text-muted);
+}
+
+.composer-menu__recent button.is-selected .composer-menu__model-recent-time,
+.composer-menu__recent button:hover .composer-menu__model-recent-time {
+  color: var(--text-faint);
+}
+
+/* ── Add Key item in model list ────────────────────────────────────────── */
+.composer-menu__add-key-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  border-radius: 4px;
+  gap: 4px;
+}
+
+.composer-menu__add-key-item:hover {
+  background: var(--hover);
+}
+
+/* ── Image attachment chips — thumbnail + name inside the text field ──── */
+.composer__attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 28px 4px 0; /* leave room for expand button */
+}
+
+.composer__attachment-pill {
+  display: inline-flex;
+  align-items: stretch;
+  max-width: min(240px, 100%);
+  min-height: 40px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  font-size: 11px;
+}
+
+.composer__attachment-pill:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 35%, var(--panel-soft));
+}
+
+.composer__attachment-thumb {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  object-fit: cover;
+  background: var(--panel);
+}
+
+.composer__attachment-thumb-fallback {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text) 8%, var(--panel-soft));
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.composer__attachment-main {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  min-width: 0;
+  padding: 4px 6px 4px 8px;
+  border: 0;
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.composer__attachment-name {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer__attachment-badge {
+  flex: 0 0 auto;
+  min-width: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 15px;
+  text-align: center;
+}
+
+.composer__attachment-x {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  color: var(--text-muted);
+  background: transparent;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.composer__attachment-x:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+/* ── Image lightbox (Weibo / Twitter-style viewer) ────────────────────── */
+.image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.88);
+  cursor: zoom-out;
+  overscroll-behavior: none;
+}
+
+.image-lightbox__stage {
+  position: relative;
+  display: inline-block;
+  max-width: 92vw;
+  max-height: 92vh;
+  line-height: 0;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  transform-origin: center center;
+  will-change: transform;
+}
+
+.image-lightbox__stage.is-dragging {
+  cursor: grabbing;
+}
+
+.image-lightbox__img {
+  display: block;
+  max-width: 92vw;
+  max-height: 92vh;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  pointer-events: none;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.45);
+}
+
+.image-lightbox__close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  cursor: pointer;
+}
+
+.image-lightbox__close:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.image-lightbox__hint {
+  position: absolute;
+  bottom: 18px;
+  left: 50%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: center;
+  margin: 0;
+  transform: translateX(-50%);
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 12px;
+  line-height: 1.3;
+  pointer-events: none;
+  text-align: center;
+}
+
+.image-lightbox__caption {
+  max-width: 80vw;
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.72);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Image annotator ───────────────────────────────────────────────────── */
+.image-annotator-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.image-annotator {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: min(1040px, 100%);
+  height: min(780px, 100%);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 10px);
+  background: var(--panel-raised, var(--panel));
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.35);
+}
+
+.image-annotator__header,
+.image-annotator__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.image-annotator__footer {
+  border-bottom: 0;
+  border-top: 1px solid var(--border);
+  justify-content: flex-end;
+}
+
+.image-annotator__header strong {
+  display: block;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.image-annotator__header span {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.image-annotator__icon-btn {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.image-annotator__icon-btn:hover {
+  color: var(--text);
+  background: var(--panel-soft);
+}
+
+.image-annotator__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 240px;
+  min-height: 0;
+}
+
+.image-annotator__stage {
+  display: grid;
+  place-items: center;
+  min-height: 0;
+  padding: 12px;
+  overflow: auto;
+  background: color-mix(in srgb, #000 18%, var(--panel-soft));
+}
+
+.image-annotator__frame {
+  position: relative;
+  max-width: 100%;
+  max-height: 100%;
+  line-height: 0;
+}
+
+.image-annotator__img {
+  max-width: min(720px, 100%);
+  max-height: min(560px, 70vh);
+  object-fit: contain;
+  user-select: none;
+  touch-action: none;
+  cursor: crosshair;
+  border-radius: 4px;
+}
+
+.image-annotator__overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.image-annotator__point {
+  position: absolute;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin: -10px 0 0 -10px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
+.image-annotator__point.is-pending {
+  background: #e25555;
+}
+
+.image-annotator__rect {
+  position: absolute;
+  z-index: 1;
+  border: 2px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35) inset;
+}
+
+.image-annotator__rect.is-pending,
+.image-annotator__rect.is-dragging {
+  border-color: #e25555;
+  background: color-mix(in srgb, #e25555 15%, transparent);
+}
+
+.image-annotator__rect-label {
+  position: absolute;
+  top: 0;
+  left: 0;
+  padding: 0 4px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+}
+
+.image-annotator__side {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  padding: 12px;
+  border-left: 1px solid var(--border);
+  overflow: auto;
+}
+
+.image-annotator__hint,
+.image-annotator__muted,
+.image-annotator__error {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.image-annotator__error {
+  color: #e25555;
+}
+
+.image-annotator__compose {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+}
+
+.image-annotator__compose-meta {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.image-annotator__comment-input {
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  background: var(--composer-bg, var(--panel-raised));
+  font-size: 12px;
+}
+
+.image-annotator__compose-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.image-annotator__list-title {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.image-annotator__list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.image-annotator__list li {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 18px;
+  gap: 4px;
+  align-items: start;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.image-annotator__list-n {
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 11px;
+}
+
+.image-annotator__list-text {
+  min-width: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.image-annotator__list-del {
+  border: 0;
+  color: var(--text-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
