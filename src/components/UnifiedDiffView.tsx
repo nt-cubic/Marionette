@@ -20,6 +20,14 @@ type UnifiedDiffViewProps = {
   elideUnchanged?: boolean;
 };
 
+/**
+ * Hard row ceiling (audit P1-A): one oversized diff card used to mount every
+ * line × 6-7 spans, so a single huge paste could add tens of thousands of DOM
+ * nodes to the transcript. The card keeps its head and tail; the middle gap is
+ * announced instead of rendered.
+ */
+const MAX_RENDER_LINES = 1000;
+
 function lineClass(line: DiffLine): string {
   const base = "file-diff-card__line";
   if (line.type === "add") return `${base} is-add`;
@@ -44,20 +52,33 @@ export function UnifiedDiffView({
   onLineComment,
   elideUnchanged = false,
 }: UnifiedDiffViewProps) {
-  const parsed = useMemo(() => (text ? parseUnifiedDiff(text) : []), [text]);
+  const { parsed, elidedMiddle } = useMemo(() => {
+    if (!text) return { parsed: [] as DiffLine[], elidedMiddle: 0 };
+    const all = parseUnifiedDiff(text);
+    if (all.length <= MAX_RENDER_LINES) return { parsed: all, elidedMiddle: 0 };
+    // Keep the head and tail (where the action usually is), elide the middle.
+    const head = Math.floor(MAX_RENDER_LINES * 0.7);
+    const tail = MAX_RENDER_LINES - head;
+    return {
+      parsed: [...all.slice(0, head), ...all.slice(all.length - tail)],
+      elidedMiddle: all.length - MAX_RENDER_LINES,
+    };
+  }, [text]);
   // `⋮` marks the gap between hunks — never the header lines before the first.
   const rows = useMemo(() => {
     let seenHunk = false;
-    return parsed.map((line) => {
+    return parsed.map((line, index) => {
       const elide = elideUnchanged && line.type === "hunk" && seenHunk;
       if (line.type === "hunk") seenHunk = true;
-      return { line, elide };
+      // The truncation gap sits right after the head block (index === head).
+      const showTruncation = elidedMiddle > 0 && index === Math.floor(MAX_RENDER_LINES * 0.7);
+      return { line, elide, showTruncation };
     });
-  }, [parsed, elideUnchanged]);
+  }, [parsed, elideUnchanged, elidedMiddle]);
 
   return (
     <pre className={className}>
-      {rows.map(({ line, elide }, index) => {
+      {rows.map(({ line, elide, showTruncation }, index) => {
         const side = lineSide(line);
         const lineNumber = side === "new" ? line.newLine : side === "old" ? line.oldLine : null;
         const canComment =
@@ -65,13 +86,15 @@ export function UnifiedDiffView({
 
         return (
           <span key={index}>
-            {elide && (
+            {(elide || showTruncation) && (
               <span className="file-diff-card__line is-elide" aria-hidden>
                 <span className="file-diff-card__gutter">
                   <span className="file-diff-card__ln" />
                   <span className="file-diff-card__ln" />
                 </span>
-                <span className="file-diff-card__code">⋮</span>
+                <span className="file-diff-card__code">
+                  {showTruncation ? `⋯ 中间省略 ${elidedMiddle} 行 ⋯` : "⋮"}
+                </span>
               </span>
             )}
             <span className={lineClass(line)}>
