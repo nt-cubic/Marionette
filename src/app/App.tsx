@@ -960,7 +960,7 @@ export function App() {
   // 1s, visible-unfocused 250ms), so one saturating stream can no longer take
   // the shared main webview down with it. Levels: 0 hidden / 1 visible /
   // 2 focused. Change-detected so it is safe to call from every flush.
-  const lastReportedInterestsRef = useRef<string>("");
+  const lastReportedInterestsRef = useRef<Record<string, number> | null>(null);
   const reportStreamInterestsRef = useRef<() => void>(() => undefined);
   const reportStreamInterests = () => {
     if (!isTauriRuntime()) return;
@@ -987,9 +987,23 @@ export function App() {
         next[focused] = docVisible ? 2 : 1;
       }
     }
-    const key = JSON.stringify(next);
-    if (key === lastReportedInterestsRef.current) return;
-    lastReportedInterestsRef.current = key;
+    // ~20Hz from every flush: compare shallowly against the cached map instead
+    // of re-stringifying the whole object every call (audit P1-A).
+    const last = lastReportedInterestsRef.current;
+    let changed = true;
+    if (typeof last === "object" && last !== null) {
+      changed = false;
+      for (const id in next) {
+        if (next[id] !== (last as Record<string, number>)[id]) { changed = true; break; }
+      }
+      if (!changed) {
+        for (const id in last as Record<string, number>) {
+          if (!(id in next)) { changed = true; break; }
+        }
+      }
+    }
+    if (!changed) return;
+    lastReportedInterestsRef.current = next;
     void setStreamInterests(next);
   };
   reportStreamInterestsRef.current = reportStreamInterests;

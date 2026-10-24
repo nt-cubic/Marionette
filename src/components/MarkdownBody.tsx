@@ -81,6 +81,25 @@ function MdCodeBlock({ children }: { children?: ReactNode }) {
 const HTTP_URL_RE = /^https?:\/\//i;
 
 /**
+ * Schemes that may survive into an href (audit P1-C). Anything else —
+ * `javascript:`, `vbscript:`, `data:text/html`, unknown schemes — collapses
+ * to `#`, so the attribute can never carry executable content even before
+ * MdLink's own interception. Local targets (`file:`, UNC, drive letters) are
+ * the other allowed family; bare relative paths stay as-is.
+ */
+function safeUrl(url: string): string {
+  const schemeMatch = /^\s*([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(url);
+  if (!schemeMatch) return url; // relative path: no scheme
+  const scheme = schemeMatch[1].toLowerCase();
+  // Single-letter "schemes" are Windows drive paths (`D:\x`, `C:/y`).
+  if (scheme.length === 1) return url;
+  if (scheme === "http" || scheme === "https") return url;
+  if (scheme === "file") return url;
+  if (scheme === "mailto") return url;
+  return "#";
+}
+
+/**
  * micromark percent-encodes link destinations at parse time (backslash →
  * `%5C`, space → `%20`, non-ASCII → UTF-8 escapes) before urlTransform runs.
  * Local targets are paths, not URLs, so decode them back — `decodeURI` is the
@@ -89,10 +108,13 @@ const HTTP_URL_RE = /^https?:\/\//i;
  */
 function decodeLocalTarget(url: string): string {
   if (HTTP_URL_RE.test(url)) return url;
+  // Deny-by-scheme first: decoding must not give `java%73cript:` a pass.
+  const safe = safeUrl(url);
+  if (safe === "#") return "#";
   try {
-    return decodeURI(url);
+    return decodeURI(safe);
   } catch {
-    return url;
+    return safe;
   }
 }
 
@@ -146,16 +168,33 @@ export const MarkdownImageCwdContext = createContext<string | null>(null);
 
 /** Resolved path → its bytes, so scrolling and re-renders never re-read. */
 type LoadedImage = { dataUrl: string; path: string };
+/**
+ * Bounded LRU (audit P1-A): the cache holds base64 payloads (megabytes each),
+ * so an unbounded map grows monotonically over a long session. 50 entries
+ * covers a heavily illustrated transcript while keeping the ceiling at a few
+ * hundred MB worst case.
+ */
+const IMAGE_CACHE_LIMIT = 50;
 const imageDataUrlCache = new Map<string, Promise<LoadedImage>>();
 
 function loadImage(path: string): Promise<LoadedImage> {
   const cached = imageDataUrlCache.get(path);
-  if (cached) return cached;
+  if (cached) {
+    // Refresh recency (Map iterates in insertion order → delete+re-insert).
+    imageDataUrlCache.delete(path);
+    imageDataUrlCache.set(path, cached);
+    return cached;
+  }
+  if (imageDataUrlCache.size >= IMAGE_CACHE_LIMIT) {
+    const oldest = imageDataUrlCache.keys().next().value;
+    if (oldest !== undefined) imageDataUrlCache.delete(oldest);
+  }
   const pending = readImageDataUrl(path).then((result) => ({
     dataUrl: result.dataUrl,
     // The reader may have matched a near-miss name; show the file it used.
     path: result.path || path,
   }));
+  imageDataUrlCache.set(path, pending);
   // A failed read is not cached: the file may be written a moment later.
   pending.catch(() => imageDataUrlCache.delete(path));
   return pending;
