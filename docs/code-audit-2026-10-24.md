@@ -6,14 +6,19 @@
 > （见文末「方法与抽查记录」）。分块原始报告约 4 万字，曾存 `fortest/code-audit-2026-10-24.md`
 > （gitignored 暂存区，可能被清理）；本文件自包含，不依赖它。
 >
+> **行号基准 = 提交 `75b952c`（2026-10-24 01:52）。** 其后 `d9c7edf`/`95c09cd`/`abceaa6`/`51ddcc0` 已致漂移：
+> app.css 9564→10678、Composer.tsx 3661→3717、MarkdownBody.tsx 310→371（urlTransform 267→328）、
+> acpTranscript.ts 1859→1885（`[...current]` 复制点 1461/1470/1515→1493/1505/1585）、App.tsx 8050→8125、
+> acp.rs 7074→7082、commands.rs ≈+37（npm_install_global 531-533→570）。动手前先按内容 grep 定位，勿直接跳行号。
+>
 > **状态约定：修复后在对应条目前加 ✅ 并注明提交号；条目全部处理完后本文件挪 `archive/`。**
 
 ## 范围与底数
 
 | 部分 | 规模 | 主要巨型文件 |
 |---|---|---|
-| 前端 `src/` | ≈ 5.0 万行 | `app.css` 9564、`App.tsx` 8050（单组件 ≈7200 行）、`Composer.tsx` ≈3100 |
-| 后端 `src-tauri/src/` | ≈ 4.8 万行 | `acp.rs` 7074、`model_bridge.rs` 4690、`engine.rs` 3324、`telegram_remote.rs` ≈4300（含测试） |
+| 前端 `src/` | ≈ 5.0 万行 | `app.css` 9564、`App.tsx` 8050（单组件 ≈7200 行）、`Composer.tsx` 3661 |
+| 后端 `src-tauri/src/` | ≈ 4.8 万行 | `acp.rs` 7074、`model_bridge.rs` 4690、`engine.rs` 3324、`telegram_remote.rs` 4639（含测试） |
 | `scripts/` + `tools/` | ≈ 0.65 万行 / 26 个脚本 | — |
 
 ## 总体结论
@@ -64,7 +69,7 @@ lib/组件层单次成本仍随数据量线性/平方放大，流式 20-50Hz 时
 | `src/lib/acpTranscript.ts:1581` | 每个 tool 分块对整条 rail `findIndex` 找 toolCallId | 每会话维护 toolCallId→index 的 Map |
 | `src/lib/turnDelivery.ts:7` | 注释自认 "derived on every render"：`buildTurnDeliveries` 每次渲染多趟全量扫描 events | 按 (events 引用, sessionId, isRunning) memoize |
 | `src/lib/useVirtualWindow.ts:58` | offsets 前缀和随 version 全量重建；流式期间每帧 O(n) 重算，万行级列表每帧重算 | 增量更新尾部 offset 或 Fenwick 树 |
-| `src/app/App.tsx`（全文件 0 个 `memo(`，≈70 useState / 41 useEffect / ≈40 ref） | 单组件 ≈7200 行，任一 state 变化整树重渲；流式期间 `eventsTick` 每 50ms bump | 按文末拆分方案拆事件管线/面板/提示卡 |
+| `src/app/App.tsx`（全文件 0 个 `memo(`，≈70 useState / 41 useEffect / 74 ref） | 单组件 ≈7200 行，任一 state 变化整树重渲；流式期间 `eventsTick` 每 50ms bump | 按文末拆分方案拆事件管线/面板/提示卡 |
 | `App.tsx:7624-7743` | `ProjectShelf`/`SessionTabs` 收到大量内联箭头回调，流式时侧栏+标签栏持续重渲 | 回调 useCallback + 子组件 React.memo |
 | `App.tsx:984, 2939` | `reportStreamInterests` 每次 flush 全量 `JSON.stringify` 比较，约 20Hz | 逐 key 浅比较或脏标记 |
 | `App.tsx:5823-5835, 5868` | Esc/Ctrl+1..9 效果依赖随流式标题更新反复变化 → 键盘监听反复卸载重挂 | handler 存 ref，依赖收敛为 `[]` |
@@ -112,12 +117,12 @@ lib/组件层单次成本仍随数据量线性/平方放大，流式 20-50Hz 时
 | 位置 | 问题 | 建议 |
 |---|---|---|
 | `package.json:6-13` | 无 `lint`、无 `test`、无独立 `typecheck`（tsc 藏在 build 里） | 补三个脚本 |
-| `src/lib/api.ts`（44+ 处）、`detachedWindow.ts`（14 处） | 裸 `catch {}` 静默兜底返回默认值，无日志通道（[核] 非字面空块，问题实质成立） | 接入统一 debug 日志，区分「可选能力」与「真失败」 |
+| `src/lib/api.ts`（44+ 处）、`detachedWindow.ts`（27 处） | 裸 `catch {}` 静默兜底返回默认值，无日志通道（[核] 非字面空块，问题实质成立） | 接入统一 debug 日志，区分「可选能力」与「真失败」 |
 | `tsconfig.json:10` | 有 `strict` 但缺 `noUncheckedIndexedAccess`、`noUnusedLocals/Parameters` | 补齐并修复暴露问题 |
 | `src/styles/app.css:449,465,2639,8176,8887,9209; tokens.css:30` | 同一「危险红」四套并存（#e25555/#e35d6a/--danger #ef4444/--red #ef6c73），fallback 与 token 值互相矛盾 | 统一 token，删内联 fallback |
 | `src-tauri/src/parsers/mod.rs:116-151` | 每源独立线程 + `join()` 捕 panic 的隔离设计在 release（`panic=abort`）失效：首个解析器 panic 直接杀进程，「单源失败不传染」仅 debug 成立 | 保持无 panic 约定 + CI 加 debug 构建跑坏输入测试兑现承诺 |
 | `scripts/`（18 个文件） | 逐字相同的 `check()` 计数 harness 复制 18 份；26 个脚本无聚合 runner | 抽 `scripts/lib/harness.mts` + 聚合 `npm run verify` |
-| 仓库根 `build-now.ps1:3` | 第二入口 + 硬编码 `Set-Location 'D:\Projects\Marionette'`；另有未跟踪残留 `diag-zcode.ps1`、`diag-zcode-out.txt`（[核] t1 曾误报 not found，实为未跟踪本地文件） | 挪 `tools/`（内部改 `$PSScriptRoot`）；残留删除 |
+| 仓库根 `build-now.ps1:3` | 第二入口 + 硬编码 `Set-Location 'D:\Projects\Marionette'`；另有本地残留 `zdiag.ps1`、`zdiag-out.txt`、`zdiag-zcode.ps1`、`zdiag-zcode-out.txt`、`preview-transcript.local.jsonl`、`.tmp-build.log`（[核] t1 曾误报 not found 且写错名；`2e00805` 已把前五类 gitignore，文件本体仍在） | 挪 `tools/`（内部改 `$PSScriptRoot`）；残留删除 |
 | `tools/build-portable.bat:166-173` | UPX 压缩失败仅 `[warn]` 继续；`REQUIRE_UPX=1` 只拦「未安装」不拦「压缩失败」→ 7MB 未压缩产物可能静默发布 | REQUIRE_UPX=1 时 UPX 失败 goto fail |
 | `tools/build-portable.bat:14` | 引擎种子默认拉 GitHub latest stable 不锁 tag，构建不可复现 | 默认读 `third_party/magpie/VERSION`，显式 MAGPIE_TAG 才升级 |
 | `tools/start-marionette-quick.bat:26` | `call npm install` 后不查 errorlevel 就起 Vite/exe | 补 `if errorlevel 1 exit /b 1` |
@@ -177,11 +182,14 @@ map 值从不读取（假状态，应 HashSet）；`app_paths.rs:31-39` 目录�
 
 **Rust 命令面 / 终端 / Telegram / 用量**：`telegram_remote.rs:1705,1727,1401+1843-1850` outbound
 无界 mpsc，长故障期队列无上界（应 sync_channel + 丢旧合并 Dashboard）；`telegram_remote.rs:2201-2209`
-getUpdates 非 409 失败固定 15s 重试无指数退避（401/403 应停用并提示）；`terminal_runtime.rs:375-383`
+getUpdates ok:false 分支固定 15s 重试无退避增长（[核] 传输/HTTP 错误走 Err 分支，本就有 1s→60s
+指数退避，2243；401/403 的真缺口是永不停用无限重试，应停用并提示）；`terminal_runtime.rs:375-383`
 `clear_session` 不清仍在跑的 PTY 进程与 map 条目；`terminal_runtime.rs:332-337` 二进制垃圾输出逐字节
 drain + 整体 clone 重解析；`provider_usage.rs:244-267` `find_meta` 每次重读盘解析 catalog；
-`telegram_remote.rs:2918-2926` Permission 回调未回传校验 option_label；`commands.rs:2034` 起
-`install_agent` 是同步 command，分钟级 npm 安装占池槽（应同 `agent_versions` 改 async + spawn_blocking）。
+`telegram_remote.rs:2918-2926` Permission 回调未回传校验 option_label。（原列「`commands.rs:2034` 起
+`install_agent` 是同步 command，分钟级 npm 安装占池槽，应改 async + spawn_blocking」经二次复核为
+**误报撤回**：75b952c 当时它就已是 `pub async fn` + `spawn_blocking`（时 commands.rs:403/409），
+所引 2034 行实为 `start_acp_session`。）
 
 **Rust 存储 / 解析器 / git**：`util.rs:112`、`gemini.rs:25`、`codex.rs:64` `read_to_string` 严格
 UTF-8，一个坏字节整份会话静默跳过（应 lossy 变体）；`storage.rs:947-956` `load_transcript` 整读进内存；
@@ -204,7 +212,7 @@ UTF-8，一个坏字节整份会话静默跳过（应 lossy 变体）；`storage
   `useTurnQueue`、`WorkspaceShell`（分屏/拖拽）、`usePromptCards`（三卡 + Esc 层级）、
   SidebarCallbacks 收敛（约 25 个内联回调改 useCallback + `React.memo(ProjectShelf)`，**收益/风险比
   最高，先做这步**）、`useSessionDerivedData`。
-- **`Composer.tsx`（≈3100）** → `useComposerDraft`（含防抖写缓存）、`useAgentCaps`、`ModelMenu`、
+- **`Composer.tsx`（3661）** → `useComposerDraft`（含防抖写缓存）、`useAgentCaps`、`ModelMenu`、
   `AgentMenu + useAgentHealth`、`useSuggestions`、`SettingsDialogs`。
 - **`acp.rs`（7074）** → `acp_transport`（≈500，纯管道层最易先拆）→ `acp_capabilities`（≈1200 纯函数）
   → `acp_config`（≈800）→ `acp_ui_bridge`（≈870）→ `acp_service`（≈1700）→ 测试（≈2300）移 `tests/`。
@@ -272,9 +280,19 @@ r3 首跑被 Zhipu 限流（429 code 1302）打断，串行重跑成功。
 1. f5 称 api.ts「44 处空 catch」——实为「静默兜底返回默认值」的 catch（非字面空块），问题实质成立。
 2. r1 称 debug_log 每行 5 次系统调用——info 级已跳过 flush，问题集中在每行 4 次（create_dir_all/
    metadata/open/write）+ 全局锁。
-3. t1 称 `diag-zcode.ps1` 仓库 not found——两文件（.ps1/.txt）实际在仓库根，属未跟踪本地文件，主代理亲验。
-4. 次要出入：f2 记 App.tsx 69 个 useState，主代理实数 68（不影响结论）。
+3. t1 称 `diag-zcode.ps1` 仓库 not found——实际文件名是 `zdiag-zcode.ps1`/`zdiag-zcode-out.txt`
+   （连同 `zdiag.ps1`、`zdiag-out.txt`、`preview-transcript.local.jsonl`、`.tmp-build.log` 共六件
+   本地残留在仓库根），主代理亲验。
+4. 次要出入：f2 记 App.tsx 69 个 useState——二次复核 75b952c 时确为 69，f2 本无错（后续提交现为 70）。
 
 **P0 的三方证据链**：telegram_remote.rs 代码两点（2184、3257）→ 本机 Cargo registry 的
 ureq-2.12.1 `error.rs:210-240`（Display 拼 URL）→ 日志通路（last_error ≈2226 → log warn
 2229-2236 → dev.log）。
+
+**二次复核（2026-10-24，另一会话独立验证约 40 处后回改本文）**：除上述外另修正——规模表
+Composer.tsx ≈3100→3661、telegram_remote.rs ≈4300→4639（两者在 75b952c 当时即如此，非漂移）；
+App.tsx「≈40 ref」→74、detachedWindow.ts「14 处」→27 处（同，审计时即此数，原为低估）；
+撤回 install_agent「同步 command」误报；telegram 退避表述改准（见 P2）；补行号基准注记。
+P0 证据链独立复验成立：ureq 2.12.1 Display 拼 URL 的源码在
+`D:\Dev\Cargo\registry\src\...\ureq-2.12.1\src\error.rs`（`Error::Status` 打 `response.get_url()`、
+`Transport` 打 `transport.url`，两条通路都会把 `bot<TOKEN>` 带进错误文本）。
