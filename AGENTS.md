@@ -207,6 +207,10 @@ ZCode 官方**没有** ACP（CLI 0.16.x 无 `--acp`，ACP registry 未收录）�
   模型 id 广告为 `marionette\<engineId>`（适配器 configOptions 的 `provider\model` 反斜杠拼法，
   前端钉原生偏好用此前缀，`isBridgeNativeModel`/`modelLabel` 已收 `\` 形态）。E2E 实测：
   写入后 `model.available` 出现 `marionette\glm-5.3-e2e | ctx:1000000 | out:65536 | img:true`。
+  **`manualProviderModelRules` 是必填数组**（2026-10-24，雷 14）：桥从头建文件（重装后
+  `~/.zcode` 全新）缺这个键，整层个人配置 zod 拒载、内存降级空配置——每条 prompt 都死在
+  model_creation 的「Select a model before continuing」。合并体现在对缺失/非数组补 `[]`，
+  已有值原样保留；回归 `zcode_merge_backfills_manual_provider_model_rules`。
 - **会话导入（2026-10-23，`parsers/zcode.rs`）**：ZCode 的对话主库是
   `~/.zcode/cli/db/db.sqlite`（`ZCODE_HOME` 可挪根）——`session.directory` 做项目
   过滤；转录在 `message`（时间线事件，role + semantics.kind）+ `part`（内容分片，
