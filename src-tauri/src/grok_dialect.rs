@@ -522,7 +522,12 @@ fn extra_headers_for(preset_id: &str) -> Vec<(String, String)> {
     }
     let session_id = match state() {
         Ok(state) => {
-            let mut ids = state.session_ids.lock().unwrap();
+            // Poisoned lock recovers via into_inner: the id map is plain data,
+            // and a panic here (release = abort) would kill the app mid-request.
+            let mut ids = state
+                .session_ids
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let id = ids
                 .entry(preset_id.to_string())
                 .or_insert_with(|| generate_opencode_session_id());

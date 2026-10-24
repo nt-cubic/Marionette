@@ -675,8 +675,7 @@ pub async fn refresh_external_sessions(
         listed
             .iter()
             .map(|session| {
-                let live = state.acp.is_live(&session.id)
-                    || state.sessions.is_live(&session.id).unwrap_or(false);
+                let live = state.acp.is_live(&session.id);
                 crate::parsers::dedup::row_from_session(session, live)
             })
             .collect::<Vec<_>>()
@@ -889,7 +888,7 @@ pub async fn refresh_external_sessions(
             .lock()
             .map_err(|_| "Storage lock poisoned".to_string())?;
         storage.list_sessions_healed(&project_id, |session_id| {
-            state.acp.is_live(session_id) || state.sessions.is_live(session_id).unwrap_or(false)
+            state.acp.is_live(session_id)
         })?
     };
 
@@ -926,7 +925,7 @@ pub fn list_sessions(
         .map_err(|_| "Storage lock poisoned".to_string())?;
     // Only this process can own a live agent — anything else on disk is stale.
     storage.list_sessions_healed(&project_id, |session_id| {
-        state.acp.is_live(session_id) || state.sessions.is_live(session_id).unwrap_or(false)
+        state.acp.is_live(session_id)
     })
 }
 

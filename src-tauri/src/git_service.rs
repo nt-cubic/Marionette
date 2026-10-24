@@ -829,7 +829,9 @@ fn run_git(cwd: &Path, args: &[&str]) -> Result<std::process::Output, String> {
 fn parse_porcelain(stdout: &str) -> Vec<ChangedFile> {
     let mut files = Vec::new();
     for line in stdout.lines() {
-        if line.len() < 4 {
+        // XY status pair is always ASCII; bail if the bytes after it would
+        // split a multi-byte char (defensive — a panic here kills the app).
+        if line.len() < 4 || !line.is_char_boundary(2) {
             continue;
         }
         let status = &line[..2];

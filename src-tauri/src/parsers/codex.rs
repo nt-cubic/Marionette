@@ -61,9 +61,10 @@ fn read_session_meta(path: &Path) -> Option<SessionMeta> {
 
 fn load_index_titles(codex: &Path) -> HashMap<String, String> {
     let mut map = HashMap::new();
-    let Ok(text) = fs::read_to_string(codex.join("session_index.jsonl")) else {
-        return map;
-    };
+    // lossy: 一个坏字节不该让整份标题索引失效（坏行反正会按行跳过）。
+    let text = std::fs::read(codex.join("session_index.jsonl"))
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_default();
     for line in text.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
