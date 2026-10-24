@@ -1,0 +1,620 @@
+/* base-chrome.css — App shell, layout grid, titlebar, tabs, window chrome, z-index scale. Split verbatim from app.css (order preserved); edit here, not there. */
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Mode-tone palette — single source of truth
+   The six session-mode accent tones, defined once. Every component hook
+   (event-card rail, meta tags, composer rail/chip, mode menu dot) maps
+   data-mode-tone to one of these tokens instead of re-declaring colors.
+   Theme variants are preserved via var() indirection (--orange/--accent/
+   --text-faint resolve per theme), so computed values are unchanged.
+   ────────────────────────────────────────────────────────────────────────── */
+:root {
+  --mode-tone-plan: #a78bfa;
+  --mode-tone-ask: #60a5fa;
+  --mode-tone-debug: var(--orange);
+  --mode-tone-build: var(--accent);
+  --mode-tone-minimal: #2dd4bf;
+  --mode-tone-default: var(--text-faint);
+}
+
+/* ── z-index layering scale (documentation only — no values changed) ────────
+   Three tiers; stay inside one when adding new rules:
+   • 0-99     Component-local stacking (resizers, cards, chips, in-flow
+              decorations; e.g. .panel-resizer = 8). Scoped to the nearest
+              stacking context.
+   • 1200     Fixed floating popovers above all app content
+              (e.g. .proxy-popover = 1200).
+   • 9980+    App-chrome top layer, strictly ordered, all position:fixed:
+              9980 shelf hover peek (.shelf-peek)
+              9985 toasts (with --toast-depth ordering)
+              9990 pane split-drop overlay (.split-drop-overlay)
+              9995 split-beside context menu (.split-beside-menu)
+              10000 tab tear-off ghost (.tab-tear-ghost) — topmost
+   ────────────────────────────────────────────────────────────────────────/* ── prefers-reduced-motion：用户要求减少动效时关停全部动画/过渡 ──────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+#root {
+  height: 100vh;
+}
+
+.app-shell {
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg);
+  /* Frameless window: light outline so the shell stays readable on desktop */
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.workspace-grid {
+  display: grid;
+  /* Widths are set inline from remembered left/right panel sizes. */
+  grid-template-columns: var(--left-panel-width, 224px) minmax(0, 1fr) var(--right-panel-width, 270px);
+  grid-template-rows: 34px minmax(0, 1fr);
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+/* Collapsed: fully hide sidebar (0px) — no rail */
+.workspace-grid.is-left-collapsed {
+  grid-template-columns: 0px minmax(0, 1fr) var(--right-panel-width, 270px);
+}
+
+.workspace-grid.is-right-collapsed {
+  grid-template-columns: var(--left-panel-width, 224px) minmax(0, 1fr) 0px;
+}
+
+.workspace-grid.is-left-collapsed.is-right-collapsed {
+  grid-template-columns: 0px minmax(0, 1fr) 0px;
+}
+
+/* Smooth transition for the expand/collapse animation */
+.workspace-grid {
+  transition: grid-template-columns 0.15s ease;
+}
+
+/* But not during resize — keep performance */
+body.is-panel-resizing .workspace-grid {
+  transition: none;
+}
+
+/* Shared titlebar across center + right columns (Zed-style). */
+.workspace-titlebar {
+  grid-column: 2 / -1;
+  grid-row: 1;
+  display: flex;
+  align-items: stretch;
+  height: 34px;
+  border-bottom: 1px solid var(--border);
+  background: var(--editor-toolbar-bg);
+}
+
+.workspace-titlebar__spacer {
+  flex: 0 0 8px;
+  min-width: 8px;
+  align-self: stretch;
+  height: 100%;
+}
+
+/* Fills the bar so the window controls stay pinned to the far right in the
+   split titlebar, where no session tabs are rendered. */
+.workspace-titlebar__fill {
+  flex: 1 1 auto;
+  min-width: 0;
+  align-self: stretch;
+}
+
+/* Drag handles on the inner seams of side panels. */
+.panel-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 8;
+  width: 6px;
+  padding: 0;
+  border: 0;
+  cursor: col-resize;
+  background: transparent;
+}
+
+.panel-resizer:hover,
+.panel-resizer:focus-visible,
+.panel-resizer.is-dragging {
+  background: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.panel-resizer--left {
+  right: -3px;
+}
+
+.panel-resizer--right {
+  left: -3px;
+}
+
+.left-rail.is-collapsed .panel-resizer,
+.context-panel.is-collapsed .panel-resizer {
+  display: none;
+}
+
+/* Floating trigger buttons — match icon-button--eye style */
+.floating-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--panel);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: opacity 0.18s ease, background 0.15s ease, color 0.15s ease;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.floating-trigger.is-visible {
+  opacity: 0.85;
+  pointer-events: auto;
+}
+
+.floating-trigger:hover {
+  background: var(--panel-soft);
+  color: var(--text);
+  opacity: 1;
+}
+
+/* Sidebar collapsed: keep the left chevron visible when a dialog just finished. */
+.floating-trigger.is-done {
+  opacity: 0.95;
+  pointer-events: auto;
+  border-color: color-mix(in srgb, var(--green) 55%, var(--border));
+  color: var(--green);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 24%, transparent);
+}
+
+/* Anchored inside .center-workspace so they never straddle the rail border. */
+.floating-trigger--center-left,
+.floating-trigger--center-right {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 10;
+}
+
+.floating-trigger--center-left {
+  left: 6px;
+}
+
+.floating-trigger--center-right {
+  right: 6px;
+}
+
+body.is-panel-resizing {
+  cursor: col-resize;
+  user-select: none;
+  /* Avoid expensive hover/paint work while dragging rails. */
+  pointer-events: none;
+}
+
+body.is-panel-resizing .panel-resizer {
+  pointer-events: auto;
+}
+
+body.is-panel-resizing * {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* During resize, skip layout thrash from nested scroll/reflow paints. */
+body.is-panel-resizing .event-list,
+body.is-panel-resizing .project-list,
+body.is-panel-resizing .context-panel {
+  pointer-events: none;
+  contain: strict;
+}
+
+.center-workspace {
+  position: relative;
+  grid-row: 2;
+  display: grid;
+  /* Composer row is auto-sized so expand can grow without a fixed 104px trap. */
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--workspace-bg);
+}
+
+.center-workspace.is-split {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.center-workspace.is-split > .split-workspace {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+/* Detached tab hovering the main window: whole conversation area is the drop target. */
+.center-workspace.is-merge-target {
+  outline: 1px dashed color-mix(in srgb, var(--accent) 65%, var(--border));
+  outline-offset: -2px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--workspace-bg));
+}
+
+.split-workspace {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.split-branch {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  width: 100%;
+  --split-ratio: 0.5;
+}
+
+.split-branch.is-vertical {
+  flex-direction: row;
+}
+
+.split-branch.is-horizontal {
+  flex-direction: column;
+}
+
+.split-branch > .split-a {
+  flex: var(--split-ratio) 1 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.split-branch > .split-b {
+  flex: calc(1 - var(--split-ratio)) 1 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.session-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 280px;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.session-pane.is-focused {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.session-pane__tabs {
+  display: flex;
+  flex: 0 0 34px;
+  align-items: stretch;
+  min-width: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--editor-toolbar-bg);
+}
+
+.session-pane__tabs .editor-tabs__tablist {
+  flex: 1;
+  min-width: 0;
+  padding: 0 4px 0 8px;
+}
+
+.session-pane__body {
+  display: grid;
+  flex: 1;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pane-splitter {
+  flex: 0 0 8px;
+  padding: 0;
+  border: 0;
+  background: color-mix(in srgb, var(--border) 42%, var(--workspace-bg));
+  z-index: 5;
+  position: relative;
+}
+
+.pane-splitter::before {
+  content: "";
+  position: absolute;
+  background: var(--border-strong);
+  pointer-events: none;
+}
+
+.pane-splitter--vertical {
+  cursor: col-resize;
+}
+
+.pane-splitter--vertical::before {
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 4px;
+}
+
+.pane-splitter--horizontal {
+  cursor: row-resize;
+}
+
+.pane-splitter--horizontal::before {
+  left: 0;
+  right: 0;
+  top: 2px;
+  height: 4px;
+}
+
+.pane-splitter:hover,
+.pane-splitter:focus-visible,
+.pane-splitter.is-dragging {
+  background: color-mix(in srgb, var(--accent) 22%, var(--workspace-bg));
+}
+
+.pane-splitter:hover::before,
+.pane-splitter:focus-visible::before,
+.pane-splitter.is-dragging::before {
+  background: color-mix(in srgb, var(--accent) 80%, var(--border-strong));
+}
+
+body.is-pane-splitting {
+  cursor: col-resize;
+  user-select: none;
+}
+
+body.is-pane-splitting-y {
+  cursor: row-resize !important;
+}
+
+body.is-pane-splitting * {
+  cursor: inherit !important;
+  user-select: none !important;
+}
+
+.split-drop-overlay {
+  position: fixed;
+  z-index: 9990;
+  pointer-events: none;
+  border-radius: 2px;
+}
+
+.split-drop-overlay--split {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.split-drop-overlay--activate {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.split-drop-overlay--insert {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  outline: 1px dashed color-mix(in srgb, var(--accent) 65%, var(--border));
+  outline-offset: -2px;
+}
+
+.section-heading,
+.composer,
+.composer__toolbar,
+.composer__controls,
+.composer__actions {
+  display: flex;
+  align-items: center;
+}
+
+.eyebrow {
+  display: block;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.sidebar-search {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  color: var(--text-faint);
+}
+
+.sidebar-search span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-search--input {
+  width: 100%;
+  gap: 7px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.sidebar-search--input input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.sidebar-search--input input::placeholder {
+  color: var(--text-faint);
+}
+
+.project-list__empty,
+.session-row--empty {
+  padding: 10px 8px;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.session-auth-banner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 10px 8px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, #e25555 45%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, #e25555 12%, var(--panel));
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.session-auth-banner__copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  flex: 1 1 12rem;
+}
+
+.session-auth-banner strong {
+  color: #e25555;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.session-auth-banner--upgrade {
+  border-color: color-mix(in srgb, #e0a040 55%, var(--border));
+  background: color-mix(in srgb, #e0a040 14%, var(--panel));
+}
+
+.session-auth-banner--upgrade strong {
+  color: #c4841d;
+}
+
+.session-auth-banner__button {
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 22%, var(--panel-raised));
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.session-auth-banner__button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 35%, var(--panel-raised));
+}
+
+.session-auth-banner__button:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.clean-empty .session-auth-banner__button {
+  margin-top: 8px;
+}
+
+.text-button,
+.icon-button,
+.send-button,
+.composer-chip {
+  border: 1px solid var(--border);
+  background: var(--panel-raised);
+  cursor: default;
+}
+
+.icon-button,
+.text-button,
+.send-button {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+}
+
+.icon-button--small {
+  min-width: 26px;
+  height: 26px;
+  padding: 0;
+}
+
+/*
+ * Quiet pill actions — secondary chrome (copy / edit / refresh / panel tools).
+ * Soft opacity at rest, border + raised fill on hover. Prefer this over
+ * square icon-button for in-content and panel header controls.
+ */
+.pill-action {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  height: 24px;
+  min-width: 24px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.55;
+  transition:
+    opacity 0.12s ease,
+    color 0.12s ease,
+    background 0.12s ease,
+    border-color 0.12s ease;
+  user-select: none;
+}
+
+.pill-action:hover,
+.pill-action:focus-visible {
+  opacity: 1;
+  color: var(--text);
+  border-color: var(--border);
+  background: var(--panel-soft);
+}
+
+.pill-action:disabled {
+  opacity: 0.35;
+  cursor: default;
+  pointer-events: none;
+}
+

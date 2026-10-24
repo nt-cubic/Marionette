@@ -1,0 +1,2625 @@
+/* controls.css — Buttons, pills, icon buttons, project shelf, top tabs, chat column header, custom scrollbars. Split verbatim from app.css (order preserved); edit here, not there. */
+
+/* Icon-only: round hit target, no label padding */
+.pill-action--icon {
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  padding: 0;
+}
+
+/* Compact icon pills — panel headers, tabs, dense chrome */
+.pill-action--sm {
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+  padding: 0;
+}
+
+.pill-action.is-active,
+.pill-action.is-copied {
+  opacity: 1;
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.text-button,
+.send-button {
+  color: var(--text);
+}
+
+.send-button {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+  color: var(--bg);
+  background: var(--accent);
+  font-weight: 700;
+}
+
+.status-running,
+.status-waiting,
+.status-starting {
+  color: var(--accent);
+}
+
+.status-exited {
+  color: var(--text-faint);
+}
+
+.status-error {
+  color: var(--red);
+}
+
+.left-rail,
+.context-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--panel);
+}
+
+.left-rail {
+  grid-row: 1 / -1;
+  border-right: 1px solid var(--border);
+}
+
+.context-panel {
+  grid-row: 2;
+  gap: 0;
+  padding: 0;
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.panel-section {
+  min-height: 0;
+  padding: 10px;
+}
+
+.project-tree {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+}
+
+/* Unified top chrome height across left / center / right (Zed-like). */
+.titlebar-row {
+  box-sizing: border-box;
+  height: 34px;
+  min-height: 34px;
+  max-height: 34px;
+}
+
+.titlebar-drag-fill {
+  flex: 1;
+  min-width: 8px;
+  min-height: 100%;
+  align-self: stretch;
+}
+
+.project-tree__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  padding: 8px 10px 10px;
+  overflow: hidden;
+}
+
+.sidebar-title {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin: 0;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  background: var(--editor-toolbar-bg);
+}
+
+/* Behind interactive chrome so empty titlebar still drags the window. */
+.titlebar-drag-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.sidebar-search {
+  flex: 1;
+  gap: 7px;
+  height: 28px;
+  font-weight: 500;
+}
+
+/* Search sits in the titlebar row — borderless, full-bleed feel like Zed. */
+.sidebar-search--titlebar {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* No focus “black slab” — keep the titlebar flat. */
+.sidebar-search--titlebar:focus-within,
+.sidebar-search--titlebar:focus,
+.sidebar-search--titlebar:active {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.sidebar-search--titlebar input {
+  font-size: 12px;
+  outline: none;
+  box-shadow: none;
+  background: transparent;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.sidebar-search--titlebar input:focus,
+.sidebar-search--titlebar input:focus-visible {
+  outline: none;
+  box-shadow: none;
+  background: transparent;
+}
+
+/* Windows/WebView search field sometimes paints a dark native box */
+.sidebar-search--titlebar input[type="search"]::-webkit-search-decoration,
+.sidebar-search--titlebar input[type="search"]::-webkit-search-cancel-button,
+.sidebar-search--titlebar input[type="search"]::-webkit-search-results-button {
+  display: none;
+}
+
+/*
+ * Shelf-top status counts: what needs a look across every project. Only
+ * non-zero states show; one click filters the shelf, again clears it. Dots use
+ * the same colors as the session rows below.
+ */
+.shelf-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0 0 6px;
+  padding: 0 2px;
+}
+
+.shelf-status__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: transparent;
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.shelf-status__chip:hover,
+.shelf-status__chip:focus-visible {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+
+.shelf-status__chip.is-active {
+  color: var(--text-strong);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: var(--accent-soft);
+}
+
+.shelf-status__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+.shelf-status__chip.is-running .shelf-status__dot {
+  background: var(--accent);
+  animation: activity-pulse 1.2s ease-in-out infinite;
+}
+
+.shelf-status__chip.is-waiting .shelf-status__dot {
+  background: var(--yellow);
+}
+
+.shelf-status__chip.is-done .shelf-status__dot {
+  background: var(--green);
+}
+
+.shelf-status__chip.is-error .shelf-status__dot {
+  background: var(--red);
+}
+
+.shelf-status__count {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.shelf-status__chip.is-active .shelf-status__count {
+  color: var(--text-muted);
+}
+
+/* Day labels inside a long, fully listed project (今天 / 昨天 / 本周 / 更早). */
+.shelf-day {
+  margin: 6px 0 1px 30px;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+/* Hover preview of a shelf row: the full title and what the row cannot fit. */
+.shelf-peek {
+  position: fixed;
+  z-index: 9980;
+  display: grid;
+  gap: 3px;
+  width: 260px;
+  padding: 9px 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--panel-raised);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+  animation: m-menu var(--dur-base, 180ms) var(--ease-out, ease-out) backwards;
+  transform-origin: left top;
+}
+
+.shelf-peek__title {
+  color: var(--text-strong);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.shelf-peek__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.shelf-peek__status {
+  color: var(--text-faint);
+}
+
+.shelf-peek__status.is-running,
+.shelf-peek__status.is-starting {
+  color: var(--accent);
+}
+
+.shelf-peek__status.is-waiting {
+  color: var(--yellow);
+}
+
+.shelf-peek__status.is-error {
+  color: var(--red);
+}
+
+.shelf-peek__status.is-done {
+  color: var(--green);
+}
+
+.shelf-peek__meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.shelf-peek__hint {
+  border-top: 1px solid var(--border);
+  padding-top: 4px;
+  margin-top: 2px;
+}
+
+.project-add {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  width: 100%;
+  height: 28px;
+  margin-bottom: 8px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  background: transparent;
+  font-size: 12px;
+  text-align: left;
+}
+
+.project-add:hover {
+  color: var(--text);
+  background: var(--panel-soft);
+}
+
+.project-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.32);
+}
+
+.project-dialog {
+  display: grid;
+  width: min(420px, 100%);
+  gap: 18px;
+  padding: 18px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--panel-raised);
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.3);
+}
+
+.project-dialog__header,
+.project-dialog__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.project-dialog__header > div {
+  display: grid;
+  gap: 4px;
+}
+
+.project-dialog__header strong {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.project-dialog__header span,
+.project-dialog__field span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.project-dialog__close {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  background: transparent;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.project-dialog__close:hover {
+  color: var(--text);
+  background: var(--panel-soft);
+}
+
+.project-dialog__field {
+  display: grid;
+  gap: 7px;
+}
+
+.project-dialog__path-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.project-dialog__field input {
+  width: 100%;
+  height: 32px;
+  padding: 0 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  outline: none;
+  color: var(--text);
+  background: var(--panel-soft);
+  font: inherit;
+  font-size: 12px;
+}
+
+.project-dialog__field input:focus {
+  border-color: var(--accent);
+}
+
+.project-dialog__browse {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  background: var(--panel-soft);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.project-dialog__browse:hover:not(:disabled) {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+
+.project-dialog__browse:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.project-dialog__error {
+  margin: -8px 0 0;
+  color: var(--red);
+  font-size: 12px;
+}
+
+.project-dialog__actions {
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.project-dialog__cancel,
+.project-dialog__submit {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.project-dialog__cancel {
+  color: var(--text-muted);
+  background: transparent;
+}
+
+.project-dialog__submit {
+  border-color: var(--accent);
+  color: var(--bg);
+  background: var(--accent);
+  font-weight: 600;
+}
+
+.project-dialog__submit--danger {
+  border-color: var(--red);
+  background: var(--red);
+  color: #fff;
+}
+
+.confirm-dialog-backdrop {
+  z-index: 60;
+}
+
+.confirm-dialog {
+  width: min(360px, 100%);
+  gap: 14px;
+}
+
+.confirm-dialog__header {
+  justify-content: flex-start;
+  gap: 10px;
+}
+
+.confirm-dialog__icon {
+  display: grid;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+}
+
+.confirm-dialog__item {
+  display: block;
+  max-width: 260px;
+  overflow: hidden;
+  color: var(--text) !important;
+  font-size: 13px !important;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.confirm-dialog__desc {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.panel-section--fill {
+  flex: 1;
+  overflow: hidden;
+  border-bottom: 0;
+}
+
+.section-heading {
+  justify-content: space-between;
+  min-height: 28px;
+  margin-bottom: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.project-list,
+.session-list,
+.changed-list,
+.todo-list {
+  display: grid;
+  gap: 6px;
+}
+
+.project-list,
+.session-list {
+  flex: 1;
+  max-height: 100%;
+  overflow: auto;
+  overflow-x: hidden;
+  align-content: start;
+}
+
+.sidebar-footer {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 32px;
+  margin-top: auto;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border);
+}
+
+/* ── Chat section ── */
+
+.chat-section {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+}
+
+.chat-section__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.chat-section__title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-strong);
+  letter-spacing: 0.02em;
+}
+
+.chat-section__title svg {
+  color: var(--accent);
+}
+
+.chat-section__new {
+  opacity: 0.6;
+}
+
+.chat-section__new:hover {
+  opacity: 1;
+}
+
+.chat-list {
+  min-height: 0;
+  max-height: 200px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.chat-list__empty {
+  padding: 8px;
+  font-size: 12px;
+  color: var(--text-faint);
+  text-align: center;
+}
+
+.chat-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  min-height: 25px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text);
+  text-align: left;
+  font-size: 12px;
+}
+
+.chat-row:hover {
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+
+.chat-row.is-active {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-left: 2px solid var(--accent);
+}
+
+.chat-row.is-active strong {
+  color: var(--accent);
+}
+
+.chat-row.is-done:not(.is-active) {
+  background: color-mix(in srgb, var(--green) 12%, transparent);
+  border-left: 2px solid var(--green);
+}
+
+.chat-row.is-done:not(.is-active) strong {
+  color: var(--green);
+  font-weight: 650;
+}
+
+.chat-row__dot {
+  flex: 0 0 auto;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  opacity: 0.45;
+}
+
+.chat-row__dot.is-running {
+  background: var(--yellow);
+  opacity: 0.7;
+}
+
+.chat-row__dot.is-waiting {
+  background: var(--yellow);
+  opacity: 0.7;
+}
+
+.chat-row__dot.is-error {
+  background: var(--red);
+  opacity: 0.85;
+}
+
+.chat-row__dot.is-done {
+  background: var(--green);
+  opacity: 1;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 30%, transparent);
+  animation: done-attention 1.15s ease-in-out 2;
+}
+
+.chat-row__content {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-row__content strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.chat-row__select {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 25px;
+  padding: 4px 8px;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+.chat-row__select:hover {
+  background: transparent;
+}
+
+.chat-row__actions {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  z-index: 1;
+  display: flex;
+  gap: 1px;
+  align-items: center;
+  padding-left: 3px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--panel-raised) 96%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition: opacity 120ms ease;
+}
+
+.chat-row:hover .chat-row__actions,
+.chat-row:focus-within .chat-row__actions,
+.chat-row.is-active:hover .chat-row__actions,
+.chat-row.is-active:focus-within .chat-row__actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.chat-row__action {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  background: transparent;
+  cursor: pointer;
+}
+
+.chat-row__action:hover {
+  color: var(--text);
+  background: var(--panel-soft);
+}
+
+.chat-row__action--danger:hover {
+  color: var(--red);
+  background: var(--panel-soft);
+}
+
+.chat-row__rename {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 2px 4px 2px 8px;
+}
+
+.chat-row__rename-input {
+  width: 100%;
+  min-width: 0;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  background: var(--panel);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  outline: none;
+}
+
+.chat-row__rename-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+/* Visual base from .pill-action; keep notify/collapse modifiers here */
+.sidebar-footer__button {
+  opacity: 0.7;
+}
+
+.sidebar-footer__button.is-notify-on {
+  opacity: 1;
+  color: color-mix(in srgb, var(--accent) 85%, var(--text-muted));
+}
+
+.sidebar-footer__button.is-notify-off {
+  color: var(--text-faint);
+  opacity: 0.55;
+}
+
+.sidebar-footer__button--collapse {
+  margin-left: auto;
+}
+
+/* On-state pip: which footer service is running reads without hovering. */
+.sidebar-footer__button.is-notify-on,
+.sidebar-footer__button.is-proxy-on,
+.sidebar-footer__button.is-engine-on {
+  position: relative;
+}
+
+.sidebar-footer__button.is-notify-on::after,
+.sidebar-footer__button.is-proxy-on::after,
+.sidebar-footer__button.is-engine-on::after {
+  content: "";
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 1.5px var(--panel);
+}
+
+.project-group {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.project-sessions {
+  position: relative;
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.file-diff-card {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.file-diff-card__path {
+  font-size: 11px;
+  color: var(--text-muted);
+  word-break: break-all;
+}
+
+.file-diff-card__muted {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.file-diff-card__body {
+  margin: 0;
+  max-height: 280px;
+  overflow: auto;
+  padding: 6px 0;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre;
+}
+
+.file-diff-card__line {
+  display: flex;
+  gap: 0;
+  align-items: flex-start;
+  padding: 0 8px 0 4px;
+  border-left: 2px solid transparent;
+}
+
+.file-diff-card__line.is-add {
+  background: color-mix(in srgb, var(--green) 13%, transparent);
+  border-left-color: var(--green);
+  color: color-mix(in srgb, var(--green) 78%, var(--text));
+}
+
+.file-diff-card__line.is-del {
+  background: color-mix(in srgb, var(--red) 13%, transparent);
+  border-left-color: var(--red);
+  color: color-mix(in srgb, var(--red) 78%, var(--text));
+}
+
+.file-diff-card__line.is-hunk,
+.file-diff-card__line.is-meta {
+  color: var(--text-faint);
+}
+
+/* Codex-style elision row: unchanged file content between hunks. */
+.file-diff-card__line.is-elide {
+  color: var(--text-faint);
+  user-select: none;
+}
+
+.file-diff-card__gutter {
+  display: inline-grid;
+  grid-template-columns: 2.2em 2.2em;
+  flex: 0 0 auto;
+  gap: 2px;
+  margin-right: 6px;
+  color: var(--text-faint);
+  user-select: none;
+}
+
+.file-diff-card__ln {
+  text-align: right;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+
+.file-diff-card__code {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  white-space: pre-wrap;
+  word-break: break-all;
+  cursor: pointer;
+}
+
+button.file-diff-card__code:hover {
+  background: color-mix(in srgb, var(--accent-soft, var(--accent)) 25%, transparent);
+}
+
+.file-diff-card__comment {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+}
+
+.file-diff-card__comment-meta {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.file-diff-card__comment-input {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  background: var(--composer-bg, var(--panel-raised));
+  font-size: 12px;
+}
+
+.file-diff-card__comment-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.file-diff-card__note {
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+/* Turn-delivery card chrome lives next to .event-card so it can override
+   the shared card fill (see .event-card.event-card--turn_delivery). */
+
+.project-row,
+.session-row,
+.changed-row {
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+}
+
+.project-row,
+.session-row {
+  display: grid;
+  width: 100%;
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+}
+
+.project-row {
+  grid-template-columns: 16px 22px minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: 26px;
+  padding: 0;
+}
+
+.project-row__grip {
+  display: grid;
+  width: 16px;
+  height: 100%;
+  min-height: 26px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  color: var(--text-faint);
+  background: transparent;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.project-row__grip:hover {
+  color: var(--text-muted);
+}
+
+.project-row__grip:active,
+.project-row.is-dragging .project-row__grip {
+  cursor: grabbing;
+  color: var(--accent);
+}
+
+.project-row__grip--spacer {
+  pointer-events: none;
+  visibility: hidden;
+}
+
+.project-row.is-dragging {
+  opacity: 0.4;
+}
+
+/* Insertion preview — same language as VS Code / Finder drag reorder. */
+.project-drop-line {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  height: 0;
+  margin: 0 4px;
+  pointer-events: none;
+  position: relative;
+  z-index: 2;
+}
+
+.project-drop-line__dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  margin-left: 2px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  background: var(--panel);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+  transform: translateY(-50%);
+}
+
+.project-drop-line__bar {
+  flex: 1 1 auto;
+  height: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent);
+  transform: translateY(-50%);
+}
+
+body.is-project-reordering {
+  cursor: grabbing !important;
+  user-select: none;
+}
+
+body.is-project-reordering * {
+  cursor: grabbing !important;
+}
+
+body.is-project-reordering .project-list {
+  /* Give drop lines a little breathing room while dragging. */
+  padding-block: 2px;
+}
+
+.project-row__select {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 7px;
+  align-items: center;
+  min-width: 0;
+  min-height: 26px;
+  padding: 3px 6px;
+  border: 0;
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+}
+
+.project-row__toggle {
+  display: grid;
+  width: 22px;
+  height: 100%;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  color: var(--text-faint);
+  background: transparent;
+  cursor: pointer;
+}
+
+.project-row__toggle:hover {
+  color: var(--text);
+}
+
+.project-row__content {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.project-row__content strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Explorer "open here" pin — current path project for this launch. */
+.project-row__here-badge {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 16px;
+}
+
+.project-row__done-badge {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--green) 45%, var(--border));
+  background: color-mix(in srgb, var(--green) 16%, transparent);
+  color: var(--green);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 16px;
+}
+
+.project-row.is-open-here {
+  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+.project-row__actions {
+  display: inline-flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 100ms ease;
+}
+
+.project-row:hover .project-row__actions,
+.project-row:focus-visible .project-row__actions,
+.project-row.is-active .project-row__actions {
+  opacity: 1;
+}
+
+.project-row__action {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.project-row__action:hover {
+  color: var(--text);
+  background: var(--panel-soft);
+}
+
+.project-row__action--danger:hover {
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+}
+
+/*
+ * Shelf collapse control — same language as tool-card ClippedBody:
+ * soft bottom fade + translucent “Show more / Show less”.
+ */
+.shelf-clip {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  margin-top: -2px;
+  padding-top: 0;
+  min-width: 0;
+}
+
+.shelf-clip__fade {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  height: 28px;
+  pointer-events: none;
+  z-index: 1;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--panel) 0%, transparent),
+    color-mix(in srgb, var(--panel) 88%, transparent)
+  );
+}
+
+.shelf-clip--sessions .shelf-clip__fade {
+  /* Sit over the last visible session rows */
+  height: 32px;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--panel) 0%, transparent),
+    color-mix(in srgb, var(--panel) 92%, transparent)
+  );
+}
+
+.shelf-clip__more {
+  position: relative;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  width: 100%;
+  min-height: 26px;
+  margin: 0;
+  padding: 4px 8px 4px 28px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--panel) 55%, transparent);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  text-align: left;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+}
+
+.shelf-clip--projects .shelf-clip__more {
+  padding-left: 8px;
+  justify-content: center;
+  background: color-mix(in srgb, var(--panel-soft) 70%, transparent);
+}
+
+.shelf-clip__more:hover {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 45%, var(--panel));
+}
+
+.shelf-clip__count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--panel-soft) 80%, transparent);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.shelf-clip__more:hover .shelf-clip__count {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, var(--panel-soft));
+}
+
+.shelf-clip--expanded {
+  margin-top: 2px;
+}
+
+.shelf-clip--expanded .shelf-clip__more {
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  opacity: 0.85;
+}
+
+.project-row__action:hover {
+  color: var(--text);
+  background: var(--panel-soft);
+}
+
+.project-row span,
+.session-row__main {
+  min-width: 0;
+}
+
+.project-row strong,
+.project-row small,
+.session-row strong,
+.session-row small,
+.changed-row span:nth-child(2),
+.metadata-list dd {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-row small,
+.session-row small,
+.metadata-list dt,
+.handoff-block small {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.project-row.is-active,
+.session-row.is-active {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+  background: var(--accent-soft);
+}
+
+.session-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px;
+  align-items: center;
+  width: calc(100% - 20px);
+  margin-left: 20px;
+  min-height: 25px;
+  padding: 0 3px 0 0;
+}
+
+.session-row__select {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  min-height: 25px;
+  padding: 3px 6px;
+  border: 0;
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+}
+
+/* Same language as top-tab pulse: green blink while the agent is working. */
+.session-row__pulse {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: activity-pulse 1.2s ease-in-out infinite;
+}
+
+.session-row__pulse.is-starting {
+  background: var(--yellow);
+}
+
+.session-row__pulse.is-running {
+  background: var(--accent);
+}
+
+.session-row__dot {
+  flex: 0 0 auto;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  opacity: 0.45;
+}
+
+.session-row__dot.is-waiting {
+  background: var(--yellow);
+  opacity: 0.7;
+}
+
+.session-row__dot.is-error {
+  background: var(--red);
+  opacity: 0.85;
+}
+
+.session-row__dot.is-done {
+  background: var(--green);
+  opacity: 1;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 30%, transparent);
+  animation: done-attention 1.15s ease-in-out 2;
+}
+
+.session-row__action .is-spinning,
+.project-row__action .is-spinning {
+  animation: context-lend-spin 900ms linear infinite;
+}
+
+.session-row__actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 1px;
+  align-items: center;
+  opacity: 0;
+}
+
+.session-row:hover .session-row__actions,
+.session-row:focus-within .session-row__actions,
+.session-row.is-active .session-row__actions {
+  opacity: 1;
+}
+
+.session-row__action {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  background: transparent;
+  cursor: pointer;
+}
+
+.session-row__action:hover {
+  color: var(--text);
+  background: var(--panel-soft);
+}
+
+.session-row__action--danger:hover {
+  color: var(--red);
+  background: var(--panel-soft);
+}
+
+/* Pin toggle: accent while the dialog is pinned, so the row and the control agree. */
+.session-row__action.is-pinned,
+.chat-row__action.is-pinned {
+  color: var(--accent);
+}
+
+/* Always-visible pin marker — a pinned row reads as pinned without hovering. */
+.session-row__pin,
+.chat-row__pin {
+  display: inline-block;
+  margin-right: 4px;
+  color: var(--accent);
+  vertical-align: -1px;
+}
+
+.session-row__pin svg,
+.chat-row__pin svg {
+  display: block;
+}
+
+.session-row__rename {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  min-height: 25px;
+  padding: 2px 4px 2px 6px;
+}
+
+.session-row__rename-input {
+  width: 100%;
+  min-width: 0;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  background: var(--panel);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  outline: none;
+}
+
+.session-row__rename-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+/* ── Project shelf density ────────────────────────────────────────────────
+ * Keep the hierarchy visible while giving each session a useful single-line
+ * row.  The selectors stay scoped to the shelf so the center and right panels
+ * keep their existing spacing.
+ */
+.project-tree .project-list {
+  gap: 8px;
+}
+
+.project-tree .project-group {
+  gap: 3px;
+}
+
+.project-tree .project-sessions {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.project-tree .project-row {
+  position: relative;
+  grid-template-columns: 16px 22px minmax(0, 1fr);
+  min-height: 32px;
+  border-radius: 6px;
+}
+
+.project-tree .project-row__grip {
+  min-height: 32px;
+}
+
+/* The grip is for reordering; it waits for the row to be pointed at. */
+.project-tree .project-row__grip > * {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.project-tree .project-row:hover .project-row__grip > *,
+.project-tree .project-row:focus-within .project-row__grip > *,
+.project-tree .project-row.is-dragging .project-row__grip > * {
+  opacity: 1;
+}
+
+.project-tree .project-row__select,
+.project-tree .project-row__toggle {
+  min-height: 32px;
+}
+
+.project-tree .project-row__content strong {
+  color: var(--text-strong);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.project-tree .project-row.is-active {
+  border-color: transparent;
+  border-left-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+}
+
+/* Do not reserve space for project actions while they are hidden. */
+.project-tree .project-row__actions {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  z-index: 2;
+  padding-left: 3px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--panel-raised) 96%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition: opacity 120ms ease;
+}
+
+.project-tree .project-row.is-active .project-row__actions {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.project-tree .project-row:hover .project-row__actions,
+.project-tree .project-row:focus-within .project-row__actions,
+.project-tree .project-row.is-active:hover .project-row__actions,
+.project-tree .project-row.is-active:focus-within .project-row__actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.project-tree .session-row {
+  position: relative;
+  grid-template-columns: minmax(0, 1fr) auto;
+  width: 100%;
+  min-height: 30px;
+  margin-left: 0;
+  padding: 0 3px 0 20px;
+  border-radius: 6px;
+}
+
+.project-tree .session-row__select {
+  min-height: 30px;
+  padding: 4px 6px;
+}
+
+.project-tree .session-row__content {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.project-tree .session-row__content strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.project-tree .session-row__dot,
+.project-tree .session-row__pulse {
+  width: 6px;
+  height: 6px;
+}
+
+.project-tree .session-row:not(.is-active):hover {
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+
+.project-tree .session-row.is-active {
+  border-color: transparent;
+  border-left-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+}
+
+.project-tree .project-row.is-done:not(.is-active) {
+  background: color-mix(in srgb, var(--green) 10%, var(--panel));
+}
+
+.project-tree .session-row.is-done:not(.is-active) {
+  border-color: transparent;
+  border-left-color: var(--green);
+  background: color-mix(in srgb, var(--green) 14%, var(--panel));
+}
+
+.project-tree .session-row.is-done:not(.is-active) .session-row__content strong {
+  color: var(--green);
+  font-weight: 650;
+}
+
+.project-tree .session-row__select {
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+}
+
+/* Last active, quiet; the hover actions float over it. */
+.project-tree .session-row__time {
+  color: var(--text-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.project-tree .session-row:hover .session-row__time,
+.project-tree .session-row:focus-within .session-row__time {
+  visibility: hidden;
+}
+
+/* Actions float over the metadata only when the row is being inspected. */
+.project-tree .session-row__actions {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  z-index: 2;
+  padding-left: 3px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--panel-raised) 96%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition: opacity 120ms ease;
+}
+
+.project-tree .session-row:hover .session-row__actions,
+.project-tree .session-row:focus-within .session-row__actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.project-tree .session-row.is-active .session-row__actions {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.project-tree .session-row.is-active:hover .session-row__actions,
+.project-tree .session-row.is-active:focus-within .session-row__actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.session-view {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+  background: var(--editor-bg);
+}
+
+.session-view > .session-stage {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Clean is product primary; Raw transport stays mounted (may be clipped). */
+.session-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.session-stage__clean {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.editor-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 34px;
+  min-height: 34px;
+  max-height: 34px;
+  padding: 0 4px 0 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--editor-toolbar-bg);
+}
+
+.editor-tabs__tablist {
+  position: relative;
+  display: flex;
+  /* Tabs stretch to the full bar height; the strip reads as one piece of chrome. */
+  align-items: stretch;
+  gap: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Detached tab dragged over the main window → drop target glow. */
+.editor-tabs__tablist.is-merge-target {
+  border-radius: var(--radius-sm);
+  outline: 1px dashed color-mix(in srgb, var(--accent) 65%, var(--border));
+  outline-offset: -2px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.editor-tabs__spacer {
+  flex: 1;
+  min-width: 24px;
+  align-self: stretch;
+  height: 100%;
+}
+
+.editor-tab {
+  display: inline-flex;
+  align-items: center;
+  box-sizing: border-box;
+  /* Equal-width tabs (Chrome-style): after a close, the next × lands under the cursor. */
+  flex: 1 1 0px;
+  /* Full-bleed vertical: the tab fills the bar top-to-bottom and sits flush on the
+     border below, instead of floating as a rounded chip in the middle. */
+  align-self: stretch;
+  height: 100%;
+  min-width: 104px;
+  max-width: 240px;
+  padding: 0 3px 0 8px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  color: var(--text-muted);
+  background: transparent;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* Sit above the titlebar drag layer so × / split / pop-out stay clickable. */
+  position: relative;
+  z-index: 1;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* Hairline separators between neighbours; hover and the active tab eat theirs. */
+.editor-tab + .editor-tab::before {
+  content: "";
+  position: absolute;
+  top: 7px;
+  bottom: 7px;
+  left: 0;
+  width: 1px;
+  background: var(--border);
+}
+
+.editor-tab:hover::before,
+.editor-tab:hover + .editor-tab::before,
+.editor-tab.is-active::before,
+.editor-tab.is-active + .editor-tab::before {
+  opacity: 0;
+}
+
+/* Done tabs keep their green fill; the others lift on hover. */
+.editor-tab:not(.is-active):not(.is-done):hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text-muted) 12%, transparent);
+}
+
+.editor-tab__select,
+.editor-tab__close,
+.editor-tab__new {
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+.editor-tab__select {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  touch-action: none;
+  user-select: none;
+  cursor: grab;
+}
+
+.editor-tab__rename {
+  min-width: 72px;
+  max-width: 180px;
+  height: 22px;
+  margin: 0 2px;
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  background: var(--panel);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.editor-tab__rename:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.editor-tab__close,
+.editor-tab__popout,
+.editor-tab__mergeback,
+.editor-tab__split,
+.editor-tab__new,
+.editor-tab__view-toggle {
+  /* Visual base from .pill-action.pill-action--sm */
+  flex: 0 0 auto;
+}
+
+.editor-tab__close,
+.editor-tab__popout,
+.editor-tab__mergeback,
+.editor-tab__split {
+  color: var(--text-faint);
+}
+
+.editor-tab__popout:hover,
+.editor-tab__mergeback:hover,
+.editor-tab__split:hover {
+  color: var(--text);
+}
+
+/*
+ * Split / pop-out belong to the tab you are on or pointing at; on every other
+ * tab they only crowd the title. Close stays put so the next × still lands
+ * under the cursor after a close.
+ */
+.editor-tab:not(.is-active):not(:hover):not(:focus-within) .editor-tab__split,
+.editor-tab:not(.is-active):not(:hover):not(:focus-within) .editor-tab__popout {
+  display: none;
+}
+
+/*
+ * App-wide result toasts, bottom-right. Stacked: one cell, older ones tucked
+ * behind by --toast-depth; pointed at: a plain column. Same panel chrome as menus.
+ */
+.toast-stack {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 9985;
+  display: grid;
+  align-items: end;
+  width: min(340px, calc(100vw - 32px));
+}
+
+.toast-stack:not(.is-fanned) > .toast {
+  grid-area: 1 / 1;
+  transform: translateY(calc(var(--toast-depth) * -7px)) scale(calc(1 - var(--toast-depth) * 0.04));
+  transform-origin: bottom center;
+  z-index: calc(10 - var(--toast-depth));
+}
+
+.toast-stack:not(.is-fanned) > .toast:not(:last-child) > * {
+  visibility: hidden;
+}
+
+.toast-stack.is-fanned {
+  gap: 6px;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 40px;
+  padding: 8px 8px 8px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--text);
+  background: var(--panel-raised);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.2);
+  font-size: 12.5px;
+  transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  animation: m-pill-in 280ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+.toast__dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+.toast.is-ok .toast__dot {
+  background: var(--green);
+}
+
+.toast.is-error .toast__dot {
+  background: var(--red);
+}
+
+.toast__copy {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 1px;
+  min-width: 0;
+}
+
+.toast__text {
+  overflow-wrap: anywhere;
+}
+
+.toast__detail {
+  color: var(--text-faint);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+.toast__action {
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  background: var(--panel-soft);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.toast__action:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  color: var(--accent);
+}
+
+.toast__close {
+  display: grid;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  background: transparent;
+  cursor: pointer;
+}
+
+.toast__close:hover {
+  color: var(--text);
+  background: var(--panel-soft);
+}
+
+/*
+ * Ctrl+K command palette: Zed-style, top-centred over the workbench. Same
+ * panel chrome and row language as the composer menus.
+ */
+.command-palette-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9990;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 11vh;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.command-palette {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: min(580px, 92vw);
+  max-height: min(460px, 76vh);
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.28);
+  transform-origin: top center;
+}
+
+.command-palette__search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 42px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-faint);
+}
+
+.command-palette__search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  color: var(--text-strong);
+  background: transparent;
+  font: inherit;
+  font-size: 13.5px;
+}
+
+.command-palette__kbd {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  font-size: 10.5px;
+  line-height: 16px;
+}
+
+.command-palette__list {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.command-palette__group + .command-palette__group {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.command-palette__label {
+  padding: 5px 8px 3px;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.command-palette__row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.command-palette__row.is-active {
+  color: var(--text-strong);
+  background: var(--panel-soft);
+}
+
+.command-palette__row .session-row__dot,
+.command-palette__row .session-row__pulse {
+  width: 6px;
+  height: 6px;
+}
+
+.command-palette__glyph {
+  display: inline-grid;
+  width: 6px;
+  place-items: center;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.command-palette__title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.command-palette__meta {
+  flex: 1 1 0%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-size: 11.5px;
+}
+
+.command-palette__hint {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.command-palette__empty {
+  padding: 18px 10px;
+  color: var(--text-faint);
+  font-size: 12px;
+  text-align: center;
+}
+
+.command-palette__foot {
+  display: flex;
+  gap: 14px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--border);
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.command-palette__foot b {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.split-beside-menu {
+  position: fixed;
+  z-index: 9995;
+  display: grid;
+  min-width: 168px;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--panel-raised);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.24);
+}
+
+.split-beside-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.split-beside-menu button:hover,
+.split-beside-menu button:focus-visible {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.editor-tab.is-dragging-out {
+  opacity: 0.55;
+}
+
+.editor-tab.is-tear-source {
+  opacity: 0.28;
+  outline: 1px dashed color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+
+.editor-tab.is-dragging-out .editor-tab__select {
+  cursor: grabbing;
+}
+
+/* Rapid-close burst: freeze survivor width so the next × stays under the cursor. */
+.editor-tabs__tablist.is-closing-burst .editor-tab {
+  flex: 0 0 var(--frozen-tab-w, auto);
+}
+
+/* Titlebar: tab strip takes the bar; empty area over the drag layer still moves the window. */
+.workspace-titlebar .editor-tabs__tablist {
+  flex: 1 1 0%;
+  min-width: 0;
+}
+
+body.is-tab-detaching {
+  cursor: grabbing !important;
+  user-select: none;
+}
+
+body.is-tab-detaching * {
+  cursor: grabbing !important;
+}
+
+body.is-tab-detaching .floating-trigger {
+  pointer-events: none;
+}
+
+/* Ghost chip while tearing off — real WebView is created only on mouse-up. */
+.tab-tear-ghost {
+  position: fixed;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 96px;
+  max-width: 220px;
+  padding: 6px 10px 7px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--panel) 92%, var(--accent));
+  box-shadow:
+    0 8px 28px color-mix(in srgb, #000 35%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--text);
+  pointer-events: none;
+  transform: translate(-2px, -2px) rotate(-1.5deg);
+}
+
+.tab-tear-ghost__label {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-tear-ghost__hint {
+  font-size: 10px;
+  color: var(--text-muted);
+  letter-spacing: 0.01em;
+}
+
+/* Detached drag hovering the main window → merge affordance. */
+.tab-tear-ghost.is-merge-target {
+  border-color: var(--accent);
+  box-shadow:
+    0 8px 28px color-mix(in srgb, #000 35%, transparent),
+    0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.tab-tear-ghost.is-merge-target .tab-tear-ghost__hint {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* Detached dialog window: no project shelf (column already 0 via is-left-collapsed). */
+.workspace-grid.is-detached .left-rail {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.workspace-grid.is-detached .floating-trigger--center-left {
+  display: none;
+}
+
+.editor-tab__view-toggle {
+  color: var(--text-muted);
+}
+
+.editor-tab__pulse {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  margin-right: 2px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: activity-pulse 1.2s ease-in-out infinite;
+}
+
+.editor-tab__pulse.is-starting {
+  background: var(--yellow);
+}
+
+.editor-tab__pulse.is-running {
+  background: var(--accent);
+}
+
+.editor-tab.is-done:not(.is-active) {
+  color: var(--text);
+  /* Borders went away with the full-height tabs; the fill carries the done state. */
+  background: color-mix(in srgb, var(--green) 14%, transparent);
+}
+
+.editor-tab__done {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  margin-right: 2px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 30%, transparent);
+  animation: done-attention 1.15s ease-in-out 2;
+}
+
+@keyframes done-attention {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 22%, transparent);
+  }
+  50% {
+    transform: scale(1.25);
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--green) 38%, transparent);
+  }
+}
+
+@keyframes activity-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+
+/* ============================================================
+ * Unified custom scrollbar (Zed-style thin)
+ * Auto-fade: thumb is faint when idle, full opacity during scroll.
+ * Activate with .custom-scrollbar.scrollbar-autohide classes.
+ * ============================================================ */
+
+/* Base: thin scrollbar */
+.custom-scrollbar {
+  scrollbar-width: thin;
+}
+
+/* Idle state: faint but visible (never fully transparent — avoids browser quirks) */
+.custom-scrollbar {
+  scrollbar-color: var(--scrollbar-thumb-faint) var(--scrollbar-track);
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: var(--scrollbar-width, 4px);
+  height: var(--scrollbar-width, 4px);
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: var(--scrollbar-track, transparent);
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: var(--scrollbar-thumb-faint);
+}
+
+/* Auto-hide: full thumb during scroll OR on element hover */
+.custom-scrollbar.scrollbar-autohide.is-scrolling,
+.custom-scrollbar.scrollbar-autohide:hover {
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+.custom-scrollbar.scrollbar-autohide.is-scrolling::-webkit-scrollbar-thumb,
+.custom-scrollbar.scrollbar-autohide:hover::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+}
+
+.custom-scrollbar.scrollbar-autohide.is-scrolling::-webkit-scrollbar-thumb:hover,
+.custom-scrollbar.scrollbar-autohide:hover::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* Sidebars: keep the scrollbar invisible until the whole panel is hovered. */
+.left-rail .custom-scrollbar.scrollbar-autohide,
+.context-panel.custom-scrollbar.scrollbar-autohide,
+.context-panel .custom-scrollbar.scrollbar-autohide {
+  scrollbar-color: transparent transparent;
+}
+
+.left-rail .custom-scrollbar.scrollbar-autohide::-webkit-scrollbar-thumb,
+.context-panel.custom-scrollbar.scrollbar-autohide::-webkit-scrollbar-thumb,
+.context-panel .custom-scrollbar.scrollbar-autohide::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+
+.left-rail:hover .custom-scrollbar.scrollbar-autohide,
+.context-panel:hover.custom-scrollbar.scrollbar-autohide,
+.context-panel:hover .custom-scrollbar.scrollbar-autohide {
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+.left-rail:hover .custom-scrollbar.scrollbar-autohide::-webkit-scrollbar-thumb,
+.context-panel:hover.custom-scrollbar.scrollbar-autohide::-webkit-scrollbar-thumb,
+.context-panel:hover .custom-scrollbar.scrollbar-autohide::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+}
+
+.left-rail:hover .custom-scrollbar.scrollbar-autohide::-webkit-scrollbar-thumb:hover,
+.context-panel:hover.custom-scrollbar.scrollbar-autohide::-webkit-scrollbar-thumb:hover,
+.context-panel:hover .custom-scrollbar.scrollbar-autohide::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* Scrollbar hidden completely — element stays scrollable */
+.scrollbar-hidden {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-hidden::-webkit-scrollbar {
+  display: none;
+}
+
+.activity-dots {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+  height: 15px;
+}
+
+.activity-dots i {
+  display: block;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: activity-dot 1.05s ease-in-out infinite;
+}
+
+.activity-dots i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.activity-dots i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes activity-dot {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
+.event-card--waiting {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent) 6%, var(--panel));
+}
+
+.event-card--waiting.is-stale {
+  border-color: color-mix(in srgb, var(--orange) 40%, var(--border));
+  background: color-mix(in srgb, var(--orange) 8%, var(--panel));
+}
+
+.event-card--waiting.is-stalled {
+  border-color: color-mix(in srgb, var(--orange) 55%, var(--border));
+  background: color-mix(in srgb, var(--orange) 12%, var(--panel));
+}
+
+.event-card--waiting.is-stuck {
+  border-color: color-mix(in srgb, var(--red, #e35d6a) 50%, var(--border));
+  background: color-mix(in srgb, var(--red, #e35d6a) 10%, var(--panel));
+}
+
+.event-card__waiting-copy {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.event-card__stall-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.event-card__interrupt {
+  /* Pill shape from .pill-action; keep stall warning colors */
+  height: 26px;
+  padding: 0 12px;
+  opacity: 1;
+  border-color: color-mix(in srgb, var(--orange) 45%, var(--border));
+  background: color-mix(in srgb, var(--orange) 14%, var(--panel));
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.event-card__interrupt:hover,
+.event-card__interrupt:focus-visible {
+  opacity: 1;
+  border-color: color-mix(in srgb, var(--orange) 55%, var(--border));
+  background: color-mix(in srgb, var(--orange) 22%, var(--panel));
+  color: var(--text);
+}
+
+.event-card--waiting.is-stuck .event-card__interrupt {
+  border-color: color-mix(in srgb, var(--red, #e35d6a) 45%, var(--border));
+  background: color-mix(in srgb, var(--red, #e35d6a) 14%, var(--panel));
+}
+
+.event-card__stall-hint {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.event-card__stall-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  color: #1a1a1a;
+  background: var(--orange);
+}
+
+.event-card__stall-mark.is-stuck {
+  background: var(--red, #e35d6a);
+  color: #fff;
+}
+
+.event-card__live-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 6px;
+  vertical-align: middle;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: activity-pulse 1s ease-in-out infinite;
+}
+
