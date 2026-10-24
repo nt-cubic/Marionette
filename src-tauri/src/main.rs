@@ -13,6 +13,7 @@ mod credentials;
 mod custom_agents;
 mod data_dir_gate;
 mod debug_log;
+mod dock_support;
 mod dsh_bridge;
 mod dsh_plugins;
 mod engine;
@@ -61,7 +62,7 @@ const SHUTDOWN_KILL_TIMEOUT_SECS: u64 = 5;
 ///
 /// Callers must `api.prevent_close()` first so default WebView teardown never
 /// starts while we are still on the event-handler stack.
-fn shutdown_and_exit(app: &tauri::AppHandle) -> ! {
+pub(crate) fn shutdown_and_exit(app: &tauri::AppHandle) -> ! {
     use tauri::Manager;
 
     // Kill our embedded translation engine first (fast TerminateProcess; the
@@ -362,22 +363,38 @@ fn main() {
                         .values()
                         .filter(|w| w.is_visible().unwrap_or(true))
                         .count();
-                    if is_main || visible <= 1 {
+                    // Background mode (edge dock, stage 0): close never exits —
+                    // the window hides, engine/sessions/TG bridge keep running.
+                    // True exit is footer 退出 → quit_app → shutdown_and_exit.
+                    let background = dock_support::background_mode_enabled();
+                    if (is_main || visible <= 1) && !background {
                         shutdown_and_exit(window.app_handle());
                     } else {
                         let _ = window.hide();
-                        // Frontend reaper blanks excess hidden shells (memory).
-                        // Detached SPA flushes transcript then releases ACP
-                        // ownership — do not steal the stream here or main
-                        // would rewrite JSONL from an empty in-memory rail.
-                        let _ = window.app_handle().emit("marionette-detached-hidden", &label);
-                        crate::debug_log::append(
-                            "window",
-                            "info",
-                            "",
-                            &format!("hid detached window `{label}` (no WebView destroy)"),
-                            Some("avoids tao#1180 paint assert on secondary close"),
-                        );
+                        if is_main {
+                            // Background mode: main hidden, awaiting a second
+                            // launch (single-instance handoff shows it again).
+                            crate::debug_log::append(
+                                "window",
+                                "info",
+                                "",
+                                "hid main window (background mode)",
+                                Some("close = retract to background; quit via footer"),
+                            );
+                        } else {
+                            // Frontend reaper blanks excess hidden shells (memory).
+                            // Detached SPA flushes transcript then releases ACP
+                            // ownership — do not steal the stream here or main
+                            // would rewrite JSONL from an empty in-memory rail.
+                            let _ = window.app_handle().emit("marionette-detached-hidden", &label);
+                            crate::debug_log::append(
+                                "window",
+                                "info",
+                                "",
+                                &format!("hid detached window `{label}` (no WebView destroy)"),
+                                Some("avoids tao#1180 paint assert on secondary close"),
+                            );
+                        }
                     }
                 }
                 // Safety net if something still destroys a window without
@@ -541,7 +558,9 @@ fn main() {
             commands::telegram_remote_result,
             open_target::resolve_link_target,
             open_target::open_external,
-            open_target::reveal_in_file_manager
+            open_target::reveal_in_file_manager,
+            dock_support::set_background_mode,
+            dock_support::quit_app
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|error| {

@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Bell, BellOff, ChevronRight, CloudMoon, Folder, FolderOpen, Globe, GripVertical, KeyRound, MessageSquare, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, SlidersHorizontal, SunMedium, Trash2, X, Zap } from "lucide-react";
+import { Bell, BellOff, ChevronRight, CloudMoon, Dock, Folder, FolderOpen, Globe, GripVertical, KeyRound, LogOut, MessageSquare, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, SlidersHorizontal, SunMedium, Trash2, X, Zap } from "lucide-react";
 // Refresh on a project row folds CLI history into the normal session list.
 import type { AgentConfig, Project, ProxyConfig, ProxyTestResult, Session } from "../lib/types";
 import { themeToggleTitle, type ThemeMode } from "../lib/theme";
@@ -115,6 +115,11 @@ type ProjectShelfProps = {
   /** Desktop attention (taskbar flash + sound) for agent events and stalls. */
   desktopNotifyEnabled?: boolean;
   onToggleDesktopNotify?: () => void;
+  /** Edge dock stage 0: closing the window retracts to background (engine and sessions keep running). */
+  autoHideOnClose?: boolean;
+  onToggleAutoHideClose?: () => void;
+  /** Real exit — only reachable while close-to-background is on. */
+  onQuitApp?: () => void;
   onAddProject: () => void;
   onNewSession: (projectId: string) => void;
   onProjectSelect: (projectId: string) => void;
@@ -261,6 +266,9 @@ export function ProjectShelf({
   onToggleTheme,
   desktopNotifyEnabled = true,
   onToggleDesktopNotify,
+  autoHideOnClose = true,
+  onToggleAutoHideClose,
+  onQuitApp,
   onDeleteSession,
   onToggleSessionPin,
   onDeleteProject,
@@ -908,6 +916,27 @@ export function ProjectShelf({
       onClick={onToggleDesktopNotify}
     >
       {desktopNotifyEnabled ? <Bell size={13} /> : <BellOff size={13} />}
+    </button>
+  ) : null;
+
+  const dockButton = onToggleAutoHideClose ? (
+    <button
+      className={
+        autoHideOnClose
+          ? "pill-action pill-action--icon pill-action--sm sidebar-footer__button is-dock-on"
+          : "pill-action pill-action--icon pill-action--sm sidebar-footer__button is-dock-off"
+      }
+      type="button"
+      title={
+        autoHideOnClose
+          ? "关闭窗口 = 收起到后台 · 引擎与会话继续运行，再次启动 Marionette 唤起；真正退出用退出按钮"
+          : "关闭窗口 = 退出 Marionette · 点此改为收起到后台"
+      }
+      aria-label={autoHideOnClose ? "关闭时收起到边缘（已开）" : "关闭时收起到边缘（已关）"}
+      aria-pressed={autoHideOnClose}
+      onClick={onToggleAutoHideClose}
+    >
+      <Dock size={13} />
     </button>
   ) : null;
 
@@ -1676,6 +1705,18 @@ export function ProjectShelf({
         {notifyButton}
         {proxyButton}
         {telegramButton}
+        {dockButton}
+        {autoHideOnClose && onQuitApp && (
+          <button
+            className="pill-action pill-action--icon pill-action--sm sidebar-footer__button sidebar-footer__button--quit"
+            type="button"
+            title="退出 Marionette · 停止引擎与全部会话"
+            aria-label="退出 Marionette"
+            onClick={onQuitApp}
+          >
+            <LogOut size={13} />
+          </button>
+        )}
         <button className="pill-action pill-action--icon pill-action--sm sidebar-footer__button sidebar-footer__button--collapse" type="button" title={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} aria-label={collapsed ? "Pin projects and sessions open" : "Collapse projects and sessions"} onClick={collapsed ? onExpand : onCollapse}>
           {collapsed ? <PanelLeftOpen size={13} /> : <PanelLeftClose size={13} />}
         </button>

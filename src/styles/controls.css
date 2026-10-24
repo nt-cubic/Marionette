@@ -852,6 +852,23 @@
   opacity: 0.55;
 }
 
+/* Edge dock stage 0: close = retract to background (same on/off language). */
+.sidebar-footer__button.is-dock-on {
+  opacity: 1;
+  color: color-mix(in srgb, var(--accent) 85%, var(--text-muted));
+}
+
+.sidebar-footer__button.is-dock-off {
+  color: var(--text-faint);
+  opacity: 0.55;
+}
+
+/* Quit stays quiet next to the service icons; red only on intent. */
+.sidebar-footer__button--quit:hover {
+  color: var(--red);
+  opacity: 1;
+}
+
 .sidebar-footer__button--collapse {
   margin-left: auto;
 }
@@ -859,13 +876,15 @@
 /* On-state pip: which footer service is running reads without hovering. */
 .sidebar-footer__button.is-notify-on,
 .sidebar-footer__button.is-proxy-on,
-.sidebar-footer__button.is-engine-on {
+.sidebar-footer__button.is-engine-on,
+.sidebar-footer__button.is-dock-on {
   position: relative;
 }
 
 .sidebar-footer__button.is-notify-on::after,
 .sidebar-footer__button.is-proxy-on::after,
-.sidebar-footer__button.is-engine-on::after {
+.sidebar-footer__button.is-engine-on::after,
+.sidebar-footer__button.is-dock-on::after {
   content: "";
   position: absolute;
   top: 1px;
