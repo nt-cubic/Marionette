@@ -25,7 +25,9 @@ export function useVirtualWindow(
   }
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportH, setViewportH] = useState(600);
-  const [version, setVersion] = useState(0);
+  // 前缀和重算起点：measure 写入的最小下标（itemCount 干净时为 itemCount，
+  // 表示只有尾部增长）。全量重算只在初始/reset/forceRemeasure 时发生。
+  const [rebuildFrom, setRebuildFrom] = useState(0);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -55,17 +57,29 @@ export function useVirtualWindow(
     [estimate]
   );
 
+  // 增量前缀和：流式期间 itemCount 持续增长、measure 偶发改写个别下标，
+  // 旧实现每次 version bump 都全量重算 O(n)。现在只在「最早变更下标」之后
+  // 重算，缓存里 0..from 的前缀直接复用（流式尾部增长 = O(新增)）。
+  const offsetsCacheRef = useRef<{ key: string; offsets: number[] } | null>(null);
   const { offsets, totalSize } = useMemo(() => {
-    void version;
-    const offsets: number[] = new Array(itemCount + 1);
-    offsets[0] = 0;
-    let acc = 0;
-    for (let i = 0; i < itemCount; i += 1) {
+    const prev = offsetsCacheRef.current;
+    const cached = prev && prev.key === resetKey ? prev : null;
+    const baseLen = cached ? cached.offsets.length - 1 : 0;
+    const from = Math.min(rebuildFrom, itemCount, baseLen);
+    const offsets = (cached ? cached.offsets : [0]).slice(0, from + 1);
+    let acc = offsets[offsets.length - 1] ?? 0;
+    for (let i = offsets.length - 1; i < itemCount; i += 1) {
       acc += getSize(i);
       offsets[i + 1] = acc;
     }
+    offsetsCacheRef.current = { key: resetKey, offsets };
     return { offsets, totalSize: acc };
-  }, [getSize, itemCount, resetKey, version]);
+  }, [getSize, itemCount, rebuildFrom, resetKey]);
+
+  // 重算完成后把起点重置为 itemCount（干净态），额外渲染一次但 O(1)。
+  useEffect(() => {
+    if (rebuildFrom < itemCount) setRebuildFrom(itemCount);
+  }, [itemCount, rebuildFrom]);
 
   const { start, end } = useMemo(() => {
     if (itemCount === 0) return { start: 0, end: 0 };
@@ -104,10 +118,11 @@ export function useVirtualWindow(
     return { start, end };
   }, [itemCount, offsets, overscan, scrollTop, viewportH]);
 
-  // Batch height writes into one setVersion per frame — unbatched measure
+  // Batch height writes into one rebuild per frame — unbatched measure
   // during streaming used to thrash layout / flicker the WebView.
   const measureRafRef = useRef(0);
   const measureDirtyRef = useRef(false);
+  const measureMinChangedRef = useRef(Number.MAX_SAFE_INTEGER);
   const measureRef = useCallback((index: number, node: HTMLElement | null) => {
     if (!node) return;
     const h = node.getBoundingClientRect().height;
@@ -116,13 +131,16 @@ export function useVirtualWindow(
     // Ignore sub-pixel noise
     if (prev != null && Math.abs(prev - h) < 2) return;
     sizeMapRef.current.set(index, h);
+    measureMinChangedRef.current = Math.min(measureMinChangedRef.current, index);
     measureDirtyRef.current = true;
     if (measureRafRef.current) return;
     measureRafRef.current = requestAnimationFrame(() => {
       measureRafRef.current = 0;
       if (!measureDirtyRef.current) return;
       measureDirtyRef.current = false;
-      setVersion((v) => v + 1);
+      const from = measureMinChangedRef.current;
+      measureMinChangedRef.current = Number.MAX_SAFE_INTEGER;
+      setRebuildFrom((current) => Math.min(current, from));
     });
   }, []);
 
@@ -162,7 +180,7 @@ export function useVirtualWindow(
     offsetOf,
     /** After a tab restore writes scrollTop, pull it into the window state. */
     syncFromDom,
-    /** Call after stick-to-bottom when sizes may have changed. */
-    forceRemeasure: () => setVersion((v) => v + 1),
+    /** Call after stick-to-bottom when sizes may have changed (full recompute). */
+    forceRemeasure: () => setRebuildFrom(0),
   };
 }
