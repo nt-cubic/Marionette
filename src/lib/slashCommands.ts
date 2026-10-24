@@ -133,12 +133,11 @@ export function filterSlashCommands(
   const q = query.toLowerCase();
   if (!q) return commands.slice(0, 12);
   return commands
-    .filter(
-      (c) =>
-        c.name.toLowerCase().startsWith(q) ||
-        c.name.toLowerCase().includes(q) ||
-        c.description.toLowerCase().includes(q),
-    )
+    .filter((c) => {
+      // startsWith is subsumed by includes for a non-empty query.
+      const name = c.name.toLowerCase();
+      return name.includes(q) || c.description.toLowerCase().includes(q);
+    })
     .slice(0, 12);
 }
 

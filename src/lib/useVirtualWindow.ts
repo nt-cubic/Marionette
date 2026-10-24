@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { sizeMapForKey } from "./virtualSizeCache";
 
 const DEFAULT_ESTIMATE = 128;
@@ -124,6 +124,17 @@ export function useVirtualWindow(
       measureDirtyRef.current = false;
       setVersion((v) => v + 1);
     });
+  }, []);
+
+  // Cancel a pending measure frame on unmount — a fired callback on a
+  // detached list would call setState on an unmounted hook.
+  useEffect(() => {
+    return () => {
+      if (measureRafRef.current) {
+        cancelAnimationFrame(measureRafRef.current);
+        measureRafRef.current = 0;
+      }
+    };
   }, []);
 
   const paddingTop = offsets[start] ?? 0;

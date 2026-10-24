@@ -1426,15 +1426,16 @@ function openReplyIndexAcrossThoughts(
 
 /** Index of the latest thought in this session after the last user message. */
 function findLastThoughtInTurn(events: SessionEvent[], sessionId: string): number {
-  let lastUser = -1;
-  for (let i = 0; i < events.length; i += 1) {
-    if (events[i].sessionId === sessionId && events[i].type === "user_message") lastUser = i;
-  }
-  for (let i = events.length - 1; i > lastUser; i -= 1) {
+  // Single reverse pass: remember the deepest same-session thought, stop at
+  // the last user message. (Was two full forward scans; the rail is long.)
+  let found = -1;
+  for (let i = events.length - 1; i >= 0; i -= 1) {
     const e = events[i];
-    if (e.sessionId === sessionId && e.type === "thought") return i;
+    if (e.sessionId !== sessionId) continue;
+    if (e.type === "user_message") break;
+    if (e.type === "thought") found = i;
   }
-  return -1;
+  return found;
 }
 
 function patchThoughtAt(

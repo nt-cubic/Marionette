@@ -45,10 +45,10 @@ check("the dialog this window shows is never parked", () => {
   assert.equal(shouldAutoSuspend(warm(), NOW, { currentSessionId: "s1" }), false);
 });
 check("a dialog with a question / plan / permission card is never parked", () => {
-  assert.equal(shouldAutoSuspend(warm(), NOW, { pendingSessionIds: ["s1"] }), false);
+  assert.equal(shouldAutoSuspend(warm(), NOW, { pendingSessionIds: new Set(["s1"]) }), false);
 });
 check("a dialog with a queued follow-up is never parked", () => {
-  assert.equal(shouldAutoSuspend(warm(), NOW, { queuedSessionIds: ["s1"] }), false);
+  assert.equal(shouldAutoSuspend(warm(), NOW, { queuedSessionIds: new Set(["s1"]) }), false);
 });
 check("only warm idle dialogs are parked, even though a working one can be", () => {
   for (const status of ["running", "starting", "exited", "error"]) {
