@@ -25,6 +25,7 @@ Windows 本地 **多 Agent CLI 图形壳**（Tauri + React）。不替代 OpenCo
 | Usage | 上下文、OpenCode 余额探测、Claude/Codex/Grok 限流类数据、**订阅配额（引擎 `magpie quota`，跨 agent 可见的订阅窗口并入同一面板）** |
 | 登录 | 多 agent probe + Sign in 横幅 |
 | **Telegram 远程** | 左下角纸飞机图标：@BotFather 建个 bot 粘 token（getMe 校验，DPAPI 落 `~/.marionette/telegram.json`）→ 给 bot 发条消息在浮层确认配对（只认这一个 chat）。会话跑完/等你批准（权限、ask、plan）/出错/进程死亡推送到手机；**跑完推送带全文正文，MarkdownV2 格式（代码块/粗体/链接），长文自动分片**；权限/ask/plan 的通知带内联按钮，远程解答与 UI 共享同一 waiter（先答先得）；在 Telegram 里回复文字 = 送进对应会话（引用回复定向，裸文本去最近活跃会话），走与本地输入完全相同的发送管线（挂起重连/历史注入/排队）；权限等待 120s 到期前 30s 追加提醒。**置顶「总控」面板**：谁在跑/谁在等你实时重画（忙时每 60s 保鲜），按钮点会话名 = 切换裸发文字去向，⏹ = 远程停止（与 UI 停止键同路），`/status` 拉全量清单。通知偏好（跑完/等待/出错/带内容）在浮层开关。纯出站 HTTPS，零新依赖；未配对时零行为变化。详见 [`telegram-bridge.md`](./telegram-bridge.md) |
+| **贴边停靠（edge dock）** | 主窗可并入屏幕左右边缘（`dockMode.ts` 三态：floating / docked-hidden / docked-expanded）：停好后整条移出屏外只留 4px 高亮边，鼠标触碰滑出（~160ms 9 步），离开 300ms 且失焦收回；弹出只挪窗不抢焦点，全屏视频/演示模式不弹。关闭主窗 = 贴边收起（引擎、全部会话、Telegram 桥继续跑；footer「收起到边缘」开关，默认开），真正退出走 footer「退出」（`quit_app`）；再次启动 Marionette 唤起。窄条（默认 400，可调 320–480）自上而下：操作行（新建对话/收纳盒/对话抽屉/右栏）→ 余额 chip（引擎订阅最紧张额度，点击刷新）→ 标签横滑 + 对话与输入框 → 底栏（升级/解除贴边/退出）；项目会话列表与右栏收进覆盖层；分屏停靠时暂停。**收纳盒**（`~/.marionette/memos/`）：资源管理器拖文件/文件夹进条即收（内容哈希去重、复制落盘）、Ctrl+V 收文字/链接、搜索与类型筛选、文件条目可直接拖进输入框成附件。实施与红线见 `AGENTS.md`「贴边停靠」节，设计稿 `docs/plan-edge-dock.md` |
 | **跨用（模型/key/订阅互通）** | 见下节 |
 
 ## 跨用引擎（2026-10 定稿形态）
