@@ -42,14 +42,7 @@ impl StorageService {
             return Ok(Vec::new());
         }
 
-        let content = fs::read_to_string(&self.projects_file)
-            .map_err(|error| format!("Read projects failed: {error}"))?;
-        if content.trim().is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let projects: Vec<Project> = serde_json::from_str(&content)
-            .map_err(|error| format!("Parse projects failed: {error}"))?;
+        let projects: Vec<Project> = read_json_with_recovery(&self.projects_file, "projects")?;
         // `project-chat` was used by an interrupted implementation. Keep the
         // index clean even if it was written while the app was already running.
         Ok(projects
@@ -235,14 +228,7 @@ impl StorageService {
         if !file.exists() {
             return Ok(Vec::new());
         }
-
-        let content =
-            fs::read_to_string(file).map_err(|error| format!("Read sessions failed: {error}"))?;
-        if content.trim().is_empty() {
-            return Ok(Vec::new());
-        }
-        let all: Vec<Session> =
-            serde_json::from_str(&content).map_err(|error| format!("Parse sessions failed: {error}"))?;
+        let all: Vec<Session> = read_json_with_recovery(&file, "sessions")?;
         // Top-level shelf: hide @-delegate children (they live under the parent card).
         Ok(all
             .into_iter()
@@ -260,12 +246,7 @@ impl StorageService {
         if !file.exists() {
             return Ok(Vec::new());
         }
-        let content =
-            fs::read_to_string(file).map_err(|error| format!("Read sessions failed: {error}"))?;
-        if content.trim().is_empty() {
-            return Ok(Vec::new());
-        }
-        serde_json::from_str(&content).map_err(|error| format!("Parse sessions failed: {error}"))
+        read_json_with_recovery(&file, "sessions")
     }
 
     /// Sessions with the stored live status repaired.
@@ -920,10 +901,6 @@ impl StorageService {
         path: &Path,
         events: &[serde_json::Value],
     ) -> Result<(), String> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|error| format!("Create transcript dir failed: {error}"))?;
-        }
         let mut body = String::new();
         for event in events {
             let line = serde_json::to_string(event)
@@ -931,7 +908,7 @@ impl StorageService {
             body.push_str(&line);
             body.push('\n');
         }
-        fs::write(path, body).map_err(|error| format!("Write transcript failed: {error}"))
+        write_atomic(path, &body).map_err(|error| format!("Write transcript failed: {error}"))
     }
 
     /// Rewrite Clean-view transcript as JSONL (one SessionEvent per line).
@@ -995,22 +972,16 @@ impl StorageService {
         if !file.exists() {
             return Ok(Vec::new());
         }
-        let content = fs::read_to_string(&file)
-            .map_err(|error| format!("Read chat sessions failed: {error}"))?;
-        if content.trim().is_empty() {
-            return Ok(Vec::new());
-        }
-        serde_json::from_str(&content)
-            .map_err(|error| format!("Parse chat sessions failed: {error}"))
+        read_json_with_recovery(&file, "chat sessions")
     }
 
     fn write_chat_sessions(&self, sessions: &[Session]) -> Result<(), String> {
         self.ensure_chat_dirs()?;
         let content = serde_json::to_string_pretty(sessions)
             .map_err(|error| format!("Serialize chat sessions failed: {error}"))?;
-        fs::write(
-            self.chat_dir().join("sessions").join("index.json"),
-            format!("{content}\n"),
+        write_atomic(
+            &self.chat_dir().join("sessions").join("index.json"),
+            &format!("{content}\n"),
         )
         .map_err(|error| format!("Write chat sessions failed: {error}"))
     }
@@ -1127,14 +1098,14 @@ impl StorageService {
         let file = sessions_file(project_path);
         let content = serde_json::to_string_pretty(sessions)
             .map_err(|error| format!("Serialize sessions failed: {error}"))?;
-        fs::write(file, format!("{content}\n"))
+        write_atomic(&file, &format!("{content}\n"))
             .map_err(|error| format!("Write sessions failed: {error}"))
     }
 
     fn write_projects(&self, projects: &[Project]) -> Result<(), String> {
         let content = serde_json::to_string_pretty(projects)
             .map_err(|error| format!("Serialize projects failed: {error}"))?;
-        fs::write(&self.projects_file, format!("{content}\n"))
+        write_atomic(&self.projects_file, &format!("{content}\n"))
             .map_err(|error| format!("Write projects failed: {error}"))
     }
 
@@ -1152,6 +1123,64 @@ fn sessions_file(project_path: &Path) -> PathBuf {
     crate::app_paths::project_dir(project_path)
         .join("sessions")
         .join("index.json")
+}
+
+/// Atomic replace via tmp + rename (same pattern as `memory.rs::save_at`).
+///
+/// A direct `fs::write` truncates the target first: power loss mid-write
+/// leaves a half file, and `from_global_dir` then fails outright — the whole
+/// storage layer bricks on one corrupted index. Rename keeps readers seeing
+/// either the old or the new file, never a partial one.
+fn write_atomic(path: &Path, body: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("Create dir failed: {error}"))?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, body).map_err(|error| format!("Write tmp failed: {error}"))?;
+    // Windows rename refuses to overwrite, so move the old file aside first.
+    let bak = path.with_extension("json.bak");
+    if path.exists() {
+        let _ = fs::remove_file(&bak);
+        let _ = fs::rename(path, &bak);
+    }
+    fs::rename(&tmp, path).map_err(|error| format!("Rename into place failed: {error}"))
+}
+
+/// Read a JSON index that may have been truncated by a crash before atomic
+/// writes existed. `primary` unusable → fall back to the `.bak` left by
+/// `write_atomic`, and if even that is gone, keep a copy of the corpse for
+/// manual recovery instead of silently erasing it.
+fn read_json_with_recovery<T: serde::de::DeserializeOwned>(
+    primary: &Path,
+    what: &str,
+) -> Result<T, String> {
+    let read = |path: &Path| -> Result<T, String> {
+        let content = fs::read_to_string(path)
+            .map_err(|error| format!("Read {what} failed: {error}"))?;
+        serde_json::from_str(&content).map_err(|error| format!("Parse {what} failed: {error}"))
+    };
+    match read(primary) {
+        Ok(value) => Ok(value),
+        Err(primary_error) => {
+            let bak = primary.with_extension("json.bak");
+            if bak.exists() {
+                if let Ok(value) = read(&bak) {
+                    let corpse = primary.with_extension("json.corrupt");
+                    let _ = fs::rename(primary, &corpse);
+                    crate::debug_log::append(
+                        "storage",
+                        "warn",
+                        "",
+                        &format!("{what} index was corrupt; restored from .bak"),
+                        Some(&primary_error),
+                    );
+                    return Ok(value);
+                }
+            }
+            Err(primary_error)
+        }
+    }
 }
 
 fn session_log_path(project_path: &Path, session_id: &str) -> PathBuf {
@@ -1300,6 +1329,40 @@ mod tests {
                 .as_nanos(),
             NEXT_ID.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    /// Atomic write + corrupt-primary recovery (audit P1-D): a truncated
+    /// index (power loss under the old plain fs::write) must not brick
+    /// storage when a .bak exists, and the corpse must be kept aside.
+    #[test]
+    fn corrupt_index_recovers_from_bak_and_keeps_corpse() {
+        let root = test_root();
+        fs::create_dir_all(&root).unwrap();
+        let index = root.join("projects.json");
+
+        // Two healthy writes: primary holds the current generation, .bak the
+        // previous one (p1 only — that is what a recovery can promise).
+        super::write_atomic(&index, r#"[{"id":"p1"}]"#).unwrap();
+        super::write_atomic(&index, r#"[{"id":"p1"},{"id":"p2"}]"#).unwrap();
+        let restored: Vec<serde_json::Value> =
+            super::read_json_with_recovery(&index, "projects").unwrap();
+        assert_eq!(restored.len(), 2);
+
+        // Simulate crash-truncation of the primary: recovery falls back to
+        // the .bak (previous generation) and preserves the corpse.
+        let truncated = r#"[{"id":"p1"},{"id":"p2"},{"id":"p3"#;
+        fs::write(&index, truncated).unwrap();
+        let recovered: Vec<serde_json::Value> =
+            super::read_json_with_recovery(&index, "projects").unwrap();
+        assert_eq!(recovered.len(), 1, "restores the previous (.bak) generation");
+        assert!(root.join("projects.json.corrupt").exists(), "corpse kept");
+
+        // No .bak and corrupt: the error surfaces (never silently empty).
+        let lone = root.join("lone.json");
+        fs::write(&lone, "{not json").unwrap();
+        assert!(super::read_json_with_recovery::<Vec<Project>>(&lone, "projects").is_err());
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

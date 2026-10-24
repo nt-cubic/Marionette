@@ -293,6 +293,11 @@ pub struct TurnSnapshotEnd {
 /// stream) would otherwise pin hashed worktree blobs in `%TEMP%` forever.
 const SNAPSHOT_TTL_MS: u128 = 10 * 60 * 1000;
 
+/// Ceiling for one git invocation. status/diff-tree on huge repos can take a
+/// few seconds, but nothing legitimate takes minutes — and an unbounded wait
+/// holds the caller's thread (delivery-card turns, Tauri commands) hostage.
+const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 fn snapshot_registry() -> &'static std::sync::Mutex<std::collections::HashMap<String, WorkspaceSnapshot>>
 {
     static REGISTRY: std::sync::OnceLock<
@@ -808,13 +813,16 @@ fn project_relative_path(project_root: &Path, raw: &str) -> Result<String, Strin
 fn run_git(cwd: &Path, args: &[&str]) -> Result<std::process::Output, String> {
     let mut cmd = Command::new("git");
     cmd.args(args).current_dir(cwd);
+    // A credential prompt or an nfs-slow disk would otherwise wedge the
+    // command thread forever; every git here is short-status work.
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    cmd.output()
+    crate::process_util::output_with_kill_timeout(cmd, GIT_TIMEOUT)
         .map_err(|e| format!("Failed to run git: {e}"))
 }
 

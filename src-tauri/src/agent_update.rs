@@ -43,26 +43,12 @@ pub fn installed_version(command: &str) -> Option<String> {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    parse_version(&output_with_timeout(cmd, VERSION_TIMEOUT)?)
-}
-
-/// `Command::output()` waits forever, and `--version` is being handed to a
-/// third-party CLI we do not control. One that never answers would otherwise
-/// stall every remaining agent behind it on this thread — so bound the wait and
-/// treat silence as "version unknown".
-fn output_with_timeout(mut cmd: Command, wait: Duration) -> Option<String> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let text = cmd.output().ok().map(|out| {
-            format!(
-                "{}{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            )
-        });
-        let _ = tx.send(text);
-    });
-    rx.recv_timeout(wait).ok().flatten()
+    let text = crate::process_util::output_with_kill_timeout(cmd, VERSION_TIMEOUT).ok()?;
+    parse_version(&format!(
+        "{}{}",
+        crate::process_util::decode_process_bytes(&text.stdout),
+        crate::process_util::decode_process_bytes(&text.stderr)
+    ))
 }
 
 /// First semver-looking token in `--version` output.
@@ -280,9 +266,10 @@ mod tests {
         cmd.stdin(std::process::Stdio::null());
 
         let started = std::time::Instant::now();
-        let got = output_with_timeout(cmd, Duration::from_millis(300));
+        let got =
+            crate::process_util::output_with_kill_timeout(cmd, Duration::from_millis(300));
 
-        assert!(got.is_none(), "a silent CLI must report no version");
+        assert!(got.is_err(), "a silent CLI must report no version");
         assert!(
             started.elapsed() < Duration::from_secs(5),
             "must give up at the bound, waited {:?}",

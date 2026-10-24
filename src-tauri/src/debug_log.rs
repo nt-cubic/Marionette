@@ -2,14 +2,75 @@
 //! Path: `%USERPROFILE%\.marionette\logs\dev.log`
 
 use std::collections::HashMap;
-use std::fs::{create_dir_all, OpenOptions};
+use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::{Mutex, OnceLock};
+use std::thread;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-static LOG_LOCK: Mutex<()> = Mutex::new(());
+/// Backlog cap for the async info path. Bounded so a stuck disk cannot grow
+/// the queue without limit; when full, info lines are dropped (best-effort by
+/// contract — warn/error/panic never take this path).
+const CHANNEL_BOUND: usize = 8192;
+/// Soft-rotate threshold, tracked in bytes written by the writer thread
+/// (no per-line metadata() syscall).
+const ROTATE_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Info lines go to a resident writer thread; nothing on the caller side ever
+/// touches the disk or takes a lock. Format happens here (timestamps stay
+/// caller-side, so cross-level ordering is recoverable from the stamps).
+static ASYNC_TX: OnceLock<SyncSender<String>> = OnceLock::new();
+
+fn async_tx() -> &'static SyncSender<String> {
+    ASYNC_TX.get_or_init(|| {
+        let (tx, rx) = sync_channel::<String>(CHANNEL_BOUND);
+        thread::Builder::new()
+            .name("devlog-writer".to_string())
+            .spawn(move || writer_loop(rx))
+            .ok();
+        tx
+    })
+}
+
+/// Resident writer: keeps one open handle, appends each line, rotates by its
+/// own byte counter, flushes periodically so a crash loses at most a moment
+/// of info chatter (warn/error/panic are written synchronously elsewhere).
+fn writer_loop(rx: Receiver<String>) {
+    let mut file: Option<File> = None;
+    let mut written: u64 = 0;
+    while let Ok(line) = rx.recv() {
+        if file.is_none() {
+            match open_log() {
+                Ok(f) => file = Some(f),
+                Err(_) => continue, // retry on the next line; drop this one
+            }
+        }
+        let Some(f) = file.as_mut() else { continue };
+        let _ = f.write_all(line.as_bytes());
+        let _ = f.flush();
+        written += line.len() as u64;
+        if written > ROTATE_BYTES {
+            drop(file.take());
+            if let Ok(path) = log_path() {
+                let _ = std::fs::rename(&path, path.with_extension("log.1"));
+            }
+            written = 0;
+            file = open_log().ok();
+        }
+    }
+}
+
+fn open_log() -> Result<File, String> {
+    let path = log_path()?;
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| e.to_string())
+}
 
 fn log_path() -> Result<PathBuf, String> {
     let dir = crate::app_paths::global_dir()?.join("logs");
@@ -34,18 +95,18 @@ pub fn append(
     summary: &str,
     detail: Option<&str>,
 ) {
-    append_inner(source, level, session_id, summary, detail, false);
+    append_inner(source, level, session_id, summary, detail);
 }
 
 /// Logging path for the panic hook.
 ///
-/// The hook runs *before* unwinding, so the panicking thread may still hold
-/// `LOG_LOCK` — if the panic came from inside `append`, it does. Blocking on it
-/// there deadlocks the thread permanently and leaves the guard held, taking
-/// every other logger down with it. A panic report is worth dropping; the
-/// process is not worth wedging.
+/// With `panic = "abort"` the process dies as soon as the hook returns, so a
+/// channel send would lose the report — the panic line is written inline.
+/// There is no shared lock to deadlock on: the async writer owns its own
+/// handle, and append-mode writes interleave at worst, which beats dropping
+/// the one line that explains the crash.
 pub fn append_from_panic_hook(summary: &str) {
-    append_inner("panic", "error", "", summary, None, true);
+    append_inner("panic", "error", "", summary, None);
 }
 
 fn append_inner(
@@ -54,30 +115,7 @@ fn append_inner(
     session_id: &str,
     summary: &str,
     detail: Option<&str>,
-    never_block: bool,
 ) {
-    let _guard = if never_block {
-        match LOG_LOCK.try_lock() {
-            Ok(guard) => Some(guard),
-            // Held elsewhere (or by us). Write unlocked: a possibly interleaved
-            // panic line beats no panic line and a frozen app.
-            Err(_) => None,
-        }
-    } else {
-        Some(LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner()))
-    };
-    let Ok(path) = log_path() else {
-        return;
-    };
-
-    // Soft rotate when file grows too large (~4MB)
-    if let Ok(meta) = std::fs::metadata(&path) {
-        if meta.len() > 4 * 1024 * 1024 {
-            let bak = path.with_extension("log.1");
-            let _ = std::fs::rename(&path, bak);
-        }
-    }
-
     let mut line = format!(
         "[{ts}] [{level}] [{source}] session={session} {summary}",
         ts = now_iso(),
@@ -95,14 +133,23 @@ fn append_inner(
     }
     line.push('\n');
 
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        let _ = file.write_all(line.as_bytes());
-        // Flushing every ACP token (~93/s × N sessions) serializes all
-        // dispatch threads on disk. Errors/warns still fsync so a crash
-        // leaves the stall/panic line.
-        if matches!(level, "error" | "warn") || source == "panic" {
-            let _ = file.flush();
+    // Hot path: info chatter (every ACP token, ~93/s × sessions) must not
+    // touch the disk on the caller's thread. Bounded channel, never blocks:
+    // a full queue drops the line instead of stalling dispatch.
+    if !matches!(level, "error" | "warn") && source != "panic" {
+        match async_tx().try_send(line) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {} // disk stuck; drop info line
+            Err(TrySendError::Disconnected(_)) => {}
         }
+        return;
+    }
+
+    // warn/error/panic stay synchronous and flushed: a crash must leave the
+    // stall/panic line on disk. These are rare, so per-call open is fine.
+    if let Ok(mut file) = open_log() {
+        let _ = file.write_all(line.as_bytes());
+        let _ = file.flush();
     }
 }
 
@@ -196,9 +243,11 @@ mod tests {
 
     /// A `read` tool result for a Chinese document is >4000 bytes of 3-byte
     /// characters, so the clip offset lands mid-character. Byte-slicing there
-    /// panics *while holding `LOG_LOCK`*, and the panic hook's own `append`
-    /// then deadlocks on the same non-reentrant lock — which is why the panic
-    /// never reached the log and every other thread went quiet at once.
+    /// used to panic while holding the global log lock, and the panic hook's
+    /// own `append` then deadlocked on the same non-reentrant lock — which is
+    /// why the panic never reached the log and every other thread went quiet
+    /// at once. Formatting (where the clip happens) must stay panic-free on
+    /// both the async info path and the sync warn/error path.
     #[test]
     fn clipping_a_long_multibyte_detail_does_not_panic() {
         let detail = "战".repeat(1334); // 4002 bytes; byte 4000 is mid-character
@@ -206,6 +255,7 @@ mod tests {
         assert!(!detail.is_char_boundary(4000), "test must exercise the bad offset");
 
         append("test", "info", "test-session", "long multibyte detail", Some(&detail));
+        append("test", "warn", "test-session", "long multibyte detail", Some(&detail));
     }
 
     #[test]

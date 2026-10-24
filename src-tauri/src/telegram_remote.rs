@@ -2273,12 +2273,19 @@ fn poller_loop(slot: &'static Telegram) {
     }
 }
 
+/// 处理一条 update。**在独立线程上跑**：命令回复 / 回调应答 / 菜单翻页全是
+/// 同步 HTTP（sendMessage、answerCallbackQuery、editMessageText），在 poller
+/// 线程里跑的话每条交互都会把 getUpdates 长轮询整段卡住（audit P1-B）。
+/// `live` 是每轮循环里克隆的快照（derive Clone），move 进线程安全。
 fn handle_update(slot: &'static Telegram, live: &LiveConfig, update: Value) {
-    if let Some(message) = update.get("message").cloned() {
-        handle_incoming_message(slot, live, message);
-    } else if let Some(callback) = update.get("callback_query").cloned() {
-        handle_callback_query(slot, live, callback);
-    }
+    let live = live.clone();
+    thread::spawn(move || {
+        if let Some(message) = update.get("message").cloned() {
+            handle_incoming_message(slot, &live, message);
+        } else if let Some(callback) = update.get("callback_query").cloned() {
+            handle_callback_query(slot, &live, callback);
+        }
+    });
 }
 
 fn handle_incoming_message(slot: &'static Telegram, live: &LiveConfig, message: Value) {
@@ -2366,13 +2373,13 @@ fn handle_incoming_message(slot: &'static Telegram, live: &LiveConfig, message: 
                     .lock()
                     .map(|inner| inner.sessions.len())
                     .unwrap_or(rows.len());
-                let _ = send_message(
+                // 回复走发送线程：poller 里同步 HTTP 会把长轮询整个卡住。
+                enqueue_send(
                     live,
-                    &render_status(&rows, total),
-                    &[],
+                    render_status(&rows, total),
+                    Vec::new(),
+                    None,
                     message_id,
-                    None,
-                    None,
                 );
                 schedule_dashboard(slot);
             }
@@ -2397,23 +2404,22 @@ fn handle_incoming_message(slot: &'static Telegram, live: &LiveConfig, message: 
                             .and_then(|inner| inner.last_user_session.clone())
                     });
                 let Some(session_id) = target else {
-                    let _ = send_message(
+                    enqueue_send(
                         live,
-                        "还不知道要切哪个会话——回复它的某条通知再发 /model，或先在总控面板点它的名字绑定。",
-                        &[],
+                        "还不知道要切哪个会话——回复它的某条通知再发 /model，或先在总控面板点它的名字绑定。".to_string(),
+                        Vec::new(),
+                        None,
                         message_id,
-                        None,
-                        None,
                     );
                     return;
                 };
                 send_model_menu(slot, live, &session_id, 0, message_id, None);
             }
             "/help" | "/start" => {
-                let _ = send_message(live, HELP_TEXT, &[], message_id, None, None);
+                enqueue_send(live, HELP_TEXT.to_string(), Vec::new(), None, message_id);
             }
             _ => {
-                let _ = send_message(live, HELP_TEXT, &[], message_id, None, None);
+                enqueue_send(live, HELP_TEXT.to_string(), Vec::new(), None, message_id);
             }
         }
         return;
@@ -2437,13 +2443,12 @@ fn handle_incoming_message(slot: &'static Telegram, live: &LiveConfig, message: 
         });
 
     let Some(session_id) = target else {
-        let _ = send_message(
+        enqueue_send(
             live,
-            "还没有可以投递的会话——先在电脑上开一个对话框，或回复某条通知来指定。",
-            &[],
+            "还没有可以投递的会话——先在电脑上开一个对话框，或回复某条通知来指定。".to_string(),
+            Vec::new(),
+            None,
             message_id,
-            None,
-            None,
         );
         return;
     };

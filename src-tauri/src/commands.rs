@@ -566,9 +566,13 @@ fn npm_install_global(agent_id: &str, package: &str) -> Result<(), String> {
         command.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let output = command
-        .output()
-        .map_err(|error| format!("Run npm install -g {package} failed: {error}"))?;
+    let output = crate::process_util::output_with_kill_timeout(
+        command,
+        // npm installs are minutes-scale, not seconds; but an unbounded wait
+        // pins the thread (and its spawn_blocking slot) forever if npm wedges.
+        std::time::Duration::from_secs(10 * 60),
+    )
+    .map_err(|error| format!("Run npm install -g {package} failed: {error}"))?;
     let stdout = crate::process_util::decode_process_bytes(&output.stdout);
     let stderr = crate::process_util::decode_process_bytes(&output.stderr);
     crate::debug_log::append(
@@ -1219,9 +1223,13 @@ fn run_cli_status(bin: &str, args: &[&str]) -> Result<(bool, String), String> {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
     }
-    let output = command
-        .output()
-        .map_err(|error| format!("Run `{bin} {args:?}` failed: {error}"))?;
+    let output = crate::process_util::output_with_kill_timeout(
+        command,
+        // These are `--version`-style probes against third-party CLIs; silence
+        // past half a minute means wedged, not slow.
+        std::time::Duration::from_secs(30),
+    )
+    .map_err(|error| format!("Run `{bin} {args:?}` failed: {error}"))?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let text = if !stdout.trim().is_empty() {
