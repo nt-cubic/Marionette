@@ -31,8 +31,16 @@ type fakeSocketBackend struct {
 	mu      sync.Mutex
 	sockets []socketTurn
 	posts   int
-	refuse  int
-	frames  func(socketTurn) []string
+	// handshakes counts the sockets opened, a refused message's too
+	handshakes int
+	refuse     int
+	frames     func(socketTurn) []string
+	// limit is the socket's read limit (0: none); a bigger message is
+	// closed 1009 as coder/websocket does it
+	limit int64
+	// closeWith, when set, closes the socket with that status after the
+	// frames, instead of a normal close
+	closeWith websocket.StatusCode
 }
 
 func (f *fakeSocketBackend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -51,7 +59,13 @@ func (f *fakeSocketBackend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		defer c.CloseNow()
 		c.SetReadLimit(-1)
+		if f.limit > 0 {
+			c.SetReadLimit(f.limit)
+		}
 		_, msg, err := c.Read(r.Context())
+		f.mu.Lock()
+		f.handshakes++
+		f.mu.Unlock()
 		if err != nil {
 			return
 		}
@@ -63,6 +77,10 @@ func (f *fakeSocketBackend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if c.Write(r.Context(), websocket.MessageText, []byte(fr)) != nil {
 				return
 			}
+		}
+		if f.closeWith != 0 {
+			c.Close(f.closeWith, "")
+			return
 		}
 		c.Close(websocket.StatusNormalClosure, "")
 		return
@@ -92,6 +110,7 @@ func socketOn(t *testing.T) {
 		codexSocketOff.Store(true)
 		codexShunMu.Lock()
 		clear(codexShun)
+		clear(codexTooBig)
 		codexShunMu.Unlock()
 	})
 }
@@ -296,5 +315,100 @@ func TestCodexSocketOnlyForStreamedTurns(t *testing.T) {
 	res.Body.Close()
 	if posts, sockets := f.counts(); posts != 1 || sockets != 0 {
 		t.Fatalf("%d posts, %d sockets", posts, sockets)
+	}
+}
+
+// postsOpened are the turns seen over HTTP and the sockets opened,
+// a socket whose message was refused too.
+func (f *fakeSocketBackend) postsOpened() (posts, opened int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.posts, f.handshakes
+}
+
+// Lamrfu on Discord: on a long conversation chatgpt.com closed the socket
+// 1009 (message too big) on the turn's message, and Codex got a 502
+// ("codex websocket: failed to get reader: received close frame: status =
+// StatusMessageTooBig"), retried and got it again. The same turn now goes
+// over HTTP, and a message as big doesn't try the socket again.
+func TestCodexSocketTooBigGoesOverHTTP(t *testing.T) {
+	socketOn(t)
+	f := &fakeSocketBackend{frames: wholeReply, limit: 200}
+	chatgpt(t, f.ServeHTTP)
+	big := `{"model":"gpt-5.5","stream":true,"input":"` + strings.Repeat("long conversation ", 40) + `"}`
+	for i := range 2 {
+		code, body := codexPost(t, big)
+		if code != 200 || !strings.Contains(body, `"delta":"po"`) {
+			t.Fatalf("turn %d: %d %s; want the HTTP reply", i, code, body)
+		}
+	}
+	if posts, opened := f.postsOpened(); posts != 2 || opened != 1 {
+		t.Fatalf("%d posts, %d sockets; want both turns over HTTP and one socket tried", posts, opened)
+	}
+	// a small turn still goes over the socket
+	code, body := codexPost(t, `{"model":"gpt-5.5","stream":true,"input":"ping"}`)
+	if code != 200 || !strings.Contains(body, "pong") || !strings.Contains(body, "response.completed") {
+		t.Fatalf("small turn: %d %s", code, body)
+	}
+	if posts, sockets := f.counts(); posts != 2 || sockets != 1 {
+		t.Fatalf("%d posts, %d sockets; want the small turn on the socket", posts, sockets)
+	}
+}
+
+// Any end of the socket before a frame of the reply was handed on goes
+// over HTTP the same way: a close after the message with any status, a
+// normal close with no reply, a close after only the headers' frames.
+func TestCodexSocketEndedBeforeReplyGoesOverHTTP(t *testing.T) {
+	limits := func(socketTurn) []string { return wholeReply(socketTurn{})[:2] }
+	none := func(socketTurn) []string { return nil }
+	for _, tc := range []struct {
+		name   string
+		frames func(socketTurn) []string
+		status websocket.StatusCode
+	}{
+		{"too big after the message", none, websocket.StatusMessageTooBig},
+		{"too big after the limits", limits, websocket.StatusMessageTooBig},
+		{"internal error", none, websocket.StatusInternalError},
+		{"service restart", none, websocket.StatusServiceRestart},
+		{"try again later", none, websocket.StatusTryAgainLater},
+		{"policy violation", none, websocket.StatusPolicyViolation},
+		{"going away", limits, websocket.StatusGoingAway},
+		{"normal, no reply", none, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			socketOn(t)
+			f := &fakeSocketBackend{frames: tc.frames, closeWith: tc.status}
+			chatgpt(t, f.ServeHTTP)
+			code, body := codexPost(t, `{"model":"gpt-5.5","stream":true,"input":"ping"}`)
+			if code != 200 || !strings.Contains(body, `"delta":"po"`) {
+				t.Fatalf("%d %s; want the HTTP reply", code, body)
+			}
+			if posts, sockets := f.counts(); posts != 1 || sockets != 1 {
+				t.Fatalf("%d posts, %d sockets", posts, sockets)
+			}
+		})
+	}
+}
+
+// Once a frame of the reply was handed on, a 1009 close is a cut stream,
+// and the turn is not asked again over HTTP.
+func TestCodexSocketTooBigMidReplyIsCut(t *testing.T) {
+	socketOn(t)
+	f := &fakeSocketBackend{frames: func(socketTurn) []string {
+		return wholeReply(socketTurn{})[:5]
+	}, closeWith: websocket.StatusMessageTooBig}
+	chatgpt(t, f.ServeHTTP)
+	res, err := New().client.Post(provider.CodexBase+"/responses", "application/json",
+		strings.NewReader(`{"model":"gpt-5.5","stream":true,"input":"ping"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	b, err := io.ReadAll(res.Body)
+	if err == nil || !strings.Contains(string(b), "pong") {
+		t.Fatalf("read %q, %v; want the reply so far and a cut", b, err)
+	}
+	if posts, _ := f.counts(); posts != 0 {
+		t.Fatalf("%d HTTP posts; the turn was asked twice", posts)
 	}
 }

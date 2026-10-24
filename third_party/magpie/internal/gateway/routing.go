@@ -749,10 +749,29 @@ func resetsZhipu(body []byte, now time.Time) time.Duration {
 // them, each a number and its unit, and nothing else between.
 var resetsInWords = regexp.MustCompile(`(?i)\bresets? in (?:(\d+)\s*d(?:ays?)?\b\s*)?(?:(\d+)\s*h(?:ours?|rs?)?\b\s*)?(?:(\d+)\s*m(?:in(?:utes?|s)?)?\b)?`)
 
-// resetsAfter is how long the refusal says until it is back (resetsInWords),
-// held to longestWritten. Zero when it doesn't say.
+// quotaResetAfter: Antigravity's (Google Code Assist's) 429 for a model's
+// allowance used up, which writes how long until it is back as Go prints
+// a duration: "You have exhausted your capacity on this model. Your quota
+// will reset after 3h19m30s." Unread, the account rested the quarter of
+// an hour of a quota that says nothing, and the account first in order
+// was asked again, and refused, every 15 minutes for the hours or days
+// its quota was out (Dani Ariyanto on Discord, 10-24).
+var quotaResetAfter = regexp.MustCompile(`(?i)\bquota will reset after ((?:\d+h)?(?:\d+m)?(?:\d+(?:\.\d+)?s)?)`)
+
+// resetsAfter is how long the refusal says until it is back
+// (resetsInWords, quotaResetAfter), held to longestWritten. Zero when it
+// doesn't say.
 func resetsAfter(body []byte) time.Duration {
-	return spanWritten(resetsInWords.FindSubmatch(wordsOf(body)))
+	body = wordsOf(body)
+	if d := spanWritten(resetsInWords.FindSubmatch(body)); d > 0 {
+		return d
+	}
+	if m := quotaResetAfter.FindSubmatch(body); m != nil && len(m[1]) > 0 {
+		if d, err := time.ParseDuration(string(m[1])); err == nil && d > 0 && d <= longestWritten {
+			return d
+		}
+	}
+	return 0
 }
 
 // clineModelLimited says c, a provider whose requests reach Cline's API,

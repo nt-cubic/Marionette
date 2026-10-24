@@ -233,6 +233,18 @@ func renewSaved(ctx context.Context, agent, user string, force bool, stale strin
 	if l == nil {
 		return "", "", fmt.Errorf("no saved %s account %q", agent, user)
 	}
+	if agent == "codex" && heldByCodex(*l) {
+		// the account Codex is signed in to now (switched to since this
+		// was asked for, or the copy kept of it as it was): one sign-in in
+		// two places, whose refresh token a refresh here would spend under
+		// Codex. Codex's own auth.json then holds a dead one, and the app
+		// of an edu or business workspace, which reads its workspace's
+		// settings with it at start, stays paused on "无法加载组织设置"
+		// (万贤凯 on Discord). So it is renewed where Codex keeps it, as
+		// Codex's own (codexTokenRenewing), and the copy is left as it is:
+		// a switch away saves it afresh from Codex's.
+		return codexTokenRenewing(ctx, codexHome(), stale)
+	}
 	var auth []byte
 	switch agent {
 	case "codex":
@@ -272,6 +284,23 @@ func renewSaved(ctx context.Context, agent, user string, force bool, stale strin
 		}
 	}
 	return tok, accountID, writeLogins(ls)
+}
+
+// heldByCodex says the saved ChatGPT account l is the one Codex is signed
+// in to: the same login, or the same refresh token. Asked under
+// savedTokenMu, which a switch holds too, so it can't change before the
+// refresh it decides is done.
+func heldByCodex(l savedLogin) bool {
+	live, ok := liveLogin("codex")
+	if !ok {
+		return false
+	}
+	if sameLogin(live, l) {
+		return true
+	}
+	var a, b codexAuth
+	return json.Unmarshal(live.Auth, &a) == nil && json.Unmarshal(l.Auth, &b) == nil &&
+		a.Tokens.RefreshToken != "" && a.Tokens.RefreshToken == b.Tokens.RefreshToken
 }
 
 // savedRefreshFailed words a saved account's failed refresh. One the vendor

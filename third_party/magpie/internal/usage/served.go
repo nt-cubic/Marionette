@@ -86,10 +86,34 @@ func RelayRenamed(sent, served string) bool {
 
 // ServingName reports whether served is the vendor's own name for the
 // deployment serving the model sent, which no request asks for by: Google's
-// for a Gemini model (GeminiServing), xAI's for a Grok one (GrokServing).
+// for a Gemini model (GeminiServing), xAI's for a Grok one (GrokServing),
+// ClinePass's for one of its models (ClineServing).
 func ServingName(sent, served string) bool {
-	return GeminiServing(sent, served) || GrokServing(sent, served)
+	return GeminiServing(sent, served) || GrokServing(sent, served) || ClineServing(sent, served)
 }
+
+// ClineServing reports whether served is ClinePass's name for the virtual
+// model config ("vmc/") serving the cline-pass/ model sent: the model's
+// own name, its version's dot written as "p". ClinePass answers
+// cline-pass/deepseek-v4.1-flash-1017 as vmc/deepseek-v4p1-flash-1017
+// whichever upstream served it, DeepSeek's own API included
+// (finalProvider "deepseek": hy125245 on X, 10-23), and the swap it was
+// marked read as the request going to another provider (zRain on
+// Discord, 10-24). It holds for ClinePass's models only, and for the same
+// model: vmc/deepseek-v4p1-flash for cline-pass/deepseek-v4-pro is still
+// a swap, as is a vmc/ name for a model not asked of ClinePass.
+func ClineServing(sent, served string) bool {
+	s := strings.ToLower(strings.TrimSpace(served))
+	if !strings.HasPrefix(s, "vmc/") || !strings.Contains(strings.ToLower(sent), "cline-pass/") {
+		return false
+	}
+	a := squash(bareModel(sent))
+	return a != "" && squash(bareModel(vmcPoint.ReplaceAllString(s, "$1.$2"))) == a
+}
+
+// vmcPoint is a version's dot as ClinePass's vmc/ names write it (v4p1
+// for v4.1), the part ClineServing reads past
+var vmcPoint = regexp.MustCompile(`(\d)p(\d)`)
 
 // GrokServing reports whether served is xAI's name for the build serving
 // the Grok model sent: the model's own name with "-build" after its

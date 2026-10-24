@@ -887,6 +887,11 @@ body.window .field.solo { grid-column: auto; }
    the ellipsis ("剩余 100…" for 100 / 100 积分 · 剩余 100%) */
 .quota-windows.stacked .quota-n { flex-basis: 100%; display: flex; flex-wrap: wrap; column-gap: 4px; white-space: normal; }
 .quota-windows.stacked .quota-n > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* stacked, a window's name wider than its column goes on to a second
+   line rather than running under the window beside it (ZCode's "ZCode
+   1024 Dev Day · GLM-5.3" in the panel, rtbeilin on X); cut short, two
+   windows of one plan would read alike */
+.quota-windows.stacked .quota-name { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 .quota-reset { display: flex; flex-wrap: wrap; column-gap: 4px; margin-top: 4px; font-size: 10px; color: var(--faint); font-variant-numeric: tabular-nums; }
 /* each part of the reset line goes whole onto a line of its own when it
    doesn't fit beside the others, and only one wider than the card breaks
@@ -982,11 +987,11 @@ body.window .field.solo { grid-column: auto; }
 .wb-checkin { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .wb-checkin .ci-say { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
 .wb-checkin .ci-say > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* a failed check-in's reason wraps under it rather than ending in "…" (#821) */
-.wb-checkin[data-state="bad"] { flex-wrap: wrap; align-items: flex-start; }
-.wb-checkin[data-state="bad"] .ci-say { flex: 1 1 180px; align-items: flex-start; }
-.wb-checkin[data-state="bad"] .ci-say > span { white-space: normal; overflow-wrap: anywhere; }
-.wb-checkin[data-state="bad"] .ci-dot { margin-top: 4px; }
+/* a failed check-in's reason, or why none was offered (plugins#304), wraps under it rather than ending in "…" (#821) */
+.wb-checkin[data-state="bad"], .wb-checkin[data-why] { flex-wrap: wrap; align-items: flex-start; }
+.wb-checkin[data-state="bad"] .ci-say, .wb-checkin[data-why] .ci-say { flex: 1 1 180px; align-items: flex-start; }
+.wb-checkin[data-state="bad"] .ci-say > span, .wb-checkin[data-why] .ci-say > span { white-space: normal; overflow-wrap: anywhere; }
+.wb-checkin[data-state="bad"] .ci-dot, .wb-checkin[data-why] .ci-dot { margin-top: 4px; }
 .wb-checkin .ci-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
 .wb-checkin .ci-dot.ok { background: var(--green); }
 .wb-checkin .ci-dot.bad { background: var(--red); }

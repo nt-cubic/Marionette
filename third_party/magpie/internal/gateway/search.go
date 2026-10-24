@@ -926,9 +926,13 @@ func (s *Server) searchWith(ctx context.Context, p provider.Provider, model, que
 	s.serve(w, r, provider.Anthropic, body)
 	var out struct {
 		Content []struct {
-			Type    string          `json:"type"`
-			Text    string          `json:"text"`
-			Content json.RawMessage `json:"content"`
+			Type      string          `json:"type"`
+			Text      string          `json:"text"`
+			Content   json.RawMessage `json:"content"`
+			Citations []struct {
+				URL       string `json:"url"`
+				CitedText string `json:"cited_text"`
+			} `json:"citations"`
 		} `json:"content"`
 		Error *struct {
 			Message string `json:"message"`
@@ -947,11 +951,17 @@ func (s *Server) searchWith(ctx context.Context, p provider.Provider, model, que
 	var text strings.Builder
 	var sources []string
 	var found []Hit
+	quoted := map[string]string{} // what the searcher's citations quote of each page
 	searched := false
 	for _, b := range out.Content {
 		switch b.Type {
 		case "text":
 			text.WriteString(b.Text)
+			for _, c := range b.Citations {
+				if c.URL != "" && c.CitedText != "" && quoted[c.URL] == "" {
+					quoted[c.URL] = c.CitedText
+				}
+			}
 		case "server_tool_use":
 			searched = true
 		case "web_search_tool_result":
@@ -975,6 +985,9 @@ func (s *Server) searchWith(ctx context.Context, p provider.Provider, model, que
 				found = append(found, Hit{Title: h.Title, URL: h.URL, PageAge: age})
 			}
 		}
+	}
+	for i := range found {
+		found[i].Cited = quoted[found[i].URL]
 	}
 	said := strings.TrimSpace(text.String())
 	if said == "" || (len(found) == 0 && !strings.Contains(said, "://")) {
