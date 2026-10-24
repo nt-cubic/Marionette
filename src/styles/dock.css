@@ -44,9 +44,26 @@
   right: 0;
 }
 
-/* tokens.css pins body min-width at 960; the strip is 320-480. */
+/* Chrome band heights (DockChrome measures: top 6+26+4+24+6, bottom 6+22+6). */
+.dock-mode {
+  --dock-chrome-top: 66px;
+  --dock-chrome-bottom: 34px;
+}
+
+/* tokens.css pins body min-width at 960; the strip is 320-480.
+   The strip body is --panel per the design; the window's screen-facing
+   edge gets a hairline via inset shadow (layout-safe, no scrollbars). */
 .dock-mode body {
   min-width: 0;
+  background: var(--panel);
+}
+
+.dock-mode.dock-mode--right body {
+  box-shadow: inset 1px 0 0 var(--border-strong);
+}
+
+.dock-mode.dock-mode--left body {
+  box-shadow: inset -1px 0 0 var(--border-strong);
 }
 
 /* ── Stage 2: the strip layout ───────────────────────────────────────────
