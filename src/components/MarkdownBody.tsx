@@ -1,9 +1,11 @@
-import { createContext, memo, useContext, useEffect, useState, type ReactNode } from "react";
+import { Check, Copy } from "lucide-react";
+import { createContext, isValidElement, memo, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { isTauriRuntime, readImageDataUrl } from "../lib/api";
+import { copyText } from "../lib/clipboard";
 import { stripFileUri } from "../lib/imageAttachments";
 import { prepareMarkdownForRender } from "../lib/markdownText";
 import { resolveToolImagePath } from "../lib/toolBody";
@@ -15,6 +17,65 @@ type MarkdownBodyProps = {
   text: string;
   className?: string;
 };
+
+/** Plain text of rendered markdown children (code blocks hold strings or arrays). */
+function nodeText(node: ReactNode): string {
+  if (node == null || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(nodeText).join("");
+  if (isValidElement<{ children?: ReactNode }>(node)) return nodeText(node.props.children);
+  return "";
+}
+
+/** Fenced blocks taller than this fold to CODE_FOLDED_LINES with "显示全部". */
+const CODE_FOLD_AFTER = 18;
+const CODE_FOLDED_LINES = 14;
+
+/**
+ * Fenced code: a quiet header (language · lines) with copy, and long blocks
+ * folded to a few lines under a soft fade until "显示全部".
+ */
+function MdCodeBlock({ children }: { children?: ReactNode }) {
+  const text = nodeText(children).replace(/\n$/, "");
+  const lines = text ? text.split("\n").length : 0;
+  const child = Array.isArray(children) ? children[0] : children;
+  const codeClass = isValidElement<{ className?: string }>(child) ? child.props.className ?? "" : "";
+  const lang = /language-([\w+#.-]+)/.exec(codeClass)?.[1] ?? "";
+  const foldable = lines > CODE_FOLD_AFTER;
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  return (
+    <div className={`md-code${foldable && !open ? " is-folded" : ""}`}>
+      <div className="md-code__bar">
+        <span className="md-code__lang">{[lang, lines > 1 ? `${lines} 行` : ""].filter(Boolean).join(" · ")}</span>
+        <button
+          type="button"
+          className={`pill-action pill-action--sm md-code__copy${copied ? " is-copied" : ""}`}
+          title="复制代码"
+          aria-label={copied ? "已复制" : "复制代码"}
+          onClick={() => {
+            void copyText(text).then((ok) => {
+              if (!ok) return;
+              setCopied(true);
+              window.clearTimeout(timer.current);
+              timer.current = window.setTimeout(() => setCopied(false), 1400);
+            });
+          }}
+        >
+          {copied ? <Check size={11} /> : <Copy size={11} />}
+        </button>
+      </div>
+      <pre style={foldable && !open ? { maxHeight: `${CODE_FOLDED_LINES * 1.45 + 1.4}em` } : undefined}>{children}</pre>
+      {foldable && (
+        <button type="button" className="md-code__more" onClick={() => setOpen((value) => !value)}>
+          {open ? "收起" : `显示全部 ${lines} 行`}
+        </button>
+      )}
+    </div>
+  );
+}
 
 /** The only scheme the webview can hand straight to a browser. */
 const HTTP_URL_RE = /^https?:\/\//i;
@@ -284,6 +345,7 @@ export const MarkdownBody = memo(function MarkdownBody({ text, className }: Mark
           p: ({ children }) => <p className="md-body__p">{linkifyChildren(children)}</p>,
           li: ({ children }) => <li className="md-body__li">{linkifyChildren(children)}</li>,
           td: ({ children }) => <td>{linkifyChildren(children)}</td>,
+          pre: ({ children }) => <MdCodeBlock>{children}</MdCodeBlock>,
           code: ({ children, className: codeClassName }) => {
             // Fenced blocks are `pre > code` (often `language-*`); inline is
             // short / single-line — that's where models usually put a path.

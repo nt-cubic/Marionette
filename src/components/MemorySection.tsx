@@ -120,7 +120,7 @@ export function MemorySection({ activeSessionId }: { activeSessionId?: string | 
   return (
     <section className="context-card">
       <div className="context-card__heading">
-        <span>MEMORY</span>
+        <span>记忆</span>
         <div className="context-card__heading-actions">
           <button
             className="pill-action pill-action--icon pill-action--sm"
@@ -305,7 +305,7 @@ function MemoryRow({
 
   const excerpt = entry.text.trim().split(/\r?\n/).find((l) => l.trim()) ?? "";
   return (
-    <li>
+    <li className="memory-entry">
       <label
         className="context-lend__row"
         title={entry.text}
@@ -322,7 +322,7 @@ function MemoryRow({
           {excerpt ? ` · ${excerpt.slice(0, 48)}${excerpt.length > 48 ? "…" : ""}` : ""}
         </span>
       </label>
-      <div className="panel-entry__foot" style={{ paddingLeft: 22, marginTop: 2 }}>
+      <div className="panel-entry__foot memory-entry__actions">
         <button
           className="pill-action pill-action--icon pill-action--sm"
           type="button"

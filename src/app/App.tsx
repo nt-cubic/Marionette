@@ -189,6 +189,8 @@ import { PermissionDialog, type PermissionPrompt } from "../components/Permissio
 import { type PlanApprovalPrompt } from "../components/PlanApprovalCard";
 import { UnifiedDiffView } from "../components/UnifiedDiffView";
 import { ProjectShelf } from "../components/ProjectShelf";
+import { CommandPalette } from "../components/CommandPalette";
+import { ToastStack } from "../components/ToastStack";
 import { SessionTabs, SessionView, type ForkAnchor, type UserMessageAnchor } from "../components/SessionView";
 import {
   SplitWorkspace,
@@ -447,6 +449,8 @@ export function App() {
   const manuallyRenamedSessionIdsRef = useRef<Set<string>>(new Set());
   const [viewMode, setViewMode] = useState<SessionViewMode>("clean");
   const [leftCollapsed, setLeftCollapsed] = useState(IS_DETACHED_WINDOW);
+  /** Ctrl+K palette: jump to any dialog / project, or run a shell action. */
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
   /** Whether the mouse is hovering near the collapsed sidebar edge — shows the floating trigger */
   const [leftEdgeHover, setLeftEdgeHover] = useState(false);
@@ -5834,10 +5838,16 @@ export function App() {
     handlePlanPermissionChoose,
   ]);
 
-  // Ctrl/Cmd+1..9 jumps to a tab; Ctrl/Cmd+Shift+T reopens the last closed one.
+  // Ctrl/Cmd+K toggles the palette; Ctrl/Cmd+1..9 jumps to a tab; Ctrl/Cmd+Shift+T
+  // reopens the last closed one.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      if (!event.shiftKey && (event.key === "k" || event.key === "K") && !IS_DETACHED_WINDOW) {
+        event.preventDefault();
+        setPaletteOpen((open) => !open);
+        return;
+      }
       if (event.key >= "1" && event.key <= "9" && !event.shiftKey) {
         const idx = Number(event.key) - 1;
         const tree = splitStateRef.current;
@@ -7708,6 +7718,71 @@ export function App() {
             />
           )}
         </aside>
+
+        <ToastStack />
+        {paletteOpen && (
+          <CommandPalette
+            sessions={availableSessions}
+            chatSessions={chatSessions}
+            projects={availableProjects.filter((p) => p.id !== CHAT_PROJECT_ID)}
+            currentSessionId={displaySession.id}
+            doneUnreadIds={doneUnreadIds}
+            agentLabel={(agentId) => availableAgents.find((a) => a.id === agentId)?.label ?? agentId}
+            onOpenSession={openSession}
+            onOpenChat={openChatSession}
+            onSelectProject={(projectId) => {
+              setCurrentProjectId(projectId);
+              const nextSession = availableSessions.find((session) => session.projectId === projectId);
+              if (nextSession) openSession(nextSession);
+              else void createSessionForProject(projectId);
+            }}
+            onClose={() => setPaletteOpen(false)}
+            actions={[
+              ...(currentProjectId && currentProjectId !== CHAT_PROJECT_ID
+                ? [
+                    {
+                      id: "new-session",
+                      label: "在当前项目新建对话",
+                      hint: availableProjects.find((p) => p.id === currentProjectId)?.name,
+                      run: () => void createSessionForProject(currentProjectId),
+                    },
+                  ]
+                : []),
+              { id: "new-chat", label: "新建聊天", run: () => void handleCreateChatSession() },
+              {
+                id: "add-project",
+                label: "添加项目…",
+                run: () => {
+                  setProjectDialogOpen(true);
+                  setProjectError("");
+                },
+              },
+              ...(lastClosedTabsRef.current.length > 0
+                ? [
+                    {
+                      id: "reopen-tab",
+                      label: "重新打开刚关闭的标签",
+                      hint: "Ctrl Shift T",
+                      run: () => {
+                        const id = lastClosedTabsRef.current[0];
+                        const session = availableSessions.find((s) => s.id === id);
+                        if (!session) return;
+                        lastClosedTabsRef.current = lastClosedTabsRef.current.slice(1);
+                        saveClosedTabs(lastClosedTabsRef.current);
+                        openSession(session);
+                      },
+                    },
+                  ]
+                : []),
+              {
+                id: "toggle-left",
+                label: leftCollapsed ? "展开左侧栏" : "收起左侧栏",
+                run: () => setLeftCollapsed((value) => !value),
+              },
+              { id: "theme", label: "切换主题", run: () => setTheme((current) => nextTheme(current)) },
+            ]}
+          />
+        )}
 
         {/* Shared titlebar across center + right columns */}
         <div className="workspace-titlebar">

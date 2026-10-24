@@ -4,9 +4,10 @@
  * Run: npx tsx scripts/title-smoke.mts
  *
  * Both preambles below are the real strings Marionette injects
- * (`sessionHistory.ts` and `context_inventory.rs`). An agent titles a
- * conversation from its first prompt, so after a reconnect it hands one of
- * these back — which is how a whole shelf of dialogs became "[Marionette — …".
+ * (`sessionHistory.ts` and `context_inventory.rs`), plus the shared-memory
+ * card header (`memory.rs`). An agent titles a conversation from its first
+ * prompt, so it hands one of these back — which is how a whole shelf of
+ * dialogs became "[Marionette — …" and then "<marionette-memory> 以下是用户…
  */
 import assert from "node:assert/strict";
 import {
@@ -36,6 +37,11 @@ const SKILLS_PREAMBLE =
   "These are instruction files on this machine. If one matches the task, read its " +
   "SKILL.md first and follow it. Ignore the rest.\n\n- **agent-reach**";
 
+// memory.rs compose_card 的开头，以及 Grok 按首条 prompt 截断出来的标题形态。
+const MEMORY_PREAMBLE =
+  "<marionette-memory>\n" +
+  "以下是用户的长期偏好与事实（Marionette 跨 agent 共享记忆，均经用户确认）。\n";
+
 console.log("injected preambles are refused as titles");
 check("both headers are recognised", () => {
   assert.equal(isInjectedPromptText(HISTORY_PREAMBLE), true);
@@ -45,10 +51,18 @@ check("the agent's truncated copy is recognised too", () => {
   assert.equal(isInjectedPromptText("[Marionette — prior conversation in this dialo…"), true);
   assert.equal(isInjectedPromptText("[Marionette — skills available in this pro…"), true);
 });
+check("the memory card and its truncated title are recognised", () => {
+  assert.equal(isInjectedPromptText(MEMORY_PREAMBLE), true);
+  assert.equal(
+    isInjectedPromptText("<marionette-memory> 以下是用户的长期偏好与事实（Marionette 跨…"),
+    true,
+  );
+});
 check("ordinary brackets and prose are not mistaken for it", () => {
   assert.equal(isInjectedPromptText("[urgent] fix the usage bar"), false);
   assert.equal(isInjectedPromptText("Marionette — a normal message"), false);
   assert.equal(isInjectedPromptText("我想看看 [Marionette] 这个名字"), false);
+  assert.equal(isInjectedPromptText("把 <marionette-memory> 的注入修一下"), false);
 });
 
 console.log("\ntitles come from what the user typed");

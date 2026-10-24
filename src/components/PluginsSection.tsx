@@ -72,7 +72,7 @@ export function PluginsSection({ activeAgentId }: { activeAgentId?: string | nul
   return (
     <section className="context-card">
       <div className="context-card__heading">
-        <span>PLUGINS</span>
+        <span>插件</span>
         <div className="context-card__heading-actions">
           <button
             className="pill-action pill-action--icon pill-action--sm"

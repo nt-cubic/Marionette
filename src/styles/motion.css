@@ -68,6 +68,7 @@
  * Live labels: a calm light across the words while work is ongoing
  * ------------------------------------------------------------------ */
 
+.run-pill__label,
 .event-card.is-tool-running:not(.is-tool-stalled) .event-card__type,
 .event-card.is-thought-live .event-card__type,
 .activity-panel.is-live > .activity-panel__summary .activity-panel__title,
@@ -118,6 +119,7 @@
  * Overlays: say where they came from
  * ------------------------------------------------------------------ */
 
+.command-palette-backdrop,
 .project-dialog-backdrop,
 .permission-dialog-backdrop,
 .image-annotator-backdrop,
@@ -132,6 +134,7 @@
   animation: m-pop var(--dur-slow) var(--ease-out) backwards;
 }
 
+.command-palette,
 .composer-menu,
 .link-menu,
 .split-beside-menu,
@@ -282,6 +285,7 @@
     scroll-behavior: auto !important;
   }
 
+  .run-pill__label,
   .event-card.is-tool-running:not(.is-tool-stalled) .event-card__type,
   .event-card.is-thought-live .event-card__type,
   .activity-panel.is-live > .activity-panel__summary .activity-panel__title,

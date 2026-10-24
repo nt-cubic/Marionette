@@ -3,8 +3,12 @@ import { ChevronDown, Undo2 } from "lucide-react";
 import { CHAT_PROJECT_ID, getFileDiff, restoreTurnFiles } from "../lib/api";
 import type { TurnDelivery, TurnDeliveryChangeType, TurnDeliveryFile } from "../lib/turnDelivery";
 import { formatDeliveryHeadline } from "../lib/turnDelivery";
+import { showToast } from "../lib/toast";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { UnifiedDiffView } from "./UnifiedDiffView";
+
+/** A long turn lists this many files, then "其余 N 个" — the transcript stays readable. */
+const FILES_SHOWN = 8;
 
 /** Same single-letter glyphs as the right-side Changed Files panel. */
 function badgeLetter(changeType: TurnDeliveryChangeType): string {
@@ -168,6 +172,7 @@ export function TurnDeliveryCard({
   onRestored?: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [showAll, setShowAll] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -204,6 +209,12 @@ export function TurnDeliveryCard({
       if (result.errors.length > 0) {
         setError(result.errors.join("\n"));
       }
+      const reverted = result.restored.length + result.removed.length;
+      showToast({
+        text: `已撤销本轮改动 · ${reverted} 个文件`,
+        detail: result.errors.length > 0 ? `${result.errors.length} 个文件没能还原，详情见卡片` : undefined,
+        tone: result.errors.length > 0 ? "error" : "ok",
+      });
       onUndone?.();
       onRestored?.();
     } catch (err) {
@@ -268,9 +279,14 @@ export function TurnDeliveryCard({
           <div className="turn-delivery">
             {fileCount > 0 ? (
               <div className="turn-delivery__files">
-                {delivery.files.map((file) => (
+                {(showAll ? delivery.files : delivery.files.slice(0, FILES_SHOWN)).map((file) => (
                   <DeliveryFileRow key={file.path} file={file} projectId={projectId} />
                 ))}
+                {!showAll && fileCount > FILES_SHOWN && (
+                  <button type="button" className="turn-delivery__more" onClick={() => setShowAll(true)}>
+                    其余 {fileCount - FILES_SHOWN} 个文件
+                  </button>
+                )}
               </div>
             ) : null}
             {delivery.tally && <div className="turn-delivery__tally">{delivery.tally}</div>}

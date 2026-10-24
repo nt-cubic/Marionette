@@ -314,17 +314,23 @@ export function titleFromUserText(text: string): string {
 }
 
 /**
- * Marionette prefixes two prompts of its own: the rehydrated-history header
- * (`sessionHistory.ts`) and the project skills list (`context_inventory.rs`).
- * An agent that titles a conversation from its first prompt hands one back, so
- * a shelf of reconnected dialogs all read "[Marionette — …". Titles and labels
- * derived from that scaffolding are refused.
+ * Marionette prefixes three prompts of its own: the rehydrated-history header
+ * (`sessionHistory.ts`), the project skills list (`context_inventory.rs`), and
+ * the shared-memory card that opens every agent process's first prompt
+ * (`memory.rs`). An agent that titles a conversation from its first prompt
+ * hands one back, so shelves read "[Marionette — …" or
+ * "<marionette-memory> 以下是用户的长期偏好…". Titles and labels derived from
+ * that scaffolding are refused.
  */
-const INJECTED_PREAMBLE = /^\[\s*Marionette\s*[—–-]/;
+const INJECTED_PREAMBLES: RegExp[] = [
+  /^\[\s*Marionette\s*[—–-]/,
+  /^<marionette-memory>/,
+];
 
 /** True when `text` is, or begins with, a prompt Marionette injected itself. */
 export function isInjectedPromptText(text: string): boolean {
-  return INJECTED_PREAMBLE.test(text.trim());
+  const trimmed = text.trim();
+  return INJECTED_PREAMBLES.some((pattern) => pattern.test(trimmed));
 }
 
 export function shouldAutoRenameLabel(label: string): boolean {

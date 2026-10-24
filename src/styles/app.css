@@ -765,6 +765,150 @@ body.is-pane-splitting * {
   display: none;
 }
 
+/*
+ * Shelf-top status counts: what needs a look across every project. Only
+ * non-zero states show; one click filters the shelf, again clears it. Dots use
+ * the same colors as the session rows below.
+ */
+.shelf-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0 0 6px;
+  padding: 0 2px;
+}
+
+.shelf-status__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: transparent;
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.shelf-status__chip:hover,
+.shelf-status__chip:focus-visible {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+
+.shelf-status__chip.is-active {
+  color: var(--text-strong);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: var(--accent-soft);
+}
+
+.shelf-status__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+.shelf-status__chip.is-running .shelf-status__dot {
+  background: var(--accent);
+  animation: activity-pulse 1.2s ease-in-out infinite;
+}
+
+.shelf-status__chip.is-waiting .shelf-status__dot {
+  background: var(--yellow);
+}
+
+.shelf-status__chip.is-done .shelf-status__dot {
+  background: var(--green);
+}
+
+.shelf-status__chip.is-error .shelf-status__dot {
+  background: var(--red);
+}
+
+.shelf-status__count {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.shelf-status__chip.is-active .shelf-status__count {
+  color: var(--text-muted);
+}
+
+/* Day labels inside a long, fully listed project (今天 / 昨天 / 本周 / 更早). */
+.shelf-day {
+  margin: 6px 0 1px 30px;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+/* Hover preview of a shelf row: the full title and what the row cannot fit. */
+.shelf-peek {
+  position: fixed;
+  z-index: 9980;
+  display: grid;
+  gap: 3px;
+  width: 260px;
+  padding: 9px 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--panel-raised);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+  animation: m-menu var(--dur-base, 180ms) var(--ease-out, ease-out) backwards;
+  transform-origin: left top;
+}
+
+.shelf-peek__title {
+  color: var(--text-strong);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.shelf-peek__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.shelf-peek__status {
+  color: var(--text-faint);
+}
+
+.shelf-peek__status.is-running,
+.shelf-peek__status.is-starting {
+  color: var(--accent);
+}
+
+.shelf-peek__status.is-waiting {
+  color: var(--yellow);
+}
+
+.shelf-peek__status.is-error {
+  color: var(--red);
+}
+
+.shelf-peek__status.is-done {
+  color: var(--green);
+}
+
+.shelf-peek__meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
 .project-add {
   display: inline-flex;
   gap: 7px;
@@ -1282,6 +1426,27 @@ body.is-pane-splitting * {
 
 .sidebar-footer__button--collapse {
   margin-left: auto;
+}
+
+/* On-state pip: which footer service is running reads without hovering. */
+.sidebar-footer__button.is-notify-on,
+.sidebar-footer__button.is-proxy-on,
+.sidebar-footer__button.is-engine-on {
+  position: relative;
+}
+
+.sidebar-footer__button.is-notify-on::after,
+.sidebar-footer__button.is-proxy-on::after,
+.sidebar-footer__button.is-engine-on::after {
+  content: "";
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 1.5px var(--panel);
 }
 
 .project-group {
@@ -1979,6 +2144,18 @@ body.is-project-reordering .project-list {
   min-height: 32px;
 }
 
+/* The grip is for reordering; it waits for the row to be pointed at. */
+.project-tree .project-row__grip > * {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.project-tree .project-row:hover .project-row__grip > *,
+.project-tree .project-row:focus-within .project-row__grip > *,
+.project-tree .project-row.is-dragging .project-row__grip > * {
+  opacity: 1;
+}
+
 .project-tree .project-row__select,
 .project-tree .project-row__toggle {
   min-height: 32px;
@@ -1987,7 +2164,7 @@ body.is-project-reordering .project-list {
 .project-tree .project-row__content strong {
   color: var(--text-strong);
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .project-tree .project-row.is-active {
@@ -2328,6 +2505,282 @@ body.is-project-reordering .project-list {
 .editor-tab:not(.is-active):not(:hover):not(:focus-within) .editor-tab__split,
 .editor-tab:not(.is-active):not(:hover):not(:focus-within) .editor-tab__popout {
   display: none;
+}
+
+/*
+ * App-wide result toasts, bottom-right. Stacked: one cell, older ones tucked
+ * behind by --toast-depth; pointed at: a plain column. Same panel chrome as menus.
+ */
+.toast-stack {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 9985;
+  display: grid;
+  align-items: end;
+  width: min(340px, calc(100vw - 32px));
+}
+
+.toast-stack:not(.is-fanned) > .toast {
+  grid-area: 1 / 1;
+  transform: translateY(calc(var(--toast-depth) * -7px)) scale(calc(1 - var(--toast-depth) * 0.04));
+  transform-origin: bottom center;
+  z-index: calc(10 - var(--toast-depth));
+}
+
+.toast-stack:not(.is-fanned) > .toast:not(:last-child) > * {
+  visibility: hidden;
+}
+
+.toast-stack.is-fanned {
+  gap: 6px;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 40px;
+  padding: 8px 8px 8px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--text);
+  background: var(--panel-raised);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.2);
+  font-size: 12.5px;
+  transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  animation: m-pill-in 280ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+.toast__dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+.toast.is-ok .toast__dot {
+  background: var(--green);
+}
+
+.toast.is-error .toast__dot {
+  background: var(--red);
+}
+
+.toast__copy {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 1px;
+  min-width: 0;
+}
+
+.toast__text {
+  overflow-wrap: anywhere;
+}
+
+.toast__detail {
+  color: var(--text-faint);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+.toast__action {
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  background: var(--panel-soft);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.toast__action:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  color: var(--accent);
+}
+
+.toast__close {
+  display: grid;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  background: transparent;
+  cursor: pointer;
+}
+
+.toast__close:hover {
+  color: var(--text);
+  background: var(--panel-soft);
+}
+
+/*
+ * Ctrl+K command palette: Zed-style, top-centred over the workbench. Same
+ * panel chrome and row language as the composer menus.
+ */
+.command-palette-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9990;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 11vh;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.command-palette {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: min(580px, 92vw);
+  max-height: min(460px, 76vh);
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.28);
+  transform-origin: top center;
+}
+
+.command-palette__search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 42px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-faint);
+}
+
+.command-palette__search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  color: var(--text-strong);
+  background: transparent;
+  font: inherit;
+  font-size: 13.5px;
+}
+
+.command-palette__kbd {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  font-size: 10.5px;
+  line-height: 16px;
+}
+
+.command-palette__list {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.command-palette__group + .command-palette__group {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.command-palette__label {
+  padding: 5px 8px 3px;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.command-palette__row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.command-palette__row.is-active {
+  color: var(--text-strong);
+  background: var(--panel-soft);
+}
+
+.command-palette__row .session-row__dot,
+.command-palette__row .session-row__pulse {
+  width: 6px;
+  height: 6px;
+}
+
+.command-palette__glyph {
+  display: inline-grid;
+  width: 6px;
+  place-items: center;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.command-palette__title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.command-palette__meta {
+  flex: 1 1 0%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-size: 11.5px;
+}
+
+.command-palette__hint {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.command-palette__empty {
+  padding: 18px 10px;
+  color: var(--text-faint);
+  font-size: 12px;
+  text-align: center;
+}
+
+.command-palette__foot {
+  display: flex;
+  gap: 14px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--border);
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.command-palette__foot b {
+  color: var(--text-muted);
+  font-weight: 600;
 }
 
 .split-beside-menu {
@@ -3001,6 +3454,78 @@ body.is-tab-detaching .floating-trigger {
   cursor: pointer;
 }
 
+/*
+ * Live run pill, bottom-left (Latest sits bottom-right): current step with
+ * the live shimmer, the turn's elapsed time, stop. Same pill chrome as Latest.
+ */
+.run-pill {
+  position: absolute;
+  left: 12px;
+  bottom: 14px;
+  z-index: 14;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(420px, calc(100% - 140px));
+  height: 30px;
+  padding: 0 4px 0 11px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border-strong));
+  border-radius: 999px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--panel-raised) 94%, transparent);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16);
+  font-size: 12px;
+}
+
+/* Keep the tail readable above the floating pill. */
+.event-list.has-run-pill {
+  padding-bottom: 44px;
+}
+
+.run-pill__dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: activity-pulse 1.2s ease-in-out infinite;
+}
+
+.run-pill__label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.run-pill__time {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.run-pill__stop {
+  display: grid;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: var(--text-muted);
+  background: var(--panel-soft);
+  cursor: pointer;
+}
+
+.run-pill__stop:hover,
+.run-pill__stop:focus-visible {
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 14%, var(--panel-soft));
+}
+
 .scroll-to-bottom:hover {
   border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
   color: var(--accent);
@@ -3630,6 +4155,37 @@ body.is-tab-detaching .floating-trigger {
   cursor: pointer;
 }
 
+/* Mouse clicks keep the card quiet; the ring is for keyboard focus only. */
+.turn-delivery__toggle:focus:not(:focus-visible) {
+  outline: none;
+}
+
+.turn-delivery__toggle:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.turn-delivery__more {
+  justify-self: start;
+  min-height: 24px;
+  margin: 2px 0 0 32px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  background: transparent;
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.turn-delivery__more:hover,
+.turn-delivery__more:focus-visible {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+
 .turn-delivery__fold {
   flex: 0 0 auto;
   color: var(--text-muted);
@@ -3643,7 +4199,8 @@ body.is-tab-detaching .floating-trigger {
 }
 
 .turn-delivery__headline {
-  flex: 0 1 auto;
+  /* The count is the card; the file-name peek gives way first. */
+  flex: 0 0 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4026,6 +4583,36 @@ body.is-tab-detaching .floating-trigger {
 .activity-panel.is-live > .activity-panel__summary .activity-panel__title,
 .activity-kind.is-live > .activity-panel__summary .activity-panel__title {
   color: var(--accent);
+}
+
+/* Failed steps in a fold, said in words (Tool call style "1 failed"). */
+.activity-panel__failed {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--red);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* Row end: how long a finished tool took, or "failed" in red. */
+.event-card__outcome {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.event-card__tool-diff + .event-card__outcome {
+  margin-left: 6px;
+}
+
+.event-card__outcome.is-failed {
+  color: var(--red);
+  font-weight: 600;
 }
 
 /* Run wall time beside the tally, ahead of the diff badge. */
@@ -4522,21 +5109,143 @@ body.is-tab-detaching .floating-trigger {
   color: var(--text-muted);
 }
 
-/*
- * Interim replies (not the turn's last): their tags and time repeat the final
- * reply, so they wait for hover. Opacity only — the card keeps its height.
- */
-.event-card--assistant_message.is-interim .event-card__meta,
-.event-card--assistant_message.is-interim .event-card__timestamp {
-  opacity: 0;
-  transition: opacity 120ms ease;
+/* Tool JSON as a tree: keys muted, values by type, copy on hover. */
+.event-card__json-lead {
+  margin: 0 0 6px;
+  font: inherit;
+  white-space: pre-wrap;
 }
 
-.event-card--assistant_message.is-interim:hover .event-card__meta,
-.event-card--assistant_message.is-interim:hover .event-card__timestamp,
-.event-card--assistant_message.is-interim:focus-within .event-card__meta,
-.event-card--assistant_message.is-interim:focus-within .event-card__timestamp {
+.json-tree {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.json-tree__kids {
+  margin-left: 14px;
+  border-left: 1px solid var(--border);
+  padding-left: 4px;
+}
+
+.json-tree__row {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+  padding: 0 2px;
+  border-radius: var(--radius-sm);
+}
+
+.json-tree__row.is-branch {
+  cursor: pointer;
+}
+
+.json-tree__row:hover {
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+
+.json-tree__chev {
+  display: inline-block;
+  flex: 0 0 10px;
+  color: var(--text-faint);
+  font-size: 10px;
+  transition: transform 120ms ease;
+}
+
+.json-tree__chev.is-open {
+  transform: rotate(90deg);
+}
+
+.json-tree__k {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+.json-tree__colon,
+.json-tree__count {
+  color: var(--text-faint);
+}
+
+.json-tree__v {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.json-tree__v.is-str {
+  color: var(--text);
+}
+
+.json-tree__v.is-num {
+  color: var(--blue);
+}
+
+.json-tree__v.is-bool,
+.json-tree__v.is-null {
+  color: var(--orange);
+}
+
+.json-tree__copy {
+  display: inline-grid;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin-left: auto;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  background: transparent;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.json-tree__row:hover .json-tree__copy,
+.json-tree__copy:focus-visible {
   opacity: 1;
+}
+
+.json-tree__copy:hover {
+  color: var(--text);
+}
+
+.json-tree__more {
+  margin: 2px 0 2px 14px;
+  padding: 0;
+  border: 0;
+  color: var(--text-muted);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.json-tree__more:hover {
+  color: var(--accent);
+}
+
+/* Long You messages: folded under a soft fade until 展开全文. */
+.expandable-body.is-folded .expandable-body__inner {
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 48px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 48px), transparent);
+}
+
+.expandable-body__toggle {
+  margin-top: 4px;
+  padding: 2px 0;
+  border: 0;
+  color: var(--text-muted);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.expandable-body__toggle:hover,
+.expandable-body__toggle:focus-visible {
+  color: var(--accent);
 }
 
 /* Reply footer: meta tags left, Copy right */
@@ -4779,6 +5488,68 @@ body.is-tab-detaching .floating-trigger {
   word-break: break-word;
   scrollbar-width: thin;
   scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+/* Fenced code (MdCodeBlock): header row with language + copy; long blocks fold. */
+.md-body .md-code {
+  position: relative;
+  max-width: 100%;
+  margin: 0.55em 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--terminal-bg, var(--panel-soft));
+}
+
+.md-body .md-code > pre {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.md-code__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 24px;
+  padding: 0 4px 0 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.md-code__lang {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.md-code.is-folded > pre {
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 2.2em), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 2.2em), transparent);
+}
+
+.md-code__more {
+  display: block;
+  width: 100%;
+  min-height: 26px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  background: transparent;
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.md-code__more:hover,
+.md-code__more:focus-visible {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 5%, transparent);
 }
 
 .md-body pre code {
@@ -5027,6 +5798,21 @@ body.is-tab-detaching .floating-trigger {
   white-space: nowrap;
 }
 
+/* Closed box: the subagent's last line (its current step, or why it failed). */
+.subagent-box__line {
+  margin: -2px 0 0;
+  padding: 0 10px 7px 30px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-size: 11.5px;
+}
+
+.subagent-box__line.is-failed {
+  color: var(--red);
+}
+
 .subagent-box__body {
   min-width: 0;
   max-height: 280px;
@@ -5058,9 +5844,8 @@ body.is-tab-detaching .floating-trigger {
   min-height: 20px;
   margin-bottom: 8px;
   color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 /* Pin refresh / actions to the content right edge (match usage-row values). */
@@ -5406,6 +6191,29 @@ body.is-tab-detaching .floating-trigger {
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+/* Memory rows: edit / delete float at the row end on hover instead of taking a line each. */
+.memory-entry {
+  position: relative;
+}
+
+.memory-entry__actions {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  padding-left: 4px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.memory-entry:hover .memory-entry__actions,
+.memory-entry:focus-within .memory-entry__actions {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .panel-entry__date {
@@ -5858,7 +6666,18 @@ body.is-tab-detaching .floating-trigger {
 }
 
 .permission-dialog__header strong {
-  font-size: 13px;
+  color: var(--text-strong);
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+/* Small label over the action itself, which is the real title. */
+.permission-dialog__header .permission-dialog__eyebrow {
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 500;
 }
 
 .permission-dialog__header span {
@@ -6573,6 +7392,11 @@ body.is-tab-detaching .floating-trigger {
 .permission-dialog__btn--deny {
   border-color: color-mix(in srgb, var(--red) 45%, var(--border));
   background: color-mix(in srgb, var(--red) 12%, var(--panel));
+}
+
+/* Refusals sit left; the allow group is pushed to the right edge. */
+.permission-dialog__btn.is-split {
+  margin-left: auto;
 }
 
 .diff-dialog {
