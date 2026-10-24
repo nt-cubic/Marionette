@@ -130,7 +130,7 @@ export function pendingHandoff(
   sessionId: string,
 ): PendingHandoff | null {
   for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
+    const event = events[index]!;
     if (event.sessionId !== sessionId) continue;
     if (event.type === "user_message") return null;
     if (event.type === "handoff_prepared") {

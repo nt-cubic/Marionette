@@ -16,7 +16,7 @@ export type ForkAnchor = {
  */
 export function forkCutIndex(events: SessionEvent[], anchor: ForkAnchor): number {
   for (let i = events.length - 1; i >= 0; i -= 1) {
-    const event = events[i];
+    const event = events[i]!;
     if (event.type !== "assistant_message") continue;
     if (anchor.messageId ? event.messageId === anchor.messageId : event.text === anchor.text) {
       return i;

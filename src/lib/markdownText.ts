@@ -110,10 +110,10 @@ function isClaudePanelTableRow(line: string): boolean {
     CLAUDE_MD_WORD.test(cell) ||
     cell === "-";
   const [head, ...rest] = cells;
-  if (CLAUDE_MD_LABEL.test(head)) return rest.every(isValue);
-  if (/^Cost$/i.test(head)) return rest.every((cell) => CLAUDE_MD_WORD.test(cell));
-  if (/^Breakdown$/i.test(head)) return rest.every((cell) => /^Tokens$/i.test(cell));
-  if (CLAUDE_MD_MONEY.test(head)) return rest.every(isValue);
+  if (CLAUDE_MD_LABEL.test(head!)) return rest.every(isValue);
+  if (/^Cost$/i.test(head!)) return rest.every((cell) => CLAUDE_MD_WORD.test(cell));
+  if (/^Breakdown$/i.test(head!)) return rest.every((cell) => /^Tokens$/i.test(cell));
+  if (CLAUDE_MD_MONEY.test(head!)) return rest.every(isValue);
   return false;
 }
 
@@ -164,7 +164,7 @@ export function stripClaudeUsagePanel(text: string): string {
   const lines = normalized.split("\n");
 
   for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index].trim();
+    const line = lines[index]!.trim();
     if (
       !CLAUDE_PANEL_ANCHOR_LINE.test(line) &&
       !CLAUDE_PANEL_MD_USAGE_HEADING.test(line)
@@ -190,7 +190,7 @@ export function stripClaudeUsagePanel(text: string): string {
     // into the strip so no orphan glyph is left above the cut.
     let start = index;
     while (start > 0) {
-      const prev = lines[start - 1].trim();
+      const prev = lines[start - 1]!.trim();
       if (
         !prev ||
         !(
@@ -256,7 +256,7 @@ export function stripRuntimeMetadata(text: string): string {
   const normalized = text.replace(/\r\n?/g, "\n");
   const lines = normalized.split("\n");
   for (let index = 0; index < lines.length; index += 1) {
-    if (!isRuntimeMetadataLine(lines[index])) continue;
+    if (!isRuntimeMetadataLine(lines[index]!)) continue;
 
     const tail = lines.slice(index).filter((line) => line.trim());
     if (tail.length === 0 || !tail.every(isRuntimeMetadataLine)) continue;
@@ -310,7 +310,7 @@ function splitTableRow(line: string): string[] | null {
   }
   cells.push(cell);
 
-  if (cells.length > 1 && cells[cells.length - 1].trim() === "") {
+  if (cells.length > 1 && cells[cells.length - 1]!.trim() === "") {
     cells.pop();
   }
   return cells;
@@ -334,7 +334,7 @@ function updateFenceState(line: string, state: FenceState): void {
   const match = line.match(/^\s{0,3}(`{3,}|~{3,})/);
   if (!match) return;
 
-  const marker = match[1];
+  const marker = match[1]!;
   const character = marker[0] as "`" | "~";
   if (!state.character) {
     state.character = character;
@@ -376,14 +376,14 @@ export function normalizeMarkdownFences(text: string): string {
   const fence: FenceState = { character: null, length: 0 };
 
   for (let index = 0; index < lines.length; index += 1) {
-    let line = lines[index];
+    let line = lines[index]!;
 
     if (!fence.character) {
       // "prose：```json" / "prose```" → split so the fence starts its own line.
       const gluedOpen = line.match(/^(.*\S)[ \t]*(`{3,}|~{3,})([^\n`~]*)$/);
-      if (gluedOpen && FENCE_INFO_STRING.test(gluedOpen[3])) {
-        out.push(gluedOpen[1]);
-        line = gluedOpen[2] + gluedOpen[3].trimStart();
+      if (gluedOpen && FENCE_INFO_STRING.test(gluedOpen[3]!)) {
+        out.push(gluedOpen[1]!);
+        line = gluedOpen[2]! + gluedOpen[3]!.trimStart();
       }
       updateFenceState(line, fence);
       out.push(line);
@@ -395,11 +395,11 @@ export function normalizeMarkdownFences(text: string): string {
     const midClose = line.match(/^(.*\S)[ \t]*(`{3,}|~{3,})[ \t]*$/);
     if (
       midClose &&
-      midClose[2][0] === fence.character &&
-      midClose[2].length >= fence.length
+      midClose[2]![0] === fence.character &&
+      midClose[2]!.length >= fence.length
     ) {
-      out.push(midClose[1]);
-      out.push(midClose[2]);
+      out.push(midClose[1]!);
+      out.push(midClose[2]!);
       fence.character = null;
       fence.length = 0;
       continue;
@@ -482,12 +482,12 @@ export function normalizeMarkdownTables(text: string): string {
   const fence: FenceState = { character: null, length: 0 };
 
   for (let index = 0; index < lines.length - 1; index += 1) {
-    const line = lines[index];
+    const line = lines[index]!;
     updateFenceState(line, fence);
     if (fence.character) continue;
 
     const header = splitTableRow(line);
-    const delimiter = splitTableRow(lines[index + 1]);
+    const delimiter = splitTableRow(lines[index + 1]!);
     if (!header || header.length < 2 || !delimiter || !delimiter.every(isDelimiterCell)) {
       continue;
     }
@@ -495,7 +495,7 @@ export function normalizeMarkdownTables(text: string): string {
     if (delimiter.length !== header.length) {
       const repaired = delimiter.slice(0, header.length);
       while (repaired.length < header.length) repaired.push("---");
-      lines[index + 1] = formatTableRow(lines[index + 1], repaired);
+      lines[index + 1] = formatTableRow(lines[index + 1]!, repaired);
     }
 
     // The delimiter row is not a header candidate, so skip over it.

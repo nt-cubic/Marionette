@@ -102,7 +102,7 @@ function stripMarkdown(text: string): string {
 
 function lastAssistantText(events: SessionEvent[]): string | null {
   for (let i = events.length - 1; i >= 0; i--) {
-    const e = events[i];
+    const e = events[i]!;
     if (e.type === "assistant_message" && e.text.trim()) return e.text;
   }
   return null;
@@ -127,7 +127,7 @@ function tailQuestionSentence(assistantText: string): string | null {
     /[？?]$|吗|呢|要不要|是否|需要我|用不用|还是|should I|do you want|would you like|shall I|want me to/i;
 
   for (let i = parts.length - 1; i >= 0; i--) {
-    const s = parts[i];
+    const s = parts[i]!;
     if (questionHint.test(s)) return s;
   }
   return null;
@@ -139,8 +139,8 @@ function buildQuestionChips(sentence: string): Suggestion[] {
   // A 还是 B
   const orMatch = s.match(/^(.+?)还是(.+?)[？?吗呢。!！]*$/);
   if (orMatch && !/要不要|是否|需要我|用不用|should I|want me/i.test(s)) {
-    const a = stripFirstPerson(orMatch[1].replace(/[，,、]/g, "").trim());
-    const b = stripFirstPerson(orMatch[2].replace(/[，,、]/g, "").trim());
+    const a = stripFirstPerson(orMatch[1]!.replace(/[，,、]/g, "").trim());
+    const b = stripFirstPerson(orMatch[2]!.replace(/[，,、]/g, "").trim());
     if (a && b && [...a].length <= 40 && [...b].length <= 40) {
       return [
         { id: "q-or-a", label: clipLabel(a), text: a, source: "options" },
@@ -152,7 +152,7 @@ function buildQuestionChips(sentence: string): Suggestion[] {
   // 要不要 X / 用不用 X
   let m = s.match(/(?:要不要|用不用)\s*(.+?)[？?吗呢。!！]*$/i);
   if (m) {
-    const action = stripFirstPerson(m[1]);
+    const action = stripFirstPerson(m[1]!);
     if (action) {
       return [
         {
@@ -169,7 +169,7 @@ function buildQuestionChips(sentence: string): Suggestion[] {
   // 需要我 X 吗 / 是否(需要) X
   m = s.match(/需要我\s*(.+?)[吗呢？?。!！]*$/i);
   if (m) {
-    const action = stripFirstPerson(m[1]);
+    const action = stripFirstPerson(m[1]!);
     if (action) {
       return [
         {
@@ -185,7 +185,7 @@ function buildQuestionChips(sentence: string): Suggestion[] {
 
   m = s.match(/是否(?:需要)?\s*(.+?)[？?吗呢。!！]*$/i);
   if (m) {
-    const action = stripFirstPerson(m[1]);
+    const action = stripFirstPerson(m[1]!);
     if (action) {
       return [
         {
@@ -202,7 +202,7 @@ function buildQuestionChips(sentence: string): Suggestion[] {
   // 我可以 X，要吗/好吗
   m = s.match(/(?:我可以|我能|我来)\s*(.+?)[，,]?\s*(?:要吗|好吗|可以吗)[？?。!！]*$/i);
   if (m) {
-    const action = stripFirstPerson(m[1]);
+    const action = stripFirstPerson(m[1]!);
     if (action) {
       return [
         {
@@ -221,7 +221,7 @@ function buildQuestionChips(sentence: string): Suggestion[] {
     /(?:should I|shall I|want me to|would you like(?: me)? to|do you want(?: me)? to)\s+(.+?)[？?.!]*$/i,
   );
   if (m) {
-    const action = stripFirstPerson(m[1]);
+    const action = stripFirstPerson(m[1]!);
     if (action) {
       return [
         {
@@ -251,7 +251,7 @@ function buildOptionChips(assistantText: string): Suggestion[] | null {
   for (const line of lines) {
     const m = line.match(/^\s*(?:(\d+)[.)、]\s+|[-*+]\s+)(.+)$/);
     if (!m) continue;
-    const text = m[2].trim();
+    const text = m[2]!.trim();
     if (!text || [...text].length > 40) continue;
     items.push({ n: m[1] ? Number(m[1]) : items.length + 1, text });
   }
@@ -279,7 +279,7 @@ function buildDropChips(paths: string[]): Suggestion[] {
   if (paths.length === 0) return [];
   if (paths.length >= 2) {
     // Infer dominant type from first path for third chip
-    const primary = buildDropChips([paths[0]]).slice(0, 1);
+    const primary = buildDropChips([paths[0]!]).slice(0, 1);
     const multi: Suggestion[] = [
       {
         id: "drop-multi-1",
@@ -300,7 +300,7 @@ function buildDropChips(paths: string[]): Suggestion[] {
     return multi.slice(0, 3);
   }
 
-  const p = paths[0];
+  const p = paths[0]!;
   const base = (p.replace(/[/\\]+$/, "").split(/[/\\]/).pop() ?? p).toLowerCase();
   const ext = pathExt(p);
 

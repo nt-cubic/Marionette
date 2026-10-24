@@ -147,9 +147,9 @@ function pathToNode(root: SplitNode, id: string): SplitNode[] | null {
 export function contiguousAxisRoot(root: SplitNode, paneId: string, axis: SplitAxis): SplitNode {
   const path = pathToNode(root, paneId);
   if (!path || path.length === 0) return root;
-  let top = path[path.length - 1];
+  let top = path[path.length - 1]!;
   for (let i = path.length - 2; i >= 0; i -= 1) {
-    const node = path[i];
+    const node = path[i]!;
     if (node.type === "split" && node.axis === axis) top = node;
     else break;
   }
@@ -303,8 +303,8 @@ function nextActiveAfterRemove(tabIds: string[], activeTabId: string, removedId:
   }
   const idx = tabIds.indexOf(removedId);
   if (idx < 0) return activeTabId;
-  if (idx < tabIds.length - 1) return tabIds[idx + 1];
-  if (idx > 0) return tabIds[idx - 1];
+  if (idx < tabIds.length - 1) return tabIds[idx + 1]!;
+  if (idx > 0) return tabIds[idx - 1]!;
   return "";
 }
 
@@ -364,7 +364,7 @@ function uniqueTabs(tabIds: string[]): string[] {
 function squashOverflow(root: SplitNode, maxLeaves: number): SplitNode {
   const leaves = collectLeaves(root);
   if (leaves.length <= maxLeaves) return root;
-  const keepLast = leaves[maxLeaves - 1];
+  const keepLast = leaves[maxLeaves - 1]!;
   const extra: string[] = [];
   for (const leaf of leaves.slice(maxLeaves)) extra.push(...leaf.tabIds);
   const overflowIds = new Set(leaves.slice(maxLeaves).map((l) => l.id));
@@ -473,7 +473,7 @@ export function assertInvariants(state: SplitWorkspaceState, maxLeaves = MAX_PAN
   };
   walk(state.root);
   if (tabCount === 0) {
-    if (leaves.length !== 1 || leaves[0].tabIds.length !== 0 || leaves[0].activeTabId !== "") {
+    if (leaves.length !== 1 || leaves[0]!.tabIds.length !== 0 || leaves[0]!.activeTabId !== "") {
       throw new Error("invariant: empty workspace must be exactly one empty leaf");
     }
     if (state.root.type !== "leaf") throw new Error("invariant: empty workspace root must be a leaf");
@@ -757,7 +757,7 @@ function bodyRect(
 
 function insertIndex(tabXs: number[], x: number): number {
   for (let i = 0; i < tabXs.length; i += 1) {
-    if (tabXs[i] > x) return i;
+    if (tabXs[i]! > x) return i;
   }
   return tabXs.length;
 }

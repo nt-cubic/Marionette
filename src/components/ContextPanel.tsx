@@ -669,7 +669,7 @@ export const ContextPanel = memo(function ContextPanel({
           <div className="usage-list">
             {usageGroups.map((group) =>
               group.windows.length === 1 ? (
-                renderUsageRow(group.windows[0])
+                renderUsageRow(group.windows[0]!)
               ) : (
                 <div className="usage-group" key={group.key}>
                   <div className={`usage-group__head usage-row--${group.tone}`}>

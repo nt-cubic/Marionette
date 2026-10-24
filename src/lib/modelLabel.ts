@@ -38,7 +38,7 @@ function providerPrefix(text: string): { provider: string; rest: string } | null
   // Coding Plan › GLM-5.3). The group header prints the provider, so the row
   // label must not repeat it.
   const arrow = /^(.+?)\s*›\s*(.+)$/.exec(text);
-  if (arrow) return { provider: arrow[1].trim(), rest: arrow[2].trim() };
+  if (arrow) return { provider: arrow[1]!.trim(), rest: arrow[2]!.trim() };
   return null;
 }
 
@@ -46,9 +46,9 @@ function providerPrefix(text: string): { provider: string; rest: string } | null
 function leadingBracketTag(label: string): { tag: string; rest: string } | null {
   const m = /^\s*\[([^\]]+)\]\s*(.*)$/.exec(label);
   if (!m) return null;
-  const tag = m[1].trim();
+  const tag = m[1]!.trim();
   if (!tag) return null;
-  return { tag, rest: m[2].trim() };
+  return { tag, rest: m[2]!.trim() };
 }
 
 function stripLeadingBracket(label: string): string {
@@ -65,7 +65,7 @@ function humanizeSlug(slug: string): string {
   // grok-4.5 → Grok 4.5
   const grok = s.match(/^grok[-_]?([\d.]+(?:[-_][\w.]+)?)$/i);
   if (grok) {
-    const rest = grok[1].replace(/[-_]/g, " ");
+    const rest = grok[1]!.replace(/[-_]/g, " ");
     return `Grok ${rest}`;
   }
 
@@ -131,7 +131,7 @@ export function prettyModelLabel(
 /** Trailing parenthetical of a display name: "… (Teamo)" → "Teamo". */
 function trailingTag(label: string): string | null {
   const m = /\(([^()]*)\)\s*$/.exec(label.trim());
-  return m ? m[1].trim() : null;
+  return m ? m[1]!.trim() : null;
 }
 
 /**
@@ -192,14 +192,14 @@ function familyGroup(text: string): string | null {
 function pathPrefix(model: Pick<ModelDef, "id" | "label">): string | null {
   const leading = (text: string): string => {
     const trimmed = text.trim();
-    if (trimmed.includes("::")) return trimmed.split("::")[0];
+    if (trimmed.includes("::")) return trimmed.split("::")[0]!;
     // Adapter display name (`Provider › Model`) — checked before the path
     // separators because the model half may itself contain `/`.
-    if (trimmed.includes("›")) return trimmed.split("›")[0];
+    if (trimmed.includes("›")) return trimmed.split("›")[0]!;
     // ZCode ids are `provider\model`; the model half can contain `/`
     // (`marionette\zhipu/glm-5.3`), so the backslash wins over the slash.
-    if (trimmed.includes("\\")) return trimmed.split("\\")[0];
-    return trimmed.includes("/") ? trimmed.split("/")[0] : "";
+    if (trimmed.includes("\\")) return trimmed.split("\\")[0]!;
+    return trimmed.includes("/") ? trimmed.split("/")[0]! : "";
   };
   const idPart = leading(model.id);
   const labelPart = leading(model.label);

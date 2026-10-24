@@ -271,22 +271,22 @@ export function mapNumericEffortToOptionId(
   if (n <= 0.2) {
     return options.find((o) => /low|minimal|min/.test(o.id.toLowerCase()))?.id
       ?? options.find((o) => o.id.toLowerCase() === "default")?.id
-      ?? options[0].id;
+      ?? options[0]!.id;
   }
   if (n >= 0.8) {
     return options.find((o) => /max|xhigh|ultra/.test(o.id.toLowerCase()))?.id
       ?? options.find((o) => /high/.test(o.id.toLowerCase()))?.id
-      ?? options[options.length - 1].id;
+      ?? options[options.length - 1]!.id;
   }
   if (n >= 0.55) {
     return options.find((o) => o.id.toLowerCase() === "high")?.id
       ?? options.find((o) => /medium|mid|default/.test(o.id.toLowerCase()))?.id
-      ?? options[Math.floor(options.length / 2)].id;
+      ?? options[Math.floor(options.length / 2)]!.id;
   }
   // mid-low → default or medium
   if (ids.includes("default")) return options.find((o) => o.id.toLowerCase() === "default")!.id;
   if (ids.includes("medium")) return options.find((o) => o.id.toLowerCase() === "medium")!.id;
-  return options[Math.floor(options.length / 2)]?.id ?? options[0].id;
+  return options[Math.floor(options.length / 2)]?.id ?? options[0]!.id;
 }
 
 /**

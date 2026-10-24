@@ -1113,14 +1113,14 @@ export function App() {
       if (!rail?.length) continue;
       let startIndex = 0;
       for (let i = rail.length - 1; i >= 0; i -= 1) {
-        const event = rail[i];
+        const event = rail[i]!;
         if (event.type === "user_message" || event.type === "handoff_prepared") {
           startIndex = i;
           break;
         }
       }
       for (let i = startIndex; i < rail.length; i += 1) {
-        const event = rail[i];
+        const event = rail[i]!;
         if (event.type !== "tool_call" || !event.path) continue;
         const kind = classifyToolCall(event);
         if (kind === "edit" || kind === "write") paths.push(event.path);
@@ -1327,7 +1327,7 @@ export function App() {
     const agent =
       availableAgents.find((candidate) => candidate.id === activeSession?.agentId) ??
       availableAgents[0] ??
-      agents[0];
+      agents[0]!;
     const connected =
       !!activeSession &&
       (activeSession.status === "starting" ||
@@ -1432,7 +1432,7 @@ export function App() {
       const agentId =
         agentsRef.current[0]?.id ??
         availableAgents[0]?.id ??
-        agents[0].id;
+        agents[0]!.id;
       const result = await openHere(path, agentId);
       if (result.kind === "project") {
         const project = result.project;
@@ -1560,7 +1560,7 @@ export function App() {
       // `.marionette` is a project; a plain folder becomes one Chat session.
       if (launchPath) {
         try {
-          const agentId = resolvedAgents[0]?.id ?? agents[0].id;
+          const agentId = resolvedAgents[0]?.id ?? agents[0]!.id;
           const result = await openHere(launchPath, agentId);
           if (result.kind === "project") {
             const project = result.project;
@@ -1642,7 +1642,7 @@ export function App() {
         setCurrentProjectId((current) =>
           resolvedProjects.some((project) => project.id === current)
             ? current
-            : resolvedProjects[0].id,
+            : resolvedProjects[0]!.id,
         );
       } else {
         setCurrentProjectId("");
@@ -3325,7 +3325,7 @@ export function App() {
     // renders those rows).
     let lastStats: TurnStats | null = null;
     for (let i = parsed.length - 1; i >= 0; i -= 1) {
-      const e = parsed[i];
+      const e = parsed[i]!;
       if (e.type === "assistant_message" && e.sessionId === sessionId && e.turnStats) {
         lastStats = e.turnStats;
         break;
@@ -3755,7 +3755,7 @@ export function App() {
         let openSubagent = false;
         const evs = shadowBySessionRef.current.get(session.id) ?? EMPTY_EVENTS;
         for (let i = evs.length - 1; i >= 0; i -= 1) {
-          const e = evs[i];
+          const e = evs[i]!;
           if (
             e.type === "tool_call" &&
             isToolInProgress(e.status) &&
@@ -3917,7 +3917,7 @@ export function App() {
       currentSession ?? {
         id: `session-empty-${currentProjectId || currentProject?.id || "none"}`,
         projectId: currentProject?.id ?? currentProjectId,
-        agentId: availableAgents[0]?.id ?? agents[0].id,
+        agentId: availableAgents[0]?.id ?? agents[0]!.id,
         label: "New session",
         cwd: currentProject?.rootPath ?? (currentProjectId === CHAT_PROJECT_ID ? defaultFolderPath : ""),
         status: "exited" as const,
@@ -3932,7 +3932,7 @@ export function App() {
   }, [availableAgents, currentProject, currentProjectId, currentSession, defaultFolderPath]);
 
   const currentAgent = useMemo(
-    () => availableAgents.find((agent) => agent.id === displaySession.agentId) ?? availableAgents[0] ?? agents[0],
+    () => availableAgents.find((agent) => agent.id === displaySession.agentId) ?? availableAgents[0] ?? agents[0]!,
     [availableAgents, displaySession]
   );
 
@@ -4017,7 +4017,7 @@ export function App() {
     const resolvedAgentId =
       agentId ??
       source?.agentId ??
-      (availableAgents[0] ?? agents[0]).id;
+      (availableAgents[0] ?? agents[0])!.id;
     // Model/mode/effort only transfer when the agent is the same (or the
     // caller passed prefs explicitly). A different agent has a different catalog.
     const sameAgentAsSource = !source || source.agentId === resolvedAgentId;
@@ -4217,7 +4217,7 @@ export function App() {
         const resolvedAgentId =
           typeof agentId === "string" && agentId
             ? agentId
-            : (availableAgents[0]?.id ?? agents[0].id);
+            : (availableAgents[0]?.id ?? agents[0]!.id);
         const cwd = defaultFolderPath || (await getDefaultFolder());
         const session = await createChatSession(resolvedAgentId, "新对话", cwd || null);
         if (!session) return undefined;
@@ -4348,7 +4348,7 @@ export function App() {
       const agent =
         agentsRef.current.find((a) => a.id === session.agentId) ??
         agentsRef.current[0] ??
-        agents[0];
+        agents[0]!;
       if (agent.transport !== "acp") return null;
 
       // Already bootstrapped?
@@ -4530,7 +4530,7 @@ export function App() {
         if (insertAt === from) return current; // line sits on an edge that keeps order
         const next = [...current];
         const [item] = next.splice(from, 1);
-        next.splice(insertAt, 0, item);
+        next.splice(insertAt, 0, item!);
         void reorderProjectsApi(next.map((p) => p.id)).catch(() => {
           void listProjects().then((projects) => {
             if (projects.length > 0) setAvailableProjects(projects);
@@ -4816,7 +4816,7 @@ export function App() {
       ? (shadowBySessionRef.current.get(sid) ?? EMPTY_EVENTS)
       : EMPTY_EVENTS;
     for (let i = events.length - 1; i >= 0; i--) {
-      const e = events[i];
+      const e = events[i]!;
       if (e.type !== "assistant_message") continue;
       const proposed = parseMarionetteTodoFence(e.text);
       if (proposed) return previewMergeFromAi(todoItems, proposed);
@@ -5766,7 +5766,7 @@ export function App() {
         if (reject) {
           void handlePlanPermissionChoose(reject.optionId);
         } else if (planApproval.permissionOptions?.length) {
-          const last = planApproval.permissionOptions[planApproval.permissionOptions.length - 1];
+          const last = planApproval.permissionOptions[planApproval.permissionOptions.length - 1]!;
           void handlePlanPermissionChoose(last.optionId);
         } else {
           void handlePlanApproval("abandon");
@@ -6027,7 +6027,7 @@ export function App() {
       const events = shadowBySessionRef.current.get(childId) ?? EMPTY_EVENTS;
       let summary = "";
       for (let i = events.length - 1; i >= 0; i--) {
-        const e = events[i];
+        const e = events[i]!;
         if (e.type === "assistant_message" && e.text.trim()) {
           summary = e.text.trim();
           break;
@@ -6475,7 +6475,7 @@ export function App() {
       const sendAgent =
         agentsRef.current.find((a) => a.id === sendRow?.agentId) ??
         agentsRef.current[0] ??
-        agents[0];
+        agents[0]!;
       // Prefer Composer chip snapshot (what the user saw at send). Caps.currentMode
       // lags on purpose after a mode switch — agent often still echoes the old mode.
       const caps = capsByIdRef.current[sid] ?? (sid === currentSessionIdRef.current ? sessionCapabilities : null);
@@ -6798,7 +6798,7 @@ export function App() {
       if (classified.kind === "busy") {
         updateSessionEvents(sid, (current) => {
           for (let i = current.length - 1; i >= 0; i -= 1) {
-            const e = current[i];
+            const e = current[i]!;
             if (e.type === "user_message" && e.text === composed) {
               return [...current.slice(0, i), ...current.slice(i + 1)];
             }
@@ -7151,7 +7151,7 @@ export function App() {
       setProjectDialogOpen(false);
       setProjectPath("");
       // Auto-open a conversation so ACP/composer are usable immediately.
-      await createSessionForProject(project.id, availableAgents[0]?.id ?? agents[0].id, project);
+      await createSessionForProject(project.id, availableAgents[0]?.id ?? agents[0]!.id, project);
       // First look at a new folder: show what this machine can lend it.
       void refreshProjectContext(project.id);
     } catch (error) {
@@ -7383,7 +7383,7 @@ export function App() {
     const agent =
       availableAgents.find((item) => item.id === session.agentId) ??
       availableAgents[0] ??
-      agents[0];
+      agents[0]!;
     const caps = capsById[session.id] ?? (session.id === currentSessionId ? sessionCapabilities : null);
     const queuedSends = pendingSendsRef.current.get(session.id) ?? [];
     const prefill =
@@ -7480,7 +7480,7 @@ export function App() {
         <div className="composer-slot__notices">
         {sessionNotices[session.id] && (
           <SessionNoticeStrip
-            notice={sessionNotices[session.id]}
+            notice={sessionNotices[session.id]!}
             onDismiss={() => {
               setSessionNotices((current) => {
                 const next = { ...current };

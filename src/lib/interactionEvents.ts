@@ -84,7 +84,7 @@ export function askPromptEvent(
 
 function lastPromptIndex(events: SessionEvent[], requestId: string): number {
   for (let i = events.length - 1; i >= 0; i -= 1) {
-    const row = events[i];
+    const row = events[i]!;
     if (isPromptEvent(row) && row.requestId === requestId) return i;
   }
   return -1;
@@ -96,7 +96,7 @@ export function upsertPromptEvent(
 ): SessionEvent[] {
   const idx = lastPromptIndex(events, event.requestId);
   if (idx < 0) return [...events, event];
-  const prev = events[idx];
+  const prev = events[idx]!;
   if (!isPromptEvent(prev)) return [...events, event];
   // The agent reused a request id for a *new* prompt (a restarted process
   // restarts its counter). Overwriting the settled row would move the live
@@ -125,7 +125,7 @@ export function patchPromptEvent(
   // is actually looking at, never an older answered one.
   let idx = -1;
   for (let i = events.length - 1; i >= 0; i -= 1) {
-    const row = events[i];
+    const row = events[i]!;
     if (!isPromptEvent(row) || row.requestId !== requestId) continue;
     if (row.status === "pending") {
       idx = i;

@@ -629,7 +629,7 @@ export function parseClaudeUsageText(text: string): UsageWindow[] {
 
   let match: RegExpExecArray | null;
   while ((match = re.exec(text)) !== null) {
-    const scope = match[1].toLowerCase();
+    const scope = match[1]!.toLowerCase();
     const qualifier = (match[2] ?? "").trim().toLowerCase();
     const used = Number(match[3]);
     if (!Number.isFinite(used)) continue;
@@ -676,8 +676,8 @@ export function parseCodexStatusRateLimits(text: string): UsageWindow[] {
     /\*\*([^*]*?((?:\d+[mhd])\s+limit|Weekly limit)):\*\*\s*(\d+(?:\.\d+)?)%\s*left([^\n]*)/gi;
   let match: RegExpExecArray | null;
   while ((match = re.exec(text)) !== null) {
-    const fullLabel = match[1].trim();
-    const durationLabel = match[2].trim();
+    const fullLabel = match[1]!.trim();
+    const durationLabel = match[2]!.trim();
     const percentLeft = Number(match[3]);
     if (!Number.isFinite(percentLeft)) continue;
     const used = Math.max(0, Math.min(100, Math.round((100 - percentLeft) * 10) / 10));
@@ -1030,7 +1030,7 @@ export function parseGrokCostText(text: string): UsageWindow[] {
         id: "weekly",
         label: "Weekly limit",
         percentage: Math.max(0, Math.min(100, pct)),
-        detail: resetLine ? `resets ${resetLine[1].trim()}` : null,
+        detail: resetLine ? `resets ${resetLine[1]!.trim()}` : null,
         kind: "rate_limit",
       });
     }

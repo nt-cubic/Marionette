@@ -134,7 +134,7 @@ export function extractCommandText(event: ToolCallEvent): string {
     const values = Object.values(parsed).filter(
       (v): v is string => typeof v === "string" && v.trim().length > 0,
     );
-    if (values.length === 1) return values[0].trim();
+    if (values.length === 1) return values[0]!.trim();
   } catch {
     // Not JSON, or JSON clipped mid-string upstream (`{"variant":"Bash","command":"powershell -NoProfi`).
     const clipped = /"(?:command|cmd|script|query|pattern|path|filePath|file_path|url)"\s*:\s*"((?:[^"\\]|\\.)*)/.exec(input);
@@ -251,20 +251,20 @@ export function clusterActivityRuns(
   const clustered: ActivityClusterUnit[] = [];
   let i = 0;
   while (i < units.length) {
-    const unit = units[i];
+    const unit = units[i]!;
     if (isSubagentEvent(unit.event)) {
       const start = i;
       i += 1;
-      while (i < units.length && isSubagentEvent(units[i].event)) i += 1;
+      while (i < units.length && isSubagentEvent(units[i]!.event)) i += 1;
       const slice = units.slice(start, i);
       if (slice.length >= 2) {
         clustered.push({
           kind: "subagent_group",
-          key: `subg-${slice[0].index}`,
+          key: `subg-${slice[0]!.index}`,
           items: slice.map(({ event, index }) => ({ event, index })),
         });
       } else {
-        clustered.push({ kind: "row", ...slice[0] });
+        clustered.push({ kind: "row", ...slice[0]! });
       }
       continue;
     }
@@ -277,20 +277,20 @@ export function clusterActivityRuns(
     i += 1;
     while (
       i < units.length &&
-      isActivityEvent(units[i].event) &&
-      !isSubagentEvent(units[i].event)
+      isActivityEvent(units[i]!.event) &&
+      !isSubagentEvent(units[i]!.event)
     ) {
       i += 1;
     }
     const slice = units.slice(start, i);
     if (slice.length === 1) {
-      clustered.push({ kind: "row", ...slice[0] });
+      clustered.push({ kind: "row", ...slice[0]! });
     } else {
       clustered.push({
         kind: "activity",
         // Start index only — the run grows as tools stream in; a key that
         // included the last index remounted the fold on every new tool.
-        key: `act-${slice[0].index}`,
+        key: `act-${slice[0]!.index}`,
         items: slice.map(({ event, index }) => ({ event, index })),
       });
     }
@@ -305,23 +305,23 @@ export function groupSubagentRuns(
   const grouped: ActivityClusterUnit[] = [];
   let i = 0;
   while (i < units.length) {
-    if (!isSubagentEvent(units[i].event)) {
-      grouped.push({ kind: "row", ...units[i] });
+    if (!isSubagentEvent(units[i]!.event)) {
+      grouped.push({ kind: "row", ...units[i]! });
       i += 1;
       continue;
     }
     const start = i;
     i += 1;
-    while (i < units.length && isSubagentEvent(units[i].event)) i += 1;
+    while (i < units.length && isSubagentEvent(units[i]!.event)) i += 1;
     const slice = units.slice(start, i);
     if (slice.length >= 2) {
       grouped.push({
         kind: "subagent_group",
-        key: `subg-${slice[0].index}`,
+        key: `subg-${slice[0]!.index}`,
         items: slice.map(({ event, index }) => ({ event, index })),
       });
     } else {
-      grouped.push({ kind: "row", ...slice[0] });
+      grouped.push({ kind: "row", ...slice[0]! });
     }
   }
   return grouped;
@@ -382,7 +382,7 @@ function kindCountPhrase(bucket: ActivityKindBucket, count: number): string {
 export function kindGroupTitle(group: ActivityKindGroup): string {
   const { bucket, items } = group;
   if (items.length === 1) {
-    const event = items[0].event;
+    const event = items[0]!.event;
     if (event.type === "thought") return "Thought";
     if (event.type === "tool_call") {
       const verb = toolKindVerb(bucket === "thought" ? "other" : bucket);
@@ -396,11 +396,11 @@ export function kindGroupTitle(group: ActivityKindGroup): string {
 export function summarizeKindGroup(group: ActivityKindGroup): ActivitySummary {
   const title = kindGroupTitle(group);
   let preview = "";
-  if (group.items.length === 1 && group.items[0].event.type === "tool_call") {
+  if (group.items.length === 1 && group.items[0]!.event.type === "tool_call") {
     // Title already has verb+main; keep preview empty so the row stays one phrase.
     preview = "";
   } else if (group.bucket === "command" && group.items.length > 1) {
-    const last = group.items[group.items.length - 1].event;
+    const last = group.items[group.items.length - 1]!.event;
     if (last.type === "tool_call") preview = toolMainText(last);
   }
   return {
@@ -534,7 +534,7 @@ export function activityTimeline(
   if (first == null) return null;
   // Next known start per step, filled back to front so the run stays O(n).
   const nextStart: (number | null)[] = new Array(items.length).fill(null);
-  for (let i = items.length - 2; i >= 0; i -= 1) nextStart[i] = starts[i + 1] ?? nextStart[i + 1];
+  for (let i = items.length - 2; i >= 0; i -= 1) nextStart[i] = starts[i + 1]! ?? nextStart[i + 1];
   const lanes: ActivityKindBucket[] = [];
   const spans: ActivitySpan[] = [];
   let last = first;

@@ -202,7 +202,7 @@ export function isWorkspaceDiffPath(path: string, cwd?: string | null): boolean 
 export function diffTargetPath(diff: string, fallback?: string | null): string {
   const header = diff.match(/^\+\+\+\s+([^\t\n]+)/m);
   if (header) {
-    const value = header[1].trim().replace(/^[ab]\//, "");
+    const value = header[1]!.trim().replace(/^[ab]\//, "");
     if (value && value !== "/dev/null") return value;
   }
   return (fallback ?? "").trim();
