@@ -44,6 +44,7 @@ import {
   classifyToolCall,
   clusterActivityRuns,
   extractDiffStats,
+  formatStepDuration,
   groupConsecutiveByKind,
   groupSubagentRuns,
   summarizeActivity,
@@ -68,6 +69,8 @@ import type { AgentConfig, Session, SessionEvent, SessionStatus, SessionViewMode
 import { ActivityKindGroup, ActivityPanel, ActivityTimeline } from "./ActivityPanel";
 import { StreamPromptCard, type StreamPromptHandlers } from "./StreamPromptCard";
 import { ClippedBody } from "./ClippedBody";
+import { ExpandableBody } from "./ExpandableBody";
+import { JsonTree, splitJsonTail } from "./JsonTree";
 import { LinkCwdContext, LinkedText } from "./LinkedText";
 import { MarkdownBody, MarkdownImageCwdContext, PreviewImage } from "./MarkdownBody";
 import { MessageOutline } from "./MessageOutline";
@@ -1379,6 +1382,11 @@ function ToolCallBody({
 
   // Running with partial output: keep the tall clip so the block stays large.
   const maxHeight = running ? 420 : isDiff ? 560 : hasImages ? 440 : 220;
+  // Settled JSON output reads as a tree; streaming text stays raw until it lands.
+  const jsonTail = useMemo(
+    () => (running || isSubagent ? null : splitJsonTail(textBody)),
+    [running, isSubagent, textBody],
+  );
 
   return (
     <div className="tool-body">
@@ -1405,6 +1413,15 @@ function ToolCallBody({
         >
           {isSubagent ? (
             <MarkdownBody text={textBody} className="event-card__body" />
+          ) : jsonTail ? (
+            <div className="event-card__body event-card__body--tool">
+              {jsonTail.lead && (
+                <pre className="event-card__json-lead">
+                  <LinkedText text={jsonTail.lead} />
+                </pre>
+              )}
+              <JsonTree value={jsonTail.value} />
+            </div>
           ) : (
             <pre className="event-card__body event-card__body--tool">
               <LinkedText text={textBody} />
@@ -1444,6 +1461,24 @@ function subagentBoxMeta(event: ToolCallEvent): string {
   return bits.join(" · ");
 }
 
+/** Last meaningful line a subagent printed — its current step, or why it failed. */
+function subagentLastLine(body: string): string {
+  const lines = body.replace(/\r\n?/g, "\n").split("\n");
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i].replace(/\s+/g, " ").trim();
+    if (line && !/^[-=*_`]{3,}$/.test(line)) return line.length > 120 ? `${line.slice(0, 119)}…` : line;
+  }
+  return "";
+}
+
+/** Finished: how long it took; running: how long so far. */
+function subagentElapsed(event: ToolCallEvent, live: boolean): string {
+  const start = Date.parse(event.createdAt);
+  const end = live ? Date.now() : event.completedAt ? Date.parse(event.completedAt) : NaN;
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return "";
+  return formatStepDuration(end - start);
+}
+
 function SubagentGroupPanel({
   items,
   cwd,
@@ -1466,6 +1501,9 @@ function SubagentGroupPanel({
         const body = event.detail || event.text || "";
         const stub = Boolean(parseBackgroundSubagentStart(body));
         const title = event.title || event.toolName || "Subagent";
+        const failed = /fail|error|cancel/i.test(event.status ?? "");
+        const lastLine = stub ? "" : subagentLastLine(body);
+        const elapsed = subagentElapsed(event, live);
         return (
           <article
             key={key}
@@ -1487,8 +1525,15 @@ function SubagentGroupPanel({
                 </span>
               )}
               <span className="subagent-box__title">{title}</span>
-              <span className="subagent-box__meta">{subagentBoxMeta(event) || (live ? "进行中" : "")}</span>
+              <span className="subagent-box__meta">
+                {[subagentBoxMeta(event) || (live ? "进行中" : ""), elapsed].filter(Boolean).join(" · ")}
+              </span>
             </button>
+            {!open && lastLine && (
+              <div className={`subagent-box__line${failed ? " is-failed" : ""}`} title={lastLine}>
+                {lastLine}
+              </div>
+            )}
             {open && (
               <div className="subagent-box__body">
                 {live && stub ? (
@@ -1610,26 +1655,6 @@ function CleanPlaceholder({
     () => displayEvents.filter((event) => event.type !== "file_change"),
     [displayEvents],
   );
-  /**
-   * Interim replies: every Reply in a turn except the last one with the same
-   * agent / model / mode / effort. Their footer tags and timestamp repeat the
-   * turn's final reply, so they stay quiet until hovered.
-   */
-  const interimReplyIndexes = useMemo(() => {
-    const quiet = new Set<number>();
-    let pending: { index: number; key: string } | null = null;
-    visibleEvents.forEach((event, index) => {
-      if (event.type === "user_message") {
-        pending = null;
-        return;
-      }
-      if (event.type !== "assistant_message") return;
-      const key = [event.agentLabel, event.modelLabel, event.modeLabel, event.effortLabel].join("|");
-      if (pending && pending.key === key) quiet.add(pending.index);
-      pending = { index, key };
-    });
-    return quiet;
-  }, [visibleEvents]);
   const presentationItems = useMemo(
     () => buildMessagePresentation(visibleEvents, session.id),
     [session.id, visibleEvents],
@@ -1771,6 +1796,32 @@ function CleanPlaceholder({
     });
   }, [visibleEvents]);
   const midTurn = isRunning && !awaitingFirstChunk;
+  const showRunPill = isRunning && !awaitingFirstChunk;
+  /** What the run pill says: the open tool, else the phase the stream is in. */
+  const runActivityLabel = useMemo(() => {
+    if (!isRunning) return "";
+    if (openTool) {
+      const main = toolMainText(openTool);
+      const verb = toolKindDoing(classifyToolCall(openTool));
+      return main ? `${verb} ${main}` : verb;
+    }
+    const last = visibleEvents[visibleEvents.length - 1];
+    if (last?.type === "thought") return "Thinking";
+    if (last?.type === "assistant_message") return "Writing the reply";
+    return "Working";
+  }, [isRunning, awaitingFirstChunk, openTool, visibleEvents]);
+  /** The live turn began at its opening message. */
+  const turnStartMs = useMemo(() => {
+    if (!isRunning) return null;
+    for (let i = visibleEvents.length - 1; i >= 0; i -= 1) {
+      const e = visibleEvents[i];
+      if (e.type === "user_message" || e.type === "handoff_prepared") {
+        const ms = Date.parse(e.createdAt);
+        return Number.isFinite(ms) ? ms : null;
+      }
+    }
+    return null;
+  }, [isRunning, visibleEvents]);
   // Mount banner only while a turn is live; it returns null when healthy mid-turn.
   const showStallBanner = isRunning;
 
@@ -2038,6 +2089,14 @@ function CleanPlaceholder({
         {detailsVisible ? <Eye size={14} /> : <EyeOff size={14} />}
       </button>
       <div className="clean-surface__body">
+      {/* Before the first chunk the in-list waiting card already says so. */}
+      {showRunPill && (
+        <RunStatusPill
+          label={runActivityLabel}
+          startMs={turnStartMs}
+          onInterrupt={onInterrupt}
+        />
+      )}
       {!atBottom && visibleEvents.length > 0 && (
         <button
           type="button"
@@ -2052,7 +2111,7 @@ function CleanPlaceholder({
       )}
       <div
         ref={listRef}
-        className={`event-list${isLongTranscript ? " is-long" : ""} scrollbar-hidden`}
+        className={`event-list${isLongTranscript ? " is-long" : ""}${showRunPill ? " has-run-pill" : ""} scrollbar-hidden`}
         onScroll={onListScroll}
       >
         {/* Quote UI is isolated so its setState does not re-render cards (keeps selection).
@@ -2441,15 +2500,27 @@ function CleanPlaceholder({
           // diff/output when the agent provided it. "completed" stays quiet.
           let previewFull = "";
           let toolDiff: { add: number; del: number } | null = null;
+          let toolOutcome: { failed: boolean; text: string } | null = null;
           if (event.type === "tool_call") {
             const main = toolMainText(event);
             const statusText = String(event.status ?? "");
+            // completed → its duration and failed → a red word, both in their own
+            // slot at the row's end; only states that need a sentence stay inline.
             const statusBit =
-              toolStatusLabel ||
-              (statusText && statusText !== "completed" && statusText !== "pending"
-                ? statusText
-                : "");
+              toolStalled
+                ? toolStatusLabel
+                : statusText &&
+                    statusText !== "completed" &&
+                    statusText !== "pending" &&
+                    statusText !== "failed"
+                  ? statusText
+                  : "";
             previewFull = [main, statusBit].filter(Boolean).join(" · ");
+            if (statusText === "failed") toolOutcome = { failed: true, text: "failed" };
+            else if (statusText === "completed" && event.completedAt) {
+              const ms = Date.parse(event.completedAt) - Date.parse(event.createdAt);
+              if (Number.isFinite(ms) && ms >= 0) toolOutcome = { failed: false, text: formatStepDuration(ms) };
+            }
             if (toolKind === "edit" || toolKind === "write") {
               toolDiff = extractDiffStats(event.detail);
             }
@@ -2591,6 +2662,11 @@ function CleanPlaceholder({
                       <span className="event-card__tool-diff-del">−{toolDiff.del}</span>
                     </span>
                   )}
+                  {toolOutcome && (
+                    <span className={`event-card__outcome${toolOutcome.failed ? " is-failed" : ""}`}>
+                      {toolOutcome.text}
+                    </span>
+                  )}
                 </summary>
                 {/* Lazy body: closed cards mount summary only — 500+ tool rows stay cheap. */}
                 {detailOpen && (
@@ -2641,9 +2717,7 @@ function CleanPlaceholder({
 
           return (
             <article
-              className={`event-card event-card--${event.type}${isEditing ? " is-editing" : ""}${
-                event.type === "assistant_message" && interimReplyIndexes.has(index) ? " is-interim" : ""
-              }`}
+              className={`event-card event-card--${event.type}${isEditing ? " is-editing" : ""}`}
               key={`${event.type}-${event.createdAt}-${index}`}
               id={isUser ? userKey : undefined}
               {...(tone ? { "data-mode-tone": tone } : {})}
@@ -2788,17 +2862,18 @@ function CleanPlaceholder({
                         isUser && typeof body === "string"
                           ? stripForceWebSearchPrefix(body)
                           : body;
+                      let content: ReactNode = null;
                       if (useMarkdown && typeof displayBody === "string" && displayBody.trim()) {
-                        return <MarkdownBody text={displayBody} />;
-                      }
-                      if (typeof displayBody === "string" && displayBody.trim()) {
-                        return (
+                        content = <MarkdownBody text={displayBody} />;
+                      } else if (typeof displayBody === "string" && displayBody.trim()) {
+                        content = (
                           <pre className="event-card__plain">
                             <LinkedText text={displayBody} />
                           </pre>
                         );
                       }
-                      return null;
+                      // A long paste folds; replies stay whole (they are what you came to read).
+                      return isUser && content ? <ExpandableBody>{content}</ExpandableBody> : content;
                     })()}
                   </>
                 )}
@@ -3332,6 +3407,74 @@ const ThoughtDurationLabel = memo(function ThoughtDurationLabel({
 });
 
 /** Mid-turn / first-chunk stall card with clear severity + interrupt CTA. */
+/** Present-tense verb for the run pill ("Reading", "Running"), past tense lives on the cards. */
+function toolKindDoing(kind: ReturnType<typeof classifyToolCall>): string {
+  switch (kind) {
+    case "read":
+      return "Reading";
+    case "edit":
+      return "Editing";
+    case "write":
+      return "Writing";
+    case "command":
+      return "Running";
+    case "search":
+      return "Searching";
+    case "web":
+      return "Fetching";
+    case "agent":
+      return "Running a task";
+    default:
+      return "Using a tool";
+  }
+}
+
+function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+/**
+ * Live run pill (bottom-left, mirroring Latest): what the agent is doing now,
+ * how long this turn has run, and a stop control. Its own one-second clock —
+ * never a parent ticker, which would re-render the cards and wipe selection.
+ */
+function RunStatusPill({
+  label,
+  startMs,
+  onInterrupt,
+}: {
+  label: string;
+  startMs: number | null;
+  onInterrupt?: () => void | Promise<void>;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  return (
+    <div className="run-pill" role="status" aria-live="off" title={label}>
+      <span className="run-pill__dot" aria-hidden />
+      <span className="run-pill__label">{label}</span>
+      {startMs != null && <span className="run-pill__time">{formatElapsed(now - startMs)}</span>}
+      {onInterrupt && (
+        <button
+          type="button"
+          className="run-pill__stop"
+          title="Stop (or press Esc twice)"
+          aria-label="Stop the turn"
+          onClick={() => void onInterrupt()}
+        >
+          <Square size={9} fill="currentColor" />
+        </button>
+      )}
+    </div>
+  );
+}
+
 function StallBanner({
   status,
   midTurn,

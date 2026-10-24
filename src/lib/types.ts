@@ -57,6 +57,9 @@ export type AgentCommandStatus = {
   installable?: boolean;
   /** Human labels of the missing pieces. */
   missing?: string[];
+  /** Install is hidden: a missing local runtime cannot be npm-installed
+   *  (ZCode's engine ships with the desktop app). Carries setup guidance. */
+  runtimeGate?: string | null;
 };
 
 export type AgentInstallResult = {

@@ -1396,6 +1396,34 @@ function isOpenAssistantStream(last: SessionEvent, sessionId: string): boolean {
   return true;
 }
 
+/**
+ * Index of the open Reply an assistant chunk should append to, or -1.
+ * Grok interleaves thought bursts inside ONE model call (message→thought→
+ * message): trailing same-session thought cards do not close the Reply, so
+ * look across them for the open card (2026-10-24: deleting the thought-glue
+ * heuristic without this split grok replies around every thought burst).
+ * Tool calls, user messages and sealed Replies are hard boundaries — the
+ * chunk opens a new card instead.
+ */
+function openReplyIndexAcrossThoughts(
+  events: SessionEvent[],
+  sessionId: string,
+  last: SessionEvent | undefined,
+  lastIdx: number,
+): number {
+  if (!last || lastIdx < 0 || last.sessionId !== sessionId) return -1;
+  if (isOpenAssistantStream(last, sessionId)) return lastIdx;
+  if (last.type !== "thought") return -1;
+  for (let i = lastIdx - 1; i >= 0; i -= 1) {
+    const e = events[i];
+    if (e.sessionId !== sessionId) continue; // foreign window interleave
+    if (e.type === "thought") continue; // same Reply's thinking burst
+    if (e.type === "assistant_message" && e.durationMs == null) return i;
+    return -1;
+  }
+  return -1;
+}
+
 /** Index of the latest thought in this session after the last user message. */
 function findLastThoughtInTurn(events: SessionEvent[], sessionId: string): number {
   let lastUser = -1;
@@ -1449,31 +1477,38 @@ export function applyAcpPartToEvents(
     // token; matching ids made every character its own card with a repeated
     // agent/model header. Sealed bubbles (durationMs set at turn end) start
     // a new card — never absorb the next turn.
-    const canAppend = Boolean(last && isOpenAssistantStream(last, sessionId));
+    const appendIdx = openReplyIndexAcrossThoughts(current, sessionId, last, lastIdx);
+    const appendTarget =
+      appendIdx >= 0 && current[appendIdx].type === "assistant_message"
+        ? current[appendIdx]
+        : undefined;
     // Whitespace-only tokens (" ", "\n") must still append onto an open Reply.
     // Dropping them glued "Always" + "approve" → "Alwaysapprove".
     if (!text.trim()) {
-      if (!canAppend || !last || last.type !== "assistant_message" || lastIdx < 0) {
+      if (!appendTarget || appendIdx < 0) {
         return current;
       }
-      const nextText = mergeStreamText(last.text, text, true);
-      if (nextText === last.text) return current;
+      const nextText = mergeStreamText(appendTarget.text, text, true);
+      if (nextText === appendTarget.text) return current;
       const next = [...current];
-      next[lastIdx] = { ...last, text: nextText };
+      next[appendIdx] = { ...appendTarget, text: nextText };
       return next;
     }
-    if (canAppend && last && last.type === "assistant_message" && lastIdx >= 0) {
-      const nextText = mergeStreamText(last.text, text, part.isDelta);
-      if (nextText === last.text && (!part.messageId || last.messageId === part.messageId)) {
+    if (appendTarget && appendIdx >= 0) {
+      const nextText = mergeStreamText(appendTarget.text, text, part.isDelta);
+      if (
+        nextText === appendTarget.text &&
+        (!part.messageId || appendTarget.messageId === part.messageId)
+      ) {
         return current;
       }
       const next = [...current];
-      next[lastIdx] = {
-        ...last,
+      next[appendIdx] = {
+        ...appendTarget,
         text: nextText,
         // Keep the first id of the open bubble so later id churn does not
         // look like a "new message" to any secondary consumer.
-        messageId: last.messageId ?? part.messageId,
+        messageId: appendTarget.messageId ?? part.messageId,
       };
       return next;
     }
@@ -1501,21 +1536,12 @@ export function applyAcpPartToEvents(
     const noise = isThoughtNoiseToken(text);
     const asDelta = part.isDelta || noise || text.length <= 32;
 
-    // Safety: if we are mid-Reply and a mis-tagged short piece arrives as thought
-    // (should be rare after extract fix), keep it on the assistant bubble.
-    if (
-      last &&
-      lastIdx >= 0 &&
-      last.type === "assistant_message" &&
-      last.sessionId === sessionId &&
-      (noise || text.length <= 8 || /[。，、．！？；：,.!?;:…—\-]/.test(text))
-    ) {
-      const nextText = mergeStreamText(last.text, text, true);
-      if (nextText === last.text) return current;
-      const next = [...current];
-      next[lastIdx] = { ...last, text: nextText };
-      return next;
-    }
+    // Protocol thought types are authoritative: a thought chunk after a Reply
+    // (open or sealed) is the next reasoning burst — it NEVER glues onto the
+    // Reply bubble. The old "mis-tagged short piece" heuristic swallowed whole
+    // CJK thinking streams into Reply cards (2026-10-24, grok interleaves
+    // message/thought inside one model call and CJK tokens are mostly ≤8
+    // chars or carry punctuation).
 
     // 1) Continuous thought stream — ignore messageId churn.
     if (

@@ -19,6 +19,7 @@ import type { PlanEntry } from "../lib/acpPlan";
 import type { SessionStats } from "../lib/sessionStats";
 import type { TodoItem, TodoMergePreview, TodoStatus } from "../lib/todos";
 import type {
+  McpServerSpec,
   ChangedFile,
   HandoffResult,
   ProjectContext,
@@ -111,6 +112,34 @@ function meterTone(window: UsageWindow): "ok" | "warn" | "hot" | "none" {
   if (window.percentage >= 90) return "hot";
   if (window.percentage >= 75) return "warn";
   return "ok";
+}
+
+/**
+ * One readable line per MCP entry: where it runs (本地 · command / 远程 · host)
+ * and who already loads it. This is a config scan, not a live connection, so
+ * it never claims connected / failed.
+ */
+function mcpServerLine(server: McpServerSpec, nativeHere: boolean): string {
+  let where: string;
+  if (server.transport === "stdio") {
+    const cmd = (server.command ?? "").split(/[\\/]/).pop() ?? "";
+    const pkg = server.args.find((a) => !a.startsWith("-") && a !== "-y") ?? "";
+    where = ["本地", [cmd, pkg].filter(Boolean).join(" ")].filter(Boolean).join(" · ");
+  } else {
+    let host = server.url ?? "";
+    try {
+      host = server.url ? new URL(server.url).host : "";
+    } catch {
+      // keep the raw url
+    }
+    where = ["远程", host].filter(Boolean).join(" · ");
+  }
+  const owners = nativeHere
+    ? "当前 agent 自带"
+    : server.agents.length > 0
+      ? `${server.agents.join("、")} 已自带`
+      : "";
+  return [where, owners].filter(Boolean).join(" · ");
 }
 
 type UsageGroup = {
@@ -471,7 +500,7 @@ export function ContextPanel({
       )}
       <section className="context-card" aria-label="Tasks">
         <div className="context-card__heading">
-          <span>Tasks</span>
+          <span>任务</span>
         </div>
 
         {planList && (
@@ -566,8 +595,8 @@ export function ContextPanel({
             </div>
           )}
           <div className="tasks-actions">
-            {onSendTodosToAi && (
-              <button type="button" className="tasks-action" onClick={onSendTodosToAi} disabled={todoItems.length === 0}>
+            {onSendTodosToAi && todoItems.length > 0 && (
+              <button type="button" className="tasks-action" onClick={onSendTodosToAi}>
                 发给 AI
               </button>
             )}
@@ -626,7 +655,7 @@ export function ContextPanel({
       </section>
       <section className="context-card">
         <div className="context-card__heading">
-          <span>Usage</span>
+          <span>用量</span>
           <button className="pill-action pill-action--icon pill-action--sm" type="button" title="Refresh usage" aria-label="Refresh usage" onClick={onUsageRefresh}>
             <RefreshCw size={11} />
           </button>
@@ -688,7 +717,7 @@ export function ContextPanel({
 
       <section className="context-card">
         <div className="context-card__heading">
-          <span>Changed Files · project</span>
+          <span>改动文件 · 项目</span>
           <div className="context-card__heading-actions">
             {onCommitAndPush && changedFiles.length > 0 && (
               <button
@@ -737,7 +766,7 @@ export function ContextPanel({
 
       <section className="context-card">
         <div className="context-card__heading">
-          <span>Project context</span>
+          <span>项目上下文</span>
           {onRescanProjectContext && (
             <button
               className="pill-action pill-action--icon pill-action--sm"
@@ -801,9 +830,7 @@ export function ContextPanel({
                         />
                         <span className="context-lend__name">{server.name}</span>
                         <span className="context-lend__meta">
-                          {server.transport}
-                          {server.agents.length > 0 ? ` · has: ${server.agents.join(", ")}` : ""}
-                          {native ? " · native here" : ""}
+                          {mcpServerLine(server, native)}
                         </span>
                       </label>
                     </li>
@@ -857,7 +884,7 @@ export function ContextPanel({
 
       <section className="context-card">
         <div className="context-card__heading">
-          <span>Handoff</span>
+          <span>交接</span>
         </div>
         {handoff ? (
           <div className="handoff-block">

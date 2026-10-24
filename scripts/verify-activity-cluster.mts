@@ -58,7 +58,7 @@ check("groups write then 3 commands", () => {
 
 check("done headline is a count+type tally", () => {
   const summary = summarizeActivity(items);
-  assert.equal(summary.title, "1 write, 3 command");
+  assert.equal(summary.title, "1 write, 3 commands");
   assert.ok(summary.diff);
   assert.equal(summary.diff?.add, 2);
 });
@@ -76,7 +76,7 @@ check("same-kind run uses a count phrase", () => {
   const groups = groupConsecutiveByKind(reads);
   assert.equal(groups.length, 1);
   assert.equal(kindGroupTitle(groups[0]), "Read 3 files");
-  assert.equal(summarizeActivity(reads).title, "3 read");
+  assert.equal(summarizeActivity(reads).title, "3 reads");
 });
 
 const thought = {
@@ -140,7 +140,7 @@ check("mixed headline includes thought", () => {
   const groups = groupConsecutiveByKind(withThought);
   assert.equal(groups[0].bucket, "thought");
   const summary = summarizeActivity(withThought);
-  assert.equal(summary.title, "1 think, 1 write, 3 command");
+  assert.equal(summary.title, "1 thought, 1 write, 3 commands");
 });
 
 check("tally merges the same kind across the fold", () => {
@@ -152,8 +152,8 @@ check("tally merges the same kind across the fold", () => {
     { event: tool({ toolName: "edit", path: "b.ts" }), index: 4 },
     { event: tool({ toolName: "edit", path: "c.ts" }), index: 5 },
   ];
-  assert.equal(formatActivityTally(mixed), "1 think, 2 read, 3 edit");
-  assert.equal(summarizeActivity(mixed).title, "1 think, 2 read, 3 edit");
+  assert.equal(formatActivityTally(mixed), "1 thought, 2 reads, 3 edits");
+  assert.equal(summarizeActivity(mixed).title, "1 thought, 2 reads, 3 edits");
 });
 
 check("live thought headline is Thinking…", () => {

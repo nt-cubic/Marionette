@@ -2929,6 +2929,15 @@ export function Composer({
                 onClick={() => {
                   const next = !alwaysApprove;
                   const prev = alwaysApprove;
+                  // 冷会话（挂起/出错）只落盘偏好：为同步一个开关把 agent 进程
+                  // 拉起来纯属浪费；下次唤醒的 pref restore 会把斜杠回放过去。
+                  const status = sessionStatusRef.current;
+                  if (status === "exited" || status === "error") {
+                    setAlwaysApprove(next);
+                    persistPrefs({ preferredAlwaysApprove: next });
+                    recordLastUsedDefaults(agent.id, { alwaysApprove: next });
+                    return;
+                  }
                   setAlwaysApprove(next);
                   void commitUpdate({ alwaysApprove: next }, () => {
                     setAlwaysApprove(prev);
@@ -3319,6 +3328,10 @@ export function Composer({
                       const status = agentStatuses[candidate.id];
                       const ready = !status || status.status === "installed";
                       const busyInstall = installingAgentId === candidate.id;
+                      // ZCode without a local runtime (desktop install /
+                      // PATH zcode / ZCODE_BIN): installing the npm adapter is
+                      // a dead end — the engine cannot come from npm.
+                      const runtimeGate = status?.runtimeGate ?? null;
                       const canInstall =
                         !ready && (status?.installable ?? false) && !busyInstall;
                       // Grok / Hermes / Cursor: no in-app installer — show setup help instead of a blank gap.
@@ -3326,8 +3339,9 @@ export function Composer({
                         !ready &&
                         !canInstall &&
                         !busyInstall &&
-                        candidate.install.manager === "manual";
+                        (candidate.install.manager === "manual" || Boolean(runtimeGate));
                       const manualHint =
+                        runtimeGate?.trim() ||
                         candidate.install.note?.trim() ||
                         status?.message?.trim() ||
                         `Install \`${candidate.command}\` and put it on PATH, then restart Marionette.`;
@@ -3378,10 +3392,10 @@ export function Composer({
                               <span className="composer-agent-row__tag">
                                 {busyInstall
                                   ? "installing…"
-                                  : status?.status === "incomplete"
-                                    ? "needs CLI"
-                                    : needsManualSetup
-                                      ? "需本机安装"
+                                  : needsManualSetup
+                                    ? "需本机安装"
+                                    : status?.status === "incomplete"
+                                      ? "needs CLI"
                                       : "not installed"}
                               </span>
                             )}

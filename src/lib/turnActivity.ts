@@ -217,6 +217,8 @@ export type ActivitySummary = {
   preview: string;
   /** Wall time of a finished run (`3m 33s`); empty while live or untimed. */
   elapsed?: string;
+  /** Tool calls in the run that ended `failed` — shown in red, never only as color. */
+  failed?: number;
   diff: { add: number; del: number } | null;
 };
 
@@ -404,15 +406,23 @@ export function summarizeKindGroup(group: ActivityKindGroup): ActivitySummary {
   return {
     title,
     preview,
+    failed: countFailed(group.items),
     diff: sumDiffStats(group.items),
   };
 }
 
-/** Short type word for the closed activity tally (`1 think, 2 read`). */
+/** Plural of `tallyWord` for counts above one (`3 commands`, `2 searches`). */
+function tallyPlural(bucket: ActivityKindBucket): string {
+  const word = tallyWord(bucket);
+  if (word === "other") return word;
+  return /(ch|sh|s|x)$/.test(word) ? `${word}es` : `${word}s`;
+}
+
+/** Short type word for the closed activity tally (`1 thought, 2 reads`). */
 export function tallyWord(bucket: ActivityKindBucket): string {
   switch (bucket) {
     case "thought":
-      return "think";
+      return "thought";
     case "read":
       return "read";
     case "edit":
@@ -424,9 +434,9 @@ export function tallyWord(bucket: ActivityKindBucket): string {
     case "search":
       return "search";
     case "web":
-      return "web";
+      return "fetch";
     case "agent":
-      return "agent";
+      return "task";
     default:
       return "other";
   }
@@ -445,7 +455,12 @@ export function formatActivityTally(items: ActivityDetailItem[]): string {
     if (!counts.has(bucket)) order.push(bucket);
     counts.set(bucket, (counts.get(bucket) ?? 0) + 1);
   }
-  return order.map((bucket) => `${counts.get(bucket)} ${tallyWord(bucket)}`).join(", ");
+  return order
+    .map((bucket) => {
+      const n = counts.get(bucket) ?? 0;
+      return `${n} ${n === 1 ? tallyWord(bucket) : tallyPlural(bucket)}`;
+    })
+    .join(", ");
 }
 
 /**
@@ -476,6 +491,7 @@ export function summarizeActivity(
     title: tally || "Activity",
     preview: "",
     elapsed: span && span.durationMs >= 1000 ? formatSpanDuration(span.durationMs) : "",
+    failed: countFailed(items),
     diff: sumDiffStats(items),
   };
 }
@@ -544,6 +560,20 @@ export function activityTimeline(
   });
   if (spans.length === 0) return null;
   return { durationMs: last - first, lanes, spans };
+}
+
+export function countFailed(items: ActivityDetailItem[]): number {
+  let n = 0;
+  for (const item of items) {
+    if (item.event.type === "tool_call" && item.event.status === "failed") n += 1;
+  }
+  return n;
+}
+
+/** One step's time: `0.4s`, `3.2s` under ten seconds, then the run format. */
+export function formatStepDuration(ms: number): string {
+  if (ms < 10_000) return `${Math.max(0.1, Math.round(ms / 100) / 10)}s`;
+  return formatSpanDuration(ms);
 }
 
 /** `48s` under a minute, `2m 10s` after — same unit style as `Thought · 17s`. */

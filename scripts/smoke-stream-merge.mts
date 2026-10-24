@@ -904,4 +904,155 @@ console.log("OpenCode v2 child-session streams stay off the parent Reply");
   }
 }
 
+// ── Thought-after-Reply interleave (2026-10-24 incident regression) ────────
+// Grok interleaves thought bursts inside one model call (message→thought→
+// message). Two old failure modes, both reported as "think 里面东西变成
+// reply / 对话流全乱":
+//   1) the "mis-tagged short piece" heuristic appended thought text onto the
+//      Reply bubble whenever it was short (CJK tokens are ≤8 chars) or carried
+//      punctuation — whole thinking streams landed in Reply cards;
+//   2) removing it naively would split the Reply around every thought burst.
+// Contract: thought text NEVER reaches a Reply card; one model call keeps ONE
+// Reply card (appending across trailing thought cards); tool calls, user
+// messages and sealed Replies stay hard boundaries.
+console.log("thought/reply interleave stays on separate rails");
+{
+  // a) Sealed previous Reply + new reasoning: thinking opens its own card,
+  //    the sealed Reply is untouched.
+  let rail: SessionEvent[] = [
+    userMessageEvent("s9", "上一问"),
+    {
+      type: "assistant_message",
+      sessionId: "s9",
+      text: "上一轮的回复。",
+      durationMs: 1234,
+      createdAt: new Date().toISOString(),
+    },
+  ];
+  const tokens = ["先", "看日志", "，", "再", "对照代码。", "嗯"];
+  for (let i = 0; i < tokens.length; i++) {
+    rail = applyAcpPartToEvents(rail, "s9", {
+      role: "thought",
+      text: tokens[i],
+      isDelta: true,
+      sessionUpdate: "agent_thought_chunk",
+      messageId: `th-${i}`,
+    });
+  }
+  const sealedReplies = rail.filter((e) => e.type === "assistant_message");
+  assert.equal(sealedReplies.length, 1, "thought stream must not add Reply cards");
+  assert.equal(sealedReplies[0].text, "上一轮的回复。", "sealed Reply must stay untouched");
+  const thoughtCards = rail.filter((e) => e.type === "thought");
+  assert.equal(thoughtCards.length, 1, "all thought tokens glue into one Thought card");
+  assert.equal(thoughtCards[0].text, tokens.join(""));
+
+  // b) Live interleave: message→thought→message→thought→message keeps ONE
+  //    open Reply (append across trailing thoughts) and ONE Thought card.
+  let live: SessionEvent[] = [userMessageEvent("s9", "继续")];
+  const seq: Array<{ role: "assistant" | "thought"; text: string }> = [
+    { role: "assistant", text: "答复" },
+    { role: "thought", text: "先检查，" },
+    { role: "assistant", text: "：好的" },
+    { role: "thought", text: "再看一眼。" },
+    { role: "assistant", text: "完成。" },
+  ];
+  for (let i = 0; i < seq.length; i++) {
+    live = applyAcpPartToEvents(live, "s9", {
+      role: seq[i].role,
+      text: seq[i].text,
+      isDelta: true,
+      sessionUpdate:
+        seq[i].role === "assistant" ? "agent_message_chunk" : "agent_thought_chunk",
+      messageId: `x-${i}`,
+    });
+  }
+  const liveReplies = live.filter((e) => e.type === "assistant_message");
+  assert.equal(liveReplies.length, 1, `expected 1 Reply, got ${liveReplies.length}`);
+  assert.equal(liveReplies[0].text, "答复：好的完成。", "Reply must absorb only its own text");
+  const liveThoughts = live.filter((e) => e.type === "thought");
+  assert.equal(liveThoughts.length, 1);
+  assert.equal(liveThoughts[0].text, "先检查，再看一眼。");
+
+  // c) § noise after a Reply drops — never reaches the Reply text.
+  let noisy: SessionEvent[] = [
+    userMessageEvent("s9", "x"),
+    {
+      type: "assistant_message",
+      sessionId: "s9",
+      text: "回复正文",
+      createdAt: new Date().toISOString(),
+    },
+  ];
+  noisy = applyAcpPartToEvents(noisy, "s9", {
+    role: "thought",
+    text: "§2§",
+    isDelta: false,
+    sessionUpdate: "agent_thought_chunk",
+  });
+  assert.equal(
+    noisy.find((e) => e.type === "assistant_message")!.text,
+    "回复正文",
+    "§ noise must not reach the Reply",
+  );
+  assert.equal(noisy.filter((e) => e.type === "thought").length, 0);
+
+  // d) Tool call between the Reply and the thought is a hard boundary: the
+  //    next model call's message opens a NEW Reply card.
+  let bounded: SessionEvent[] = [
+    userMessageEvent("s9", "y"),
+    {
+      type: "assistant_message",
+      sessionId: "s9",
+      text: "第一段",
+      createdAt: new Date().toISOString(),
+    },
+    {
+      type: "tool_call",
+      sessionId: "s9",
+      text: "read",
+      toolCallId: "t9",
+      createdAt: new Date().toISOString(),
+    },
+  ];
+  bounded = applyAcpPartToEvents(bounded, "s9", {
+    role: "thought",
+    text: "调用后思考",
+    isDelta: true,
+    sessionUpdate: "agent_thought_chunk",
+  });
+  bounded = applyAcpPartToEvents(bounded, "s9", {
+    role: "assistant",
+    text: "第二段",
+    isDelta: true,
+    sessionUpdate: "agent_message_chunk",
+  });
+  const boundedReplies = bounded.filter((e) => e.type === "assistant_message");
+  assert.equal(boundedReplies.length, 2, "text after a tool call is a new Reply");
+  assert.equal(boundedReplies[1].text, "第二段");
+
+  // e) Foreign-session thought sitting at the absolute tail must not block
+  //    this session's Reply append (multi-window interleave).
+  let multiwin: SessionEvent[] = [
+    userMessageEvent("sA", "go"),
+    {
+      type: "assistant_message",
+      sessionId: "sA",
+      text: "窗口A",
+      createdAt: new Date().toISOString(),
+    },
+    { type: "thought", sessionId: "sB", text: "别的窗口", createdAt: new Date().toISOString() },
+  ];
+  multiwin = applyAcpPartToEvents(multiwin, "sA", {
+    role: "assistant",
+    text: "继续",
+    isDelta: true,
+    sessionUpdate: "agent_message_chunk",
+  });
+  const multiReplies = multiwin.filter(
+    (e) => e.type === "assistant_message" && e.sessionId === "sA",
+  );
+  assert.equal(multiReplies.length, 1, "foreign thought must not split this Reply");
+  assert.equal(multiReplies[0].text, "窗口A继续");
+}
+
 console.log("smoke-stream-merge: ok");

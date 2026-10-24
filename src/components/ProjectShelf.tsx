@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Bell, BellOff, ChevronDown, ChevronRight, CloudMoon, Folder, FolderOpen, Globe, GripVertical, KeyRound, MessageSquare, Network, PanelLeftClose, PanelLeftOpen, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, SlidersHorizontal, SunMedium, Trash2, X, Zap } from "lucide-react";
 // Refresh on a project row folds CLI history into the normal session list.
 import type { AgentConfig, Project, ProxyConfig, ProxyTestResult, Session } from "../lib/types";
 import { themeToggleTitle, type ThemeMode } from "../lib/theme";
 import { collapsedShelfSessions, pinStamp, sortSessionsNewestFirst } from "../lib/sessionOrder";
 import { suspendControl } from "../lib/sessionSuspend";
+import { showToast } from "../lib/toast";
 import { loadCollapsedProjectIds, saveCollapsedProjectIds } from "../lib/uiRestore";
 import {
   engineCheckUpdate,
@@ -160,6 +161,68 @@ function shelfRecency(iso: string | undefined, nowMs: number): string {
 
 function sessionIsBusy(status: Session["status"]): boolean {
   return status === "running" || status === "starting";
+}
+
+/** Day bucket for the shelf's group labels; pinned rows keep their own group. */
+function shelfDayLabel(session: Session, nowMs: number): string {
+  if (pinStamp(session) != null) return "置顶";
+  const ms = Date.parse(session.lastActiveAt);
+  if (!Number.isFinite(ms)) return "更早";
+  const start = new Date(nowMs);
+  start.setHours(0, 0, 0, 0);
+  const today = start.getTime();
+  if (ms >= today) return "今天";
+  if (ms >= today - 86_400_000) return "昨天";
+  if (ms >= today - 6 * 86_400_000) return "本周";
+  return "更早";
+}
+
+/** First row of each day bucket → its label; only long lists get labels. */
+function shelfDayHeaders(list: Session[], nowMs: number, minRows: number): Map<string, string> {
+  const heads = new Map<string, string>();
+  if (list.length <= minRows) return heads;
+  let last = "";
+  for (const session of list) {
+    const label = shelfDayLabel(session, nowMs);
+    if (label !== last) heads.set(session.id, label);
+    last = label;
+  }
+  return heads;
+}
+
+const SESSION_STATUS_WORD: Record<string, string> = {
+  starting: "启动中",
+  running: "运行中",
+  waiting: "等你",
+  exited: "空闲",
+  error: "出错",
+};
+
+/** Shelf-top filter: which dialogs need a look right now. */
+type ShelfStatusFilter = "running" | "waiting" | "done" | "error";
+
+const SHELF_STATUS_ORDER: { id: ShelfStatusFilter; label: string }[] = [
+  { id: "running", label: "运行中" },
+  { id: "waiting", label: "等你" },
+  { id: "done", label: "已完成" },
+  { id: "error", label: "出错" },
+];
+
+function sessionMatchesStatus(
+  session: Session,
+  filter: ShelfStatusFilter,
+  doneUnread: ReadonlySet<string>,
+): boolean {
+  switch (filter) {
+    case "running":
+      return sessionIsBusy(session.status);
+    case "waiting":
+      return session.status === "waiting";
+    case "done":
+      return doneUnread.has(session.id) && !sessionIsBusy(session.status);
+    case "error":
+      return session.status === "error";
+  }
 }
 
 export function ProjectShelf({
@@ -559,6 +622,21 @@ export function ProjectShelf({
   }, [unreadDone, sessions]);
 
   const [renamingId, setRenamingId] = useState<string | null>(null);
+  /** Hover preview: which row, anchored where. Opens after a short dwell. */
+  const [hoverCard, setHoverCard] = useState<{ session: Session; top: number; left: number } | null>(null);
+  const hoverTimerRef = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(hoverTimerRef.current), []);
+  const hoverRow = (session: Session, el: HTMLElement | null) => {
+    window.clearTimeout(hoverTimerRef.current);
+    if (!el) {
+      setHoverCard(null);
+      return;
+    }
+    hoverTimerRef.current = window.setTimeout(() => {
+      const rect = el.getBoundingClientRect();
+      setHoverCard({ session, top: rect.top, left: rect.right + 8 });
+    }, 350);
+  };
   const [renameDraft, setRenameDraft] = useState("");
   const renameInputRef = useRef<HTMLInputElement>(null);
   /** Pending destructive action — rendered as an in-app window instead of window.confirm. */
@@ -602,15 +680,30 @@ export function ProjectShelf({
   const agentLabel = (agentId: string) =>
     agents.find((a) => a.id === agentId)?.label ?? agentId;
 
-  /** Search always reveals matching projects; otherwise respect saved collapse. */
+  const [statusFilter, setStatusFilter] = useState<ShelfStatusFilter | null>(null);
+  const statusCounts = useMemo(() => {
+    const counts: Record<ShelfStatusFilter, number> = { running: 0, waiting: 0, done: 0, error: 0 };
+    for (const session of [...sessions, ...chatSessions]) {
+      for (const { id } of SHELF_STATUS_ORDER) {
+        if (sessionMatchesStatus(session, id, unreadDone)) counts[id] += 1;
+      }
+    }
+    return counts;
+  }, [sessions, chatSessions, unreadDone]);
+  // A filter whose count drops to zero (the run finished) lets go by itself.
+  const activeStatusFilter = statusFilter && statusCounts[statusFilter] > 0 ? statusFilter : null;
+
+  /** Search / status filter always reveal matching projects; otherwise respect saved collapse. */
   const isProjectExpanded = (projectId: string) =>
-    Boolean(query.trim()) || !collapsedProjects.has(projectId);
+    Boolean(query.trim()) || activeStatusFilter != null || !collapsedProjects.has(projectId);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) {
+    if (!q && !activeStatusFilter) {
       return { projects, sessionsByProject: null as Map<string, Session[]> | null };
     }
+    const statusOk = (session: Session) =>
+      !activeStatusFilter || sessionMatchesStatus(session, activeStatusFilter, unreadDone);
     const sessionsByProject = new Map<string, Session[]>();
     const projectIds = new Set<string>();
 
@@ -618,7 +711,7 @@ export function ProjectShelf({
     // session title). Transcript content is out of scope here — matching it
     // meant reading every transcript on each keystroke.
     for (const session of sessions) {
-      if (session.label.toLowerCase().includes(q)) {
+      if (statusOk(session) && (!q || session.label.toLowerCase().includes(q))) {
         projectIds.add(session.projectId);
         const list = sessionsByProject.get(session.projectId) ?? [];
         list.push(session);
@@ -627,14 +720,12 @@ export function ProjectShelf({
     }
 
     for (const project of projects) {
-      if (project.name.toLowerCase().includes(q)) {
+      if (q && project.name.toLowerCase().includes(q)) {
+        const own = sessions.filter((s) => s.projectId === project.id && statusOk(s));
+        // Under a status filter a name match alone does not list the project.
+        if (activeStatusFilter && own.length === 0) continue;
         projectIds.add(project.id);
-        if (!sessionsByProject.has(project.id)) {
-          sessionsByProject.set(
-            project.id,
-            sessions.filter((s) => s.projectId === project.id)
-          );
-        }
+        if (!sessionsByProject.has(project.id)) sessionsByProject.set(project.id, own);
       }
     }
 
@@ -642,7 +733,7 @@ export function ProjectShelf({
       projects: projects.filter((p) => projectIds.has(p.id)),
       sessionsByProject,
     };
-  }, [projects, query, sessions]);
+  }, [projects, query, sessions, activeStatusFilter, unreadDone]);
 
   const toggleProject = (projectId: string) => {
     setCollapsedProjects((current) => {
@@ -854,6 +945,10 @@ export function ProjectShelf({
         if (!engineRunning && !engineBusyTransient) {
           void engineEnable().then((snapshot) => {
             if (snapshot) setEngineState(snapshot);
+            // The popover may be gone by now; say how the start went.
+            if (snapshot?.state === "running") showToast({ text: "模型共享已启动", tone: "ok" });
+            else if (snapshot === null || snapshot.state === "failed")
+              showToast({ text: "模型共享没能启动", detail: "点左下角互联图标查看原因", tone: "error" });
           });
         }
       }}
@@ -892,12 +987,17 @@ export function ProjectShelf({
     </button>
   );
 
-  const searching = Boolean(query.trim());
+  const searching = Boolean(query.trim()) || activeStatusFilter != null;
   const visibleChatSessions = useMemo(() => {
     if (!searching) return chatSessions;
     const q = query.trim().toLowerCase();
-    return chatSessions.filter((session) => session.label.toLowerCase().includes(q));
-  }, [chatSessions, query, searching]);
+    return chatSessions.filter(
+      (session) =>
+        (!q || session.label.toLowerCase().includes(q)) &&
+        (!activeStatusFilter || sessionMatchesStatus(session, activeStatusFilter, unreadDone)),
+    );
+  }, [chatSessions, query, searching, activeStatusFilter, unreadDone]);
+  const hasStatusCounts = SHELF_STATUS_ORDER.some(({ id }) => statusCounts[id] > 0);
   // Pin the Explorer "open here" project to the top of the shelf (still filterable).
   const allVisibleProjects = useMemo(() => {
     const list = filtered.projects;
@@ -936,6 +1036,24 @@ export function ProjectShelf({
       </div>
 
       <div className="project-tree__body">
+      {hasStatusCounts && (
+        <div className="shelf-status" role="toolbar" aria-label="按状态筛选对话">
+          {SHELF_STATUS_ORDER.filter(({ id }) => statusCounts[id] > 0).map(({ id, label }) => (
+            <button
+              key={id}
+              type="button"
+              className={`shelf-status__chip is-${id}${activeStatusFilter === id ? " is-active" : ""}`}
+              aria-pressed={activeStatusFilter === id}
+              title={activeStatusFilter === id ? "显示全部对话" : `只看${label}的对话`}
+              onClick={() => setStatusFilter(activeStatusFilter === id ? null : id)}
+            >
+              <span className="shelf-status__dot" aria-hidden />
+              {label}
+              <span className="shelf-status__count">{statusCounts[id]}</span>
+            </button>
+          ))}
+        </div>
+      )}
       <button className="project-add" type="button" title="Add project" onClick={onAddProject}>
         <Plus size={13} />
         Add project
@@ -946,7 +1064,9 @@ export function ProjectShelf({
           <div className="project-list__empty">No projects yet</div>
         )}
         {noShelfMatch && (
-          <div className="project-list__empty">No threads match “{query.trim()}”</div>
+          <div className="project-list__empty">
+            {query.trim() ? `No threads match “${query.trim()}”` : "这一类里没有对话"}
+          </div>
         )}
         {allVisibleProjects.map((project) => {
           const rawSessions =
@@ -962,6 +1082,8 @@ export function ProjectShelf({
             ? collapsedShelfSessions(projectSessions, SESSION_LIST_PREVIEW, unreadDone)
             : projectSessions;
           const hiddenSessionCount = Math.max(0, projectSessions.length - visibleSessions.length);
+          // Long, fully listed projects get 今天 / 昨天 / 本周 / 更早 labels.
+          const dayHeads = shelfDayHeaders(visibleSessions, Date.now(), SESSION_LIST_PREVIEW);
 
           const showLineBefore =
             dropHint?.targetId === project.id &&
@@ -1098,6 +1220,7 @@ export function ProjectShelf({
                     <div className="session-row session-row--empty">No sessions</div>
                   )}
                   {visibleSessions.map((session) => {
+                    const dayLabel = dayHeads.get(session.id);
                     const busy = sessionIsBusy(session.status);
                     const park = suspendControl(session, session.label);
                     const isRenaming = renamingId === session.id;
@@ -1127,6 +1250,8 @@ export function ProjectShelf({
                       />
                     );
                     return (
+                      <Fragment key={session.id}>
+                      {dayLabel && <div className="shelf-day">{dayLabel}</div>}
                       <div
                         className={[
                           "session-row",
@@ -1137,7 +1262,11 @@ export function ProjectShelf({
                         ]
                           .filter(Boolean)
                           .join(" ")}
-                        key={session.id}
+                        onMouseEnter={(event) => {
+                          if (!isRenaming) hoverRow(session, event.currentTarget);
+                        }}
+                        onMouseLeave={() => hoverRow(session, null)}
+                        onMouseDown={() => hoverRow(session, null)}
                         onContextMenu={(event) => {
                           if (!onOpenBeside) return;
                           event.preventDefault();
@@ -1247,6 +1376,7 @@ export function ProjectShelf({
                           </button>
                         </span>
                       </div>
+                      </Fragment>
                     );
                   })}
 
@@ -1894,6 +2024,46 @@ export function ProjectShelf({
         }}
       />
     )}
+    {hoverCard && !besideMenu && (
+        <div
+          className="shelf-peek"
+          role="tooltip"
+          style={{ top: Math.min(hoverCard.top, window.innerHeight - 190), left: hoverCard.left }}
+        >
+          <div className="shelf-peek__title">{hoverCard.session.label}</div>
+          <div className="shelf-peek__row">
+            <span
+              className={`shelf-peek__status is-${hoverCard.session.status}${
+                unreadDone.has(hoverCard.session.id) && !sessionIsBusy(hoverCard.session.status) ? " is-done" : ""
+              }`}
+            >
+              {unreadDone.has(hoverCard.session.id) && !sessionIsBusy(hoverCard.session.status)
+                ? "已完成"
+                : SESSION_STATUS_WORD[hoverCard.session.status] ?? hoverCard.session.status}
+            </span>
+            <span>{agentLabel(hoverCard.session.agentId)}</span>
+          </div>
+          {(hoverCard.session.preferredModel || hoverCard.session.preferredMode) && (
+            <div className="shelf-peek__meta">
+              {[hoverCard.session.preferredModel, hoverCard.session.preferredMode].filter(Boolean).join(" · ")}
+            </div>
+          )}
+          <div className="shelf-peek__meta">
+            {projects.find((p) => p.id === hoverCard.session.projectId)?.name ?? "聊天"}
+            {hoverCard.session.origin === "import" ? " · 导入" : ""}
+          </div>
+          <div className="shelf-peek__meta">
+            开始{" "}
+            {new Date(hoverCard.session.startedAt).toLocaleString(undefined, {
+              month: "numeric",
+              day: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+            })}
+            {" · "}最近 {shelfRecency(hoverCard.session.lastActiveAt, Date.now())}
+          </div>
+        </div>
+      )}
     {besideMenu && onOpenBeside && (
       <SplitBesideMenu
         x={besideMenu.x}
