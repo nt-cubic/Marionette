@@ -1395,9 +1395,19 @@ fn fetch_models_from_endpoint(chat_base: &str, key: &str) -> Vec<String> {
     else {
         return Vec::new();
     };
-    let Ok(text) = response.into_string() else {
+    // 响应带 Bearer key 请求的结果，读取加硬上限（模型目录正常远小于 16MiB），
+    // 恶意/坏掉的端点返回几个 GB 也不能把进程内存吃穿。
+    const MODELS_CATALOG_MAX_BYTES: u64 = 16 * 1024 * 1024;
+    use std::io::Read;
+    let reader = response.into_reader();
+    let mut text = String::new();
+    let mut capped = reader.take(MODELS_CATALOG_MAX_BYTES + 1);
+    if capped.read_to_string(&mut text).is_err() {
         return Vec::new();
-    };
+    }
+    if text.len() as u64 > MODELS_CATALOG_MAX_BYTES {
+        return Vec::new();
+    }
     parse_models_catalog(&text)
 }
 
@@ -2012,15 +2022,15 @@ struct TomlBlock {
 /// 逐行只判闭合定界符，不认表头。真实文件另由 toml crate 整体校验兜底
 /// （ensure / remove 在手术前后都会校验）。
 fn split_blocks(text: &str) -> Vec<TomlBlock> {
-    let mut blocks: Vec<TomlBlock> = vec![TomlBlock {
-        header: None,
-        lines: Vec::new(),
-    }];
+    let mut blocks: Vec<TomlBlock> = Vec::new();
     let mut multiline: Option<&'static str> = None;
+    // 序言块惰性创建：任何要放行的时刻若还没有块就建一个 header=None 块。
+    // 旧实现靠「初始必有一个块」的隐式不变量 + last_mut().unwrap()，panic=abort
+    // 下万一被重排破坏就是进程自杀。
     for raw in text.lines() {
         let line = raw.strip_suffix('\r').unwrap_or(raw).to_string();
         if let Some(delim) = multiline {
-            blocks.last_mut().unwrap().lines.push(line.clone());
+            push_split_line(&mut blocks, line.clone());
             if line.matches(delim).count() % 2 == 1 {
                 multiline = None;
             }
@@ -2032,7 +2042,7 @@ fn split_blocks(text: &str) -> Vec<TomlBlock> {
                 lines: vec![line.clone()],
             });
         } else {
-            blocks.last_mut().unwrap().lines.push(line.clone());
+            push_split_line(&mut blocks, line.clone());
         }
         for delim in ["\"\"\"", "'''"] {
             if line.matches(delim).count() % 2 == 1 {
@@ -2040,7 +2050,25 @@ fn split_blocks(text: &str) -> Vec<TomlBlock> {
             }
         }
     }
+    if blocks.is_empty() {
+        blocks.push(TomlBlock {
+            header: None,
+            lines: Vec::new(),
+        });
+    }
     blocks
+}
+
+/// 行放入最后一个块；还没有块（空输入首行）就建序言块。任何路径都不 panic。
+fn push_split_line(blocks: &mut Vec<TomlBlock>, line: String) {
+    if let Some(last) = blocks.last_mut() {
+        last.lines.push(line);
+    } else {
+        blocks.push(TomlBlock {
+            header: None,
+            lines: vec![line],
+        });
+    }
 }
 
 /// 解析 `[model."<name>"]` / `[model.<bare>]` 表头 → name。

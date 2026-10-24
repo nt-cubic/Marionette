@@ -240,8 +240,24 @@ fn load_user_catalog() -> Vec<ProviderMeta> {
         .collect()
 }
 
+/// 合并目录缓存，以 user catalog 的 mtime 为键：文件没变就不重读盘不重解析。
+/// find_meta 在每条消息的用量/别名热路径上被反复调用，旧实现每次都读盘 +
+/// 解析两份目录；写入（upsert/delete 走 fs::write）必然改 mtime，所以不会读到旧数据。
+static MERGED_CACHE: std::sync::Mutex<Option<(Option<std::time::SystemTime>, Vec<ProviderMeta>)>> =
+    std::sync::Mutex::new(None);
+
 /// Builtin first, then user overrides / adds by id.
 fn merged_catalog() -> Vec<ProviderMeta> {
+    let user_mtime = providers_json_path()
+        .and_then(|path| fs::metadata(&path).ok())
+        .and_then(|meta| meta.modified().ok());
+    if let Ok(guard) = MERGED_CACHE.lock() {
+        if let Some((cached_mtime, catalog)) = guard.as_ref() {
+            if *cached_mtime == user_mtime {
+                return catalog.clone();
+            }
+        }
+    }
     let mut by_id: std::collections::BTreeMap<String, ProviderMeta> = std::collections::BTreeMap::new();
     for p in builtin_catalog() {
         by_id.insert(p.id.clone(), p);
@@ -249,7 +265,11 @@ fn merged_catalog() -> Vec<ProviderMeta> {
     for p in load_user_catalog() {
         by_id.insert(p.id.clone(), p);
     }
-    by_id.into_values().collect()
+    let catalog: Vec<ProviderMeta> = by_id.into_values().collect();
+    if let Ok(mut guard) = MERGED_CACHE.lock() {
+        *guard = Some((user_mtime, catalog.clone()));
+    }
+    catalog
 }
 
 fn find_meta(provider: &str) -> Option<ProviderMeta> {

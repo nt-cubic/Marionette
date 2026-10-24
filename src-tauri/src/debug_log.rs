@@ -55,6 +55,17 @@ fn writer_loop(rx: Receiver<String>) {
         if written > ROTATE_BYTES {
             drop(file.take());
             if let Ok(path) = log_path() {
+                // 三代轮转：崩溃现场往往在上一代日志里，只留一代会在连续轮转后
+                // 把事故证据冲掉。最旧的 .log.3 先淘汰，再逐代上移。
+                let _ = std::fs::remove_file(path.with_extension("log.3"));
+                let _ = std::fs::rename(
+                    path.with_extension("log.2"),
+                    path.with_extension("log.3"),
+                );
+                let _ = std::fs::rename(
+                    path.with_extension("log.1"),
+                    path.with_extension("log.2"),
+                );
                 let _ = std::fs::rename(&path, path.with_extension("log.1"));
             }
             written = 0;

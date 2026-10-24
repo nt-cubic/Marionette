@@ -321,27 +321,32 @@ fn spawn_reader<R: Read + Send + 'static>(
                 }
                 Ok(n) => {
                     pending.extend_from_slice(&buf[..n]);
-                    // Decode complete UTF-8; keep partial trailing bytes.
-                    match String::from_utf8(pending.clone()) {
+                    // 解码完整 UTF-8，保留尾部不完整字节。常见路径走借用零拷贝
+                    // （旧实现每个 chunk 都 clone 整个 pending，大输出下白烧）。
+                    match std::str::from_utf8(&pending) {
                         Ok(text) => {
                             if !text.is_empty() {
-                                terminal.append_output(&text);
+                                terminal.append_output(text);
                             }
                             pending.clear();
                         }
                         Err(err) => {
-                            let valid = err.utf8_error().valid_up_to();
+                            let valid = err.valid_up_to();
                             if valid > 0 {
                                 let text = String::from_utf8_lossy(&pending[..valid]);
                                 terminal.append_output(&text);
                                 pending.drain(..valid);
                             }
-                            // Incomplete sequence at end — wait for more bytes.
-                            if err.utf8_error().error_len().is_some() && pending.len() > 4 {
-                                // Invalid bytes — lossy drain one byte.
-                                let text = String::from_utf8_lossy(&pending[..1]);
-                                terminal.append_output(&text);
-                                pending.drain(..1);
+                            // 尾部不完整序列 — 等更多字节。
+                            if let Some(bad_len) = err.error_len() {
+                                if pending.len() > 4 {
+                                    // 真实垃圾字节：lossy 解掉整个坏序列再前进，
+                                    // 别逐字节 drain（垃圾长跑会 O(n²) memmove）。
+                                    let text =
+                                        String::from_utf8_lossy(&pending[..bad_len.min(pending.len())]);
+                                    terminal.append_output(&text);
+                                    pending.drain(..bad_len.min(pending.len()));
+                                }
                             }
                         }
                     }
