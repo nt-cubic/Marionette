@@ -30,7 +30,6 @@ mod preflight;
 mod process_util;
 mod provider_usage;
 mod proxy;
-mod session_manager;
 mod shell_integration;
 mod storage;
 mod telegram_remote;
@@ -38,14 +37,12 @@ mod terminal_runtime;
 mod webview2_gate;
 
 use acp::AcpService;
-use session_manager::SessionManager;
 use std::sync::Mutex;
 use storage::StorageService;
 
 pub struct AppState {
     pub storage: Mutex<StorageService>,
     pub acp: AcpService,
-    pub sessions: SessionManager,
 }
 
 /// Longest to wait for agent kills on close before exiting anyway.
@@ -407,7 +404,6 @@ fn main() {
                 StorageService::new().expect("failed to initialize Marionette storage"),
             ),
             acp: AcpService::new(),
-            sessions: SessionManager::new(),
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_projects,

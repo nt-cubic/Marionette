@@ -10,6 +10,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
+/// Ceiling for PATH probes (`where.exe` / `which`): a wedged lookup must not
+/// stall session start — it sits on the spawn path.
+const WHERE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// A spawnable program + optional leading args (e.g. `cmd.exe /C script.cmd`).
 #[derive(Clone, Debug)]
 pub struct ResolvedCommand {
@@ -45,11 +49,9 @@ pub fn resolve_spawn_command(command: &str) -> Result<ResolvedCommand, String> {
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        if let Ok(output) = Command::new("where.exe")
-            .arg(command)
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-        {
+        let mut where_cmd = Command::new("where.exe");
+        where_cmd.arg(command).creation_flags(CREATE_NO_WINDOW);
+        if let Ok(output) = output_with_kill_timeout(where_cmd, WHERE_TIMEOUT) {
             if output.status.success() {
                 for line in String::from_utf8_lossy(&output.stdout).lines() {
                     let line = line.trim();
@@ -64,7 +66,9 @@ pub fn resolve_spawn_command(command: &str) -> Result<ResolvedCommand, String> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        if let Ok(output) = Command::new("which").arg(command).output() {
+        if let Ok(output) =
+            output_with_kill_timeout(Command::new("which").arg(command), WHERE_TIMEOUT)
+        {
             if output.status.success() {
                 if let Some(line) = String::from_utf8_lossy(&output.stdout).lines().next() {
                     let line = line.trim();

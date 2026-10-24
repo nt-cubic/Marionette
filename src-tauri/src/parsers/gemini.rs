@@ -22,11 +22,13 @@ fn gemini_base() -> Option<PathBuf> {
 fn alias_cwd(base: &Path, alias: &str) -> Option<String> {
     for rel in ["tmp", "history"] {
         let p = base.join(rel).join(alias).join(".project_root");
-        if let Ok(s) = std::fs::read_to_string(p) {
-            let t = s.trim();
-            if !t.is_empty() {
-                return Some(t.to_string());
-            }
+        // lossy: 一个坏字节不该让整个 alias 解析失效。
+        let s = std::fs::read(&p)
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .unwrap_or_default();
+        let t = s.trim();
+        if !t.is_empty() {
+            return Some(t.to_string());
         }
     }
     if let Some(v) = read_json_file(&base.join("projects.json")) {

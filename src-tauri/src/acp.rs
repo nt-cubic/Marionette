@@ -1213,17 +1213,21 @@ impl AcpService {
     }
 
     /// Kill every agent process we own — nothing should outlive the window.
+    /// Returns how many stops actually succeeded (a poisoned lock mid-shutdown
+    /// must not inflate the count).
     pub fn stop_all(&self) -> usize {
         let ids: Vec<String> = self
             .sessions
             .lock()
             .map(|sessions| sessions.keys().cloned().collect())
             .unwrap_or_default();
-        let count = ids.len();
+        let mut stopped = 0;
         for id in ids {
-            let _ = self.stop(&id);
+            if self.stop(&id).is_ok() {
+                stopped += 1;
+            }
         }
-        count
+        stopped
     }
 
     /// Is an agent process for this dialog alive in *this* app run?
