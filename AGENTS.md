@@ -223,3 +223,12 @@ ZCode 官方**没有** ACP（CLI 0.16.x 无 `--acp`，ACP registry 未收录）�
   `scripts/patch-zcode-acp-personal-models.mjs` 给适配器补回退链（→ `personalModelIds`
   → 模板 `builtinModelIds`，上下文窗口同源兜底）。**`npm i -g zcode-acp-server`
   会覆盖 `dist/`，升级后重跑该脚本**；细节见 `docs/pitfalls-zcode-acp.md` 雷 12。
+  **且 Windows 上必须带 `--ignore-scripts`**：包的 postinstall 是 Unix-only
+  （`2>/dev/null || true`），裸装恒败并被 npm 回滚成 0 文件空壳（`npm ls -g` 版本号
+  空、agent 起不来；2026-10-24 实锤）。安装/升级通道已按包名自动加该参数
+  （`commands.rs::npm_install_args`，按钮与 auto-update 同通道），手工装也要带。
+- **桌面版「在位」的判定 = `acp::zcode_bin_path()` 探测链**（固定根 + 开始菜单/桌面
+  `.lnk`）。`~/.zcode/v2` 目录**不是**安装痕迹——跨用桥自己就写 provider_config.json
+  进去，没装桌面版也会「已就绪」（`commands.rs::zcode_desktop_present` 2026-10-24 改）。
+  桥没有本体跑不了第一条 prompt：ACP 只是翻译层，真正的 `zcode app-server` 来自
+  桌面版安装里的 `resources\glm\zcode.cjs`。
