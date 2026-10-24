@@ -88,6 +88,13 @@ pub fn dsh_standalone_model_path() -> Option<PathBuf> {
 /// - 引擎 Absent/Failed → 删 bundle（不留连不上的死路由）→ `Ok(None)`；
 /// - Starting/Downloading 或目录暂空 → 文件不动，`Ok(None)`。
 pub fn refresh_marionette_route() -> Result<Option<PathBuf>, String> {
+    // 并发 spawn 时读→合并→写必须互斥：后写覆盖前写会丢一方的托管段
+    // （audit P1-B；与 model_bridge::BRIDGE_WRITE_LOCK 同一纪律，各自文件
+    // 序列独立，不共用一把锁以免跨文件排队）。
+    static REFRESH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = REFRESH_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = bundle_dir().ok_or_else(|| "无法定位用户目录".to_string())?;
     match crate::engine::status() {
         crate::engine::EngineStatus::Running { port, .. } => {

@@ -73,6 +73,11 @@ pub fn presets() -> &'static [ProviderPreset] {
     &PRESETS
 }
 
+/// 跨用桥「读→外科合并→写」全序列的进程内互斥。两个会话并发 spawn 时会
+/// 同时跑 refresh：不加锁的话两次合并各基于各自的旧快照，后写覆盖前写，
+/// 一方的托管段就丢了（audit P1-B）。锁只覆盖文件序列，不做长 I/O。
+static BRIDGE_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 static PRESETS: [ProviderPreset; 6] = [
     // anthropic：api-docs.deepseek.com/guides/anthropic_api 原文
     // "base_url being https://api.deepseek.com/anthropic"。
@@ -658,6 +663,10 @@ fn pi_remove_marionette_at(path: &Path) -> Result<bool, String> {
 /// Running 且目录非空 → 写/刷（语义幂等，格式化不 churn）→ Ok(true)；
 /// Absent/Failed → 移除托管段 → Ok(false)；Starting/Downloading → 不动。
 pub fn refresh_pi_marionette_route() -> Result<bool, String> {
+    // 读→合并→写必须整体互斥（见 BRIDGE_WRITE_LOCK）。
+    let _guard = BRIDGE_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let path = pi_models_path().ok_or_else(|| "无法定位用户目录".to_string())?;
     match crate::engine::status() {
         crate::engine::EngineStatus::Running { port, .. } => {
@@ -954,6 +963,10 @@ fn zcode_remove_marionette_at(path: &Path) -> Result<bool, String> {
 /// 形如 `marionette\<engineId>`（适配器 configOptions 的 `provider\model`
 /// 拼法，前端钉原生偏好用这个前缀）。
 pub fn refresh_zcode_marionette_route() -> Result<bool, String> {
+    // 读→合并→写必须整体互斥（见 BRIDGE_WRITE_LOCK）。
+    let _guard = BRIDGE_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let path = zcode_provider_config_path().ok_or_else(|| "无法定位用户目录".to_string())?;
     match crate::engine::status() {
         crate::engine::EngineStatus::Running { port, .. } => {

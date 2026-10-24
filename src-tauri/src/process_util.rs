@@ -788,6 +788,57 @@ fn unwrap_npm_shim_dir_to_exe(shim_path: &Path) -> Option<String> {
     None
 }
 
+/// `Command::output()` with a hard ceiling: on timeout the child is **killed**,
+/// not just abandoned.
+///
+/// Plain `output()` waits forever, and the spawn-with-thread-and-recv_timeout
+/// variant leaves the child running after the deadline — every preflight that
+/// hits it accumulates another zombie process plus a thread that never exits.
+/// This runs the child via `spawn`, polls, and kills on the deadline so both
+/// the process and the thread are reclaimed.
+pub fn output_with_kill_timeout(
+    mut cmd: Command,
+    wait: std::time::Duration,
+) -> Result<std::process::Output, String> {
+    use std::io::Read;
+
+    let mut child = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut stdout = Vec::new();
+                let mut stderr = Vec::new();
+                if let Some(mut pipe) = child.stdout.take() {
+                    let _ = pipe.read_to_end(&mut stdout);
+                }
+                if let Some(mut pipe) = child.stderr.take() {
+                    let _ = pipe.read_to_end(&mut stderr);
+                }
+                return Ok(std::process::Output { status, stdout, stderr });
+            }
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!(
+                        "timed out after {}s (child killed)",
+                        wait.as_secs()
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
