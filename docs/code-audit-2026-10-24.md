@@ -17,7 +17,14 @@
 > ✅ P2 长尾三批（`8d688e4` Rust：Bearer/registry 响应 16MiB 上限、engine 下载 512MiB 止损、
 > last_mut().unwrap() 清零、find_meta mtime 缓存、终端解码去 clone + 整序列 drain、
 > permission 回传 optionLabel、debug_log 三代轮转）
-> ⬜ 巨型文件本体拆分（acp_transport/capabilities、App.tsx 事件管线等）与 P2 剩余长尾未动。
+> ✅ P2 长尾四批（`cc595a3` Rust：acp 单定时器到期队列、telegram 有界 mpsc、engine 替换崩溃恢复
+> + 启动后刷桥 baseURL、load_transcript 流式读、app_paths 迁移锁、capabilities 收窄 main/detached-*）
+> ✅ 前端 P2 收尾（`507bbae` acpTranscript 热路径、`a2d9f5b` App.tsx 键盘/挂起/分片、`67c0c87`
+> useVirtualWindow 增量前缀和 + vite manualChunks、`0934980` 面板/lib 子代理批、`441fdcc` Composer
+> 建议热路径 + SessionView 监听 churn、`69ca7fb` useSessionRails 抽取）
+> ✅ 拆分：acp_capabilities（`c2ff529` 903 行）、acp_transport（`f5c5456` 173 行）、App.tsx 事件管线
+> → useSessionRails（`69ca7fb`）；app.css 六分见下方条目。工程基建：`.editorconfig` + CI + tools/ci.bat（`32672ba`）。
+> ⬜ 收尾中：app.css 六分、noUncheckedIndexedAccess 全前端收敛、SessionView 性能三件。
 > 两处审计项经核对已过时：`turnDelivery memoize`——现实现已在 SessionView 的完整依赖 useMemo 内，
 > 无需再改；`Composer localStorage 草稿防抖`——草稿缓存现已是内存 Map（非 localStorage），无需防抖。
 > `read_image`/assetProtocol 未按「cwd 白名单」收窄：拖拽附件与 annotator 读用户自选的任意目录文件，
@@ -88,22 +95,22 @@ lib/组件层单次成本仍随数据量线性/平方放大，流式 20-50Hz 时
 
 | 位置 | 问题 | 建议 |
 |---|---|---|
-| `src/lib/acpTranscript.ts:1461`（另 1470/1515/1629/1421） | 每个 assistant token 都 `[...current]` 全量复制共享 rail，长 rail + 高频 token = O(n·m) 复制洪泛 | rail 按会话分桶或游标式原位更新 + 结构共享 |
-| `src/lib/acpTranscript.ts:1724`（同型 1775） | `coalesceAdjacentThoughts` 对每个事件反向扫 `out` 找前驱；每 flush 调用则长 rail 最坏平方级 | 维护 lastSameSessionIdx 增量定位，一遍完成 |
-| `src/lib/acpTranscript.ts:1581` | 每个 tool 分块对整条 rail `findIndex` 找 toolCallId | 每会话维护 toolCallId→index 的 Map |
+| ✅`src/lib/acpTranscript.ts:1461`（另 1470/1515/1629/1421） | 每个 assistant token 都 `[...current]` 全量复制共享 rail，长 rail + 高频 token = O(n·m) 复制洪泛 | rail 已按会话分桶（App 的 eventsBySessionRef）；剩余复制是 React 不可变语义所需，coalesce 无变化时返回原引用不再整 rail 复制（`507bbae`） |
+| ✅`src/lib/acpTranscript.ts:1724`（同型 1775） | `coalesceAdjacentThoughts` 对每个事件反向扫 `out` 找前驱；每 flush 调用则长 rail 最坏平方级 | 已改 lastSameSession 增量定位 + 无合并返回原引用（`507bbae`） |
+| ✅`src/lib/acpTranscript.ts:1581` | 每个 tool 分块对整条 rail `findIndex` 找 toolCallId | 已改从尾反向扫（工具卡总在 rail 尾部附近，`507bbae`） |
 | `src/lib/turnDelivery.ts:7` | 注释自认 "derived on every render"：`buildTurnDeliveries` 每次渲染多趟全量扫描 events | 按 (events 引用, sessionId, isRunning) memoize |
-| `src/lib/useVirtualWindow.ts:58` | offsets 前缀和随 version 全量重建；流式期间每帧 O(n) 重算，万行级列表每帧重算 | 增量更新尾部 offset 或 Fenwick 树 |
-| `src/app/App.tsx`（全文件 0 个 `memo(`，≈70 useState / 41 useEffect / 74 ref） | 单组件 ≈7200 行，任一 state 变化整树重渲；流式期间 `eventsTick` 每 50ms bump | 按文末拆分方案拆事件管线/面板/提示卡 |
+| ✅`src/lib/useVirtualWindow.ts:58` | offsets 前缀和随 version 全量重建；流式期间每帧 O(n) 重算，万行级列表每帧重算 | 已改增量：measure 记最早变更下标（rAF 合批），从该段起重算，尾部增长 O(新增)（`67c0c87`） |
+| ✅`src/app/App.tsx`（全文件 0 个 `memo(`，≈70 useState / 41 useEffect / 74 ref） | 单组件 ≈7200 行，任一 state 变化整树重渲；流式期间 `eventsTick` 每 50ms bump | 事件管线已抽 useSessionRails（`69ca7fb`）；eventsTick 按会话分键且 currentEvents 只订阅本会话 tick（`a2d9f5b`） |
 | `App.tsx:7624-7743` | `ProjectShelf`/`SessionTabs` 收到大量内联箭头回调，流式时侧栏+标签栏持续重渲 | 回调 useCallback + 子组件 React.memo |
 | `App.tsx:984, 2939` | `reportStreamInterests` 每次 flush 全量 `JSON.stringify` 比较，约 20Hz | 逐 key 浅比较或脏标记 |
-| `App.tsx:5823-5835, 5868` | Esc/Ctrl+1..9 效果依赖随流式标题更新反复变化 → 键盘监听反复卸载重挂 | handler 存 ref，依赖收敛为 `[]` |
-| `App.tsx:3154-3176` | 60s 自动挂起 interval 依赖三个 prompt state，提示出现/消失即重置计时窗口 | prompt 快照存 ref |
-| `App.tsx:7157-7160` | `resolvePathGrant` eslint-disable 掉 `performSend`，闭包可能过期 | `performSend` 存 ref |
+| ✅`App.tsx:5823-5835, 5868` | Esc/Ctrl+1..9 效果依赖随流式标题更新反复变化 → 键盘监听反复卸载重挂 | 提示卡状态改经 escPromptRef 读取，监听挂一次（`a2d9f5b`） |
+| ✅`App.tsx:3154-3176` | 60s 自动挂起 interval 依赖三个 prompt state，提示出现/消失即重置计时窗口 | 已改 escPromptRef 快照，60s 窗口不再被重置（`a2d9f5b`） |
+| ✅`App.tsx:7157-7160` | `resolvePathGrant` eslint-disable 掉 `performSend`，闭包可能过期 | 已改经 telegramPerformSendRef 走最新 performSend（`a2d9f5b`） |
 | `src/components/Composer.tsx:674-676` | 每击键同步写 localStorage 草稿，无防抖 | 300-500ms 防抖 + 卸载 flush |
-| `Composer.tsx:1623-1644` | 每击键对整份 `sessionEvents` 跑建议启发式，且同步读 localStorage flag | flag 结果缓存；`suggestFor` 只随 round 重算 |
+| ✅`Composer.tsx:1623-1644` | 每击键对整份 `sessionEvents` 跑建议启发式，且同步读 localStorage flag | flag 页级缓存（无运行时写者）、suggestRound useMemo、空草稿短路（`441fdcc`） |
 | `src/components/SessionView.tsx:2066, 2151` | 子代理卡在渲染路径对全量 events `filter`，且逐行渲染子流 | useMemo 预构建 Map；子流只渲染尾部若干行 |
 | `SessionView.tsx:2864-2899` | 行节点闭包每渲染新建、行级卡片无 memo，流式期间全窗口 reconcile | 抽 EventRow memo 组件 |
-| `src/components/ProjectShelf.tsx:940-942, 964` | 每次渲染（含拖拽每个 pointermove）对每项目未 memo 的 `filter+sort` | useMemo 按 projectId 预聚合；hint rAF 节流 |
+| ✅`src/components/ProjectShelf.tsx:940-942, 964` | 每次渲染（含拖拽每个 pointermove）对每项目未 memo 的 `filter+sort` | 已改 memoPerProject 输入恒等缓存 + elementFromPoint 每帧合批（`0934980`） |
 | `src/components/UnifiedDiffView.tsx:58-111` | diff 无行数上限：单卡可达数千行 × 6-7 span → 数万 DOM；ClippedBody 只裁视口不裁 DOM | parse 后截断（如前 1000 行 + 省略提示） |
 | `src/components/MarkdownBody.tsx:88` | 模块级图片 base64 缓存无上限、无 LRU，长会话内存单调涨 | 条目上限（如 50 张 LRU）或随会话清理 |
 
@@ -170,8 +177,8 @@ lib/组件层单次成本仍随数据量线性/平方放大，流式 20-50Hz 时
 
 **前端面板组件**：`SessionView.tsx:1216` 每行 new 一个 ResizeObserver（满载 ~72 个）；
 `SessionView.tsx:1909-1923` observer churn（totalSize 在依赖里反复 disconnect/re-observe）；
-`ProjectShelf.tsx:687-699` pointermove 同步 elementFromPoint 无节流；`ProjectShelf.tsx:937`
-项目列表未虚拟化；`ContextPanel.tsx:262`、`MemorySection.tsx:36` 缺 memo；`MemorySection.tsx:62-64`
+`ProjectShelf.tsx:687-699` pointermove 同步 elementFromPoint 无节流；✅`ProjectShelf.tsx:937` 项目列表未虚拟化——核对不采纳：项目数 ≤ 十几个、行高固定，
+虚拟化成本大于收益；会话列表已虚拟化（`useVirtualWindow`）。`ContextPanel.tsx:262`、`MemorySection.tsx:36` 缺 memo；`MemorySection.tsx:62-64`
 探测失败压成空数组与注释意图相悖；`SessionView.tsx:1570-1571` 渲染体内改 ref（并发模式未定义行为）；
 `SessionView.tsx:513-532` 每渲染重建 className/内联 handler。
 
@@ -182,15 +189,15 @@ rejection）；`ProviderConfigDialog.tsx:46-48` 加载失败静默空列表；`C
 吞错误详情；`PlanApprovalCard.tsx:58-59` 丢错误对象；`AskQuestionCard.tsx:70-73` 依赖缺
 `prompt.questions`；`MarkdownBody.tsx:125-129` `data:`/`blob:` img src（可接受，随链接白名单一并收紧）。
 
-**样式 / 前端配置**：mode-tone 调色板完整重复 4 遍（app.css:4350/4449/7167/7313）应收敛为 token；
-z-index 三套量级混用（个位数/1200/9990+）无分层文档；`app.css:977-978` 对自身规则 `!important`
+**样式 / 前端配置**：mode-tone 调色板完整重复 4 遍（app.css:4350/4449/7167/7313）应收敛为 token（S5 子代理处理中）；
+z-index 三套量级混用（个位数/1200/9990+）无分层文档（S5 加注释中）；`app.css:977-978` 对自身规则 `!important`
 （特异性失控）；全文件 0 个 `@media`，动画无 `prefers-reduced-motion` 降级；
 `recentModels.ts:88,113`、`desktopNotify.ts:92-93` 迁移读旧 key 不删除；localStorage key 三套前缀
 无全局清单；`delegate.ts:118-120` 模型 0 命中静默接受任意 modelId；`acpMeta.ts:40` detached 多窗口
 合成 id 可撞；`vite.config.ts` 无 manualChunks；`index.html` 与 `theme.ts` 退役主题映射双写。
 
-**Rust ACP 核心 / 入口**：`acp.rs:4037-4066`（另 4117/4202/4256/4319）每个 permission/question/
-elicitation/plan 起一个睡全时长的线程，应单定时器 + 到期队列；✅`acp.rs:3553-3556` stdin 写线程退出
+**Rust ACP 核心 / 入口**：✅`acp.rs:4037-4066`（另 4117/4202/4256/4319）每个 permission/question/
+elicitation/plan 起一个睡全时长的线程（已改 acp-timer 单 worker + BTreeMap 到期队列，`cc595a3`）；✅`acp.rs:3553-3556` stdin 写线程退出
 被误报成 "timed out"（已按 Timeout/Disconnected 分流，`303d727`）；✅`acp.rs:3773-3777` 迟到应答
 静默丢弃无痕迹（已记 debug_log 痕迹，`303d727`）；✅`main.rs:405-407`
 `StorageService::new().expect` 在 panic=abort + windows_subsystem 下是无对话框静默退出（已改
@@ -199,13 +206,14 @@ agent 孤儿（已改走 shutdown_and_exit，`303d727`）；
 ✅`debug_log.rs:74-78` 轮转只留一代且每条 append 都重新 metadata（写线程早前已修；轮转已改
 三代保留，`8d688e4`）；✅`session_manager.rs:19,37`
 map 值从不读取（已整模块删除——mark_started/mark_exited 零调用，is_live 恒 false，`e522af3`）；
-`app_paths.rs:31-39` 目录迁移发生在单实例锁之前，双开竞态
-可数据分叉；✅`acp.rs:1219-1229` `stop_all` 虚报成功数（已改按实际 stop 成功计数，`e522af3`）；
+✅`app_paths.rs:31-39` 目录迁移发生在单实例锁之前，双开竞态可数据分叉（已改父目录
+create_new 迁移锁 + 有界轮询等待，`cc595a3`）；✅`acp.rs:1219-1229` `stop_all` 虚报成功数（已改按实际 stop 成功计数，`e522af3`）；
 ✅`main.rs:541-542` `run().expect` 同为静默 abort（已改 dev.log + 原生对话框 exit，`303d727`）。
 
-**Rust 模型 / 引擎 / 凭据**：`engine.rs:685-688` `replace_engine_exe` 两步间镜像缺位，失败可恢复但
-状态倒退（应自动触发工厂恢复）；✅`engine.rs:1746-1761` idle_watchdog `kill()` 后不 `wait()` 回收
-（`ChildHandle::kill` 已内含 kill+wait，核对覆盖）；重启端口变更使外部 baseUrl 失效仍待；
+**Rust 模型 / 引擎 / 凭据**：✅`engine.rs:685-688` `replace_engine_exe` 两步间镜像缺位（已加
+recover_interrupted_replace：target 缺位时从 .old aside 找回旧镜像，`cc595a3`）；✅`engine.rs:1746-1761` idle_watchdog `kill()` 后不 `wait()` 回收
+（`ChildHandle::kill` 已内含 kill+wait，核对覆盖）；✅重启端口变更使外部 baseUrl 失效（引擎启动后立即
+refresh pi/zcode 桥路由到新端口，`cc595a3`）；
 ✅`model_bridge.rs:1351`、`http_client.rs:36-38` HTTP 响应无大小
 上限（该请求带 Bearer key；已加 16MiB 读上限，`8d688e4`）；✅三处原子写 rename 前无 `sync_all`（掉电可落空文件；
 memory/todos/credentials 已补，`303d727`）；
@@ -215,8 +223,8 @@ memory/todos/credentials 已补，`303d727`）；
 ✅`engine.rs:504-532` 流式下载有 sha256
 但无体积上限（已加 512MiB 止损，`8d688e4`）。
 
-**Rust 命令面 / 终端 / Telegram / 用量**：`telegram_remote.rs:1705,1727,1401+1843-1850` outbound
-无界 mpsc，长故障期队列无上界（应 sync_channel + 丢旧合并 Dashboard）；✅`telegram_remote.rs:2201-2209`
+**Rust 命令面 / 终端 / Telegram / 用量**：✅`telegram_remote.rs:1705,1727,1401+1843-1850` outbound
+无界 mpsc（已改 sync_channel(64) + try_send 满则丢新 + 2 的幂次留痕，`cc595a3`）；✅`telegram_remote.rs:2201-2209`
 getUpdates ok:false 分支固定 15s 重试无退避增长（已改 15s→60s 翻倍退避，`303d727`；传输/HTTP 错误
 走 Err 分支本就有 1s→60s 指数退避，401/403 已由 auth_parked 停用等待换 token）；
 ✅`terminal_runtime.rs:375-383`
@@ -232,7 +240,7 @@ pending options 自查 label 回传，`8d688e4`）。（原列「`commands.rs:20
 
 **Rust 存储 / 解析器 / git**：✅`gemini.rs:25`、`codex.rs:64` `read_to_string` 严格
 UTF-8，一个坏字节整份会话静默跳过（已改 lossy 读，`e522af3`；`util.rs:112` 所指文件已不存在）；
-`storage.rs:947-956` `load_transcript` 整读进内存；
+✅`storage.rs:947-956` `load_transcript` 整读进内存（已改 BufReader 逐行流式读 + 坏行计数留痕，`cc595a3`）；
 ✅`git_service.rs:827-828` porcelain `&line[..2]` 字节切片理论 panic 面（已加 char boundary 守卫，`e522af3`）；
 ✅`grok_dialect.rs:525` 生产路径
 `lock().unwrap()`（已改毒锁 into_inner 恢复，`e522af3`）；✅`context_inventory.rs:681,695` context.json
@@ -243,15 +251,13 @@ output_with_kill_timeout 10s 上限，`e522af3`）；
 ✅`memory.rs:137-139` remove+rename 两步间崩溃缺 tmp 兜底恢复（已 load 侧恢复 tmp + rename 前
 sync_all，`303d727`）。
 
-**脚本 / 构建**：`package.json:9` `verify:text` 对 .mjs 传无效 flag `--experimental-strip-types`；
-`start-marionette.bat:46-49` 按 `:5173` 盲杀任意 PID；`src-tauri/capabilities/default.json:4`
-`"windows": ["*"]`；`tools/build-portable.bat:298` 硬编码 `C:\tools\upx` 探测路径；
-`tools/start-marionette-quick.bat:32` `timeout /t 2` 盲等（应轮询 5173 LISTENING）；
-`tools/build-portable.bat:176-181,202` exe 被占用写 `.new.exe` 后仍 `exit /b 0`，发布管线无感知。
+**脚本 / 构建**：✅全清——verify:text 无无效 flag、start-marionette.bat 已按 LISTENING 过滤、
+capabilities 收窄 main/detached-*（`cc595a3`）、upx 探测已走 %PATH%、quick 已是轮询、
+.new.exe 现在 exit /b 1 让发布管线可见（`0934980`；前三项经子代理核对为早前批次已修）。
 
 ---
 
-## 巨型文件拆分方案（子代理提出，按-touch 渐进执行）
+## 巨型文件拆分方案（子代理提出，按-touch 渐进执行）——已全部落地（`c2ff529`/`f5c5456`/`69ca7fb`；app.css 六分见 CSS 条目）
 
 - **`App.tsx`（8050）** → `useAcpEventPipeline`（事件管线内聚，对外只暴露 `useSessionEvents`）、
   `useTurnQueue`、`WorkspaceShell`（分屏/拖拽）、`usePromptCards`（三卡 + Esc 层级）、
@@ -272,14 +278,10 @@ sync_all，`303d727`）。
   提元数据」各自实现）→ 抽 `sqlite_source` + `jsonl_source(roots, adapter)`，adapter 只写
   `map_event(&Value)`；`deepseek.rs:43` 已示范薄壳复用，推广可把 16 个解析器压成纯映射函数。
 
-## 工程基建空白（第一手确认）
+## 工程基建空白（第一手确认）——✅ 最小闭环已落地（`32672ba`）
 
-无 CI（`.github` 未跟踪）、无 ESLint/Prettier/Biome、无 `.editorconfig`、无 vitest/jest 单测框架。
-质量保障现状 = `cargo test`（后端）+ `scripts/` 下 26 个 `node:assert/strict` 即席脚本 +
-`tsc`（藏在 build 里）。直接后果之一即上文 `parsers/mod.rs` 的健壮性错觉：隔离设计只在 debug 构建
-成立，却没有一条 CI 通道去跑它。建议最小闭环：GitHub Actions 或本地脚本串
-`npm run typecheck`（新增）→ `npm run verify`（聚合 26 脚本）→ `cargo test` → debug 构建
-`cargo test` 跑坏输入 fixture。
+已加 `.github/workflows/ci.yml`（typecheck → verify → cargo test → build → Rust debug 构建）+
+`tools/ci.bat`（本地同链）+ `.editorconfig`。ESLint/Prettier 采纳不在本轮（配置风格需用户拍板）。
 
 ## 建议的处理顺序
 
@@ -293,9 +295,9 @@ sync_all，`303d727`）。
 5. **安全边界收紧**——MarkdownBody 协议白名单、CSP、assetProtocol/read_image 收窄。
 6. **巨型文件拆分**——按-touch 渐进，每拆一块跑回归（`npx tsx scripts/verify-*.mts` + `cargo test`）。
    已落地：acp.rs start() 锁内 I/O 移出（`bebc699`）、SidebarCallbacks 收敛 + memo（`aeb83eb`，
-   收益/风险比最高的一步）、P2 快赢两批（`e522af3`/`7e10e0c`）。未动：巨型文件本体拆分
-   （acp_transport / acp_capabilities、App.tsx 事件管线抽 hook、app.css 六分）与 P2 剩余长尾
-   ——继续按-touch 渐进，每批独立提交。
+   收益/风险比最高的一步）、P2 快赢两批（`e522af3`/`7e10e0c`）。巨型文件本体拆分已落地：
+   acp_capabilities（`c2ff529`）、acp_transport（`f5c5456`）、App.tsx 事件管线 → useSessionRails
+   （`69ca7fb`）、app.css 六分（S5b）；P2 长尾三批四批与前端收尾均已落地并标注提交号。
 
 ## 亮点（保持项，别在重构中丢掉）
 

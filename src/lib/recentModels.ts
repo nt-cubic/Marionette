@@ -1,3 +1,8 @@
+// localStorage 键前缀清单（三套并存，审计 2026-10-24）：
+//   marionette-*     现行（theme / recent-models / last-defaults / layout / …）
+//   agentshell-*     AgentShell 遗留（迁移读后即删，见 desktopNotify / 本文件）
+//   codex-*/其它     代理侧或一次性用途，不在 Marionette 命名空间
+// 新增键一律用 marionette- 前缀；读旧键的迁移代码见 recentModels / desktopNotify / App.tsx。
 const STORAGE_KEY = "marionette-recent-models";
 const LEGACY_KEY = "agentshell-recent-models";
 const MAX_ENTRIES = 5;
