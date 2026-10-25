@@ -28,7 +28,7 @@ func TestPauseRuleCleanAndMatch(t *testing.T) {
 		}
 	}
 	q := RuleRequest{Agent: "codex", At: at(2, 10, 0)}
-	if MatchRule(rules, q) != -1 || len(ThenUses(rules, q, 0, "")) != 0 {
+	if MatchRule(rules, q) != -1 || len(ThenUses(rules, q, 0, nil)) != 0 {
 		t.Fatal("a pause rule sent a request to its model")
 	}
 	if (Group{Rules: rules}).Ruled() || !(Group{Rules: append(rules, Rule{Use: "a/x", Tokens: 1})}).Ruled() {

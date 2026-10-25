@@ -13,8 +13,9 @@ package provider
 // A rule decides when a user's turn begins; the agent's requests within
 // that turn — tool results sent back — stay with what it decided, so a
 // turn is never moved to another model halfway through (the gateway keeps
-// that; see gateway/rules.go). The member a rule names goes first; the
-// group's other members stay behind it for failover.
+// that; see gateway/rules.go). The member a rule names goes first, then
+// the others it names after it (Rule.More), in order; the group's other
+// members stay behind them for failover.
 //
 // A pause rule (Rule.Pause) sends nothing first: while it holds, the
 // member it names is out of the group altogether — not first, not a
@@ -36,10 +37,19 @@ import (
 // Efforts are the reasoning levels a rule can ask for, lowest first.
 var Efforts = []string{"low", "medium", "high", "xhigh", "max"}
 
-// Rule sends the requests it matches to one of its group's members first.
-// Every condition set must hold; a rule sets at least one.
+// Rule sends the requests it matches to one of its group's members first,
+// and then to the others it names, in order. Every condition set must
+// hold; a rule sets at least one.
 type Rule struct {
 	Use string `json:"use"` // the member, as the group names it: "provider/model"
+	// More: the members the rule sends to after Use, in order, each tried
+	// when the ones before it can't take the request (monkeyin_92 on X: one
+	// rule for several models, not a rule each). They go before the
+	// members the matching rules after it name, and the group's others.
+	// Use stays the first, so a magpie from before More still sends the
+	// rule's requests to it, and has the others behind it as group members.
+	// A pause names one model and has none.
+	More []string `json:"more,omitempty"`
 	// UseEffort: the reasoning the member is asked for on the requests the
 	// rule sends it (one of Efforts), in place of what the agent asked —
 	// an intent picks the model and its effort as a pair (#2633). Like a
@@ -90,6 +100,57 @@ type Rule struct {
 	// request whatever it is.
 	Pause bool `json:"pause,omitempty"`
 }
+
+// Uses are the members the rule sends to, in order: Use, then More.
+func (r Rule) Uses() []string {
+	if r.Use == "" {
+		return slices.Clone(r.More)
+	}
+	return append([]string{r.Use}, r.More...)
+}
+
+// SetUses has the rule send to uses, in order, each once and none empty:
+// the first is Use, the rest More.
+func (r *Rule) SetUses(uses []string) {
+	var out []string
+	for _, u := range uses {
+		if u != "" && !slices.Contains(out, u) {
+			out = append(out, u)
+		}
+	}
+	r.Use, r.More = "", nil
+	if len(out) > 0 {
+		r.Use = out[0]
+	}
+	if len(out) > 1 {
+		r.More = out[1:]
+	}
+}
+
+// MapUses has each member the rule sends to go by what f makes of it:
+// a member renamed, cleaned or taken out ("").
+func (r *Rule) MapUses(f func(string) string) {
+	uses := r.Uses()
+	for i, u := range uses {
+		uses[i] = f(u)
+	}
+	r.SetUses(uses)
+}
+
+// Without is the rule with m no longer among the members it sends to;
+// false when it names no other, and goes with m.
+func (r Rule) Without(m string) (Rule, bool) {
+	r.MapUses(func(u string) string {
+		if u == m {
+			return ""
+		}
+		return u
+	})
+	return r, r.Use != ""
+}
+
+// Names reports whether the rule sends to m.
+func (r Rule) Names(m string) bool { return r.Use == m || slices.Contains(r.More, m) }
 
 // TimeWindow is hours of the day, local time: From until To, "HH:MM" each,
 // past midnight when To comes before From (22:00–08:00), the whole day
@@ -276,7 +337,7 @@ func (r Rule) Conditions() []string {
 func cleanRules(rules []Rule, members []string) ([]Rule, error) {
 	var out []Rule
 	for i, r := range rules {
-		r.Use = strings.TrimSpace(r.Use)
+		r.MapUses(strings.TrimSpace)
 		r.Effort = strings.ToLower(strings.TrimSpace(r.Effort))
 		r.UseEffort = strings.ToLower(strings.TrimSpace(r.UseEffort))
 		r.Agents = cleanList(r.Agents)
@@ -305,8 +366,11 @@ func cleanRules(rules []Rule, members []string) ([]Rule, error) {
 		switch {
 		case r.Use == "":
 			return nil, fmt.Errorf("rule %d: which model it sends to is missing", n)
-		case !slices.Contains(members, r.Use):
-			return nil, fmt.Errorf("rule %d: %s is not in the group", n, r.Use)
+		case slices.ContainsFunc(r.Uses(), func(u string) bool { return !slices.Contains(members, u) }):
+			u := r.Uses()[slices.IndexFunc(r.Uses(), func(u string) bool { return !slices.Contains(members, u) })]
+			return nil, fmt.Errorf("rule %d: %s is not in the group", n, u)
+		case r.Pause && len(r.More) > 0:
+			return nil, fmt.Errorf("rule %d: a pause names one model: give each its own rule", n)
 		case r.Tokens < 0:
 			return nil, fmt.Errorf("rule %d: tokens can't be negative", n)
 		case r.Effort != "" && r.Effort != "on" && !slices.Contains(Efforts, r.Effort):
@@ -403,13 +467,19 @@ func MatchRule(rules []Rule, q RuleRequest) int {
 }
 
 // ThenUses are the members the rules after the n-th (from 1) that also
-// match q send to, each once and in the rules' order, leaving out use: who
-// a request a rule sent to use fails over to before the group's others (#112).
-func ThenUses(rules []Rule, q RuleRequest, n int, use string) []string {
+// match q send to, each once and in the rules' order (a rule's own in its
+// order), leaving out those of uses: who a request a rule sent to uses
+// fails over to before the group's others (#112).
+func ThenUses(rules []Rule, q RuleRequest, n int, uses []string) []string {
 	var out []string
 	for i := n; i < len(rules); i++ {
-		if u := rules[i].Use; u != use && !slices.Contains(out, u) && rules[i].Matches(q) {
-			out = append(out, u)
+		if !rules[i].Matches(q) {
+			continue
+		}
+		for _, u := range rules[i].Uses() {
+			if !slices.Contains(uses, u) && !slices.Contains(out, u) {
+				out = append(out, u)
+			}
 		}
 	}
 	return out
@@ -472,14 +542,35 @@ func ruledEntry(e *Entry, g Group, ms []Member, entries []Entry) {
 		}
 		return out, found
 	}
+	// ofRule is what every member a rule sends to takes: a request it
+	// matches may go to any of them
+	ofRule := func(r Rule) (Entry, bool) {
+		var out Entry
+		for i, id := range r.Uses() {
+			x, ok := of(id)
+			if !ok {
+				return Entry{}, false
+			}
+			if i == 0 {
+				out = x
+				continue
+			}
+			if x.Context > 0 && (out.Context == 0 || x.Context < out.Context) {
+				out.Context = x.Context
+			}
+			out.Images = out.Images && x.Images
+			out.ImageInput = sharedImageInput(out.ImageInput, x.ImageInput)
+		}
+		return out, r.Use != ""
+	}
 	sees := func(x Entry) bool { return x.Images && (x.ImageInput == nil || *x.ImageInput) }
 	for i, r := range g.Rules {
-		x, ok := of(r.Use)
+		x, ok := ofRule(r)
 		if !ok || r.Pause {
 			continue
 		}
 		if r.Images && r.Tokens == 0 && r.Effort == "" && len(r.Agents) == 0 && r.Intent == "" && !r.Compact && r.Time == nil && !r.ByFolder() && sees(x) && !e.Images &&
-			!slices.ContainsFunc(g.Rules[:i], func(b Rule) bool { y, ok := of(b.Use); return !b.Pause && (!ok || !sees(y)) }) {
+			!slices.ContainsFunc(g.Rules[:i], func(b Rule) bool { y, ok := ofRule(b); return !b.Pause && (!ok || !sees(y)) }) {
 			e.Images, e.ImageInput = true, x.ImageInput
 		}
 		if r.Tokens == 0 || r.Images || r.Effort != "" || len(r.Agents) > 0 || r.Intent != "" || r.Compact || r.Time != nil || r.ByFolder() || x.Context <= e.Context {
@@ -489,7 +580,7 @@ func ruledEntry(e *Entry, g Group, ms []Member, entries []Entry) {
 		// it, and a longer one may still be taken by a rule before
 		fits := x.Context
 		for _, m := range ms {
-			if m.ID == r.Use {
+			if r.Names(m.ID) {
 				continue
 			}
 			if y, ok := of(m.ID); ok && y.Context > 0 && y.Context < r.Tokens {
@@ -501,7 +592,7 @@ func ruledEntry(e *Entry, g Group, ms []Member, entries []Entry) {
 			if before.Pause {
 				continue
 			}
-			if y, ok := of(before.Use); !ok {
+			if y, ok := ofRule(before); !ok {
 				fits = 0
 			} else if y.Context < fits {
 				fits = y.Context

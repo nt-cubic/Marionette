@@ -186,3 +186,44 @@ func TestGroupMemberNames(t *testing.T) {
 		t.Errorf("gone: %v", err)
 	}
 }
+
+// A rule naming several models (monkeyin_92 on X): use=a,b, in order; a
+// model dropped from the group leaves the rule, which goes with its last.
+func TestGroupRuleSeveralModelsCmd(t *testing.T) {
+	groupsHome(t)
+	if _, err := addGroup("Opus", []string{"models=a/claude-opus-5-5,b/gpt-5.5,a/only-a"}); err != nil {
+		t.Fatal(err)
+	}
+	rule := func() []provider.Rule {
+		t.Helper()
+		g, err := findGroup("opus")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g.Rules
+	}
+	if err := ruleCmd([]string{"add", "opus", "use=gpt-5.5,only-a,claude-opus-5-5", "tokens=200k"}); err != nil {
+		t.Fatal(err)
+	}
+	if rs := rule(); len(rs) != 1 || strings.Join(rs[0].Uses(), " ") != "b/gpt-5.5 a/only-a a/claude-opus-5-5" {
+		t.Fatalf("%+v", rs)
+	}
+	if err := ruleCmd([]string{"opus"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ruleCmd([]string{"add", "opus", "use=gpt-5.5,a/m", "tokens=5"}); err == nil {
+		t.Fatal("a model not in the group taken")
+	}
+	if _, err := setGroup("opus", []string{"models-=b/gpt-5.5"}); err != nil {
+		t.Fatal(err)
+	}
+	if rs := rule(); len(rs) != 1 || strings.Join(rs[0].Uses(), " ") != "a/only-a a/claude-opus-5-5" || rs[0].Tokens != 200000 {
+		t.Fatalf("after models-=b: %+v", rs)
+	}
+	if _, err := setGroup("opus", []string{"models-=a/only-a,a/claude-opus-5-5", "models+=b/gpt-5.5"}); err != nil {
+		t.Fatal(err)
+	}
+	if rs := rule(); len(rs) != 0 {
+		t.Fatalf("a rule left with no model kept: %+v", rs)
+	}
+}

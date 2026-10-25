@@ -12,6 +12,10 @@ import (
 // mapDiskFile maps the file at path read-only. The file is only ever
 // replaced by a rename (toDisk), never written in place, so what is
 // mapped stays as it was read while the mapping lives.
+// mapsFiles: the system maps a file, and archiveSpill holds a build's
+// archives in one.
+const mapsFiles = true
+
 func mapDiskFile(path string) (*diskMapping, bool) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -29,8 +33,8 @@ func mapDiskFile(path string) (*diskMapping, bool) {
 	m := &diskMapping{data: data}
 	runtime.AddCleanup(m, func(data []byte) {
 		unix.Munmap(data)
-		if diskUnmapped != nil {
-			diskUnmapped()
+		if f := diskUnmapped.Load(); f != nil {
+			(*f)()
 		}
 	}, data)
 	return m, true

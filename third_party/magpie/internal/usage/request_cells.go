@@ -312,6 +312,7 @@ func (ps *pairedRows) partsOf(pass *cellPass, cache *partCache, identities map[s
 	sigs := ps.sigs(identities)
 	parts := make([]*chunkPart, len(ps.all))
 	var rows chunkRows
+	defer rows.release()
 	var r Row
 	for i, c := range ps.all {
 		sig := sigs[c]
@@ -357,6 +358,7 @@ func (ps *pairedRows) newest(f Filter, parts []*chunkPart, take int) newestHeap 
 		return b.Latest.Compare(a.Latest)
 	})
 	var rows chunkRows
+	defer rows.release()
 	var r Row
 	for _, c := range order {
 		if len(selected) == take && !c.Latest.IsZero() && c.Latest.Before(selected[0].at) {

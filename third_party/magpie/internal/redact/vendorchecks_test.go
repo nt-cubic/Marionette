@@ -75,3 +75,27 @@ func TestModelTakesNoSnakeWord(t *testing.T) {
 		}
 	}
 }
+
+// The model took a tool result's Unix time for a phone, "tool_call" before
+// it was the cue, and the log went as "timestamp": {{PHONE_c2ukh7gk}}
+// (#3577, the reporter's line). A time in seconds or milliseconds is
+// kept, cued or not; a phone beside it is still masked.
+func TestModelPhoneKeepsUnixTime(t *testing.T) {
+	f := &fakeModel{values: map[string]string{"1792903687": "private_phone", "1792903687123": "private_phone", "+1 415 555 0132": "private_phone"}}
+	body := `{"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":` +
+		`"{\"event\": \"tool_call\", \"timestamp\": 1792903687, \"ms\": 1792903687123, \"at\": \"2026-10-25T04:48:03.755Z\", \"desk\": \"+1 415 555 0132\"}"}]}]}`
+	out, n := MaskJSON([]byte(body), Options{Personal: true, Model: f.find})
+	for _, keep := range []string{`\"timestamp\": 1792903687,`, `\"ms\": 1792903687123,`} {
+		if !strings.Contains(string(out), keep) {
+			t.Errorf("time masked: %s", out)
+		}
+	}
+	if n != 1 || strings.Contains(string(out), "415 555 0132") {
+		t.Fatalf("%d masked: %s", n, out)
+	}
+	for _, v := range []string{"13800138000", "2125551234", "1792903687x", "179290368", "+11792903687"} {
+		if epochNumber(v) {
+			t.Errorf("%q taken for a time", v)
+		}
+	}
+}

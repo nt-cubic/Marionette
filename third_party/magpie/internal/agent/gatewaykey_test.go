@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/base64"
 	"encoding/json"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -218,6 +219,7 @@ func TestPinnedGatewayKeyForEveryWriter(t *testing.T) {
 		}
 		return map[string]string{
 			"agy":        agy,
+			"aionui":     aionuiKey(AionUiLink(gw)),
 			"alma":       almaKey(),
 			"cindy":      cindy.Auth.APIKey,
 			"copilotjb":  jbKey,
@@ -248,4 +250,10 @@ func TestPinnedGatewayKeyForEveryWriter(t *testing.T) {
 			t.Errorf("%s with nothing shared: key %q, want magpie's own", agent, plain[agent])
 		}
 	}
+}
+
+// aionuiKey is the api_key AionUi's link hands it.
+func aionuiKey(link string) string {
+	v, _ := url.ParseQuery(strings.TrimPrefix(link, AionUiScheme))
+	return v.Get("api_key")
 }

@@ -402,17 +402,28 @@ func rowsIn(c *rowChunk) int {
 // chunk. Its strings' and shapes' slices are reused the same way.
 type chunkRows struct {
 	c, open *rowChunk
-	buf     []packedRow
-	strs    []string
-	shapes  [][rowTexts]uint32
 	// lent: the strings are of the decoded block, not a copy of them, and
 	// the next chunk is decoded over them. For a pass that keeps nothing of
 	// a row past the next chunk, and clones a string it keeps: the passes
 	// that pair a page's calls copied every chunk's strings five times,
 	// ~250 MB of a warm start's page (#3493).
-	lent    bool
-	decoded []byte
+	lent bool
+	b    *rowBuffer
 }
+
+// rowBuffer is what a chunkRows decodes into, kept between passes
+// (rowBuffers): each of a page's passes over every chunk grew its own from
+// nothing, and a warm start's page and Codex's effort after it allocated
+// ~30 MB a pass to read the same rows (#3493).
+type rowBuffer struct {
+	rows    []packedRow
+	strs    []string
+	shapes  [][rowTexts]uint32
+	decoded []byte
+	open    rowChunk
+}
+
+var rowBuffers = sync.Pool{New: func() any { return new(rowBuffer) }}
 
 // lentRows is a chunkRows whose strings are lent (chunkRows.lent).
 func lentRows() chunkRows { return chunkRows{lent: true} }
@@ -424,27 +435,43 @@ func (r *chunkRows) of(c *rowChunk) *rowChunk {
 		return c
 	}
 	if r.c != c {
+		if r.b == nil {
+			r.b = rowBuffers.Get().(*rowBuffer)
+		}
+		b := r.b
 		var lent *[]byte
 		if r.lent {
-			lent = &r.decoded
+			lent = &b.decoded
 		}
-		open := c.unpackReusing(r.buf, r.strs, r.shapes, lent)
+		open := c.unpackReusing(&b.open, b.rows, b.strs, b.shapes, lent)
 		if open == nil { // never written so: pack wrote it in this process
-			open = &rowChunk{Source: c.Source, Computer: c.Computer}
+			b.open = rowChunk{Source: c.Source, Computer: c.Computer}
+			open = &b.open
 		}
-		if cap(open.Rows) > cap(r.buf) {
-			r.buf = open.Rows[:0]
+		if cap(open.Rows) > cap(b.rows) {
+			b.rows = open.Rows[:0]
 		}
-		if cap(open.Strings) > cap(r.strs) {
-			r.strs = open.Strings[:0]
+		if cap(open.Strings) > cap(b.strs) {
+			b.strs = open.Strings[:0]
 		}
-		if cap(open.Shapes) > cap(r.shapes) {
-			r.shapes = open.Shapes[:0]
+		if cap(open.Shapes) > cap(b.shapes) {
+			b.shapes = open.Shapes[:0]
 		}
 		r.c, r.open = c, open
 	}
 	r.open.codexActors, r.open.codexCompactions, r.open.codexIdentities = c.codexActors, c.codexCompactions, c.codexIdentities
 	return r.open
+}
+
+// release hands r's buffers on to the next pass. Nothing r opened is read
+// after: a lent string kept from it is a clone, and a row a copy.
+func (r *chunkRows) release() {
+	if b := r.b; b != nil {
+		b.open = rowChunk{}
+		clear(b.strs[:cap(b.strs)]) // the strings of a block not lent are its own
+		r.b, r.c, r.open = nil, nil, nil
+		rowBuffers.Put(b)
+	}
 }
 
 func (r *chunkRows) row(ref rowRef) Row { return r.of(ref.Chunk).row(ref.Index) }
@@ -457,6 +484,7 @@ func rowsOf(chunks []*rowChunk, refs []rowRef) map[rowRef]Row {
 		byChunk[ref.Chunk] = append(byChunk[ref.Chunk], ref.Index)
 	}
 	var rows chunkRows
+	defer rows.release()
 	for _, c := range chunks {
 		indexes, ok := byChunk[c]
 		if !ok {
@@ -866,13 +894,15 @@ func readRequestBlocks(idx *requestIndex, st requestState, p Period, now time.Ti
 			want[s.Path] = s
 		}
 	}
+	var spill *archiveSpill
 	if len(want) >= requestDiskLeast {
 		idx.fromDisk(want)
+		spill = newArchiveSpill()
 	}
 	built, builtRows := 0, 0
 	// A file's rows are made by the reader that read it: made one after
 	// another, they were most of a cold build's wait (#3493).
-	read := prefetchEach(sources, stale, func() func(sessions.CallSource) *rowChunk {
+	makeChunk := func() func(sessions.CallSource) *rowChunk {
 		priceRow := pricers()
 		return func(s sessions.CallSource) *rowChunk {
 			cs := readSource(s)
@@ -890,7 +920,8 @@ func readRequestBlocks(idx *requestIndex, st requestState, p Period, now time.Ti
 			c.dict, c.shapeIDs = nil, nil // local chunks are immutable until the source changes
 			return c.pack()
 		}
-	})
+	}
+	read := prefetchEach(sources, stale, makeChunk)
 	for i, s := range sources {
 		on[s.Path] = true
 		if !since.IsZero() && s.Modified.Before(since) {
@@ -899,17 +930,23 @@ func readRequestBlocks(idx *requestIndex, st requestState, p Period, now time.Ti
 		// kept packed: the page reads a chunk's rows when it reaches them
 		// (chunkRows), not every file's at once
 		c := idx.chunks[s.Path]
+		put := false
 		if reused := c != nil && c.Source.Size == s.Size && c.Source.Modified.Equal(s.Modified); !reused {
 			c = read(i)
 			c.serial = nextChunkSerial()
 			built++
 			builtRows += c.Count
+			put = spill.put(c, i)
 		}
 		kept, next := *c, *c
 		kept.Used, next.Used = idx.tick, idx.tick
 		idx.chunks[s.Path] = &kept
 		chunks = append(chunks, &next)
+		if put {
+			spill.hand(&kept, &next)
+		}
 	}
+	spill.done(func(i int) *rowChunk { return makeChunk()(sources[i]) })
 	// the other computers' days (#542), a chunk each, read again only when
 	// sync brought a new copy
 	var others []*rowChunk
@@ -1000,9 +1037,18 @@ func (idx *requestIndex) keep(read *requestIndex, on map[string]bool) bool {
 		return false
 	}
 	for path, c := range read.chunks {
-		if prev := idx.chunks[path]; prev == nil || prev.Used <= c.Used {
-			idx.chunks[path] = c
+		prev := idx.chunks[path]
+		if prev != nil && prev.Used > c.Used {
+			continue
 		}
+		if prev != nil && prev.serial == c.serial && prev.pagesRank() > c.pagesRank() {
+			// copied before the file of it was written (save): its archive
+			// stays of the file's pages
+			next := *c
+			next.Archive, next.mapped = prev.Archive, prev.mapped
+			c = &next
+		}
+		idx.chunks[path] = c
 	}
 	for path := range idx.chunks {
 		if !on[path] {
@@ -1040,6 +1086,9 @@ var requestDiskLeastRows = 20000
 // requestDiskSaves are the writes under way, for the tests to wait on.
 var requestDiskSaves sync.WaitGroup
 
+// savingDisk, in tests, is called by a write before it writes the file.
+var savingDisk func()
+
 // save writes the file of idx's chunks behind the lock: chunks are never
 // changed once made, so a copy of the map is enough. idx is locked.
 func (idx *requestIndex) save() {
@@ -1052,10 +1101,25 @@ func (idx *requestIndex) save() {
 	requestDiskSaves.Add(1)
 	go func() {
 		defer requestDiskSaves.Done()
-		_ = toDisk(root, meta, chunks, on)
+		if savingDisk != nil {
+			savingDisk()
+		}
+		var kept map[string]*rowChunk
+		if toDisk(root, meta, chunks, on) == nil {
+			kept = onDisk(root, meta, chunks)
+		}
 		idx.Lock()
 		defer idx.Unlock()
 		idx.saving = false
+		// a read since has copied the chunk with a use of its own: the same
+		// chunk while its serial is
+		for path, c := range kept {
+			if cur := idx.chunks[path]; cur != nil && cur.serial == c.serial && cur.pagesRank() < 2 {
+				next := *cur
+				next.Archive, next.mapped = c.Archive, c.mapped
+				idx.chunks[path] = &next
+			}
+		}
 	}()
 }
 
@@ -1113,6 +1177,7 @@ func visibleLocal(chunks []*rowChunk) map[rowRef]bool {
 	duplicates := map[rowRef]bool{}
 	seen := map[string]bool{}
 	rows := lentRows() // a kept message id is cloned
+	defer rows.release()
 	for _, c := range chunks {
 		open := rows.of(c)
 		for i := range open.Rows {
@@ -1205,6 +1270,7 @@ func matchedBlocks(gateways []*rowChunk, chunks []*rowChunk, skip map[rowRef]boo
 	}
 	byRequest := map[string][]timedRef{}
 	rows := lentRows() // a kept request id is cloned; a key is looked up
+	defer rows.release()
 	for _, c := range chunks {
 		open := rows.of(c)
 		for i := range open.Rows {
@@ -1462,6 +1528,7 @@ func pairRows(p Period, now time.Time, gateways, chunks, others []*rowChunk, ide
 // visit calls fn with each row of the period that no other one stands for.
 func (ps *pairedRows) visit(fn func(timedRef, *Row)) {
 	var rows chunkRows
+	defer rows.release()
 	// one row for the visit, written over for each: fn is not known
 	// here, so a row of each would be an allocation of its own, and fn
 	// keeps none of them

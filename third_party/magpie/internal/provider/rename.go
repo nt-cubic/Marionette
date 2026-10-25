@@ -87,8 +87,8 @@ func Rename(from, to string) error {
 		for k, m := range g.Members {
 			g.Members[k] = renamedRef(m, from, to)
 		}
-		for k, r := range g.Rules {
-			g.Rules[k].Use = renamedRef(r.Use, from, to)
+		for k := range g.Rules {
+			g.Rules[k].MapUses(func(u string) string { return renamedRef(u, from, to) })
 		}
 		for k, m := range g.Fast {
 			g.Fast[k] = renamedRef(m, from, to)

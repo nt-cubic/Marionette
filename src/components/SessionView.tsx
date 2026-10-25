@@ -69,6 +69,7 @@ import { ExpandableBody } from "./ExpandableBody";
 import { JsonTree, splitJsonTail } from "./JsonTree";
 import { LinkCwdContext, LinkedText } from "./LinkedText";
 import { MarkdownBody, MarkdownImageCwdContext, PreviewImage } from "./MarkdownBody";
+import { WebReplyBody } from "./WebReplyBody";
 import { MessageOutline } from "./MessageOutline";
 import { MessageTimestamp } from "./MessageTimestamp";
 import { ToolImageStrip } from "./ToolImageStrip";
@@ -128,6 +129,8 @@ type SessionViewProps = {
   onSubtaskRetry?: (childSessionId: string) => void;
   /** Live Plan / Ask waiter — interactive while pending, otherwise a settled card. */
   streamPrompt?: StreamPromptHandlers;
+  webReplyWidthPercent?: number;
+  onWebReplyWidthChange?: (width: number) => void;
 };
 
 /** Drag a tab far enough / off the strip → ghost chip; full window on release. */
@@ -776,6 +779,8 @@ export function SessionView({
   onSubtaskQuote,
   onSubtaskRetry,
   streamPrompt,
+  webReplyWidthPercent = 85,
+  onWebReplyWidthChange,
   detailsVisible: detailsVisibleProp,
   onDetailsVisibleChange,
 }: SessionViewProps) {
@@ -873,6 +878,8 @@ export function SessionView({
             onSubtaskQuote={onSubtaskQuote}
             onSubtaskRetry={onSubtaskRetry}
             streamPrompt={streamPrompt}
+            webReplyWidthPercent={webReplyWidthPercent}
+            onWebReplyWidthChange={onWebReplyWidthChange}
           />
         </div>
         </MarkdownImageCwdContext.Provider>
@@ -1521,6 +1528,8 @@ function CleanPlaceholder({
   onSubtaskQuote,
   onSubtaskRetry,
   streamPrompt,
+  webReplyWidthPercent = 85,
+  onWebReplyWidthChange,
 }: {
   agent: AgentConfig;
   session: Session;
@@ -1549,6 +1558,8 @@ function CleanPlaceholder({
   onSubtaskQuote?: (summary: string) => void;
   onSubtaskRetry?: (childSessionId: string) => void;
   streamPrompt?: StreamPromptHandlers;
+  webReplyWidthPercent?: number;
+  onWebReplyWidthChange?: (width: number) => void;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   /** When true, new content may stick the viewport to the bottom. */
@@ -2017,31 +2028,50 @@ function CleanPlaceholder({
     // Relative paths in agent text resolve against this dialog's project root.
     <LinkCwdContext.Provider value={session.cwd || null}>
     <div className="clean-surface">
-      <button
-        className="pill-action pill-action--icon icon-button--eye"
-        type="button"
-        title={
-          detailsVisible
-            ? "折叠全部 tool / thinking"
-            : "展开全部 tool / thinking"
-        }
-        aria-label={
-          detailsVisible
-            ? "折叠全部 tool / thinking"
-            : "展开全部 tool / thinking"
-        }
-        onClick={() => {
-          if (detailsVisible) {
-            setActivityFoldPins(new Map());
-            setExpandedKindKeys(new Set());
-            setExpandedToolKeys(new Set());
-            setExpandedThoughtKeys(new Set());
+      <div className="clean-surface__tools">
+        {agent.id === "web-chatgpt" && (
+          <label className="web-reply-width-control" title={`GPT 回复宽度：${webReplyWidthPercent}%`}>
+            <input
+              type="range"
+              min={25}
+              max={100}
+              step={1}
+              value={webReplyWidthPercent}
+              aria-label="GPT 回复宽度"
+              onChange={(event) => {
+                const value = Number(event.currentTarget.value);
+                onWebReplyWidthChange?.(value);
+              }}
+            />
+            <output>{webReplyWidthPercent}%</output>
+          </label>
+        )}
+        <button
+          className="pill-action pill-action--icon icon-button--eye"
+          type="button"
+          title={
+            detailsVisible
+              ? "折叠全部 tool / thinking"
+              : "展开全部 tool / thinking"
           }
-          onDetailsToggle();
-        }}
-      >
-        {detailsVisible ? <Eye size={14} /> : <EyeOff size={14} />}
-      </button>
+          aria-label={
+            detailsVisible
+              ? "折叠全部 tool / thinking"
+              : "展开全部 tool / thinking"
+          }
+          onClick={() => {
+            if (detailsVisible) {
+              setActivityFoldPins(new Map());
+              setExpandedKindKeys(new Set());
+              setExpandedToolKeys(new Set());
+              setExpandedThoughtKeys(new Set());
+            }
+            onDetailsToggle();
+          }}
+        >
+          {detailsVisible ? <Eye size={14} /> : <EyeOff size={14} />}
+        </button>
+      </div>
       <div className="clean-surface__body">
       {!atBottom && visibleEvents.length > 0 && (
         <button
@@ -2678,7 +2708,8 @@ function CleanPlaceholder({
 
           return (
             <article
-              className={`event-card event-card--${event.type}${isEditing ? " is-editing" : ""}`}
+              className={`event-card event-card--${event.type}${event.type === "assistant_message" && event.webReply ? " is-web-reply" : ""}${isEditing ? " is-editing" : ""}`}
+              style={event.type === "assistant_message" && event.webReply ? { "--web-reply-width": `${webReplyWidthPercent}%` } as CSSProperties : undefined}
               key={`${event.type}-${event.createdAt}-${index}`}
               id={isUser ? userKey : undefined}
               {...(tone ? { "data-mode-tone": tone } : {})}
@@ -2824,7 +2855,9 @@ function CleanPlaceholder({
                           ? stripForceWebSearchPrefix(body)
                           : body;
                       let content: ReactNode = null;
-                      if (useMarkdown && typeof displayBody === "string" && displayBody.trim()) {
+                      if (event.type === "assistant_message" && event.webReply) {
+                        content = <WebReplyBody reply={event.webReply} text={event.text} />;
+                      } else if (useMarkdown && typeof displayBody === "string" && displayBody.trim()) {
                         content = <MarkdownBody text={displayBody} />;
                       } else if (typeof displayBody === "string" && displayBody.trim()) {
                         content = (

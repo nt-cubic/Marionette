@@ -2172,12 +2172,16 @@ pub fn send_acp_prompt(
     session_id: String,
     text: String,
     image_paths: Option<Vec<String>>,
+    file_paths: Option<Vec<String>>,
     probe: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<Value, String> {
-    let result = state
-        .acp
-        .send_prompt(&session_id, text, image_paths.unwrap_or_default());
+    let result = state.acp.send_prompt(
+        &session_id,
+        text,
+        image_paths.unwrap_or_default(),
+        file_paths.unwrap_or_default(),
+    );
     // 本地探针（额度刷新发的 /status、/usage）：发送成功才标记，Telegram 桥
     // 在回合完成时不推送。失败不标——残留标记会误吞下一个真实回合的推送。
     if result.is_ok() && probe.unwrap_or(false) {

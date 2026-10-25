@@ -205,18 +205,25 @@ func ImportGroup(text string) (Imported, error) {
 	in := append(slices.Clone(g.Members), matchesIn(entries, g)...)
 	var rules []Rule
 	for _, r := range g.Rules {
-		use := here[strings.TrimSpace(r.Use)]
-		if _, named := here[strings.TrimSpace(r.Use)]; !named && !IsPattern(r.Use) {
-			// a rule may send to a model a pattern matches: one this
-			// magpie has, or none
-			use = memberHere(entries, all, r.Use)
-		}
+		// each model it sends to as this magpie has it; one it hasn't is
+		// left out of the rule, and a rule left with none goes
+		r.MapUses(func(u string) string {
+			use := here[strings.TrimSpace(u)]
+			if _, named := here[strings.TrimSpace(u)]; !named && !IsPattern(u) {
+				// a rule may send to a model a pattern matches: one this
+				// magpie has, or none
+				use = memberHere(entries, all, u)
+			}
+			if !slices.Contains(in, use) {
+				return ""
+			}
+			return use
+		})
 		// a folder is the sharer's path, never this machine's
-		if use == "" || !slices.Contains(in, use) || (r.Intent != "" && g.Classifier == "") || r.ByFolder() {
+		if r.Use == "" || (r.Intent != "" && g.Classifier == "") || r.ByFolder() {
 			res.Rules++
 			continue
 		}
-		r.Use = use
 		rules = append(rules, r)
 	}
 	g.Rules = rules

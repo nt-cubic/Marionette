@@ -49,7 +49,7 @@ func (v cachingVendor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"event: message_delta\ndata: " + `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}`,
 			"event: message_stop\ndata: " + `{"type":"message_stop"}`,
 		}
-	case "chat", "chat-anthropic-names", "chat-deepseek":
+	case "chat", "chat-anthropic-names", "chat-deepseek", "chat-zero-details", "chat-moonshot":
 		u := map[string]string{
 			// OpenAI's: prompt_tokens counts the cached ones too
 			"chat": `{"prompt_tokens":352,"completion_tokens":7,"total_tokens":359,"prompt_tokens_details":{"cached_tokens":300}}`,
@@ -57,6 +57,10 @@ func (v cachingVendor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"chat-anthropic-names": `{"prompt_tokens":12,"completion_tokens":7,"total_tokens":19,"cache_read_input_tokens":300,"cache_creation_input_tokens":40}`,
 			// DeepSeek's hits and misses
 			"chat-deepseek": `{"prompt_tokens":352,"completion_tokens":7,"total_tokens":359,"prompt_cache_hit_tokens":300,"prompt_cache_miss_tokens":52}`,
+			// a relay that puts DeepSeek's hits beside a 0 of OpenAI's
+			"chat-zero-details": `{"prompt_tokens":352,"completion_tokens":7,"total_tokens":359,"prompt_tokens_details":{"cached_tokens":0},"prompt_cache_hit_tokens":300,"prompt_cache_miss_tokens":52}`,
+			// Moonshot's top-level cached_tokens beside a 0 of OpenAI's
+			"chat-moonshot": `{"prompt_tokens":352,"completion_tokens":7,"total_tokens":359,"prompt_tokens_details":{"cached_tokens":0},"cached_tokens":300}`,
 		}[v.wire]
 		whole = `{"id":"c1","object":"chat.completion","model":"m1","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":` + u + `}`
 		events = []string{
@@ -111,6 +115,8 @@ func TestUsageRecordsCacheTokensOnEveryRoute(t *testing.T) {
 		{"chat", provider.Chat, want{52, 300, 0}},
 		{"chat-anthropic-names", provider.Chat, want{12, 300, 40}},
 		{"chat-deepseek", provider.Chat, want{52, 300, 0}},
+		{"chat-zero-details", provider.Chat, want{52, 300, 0}},
+		{"chat-moonshot", provider.Chat, want{52, 300, 0}},
 		{"responses", provider.Responses, want{52, 300, 0}},
 		{"gemini", provider.Gemini, want{52, 300, 0}},
 	}

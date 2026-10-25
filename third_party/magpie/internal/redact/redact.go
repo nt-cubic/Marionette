@@ -47,6 +47,9 @@ type Options struct {
 	Kinds map[string]bool
 	// Model, where set, finds more in the texts to mask (model.go)
 	Model Model
+	// Shape sends a key as a made-up key of its form, not a placeholder
+	// (shape.go)
+	Shape bool
 
 	// Actions is what is done with a value of a kind (a Hit's Kind) other
 	// than masking it, where the user chose: Warn sends it as written,
@@ -152,12 +155,60 @@ var rules = append([]rule{
 	// code calls anything a key: a map's "key": "value", sort_key, keyboard.
 	{kind: "SECRET", re: regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_.-])` + quote + `key` + quote + `[ \t]*[:=][ \t]*` + quote + `(` + secretCh + `{16,})`),
 		markers: fieldNames{{"key", "key"}}.markers(), ok: secretValue, at: notCode},
+	// a password after its name in Chinese, Japanese or Korean, as people
+	// write one into a message: 密码：786kih, 密碼是 hunter2, パスワード: … .
+	// Unlike password = in a config, nothing in code is called 密码, so
+	// any value of four or more is taken, digits only too (CyberCaius on
+	// Discord); a sentence's closing stop is no part of it.
+	{kind: "PASSWORD", re: cjkNamed(cjkPasswordNames), fold: lowerAll(cjkPasswordNames), back: 64, ahead: 100, ok: notAVariable},
+	// a key, a secret or a token after its name the same way: 密钥为 …,
+	// 令牌是 …, 金鑰： … . A key of digits only is taken after 为, 是, ：
+	// or = when it has six or more and counts nothing, so 密钥为12231241
+	// is masked and 密钥为 2048 位 is left.
+	{kind: "SECRET", re: cjkNamed(cjkKeyNames), fold: lowerAll(cjkKeyNames), back: 64, ahead: 100, at: keyAt},
+	// an English name for one before 为, 為, 是 or ：, as a Chinese message
+	// has it: apikey 为 …, token 是 …, API Key：… (CyberCaius on Discord).
+	// password = … and API_KEY: … in a config are the SECRET rule's above.
+	{kind: "SECRET", re: regexp.MustCompile(`(?i)(?:` + secretNames.pattern() + `|pwd|api[ ]key|access[ ]key|secret[ ]key|key|\bpin(?:[ ]?code)?)` + quote +
+		`[ \t]*(?:[为為是][ \t]*[:：]?|：)[ \t]*(?:\\?["'“「])?(` + secretCh + `{3,}[A-Za-z0-9_\-/+=~!@#%^&*])`),
+		fold: cjkCopulas, back: 24, ahead: 260, at: keyAt},
 
 	{kind: "EMAIL", re: regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}`), markers: []string{"@"}, bound: alnum + "._%+-", ok: realEmail, at: notUserinfo, cat: catPersonal},
 	{kind: "ID_CARD", re: regexp.MustCompile(`[1-9]\d{5}(?:18|19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]`), bound: alnum, ok: chineseID, cat: catPersonal},
 	{kind: "PHONE", re: regexp.MustCompile(`(?:\+?86[- ]?)?1[3-9]\d{9}`), bound: digits, cat: catPersonal},
 	{kind: "BANK_CARD", re: regexp.MustCompile(`[3-6]\d{3}(?:[ -]?\d{4}){2,3}(?:[ -]?\d{1,3})?`), bound: digits, ok: luhn, cat: catPersonal},
 }, moreRules...)
+
+// cjkPasswordNames are what a password is called in Chinese, Japanese and
+// Korean.
+var cjkPasswordNames = []string{"密码", "密碼", "口令", "PIN码", "PIN碼", "PIN 码", "安全码", "安全碼", "パスワード", "暗証番号", "비밀번호", "암호", "비번"}
+
+// cjkKeyNames are what a key, a secret or a token is called in Chinese,
+// Simplified and Traditional, Japanese and Korean.
+var cjkKeyNames = []string{
+	"密钥", "密鑰", "秘钥", "秘鑰", "私钥", "私鑰", "金钥", "金鑰", "令牌", "权杖", "權杖", "授权码", "授權碼",
+	"秘密鍵", "トークン", "シークレット", "APIキー", "アクセスキー",
+	"토큰", "비밀키", "API 키", "API키",
+}
+
+// cjkCopulas are what stands between a name and its value in a Chinese
+// message: 为, 為, 是, a full-width colon.
+var cjkCopulas = []string{"为", "為", "是", "："}
+
+// lowerAll is names as fold has them, in lower case.
+func lowerAll(names []string) []string {
+	out := make([]string, len(names))
+	for i, n := range names {
+		out[i] = strings.ToLower(n)
+	}
+	return out
+}
+
+// cjkNamed is a value after one of names: after ：, :, =, 为, 為, 是, は
+// or 는, quoted or not, or after nothing but a space.
+func cjkNamed(names []string) *regexp.Regexp {
+	return regexp.MustCompile(`(?i)(?:` + strings.Join(names, "|") + `)[ \t]*(?:[:：=][ \t]*|[为為是][ \t]*[:：]?[ \t]*|は[ \t]*|는[ \t]*)?(?:\\?["'“「])?(` + secretCh + `{3,63}[A-Za-z0-9_\-/+=~!@#%^&*])`)
+}
 
 // fieldNames are what a field that holds a secret is called: a pattern for
 // each name, and text that any match of it has in it, so a rule's markers
@@ -214,6 +265,43 @@ func notAVariable(v string) bool {
 	}
 	return strings.Trim(v, "*xX.") != ""
 }
+
+// keyValue is a key's or a token's value, not a word or a number: letters
+// and digits both, or 16 characters or more that aren't all digits. token 是
+// expired, key 是 value and 密钥为 2048 are left.
+func keyValue(v string) bool {
+	if !notAVariable(v) {
+		return false
+	}
+	letter := strings.IndexFunc(v, func(r rune) bool { return r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' }) >= 0
+	return letter && (strings.ContainsAny(v, digits) || len(v) >= 16)
+}
+
+// keyAt is keyValue for s[a:b], or six digits or more right after 为, 為,
+// 是, ：, :, =, は or 는 that count nothing: a key said in a message is
+// often a number (密钥为12231241, token 是 20261025, CyberCaius on
+// Discord), while 密钥为 2048 位 and 令牌 300000 毫秒 are a size and a
+// time.
+func keyAt(s string, a, b int) bool {
+	v := s[a:b]
+	if keyValue(v) {
+		return true
+	}
+	if len(v) < 6 || strings.Trim(v, digits) != "" {
+		return false
+	}
+	before := strings.TrimRight(s[:a], " \t\"'“「\\")
+	after := strings.TrimLeft(s[b:], " \t")
+	return slices.ContainsFunc(keySeparators, func(c string) bool { return strings.HasSuffix(before, c) }) &&
+		!slices.ContainsFunc(quantityUnits, func(u string) bool { return strings.HasPrefix(after, u) })
+}
+
+// keySeparators are what stands between a name and a key's value.
+var keySeparators = []string{"为", "為", "是", "：", ":", "=", "は", "는"}
+
+// quantityUnits are what a number counts when one follows it: bits, bytes,
+// a time, a count.
+var quantityUnits = []string{"位", "比特", "字节", "字節", "个", "個", "次", "秒", "毫秒", "分钟", "分鐘", "小时", "小時", "天", "年", "bit", "byte", "ms", "sec", "min", "ビット", "バイト", "비트", "바이트"}
 
 // secretValue is a value that looks like a secret, not code: letters and
 // digits both, and not a call, a reference or a placeholder of its own.
@@ -434,22 +522,39 @@ func placeholder(kind, v string) string {
 	p := tag(kind, v)
 	mu.Lock()
 	if _, ok := values[p]; !ok {
-		if len(values) >= maxValues {
-			n := 0
-			for k := range values {
-				delete(values, k)
-				if n++; n >= maxValues/2 {
-					break
-				}
-			}
-			reindexKnown()
-		}
+		makeRoom()
 		values[p] = v
 		kinds[kind] = true
 		addKnown(p, v)
 	}
 	mu.Unlock()
 	return p
+}
+
+// makeRoom lets the oldest half of values go when they are full; called
+// with mu held.
+func makeRoom() {
+	if len(values) < maxValues {
+		return
+	}
+	n := 0
+	for k := range values {
+		delete(values, k)
+		delete(shapes, k)
+		if n++; n >= maxValues/2 {
+			break
+		}
+	}
+	reindexKnown()
+}
+
+// put is how o sends a value: as its placeholder, or as a made-up key of
+// its form (Shape).
+func (o Options) put() func(kind, v string) string {
+	if o.Shape {
+		return shaped
+	}
+	return placeholder
 }
 
 // ---- masking --------------------------------------------------------------------
@@ -541,14 +646,24 @@ func anyCase(w string) *regexp.Regexp {
 // Mask swaps what o covers in s for placeholders, and says how many.
 func Mask(s string, o Options) (string, int) {
 	o.sent = true
-	return mask(s, withModel(o, []string{s}), placeholder, false)
+	return mask(s, withModel(o, []string{s}), o.put(), false)
 }
 
 // Preview is Mask with nothing remembered: each value goes as the
-// placeholder it would have, which isn't kept for Restore or as a value
-// seen before (known.go).
+// placeholder, or with Options.Shape the made-up key, it would have, which
+// isn't kept for Restore or as a value seen before (known.go).
 func Preview(s string, o Options) string {
-	out, _ := mask(s, withModel(o, []string{s}), tag, false)
+	put := tag
+	if o.Shape {
+		put = func(kind, v string) string {
+			name, k := splitName(v)
+			if f, ok := shapeOf(kind, k); ok {
+				return name + f
+			}
+			return tag(kind, v)
+		}
+	}
+	out, _ := mask(s, withModel(o, []string{s}), put, false)
 	return out
 }
 
@@ -674,7 +789,7 @@ func mask(raw string, o Options, put func(kind, v string) string, escaped bool) 
 	if escaped {
 		found = outsideEscapes(raw, found)
 	}
-	return apply(raw, noDecimals(s, noIDs(s, found)), put, o)
+	return apply(raw, noNumbers(s, noIDs(s, found)), put, o)
 }
 
 // unescapedView is s, JSON text, as long as s and read as the vendor reads
@@ -773,19 +888,65 @@ func outsideEscapes(s string, found []span) []span {
 	return out
 }
 
-// noDecimals is found without what is a piece of a decimal number of s:
+// noNumbers is found without what is a piece of a decimal number of s:
 // digits right after the point of 5.13800138000, or right before the
 // point of 13800138000.5. A number is judged whole, and the fraction of
 // a height, a price or a coordinate is not a phone or a card number
-// because its digits happen to check (willz on Discord). Only personal
-// data's kinds, whoever found them (a rule, the model, a value known
-// before): a secret is masked wherever it is, and what the user chose
-// (their words, their rules) stays theirs.
-func noDecimals(s string, found []span) []span {
+// because its digits happen to check (willz on Discord). Nor is a number
+// that stands bare as a JSON value: "timestamp": 17929036837 in a session
+// file is a count or a time, and a phone, a card or an ID number in JSON
+// is a string (id.null on Discord). Only personal data's kinds, whoever
+// found them (a rule, the model, a value known before): a secret is
+// masked wherever it is, and what the user chose (their words, their
+// rules) stays theirs.
+func noNumbers(s string, found []span) []span {
 	return slices.DeleteFunc(found, func(f span) bool {
 		_, personal := kindCats[f.kind]
-		return personal && f.by != ByWord && f.by != ByYours && inDecimal(s, f.start, f.end)
+		return personal && f.by != ByWord && f.by != ByYours && (inDecimal(s, f.start, f.end) || jsonNumber(s, f.start, f.end))
 	})
+}
+
+// jsonNumber says s[a:b] is all of a bare JSON number, by where it sits:
+// digits only, an object's value ("key": …) or an element of an array of
+// numbers ([…, …]), and nothing after it but the , } or ] that ends a
+// value. "phone": "13800138000" is a string, and phone:13800138000 and
+// "call 13800138000, thanks" are text, so each is still masked.
+func jsonNumber(s string, a, b int) bool {
+	if a >= b || strings.Trim(s[a:b], digits) != "" {
+		return false
+	}
+	space := func(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' }
+	k := b
+	for k < len(s) && space(s[k]) {
+		k++
+	}
+	if k < len(s) && strings.IndexByte(",}]", s[k]) < 0 {
+		return false
+	}
+	i := a - 1
+	for i >= 0 && space(s[i]) {
+		i--
+	}
+	if i < 0 {
+		return false
+	}
+	switch s[i] {
+	case ':':
+		for i--; i >= 0 && space(s[i]); i-- {
+		}
+		return i >= 0 && s[i] == '"'
+	case '[', ',':
+		// back over the numbers before it to the array's [
+		for ; i >= 0; i-- {
+			if s[i] == '[' {
+				return true
+			}
+			if strings.IndexByte(digits+",.-+eE", s[i]) < 0 && !space(s[i]) {
+				return false
+			}
+		}
+	}
+	return false
 }
 
 // inDecimal says s[a:b] starts with a digit that is a decimal's fraction
@@ -823,10 +984,14 @@ func (r rule) matches(s, lower string) [][]int {
 			i = at + len(f)
 			// from the line's start, or from where a word starts no further
 			// back than back: what the pattern takes for the text's start is
-			// where a line or a word starts in s too
-			start := strings.LastIndexByte(s[:at], '\n') + 1
-			if start < at-r.back {
-				start = at - r.back
+			// where a line or a word starts in s too. The line's start is
+			// looked for no further back than that: a text of one long
+			// line, as a request body is, isn't read back to its start for
+			// each marker.
+			start := max(0, at-r.back)
+			if nl := strings.LastIndexByte(s[start:at], '\n'); nl >= 0 {
+				start += nl + 1
+			} else if start > 0 {
 				for start < at && (strings.IndexByte(alnum+"_.-", s[start-1]) >= 0 || s[start]&0xc0 == 0x80) {
 					start++
 				}
@@ -892,7 +1057,8 @@ func apply(s string, found []span, put func(kind, v string) string, o Options) (
 	if len(found) == 0 {
 		return s, 0
 	}
-	// nothing inside a placeholder already there
+	// nothing inside a placeholder already there, or a made-up key
+	found = outsideShapes(s, found)
 	if strings.Contains(s, "{{") {
 		for _, p := range placeholderRe.FindAllStringIndex(s, -1) {
 			found = slices.DeleteFunc(found, func(f span) bool { return f.start < p[1] && f.end > p[0] })
@@ -984,12 +1150,13 @@ func Restore(s string, escaped bool) string { return restore(s, escaped, nil) }
 // restore is Restore, counting in put, when it isn't nil, each
 // placeholder it put a value back for.
 func restore(s string, escaped bool, put map[string]int) string {
-	if !strings.Contains(s, "_") {
-		return s
-	}
 	mu.RLock()
 	defer mu.RUnlock()
 	if len(values) == 0 {
+		return s
+	}
+	s = restoreShapes(s, put)
+	if !strings.Contains(s, "_") {
 		return s
 	}
 	var b strings.Builder
@@ -1078,7 +1245,7 @@ func partialTail(s string) int {
 	if n := braceTail(s); n > 0 {
 		return n
 	}
-	return wordTail(s)
+	return max(wordTail(s), shapeTail(s))
 }
 
 // braceTail is a tail from {, or {{, on: then spaces, a placeholder's body

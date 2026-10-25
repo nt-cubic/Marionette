@@ -1,6 +1,6 @@
 package provider
 
-// A rule as it is typed: use=<model> use-effort=low tokens=200k images effort=high
+// A rule as it is typed: use=<model>[,<model>…] use-effort=low tokens=200k images effort=high
 // agents=a,b intent="…" compact time=09:00-18:00 days=mon-fri
 // folders=~/work,"~/My Project" except-folders=~/work/old, or
 // pause=<model> time=… days=… agents=… folders=… except-folders=… — by
@@ -92,17 +92,28 @@ func ParseRule(g Group, words []string) (r Rule, at int, classifier string, err 
 		k = strings.ToLower(strings.TrimSpace(k))
 		switch k {
 		case "use", "model", "to":
-			id, err := GroupMember(g, v)
-			if err != nil {
-				return r, 0, "", err
+			// use=a,b: a first, then b when a can't take the request
+			var uses []string
+			for _, m := range strings.Split(v, ",") {
+				if m = strings.TrimSpace(m); m == "" {
+					continue
+				}
+				id, err := GroupMember(g, m)
+				if err != nil {
+					return r, 0, "", err
+				}
+				uses = append(uses, id)
 			}
-			r.Use = id
+			if len(uses) == 0 {
+				return r, 0, "", fmt.Errorf("use=<model> names the model it sends to, or several in order: use=a,b")
+			}
+			r.SetUses(uses)
 		case "pause", "skip":
 			id, err := GroupMember(g, v)
 			if err != nil {
 				return r, 0, "", err
 			}
-			r.Use, r.Pause = id, true
+			r.Use, r.More, r.Pause = id, nil, true
 		case "tokens", "context", "longer":
 			n, err := ParseTokens(v)
 			if err != nil {
@@ -197,6 +208,9 @@ func ParseRule(g Group, words []string) (r Rule, at int, classifier string, err 
 	if r.Use == "" {
 		return r, 0, "", fmt.Errorf("use=<model> (or pause=<model>) is missing: one of %s", strings.Join(g.Members, ", "))
 	}
+	if r.Pause && len(r.More) > 0 {
+		return r, 0, "", fmt.Errorf("pause=<model> names one model: give each its own rule")
+	}
 	if r.Pause && r.UseEffort != "" {
 		return r, 0, "", fmt.Errorf("pause=<model> sends nothing, so it takes no use-effort=")
 	}
@@ -274,7 +288,7 @@ func RuleWords(line string) []string {
 
 // Line is the rule as ParseRule reads it back.
 func (r Rule) Line() string {
-	out := []string{"use=" + r.Use}
+	out := []string{"use=" + strings.Join(r.Uses(), ",")}
 	if r.Pause {
 		out[0] = "pause=" + r.Use
 	}

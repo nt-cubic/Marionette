@@ -95,11 +95,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(saved[0].redact, true);
         assert.deepEqual(await page.evaluate(() => [scrollX, scrollY, document.querySelector("#view-settings").scrollTop]), before, "the click moved nothing");
 
-        // another choice on the page keeps it
-        const p = page.locator("#redactList .row").nth(1).locator(".segs .opt", { hasText: w.on });
+        // another choice on the page keeps it: Mask personal data, under
+        // the key's form
+        const p = page.locator("#redactShapeRow + .row").locator(".segs .opt", { hasText: w.on });
         await reach(page, p); // above it now, maybe under the tabs
         await p.click();
-        await page.waitForFunction(() => document.querySelector("#redactList .row:nth-child(2) .segs .opt.on")?.textContent === t("On"));
+        await page.waitForFunction(() => document.querySelector("#redactShapeRow + .row .segs .opt.on")?.textContent === t("On"));
         await new Promise((r) => setTimeout(r, 300));
         assert.equal(saved.length, 2);
         assert.equal(saved[1].redactPersonal, true);

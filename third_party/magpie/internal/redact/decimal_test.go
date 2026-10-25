@@ -113,3 +113,53 @@ func TestKnownSecretInDecimalStillMasked(t *testing.T) {
 }
 
 func jsonQuote(s string) string { return `"` + jsonEscape(s) + `"` }
+
+// A number that stands bare as a JSON value is a count or a time, not a
+// phone, a card or an ID number: a session file's line in a tool's output
+// (id.null on Discord, "timestamp": 17929036837 masked as a PHONE). It is
+// judged by where it sits, not by its key's name. The same digits in a
+// JSON string, or in text, are still masked.
+func TestBareJSONNumberNotMasked(t *testing.T) {
+	o := Options{Secrets: true, Personal: true}
+	for _, s := range []string{
+		// the reporter's line, as the session file has it
+		`{"type":"user","timestamp": 17929036837,"uuid":"6316955a","isoTime":"2026-10-25T04:48:03.755Z"}`,
+		// 10 and 13 digits, seconds and milliseconds
+		`{"timestamp":1792903683,"id":"6316955a"}`,
+		`{"timestamp":1792903683755}`,
+		// 11 digits that start 1[3-9], at the object's end and spread out
+		`{"n": 13800138000}`,
+		"{\n  \"count\" :\t13800138000\n}",
+		// in an array of numbers
+		`{"ids":[13800138000, 13900139000]}`,
+		`[1, 13800138000]`,
+		// a Luhn-valid card's digits and an ID card's, as numbers
+		`{"snowflake": 4111111111111111}`,
+		`{"seq": 110105194912310038}`,
+	} {
+		out, n := Mask(s, o)
+		if n != 0 || out != s {
+			t.Errorf("Mask(%q) = %q (%d masked), want it as written", s, out, n)
+		}
+		body := `{"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":` + jsonQuote(s) + `}]}]}`
+		if got, n := MaskJSON([]byte(body), o); n != 0 || string(got) != body {
+			t.Errorf("MaskJSON: %d masked: %s", n, got)
+		}
+	}
+	for _, c := range []struct{ in, kind, v string }{
+		{`{"phone": "13800138000"}`, "PHONE", "13800138000"},
+		{`{"timestamp": 1792903683, "phone": "13800138000"}`, "PHONE", "13800138000"},
+		{`["13800138000"]`, "PHONE", "13800138000"},
+		{"phone:13800138000", "PHONE", "13800138000"},
+		{"call 13800138000, thanks", "PHONE", "13800138000"},
+		{"我的号码 13800138000，谢谢", "PHONE", "13800138000"},
+		{"numbers 13900139000, 13800138000]", "PHONE", "13800138000"},
+		{`{"note": "call 13800138000"}`, "PHONE", "13800138000"},
+		{`{"card": "4111111111111111"}`, "BANK_CARD", "4111111111111111"},
+	} {
+		out, _ := Mask(c.in, o)
+		if strings.Contains(out, c.v) || !strings.Contains(out, "{{"+c.kind+"_") {
+			t.Errorf("Mask(%q) = %q, want %s masked as %s", c.in, out, c.v, c.kind)
+		}
+	}
+}

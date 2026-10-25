@@ -72,8 +72,12 @@ func TestRemoteMagpieRestsTheModel(t *testing.T) {
 	if asked.Load() != 1 {
 		t.Errorf("Qoder was asked %d times; want once", asked.Load())
 	}
-	// Claude Code itself still rests: asked again, it is refused here
-	// without the other magpie being asked
+	// Claude Code itself still rests: refused again (a rest of a length
+	// magpie guessed is asked once more after the first refusal, zoecats
+	// on Discord), it is refused here without the other magpie being asked
+	if rec := send(id + "/cc/claude-opus-5-5"); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("Claude Code asked again: %d %s; want its 429", rec.Code, rec.Body.String())
+	}
 	if rec := send(id + "/cc/claude-opus-5-5"); rec.Code != http.StatusTooManyRequests || !strings.Contains(rec.Body.String(), "not asked again") {
 		t.Errorf("Claude Code asked again while it rests: %d %s; want its 429 held here", rec.Code, rec.Body.String())
 	}

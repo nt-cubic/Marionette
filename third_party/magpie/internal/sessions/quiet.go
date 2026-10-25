@@ -35,7 +35,10 @@ func scanReaders() int { return max(2, runtime.NumCPU()/2) }
 // Warm runs fn, the reads nobody waits on yet, with few readers.
 func Warm(fn func()) {
 	warming.Add(1)
-	defer warming.Add(-1)
+	defer func() {
+		warming.Add(-1)
+		forgetWarmListing()
+	}()
 	fn()
 }
 

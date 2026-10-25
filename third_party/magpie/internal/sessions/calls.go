@@ -69,14 +69,16 @@ type callFile struct {
 	Claude      *claudeUsageState
 	ContentHash string
 	dirty       map[int]bool
-	Size        int64
-	Mod         int64  // unix nanoseconds
-	Off         int64  // after the last whole line read
-	Head        string // hash of the prefix, to tell one replaced from one grown
-	HeadSize    int
-	Path        string
-	Calls       []Call
-	Agent       string
+	// bigFrame: read from a frame of more than framePatches (loadCalls)
+	bigFrame bool
+	Size     int64
+	Mod      int64  // unix nanoseconds
+	Off      int64  // after the last whole line read
+	Head     string // hash of the prefix, to tell one replaced from one grown
+	HeadSize int
+	Path     string
+	Calls    []Call
+	Agent    string
 	// where the line being handled begins and ends, and where the last reply's did
 	At, End, AsstEnd int64
 	Strs             map[string]string

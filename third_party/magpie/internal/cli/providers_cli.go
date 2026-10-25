@@ -889,7 +889,7 @@ func showProvider(p provider.Provider) error {
 		kv("header", k+": "+muted.Render(p.Headers[k]))
 	}
 	if d := p.RefreshInterval(); d > 0 {
-		kv("refresh", "every "+p.RefreshEvery+muted.Render("  the gateway fetches its list by itself"))
+		kv("refresh", "every "+p.RefreshSchedule()+muted.Render("  the gateway fetches its list by itself"))
 	}
 	if len(p.AutoInclude) > 0 {
 		kv("include", strings.Join(p.AutoInclude, " ")+muted.Render("  newly listed models these match are exposed"))
@@ -1942,7 +1942,7 @@ func refreshEveryCmd(rest []string) error {
 		}
 	}
 	if d := p.RefreshInterval(); d > 0 {
-		fmt.Printf("%s · its model list is fetched by the gateway every %s (magpie serve, or the app, running)\n", p.Name, p.RefreshEvery)
+		fmt.Printf("%s · its model list is fetched by the gateway every %s (magpie serve, or the app, running)\n", p.Name, p.RefreshSchedule())
 	} else {
 		fmt.Printf("%s · its model list is fetched only when asked (magpie provider refresh %s, or Fetch models)\n", p.Name, p.ID)
 	}

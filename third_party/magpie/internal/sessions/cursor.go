@@ -182,6 +182,16 @@ func cursorParentOf(f file) string {
 // the two files, in a folder of magpie's own that close removes; a large
 // store's copy is shared while it is unchanged (cursor_snapshot.go).
 func openCursorStore(path string) (db *sql.DB, closeDB func(), err error) {
+	return OpenUntouched(path)
+}
+
+// OpenUntouched opens another app's SQLite database at path to read it,
+// as openCursorStore does, without writing a byte beside it: immutable
+// with no log to replay, from a copy of it and its log with one. A
+// database in WAL mode can't be opened read-only while its app is closed
+// (SQLite would make its -shm file), so a reader that needs it read
+// whether the app runs or not opens it this way. closeDB removes the copy.
+func OpenUntouched(path string) (db *sql.DB, closeDB func(), err error) {
 	open := func(p, query string) (*sql.DB, error) {
 		u := url.URL{Scheme: "file", Path: filepath.ToSlash(p), RawQuery: query}
 		if len(u.Path) >= 2 && u.Path[1] == ':' {

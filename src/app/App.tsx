@@ -256,6 +256,8 @@ type AgentBannerKind = "auth" | "upgrade";
  * effort was inherited (never explicitly picked here) can persist it.
  */
 type ComposerChipSnapshot = {
+  /** Explicitly picked/dropped files; preserve through grants and queued sends. */
+  filePaths?: string[];
   modeId?: string | null;
   modeLabel?: string | null;
   modelId?: string | null;
@@ -496,6 +498,14 @@ export function App() {
       window.localStorage.getItem("marionette-theme") ??
       window.localStorage.getItem("agentshell-theme");
     return parseStoredTheme(stored);
+  });
+  const [webReplyWidthPercent, setWebReplyWidthPercent] = useState(() => {
+    const savedPercent = Number(window.localStorage.getItem("marionette-web-reply-width-percent"));
+    if (Number.isFinite(savedPercent) && savedPercent >= 25 && savedPercent <= 100) return savedPercent;
+    const legacyPx = Number(window.localStorage.getItem("marionette-web-reply-width"));
+    return Number.isFinite(legacyPx) && legacyPx >= 320 && legacyPx <= 980
+      ? Math.round((legacyPx / 980) * 100)
+      : 85;
   });
   /** Taskbar flash + chime when AI replies / may be stuck. Completion also chimes while focused. */
   const [desktopNotifyOn, setDesktopNotifyOn] = useState(() => isDesktopNotifyEnabled());
@@ -6607,6 +6617,7 @@ export function App() {
     opts?: ComposerChipSnapshot,
     sessionId?: string,
   ) => {
+    opts = { ...opts, filePaths: [...new Set(droppedPaths)] };
     let sid = sessionId ?? currentSessionId;
     const row = sessionsRef.current.find((s) => s.id === sid);
     if (!sid || sid.startsWith("session-empty-")) {
@@ -6711,10 +6722,11 @@ export function App() {
   const sendPromptWithTurnWait = async (
     sid: string,
     text: string,
-    imagePaths: string[]
+    imagePaths: string[],
+    filePaths: string[] = [],
   ) => {
     try {
-      return await sendAcpPrompt(sid, text, imagePaths);
+      return await sendAcpPrompt(sid, text, imagePaths, false, filePaths);
     } catch (error) {
       if (!isTurnInFlightError(error)) throw error;
       pushDebug({
@@ -6737,7 +6749,7 @@ export function App() {
           ? "turn slot freed — retrying session/prompt"
           : `turn still in flight after ${Math.round(TURN_SLOT_WAIT_MS / 1000)}s — retrying anyway`,
       });
-      return await sendAcpPrompt(sid, text, imagePaths);
+      return await sendAcpPrompt(sid, text, imagePaths, false, filePaths);
     }
   };
 
@@ -7057,7 +7069,7 @@ export function App() {
       if (sendRow?.projectId !== CHAT_PROJECT_ID && projectId) {
         startTurnBaseline(sid, projectId);
       }
-      await sendPromptWithTurnWait(sid, wireText, imagePaths);
+      await sendPromptWithTurnWait(sid, wireText, imagePaths, composerSnap?.filePaths);
       clearSendSilenceWatchdog(sid);
       touchActivity(sid);
       pushDebug({
@@ -7711,6 +7723,11 @@ export function App() {
           agent={agent}
           events={events}
           session={session}
+          webReplyWidthPercent={webReplyWidthPercent}
+          onWebReplyWidthChange={(value) => {
+            setWebReplyWidthPercent(value);
+            window.localStorage.setItem("marionette-web-reply-width-percent", String(value));
+          }}
           lastActivityAt={lastActivityById[session.id] ?? null}
           authBanner={agentBanner[agent.id]?.message ?? null}
           bannerKind={agentBanner[agent.id]?.kind ?? "auth"}

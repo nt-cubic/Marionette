@@ -1,4 +1,4 @@
-// An app magpie is added to by a link of its own (Cindy, Lody) is a row like the
+// An app magpie is added to by a link of its own (Cindy, Lody, AionUi) is a row like the
 // others on the Agents page (the owner: its wide button, with no line under
 // the name, sat apart from every other): a line under its name says whether
 // magpie is added, and its button stands where the others' model picker
@@ -17,6 +17,10 @@ const crush = (wired) => ({
   fields: [{ key: "model", label: "model", value: wired ? "magpie/deepseek-flash" : "", options: [{ value: "magpie/deepseek-flash", label: "DeepSeek Flash", ref: "deepseek/deepseek-flash" }] }],
 });
 const cindy = (added) => ({ id: "cindy", name: "Cindy", path: "", icon: "cindy", import: "cindy://import?x=1", added, fields: [] });
+// AionUi's link as magpie makes it (agent.AionUiLink), its status the
+// other way round from Cindy's so each run has both
+const AIONUI_LINK = "aionui://add-provider?api_key=magpie-aionui&base_url=http%3A%2F%2F127.0.0.1%3A3425%2Fv1&name=magpie&platform=custom";
+const aionui = (added) => ({ id: "aionui", name: "AionUi", path: "", icon: "aionui", import: AIONUI_LINK, added, fields: [] });
 
 async function serve(route, lang, added) {
   const url = new URL(route.request().url());
@@ -25,7 +29,7 @@ async function serve(route, lang, added) {
     return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:false,textSize:100};` });
   }
   if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
-  if (url.pathname === "/api/state") return json({ agents: [crush(added), cindy(added), { id: "lody", name: "Lody", path: "", icon: "lody", import: "lody://provider/import?v=1&data=fixture", fields: [] }], profiles: [], settings: { lang, theme: "light", textSize: 100 } });
+  if (url.pathname === "/api/state") return json({ agents: [crush(added), cindy(added), aionui(!added), { id: "lody", name: "Lody", path: "", icon: "lody", import: "lody://provider/import?v=1&data=fixture", fields: [] }], profiles: [], settings: { lang, theme: "light", textSize: 100 } });
   if (url.pathname === "/api/providers") return json({ providers: [], gateway: { running: true, window: true } });
   if (url.pathname === "/api/plugins") return json({ plugins: [] });
   if (url.pathname.startsWith("/api/")) return json({});
@@ -89,13 +93,35 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         for (const width of [960, 700]) {
           await page.setViewportSize({ width, height: 600 });
           const box = (sel) => page.locator(sel).evaluate((e) => { const r = e.getBoundingClientRect(); return { x: r.x, right: r.right, width: r.width, y: r.y, bottom: r.bottom }; });
-          const pick = await box('.row.agent[data-id="crush"] > .ag-start');
-          const link = await box('.row.agent[data-id="cindy"] > .ag-start');
+          // the rows settle a moment after a resize (under load one was
+          // caught mid-way, 194.4px beside 193.4px), so wait for them to line
+          // up before calling them apart
+          let pick, link;
+          for (const until = Date.now() + 3000; ;) {
+            pick = await box('.row.agent[data-id="crush"] > .ag-start');
+            link = await box('.row.agent[data-id="cindy"] > .ag-start');
+            if ((Math.abs(pick.right - link.right) < 1 && Math.abs(pick.width - link.width) < 1) || Date.now() > until) break;
+            await page.waitForTimeout(50);
+          }
           assert(Math.abs(pick.right - link.right) < 1 && Math.abs(pick.width - link.width) < 1, `Cindy's button lines up with the model picker at ${width}px: ${JSON.stringify({ pick, link })}`);
           const who = await box('.row.agent[data-id="cindy"] > .who');
           assert(link.x >= who.right, `the button stays clear of the name at ${width}px`);
         }
-        // narrow: no page scroll sideways, and both import rows keep their
+        // AionUi: its own icon, its known status in the reader's language,
+        // and its add-provider link as the button opens it
+        const aion = page.locator('.row.agent[data-id="aionui"]');
+        await aion.locator(".ag-st").waitFor();
+        const aionSaid = await aion.locator(".ag-st-t").innerText();
+        assert.match(aionSaid, new RegExp(SAID[lang][added ? 0 : 1].source.replace("Cindy", "AionUi")));
+        assert.equal(await aion.locator(".ag-st").evaluate((e) => e.classList.contains("on")), !added);
+        assert.equal(await aion.locator('.ic[data-icon="aionui"]').count() > 0, true, "AionUi's row has its icon");
+        const aionIcon = await page.evaluate(async () => (await fetch("/icons/aionui.svg")).status);
+        assert.equal(aionIcon, 200);
+        const aionOpened = page.waitForRequest((r) => r.url().includes("/api/open"));
+        await aion.locator(".ag-start").click();
+        assert.equal(JSON.parse((await aionOpened).postData()).url, AIONUI_LINK);
+
+        // narrow: no page scroll sideways, and every import row keeps its
         // line and button inside the window
         await page.setViewportSize({ width: 420, height: 700 });
         // the header's segments settle a moment after a resize, so wait for
@@ -103,7 +129,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.waitForFunction(() => document.documentElement.scrollWidth <= window.innerWidth, null, { timeout: 3000 }).catch(async () => {
           assert.fail(`sideways scroll at 420px: ${await page.evaluate(() => document.documentElement.scrollWidth)}`);
         });
-        for (const id of ["lody", "cindy"]) {
+        for (const id of ["lody", "cindy", "aionui"]) {
           const r = page.locator(`.row.agent[data-id="${id}"]`);
           for (const sel of [".ag-start", ".ag-st-t"]) {
             const b = await r.locator(sel).evaluate((e) => { const x = e.getBoundingClientRect(); return { left: x.left, right: x.right, width: x.width }; });

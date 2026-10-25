@@ -1,4 +1,4 @@
-Vendored from https://github.com/yetone/magpie (MIT) at tag v0.1.1485 on 2026-10-25.
-Imported by tools\import-magpie.ps1 ‚ÄÅEdefault Tag is GitHub latest stable; pass -Tag or MAGPIE_TAG to pin.
+Vendored from https://github.com/yetone/magpie (MIT) at tag v0.1.1511 on 2026-10-25.
+Imported by tools\import-magpie.ps1 ‚Ä?default Tag is GitHub latest stable; pass -Tag or MAGPIE_TAG to pin.
 Subset only: build inputs for the nogui CLI. Upstream site/, build/, .github/, docs/ are intentionally absent.
 License: LICENSE (MIT) in this folder.

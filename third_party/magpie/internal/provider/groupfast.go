@@ -212,10 +212,13 @@ func (g *Group) RenameMember(from, to string) {
 			g.Members[i] = to
 		}
 	}
-	for i, r := range g.Rules {
-		if r.Use == from {
-			g.Rules[i].Use = to
-		}
+	for i := range g.Rules {
+		g.Rules[i].MapUses(func(u string) string {
+			if u == from {
+				return to
+			}
+			return u
+		})
 	}
 	if g.Pick == from {
 		g.Pick = to

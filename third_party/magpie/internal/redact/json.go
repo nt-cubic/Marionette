@@ -401,7 +401,7 @@ func MaskJSON(body []byte, o Options) ([]byte, int) {
 	total := 0
 	var seen []string // value, placeholder, value, placeholder…
 	put := func(kind, v string) string {
-		p := placeholder(kind, v)
+		p := o.put()(kind, v)
 		seen = append(seen, v, p)
 		return p
 	}
@@ -440,7 +440,7 @@ func MaskJSON(body []byte, o Options) ([]byte, int) {
 		// number or an address the vendor wrote of its own can be one
 		// masked in another conversation (13800138000 is in many), and
 		// masked, its text would no longer match its signature
-		t, n := apply(t, sentKnownSpans(t, Options{Secrets: o.Secrets}), placeholder, o)
+		t, n := apply(t, sentKnownSpans(t, Options{Secrets: o.Secrets}), o.put(), o)
 		total += n
 		return t
 	})
@@ -479,7 +479,7 @@ func RestoreJSON(body []byte) []byte { return restoreJSON(body, nil) }
 
 // restoreJSON is RestoreJSON, counting in put as restore does.
 func restoreJSON(body []byte, put map[string]int) []byte {
-	if !bytes.Contains(body, []byte("{{")) {
+	if !bytes.Contains(body, []byte("{{")) && !hasShapes(body) {
 		return body
 	}
 	typ := ""

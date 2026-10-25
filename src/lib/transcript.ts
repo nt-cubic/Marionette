@@ -1,5 +1,6 @@
 import { cleanAssistantText, stripSectionMarkers } from "./markdownText";
 import type { SessionEvent } from "./types";
+import { parseWebReply } from "./webReply";
 
 const PERSISTABLE = new Set([
   "user_message",
@@ -101,7 +102,7 @@ export function parseTranscriptEvents(raw: unknown[]): SessionEvent[] {
         ...(typeof e.endedAt === "string" ? { endedAt: e.endedAt } : {}),
         ...(type === "user_message" && typeof e.sentAt === "string" ? { sentAt: e.sentAt } : {}),
         ...(type === "assistant_message"
-          ? { turnStats: parseTurnStats(e.turnStats) }
+          ? { turnStats: parseTurnStats(e.turnStats), webReply: parseWebReply(e.webReply) }
           : {}),
         ...(type === "user_message" && Array.isArray(e.attachments)
           ? { attachments: e.attachments as import("./imageAttachments").ImageAttachment[] }

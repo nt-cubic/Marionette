@@ -24,7 +24,7 @@ func Wanted(st settings.Settings) bool {
 func options() redact.Options {
 	st := settings.Shared()
 	o := redact.Options{Secrets: st.Redact, Personal: st.RedactPersonal, Kinds: st.RedactKinds, Words: st.RedactWords, WordsAnyCase: st.RedactWordsAnyCase, Rules: st.RedactRules,
-		Actions: st.RedactActions, Allow: st.RedactAllow}
+		Actions: st.RedactActions, Allow: st.RedactAllow, Shape: st.RedactShape}
 	if st.RedactModel {
 		o.Model = model
 	}

@@ -2137,6 +2137,9 @@ export function ProjectShelf({
               </div>
             </>
           )}
+          <div className="proxy-popover__hint">
+            Telegram 跟随应用代理设置；启用代理后无需开启 TUN。
+          </div>
           {tgError && <div className="proxy-popover__test is-err">{tgError}</div>}
           {tgState?.lastError && !tgError && (
             <div className="proxy-popover__test is-err">最近一次发送失败：{tgState.lastError}</div>

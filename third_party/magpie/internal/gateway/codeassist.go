@@ -794,6 +794,13 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 					out["type"] = "array"
 				}
 			}
+			if out["type"] == "array" && out["items"] == nil {
+				// Google wants items on every array, and turns the whole
+				// request away over one with none ("…properties[batch].
+				// items: missing field", Claude Desktop's own MCP tools,
+				// plugins#375): any item is what JSON Schema means by none
+				out["items"] = map[string]any{}
+			}
 			if req, ok := out["required"].([]any); ok {
 				// required names only the properties there are
 				props, _ := out["properties"].(map[string]any)

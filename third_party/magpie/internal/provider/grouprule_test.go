@@ -313,10 +313,10 @@ func TestThenUses(t *testing.T) {
 		{Use: "ai/flash", Images: true},
 	}
 	q := RuleRequest{Images: true, Tokens: 50}
-	if got := ThenUses(rules, q, 1, "codex/gpt"); !slices.Equal(got, []string{"ai/flash"}) {
+	if got := ThenUses(rules, q, 1, []string{"codex/gpt"}); !slices.Equal(got, []string{"ai/flash"}) {
 		t.Fatal(got)
 	}
-	if got := ThenUses(rules, q, 4, "ai/flash"); len(got) != 0 {
+	if got := ThenUses(rules, q, 4, []string{"ai/flash"}); len(got) != 0 {
 		t.Fatal(got)
 	}
 }

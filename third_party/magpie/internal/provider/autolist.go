@@ -65,13 +65,39 @@ func ParseRefreshEvery(s string) (time.Duration, error) {
 	return d, nil
 }
 
+// RemoteMagpieEvery is how often, as RefreshEvery writes it, the gateway
+// fetches a Remote magpie's list when its user set no RefreshEvery. Its list is the other magpie's
+// models as they are now: a model that comes there later (a ZCode gift
+// plan's GLM-5.3-Trial, listed once its plugin read the gift; a provider,
+// plugin or routing group added there) reached this magpie only when
+// Fetch models was pressed in its editor, and a trial a day long could
+// pass unseen (6igsteven on Discord, 10-24). It is a list on the other
+// computer's magpie, read from its memory, so asking it often costs
+// nothing a vendor sees. "off" (magpie provider refresh-every <id> off)
+// asks it only when told, as before.
+const RemoteMagpieEvery = "10m"
+
+// RefreshSchedule is the schedule the provider's list is fetched on, as
+// written: its user's, or a Remote magpie's default (RemoteMagpieEvery)
+// when its user set none; "" for only when asked.
+func (p Provider) RefreshSchedule() string {
+	if !p.ownList() {
+		return ""
+	}
+	if strings.TrimSpace(p.RefreshEvery) == "" && p.IsRemoteMagpie() {
+		return RemoteMagpieEvery
+	}
+	return p.RefreshEvery
+}
+
 // RefreshInterval is how often the gateway fetches the provider's list by
 // itself: 0 for only when asked, and for one RefreshEvery can't be read.
+// A Remote magpie with none set is fetched every RemoteMagpieEvery.
 func (p Provider) RefreshInterval() time.Duration {
 	if !p.ownList() {
 		return 0
 	}
-	d, err := ParseRefreshEvery(p.RefreshEvery)
+	d, err := ParseRefreshEvery(p.RefreshSchedule())
 	if err != nil {
 		return 0
 	}
@@ -107,6 +133,9 @@ func SetRefreshEvery(id, every string) error {
 	p.RefreshEvery = ""
 	if d > 0 {
 		p.RefreshEvery = strings.ToLower(strings.TrimSpace(every))
+	} else if p.IsRemoteMagpie() {
+		// kept as said: none set is RemoteMagpieEvery for a Remote magpie
+		p.RefreshEvery = "off"
 	}
 	return Save(*p)
 }

@@ -911,9 +911,10 @@ func (s *Server) drawOnAccounts(ctx context.Context, r *http.Request, p provider
 // still have it first (restLast in candidates), and a chat on that image
 // model goes past it too, where before every drawing asked the spent
 // account first again (01huadalang on Discord). A failure of any other
-// kind rests nothing, as before: a key, a request refused, a vendor down.
+// kind rests nothing, as before: a key, a request refused, a vendor down;
+// nor does any on a provider set never to rest for a limit (LimitRestOff).
 func restDrawer(c candidate, code int, msg string) {
-	if c.p.Account == nil || c.model == "" || failure(code, []byte(msg)) != failQuota {
+	if c.p.Account == nil || c.p.LimitRestOff || c.model == "" || failure(code, []byte(msg)) != failQuota {
 		return
 	}
 	now := time.Now()
