@@ -1,9 +1,11 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
-  activitySpanWidthPct,
+  activitySpanLayout,
   activityTimeline,
   clipTeaser,
   formatSpanDuration,
+  LIVE_AXIS_FLOOR_MS,
+  liveAxisMs,
   oneLine,
   tallyWord,
   toolKindVerb,
@@ -72,7 +74,9 @@ function userToggled(details: HTMLDetailsElement, open: boolean): boolean {
  * Body mounts only while open so a 400-tool turn stays cheap until expanded.
  *
  * The live chart is outside the detail fold, so the details can stay closed
- * while time bars update. Ignore controlled attribute changes in onToggle.
+ * while time bars update. After the run the chart hides; opening the fold
+ * shows the same occupancy freeze-frame inside. Ignore controlled attribute
+ * changes in onToggle.
  */
 export function ActivityPanel({
   summary,
@@ -102,17 +106,38 @@ export function ActivityPanel({
   );
 }
 
+/**
+ * Live chart: 60s ruler, occupancy bars, 500ms clock. After the run this
+ * unmounts with the fold; opening the tally remounts ActivityTimeline with
+ * the same occupancy + floor (not a short-axis tick chart).
+ *
+ * Each step occupies the track until the next one starts (latest step grows
+ * to now, then to the Reply). Instant tools would otherwise stay as ticks
+ * while only thought appeared to grow.
+ */
+
 /** Own the clock here: growing a live bar must not re-render the transcript. */
-export function LiveActivityTimeline({ items }: { items: ActivityDetailItem[] }) {
-  const [now, setNow] = useState(Date.now);
+export function LiveActivityTimeline({
+  items,
+  live = true,
+  untilMs,
+}: {
+  items: ActivityDetailItem[];
+  /** When false the last live frame freezes — no clock, same occupancy. */
+  live?: boolean;
+  /** Reply (or other closer) that seals the last step after the run ends. */
+  untilMs?: number;
+}) {
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
+    if (!live) return;
     const timer = window.setInterval(() => setNow(Date.now()), 500);
     return () => window.clearInterval(timer);
-  }, []);
-  const data = activityTimeline(items, now);
+  }, [live]);
+  const data = activityTimeline(items, live ? now : undefined, untilMs);
   if (!data) return null;
   return (
-    <div className="activity-trace" role="group" aria-label="实时轨迹面板">
+    <div className="activity-trace" role="group" aria-label={live ? "实时轨迹面板" : "运行轨迹面板"}>
       <div className="activity-trace__heading">轨迹面板</div>
       <ActivityTimeline data={data} />
     </div>
@@ -174,15 +199,22 @@ export function ActivityKindGroup({
 }
 
 /**
- * Run timeline at the top of an open fold: one lane per kind (tally order),
- * one bar per step on a shared time axis. Native title tooltips keep it free
- * of state; the fold body below still holds the full cards.
+ * Run timeline: one lane per kind (tally order), one bar per step on a
+ * shared time axis. Native title tooltips keep it free of state. Live sits
+ * in the trace slot; the same occupancy + 60s floor is used inside an
+ * open historical fold.
  */
-export function ActivityTimeline({ data }: { data: ActivityTimelineData }) {
-  const total = Math.max(data.durationMs, 1);
-  const pct = (ms: number) => `${(ms / total) * 100}%`;
+export function ActivityTimeline({
+  data,
+  axisFloorMs = LIVE_AXIS_FLOOR_MS,
+}: {
+  data: ActivityTimelineData;
+  /** Minimum axis span — short runs grow into it instead of stretching. */
+  axisFloorMs?: number;
+}) {
+  const total = liveAxisMs(data.durationMs, axisFloorMs);
   return (
-    <div className="activity-timeline" role="img" aria-label={`运行时间轨迹，${formatSpanDuration(data.durationMs)}`}>
+    <div className="activity-timeline" role="img" aria-label={`运行时间轨迹，${formatSpanDuration(total)}`}>
       {data.lanes.map((bucket) => {
         const spans = data.spans.filter((span) => span.bucket === bucket);
         return (
@@ -195,7 +227,7 @@ export function ActivityTimeline({ data }: { data: ActivityTimelineData }) {
                   ev.type === "tool_call"
                     ? `${bucket === "thought" ? "Thought" : toolKindVerb(bucket)} · ${clipTeaser(oneLine(ev.title || ev.path || ""), 60)}`
                     : clipTeaser(oneLine(ev.type === "thought" ? ev.text : ""), 60);
-                const widthPct = activitySpanWidthPct(span, data.durationMs);
+                const { leftPct, widthPct } = activitySpanLayout(span, total);
                 return (
                   <i
                     key={i}
@@ -203,7 +235,7 @@ export function ActivityTimeline({ data }: { data: ActivityTimelineData }) {
                       span.failed ? " is-failed" : ""
                     }${span.open ? " is-open" : ""}`}
                     style={{
-                      left: `min(${pct(span.start)}, ${100 - widthPct}%)`,
+                      left: `${leftPct}%`,
                       width: `${widthPct}%`,
                     }}
                     title={`${what} · ${formatSpanDuration(span.end - span.start)}`}
@@ -217,7 +249,7 @@ export function ActivityTimeline({ data }: { data: ActivityTimelineData }) {
       })}
       <div className="activity-timeline__axis">
         <span>0s</span>
-        <span>{formatSpanDuration(data.durationMs)}</span>
+        <span>{formatSpanDuration(total)}</span>
       </div>
     </div>
   );

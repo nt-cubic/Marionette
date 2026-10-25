@@ -976,7 +976,7 @@ fn normalize_trust_path(project_root: &Path) -> String {
 // ─── Injection ──────────────────────────────────────────────────────────────
 
 /// Re-read a server's env from its own config. Values never leave this call.
-fn env_values_for(spec: &McpServerSpec) -> Vec<(String, String)> {
+pub(crate) fn env_values_for(spec: &McpServerSpec) -> Vec<(String, String)> {
     let mut values: Vec<(String, String)> = Vec::new();
     for path in &spec.source_paths {
         let path = Path::new(path);

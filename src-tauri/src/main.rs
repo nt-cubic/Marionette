@@ -37,6 +37,7 @@ mod storage;
 mod telegram_remote;
 mod terminal_runtime;
 mod webview2_gate;
+mod zcode_mcp_bridge;
 
 use acp::AcpService;
 use std::sync::Mutex;
@@ -500,6 +501,8 @@ fn main() {
             commands::save_pasted_image,
             commands::cancel_acp_session,
             commands::stop_acp_session,
+            commands::list_acp_terminals,
+            commands::kill_acp_terminal,
             commands::get_session_capabilities,
             commands::update_acp_session,
             commands::append_debug_log,

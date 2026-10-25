@@ -599,6 +599,31 @@ export async function stopAcpSession(sessionId: string): Promise<void> {
   await invoke("stop_acp_session", { sessionId });
 }
 
+// ─── 后台任务面板（ACP terminal/* 宿主） ────────────────────────────────────
+
+export type AcpTerminalRow = {
+  terminalId: string;
+  sessionId: string;
+  command: string;
+  running: boolean;
+  startedAtMs: number;
+  exitStatus?: { exitCode?: number; signal?: string };
+};
+
+export async function listAcpTerminals(): Promise<AcpTerminalRow[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    return await invoke<AcpTerminalRow[]>("list_acp_terminals");
+  } catch {
+    return [];
+  }
+}
+
+export async function killAcpTerminal(terminalId: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("kill_acp_terminal", { terminalId });
+}
+
 // ─── ACP Capability API ─────────────────────────────────────────────────────
 
 export async function getSessionCapabilities(sessionId: string): Promise<CapabilitySnapshot | null> {

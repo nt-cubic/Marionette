@@ -37,6 +37,7 @@ import { buildTurnDeliveries, type TurnDeliveryUnit } from "../lib/turnDelivery"
 import { modeTone } from "../lib/modeTone";
 import { diffTargetPath, isWorkspaceDiffPath, splitToolBody } from "../lib/toolBody";
 import {
+  activityRunUntilMs,
   activityTimeline,
   classifyToolCall,
   clusterActivityRuns,
@@ -1719,9 +1720,10 @@ function CleanPlaceholder({
   const prevForcedToolKeysRef = useRef<Set<string>>(new Set());
 
   /**
-   * Keep the trailing time chart visible between steps until the run ends.
-   * The detail fold underneath is independent and closed by default.
-   * Selections freeze liveness, see `viewRunning`.
+   * Trailing run keeps the live chart (clock + thought preview) until a
+   * Reply or idle follows. Then the chart hides with the fold — click the
+   * tally to see the same occupancy freeze-frame. Selections freeze
+   * liveness, see `viewRunning`.
    */
   const tailFoldKey = useMemo(() => tailActivityFoldKey(renderUnits), [renderUnits]);
 
@@ -2937,23 +2939,26 @@ function CleanPlaceholder({
               viewRunning,
             );
             const liveEvent = liveItem?.event ?? null;
-            // The live time chart sits ABOVE a separate, closed detail fold.
-            // Tool/thought transitions never open the detail body.
+            // Live chart sits ABOVE a separate, closed detail fold so bars
+            // can update without opening the body. After the run the chart
+            // hides with the fold; opening the tally shows the same
+            // occupancy freeze-frame, not a short-axis tick chart.
             const live = liveItem != null || (unit.key === tailFoldKey && viewRunning);
             const open = activityFoldPins.get(unit.key) ?? false;
             const groups = groupConsecutiveByKind(unit.items);
-            const timeline = open && !live ? activityTimeline(unit.items) : null;
+            const untilMs = activityRunUntilMs(unit.items, visibleEvents, session.id);
+            const timeline = open && !live ? activityTimeline(unit.items, undefined, untilMs) : null;
             const liveIcon = <NineDotSpinner compact />;
             return (
               <ActivityPanel
                 key={unit.key}
-                summary={summarizeActivity(unit.items, { liveEvent })}
+                summary={summarizeActivity(unit.items, { liveEvent, untilMs })}
                 open={open}
                 live={live}
                 liveIcon={liveIcon}
                 trace={live ? (
                   <>
-                    <LiveActivityTimeline items={unit.items} />
+                    <LiveActivityTimeline items={unit.items} live untilMs={untilMs} />
                     <LiveThoughtPreview items={unit.items} thinking={liveEvent?.type === "thought"} />
                   </>
                 ) : null}

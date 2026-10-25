@@ -727,6 +727,12 @@ export function ProjectShelf({
   }, [sessions, chatSessions, unreadDone]);
   // A filter whose count drops to zero (the run finished) lets go by itself.
   const activeStatusFilter = statusFilter && statusCounts[statusFilter] > 0 ? statusFilter : null;
+  // 归零不只是显示上放手——状态本身也要清掉。旧实现把 statusFilter 留在
+  // state 里：下次任何对话再进入该状态，过滤会一声不响地重新挂上，用户
+  // 看到的就是「列表突然又少了一截」（2026-10-25 反馈）。
+  useEffect(() => {
+    if (statusFilter && statusCounts[statusFilter] === 0) setStatusFilter(null);
+  }, [statusFilter, statusCounts]);
 
   /** Search / status filter always reveal matching projects; otherwise respect saved collapse. */
   const isProjectExpanded = (projectId: string) =>
@@ -734,6 +740,19 @@ export function ProjectShelf({
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
+    // 纯状态过滤（无搜索词）：项目行全部保留，没有匹配的置灰——把项目整行
+    // 藏掉会让用户以为项目/对话丢了（2026-10-25 反馈）。搜索仍然只留命中项。
+    if (!q && activeStatusFilter) {
+      const sessionsByProject = new Map<string, Session[]>();
+      for (const session of sessions) {
+        if (sessionMatchesStatus(session, activeStatusFilter, unreadDone)) {
+          const list = sessionsByProject.get(session.projectId) ?? [];
+          list.push(session);
+          sessionsByProject.set(session.projectId, list);
+        }
+      }
+      return { projects, sessionsByProject };
+    }
     if (!q && !activeStatusFilter) {
       return { projects, sessionsByProject: null as Map<string, Session[]> | null };
     }
@@ -1162,6 +1181,23 @@ export function ProjectShelf({
           ))}
         </div>
       )}
+      {activeStatusFilter && (
+        <div className="shelf-filter-note">
+          <span className="shelf-filter-note__text">
+            只显示「{SHELF_STATUS_ORDER.find(({ id }) => id === activeStatusFilter)?.label}」·{" "}
+            {statusCounts[activeStatusFilter]} 个对话
+          </span>
+          <button
+            type="button"
+            className="shelf-filter-note__clear"
+            title="清除状态筛选，显示全部对话"
+            aria-label="清除状态筛选"
+            onClick={() => setStatusFilter(null)}
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
       <button className="project-add" type="button" title="Add project" onClick={onAddProject}>
         <Plus size={13} />
         Add project
@@ -1180,11 +1216,13 @@ export function ProjectShelf({
           const derivedShelf = memoPerProject(
             projectShelfCacheRef.current,
             project.id,
-            [filtered.sessionsByProject, sessions, unreadDone, sessionsExpandedByProject, searching, Math.floor(Date.now() / 60000)],
+            [filtered.sessionsByProject, sessions, unreadDone, sessionsExpandedByProject, searching, activeStatusFilter, Math.floor(Date.now() / 60000)],
             () => {
-              const rawSessions =
-                filtered.sessionsByProject?.get(project.id) ??
-                sessions.filter((session) => session.projectId === project.id);
+              const rawSessions = activeStatusFilter
+                ? // 状态过滤下取不到 = 没有匹配（项目行置灰、不列会话）；搜索与
+                  // 无过滤才回退全量。搜索路径 filtered 只含命中项目，不会到这。
+                  (filtered.sessionsByProject?.get(project.id) ?? [])
+                : sessions.filter((session) => session.projectId === project.id);
               // Pinned first, then recency — click-to-select must not jump the row.
               const projectSessions = sortSessionsNewestFirst(rawSessions);
               const sessionsFullyExpanded = searching || sessionsExpandedByProject.has(project.id);
@@ -1201,6 +1239,7 @@ export function ProjectShelf({
           );
           const { projectSessions, visibleSessions, hiddenSessionCount, dayHeads } = derivedShelf;
           const projectExpanded = isProjectExpanded(project.id);
+          const filteredOutByStatus = activeStatusFilter != null && projectSessions.length === 0;
 
           const showLineBefore =
             dropHint?.targetId === project.id &&
@@ -1221,12 +1260,17 @@ export function ProjectShelf({
             draggingProjectId === project.id ? "is-dragging" : "",
             isPinnedHere ? "is-open-here" : "",
             hasDoneUnread ? "is-done" : "",
+            filteredOutByStatus ? "is-filtered-out" : "",
           ]
             .filter(Boolean)
             .join(" ");
 
           return (
-            <div className="project-group" key={project.id} data-project-id={project.id}>
+            <div
+              className={`project-group${filteredOutByStatus ? " is-filtered-out" : ""}`}
+              key={project.id}
+              data-project-id={project.id}
+            >
               {showLineBefore && (
                 <div className="project-drop-line" aria-hidden>
                   <span className="project-drop-line__dot" />
@@ -1261,7 +1305,12 @@ export function ProjectShelf({
                       ? `${project.rootPath}\n(从资源管理器「在此处打开」)`
                       : project.rootPath
                   }
-                  onClick={() => onProjectSelect(project.id)}
+                  onClick={() => {
+                    // 点具体项目/对话 = 「带我去这里」，状态过滤随之解除——
+                    // 过滤是用来找东西的，不是要一直留着的视图（2026-10-25）。
+                    setStatusFilter(null);
+                    onProjectSelect(project.id);
+                  }}
                 >
                   <Folder size={15} />
                   <span className="project-row__content">
@@ -1333,7 +1382,7 @@ export function ProjectShelf({
 
               {projectExpanded && (
                 <div className="project-sessions">
-                  {projectSessions.length === 0 && (
+                  {projectSessions.length === 0 && !activeStatusFilter && (
                     <div className="session-row session-row--empty">No sessions</div>
                   )}
                   {visibleSessions.map((session) => {
@@ -1418,7 +1467,10 @@ export function ProjectShelf({
                             className="session-row__select"
                             type="button"
                             aria-label={`${agentLabel(session.agentId)} · ${session.label}`}
-                            onClick={() => onSessionSelect(session)}
+                            onClick={() => {
+                              setStatusFilter(null);
+                              onSessionSelect(session);
+                            }}
                             onDoubleClick={(e) => {
                               e.preventDefault();
                               e.stopPropagation();
@@ -1642,7 +1694,10 @@ export function ProjectShelf({
                           ? `${session.label} · 任务已完成`
                           : `${session.label} · ${session.agentId} · double-click or pencil to rename`
                       }
-                      onClick={() => onChatSessionSelect(session)}
+                      onClick={() => {
+                        setStatusFilter(null);
+                        onChatSessionSelect(session);
+                      }}
                       onDoubleClick={(event) => {
                         event.preventDefault();
                         event.stopPropagation();

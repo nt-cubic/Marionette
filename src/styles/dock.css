@@ -1044,6 +1044,52 @@ html.dock-resizing * {
   background: var(--panel-raised);
 }
 
+/* ── Native drop routing (2026-10-26): 上带 → 收纳盒 · 下区 → 对话 ──── */
+
+/* The two labeled halves App draws while an Explorer drag is over the strip.
+   Cold = the region's resting label; the hovered half gets the accent wash,
+   mirroring the composer's own drop hint (stream-cards.css). */
+.dock-drop-veil {
+  position: fixed;
+  left: 0;
+  right: 0;
+  z-index: 120;
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--border);
+  color: var(--text-faint);
+  font-size: 12px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.dock-drop-veil.is-memo {
+  top: 0;
+  height: var(--dock-chrome-top, 96px);
+}
+
+/* 收纳盒 page: the band above the page is just the 32px title bar. */
+.dock-drop-veil.is-band {
+  height: 32px;
+}
+
+.dock-drop-veil.is-chat {
+  top: var(--dock-chrome-top, 96px);
+  bottom: 0;
+}
+
+/* Whole strip → 收纳盒: a full page (or no dialog at all) is in view. */
+.dock-drop-veil.is-full {
+  top: 0;
+  bottom: 0;
+}
+
+.dock-drop-veil.is-hot {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 40%, transparent);
+  color: var(--accent);
+}
+
 /* ── Memo box page (design ③④) ──────────────────────────────────────── */
 
 .memo-box {
