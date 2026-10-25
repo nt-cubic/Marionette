@@ -9,8 +9,11 @@
 > （`prefs.pinned`，抑制自动收回，手动路径不变）；③ 新建对话改为目的地菜单（聊天/各项目/全部对话）；
 > ④ 贴边 composer 工具栏收成单入口（模式/权限/模型/Agent 分组菜单再进原列表，＋与发送保留）；
 > ⑤ 窄条内缘可拖宽 320–560（`applyDockWidth` 串行 setSize+setPosition，clientX 相对活客户区换算，
-> 松手 `persistDockWidth`）；⑥ 进行中列表：waiting 且安静 60s（`DOCK_DONE_GRACE_MS`）自动退场，
-> 有 pending 卡/排队的不退，进程与 30 分钟自动挂起不动。
+> 松手 `persistDockWidth`）；⑥ 进行中列表：~~waiting 且安静 60s（`DOCK_DONE_GRACE_MS`）自动退场~~
+> （2026-10-26 用户反馈改为：完成（waiting）的对话不退场，一直留到真正挂起——30 分钟自动挂起 /
+> 行内 ⏸ / 进程退出把状态翻成 `exited` 才消失；`DOCK_DONE_GRACE_MS` 已删）。2026-10-26 又增：
+> 拖文件进窄条分区接住（`DockDropRouter`：上半条 → 收纳盒、下半条对话区 → composer 附件，
+> 拖动中双层虚线提示；dock 态 composer 的原生落点处理关闭，路径经 `lib/dockDrop.ts` 事件转交）。
 > 实施偏差两处：`monitors_work_areas` 未做——Tauri 2.8 `Monitor.workArea` 已带工作区，全走 JS API；
 > capability 实名是 `core:window:allow-set-skip-taskbar`（计划里的 `allow-skip-taskbar` 不存在）。
 > 行为描述已并入 `CURRENT.md`「贴边停靠」行；全部阶段完成后本文件挪入 `archive/`。

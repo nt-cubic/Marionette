@@ -1,5 +1,5 @@
 import type { SessionEvent } from "./types";
-import { isSubagentTool } from "./activityHealth";
+import { isSubagentTool, isToolInProgress } from "./activityHealth";
 import { normalizeToolName } from "./toolCallNormalize";
 
 /**
@@ -436,7 +436,7 @@ export function formatActivityTally(items: ActivityDetailItem[]): string {
  */
 export function summarizeActivity(
   items: ActivityDetailItem[],
-  opts?: { liveEvent?: SessionEvent | null },
+  opts?: { liveEvent?: SessionEvent | null; untilMs?: number },
 ): ActivitySummary {
   const live = opts?.liveEvent;
   const tally = formatActivityTally(items);
@@ -453,7 +453,7 @@ export function summarizeActivity(
       diff: sumDiffStats(items),
     };
   }
-  const span = activityTimeline(items);
+  const span = activityTimeline(items, undefined, opts?.untilMs);
   return {
     title: tally || "Activity",
     preview: "",
@@ -490,6 +490,32 @@ export function activitySpanWidthPct(span: ActivitySpan, durationMs: number): nu
   return Math.min(100, Math.max(raw, ACTIVITY_MIN_SPAN_PCT));
 }
 
+/**
+ * Shared chart ruler (live and frozen). Bars grow left→right into this
+ * window; only after the run outgrows it does the axis follow elapsed time
+ * (relative compress). 10s filled too fast — a few tool calls later the
+ * open thought was already glued to the right edge, which reads as
+ * "growing from the right". Dropping the floor on the finished chart
+ * stretched a 14s run across the full strip (ticks on a short axis).
+ */
+export const LIVE_AXIS_FLOOR_MS = 60_000;
+
+/** Axis length for the trajectory chart. Floor keeps short runs from stretching. */
+export function liveAxisMs(elapsedMs: number, floorMs = LIVE_AXIS_FLOOR_MS): number {
+  return Math.max(elapsedMs, floorMs, 1);
+}
+
+/** Left/width on the track. Instant ticks stay inside; growing bars keep their start. */
+export function activitySpanLayout(
+  span: ActivitySpan,
+  axisMs: number,
+): { leftPct: number; widthPct: number } {
+  const widthPct = activitySpanWidthPct(span, axisMs);
+  const startPct = (span.start / Math.max(axisMs, 1)) * 100;
+  const leftPct = startPct + widthPct > 100 ? 100 - widthPct : startPct;
+  return { leftPct, widthPct };
+}
+
 export type ActivityTimelineData = {
   durationMs: number;
   /** Buckets in first-seen order — the same order as the closed tally. */
@@ -504,13 +530,52 @@ function eventMs(value: string | undefined): number | null {
 }
 
 /**
- * Time layout of one thought/tool run for the fold's timeline strip.
- * A step ends at its own terminal stamp (`completedAt` / `endedAt`), else
- * where the next step starts. Null when the run carries no usable times.
+ * Wall time of the first same-session event after this run (usually the
+ * Reply that closed it). Thought cards already count that gap as duration;
+ * the fold elapsed / historical chart must use the same close, because a
+ * trailing thought often has no `endedAt` (turn/complete stamps only the
+ * last card, which is the Reply).
+ */
+export function activityRunUntilMs(
+  items: ActivityDetailItem[],
+  events: readonly SessionEvent[],
+  sessionId: string,
+): number | undefined {
+  const last = items[items.length - 1];
+  if (!last) return undefined;
+  for (let j = last.index + 1; j < events.length; j++) {
+    const n = events[j]!;
+    if (n.sessionId !== sessionId) continue;
+    if (
+      n.type === "thought" ||
+      n.type === "assistant_message" ||
+      n.type === "tool_call" ||
+      n.type === "user_message"
+    ) {
+      return eventMs(n.createdAt) ?? undefined;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Time layout of one thought/tool run for the trajectory strip.
+ *
+ * Live and historical charts share occupancy: a step holds the track from
+ * when it started until the next step starts. The last step grows to `now`
+ * while live, or to `untilMs` (the Reply that closed the run) once frozen.
+ * Grok writes/searches often land at 0–1 ms of wall time, so honest
+ * `completedAt` would turn every tool into a tick and only thought would
+ * appear to grow — then the finished chart would snap back to those ticks
+ * on a short axis that fills the strip. One formula keeps the freeze-frame
+ * identical to the last live frame. `own` is only the last-resort end when
+ * there is no next step, no clock, and no closer. Null when the run carries
+ * no usable times.
  */
 export function activityTimeline(
   items: ActivityDetailItem[],
   nowMs?: number,
+  untilMs?: number,
 ): ActivityTimelineData | null {
   const starts = items.map((item) => eventMs(item.event.createdAt));
   const first = starts.find((ms): ms is number => ms != null);
@@ -535,10 +600,15 @@ export function activityTimeline(
           ? eventMs(ev.endedAt)
           : null;
     const next = nextStart[i];
-    const open = ev.type === "tool_call"
-      ? (status === "pending" || status === "in_progress")
-      : ev.type === "thought" && own == null && next == null && nowMs != null;
-    let end = own ?? next ?? (open && nowMs != null ? nowMs : start);
+    const live = nowMs != null;
+    const liveTail = live && next == null;
+    const open =
+      ev.type === "tool_call"
+        ? isToolInProgress(status) || (liveTail && status !== "failed")
+        : ev.type === "thought" && own == null && liveTail;
+    // Occupancy for every chart: hold until the next step, else the live
+    // clock, else the Reply that closed the run, else the own stamp.
+    let end = next ?? nowMs ?? untilMs ?? own ?? start;
     if (end < start) end = start;
     last = Math.max(last, end);
     spans.push({ bucket, start: start - first, end: end - first, failed: status === "failed", open, event: ev });

@@ -88,10 +88,16 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
      prefs（拖动中不写 localStorage）。WIDTH_MAX 由 480 放宽到 560。停靠窗 `setResizable(false)`
      不挡程序化 setSize；onMoved 在 docked-expanded 且无 `dockBarDrag` 时早退，宽度拖拽不会被
      误判成拖出贴边。
-  6. **进行中列表自动退场**：`App.tsx` 的 `dockActiveSessions` 把 `waiting` 且安静超过
-     `DOCK_DONE_GRACE_MS`（60s，`sessionSuspend.ts`）的非当前对话移出列表（15s tick 兜底重算）；
-     有 permission/ask/plan 卡或排队发送的行**不退**。只影响列表显示：进程不动、30 分钟自动挂起
-     照旧、全部对话里的完成徽标保留。
+  6. **进行中列表退场时机（2026-10-26 改）**：~~waiting 安静 60s（`DOCK_DONE_GRACE_MS`）退场~~——用户反馈
+     「对话一完成就消失」观感不对。现在完成（waiting）的行**一直留着，直到真正挂起**：30 分钟自动挂起 /
+     行内 ⏸ / 进程退出把状态翻成 `exited`（`canPark` 为 false）才从 `dockActiveSessions` 消失。
+     `DOCK_DONE_GRACE_MS` 常量已删；15s tick 只用于保鲜「5m」新鲜度标签。
+  7. **窄条分区接住拖放（2026-10-26，`DockDropRouter.tsx` + `lib/dockDrop.ts`）**：dock 态 App 级
+     onDragDropEvent 路由接管整条窄条的 OS 拖放——**上半条（chrome 带）→ 收纳盒**、**下半条对话区 →
+     composer 附件**（DOM 事件 `marionette:dock-drop-paths` 转交，composer 的原生落点 effect 在
+     `docked` 时关闭）；拖动中双层 `dock-drop-veil` 虚线提示、悬停侧点亮（仿 composer 落点提示）。
+     收纳盒整页开着时标题栏以下归该页自己的落点 UI，其它整页/无对话在开时全条 → 收纳盒。
+     `enter` 无 paths 不武装——tao 对页内 HTML5 memo 拖拽也发 enter/over，那些必须留给纯 HTML5 链路。
 
 前端结构：`src/lib/dockMode.ts`（状态机 + 窗口编排 + prefs）、`src/components/DockChrome.tsx`
 （窄条顶部铬：标题栏/操作/额度计量卡/进行中列表，高度量进 `--dock-chrome-top`；无标签行；全部对话/用量/收纳盒是带「返回」的整页）、`src/lib/dockFooter.ts` + `src/components/MemoBox.tsx`
@@ -113,19 +119,44 @@ auto + min/max），底边正好压在 footer 上沿；普通窗口仍用记住�
 **Composer 下拉夹边**：`Composer.tsx` 的 menu 布局 effect 会在打开后测量每个 `.composer-menu`，按视口
 8px 边距改写 `left/right`（400px 窄条里右对齐的模型菜单原先向左溢出，被 WebView 裁到只剩一条）。
 
+**2026-10-25 反馈批二（侧栏状态过滤 + 挂起豁免）**：
+1. **状态过滤不再「看起来像数据丢了」**（`ProjectShelf.tsx`）：点「运行中/等你/已完成/出错」chip 后，
+   旧实现把无匹配对话的项目整行删掉 + 计数归零只解显示不解状态（`statusFilter` 留在 state 里，下次
+   任一对话再进该状态会**静默重挂**过滤——实测「发消息后列表自己回来了」就是自动解除，用户以为见了鬼）。
+   现在：纯状态过滤**保留全部项目行**、无匹配的置灰（`.project-group.is-filtered-out`，不列会话、
+   不显 "No sessions"）；过滤激活时常驻 `shelf-filter-note` 提示条（标签 + 匹配数 + × 清除）；计数
+   归零 `setStatusFilter(null)` 彻底清掉；**点项目/对话/聊天行即清状态过滤**（query 搜索词不动，
+   搜索仍只留命中项——那是明确的收窄意图）。
+2. **30 分钟自动挂起不再无条件豁免当前对话**（`App.tsx` 挂起巡检）：旧规则「当前对话永不挂起」在
+   窗口藏后台几小时后 = 对话永远停在「等你」+ 养着一个活 agent 进程（本次反馈的直接来源；另有
+   lazy warm 在点开对话时把状态置回 waiting，等你还以为它是几小时前的残留）。现在豁免只在
+   `document.visibilityState === "visible"` 时生效——藏后台/最小化到期照挂，下次发消息自动接上；
+   贴边窄条窗口没有 hide、仍是 visible，照旧豁免。
+
 **对话轨迹（clean view）**：连续 thought/tool 从**第一步**起就是一张组卡（稳定 `act-起点` key，
 单步也分组）。运行时**上方实时轨迹面板**（`LiveActivityTimeline` → `ActivityTimeline`，
 thought / other / search 等泳道与时间条），**下方默认关闭的 tally 详情折叠**。
-**时间图必须在 details 外面**，不能再用 live 步骤列表代替，也不能等 open / 回合完成才渲染。
+**时间图必须在 details 外面**，不能再用 live 步骤列表代替，也不能等 open 才渲染。
 500ms 时钟局限在图表子组件，第一条未结束 thought 也随时钟增长；工具间 settle 保留尾段图表。
-运行段结束（后续发言 / idle）移除实时图，留下折叠 tally；整轮结束清掉详情和步骤开合状态，
-保证手动展开过的卡也自动折好。历史卡手动展开仍显示时间图和按类型分组；子步骤用
-`renderEvent(..., true)` 禁掉工具/thought 卡片正文自动展开。
+运行段结束（后续发言 / idle）移除实时图和思考预览，留下折叠 tally；整轮结束清掉详情和步骤开合状态，
+保证手动展开过的卡也自动折好。历史卡手动展开仍显示时间图（**同一套占位 + 60s 标尺**，不是短轴断点）
+和按类型分组；子步骤用 `renderEvent(..., true)` 禁掉工具/thought 卡片正文自动展开。
 按用户后续要求，轨迹图与 tally 之间另有 `LiveThoughtPreview`：固定四行（72px 正文）显示最新
 非空 thought；切工具时保留并标「最近思考」，下一段 thought 原地替换，新段空 chunk 不清空旧文字。
 预览不驱动 details 开合，不给它按 thought id 加 key，也不随短 think 改高度；长文内部滚动，
 尊重用户滚离底部。运行段结束随实时图一起移除。不要恢复旧的自动展开整张 thought 卡或 200px 槽。
 `tailActivityFoldKey` 只找列表尾（跳过 delivery），`summarizeActivity` 的 title 永远是 tally。
+时间轴有 60s 起步标尺（`turnActivity.ts` 的 `LIVE_AXIS_FLOOR_MS`）：开跑先在
+固定标尺上**从左往右长**，长满后才切回「轴=已流逝时间」的相对压缩——否则第一条 think 一睁眼
+就是 100% 宽（它是唯一 open 段时 0→now 恒铺满轴）。10s 会在几个工具之后就把当前 think
+贴到右缘（看起来像从右边长）。**实时图和点开后的冻结图都走这把标尺**（`ActivityTimeline` 默认
+`axisFloorMs=LIVE_AXIS_FLOOR_MS`），14s 的回合点开后轴仍是 0s–1m，不会把 14s 拉满整条轨道；
+轴右端标签/aria 跟着 total 走，别再用回 `durationMs`。条用占位（本步开始 → 下一步开始 /
+现在或 Reply 的 `untilMs`），不要用工具的 `completedAt` 墙钟——Grok write/search 经常 0–1ms，
+诚实时长会让工具泳道全是小点、只有 think 在涨，点开后再退回短轴断点。尾段 thought 经常没有
+`endedAt`（turn/complete 只盖最后一张 Reply），要把后面 Reply 的 `createdAt` 当 `untilMs`
+收尾，否则组标题会只剩工具那几秒。实时最后一帧与冻结图的 span 起止必须一致。
+回归：`npx tsx scripts/verify-activity-cluster.mts`。
 
 ## 再次进入对话（agent re-entry，2026-10-25）
 
@@ -317,6 +348,16 @@ ZCode 官方**没有** ACP（CLI 0.16.x 无 `--acp`，ACP registry 未收录）�
   的 MCP/插件（node_repl 等）照常加载；实测 http MCP 借出后模型能真实调用工具（E2E
   PONG:marionette-http-mcp-ok）。反向共通：`context_inventory` 扫 `~/.zcode/cli/config.json`
   的 `mcp.servers` 与 `~/.zcode/cli/skills`（用户层；插件技能不入清单，与其它 agent 的插件口径一致）。
+- **stdio MCP 走 zcode 本地配置桥（2026-10-25，`zcode_mcp_bridge.rs`）**：上面的 schema 限制绕不开，
+  换路线——ZCode **后端**会原生加载 `~/.zcode/cli/config.json` 的 `mcp.servers`（stdio：
+  `type/command/args/cwd/env`，zod strict，见 zcode.cjs 的 `Nso/pJs/Bpt`；适配器 `/mcp` 读的也是
+  这个文件）。「能力与上下文」勾选借贷的**全局** stdio MCP（所有项目勾选的并集；project 层
+  server 不进机器级文件）幂等合并进去，桌面版与 Marionette 里的 zcode 会话都原生加载。归属记账在
+  `~/.marionette/zcode-mcp-bridge.json`（条目 schema 塞不进标记键）：只动自己名下的条目，用户
+  在 zcode 里自己配的 server 永不触碰；与 zcode 插件 MCP 同名（`cli/plugins/cache/**/.mcp.json`
+  不分启用全量扫）整个跳过防双开。config.json 原文存在但不是合法 JSON → 报错不同步（宁可不修
+  也不覆盖可能救得回的配置）。同步时机：`set_project_context_enabled`（mcp kind）+ 每次 zcode
+  spawn（acp.rs zcode 分支，紧跟 provider 桥，幂等自愈）。回归：`cargo test zcode_mcp_bridge`。
 - **登录/凭据**：与桌面版共享 `~/.zcode`——provider 密钥在 `v2/config.json`（`provider.*`），
   OAuth 令牌在加密的 `v2/credentials.json`（`probe_zcode_auth` 探这两个）。登录 = `zcode login`
   （PATH 没有 zcode 时 `commands.rs` 自动改跑 `node <zcode.cjs> login`，独立控制台）。

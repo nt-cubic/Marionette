@@ -18,6 +18,7 @@ import { PluginsSection } from "./PluginsSection";
 import { SessionStatsSection } from "./SessionStatsSection";
 import { dockFooterHost, useDocked } from "../lib/dockFooter";
 import type { PlanEntry } from "../lib/acpPlan";
+import type { BackgroundTaskRow } from "../lib/backgroundTasks";
 import type { SessionStats } from "../lib/sessionStats";
 import type { TodoItem, TodoMergePreview, TodoStatus } from "../lib/todos";
 import type {
@@ -28,6 +29,10 @@ import type {
   UsageSnapshot,
   UsageWindow,
 } from "../lib/types";
+
+/** memo 默认值要保持同一引用，否则每次渲染都击穿子组件 memo。 */
+const EMPTY_BG_TASKS: BackgroundTaskRow[] = [];
+
 
 
 type ContextPanelProps = {
@@ -83,6 +88,14 @@ type ContextPanelProps = {
   appUpdateAvailable?: boolean;
   /** Active session id — 会话蒸馏（memory_distill）用。 */
   activeSessionId?: string | null;
+  /** 后台任务面板：聚合好的行（子代理/后台命令/排队发送/需要你），空数组 = 不渲染。 */
+  backgroundTasks?: BackgroundTaskRow[];
+  /** sessionId → 会话名（行的归属说明）。 */
+  sessionLabels?: Map<string, string>;
+  /** 点击行：打开发起会话。 */
+  onOpenBackgroundTask?: (row: BackgroundTaskRow) => void;
+  /** 终止一个 ACP terminal/* 后台命令。 */
+  onKillBackgroundTerminal?: (terminalId: string) => void;
 };
 
 function planStatusGlyph(status: PlanEntry["status"]): string {
@@ -261,6 +274,98 @@ function changeBadge(changeType: ChangedFile["changeType"]): string {
   }
 }
 
+/** 后台任务行的状态徽标与 aria 文案。 */
+function backgroundTaskStateMark(row: BackgroundTaskRow): { glyph: string; label: string } {
+  switch (row.state) {
+    case "attention":
+      return { glyph: "!", label: "需要你" };
+    case "running":
+      return { glyph: "◐", label: "运行中" };
+    case "queued":
+      return { glyph: "…", label: "排队" };
+    case "failed":
+      return { glyph: "×", label: "失败" };
+    case "stopped":
+      return { glyph: "■", label: "已停止" };
+    default:
+      return { glyph: "✓", label: "完成" };
+  }
+}
+
+function backgroundTaskKindLabel(row: BackgroundTaskRow): string {
+  switch (row.kind) {
+    case "delegate":
+      return "子代理";
+    case "delegate_queued":
+      return "子代理排队";
+    case "terminal":
+      return "后台命令";
+    case "queued":
+      return "排队发送";
+    default:
+      return "需要你";
+  }
+}
+
+const BackgroundTaskRowView = memo(function BackgroundTaskRowView({
+  row,
+  sessionLabel,
+  onOpen,
+  onKill,
+}: {
+  row: BackgroundTaskRow;
+  sessionLabel?: string;
+  onOpen: (row: BackgroundTaskRow) => void;
+  onKill?: (terminalId: string) => void;
+}) {
+  const mark = backgroundTaskStateMark(row);
+  const kind = backgroundTaskKindLabel(row);
+  const killable = row.kind === "terminal" && row.state === "running";
+  // 排队发送在会话回合结束后自动冲走，行不可点；其余行点击切到发起会话。
+  const clickable = row.kind !== "queued";
+  const meta = [kind, sessionLabel].filter(Boolean).join(" · ");
+  return (
+    <li className={`bg-task-row bg-task-row--${row.state}`}>
+      <button
+        type="button"
+        className="bg-task-row__main"
+        title={row.detail ? `${row.title}\n${row.detail}` : row.title}
+        onClick={clickable ? () => onOpen(row) : undefined}
+        disabled={!clickable}
+      >
+        <span className={`bg-task-row__mark bg-task-row__mark--${row.state}`} aria-hidden>
+          {mark.glyph}
+        </span>
+        <span className="bg-task-row__body">
+          <span className="bg-task-row__title">{row.title}</span>
+          {(row.detail || meta) && (
+            <span className="bg-task-row__meta">
+              {meta}
+              {meta && row.detail ? " — " : ""}
+              {row.detail}
+            </span>
+          )}
+        </span>
+        <span className="bg-task-row__state" title={mark.label}>
+          {mark.label}
+        </span>
+      </button>
+      {killable && onKill && (
+        <button
+          type="button"
+          className="pill-action pill-action--icon pill-action--sm bg-task-row__kill"
+          title="终止这个后台命令"
+          aria-label={`终止 ${row.title}`}
+          onClick={() => onKill(row.key.slice("terminal:".length))}
+        >
+          <X size={11} />
+        </button>
+      )}
+    </li>
+  );
+});
+
+
 function parentRelativePath(path: string): string {
   const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
   const slash = normalized.lastIndexOf("/");
@@ -388,6 +493,10 @@ export const ContextPanel = memo(function ContextPanel({
   checkAppUpdateBusy = false,
   appUpdateAvailable = false,
   activeSessionId = null,
+  backgroundTasks = EMPTY_BG_TASKS,
+  sessionLabels,
+  onOpenBackgroundTask,
+  onKillBackgroundTerminal,
 }: ContextPanelProps) {
   const planList = planEntries && planEntries.length > 0 ? planEntries : null;
   const [draftTodo, setDraftTodo] = useState("");
@@ -465,6 +574,7 @@ export const ContextPanel = memo(function ContextPanel({
   // Group windows by their source so one provider's 5 hours / 7 days / month
   // read together, shortest first; a source with one window keeps the plain row.
   const usageGroups = groupUsageBySource(usage.windows, usage.agentLabel);
+  const attentionCount = backgroundTasks.filter((row) => row.state === "attention").length;
   const usageFooter = [usage.note, usage.refreshedAt || "尚未刷新"]
     .filter((part, i, all): part is string => Boolean(part) && all.indexOf(part) === i)
     .join(" · ");
@@ -691,6 +801,29 @@ export const ContextPanel = memo(function ContextPanel({
           )}
         </div>
       </section>
+      {backgroundTasks.length > 0 && (
+        <section className="context-card" id="context-background" aria-label="Background tasks">
+          <div className="context-card__heading">
+            <span>后台任务</span>
+            {attentionCount > 0 && (
+              <span className="bg-task-attention-badge" title={`${attentionCount} 项等待处理`}>
+                {attentionCount}
+              </span>
+            )}
+          </div>
+          <ul className="bg-task-list custom-scrollbar scrollbar-autohide">
+            {backgroundTasks.map((row) => (
+              <BackgroundTaskRowView
+                key={row.key}
+                row={row}
+                sessionLabel={sessionLabels?.get(row.sessionId)}
+                onOpen={(target) => onOpenBackgroundTask?.(target)}
+                onKill={onKillBackgroundTerminal}
+              />
+            ))}
+          </ul>
+        </section>
+      )}
       <section className="context-card" id="context-usage">
         <div className="context-card__heading">
           <span>用量</span>
@@ -825,7 +958,10 @@ export const ContextPanel = memo(function ContextPanel({
           <div className="context-lend">
             <p className="context-lend__hint">
               Lend these to agents that don’t have them. Checked items go into the next
-              connection — MCP servers via <code>session/new</code>, skills as a pointer list.
+              connection — MCP servers via <code>session/new</code>, skills as a pointer
+              list. ZCode’s adapter rejects stdio servers over ACP, so checked stdio
+              servers are also merged into <code>~/.zcode/cli/config.json</code> for
+              ZCode to load natively (machine-wide, all projects’ checked servers).
             </p>
 
             <div className="context-lend__labelrow">

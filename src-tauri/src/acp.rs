@@ -11,7 +11,7 @@ use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 #[path = "acp_capabilities.rs"]
 mod acp_capabilities;
@@ -751,6 +751,33 @@ impl AcpService {
                         "zcode marionette route refresh failed; bridge skipped",
                         Some(&error),
                     ),
+                }
+                // ── zcode stdio MCP 桥（2026-10-25）：session/new 只收 url 型
+                //    MCP，stdio 借贷改写进 zcode 自己的
+                //    ~/.zcode/cli/config.json（后端原生加载，见
+                //    zcode_mcp_bridge.rs）。每次 zcode spawn 前幂等同步一次：
+                //    勾选/取消即时生效，外部改动也自愈。
+                let project_roots = app
+                    .state::<crate::AppState>()
+                    .storage
+                    .lock()
+                    .ok()
+                    .and_then(|storage| storage.list_projects().ok())
+                    .map(|projects| {
+                        projects
+                            .iter()
+                            .map(|project| PathBuf::from(&project.root_path))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if let Err(error) = crate::zcode_mcp_bridge::sync(&project_roots) {
+                    crate::debug_log::append(
+                        "bridge",
+                        "warn",
+                        &session_id,
+                        "zcode stdio mcp bridge sync failed",
+                        Some(&error),
+                    );
                 }
             }
         }
@@ -2056,6 +2083,19 @@ impl AcpService {
             )),
         );
         Ok(json!({ "accepted": true, "id": id, "images": image_count }))
+    }
+
+    /// 后台任务面板：terminal 宿主快照（create 过的全部条目，含已结束未清理的）。
+    pub fn list_terminals(&self) -> Vec<serde_json::Value> {
+        self.terminals.list_running()
+    }
+
+    /// 后台任务面板：按 UI 侧 terminalId 终止（保留条目与退出码，等同 terminal/kill）。
+    pub fn kill_terminal(
+        &self,
+        terminal_id: &str,
+    ) -> Result<(), crate::terminal_runtime::TerminalError> {
+        self.terminals.kill_by_id(terminal_id)
     }
 
     pub fn cancel(&self, session_id: &str) -> Result<(), String> {

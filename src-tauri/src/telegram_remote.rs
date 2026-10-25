@@ -421,6 +421,13 @@ enum CallbackAction {
         model_id: String,
         model_label: String,
     },
+    /// /resume：把这个会话设为裸文本绑定，继续聊。
+    ResumeSession {
+        session_id: String,
+        label: String,
+    },
+    /// /resume 清单翻页（菜单原地重画）。
+    ResumePage { offset: usize },
     /// 菜单类消息的「关闭」：只摘按钮，无事发生。
     DismissMenu,
 }
@@ -446,7 +453,8 @@ impl CallbackAction {
             | CallbackAction::WizardModelPage { .. } => "new-session",
             CallbackAction::ModelPage { session_id, .. }
             | CallbackAction::SetModel { session_id, .. } => session_id,
-            CallbackAction::DismissMenu => "menu",
+            CallbackAction::ResumeSession { session_id, .. } => session_id,
+            CallbackAction::ResumePage { .. } | CallbackAction::DismissMenu => "menu",
         }
     }
 }
@@ -2450,6 +2458,9 @@ fn handle_incoming_message(slot: &'static Telegram, live: &LiveConfig, message: 
                 };
                 send_model_menu(slot, live, &session_id, 0, message_id, None);
             }
+            "/resume" | "/sessions-resume" | "/open" => {
+                send_resume_menu(slot, live, 0, message_id, None);
+            }
             "/help" | "/start" => {
                 enqueue_send(live, HELP_TEXT.to_string(), Vec::new(), None, message_id);
             }
@@ -2461,21 +2472,41 @@ fn handle_incoming_message(slot: &'static Telegram, live: &LiveConfig, message: 
     }
 
     // 引用回复 → 被引消息所属会话；裸文本 → 最近用户会话。
-    let target = message
+    // 失路（Marionette 重启后 routes 是内存态、或超过 256 条被逐出）时，
+    // 引用回复明确报错而不是静默送进当前绑定会话——那正是「送错对话」事故。
+    let reply_route = message
         .pointer("/reply_to_message/message_id")
-        .and_then(Value::as_i64)
-        .and_then(|replied| {
-            slot.inner
-                .lock()
-                .ok()
-                .and_then(|inner| inner.routes.get(&replied).cloned())
-        })
-        .or_else(|| {
-            slot.inner
-                .lock()
-                .ok()
-                .and_then(|inner| inner.last_user_session.clone())
-        });
+        .and_then(Value::as_i64);
+    let target = match reply_route {
+        Some(replied) => match slot
+            .inner
+            .lock()
+            .ok()
+            .and_then(|inner| inner.routes.get(&replied).cloned())
+        {
+            Some(session_id) => Some(session_id),
+            None => {
+                log(
+                    "warn",
+                    "reply target message not in route map",
+                    Some(&format!("replied msg {replied}")),
+                );
+                enqueue_send(
+                    live,
+                    "这条被回复的消息太旧（或 Marionette 重启过），认不出它属于哪个会话——改用 /resume 选一个会话再发。".to_string(),
+                    Vec::new(),
+                    None,
+                    message_id,
+                );
+                return;
+            }
+        },
+        None => slot
+            .inner
+            .lock()
+            .ok()
+            .and_then(|inner| inner.last_user_session.clone()),
+    };
 
     let Some(session_id) = target else {
         enqueue_send(
@@ -2515,6 +2546,7 @@ const WIZARD_MAX_AGENTS: usize = 10;
 
 const HELP_TEXT: &str = "命令：
 /new — 新建对话（在哪建 → agent → 模型 → 编辑模式，一步步选）
+/resume — 继续过往会话（列出全部历史对话，点一个直接接着聊）
 /model — 切换模型（回复某条通知 = 切那个会话；裸发 = 切 ⏎ 绑定的会话）
 /status — 全部会话的状态清单
 /help — 本说明
@@ -3207,6 +3239,18 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
             send_model_menu(slot, live, &session_id, *offset, None, host);
             Ok(format!("第 {} 项起", offset + 1))
         }
+        CallbackAction::ResumeSession { session_id, label } => {
+            if let Ok(mut inner) = slot.inner.lock() {
+                inner.last_user_session = Some(session_id.clone());
+            }
+            schedule_dashboard(slot);
+            Ok(format!("⏎ 已接上 [{label}]，直接发文字继续聊"))
+        }
+        CallbackAction::ResumePage { offset } => {
+            let host = callback.pointer("/message/message_id").and_then(Value::as_i64);
+            send_resume_menu(slot, live, *offset, None, host);
+            Ok(format!("第 {} 项起", offset + 1))
+        }
         CallbackAction::SetModel { session_id, model_id, model_label } => {
             let _ = slot.app.emit_to(
                 "main",
@@ -3231,7 +3275,9 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
             // 新一页的按钮抹掉。
             let is_page_action = matches!(
                 action,
-                CallbackAction::WizardModelPage { .. } | CallbackAction::ModelPage { .. }
+                CallbackAction::WizardModelPage { .. }
+                    | CallbackAction::ModelPage { .. }
+                    | CallbackAction::ResumePage { .. }
             );
             let dashboard_message = slot
                 .inner
@@ -3921,6 +3967,108 @@ fn session_label(session_id: &str) -> String {
     session_meta(session_id).label
 }
 
+/// /resume 清单的一行（label 已截好，agent 标签独立保留）。
+struct ResumeRow {
+    session_id: String,
+    label: String,
+    /// agent 标签（显示用，已截好）。
+    agent: String,
+    last_active_at: String,
+}
+
+/// 全部历史会话，按 last_active_at 倒序。只在未持有 telegram inner 锁时调用
+/// （锁序红线：inner → storage 禁止）。
+fn historical_sessions(slot: &'static Telegram) -> Vec<ResumeRow> {
+    let Some(state) = slot.app.try_state::<crate::AppState>() else {
+        return Vec::new();
+    };
+    let Ok(storage) = state.storage.lock() else {
+        return Vec::new();
+    };
+    let mut rows: Vec<ResumeRow> = Vec::new();
+    for project in storage.list_projects().unwrap_or_default() {
+        let sessions = storage.list_sessions(&project.id).unwrap_or_default();
+        for session in sessions {
+            rows.push(ResumeRow {
+                session_id: session.id.clone(),
+                label: session
+                    .label
+                    .trim()
+                    .is_empty()
+                    .then(|| clip(&session.id, 24))
+                    .unwrap_or_else(|| clip(session.label.trim(), 40)),
+                agent: crate::custom_agents::all_agents_merged()
+                    .iter()
+                    .find(|agent| agent.id == session.agent_id)
+                    .map(|agent| clip(agent.label.trim(), 20))
+                    .filter(|label| !label.is_empty())
+                    .unwrap_or_else(|| clip(&session.agent_id, 20)),
+                last_active_at: session.last_active_at.clone(),
+            });
+        }
+    }
+    // 最近活跃在前；时间戳是 ISO 字符串，字典序即时间序。
+    rows.sort_by(|a, b| b.last_active_at.cmp(&a.last_active_at));
+    rows
+}
+
+/// /resume 清单每页条数。
+const RESUME_PAGE_SIZE: usize = 8;
+
+/// /resume：全部历史会话菜单，点选即绑定并继续聊。
+fn send_resume_menu(
+    slot: &'static Telegram,
+    live: &LiveConfig,
+    offset: usize,
+    reply_to: Option<i64>,
+    host_message: Option<i64>,
+) {
+    let sessions = historical_sessions(slot);
+    if sessions.is_empty() {
+        let _ = send_message(live, "还没有任何历史会话。", &[], reply_to, None, None);
+        return;
+    }
+    let offset = offset.min(sessions.len().saturating_sub(1) / RESUME_PAGE_SIZE * RESUME_PAGE_SIZE);
+    let end = (offset + RESUME_PAGE_SIZE).min(sessions.len());
+    let range = offset..end;
+    let total = sessions.len();
+    let mut header = format!("📂 继续哪个会话？({} 个，按最近活跃排序)", total);
+    if total > RESUME_PAGE_SIZE {
+        header.push_str(&format!("\n第 {}–{} 项", offset + 1, end));
+    }
+    let mut rows: Vec<Vec<(CallbackAction, String)>> = Vec::new();
+    for row in &sessions[range.clone()] {
+        rows.push(vec![(
+            CallbackAction::ResumeSession {
+                session_id: row.session_id.clone(),
+                label: row.label.clone(),
+            },
+            if row.agent.is_empty() {
+                clip(&row.label, 56)
+            } else {
+                clip(&format!("{} · {}", row.label, row.agent), 56)
+            },
+        )]);
+    }
+    let (prev, next) = page_nav(
+        range.end < total,
+        offset > 0,
+        CallbackAction::ResumePage {
+            offset: offset.saturating_sub(RESUME_PAGE_SIZE),
+        },
+        CallbackAction::ResumePage { offset: range.end },
+    );
+    if let (Some(prev), Some(next)) = (&prev, &next) {
+        rows.push(vec![prev.clone(), next.clone()]);
+    } else if let Some(nav) = prev.or(next) {
+        rows.push(vec![nav]);
+    }
+    rows.push(vec![(CallbackAction::DismissMenu, "✖ 关闭".into())]);
+    let (keyboard, pending) = assemble_keyboard(slot, rows);
+    register_callbacks(slot, pending);
+    deliver_menu(live, &header, &keyboard, reply_to, host_message);
+}
+
 // ─── 对 commands.rs 的 API（状态 / 保存 / 配对 / 回执）────────────────────
 
 #[derive(Clone, Debug, Serialize)]
@@ -4190,6 +4338,7 @@ fn sync_bot_commands(slot: &'static Telegram) {
     std::thread::spawn(move || {
         let commands = json!([
             { "command": "new", "description": "新建对话（项目/聊天 → agent → 模型 → 模式）" },
+            { "command": "resume", "description": "继续过往会话（选一个直接聊）" },
             { "command": "model", "description": "切换模型（回复通知=切那个会话）" },
             { "command": "status", "description": "全部会话的状态清单" },
             { "command": "help", "description": "命令说明" },

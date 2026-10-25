@@ -57,6 +57,9 @@ struct TerminalInstance {
     agent_session_id: String,
     /// Marionette UI session id（create 时传入）——clear_session 靠它反向清理。
     marionette_session_id: String,
+    /// 原始命令行（后台任务面板显示用）。
+    command: String,
+    created_at_ms: u64,
     output_limit: usize,
     child: Mutex<Option<Child>>,
     snapshot: Mutex<TerminalSnapshot>,
@@ -67,12 +70,18 @@ impl TerminalInstance {
     fn new(
         agent_session_id: String,
         marionette_session_id: String,
+        command: String,
         output_limit: usize,
         child: Child,
     ) -> Self {
         Self {
             agent_session_id,
             marionette_session_id,
+            command,
+            created_at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_millis() as u64)
+                .unwrap_or(0),
             output_limit,
             child: Mutex::new(Some(child)),
             snapshot: Mutex::new(TerminalSnapshot::default()),
@@ -449,6 +458,61 @@ impl TerminalRuntime {
         }
     }
 
+    /// Snapshot list for the 后台任务 panel. Running state comes from a
+    /// fresh `try_wait` reap (Windows ConPTY EOF may not surface on its own);
+    /// finished terminals keep their exit status until release/kill.
+    pub fn list_running(&self) -> Vec<Value> {
+        let Ok(map) = self.terminals.lock() else {
+            return Vec::new();
+        };
+        let mut rows: Vec<Value> = map
+            .iter()
+            .map(|(id, term)| {
+                let _ = term.refresh_exit_status();
+                let snap = term.snapshot.lock().ok();
+                let exited = snap
+                    .as_ref()
+                    .map(|s| s.exit_code.is_some() || s.signal.is_some())
+                    .unwrap_or(false);
+                let mut row = json!({
+                    "terminalId": id,
+                    "sessionId": term.marionette_session_id,
+                    "command": term.command,
+                    "running": !exited,
+                    "startedAtMs": term.created_at_ms,
+                });
+                if let Some(snap) = snap {
+                    if snap.exit_code.is_some() || snap.signal.is_some() {
+                        row["exitStatus"] =
+                            exit_status_json(snap.exit_code, snap.signal.as_deref());
+                    }
+                }
+                row
+            })
+            .collect();
+        rows.sort_by_key(|row| {
+            row.get("startedAtMs")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+        });
+        rows
+    }
+
+    /// 后台任务面板的终止入口：只 kill，不清理条目（退出码留给面板展示，
+    /// 条目随会话 stop 的 clear_session 一起回收）。
+    pub fn kill_by_id(&self, terminal_id: &str) -> Result<(), TerminalError> {
+        let term = {
+            let map = self
+                .terminals
+                .lock()
+                .map_err(|_| TerminalError::Internal("terminals lock poisoned".into()))?;
+            map.get(terminal_id).cloned().ok_or_else(|| {
+                TerminalError::InvalidParams(format!("terminal {terminal_id} not found"))
+            })?
+        };
+        term.kill_command()
+    }
+
     fn create(
         &self,
         params: &Value,
@@ -515,9 +579,15 @@ impl TerminalRuntime {
 
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
+        let command_display = if args.is_empty() {
+            command.to_string()
+        } else {
+            format!("{command} {}", args.join(" "))
+        };
         let terminal = Arc::new(TerminalInstance::new(
             agent_session_id,
             marionette_session_id.to_string(),
+            command_display,
             output_limit,
             child,
         ));
@@ -830,6 +900,7 @@ mod tests {
         let term = Arc::new(TerminalInstance::new(
             "agent-wait-kill-test".to_string(),
             "ui-session-wait-kill-test".to_string(),
+            "ping-test".to_string(),
             DEFAULT_OUTPUT_BYTE_LIMIT,
             child,
         ));

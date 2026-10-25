@@ -59,6 +59,7 @@ import {
 import { detectCapabilityDrift } from "../lib/capabilityDrift";
 import { ensureModelSources, expandHiddenProviders, libraryGroups, refreshModelSources, visibleLibraryGroups, useModelLibrary } from "../lib/modelLibrary";
 import { modeTone } from "../lib/modeTone";
+import { DOCK_DROP_PATHS_EVENT } from "../lib/dockDrop";
 import { foldLocalSingleGroups, splitModelMeta } from "../lib/modelMenu";
 import {
   modelProviderGroup,
@@ -1997,8 +1998,10 @@ export function Composer({
   };
 
   // Tauri-native file drops give absolute paths (HTML5 File.path is not always present).
+  // Off while docked: App's dock drop router owns native drops for the whole
+  // strip (top band → 收纳盒, conversation → here via DOCK_DROP_PATHS_EVENT).
   useEffect(() => {
-    if (!isTauriRuntime()) return;
+    if (!isTauriRuntime() || docked) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
     const field = () => textareaRef.current?.closest(".composer__field") as HTMLElement | null;
@@ -2048,7 +2051,19 @@ export function Composer({
       disposed = true;
       unlisten?.();
     };
-  }, [insertDroppedPaths]);
+  }, [insertDroppedPaths, docked]);
+
+  // Chat-zone drops handed over by the dock router (the effect above is off
+  // while docked) — same insert path as a direct field drop.
+  useEffect(() => {
+    if (!docked) return;
+    const onDockDropPaths = (event: Event) => {
+      const paths = (event as CustomEvent<string[]>).detail;
+      if (Array.isArray(paths) && paths.length > 0) insertDroppedPaths(paths);
+    };
+    window.addEventListener(DOCK_DROP_PATHS_EVENT, onDockDropPaths);
+    return () => window.removeEventListener(DOCK_DROP_PATHS_EVENT, onDockDropPaths);
+  }, [docked, insertDroppedPaths]);
 
   /** OpenCode-style: Tab cycles execution mode when ≥2 modes exist. */
   const cycleMode = useCallback(

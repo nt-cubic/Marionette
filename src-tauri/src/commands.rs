@@ -2384,6 +2384,22 @@ pub fn cancel_acp_session(session_id: String, state: State<'_, AppState>) -> Res
     state.acp.cancel(&session_id)
 }
 
+/// 后台任务面板：ACP `terminal/*` 宿主里所有活的/已结束未清理的命令。
+#[tauri::command(async)]
+pub fn list_acp_terminals(state: State<'_, AppState>) -> Result<Vec<serde_json::Value>, String> {
+    Ok(state.acp.list_terminals())
+}
+
+/// 后台任务面板：终止一个 agent 起的后台命令（同 terminal/kill，不清理条目，
+/// 保留退出码供面板展示）。
+#[tauri::command(async)]
+pub fn kill_acp_terminal(terminal_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .acp
+        .kill_terminal(&terminal_id)
+        .map_err(|err| err.message().to_string())
+}
+
 #[tauri::command]
 pub fn get_session_capabilities(
     session_id: String,
@@ -2938,6 +2954,28 @@ pub fn set_project_context_enabled(
         &format!("{kind} {id} → {}", if enabled { "lend" } else { "off" }),
         Some(&root.display().to_string()),
     );
+    // MCP 勾选变了 → zcode stdio 桥跟着重算（stdio 借给 zcode 走的是
+    // ~/.zcode/cli/config.json，不是 ACP session/new）。
+    if kind == "mcp" {
+        let projects = state
+            .storage
+            .lock()
+            .map_err(|_| "Storage lock poisoned".to_string())?
+            .list_projects()?;
+        let project_roots: Vec<PathBuf> = projects
+            .iter()
+            .map(|project| PathBuf::from(&project.root_path))
+            .collect();
+        if let Err(error) = crate::zcode_mcp_bridge::sync(&project_roots) {
+            crate::debug_log::append(
+                "bridge",
+                "warn",
+                "",
+                "zcode stdio mcp bridge sync failed",
+                Some(&error),
+            );
+        }
+    }
     Ok(serde_json::to_value(selection).unwrap_or_default())
 }
 

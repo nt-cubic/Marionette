@@ -1143,7 +1143,7 @@ fn sessions_file(project_path: &Path) -> PathBuf {
 /// leaves a half file, and `from_global_dir` then fails outright — the whole
 /// storage layer bricks on one corrupted index. Rename keeps readers seeing
 /// either the old or the new file, never a partial one.
-fn write_atomic(path: &Path, body: &str) -> Result<(), String> {
+pub(crate) fn write_atomic(path: &Path, body: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|error| format!("Create dir failed: {error}"))?;

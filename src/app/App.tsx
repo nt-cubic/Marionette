@@ -30,7 +30,7 @@ import { engineQuota as fetchEngineQuota, type EngineQuotaEntry } from "../lib/a
 import { TELEGRAM_COMMAND_EVENT, telegramRemoteResult, type TelegramCommand } from "../lib/api";
 import { invalidateBridgeModels } from "../lib/bridge";
 import { useLatestCallback } from "../lib/useLatestCallback";
-import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, beginWorkspaceSnapshot, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, discardWorkspaceSnapshot, downloadAppUpdate, endWorkspaceSnapshot, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, quitApp, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, type TurnSnapshotEnd, type TurnSnapshotStart, CHAT_PROJECT_ID } from "../lib/api";
+import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, beginWorkspaceSnapshot, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, discardWorkspaceSnapshot, downloadAppUpdate, endWorkspaceSnapshot, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, killAcpTerminal, listAcpTerminals, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, quitApp, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, type TurnSnapshotEnd, type TurnSnapshotStart, CHAT_PROJECT_ID } from "../lib/api";
 import {
   bindDetachedWindowReaper,
   DETACHED_HIDDEN_EVENT,
@@ -88,6 +88,7 @@ import {
 } from "../lib/desktopNotify";
 import { enterDock, getDockState, initDockMode, readDockPrefs, subscribeDockPrefs, subscribeDockState, syncBackgroundMode, toggleAutoHideOnClose, undock } from "../lib/dockMode";
 import { DockChrome, DockResizeGrip, type DockPage } from "../components/DockChrome";
+import { DockDropRouter } from "../components/DockDropRouter";
 import { MemoBox } from "../components/MemoBox";
 import { memoList, memoPrompt } from "../lib/memos";
 import { parseAvailableCommandsUpdate } from "../lib/slashCommands";
@@ -185,9 +186,11 @@ import {
   type SplitWorkspaceState,
 } from "../lib/splitWorkspace";
 import type { QuotePin } from "../lib/quoteComment";
-import { canPark, DOCK_DONE_GRACE_MS, lastActiveMs, shouldAutoSuspend } from "../lib/sessionSuspend";
+import { canPark, lastActiveMs, shouldAutoSuspend } from "../lib/sessionSuspend";
 import { forkCopyEvents, forkCutIndex } from "../lib/sessionFork";
 import { type AskQuestionPrompt } from "../components/AskQuestionCard";
+import { buildBackgroundTaskRows } from "../lib/backgroundTasks";
+import type { AcpTerminalRow } from "../lib/api";
 import { Composer, transferEmptyDraft } from "../components/Composer";
 import { ComposerErrorStrip, SessionNoticeStrip } from "../components/ComposerErrorStrip";
 import { isAcpTranscriptMethod, parseLiveNotice } from "../lib/acpMeta";
@@ -368,6 +371,26 @@ function turnStopReason(data: unknown): string {
  * duration into the session statistics, so it stays unstamped.
  */
 const EMPTY_EVENTS: SessionEvent[] = [];
+
+/** 后台任务面板：终端快照轮询 3s 一次，浅比较避免无变化时击穿下游 memo。 */
+function sameTerminals(prev: AcpTerminalRow[], next: AcpTerminalRow[]): boolean {
+  if (prev.length !== next.length) return false;
+  for (let i = 0; i < prev.length; i++) {
+    const a = prev[i]!;
+    const b = next[i]!;
+    if (
+      a.terminalId !== b.terminalId ||
+      a.running !== b.running ||
+      a.command !== b.command ||
+      a.sessionId !== b.sessionId ||
+      a.exitStatus?.exitCode !== b.exitStatus?.exitCode ||
+      a.exitStatus?.signal !== b.exitStatus?.signal
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
 
 function markOpenTools(
   events: SessionEvent[],
@@ -3275,10 +3298,19 @@ export function App() {
           .filter((id): id is string => Boolean(id)),
       );
       const queuedSessionIds = new Set(pendingSendsRef.current.keys());
+      // 「当前对话不挂起」只保护看得见的窗口：窗口藏进后台（background
+      // mode/最小化，visibilityState=hidden）时用户根本不在看，30 分钟到了
+      // 连当前对话一起挂起——否则它会永远停在「等你」并养着一个活进程
+      // （2026-10-25 反馈）。贴边停靠的窄条窗口并没有 hide，仍是 visible，
+      // 照旧豁免。
+      const exemptCurrent =
+        typeof document !== "undefined" && document.visibilityState === "visible"
+          ? currentSessionIdRef.current
+          : null;
       for (const session of sessionsRef.current) {
         if (
           !shouldAutoSuspend(session, now, {
-            currentSessionId: currentSessionIdRef.current,
+            currentSessionId: exemptCurrent,
             pendingSessionIds,
             queuedSessionIds,
           })
@@ -4055,17 +4087,18 @@ export function App() {
 
   /**
    * Edge dock strip (instead of tabs): every dialog still holding a process,
-   * plus the one in view, newest first. A dialog whose turn ended cleanly
-   * (waiting) leaves the list DOCK_DONE_GRACE_MS after it went quiet — opened
-   * or not (2026-10-25; before, it lingered until the 30-min auto-suspend).
-   * The dialog itself is untouched: its process stays up (still parkable,
-   * auto-suspend keeps the old clock) and 全部对话 keeps the unread-done
-   * badge. Rows with a pending question/plan/permission card or a queued
-   * follow-up never auto-leave.
+   * plus the one in view, newest first. A finished (waiting) dialog stays
+   * listed until its process is really gone — the 30-min auto-suspend, a
+   * manual park, or an agent exit flips it to `exited` and only then does the
+   * row leave (2026-10-26; the 60s-after-quiet eviction read as "finished
+   * dialogs vanish the moment they complete"). 全部对话 keeps the unread-done
+   * badge either way.
    */
   const [dockListTick, setDockListTick] = useState(0);
   useEffect(() => {
     if (!dockActive) return;
+    // No time-based eviction anymore — the tick only keeps the rows' "5m"
+    // recency labels honest while the strip sits idle.
     const id = window.setInterval(() => setDockListTick((tick) => tick + 1), 15_000);
     return () => window.clearInterval(id);
   }, [dockActive]);
@@ -4073,42 +4106,101 @@ export function App() {
   const dockActiveSessions = useMemo(() => {
     if (!dockActive) return [];
     void dockListTick;
-    const now = Date.now();
-    const pendingIds = new Set(
-      [permissionPrompt, askPrompt, planApproval]
-        .map((prompt) => prompt?.sessionId)
-        .filter((id): id is string => Boolean(id)),
-    );
     return availableSessions
-      .filter((session) => {
-        if (session.id === currentSessionId) return true;
-        if (!canPark(session)) return false;
-        if (
-          session.status === "waiting" &&
-          !pendingIds.has(session.id) &&
-          !pendingSendsRef.current.has(session.id) &&
-          now - lastActiveMs(session) >= DOCK_DONE_GRACE_MS
-        ) {
-          return false;
-        }
-        return true;
-      })
+      .filter((session) => session.id === currentSessionId || canPark(session))
       .sort((a, b) => lastActiveMs(b) - lastActiveMs(a));
-  }, [
-    availableSessions,
-    currentSessionId,
-    dockActive,
-    dockListTick,
-    permissionPrompt,
-    askPrompt,
-    planApproval,
-  ]);
+  }, [availableSessions, currentSessionId, dockActive, dockListTick]);
 
   // Strip sliver: the parked handle breathes while any dialog is working.
   const dockAnyBusy = dockActive && availableSessions.some((s) => s.status === "running" || s.status === "starting");
   useEffect(() => {
     document.documentElement.classList.toggle("dock-live", dockAnyBusy);
   }, [dockAnyBusy]);
+
+  // ─── 后台任务面板 ──────────────────────────────────────────────────────────
+  // 聚合 @-delegate 子代理 / 排队委托 / ACP terminal/* 后台命令 / 排队发送 /
+  // 待审批（需要你）。子代理与排队发送的真相在 ref 里，靠 delegateTick /
+  // queuedStripTick / 会话状态变化触发重算；终端快照 3s 拉一次（幂等 invoke）。
+  const [acpTerminals, setAcpTerminals] = useState<AcpTerminalRow[]>([]);
+  const [backgroundTick, setBackgroundTick] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    const pull = () => {
+      void listAcpTerminals().then((rows) => {
+        if (alive) setAcpTerminals((prev) => (sameTerminals(prev, rows) ? prev : rows));
+      });
+    };
+    pull();
+    const id = window.setInterval(pull, 3000);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, []);
+  useEffect(() => {
+    // delegateMeta/delegateQueue/pendingSends 都是 ref——子代理启动/结束、
+    // 排队入列都会 bump queuedStripTick，会话状态翻转走这里重算。
+    setBackgroundTick((t) => t + 1);
+  }, [queuedStripTick, availableSessions, permissionPrompt, askPrompt, planApproval]);
+
+  const backgroundTasks = useMemo(() => {
+    void backgroundTick;
+    const queuedSends = new Map<string, number>();
+    const queuedSendLabels = new Map<string, string>();
+    for (const [sessionId, items] of pendingSendsRef.current) {
+      if (items.length > 0) queuedSends.set(sessionId, items.length);
+    }
+    const sessionLabels = new Map<string, string>();
+    for (const session of availableSessions) {
+      sessionLabels.set(session.id, session.label?.trim() || "Session");
+      if (queuedSends.has(session.id)) {
+        queuedSendLabels.set(session.id, session.label?.trim() || "排队发送");
+      }
+    }
+    return buildBackgroundTaskRows({
+      delegateMeta: delegateMetaRef.current,
+      delegateQueue: delegateQueueRef.current,
+      terminals: acpTerminals,
+      queuedSends,
+      queuedSendLabels,
+      currentSessionId,
+      permissionSessionId: permissionPrompt?.sessionId,
+      permissionTitle: permissionPrompt?.title ?? null,
+      askSessionId: askPrompt?.sessionId,
+      planSessionId: planApproval?.sessionId,
+      sessionLabels,
+    });
+  }, [backgroundTick, acpTerminals, availableSessions, currentSessionId, permissionPrompt, askPrompt, planApproval]);
+
+  const handleKillBackgroundTerminal = useCallback((terminalId: string) => {
+    void killAcpTerminal(terminalId).catch(() => undefined);
+  }, []);
+
+  const sessionLabelsForBackground = useMemo(() => {
+    const labels = new Map<string, string>();
+    for (const session of availableSessions) {
+      labels.set(session.id, session.label?.trim() || "Session");
+    }
+    return labels;
+  }, [availableSessions]);
+
+  /** 面板行点击：切到发起会话（子代理是父会话，行内已有归属说明）。 */
+  const handleOpenBackgroundTask = useCallback(
+    (row: { sessionId: string }) => {
+      const session = availableSessions.find((s) => s.id === row.sessionId);
+      if (session) {
+        openSession(session);
+        return;
+      }
+      // 会话表里没有（如刚结束的 delegate 子会话）——退而打开父会话。
+      const parentId = delegateMetaRef.current.get(row.sessionId)?.parentId;
+      const parent = parentId ? availableSessions.find((s) => s.id === parentId) : undefined;
+      if (parent) openSession(parent);
+    },
+    [availableSessions],
+  );
+
+  // ───────────────────────────────────────────────────────────────────────────
 
   // ProjectShelf 的项目列表（memo 化：内联 filter 会让引用每渲染都变，击穿 memo）。
   const shelfProjects = useMemo(
@@ -8367,6 +8459,10 @@ export function App() {
           activeSessionId={currentSessionId}
           resizeDragging={resizingSide === "right"}
           onResizeStart={() => setResizingSide("right")}
+          backgroundTasks={backgroundTasks}
+          sessionLabels={sessionLabelsForBackground}
+          onOpenBackgroundTask={handleOpenBackgroundTask}
+          onKillBackgroundTerminal={handleKillBackgroundTerminal}
         />
       </div>
       {/* Window-level: draw as soon as the prompt exists. Do not wait for pane focus. */}
@@ -8396,6 +8492,13 @@ export function App() {
             onCheckUpdate={handleCheckAppUpdate}
             onUpdateAndRelaunch={handleUpdateAndRelaunch}
             splitPaused={dockSplitPaused}
+          />
+          {/* Native drop routing for the whole strip: top band → 收纳盒,
+              conversation → composer (2026-10-26). */}
+          <DockDropRouter
+            page={dockPage}
+            hasConversation={currentSessionId != null}
+            onMemoCount={setMemoCount}
           />
           {/* Width grip only on the home view: the full pages are overlays and
               keep their own width until 返回. */}

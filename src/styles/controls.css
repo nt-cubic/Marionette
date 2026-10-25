@@ -252,6 +252,59 @@
   background: var(--red);
 }
 
+/* 状态过滤激活时的常驻提示条：一个 chip 高亮太容易被当成普通徽标，
+   用户不知道列表被筛过（2026-10-25 反馈：整个侧栏看起来像空了）。 */
+.shelf-filter-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin: 0 0 6px;
+  padding: 3px 6px 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.shelf-filter-note__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shelf-filter-note__clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 5px;
+  color: var(--text-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.shelf-filter-note__clear:hover,
+.shelf-filter-note__clear:focus-visible {
+  color: var(--text-strong);
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+/* 状态过滤下没有匹配的项目：行保留但整体压暗——「东西还在，只是被
+   筛掉了」，而不是从界面上消失。 */
+.project-group.is-filtered-out .project-row {
+  opacity: 0.45;
+}
+
+.project-group.is-filtered-out .project-row__action {
+  opacity: 0.6;
+}
+
 .shelf-status__count {
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
