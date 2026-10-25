@@ -13,6 +13,8 @@
 | [`research-content-filter.md`](./research-content-filter.md) | 归因报告：content_filter 不是 marionette 中转引入的（抓包逐字段对照 + 直连反例 + 时间线） |
 | [`research-edge-dock.md`](./research-edge-dock.md) | **调研（2026-10-23）**：QQ 式贴边停靠的技术选型——sliver 触发条 vs 钩子/轮询/AppBar 路线对比、现有代码盘点（余额/会话恢复/升级/拖放皆现成）、memo 收纳盒两案，含外部参考全集 |
 | [`plan-edge-dock.md`](./plan-edge-dock.md) | **设计稿（未实现）**：贴边停靠长条——主窗停靠模式三态状态机、4px 触发条唤出、关闭即收起后台常驻、窄条 UI（新建对话/收纳盒/工程列表/余额 chip/footer 升级退出）、memo 收纳盒，五阶段实施计划。**悬浮球计划已废弃并入本计划**（地基/`capture_save_blob`/余额数据层/收集箱方案；原件 [`archive/plan-orb-assistant.md`](./archive/plan-orb-assistant.md)） |
+| [`research-codeg.md`](./research-codeg.md) | **调研（2026-10-25）**：同类产品 Codeg 全量分析（克隆在 `D:\Projects\codeg`）——可抄功能（活动胶囊/steer 队列/富内容渲染/MCP·Skills 分发/收菜任务/@委托/微信 iLink 通道…）、坑清单（进程管理/编码/Windows/流式 UI/适配器漂移…带 commit 证据）、ZCode 同桥情报（`ZCODE_ACP_RUNTIME` 等）、行动优先级 |
+| [`plan-codeg-borrow.md`](./plan-codeg-borrow.md) | **路线图（2026-10-25）**：从 Codeg 借什么、什么不借——对照现状（代理层/跨 agent handoff/12 parser/registry 安装/Ctrl K 搜索已对齐）分 P0 速赢→P1 对话流骨架→P2 数据与能力分发→P3 协作与远程→P4 按需，含明确不做清单、依赖关系与工程纪律 |
 | `archive/` | 历史归档（2026-07 前后的策划、路线图、规格与调研）。**不是**待办清单 |
 | `screenshots/` | 根 README 用的界面截图 |
 

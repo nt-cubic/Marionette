@@ -1,5 +1,5 @@
 import { emit, listen } from "@tauri-apps/api/event";
-import { ChevronLeft, ChevronRight, FolderOpen, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, FolderOpen, Inbox, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, memo, type CSSProperties } from "react";
 import { agents, projects, sessions } from "../lib/mockData";
 import {
@@ -14,6 +14,11 @@ import {
   userMessageEvent,
 } from "../lib/acpTranscript";
 import { useSessionRails } from "./useSessionRails";
+import {
+  REENTRY_IDLE_MS,
+  sealAgentSegmentForIdle,
+  shouldArmAgentReentry,
+} from "../lib/agentReentry";
 import {
   chunkKindFromRole,
   flushShadowsIntoPaintSet,
@@ -82,7 +87,7 @@ import {
   setDesktopNotifyEnabled,
 } from "../lib/desktopNotify";
 import { enterDock, getDockState, initDockMode, readDockPrefs, subscribeDockPrefs, subscribeDockState, syncBackgroundMode, toggleAutoHideOnClose, undock } from "../lib/dockMode";
-import { DockChrome, type DockPage } from "../components/DockChrome";
+import { DockChrome, DockResizeGrip, type DockPage } from "../components/DockChrome";
 import { MemoBox } from "../components/MemoBox";
 import { memoList, memoPrompt } from "../lib/memos";
 import { parseAvailableCommandsUpdate } from "../lib/slashCommands";
@@ -180,7 +185,7 @@ import {
   type SplitWorkspaceState,
 } from "../lib/splitWorkspace";
 import type { QuotePin } from "../lib/quoteComment";
-import { canPark, lastActiveMs, shouldAutoSuspend } from "../lib/sessionSuspend";
+import { canPark, DOCK_DONE_GRACE_MS, lastActiveMs, shouldAutoSuspend } from "../lib/sessionSuspend";
 import { forkCopyEvents, forkCutIndex } from "../lib/sessionFork";
 import { type AskQuestionPrompt } from "../components/AskQuestionCard";
 import { Composer, transferEmptyDraft } from "../components/Composer";
@@ -498,12 +503,19 @@ export function App() {
   const [autoHideOnClose, setAutoHideOnClose] = useState(() => readDockPrefs().autoHideOnClose);
   /** Edge dock stage 1: main window is parked at a screen edge. */
   const [dockActive, setDockActive] = useState(false);
+  const [dockExpanded, setDockExpanded] = useState(false);
   /** Edge dock: the page covering the strip below its title bar (all dialogs / usage / memo box). */
   const [dockPage, setDockPage] = useState<DockPage | null>(null);
   /** Edge dock stage 3: memo inbox overlay + its count badge. */
   const [memoCount, setMemoCount] = useState(0);
   /** Floating-window 收纳盒 page (docked mode uses dockPage === "memo"). */
   const [memoOpen, setMemoOpen] = useState(false);
+  /**
+   * 收纳盒 lives in the tab strip beside conversations: `memoOpen` = the tab
+   * exists, `memoActive` = it is the selected page (switching to a
+   * conversation tab keeps the tab, like any other open dialog).
+   */
+  const [memoActive, setMemoActive] = useState(false);
   /** Sessions that finished a turn while this window was looking at another dialog. */
   const [doneUnreadIds, setDoneUnreadIds] = useState<Set<string>>(() => new Set());
   /** Agent proxy config (single exit address), loaded on mount. */
@@ -579,6 +591,22 @@ export function App() {
   const acpNeedsHistoryRef = useRef<Set<string>>(new Set());
   /** When each session's turn last actually finished (`turn/complete` / process end). */
   const turnEndedAtRef = useRef<Record<string, number>>({});
+  /**
+   * Re-entry segments（再次进入对话）: the agent resumed on its own after
+   * `turn/complete` (a background command came back). Keyed by session;
+   * the timer ends the segment on quiet because several adapters never send
+   * a boundary for it (see lib/agentReentry.ts).
+   */
+  const agentReentryRef = useRef<
+    Record<string, { startedAt: number; lastAt: number; timer: ReturnType<typeof setTimeout> }>
+  >({});
+  /** Drop a re-entry segment's bookkeeping (timer included) — turn boundary, send, or teardown. */
+  const disarmAgentReentry = useCallback((sessionId: string) => {
+    const armed = agentReentryRef.current[sessionId];
+    if (!armed) return;
+    if (armed.timer) clearTimeout(armed.timer);
+    delete agentReentryRef.current[sessionId];
+  }, []);
   /**
    * Sessions whose `session/cancel` went unanswered. Cancel is a fire-and-forget
    * notification, so an agent wedged inside a tool or a model call never reads
@@ -952,8 +980,10 @@ export function App() {
     const disposeEngine = initDockMode();
     const unsubState = subscribeDockState((state) => {
       setDockActive(state !== "floating");
+      setDockExpanded(state === "docked-expanded");
       // A floating page cannot stay open across the mode switch.
       setMemoOpen(false);
+      setMemoActive(false);
       if (state !== "docked-expanded") setDockPage(null);
     });
     return () => {
@@ -2108,6 +2138,10 @@ export function App() {
         // A send parked because the connection's turn slot was busy may go now.
         releaseTurnSlotWaiters(turnSlotWaitersRef.current, payload.sessionId);
         turnEndedAtRef.current[payload.sessionId] = Date.now();
+        // A re-entry segment ends here too — adapters that do send a boundary
+        // for the continuation let the normal turn/complete path below seal
+        // and notify (it already sees status "running" from the arm).
+        disarmAgentReentry(payload.sessionId);
         cancelIgnoredRef.current.delete(payload.sessionId);
         // Keep suppressing late Thinking/Reply until a queued follow-up is
         // actually wired — cancel emits turn/complete immediately, before
@@ -2241,6 +2275,30 @@ export function App() {
             streamSuppressedRef.current.has(payload.sessionId) &&
             (extracted.role === "assistant" || extracted.role === "thought");
           if (!streamSuppressed) {
+            // 再次进入对话: the agent is producing again while Marionette
+            // considers the session idle (post-turn background continuation).
+            // Arm on assistant/thought text; once armed, any transcript chunk
+            // (tool status included) refreshes the quiet timer.
+            const reentryArmed = agentReentryRef.current[payload.sessionId];
+            if (reentryArmed) {
+              if (
+                extracted.role === "assistant" ||
+                extracted.role === "thought" ||
+                extracted.role === "tool"
+              ) {
+                armAgentReentryRef.current(payload.sessionId);
+              }
+            } else if (extracted.role === "assistant" || extracted.role === "thought") {
+              const sess = sessionsRef.current.find((s) => s.id === payload.sessionId);
+              if (
+                shouldArmAgentReentry(
+                  sess?.status,
+                  turnEndedAtRef.current[payload.sessionId] ?? null,
+                )
+              ) {
+                armAgentReentryRef.current(payload.sessionId);
+              }
+            }
             // Codex `/status` / Claude `/usage` embed rate-limit lines in assistant text.
             if (extracted.role === "assistant" && extracted.text) {
               setSessionUsageById((current) => {
@@ -3000,7 +3058,7 @@ export function App() {
       for (const t of cancelWatchdogsRef.current.values()) clearTimeout(t);
       cancelWatchdogsRef.current.clear();
     };
-  }, [applyAgentSessionTitle, pushDebug, touchActivity, clearAgentBanner, raiseClassifiedBanner]);
+  }, [applyAgentSessionTitle, pushDebug, touchActivity, clearAgentBanner, raiseClassifiedBanner, disarmAgentReentry]);
   // note: pushDebug is stable via useCallback
 
   // Stream interest follows pane structure, the focused tab, the session list,
@@ -3987,17 +4045,54 @@ export function App() {
 
   /**
    * Edge dock strip (instead of tabs): every dialog still holding a process,
-   * plus the one in view, newest first.
+   * plus the one in view, newest first. A dialog whose turn ended cleanly
+   * (waiting) leaves the list DOCK_DONE_GRACE_MS after it went quiet — opened
+   * or not (2026-10-25; before, it lingered until the 30-min auto-suspend).
+   * The dialog itself is untouched: its process stays up (still parkable,
+   * auto-suspend keeps the old clock) and 全部对话 keeps the unread-done
+   * badge. Rows with a pending question/plan/permission card or a queued
+   * follow-up never auto-leave.
    */
-  const dockActiveSessions = useMemo(
-    () =>
-      dockActive
-        ? availableSessions
-            .filter((session) => canPark(session) || session.id === currentSessionId)
-            .sort((a, b) => lastActiveMs(b) - lastActiveMs(a))
-        : [],
-    [availableSessions, currentSessionId, dockActive]
-  );
+  const [dockListTick, setDockListTick] = useState(0);
+  useEffect(() => {
+    if (!dockActive) return;
+    const id = window.setInterval(() => setDockListTick((tick) => tick + 1), 15_000);
+    return () => window.clearInterval(id);
+  }, [dockActive]);
+
+  const dockActiveSessions = useMemo(() => {
+    if (!dockActive) return [];
+    void dockListTick;
+    const now = Date.now();
+    const pendingIds = new Set(
+      [permissionPrompt, askPrompt, planApproval]
+        .map((prompt) => prompt?.sessionId)
+        .filter((id): id is string => Boolean(id)),
+    );
+    return availableSessions
+      .filter((session) => {
+        if (session.id === currentSessionId) return true;
+        if (!canPark(session)) return false;
+        if (
+          session.status === "waiting" &&
+          !pendingIds.has(session.id) &&
+          !pendingSendsRef.current.has(session.id) &&
+          now - lastActiveMs(session) >= DOCK_DONE_GRACE_MS
+        ) {
+          return false;
+        }
+        return true;
+      })
+      .sort((a, b) => lastActiveMs(b) - lastActiveMs(a));
+  }, [
+    availableSessions,
+    currentSessionId,
+    dockActive,
+    dockListTick,
+    permissionPrompt,
+    askPrompt,
+    planApproval,
+  ]);
 
   // Strip sliver: the parked handle breathes while any dialog is working.
   const dockAnyBusy = dockActive && availableSessions.some((s) => s.status === "running" || s.status === "starting");
@@ -4263,6 +4358,9 @@ export function App() {
   const applyFocusedSession = (nextSession: Session) => {
     setCurrentProjectId(nextSession.projectId);
     setCurrentSessionId(nextSession.id);
+    // Selecting any conversation switches the center back to its flow — the
+    // 收纳盒 tab itself stays open in the strip.
+    setMemoActive(false);
     setViewMode("clean");
     setSessionCapabilities(capsByIdRef.current[nextSession.id] ?? null);
     setActiveModelId(null);
@@ -4395,6 +4493,95 @@ export function App() {
       void updateSessionStatus(sessionId, status).catch(() => undefined);
     }
   }, []);
+
+  // ── 再次进入对话（agent re-entry, lib/agentReentry.ts）──────────────────
+  // The agent resumed on its own after its turn ended (a background command
+  // came back). Marionette re-arms the live-turn state so the Working bar,
+  // shelf pulse and live timeline come back; the segment ends on turn/complete
+  // (adapters that do send a boundary) or on quiet (the rest).
+  const finalizeAgentReentryRef = useRef<(sessionId: string, reason: "idle") => void>(
+    () => undefined,
+  );
+
+  const armAgentReentry = useCallback((sessionId: string) => {
+    const now = Date.now();
+    const existing = agentReentryRef.current[sessionId];
+    if (existing?.timer) clearTimeout(existing.timer);
+    if (!existing) {
+      setSessionStatusById(sessionId, "running");
+      pushDebug({
+        sessionId,
+        level: "info",
+        source: "acp",
+        summary: "agent re-entry armed (post-turn continuation)",
+      });
+    }
+    const timer = setTimeout(() => {
+      finalizeAgentReentryRef.current(sessionId, "idle");
+    }, REENTRY_IDLE_MS);
+    agentReentryRef.current[sessionId] = {
+      startedAt: existing?.startedAt ?? now,
+      lastAt: now,
+      timer,
+    };
+  }, [pushDebug, setSessionStatusById]);
+  const armAgentReentryRef = useRef(armAgentReentry);
+  armAgentReentryRef.current = armAgentReentry;
+
+  /**
+   * Quiet end of a re-entry segment (adapter never sent a boundary): seal the
+   * tail card like turn/complete does, free the composer and alert the same
+   * way a completed turn does. A later chunk simply arms a new segment.
+   */
+  const finalizeAgentReentry = (sessionId: string, reason: "idle") => {
+    const armed = agentReentryRef.current[sessionId];
+    if (!armed) return;
+    if (armed.timer) clearTimeout(armed.timer);
+    delete agentReentryRef.current[sessionId];
+    const prev = sessionsRef.current.find((s) => s.id === sessionId);
+    if (!prev) return; // deleted while armed — nothing to seal or announce
+    const endedAtMs = Date.now();
+    updateSessionEvents(
+      sessionId,
+      (current) =>
+        collapseIntermediateAssistantAsThought(
+          sealAgentSegmentForIdle(current, sessionId, endedAtMs),
+          sessionId,
+        ),
+      { publish: true },
+    );
+    // The re-entry still owns the running state only if no prompt took over
+    // since (a send disarms first; its own lifecycle owns the status then).
+    if (prev.status !== "running") return;
+    setSessionStatusById(sessionId, "waiting");
+    const label = prev.label?.trim() || "Session";
+    const stoppedSilently = turnEndedSilently(
+      shadowBySessionRef.current.get(sessionId) ?? EMPTY_EVENTS,
+      sessionId,
+    );
+    scheduleDesktopNotify(
+      sessionId,
+      stoppedSilently ? "idle" : "reply",
+      label,
+      DESKTOP_NOTIFY_SETTLE_MS,
+      { audibleWhenFocused: true },
+    );
+    if (sessionId !== currentSessionIdRef.current) {
+      setDoneUnreadIds((current) => {
+        if (current.has(sessionId)) return current;
+        const next = new Set(current);
+        next.add(sessionId);
+        return next;
+      });
+    }
+    pushDebug({
+      sessionId,
+      level: "info",
+      source: "acp",
+      summary: `agent re-entry ended (${reason})`,
+    });
+  };
+  finalizeAgentReentryRef.current = finalizeAgentReentry;
 
   /**
    * Merge a Composer prefs patch onto the dialog row, publish it to the UI and
@@ -6025,6 +6212,7 @@ export function App() {
       // and rendered as Notification.
       sendMetaRef.current = sendMeta;
       delete turnStartedAtRef.current[sid];
+      disarmAgentReentry(sid);
       turnSentAtRef.current[sid] = Date.now();
       grokTurnUsageRef.current[sid] = emptyGrokTurnUsage();
       cancelScheduledDesktopNotify(sid);
@@ -6637,6 +6825,10 @@ export function App() {
         effortLabel: effortLabelVal || undefined,
       };
       delete turnStartedAtRef.current[sid];
+      // A user prompt takes over the turn lifecycle — any armed re-entry
+      // segment must stop owning the status (its quiet timer must not fire
+      // mid-prompt and free the composer under a live turn).
+      disarmAgentReentry(sid);
 
       // Show the user message immediately; wait for ACP only after that.
       // History injection uses events *before* this message.
@@ -7771,13 +7963,13 @@ export function App() {
 
   /**
    * 收纳盒 page — shared by the docked strip (dockPage === "memo") and the
-   * floating window (left sidebar entry). Using a note opens a dialog in the
+   * floating window's tab form (memoActive). The mount's chrome owns title
+   * and close (strip 返回 / titlebar tab). Using a note opens a dialog in the
    * project in view; plain context can go to a chat when no project is open.
    */
-  const renderMemoBox = (close: () => void, floating: boolean) => (
+  const renderMemoBox = (close: () => void) => (
     <MemoBox
       onClose={close}
-      showClose={floating}
       onChanged={setMemoCount}
       onUse={(picked, intent) => {
         const projectId = currentProjectId && currentProjectId !== CHAT_PROJECT_ID ? currentProjectId : null;
@@ -7840,7 +8032,10 @@ export function App() {
             chatSessions={chatSessions}
             onChatSessionSelect={openChatSession}
             onNewChat={shelfStable.onNewChat}
-            onOpenMemo={dockActive ? undefined : () => setMemoOpen(true)}
+            onOpenMemo={dockActive ? undefined : () => {
+              setMemoOpen(true);
+              setMemoActive(true);
+            }}
           />
           )}
           {!leftCollapsed && !IS_DETACHED_WINDOW && (
@@ -7978,9 +8173,55 @@ export function App() {
             ghostHint={tabGhostHint}
             onOpenBeside={IS_DETACHED_WINDOW ? undefined : shelfStable.onOpenBeside}
             titlebarDragRegion
+            memoTab={
+              IS_DETACHED_WINDOW || !memoOpen
+                ? undefined
+                : {
+                    active: memoActive,
+                    count: memoCount,
+                    onSelect: () => setMemoActive(true),
+                    onClose: () => {
+                      setMemoOpen(false);
+                      setMemoActive(false);
+                    },
+                  }
+            }
           />
           ) : (
-            <div className="workspace-titlebar__fill" data-tauri-drag-region />
+            <>
+              {memoOpen && !IS_DETACHED_WINDOW && (
+                <div
+                  className={`editor-tab is-memo${memoActive ? " is-active" : ""}`}
+                  role="tab"
+                  aria-selected={memoActive}
+                  data-tauri-drag-region="false"
+                >
+                  <button
+                    className="editor-tab__select"
+                    type="button"
+                    title="收纳盒"
+                    onClick={() => setMemoActive(true)}
+                  >
+                    <Inbox size={12} />
+                    <span>收纳盒</span>
+                    {memoCount > 0 && <b className="editor-tab__memo-count">{memoCount}</b>}
+                  </button>
+                  <button
+                    className="pill-action pill-action--icon pill-action--sm editor-tab__close"
+                    type="button"
+                    title="Close 收纳盒"
+                    aria-label="Close 收纳盒"
+                    onClick={() => {
+                      setMemoOpen(false);
+                      setMemoActive(false);
+                    }}
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              )}
+              <div className="workspace-titlebar__fill" data-tauri-drag-region />
+            </>
           )}
           <div className="workspace-titlebar__spacer" data-tauri-drag-region />
           <WindowControls />
@@ -8022,7 +8263,16 @@ export function App() {
               {rightCollapsed ? <ChevronLeft size={12} /> : <ChevronRight size={12} />}
             </button>
           )}
-          {workspaceSplit ? (
+          {memoActive && !dockActive && !IS_DETACHED_WINDOW ? (
+            // 收纳盒 as a tab page: only the conversation-flow column switches
+            // (shelf and context panel stay); no composer for this page.
+            <div className="memo-tab-page" aria-label="收纳盒">
+              {renderMemoBox(() => {
+                setMemoOpen(false);
+                setMemoActive(false);
+              })}
+            </div>
+          ) : workspaceSplit ? (
             <SplitWorkspace
               state={splitState}
               dropPreview={tabDropPreview}
@@ -8110,6 +8360,8 @@ export function App() {
             page={dockPage}
             onPage={setDockPage}
             onNewChat={() => void handleCreateChatSession()}
+            onNewChatIn={(projectId) => void createSessionForProject(projectId)}
+            projects={shelfProjects}
             memoCount={memoCount}
             quotaRows={engineQuotaRows}
             active={dockActiveSessions}
@@ -8128,10 +8380,12 @@ export function App() {
             onUpdateAndRelaunch={handleUpdateAndRelaunch}
             splitPaused={dockSplitPaused}
           />
-          {dockPage === "memo" && renderMemoBox(() => setDockPage(null), false)}
+          {/* Width grip only on the home view: the full pages are overlays and
+              keep their own width until 返回. */}
+          {dockExpanded && dockPage === null && <DockResizeGrip />}
+          {dockPage === "memo" && renderMemoBox(() => setDockPage(null))}
         </>
       )}
-      {!dockActive && memoOpen && renderMemoBox(() => setMemoOpen(false), true)}
       {permissionPrompt && (
         <PermissionDialog
           prompt={permissionPrompt}

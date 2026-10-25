@@ -4,12 +4,16 @@
  *
  * One fixed band above the conversation, top to bottom:
  *   title bar   brand · search · usage · ⋯   — or ‹ 返回 + page title on a page
- *   actions     新建对话 · 收纳盒
+ *   actions     新建对话 (destination picker: 聊天 / projects / 全部对话) · 收纳盒
  *   quota       one compact meter per subscription + balance chips, tap = usage page
- *   active      dialogs still holding a process + the one in view; replaces tabs
+ *   active      dialogs still holding a process + the one in view; replaces tabs.
+ *   A waiting dialog leaves the active list ~60s after it went quiet (App's
+ *   dockActiveSessions), opened or not — the process stays until auto-suspend.
  * Pages (all dialogs / usage / memo box) cover everything below the title bar
- * and come back with ‹ 返回 or Esc. Undock / update / quit live in ⋯. The
- * band's height is measured into --dock-chrome-top for the app-shell padding.
+ * and come back with ‹ 返回 or Esc. ⋯ also holds 侧边栏常驻 (pinned strip),
+ * undock / update / quit. The band's height is measured into --dock-chrome-top.
+ * DockResizeGrip (below) is the inner-edge width handle App mounts on the
+ * home view of an expanded strip.
  */
 
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -17,7 +21,16 @@ import { Archive, ChevronLeft, MoreHorizontal, Pause, Plus, Search } from "lucid
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { EngineQuotaEntry, EngineQuotaWindow } from "../lib/api";
 import { lastActiveMs } from "../lib/sessionSuspend";
-import { beginDockBarDrag } from "../lib/dockMode";
+import {
+  applyDockWidth,
+  beginDockBarDrag,
+  getDockEdge,
+  getDockWidth,
+  persistDockWidth,
+  readDockPrefs,
+  subscribeDockPrefs,
+  toggleDockPinned,
+} from "../lib/dockMode";
 import type { Session } from "../lib/types";
 
 export type DockPage = "shelf" | "context" | "memo";
@@ -32,6 +45,10 @@ type Props = {
   page: DockPage | null;
   onPage: (page: DockPage | null) => void;
   onNewChat: () => void;
+  /** 新建对话的目的地（2026-10-25）：在某个项目里开新会话。 */
+  onNewChatIn: (projectId: string) => void;
+  /** Projects offered as new-chat destinations (name + id only). */
+  projects: Array<{ id: string; name: string }>;
   memoCount: number;
   /** Subscription families from `magpie quota`; every one gets a ring. */
   quotaRows: EngineQuotaEntry[];
@@ -191,6 +208,8 @@ export const DockChrome = memo(function DockChrome({
   page,
   onPage,
   onNewChat,
+  onNewChatIn,
+  projects,
   memoCount,
   quotaRows,
   active,
@@ -211,7 +230,12 @@ export const DockChrome = memo(function DockChrome({
 }: Props) {
   const bandRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const [menuOpen, setMenuOpen] = useState(false);
+  const newChatRef = useRef<HTMLDivElement>(null);
+  /** One popover at a time: the ⋯ menu or the new-chat destination picker. */
+  const [openMenu, setOpenMenu] = useState<"more" | "new" | null>(null);
+  /** 侧边栏常驻 — mirrored from prefs so the ⋯ row can draw its state. */
+  const [pinned, setPinned] = useState(() => readDockPrefs().pinned);
+  useEffect(() => subscribeDockPrefs((prefs) => setPinned(prefs.pinned)), []);
   const now = Date.now();
   const anyRunning = active.some(isBusy);
 
@@ -233,8 +257,8 @@ export const DockChrome = memo(function DockChrome({
     }
     event.preventDefault();
     event.stopPropagation();
-    // The ⋯ menu closes on window mousedown; this press never reaches it.
-    if (menuOpen) setMenuOpen(false);
+    // Menus close on window mousedown; this press never reaches it.
+    if (openMenu) setOpenMenu(null);
     // detail 2 = second press of a double click: swallow it, do not maximize.
     if (event.detail > 1) return;
     beginDockBarDrag(); // arms undock-by-drag; own slides are ignored
@@ -258,12 +282,15 @@ export const DockChrome = memo(function DockChrome({
   }, []);
 
   useEffect(() => {
-    if (!menuOpen) return;
+    if (!openMenu) return;
     const onDown = (event: MouseEvent) => {
-      if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false);
+      const target = event.target as Node;
+      if (!menuRef.current?.contains(target) && !newChatRef.current?.contains(target)) {
+        setOpenMenu(null);
+      }
     };
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setMenuOpen(false);
+      if (event.key === "Escape") setOpenMenu(null);
     };
     window.addEventListener("mousedown", onDown);
     window.addEventListener("keydown", onKey);
@@ -271,7 +298,7 @@ export const DockChrome = memo(function DockChrome({
       window.removeEventListener("mousedown", onDown);
       window.removeEventListener("keydown", onKey);
     };
-  }, [menuOpen]);
+  }, [openMenu]);
 
   return (
     <div ref={bandRef} className="dock-chrome">
@@ -307,17 +334,17 @@ export const DockChrome = memo(function DockChrome({
         <div className="dock-menu-anchor" ref={menuRef}>
           <button
             type="button"
-            className={menuOpen ? "dock-icon is-on" : "dock-icon"}
+            className={openMenu === "more" ? "dock-icon is-on" : "dock-icon"}
             title="更多"
             aria-label="更多"
             aria-haspopup="menu"
-            aria-expanded={menuOpen}
-            onClick={() => setMenuOpen((open) => !open)}
+            aria-expanded={openMenu === "more"}
+            onClick={() => setOpenMenu(openMenu === "more" ? null : "more")}
           >
             <MoreHorizontal size={14} />
             {updateAvailable && <span className="dock-icon__pip" aria-hidden />}
           </button>
-          {menuOpen && (
+          {openMenu === "more" && (
             <div className="dock-menu" role="menu">
               <button
                 type="button"
@@ -325,7 +352,7 @@ export const DockChrome = memo(function DockChrome({
                 className={updateAvailable ? "is-accent" : undefined}
                 disabled={updateBusy}
                 onClick={() => {
-                  setMenuOpen(false);
+                  setOpenMenu(null);
                   if (updateAvailable) onUpdateAndRelaunch();
                   else onCheckUpdate();
                 }}
@@ -336,18 +363,29 @@ export const DockChrome = memo(function DockChrome({
                 type="button"
                 role="menuitem"
                 onClick={() => {
-                  setMenuOpen(false);
+                  setOpenMenu(null);
                   onPage("context");
                 }}
               >
                 用量与项目
                 <small>额度 · 改动文件 · 待办</small>
               </button>
+              {/* 侧边栏常驻 stays open — the row itself is the feedback. */}
+              <button
+                type="button"
+                role="menuitem"
+                aria-pressed={pinned}
+                className={pinned ? "is-accent" : undefined}
+                onClick={() => setPinned(toggleDockPinned())}
+              >
+                侧边栏常驻{pinned ? " · 已开启" : ""}
+                <small>{pinned ? "展开后不再自动收起" : "展开后保持显示，不随鼠标移开收起"}</small>
+              </button>
               <button
                 type="button"
                 role="menuitem"
                 onClick={() => {
-                  setMenuOpen(false);
+                  setOpenMenu(null);
                   onUndock();
                 }}
               >
@@ -360,7 +398,7 @@ export const DockChrome = memo(function DockChrome({
                 role="menuitem"
                 className="is-danger"
                 onClick={() => {
-                  setMenuOpen(false);
+                  setOpenMenu(null);
                   onQuit();
                 }}
               >
@@ -373,10 +411,65 @@ export const DockChrome = memo(function DockChrome({
       </div>
 
       <div className="dock-actions">
-        <button type="button" className="dock-btn dock-btn--primary" onClick={onNewChat}>
-          <Plus size={13} />
-          新建对话
-        </button>
+        {/* 新建对话 opens a destination picker (2026-10-25): plain click used to
+            always create in 聊天 — now 聊天 is just the first destination and
+            each project is one tap away. 全部对话 keeps the full-list path. */}
+        <div className="dock-menu-anchor dock-new-anchor" ref={newChatRef}>
+          <button
+            type="button"
+            className="dock-btn dock-btn--primary"
+            aria-haspopup="menu"
+            aria-expanded={openMenu === "new"}
+            onClick={() => setOpenMenu(openMenu === "new" ? null : "new")}
+          >
+            <Plus size={13} />
+            新建对话
+          </button>
+          {openMenu === "new" && (
+            <div className="dock-menu dock-menu--left" role="menu" aria-label="新建对话到">
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setOpenMenu(null);
+                  onNewChat();
+                }}
+              >
+                聊天
+                <small>默认工作文件夹 · 不绑定项目</small>
+              </button>
+              {projects.map((project) => (
+                <button
+                  key={project.id}
+                  type="button"
+                  role="menuitem"
+                  title={`在 ${project.name} 里新建会话`}
+                  onClick={() => {
+                    setOpenMenu(null);
+                    onNewChatIn(project.id);
+                  }}
+                >
+                  {project.name}
+                </button>
+              ))}
+              {projects.length === 0 && (
+                <span className="dock-menu__hint">还没有项目 · 「全部对话」里可添加</span>
+              )}
+              <span className="dock-menu__sep" />
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setOpenMenu(null);
+                  onPage("shelf");
+                }}
+              >
+                全部对话 ›
+                <small>打开完整列表，用每个项目的 ＋ 新建</small>
+              </button>
+            </div>
+          )}
+        </div>
         <button type="button" className="dock-btn" onClick={() => onPage("memo")} title="收纳盒 · 拖入文件 / Ctrl V 粘贴文字与链接">
           <Archive size={13} />
           收纳盒
@@ -444,5 +537,67 @@ export const DockChrome = memo(function DockChrome({
         </div>
       </div>
     </div>
+  );
+});
+
+/**
+ * The strip's inner-edge width grip (2026-10-25): fixed to the viewport side
+ * away from the screen edge, full height, rendered by App only while
+ * docked-expanded with no page open. Pointer-captured drag calls
+ * applyDockWidth per move (the window itself resizes — clientX is measured
+ * against the live client rect, see dockMode.ts); release persists the width.
+ */
+export const DockResizeGrip = memo(function DockResizeGrip() {
+  const [dragging, setDragging] = useState(false);
+  const draggingRef = useRef(false);
+
+  const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // pointer already gone — the press simply does nothing
+    }
+    draggingRef.current = true;
+    setDragging(true);
+    document.documentElement.classList.add("dock-resizing");
+  };
+
+  const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!draggingRef.current) return;
+    const current = getDockWidth();
+    // Right dock drags its left (inner) edge: wider = clientX went negative.
+    // Left dock drags its right edge: the width is the pointer's clientX.
+    const next = getDockEdge() === "right" ? current - event.clientX : event.clientX;
+    applyDockWidth(next);
+  };
+
+  const endDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!draggingRef.current) return;
+    draggingRef.current = false;
+    setDragging(false);
+    document.documentElement.classList.remove("dock-resizing");
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // already released by the browser
+    }
+    persistDockWidth();
+  };
+
+  return (
+    <div
+      className={dragging ? "dock-resize-grip is-dragging" : "dock-resize-grip"}
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="拖动调整侧栏宽度"
+      title="拖动调整侧栏宽度"
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
+    />
   );
 });

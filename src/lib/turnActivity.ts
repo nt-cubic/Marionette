@@ -474,6 +474,22 @@ export type ActivitySpan = {
   event: SessionEvent;
 };
 
+/**
+ * Minimum visual share of the track for one step bar. Instant tools finish
+ * inside the same millisecond (Write/search_replace land at 0–1 ms — measured
+ * on real Grok transcripts), so an honest 0% width reads as "the step never
+ * happened". Every span still draws a visible tick; the bar may extend a
+ * hair past its true end, which is the standard time-chart trade.
+ */
+export const ACTIVITY_MIN_SPAN_PCT = 0.75;
+
+/** Track-share width of a span, clamped so instant steps stay visible. */
+export function activitySpanWidthPct(span: ActivitySpan, durationMs: number): number {
+  const total = Math.max(durationMs, 1);
+  const raw = ((span.end - span.start) / total) * 100;
+  return Math.min(100, Math.max(raw, ACTIVITY_MIN_SPAN_PCT));
+}
+
 export type ActivityTimelineData = {
   durationMs: number;
   /** Buckets in first-seen order — the same order as the closed tally. */

@@ -65,14 +65,46 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
   收纳盒 → Composer 拖拽是**页内 HTML5 DnD**（自定义 type `application/x-marionette-memo` +
   `text/plain`=绝对路径）；Composer 的 HTML5 drop 守卫只为该自定义 type 放行（Tauri 运行时），
   OS 级文件拖放仍走 tao 的 `onDragDropEvent`（物理像素，除以 devicePixelRatio）。
+- **2026-10-25 用户反馈批（六件）**：
+  1. **拖文件到收起态把手也展开**：OLE 拖拽期间鼠标事件被抑制，sliver 的 mouseenter 不触发——
+     `initDockMode` 另听 `getCurrentWebview().onDragDropEvent`（enter/over → `expand()` 并置
+     pointerInside；leave → 复位 + `scheduleRetract`，否则指针标志残留会导致永远不自动收回）。
+  2. **侧边栏常驻**：prefs 新增 `pinned`（⋯ 菜单切换，`toggleDockPinned`）。只抑制
+     `scheduleRetract` 的**自动**收回；手动路径（close→retract、拖出、解除贴边）不受影响。
+  3. **新建对话 = 目的地菜单**（DockChrome；`.dock-menu--left` 左对齐变体，基础 `.dock-menu`
+     是 right:0 会溢出左缘）：聊天（默认文件夹，`handleCreateChatSession`）/ 各项目
+     （`createSessionForProject`，建好即打开并切项目）/ 全部对话。App 传 `projects={shelfProjects}` +
+     `onNewChatIn`。菜单状态与 ⋯ 合并成 `openMenu: "more" | "new" | null`。
+  4. **贴边 composer 工具栏收成单入口**：`<Composer docked>` 只渲染 hub（滑杆图标 + 当前模型名；
+     menu 状态新增 `"hub"`），hub 行 `setMenu("mode"/"permission"/"model"/"agent")` 复用原有菜单
+     与提交链路；芯片本体 dock 态 `display:none`（dock.css），但**锚点必须保留在流里**（菜单挂在
+     锚点内，夹边 effect 靠锚点几何定位）。always-approve 无子菜单，hub 行内直切
+     （`toggleAlwaysApprove` 抽出与浮窗芯片共用，冷会话只落盘偏好）。＋ 附文件与发送钮不进 hub。
+  5. **窄条宽度可拖（320–560）**：`DockResizeGrip`（DockChrome.tsx 导出；App 只在 docked-expanded
+     且无整页时渲染，`position:fixed` 贴内缘全高）。换算**相对活的客户区**：右贴
+     `新宽 = 当前宽 − clientX`、左贴 `新宽 = clientX`——每次 apply 后内缘正好落在指针下，下一个
+     事件的 clientX 从 ~0 重新起算，无累计漂移；`applyDockWidth` 先同步改 `dockWidthPhys` 再走
+     **promise 链串行** setSize+setPosition（两步不能与下一次交错），松手 `persistDockWidth` 落
+     prefs（拖动中不写 localStorage）。WIDTH_MAX 由 480 放宽到 560。停靠窗 `setResizable(false)`
+     不挡程序化 setSize；onMoved 在 docked-expanded 且无 `dockBarDrag` 时早退，宽度拖拽不会被
+     误判成拖出贴边。
+  6. **进行中列表自动退场**：`App.tsx` 的 `dockActiveSessions` 把 `waiting` 且安静超过
+     `DOCK_DONE_GRACE_MS`（60s，`sessionSuspend.ts`）的非当前对话移出列表（15s tick 兜底重算）；
+     有 permission/ask/plan 卡或排队发送的行**不退**。只影响列表显示：进程不动、30 分钟自动挂起
+     照旧、全部对话里的完成徽标保留。
 
 前端结构：`src/lib/dockMode.ts`（状态机 + 窗口编排 + prefs）、`src/components/DockChrome.tsx`
 （窄条顶部铬：标题栏/操作/额度计量卡/进行中列表，高度量进 `--dock-chrome-top`；无标签行；全部对话/用量/收纳盒是带「返回」的整页）、`src/lib/dockFooter.ts` + `src/components/MemoBox.tsx`
-（底栏 portal / 收纳盒覆盖层）、`src/styles/dock.css`
+（底栏 portal / 收纳盒页面）、`src/styles/dock.css`
 （`.dock-mode` 变体：单列网格、左右栏转覆盖层 `dock-drawer-open`/`dock-context-open`、
 标签行隐藏、body min-width 放开）。分屏在 dock 态禁用（提示解除贴边），整页在收回时自动关。
-普通窗口的收纳盒入口在**左侧栏「聊天」栏目正上方**（`ProjectShelf.tsx` 的
-`.shelf-memo-entry`），点开同一个 `MemoBox` 页面（`showClose`，`top: 34px`）。
+**普通窗口的收纳盒是标签页不是全屏覆盖**（2026-10-25 改）：入口仍在左侧栏「聊天」栏目正上方
+（`ProjectShelf.tsx` 的 `.shelf-memo-entry`），点开后 `SessionTabs` 尾部出现一枚 `is-memo`
+伪标签（App 的 `memoOpen`=标签存在 / `memoActive`=选中；`SessionTabs` 的 `memoTab` prop），
+中栏只切换对话流那一列（`App.tsx` 的 `.memo-tab-page` 覆盖 `renderConversation`/SplitWorkspace，
+无 composer 行；左右侧栏照常可见）。选中任一对话标签只取消选中（标签保留），× 或 Esc 才关标签；
+分屏态伪标签渲染在 titlebar 的 fill 前，页面同样覆盖整个中栏。`MemoBox` 组件不再有 `showClose`
+（标题与关闭都在挂载点的铬里：贴边窄条的返回 / 普通窗口的标签 ×）。
 聊天内容上方不放收纳盒或「能力与上下文」工具栏，分屏也不重复添加入口。
 `.center-workspace` 与 `.session-pane__body` 都是「对话 1fr | composer auto」两行；
 分屏时 `.center-workspace` 只有 SplitWorkspace，行改成 `1fr`。贴边入口仍由 DockChrome 提供。
@@ -94,6 +126,25 @@ thought / other / search 等泳道与时间条），**下方默认关闭的 tall
 预览不驱动 details 开合，不给它按 thought id 加 key，也不随短 think 改高度；长文内部滚动，
 尊重用户滚离底部。运行段结束随实时图一起移除。不要恢复旧的自动展开整张 thought 卡或 200px 槽。
 `tailActivityFoldKey` 只找列表尾（跳过 delivery），`summarizeActivity` 的 title 永远是 tally。
+
+## 再次进入对话（agent re-entry，2026-10-25）
+
+Agent 在 `turn/complete` 之后自己续跑（后台指令回来触发新模型调用，无 client prompt）：
+zcode-acp-server 0.76.2 实测（session-1792813095629）prompt 应答返回后 54s 出现 `bg_*`
+tool 完成 + 新的 agent message，**没有 turnState、没有 turn/complete**——旧版这张 Reply 卡永不
+封口、会话不再显示为运行中。支持对所有 ACP 走**同一条线**（不按 agent 特化）：
+
+- 判定在 `src/lib/agentReentry.ts` + `App.tsx` 转录事件分支：会话 `waiting` 且距离上次回合边界
+  ≥ `REENTRY_GRACE_MS`（2.5s，滤掉与 prompt 应答赛跑的迟到回声）时，assistant/thought 分块
+  武装 re-entry（状态置回 `running`，Working 条/侧栏脉冲/实时轨迹图全回来）；武装后任何转录分块
+  （含 tool）刷新安静计时。
+- 收尾两条路：适配器真发了 `turn/complete`（有些会发）→ 正常回合收尾路径接管（边界块先解除武装）；
+  没发的（zcode 这类）→ 静默 `REENTRY_IDLE_MS`（6 分钟，高于 activityHealth 的 5 分钟「quiet」线）
+  后 `sealAgentSegmentForIdle` 封尾卡（Reply 补 durationMs、Thought 补 endedAt，与 turn/complete
+  同口径：中段卡保持 open）+ 状态回 `waiting` + 桌面通知/未读。之后再来分块就再武装新段。
+- **用户 prompt 一律接管生命周期**：`performSend` / edit-resend 开头就解除武装（否则安静计时可能
+  在活回合中途放掉 composer）。冷启动恢复的会话（`turnEndedAtRef` 无记录）永不武装。
+- 回归：`npx tsx scripts/verify-agent-reentry.mts`。
 
 ## 排查「卡退」（崩溃/闪退）—— 第一件事
 

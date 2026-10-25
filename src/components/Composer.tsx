@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { Check, Expand, Plus, Search, SendHorizontal, Settings2, Shrink, Square } from "lucide-react";
+import { Check, ChevronRight, Expand, Plus, Search, SendHorizontal, Settings2, Shrink, SlidersHorizontal, Square } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -601,7 +601,7 @@ export function Composer({
   /** True once caps came from a live agent — cached caps must not act as live. */
   const [capsLive, setCapsLive] = useState(false);
   const [menu, setMenu] = useState<
-    "mode" | "model" | "effort" | "permission" | "agent" | "send" | null
+    "mode" | "model" | "effort" | "permission" | "agent" | "send" | "hub" | null
   >(null);
   const [modelQuery, setModelQuery] = useState("");
   const [draft, setDraft] = useState(() => readDraftCache(sessionId));
@@ -2563,6 +2563,25 @@ export function Composer({
   const tone = modeTone(displayMode);
   const isTall = composerHeight > COMPOSER_HEIGHT_DEFAULT + 40;
 
+  /** Shared by the floating chip and the dock hub row: cold dialogs only
+   *  persist the preference — spinning an agent process up just to sync one
+   *  switch is waste; the next wake's pref restore replays the slash. */
+  const toggleAlwaysApprove = () => {
+    const next = !alwaysApprove;
+    const prev = alwaysApprove;
+    const status = sessionStatusRef.current;
+    if (status === "exited" || status === "error") {
+      setAlwaysApprove(next);
+      persistPrefs({ preferredAlwaysApprove: next });
+      recordLastUsedDefaults(agent.id, { alwaysApprove: next });
+      return;
+    }
+    setAlwaysApprove(next);
+    void commitUpdate({ alwaysApprove: next }, () => {
+      setAlwaysApprove(prev);
+    });
+  };
+
   return (
     <footer
       ref={composerRef}
@@ -2944,18 +2963,108 @@ export function Composer({
             >
               <Plus size={14} />
             </button>
+            {/* Docked strip (2026-10-25): one hub entry instead of the chip row.
+                At 400px the five selector chips wrapped into a ragged two-line
+                tray; the hub lists every axis with its current value and opens
+                the very same menus the (dock-hidden) chips own. */}
+            {docked && (
+              <div className="composer-menu-anchor composer-menu-anchor--hub">
+                <button
+                  className="composer-dock-hub"
+                  type="button"
+                  title="模式 · 权限 · 模型 · Agent"
+                  aria-expanded={menu === "hub"}
+                  onClick={() => setMenu(menu === "hub" ? null : "hub")}
+                >
+                  <SlidersHorizontal size={13} />
+                  <span className="composer-dock-hub__label">
+                    {bridgeChipLabel ?? displayModelLabel ?? "模式与模型"}
+                  </span>
+                  <ChevronRight size={12} aria-hidden />
+                </button>
+                {menu === "hub" && (
+                  <div className="composer-menu composer-menu--hub" role="menu" aria-label="模式与模型">
+                    {hasModes && displayMode && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="composer-menu__hub-row"
+                        onClick={() => setMenu("mode")}
+                      >
+                        <span className="composer-menu__hub-name">模式</span>
+                        <span className="composer-menu__hub-value">{displayModeLabel}</span>
+                        <ChevronRight size={13} aria-hidden />
+                      </button>
+                    )}
+                    {hasPermission && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="composer-menu__hub-row"
+                        onClick={() => setMenu("permission")}
+                      >
+                        <span className="composer-menu__hub-name">{permissionTitle}</span>
+                        <span className="composer-menu__hub-value">{displayPermissionLabel}</span>
+                        <ChevronRight size={13} aria-hidden />
+                      </button>
+                    )}
+                    {alwaysApproveSpec && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="composer-menu__hub-row"
+                        aria-pressed={alwaysApprove}
+                        onClick={toggleAlwaysApprove}
+                      >
+                        <span className="composer-menu__hub-name">
+                          {alwaysApproveSpec.onLabel ?? "Always approve"}
+                        </span>
+                        <span className="composer-menu__hub-value">{alwaysApprove ? "开" : "关"}</span>
+                        {alwaysApprove ? <Check size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />}
+                      </button>
+                    )}
+                    {(hasModels || hasEffort || showKeyPrompt) && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="composer-menu__hub-row"
+                        onClick={() => setMenu("model")}
+                      >
+                        <span className="composer-menu__hub-name">模型</span>
+                        <span className="composer-menu__hub-value">
+                          {bridgeChipLabel ?? displayModelLabel ?? "选择模型"}
+                        </span>
+                        <ChevronRight size={13} aria-hidden />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="composer-menu__hub-row"
+                      onClick={() => setMenu("agent")}
+                    >
+                      <span className="composer-menu__hub-name">Agent</span>
+                      <span className="composer-menu__hub-value">{agent.label}</span>
+                      <ChevronRight size={13} aria-hidden />
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
             {/* Execution mode — flat control beside the tools, matching model/agent. */}
             {hasModes && displayMode && (
               <div className="composer-menu-anchor composer-menu-anchor--mode">
-                <button
-                  className="composer-mode-chip"
-                  type="button"
-                  title="Execution mode (Tab to cycle)"
-                  aria-expanded={menu === "mode"}
-                  onClick={() => setMenu(menu === "mode" ? null : "mode")}
-                >
-                  <span className="composer-mode-chip__label">{displayModeLabel}</span>
-                </button>
+                {!docked && (
+                  <button
+                    className="composer-mode-chip"
+                    type="button"
+                    title="Execution mode (Tab to cycle)"
+                    aria-expanded={menu === "mode"}
+                    onClick={() => setMenu(menu === "mode" ? null : "mode")}
+                  >
+                    <span className="composer-mode-chip__label">{displayModeLabel}</span>
+                  </button>
+                )}
                 {menu === "mode" && (
                   <div className="composer-menu composer-menu--mode" role="menu" aria-label="Execution mode">
                     {caps!.modes.map((m) => (
@@ -2989,21 +3098,23 @@ export function Composer({
                 level allows it, so the two must not be merged. */}
             {hasPermission && (
               <div className="composer-menu-anchor composer-menu-anchor--permission">
-                <button
-                  className={
-                    permissionIsLoose(currentPermission)
-                      ? "composer-mode-chip composer-mode-chip--perm composer-mode-chip--perm-loose"
-                      : permissionIsReadOnly(currentPermission)
-                        ? "composer-mode-chip composer-mode-chip--perm composer-mode-chip--perm-readonly"
-                        : "composer-mode-chip composer-mode-chip--perm"
-                  }
-                  type="button"
-                  title={`${permissionTitle}: ${displayPermissionLabel}`}
-                  aria-expanded={menu === "permission"}
-                  onClick={() => setMenu(menu === "permission" ? null : "permission")}
-                >
-                  <span className="composer-mode-chip__label">{displayPermissionLabel}</span>
-                </button>
+                {!docked && (
+                  <button
+                    className={
+                      permissionIsLoose(currentPermission)
+                        ? "composer-mode-chip composer-mode-chip--perm composer-mode-chip--perm-loose"
+                        : permissionIsReadOnly(currentPermission)
+                          ? "composer-mode-chip composer-mode-chip--perm composer-mode-chip--perm-readonly"
+                          : "composer-mode-chip composer-mode-chip--perm"
+                    }
+                    type="button"
+                    title={`${permissionTitle}: ${displayPermissionLabel}`}
+                    aria-expanded={menu === "permission"}
+                    onClick={() => setMenu(menu === "permission" ? null : "permission")}
+                  >
+                    <span className="composer-mode-chip__label">{displayPermissionLabel}</span>
+                  </button>
+                )}
                 {menu === "permission" && (
                   <div
                     className="composer-menu composer-menu--permission"
@@ -3044,7 +3155,7 @@ export function Composer({
               </div>
             )}
             {/* Grok always-approve: the important permission axis (not plan/build). */}
-            {alwaysApproveSpec && (
+            {alwaysApproveSpec && !docked && (
               <button
                 className={
                   alwaysApprove
@@ -3058,23 +3169,7 @@ export function Composer({
                     : "Ask permissions — agent will prompt before edits (click for always-approve)"
                 }
                 aria-pressed={alwaysApprove}
-                onClick={() => {
-                  const next = !alwaysApprove;
-                  const prev = alwaysApprove;
-                  // 冷会话（挂起/出错）只落盘偏好：为同步一个开关把 agent 进程
-                  // 拉起来纯属浪费；下次唤醒的 pref restore 会把斜杠回放过去。
-                  const status = sessionStatusRef.current;
-                  if (status === "exited" || status === "error") {
-                    setAlwaysApprove(next);
-                    persistPrefs({ preferredAlwaysApprove: next });
-                    recordLastUsedDefaults(agent.id, { alwaysApprove: next });
-                    return;
-                  }
-                  setAlwaysApprove(next);
-                  void commitUpdate({ alwaysApprove: next }, () => {
-                    setAlwaysApprove(prev);
-                  });
-                }}
+                onClick={toggleAlwaysApprove}
               >
                 <span className="composer-mode-chip__label">
                   {alwaysApprove
@@ -3089,18 +3184,20 @@ export function Composer({
             {/* Always show when caps exist (even empty for add-key prompt), or has effort */}
             {(hasModels || hasEffort || showKeyPrompt) && (
               <div className="composer-menu-anchor" ref={modelMenuAnchorRef}>
-                <button
-                  className="composer-select composer-select--model"
-                  type="button"
-                  title={bridgeChipTitle ?? displayModelTitle}
-                  aria-expanded={menu === "model" || menu === "effort"}
-                  onClick={() => setMenu(menu === "model" ? null : "model")}
-                >
-                  <ModelChipLabel
-                    text={bridgeChipLabel ?? displayModelLabel ?? "Choose model"}
-                    effort={displayEffort != null && hasEffort ? String(displayEffort) : null}
-                  />
-                </button>
+                {!docked && (
+                  <button
+                    className="composer-select composer-select--model"
+                    type="button"
+                    title={bridgeChipTitle ?? displayModelTitle}
+                    aria-expanded={menu === "model" || menu === "effort"}
+                    onClick={() => setMenu(menu === "model" ? null : "model")}
+                  >
+                    <ModelChipLabel
+                      text={bridgeChipLabel ?? displayModelLabel ?? "Choose model"}
+                      effort={displayEffort != null && hasEffort ? String(displayEffort) : null}
+                    />
+                  </button>
+                )}
 
                 {menu === "model" && (
                   <div
@@ -3423,35 +3520,37 @@ export function Composer({
 
             {/* ── Agent switcher ──────────────────────────────────────── */}
             <div className="composer-menu-anchor">
-              <button
-                className={
-                  currentHasUpdate
-                    ? "composer-select composer-select--agent has-update"
-                    : "composer-select composer-select--agent"
-                }
-                type="button"
-                title={
-                  currentAgentVersion?.installed
-                    ? currentHasUpdate
-                      ? `${agent.label} v${currentAgentVersion.installed} · update ${currentAgentVersion.latest} available`
-                      : `${agent.label} v${currentAgentVersion.installed}`
-                    : `Agent for this dialog (bound to session · ${agent.id})`
-                }
-                aria-expanded={menu === "agent"}
-                onClick={() => setMenu(menu === "agent" ? null : "agent")}
-              >
-                <span className="composer-select__agent-label">{agent.label}</span>
-                {currentAgentVersion?.installed && (
-                  <span className="composer-select__agent-version">
-                    v{currentAgentVersion.installed}
-                  </span>
-                )}
-                {currentHasUpdate && (
-                  <span className="composer-select__agent-update" aria-label="Update available">
-                    ↑
-                  </span>
-                )}
-              </button>
+              {!docked && (
+                <button
+                  className={
+                    currentHasUpdate
+                      ? "composer-select composer-select--agent has-update"
+                      : "composer-select composer-select--agent"
+                  }
+                  type="button"
+                  title={
+                    currentAgentVersion?.installed
+                      ? currentHasUpdate
+                        ? `${agent.label} v${currentAgentVersion.installed} · update ${currentAgentVersion.latest} available`
+                        : `${agent.label} v${currentAgentVersion.installed}`
+                      : `Agent for this dialog (bound to session · ${agent.id})`
+                  }
+                  aria-expanded={menu === "agent"}
+                  onClick={() => setMenu(menu === "agent" ? null : "agent")}
+                >
+                  <span className="composer-select__agent-label">{agent.label}</span>
+                  {currentAgentVersion?.installed && (
+                    <span className="composer-select__agent-version">
+                      v{currentAgentVersion.installed}
+                    </span>
+                  )}
+                  {currentHasUpdate && (
+                    <span className="composer-select__agent-update" aria-label="Update available">
+                      ↑
+                    </span>
+                  )}
+                </button>
+              )}
               {menu === "agent" && (
                 <div className="composer-menu composer-menu--agent" role="listbox" aria-label="Switch agent">
                   {agents

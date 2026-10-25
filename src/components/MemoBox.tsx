@@ -1,8 +1,12 @@
 /**
- * Memo inbox overlay (edge dock stage 3, docs/plan-edge-dock.md §4 / §4.1;
+ * Memo inbox page (edge dock stage 3, docs/plan-edge-dock.md §4 / §4.1;
  * layout per docs/design/edge-dock.html ③④).
  *
- * 收 — Explorer drag-in (tauri onDragDropEvent hit-tested against this overlay)
+ * Mounted either as the dock strip's full page or as the floating window's
+ * titlebar tab page — the mount's chrome owns title and close, Esc still
+ * closes.
+ *
+ * 收 — Explorer drag-in (tauri onDragDropEvent hit-tested against this page)
  *      and Ctrl+V of text / a bare URL.
  * 找 — search + kind filters.
  * 用 — drag a file row onto the composer, or pick several (选择 / Ctrl-click)
@@ -12,7 +16,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { Check, File as FileIcon, FileText, Image as ImageIcon, Link2, MessageSquarePlus, Search, Trash2, Type, X } from "lucide-react";
+import { Check, File as FileIcon, FileText, Image as ImageIcon, Link2, MessageSquarePlus, Search, Trash2, Type } from "lucide-react";
 import { isTauriRuntime } from "../lib/api";
 import {
   formatMemoAge,
@@ -65,11 +69,9 @@ type Props = {
   onChanged: (count: number) => void;
   /** Hand the picked entries to a new dialog (prefilled, not sent). */
   onUse: (entries: MemoEntry[], intent: "dialog" | "doc") => void;
-  /** Floating window: no dock title bar, so the page carries its own close. */
-  showClose?: boolean;
 };
 
-export function MemoBox({ onClose, onChanged, onUse, showClose = false }: Props) {
+export function MemoBox({ onClose, onChanged, onUse }: Props) {
   const [entries, setEntries] = useState<MemoEntry[]>([]);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<MemoKind | "all">("all");
@@ -240,9 +242,9 @@ export function MemoBox({ onClose, onChanged, onUse, showClose = false }: Props)
       tabIndex={-1}
       onPaste={onPaste}
     >
-      {/* Title and 返回 live in the strip's title bar. */}
+      {/* Title / close live in the mount's chrome (dock strip title bar or the
+          titlebar tab); Esc and the strip's 返回 still close. */}
       <div className="memo-box__head">
-        {showClose && <strong className="memo-box__title-label">收纳盒</strong>}
         <label className="memo-box__search">
           <Search size={12} />
           <input
@@ -261,17 +263,6 @@ export function MemoBox({ onClose, onChanged, onUse, showClose = false }: Props)
             onClick={() => (selecting ? exitSelect() : setSelecting(true))}
           >
             {selecting ? "完成" : "选择"}
-          </button>
-        )}
-        {showClose && (
-          <button
-            type="button"
-            className="memo-box__close"
-            title="关闭 · Esc"
-            aria-label="关闭收纳盒"
-            onClick={onClose}
-          >
-            <X size={13} />
           </button>
         )}
       </div>

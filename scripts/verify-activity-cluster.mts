@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import type { SessionEvent } from "../src/lib/types.ts";
 import {
   clusterActivityRuns,
+  activitySpanWidthPct,
   activityTimeline,
   formatActivityTally,
   groupConsecutiveByKind,
@@ -216,6 +217,52 @@ check("thought-tool transitions retain both lanes and stop the completed thought
   assert.equal(trace.spans[0].end, 500);
   assert.equal(trace.spans[1].open, true);
   assert.equal(trace.spans[1].end, 1500);
+});
+
+check("an instant write still draws a visible tick on the time axis", () => {
+  // Measured on real transcripts: Write lands at 0–1 ms while the run's
+  // axis is dominated by seconds-long thoughts/commands.
+  const start = Date.parse("2026-10-24T12:00:00Z");
+  const steps = [
+    { event: { ...thought, createdAt: new Date(start).toISOString() }, index: 0 },
+    {
+      event: tool({
+        toolName: "write",
+        path: "a.ts",
+        createdAt: new Date(start + 4000).toISOString(),
+        completedAt: new Date(start + 4001).toISOString(),
+      }),
+      index: 1,
+    },
+    {
+      event: tool({
+        toolName: "bash",
+        input: '{"command":"ls"}',
+        createdAt: new Date(start + 4500).toISOString(),
+        completedAt: new Date(start + 5800).toISOString(),
+      }),
+      index: 2,
+    },
+  ];
+  const trace = activityTimeline(steps)!;
+  assert.deepEqual(trace.lanes, ["thought", "write", "command"]);
+  const writeSpan = trace.spans[1]!;
+  assert.equal(writeSpan.end - writeSpan.start, 1);
+  const width = activitySpanWidthPct(writeSpan, trace.durationMs);
+  assert.ok(width >= 0.75, `instant write bar ${width}% must clamp to a visible tick`);
+  const commandSpan = trace.spans[2]!;
+  assert.equal(
+    activitySpanWidthPct(commandSpan, trace.durationMs),
+    ((5800 - 4500) / trace.durationMs) * 100,
+    "long spans keep their honest width",
+  );
+});
+
+check("search_replace is an edit, not a search", () => {
+  const edits = [{ event: tool({ toolName: "search_replace", path: "a.ts" }), index: 0 }];
+  const groups = groupConsecutiveByKind(edits);
+  assert.equal(groups[0].bucket, "edit");
+  assert.equal(formatActivityTally(edits), "1 edit");
 });
 
 check("the trailing run is found through delivery cards", () => {
