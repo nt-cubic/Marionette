@@ -242,8 +242,14 @@ func freeID(id string) string {
 	for _, p := range All() {
 		taken[p.ID] = true
 	}
+	// an id a provider had is taken too: its calls are recorded under it
+	// (Renames), and one added under it would be counted from then on
+	// only, its own history read apart from the renamed one's
 	for _, p := range load().Providers {
 		taken[p.ID] = true
+		for _, w := range p.Was {
+			taken[w] = true
+		}
 	}
 	for n, try := 2, id; ; n++ {
 		if !taken[try] {

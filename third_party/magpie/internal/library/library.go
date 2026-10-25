@@ -104,6 +104,10 @@ type Applied struct {
 	// Subagents are the files magpie wrote for the subagents, each with
 	// the hash of what it wrote: one changed since is the user's
 	Subagents []SubagentFile `json:"subagents,omitempty"`
+	// Startup is, for each server, the startup timeout magpie wrote in its
+	// entry (Codex's startup_timeout_sec): one there other than this is
+	// the user's
+	Startup map[string]float64 `json:"startup,omitempty"`
 }
 
 var mu lock // one change at a time, from the page or the CLI's process

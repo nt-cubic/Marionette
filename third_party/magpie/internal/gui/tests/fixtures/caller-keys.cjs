@@ -14,6 +14,8 @@ function fixture(lang, theme, events, options = {}) {
     { id: "server", name: "Server", masked: "sk-magpie-key-…222222" },
     { id: "work", name: "Work", masked: "sk-magpie-key-…333333" },
   ];
+  // options.keys is the test's own list: [] for the empty Gateway keys
+  if (options.keys) keys = options.keys;
   for (const k of keys) {
     if (options.limits?.[k.id]) Object.assign(k, options.limits[k.id]);
     if (options.keyHolds?.[k.id]) Object.assign(k, options.keyHolds[k.id]);
@@ -88,6 +90,8 @@ function fixture(lang, theme, events, options = {}) {
       }
       return json(lanState());
     }
+    // options.keysError: the list can't be read
+    if (url.pathname === "/api/caller-keys" && options.keysError) return route.fulfill({ status: 500, json: { error: options.keysError } });
     if (url.pathname === "/api/caller-keys") return json({ keys });
     if (url.pathname === "/api/caller-keys/models") return json({ models: [
       ...(options.groups ? [

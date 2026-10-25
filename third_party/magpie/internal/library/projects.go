@@ -37,6 +37,10 @@ type Project struct {
 	// Wrote are, by the project's file (.mcp.json), the servers magpie
 	// wrote in it, the only entries it ever takes out
 	Wrote map[string][]string `json:"wrote,omitempty"`
+	// Startup are, by the project's file, the startup timeout magpie
+	// wrote in each server's entry there (Codex's startup_timeout_sec):
+	// one other than this is the user's
+	Startup map[string]map[string]float64 `json:"startup,omitempty"`
 	// MadeFiles are the files magpie made to write servers in, listed in
 	// the .gitignore and taken away again once nothing's left in them
 	MadeFiles []string `json:"madeFiles,omitempty"`

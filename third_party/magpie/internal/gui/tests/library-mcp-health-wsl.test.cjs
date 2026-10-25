@@ -4,7 +4,9 @@
 // while his agents started it fine). The row's tooltip says where it was
 // checked; a failure names the place that failed on the row itself; a
 // distro that isn't running, which a check doesn't start, is said to be
-// unknown, not broken. In every language, in both engines. No backend:
+// unknown, not broken. A remote server signed in to in Claude Code in WSL
+// itself says so, not "needs sign-in" (CyberCaius on Discord), and one no
+// agent signed in to still needs it. In every language, in both engines. No backend:
 // the API is faked here.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
@@ -26,6 +28,8 @@ const fixture = () => ({
     { name: "both", transport: "stdio", command: "npx", args: ["x-mcp"], agents: ["claude", WSL] },
     { name: "down", transport: "stdio", command: "node", args: ["/home/loong/tools/y.js"], agents: ["claude@wsl:Arch"] },
     { name: "here", transport: "stdio", command: "npx", args: ["h-mcp"], agents: ["claude"] },
+    { name: "signed", transport: "http", url: "https://mcp.linear.app/mcp", agents: ["claude", WSL] },
+    { name: "unsigned", transport: "http", url: "https://mcp.notion.com/mcp", agents: ["claude", WSL] },
   ],
 });
 const found = {
@@ -33,6 +37,8 @@ const found = {
   both: { state: "error", why: "exited", code: 1, detail: "Node.js v24.9.0", checked: ["", "Ubuntu"] },
   down: { state: "error", why: "wsldown", detail: "Arch" },
   here: { state: "ok", tools: 3 },
+  signed: { state: "auth", code: 401, oauth: true, agentSignIn: [WSL] },
+  unsigned: { state: "auth", code: 401, oauth: true },
 };
 
 function server(lang) {
@@ -58,11 +64,11 @@ function server(lang) {
 }
 
 const words = {
-  en: { checked: "Checked in: ", failed: "Failed in: ", down: "WSL Arch not running", downTip: "magpie can't check it: the agents given it run in WSL Arch, which isn't running, and a check doesn't start it" },
-  zh: { checked: "检查位置：", failed: "失败位置：", down: "WSL Arch 未运行", downTip: "magpie 无法检查：用它的智能体运行在 WSL Arch 里，而它没有在运行，检查不会去启动它" },
-  "zh-TW": { checked: "檢查位置：", failed: "失敗位置：", down: "WSL Arch 未執行", downTip: "magpie 無法檢查：使用它的智慧體執行在 WSL Arch 裡，而它沒有在執行，檢查不會去啟動它" },
-  ja: { checked: "チェックした場所: ", failed: "失敗した場所: ", down: "WSL Arch は停止中", downTip: "magpie はチェックできません: これを使うエージェントは WSL Arch で動きますが、Arch は起動していません。チェックのために起動はしません" },
-  de: { checked: "Geprüft in: ", failed: "Fehlgeschlagen in: ", down: "WSL Arch läuft nicht", downTip: "magpie kann ihn nicht prüfen: Die Agenten, die ihn bekommen, laufen in WSL Arch, das nicht läuft, und eine Prüfung startet es nicht" },
+  en: { signed: "signed in in Claude Code (Ubuntu)", needs: "needs sign-in", checked: "Checked in: ", failed: "Failed in: ", down: "WSL Arch not running", downTip: "magpie can't check it: the agents given it run in WSL Arch, which isn't running, and a check doesn't start it" },
+  zh: { signed: "已在 Claude Code (Ubuntu) 登录", needs: "需要登录", checked: "检查位置：", failed: "失败位置：", down: "WSL Arch 未运行", downTip: "magpie 无法检查：用它的智能体运行在 WSL Arch 里，而它没有在运行，检查不会去启动它" },
+  "zh-TW": { signed: "已在 Claude Code (Ubuntu) 登入", needs: "需要登入", checked: "檢查位置：", failed: "失敗位置：", down: "WSL Arch 未執行", downTip: "magpie 無法檢查：使用它的智慧體執行在 WSL Arch 裡，而它沒有在執行，檢查不會去啟動它" },
+  ja: { signed: "Claude Code (Ubuntu) でサインイン済み", needs: "サインインが必要", checked: "チェックした場所: ", failed: "失敗した場所: ", down: "WSL Arch は停止中", downTip: "magpie はチェックできません: これを使うエージェントが動く WSL Arch は起動しておらず、チェックのために起動はしません" },
+  de: { signed: "in Claude Code (Ubuntu) angemeldet", needs: "Anmeldung nötig", checked: "Geprüft in: ", failed: "Fehlgeschlagen in: ", down: "WSL Arch läuft nicht", downTip: "magpie kann ihn nicht prüfen: Die Agenten, die ihn bekommen, laufen in WSL Arch, das nicht läuft, und eine Prüfung startet es nicht" },
 };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
@@ -105,9 +111,18 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const here = await tip("here");
         assert.ok(!here.some((l) => l.startsWith(w.checked) || l.startsWith(w.failed)), here.join(" | "));
         assert.doesNotMatch(await status("here").textContent(), / · /);
+        // signed in in WSL's Claude Code: said, and not painted as wanting
+        // a sign-in; the tooltip names the agent
+        assert.equal(await status("signed").textContent(), w.signed);
+        assert.equal(await status("signed").evaluate((b) => b.classList.contains("ok") && !b.classList.contains("auth")), true);
+        assert.match((await tip("signed"))[0], /^Claude Code \(Ubuntu\)/);
+        assert.equal(await status("unsigned").textContent(), w.needs);
+        assert.equal(await status("unsigned").evaluate((b) => b.classList.contains("auth")), true);
         // one line high still
-        const box = await status("both").boundingBox();
-        assert.ok(box.height <= 18, "status wraps: " + box.height);
+        for (const n of ["both", "signed"]) {
+          const box = await status(n).boundingBox();
+          assert.ok(box.height <= 18, n + " status wraps: " + box.height);
+        }
         await ctx.close();
       });
     }

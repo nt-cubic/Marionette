@@ -893,5 +893,5 @@ func routeUsage(id, model string, u Usage) []RouteUsage {
 	}
 	return append(out, RouteUsage{Provider: id, Model: model, Input: u.Input, Output: u.Output,
 		CacheRead: u.CacheRead, CacheWrite: u.CacheWrite, Reasoning: u.Reasoning,
-		CacheUnknown: u.cacheUnknown && u.CacheRead+u.CacheWrite == 0})
+		CacheUnknown: u.cacheNotCounted()})
 }

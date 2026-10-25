@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -182,5 +183,48 @@ func TestPluginLoginInstallsItsCLIFirst(t *testing.T) {
 	}
 	if len(installed) != 2 {
 		t.Fatalf("installed for a key: %v", installed)
+	}
+}
+
+// A sign-in to a provider the user switched off keeps it off, and says so
+// with the command that turns it on (Atlas: WorkBuddy AI signed in, then
+// "○ switched off" with nothing saying why or how). One that is on says
+// nothing of it. magpie providers says the same command beside the row.
+func TestPluginLoginSaysItIsSwitchedOff(t *testing.T) {
+	fakeCoHome(t)
+	noBrowser(t)
+	login := func() string {
+		t.Helper()
+		piped(t, "1", "sk-one-key-1111")
+		out, err := said(t, func() error { return pluginCmd([]string{"plugin", "login", "fakeco"}) })
+		if err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+		return out
+	}
+	if out := login(); strings.Contains(out, "switched off") {
+		t.Fatalf("a provider that is on said switched off:\n%s", out)
+	}
+	if err := provider.SetOff("fakeco", true); err != nil {
+		t.Fatal(err)
+	}
+	out := login()
+	if !strings.Contains(out, "switched off") || !strings.Contains(out, "magpie provider on fakeco") {
+		t.Fatalf("signed in to a switched-off provider, and nothing said how to turn it on:\n%s", out)
+	}
+	if p, err := provider.Find("fakeco"); err != nil || !p.Off {
+		t.Fatalf("the sign-in turned the user's switch over: %+v %v", p, err)
+	}
+	// magpie accounts add, the same sign-in, says it too
+	piped(t, "1", "sk-two-key-2222")
+	if out, err := said(t, func() error { return accountsCmd([]string{"accounts", "add", "fakeco"}) }); err != nil || !strings.Contains(out, "magpie provider on fakeco") {
+		t.Fatalf("accounts add: %v\n%s", err, out)
+	}
+	out, err := printed(t, providers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row := lineWith(out, "fakeco"); !strings.Contains(row, "switched off") || !strings.Contains(row, "magpie provider on fakeco") {
+		t.Errorf("magpie providers, off: %q", row)
 	}
 }

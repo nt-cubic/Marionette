@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/provider"
 )
 
 func TestVisibleReasoningSpeed(t *testing.T) {
@@ -97,7 +98,7 @@ func TestPricedRowKeepsReasoningEvidence(t *testing.T) {
 			for i := 0; i < 80; i++ {
 				chunk.add(Row{Record: c.r}, "", int64(i), false)
 			}
-			b := newBlockPricer(nil, nil, func(Record) *catalog.Price { return nil })
+			b := newBlockPricer(provider.Renames{}, nil, func(Record) *catalog.Price { return nil })
 			defer b.release()
 			for _, from := range []*rowChunk{&chunk, chunk.pack()} {
 				priced := b.block(from)
@@ -139,7 +140,7 @@ func TestRowFlagsApart(t *testing.T) {
 				}
 				return &chunk
 			}
-			b := newBlockPricer(nil, nil, func(Record) *catalog.Price { return nil })
+			b := newBlockPricer(provider.Renames{}, nil, func(Record) *catalog.Price { return nil })
 			defer b.release()
 			raw := made()
 			for _, row := range []Row{raw.row(0), b.block(raw).row(0), b.block(made().pack()).row(0)} {
@@ -149,7 +150,7 @@ func TestRowFlagsApart(t *testing.T) {
 			}
 		})
 	}
-	bits := []uint16{1, 2, 4, 8, 16, 32, swapKnown, rowHandedOn, rowReasoningHidden, rowOwnCost, rowCompactionKnown, rowCompaction, rowCredits}
+	bits := []uint16{1, 2, 4, 8, 16, 32, swapKnown, rowHandedOn, rowReasoningHidden, rowOwnCost, rowCompactionKnown, rowCompaction, rowCredits, rowCacheUnknown}
 	var all uint16
 	for _, b := range bits {
 		if all&b != 0 {

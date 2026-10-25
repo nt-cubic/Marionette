@@ -3,6 +3,7 @@ package sessions
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 	"strings"
 	"time"
 
@@ -276,14 +277,18 @@ func noteCodexIdentity(s *state, identity CodexIdentity, conflict bool) {
 }
 
 // CodexIdentities returns an independent snapshot of the native thread identities.
-func CodexIdentities() map[string]CodexIdentity {
+func CodexIdentities() map[string]CodexIdentity { return codexIdentitiesOf(codexFiles()) }
+
+// codexIdentitiesOf is CodexIdentities with codex the rollouts codexFiles
+// found.
+func codexIdentitiesOf(codex []file) map[string]CodexIdentity {
 	storeMu.RLock()
 	defer storeMu.RUnlock()
 	mu.Lock()
 	defer mu.Unlock()
 	loadCache()
 	defer useDBs()()
-	want := append(codexFiles(), wslFiles("codex")...)
+	want := append(slices.Clip(codex), wslFiles("codex")...)
 	refresh(want, nil)
 	return codexIdentitySnapshot(want)
 }

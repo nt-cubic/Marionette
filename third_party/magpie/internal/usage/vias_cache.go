@@ -4,6 +4,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/yetone/magpie/internal/provider"
 )
 
 // viaLists is what the gateway sent each session's calls to, and when each
@@ -23,7 +25,7 @@ type viaLists struct {
 var viasCache struct {
 	sync.Mutex
 	version uint64
-	clients string // the clients counted as agents (#1958)
+	clients string // the clients counted as agents (#1958), and the renames
 	all     *viaLists
 	window  struct {
 		version uint64
@@ -42,6 +44,7 @@ type ViaIndex struct {
 	since    time.Time
 	snapshot *logSnapshot
 	clients  string
+	renames  provider.Renames
 }
 
 // Of is what the gateway sent one session's calls to ("agent|id") since
@@ -81,7 +84,7 @@ func (x ViaIndex) window() map[string][]Via {
 	if w.m != nil && w.version == x.snapshot.version && w.clients == x.clients && w.since.Equal(x.since) {
 		return w.m
 	}
-	m := buildVias(x.snapshot, x.since).m
+	m := buildVias(x.snapshot, x.since, x.renames).m
 	if x.snapshot.complete() {
 		w.version, w.clients, w.since, w.m = x.snapshot.version, x.clients, x.since, m
 	}
@@ -90,17 +93,20 @@ func (x ViaIndex) window() map[string][]Via {
 
 func cachedVias(since time.Time) ViaIndex {
 	snapshot := readLogSnapshot()
-	clients := clientAgentsKey()
+	// a provider renamed is listed by the id it has now (Renames), so a
+	// rename is another index too
+	renames := provider.UsageRenames()
+	clients := clientAgentsKey() + "\x00" + renames.Key()
 	viasCache.Lock()
 	defer viasCache.Unlock()
 	all := viasCache.all
 	if all == nil || viasCache.version != snapshot.version || viasCache.clients != clients {
-		all = buildVias(snapshot, time.Time{})
+		all = buildVias(snapshot, time.Time{}, renames)
 		if snapshot.complete() {
 			viasCache.version, viasCache.clients, viasCache.all = snapshot.version, clients, all
 		}
 	}
-	return ViaIndex{all: all, since: since, snapshot: snapshot, clients: clients}
+	return ViaIndex{all: all, since: since, snapshot: snapshot, clients: clients, renames: renames}
 }
 
 // complete is whether the snapshot reached the end of the log, so what is

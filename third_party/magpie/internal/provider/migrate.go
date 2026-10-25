@@ -347,6 +347,10 @@ func MoveCandidates() []MoveCandidate {
 	return out
 }
 
+// a retired subscription's id names its plugin to `magpie plugin add`
+// and the Plugins page's field (qoder-cn, commandcode-plan)
+func init() { plugin.SubscriptionPlugin = MovePackage }
+
 // MovePackage is the plugin the built-in id moves to.
 func MovePackage(id string) string {
 	if m := movers[id]; m != nil {
@@ -539,6 +543,9 @@ var (
 	// so a test can read what it is handed
 	addPlugin     = plugin.Add
 	upgradePlugin = plugin.Upgrade
+	// addPluginExact is a backup's or a sync's install: the spec as the
+	// other computer has it, never taken for a name
+	addPluginExact = plugin.AddExact
 	// importAuth keeps a built-in's sign-in as one of the plugin's
 	importAuth = plugin.Import
 )

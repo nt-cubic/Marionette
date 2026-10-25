@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/catalog"
@@ -50,10 +51,14 @@ type Provider struct {
 	Name string `json:"name"`
 	// Was are ids the provider had before it was renamed (see Rename):
 	// a model still picked by one of them reaches it.
-	Was    []string `json:"was,omitempty"`
-	Icon   string   `json:"icon,omitempty"`
-	Preset string   `json:"preset,omitempty"` // preset this was created from, if any
-	Key    string   `json:"key"`              // API key, as typed by the user
+	Was []string `json:"was,omitempty"`
+	// Gave are ids it had that another provider took after it (a rename
+	// onto one, a provider added under one), each with when: the calls
+	// recorded under such an id before then were this one's (Renames).
+	Gave   []Gave `json:"gave,omitempty"`
+	Icon   string `json:"icon,omitempty"`
+	Preset string `json:"preset,omitempty"` // preset this was created from, if any
+	Key    string `json:"key"`              // API key, as typed by the user
 
 	// AccessKeyID and SecretAccessKey are a Volcengine account's access
 	// key (TakesVolcAccessKey), what Ark tells its Coding or Agent Plan's
@@ -600,6 +605,7 @@ func All() []Provider {
 // clone is p with its settings unshared: slices, maps and pointers copied.
 func (p Provider) clone() Provider {
 	p.Was = slices.Clone(p.Was)
+	p.Gave = slices.Clone(p.Gave)
 	p.Keys = slices.Clone(p.Keys)
 	p.Fallback = slices.Clone(p.Fallback)
 	p.Models = slices.Clone(p.Models)
@@ -855,6 +861,9 @@ func Save(p Provider) error {
 		if p.Was == nil {
 			p.Was = was.Was
 		}
+		if p.Gave == nil {
+			p.Gave = was.Gave
+		}
 		if sameStored(*was, p) {
 			// Save pressed on an editor left as it was: providers.json
 			// would be written byte for byte as it is, and its write
@@ -864,6 +873,9 @@ func Save(p Provider) error {
 		}
 		f.Providers[i] = p
 	} else {
+		// a new provider under an id another had: what was recorded under
+		// it until now stays that one's
+		giveID(f.Providers, -1, p.ID, time.Now())
 		f.Providers = append(f.Providers, p)
 	}
 	if err := store(f); err != nil {

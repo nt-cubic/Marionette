@@ -177,8 +177,11 @@ func TestCarryPiToOmp(t *testing.T) {
 	if c := carries(Session{Agent: "omp", ID: "o", Cwd: "/w", Path: "/w/o.jsonl"}); c != nil {
 		t.Fatalf("omp carried: %+v", c)
 	}
+	oldThere := agentThere
+	agentThere = func(string) bool { return false }
+	t.Cleanup(func() { agentThere = oldThere })
 	if c := carries(Session{Agent: "claude", ID: "c", Cwd: "/w", Path: "/w/c.jsonl"}); c != nil {
-		t.Fatalf("claude carried: %+v", c)
+		t.Fatalf("claude carried with no codex: %+v", c)
 	}
 	there = false
 	if c := carries(p); c != nil {

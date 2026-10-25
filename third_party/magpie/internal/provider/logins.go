@@ -61,6 +61,9 @@ type Login struct {
 	// first is the saved Claude account served in the place of Claude
 	// Code's own while it is signed out (claudeStandIn).
 	first bool
+	// home is the other Codex folder a ChatGPT account is signed in to
+	// in, Codex's own there (codexHomeLogins): not one to switch ~/.codex to.
+	home string
 }
 
 type savedLogin struct {
@@ -670,26 +673,7 @@ func liveLogin(agent string) (savedLogin, bool) {
 	}
 	switch agent {
 	case "codex":
-		b, _, err := readCodexLogin(codexHome(), false)
-		if err != nil {
-			return savedLogin{}, false
-		}
-		var a codexAuth
-		if json.Unmarshal(b, &a) != nil || a.Tokens.AccessToken == "" || a.AuthMode == "apikey" {
-			return savedLogin{}, false
-		}
-		id := jwtClaims(a.Tokens.IDToken)
-		user := codexUser(id)
-		if user == "" {
-			user = a.Tokens.AccountID
-		}
-		if user == "" {
-			return savedLogin{}, false
-		}
-		l := savedLogin{Agent: agent, User: user, Plan: claimString(id, "https://api.openai.com/auth", "chatgpt_plan_type"),
-			Auth: json.RawMessage(bytes.TrimSpace(b))}
-		l.User = codexLiveName(user, l.Auth)
-		return l, true
+		return codexLoginIn(codexHome())
 	case "claude":
 		c, _, ok := claudeCredential()
 		if !ok {
@@ -716,6 +700,79 @@ func liveLogin(agent string) (savedLogin, bool) {
 		return claudeSignInOwner(readLogins(), l), true
 	}
 	return savedLogin{}, false
+}
+
+// codexLoginIn is the ChatGPT account Codex is signed in to in its folder
+// home, as Codex keeps it there (auth.json, or the keychain item named by
+// the folder).
+func codexLoginIn(home string) (savedLogin, bool) {
+	b, _, err := readCodexLogin(home, false)
+	if err != nil {
+		return savedLogin{}, false
+	}
+	var a codexAuth
+	if json.Unmarshal(b, &a) != nil || a.Tokens.AccessToken == "" || a.AuthMode == "apikey" {
+		return savedLogin{}, false
+	}
+	id := jwtClaims(a.Tokens.IDToken)
+	user := codexUser(id)
+	if user == "" {
+		user = a.Tokens.AccountID
+	}
+	if user == "" {
+		return savedLogin{}, false
+	}
+	l := savedLogin{Agent: "codex", User: user, Plan: claimString(id, "https://api.openai.com/auth", "chatgpt_plan_type"),
+		Auth: json.RawMessage(bytes.TrimSpace(b))}
+	l.User = codexLiveName(user, l.Auth)
+	return l, true
+}
+
+// codexOtherHomes are the user's Codex folders but the one magpie and
+// Codex run with (appdir.CodexHomes): one ChatGPT account each, Codex run
+// in it with CODEX_HOME set.
+func codexOtherHomes() []string { return appdir.CodexHomes()[1:] }
+
+// codexHomeLogins are the accounts Codex is signed in to in the user's
+// other Codex folders, each with its folder as Home: one Codex keeps
+// signed in itself, as it does the one in ~/.codex. The one ~/.codex is
+// signed in to is that one's, wherever else it is too, and an account in
+// two other folders is the first's.
+func codexHomeLogins(live savedLogin, haveLive bool) []savedLogin {
+	var out []savedLogin
+	for _, home := range codexOtherHomes() {
+		l, ok := codexLoginIn(home)
+		if !ok || haveLive && sameLogin(live, l) || slices.ContainsFunc(out, func(o savedLogin) bool { return sameLogin(o, l) }) {
+			continue
+		}
+		l.Home = home
+		out = append(out, l)
+	}
+	return out
+}
+
+// codexHeldIn is the other Codex folder the saved account l is signed in
+// to now, as rememberLogins recorded it in Home: the same login, or the
+// same refresh token. "" when it is in none.
+func codexHeldIn(l savedLogin) string {
+	if l.Agent != "codex" || l.Home == "" {
+		return ""
+	}
+	in, ok := codexLoginIn(l.Home)
+	if !ok {
+		return ""
+	}
+	if sameLogin(in, l) || sameRefresh(in.Auth, l.Auth) {
+		return l.Home
+	}
+	return ""
+}
+
+// sameRefresh says two Codex auth.json hold one refresh token.
+func sameRefresh(x, y json.RawMessage) bool {
+	var a, b codexAuth
+	return json.Unmarshal(x, &a) == nil && json.Unmarshal(y, &b) == nil &&
+		a.Tokens.RefreshToken != "" && a.Tokens.RefreshToken == b.Tokens.RefreshToken
 }
 
 // rememberLogins saves the accounts the agents are signed in to now. The
@@ -754,6 +811,15 @@ func rememberLogins(force bool) {
 			continue
 		}
 		l, ok := liveLogin(agent)
+		if agent == "codex" {
+			// Codex's other folders' accounts (phantom3792 on X: only the
+			// default profile's account read a quota)
+			for _, h := range codexHomeLogins(l, ok) {
+				h.Seen = now
+				ls = upsertLogin(ls, h)
+				changed = true
+			}
+		}
 		if !ok {
 			if agent == "claude" && claudeLoggedOut(ls) {
 				changed = true
@@ -926,6 +992,9 @@ func Logins(agent string) []Login {
 		first := l.Agent == "claude" && strings.EqualFold(standIn, l.User)
 		lg := Login{Agent: l.Agent, User: l.User, Plan: l.Plan, Seen: l.Seen, Active: using, On: using || first || l.On,
 			Paused: (using || first) && pausedOwn(ls, l.Agent, l.User), first: first}
+		if !using && l.Agent == "codex" {
+			lg.home = l.Home
+		}
 		if l.Agent == "claude" {
 			lg.Lapsed = claudeSignedOut(l)
 		} else {
@@ -1123,6 +1192,12 @@ func switchSavedLogin(agent, user string) (from string, _ error) {
 	if target == nil {
 		return "", fmt.Errorf("no saved %s account %q", agent, user)
 	}
+	if home := codexHeldIn(*target); home != "" {
+		// Codex there keeps it signed in and refreshes it: a copy in
+		// ~/.codex would be a second holder of one refresh token, and
+		// whichever refreshed first would sign the other out
+		return "", fmt.Errorf("%s is signed in to Codex in %s: run Codex there (CODEX_HOME=%s codex) to use it, or turn it on for magpie's requests", target.User, home, home)
+	}
 	if agent == "claude" {
 		// as Claude Code keeps it, if it has run on the account beside the
 		// one it is signed in to; never one that can't be used, which
@@ -1313,6 +1388,14 @@ func forgetLogin(agent, user string) (signedOut bool, err error) {
 			return false, err
 		}
 		signedOut = true
+	}
+	for _, l := range ls {
+		if l.Agent == agent && strings.EqualFold(l.User, user) {
+			if home := codexHeldIn(l); home != "" {
+				// it would be read again from there at the next look
+				return false, fmt.Errorf("%s is signed in to Codex in %s: sign it out there (CODEX_HOME=%s codex logout) to remove it", l.User, home, home)
+			}
+		}
 	}
 	out := ls[:0]
 	found := false

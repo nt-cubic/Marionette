@@ -416,8 +416,8 @@ func saveServer(old *library.Server, line string) tea.Cmd {
 		was, done := "", "added "+s.Name+" · ↵ on it gives it to agents"
 		if old != nil {
 			was, done = old.Name, "saved "+s.Name
-			// and its OAuth app, which only the GUI edits
-			s.Agents, s.Env, s.Headers, s.OAuth = old.Agents, old.Env, old.Headers, old.OAuth
+			// and its OAuth app and startup timeout, which only the GUI edits
+			s.Agents, s.Env, s.Headers, s.OAuth, s.StartupTimeout = old.Agents, old.Env, old.Headers, old.OAuth, old.StartupTimeout
 		}
 		return libCmd(func() (*library.Result, error) { return library.SaveServer(was, s) }, done)()
 	}

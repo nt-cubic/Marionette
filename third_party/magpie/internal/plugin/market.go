@@ -83,6 +83,7 @@ var (
 	marketMu   sync.Mutex
 	marketList []Listing
 	marketAt   time.Time
+	marketErr  error // why marketList isn't a list just fetched; nil when it is
 	npmMu      sync.Mutex
 	npmCache   map[string]npmEntry // nil until read from npmCacheFile
 )
@@ -180,15 +181,25 @@ func parseMarket(b []byte) ([]Listing, error) {
 // Market is the list of plugins magpie suggests: fetched at most every six
 // hours, else the copy fetched last, else the one built in.
 func Market(ctx context.Context) []Listing {
+	l, _ := market(ctx)
+	return l
+}
+
+// market is Market, and why the list it gives isn't one fetched within
+// the six hours: the fetch's failure, when it is the copy fetched some
+// time before or the one built in. A newer list may name a plugin
+// neither does, so what one leaves out is unknown, not absent.
+func market(ctx context.Context) ([]Listing, error) {
 	marketMu.Lock()
 	defer marketMu.Unlock()
 	if marketList != nil && time.Since(marketAt) < 6*time.Hour {
-		return marketList
+		return marketList, marketErr
 	}
 	src := os.Getenv("MAGPIE_PLUGIN_MARKET")
 	if src == "" {
 		src = MarketURL
 	}
+	ferr := errors.New("the list is off (MAGPIE_PLUGIN_MARKET=off)")
 	if src != "off" {
 		c, cancel := context.WithTimeout(ctx, 6*time.Second)
 		// the list names the packages installed: a copy of the very file
@@ -196,24 +207,27 @@ func Market(ctx context.Context) []Listing {
 		b, err := fetchJSONFaithful(c, src, 1<<20)
 		cancel()
 		if err == nil {
-			if l, err := parseMarket(b); err == nil {
-				marketList, marketAt = l, time.Now()
+			l, perr := parseMarket(b)
+			if perr == nil {
+				marketList, marketAt, marketErr = l, time.Now(), nil
 				_ = os.MkdirAll(filepath.Dir(marketCache()), 0o755)
 				_ = os.WriteFile(marketCache(), b, 0o644)
-				return l
+				return l, nil
 			}
+			err = perr
 		}
+		ferr = err
 		if b, err := os.ReadFile(marketCache()); err == nil {
 			if l, err := parseMarket(b); err == nil {
 				// tried again in a minute, not six hours
-				marketList, marketAt = l, time.Now().Add(-6*time.Hour+time.Minute)
-				return l
+				marketList, marketAt, marketErr = l, time.Now().Add(-6*time.Hour+time.Minute), ferr
+				return l, ferr
 			}
 		}
 	}
 	l, _ := parseMarket(builtinMarket)
-	marketList, marketAt = l, time.Now().Add(-6*time.Hour+time.Minute)
-	return l
+	marketList, marketAt, marketErr = l, time.Now().Add(-6*time.Hour+time.Minute), ferr
+	return l, ferr
 }
 
 // RefreshMarket has the next Market fetch the list again, as with the

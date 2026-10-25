@@ -370,6 +370,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
                 await current.locator("#claudeLeanRow").evaluate((r) => r.remove());
                 await current.waitForTimeout(350);
               }
+              // A setting row's line wraps whole (arculongus on Discord):
+              // until BASE_REF has that, the page is compared with the lines
+              // held to one line as they were; settings-lines-wrap.test.cjs
+              // covers the wrapping.
+              if (view === "settings" && !baselineFile("app.css").includes("arculongus")) {
+                await current.addStyleTag({ content: ".row.pref .sub { white-space: nowrap; overflow-wrap: normal; }" });
+                await current.waitForTimeout(350);
+              }
               const before = PNG.sync.read(await still(original));
               const after = PNG.sync.read(await still(current));
               const sameSize = before.width === after.width && before.height === after.height;

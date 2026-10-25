@@ -20,6 +20,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/yetone/magpie/internal/ghtoken"
@@ -150,6 +151,9 @@ func whyDied(ctx context.Context, bun string, err error) error {
 	if verr == nil {
 		return err
 	}
+	if ue := wontLoad(bun, verr); ue != nil {
+		return fmt.Errorf("%w (%v)", ue, err)
+	}
 	if hint := missingLibs(string(out)); hint != "" {
 		return fmt.Errorf("%s: %w", hint, err)
 	}
@@ -159,9 +163,13 @@ func whyDied(ctx context.Context, bun string, err error) error {
 // cantStart says what it means when a bun that is on disk can't be
 // started with "no such file or directory": not that the file is missing,
 // but that the interpreter it names is. A glibc build on a musl Linux
-// (Alpine) names glibc's loader, which isn't there (#1877). Any other
+// (Alpine) names glibc's loader, which isn't there (#1877). A bun that
+// Windows or the processor won't load says so (wontLoad). Any other
 // error is given back as it is.
 func cantStart(bun string, err error) error {
+	if ue := wontLoad(bun, err); ue != nil {
+		return ue
+	}
 	if err == nil || !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
@@ -173,6 +181,62 @@ func cantStart(bun string, err error) error {
 	}
 	target, _ := bunTarget()
 	return fmt.Errorf("this system can't start the Bun magpie downloaded (%s, %s), though it is there: the build doesn't match this system's C library (glibc or musl). Set MAGPIE_BUN to a bun built for this system to run plugins on it: %w", target, bun, err)
+}
+
+// The statuses Windows ends a program with when it can't load it.
+const (
+	// a DLL it imports lacks a function it names: Bun 1.3.14 and later
+	// import CreatePseudoConsole from kernel32, which Windows has only
+	// from Windows 10 1809 and Server 2019 on (zgcwkj on Discord)
+	statusEntrypointNotFound = 0xc0000139
+	// the processor lacks an instruction it uses
+	statusIllegalInstruction = 0xc000001d
+)
+
+// BunUnstartableError is a bun this machine can't run at all: Windows is
+// older than Bun needs, or the processor lacks an instruction Bun is
+// built for. No Bun magpie can download runs here, so an install isn't
+// tried again from elsewhere and the GUI says it in the reader's language.
+type BunUnstartableError struct {
+	Bun string
+	// Why is "windows" or "cpu".
+	Why string
+	Err error
+}
+
+func (e *BunUnstartableError) Error() string {
+	if e.Why == "windows" {
+		return fmt.Sprintf("Bun can't start on this version of Windows: it needs Windows 10 version 1809 or later, or Windows Server 2019 or later, and this one lacks a function it uses (%s exited with 0xc0000139, entry point not found). Update Windows to run plugins, or set MAGPIE_BUN to a bun that runs here: %v", e.Bun, e.Err)
+	}
+	return fmt.Sprintf("Bun can't start on this computer's processor: it lacks an instruction Bun uses (%s: %v). Bun's x64 build needs SSE4.2 (an Intel or AMD processor from 2008 on; in a virtual machine, a CPU type that passes it through). Run magpie on such a processor to run plugins, or set MAGPIE_BUN to a bun that runs here", e.Bun, e.Err)
+}
+
+func (e *BunUnstartableError) Unwrap() error { return e.Err }
+
+// wontLoad is a *BunUnstartableError when err is bun's exit with what
+// Windows or the processor says when it can't run it at all: STATUS_
+// ENTRYPOINT_NOT_FOUND, STATUS_ILLEGAL_INSTRUCTION, or SIGILL elsewhere.
+// Else nil.
+func wontLoad(bun string, err error) *BunUnstartableError {
+	if err == nil {
+		return nil
+	}
+	var ec interface{ ExitCode() int }
+	if errors.As(err, &ec) {
+		switch uint32(ec.ExitCode()) {
+		case statusEntrypointNotFound:
+			return &BunUnstartableError{Bun: bun, Why: "windows", Err: err}
+		case statusIllegalInstruction:
+			return &BunUnstartableError{Bun: bun, Why: "cpu", Err: err}
+		}
+	}
+	var ps interface{ Sys() any }
+	if errors.As(err, &ps) {
+		if ws, ok := ps.Sys().(syscall.WaitStatus); ok && ws.Signaled() && ws.Signal() == syscall.SIGILL {
+			return &BunUnstartableError{Bun: bun, Why: "cpu", Err: err}
+		}
+	}
+	return nil
 }
 
 // Bun is the bun to run plugins with: $MAGPIE_BUN when set, else the one

@@ -30,6 +30,8 @@ const (
 	missJSON = `{"id":"msg_1","type":"message","role":"assistant","model":"m1","content":[{"type":"text","text":"OK."}],"stop_reason":"end_turn","usage":{"input_tokens":1200,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}`
 )
 
+// TestCacheUnknownReachesTheRoute: the flag reaches the route and the
+// ledger's record.
 func TestCacheUnknownReachesTheRoute(t *testing.T) {
 	messages := `{"model":"fake/m1","max_tokens":20,"messages":[{"role":"user","content":"Say just OK."}]}`
 	streamed := `{"model":"fake/m1","max_tokens":20,"stream":true,"messages":[{"role":"user","content":"Say just OK."}]}`
@@ -59,6 +61,10 @@ func TestCacheUnknownReachesTheRoute(t *testing.T) {
 			}
 			if got := r.Usage[0].CacheUnknown; got != c.unknown {
 				t.Fatalf("cache unknown %v, want %v: %+v", got, c.unknown, r.Usage[0])
+			}
+			// and the usage ledger, whose hit rates leave it out (#3464)
+			if got := lastRecord(t); got.CacheUnknown != c.unknown {
+				t.Fatalf("ledger cache unknown %v, want %v: %+v", got.CacheUnknown, c.unknown, got)
 			}
 		})
 	}

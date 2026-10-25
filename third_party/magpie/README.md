@@ -37,6 +37,7 @@ Each agent keeps its model in its own file, in its own format, with its own keys
 - **Pick any model for any agent** from one list. magpie edits the one key that matters in the agent's own config.
 - **Use one provider everywhere**: an API key, a local model, or the Claude, ChatGPT, Copilot, Gemini or Grok plan you're signed in to.
 - **Keep going when a quota runs out**: a routing group moves to the next account or model, and the agent never sees the error.
+- **Keep your secrets off the vendor's servers**: keys, passwords and emails in a prompt are masked on your computer before the request leaves it, and put back in the reply.
 
 It's for you if you use more than one agent, more than one provider, or more than one account. If you use one agent on its vendor's own plan and that's enough, you don't need it.
 
@@ -121,6 +122,26 @@ Click a value and a searchable list opens: every model of every provider you add
 </td>
 </tr>
 </table>
+
+### Privacy masking
+
+Agents put what they read into the prompt: an `.env`, a config file, a log with a token in it. With masking on, magpie swaps those values for placeholders on your computer before a request leaves it, and swaps them back in the reply. Your agent and your files keep the real values; the vendor never sees them.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="site/public/img/masking-dark.png">
+  <img src="site/public/img/masking-light.png" width="900" alt="Insights › Masking: 5,812 values kept from vendors in 7 days, flowing from Claude Code and Codex through magpie to OpenAI, Kimi and DeepSeek, and each request's masked values">
+</picture>
+
+| | |
+| :-- | :-- |
+| **Found two ways** | Rules for what is certain (API keys, private keys, tokens, emails, and card and ID numbers whose checksum adds up), and, if you want it, a model that runs on this computer for the names, addresses and passwords no rule can find (a 1.6 GB download, on the CPU) |
+| **Put back everywhere** | A value becomes a placeholder such as `{{API_KEY_k3v9x2mq}}`, and every placeholder in the reply turns back into its value: streamed text and tool-call arguments too, so a command the agent runs has the real key |
+| **Nothing breaks** | A value gets the same placeholder every time, so the conversation, the prompt cache and thinking signatures stay valid. A value masked once is masked wherever it shows up later |
+| **Never on disk** | Values are held in memory only. The record keeps each value's kind, length and first characters. If masking is on and can't run, the request is held back (503), never sent as written |
+| **You can check it** | **Insights › Masking** lists every request it changed, with what the vendor got instead, side by side, and **Try it** in Settings shows what a text would become |
+| **Your rules** | Secrets and personal data each on or off, finer kinds (passport, IBAN, MAC, public IP…), your own words and patterns, and whether a value found is masked, only warned about, or held back (**Mask**, **Warn**, **Block**) |
+
+The cost: the model sees `{{API_KEY_…}}`, not the key, so a task about the value itself (why is this token refused?) can't be done on it. Put such values under **Never mask**. Rules can be wrong now and then; the Masking page is where you'd see it. Turn it on in **Settings → Privacy**.
 
 ### Providers
 
@@ -270,7 +291,7 @@ Find them under Plugins › Discover › Gateway middleware. See [Gateway middle
 
 ## Privacy
 
-Your prompts, replies, keys and accounts go only to the providers you use. Once a day a released magpie tells us it is in use: a random id, its version and system, and which agents, providers and models it is used with, by magpie's own ids (a provider you added yourself is only `custom`), and for each partner listed first in the add sheet, how many times a day it was shown, opened and added (counts only). No names, URLs, accounts, keys, prompts or usage. Turn part or all of it off in **Settings → Privacy**, or with `DO_NOT_TRACK=1`. A partner's website and key links go through `usemagpie.ai/go/…`, which counts the click, and usemagpie.ai counts fetches of the partner list; the server sees these whatever the settings, and keeps no id or address. Icons named by a plugin, an import link or the library are fetched through `usemagpie.ai/api/icon`, so their hosts see Cloudflare's address, not yours; the server only passes the picture on, and counts and keeps nothing. The [Privacy page](https://usemagpie.ai/docs/privacy) lists everything magpie sends by itself, with an example and every switch; the [reference](docs/reference.md#counting-users) has the rules.
+Your prompts, replies, keys and accounts go only to the providers you use, and with [privacy masking](#privacy-masking) on, the secrets in them don't go even there. Once a day a released magpie tells us it is in use: a random id, its version and system, and which agents, providers and models it is used with, by magpie's own ids (a provider you added yourself is only `custom`), and for each partner listed first in the add sheet, how many times a day it was shown, opened and added (counts only). No names, URLs, accounts, keys, prompts or usage. Turn part or all of it off in **Settings → Privacy**, or with `DO_NOT_TRACK=1`. A partner's website and key links go through `usemagpie.ai/go/…`, which counts the click, and usemagpie.ai counts fetches of the partner list; the server sees these whatever the settings, and keeps no id or address. Icons named by a plugin, an import link or the library are fetched through `usemagpie.ai/api/icon`, so their hosts see Cloudflare's address, not yours; the server only passes the picture on, and counts and keeps nothing. The [Privacy page](https://usemagpie.ai/docs/privacy) lists everything magpie sends by itself, with an example and every switch; the [reference](docs/reference.md#counting-users) has the rules.
 
 ## Community
 

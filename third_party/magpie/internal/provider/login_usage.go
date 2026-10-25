@@ -450,6 +450,12 @@ func codexLoginAuth(l Login) []byte {
 	defer loginsMu.Unlock()
 	for _, x := range readLogins() {
 		if x.Agent == "codex" && strings.EqualFold(x.User, l.User) {
+			// as Codex keeps it in its other folder, when it is signed in there
+			if home := codexHeldIn(x); home != "" {
+				if b, _, err := readCodexLogin(home, false); err == nil {
+					return b
+				}
+			}
 			return x.Auth
 		}
 	}

@@ -127,10 +127,11 @@ func TestPluginsCarried(t *testing.T) {
 	// the other computer: the model-map middleware is here already, as the
 	// user set it; the cursor plugin is not
 	write(`{"plugins":[{"spec":"@magpie-community/middleware-model-map@1.0.0","options":{"map":{"x":"y"}}}]}`)
-	oldAdd, oldHand := addPlugin, handOver
-	t.Cleanup(func() { addPlugin, handOver = oldAdd, oldHand })
+	oldAdd, oldHand := addPluginExact, handOver
+	t.Cleanup(func() { addPluginExact, handOver = oldAdd, oldHand })
 	var asked []string
-	addPlugin = func(_ context.Context, spec string) (plugin.Entry, error) {
+	// the spec as the other computer has it, never resolved as a name
+	addPluginExact = func(_ context.Context, spec string) (plugin.Entry, error) {
 		asked = append(asked, spec)
 		l := plugin.Load()
 		l.Plugins = append(l.Plugins, plugin.Entry{Spec: spec})

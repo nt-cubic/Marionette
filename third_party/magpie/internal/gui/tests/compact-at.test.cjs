@@ -7,7 +7,8 @@
 // anything is sent. Long conversations, in Codex's and Claude Code's
 // settings on their opened rows (here Claude Code's), takes a size of its own
 // beside Compact at / Full window; a typed size posts settings/full-context
-// with it, and no click or typing scrolls the page.
+// with it, and no click or typing scrolls the page. The editor's Compact at
+// says that is where its empty value follows (#3425).
 // English and Chinese, Chromium and WebKit; no backend, the API is faked here.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
@@ -58,8 +59,8 @@ function serve(lang, posts) {
 }
 
 const words = {
-  en: { field: "Compact at", save: "Save", bad: "Compact at: lots is not a number of tokens like 272k", at: (n) => `Compact at ${n}`, full: "Full window" },
-  zh: { field: "压缩阈值", save: "保存", bad: "压缩阈值：lots 不是 272k 这样的 token 数", at: (n) => `${n} 时压缩`, full: "完整窗口" },
+  en: { field: "Compact at", save: "Save", bad: "Compact at: lots is not a number of tokens like 272k", at: (n) => `Compact at ${n}`, full: "Full window", follows: "empty follows Long conversations, in their settings on the Agents page (else in Settings)", notSettings: "Settings → Long conversations" },
+  zh: { field: "压缩阈值", save: "保存", bad: "压缩阈值：lots 不是 272k 这样的 token 数", at: (n) => `${n} 时压缩`, full: "完整窗口", follows: "留空按 Agent 页里它们设置中的「长对话」（否则在「设置」里）", notSettings: "设置 → 长对话" },
 };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
@@ -82,6 +83,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const { page, errors, posts } = await open(t, "providers");
       await page.locator('.row.provider[data-id="deepseek"]').click();
       assert(await page.getByText(w.field, { exact: true }).isVisible(), "the field is there");
+      // empty follows Long conversations, which is in the agents' rows on
+      // the Agents page, not in Settings, while one of them is here (#3425)
+      assert(await page.getByText(w.follows).isVisible(), "says where Long conversations is");
+      assert.equal(await page.getByText(w.notSettings).count(), 0, "not Settings → Long conversations");
       const box = page.locator("input.compacts");
       assert.equal(await box.inputValue(), "500k, deepseek-v4-flash=272k", "what is set is shown");
       // not a number of tokens: refused, nothing sent

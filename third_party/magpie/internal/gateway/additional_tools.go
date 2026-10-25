@@ -3,6 +3,9 @@ package gateway
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
+
+	"github.com/yetone/magpie/internal/provider"
 )
 
 // Codex's Responses Lite, for the models its catalog marks so (the ChatGPT
@@ -15,6 +18,65 @@ import (
 // it (#350: 422 "unknown item type additional_tools") — so a request going
 // anywhere else has its tools in the tools, the "functions" namespace
 // opened into them, as Codex sends a model that isn't Lite.
+
+// Lite also asks for reasoning context "all_turns" (the ChatGPT backend
+// turns a Lite request away without it, #534) and says it is Lite in the
+// X-OpenAI-Internal-Codex-Responses-Lite header. Neither is in the
+// Responses API anyone else serves. A subagent a GPT lead spawns on another
+// model is sent in the lead's Lite shape, its model name alone changed
+// (codex-rs builds the child's request from the lead's catalog entry), and
+// OpenCode Go's DeepSeek answered it with 503 "Endpoint is unavailable"
+// while the same subagent under a DeepSeek lead, not Lite, was answered
+// (TangForX on X). So a request leaving Lite has both taken off too
+// (fromLite, liteHeaderKept).
+
+// liteHeader says a Codex request is Responses Lite.
+const liteHeader = "X-OpenAI-Internal-Codex-Responses-Lite"
+
+// fromLite is a Responses request Codex sent as Responses Lite in the shape
+// it sends a model that isn't Lite: its additional_tools in its tools
+// (liftAdditionalTools) and no reasoning context. A request that isn't
+// Lite is returned as it was.
+func fromLite(body []byte) []byte {
+	return withoutReasoningContext(liftAdditionalTools(body))
+}
+
+// withoutReasoningContext is body without reasoning.context, the rest of
+// reasoning and every other member byte for byte as they were.
+func withoutReasoningContext(body []byte) []byte {
+	if !bytes.Contains(body, []byte(`"context"`)) {
+		return body
+	}
+	r, found, ok := topMember(body, "reasoning")
+	if !found || !ok {
+		return body
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal(r, &m) != nil || m == nil {
+		return body
+	}
+	if _, has := m["context"]; !has {
+		return body
+	}
+	delete(m, "context")
+	nb, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return withMembers(body, map[string][]byte{"reasoning": nb})
+}
+
+// liteKept says a Responses request to p goes in Codex's Lite shape as it
+// was sent: to OpenAI, to a ChatGPT account, and to a relay that takes
+// Codex's requests as Codex sent them (Provider.CodexAsSent, #1758).
+func liteKept(p provider.Provider, to provider.Protocol, codex bool) bool {
+	if to != provider.Responses {
+		return false
+	}
+	return p.Account != nil && p.Account.Agent == "codex" ||
+		strings.HasSuffix(p.Host(), "openai.com") ||
+		p.CodexAsSent && p.Account == nil && codex
+}
 
 // liteNamespace is the namespace Responses Lite groups Codex's own
 // functions in (codex_protocol::DEFAULT_FUNCTION_NAMESPACE).

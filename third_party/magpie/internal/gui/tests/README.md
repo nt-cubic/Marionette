@@ -41,6 +41,14 @@ a live gateway.
 
 ## Gateway Caller Keys
 
+`gateway-keys-empty.test.cjs` checks the Gateway page with no gateway key
+yet, as magpie web on a 390px phone: "No gateway keys yet" sits inside the
+list's card, inset from its edges, in the muted colour and size of Recent
+calls' empty line, in Chromium and WebKit, light and dark, and every
+language. A list that can't be read says why in the same card, still there
+after the page is drawn again; a list read before stays when a later read
+fails, and the error goes to the status line.
+
 `gateway-caller-keys.test.cjs` checks the named caller-key list on the
 Gateway page, including creation, copying, renaming, disabling, enabling,
 rotation and deletion. It verifies key-level usage overview, request filtering and

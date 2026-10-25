@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"strings"
@@ -103,7 +104,7 @@ func StartWeb(addr, version string) (*Web, error) {
 	}
 	w.Link = scheme + "://" + net.JoinHostPort(host, port) + "/?k=" + url.QueryEscape(key)
 	w.srv = &http.Server{
-		Handler:           gateway.AllowGuard(webHandler(port, key, keep, Handler(webHost{quit}, startBackend()))),
+		Handler:           webServed(port, key, keep, Handler(webHost{quit}, startBackend())),
 		ReadHeaderTimeout: 30 * time.Second,
 	}
 	go w.srv.Serve(ln)
@@ -321,6 +322,13 @@ func LANAddrs() []string {
 	return out
 }
 
+// webServed is all `magpie web` on port serves: the gateway's client
+// routes, judged by the gateway (onePort), and the page and its API behind
+// the allow list and the key.
+func webServed(port, key string, keep time.Duration, page http.Handler) http.Handler {
+	return onePort(gateway.AllowGuard(webHandler(port, key, keep, page)))
+}
+
 // webHandler is what `magpie web` on port serves: the page and its API
 // behind the key, compressed for the browser.
 func webHandler(port, key string, keep time.Duration, page http.Handler) http.Handler {
@@ -375,3 +383,61 @@ func compressible(ct string) bool {
 
 // isWeb: the page is served to a browser by `magpie web`.
 func isWeb(w Windows) bool { _, ok := w.(webHost); return ok }
+
+// onePort hands the gateway's client routes (gateway.ClientPath: /v1/…,
+// /v1beta/…, /mcp/…) on the page's port to the gateway, so the page and the
+// agents share one address and a reverse proxy needs one location for both
+// (zgcwkj on Discord). Each such request is judged by the gateway's own
+// guards (Server.Front), not the page's key: an agent has no cookie, and a
+// request from another machine or through a proxy needs a gateway key
+// while magpie is shared, as on the gateway's port. Everything else (the
+// page, its /api/*) stays behind the page's allow list and key.
+func onePort(page http.Handler) http.Handler {
+	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if !gateway.ClientPath(r.URL.Path) {
+			page.ServeHTTP(rw, r)
+			return
+		}
+		if gw := served.Load(); gw != nil {
+			gw.Front().ServeHTTP(rw, r)
+			return
+		}
+		toGateway.ServeHTTP(rw, r)
+	})
+}
+
+// toGateway passes a client route on to the gateway another magpie serves
+// here (the service, the app), as it came: its Host, so a rebound page's
+// name is still refused, and its forwarding headers, so a request a proxy
+// passed on is still one from another machine. One from another machine
+// straight to this port gets the peer's address added as X-Forwarded-For,
+// as the gateway would otherwise see this process's loopback call and ask
+// it no key.
+var toGateway = &httputil.ReverseProxy{
+	Rewrite: func(pr *httputil.ProxyRequest) {
+		u, _ := url.Parse(gateway.URL())
+		pr.SetURL(u)
+		pr.Out.Host = pr.In.Host
+		// Rewrite starts from a request with these taken off
+		for _, h := range []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"} {
+			if v := pr.In.Header.Values(h); len(v) > 0 {
+				pr.Out.Header[h] = append([]string(nil), v...)
+			}
+		}
+		if !loopbackPeer(pr.In.RemoteAddr) {
+			pr.SetXForwarded()
+		}
+	},
+	FlushInterval: -1, // streams as they come
+	ErrorHandler: func(rw http.ResponseWriter, r *http.Request, err error) {
+		log.Printf("magpie web: %s %s: the gateway at %s: %v", r.Method, r.URL.Path, gateway.URL(), err)
+		http.Error(rw, "magpie's gateway at "+gateway.URL()+" doesn't answer: "+err.Error(), http.StatusBadGateway)
+	},
+}
+
+// loopbackPeer: addr (a RemoteAddr) is on this computer's loopback.
+func loopbackPeer(addr string) bool {
+	h, _, err := net.SplitHostPort(addr)
+	ip := net.ParseIP(h)
+	return err == nil && ip != nil && ip.IsLoopback()
+}

@@ -65,7 +65,7 @@ func directRows(p Period, now time.Time) []Row {
 			}
 		}
 		duplicates := foldCodexRows([]*rowChunk{local})
-		pairs := codexChunkResponsePairs(gateways, []*rowChunk{local}, duplicates)
+		pairs, _ := codexChunkResponsePairs(gateways, []*rowChunk{local}, duplicates)
 		for ref := range matchedBlocks(gateways, []*rowChunk{local}, duplicates, pairs, since, false) {
 			matched[ref.Index] = true
 		}

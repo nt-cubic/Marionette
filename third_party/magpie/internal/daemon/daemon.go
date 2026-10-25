@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/yetone/magpie/internal/agentenv"
+	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/autostart"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/proc"
@@ -103,7 +104,22 @@ func Install(o Options) error {
 		return err
 	}
 	widenPath()
-	return m.install(exe, serveArgs(o), withKey(environ(), o))
+	if err := m.install(exe, serveArgs(o), withKey(environ(), o)); err != nil {
+		return err
+	}
+	os.Remove(removedMark())
+	return nil
+}
+
+// removedMark is there once the user removed the service (Uninstall): what
+// magpie puts in place by itself (the terminal's keepGateway, as it quits) is put there
+// no more.
+func removedMark() string { return filepath.Join(appdir.Config(), "daemon-removed") }
+
+// Removed says the user removed the service, and hasn't installed it since.
+func Removed() bool {
+	_, err := os.Stat(removedMark())
+	return err == nil
 }
 
 // serveArgs is what the service runs magpie with.
@@ -231,7 +247,14 @@ func Node() string {
 
 // Uninstall stops the service and removes it. One not installed is left
 // as it is.
-func Uninstall() error { return with(manager.uninstall) }
+func Uninstall() error {
+	err := with(manager.uninstall)
+	if err == nil {
+		os.MkdirAll(filepath.Dir(removedMark()), 0o700)
+		os.WriteFile(removedMark(), nil, 0o600)
+	}
+	return err
+}
 
 // Start starts the installed service.
 func Start() error { return installed(manager.start) }

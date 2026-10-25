@@ -1752,7 +1752,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				fail(rw, err)
 				return
 			}
-			agent.SyncCatalog()
+			agent.SyncCatalogSoon()
 		case "accountmodels":
 			if err := provider.SetAccountModels(in.ID, req.Account, req.Allow); err != nil {
 				fail(rw, err)
@@ -1811,7 +1811,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				fail(rw, err)
 				return
 			}
-			agent.SyncCatalog()
+			agent.SyncCatalogSoon()
 		case "switchonly":
 			// magpie only switches Codex's own sign-in, its requests going
 			// straight to OpenAI, or routes them for failover again
@@ -1820,7 +1820,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				fail(rw, err)
 				return
 			}
-			agent.SyncCatalog()
+			agent.SyncCatalogSoon()
 		case "affinity":
 			if err := provider.SetAffinity(in.ID, in.Affinity); err != nil {
 				fail(rw, err)
@@ -2053,7 +2053,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		}
 		// an agent on its own models goes through magpie while more of
 		// its accounts are on, and straight to its vendor again once not
-		agent.SyncCatalog()
+		agent.SyncCatalogSoon()
 		st := providersState()
 		st.Moved = moved
 		writeJSON(rw, st)
@@ -2238,7 +2238,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			fail(rw, err)
 			return
 		}
-		agent.SyncCatalog()
+		agent.SyncCatalogSoon()
 		writeJSON(rw, struct {
 			Results   []provider.ImportedAccount `json:"results"`
 			Providers providersJSON              `json:"providers"`

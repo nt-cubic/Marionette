@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/pluginrt"
 	"github.com/yetone/magpie/internal/settings"
 	_ "github.com/yetone/magpie/plugins/all"
@@ -134,6 +135,37 @@ func TestBootSaysBuiltinsOff(t *testing.T) {
 	}
 	if b := boot(); !strings.Contains(b, `"featuresOff":["groups","otel","sessions","warmups"]`) {
 		t.Fatalf("Essentials picked: %s", b)
+	}
+}
+
+// boot.js says where the gateway listens when this process serves it, so
+// the sidebar's line is drawn before the first paint (#3429), and nothing
+// when it doesn't: one served by another magpie is the providers' read to
+// find, never this process's guess.
+func TestBootSaysWhereItsGatewayListens(t *testing.T) {
+	h := builtinHome(t)
+	t.Setenv("MAGPIE_ADDR", "127.0.0.1:3481")
+	boot := func() string {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", "/boot.js", nil))
+		return rec.Body.String()
+	}
+	prev := served.Swap(nil)
+	t.Cleanup(func() { served.Store(prev) })
+	if b := boot(); strings.Contains(b, "sideGateway") {
+		t.Fatalf("no gateway served here: %s", b)
+	}
+	served.Store(gateway.New())
+	if b := boot(); !strings.Contains(b, `"sideGateway":{"boot":true,"running":true,"url":"http://127.0.0.1:3481"}`) {
+		t.Fatalf("served here: %s", b)
+	}
+	t.Setenv("MAGPIE_ADDR", "0.0.0.0:3483")
+	if b := boot(); !strings.Contains(b, `"sideGateway":{"boot":true,"running":true,"url":"http://127.0.0.1:3483"}`) {
+		t.Fatalf("every interface, reached on loopback: %s", b)
+	}
+	served.Store(nil)
+	if b := boot(); strings.Contains(b, "sideGateway") {
+		t.Fatalf("stopped: %s", b)
 	}
 }
 

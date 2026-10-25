@@ -160,10 +160,10 @@ func statsRead(days int, now time.Time, native map[string]bool) Stats {
 		for _, f := range files {
 			groups[f.key] = append(groups[f.key], f)
 		}
-		price := pricer()
+		price, titles := pricer(), codexTitleOf()
 		for _, fs := range groups {
 			// as List: a session nothing was said in is not listed
-			if s, ok := assembleListed(fs, price); ok {
+			if s, ok := assembleListed(fs, price, titles); ok {
 				native[s.Agent+"|"+s.ID] = true
 			}
 		}
@@ -291,7 +291,7 @@ func statsRead(days int, now time.Time, native map[string]bool) Stats {
 	for date := range dates {
 		byDate[date] = &Day{Date: date, Usage: []Usage{}, Active: []Active{}}
 	}
-	price := pricer()
+	price, titles := pricer(), codexTitleOf()
 	for k, t := range use {
 		u := Usage{Agent: k.agent, Cwd: k.cwd, Model: k.model, Tokens: t}
 		if p := price(k.model); p != nil {
@@ -348,7 +348,7 @@ func statsRead(days int, now time.Time, native map[string]bool) Stats {
 		if len(sh.dates) == 0 {
 			continue
 		}
-		s, ok := assembleListed(groups[key], price)
+		s, ok := assembleListed(groups[key], price, titles)
 		if !ok {
 			continue
 		}

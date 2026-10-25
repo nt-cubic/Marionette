@@ -49,12 +49,14 @@ func TestClaudeNativeReplayAcrossReadersAndRestart(t *testing.T) {
 			if list := List(0); len(list) != 1 || list[0].Tokens != want {
 				t.Fatalf("summary differs: %+v", list)
 			}
+			// The summary keeps its window on disk (#3493), bounded as in memory.
 			b, err := json.Marshal(cache[path])
 			if err != nil {
 				t.Fatal(err)
 			}
-			if strings.Contains(string(b), "claude_usage") || strings.Contains(string(b), "blocks") || strings.Contains(string(b), "message_4") {
-				t.Fatal("summary persisted message state")
+			var kept state
+			if err := json.Unmarshal(b, &kept); err != nil || kept.Claude.weight() > claudeRevisionEntries {
+				t.Fatalf("summary window kept: %v weight=%d", err, kept.Claude.weight())
 			}
 			info, err := os.Stat(path)
 			if err != nil {

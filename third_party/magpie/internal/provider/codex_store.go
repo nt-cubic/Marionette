@@ -673,6 +673,28 @@ func CodexSignIn(dir string) (b []byte, ok bool) {
 	return b, err == nil
 }
 
+// CodexSignInKnown is CodexSignIn with whether the read says anything at
+// all. A sign-in that isn't there (no auth.json: codex logout; no keychain
+// item) or is kept where magpie doesn't read is known, ok false. One that
+// couldn't be read, or doesn't parse, is not: Codex rewrites auth.json in
+// place when it refreshes its tokens (codex-rs FileAuthStorage::save
+// opens it with truncate), so a read in that moment finds it empty or cut
+// off, and a keychain read can fail for a moment too. known false says
+// nothing of the sign-in either way.
+func CodexSignInKnown(dir string) (b []byte, ok, known bool) {
+	b, _, err := readCodexLogin(dir, false)
+	if err != nil {
+		var se *codexStoreError
+		gone := errors.Is(err, fs.ErrNotExist) || errors.Is(err, errAccountDiscoveryOff) ||
+			errors.As(err, &se) && se.Cause == nil
+		return nil, false, gone
+	}
+	if !json.Valid(b) {
+		return nil, false, false
+	}
+	return b, true, true
+}
+
 // CodexKeychainForTest has Codex's keychain item read through find (no
 // item: fs.ErrNotExist) on every system, until restore.
 func CodexKeychainForTest(find func(service, account string) ([]byte, error)) (restore func()) {

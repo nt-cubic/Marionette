@@ -20,20 +20,24 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yetone/magpie/internal/probelog"
 	"github.com/yetone/magpie/internal/settings"
 )
 
 // Install routes http.DefaultTransport (and so http.DefaultClient) through
 // Func, and http.DefaultClient's requests made on a provider's behalf
 // (With) through a transport of that provider's proxy (Dispatch). Its
-// HTTP/2 connections are checked as the gateway's are (HTTP2Health).
+// HTTP/2 connections are checked as the gateway's are (HTTP2Health), and
+// the requests magpie sends on its own are written down (probelog).
 func Install() {
 	if t, ok := http.DefaultTransport.(*http.Transport); ok {
 		t.Proxy = Func
 		if t.HTTP2 == nil {
 			t.HTTP2 = HTTP2Health()
 		}
-		http.DefaultClient.Transport = Dispatch(t)
+		// a request magpie sends a provider on its own (a Test, a model
+		// list) is written into the request log as it goes (probelog)
+		http.DefaultClient.Transport = probelog.Transport(Dispatch(t))
 	}
 }
 

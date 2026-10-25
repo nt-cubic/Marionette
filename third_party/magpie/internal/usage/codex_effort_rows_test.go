@@ -52,6 +52,12 @@ func TestCodexEffortRowsAreTheWholeLedgers(t *testing.T) {
 				t.Fatalf("%s, %s:\n got %+v\nwant %+v", p, name, got, whole)
 			}
 		}
+		// read through the request index, as CodexModelEffort builds it
+		// (#3493): the same sums as the whole ledger's thread rows
+		want := codexModelEffort(threadRows(ledgerOfAt(p, Filter{}, now, sessions.Calls)))
+		if got := codexEffortOfIndex(readRequestState(now), p, now); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s through the index:\n got %+v\nwant %+v", p, got, want)
+		}
 	}
 }
 

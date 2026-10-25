@@ -94,6 +94,9 @@ func TestCodexIdentityParentChainsAndSummaryCache(t *testing.T) {
 	if got := CodexIdentities()["main-a"]; got.Role != codexRoleMain || got.RootSession != "main-a" {
 		t.Fatalf("identity snapshot shares its map: %+v", got)
 	}
+	if sources, ids := CallSourcesAndCodexIdentities(); !reflect.DeepEqual(sources, CallSources()) || !reflect.DeepEqual(ids, CodexIdentities()) {
+		t.Fatalf("one walk for both differs: %d sources, %d identities", len(sources), len(ids))
+	}
 
 	listed := map[string]Session{}
 	for _, s := range List(All) {

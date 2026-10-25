@@ -1,6 +1,8 @@
 package sessions
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,7 +21,23 @@ func TestQoderUsageAfterWindowLoss(t *testing.T) {
 				writeLines(t, path, string(claudeUsageLine(at, "a", "r", "m", Tokens{Input: 100, Output: 1}, "", true)))
 				List(0)
 				if restart {
+					// A sessions.json from before the window was kept (#3493).
 					Saved()
+					b, err := os.ReadFile(CachePath())
+					if err != nil {
+						t.Fatal(err)
+					}
+					var c map[string]any
+					dec := json.NewDecoder(bytes.NewReader(b))
+					dec.UseNumber()
+					if err := dec.Decode(&c); err != nil {
+						t.Fatal(err)
+					}
+					delete(c["files"].(map[string]any)[path].(map[string]any), "claude")
+					b, _ = json.Marshal(c)
+					if err := os.WriteFile(CachePath(), b, 0o644); err != nil {
+						t.Fatal(err)
+					}
 					Reset()
 					List(0)
 				} else {

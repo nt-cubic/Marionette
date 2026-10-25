@@ -553,3 +553,40 @@ func TestCodexKeychainSignOut(t *testing.T) {
 		t.Fatalf("auth.json left: %v", err)
 	}
 }
+
+// A read of Codex's sign-in that fails, or finds auth.json caught while
+// Codex rewrites it in place (empty, cut off), is unknown; none there
+// (codex logout, keyring with no item) and a store magpie doesn't read
+// are known.
+func TestCodexSignInKnown(t *testing.T) {
+	home := signIn(t)
+	dir := filepath.Join(home, ".codex")
+	auth := filepath.Join(dir, "auth.json")
+	whole, err := os.ReadFile(auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(when string, wantOK, wantKnown bool) {
+		t.Helper()
+		if _, ok, known := CodexSignInKnown(dir); ok != wantOK || known != wantKnown {
+			t.Fatalf("%s: ok %v known %v, want %v %v", when, ok, known, wantOK, wantKnown)
+		}
+	}
+	check("signed in", true, true)
+	for _, mid := range []string{"", string(whole[:len(whole)/2])} {
+		os.WriteFile(auth, []byte(mid), 0o600)
+		check("auth.json mid-rewrite: "+mid, false, false)
+	}
+	os.Remove(auth)
+	check("logged out", false, true)
+
+	codexKeychain, codexKeychainHere = &fakeKeychain{}, true
+	os.WriteFile(filepath.Join(dir, "config.toml"), []byte("cli_auth_credentials_store = \"keyring\"\n"), 0o600)
+	resetCodexKeychain()
+	check("keyring, no item", false, true)
+	codexKeychain = &fakeKeychain{findErr: errKeychainRefused, items: map[string][]byte{codexKeychainAccount(dir): []byte(`{}`)}}
+	resetCodexKeychain()
+	check("keyring, the keychain refusing", false, false)
+	os.WriteFile(filepath.Join(dir, "config.toml"), []byte("cli_auth_credentials_store = \"ephemeral\"\n"), 0o600)
+	check("ephemeral", false, true)
+}

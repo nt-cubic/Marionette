@@ -1,10 +1,9 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
-// ZCode's Start Plan turning a request away (#425: 405 "request has been
-// blocked due to unusual activity", code 3012): the Routing page gives
-// what the gateway made of it, and apart from that what it means (it was
-// sent as the ZCode app sends it, so the network blocked the address or
-// ZCode checks something new, and what to use instead), in the page's
-// language.
+// ZCode's Start Plan turning a request away (405 "request has been blocked
+// due to unusual activity", code 3012, plugins#348): the Routing page
+// gives what ZCode said, and apart from that what it means (ZCode's risk
+// control blocked the account, it rests, and only ZCode support lifts
+// it), in the page's language.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -15,8 +14,8 @@ const assets = path.resolve(__dirname, "../assets");
 const now = new Date();
 const day = [now.getFullYear(), now.getMonth() + 1, now.getDate()].map((n) => String(n).padStart(2, "0")).join("-");
 const at = (i) => new Date(now.getTime() - (i + 1) * 60e3).toISOString();
-const hint = "ZCode's Start Plan still turned this request away, though magpie sends it as the ZCode app does; it can be a network block of this IP, or ZCode checking for something new. Use an account with a GLM Coding Plan, or add another provider to this group";
-const vendor = "ZCode: 405 Method Not Allowed";
+const hint = "ZCode's risk control blocked this account for unusual activity (code 3012); it rests, and the group's other providers are used. If the ZCode app fails on this account too, only ZCode support can lift the block";
+const vendor = "ZCode: request has been blocked due to unusual activity. (405, code 3012)";
 const key = { id: "zcode", provider: "zcode", name: "ZCode", kind: "provider", model: "GLM-5.3-Flash" };
 // newest first: the block, then another 405 with nothing to add
 const errs = [vendor + " — " + hint, "ZCode: 405 Method Not Allowed", "", "", "", ""];
@@ -57,7 +56,7 @@ function serve(lang) {
 
 const want = {
   en: { said: "It said: " + vendor, hint },
-  zh: { said: "原话：" + vendor, hint: "ZCode 体验套餐仍拒绝了此请求（已按 ZCode 客户端方式发送）；可能是此 IP 被网络拦截，或 ZCode 新增了校验。请改用有 GLM Coding Plan 的账号，或在此分组中加入其他供应商" },
+  zh: { said: "原话：" + vendor, hint: "ZCode 风控因异常行为封禁了这个账号（代码 3012）；它会暂停使用，改用此分组中的其他供应商。如果用这个账号在 ZCode 官方 App 里也失败，只有 ZCode 客服能解除" },
 };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
@@ -110,7 +109,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.waitForTimeout(300);
       got = await steps();
       assert.equal(got.filter(([c]) => c === "aside said").length, 1);
-      assert(!got.some(([, s]) => s.includes("Start Plan") || s.includes("体验套餐")), JSON.stringify(got));
+      assert(!got.some(([, s]) => s.includes("risk control") || s.includes("风控")), JSON.stringify(got));
       assert.deepEqual(errors, []);
     });
   }

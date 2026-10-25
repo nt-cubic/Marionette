@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -139,6 +140,7 @@ func (l *Library) syncProjectMCP(p *Project, fail func(what string, err error)) 
 		files[rel] = true
 	}
 	wrote := map[string][]string{}
+	startup := map[string]map[string]float64{}
 	for _, rel := range slices.Sorted(func(yield func(string) bool) {
 		for r := range files {
 			if !yield(r) {
@@ -153,11 +155,16 @@ func (l *Library) syncProjectMCP(p *Project, fail func(what string, err error)) 
 		abs := filepath.Join(p.Dir, filepath.FromSlash(rel))
 		f := &mcpFile{Path: abs, Format: format}
 		had := p.Wrote[rel]
+		was := p.Startup[rel]
+		now := map[string]float64{}
 		entries, err := f.entries()
 		if err != nil {
 			fail("", err)
 			if len(had) > 0 {
 				wrote[rel] = had
+				if was != nil {
+					startup[rel] = was
+				}
 			}
 			continue
 		}
@@ -172,9 +179,11 @@ func (l *Library) syncProjectMCP(p *Project, fail func(what string, err error)) 
 			if err := f.del(name); err != nil {
 				fail("mcp:"+name, err)
 				mine = append(mine, name)
+				now[name] = was[name]
 			}
 		}
 		for _, s := range want[rel] {
+			s := wroteStartup(s, was[s.Name])
 			old := entries[s.Name]
 			if old != nil && !slices.Contains(had, s.Name) {
 				fail("mcp:"+s.Name, fmt.Errorf("%s has a server called %s already that isn't magpie's: it's left as it is", rel, s.Name))
@@ -183,6 +192,7 @@ func (l *Library) syncProjectMCP(p *Project, fail func(what string, err error)) 
 			if old != nil {
 				if cur, ok := f.current(s.Name, old, s); ok && cur.same(s) && !f.behind(s, old) {
 					mine = append(mine, s.Name)
+					now[s.Name] = f.startupWritten(s, old)
 					continue
 				}
 			}
@@ -199,12 +209,18 @@ func (l *Library) syncProjectMCP(p *Project, fail func(what string, err error)) 
 				fail("mcp:"+s.Name, err)
 				if old != nil {
 					mine = append(mine, s.Name)
+					now[s.Name] = was[s.Name]
 				}
 				continue
 			}
 			mine = append(mine, s.Name)
+			now[s.Name] = f.startupWritten(s, old)
 		}
 		sort.Strings(mine)
+		maps.DeleteFunc(now, func(_ string, v float64) bool { return v == 0 })
+		if len(now) > 0 {
+			startup[rel] = now
+		}
 		if len(mine) > 0 {
 			wrote[rel] = mine
 			continue
@@ -225,6 +241,10 @@ func (l *Library) syncProjectMCP(p *Project, fail func(what string, err error)) 
 		wrote = nil
 	}
 	p.Wrote = wrote
+	if len(startup) == 0 {
+		startup = nil
+	}
+	p.Startup = startup
 	sort.Strings(p.MadeFiles)
 }
 

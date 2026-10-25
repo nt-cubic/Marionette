@@ -86,9 +86,10 @@ const modelUsage = `usage:
                                                  272K: on, as by default, for a model of a longer window (in
                                                  Claude Code, a Claude model runs to its own); off, at the
                                                  model's whole window, 1M for a [1m] one; a size such as 500k
-                                                 compacts there instead. The app's Settings → Long
-                                                 conversations is the same switch; a provider's own Compact
-                                                 at (its editor) comes before it
+                                                 compacts there instead. The app's Long conversations,
+                                                 in Codex's and Claude Code's settings on the Agents page,
+                                                 is the same switch; a provider's own Compact at (its
+                                                 editor) comes before it
 
   Each is looked for in this order: this model, then <provider id>/*, then the provider's own
   list, then models.dev. --reset removes only the first, and says so when a <provider id>/* value

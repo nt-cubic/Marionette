@@ -77,7 +77,8 @@
   // the cache a route's vendor read: its last answer's usage
   function cacheOf(r) {
     const u = r.usage?.[r.usage.length - 1];
-    if (!u) return null;
+    // a vendor that counts no cache has none to show, not 0% (#3464)
+    if (!u || u.cache_unknown) return null;
     const total = (u.in || 0) + (u.cache_read || 0) + (u.cache_write || 0);
     if (!total) return null;
     return { read: u.cache_read || 0, total };
@@ -1216,7 +1217,7 @@
     if (open && s.latest) {
       const last = s.points[s.points.length - 1];
       const r = { id: s.latestId, time: s.last, done: true, agent: s.agent, model: s.model, prompt: s.latest };
-      const cache = last && s.latest.counted && last.tokens ? { read: last.cache || 0, total: last.tokens } : null;
+      const cache = last && s.latest.counted && last.tokens && !last.cache_unknown ? { read: last.cache || 0, total: last.tokens } : null;
       box.append(ctxCard(r, {
         still: true, cache, place: "session",
         series: s.points,

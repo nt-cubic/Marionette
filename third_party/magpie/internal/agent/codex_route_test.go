@@ -246,6 +246,33 @@ func TestCodexSubagentModelTakesAnyProvider(t *testing.T) {
 	}
 }
 
+// The GUI shows one setting for the subagents' model, the one magpie puts
+// them all on: a pick there, Default too, takes away Codex's own [agents]
+// default_subagent_model, which read the same and nobody could tell apart,
+// and keeps the user's other [agents] keys; a refused pick leaves it.
+func TestCodexSubagentModelReplacesConfigs(t *testing.T) {
+	for _, pick := range []string{"fake/m1", ""} {
+		home, read := codexHome(t, `{"tokens":{"access_token":"x","id_token":"x.e30.x"}}`,
+			"model = \"gpt-5.5\"\n\n[agents]\nmax_threads = 6\ndefault_subagent_model = \"gpt-5.4-mini\"\n")
+		sub := codex(home).Field("subagent_model")
+		if err := sub.Set("gpt-5.5"); err == nil {
+			t.Fatal("a bare name of Codex's own was taken")
+		}
+		if cfg := read(); !strings.Contains(cfg, "default_subagent_model") {
+			t.Fatalf("a refused pick took Codex's away:\n%s", cfg)
+		}
+		if err := sub.Set(pick); err != nil {
+			t.Fatal(err)
+		}
+		if cfg := read(); strings.Contains(cfg, "default_subagent_model") || !strings.Contains(cfg, "max_threads = 6") {
+			t.Fatalf("pick %q:\n%s", pick, cfg)
+		}
+		if got := sub.Get(); got != pick {
+			t.Fatalf("subagent model = %q, want %q", got, pick)
+		}
+	}
+}
+
 // Subagents can start at an effort of their own (#469): Codex's [agents]
 // default_subagent_reasoning_effort, used when a spawn names none. Codex
 // refuses a spawn at a level the subagents' model lacks, so magpie takes

@@ -335,6 +335,42 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 		}
 		rw.WriteHeader(http.StatusNoContent)
 	})
+	// carry converts a session for another agent (one its Carry offers with
+	// Convert): a new session of that agent's, in its own folder, the
+	// source only read. It runs only when the user picks the agent, never
+	// on a listing. It answers with the line that opens the new one, and,
+	// with Open, opens Terminal on it.
+	mux.HandleFunc("POST /api/sessions/carry", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Agent, ID, To string
+			Open          bool
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		if in.Open && (runtime.GOOS != "darwin" || isWeb(w)) {
+			fail(rw, errors.New("opening Terminal is only for the Mac app"))
+			return
+		}
+		s, ok := sessions.Find(in.Agent, in.ID)
+		if !ok {
+			fail(rw, errors.New("no such session"))
+			return
+		}
+		c, err := sessions.CarryOver(s, in.To)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		if in.Open {
+			if err := openTerminal(c.Command, settings.Load().SessionTerminal); err != nil {
+				fail(rw, err)
+				return
+			}
+		}
+		writeJSON(rw, map[string]any{"agent": c.Agent, "id": c.ID, "command": c.Command})
+	})
 }
 
 // sessionMarkdown is a session's conversation as Markdown, and the name its

@@ -68,7 +68,7 @@ func modelSpans(s string, o Options) []span {
 		if kind == "PERSON" {
 			a, b = zhTrim(s, a, b)
 		}
-		if a < b && utf8.ValidString(s[a:b]) && modelTakes(kind, s[a:b]) {
+		if a < b && utf8.ValidString(s[a:b]) && modelTakes(kind, s[a:b]) && modelFits(s, a, b, kind) {
 			out = append(out, span{a, b, kind, ByModel})
 		}
 	}
@@ -150,7 +150,7 @@ var (
 // (req_011CS…, toolu_01A…, call_x9…, msg_…).
 func madeID(v string) bool {
 	p, rest, ok := strings.Cut(v, "_")
-	if !ok || len(p) < 2 || len(p) > 6 || len(rest) < 8 {
+	if !ok || len(p) < 2 || len(p) > 8 || len(rest) < 8 {
 		return false
 	}
 	for _, c := range p {
@@ -191,4 +191,202 @@ func withModel(o Options, texts []string) Options {
 		}
 	}
 	return o
+}
+
+// modelFits says the model's value at s[a:b] is what its kind says by
+// where it is, as modelTakes does by what it is. Run on what agents send
+// (3 MB of Claude Code's requests, 10-25), the model masked ~1,800
+// values where the rules masked 17, most of them wrongly: the count in
+// each turn's <total_tokens>14983666 tokens left</total_tokens> as an
+// account, a run's id as a phone, "Claude" and "Opus 5.5" in the system
+// prompt as people, /Users/yetone's folder as a person, the tail of
+// toolu_01… and req_011C… as a name or a secret, a grep pattern as a
+// secret. Each goes as written now:
+//   - a piece cut out of a longer word, whatever its kind;
+//   - a name with a digit, a slash, an @ or a file's dot in it, all in
+//     lower case (magpie, claude-in-chrome), a path's part, or an
+//     assistant's or a model's own (Claude, Codex, Haiku 4.5);
+//   - an account that is a commit's hash, a version, or a number with
+//     nothing before it to say it is an account's; a phone number that is
+//     digits only with nothing to say it is one, and no 0 or + to start;
+//   - a secret that is a pattern's words, a|b|c, holds a UUID (a session's
+//     file) or is a piece of JSON;
+//   - an account or a phone number that is a size (1624x1487), drawing
+//     data (an SVG path's M16 0H44…) or a diff's index line; a phone with
+//     fewer than 7 digits, an address with no letter.
+//
+// A name's words each start with a capital, but for the particles names
+// have (van, de, bin): "local LLM", "User yetone" and claudeKeychain are
+// a program's or a log's words.
+func modelFits(s string, a, b int, kind string) bool {
+	if a > 0 && wordByte(s[a-1]) && wordByte(s[a]) || b < len(s) && wordByte(s[b-1]) && wordByte(s[b]) {
+		return false
+	}
+	v := s[a:b]
+	switch kind {
+	case "PERSON":
+		return personFits(s, a, b, v)
+	case "ACCOUNT":
+		if hexRe.MatchString(v) && strings.ContainsAny(v, "abcdef") || versionRe.MatchString(v) || !numberLike(v) {
+			return false
+		}
+		return strings.Trim(v, digits) != "" || cued(s, a, accountCues)
+	case "PHONE":
+		if !numberLike(v) || countDigits(v) < 7 {
+			return false
+		}
+		return strings.Trim(v, digits) != "" || v[0] == '0' || cued(s, a, phoneCues)
+	case "ADDRESS":
+		return strings.IndexFunc(v, unicode.IsLetter) >= 0
+	case "SECRET":
+		if !wordByte(v[0]) || patternWords(v) || uuidIn.MatchString(v) || strings.Contains(v, `": `) || strings.Contains(v, `", "`) || linkRe.MatchString(v) {
+			return false
+		}
+		// a piece of a longer base64 run (an image, a signature) is cut
+		// from it at a '+' or '/'
+		if a > 1 && (s[a-1] == '+' || s[a-1] == '/') && wordByte(s[a-2]) || b+1 < len(s) && (s[b] == '+' || s[b] == '/') && wordByte(s[b+1]) {
+			return false
+		}
+		// a bare hex run is a hash or an id unless something calls it a key;
+		// one with words after it is a hash in a tool's output
+		if f := strings.Fields(v); len(f) > 1 && hexRe.MatchString(f[0]) || modCacheRe.MatchString(v) {
+			return false
+		}
+		return !hexRe.MatchString(v) || cued(s, a, secretCues)
+	case "EMAIL":
+		// a URL's user:password@host is no address, as for the rule's (#3538)
+		return wordByte(v[0]) && !modCacheRe.MatchString(v) && !inUserinfo(s, a)
+	}
+	return true
+}
+
+func wordByte(c byte) bool {
+	return c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+}
+
+func personFits(s string, a, b int, v string) bool {
+	if strings.ContainsAny(v, "0123456789/\\@<>|=_") || strings.IndexFunc(v, unicode.IsUpper) < 0 && isASCII(v) {
+		return false
+	}
+	// a file's name: LESSONS.md, a dot with a letter right after it
+	for i := 0; i+1 < len(v); i++ {
+		if v[i] == '.' && (v[i+1] >= 'a' && v[i+1] <= 'z' || v[i+1] >= 'A' && v[i+1] <= 'Z') {
+			return false
+		}
+	}
+	// a path's part: /Users/yetone, ~/.orca/
+	if a > 0 && (s[a-1] == '/' || s[a-1] == '\\' || s[a-1] == '.' && a > 1 && (s[a-2] == '/' || s[a-2] == '\\')) || b < len(s) && (s[b] == '/' || s[b] == '\\') {
+		return false
+	}
+	if strings.ContainsRune(v, ':') {
+		return false
+	}
+	for i, w := range strings.Fields(v) {
+		if c := w[0]; c >= 'a' && c <= 'z' && (i == 0 || !nameParticles[w]) {
+			return false
+		}
+		if assistantNames[strings.ToLower(w)] {
+			return false
+		}
+	}
+	return true
+}
+
+// nameParticles are the words in lower case a name may have between its
+// others: Ludwig van Beethoven, Ibn al Haytham.
+var nameParticles = map[string]bool{
+	"van": true, "von": true, "der": true, "den": true, "de": true, "da": true, "del": true, "della": true,
+	"di": true, "du": true, "la": true, "le": true, "bin": true, "binti": true, "al": true, "el": true,
+	"y": true, "dos": true, "das": true, "do": true, "ter": true, "ten": true, "zu": true,
+}
+
+// numberLike says v is written as a number is: digits, and the spaces,
+// dashes, dots, brackets and + that group them, with a letter or two at
+// most (an IBAN's, ext.). A size is no number (1624x1487).
+func numberLike(v string) bool {
+	if sizeRe.MatchString(v) || strings.Contains(v, "..") {
+		return false
+	}
+	letters := 0
+	for _, c := range v {
+		switch {
+		case c >= '0' && c <= '9', strings.ContainsRune(" -.()+/", c):
+		case unicode.IsLetter(c):
+			letters++
+		default:
+			return false
+		}
+	}
+	return letters <= 4 && countDigits(v)*2 > len(v)
+}
+
+func countDigits(v string) int {
+	n := 0
+	for i := 0; i < len(v); i++ {
+		if v[i] >= '0' && v[i] <= '9' {
+			n++
+		}
+	}
+	return n
+}
+
+func isASCII(v string) bool {
+	for i := 0; i < len(v); i++ {
+		if v[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
+}
+
+// assistantNames are what agents and models call themselves, in every
+// system prompt: the model takes each for a person's name.
+var assistantNames = map[string]bool{
+	"claude": true, "chatgpt": true, "gpt": true, "codex": true, "gemini": true, "copilot": true,
+	"grok": true, "kimi": true, "qwen": true, "deepseek": true, "cursor": true, "devin": true,
+	"kiro": true, "opencode": true, "opus": true, "sonnet": true, "haiku": true, "fable": true,
+	"glm": true, "doubao": true, "magpie": true, "jev": true,
+}
+
+var (
+	hexRe     = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
+	versionRe = regexp.MustCompile(`^v?\d+(?:\.\d+)+$`)
+	sizeRe    = regexp.MustCompile(`^\d+ ?[x×] ?\d+$`)
+	uuidIn    = regexp.MustCompile(`(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
+	// a name in Go's module cache (d6426ecaaf0a28de@v31)
+	modCacheRe = regexp.MustCompile(`^[0-9a-f]{16}@v\d+$`)
+	// a link, or a host's name with a path (discord.gg/…)
+	linkRe = regexp.MustCompile(`^(?:[a-z][a-z0-9+.-]*://|[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/)`)
+)
+
+var (
+	accountCues = []string{"account", "acct", "a/c", "iban", "routing", "sort code", "card", "账号", "帐号", "账户", "帐户", "卡号", "户名"}
+	secretCues  = []string{"key", "token", "secret", "password", "passwd", "密钥", "密码", "令牌"}
+	phoneCues   = []string{"phone", "tel", "mobile", "cell", "call", "whatsapp", "sms", "电话", "手机", "联系", "致电"}
+)
+
+// cued says one of cues is in the 40 bytes before at, in any case.
+func cued(s string, at int, cues []string) bool {
+	before := strings.ToLower(s[max(0, at-40):at])
+	for _, c := range cues {
+		if strings.Contains(before, c) {
+			return true
+		}
+	}
+	return false
+}
+
+// patternWords says v is three or more words joined by |, as a grep's or
+// a regexp's alternatives are.
+func patternWords(v string) bool {
+	parts := strings.Split(v, "|")
+	if len(parts) < 3 {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" || strings.IndexFunc(p, unicode.IsLetter) < 0 || strings.Trim(p, alnum+"_.-") != "" {
+			return false
+		}
+	}
+	return true
 }

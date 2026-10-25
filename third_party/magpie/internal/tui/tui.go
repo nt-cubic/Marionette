@@ -168,7 +168,7 @@ func Run(ready func()) error {
 	stop()
 	wait()
 	if served {
-		fmt.Fprintln(os.Stderr, gatewayGoneNote())
+		fmt.Fprintln(os.Stderr, keepGateway(connected(m.agents)))
 	}
 	return err
 }

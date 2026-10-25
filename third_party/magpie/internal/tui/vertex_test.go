@@ -80,10 +80,10 @@ func TestTUIAddsVertexWithItsProject(t *testing.T) {
 	if r := row("google-vertex"); !strings.Contains(r, "● Google credentials") || strings.Contains(r, " as ") || strings.Contains(r, "no key") {
 		t.Errorf("its row: %q", r)
 	}
-	if r := row("vertex-sa"); !strings.Contains(r, "● Google credentials as vertex@my-project.iam.gserviceaccount.com") {
+	if r := row("vertex-sa"); !strings.Contains(r, "● Google credentials as vertex@my-project.iam.gserviceaccount.com") || strings.Contains(r, "switches it on") {
 		t.Errorf("a service account's row: %q", r)
 	}
-	if r := row("vertex-off"); !strings.Contains(r, "○ switched off") || strings.Contains(r, "Google credentials") {
+	if r := row("vertex-off"); !strings.Contains(r, "○ switched off") || strings.Contains(r, "Google credentials") || !strings.Contains(r, "o switches it on") {
 		t.Errorf("a switched-off one's row: %q", r)
 	}
 

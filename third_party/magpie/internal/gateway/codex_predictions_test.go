@@ -113,6 +113,11 @@ func TestCodexPredictionsSetting(t *testing.T) {
 		if u.Provider == "magpie" && (!u.IsRejected() || u.Status != 200) {
 			t.Errorf("an answered-here prediction %+v", u)
 		}
+		// and says where the setting is: Codex's row on the Agents page
+		// since f1e4516d, not Settings (#3425)
+		if u.Provider == "magpie" && !strings.Contains(u.Error, "in Codex's settings on magpie's Agents page") {
+			t.Errorf("an answered-here prediction says %q", u.Error)
+		}
 	}
 	want := "openai:composer_predictions magpie:composer_predictions fake:composer_predictions openai:"
 	if got := strings.Join(kinds, " "); got != want {

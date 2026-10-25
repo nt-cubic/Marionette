@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/provider"
 )
 
 // What a request said it cost in its plan's credits (#2512) is summed by
@@ -108,7 +109,7 @@ func TestPlanCreditsPacked(t *testing.T) {
 		}
 		chunk.add(Row{Record: r}, "", int64(i), false)
 	}
-	b := newBlockPricer(nil, nil, func(Record) *catalog.Price { return nil })
+	b := newBlockPricer(provider.Renames{}, nil, func(Record) *catalog.Price { return nil })
 	defer b.release()
 	packed := chunk.pack()
 	if len(packed.Archive) == 0 {

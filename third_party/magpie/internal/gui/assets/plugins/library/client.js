@@ -1738,6 +1738,14 @@ magpie.plugin("library", (ctx) => {
   }
   function healthWords(h, s) {
     if (h.state === "ok") return [h.tools === 1 ? t("1 tool") : t("{n} tools", { n: h.tools }), t("It started and listed its tools")];
+    // an agent signed in to it on its own (Claude Code's /mcp, in WSL too)
+    // uses it, though magpie's check, without that sign-in, was asked for
+    // one: the row says who, not "needs sign-in" (CyberCaius on Discord)
+    if (h.state === "auth" && h.agentSignIn?.length) {
+      const names = h.agentSignIn.map(nameOf);
+      const text = t("signed in in {agent}", { agent: names[0] }) + (names.length > 1 ? " +" + (names.length - 1) : "");
+      return [text, t("{agents}: signed in to it on its own, and uses it. magpie's check doesn't have that sign-in, so it can't list the tools: open it to sign in once in magpie too", { agents: names.join(", ") })];
+    }
     if (h.state === "auth") {
       const why = h.oauth
         ? (s?.transport === "http" ? t("The server asks for a sign-in — open it to sign in once in magpie") : t("The server asks for a sign-in"))
@@ -1806,7 +1814,7 @@ magpie.plugin("library", (ctx) => {
       // agent's own launch sets says nothing of the server, so it isn't
       // painted as broken (#2308, ASD-max: Codex's host-only codex_app,
       // whose pipe Codex itself hands it)
-      b.className = "lib-health " + (e.h.state === "ok" ? "ok" : e.h.state === "auth" ? "auth" : e.h.why === "novar" || e.h.why === "wsldown" ? "unknown" : "err");
+      b.className = "lib-health " + (e.h.state === "ok" || e.h.agentSignIn?.length ? "ok" : e.h.state === "auth" ? "auth" : e.h.why === "novar" || e.h.why === "wsldown" ? "unknown" : "err");
       b.replaceChildren(el("span", "", text));
       if (toolList(b.dataset.server).length) {
         const open = toolsOpen.has(b.dataset.server);
@@ -2152,6 +2160,19 @@ magpie.plugin("library", (ctx) => {
           g.append(...field(t("Sign-in"), signBox, t("For a server that asks you to sign in (OAuth): magpie signs in once, and every agent given it uses that sign-in")));
         } else appBox = null;
       }
+      // how long the agents that take one (Codex's startup_timeout_sec)
+      // wait for it to start, shown only when one of them is here (#3168)
+      const slow = [...new Set(all.filter((a) => a.startup).map((a) => a.name))];
+      if (slow.length) {
+        const wait = field2(d.startupTimeout || "", "30", (v) => {
+          wait.value = v.replace(/\D/g, "").slice(0, 5);
+          d.startupTimeout = Number(wait.value) || 0;
+        });
+        wait.inputMode = "numeric";
+        wait.classList.add("lib-startup");
+        wait.setAttribute("aria-label", t("Startup timeout"));
+        g.append(...field(t("Startup timeout"), wait, t("Seconds {agents} waits for it to start and list its tools. Empty leaves {agents}'s own 30; a value you wrote in its config.toml by hand is kept", { agents: slow.join(", ") })));
+      }
       slot.append(g);
       if (appBox) drawApp();
       // its own icon while it runs as it did; another way of running is another server
@@ -2170,7 +2191,7 @@ magpie.plugin("library", (ctx) => {
     // send saves the form; s is then the server as saved, for a save after
     // a sign-in's to be of it
     const send = async () => {
-      const body = { old: s ? s.name : "", server: { name: d.name, transport: d.transport, agents: d.agents } };
+      const body = { old: s ? s.name : "", server: { name: d.name, transport: d.transport, agents: d.agents, startupTimeout: d.startupTimeout || 0 } };
       if (d.transport === "stdio") Object.assign(body.server, { command: d.command, args: d.args, env: d.env });
       else Object.assign(body.server, { url: d.url, headers: d.headers, oauth: d.transport === "http" && d.oauth?.clientId ? d.oauth : null });
       take(await api("library/servers/save", body));

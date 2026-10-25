@@ -207,6 +207,11 @@ func providers() error {
 		if u := uses[p.ID]; len(u) > 0 {
 			r.uses = green.Render("← " + strings.Join(u, ", "))
 		}
+		if p.Off {
+			// the user's own switch, kept as they set it: how to undo it
+			// is said beside it, never done for them
+			r.uses = strings.TrimSpace(muted.Render("magpie provider on "+p.ID) + "  " + r.uses)
+		}
 		if e := p.ListError(); e != "" {
 			r.uses += amber.Render("  ! couldn't list its models: " + e)
 		}

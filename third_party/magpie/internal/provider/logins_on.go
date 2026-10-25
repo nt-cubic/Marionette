@@ -245,6 +245,17 @@ func renewSaved(ctx context.Context, agent, user string, force bool, stale strin
 		// a switch away saves it afresh from Codex's.
 		return codexTokenRenewing(ctx, codexHome(), stale)
 	}
+	if home := codexHeldIn(*l); home != "" {
+		// the same for an account Codex is signed in to in another of
+		// its folders (CODEX_HOME=~/.codex-work): Codex there refreshes
+		// it too, so magpie renews it in that folder, never in a copy
+		// whose refresh token would sign that Codex out
+		tok, accountID, err := codexTokenRenewing(ctx, home, stale)
+		if err != nil {
+			return "", "", fmt.Errorf("%s, signed in to Codex in %s: %w; to sign in again there, run CODEX_HOME=%s codex login", user, home, err, home)
+		}
+		return tok, accountID, nil
+	}
 	var auth []byte
 	switch agent {
 	case "codex":
@@ -298,9 +309,7 @@ func heldByCodex(l savedLogin) bool {
 	if sameLogin(live, l) {
 		return true
 	}
-	var a, b codexAuth
-	return json.Unmarshal(live.Auth, &a) == nil && json.Unmarshal(l.Auth, &b) == nil &&
-		a.Tokens.RefreshToken != "" && a.Tokens.RefreshToken == b.Tokens.RefreshToken
+	return sameRefresh(live.Auth, l.Auth)
 }
 
 // savedRefreshFailed words a saved account's failed refresh. One the vendor

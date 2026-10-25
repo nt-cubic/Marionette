@@ -99,6 +99,7 @@ func pricedRoutes(routes []gateway.Route) []routeJSON {
 	pub := publicRefs()
 	for _, r := range routes {
 		r = publicRoute(r, pub)
+		r.Usage = cacheCounted(r.Usage)
 		recs := make([]usage.Record, len(r.Usage))
 		for i, u := range r.Usage {
 			recs[i] = u.PricingRecord()
@@ -117,6 +118,32 @@ func pricedRoutes(routes []gateway.Route) []routeJSON {
 		out = append(out, routeJSON{Route: r, SessionTitle: name, Cost: sum.Cost, Priced: priced, Unpriced: sum.Unpriced})
 	}
 	return out
+}
+
+// cacheCounted marks the usage of a vendor that counts no cache as such,
+// kept before its plugin said so (usage.CountsNoCache): its hit rate is
+// none rather than 0% (#3464). us is copied before it is changed.
+func cacheCounted(us []gateway.RouteUsage) []gateway.RouteUsage {
+	var out []gateway.RouteUsage
+	for i, u := range us {
+		if u.CacheUnknown || !cacheNotCounted(u) {
+			continue
+		}
+		if out == nil {
+			out = slices.Clone(us)
+		}
+		out[i].CacheUnknown = true
+	}
+	if out == nil {
+		return us
+	}
+	return out
+}
+
+// cacheNotCounted is whether u's vendor counted no cache for it: it said
+// so, or it never does and none was recorded.
+func cacheNotCounted(u gateway.RouteUsage) bool {
+	return u.CacheUnknown || u.CacheRead+u.CacheWrite == 0 && usage.CountsNoCache(u.Provider)
 }
 
 // publicRefs is provider.PublicRef, each ref looked up once: a page of

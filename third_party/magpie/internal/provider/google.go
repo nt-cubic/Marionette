@@ -1221,6 +1221,12 @@ func (g googleAccount) quota(ctx context.Context, plan string) SubscriptionQuota
 // its group's name as its Pool, so the GUI shows one row a group. None
 // when the summary can't be read: the per-model windows stand alone. They
 // are Aside: routing goes on reading the per-model windows, as before.
+//
+// A group named for one model ("Gemini 4 Argon", whose quota is apart
+// from the other Gemini models' and has only a week: agy 1.4.0's /usage,
+// CodexBar #4585) takes that model, whatever windows it has, and no other
+// model of its family: the family-wide group ("Gemini Models") keeps the
+// rest, whichever of the two Google lists first (01huadalang on Discord).
 func (g googleAccount) pools(ctx context.Context, ws []QuotaWindow) []QuotaWindow {
 	p, err := g.project(ctx)
 	if err != nil {
@@ -1243,7 +1249,12 @@ func (g googleAccount) pools(ctx context.Context, ws []QuotaWindow) []QuotaWindo
 	if err := g.call(ctx, g.app.base, "retrieveUserQuotaSummary", map[string]any{"project": p.id}, &res, nil); err != nil {
 		return nil
 	}
+	type group struct {
+		pool, about string
+		five        bool // has its 5 hours, which stand in for its models'
+	}
 	var out []QuotaWindow
+	var groups []group
 	for _, gr := range res.Groups {
 		pool := poolName(gr.DisplayName)
 		if pool == "" {
@@ -1281,21 +1292,53 @@ func (g googleAccount) pools(ctx context.Context, ws []QuotaWindow) []QuotaWindo
 			n++
 			fiveHour = fiveHour || w.Span == modelSpan
 		}
-		if n == 0 || !fiveHour {
-			continue // without the group's 5 hours its models' own stand (#745)
+		if n > 0 {
+			groups = append(groups, group{pool, strings.ToLower(gr.DisplayName + " " + gr.Description), fiveHour})
 		}
-		// a model is in the group its name or description names its
-		// family in ("Models within this group: Claude Opus, Claude
-		// Sonnet, GPT-OSS")
-		about := strings.ToLower(gr.DisplayName + " " + gr.Description)
-		for i := range ws {
-			if ws[i].Pool == "" && ws[i].Family != "" && strings.Contains(about, strings.ToLower(ws[i].Family)) {
-				ws[i].Pool = pool
+	}
+	for i := range ws {
+		if ws[i].Pool != "" || ws[i].Family == "" {
+			continue
+		}
+		if j := slices.IndexFunc(groups, func(gr group) bool { return poolNames(gr.pool, ws[i]) }); j >= 0 {
+			ws[i].Pool = groups[j].pool
+			continue
+		}
+		// else the group its name or description names its family in
+		// ("Models within this group: Claude Opus, Claude Sonnet,
+		// GPT-OSS"), one with its 5 hours: without them its models' own
+		// stand (#745); a group that says a version ("Gemini 4 Argon") is
+		// its model's alone, never the family's
+		for _, gr := range groups {
+			if gr.five && !versioned(gr.pool) && strings.Contains(gr.about, strings.ToLower(ws[i].Family)) {
+				ws[i].Pool = gr.pool
+				break
 			}
 		}
 	}
 	return out
 }
+
+// poolNames is whether a quota group's name (pool) is a model's own: the
+// model's name or id begins with it and it says a version, as "Gemini 4
+// Argon" does Gemini 4 Argon (High)'s; "Gemini" names a family, not a model.
+func poolNames(pool string, w QuotaWindow) bool {
+	if !versioned(pool) {
+		return false
+	}
+	p := strings.ToLower(pool)
+	for _, s := range []string{w.Name, strings.ReplaceAll(w.Model, "-", " ")} {
+		s = strings.ToLower(s)
+		if s == p || strings.HasPrefix(s, p+" ") || strings.HasPrefix(s, p+"(") {
+			return true
+		}
+	}
+	return false
+}
+
+// versioned is whether a quota group's name says a version, a model's
+// group ("Gemini 4 Argon"), not a family's ("Gemini", "Claude & GPT").
+func versioned(pool string) bool { return strings.ContainsAny(pool, "0123456789") }
 
 // modelSpan is the window fetchAvailableModels gives a model of
 // Antigravity's, its 5 hours, which its window leaves without a Span.

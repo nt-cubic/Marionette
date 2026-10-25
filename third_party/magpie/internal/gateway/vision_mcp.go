@@ -112,7 +112,7 @@ func (s *Server) visionMCPRun(r *http.Request, image, prompt string) (string, er
 	if image == "" {
 		return "", searchMCPError("analyze_image needs an image: a file path, an http(s) URL or a data URL")
 	}
-	src, err := visionSrc(r, image)
+	src, err := mcpImageSrc(r, image, visionMCPTool)
 	if err != nil {
 		return "", err
 	}
@@ -144,16 +144,18 @@ func (s *Server) visionMCPRun(r *http.Request, image, prompt string) (string, er
 	return said, nil
 }
 
-// visionSrc is the image as the describer is sent it: a URL or data URL as
-// it is, a file read into a data URL. A file is read only for an agent on
+// mcpImageSrc is an image an MCP tool (tool, which names it in what it says)
+// was given, as the gateway's own APIs take it: a URL or data URL as it
+// is, a file read into a data URL. A file is read only for an agent on
 // this computer: another machine's path names none of its own here, and a
-// shared magpie's files aren't its callers'.
-func visionSrc(r *http.Request, image string) (string, error) {
+// shared magpie's files aren't its callers'. analyze_image and the image
+// server's tools (image_mcp.go) read their images through it.
+func mcpImageSrc(r *http.Request, image, tool string) (string, error) {
 	low := strings.ToLower(image)
 	switch {
 	case strings.HasPrefix(low, "data:"):
 		if !strings.HasPrefix(low, "data:image/") || !strings.Contains(low[:min(len(low), 64)], ";base64,") {
-			return "", searchMCPError("analyze_image takes a data URL of an image in base64 (data:image/png;base64,...)")
+			return "", searchMCPError(tool + " takes a data URL of an image in base64 (data:image/png;base64,...)")
 		}
 		return image, nil
 	case strings.HasPrefix(low, "http://"), strings.HasPrefix(low, "https://"):
@@ -169,31 +171,31 @@ func visionSrc(r *http.Request, image string) (string, error) {
 		}
 	}
 	if !filepath.IsAbs(path) {
-		return "", searchMCPError("analyze_image takes an absolute file path (the gateway doesn't know your agent's working folder), an http(s) URL or a data URL: " + image + " is none of them")
+		return "", searchMCPError(tool + " takes an absolute file path (the gateway doesn't know your agent's working folder), an http(s) URL or a data URL: " + image + " is none of them")
 	}
 	if !local(r) {
-		return "", searchMCPError("analyze_image reads a file only for an agent on the computer magpie runs on: from another computer, send the image as a data URL (data:image/png;base64,...) or an http(s) URL")
+		return "", searchMCPError(tool + " reads a file only for an agent on the computer magpie runs on: from another computer, send the image as a data URL (data:image/png;base64,...) or an http(s) URL")
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return "", searchMCPError("analyze_image couldn't read " + path + ": " + err.Error())
+		return "", searchMCPError(tool + " couldn't read " + path + ": " + err.Error())
 	}
 	defer f.Close()
 	if st, err := f.Stat(); err == nil && st.IsDir() {
 		return "", searchMCPError(path + " is a folder, not an image")
 	} else if err == nil && st.Size() > visionFileMax {
-		return "", searchMCPError(fmt.Sprintf("%s is %d MB: analyze_image reads images up to %d MB", path, st.Size()>>20, visionFileMax>>20))
+		return "", searchMCPError(fmt.Sprintf("%s is %d MB: %s reads images up to %d MB", path, st.Size()>>20, tool, visionFileMax>>20))
 	}
 	b, err := io.ReadAll(io.LimitReader(f, visionFileMax+1))
 	if err != nil {
-		return "", searchMCPError("analyze_image couldn't read " + path + ": " + err.Error())
+		return "", searchMCPError(tool + " couldn't read " + path + ": " + err.Error())
 	}
 	if len(b) > visionFileMax {
-		return "", searchMCPError(fmt.Sprintf("%s is over %d MB: analyze_image reads images up to %d MB", path, visionFileMax>>20, visionFileMax>>20))
+		return "", searchMCPError(fmt.Sprintf("%s is over %d MB: %s reads images up to %d MB", path, visionFileMax>>20, tool, visionFileMax>>20))
 	}
 	mime := http.DetectContentType(b)
 	if !strings.HasPrefix(mime, "image/") {
-		return "", searchMCPError(path + " isn't an image analyze_image can read (PNG, JPEG, GIF or WebP): it reads as " + mime)
+		return "", searchMCPError(path + " isn't an image " + tool + " can read (PNG, JPEG, GIF or WebP): it reads as " + mime)
 	}
 	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(b), nil
 }

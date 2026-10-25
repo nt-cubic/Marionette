@@ -1059,9 +1059,10 @@ function routingPage(part) {
   const WB_REFUSED = "WorkBuddy refuses chats from Codex and Claude Code (their system prompt); use it from Hermes, OpenCode or Pi, or add another provider to this group";
   // what it adds to a vendor's edge firewall's block page (provider.BlockedHint)
   const BLOCKED = "the provider's network firewall blocked requests from this IP; wait a while, or switch to another network or proxy";
-  // what it says of ZCode's Start Plan turning a request away (#425,
-  // provider.ZCodeStartBlockedHint), in place of BLOCKED
-  const ZCODE_BLOCKED = "ZCode's Start Plan still turned this request away, though magpie sends it as the ZCode app does; it can be a network block of this IP, or ZCode checking for something new. Use an account with a GLM Coding Plan, or add another provider to this group";
+  // what the ZCode plugin adds to the Start Plan's 405 code 3012, an
+  // account ZCode's risk control blocked (provider.ZCodeRestrictedHint,
+  // plugins#348)
+  const ZCODE_BLOCKED = "ZCode's risk control blocked this account for unusual activity (code 3012); it rests, and the group's other providers are used. If the ZCode app fails on this account too, only ZCode support can lift the block";
   // what it adds to Antigravity's 429 for Claude Code's and the Agent SDK's
   // system prompt (antigravityTurnedAwayHint, #666, #1425)
   const AG_TURNED_AWAY = "Antigravity answers this 429 to the system prompt of Claude Code and the Claude Agent SDK (Claude Desktop's chats) whatever quota is left, so it is not a quota and waiting won't help; use another provider for these chats, or put one after Antigravity in a routing group";
@@ -2416,7 +2417,7 @@ function routingPage(part) {
       ? t("{agent} requested a subagent; magpie selects its model within this routing group.", { agent })
       : t("{agent} requested a subagent on {model}.", { agent, model: r.model });
     if (purposeOf(r.kind) === "kind:ambient_suggestions") return t("{agent} drafted the suggested prompts on its home page by itself, in the background, searching the project's files and connected apps, and checked them for safety. Not a turn of the conversation; Codex's Settings › Configuration › Suggested prompts turns it off.", { agent });
-    if (purposeOf(r.kind) === "kind:composer_predictions") return t("{agent} guessed your next message for its composer by itself, reading the whole conversation again. Not a turn of the conversation; Settings › General › Codex composer predictions picks its model, and Codex's Settings › General › Show predictions turns it off.", { agent });
+    if (purposeOf(r.kind) === "kind:composer_predictions") return t("{agent} guessed your next message for its composer by itself, reading the whole conversation again. Not a turn of the conversation; Codex composer predictions, under Settings in Codex's row on the Agents page, picks its model, and Codex's Settings › General › Show predictions turns it off.", { agent });
     if (r.kind === "luna_reserve") return t("{agent} sent this turn on Luna Reserve, which it turns to once the plan's own allowance is used up; it picks the model itself.", { agent });
     // the searcher asked first failed or found nothing, and this one
     // searched in its place: say which and why, not just who searched
@@ -6457,7 +6458,7 @@ function routingPage(part) {
     if (picks) out.push(picks);
     if (!offMsg && loaded && rs.length) out.push(pStage);
     if (offMsg) out.push(el("p", "pr-none", t(offMsg)));
-    else if (!loaded) for (let i = 0; i < 3; i++) out.push(el("span", "skeleton pr-sk-row"));
+    else if (!loaded) out.push(...pGhost());
     else if (!rs.length) {
       const p = el("div", "pr-none");
       p.append(el("b", "", t("No request yet")), t("Every request an agent sends to magpie shows up here, routed for real."));
@@ -6472,6 +6473,28 @@ function routingPage(part) {
     pDraw();
     pWake();
     fit();
+  }
+  // pGhost holds the tab's place while the trace is on its way: the stage
+  // and P_ROWS requests, laid out as they will be and drawn as skeletons,
+  // so the panel, fitted to its tallest tab, doesn't grow when they come
+  // (CyberCaius on Discord). A shorter skeleton had the panel grow on the
+  // first open, and a scrollbar show till it did.
+  function pGhost() {
+    const stage = el("div", "skeleton pr-ghost");
+    stage.append(el("div", "pr-stage"));
+    const list = el("div", "pr-list");
+    for (let i = 0; i < P_ROWS; i++) {
+      const row = el("span", "pr-req");
+      const asked = el("span", "pr-a");
+      asked.append(el("span", "pr-who", "\u00a0"), el("code", "m", "\u00a0"));
+      const line = el("span", "pr-line");
+      line.append(el("span", "pr-to", "\u00a0"), el("span", "meta", "\u00a0"));
+      row.append(asked, el("span", "at", "\u00a0"), line);
+      list.append(row);
+    }
+    const rows = el("div", "skeleton pr-ghost");
+    rows.append(list);
+    return [stage, rows];
   }
   // a Manual group's model, switched here as its card's radios do (#2489,
   // Jerell.OvO on Discord): CC Switch's one provider on at a time, from
@@ -6581,5 +6604,8 @@ function routingPage(part) {
   new ResizeObserver(fitSoon).observe(box);
   words();
   start();
+  // the tray panel's line of today's totals is asked for at once, not
+  // after the trace's first answer, which it doesn't need (CyberCaius)
+  if (pBox) loadToday();
   poll();
 }

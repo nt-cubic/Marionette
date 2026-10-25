@@ -156,7 +156,8 @@ func NextLogin(ctx context.Context, agent string) (from, to string, back, ok boo
 		case l.Returns:
 			first = &ls[i]
 		}
-		if !l.Active && l.On && l.Lapsed == "" {
+		// never one Codex keeps signed in in another folder (switchSavedLogin)
+		if !l.Active && l.On && l.Lapsed == "" && l.home == "" {
 			spares = append(spares, l)
 		}
 	}

@@ -28,13 +28,13 @@ func init() { provider.ReckonHolds = WithWindowHolds }
 func WithWindowHolds(qs []provider.SubscriptionQuota, now time.Time) []provider.SubscriptionQuota {
 	since, ok := holdsSince(qs, now)
 	if !ok { // none can be reckoned: each one only says why
-		return windowHolds(qs, now, time.Time{}, nil, nil, nil, func(func(Record)) {})
+		return windowHolds(qs, now, time.Time{}, nil, provider.Renames{}, nil, func(func(Record)) {})
 	}
 	s := readLogSnapshot()
 	hist := provider.QuotaHistories(since, "", "")
 	started := withRecordedWindowStarts(qs, hist, now)
 	dry := dryRuns(started, hist, now)
-	out := windowHolds(started, now, s.firstOwn, apiPricer(), provider.Renamed(), dry, func(fn func(Record)) { s.visit(since, fn) })
+	out := windowHolds(started, now, s.firstOwn, apiPricer(), provider.UsageRenames(), dry, func(fn func(Record)) { s.visit(since, fn) })
 	return withSpansOf(out, qs)
 }
 
@@ -177,7 +177,7 @@ func dryRuns(qs []provider.SubscriptionQuota, hist []provider.QuotaHistory, now 
 // call in one of its account's dry runs that may have been paid otherwise:
 // one where the vendor answered a call after a reading of none left, or
 // where no reading with some left is known before it.
-func windowHolds(qs []provider.SubscriptionQuota, now, first time.Time, priceOf func(Record) *catalog.Price, renamed map[string]string, dry map[string][]dryRun, read func(func(Record))) []provider.SubscriptionQuota {
+func windowHolds(qs []provider.SubscriptionQuota, now, first time.Time, priceOf func(Record) *catalog.Price, renamed provider.Renames, dry map[string][]dryRun, read func(func(Record))) []provider.SubscriptionQuota {
 	type slot struct{ q, w int }
 	type span struct{ start, end time.Time }
 	want := map[slot]span{}
@@ -217,9 +217,7 @@ func windowHolds(qs []provider.SubscriptionQuota, now, first time.Time, priceOf 
 		if r.IsRejected() || r.IsReported() || r.Input+r.Output == 0 {
 			return
 		}
-		if next, ok := renamed[r.Provider]; ok {
-			r.Provider = next
-		}
+		r.Provider = renamed.Of(r.Provider, r.Time)
 		acct := r.Provider + "\x00" + strings.ToLower(r.Account())
 		var runs []runKey
 		for i, d := range dry[acct] {

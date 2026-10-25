@@ -51,13 +51,17 @@ func spawnAgentModels(r *http.Request, body []byte, lead string, codexPath bool)
 	if len(choices) == 0 {
 		return body
 	}
-	var q map[string]json.RawMessage
-	if json.Unmarshal(body, &q) != nil {
+	// Codex sends spawn_agent on every request, so only the members that
+	// change are decoded and put back, the rest of the body (the
+	// conversation) left as it is: decoding the whole body and encoding it
+	// again walked the conversation twice a request (#3394).
+	tools, _, ok := topMember(body, "tools")
+	if !ok {
 		return body
 	}
-	changed := false
-	if tools, ok := moreSpawnTools(q["tools"], choices); ok {
-		q["tools"], changed = tools, true
+	set := map[string][]byte{}
+	if t, ok := moreSpawnTools(tools, choices); ok {
+		set["tools"] = t
 	}
 	// A model that can search tools is handed spawn_agent only when it
 	// searches for it: Codex defers its multi-agent V1 tools behind
@@ -66,27 +70,83 @@ func spawnAgentModels(r *http.Request, body []byte, lead string, codexPath bool)
 	// in a tool_search_output, not in tools (Gearclickist on Discord, after
 	// v0.1.1214). Codex sends that output as it got it on every turn, so
 	// it is widened the same way on each.
-	var input []map[string]json.RawMessage
-	if json.Unmarshal(q["input"], &input) == nil {
-		in := false
-		for _, it := range input {
-			var kind string
-			json.Unmarshal(it["type"], &kind)
-			if kind != "tool_search_output" {
-				continue
-			}
-			if tools, ok := moreSpawnTools(it["tools"], choices); ok {
-				it["tools"], in = tools, true
-			}
-		}
-		if in {
-			q["input"], changed = rawJSON(input), true
+	if input, found, _ := topMember(body, "input"); found && bytes.Contains(input, []byte("tool_search_output")) {
+		if in, ok := moreSpawnInput(input, choices); ok {
+			set["input"] = in
 		}
 	}
-	if !changed {
+	if len(set) == 0 {
 		return body
 	}
-	return rawJSON(q)
+	return withMembers(body, set)
+}
+
+// moreSpawnInput is input, a request's input list, with each
+// tool_search_output's spawn_agent naming choices too; false when there is
+// none to widen. Only those items are decoded and written again.
+func moreSpawnInput(input []byte, choices []spawnChoice) ([]byte, bool) {
+	raw := trimJSON(input)
+	if len(raw) == 0 || raw[0] != '[' {
+		return input, false
+	}
+	var out []byte
+	last := 0
+	i := skipJSONSpace(raw, 1)
+	for raw[i] != ']' {
+		at := i
+		i = skipJSONValue(raw, i)
+		if el := raw[at:i]; el[0] == '{' && bytes.Contains(el, []byte("tool_search_output")) {
+			if it, ok := moreSpawnItem(el, choices); ok {
+				out = append(append(out, raw[last:at]...), it...)
+				last = i
+			}
+		}
+		if i = skipJSONSpace(raw, i); raw[i] == ',' {
+			i = skipJSONSpace(raw, i+1)
+		}
+	}
+	if out == nil {
+		return input, false
+	}
+	return append(out, raw[last:]...), true
+}
+
+// moreSpawnItem is el, an input item, when it is a tool_search_output whose
+// spawn_agent can name more choices, written again naming them.
+func moreSpawnItem(el []byte, choices []spawnChoice) ([]byte, bool) {
+	var it map[string]json.RawMessage
+	if json.Unmarshal(el, &it) != nil {
+		return nil, false
+	}
+	var kind string
+	json.Unmarshal(it["type"], &kind)
+	if kind != "tool_search_output" {
+		return nil, false
+	}
+	tools, ok := moreSpawnTools(it["tools"], choices)
+	if !ok {
+		return nil, false
+	}
+	it["tools"] = tools
+	return rawJSON(it), true
+}
+
+// withMembers is body, a valid JSON object, with the members set names
+// given set's values, every other byte of it as it was (a name the body
+// has twice is given the value at both).
+func withMembers(body []byte, set map[string][]byte) []byte {
+	raw := trimJSON(body)
+	out := make([]byte, 0, len(raw)+len(set["tools"])+len(set["input"]))
+	last := 0
+	eachMemberAt(raw, func(k0, k1, v0, v1 int) bool {
+		name, ok := unquoteJSON(raw[k0:k1])
+		if v, has := set[name]; ok && has {
+			out = append(append(out, raw[last:v0]...), v...)
+			last = v1
+		}
+		return true
+	})
+	return append(out, raw[last:]...)
 }
 
 // moreSpawnTools is raw, a list of tools (a request's, or the ones a

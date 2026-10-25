@@ -148,3 +148,42 @@ func TestCodexTitleEvidenceBound(t *testing.T) {
 		t.Fatal("evidence bound broke normal title display")
 	}
 }
+
+// A pass's codexTitleOf looks at the index on its first ask only, there or
+// not, so assembling every Codex session stats it once; the next pass sees
+// it as it is then.
+func TestCodexTitleOfLooksOnce(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir := t.TempDir()
+	t.Setenv("CODEX_HOME", dir)
+	path := filepath.Join(dir, "session_index.jsonl")
+	none := codexTitleOf()
+	if got := none("main"); got != "" {
+		t.Fatalf("no index: %q", got)
+	}
+	write := func(name string, at time.Time) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(fmt.Sprintf("{\"id\":\"main\",\"thread_name\":%q}\n", name)), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	at := time.Now().Add(-time.Hour)
+	write("天气", at)
+	if got := none("main"); got != "" {
+		t.Fatalf("an index made after the first ask: %q, want none in this pass", got)
+	}
+	pass := codexTitleOf()
+	if got := pass("main"); got != "天气" {
+		t.Fatalf("next pass: %q", got)
+	}
+	write("长沙", at.Add(time.Minute))
+	if got := pass("main"); got != "天气" {
+		t.Fatalf("a rename in the pass: %q, want the name of its first ask", got)
+	}
+	if got := codexTitleOf()("main"); got != "长沙" {
+		t.Fatalf("a pass after the rename: %q", got)
+	}
+}

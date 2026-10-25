@@ -12,7 +12,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
-const { openPart } = require("./reader.cjs");
+const { openPart, reach } = require("./reader.cjs"); // reach: wheeled to as a reader would, rows taller since their lines wrap whole (arculongus on Discord); a Playwright scroll is undone
 
 const assets = path.resolve(__dirname, "../assets");
 
@@ -111,8 +111,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           const pill = page.locator("#trayUsagePick button");
           await pill.waitFor();
           await pillIs(page, w.off);
-          await pill.scrollIntoViewIfNeeded();
+          await reach(page, pill);
           const before = await view(page);
+          const pillY = (await pill.boundingBox()).y;
 
           // the two totals follow the subscriptions, each with a box to tick
           await pill.click();
@@ -160,7 +161,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           assert.deepEqual(posts.at(-1).trayUsages, ["usage:7d"]);
 
           await page.waitForTimeout(300);
-          assert.equal(await view(page), before, "no click moved the page");
+          // the pill's name changes its width, and the row's line, wrapped
+          // whole beside it (arculongus on Discord), can take a line more or
+          // less: the page then moves only to keep the pill under the pointer (WebKit
+          // scrolls by whole pixels, so four holds can leave it ~1.3px off)
+          if (await view(page) !== before) assert.ok(Math.abs((await pill.boundingBox()).y - pillY) <= 2, "a click moved the page, and the pill with it");
           assert.deepEqual(errors, []);
           await context.close();
         });

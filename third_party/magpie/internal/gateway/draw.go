@@ -893,11 +893,60 @@ func (s *Server) drawOnAccounts(ctx context.Context, r *http.Request, p provider
 	for i, c := range cs {
 		p = c.p
 		out, code, err = s.draw(ctx, p, model, d)
+		if err != nil && ctx.Err() == nil {
+			restDrawer(c, code, err.Error())
+		}
 		if err == nil || ctx.Err() != nil || i+1 == len(cs) || !accountRefusedDrawing(code) && !keyLacksModel(code, err) {
 			break
 		}
 	}
 	return p, out, code, time.Time{}, err
+}
+
+// restDrawer rests the image model on c's account when the account is out
+// of its quota for it, until the reset the refusal names (Antigravity's
+// "Your quota will reset after 3h19m30s.", resetsAt), else quotaRest. Only
+// the model rests (restID), never the account: its text models draw on
+// allowances of their own. The next drawing then asks the accounts that
+// still have it first (restLast in candidates), and a chat on that image
+// model goes past it too, where before every drawing asked the spent
+// account first again (01huadalang on Discord). A failure of any other
+// kind rests nothing, as before: a key, a request refused, a vendor down.
+func restDrawer(c candidate, code int, msg string) {
+	if c.p.Account == nil || c.model == "" || failure(code, []byte(msg)) != failQuota {
+		return
+	}
+	now := time.Now()
+	r := Rest{Why: failQuota, Status: code, By: "quota", Key: c.restID(), Model: c.model,
+		agent: c.p.Account.UsageAgent(), user: c.p.Account.User, said: msg}
+	d := quotaRest
+	if w := resetsAt([]byte(msg), now); w > 0 {
+		d, r.By = min(w, longestQuota), "resets"
+	}
+	r.Until = now.Add(d)
+	restingUntil.Lock()
+	restingUntil.m[r.Key] = r.Until
+	restingUntil.note[r.Key] = r
+	restingUntil.Unlock()
+}
+
+// saidStatus is the status an error said inside a drawing's 200 stands
+// for, which drawOnAccounts goes by: Antigravity tells a model's quota used
+// up as the stream's error event as well as a 429 ("You have exhausted
+// your capacity on this model. Your quota will reset after 3h19m30s."),
+// and told as a 502 it ended the drawing on the spent account while the
+// next one had its quota (01huadalang on Discord). Out of quota, or
+// rate limited, it is the 429 it would have been; out of credit, the 402;
+// anything else the 502 it was, which asks no other account.
+func saidStatus(msg string) int {
+	b := wordsOf([]byte(msg))
+	switch {
+	case usedUpWords.Match(b), quotaCodes.Match(b), rateWords.Match(b):
+		return http.StatusTooManyRequests
+	case creditWords.Match(b):
+		return http.StatusPaymentRequired
+	}
+	return http.StatusBadGateway
 }
 
 // keyLacksModel says a vendor answered 404 that the model isn't one this
@@ -1324,7 +1373,7 @@ func readImagesAnswer(p provider.Provider, url string, b []byte, code int) (draw
 	}
 	if len(out.Images) == 0 {
 		// an answer with no image says why, or is shown as it came
-		return out, 502, fmt.Errorf("%s answered with no image%s", provider.HostOf(url), vendorSaid(vendorMessage(b)))
+		return out, saidStatus(vendorMessage(b)), fmt.Errorf("%s answered with no image%s", provider.HostOf(url), vendorSaid(vendorMessage(b)))
 	}
 	return out, code, nil
 }
@@ -1667,7 +1716,7 @@ func (s *Server) drawCodeAssist(ctx context.Context, p provider.Provider, model 
 		}
 		out.Text = strings.TrimSpace(out.Text)
 		if failed != "" && len(out.Images) == 0 {
-			return out, 502, errors.New(failed)
+			return out, saidStatus(failed), errors.New(failed)
 		}
 		return out, 200, nil
 	})

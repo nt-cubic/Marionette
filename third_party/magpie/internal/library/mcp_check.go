@@ -57,6 +57,11 @@ type ServerHealth struct {
 	// left it: one whose renewed token the server refused has run out
 	// since, and the page's tag says so (新v学员 on Discord)
 	SignIn *mcpauth.Status `json:"signIn,omitempty"`
+	// AgentSignIn are the agents signed in to a server that refused
+	// magpie's check on their own (Claude Code's /mcp, mcp_agent_signin.go),
+	// by id: they use it, though the check, without their tokens, was asked
+	// to sign in (CyberCaius on Discord)
+	AgentSignIn []string `json:"agentSignIn,omitempty"`
 	// Step is what a server that timed out was asked and didn't answer
 	// (initialize, notifications/initialized, tools/list, or connect: an
 	// SSE server's stream), and Waited how long it was waited for, in ms
@@ -108,7 +113,7 @@ type checkedServer struct {
 	h   ServerHealth
 }
 
-func healthKey(s *Server) string {
+func healthKey(s *Server, own ownSignIns) string {
 	c := *s
 	c.Name, c.Agents = "", nil
 	b, _ := json.Marshal(c)
@@ -118,7 +123,9 @@ func healthKey(s *Server) string {
 	if s.Transport == "stdio" {
 		sides = checkSides(s)
 	}
-	return fmt.Sprintf("%s|%v|%v|%d|%q", b, st.SignedIn, st.Dead, st.At, sides)
+	// and the agents signed in to it themselves: one signed in since
+	// isn't left as "needs sign-in"
+	return fmt.Sprintf("%s|%v|%v|%d|%q|%q", b, st.SignedIn, st.Dead, st.At, sides, own.of(s))
 }
 
 // CheckServers checks the library's servers called names (every one when
@@ -141,12 +148,13 @@ func CheckServers(ctx context.Context, names []string, fresh bool) (map[string]S
 			}
 		}
 	}
+	own := readOwnSignIns()
 	out := map[string]ServerHealth{}
 	var outMu sync.Mutex
 	var wg sync.WaitGroup
 	slots := make(chan struct{}, checkAtOnce)
 	for _, s := range list {
-		key := healthKey(s)
+		key := healthKey(s, own)
 		checked.Lock()
 		c, ok := checked.m[s.Name]
 		checked.Unlock()
@@ -161,10 +169,10 @@ func CheckServers(ctx context.Context, names []string, fresh bool) (map[string]S
 			defer wg.Done()
 			slots <- struct{}{}
 			defer func() { <-slots }()
-			h := CheckServer(ctx, s)
+			h := checkServer(ctx, s, own)
 			// as the server is now: a sign-in the check found run out
 			// isn't one to check it again for
-			key := healthKey(s)
+			key := healthKey(s, own)
 			// a check cut short by the page going away isn't one, and a
 			// server that didn't answer in time is asked again next time:
 			// a slow server may answer then (#1467)
@@ -189,6 +197,13 @@ func CheckServers(ctx context.Context, names []string, fresh bool) (map[string]S
 
 // CheckServer connects to one server and asks it for its tools.
 func CheckServer(ctx context.Context, s *Server) ServerHealth {
+	return checkServer(ctx, s, nil)
+}
+
+// checkServer is CheckServer with the agents' own sign-ins read already,
+// once for every server checked together; nil reads them when a server
+// asks for a sign-in.
+func checkServer(ctx context.Context, s *Server, own ownSignIns) ServerHealth {
 	each := remoteStep
 	if s.Transport == "stdio" {
 		each = stdioStep
@@ -213,6 +228,12 @@ func CheckServer(ctx context.Context, s *Server) ServerHealth {
 		if st := mcpauth.StatusOf(s.Name, s.URL); st.SignedIn || st.Dead {
 			h.SignIn = &st
 		}
+	}
+	if h.State == "auth" && s.Transport != "stdio" {
+		if own == nil {
+			own = readOwnSignIns()
+		}
+		h.AgentSignIn = own.of(s)
 	}
 	return h
 }

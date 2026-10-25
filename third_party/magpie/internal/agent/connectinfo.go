@@ -151,8 +151,9 @@ var running = listRunning
 // changedAt is when magpie last changed what the agent reads at start. It
 // is kept in the stash with a digest of what that was, so neither the
 // agent's own writes to the same files nor magpie starting again move it;
-// a change first seen is put at the files' latest write. Zero when the
-// files aren't there.
+// a change first seen is put at the files' latest write, or at now when
+// no file was written since the last one. Zero when the files aren't
+// there.
 func (a *Agent) changedAt(files []string, reads func() string) time.Time {
 	var mod time.Time
 	for _, f := range files {
@@ -166,10 +167,15 @@ func (a *Agent) changedAt(files []string, reads func() string) time.Time {
 	sum := sha256.Sum256([]byte(reads()))
 	digest := hex.EncodeToString(sum[:8])
 	key := a.ID + ".started"
-	if was, at, ok := strings.Cut(stashLoad()[key], " "); ok && was == digest {
-		if n, err := strconv.ParseInt(at, 10, 64); err == nil {
-			return time.Unix(0, n)
-		}
+	was, at, ok := strings.Cut(stashLoad()[key], " ")
+	n, err := strconv.ParseInt(at, 10, 64)
+	if ok && err == nil && was == digest {
+		return time.Unix(0, n)
+	}
+	// a change no file's time shows (Claude Desktop's models are the
+	// gateway's, not a file's) is put at when it is first seen
+	if ok && err == nil && !mod.After(time.Unix(0, n)) {
+		mod = time.Now()
 	}
 	stash(map[string]string{key: digest + " " + strconv.FormatInt(mod.UnixNano(), 10)})
 	return mod

@@ -34,8 +34,31 @@ func codexTitlesTo(h http.Header, body []byte, ours bool) string {
 	if to := settings.Load().CodexTitles; to != "" {
 		return to
 	}
-	if m := modelOf(body); m != "" && (ours || strings.Contains(m, "/")) {
+	return codexSideTo(body, ours)
+}
+
+// CodexSideModel is the model this machine's Codex is set to when it is
+// one of magpie's, picked beside Codex's ChatGPT sign-in, "" otherwise
+// (agent.CodexSideModel).
+var CodexSideModel func() string
+
+// codexSideTo is the model that answers one of the Codex app's hidden
+// side turns (a thread's title, description or one-line summary) when no
+// setting names one: the model Codex asked for when it is one of magpie's
+// (ours: the request came to magpie's own API, where every model is), "" to
+// leave it as Codex sent it. The app asks for these on a model of its own
+// (gpt-6-luna) whatever the conversation is on, so with one of magpie's
+// models picked beside the ChatGPT sign-in every one of them went to
+// ChatGPT and spent its allowance, and failed with it once it was used up
+// (atom_Ray on X: an hour on a third-party model took 2% of the 5-hour
+// window). Those go to the model picked, as the conversation's turns do.
+func codexSideTo(body []byte, ours bool) string {
+	m := modelOf(body)
+	if m != "" && (ours || strings.Contains(m, "/")) {
 		return m
+	}
+	if !ours && CodexSideModel != nil {
+		return CodexSideModel()
 	}
 	return ""
 }
@@ -53,10 +76,19 @@ func codexDescriptionsTo(h http.Header, body []byte, ours bool) string {
 	}
 	// Codex on a magpie model gets no schema upstream (#743), so an empty
 	// setting still wraps the model it asked for, as titles do.
-	if m := modelOf(body); m != "" && (ours || strings.Contains(m, "/")) {
-		return m
+	return codexSideTo(body, ours)
+}
+
+// codexSummariesTo is where the Codex app's request for a thread's
+// one-line activity summary goes (thread_summary, asked after each message
+// of a thread): the model codexSideTo names, its answer handed back as the
+// {"summary": …} the request's schema asks for; "" leaves it as Codex sent
+// it.
+func codexSummariesTo(h http.Header, body []byte, ours bool) string {
+	if !isSummaryKind(requestCallKind(h, requestSessionMetadata(h, body))) {
+		return ""
 	}
-	return ""
+	return codexSideTo(body, ours)
 }
 
 // codexPredictionsTo is where the Codex app's request to predict the
@@ -164,16 +196,36 @@ func (s *Server) codexTitle(w http.ResponseWriter, r *http.Request, body []byte,
 // {"description": ...} its schema asks for; a reply without one fails as a
 // description, not as a title.
 func (s *Server) codexDescription(w http.ResponseWriter, r *http.Request, body []byte, to string) {
+	s.codexShaped(w, r, body, to, "description", true, descriptionJSON, noDescription)
+}
+
+// codexSummary answers a thread_summary request as codexSummariesTo says,
+// by that model, its text handed back as the {"summary": …} the request's
+// schema asks for (a compactSummary beside it when the schema asks for
+// one too).
+func (s *Server) codexSummary(w http.ResponseWriter, r *http.Request, body []byte, to string) {
+	shape := titleShapeOf(body)
+	s.codexShaped(w, r, body, to, "summary", false, func(said string) string { return summaryJSON(said, shape) }, noSummary)
+}
+
+// codexShaped answers one of Codex's hidden side turns by the model to,
+// its answer handed back as shaped makes it the JSON the turn's schema
+// asks for, which a model behind another API never sees; an answer
+// shaped finds nothing in fails as missing says. chose: magpie picked the
+// model in its settings rather than the caller (magpieChose).
+func (s *Server) codexShaped(w http.ResponseWriter, r *http.Request, body []byte, to, what string, chose bool, shaped func(said string) string, missing func(said string) string) {
 	body, _ = codexInput(body, true)
 	rec := &recorder{header: http.Header{}, status: 200}
 	check := func(reply string) string {
-		if res, err := compactReply([]byte(reply)); err == nil && descriptionJSON(messageText(res)) == "" {
-			return noDescription(messageText(res))
+		if res, err := compactReply([]byte(reply)); err == nil && shaped(messageText(res)) == "" {
+			return missing(messageText(res))
 		}
 		return ""
 	}
 	ctx := context.WithValue(r.Context(), titleCheckKey{}, check)
-	ctx = magpieChose(ctx)
+	if chose {
+		ctx = magpieChose(ctx)
+	}
 	s.serve(rec, r.WithContext(ctx), provider.Responses, withModel(body, to))
 	if rec.status >= 400 {
 		for k, vs := range rec.header {
@@ -185,7 +237,7 @@ func (s *Server) codexDescription(w http.ResponseWriter, r *http.Request, body [
 	}
 	res, err := compactReply(rec.body.Bytes())
 	if err != nil {
-		writeError(w, provider.Responses, 502, "description: "+err.Error())
+		writeError(w, provider.Responses, 502, what+": "+err.Error())
 		return
 	}
 	id := res.ID
@@ -193,7 +245,7 @@ func (s *Server) codexDescription(w http.ResponseWriter, r *http.Request, body [
 		id = fmt.Sprintf("resp_magpie_%d", time.Now().UnixNano())
 	}
 	var out []any
-	if d := descriptionJSON(messageText(res)); d != "" {
+	if d := shaped(messageText(res)); d != "" {
 		out = append(out, map[string]any{"type": "message", "id": "msg_" + strings.TrimPrefix(id, "resp_"), "role": "assistant", "status": "completed",
 			"content": []any{map[string]any{"type": "output_text", "text": d, "annotations": []any{}}}})
 	}
@@ -210,7 +262,7 @@ func (s *Server) codexDescription(w http.ResponseWriter, r *http.Request, body [
 func (s *Server) codexPrediction(w http.ResponseWriter, r *http.Request, body []byte, to string) {
 	if to == "off" {
 		s.sentNowhere(w, r, body, "Predictions off",
-			"Codex composer predictions are off in magpie's Settings: answered with no prediction, sent nowhere", []any{predictionItem(fmt.Sprintf("resp_magpie_%d", time.Now().UnixNano()), noSuggestion)})
+			"Codex composer predictions are off in Codex's settings on magpie's Agents page: answered with no prediction, sent nowhere", []any{predictionItem(fmt.Sprintf("resp_magpie_%d", time.Now().UnixNano()), noSuggestion)})
 		return
 	}
 	body, _ = codexInput(body, true)
@@ -305,6 +357,73 @@ func predictionJSON(said string) (string, bool) {
 	return string(b), true
 }
 
+func noSummary(said string) string {
+	said = strings.Join(strings.Fields(said), " ")
+	if said == "" {
+		return "summary: the model answered with no text, so Codex got no summary"
+	}
+	if r := []rune(said); len(r) > 80 {
+		said = string(r[:80]) + "…"
+	}
+	return "summary: no summary in the model's answer, so Codex got none: " + said
+}
+
+// summaryJSON is a model's answer to a thread_summary request as Codex
+// reads one: {"summary": "…"} on one line, with each other string its
+// shape requires (compactSummary) the model's own when its JSON gave one,
+// else the summary, cut to the schema's length. "" when it gave none.
+func summaryJSON(said string, shape titleShape) string {
+	t := strings.TrimSpace(said)
+	t = afterThought(t)
+	if strings.HasPrefix(t, "```") {
+		t = strings.TrimPrefix(t, "```")
+		if i := strings.IndexByte(t, '\n'); i >= 0 && !strings.Contains(t[:i], "{") {
+			t = t[i+1:]
+		}
+		t = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(t), "```"))
+	}
+	fields := map[string]any{}
+	if strings.HasPrefix(t, "{") {
+		if json.NewDecoder(bytes.NewReader([]byte(t))).Decode(&fields) == nil {
+			if v, ok := fields["summary"].(string); ok {
+				t = v
+			}
+		}
+	}
+	t = strings.Join(strings.Fields(t), " ")
+	if low := strings.ToLower(t); strings.HasPrefix(low, "summary:") {
+		t = t[len("summary:"):]
+	}
+	t = strings.TrimSpace(strings.Trim(strings.TrimSpace(t), "\"'`*“”‘’"))
+	if t == "" || strings.HasPrefix(t, "{") {
+		return ""
+	}
+	clip := func(name, v string) string {
+		if n := shape.Properties[name].MaxLength; n > 0 {
+			if r := []rune(v); len(r) > n {
+				v = strings.TrimSpace(string(r[:n]))
+			}
+		}
+		return v
+	}
+	out := map[string]string{"summary": clip("summary", t)}
+	for _, name := range shape.Required {
+		if _, done := out[name]; done {
+			continue
+		}
+		if ty := shape.Properties[name].Type; ty != "" && ty != "string" {
+			continue
+		}
+		v, _ := fields[name].(string)
+		if v = strings.Join(strings.Fields(v), " "); v == "" {
+			v = t
+		}
+		out[name] = clip(name, v)
+	}
+	b, _ := json.Marshal(out)
+	return string(b)
+}
+
 func noDescription(said string) string {
 	said = strings.Join(strings.Fields(said), " ")
 	if said == "" {
@@ -378,7 +497,7 @@ func noTitle(said string) string {
 // no {"title": …} in it, sets none). The Routing and Usage views have it
 // as the title request it was, answered by magpie and sent to no one.
 func (s *Server) codexTitleOff(w http.ResponseWriter, r *http.Request, body []byte) {
-	s.sentNowhere(w, r, body, "Titles off", "Codex titles are off in magpie's Settings: answered with no title, sent nowhere", nil)
+	s.sentNowhere(w, r, body, "Titles off", "Codex titles are off in Codex's settings on magpie's Agents page: answered with no title, sent nowhere", nil)
 }
 
 // sentNowhere answers a hidden turn of Codex's that a setting turned off

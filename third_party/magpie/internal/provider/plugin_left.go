@@ -131,7 +131,13 @@ func takeBackLeft(spec string) error {
 // AddPlugin installs the plugin spec, as plugin.Add does, and puts back
 // what was set aside of it when it was last removed.
 func AddPlugin(ctx context.Context, spec string) (plugin.Entry, error) {
-	e, err := addPlugin(ctx, spec)
+	return addPluginWith(ctx, spec, addPlugin)
+}
+
+// addPluginWith is AddPlugin, installing with add: plugin.Add for a name
+// the user typed, plugin.AddExact for a spec carried from elsewhere.
+func addPluginWith(ctx context.Context, spec string, add func(context.Context, string) (plugin.Entry, error)) (plugin.Entry, error) {
+	e, err := add(ctx, spec)
 	if err != nil {
 		return e, err
 	}

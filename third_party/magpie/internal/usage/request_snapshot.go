@@ -33,9 +33,24 @@ var rowDecodes = sync.Pool{New: func() any { return new([]byte) }}
 var rowEncodes = sync.Pool{New: func() any { return new([2][]byte) }}
 
 func (c *rowChunk) pack() *rowChunk {
-	if c == nil || len(c.Rows) < 64 || len(c.Archive) != 0 {
+	if c == nil || len(c.Rows) == 0 || len(c.Archive) != 0 {
 		return c
 	}
+	encoded, locations := c.encode(func(encoded []byte) bool { return int64(len(encoded)) < c.Bytes })
+	if encoded == nil {
+		return c
+	}
+	next := *c
+	next.Count = len(c.Rows) // what rowsIn says of it
+	next.Rows, next.Strings, next.Shapes, next.dict, next.shapeIDs = nil, nil, nil, nil, nil
+	next.Archive, next.Locations = encoded, locations
+	next.Bytes = int64(len(next.Archive)+len(locations)*8) + codexActorBytes(next.codexActors)
+	return &next
+}
+
+// encode is c's rows as an archive and the locations their times are in,
+// or nil when keep turns the compressed bytes down.
+func (c *rowChunk) encode(keep func([]byte) bool) ([]byte, []*time.Location) {
 	scratch := rowEncodes.Get().(*[2][]byte)
 	defer rowEncodes.Put(scratch)
 	data := scratch[0][:0]
@@ -87,14 +102,10 @@ func (c *rowChunk) pack() *rowChunk {
 	}
 	encoded := s2.Encode(scratch[1][:cap(scratch[1])], data)
 	scratch[1] = encoded[:0]
-	if int64(len(encoded)) >= c.Bytes {
-		return c
+	if !keep(encoded) {
+		return nil, nil
 	}
-	next := *c
-	next.Rows, next.Strings, next.Shapes, next.dict, next.shapeIDs = nil, nil, nil, nil, nil
-	next.Archive, next.Locations = slices.Clone(encoded), locations
-	next.Bytes = int64(len(next.Archive)+len(locations)*8) + codexActorBytes(next.codexActors)
-	return &next
+	return slices.Clone(encoded), locations
 }
 
 func (c *rowChunk) unpack() *rowChunk { return c.unpackInto(nil) }
@@ -120,16 +131,43 @@ func (k keptStrings) of(s string) string {
 	return kept
 }
 
+// decodeMapped is s2.Decode of src, of m's pages (readMapped). It is not
+// unpackReusing's own closure: data caught by one is on the heap, and
+// every read of a row's fields through it is slower.
+func decodeMapped(m *diskMapping, dst, src []byte) (data []byte, ok bool) {
+	var err error
+	if m == nil {
+		data, err = s2.Decode(dst, src)
+		return data, err == nil
+	}
+	if !readMapped(m, func() { data, err = s2.Decode(dst, src) }) {
+		return nil, false
+	}
+	return data, err == nil
+}
+
 // unpackInto is unpack decoding the rows into rows when it is large enough:
 // every field of a row is written, so a reused slice needs no clearing.
 func (c *rowChunk) unpackInto(into []packedRow) *rowChunk {
+	return c.unpackReusing(into, nil, nil, nil)
+}
+
+// unpackReusing is unpackInto decoding the strings' and shapes' slices into
+// strs and shapes too, when they are large enough: for a reader that lets
+// go of a chunk's rows before it opens the next (chunkRows). With lent, the
+// block is decoded into *lent and the strings are of it, not a copy: they
+// are good until *lent is decoded into again.
+func (c *rowChunk) unpackReusing(into []packedRow, strs []string, shapes [][rowTexts]uint32, lent *[]byte) *rowChunk {
 	if c == nil || len(c.Archive) == 0 {
 		return c
 	}
-	buf := rowDecodes.Get().(*[]byte)
-	defer rowDecodes.Put(buf)
-	data, err := s2.Decode((*buf)[:cap(*buf)], c.Archive)
-	if err != nil {
+	buf := lent
+	if buf == nil {
+		buf = rowDecodes.Get().(*[]byte)
+		defer rowDecodes.Put(buf)
+	}
+	data, ok := decodeMapped(c.mapped, (*buf)[:cap(*buf)], c.Archive)
+	if !ok {
 		return nil
 	}
 	*buf = data
@@ -143,49 +181,72 @@ func (c *rowChunk) unpackInto(into []packedRow) *rowChunk {
 		data = data[k:]
 		return n
 	}
-	rows, strs := take(), take()
-	if rows > uint64(len(data)) || strs > uint64(len(data)) {
+	rows, count := take(), take()
+	if rows > uint64(len(data)) || count > uint64(len(data)) {
 		return nil
 	}
 	next := *c
-	next.Archive, next.Locations = nil, nil
+	next.Archive, next.Locations, next.mapped = nil, nil, nil
 	if uint64(cap(into)) >= rows {
 		next.Rows = into[:rows]
 	} else {
 		next.Rows = make([]packedRow, int(rows))
 	}
-	next.Strings = make([]string, int(strs))
+	if uint64(cap(strs)) >= count {
+		next.Strings = strs[:count]
+	} else {
+		next.Strings = make([]string, int(count))
+	}
 	next.Bytes = int64(len(next.Rows))*int64(unsafe.Sizeof(packedRow{})) + codexActorBytes(next.codexActors)
 	// The strings are copied out in one piece: one allocation a block, not
-	// one a string.
-	at := make([]int, 0, 2*int(strs))
+	// one a string. The section is walked once to find its end, and its
+	// copy again to cut the strings from it.
 	section := data
 	for range next.Strings {
 		n := take()
 		if n > uint64(len(data)) {
 			return nil
 		}
-		at = append(at, len(section)-len(data), int(n))
 		data = data[n:]
 	}
 	if !valid {
 		return nil
 	}
-	text := string(section[:len(section)-len(data)])
+	var text string
+	if lent != nil {
+		text = unsafe.String(unsafe.SliceData(section), len(section)-len(data))
+	} else {
+		text = string(section[:len(section)-len(data)])
+	}
 	for i := range next.Strings {
-		from, n := at[2*i], at[2*i+1]
-		next.Strings[i] = text[from : from+n]
+		var n, shift uint64
+		for k := 0; ; k++ {
+			b := text[k]
+			n |= uint64(b&0x7f) << shift
+			if b < 0x80 {
+				text = text[k+1:]
+				break
+			}
+			shift += 7
+		}
+		next.Strings[i] = text[:n]
+		text = text[n:]
 		next.Bytes += int64(n) + 16
 	}
-	shapes := take()
-	if shapes > uint64(len(data)) {
+	shapeCount := take()
+	if shapeCount > uint64(len(data)) {
 		return nil
 	}
-	next.Shapes, next.shapeIDs = make([][rowTexts]uint32, int(shapes)), nil
+	if uint64(cap(shapes)) >= shapeCount {
+		next.Shapes = shapes[:shapeCount]
+	} else {
+		next.Shapes = make([][rowTexts]uint32, int(shapeCount))
+	}
+	next.shapeIDs = nil
 	for i := range next.Shapes {
 		for j := range next.Shapes[i] {
 			n := take()
-			if n >= strs {
+			if n >= count {
 				return nil
 			}
 			next.Shapes[i][j] = uint32(n)
@@ -205,7 +266,7 @@ func (c *rowChunk) unpackInto(into []packedRow) *rowChunk {
 		}
 		for j := range p.Varied {
 			n := take()
-			if n >= strs {
+			if n >= count {
 				return nil
 			}
 			p.Varied[j] = uint32(n)
