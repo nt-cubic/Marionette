@@ -70,7 +70,7 @@ Marionette 自动生成一个普通的 Markdown 文件，让不同的 Agent 可�
 - **扫不到也知道为什么**：空列表会列出每个来源、探测路径与是否命中。
 - 记忆统一存在 `~/.marionette/memory/memory.json`；各家原文件只读，不会被改写。
 
-### 插件与上下文：装一次，全线可用
+### 插件与上下文：DSH 插件，MCP / Skills 全线共享
 
 - **插件面板**：从包名或 `github:owner/repo` 安装到 DSH Harness 的 `acp` profile，一键卸载。每个插件带兼容徽章——完全支持 / 部分功能受限 / 网页版专用 / 未知。纯改造 DSH 网页版的插件在木偶里不会生效，装之前就能看见。
 - **MCP 与 Skills**：扫描本机与项目的 agent 配置，统一列在「项目上下文」。勾选后借给下一次 `session/new`——MCP 以 server 形式接入，Skills 以指针列表交接；晚启动的 MCP 服务可以原地 Reconnect，不用重开会话。
