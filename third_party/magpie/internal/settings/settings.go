@@ -97,8 +97,11 @@ type Settings struct {
 	// category's On says. RedactModel has a local model (internal/pii) find
 	// what the rules can't as well, a name or an address in free text,
 	// under Redact and RedactPersonal; it is this computer's own, as the
-	// model is downloaded on it.
+	// model is downloaded on it. RedactShape sends a key as a made-up key
+	// of its own form (sk_… as another sk_…) instead of a placeholder
+	// (redact.Options.Shape; Charles Cao on X).
 	Redact         bool            `json:"redact,omitempty"`
+	RedactShape    bool            `json:"redactShape,omitempty"`
 	RedactModel    bool            `json:"redactModel,omitempty"`
 	RedactPersonal bool            `json:"redactPersonal,omitempty"`
 	RedactKinds    map[string]bool `json:"redactKinds,omitempty"`

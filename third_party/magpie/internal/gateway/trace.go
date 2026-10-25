@@ -491,6 +491,17 @@ type trace struct {
 	// folders: each session's folder, as its requests said it last, for
 	// the requests that don't say it (a title, a topic check)
 	folders map[string]sessionFolder
+	// liftSeq is the seq a rest was last lifted by hand at (lifted): a
+	// page waiting hears of it, though no route changed
+	liftSeq int64
+}
+
+// lifted tells the pages waiting that a rest was lifted (Unrest).
+func (t *trace) lifted() {
+	t.mu.Lock()
+	t.changed()
+	t.liftSeq = t.seq
+	t.mu.Unlock()
 }
 
 type sessionFolder struct {
@@ -518,6 +529,10 @@ type TraceState struct {
 	// (OwnerTrace): the console names it from here, so the name follows the
 	// trace when another magpie takes the gateway over (#2606)
 	By *TraceBy `json:"by,omitempty"`
+	// Lifted is when each rest lifted before its time was lifted, by the
+	// key it rested by (Rest.Key): the routes kept from before still say
+	// it rested, and the page shows it resting no more
+	Lifted map[string]time.Time `json:"lifted,omitempty"`
 }
 
 // TraceBy names the magpie a trace was read from.
@@ -712,7 +727,7 @@ func (s *Server) gatewayTrace(w http.ResponseWriter, r *http.Request) {
 		wait = 25 * time.Second
 	}
 	st := s.Trace(r.Context(), after, wait)
-	writeJSON(w, 200, map[string]any{"object": "trace", "now": time.Now(), "seq": st.Seq, "routes": st.Routes, "totals": st.Totals, "ids": st.IDs, "pid": os.Getpid(), "serves": Serves})
+	writeJSON(w, 200, map[string]any{"object": "trace", "now": time.Now(), "seq": st.Seq, "routes": st.Routes, "totals": st.Totals, "ids": st.IDs, "lifted": st.Lifted, "pid": os.Getpid(), "serves": Serves})
 }
 
 // ownerURL is the gateway's address on loopback, where the magpie serving
@@ -772,18 +787,19 @@ func OwnerTrace(ctx context.Context, after int64, wait time.Duration) (TraceStat
 		return TraceState{}, false
 	}
 	var out struct {
-		Object string  `json:"object"`
-		Seq    int64   `json:"seq"`
-		Routes []Route `json:"routes"`
-		Totals Totals  `json:"totals"`
-		IDs    []int64 `json:"ids"`
-		Pid    int     `json:"pid"`
-		Serves string  `json:"serves"`
+		Object string               `json:"object"`
+		Seq    int64                `json:"seq"`
+		Routes []Route              `json:"routes"`
+		Totals Totals               `json:"totals"`
+		IDs    []int64              `json:"ids"`
+		Lifted map[string]time.Time `json:"lifted"`
+		Pid    int                  `json:"pid"`
+		Serves string               `json:"serves"`
 	}
 	if decodeJSON(b, &out) != nil || out.Object != "trace" || out.Routes == nil {
 		return TraceState{}, false
 	}
-	return TraceState{Seq: out.Seq, Routes: out.Routes, Totals: out.Totals, IDs: out.IDs, By: &TraceBy{Pid: out.Pid, Serves: out.Serves}}, true
+	return TraceState{Seq: out.Seq, Routes: out.Routes, Totals: out.Totals, IDs: out.IDs, Lifted: out.Lifted, By: &TraceBy{Pid: out.Pid, Serves: out.Serves}}, true
 }
 
 // OwnerLanes reads the lanes of the magpie serving the gateway's address, for
@@ -840,8 +856,9 @@ func (s *Server) Trace(ctx context.Context, after int64, wait time.Duration) Tra
 				st.Routes = append(st.Routes, c)
 			}
 		}
-		if len(st.Routes) > 0 || wait <= 0 {
+		if len(st.Routes) > 0 || wait <= 0 || t.liftSeq > after {
 			t.mu.Unlock()
+			st.Lifted = liftedRests()
 			return st
 		}
 		if t.wake == nil {
@@ -862,6 +879,7 @@ func (s *Server) Trace(ctx context.Context, after int64, wait time.Duration) Tra
 				gather.Stop()
 			}
 		case <-deadline.C:
+			st.Lifted = liftedRests()
 			return st
 		case <-ctx.Done():
 			return st

@@ -2,6 +2,7 @@ package usage
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"embed"
 	"encoding/binary"
@@ -16,6 +17,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yetone/magpie/internal/sessions"
@@ -229,10 +231,12 @@ func readDiskEntry(b []byte) (*rowChunk, error) {
 // (#3493). It is unmapped once no chunk read from it is left.
 type diskMapping struct {
 	data []byte
+	// spill: a build's own file (archiveSpill), not requests-v1.bin
+	spill bool
 }
 
 // diskUnmapped, in tests, is told each time a mapping is let go of.
-var diskUnmapped func()
+var diskUnmapped atomic.Pointer[func()]
 
 // readMapped runs fn, which reads m's pages (none, with m nil). A fault
 // reading them, the file cut short under the mapping by another program,
@@ -403,6 +407,38 @@ func toDisk(root, meta string, chunks map[string]*rowChunk, on map[string]bool) 
 		return err
 	}
 	return os.Rename(out.Name(), path)
+}
+
+// onDisk is a copy of each chunk of chunks whose Archive is of the heap
+// or a build's spill, with the same Archive of the pages of the file toDisk just wrote; save
+// swaps them in for the chunks of the same serial. Made
+// in this run, they held a cold build's archives on the heap until the
+// next start: 32MB of 15.7k sessions, and a resting heap 40MB over a warm
+// start's (#3493). Nothing on a system that maps no file.
+func onDisk(root, meta string, chunks map[string]*rowChunk) map[string]*rowChunk {
+	kept := map[string]*rowChunk{}
+	readDiskEntries(requestDiskPath(), requestDiskBinary(), root, meta, func(raw []byte, m *diskMapping) bool {
+		if m == nil {
+			return false
+		}
+		path, ok := diskEntryPath(raw)
+		if !ok {
+			return false
+		}
+		c := chunks[path]
+		if c == nil || c.serial == 0 || c.pagesRank() == 2 || len(c.Archive) == 0 {
+			return true
+		}
+		e, err := readDiskEntry(raw)
+		if err != nil || e.Source.Size != c.Source.Size || !e.Source.Modified.Equal(c.Source.Modified) || !bytes.Equal(e.Archive, c.Archive) {
+			return true
+		}
+		next := *c
+		next.Archive, next.mapped = e.Archive, m
+		kept[path] = &next
+		return true
+	})
+	return kept
 }
 
 // diskEntryPath is the path of the source an entry is of.

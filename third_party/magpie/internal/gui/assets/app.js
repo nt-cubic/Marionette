@@ -7998,7 +7998,7 @@ function advancedSet(d, p) {
   return (d.headers || []).some(([k]) => (k || "").trim()) || !!(d.extraBody || "").trim() ||
     !!d.proxyMode || Object.values(d.accountProxies || {}).some((x) => x?.mode) ||
     [d.concurrency, d.queueLimit, d.queueWait, d.maxRPM, d.priceRate, d.contexts, d.outputs, d.compacts].some((v) => String(v ?? "").trim()) ||
-    !!(d.searches || d.authHeader || d.passUserAgent || d.unredacted || d.pinUpstream || d.nativeCompaction || d.balanceToken) ||
+    !!(d.searches || d.authHeader || d.passUserAgent || d.unredacted || d.pinUpstream || d.nativeCompaction || d.balanceToken || d.limitRestOff) ||
     !!d.fallback?.length || !!p?.balanceToken?.set;
 }
 function priceRateError(ed) {
@@ -9033,7 +9033,7 @@ function baseAPIOf(p) {
 
 // draftOf is a saved provider as its editor's form holds it.
 function draftOf(p) {
-  return { id: p.id, name: p.name, preset: p.preset, chat: p.chat, responses: p.responses, anthropic: p.anthropic, gemini: p.gemini || "", catalog: p.catalog, decide: p.decide || "", key: "", api: baseAPIOf(p), chosen: pickedOf(p), none: !!p.noModels, extra: [], headers: headerRows(p.headers), extraBody: extraBodyText(p.extraBody), icon: p.icon || "", fallback: [...(p.fallback || [])], unlisted: !!p.unlisted, searches: !!p.searches, unredacted: !!p.unredacted, insecureTLS: !!p.insecureTLS, nativeCompaction: !!p.nativeCompaction, passUserAgent: !!p.passUserAgent, pinUpstream: !!p.pinUpstream, authHeader: p.authHeader || "", balanceURL: p.balanceURL || "", balancePath: p.balancePath || "", balanceMethod: p.balanceMethod || "", modelsURL: p.modelsURL || "", contexts: contextsText(p.contexts), outputs: contextsText(p.outputs), compacts: contextsText(p.compacts), keysUrl: p.keysUrl || "", ...proxyDraft(p), ...concurrencyDraft(p) };
+  return { id: p.id, name: p.name, preset: p.preset, chat: p.chat, responses: p.responses, anthropic: p.anthropic, gemini: p.gemini || "", catalog: p.catalog, decide: p.decide || "", key: "", api: baseAPIOf(p), chosen: pickedOf(p), none: !!p.noModels, extra: [], headers: headerRows(p.headers), extraBody: extraBodyText(p.extraBody), icon: p.icon || "", fallback: [...(p.fallback || [])], unlisted: !!p.unlisted, searches: !!p.searches, unredacted: !!p.unredacted, insecureTLS: !!p.insecureTLS, limitRestOff: !!p.limitRestOff, nativeCompaction: !!p.nativeCompaction, passUserAgent: !!p.passUserAgent, pinUpstream: !!p.pinUpstream, authHeader: p.authHeader || "", balanceURL: p.balanceURL || "", balancePath: p.balancePath || "", balanceMethod: p.balanceMethod || "", modelsURL: p.modelsURL || "", contexts: contextsText(p.contexts), outputs: contextsText(p.outputs), compacts: contextsText(p.compacts), keysUrl: p.keysUrl || "", ...proxyDraft(p), ...concurrencyDraft(p) };
 }
 
 // duplicateProvider opens the Add form on a copy of p (#268): its URLs,
@@ -9644,6 +9644,12 @@ function drawEditor(p, presetID) {
     showTLS();
     ed.append(...row);
   }
+  // off, a 429 or quota refusal rests none of its keys (LimitRestOff, zoecats)
+  if (custom) {
+    const [rtk, rcb] = tick(t("Set it aside when out of quota or rate limited"), !draft.limitRestOff);
+    rcb.onchange = () => { draft.limitRestOff = !rcb.checked; };
+    advIn.append(...field(t("Rests"), rtk, t("Off: a 429 or an out-of-quota refusal doesn't rest its keys, and the next request is sent to it as usual. For a relay whose limits pass in a moment.")));
+  }
 
   // a vendor that tells the whole account's balance only to a token of its
   // own (AiHubMix's system access token), where a key knows just its own
@@ -9992,6 +9998,7 @@ function drawEditor(p, presetID) {
     if (twoKeyHeaders()) body.authHeader = draft.authHeader || "";
     body.unredacted = !!draft.unredacted && onLAN();
     if (tlsTakes()) body.insecureTLS = !!draft.insecureTLS && onHTTPS();
+    if (custom) body.limitRestOff = !!draft.limitRestOff;
     if (!decideOnly(p || pr)) body.nativeCompaction = !!draft.nativeCompaction && carriesCompaction();
     body.passUserAgent = !!draft.passUserAgent && uaPassable();
     const cx = parseContexts(draft.contexts || "");
@@ -17295,9 +17302,7 @@ function panelQuotaCard(q) {
   card.title = [q.name, q.alias, q.user, q.seat && q.seat !== q.alias && "≡ " + q.seat, q.plan, q.until ? planTerm(q) : "", q.balance && t("Balance") + " " + q.balance].filter(Boolean).join(" · ");
   if (q.error) {
     card.classList.add("err");
-    const why = el("span", "pq-sub err", quotaError(q.error, q));
-    why.append(quotaRefresh(q));
-    card.append(why);
+    card.append(pqLine(quotaError(q.error, q), q, " err"));
     card.title += "\n" + q.error;
     return card;
   }
@@ -17310,16 +17315,14 @@ function panelQuotaCard(q) {
   // Claude's out: 01huadalang on Discord), else three
   const fam = familyWindows(q.windows.filter((w) => !w.unlimited));
   if (!fam.length && q.windows.some((w) => w.unlimited)) {
-    const sub = el("span", "pq-sub", t("Unlimited"));
-    sub.append(quotaRefresh(q));
-    card.append(sub);
+    card.append(pqLine(t("Unlimited"), q));
     if (balance) card.append(balance);
     return card;
   }
   const ws = fam.slice(0, fam.some((w) => w.members) ? Math.max(4, fam.filter((w) => w.members).length) : 3);
   // when the windows begun start again: the first bare, the others by name
   const begun = ws.filter((w) => w.resetsAt && w.used > 0);
-  const sub = el("span", "pq-sub", begun.length
+  const say = el("span", "pq-say", begun.length
     ? begun.map((w, i) => {
       const at = new Date(w.resetsAt);
       // the first deadline named as one: a bare "↻ 14:26" read as a
@@ -17336,10 +17339,8 @@ function panelQuotaCard(q) {
   // it would read as the week's.
   const line = quotaRange !== "off" && begun.length === 1 && begun[0] === ws[0] && !ws[0].tiers ? quotaWindowLine(q, ws[0]) : null;
   const pace = line ? quotaEtaText(line, Date.now()) : "";
-  if (pace) sub.append(el("span", "pq-pace", " · " + pace));
-  // the card's own refresh, as on the Usage page: shown as it's hovered
-  sub.append(quotaRefresh(q));
-  card.append(sub);
+  if (pace) say.append(el("span", "pq-pace", " · " + pace));
+  card.append(pqLine(say, q));
   const rings = el("span", "pq-rings" + (ws.length > 4 ? " many" : ""));
   for (const w of ws) {
     const used = Math.max(0, Math.min(100, w.used));
@@ -18085,6 +18086,12 @@ function keepQuotaRefresh(box) {
     // a frame for the new hover state, so the reading doesn't slide
     requestAnimationFrame(() => { for (const b of shown) b.classList.remove("kept"); });
   };
+}
+// a tray line, its refresh kept (#3569)
+function pqLine(say, q, c = "") {
+  const l = el("span", "pq-sub pq-line" + c);
+  l.append(say.nodeType ? say : el("span", "pq-say", say), quotaRefresh(q));
+  return l;
 }
 function quotaRefresh(q) {
   const key = usageAcctKey(q);
@@ -21926,6 +21933,8 @@ function renderRedact(s, keep) {
   const onOff = (on, fn) => segs([["off", t("Off")], ["on", t("On")]], on ? "on" : "off", (v) => fn(v === "on"));
   row(t("Mask secrets"), t("API keys, private keys, tokens and passwords go to vendors as placeholders, and come back as they were"),
     onOff(s.redact, (redact) => savePrefs({ ...keep, redact })));
+  if (s.redact) row(t("Keep a key's form"), t("A key goes as a made-up one of the same form (sk_… stays sk_…), not a placeholder, and comes back as it was"),
+    onOff(s.redactShape, (redactShape) => savePrefs({ ...keep, redactShape }))).id = "redactShapeRow";
   row(t("Mask personal data"), t("Emails, phone numbers, ID and bank card numbers too"),
     onOff(s.redactPersonal, (redactPersonal) => {
       // turned on, the accounts on screen are hidden too
@@ -23118,7 +23127,7 @@ function prefsKeep(s) {
     uiFont: s.uiFont || null, codeFont: s.codeFont || null,
     otel: s.otel || {},
     trayUsages: s.trayUsages || [],
-    redact: !!s.redact, redactPersonal: !!s.redactPersonal, redactKinds: s.redactKinds || {}, redactWords: s.redactWords || [], redactWordsAnyCase: !!s.redactWordsAnyCase, codexWarmup: s.codexWarmup || "",
+    redact: !!s.redact, redactPersonal: !!s.redactPersonal, redactKinds: s.redactKinds || {}, redactWords: s.redactWords || [], redactWordsAnyCase: !!s.redactWordsAnyCase, redactShape: !!s.redactShape, codexWarmup: s.codexWarmup || "",
     claudeWarmup: s.claudeWarmup || "", codexWarmAt: s.codexWarmAt || "", claudeWarmAt: s.claudeWarmAt || "",
     codexWarmAts: warmTimes(s.codexWarmAts, s.codexWarmAt), claudeWarmAts: warmTimes(s.claudeWarmAts, s.claudeWarmAt), workbuddyCheckin: !!s.workbuddyCheckin, traeCheckin: !!s.traeCheckin, minimaxCheckin: !!s.minimaxCheckin, qoderCheckin: !!s.qoderCheckin, noStats: !!s.noStats, noUsageStats: !!s.noUsageStats,
     memberModel: !!s.memberModel, noLoopGuard: !!s.noLoopGuard, claudeLeanPrompt: !!s.claudeLeanPrompt, refusalRetries: s.refusalRetries ?? null,
@@ -23249,7 +23258,7 @@ function givesBack(e, dir) {
   for (const p of back) p.v.scrollTop += p.by;
 }
 let touchY = null;
-addEventListener("wheel", (e) => { readerScrolls(250); givesBack(e, Math.sign(e.deltaY)); }, { capture: true, passive: true });
+addEventListener("wheel", (e) => { flings(); givesBack(e, Math.sign(e.deltaY)); }, { capture: true, passive: true });
 addEventListener("touchstart", (e) => { touchY = e.touches[0]?.clientY ?? null; }, { capture: true, passive: true });
 addEventListener("touchmove", (e) => {
   readerScrolls(250);
@@ -23259,10 +23268,10 @@ addEventListener("touchmove", (e) => {
   if (touchY != null) givesBack(e, Math.sign(touchY - y));
   touchY = y;
 }, { capture: true, passive: true });
-// A flick goes on scrolling after the finger is lifted, with no touch event
-// to say so: each of its scrolls keeps the next one the reader's, till it
-// comes to rest. Put back, a phone's page jerked to and fro under the
-// finger's flick (jiakun_zhao on X: 滚动会抽搐).
+// A flick goes on after the finger lifts, and a trackpad's coast after the
+// fingers do (WebKit on the Mac plays it with no wheel), with no event to say
+// so: each of their scrolls keeps the next one the reader's till it rests.
+// Put back, the page shook (jiakun_zhao on X: 滚动会抽搐; issenn: 高频振动并复位).
 let flingUntil = 0;
 const flings = () => { flingUntil = performance.now() + 250; readerScrolls(250); };
 addEventListener("touchend", flings, { capture: true, passive: true });

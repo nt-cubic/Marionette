@@ -84,8 +84,12 @@ func reindexKnown() {
 	}
 }
 
-// kindOf is the kind in a placeholder: SECRET of {{SECRET_abcdefgh}}.
+// kindOf is the kind in a placeholder: SECRET of {{SECRET_abcdefgh}}, or
+// a made-up key's (shape.go); called with mu held.
 func kindOf(p string) string {
+	if k, ok := shapes[p]; ok {
+		return k
+	}
 	if i := strings.LastIndexByte(p, '_'); i > 2 {
 		return p[2:i]
 	}

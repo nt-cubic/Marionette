@@ -20,6 +20,8 @@ const ruleUsage = `usage:
                                           a rule: a turn that matches it goes to <model>, one of the group's
                                           (or group/<id>, a group in it), first; a model in the group at an
                                           effort of its own is named with it (use=glm/glm-5.3-flash:high).
+                                          use=a,b names several, in order: b goes when a can't take the
+                                          request, before the models of the rules after it and the others.
                                           use-effort= is the reasoning <model> is asked for on the requests
                                           the rule sends it, whatever the agent asked: at the model's nearest
                                           level, or as the agent asked when its levels aren't known
@@ -193,20 +195,34 @@ func ruleLine(r provider.Rule) string {
 	if r.Pause {
 		return strings.Join(r.Conditions(), " · ") + muted.Render(" → pause ") + r.Use
 	}
+	// the models it sends to, in order: the next when one can't take it
+	uses := strings.Join(r.Uses(), muted.Render(", "))
 	if r.UseEffort != "" {
-		return strings.Join(r.Conditions(), " · ") + muted.Render(" → ") + r.Use + muted.Render(" at ") + r.UseEffort
+		return strings.Join(r.Conditions(), " · ") + muted.Render(" → ") + uses + muted.Render(" at ") + r.UseEffort
 	}
-	return strings.Join(r.Conditions(), " · ") + muted.Render(" → ") + r.Use
+	return strings.Join(r.Conditions(), " · ") + muted.Render(" → ") + uses
 }
 
 // pruneRules drops the rules for models no longer in the group, saying so.
 func pruneRules(g *provider.Group) {
 	var keep []provider.Rule
 	for i, r := range g.Rules {
+		// a model gone from the group leaves the rule; the rule goes with
+		// the last it sends to
+		for _, u := range r.Uses() {
+			if slices.Contains(g.Members, u) {
+				continue
+			}
+			kept, ok := r.Without(u)
+			if !ok {
+				fmt.Println(amber.Render("!"), fmt.Sprintf("rule %d is removed with %s", i+1, u))
+				break
+			}
+			fmt.Println(amber.Render("!"), fmt.Sprintf("rule %d no longer sends to %s", i+1, u))
+			r = kept
+		}
 		if slices.Contains(g.Members, r.Use) {
 			keep = append(keep, r)
-		} else {
-			fmt.Println(amber.Render("!"), fmt.Sprintf("rule %d is removed with %s", i+1, r.Use))
 		}
 	}
 	g.Rules = keep

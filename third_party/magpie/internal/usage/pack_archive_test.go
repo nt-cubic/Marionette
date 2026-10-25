@@ -95,20 +95,33 @@ func TestChunkRowsReuseReadsEachBlock(t *testing.T) {
 		}
 		return c, c.pack()
 	}
-	var rows chunkRows
-	for k, n := range []int{400, 3, 120, 1, 400} {
-		plain, packed := block(k, n)
-		open := rows.of(packed)
-		if len(open.Rows) != n {
-			t.Fatalf("block %d: %d rows, want %d", k, len(open.Rows), n)
-		}
-		for i := range n {
-			if got, want := open.row(i), plain.row(i); !reflect.DeepEqual(got, want) {
-				t.Fatalf("block %d row %d: read %+v, packed %+v", k, i, got, want)
+	sizes := []int{400, 3, 120, 1, 400}
+	plains, packs := make([]*rowChunk, len(sizes)), make([]*rowChunk, len(sizes))
+	for k, n := range sizes {
+		plains[k], packs[k] = block(k, n)
+	}
+	// a pass after another reads through the buffers the last one released,
+	// lent or not: in turn, and a large block after a small one
+	for pass, lent := range []bool{false, true, false, true} {
+		rows := chunkRows{lent: lent}
+		for j := range packs {
+			k := j
+			if pass%2 == 1 {
+				k = len(packs) - 1 - j
+			}
+			open := rows.of(packs[k])
+			if len(open.Rows) != sizes[k] {
+				t.Fatalf("pass %d block %d: %d rows, want %d", pass, k, len(open.Rows), sizes[k])
+			}
+			for i := range sizes[k] {
+				if got, want := open.row(i), plains[k].row(i); !reflect.DeepEqual(got, want) {
+					t.Fatalf("pass %d block %d row %d: read %+v, packed %+v", pass, k, i, got, want)
+				}
 			}
 		}
-	}
-	if cap(rows.strs) == 0 || cap(rows.shapes) == 0 {
-		t.Fatalf("no buffers kept: %d strings, %d shapes", cap(rows.strs), cap(rows.shapes))
+		if cap(rows.b.strs) == 0 || cap(rows.b.shapes) == 0 {
+			t.Fatalf("no buffers kept: %d strings, %d shapes", cap(rows.b.strs), cap(rows.b.shapes))
+		}
+		rows.release()
 	}
 }

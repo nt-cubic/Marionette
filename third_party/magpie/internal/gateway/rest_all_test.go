@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -82,7 +83,9 @@ func postDead(t *testing.T, srv *Server) *httptest.ResponseRecorder {
 // #1772 (a fleet on four Ollama Cloud keys): every key out of its weekly
 // allowance, each new request had asked each key again (the first twice)
 // and answered 429 with no Retry-After, so a client that waits as told
-// asked again at once.
+// asked again at once. A key is held once it was refused so twice in a
+// row (a single refusal may be a moment's, zoecats on Discord), and, its
+// vendor naming no time, asked again a minute on, which Retry-After says.
 func TestAllRestingAnswersFromRest(t *testing.T) {
 	d, srv := deadChain(t, "dead-a", "dead-b")
 	rec := postDead(t, srv)
@@ -92,9 +95,20 @@ func TestAllRestingAnswersFromRest(t *testing.T) {
 	if got := d.took(); strings.Join(got, ",") != "dead-a,dead-b" {
 		t.Errorf("first request asked %v, want each key once", got)
 	}
-	ra, err := strconv.Atoi(rec.Header().Get("Retry-After"))
-	if err != nil || ra < int(quotaRest/time.Second)-5 || ra > int(quotaRest/time.Second) {
-		t.Errorf("first: Retry-After %q, want about %v", rec.Header().Get("Retry-After"), quotaRest)
+	if ra := rec.Header().Get("Retry-After"); ra != "" {
+		t.Errorf("first: Retry-After %q, while each key is asked again at once", ra)
+	}
+	// each asked once more, the soonest back first, one a request as
+	// every candidate resting has it (restLast)
+	var again []string
+	for i := 0; i < 2; i++ {
+		if rec = postDead(t, srv); rec.Code != 429 {
+			t.Fatalf("confirming: %d %s", rec.Code, rec.Body)
+		}
+		again = append(again, d.took()...)
+	}
+	if slices.Sort(again); strings.Join(again, ",") != "dead-a,dead-b" {
+		t.Errorf("asked again %v, want each key once", again)
 	}
 	for i := 0; i < 2; i++ {
 		rec = postDead(t, srv)
@@ -104,9 +118,9 @@ func TestAllRestingAnswersFromRest(t *testing.T) {
 		if got := d.took(); len(got) != 0 {
 			t.Errorf("again: asked %v while every key rests", got)
 		}
-		ra, err = strconv.Atoi(rec.Header().Get("Retry-After"))
-		if err != nil || ra < int(quotaRest/time.Second)-5 || ra > int(quotaRest/time.Second) {
-			t.Errorf("again: Retry-After %q, want about %v", rec.Header().Get("Retry-After"), quotaRest)
+		ra, err := strconv.Atoi(rec.Header().Get("Retry-After"))
+		if err != nil || ra < 50 || ra > int(fallbackCooldown/time.Second) {
+			t.Errorf("again: Retry-After %q, want about %v", rec.Header().Get("Retry-After"), fallbackCooldown)
 		}
 		if !strings.Contains(rec.Body.String(), "weekly usage limit") {
 			t.Errorf("again: the vendor's reason is gone: %s", rec.Body)
@@ -124,6 +138,12 @@ func TestOwnQuotaRest(t *testing.T) {
 	rec := postDead(t, srv)
 	if got := d.took(); rec.Code != 429 || len(got) != 2 {
 		t.Fatalf("%d after %v: %s", rec.Code, got, rec.Body)
+	}
+	// the user's rest is no guess: held from the first refusal, and not
+	// asked again a minute on
+	rec = postDead(t, srv)
+	if got := d.took(); rec.Code != 429 || len(got) != 0 {
+		t.Fatalf("held: %d after %v: %s", rec.Code, got, rec.Body)
 	}
 	week := int(7 * 24 * time.Hour / time.Second)
 	if ra, _ := strconv.Atoi(rec.Header().Get("Retry-After")); ra < week-5 || ra > week {
@@ -152,8 +172,12 @@ func TestQuotaHeldOnlyForKeysOutOfAllowance(t *testing.T) {
 	body := []byte(`{"error":{"message":"you have reached your weekly usage limit"}}`)
 	key := candidate{p: provider.Provider{ID: "k1"}, rest: "k1"}
 	srv.restAfter(key, 429, nil, body)
+	if _, _, ok := quotaHeld([]candidate{key}); ok {
+		t.Error("a key refused once is held: its retry isn't asked")
+	}
+	srv.restAfter(key, 429, nil, body)
 	if _, _, ok := quotaHeld([]candidate{key}); !ok {
-		t.Error("a key out of its allowance isn't held")
+		t.Error("a key out of its allowance twice in a row isn't held")
 	}
 	forbidden := candidate{p: provider.Provider{ID: "k2"}, rest: "k2"}
 	srv.restAfter(forbidden, 403, nil, []byte(`{"error":{"message":"quota exceeded for this region"}}`))

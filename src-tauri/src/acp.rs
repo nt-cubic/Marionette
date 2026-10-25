@@ -294,6 +294,8 @@ struct AcpProcess {
     in_flight_prompt_id: Arc<AtomicU64>,
     /// 跨 agent 记忆卡只在该进程的首条 prompt 注入一次（见 memory.rs）。
     memory_card_sent: AtomicBool,
+    /// Explicit local file picks may be passed only to an opt-in local adapter.
+    local_file_upload: AtomicBool,
 }
 
 struct PendingPermission {
@@ -473,6 +475,9 @@ impl AcpService {
         child_command
             .args(&args)
             .current_dir(&cwd)
+            // Stable across ACP process restarts; bridges can bind external
+            // conversations to the Marionette dialog rather than the process.
+            .env("MARIONETTE_SESSION_ID", &session_id)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -968,6 +973,7 @@ impl AcpService {
             config_option_unsupported: AtomicBool::new(false),
             in_flight_prompt_id,
             memory_card_sent: AtomicBool::new(false),
+            local_file_upload: AtomicBool::new(false),
         });
         sessions.insert(session_id.clone(), Arc::clone(&process));
         drop(sessions);
@@ -1047,6 +1053,14 @@ impl AcpService {
                 return Err(format!("ACP initialize failed: {error}"));
             }
         };
+
+        process.local_file_upload.store(
+            initialized
+                .pointer("/agentCapabilities/_meta/marionette.localFileUpload")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            Ordering::Relaxed,
+        );
 
         // ── Cross-agent bridge: codex `providers/set` (§4.4 S2) ──
         // codex-acp advertises `agentCapabilities.providers` and only accepts
@@ -1885,6 +1899,7 @@ impl AcpService {
         session_id: &str,
         text: String,
         image_paths: Vec<String>,
+        file_paths: Vec<String>,
     ) -> Result<Value, String> {
         let process = self.process(session_id)?;
         let agent_session_id = process
@@ -1908,6 +1923,7 @@ impl AcpService {
             .as_ref()
             .map(|c| c.prompt_image)
             .unwrap_or(false);
+        let local_file_upload = process.local_file_upload.load(Ordering::Relaxed);
 
         let mut prompt_blocks: Vec<Value> = Vec::new();
         let mut image_count = 0usize;
@@ -1935,6 +1951,11 @@ impl AcpService {
                             image_count += 1;
                         }
                         Err(err) => {
+                            // Web uploads must be all-or-nothing: never send the
+                            // text after silently dropping an unreadable image.
+                            if local_file_upload {
+                                return Err(format!("图片附件读取失败，消息未发送：{err}"));
+                            }
                             crate::debug_log::append(
                                 "acp",
                                 "warn",
@@ -1958,7 +1979,7 @@ impl AcpService {
         if !text.is_empty() {
             prompt_blocks.push(json!({ "type": "text", "text": text }));
         }
-        if prompt_blocks.is_empty() {
+        if prompt_blocks.is_empty() && !(local_file_upload && !file_paths.is_empty()) {
             return Err("Empty prompt (no text and no images)".into());
         }
 
@@ -1975,6 +1996,13 @@ impl AcpService {
                 "A turn is already in flight on this session — interrupt it first".into(),
             );
         }
+        let mut prompt_params = json!({
+            "sessionId": agent_session_id,
+            "prompt": prompt_blocks,
+        });
+        if local_file_upload && !file_paths.is_empty() {
+            prompt_params["_meta"] = json!({ "marionette.attachments": file_paths });
+        }
         // No pending waiter: response is still emitted on the event bus in read_stdout.
         if let Err(err) = write_message(
             &process,
@@ -1982,10 +2010,7 @@ impl AcpService {
                 "jsonrpc": "2.0",
                 "id": id,
                 "method": "session/prompt",
-                "params": {
-                    "sessionId": agent_session_id,
-                    "prompt": prompt_blocks
-                }
+                "params": prompt_params
             }),
         ) {
             // Only clear if we still own this turn (cancel may have taken it).
@@ -6050,6 +6075,11 @@ fn chunk_key(event: &UiEvent) -> Option<(String, String)> {
     if update.pointer("/content/type")?.as_str()? != "text" {
         return None;
     }
+    // Web replies carry cumulative text + HTML. Concatenating snapshots would
+    // corrupt text and discard the newer layout metadata under backpressure.
+    if update.pointer("/_meta/marionette.webReply").is_some() {
+        return None;
+    }
     let message_id = update
         .get("messageId")
         .and_then(Value::as_str)
@@ -6090,7 +6120,9 @@ fn emit_now(app: &AppHandle, session_id: &str, event: UiEvent) -> Duration {
         .unwrap_or_else(|| event.kind.clone());
     // Token chunks are tiny and frequent; serializing the whole JSON payload
     // for the diary is more expensive than delivering the event to the UI.
-    let detail = if chunk_key(&event).is_some() {
+    let detail = if chunk_key(&event).is_some()
+        || event.data.pointer("/params/update/_meta/marionette.webReply").is_some()
+    {
         None
     } else {
         serde_json::to_string(&event.data).ok()

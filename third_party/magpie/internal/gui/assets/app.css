@@ -1851,6 +1851,12 @@ body.panel .profiles #save { height: 25px; } /* the field's: the line keeps its 
 .pq-user { font-size: 12.5px; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pq-sub { font-size: 11px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .pq-sub.err { color: var(--muted); white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+/* a line with the card's refresh: the words shorten, the refresh keeps
+   its slot at their end (#3569: Chinese pushed it out of the ellipsis) */
+.pq-sub.pq-line { display: flex; align-items: baseline; min-width: 0; }
+.pq-line > .pq-say { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pq-line > .quota-refresh { flex: none; }
+.pq-sub.err.pq-line > .pq-say { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .pq-rings { grid-row: 1 / 3; grid-column: 2; display: flex; gap: 12px; }
 .pq-rings.many { gap: 7px; }
 .pq-ring { display: flex; flex-direction: column; align-items: center; gap: 3px; cursor: pointer; }
@@ -1943,6 +1949,7 @@ body.panel .profiles #save { height: 25px; } /* the field's: the line keeps its 
 .pq-card.bal .quota-track { margin-top: 0; }
 .pq-asof { color: var(--amber); }
 .pq-card.stale > .pq-sub { white-space: normal; text-overflow: clip; overflow-wrap: anywhere; }
+.pq-card.stale > .pq-sub > .pq-say { white-space: normal; text-overflow: clip; }
 .pq-card > .pq-asof { grid-column: 1 / -1; }
 .pq-card > .quota-balance { grid-column: 1 / -1; margin-top: 4px; }
 .pq-card .skeleton.sk-aq { width: 130px; height: 9px; border-radius: 4px; }
@@ -2657,6 +2664,9 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .proto-menu .pm-item { display: flex; align-items: flex-start; gap: 7px; width: 100%; padding: 6px 8px 7px; border: 0; border-radius: 7px; background: none; color: var(--fg); font: inherit; text-align: left; cursor: default; outline: none; }
 .proto-menu .pm-item:hover, .proto-menu .pm-item:focus { background: var(--pill); }
 .proto-menu .pm-tick { width: 14px; height: 16px; flex: none; display: grid; place-items: center; color: var(--fg); }
+/* a menu of actions, where nothing is or can be ticked, keeps no room for
+   a tick: its items line up with its heading */
+.proto-menu:not(:has(.pm-item.on, [role=menuitemcheckbox])) .pm-tick { display: none; }
 .proto-menu .pm-words { display: grid; gap: 1px; min-width: 0; }
 .proto-menu .pm-name { font-size: 12.5px; font-weight: 500; line-height: 16px; }
 .proto-menu .pm-note { font-size: 11px; color: var(--muted); line-height: 15px; }

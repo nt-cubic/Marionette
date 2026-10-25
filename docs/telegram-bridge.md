@@ -24,6 +24,7 @@
 **Telegram Bot API 直连（getUpdates 长轮询 + sendMessage）**，在 Rust 壳内置：
 
 - 纯出站 HTTPS：无端口、无 webhook、无公网暴露；PC 和手机两头都只要能连 `api.telegram.org`，与彼此所在网络无关。
+- **代理（2026-10-25）**：token 校验、配对长轮询和全部消息/按钮 API 跟随 Marionette 的应用代理设置（`~/.marionette/proxy.json`）；启用后通过所填 HTTP(S) 代理出口访问，无需 TUN。每次请求读取当前设置，代理地址变化时重建客户端，关闭代理则直连；已有长轮询在返回或超时后切换，下次重试也读取新设置。代理配置无效时报错，不回退直连。
 - 手机零安装、零账号体系：用户已有 Telegram（日本网络直连可达）。
 - 体积增量 ≈ 0：HTTP 用现有 `ureq`（阻塞、native-tls），序列化用 `serde_json`；Cargo.toml 体积红线（禁 tokio/reqwest）完全兼容——长轮询就是一个 std 线程上的阻塞 GET（`getUpdates?timeout=50`）。
 

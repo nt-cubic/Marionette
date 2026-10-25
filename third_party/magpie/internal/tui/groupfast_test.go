@@ -64,3 +64,28 @@ func TestGroupTakeOutRefusedWhileHeld(t *testing.T) {
 		t.Fatalf("members %v rules %+v", g.Members, g.Rules)
 	}
 }
+
+// A rule naming several models shows them in order; taking one out of the
+// group leaves the rule on the others.
+func TestGroupTakeOutKeepsARulesOtherModels(t *testing.T) {
+	home(t)
+	if err := provider.SaveGroup(provider.Group{ID: "pair", Name: "Pair", Members: []string{"a/m", "b/gpt-5.5"},
+		Rules: []provider.Rule{{Use: "a/m", More: []string{"b/gpt-5.5"}, Tokens: 5}}}); err != nil {
+		t.Fatal(err)
+	}
+	m := press(t, model{w: 120, h: 40}, "3", "enter")
+	if m.mode != modeGroup {
+		t.Fatalf("mode %d", m.mode)
+	}
+	if v := m.View(); !strings.Contains(v, "a/m, b/gpt-5.5") {
+		t.Fatalf("rule not shown with both models:\n%s", v)
+	}
+	m = press(t, m, "d")
+	if strings.Contains(m.flash, "its rules") {
+		t.Fatalf("flash %q: the rule keeps b/gpt-5.5", m.flash)
+	}
+	press(t, m, "d")
+	if g := group(t, "pair"); !slices.Equal(g.Members, []string{"b/gpt-5.5"}) || len(g.Rules) != 1 || g.Rules[0].Use != "b/gpt-5.5" || g.Rules[0].More != nil {
+		t.Fatalf("members %v rules %+v", g.Members, g.Rules)
+	}
+}

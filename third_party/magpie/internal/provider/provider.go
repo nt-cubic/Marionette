@@ -195,6 +195,12 @@ type Provider struct {
 	// still stands over it. RestCapOff (-1): no rest at all after a
 	// failure that says nothing of why, a rate limit's as the gateway's own.
 	RestCap int `json:"restCap,omitempty"`
+	// LimitRestOff keeps its keys and accounts asked when the vendor says
+	// they are out of quota or answers 429 (zoecats on Discord: a local
+	// aggregator says "quota exhausted" for a moment while it switches
+	// upstreams, and a rest of half an hour held every request back until
+	// magpie restarted). Off by default: such a refusal rests it as ever.
+	LimitRestOff bool `json:"limitRestOff,omitempty"`
 
 	// PriceRate is what the provider charges against the official price
 	// (ITea312, #819): a relay that bills 0.8× or 1.5× of it. It scales the

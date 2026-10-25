@@ -616,6 +616,41 @@ const zstSuffix = ".zst"
 // reading CodexDir alone left out every other account's sessions and
 // calls (phantom3792 on X).
 func codexFiles() []file {
+	if !quiet() {
+		return listCodexFiles()
+	}
+	warmListing.Lock()
+	defer warmListing.Unlock()
+	if warmListing.files != nil && time.Since(warmListing.at) < warmListingFor {
+		return slices.Clone(warmListing.files)
+	}
+	files := listCodexFiles()
+	warmListing.at, warmListing.files = time.Now(), slices.Clone(files)
+	return files
+}
+
+// warmListing is codexFiles' listing kept through the warm-up: its reads
+// (the stats of every day and of 30, the Requests page) each listed every
+// rollout again within a few seconds, ~12k lstat()s and ~45 MB a time
+// (#3493). It is kept only while nobody but the warm-up reads (quiet) and
+// for warmListingFor at most, the age statsFor's memo already answers
+// with; Warm lets it go when it ends.
+var warmListing struct {
+	sync.Mutex
+	at    time.Time
+	files []file
+}
+
+const warmListingFor = 10 * time.Second
+
+func forgetWarmListing() {
+	warmListing.Lock()
+	warmListing.files = nil
+	warmListing.Unlock()
+}
+
+// listCodexFiles is codexFiles listed now.
+func listCodexFiles() []file {
 	var out []file
 	for _, dir := range CodexDirs() {
 		out = append(out, codexFilesIn(dir)...)

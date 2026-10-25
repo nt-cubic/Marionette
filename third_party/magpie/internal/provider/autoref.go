@@ -106,7 +106,7 @@ func (g *Group) canonicalRefs() {
 		}
 	}
 	for i := range g.Rules {
-		g.Rules[i].Use = CanonicalRef(g.Rules[i].Use)
+		g.Rules[i].MapUses(CanonicalRef)
 	}
 	g.Classifier = CanonicalRef(g.Classifier)
 }

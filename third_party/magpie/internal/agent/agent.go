@@ -239,10 +239,12 @@ type Agent struct {
 	Gateway func() string
 	// Import, for an app that takes magpie only through an import link of
 	// its own, which the user confirms there (Cindy), is that link; the app
-	// has no fields magpie sets. Added says whether it has magpie already;
-	// nil means the app exposes no way to read that status.
+	// has no fields magpie sets. Added says whether it has magpie already,
+	// known false when what it is read from couldn't be read: unknown,
+	// never "not added". nil means the app exposes no way to read that
+	// status.
 	Import func() string
-	Added  func() bool
+	Added  func() (added, known bool)
 	// Launch, for an agent that takes the gateway only from its
 	// environment (agy), is the command that starts it on magpie, while
 	// it is on one of magpie's models; "" otherwise.

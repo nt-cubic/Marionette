@@ -523,7 +523,7 @@ func (m model) updateGroup(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.confirm != "member/"+id {
 			m.confirm = "member/" + id
 			m.flash, m.flashOK = "press d again to take "+id+" out", false
-			if slices.ContainsFunc(g.Rules, func(r provider.Rule) bool { return r.Use == id }) {
+			if slices.ContainsFunc(g.Rules, func(r provider.Rule) bool { _, kept := r.Without(id); return !kept }) {
 				m.flash += " and its rules"
 			}
 			return m, nil
@@ -532,7 +532,14 @@ func (m model) updateGroup(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.gsel = clamp(m.gsel, all-1)
 		return m, saveGroup(g.ID, func(g *provider.Group) error {
 			g.Members = slices.DeleteFunc(g.Members, func(x string) bool { return x == id })
-			g.Rules = slices.DeleteFunc(g.Rules, func(r provider.Rule) bool { return r.Use == id })
+			// a rule that sends to others too keeps them
+			var rules []provider.Rule
+			for _, r := range g.Rules {
+				if r, kept := r.Without(id); kept {
+					rules = append(rules, r)
+				}
+			}
+			g.Rules = rules
 			return nil
 		}, id+" taken out")
 	}
@@ -663,9 +670,10 @@ func (m model) viewGroup() string {
 	}
 	for i := ruleFrom; i < ruleTo; i++ {
 		r := g.Rules[i]
-		marker, use := "  ", sText.Render(r.Use)
+		uses := strings.Join(r.Uses(), ", ") // in order: the next when one can't take it
+		marker, use := "  ", sText.Render(uses)
 		if len(g.Members)+i == m.gsel {
-			marker, use = sCursor.Render("▸ "), sNameOn.Render(r.Use)
+			marker, use = sCursor.Render("▸ "), sNameOn.Render(uses)
 		}
 		arrow := " → "
 		if r.Pause {

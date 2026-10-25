@@ -250,7 +250,6 @@
   window.pluginTabTo = (id) => { tab = id; };
   // pluginQuery: Discover, looking for q (the add sheet found nothing by it)
   window.pluginQuery = (q) => {
-    if (q === query && !q) return;
     query = q;
     tab = "discover";
     clearTimeout(searchTimer);

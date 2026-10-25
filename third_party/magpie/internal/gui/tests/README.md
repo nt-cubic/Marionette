@@ -339,6 +339,11 @@ why one didn't load, updates one and removes one. The add sheet's
 "look for a plugin" link lead there. English and Chinese, Chromium and WebKit,
 with the API faked.
 
+`plugins-more-discover.test.cjs` checks that the add sheet's "More in
+Plugins" row and its "look for a plugin" link open Plugins on Discover,
+after Built-in or Installed was the tab open last (outloudvi on Discord).
+English and Chinese, Chromium and WebKit, with the API faked.
+
 `plugin-git.test.cjs` checks a plugin installed from a git repository: the
 market's field says it takes a GitHub repo, and Install sends
 `github:owner/repo` as typed; Installed names it by the package its

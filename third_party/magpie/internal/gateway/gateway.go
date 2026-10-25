@@ -2220,8 +2220,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	// the groups in the group as the rule's has them: a model it shares
 	// with a group ahead of it is its, for its rules (#2361)
 	ruled := ms
-	if hit != nil && strings.HasPrefix(hit.Use, provider.GroupPrefix) {
-		ruled = homed(ms, []string{hit.Use})
+	if led := ruleLed(hit, ms, cands); strings.HasPrefix(led, provider.GroupPrefix) {
+		ruled = homed(ms, []string{led})
 	}
 	// the rules of the groups in the group, down the one that goes first
 	var nested []NestedRule

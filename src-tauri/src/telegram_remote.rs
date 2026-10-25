@@ -24,7 +24,7 @@
 //! - **会话详情视图**：置顶面板同一个 message_id 上的「第二页」——点 📄
 //!   原地切换成该会话的状态 + 最近一条回复（markdown 渲染），⬅ 返回总控；
 //!   正文受「内容预览」偏好门控（关 = 内容不出本机）。
-//! - **HTTP**：复用 `http_client` 的 ureq + native-tls agent；阻塞调用跑在
+//! - **HTTP**：复用 `http_client` 的 ureq + native-tls agent，跟随应用代理设置；阻塞调用跑在
 //!   两条 std 线程上（发送 + 轮询），零新依赖，体积不变。
 //! - **安全**：bot token 经 DPAPI 落 `~/.marionette/telegram.json`（与凭据库
 //!   同一套前缀格式），明文只在内存；只处理配对过的 chat id；未配对时
@@ -919,6 +919,14 @@ fn observe_session_update(slot: &'static Telegram, session_id: &str, data: &Valu
                             started = true;
                         }
                         track.last_activity = Instant::now();
+                        // Web bridges can revise the complete HTML/Markdown reply.
+                        // Keep one current reply for forwarding.
+                        if update.pointer("/_meta/marionette.webReply").is_some()
+                            || update.pointer("/_meta/marionette.textSnapshot")
+                                .and_then(Value::as_bool) == Some(true)
+                        {
+                            track.text.current.clear();
+                        }
                         track.text.append(&text);
                     }
                     if started {
@@ -2202,7 +2210,7 @@ fn poller_loop(slot: &'static Telegram) {
         let url = format!(
             "{API_BASE}/bot{token}/getUpdates?timeout={POLL_TIMEOUT_SECS}&offset={offset}&allowed_updates=%5B%22message%22%2C%22callback_query%22%5D"
         );
-        let response = crate::http_client::agent()
+        let response = crate::http_client::agent_with_proxy()
             .and_then(|agent| {
                 agent
                     .get(&url)
@@ -3304,7 +3312,7 @@ fn tg_call(token: &str, method: &str, body: &Value, timeout: Duration) -> Result
         return Err("no token".to_string());
     }
     let url = format!("{API_BASE}/bot{token}/{method}");
-    let agent = crate::http_client::agent()?;
+    let agent = crate::http_client::agent_with_proxy()?;
     let response = agent
         .post(&url)
         .timeout(timeout)

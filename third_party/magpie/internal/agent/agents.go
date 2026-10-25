@@ -152,6 +152,7 @@ func builtins(home, cfg string) []*Agent {
 		snow(home),
 		alma(),
 		cindy(),
+		aionui(),
 		lody(home),
 	}, append(ompProfiles(home), wslAgents()...)...)
 }

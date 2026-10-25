@@ -112,6 +112,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.deepEqual(await menu.locator(".pm-item .pm-name").allTextContents(), ["Codex", "Codex"]);
       assert.deepEqual(await menu.locator(".pm-item .pm-note").allTextContents(), [await tr(KEYS[0]), await tr(KEYS[1])]);
       assert.equal(await menu.locator(".pm-item").first().getAttribute("title"), w.made);
+      // actions, nothing ticked: no empty tick column, so each agent's logo
+      // starts where the heading's words do
+      const [headX, icX] = await menu.evaluate((m) => [m.querySelector(".pm-head"), m.querySelector(".pm-item .ic")].map((e) => e.getBoundingClientRect().left + parseFloat(getComputedStyle(e).paddingLeft)));
+      assert(Math.abs(headX - icX) < 1, `the logo lines up with the heading (${icX} vs ${headX})`);
       assert.equal(await page.locator("select").count(), 0, "no native select");
       assert.deepEqual(calls, [], "opening the menu converts nothing");
 

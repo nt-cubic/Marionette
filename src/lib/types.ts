@@ -204,6 +204,8 @@ export type SessionEvent =
       type: "assistant_message";
       sessionId: string;
       text: string;
+      /** Optional original HTML layout from the ChatGPT web bridge. */
+      webReply?: import("./webReply").WebReply;
       messageId?: string;
       createdAt: string;
       /** Metadata inherited from preceding user_message snapshot. */

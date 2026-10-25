@@ -478,7 +478,12 @@ func run(args []string) error {
 				// Lody takes only a gateway on this computer's loopback
 				return fmt.Errorf("%s takes magpie only at a loopback address, and the gateway is at %s: nothing was opened", a.Name, gateway.URL())
 			}
-			openInBrowser(link)
+			if a.ID == "lody" {
+				// Lody on Linux is run with the link (agent.OpenLody)
+				_ = agent.OpenLody(link, func(u string) error { openInBrowser(u); return nil })
+			} else {
+				openInBrowser(link)
+			}
 			fmt.Println(green.Render("✓"), bold.Render(a.Name), muted.Render("opened to add magpie — confirm it there"))
 			fmt.Println(muted.Render("  " + link))
 			return nil
@@ -720,7 +725,13 @@ func list(agents []*agent.Agent, detectedOnly bool, dimFrom int) error {
 				r.vals += label.Render("  ·  " + said)
 			}
 			if a.Import != nil {
-				if a.Added != nil && a.Added() {
+				// unknown reads as not added here: the line only offers the
+				// command, never says magpie is missing
+				added := false
+				if a.Added != nil {
+					added, _ = a.Added()
+				}
+				if added {
 					r.vals = value.Render("magpie added")
 				} else {
 					r.vals = label.Render("magpie "+a.ID+" add") + faint.Render("  to add magpie")

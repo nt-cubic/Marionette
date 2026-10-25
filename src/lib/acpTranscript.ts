@@ -15,6 +15,7 @@ import { stripSectionMarkers } from "./markdownText";
 import { looksLikeUnifiedDiff } from "./toolBody";
 import { isImagePath, stripFileUri } from "./imageAttachments";
 import { inferToolNameFromMeta } from "./toolCallNormalize";
+import { parseWebReply, type WebReply } from "./webReply";
 
 export type AcpTextPart = {
   role: "assistant" | "thought" | "tool" | "other" | "system";
@@ -23,6 +24,9 @@ export type AcpTextPart = {
   isDelta: boolean;
   sessionUpdate: string;
   messageId?: string;
+  webReply?: WebReply;
+  /** Explicit complete text from a web bridge, including revisions and deletions. */
+  textSnapshot?: boolean;
   toolCallId?: string;
   toolStatus?: string;
   toolTitle?: string;
@@ -605,6 +609,29 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
       : typeof update.message_id === "string"
         ? update.message_id
         : undefined;
+
+  const webReply = parseWebReply(asRecord(update._meta)?.["marionette.webReply"]);
+  if (webReply && sessionUpdate === "agent_message_chunk") {
+    return {
+      role: "assistant",
+      text: extractTextContent(update.content),
+      isDelta: false,
+      sessionUpdate,
+      messageId,
+      webReply,
+    };
+  }
+  if (asRecord(update._meta)?.["marionette.textSnapshot"] === true &&
+      sessionUpdate === "agent_message_chunk" && messageId) {
+    return {
+      role: "assistant",
+      text: extractTextContent(update.content),
+      isDelta: false,
+      sessionUpdate,
+      messageId,
+      textSnapshot: true,
+    };
+  }
 
   // Notices (retry / sessionFailure / sessionUpdate:"notice") stay off the
   // transcript — App shows them above the composer.
@@ -1466,6 +1493,35 @@ export function applyAcpPartToEvents(
   part: AcpTextPart,
 ): SessionEvent[] {
   if (part.role === "assistant") {
+    if (part.textSnapshot) {
+      const lastIdx = findLastIndexForSession(current, sessionId);
+      const index = openReplyIndexAcrossThoughts(current, sessionId,
+        lastIdx >= 0 ? current[lastIdx] : undefined, lastIdx);
+      const previous = index >= 0 ? current[index] : undefined;
+      if (previous?.type === "assistant_message" && previous.messageId === part.messageId) {
+        if (previous.text === part.text) return current;
+        const next = [...current];
+        next[index] = { ...previous, text: part.text };
+        return next;
+      }
+      if (!part.text.trim()) return current;
+      return [...current, assistantMessageEvent(sessionId, part.text, part.messageId, metaFromLastUser(current, sessionId))];
+    }
+    if (part.webReply) {
+      // HTML and text are cumulative snapshots. Replacing them together avoids
+      // corrupting text when the website inserts formatting or revises a line.
+      const lastIdx = findLastIndexForSession(current, sessionId);
+      const last = lastIdx >= 0 ? current[lastIdx] : undefined;
+      if (last?.type === "assistant_message" && last.messageId === part.messageId) {
+        if (last.durationMs != null || (last.text === part.text &&
+            last.webReply?.html === part.webReply.html && last.webReply?.cssPath === part.webReply.cssPath)) return current;
+        const next = [...current];
+        next[lastIdx] = { ...last, text: part.text, webReply: part.webReply };
+        return next;
+      }
+      const event = assistantMessageEvent(sessionId, part.text, part.messageId, metaFromLastUser(current, sessionId));
+      return [...current, { ...event, webReply: part.webReply } as SessionEvent];
+    }
     // Keep the raw stream while it is being assembled. Runtime metadata can be
     // split at arbitrary byte/token boundaries; cleaning each delta separately
     // either misses the footer or removes its prefix before the rest arrives.
@@ -1818,6 +1874,7 @@ export function coalesceAdjacentAssistantFragments(
       if (
         prev &&
         prev.type === "assistant_message" &&
+        !prev.webReply && !e.webReply &&
         prev.durationMs == null
       ) {
         const join = mergeStreamText(prev.text, e.text, true);

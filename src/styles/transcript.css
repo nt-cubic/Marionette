@@ -541,6 +541,57 @@
   border-color: var(--border);
 }
 
+.clean-surface__tools {
+  position: absolute;
+  top: 4px;
+  right: 18px;
+  z-index: 13;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.clean-surface__tools .icon-button--eye {
+  position: static;
+}
+
+.web-reply-width-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 5px 0 7px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  background: transparent;
+  opacity: 0.72;
+  transition: opacity 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.clean-surface__tools:hover .web-reply-width-control,
+.web-reply-width-control:focus-within {
+  opacity: 1;
+  background: var(--panel);
+  border-color: var(--border);
+}
+
+.web-reply-width-control input {
+  width: 76px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: ew-resize;
+}
+
+.web-reply-width-control output {
+  min-width: 28px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
 .event-list {
   position: relative;
   display: flex;
@@ -1872,6 +1923,12 @@
 .event-card--user_message,
 .event-card--assistant_message {
   grid-template-columns: minmax(0, 1fr);
+}
+
+.event-card.is-web-reply {
+  width: min(100%, var(--web-reply-width, 85%));
+  justify-self: start;
+  margin-inline: 0 auto;
 }
 
 .event-card--user_message .event-card__icon,

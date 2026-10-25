@@ -553,12 +553,14 @@ export async function sendAcpPrompt(
   text: string,
   imagePaths: string[] = [],
   probe = false,
+  filePaths: string[] = [],
 ): Promise<unknown> {
   if (!isTauriRuntime()) return null;
   return invoke("send_acp_prompt", {
     sessionId,
     text,
     imagePaths: imagePaths.length > 0 ? imagePaths : null,
+    filePaths: filePaths.length > 0 ? filePaths : null,
     probe: probe || null,
   });
 }

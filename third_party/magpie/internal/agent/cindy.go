@@ -12,15 +12,15 @@ package agent
 // written.
 
 import (
-	"database/sql"
 	"encoding/base64"
 	"encoding/json"
-	"net/url"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/sessions"
 	_ "github.com/yetone/magpie/internal/sqlitedb"
 )
 
@@ -60,26 +60,27 @@ func CindyLink(url string) string {
 
 // cindyHas reports whether Cindy's database at path has magpie among its
 // custom providers: by the id or name the link gives it, or by the
-// gateway's address in its endpoints. Opened read-only; no database, or
-// one that can't be read, is no.
-func cindyHas(path, gw string) bool {
-	if _, err := os.Stat(path); err != nil {
-		return false
+// gateway's address in its endpoints. Read untouched, whether Cindy runs or
+// not (sessions.OpenUntouched); no database is no, and one that can't be
+// read is unknown (known false), never "not added".
+func cindyHas(path, gw string) (has, known bool) {
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		return false, true
+	} else if err != nil {
+		return false, false
 	}
-	p := filepath.ToSlash(path)
-	if !strings.HasPrefix(p, "/") {
-		p = "/" + p // C:/… on Windows
-	}
-	u := url.URL{Scheme: "file", Path: p, RawQuery: "mode=ro&_pragma=busy_timeout(1000)"}
-	db, err := sql.Open("sqlite", u.String())
+	db, done, err := sessions.OpenUntouched(path)
 	if err != nil {
-		return false
+		return false, false
 	}
-	defer db.Close()
+	defer done()
 	var n int
 	err = db.QueryRow(`SELECT count(*) FROM custom_providers
 		WHERE id = ? OR lower(name) = ? OR instr(runtimes, ?) > 0`, magpieID, magpieID, gw).Scan(&n)
-	return err == nil && n > 0
+	if err != nil {
+		return false, false
+	}
+	return n > 0, true
 }
 
 // cindyDirs are where Cindy keeps its data (~/Library/Application
@@ -104,17 +105,24 @@ func cindyDirs() []string {
 
 // cindyAdded reports whether any of Cindy's databases in dirs has magpie:
 // one per account (cindy-<account>.db) once signed in, cindy-local-v1.db
-// before.
-func cindyAdded(dirs []string, gw string) bool {
+// before. One that has it is enough; else one that couldn't be read leaves
+// it unknown.
+func cindyAdded(dirs []string, gw string) (added, known bool) {
+	known = true
 	for _, d := range dirs {
-		dbs, _ := filepath.Glob(filepath.Join(d, "cindy-*.db"))
+		dbs, err := filepath.Glob(filepath.Join(d, "cindy-*.db"))
+		if err != nil {
+			known = false
+		}
 		for _, db := range dbs {
-			if cindyHas(db, gw) {
-				return true
+			has, ok := cindyHas(db, gw)
+			if has {
+				return true, true
 			}
+			known = known && ok
 		}
 	}
-	return false
+	return false, known
 }
 
 func cindy() *Agent {
@@ -136,6 +144,6 @@ func cindy() *Agent {
 			return false
 		},
 		Import: func() string { return CindyLink(gateway.URL()) },
-		Added:  func() bool { return cindyAdded(dirs, gateway.URL()) },
+		Added:  func() (bool, bool) { return cindyAdded(dirs, gateway.URL()) },
 	}
 }

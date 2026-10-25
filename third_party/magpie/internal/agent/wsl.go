@@ -732,9 +732,18 @@ func wslAgent(k wslKind, d distro) *Agent {
 			return check()
 		}
 	}
-	for _, p := range []*func() bool{&a.Routed, &a.Joined, &a.Beside, &a.Added} {
+	for _, p := range []*func() bool{&a.Routed, &a.Joined, &a.Beside} {
 		if f := *p; f != nil {
 			*p = func() bool { return d.live() && f() }
+		}
+	}
+	// a stopped distro's app can't be read: unknown, not "not added"
+	if f := a.Added; f != nil {
+		a.Added = func() (bool, bool) {
+			if !d.live() {
+				return false, false
+			}
+			return f()
 		}
 	}
 	// what a set leaves is kept at once, in case the distro stops before
