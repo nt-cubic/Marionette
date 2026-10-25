@@ -14,8 +14,9 @@
 // keeps the pick (prefsKeep). No click moves the page. English and Chinese, Chromium and
 // WebKit, with the API faked. Search help covers costs for every provider and
 // explains current eligibility without claiming a provider can never search.
-// The help is also checked in Japanese and German, preserving desktop ellipsis
-// and hover titles as well as the existing narrow-web layout.
+// The help is also checked in Japanese and German, wrapped whole beside the
+// picker at every width (arculongus on Discord: cut with an ellipsis on the
+// desktop, it couldn't be read; settings-lines-wrap.test.cjs).
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -368,19 +369,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           });
           assert(layout.clipped <= 1 && layout.fits, JSON.stringify(layout));
           const sub = row.locator(".sub");
-          assert.equal(await sub.getAttribute("class"), "sub", "copy changes must not opt into wrapping");
-          if (width === 1000) {
-            assert.equal(layout.whiteSpace, "nowrap", "desktop help stays on one line");
-            assert.equal(layout.textOverflow, "ellipsis");
-            assert(layout.overflow > 0, "long help is truncated");
-            await sub.hover();
-            const full = await sub.evaluate((e) => e.textContent.replace(/\s+/g, " ").trim());
-            assert.equal(await sub.getAttribute("title"), full, "hover exposes the complete updated help");
-            assert.equal(await sub.getAttribute("data-full-tip"), full);
-          } else {
-            assert.equal(layout.whiteSpace, "normal", "retain the existing narrow-web layout");
-            assert(layout.overflow <= 1, JSON.stringify(layout));
-          }
+          assert.equal(await sub.getAttribute("class"), "sub", "every setting row's line wraps, with no class of its own to opt in");
+          assert.equal(layout.whiteSpace, "normal", "the help wraps");
+          assert(layout.overflow <= 1, JSON.stringify(layout));
           if (process.env.ARTIFACT_DIR) {
             await fs.mkdir(process.env.ARTIFACT_DIR, { recursive: true });
             await row.screenshot({ path: path.join(process.env.ARTIFACT_DIR, `${engine}-${lang}-${theme}-${width}-search-help.png`) });

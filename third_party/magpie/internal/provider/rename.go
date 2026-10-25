@@ -1,11 +1,14 @@
 package provider
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"slices"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/settings"
@@ -58,11 +61,11 @@ func Rename(from, to string) error {
 	if slices.ContainsFunc(f.Providers, func(p Provider) bool { return p.ID == to }) {
 		return fmt.Errorf("there is a provider %q already", to)
 	}
-	// an id another provider once had is this one's now
-	for j := range f.Providers {
-		f.Providers[j].Was = slices.DeleteFunc(f.Providers[j].Was, func(w string) bool { return w == to })
-	}
+	// an id another provider once had is this one's now; the calls
+	// recorded under it until now stay that one's
+	giveID(f.Providers, i, to, time.Now())
 	p := &f.Providers[i]
+	p.Was = slices.DeleteFunc(p.Was, func(w string) bool { return w == to })
 	p.ID = to
 	// the subscription's id is the subscription's: an old ref to it isn't
 	// taken for this one
@@ -146,15 +149,133 @@ func RenamedRef(ref string) string {
 	return ref
 }
 
-// Renamed maps the ids providers had to the ones they have now.
-func Renamed() map[string]string {
-	out := map[string]string{}
-	for _, p := range load().Providers {
-		for _, w := range p.Was {
-			out[w] = p.ID
+// Renamed maps the ids providers had to the ones they have now. An id
+// that a provider or a subscription has now is that one's, and is not
+// in it.
+func Renamed() map[string]string { return UsageRenames().now }
+
+// Gave is an id a provider had and gave up to another (Provider.Gave).
+type Gave struct {
+	ID    string    `json:"id"`
+	Until time.Time `json:"until"`
+}
+
+// Renames say which provider a call recorded under a provider id was
+// made to, as its id is now: a provider renamed takes the calls recorded
+// under the ids it had (Was), and an id another provider took since
+// (Gave) is that one's only from then on (cybercaius on Discord: a
+// renamed provider's usage was shown under its old id and its new one).
+type Renames struct {
+	now  map[string]string
+	gave map[string][]gaveTo
+}
+
+type gaveTo struct {
+	Until time.Time `json:"until"`
+	To    string    `json:"to"`
+}
+
+// Of is the id the provider a call recorded under id at the time at has
+// now; id itself when it was not renamed. A zero at is before every
+// hand-over.
+func (r Renames) Of(id string, at time.Time) string {
+	for _, g := range r.gave[id] {
+		if at.Before(g.Until) {
+			return g.To
 		}
 	}
-	return out
+	if to, ok := r.now[id]; ok {
+		return to
+	}
+	return id
+}
+
+// Timed is whether the id's calls go to more than one provider by when
+// they were made, so Of needs each call's time.
+func (r Renames) Timed(id string) bool { return len(r.gave[id]) > 0 }
+
+// Each is every id a call recorded under id can go to (Of), by when it
+// was made.
+func (r Renames) Each(id string) []string {
+	out := []string{r.Of(id, time.Time{})}
+	for _, g := range r.gave[id] {
+		out = append(out, g.To)
+	}
+	out = append(out, r.Of(id, time.Now().Add(100*365*24*time.Hour)))
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+// RenamesOf are renames of ids to the ones they are now, none given away
+// (for a test).
+func RenamesOf(now map[string]string) Renames { return Renames{now: now} }
+
+// Empty is whether no id is renamed.
+func (r Renames) Empty() bool { return len(r.now) == 0 && len(r.gave) == 0 }
+
+// Key is r as text, for a cache of what was worked out with it.
+func (r Renames) Key() string {
+	b, _ := json.Marshal([]any{r.now, r.gave})
+	return string(b)
+}
+
+// lastRenames are the renames last read, kept for when providers.json
+// can't be read: a failed read is not "nothing renamed", and the usage of
+// every renamed provider would be shown split until it read again.
+var lastRenames atomic.Pointer[Renames]
+
+// UsageRenames are the renames of providers.json as it is now.
+func UsageRenames() Renames {
+	f, err := read()
+	if err != nil {
+		if r := lastRenames.Load(); r != nil {
+			return *r
+		}
+		return Renames{now: map[string]string{}}
+	}
+	r := renamesOf(f.Providers)
+	lastRenames.Store(&r)
+	return r
+}
+
+func renamesOf(ps []Provider) Renames {
+	r := Renames{now: map[string]string{}}
+	held := map[string]bool{}
+	for _, p := range ps {
+		held[p.ID] = true
+	}
+	for _, p := range ps {
+		for _, w := range p.Was {
+			// the subscription's id is the subscription's (Rename)
+			if !held[w] && !subscriptionID(w) {
+				r.now[w] = p.ID
+			}
+		}
+		for _, g := range p.Gave {
+			if r.gave == nil {
+				r.gave = map[string][]gaveTo{}
+			}
+			r.gave[g.ID] = append(r.gave[g.ID], gaveTo{g.Until, p.ID})
+		}
+	}
+	for _, gs := range r.gave {
+		slices.SortStableFunc(gs, func(a, b gaveTo) int { return a.Until.Compare(b.Until) })
+	}
+	return r
+}
+
+// giveID moves id out of the Was of every provider of ps but ps[taker]
+// (-1 for one not among them) into its Gave at now: from now on id is
+// another's, and what was recorded under it before stays the one's that
+// had it.
+func giveID(ps []Provider, taker int, id string, now time.Time) {
+	for j := range ps {
+		if j == taker || !slices.Contains(ps[j].Was, id) {
+			continue
+		}
+		ps[j].Was = slices.DeleteFunc(ps[j].Was, func(w string) bool { return w == id })
+		ps[j].Gave = append(ps[j].Gave, Gave{ID: id, Until: now})
+	}
 }
 
 // OnAccountIDs are the user's own providers saved on a subscription's id,

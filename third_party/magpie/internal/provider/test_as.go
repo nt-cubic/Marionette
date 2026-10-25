@@ -113,11 +113,13 @@ func clientShapesPath() string {
 
 // shapeHeader is one of client's headers a test asks with: not what is
 // this conversation's or this turn's alone (its session, thread or turn,
-// a request id, a subagent's kind), nor the betas this request asked for,
-// nor anything that signs it.
+// a request id, a subagent's kind, the Codex window it came from, a
+// retry's count), nor the betas this request asked for, nor anything that
+// signs it. One that differs between two of the client's windows would
+// write the file again on each of their requests (#3394).
 func shapeHeader(k string) bool {
 	k = strings.ToLower(k)
-	for _, s := range []string{"session", "thread", "conversation", "turn", "request-id", "authorization", "api-key", "attestation", "subagent", "luna-reserve"} {
+	for _, s := range []string{"session", "thread", "conversation", "turn", "request-id", "window", "retry-count", "authorization", "api-key", "attestation", "subagent", "luna-reserve"} {
 		if strings.Contains(k, s) {
 			return false
 		}

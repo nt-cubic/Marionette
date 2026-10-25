@@ -48,6 +48,10 @@ type logSnapshot struct {
 	// reach back to a subscription window's start.
 	firstOwn     time.Time
 	keyProviders map[string]bool
+	// probes are the requests magpie sent on its own (SourceProbe), kept
+	// out of blocks: every reader of those counts what it reads, and the
+	// request log alone lists these (queryPage)
+	probes []probeRow
 }
 
 var logIndex struct {
@@ -116,6 +120,7 @@ func readLogSnapshot() *logSnapshot {
 		next.off, next.first, next.firstOwn = old.off, old.first, old.firstOwn
 		next.blocks = slices.Clone(old.blocks)
 		next.keyProviders = maps.Clone(old.keyProviders)
+		next.probes = slices.Clip(old.probes) // appended to, never written in
 	}
 	logIndex.reads++
 	f, err := os.Open(path)
@@ -145,6 +150,10 @@ func readLogSnapshot() *logSnapshot {
 		sum.Write(b)
 		var r Record
 		if json.Unmarshal(b, &r) != nil {
+			continue
+		}
+		if r.IsProbe() {
+			next.probes = append(next.probes, probeRow{r, next.off})
 			continue
 		}
 		if tail == nil {
@@ -263,7 +272,9 @@ func (c *rowChunk) freeze() *rowChunk {
 		c.Bytes -= int64(32 * len(c.Strings))
 	}
 	c.shapeIDs = nil
-	return c.pack()
+	c = c.pack()
+	c.serial = nextChunkSerial()
+	return c
 }
 
 func resumeLogHash(h hash.Hash, state []byte) bool {

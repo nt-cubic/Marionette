@@ -532,6 +532,15 @@ func desktopLocaleFrom(ps []desktopPaths) string {
 // set in 3p mode, by Desktop or by hand, is the user's and stays. What
 // can't be read is left alone. The value written is stashed, so switching
 // off can take a config.json magpie made for it away again.
+//
+// It holds only for a language Desktop's 3p window has. That window is
+// its bundled UI (Resources/ion-dist), with 11 catalogs and no Chinese up
+// to 3.6556.2 at least; on every start it asks the main process for its
+// own pick (requestLocaleChange: its localStorage, else navigator.languages
+// mapped onto those 11, else en-US), and the main process writes that into
+// Claude-3p/config.json. So a Chinese "locale" there, carried or set by
+// hand, is "en-US" again after each start, by Desktop and not by magpie
+// (Dx25 on Discord, Windows), and nothing magpie writes can keep it.
 func desktopCarryLocale(p desktopPaths) {
 	if p.app == "" || p.app3p == "" || p.app == p.app3p {
 		return

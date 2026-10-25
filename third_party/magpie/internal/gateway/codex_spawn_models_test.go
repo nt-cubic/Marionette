@@ -258,3 +258,29 @@ func TestSpawnAgentNamesEveryModelAfterToolSearch(t *testing.T) {
 		namesAll(t, searchedSpawnDescription(t, upstream))
 	})
 }
+
+// Codex sends spawn_agent on every request, so widening it must not
+// decode the conversation and write it again (#3394): the body goes on as
+// Codex sent it, its members in their order, but for the tools.
+func TestSpawnAgentModelsLeavesTheRestAsSent(t *testing.T) {
+	up := setup(t, provider.Responses, &fake{t: t})
+	if err := provider.Save(provider.Provider{ID: "fake", Name: "Fake", Key: "k", Responses: up.URL + "/v1", Models: []string{"m1", "m2"}}); err != nil {
+		t.Fatal(err)
+	}
+	var q map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(codexSpawnRequest(t, "fake/m1")), &q); err != nil {
+		t.Fatal(err)
+	}
+	// a conversation as Codex writes it: unsorted keys, < > & as they are
+	input := `[{"type":"message","role":"user","content":[{"type":"input_text","text":"a <b> & c ` + strings.Repeat("x", 300000) + `"}]}]`
+	body := []byte(`{"model":"fake/m1", "input":` + input + `, "tools":` + string(q["tools"]) + `,"stream":true}`)
+	req := httptest.NewRequest("POST", "/v1/responses", nil)
+	got := spawnAgentModels(req, body, "fake/m1", false)
+	if !strings.Contains(spawnDescription(t, got), "- `fake/m2`") {
+		t.Fatalf("spawn_agent not widened:\n%s", spawnDescription(t, got))
+	}
+	prefix := `{"model":"fake/m1", "input":` + input + `, "tools":`
+	if !strings.HasPrefix(string(got), prefix) || !strings.HasSuffix(string(got), `,"stream":true}`) {
+		t.Fatalf("the rest of the body changed: %.200s … %.200s", got, got[max(0, len(got)-200):])
+	}
+}

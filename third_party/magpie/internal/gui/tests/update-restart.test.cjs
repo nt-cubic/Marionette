@@ -162,7 +162,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(ctl.saves.at(-1).autoRestart, true);
         await page.waitForTimeout(400);
         const y1 = (await auto.locator(".opt").nth(0).boundingBox()).y;
-        if (atTop) {
+        // (the Version row's line wraps whole, arculongus on Discord: at a
+        // narrow width it can grow the row past the switch's height, and
+        // then the switch is held where it was clicked)
+        const held = Math.abs(y1 - y0) <= 1;
+        if (atTop && !held) {
           assert.equal(await settings.evaluate((v) => v.scrollTop), 0, "a view at its top stays at its top");
           const tall = (await auto.locator(".opt").nth(0).boundingBox()).height;
           assert.ok(y1 - y0 >= -1 && y1 - y0 < tall, `the clicked switch moved ${y1 - y0}px, its height ${tall}px`);

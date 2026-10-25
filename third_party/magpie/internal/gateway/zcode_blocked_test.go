@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/yetone/magpie/internal/provider"
 )
@@ -129,5 +130,36 @@ func TestEdgeBlockedSaidPlainly(t *testing.T) {
 	tries := s.trace.routes[len(s.trace.routes)-1].Tries
 	if len(tries) != 2 || tries[0].Rest == nil || !strings.Contains(tries[0].Error, provider.BlockedHint) {
 		t.Fatalf("tries: %+v", tries)
+	}
+}
+
+// The ZCode plugin's answer to the Start Plan's 405 code 3012 (0.1.27 on,
+// plugins#348) is an account ZCode's risk control blocked: it rests two
+// hours as restricted, the account rather than one model, and is lifted
+// by hand like WorkBuddy's. The words 0.1.26 gave the same 405 read as any
+// failure does.
+func TestZCodeStartPlanBlockRestsRestricted(t *testing.T) {
+	fresh(t)
+	s := New()
+	p := provider.Provider{ID: "zcode", Name: "ZCode", Account: &provider.Account{Agent: "plugin", User: "u1"}}
+	c := candidate{p: p, model: "GLM-5.3-Flash", rest: p.ID + "#u1"}
+	body := []byte(`{"type":"error","error":{"type":"permission_error","message":"request has been blocked due to unusual activity. (405, code 3012) — ` + provider.ZCodeRestrictedHint + `"}}`)
+	now := time.Now()
+	rest := s.restAfter(c, 405, nil, body)
+	if rest.Why != failRestricted || rest.By != "restricted" || rest.Key != c.restKey() {
+		t.Fatalf("rests %+v", rest)
+	}
+	if d := restedFor(rest, now); d < restrictedRest-time.Minute || d > restrictedRest+time.Minute {
+		t.Fatalf("rests %v", d)
+	}
+	if !s.Unrest(rest.Key) {
+		t.Fatal("its rest can't be lifted")
+	}
+	old := []byte(`{"type":"error","error":{"type":"permission_error","message":"405 Method Not Allowed — ZCode's Start Plan still turned this request away, though magpie sends it as the ZCode app does; it can be a network block of this IP, or ZCode checking for something new. Use an account with a GLM Coding Plan, or add another provider to this group"}}`)
+	if f := failureOf(c, 405, old); f == failRestricted {
+		t.Fatal("0.1.26's words read as restricted")
+	}
+	if f := failureOf(c, 200, body); f == failRestricted {
+		t.Fatal("a 200 read as restricted")
 	}
 }

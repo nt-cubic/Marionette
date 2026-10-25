@@ -9,7 +9,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
-const { watchSettingsReads, settingsDrawn } = require("./reader.cjs");
+const { watchSettingsReads, settingsDrawn, reach } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const words = {
@@ -59,12 +59,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await settingsDrawn(page); // rows found are the ones that stay (#1659)
       const row = page.locator("#replyList #memberModelRow");
       await row.waitFor();
-      await row.scrollIntoViewIfNeeded();
       assert.equal(await row.locator(".name").textContent(), w.name);
       assert((await row.locator(".sub").textContent()).includes(w.sub));
       assert.equal(await page.locator("#replyList").evaluate((l) => l.previousElementSibling.textContent.trim()), w.head);
       const on = row.locator(".segs button", { hasText: w.on });
       assert.notEqual(await on.getAttribute("aria-pressed"), "true", "Off at first");
+      // wheeled to as a reader would: the app puts back a scroll it didn't
+      // get from the reader (scrollIntoViewIfNeeded), and with Settings'
+      // lines wrapped whole the row is below the window's foot
+      await reach(page, on);
 
       const before = await page.evaluate(() => [scrollX, scrollY, document.scrollingElement.scrollTop]);
       const b = await on.boundingBox();

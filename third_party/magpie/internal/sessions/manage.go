@@ -218,10 +218,10 @@ func listAgent(agent string, all []file) []Managed {
 		identities = codexIdentitySnapshot(mine)
 		taskTitles = codexSubagentTaskTitles(mine)
 	}
-	price := pricer()
+	price, titles := pricer(), codexTitleOf()
 	out := []Managed{}
 	for _, fs := range groups {
-		s, _ := assemble(fs, price)
+		s, _ := assemble(fs, price, titles)
 		setSessionCodexIdentity(&s, identities)
 		setSessionCodexTaskTitle(&s, taskTitles)
 		listed(&s)
@@ -325,9 +325,9 @@ func Delete(agent, id string) (Trashed, error) {
 	// the session as the page lists it: by the id assemble gives it
 	var fs []file
 	var s Session
-	price := pricer()
+	price, titles := pricer(), codexTitleOf()
 	for _, g := range groups {
-		if one, _ := assembleListed(g, price); one.ID == id {
+		if one, _ := assembleListed(g, price, titles); one.ID == id {
 			fs, s = g, one
 			break
 		}

@@ -29,6 +29,9 @@ type ctxPoint struct {
 	Tokens int       `json:"tokens"`
 	Window int       `json:"window,omitempty"`
 	Cache  int       `json:"cache,omitempty"` // of Tokens, read from the vendor's cache
+	// CacheUnknown: the vendor counted no cache for it, so Cache's 0 is
+	// not a miss (#3464)
+	CacheUnknown bool `json:"cache_unknown,omitempty"`
 }
 
 type ctxSession struct {
@@ -148,6 +151,13 @@ func cacheOf(r gateway.Route) int {
 		return 0
 	}
 	return r.Usage[len(r.Usage)-1].CacheRead
+}
+
+// cacheKnown is whether the vendor counted the cache of r's answering try:
+// one that counts none (Kiro) is left out of a hit rate rather than read as
+// a miss (#3464).
+func cacheKnown(r gateway.Route) bool {
+	return len(r.Usage) == 0 || !cacheNotCounted(r.Usage[len(r.Usage)-1])
 }
 
 // sessionOfRoute is the conversation a route is part of.
@@ -289,7 +299,7 @@ func contextOf(routes []gateway.Route, days int) ctxJSON {
 		for _, x := range p.Parts {
 			acc.parts[x.Kind] += x.Tokens
 		}
-		if p.Counted {
+		if p.Counted && cacheKnown(r) {
 			acc.counted += p.Tokens
 			acc.cached += min(cacheOf(r), p.Tokens)
 		}
@@ -321,7 +331,7 @@ func contextOf(routes []gateway.Route, days int) ctxJSON {
 				acc.growths = append(acc.growths, d)
 			}
 		}
-		s.Points = append(s.Points, ctxPoint{ID: r.ID, Time: r.Time, Tokens: p.Tokens, Window: p.Window, Cache: cacheOf(r)})
+		s.Points = append(s.Points, ctxPoint{ID: r.ID, Time: r.Time, Tokens: p.Tokens, Window: p.Window, Cache: cacheOf(r), CacheUnknown: !cacheKnown(r)})
 		s.Requests++
 		s.Last, s.Latest, s.LatestID, s.Model = r.Time, p, r.ID, r.Model
 		s.Peak = max(s.Peak, p.Tokens)

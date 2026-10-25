@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/probelog"
 )
 
 // Which APIs a vendor or relay serves behind the one URL the user typed is
@@ -83,7 +84,7 @@ func (p Provider) Detect(ctx context.Context, base, model string, picked ...stri
 	if err != nil {
 		return nil, err
 	}
-	ctx = q.Via(ctx)
+	ctx = q.ownRequests(q.Via(ctx), probelog.KindDetect)
 	model = strings.TrimSpace(model)
 	var ids []string
 	if model == "" {
@@ -196,7 +197,7 @@ func (p Provider) DetectDecide(ctx context.Context, model string) Detection {
 		return d
 	}
 	t0 := time.Now()
-	err := p.AskSystemOne(p.Via(ctx), model)
+	err := p.AskSystemOne(p.ownRequests(p.Via(ctx), probelog.KindDetect), model)
 	d.Millis = time.Since(t0).Milliseconds()
 	if err != nil {
 		d.Error = err.Error()
@@ -245,7 +246,7 @@ func (p Provider) DetectModels(ctx context.Context, base string, models []string
 	if len(ids) > DetectMax {
 		ids = ids[:DetectMax]
 	}
-	ctx = q.Via(ctx)
+	ctx = q.ownRequests(q.Via(ctx), probelog.KindDetect)
 	out := make([]ModelDetection, len(ids))
 	sem := make(chan struct{}, DetectWide)
 	var wg sync.WaitGroup

@@ -60,6 +60,6 @@ func withTokenFloor(body []byte, floor int) ([]byte, bool) {
 	if !raised {
 		return nil, false
 	}
-	b, err := json.Marshal(q)
+	b, err := marshalJSON(q)
 	return b, err == nil
 }

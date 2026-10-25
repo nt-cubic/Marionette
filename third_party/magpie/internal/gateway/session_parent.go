@@ -15,6 +15,12 @@ func isDescriptionKind(kind string) bool {
 	return kind == "thread_description"
 }
 
+// isSummaryKind: the Codex app's one-line summary of a thread's latest
+// message, shown under its title (thread_summary)
+func isSummaryKind(kind string) bool {
+	return kind == "thread_summary"
+}
+
 // isPredictionKind: the Codex app's guess at the user's next message,
 // shown in its composer (composer_predictions, #1970)
 func isPredictionKind(kind string) bool {
@@ -33,12 +39,13 @@ type sessionMetadata struct {
 }
 
 func requestSessionMetadata(h http.Header, body []byte) sessionMetadata {
-	var envelope struct {
-		Metadata map[string]json.RawMessage `json:"client_metadata"`
-	}
+	var metadata map[string]json.RawMessage
 	var m sessionMetadata
-	if bytes.Contains(body, []byte("client_metadata")) && json.Unmarshal(body, &envelope) == nil {
-		if raw := envelope.Metadata["x-codex-turn-metadata"]; len(raw) > 0 {
+	// Every Codex request asks this four or five times, so only the member
+	// is decoded: decoding the whole body walked the conversation each time
+	// (#3394). A long body is checked and split once (topMember).
+	if bytes.Contains(body, []byte("client_metadata")) && metadataOf(body, &metadata) {
+		if raw := metadata["x-codex-turn-metadata"]; len(raw) > 0 {
 			var text string
 			if json.Unmarshal(raw, &text) == nil {
 				raw = []byte(text)
@@ -46,16 +53,16 @@ func requestSessionMetadata(h http.Header, body []byte) sessionMetadata {
 			if json.Unmarshal(raw, &m) == nil {
 				return m
 			}
-		} else if len(envelope.Metadata) > 0 {
-			_ = json.Unmarshal(envelope.Metadata["turn_id"], &m.Turn)
+		} else if len(metadata) > 0 {
+			_ = json.Unmarshal(metadata["turn_id"], &m.Turn)
 			// Compatibility projections used by clients without the full blob.
-			_ = json.Unmarshal(envelope.Metadata["thread_source"], &m.Source)
-			_ = json.Unmarshal(envelope.Metadata["parent_thread_id"], &m.Parent)
+			_ = json.Unmarshal(metadata["thread_source"], &m.Source)
+			_ = json.Unmarshal(metadata["parent_thread_id"], &m.Parent)
 			if m.Parent == "" {
-				_ = json.Unmarshal(envelope.Metadata["x-codex-parent-thread-id"], &m.Parent)
+				_ = json.Unmarshal(metadata["x-codex-parent-thread-id"], &m.Parent)
 			}
-			_ = json.Unmarshal(envelope.Metadata["forked_from_thread_id"], &m.Forked)
-			_ = json.Unmarshal(envelope.Metadata["installation_id"], &m.Installation)
+			_ = json.Unmarshal(metadata["forked_from_thread_id"], &m.Forked)
+			_ = json.Unmarshal(metadata["installation_id"], &m.Installation)
 			if m.Source != "" || m.Parent != "" || m.Forked != "" {
 				return m
 			}
@@ -70,6 +77,17 @@ func requestSessionMetadata(h http.Header, body []byte) sessionMetadata {
 		m.Turn = projectedTurn
 	}
 	return m
+}
+
+// metadataOf decodes body's client_metadata into md, as decoding body into
+// a struct with that one field does: false when body isn't a JSON object or
+// the member isn't an object or null.
+func metadataOf(body []byte, md *map[string]json.RawMessage) bool {
+	raw, found, ok := topMember(body, "client_metadata")
+	if !ok {
+		return false
+	}
+	return !found || json.Unmarshal(raw, md) == nil
 }
 
 func requestCallKind(h http.Header, m sessionMetadata) string {

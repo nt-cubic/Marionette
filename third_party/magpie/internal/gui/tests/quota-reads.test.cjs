@@ -11,7 +11,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
-const { openPart } = require("./reader.cjs");
+const { openPart, reach } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 
@@ -95,8 +95,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           assert.equal(await opts.nth(0).evaluate((b) => b.classList.contains("on")), true, "Automatic by default");
 
           // in a narrow window the row fits, and the page doesn't scroll sideways
-          await row.scrollIntoViewIfNeeded();
-          await page.waitForTimeout(300);
+          // wheeled to, as a reader does: the app puts back a scroll from
+          // code, and in WebKit de 360 the button sits just under the view's
+          // foot, where Playwright's own scroll is put back before it presses
+          await reach(page, opts.nth(1));
+          // the Usage page drawn from a reply with no cost says no error
+          // (fmtCost threw on it, and the error's line covered this row, #3406)
+          assert.equal(await page.locator("#status.err").count(), 0,
+            "an error is shown: " + await page.locator("#status").getAttribute("title"));
           const fit = await row.evaluate((r) => {
             const b = r.getBoundingClientRect(), segs = r.querySelector("#quotaReadsSegs").getBoundingClientRect();
             return { right: b.right, segsRight: segs.right, vw: document.documentElement.clientWidth,

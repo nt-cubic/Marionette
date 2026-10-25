@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/yetone/magpie/internal/sessions"
 )
 
 func TestUsageSameSizeAndMtimeRewrite(t *testing.T) {
@@ -411,5 +414,52 @@ func TestUsageLedgerReadsTheIndexNotTheFile(t *testing.T) {
 	defer mu.Unlock()
 	if n := loads - before; n != 0 {
 		t.Fatalf("the ledger parsed the whole log %d times", n)
+	}
+}
+
+// While the page is asked for, the session files' chunks are kept to
+// requestCacheBytes, so a refresh after a new call reads none of them again;
+// once it goes unasked for requestIdle they are held to requestIdleBytes
+// (#3493).
+func TestRequestChunksTrimmedWhenIdle(t *testing.T) {
+	pageHome(t)
+	now := holdClock(t, time.Date(2026, 9, 30, 12, 0, 0, 0, time.Local))
+	oldIdle, oldIdleBytes := requestIdle, requestIdleBytes
+	t.Cleanup(func() {
+		requestCache.Lock()
+		requestIdle, requestIdleBytes = oldIdle, oldIdleBytes
+		requestCache.Unlock()
+	})
+	cacheBudget(t, 1<<30)
+	requestCache.Lock()
+	requestIdle, requestIdleBytes = time.Hour, 1
+	requestCache.Unlock()
+	dir := filepath.Join(sessions.CodexDir(), "sessions")
+	os.MkdirAll(dir, 0700)
+	for i := range 3 {
+		meta := fmt.Sprintf(`{"type":"session_meta","payload":{"id":"s%d","model_provider":"custom"}}`, i) + "\n" + `{"type":"turn_context","payload":{"model":"m"}}` + "\n"
+		line := fmt.Sprintf(`{"timestamp":%q,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"output_tokens":1},"last_token_usage":{"input_tokens":10,"output_tokens":1}}}}`+"\n", now.Add(-time.Duration(i)*time.Minute).Format(time.RFC3339Nano))
+		os.WriteFile(filepath.Join(dir, fmt.Sprintf("rollout-2026-09-30T00-00-0%d-s%d.jsonl", i, i)), []byte(meta+line), 0600)
+	}
+	chunks := func() int {
+		requestCache.Lock()
+		defer requestCache.Unlock()
+		return len(requestCache.chunks)
+	}
+	if p := QueryPage(All, Filter{}, 0, 100); p.Total != 3 {
+		t.Fatalf("total %d, want 3", p.Total)
+	}
+	if n := chunks(); n != 3 {
+		t.Fatalf("%d chunks kept while the page is asked for, want 3", n)
+	}
+	requestCache.Lock()
+	requestIdle = time.Millisecond
+	requestCache.Unlock()
+	QueryPage(All, Filter{}, 0, 100) // asked again: the idle wait starts over
+	for deadline := time.Now().Add(10 * time.Second); chunks() != 0; {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d chunks kept after the page went unasked, want 0", chunks())
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }

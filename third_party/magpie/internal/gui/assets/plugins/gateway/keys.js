@@ -7,6 +7,9 @@ let gatewayOwnDraft = "";
 // #905) to how it is shown; what no provider has now is shown as it is kept
 let gatewayAccountNames = {};
 let gatewayKeysRead = 0;
+// gatewayKeysErr is why the list couldn't be read, said in its place until
+// a read works: a redraw of the page (the providers' poll) keeps it
+let gatewayKeysErr = "";
 // gatewayLimit is the key whose limit editor is open, and its draft
 // (#585): what is picked in it is sent only by its Save.
 let gatewayLimit = null;
@@ -59,11 +62,15 @@ async function loadGatewayKeys() {
     // A fresh list also refreshes a selected credential, which may have rotated.
     connectSecret = null;
     gatewayKeys = out.keys || [];
+    gatewayKeysErr = "";
     renderGatewayKeys();
     if (view === "gateway" && providers) selectConnectKey(connectKeyID);
   } catch (e) {
     if (read !== gatewayKeysRead) return;
-    $("#gatewayKeys").replaceChildren(el("div", "none", t(e.message)));
+    // a list read before stays: only one never read is said unreadable
+    if (gatewayKeys !== null) return status(t(e.message), "err");
+    gatewayKeysErr = e.message;
+    renderGatewayKeys();
   }
 }
 
@@ -167,8 +174,11 @@ function renderGatewayKeys() {
   $("#gatewayKeysBlock").hidden = !providers?.gateway.lan;
   box.replaceChildren();
   $("#addGatewayKey").onclick = () => { gatewayKeyDraft = ""; renderGatewayKeys(); };
-  if (gatewayKeys === null) return;
   const list = el("div", "accts");
+  if (gatewayKeys === null) {
+    if (gatewayKeysErr) list.append(el("div", "none", t(gatewayKeysErr))), box.append(list);
+    return;
+  }
   for (const k of gatewayKeys) {
     const row = el("div", "acc" + (k.off ? " off" : " in-use"));
     row.dataset.key = k.id;

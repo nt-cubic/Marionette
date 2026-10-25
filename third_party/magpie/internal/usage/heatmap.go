@@ -65,7 +65,7 @@ func heatmapOf(since, now time.Time, visit func(add func(Row))) *Heatmap {
 	type ymd struct{ y, yd int }
 	names := map[ymd]string{}
 	visit(func(r Row) {
-		if r.IsRejected() || r.Time.Before(since) {
+		if r.IsRejected() || r.IsProbe() || r.Time.Before(since) {
 			return
 		}
 		t := r.Time.In(now.Location())

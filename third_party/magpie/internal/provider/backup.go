@@ -182,7 +182,10 @@ func AddPlugins(ctx context.Context, es []plugin.Entry) (added []string, failed 
 			continue
 		}
 		here[plugin.Name(e.Spec)] = true
-		got, err := AddPlugin(ctx, e.Spec)
+		// the package that computer installed, as it has it: never
+		// taken for a community plugin's name, or held while the
+		// community's list can't be read
+		got, err := addPluginWith(ctx, e.Spec, addPluginExact)
 		if err == nil && e.Off {
 			err = plugin.SetOff(got.Spec, true)
 		}

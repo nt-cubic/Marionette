@@ -3,6 +3,7 @@ package update
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -115,6 +116,66 @@ func TestNotesBetween(t *testing.T) {
 	}
 	srv.Close()
 	if _, err := NotesBetween(context.Background(), "0.1.600", "0.1.604", ""); err == nil {
+		t.Error("no error offline")
+	}
+}
+
+// Settings' What's new can show this version and the 10, 20, 50 or 100
+// before it (Linka on Discord): the site is asked for that many alone, and
+// a site that sends more (from before it took a limit) is cut to them.
+func TestNotesBack(t *testing.T) {
+	versions := func(ns []Note) []string {
+		out := []string{}
+		for _, n := range ns {
+			out = append(out, n.Version)
+		}
+		return out
+	}
+	var asked []string
+	var list []Note
+	for v := 660; v >= 590; v-- {
+		if v == 607 {
+			continue // never released
+		}
+		list = append(list, Note{Version: fmt.Sprintf("0.1.%d", v), Notes: fmt.Sprintf("- %d\n\n## Install\n\nDownload it.", v)})
+	}
+	list[660-617].Notes = "## Install\n\nonly links" // 0.1.617: nothing left once Install is out
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = append(asked, r.URL.RawQuery)
+		// a site from before limit: every release, whatever was asked
+		json.NewEncoder(w).Encode(map[string]any{"releases": list})
+	}))
+	defer srv.Close()
+	t.Setenv("MAGPIE_NOTES_FEED", srv.URL)
+	got, err := NotesBack(context.Background(), "0.1.612", 10, "zh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"lang=zh&limit=11&upto=0.1.612"}; !reflect.DeepEqual(asked, want) {
+		t.Errorf("asked %q, want %q", asked, want)
+	}
+	// 0.1.612 and the ten before it, 0.1.607 never released
+	want := []string{"0.1.612", "0.1.611", "0.1.610", "0.1.609", "0.1.608", "0.1.606", "0.1.605", "0.1.604", "0.1.603", "0.1.602", "0.1.601"}
+	if !reflect.DeepEqual(versions(got), want) {
+		t.Errorf("got %v, want %v", versions(got), want)
+	}
+	if got[0].Notes != "- 612" {
+		t.Errorf("Install kept: %q", got[0].Notes)
+	}
+	// newer than upto isn't counted; an empty one counts but isn't shown
+	if got, want := versions(Back(list, "0.1.619", 3)), []string{"0.1.619", "0.1.618", "0.1.616"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("back 3 from 0.1.619: %v, want %v", got, want)
+	}
+	// fewer than asked: what there is
+	if got, want := versions(Back(list, "0.1.592", 10)), []string{"0.1.592", "0.1.591", "0.1.590"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("short list: %v, want %v", got, want)
+	}
+	// more than MaxNotes: the 100 asked for are all kept
+	if got := Back(list, "0.1.660", 100); len(got) != len(list)-1 {
+		t.Errorf("back 100: %d releases, want %d", len(got), len(list)-1)
+	}
+	srv.Close()
+	if _, err := NotesBack(context.Background(), "0.1.612", 10, ""); err == nil {
 		t.Error("no error offline")
 	}
 }

@@ -11,15 +11,15 @@ const { chromium, webkit } = require("playwright");
 
 const assets = path.resolve(__dirname, "../assets");
 
-function serve(lang, reads) {
+function serve(lang, reads, gateway = { url: "http://127.0.0.1:3425", running: true, window: true }) {
   const state = { agents: [], profiles: [], settings: { lang, theme: "light" } };
   return async (route) => {
     const url = new URL(route.request().url());
     const json = (data) => route.fulfill({ json: data });
-    if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:${JSON.stringify(lang)},theme:"light",web:false};` });
+    if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:${JSON.stringify(lang)},theme:"light",web:false,sideGateway:{url:"http://127.0.0.1:3425",running:true,boot:true}};` });
     if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
     if (url.pathname === "/api/state") return json(state);
-    if (url.pathname === "/api/providers") { reads.push(performance.now()); return json({ providers: [], presets: [], excluded: [], gateway: { url: "http://127.0.0.1:3425", running: true, window: true } }); }
+    if (url.pathname === "/api/providers") { reads.push(performance.now()); return json({ providers: [], presets: [], excluded: [], gateway }); }
     if (url.pathname === "/api/groups") return json({ groups: [] });
     if (url.pathname.startsWith("/api/")) return json({});
     const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
@@ -89,8 +89,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         if (sel === "#prefs") assert.notEqual(pressed, bg, `${sel} pressed darkens`);
       }
 
-      // the gateway's address at the foot, read once the window has settled
-      await page.locator("#sideGw").waitFor();
+      // the gateway's address at the foot, drawn from boot.js ahead of the
+      // read, not held back until the providers have come in
+      assert.ok(await page.locator("#sideGw").isVisible(), "the gateway's line from boot.js");
       assert.match(await page.locator("#sideGw").textContent(), /127\.0\.0\.1:3425/);
       assert.ok(await page.locator("#sideGw span").evaluate((s) => s.scrollWidth <= s.clientWidth), "the address is read whole");
       assert.equal(reads.length, 1, "read once for the sidebar");
@@ -170,6 +171,25 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.locator("#sideGw").waitFor();
       await page.waitForTimeout(500);
       assert.equal(reads.length, 1, "the sidebar reads nothing more");
+      await context.close();
+    });
+
+    await t.test("the line boot.js drew is read again: a gateway gone since says so", async () => {
+      // boot.js is written once this process holds the gateway, before its
+      // listen is known to have worked; the read after the start has the
+      // last word on the line it drew (#3429)
+      const reads = [];
+      const context = await browser.newContext({ viewport: { width: 1200, height: 700 }, reducedMotion: "reduce" });
+      const page = await context.newPage();
+      page.setDefaultTimeout(5000);
+      await page.route("**/*", serve("en", reads, { url: "http://127.0.0.1:3490", running: false }));
+      await page.goto("http://magpie.test/");
+      await page.waitForSelector("#nav button.on");
+      assert.match(await page.locator("#sideGw").textContent(), /127\.0\.0\.1:3425/, "boot.js's line first");
+      await page.waitForFunction(() => document.querySelector("#sideGw span")?.textContent === "Gateway stopped");
+      assert.ok(await page.locator("#sideGw").evaluate((b) => b.classList.contains("off")));
+      assert.match(await page.locator("#sideGw").getAttribute("title"), /3490/);
+      assert.equal(reads.length, 1, "the read the Providers page is made ready with, no other");
       await context.close();
     });
 

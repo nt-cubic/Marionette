@@ -505,6 +505,7 @@ func addAccount(agentID string) error {
 	}
 	switch st.State {
 	case "done":
+		defer sayStillOff(agentID)
 		if st.Again {
 			fmt.Println(green.Render("✓"), st.User, "is already listed — its sign-in was renewed")
 		} else if st.Using {

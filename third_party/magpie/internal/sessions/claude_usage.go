@@ -2,11 +2,13 @@ package sessions
 
 import (
 	"container/list"
+	"encoding/json"
 	"time"
 )
 
 // claudeUsageState tracks message revisions while a source is live. It is
-// never persisted: a changed source reconstructs it after a cache reload.
+// kept on disk with the read it belongs to (MarshalJSON, writeCallRevisions);
+// a changed source without one reconstructs it from its first line.
 type claudeUsageState struct {
 	Messages map[string]map[string]*claudeContribution `json:"messages,omitempty"`
 	recent   list.List
@@ -48,6 +50,65 @@ type claudeToolUsage struct {
 }
 
 type claudeToolVersion struct{ Name, Skill string }
+
+// claudeWindowEntry is one contribution of a window, oldest first, as its
+// eviction order has them.
+type claudeWindowEntry struct {
+	Key string              `json:"key"`
+	M   *claudeContribution `json:"m"`
+}
+
+// window is r's contributions in their eviction order, to keep on disk.
+func (r *claudeUsageState) window() []claudeWindowEntry {
+	var out []claudeWindowEntry
+	for e := r.recent.Front(); e != nil; e = e.Next() {
+		m := e.Value.(*claudeContribution)
+		out = append(out, claudeWindowEntry{m.key, m})
+	}
+	return out
+}
+
+// claudeWindowOf is the window kept as entries.
+func claudeWindowOf(entries []claudeWindowEntry) *claudeUsageState {
+	w := &claudeUsageState{}
+	w.fill(entries)
+	return w
+}
+
+func (r *claudeUsageState) fill(entries []claudeWindowEntry) {
+	r.Messages = map[string]map[string]*claudeContribution{}
+	for _, e := range entries {
+		m := e.M
+		if m == nil {
+			continue
+		}
+		m.key = e.Key
+		m.weight = m.entryWeight()
+		m.node = r.recent.PushBack(m)
+		r.entries += m.weight
+		branches := r.Messages[e.Key]
+		if branches == nil {
+			branches = map[string]*claudeContribution{}
+			r.Messages[e.Key] = branches
+		}
+		branches[m.Request] = m
+	}
+}
+
+// A summary's window is kept in sessions.json with it, so a session that grew
+// while magpie was not running is read on, not again from its first line: a
+// live 2 GB one took seconds of the first Sessions list after every update
+// (#3493). Only a few bounded windows are kept at once (trimSummaryRevisions).
+func (r *claudeUsageState) MarshalJSON() ([]byte, error) { return json.Marshal(r.window()) }
+
+func (r *claudeUsageState) UnmarshalJSON(b []byte) error {
+	var entries []claudeWindowEntry
+	if err := json.Unmarshal(b, &entries); err != nil {
+		return err
+	}
+	r.fill(entries)
+	return nil
+}
 
 func ccUsageState(p **claudeUsageState) *claudeUsageState {
 	if *p == nil {

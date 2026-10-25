@@ -103,6 +103,13 @@ export const FakePlugin = async ({ client }) => ({
       cfg.provider[ID].models["MiniMax-M3.1-Flash-Preview"] = { ...mm, name: "M3.1-Flash-Preview", variants: efforts }
       cfg.provider[ID].models["MiniMax-M3"] = { ...mm, name: "MiniMax-M3", variants: { none: { thinking: { type: "disabled" } }, high: { thinking: { type: "adaptive" } } } }
     }
+    // $FAKE_ZCODE: GLM-5.3 as ZCode's plugin (zcode 0.1.x) gives it, on
+    // Anthropic's API with a thinking budget per level
+    if (process.env.FAKE_ZCODE) {
+      const budget = { low: 4096, high: 16000, max: 31999 }
+      const variants = Object.fromEntries(["low", "high", "max"].map((e) => [e, { thinking: { type: "enabled", budgetTokens: budget[e] } }]))
+      cfg.provider[ID].models["GLM-5.3"] = { name: "GLM-5.3", provider: { npm: "@ai-sdk/anthropic" }, reasoning: true, variants, limit: { context: 1000000, output: 128000 } }
+    }
     // $FAKE_SEARCHES: the provider's upstream searches by itself (#2027),
     // as a plugin in front of Claude's API says
     if (process.env.FAKE_SEARCHES) cfg.provider[ID].searches = true

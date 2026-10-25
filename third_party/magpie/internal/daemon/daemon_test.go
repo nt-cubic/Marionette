@@ -539,3 +539,28 @@ func TestInstallCarriesTLS(t *testing.T) {
 		})
 	}
 }
+
+// A service the user removed is recorded, so the terminal's hand-over of
+// the gateway (tui.keepGateway) never installs it again by itself; an
+// install by the user clears that.
+func TestUninstallRecordsTheUsersNo(t *testing.T) {
+	fakes(t, "linux")
+	if Removed() {
+		t.Fatal("removed before anything")
+	}
+	if err := Install(Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Uninstall(); err != nil {
+		t.Fatal(err)
+	}
+	if !Removed() {
+		t.Fatal("the user's uninstall not recorded")
+	}
+	if err := Install(Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if Removed() {
+		t.Fatal("still recorded after the user installed it")
+	}
+}

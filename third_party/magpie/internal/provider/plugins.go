@@ -15,6 +15,7 @@ import (
 
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/plugin"
+	"github.com/yetone/magpie/internal/probelog"
 )
 
 // A plugin's provider (see internal/plugin) is a subscription like the
@@ -682,7 +683,26 @@ func firstOf(ss ...string) string {
 // Do sends req, through the account's own transport when it has one (a
 // plugin's), the client the account asks for this request when it asks
 // for one (ZCode's Start Plan: zcodeStartClient), and client otherwise.
+//
+// A request sent for magpie's own test (probelog.With) is written into the
+// request log here, whichever way it goes: a plugin's fetch and a client
+// of the account's own pass no transport that would.
 func (p Provider) Do(client *http.Client, req *http.Request) (*http.Response, error) {
+	if ctx := req.Context(); probelog.Pending(ctx) {
+		start := time.Now()
+		req = req.WithContext(probelog.Taken(ctx))
+		res, err := p.do(client, req)
+		status := 0
+		if err == nil {
+			status = res.StatusCode
+		}
+		probelog.Note(ctx, req.URL.String(), req.Method, start, status, err)
+		return res, err
+	}
+	return p.do(client, req)
+}
+
+func (p Provider) do(client *http.Client, req *http.Request) (*http.Response, error) {
 	if p.Account != nil && p.Account.transport != nil {
 		return p.Account.transport(req)
 	}

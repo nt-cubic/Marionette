@@ -225,8 +225,11 @@ func TestProvidersShowVertexCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, _ = printed(t, providers)
-	if row := lineWith(out, "google-vertex"); !strings.Contains(row, "switched off") || strings.Contains(row, "Google credentials") {
+	if row := lineWith(out, "google-vertex"); !strings.Contains(row, "switched off") || strings.Contains(row, "Google credentials") || !strings.Contains(row, "magpie provider on google-vertex") {
 		t.Errorf("list, off: %q", row)
+	}
+	if row := lineWith(out, "vertex-sa"); strings.Contains(row, "magpie provider on") {
+		t.Errorf("list, on, says how to turn it on: %q", row)
 	}
 }
 

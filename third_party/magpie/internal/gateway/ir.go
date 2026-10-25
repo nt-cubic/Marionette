@@ -222,7 +222,8 @@ type Request struct {
 	// was sent, null and all, when the request is built again for a
 	// Responses upstream, whose answer to a value it doesn't take
 	// (invalid_access_program) is the client's to read; no other API takes
-	// it (magpie-releases#18).
+	// it (magpie-releases#18). Only OpenAI's upstreams are sent it
+	// (keepsAccessPrograms, #3172).
 	AccessPrograms json.RawMessage
 	// Metadata is an Anthropic client's metadata (Claude Code's user_id),
 	// which goes on as it was sent when the request is built again for an
@@ -402,6 +403,13 @@ type Usage struct {
 
 // billed is what the request is billed for: its own count, and what it
 // counted of earlier ones (Deferred).
+// cacheNotCounted is whether the vendor counted no cache for this usage:
+// it said so (cacheUnknown) and no try of it reported a cache token. The
+// Routing page and the ledger leave such a prompt out of a hit rate (#3464).
+func (u Usage) cacheNotCounted() bool {
+	return u.cacheUnknown && u.CacheRead+u.CacheWrite == 0
+}
+
 func (u Usage) billed() Usage {
 	if d := u.Deferred; d != nil {
 		u.Input += d.Input

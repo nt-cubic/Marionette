@@ -3,6 +3,8 @@ package provider
 import (
 	"context"
 	"time"
+
+	"github.com/yetone/magpie/internal/probelog"
 )
 
 // A Google sign-in (Antigravity, Gemini CLI) speaks Code Assist alone, an
@@ -40,8 +42,17 @@ func (p Provider) testTranslated(ctx context.Context, model string) Result {
 	ctx, cancel := context.WithTimeout(ctx, testWait)
 	defer cancel()
 	start := time.Now()
-	status, err := translatedProbe(ctx, p, CodeAssist, model)
+	status, err := translatedProbe(probelog.Taken(ctx), p, CodeAssist, model)
 	r.Millis = time.Since(start).Milliseconds()
+	// the gateway's translator sent it: written down once, from what it
+	// came to
+	noted, msg := status, ""
+	if err != nil {
+		msg = err.Error()
+	} else {
+		noted = 200
+	}
+	probelog.NoteResult(probelog.WithModel(ctx, model), string(CodeAssist), start, noted, msg)
 	if err != nil {
 		r.Status, r.Error = status, err.Error()
 		return r

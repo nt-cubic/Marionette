@@ -38,6 +38,15 @@ var summaries struct {
 
 func indexedSummary(p Period, now time.Time) Summary { return topSummary(p, now, -1) }
 
+// ReadAhead parses the log into its index and works out today's summary in
+// this computer's zone, for magpie to run as it starts: the first reader,
+// the tray panel's line of today's calls, finds both done. Parsing the log
+// cold took 0.33 s at 2 MB and 0.77 s at 40 MB on one core, and the
+// panel's numbers waited for it on the first open after a start
+// (CyberCaius on Discord). A reader that comes while it runs waits for the
+// same parse, never a second.
+func ReadAhead() { SummarizeTopIn(Today, summaryCacheSessions, nil) }
+
 // SummarizeTop is Summarize with only the top n sessions by tokens (all of
 // them for n < 0); SessionCount says how many the period has. It is what a page that
 // shows a few of them or none asks for: a summary of more than
@@ -125,7 +134,7 @@ func usagePriceCacheKey(now time.Time) string {
 	h := sha256.New()
 	st := settings.Load()
 	prices, _ := json.Marshal(st.ModelPrices)
-	aliases, _ := json.Marshal(provider.Renamed())
+	aliases := provider.UsageRenames().Key()
 	// and the names models' usage is counted under, which the groups key on
 	usageAliases, _ := json.Marshal(st.UsageAliases)
 	fmt.Fprint(h, string(prices), string(aliases), string(usageAliases))

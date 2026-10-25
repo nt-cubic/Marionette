@@ -180,7 +180,7 @@ func TestCheckMixedServerEachSide(t *testing.T) {
 	// the agents moving from here into WSL is a check of its own
 	a, b := *s, *s
 	a.Agents, b.Agents = []string{"claude"}, []string{"claude@wsl:Ubuntu"}
-	if healthKey(&a) == healthKey(&b) {
+	if healthKey(&a, nil) == healthKey(&b, nil) {
 		t.Fatal("a server moved into WSL keeps its check from Windows")
 	}
 }

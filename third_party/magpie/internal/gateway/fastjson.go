@@ -1116,6 +1116,69 @@ func topMember(body []byte, key string) (val []byte, found, ok bool) {
 	return val, found, true
 }
 
+// withoutTopMember is body without its top-level members named key (every
+// one, as a body may name a key twice), every other byte as it came, the
+// comma and spaces of a member taken out going with it. A body that isn't a
+// valid JSON object, or has no such member, is returned as it is: a body
+// that can't be read is not rewritten.
+func withoutTopMember(body []byte, key string) []byte {
+	var members []memberSpan
+	if len(body) >= validMemoMin {
+		var valid bool
+		if valid, members = longBody(body); !valid {
+			return body
+		}
+	} else if !jsonCheck(body) {
+		return body
+	}
+	start := skipJSONSpace(body, 0)
+	raw := trimJSON(body)
+	if raw[0] != '{' {
+		return body
+	}
+	if members == nil {
+		eachMemberAt(raw, func(k0, k1, v0, v1 int) bool {
+			members = append(members, memberSpan{k0, k1, v0, v1})
+			return true
+		})
+	}
+	// each run of members named key is cut from its first key to the next
+	// member's key, or, when it ends the object, from the end of the member
+	// before it (its comma with it) to the end of its last value
+	var cuts [][2]int
+	for i := 0; i < len(members); {
+		if !keyIs(raw[members[i].k0:members[i].k1], key) {
+			i++
+			continue
+		}
+		j := i + 1
+		for j < len(members) && keyIs(raw[members[j].k0:members[j].k1], key) {
+			j++
+		}
+		switch {
+		case j < len(members):
+			cuts = append(cuts, [2]int{members[i].k0, members[j].k0})
+		case i > 0:
+			cuts = append(cuts, [2]int{members[i-1].v1, members[j-1].v1})
+		default:
+			cuts = append(cuts, [2]int{1, len(raw) - 1})
+		}
+		i = j
+	}
+	if len(cuts) == 0 {
+		return body
+	}
+	out := make([]byte, 0, len(body))
+	out = append(out, body[:start]...)
+	last := 0
+	for _, c := range cuts {
+		out = append(out, raw[last:c[0]]...)
+		last = c[1]
+	}
+	out = append(out, raw[last:]...)
+	return append(out, body[start+len(raw):]...)
+}
+
 // memberOf is topMember of obj, a valid JSON object.
 func memberOf(obj []byte, key string) (val []byte, found bool) {
 	eachMember(obj, func(k, v []byte) bool {

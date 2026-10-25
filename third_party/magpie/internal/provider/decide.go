@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/probelog"
 	"github.com/yetone/magpie/internal/settings"
 )
 
@@ -929,7 +930,7 @@ func (p Provider) AskSystemOne(ctx context.Context, model string) error {
 		"questions": map[string]any{"ok": map[string]any{"type": "noul", "instructions": "Is this a test?"}}})
 	via := p.DecideVia()
 	body = DecideAsk(via, model, body)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(probelog.WithModel(ctx, model), http.MethodPost, u, strings.NewReader(string(body)))
 	if err != nil {
 		return err
 	}

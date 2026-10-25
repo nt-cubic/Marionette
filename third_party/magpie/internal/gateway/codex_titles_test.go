@@ -135,6 +135,11 @@ func TestCodexTitlesSetting(t *testing.T) {
 		if u.Provider == "magpie" && (!u.IsRejected() || u.Status != 200) {
 			t.Errorf("an answered-here title %+v", u)
 		}
+		// and says where the setting is: Codex's row on the Agents page
+		// since f1e4516d, not Settings (#3425)
+		if u.Provider == "magpie" && !strings.Contains(u.Error, "in Codex's settings on magpie's Agents page") {
+			t.Errorf("an answered-here title says %q", u.Error)
+		}
 	}
 	want := "openai:thread_title magpie:thread_title magpie:thread_title magpie:thread_title_reconsideration fake:thread_title openai:"
 	if got := strings.Join(kinds, " "); got != want {

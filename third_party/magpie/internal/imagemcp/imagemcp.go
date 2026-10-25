@@ -38,11 +38,19 @@ const (
 	VideoFolder = "generated-videos"
 )
 
+// The tools and their arguments are the gateway's image MCP server's too
+// (gateway.ImageMCPPath), but where to save, which only this server can.
 const (
-	tool       = "generate_image"
-	videoTool  = "generate_video"
-	resultTool = "generation_result"
+	tool       = gateway.GenerateImageTool
+	videoTool  = gateway.GenerateVideoTool
+	resultTool = gateway.GenerationResultTool
 )
+
+// withPath is props with path, where to save, said as what.
+func withPath(props map[string]any, what string) map[string]any {
+	props["path"] = map[string]any{"type": "string", "description": what}
+	return props
+}
 
 // answerWithin is how long a tool call waits for its image or video before
 // it answers that it is still being made, with the job's id to ask after
@@ -71,14 +79,8 @@ var videoSchema = map[string]any{
 		"/ unless path says where) and its path is returned; when it is not ready within about 20 seconds, the answer is an id to wait on with " + resultTool + " instead. Describe the subject, the motion and the camera: what moves, how, and what the shot is.",
 	"inputSchema": map[string]any{
 		"type": "object",
-		"properties": map[string]any{
-			"prompt":           map[string]any{"type": "string", "description": "What happens in the video: the subject, its motion, the camera."},
-			"path":             map[string]any{"type": "string", "description": "Where to save it: a file (e.g. assets/intro.mp4) or a folder, relative to the project or absolute. Never written over."},
-			"seconds":          map[string]any{"type": "integer", "minimum": 1, "maximum": 15, "description": "Length in whole seconds (1-15). Default: the model's (about 8)."},
-			"size":             map[string]any{"type": "string", "description": "An aspect ratio (16:9, 9:16, 1:1, 4:3, 3:4, 3:2, 2:3) or WIDTHxHEIGHT (1280x720; its shorter side picks 480p, 720p or 1080p). Default: the model's."},
-			"image":            map[string]any{"type": "string", "description": "An image to animate, the video's first frame: a file path (relative to the project or absolute) or an http(s) URL."},
-			"reference_images": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Images the video's subjects are drawn from: file paths or http(s) URLs."},
-		},
+		"properties": withPath(gateway.VideoToolProps("a file path (relative to the project or absolute) or an http(s) URL", "file paths or http(s) URLs"),
+			"Where to save it: a file (e.g. assets/intro.mp4) or a folder, relative to the project or absolute. Never written over."),
 		"required": []string{"prompt"},
 	},
 }
@@ -88,11 +90,9 @@ var resultSchema = map[string]any{
 	"description": "Wait for an image or video that " + tool + " or " + videoTool + " said is still being made, by the id it gave, and get where it was saved. " +
 		"It answers within about " + strconv.Itoa(int(answerWithin/time.Second)) + " seconds: if it is still not ready, call this again with the same id (don't generate it again).",
 	"inputSchema": map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"id": map[string]any{"type": "string", "description": "The id " + tool + " or " + videoTool + " answered with."},
-		},
-		"required": []string{"id"},
+		"type":       "object",
+		"properties": gateway.ResultToolProps(),
+		"required":   []string{"id"},
 	},
 }
 
@@ -103,15 +103,8 @@ var schema = map[string]any{
 		"reference it from code or docs by that path. Write a detailed prompt: subject, style, composition, colours, any text to render exactly.",
 	"inputSchema": map[string]any{
 		"type": "object",
-		"properties": map[string]any{
-			"prompt":           map[string]any{"type": "string", "description": "What to draw, or how to change the reference images."},
-			"path":             map[string]any{"type": "string", "description": "Where to save it: a file (e.g. assets/hero.png) or a folder, relative to the project or absolute. With n > 1 a number is added to the name."},
-			"size":             map[string]any{"type": "string", "description": "WIDTHxHEIGHT (1024x1024, 1536x1024, 1024x1536) or an aspect ratio (16:9). Default: the model's."},
-			"n":                map[string]any{"type": "integer", "minimum": 1, "maximum": 4, "description": "How many images (default 1)."},
-			"reference_images": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Images to edit or draw from: file paths or http(s) URLs."},
-			"quality":          map[string]any{"type": "string", "description": "low, medium, high or auto, for models that take it."},
-			"background":       map[string]any{"type": "string", "description": "transparent, opaque or auto, for models that take it."},
-		},
+		"properties": withPath(gateway.ImageToolProps("file paths or http(s) URLs"),
+			"Where to save it: a file (e.g. assets/hero.png) or a folder, relative to the project or absolute. With n > 1 a number is added to the name."),
 		"required": []string{"prompt"},
 	},
 }

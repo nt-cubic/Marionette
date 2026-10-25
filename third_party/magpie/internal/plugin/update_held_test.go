@@ -174,6 +174,9 @@ func TestAgeText(t *testing.T) {
 // A pinned one already at npm's newest stays pinned.
 func TestUpdateAllUpdatesAPinnedPlugin(t *testing.T) {
 	sandbox(t)
+	// the community's list, read: no plugin of it is called this, so the
+	// name is npm's own package
+	serveRegistry(t, nil)
 	const pkg = "opencode-someones-auth"
 	heldRegistry(t, pkg, map[string]time.Time{"1.0.0": time.Now().Add(-72 * time.Hour), "2.0.0": time.Now().Add(-48 * time.Hour)}, "2.0.0")
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)

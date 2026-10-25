@@ -634,6 +634,11 @@ body.panel #agents > .row .ag-handle::before { left: -8px; }
 .ag-fix:active { transform: scale(.96); }
 .ag-fix:focus-visible { outline: 1.5px solid var(--drift); outline-offset: 1px; }
 .ag-fix.busy { pointer-events: none; opacity: .7; }
+/* a desktop app to restart for magpie's change (agent.AppBehind): the
+   row's waiting colour, not a fault's */
+.ag-fix.ag-restart { background: color-mix(in srgb, var(--amber) 13%, transparent); color: var(--amber); }
+.ag-fix.ag-restart:hover { background: color-mix(in srgb, var(--amber) 22%, transparent); }
+.ag-fix.ag-restart:focus-visible { outline-color: var(--amber); }
 /* the accounts that keep an agent going through magpie for failover (#1385) */
 .ag-acc { display: inline-flex; align-items: center; flex: none; height: 20px; padding: 0 8px; border: 1px solid var(--line); border-radius: 999px; background: var(--card); color: var(--fg-2); font: inherit; font-size: 11.5px; line-height: 1; cursor: pointer; transition: background-color .15s, color .15s; }
 .ag-acc:hover { background: var(--pill); color: var(--fg); }
@@ -708,6 +713,9 @@ body.panel .ag-fix { position: absolute; left: 20px; top: calc(50% + 1px); width
 body.panel .ag-fix:hover { background: var(--drift); filter: brightness(1.08); }
 body.panel .ag-fix svg { width: 9px; height: 9px; }
 body.panel .ag-fix span { display: none; }
+/* the panel's Restart stays on its line, its word left to the hover */
+body.panel .ag-fix.ag-restart { position: static; width: auto; height: 18px; padding: 0 5px; background: color-mix(in srgb, var(--amber) 13%, transparent); color: var(--amber); box-shadow: none; }
+body.panel .ag-fix.ag-restart:hover { filter: none; background: color-mix(in srgb, var(--amber) 22%, transparent); }
 .row.drifted .field[data-key="model"] { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--drift) 38%, transparent); }
 
 /* the line over each kind of folded agent: hidden by hand, or nothing set */
@@ -1432,6 +1440,7 @@ body.window .field.solo { grid-column: auto; }
 .led .src.access-subscription { --badge-ink: var(--tk-k); }
 .led .src.proto { --badge-ink: var(--muted); font-weight: 500; }
 .led .src.reported { --badge-ink: var(--tk-o); }
+.led .src.probe { --badge-ink: var(--muted); }
 .led .duration { font-weight: 550; }
 .led .duration-fast { color: var(--tk-s); }
 .led .duration-slow { color: var(--amber); }
@@ -1843,6 +1852,7 @@ body.panel .profiles #save { height: 25px; } /* the field's: the line keeps its 
 .pq-sub { font-size: 11px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .pq-sub.err { color: var(--muted); white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .pq-rings { grid-row: 1 / 3; grid-column: 2; display: flex; gap: 12px; }
+.pq-rings.many { gap: 7px; }
 .pq-ring { display: flex; flex-direction: column; align-items: center; gap: 3px; cursor: pointer; }
 .pq-dial { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: conic-gradient(var(--fg-2) calc(var(--p) * 1%), color-mix(in srgb, var(--fg) 9%, transparent) 0); }
 .pq-dial b { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; background: var(--card); font-size: 9.5px; font-weight: 600; color: var(--fg-2); font-variant-numeric: tabular-nums; }
@@ -2826,6 +2836,8 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .sheet .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1px 12px; }
 .sheet .none { padding: 14px 2px; color: var(--muted); font-size: 12px; }
 #gwModels .none { padding: 16px; color: var(--muted); font-size: 12px; text-align: center; }
+/* no gateway key yet: said in its card as Recent calls says it has none */
+#gatewayKeys .none { padding: 13px 14px; color: var(--muted); font-size: 11.5px; line-height: 1.45; }
 #view-gateway .row-head .find { margin-right: 8px; }
 /* a row of the add sheet: an icon and a name, no frame; a row already
    added has a small green dot after its name rather than fading */
@@ -3336,7 +3348,10 @@ img.nav-ic { border-radius: 3px; object-fit: contain; }
    one-line rows, which min-height centred (the owner, 10-22) */
 .row.pref, body.window .row.pref { min-height: 48px; padding: 12px 12px 12px 14px; gap: 14px; }
 .row.pref .who { flex: 1 1 auto; }
-.row.pref .sub { margin-top: 2px; color: var(--fg-2); }
+/* a setting's line under its name is read whole, wrapped beside the control
+   it explains: one line cut with an ellipsis hid what the setting does
+   (arculongus on Discord, 10-25) */
+.row.pref .sub { margin-top: 2px; color: var(--fg-2); white-space: normal; overflow-wrap: anywhere; }
 .row.pref.font-row { flex-wrap: wrap; gap: 8px 14px; }
 .font-row .who { flex-basis: 160px; }
 .font-row .font-note { white-space: normal; }
@@ -3592,6 +3607,7 @@ html.theming, html.theming *, html.theming *::before, html.theming *::after {
 .whatsnew .wn-ver { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .whatsnew .wn-ver b { font-weight: 600; }
 .whatsnew .wn-since { margin-left: 10px; font-size: 12px; color: var(--muted); }
+.whatsnew .wn-range { max-width: min(220px, 55%); }
 .whatsnew .wn-notes { font-size: 12.5px; line-height: 1.55; color: var(--fg-2); overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
 .whatsnew .wn-h { margin: 10px 0 2px; font-size: 12px; font-weight: 600; color: var(--fg); }
 .whatsnew .wn-h1, .whatsnew .wn-h2 { font-size: 12.5px; }
@@ -4073,7 +4089,8 @@ body.window .row.agent.gone > .ag-conn { margin-left: auto; }
 .guide-more { color: var(--muted); font-size: 12px; }
 body.panel .guide { padding: 10px 12px 4px; border-radius: 10px; }
 body.panel .guide-step { gap: 10px; padding: 8px 0; }
-body.panel:not([data-ptab="agents"]) #agentsLead { display: none; }
+/* no tab is fit()'s measure, every section shown */
+body.panel[data-ptab]:not([data-ptab="agents"]) #agentsLead { display: none; }
 /* the first line keeps its place opened: a line of its own height, the
    row not centring what it holds; no gap between its lines, which the
    opened part couldn't fold away: it starts where the shut row ended */

@@ -950,7 +950,7 @@ func withReasoningText(body []byte) []byte {
 			continue
 		}
 		m["content"], _ = json.Marshal([]map[string]string{{"type": "reasoning_text", "text": b.String()}})
-		if nb, err := json.Marshal(m); err == nil {
+		if nb, err := marshalJSON(m); err == nil {
 			items[i], changed = nb, true
 		}
 	}
@@ -961,8 +961,8 @@ func withReasoningText(body []byte) []byte {
 	if !changed {
 		return body
 	}
-	q["input"], _ = json.Marshal(items)
-	nb, err := json.Marshal(q)
+	q["input"], _ = marshalJSON(items)
+	nb, err := marshalJSON(q)
 	if err != nil {
 		return body
 	}

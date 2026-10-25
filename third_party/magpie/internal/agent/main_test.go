@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -41,6 +42,15 @@ func TestMain(m *testing.M) {
 	// nor where this Mac's Spotlight has an app (DeepSeek Harness.app
 	// outside /Applications, #2325)
 	spotlightApps = func(string) []string { return nil }
+	// a desktop app's Restart never quits or opens one of this machine's
+	// (the Codex app, Claude Desktop, WorkBuddy the developer runs); the
+	// restart tests stand in for each step
+	appQuit = func(context.Context, string) error { return errors.New("no app is quit in a test") }
+	appOpen = func(context.Context, string) error { return errors.New("no app is opened in a test") }
+	winProcs = func(string) []winProc { return nil }
+	winClose = func([]int) error { return errors.New("no app is closed in a test") }
+	winEnd = func(int) error { return errors.New("no app is ended in a test") }
+	winLaunch = func(winProc) error { return errors.New("no app is opened in a test") }
 	// Aside's default is changed through the aside binary, which answers for
 	// the account the developer is actually running: a test that picks a
 	// model would change the real Aside's default, and the running one would

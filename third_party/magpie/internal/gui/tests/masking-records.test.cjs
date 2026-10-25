@@ -1,8 +1,9 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
 // Insights › Masking: a short card of what masking kept from vendors (the
-// number, the days, agents to providers through magpie's bird) over the
-// requests it changed, by day, narrowed by facets, agents and providers,
-// or the values masked most. A request opens on its steps, its text as
+// number, the days, agents to providers, each with its logo, through
+// magpie's bird in the middle of its ring) over the requests it changed,
+// by day, narrowed by facets, agents and providers, or the values masked
+// most. A request opens on its steps, its text as
 // written here, as the vendor got it or side by side (only the parts
 // masking changed, the rest folded) and how each value was masked; picking
 // a value lights its places. A request held back says why and offers to
@@ -65,13 +66,13 @@ const records = [
 ];
 
 function serve(lang, sum, asked, opts = {}) {
-  const settings = { theme: "light", lang, tray: "panel", currency: "usd", redact: !opts.off, redactPersonal: !opts.off, redactActions: { PRIVATE_KEY: "block" } };
+  const settings = { theme: "light", lang, tray: "panel", currency: "usd", redact: !opts.off, redactPersonal: !opts.off, redactActions: { PRIVATE_KEY: "block" }, ...opts.settings };
   return async (route) => {
     const req = route.request(), url = new URL(req.url());
     const json = (data) => route.fulfill({ json: data });
     if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:true};` });
     if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
-    if (url.pathname === "/api/state") return json({ agents: [{ id: "claude", name: "Claude Code", icon: "claude", fields: [] }, { id: "codex", name: "Codex", icon: "codex", fields: [] }], profiles: [], settings });
+    if (url.pathname === "/api/state") return json({ agents: [{ id: "claude", name: "Claude Code", icon: "claudecode-color", fields: [] }, { id: "codex", name: "Codex", icon: "codex-color", fields: [] }], profiles: [], settings });
     if (url.pathname === "/api/settings") {
       if (req.method() === "POST") { asked.push("settings " + req.postData()); Object.assign(settings, JSON.parse(req.postData())); }
       return json(settings);
@@ -183,6 +184,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(await card.locator(".msk-hub use").getAttribute("href"), "#bird");
         const hub = await card.locator(".msk-hub").boundingBox(), mid = await card.locator(".mo-mid").boundingBox();
         assert(Math.abs(hub.x + hub.width / 2 - (mid.x + mid.width / 2)) < 1.5, "the bird sits on the centre line");
+        // and in the middle of its ring (the lines' svg rule once pinned it
+        // to the ring's top left)
+        const bird = await card.locator(".msk-hub svg").boundingBox();
+        assert(Math.abs(bird.x + bird.width / 2 - (hub.x + hub.width / 2)) < 1 && Math.abs(bird.y + bird.height / 2 - (hub.y + hub.height / 2)) < 1, "the bird in the middle of its ring");
+        // each agent and provider with its logo, on the side the lines are
+        assert.deepEqual(await card.locator(".mo-node .ic").evaluateAll((ns) => ns.map((n) => n.dataset.icon)), ["claudecode-color", "codex-color", "anthropic", "openai"]);
+        const agentNode = card.locator(".mo-col.agent .mo-node").first(), provNode = card.locator(".mo-col.provider .mo-node").first();
+        assert((await agentNode.locator(".ic").boundingBox()).x > (await agentNode.locator(".nm").boundingBox()).x, "an agent's logo after its name");
+        assert((await provNode.locator(".ic").boundingBox()).x < (await provNode.locator(".nm").boundingBox()).x, "a provider's logo before its name");
         assert.match(await card.locator(".mo-cap").textContent(), /magpie/);
         assert.equal(await page.evaluate(() => [...document.querySelectorAll("#maskCard, #maskCard *")].some((n) => /gradient/.test(getComputedStyle(n).backgroundImage))), false, "flat: no gradient");
         // short: the list starts in the first screen
@@ -293,6 +303,41 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await until(() => asked.some((x) => x.startsWith("settings")));
       assert.equal(JSON.parse(asked.find((x) => x.startsWith("settings")).slice(9)).redact, true);
       await page.locator("#maskCard:not(.off) .msk-head").waitFor();
+      assert.deepEqual(errors, []);
+    });
+    // what the off card promises is what its button turns on: secrets,
+    // not emails or computer names. Then, with secrets alone on and
+    // nothing masked, the card says so and where personal data is turned
+    // on, not a bare 0 (Lesnolie on X: "一直是 0"); your own words alone
+    // mask, and the card says masking is on
+    test(`${engine} ${lang}: secrets alone and nothing masked, the card says what is masked and where personal data is`, async (t) => {
+      const empty = (d) => ({ ...summary(d), requests: 0, n: 0, distinct: 0, blocked: 0, kinds: [], agents: [], providers: [], values: [], by: {} });
+      const { browser, page, errors } = await open(engine, lang, 640, empty, null, { off: true, none: true });
+      t.after(() => browser.close());
+      await page.locator("#maskCard.off").waitFor();
+      if (lang === "en") {
+        const off = await page.locator("#maskCard").innerText();
+        assert(!/computer names|emails become/.test(off), `the off card promises what Turn on masking doesn't turn on: ${off}`);
+      }
+      await page.locator("#maskCard .primary").click();
+      const none = page.locator("#maskCard .msk-flow-none");
+      await none.locator("button").waitFor();
+      if (lang === "en") assert.match(await none.innerText(), /^Only keys, passwords and tokens are masked now.*Mask personal data is on, in Settings › Privacy$/s);
+      else for (const w of ["Only keys", "Emails and phone", "A request that carries"]) assert(!(await none.innerText()).includes(w), `${w} left in English`);
+      assert.deepEqual(await wide(page), { page: false, over: [] });
+      await shot(page, `${engine}-${lang}-secrets-only`);
+      await none.locator("button").click();
+      await page.locator("#view-settings").waitFor({ state: "visible" });
+      assert.deepEqual(errors, []);
+    });
+    test(`${engine} ${lang}: your own words alone are masking on`, async (t) => {
+      const empty = (d) => ({ ...summary(d), requests: 0, n: 0, distinct: 0, blocked: 0, kinds: [], agents: [], providers: [], values: [], by: {} });
+      const { browser, page, errors } = await open(engine, lang, 640, empty, null, { off: true, none: true, settings: { redactWords: ["Nightjar"] } });
+      t.after(() => browser.close());
+      await page.locator("#maskCard .msk-head").waitFor();
+      assert.equal(await page.locator("#maskCard.off").count(), 0, "words alone mask, the card says off");
+      assert.equal(await page.locator("#maskCard .msk-head button").count(), 0, "no Turn on masking while words mask");
+      assert(!(await page.locator("#maskCard .msk-flow-none").innerText()).includes("Only keys"), "words alone: not the secrets-only line");
       assert.deepEqual(errors, []);
     });
   }

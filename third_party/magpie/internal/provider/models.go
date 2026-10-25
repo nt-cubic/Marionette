@@ -17,6 +17,7 @@ import (
 
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/plugin"
+	"github.com/yetone/magpie/internal/probelog"
 	"github.com/yetone/magpie/internal/settings"
 )
 
@@ -235,6 +236,7 @@ func (p Provider) RefetchTaking(ctx context.Context) (ms []catalog.Model, droppe
 // refetch is Refetch, with the ids the provider's list had before it
 // (none for an account's, a plugin's or a decision-only provider's).
 func (p Provider) refetch(ctx context.Context) ([]catalog.Model, []string, map[string]bool, error) {
+	ctx = p.ownRequests(ctx, probelog.KindList)
 	if p.IsPlugin() {
 		// its plugin's list, read again: a pick it had and has no more
 		// goes as a built-in's does (plugin_relist.go)
@@ -357,7 +359,7 @@ func relistPicks(q *Provider, now map[string]bool) bool {
 
 // fetch is Fetch without the picks looked after.
 func (p Provider) fetch(ctx context.Context) ([]catalog.Model, error) {
-	ctx = p.Via(ctx)
+	ctx = p.ownRequests(p.Via(ctx), probelog.KindList)
 	if p.DecideOnly() {
 		return p.fetchDecide(ctx)
 	}
@@ -407,7 +409,7 @@ func (p Provider) fetch(ctx context.Context) ([]catalog.Model, error) {
 // nothing: a provider still being added (#578, the add form's Fetch models)
 // is shown its vendor's list to pick from before it is saved.
 func (p Provider) List(ctx context.Context) ([]catalog.Model, error) {
-	ctx = p.Via(ctx)
+	ctx = p.ownRequests(p.Via(ctx), probelog.KindList)
 	if pr := Preset(p.Preset); pr != nil && pr.NoList && strings.TrimSpace(p.ModelsURL) == "" && !p.listRegion(pr) {
 		return catalog.Chat(p.planModels(nil)), nil
 	}
@@ -611,7 +613,7 @@ func fetchDue(due []newFetch, timeout time.Duration) (failed bool) {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		var err error
 		if f.decide && p.Account == nil {
-			_, err = p.fetchDecide(p.Via(ctx))
+			_, err = p.fetchDecide(p.ownRequests(p.Via(ctx), probelog.KindList))
 		} else {
 			_, err = p.Fetch(ctx)
 		}
@@ -642,6 +644,7 @@ type fetched struct {
 // answered left every other endpoint's models out of the catalog, and so out
 // of the agents' model lists and of a model's own protocol setting.
 func (p Provider) fetchOne(ctx context.Context) (fetched, error) {
+	ctx = p.ownRequests(ctx, probelog.KindList) // a detection's list too
 	if u := strings.TrimSpace(p.ModelsURL); u != "" {
 		// asked where the user said, and nowhere else: the base URLs
 		// list nothing, or the wrong thing
@@ -1742,8 +1745,17 @@ func borrowedEfforts(id string) []string {
 	}
 	// one newer than this machine's catalog: its maker's line's levels
 	// (gpt-6.1-sol, NextCommit on Discord)
-	e, _ := catalog.KinEfforts(makerCatalogs(), id)
-	return e
+	if e, ok := catalog.KinEfforts(makerCatalogs(), id); ok {
+		return e
+	}
+	// a proxy's variant of a known model, named for the level or speed
+	// it is served at (CLIProxyAPI's gemini-3.8-flash-high,
+	// claude-opus-5-5-high, grok-3-mini-fast; nianshou5 on Discord): the
+	// model's own levels, which the proxy fits a request's effort to
+	if base, ok := catalog.Unsuffixed(id); ok {
+		return borrowedEfforts(base)
+	}
+	return nil
 }
 
 // makerCatalogs are the models.dev ids of the vendors among the presets
@@ -2113,7 +2125,15 @@ func EffectivePriceIn(s settings.Settings, providerID, model string) (catalog.Pr
 	// key under a display name counts only for a caller naming that name
 	// too. Nothing writes such a key — SetModelPrice re-keys the way
 	// SetModelName does — which is what keeps the two from drifting.
-	p, known := byIDOrWas(providerID)
+	return priceIn(s, All(), providerID, model)
+}
+
+// priceIn is EffectivePriceIn with the providers read already, for a
+// caller pricing many models at once: All() copies every provider each
+// time it is read, so a list read it once a model, 30 providers' copies
+// for each of hundreds of models (EntryPricer).
+func priceIn(s settings.Settings, all []Provider, providerID, model string) (catalog.Price, bool) {
+	p, known := byIDOrWasIn(all, providerID)
 	if !known {
 		p = Provider{ID: providerID}
 	}
@@ -2161,22 +2181,32 @@ func priceOf(s settings.Settings, p Provider, known bool, model string) (catalog
 // when every member costs the same, none in a fast mode, since which of
 // them answers isn't known beforehand. find is GroupFinder's.
 func EntryPriceIn(st settings.Settings, find func(string) (Group, []Member, bool), e Entry) (catalog.Price, bool) {
-	if e.Group == "" {
-		return EffectivePriceIn(st, e.Provider.ID, e.Model)
-	}
-	_, ms, ok := find(e.ID)
-	if !ok || len(ms) == 0 {
-		return catalog.Price{}, false
-	}
-	var first catalog.Price
-	for i, m := range ms {
-		pr, ok := EffectivePriceIn(st, m.Provider.ID, m.Model)
-		if !ok || m.Fast || i > 0 && !pr.Same(first) {
+	return EntryPricer(st, find)(e)
+}
+
+// EntryPricer is EntryPriceIn for a whole list of entries, at the one
+// read of the providers it makes: what a /v1/models or an agent's model
+// file prices row by row.
+func EntryPricer(st settings.Settings, find func(string) (Group, []Member, bool)) func(Entry) (catalog.Price, bool) {
+	all := All()
+	return func(e Entry) (catalog.Price, bool) {
+		if e.Group == "" {
+			return priceIn(st, all, e.Provider.ID, e.Model)
+		}
+		_, ms, ok := find(e.ID)
+		if !ok || len(ms) == 0 {
 			return catalog.Price{}, false
 		}
-		first = pr
+		var first catalog.Price
+		for i, m := range ms {
+			pr, ok := priceIn(st, all, m.Provider.ID, m.Model)
+			if !ok || m.Fast || i > 0 && !pr.Same(first) {
+				return catalog.Price{}, false
+			}
+			first = pr
+		}
+		return first, true
 	}
-	return first, true
 }
 
 // PriceRateOK says what is wrong with a provider's price rate, "" when
@@ -2197,7 +2227,11 @@ func PriceRateOK(r float64) string {
 // both outlive the provider they were set for, so the spelling the user typed
 // is the one that has to be checked before a name is resolved at all.
 func byIDOrWas(id string) (Provider, bool) {
-	all := All()
+	return byIDOrWasIn(All(), id)
+}
+
+// byIDOrWasIn is byIDOrWas among the providers given.
+func byIDOrWasIn(all []Provider, id string) (Provider, bool) {
 	if p, ok := find(all, id); ok {
 		return p, true
 	}

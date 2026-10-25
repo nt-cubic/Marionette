@@ -286,7 +286,10 @@ func callsFor(since time.Time, session, agent string) []Call {
 
 // callFiles are the session files that hold calls: Claude Code's, Cowork's
 // and Desktop's own, and Codex's.
-func callFiles() []file {
+func callFiles() []file { return callFilesWith(codexFiles()) }
+
+// callFilesWith is callFiles with codex the rollouts codexFiles found.
+func callFilesWith(codex []file) []file {
 	var out []file
 	seen := map[string]bool{}
 	add := func(fs []file) {
@@ -305,7 +308,7 @@ func callFiles() []file {
 			add(ccFiles("claude-desktop", h))
 		}
 	}
-	add(codexFiles())
+	add(codex)
 	add(wslFiles("claude", "codex"))
 	return out
 }
@@ -320,8 +323,11 @@ func callFiles() []file {
 // that may be packed in zstd frames, is read on from the frame it was
 // left in (readDshCalls). Every agent here needs an entry in
 // wholeCallReaders, lineCallReaders or resumeCallReaders.
-func callSources() []file {
-	out := callFiles()
+func callSources() []file { return callSourcesWith(codexFiles()) }
+
+// callSourcesWith is callSources with codex the rollouts codexFiles found.
+func callSourcesWith(codex []file) []file {
+	out := callFilesWith(codex)
 	out = append(out, openCodeCallFiles()...)
 	out = append(out, zcodeCallFiles()...)
 	out = append(out, dshCallFiles()...)
@@ -1070,8 +1076,19 @@ type CallSource struct {
 	Modified         time.Time
 }
 
-func CallSources() []CallSource {
-	fs := callSources()
+func CallSources() []CallSource { return callSourcesOf(callSources()) }
+
+// CallSourcesAndCodexIdentities is CallSources and CodexIdentities from one
+// walk of the Codex folders. The Requests page asks for both on every
+// rebuild, and the walk lstat()s each rollout: twice over 12k rollouts was
+// ~150ms of each rebuild.
+func CallSourcesAndCodexIdentities() ([]CallSource, map[string]CodexIdentity) {
+	codex := codexFiles()
+	sources := callSourcesOf(callSourcesWith(codex))
+	return sources, codexIdentitiesOf(codex)
+}
+
+func callSourcesOf(fs []file) []CallSource {
 	pruneCalls(fs)
 	out := make([]CallSource, 0, len(fs))
 	for _, f := range fs {

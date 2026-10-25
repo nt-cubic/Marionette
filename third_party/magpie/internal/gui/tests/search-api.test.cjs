@@ -95,6 +95,22 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       for (let i = 0; ; i++) {
         try { await head.scrollIntoViewIfNeeded({ timeout: 1000 }); break; } catch (e) { if (i >= 4) throw e; }
       }
+      // the clicks below are at the row's buttons' places, so the whole row
+      // is brought on screen, by the wheel: magpie puts back a scroll the
+      // reader didn't make, and a row only partly shown is left where it is
+      // by scrollIntoViewIfNeeded; Settings' own landing can still put the
+      // view back, so the row is on screen twice, a second apart
+      for (let i = 0, seen = 0; ; i++) {
+        const below = await head.evaluate((e) => Math.ceil(e.getBoundingClientRect().bottom - innerHeight + 24));
+        if (below <= 0 && ++seen === 2) break;
+        assert(i < 12, `the search row comes on screen: ${below}px below`);
+        if (below > 0) {
+          seen = 0;
+          await page.mouse.move(width / 2, 700);
+          await page.mouse.wheel(0, below);
+        }
+        await page.waitForTimeout(below > 0 ? 200 : 1000);
+      }
       assert.equal(await list.locator("xpath=preceding-sibling::div[1]").textContent(), w.head);
       assert.equal(await head.locator(".name").innerText(), w.name);
       assert((await head.locator(".sub").innerText()).includes(w.none));

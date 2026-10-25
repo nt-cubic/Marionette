@@ -1019,7 +1019,17 @@ magpie.plugin("sessions", (ctx) => {
     if (s.cwd) line(t("Folder"), s.cwd);
     line(t("Session ID"), s.id, copyBtn(s.id, t("Session id")));
     if (s.resume) line(t("Resume"), el("code", "", s.resume), copyBtn(s.resume, t("Resume command")));
-    for (const c of s.carry || []) line(t("Continue in {agent}", { agent: agentOf(c.agent).name }), el("code", "", c.command), copyBtn(c.command, t("Command")));
+    for (const c of s.carry || []) {
+      const agent = agentOf(c.agent).name;
+      if (!c.convert) line(t("Continue in {agent}", { agent }), el("code", "", c.command), copyBtn(c.command, t("Command")));
+      else {
+        // made only when asked: a new session of that agent's, this one only read
+        const b = copyBtn("", t("Command"));
+        b.title = t("Convert, then copy the command");
+        b.onclick = (e) => { e.stopPropagation(); carryOver(s, c.agent, false, b); };
+        line(t("Continue in {agent}", { agent }), el("span", "v", t("A new {agent} session is made from this conversation", { agent })), b);
+      }
+    }
     sessUsageDetail(d, s, line);
     if (s.path) line(t("File"), s.path + (s.files > 1 ? " " + t("+{n} more", { n: s.files - 1 }) : ""));
     if (s.transcript) {
@@ -1086,9 +1096,10 @@ magpie.plugin("sessions", (ctx) => {
   const iconItems = (opts) => document.querySelectorAll(".proto-menu .pm-item").forEach((b, i) => opts[i]?.icon && b.firstChild.after(icon(opts[i].icon)));
   const agentOf = (id) => data?.agents.find((x) => x.agent === id) || { agent: id, name: id, icon: id };
 
-  // carryPick is the other agents that can carry a session on from its
-  // file as it is (#845; oh-my-pi forks a Pi session), in the app's menu:
-  // copy the command, or open it in the session terminal.
+  // carryPick is the other agents that can carry a session on (#845):
+  // from its file as it is (oh-my-pi forks a Pi session), or from a new
+  // session of theirs converted from it (Claude Code and Codex), in the
+  // app's menu: copy the command, or open it in the session terminal.
   function carryPick(s) {
     const b = el("button", "sess-pick sess-carry");
     b.type = "button";
@@ -1102,20 +1113,33 @@ magpie.plugin("sessions", (ctx) => {
       const opts = [];
       for (const c of s.carry) {
         const { name, icon: ic } = agentOf(c.agent);
-        opts.push({ v: "copy\x01" + c.agent, name, icon: ic, literalName: true, note: "Copy the command", title: c.command });
-        if (data.terminal) opts.push({ v: "term\x01" + c.agent, name, icon: ic, literalName: true, note: "Open in session terminal", title: c.command });
+        const title = c.convert ? t("A new {agent} session is made from this conversation", { agent: name }) : c.command;
+        opts.push({ v: "copy\x01" + c.agent, name, icon: ic, literalName: true, note: c.convert ? "Convert, then copy the command" : "Copy the command", title });
+        if (data.terminal) opts.push({ v: "term\x01" + c.agent, name, icon: ic, literalName: true, note: c.convert ? "Convert, then open in session terminal" : "Open in session terminal", title });
       }
       openProtoMenu(b, opts, "", (v) => {
         b.focus({ preventScroll: true });
         const [how, to] = v.split("\x01");
         const c = s.carry.find((x) => x.agent === to);
         if (!c) return;
-        if (how === "copy") copy(c.command, t("Command"));
+        if (c.convert) carryOver(s, to, how === "term");
+        else if (how === "copy") copy(c.command, t("Command"));
         else api("sessions/terminal", { agent: s.agent, id: s.id, in: to }).then(() => status(t("Opening in session terminal"), "ok"), (err) => status(err.message, "err"));
       }, "Continue in another agent", "sess-carry-menu", "right");
       iconItems(opts);
     };
     return b;
+  }
+
+  // carryOver converts a session for another agent (Claude Code's for
+  // Codex, Codex's for Claude Code) when the user picks it, then copies the
+  // line that opens the new one, or opens it in the session terminal
+  function carryOver(s, to, open, btn) {
+    const agent = agentOf(to).name;
+    api("sessions/carry", { agent: s.agent, id: s.id, to, open }).then((r) => {
+      if (open) status(t("Made a new {agent} session from this one, opening in session terminal", { agent }), "ok");
+      else copy(r.command, t("Command"), btn, t("Made a new {agent} session from this one, and copied the command that opens it", { agent }));
+    }, (err) => status(err.message, "err"));
   }
 
   // drawTalk fills box with what was said in a session, read from the

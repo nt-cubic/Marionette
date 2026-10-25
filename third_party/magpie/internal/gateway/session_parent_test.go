@@ -108,3 +108,26 @@ func BenchmarkRequestSessionMetadata(b *testing.B) {
 		}
 	}
 }
+
+// Only client_metadata is decoded now (#3394); what a body that isn't the
+// usual shape gives stays what decoding the whole body gave.
+func TestSessionMetadataOddBodies(t *testing.T) {
+	h := http.Header{}
+	h.Set("x-codex-turn-metadata", `{"turn_id":"from-header","parent_thread_id":"head"}`)
+	long := `"input":"` + strings.Repeat("x", 300000) + `",`
+	for _, tc := range []struct{ name, body, turn, parent string }{
+		{"metadata a string", `{"client_metadata":"x"}`, "from-header", "head"},
+		{"metadata null", `{"client_metadata":null}`, "from-header", "head"},
+		{"body cut short", `{"client_metadata":{"parent_thread_id":"body"}`, "from-header", "head"},
+		{"body an array", `[{"client_metadata":{"parent_thread_id":"body"}}]`, "from-header", "head"},
+		{"nested name only", `{"input":[{"client_metadata":{"parent_thread_id":"body"}}]}`, "from-header", "head"},
+		{"last of two", `{"client_metadata":{"parent_thread_id":"a"},"client_metadata":{"parent_thread_id":"b"}}`, "", "b"},
+		{"long body", `{` + long + `"client_metadata":{"turn_id":"t","parent_thread_id":"body"}}`, "t", "body"},
+		{"long body cut short", `{` + long + `"client_metadata":{"turn_id":"t","parent_thread_id":"body"}`, "from-header", "head"},
+	} {
+		m := requestSessionMetadata(h, []byte(tc.body))
+		if m.Turn != tc.turn || m.Parent != tc.parent {
+			t.Errorf("%s: turn %q parent %q, want %q %q", tc.name, m.Turn, m.Parent, tc.turn, tc.parent)
+		}
+	}
+}

@@ -1,10 +1,18 @@
 // Insights › Masking's code (client.js has its markup and hooks): run after
-// app.js, whose masking helpers it shares (maskWho, maskTip, maskColor,
+// app.js, whose masking helpers it shares (maskTip, maskColor,
 // maskShape, maskValue: Settings' Try it and the masked calls' badges use
 // them too). What a placeholder stood for is in this magpie's memory alone,
 // never on disk, so after a restart it is gone; so is the text a request
 // went out with (/api/masking/sent), kept for the newest requests only.
 
+const stillMotion = calm;
+// the providers' names, read once when the page opened before any page
+// that loads them
+let maskProv = null, maskProvAsked = false;
+function maskWho(id, kind) {
+  const x = kind === "agent" ? state.agents?.find((a) => a.id === id) : (providers || maskProv)?.providers?.find((p) => p.id === id);
+  return { name: x?.name || id || t("Unknown"), icon: x?.icon };
+}
 // what a request was, beside a chat (gateway's noteMasked)
 const MASK_WHAT = { search: "Web search", image: "Image", video: "Video", decide: "System One", embeddings: "Embeddings", audio: "Audio" };
 // maskDayName: Today, Yesterday or the date a masked request went on
@@ -42,7 +50,9 @@ function maskLoad(force) {
   return p;
 }
 const maskSettings = () => prefs || state?.settings || {};
-const maskOn = () => { const s = maskSettings(); return !!(s.redact || s.redactPersonal); };
+// on as the masker is (masking.Wanted): your own words mask with neither
+// switch on
+const maskOn = () => { const s = maskSettings(); return !!(s.redact || s.redactPersonal || s.redactWords?.length); };
 
 function maskPageOpen() {
   if (!providers && !maskProvAsked) {
@@ -137,7 +147,7 @@ function drawMaskCard() {
   maskStrip(days, sum.days, move);
   if (move && sum.n) maskCountUp(num, sum.n);
   if (sum.agents.length && sum.providers.length) band.append(maskFlow(sum, move));
-  else band.append(el("div", "msk-flow-none", t("A request that carries a key, a password or personal data shows here as it goes")));
+  else band.append(maskNone());
   if (move) for (const [i, n] of [...band.children].entries()) n.animate([{ opacity: 0, transform: "translateY(6px)", filter: "blur(6px)" }, {}], { duration: 900, delay: i * 120, easing: "cubic-bezier(.2, .7, .1, 1)", fill: "backwards" });
 }
 
@@ -155,8 +165,25 @@ function maskOffCard(box) {
   link.onclick = (e) => openSettingsAt(e, "privacy");
   also.append(el("span", "", t("You can also change it in")), link);
   box.append(s, el("h2", "", t("Requests go to vendors as they are")),
-    el("p", "", t("Turned on, keys, passwords, computer names and emails become placeholders before they leave this computer, and are put back in each answer. What each request had masked shows here.")),
+    el("p", "", t("Turned on, keys, passwords and tokens become placeholders before they leave this computer, and are put back in each answer. Emails and phone numbers too once Mask personal data is on. What each request had masked shows here.")),
     b, also);
+}
+// maskNone: what the card says while nothing was masked. With secrets
+// alone on, an agent's everyday requests carry nothing to mask (an email
+// or a name isn't a secret), so it says that, and where personal data is
+// turned on, rather than a 0 that reads as masking not working
+function maskNone() {
+  const s = maskSettings(), box = el("div", "msk-flow-none");
+  if (s.redactPersonal || !s.redact) {
+    box.textContent = t("A request that carries a key, a password or personal data shows here as it goes");
+    return box;
+  }
+  box.append(el("span", "", t("Only keys, passwords and tokens are masked now, and a request that carries one shows here as it goes. Emails and phone numbers are masked once Mask personal data is on, in")));
+  const link = el("button", "text", t("Settings › Privacy"));
+  link.type = "button";
+  link.onclick = (e) => openSettingsAt(e, "privacy");
+  box.append(" ", link);
+  return box;
 }
 function maskTurnOn(e) {
   const b = e.currentTarget;
@@ -224,7 +251,12 @@ function maskFlow(sum, move) {
     for (const r of rows) {
       const b = el("button", "mo-node" + (r.id && maskL[kind] === r.id ? " on" : ""));
       b.type = "button";
-      b.append(el("span", "nm", r.name), el("span", "ct", fmtN(r.n)));
+      // its logo on the side the lines are: an agent's after its name, a
+      // provider's before it; "N more" keeps the room so the names line up
+      const ic = r.id ? icon(r.icon || "generic") : el("span", "ic");
+      const tx = el("span", "tx");
+      tx.append(el("span", "nm", r.name), el("span", "ct", fmtN(r.n)));
+      b.append(...(kind === "agent" ? [tx, ic] : [ic, tx]));
       if (r.id) {
         b.title = t("Show what {name} sent masked", { name: r.name });
         b.onclick = () => maskNarrow({ [kind]: maskL[kind] === r.id ? "" : r.id });

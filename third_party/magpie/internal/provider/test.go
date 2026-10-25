@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/probelog"
 )
 
 // Result is what a probe of one endpoint came back with.
@@ -34,7 +35,7 @@ type Result struct {
 // serves, signed with a key made for it and asking for a model that key
 // sees, and reports what came back.
 func (p Provider) Test(ctx context.Context) []Result {
-	ctx = p.Via(ctx)
+	ctx = p.ownRequests(p.Via(ctx), probelog.KindTest)
 	if p.DecideOnly() {
 		return p.testDecide(ctx)
 	}
@@ -239,7 +240,7 @@ func tinyDrawing(q Provider, model string) (url, body string) {
 // on the endpoint it's served on and with a key that sees it: whether each
 // answers, not only whether the vendor does. Results are in models' order.
 func (p Provider) TestModels(ctx context.Context, models []string) []Result {
-	ctx = p.Via(ctx)
+	ctx = p.ownRequests(p.Via(ctx), probelog.KindTest)
 	out := make([]Result, len(models))
 	sem := make(chan struct{}, 4)
 	var wg sync.WaitGroup
@@ -486,13 +487,23 @@ func AuthHeaders(p Provider, proto Protocol) map[string]string {
 	return map[string]string{"Authorization": "Bearer " + p.Key}
 }
 
+// ownRequests is ctx with the requests sent under it written into the
+// request log as magpie's own, of kind (probelog), for p.
+func (p Provider) ownRequests(ctx context.Context, kind string) context.Context {
+	account := ""
+	if p.Account != nil {
+		account = p.Account.User
+	}
+	return probelog.With(ctx, kind, p.ID, account)
+}
+
 func probe(ctx context.Context, p Provider, proto Protocol, url string, body []byte, model string, wait time.Duration) Result {
 	r := Result{Protocol: proto, Model: model}
 	if model == "" {
 		r.Error = "no model to try: expose one, or refresh the model list"
 		return r
 	}
-	ctx, cancel := context.WithTimeout(ctx, wait)
+	ctx, cancel := context.WithTimeout(probelog.WithModel(ctx, model), wait)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {

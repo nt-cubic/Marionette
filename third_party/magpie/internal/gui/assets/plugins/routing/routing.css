@@ -821,7 +821,9 @@ button.rt-session { cursor: pointer; }
 .pr-today b { color: var(--fg); font-weight: 600; }
 .pr-head .text { flex: none; font-size: 12px; }
 .skeleton.pr-sk { display: inline-block; width: 150px; height: 9px; border-radius: 4px; vertical-align: middle; }
-.skeleton.pr-sk-row { height: 40px; border-radius: 11px; }
+/* the stage and the requests to come, their own size, as skeletons */
+.skeleton.pr-ghost { border-radius: 11px; }
+.pr-ghost > * { visibility: hidden; }
 /* a Manual group's model, picked from the tray (#2489) */
 .pr-picks { display: flex; flex-direction: column; padding: 4px; border-radius: 11px; background: var(--card); box-shadow: var(--card-edge); }
 .pr-pick { display: flex; align-items: center; gap: 10px; min-height: 30px; padding: 2px 4px 2px 8px; font-size: 12px; }

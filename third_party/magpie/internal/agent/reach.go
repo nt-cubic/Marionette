@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -233,13 +234,27 @@ func (a *Agent) unreachable(on Field, now string) *Drift {
 		return nil
 	}
 	// both asked at once, so one round of probes settles it
-	ok, known := reachable(addr)
+	inside := a.reachFrom != nil && gateway.OnWSLNet(addr)
+	var ok, known bool
+	if inside {
+		ok, known = a.reachFrom(addr)
+	} else {
+		ok, known = reachable(addr)
+	}
 	up, upKnown := reachable(gateway.URL())
 	if ok || !known || !up || !upKnown {
 		return nil
 	}
 	d := &Drift{Kind: "unreachable", Field: on.Key, Now: now, Want: now, Addr: addr}
 	host := strings.TrimPrefix(strings.TrimPrefix(addr, "http://"), "https://")
+	if inside {
+		// magpie listens there itself (gateway/wsl.go): what keeps WSL out
+		// is Windows' firewall
+		d.Detail = a.Name + " is pointed at magpie at " + addr + ", where magpie listens for WSL, but nothing answers there from WSL " + a.WSL + ": Windows' firewall keeps WSL out. " +
+			"Allow magpie in when Windows asks, or, in PowerShell as administrator: " + wslFirewallCommand() + ". " +
+			"On Windows 11, networkingMode=mirrored under [wsl2] in %UserProfile%\\.wslconfig lets WSL reach magpie at 127.0.0.1 instead."
+		return d
+	}
 	d.Detail = a.Name + " is pointed at magpie at " + addr + ", where nothing answers from this computer, though magpie answers at " + gateway.URL() + ". "
 	if a.WSL != "" || runtime.GOOS == "windows" {
 		d.Detail += "Under WSL's NAT networking, Windows as WSL sees it reaches magpie only while something listens on " + host +
@@ -254,6 +269,18 @@ func (a *Agent) unreachable(on Field, now string) *Drift {
 		d.Detail += " WSL " + distro + " reaches Windows at " + to + " now, not " + addr + " as before: Use " + to + " points " + a.Name + " there."
 	}
 	return d
+}
+
+// wslFirewallCommand lets magpie in from WSL's networks through Windows'
+// firewall, for an administrator's PowerShell. WSL's network is a Public
+// one, so a rule for Private networks only (what Windows' own prompt
+// offers ticked) doesn't do.
+func wslFirewallCommand() string {
+	exe, err := os.Executable()
+	if err != nil || exe == "" {
+		exe = "magpie.exe"
+	}
+	return "New-NetFirewallRule -DisplayName 'magpie (WSL)' -Direction Inbound -Action Allow -Profile Any -InterfaceAlias 'vEthernet (WSL*)' -Program '" + strings.ReplaceAll(exe, "'", "''") + "'"
 }
 
 // wslMovedFrom is the address a WSL distro reaches Windows at now, when

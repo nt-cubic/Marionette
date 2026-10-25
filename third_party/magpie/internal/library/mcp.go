@@ -47,6 +47,15 @@ type Server struct {
 	// (GitHub's, 新v学员 on Discord). It is magpie's alone: the agents are
 	// given the server as before.
 	OAuth *OAuthApp `json:"oauth,omitempty"`
+	// StartupTimeout is the seconds an agent waits for the server to start
+	// and list its tools: Codex's startup_timeout_sec (#3168), the only
+	// agent given it. 0 leaves it to the agent (Codex's own is 30s).
+	StartupTimeout int `json:"startupTimeout,omitempty"`
+
+	// startupWrote is the startup_timeout_sec magpie last wrote in the
+	// entry being written, 0 for none: one the entry has otherwise is the
+	// user's, and stays (startupTheirs)
+	startupWrote float64
 }
 
 // OAuthApp is an OAuth app made with a server's vendor, by the names
@@ -116,6 +125,9 @@ func (s *Server) check() error {
 			}
 			s.OAuth = nil
 		}
+	}
+	if s.StartupTimeout < 0 || s.StartupTimeout > maxStartupTimeout {
+		return fmt.Errorf("%s: the startup timeout is between 0 (the agent's own) and %d seconds", s.Name, maxStartupTimeout)
 	}
 	for k := range s.Env {
 		if strings.TrimSpace(k) == "" {
@@ -345,15 +357,69 @@ func selfTimeout(s *Server, def int) int {
 	return def
 }
 
+// maxStartupTimeout is the longest startup timeout a server is given: a
+// day, as a hook's timeout.
+const maxStartupTimeout = 86400
+
+// startupTheirs says whether old, a Codex entry, has a startup timeout
+// magpie didn't write: a startup_timeout_ms (magpie writes only _sec, and
+// Codex reads _ms only without it), or a startup_timeout_sec other than
+// the one magpie wrote last. That one is the user's, and magpie's value
+// never goes over it.
+func startupTheirs(s *Server, old map[string]any) bool {
+	if _, ok := old["startup_timeout_ms"]; ok {
+		return true
+	}
+	v, ok := old["startup_timeout_sec"]
+	return ok && (s.startupWrote == 0 || !isNumber(v, s.startupWrote))
+}
+
+// startupWritten is the startup_timeout_sec of magpie's in the entry it
+// writes for s over old, for the next write to know it by: 0 for none.
+func (f *mcpFile) startupWritten(s *Server, old map[string]any) float64 {
+	if f.Format != fmtCodex || startupTheirs(s, old) {
+		return 0
+	}
+	return float64(s.StartupTimeout)
+}
+
+// startupBehind says whether a Codex entry lacks the startup timeout
+// magpie gives s, or has one magpie wrote that s no longer has.
+func startupBehind(s *Server, old map[string]any) bool {
+	if startupTheirs(s, old) {
+		return false
+	}
+	v, ok := old["startup_timeout_sec"]
+	if s.StartupTimeout == 0 {
+		return ok
+	}
+	return !isNumber(v, float64(s.StartupTimeout))
+}
+
+// wroteStartup is s with the startup timeout magpie last wrote in its
+// entry.
+func wroteStartup(s *Server, v float64) *Server {
+	if s.startupWrote == v {
+		return s
+	}
+	c := *s
+	c.startupWrote = v
+	return &c
+}
+
 // gooseOldTimeout is the timeout magpie wrote for every Goose server before
 // magpie-image was given a longer one.
 const gooseOldTimeout = 300
 
 // behind says whether an entry magpie wrote before lacks the timeout it
 // gives s now: Codex's tool_timeout_sec is missing, or Goose's timeout is
-// still the gooseOldTimeout every server had. A value the user chose is
-// neither, so it is left as it is.
+// still the gooseOldTimeout every server had, or Codex's startup timeout
+// isn't the one s has (startupBehind). A value the user chose is none of
+// these, so it is left as it is.
 func (f *mcpFile) behind(s *Server, old map[string]any) bool {
+	if f.Format == fmtCodex && old != nil && startupBehind(s, old) {
+		return true
+	}
 	if selfTimeout(s, 0) == 0 {
 		return false
 	}
@@ -630,6 +696,10 @@ func (f *mcpFile) encode(s *Server) ordered {
 		// Codex gives a tool a minute unless its entry says more
 		if t := selfTimeout(s, 0); t > 0 {
 			add("tool_timeout_sec", t)
+		}
+		// and 30s to start and list its tools unless its entry says more
+		if s.StartupTimeout > 0 {
+			add("startup_timeout_sec", s.StartupTimeout)
 		}
 	case fmtDsh:
 		// a reference is a !!js expression dsh evaluates (dshRef)
@@ -1094,6 +1164,16 @@ func (f *mcpFile) merged(s *Server, old map[string]any) ordered {
 	o := f.encode(s)
 	mine := f.mine(s)
 	behind := f.behind(s, old)
+	// Codex's startup timeout is magpie's unless the user wrote one
+	// (startupTheirs): theirs is kept as it is, below, with no _sec of
+	// magpie's beside a _ms of theirs
+	if f.Format == fmtCodex {
+		if startupTheirs(s, old) {
+			o = slices.DeleteFunc(o, func(e kv) bool { return e.k == "startup_timeout_sec" })
+		} else {
+			mine = append(slices.Clone(mine), "startup_timeout_sec")
+		}
+	}
 	for i, e := range o {
 		if v, ok := old[e.k]; ok && !slices.Contains(mine, e.k) && !(behind && f.Format == fmtGoose && e.k == "timeout") {
 			o[i].v = v

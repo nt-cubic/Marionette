@@ -46,6 +46,28 @@ func CodexTitleDigest(name string) string {
 	return codexFingerprint("title", name)
 }
 
+// codexTitleOf is CodexTitles of one id at a time, for a pass that
+// assembles every session (pricer): the index is looked at on the first
+// ask only. A stat of it for each Codex session was ~60ms of a start's
+// stats (#3493).
+func codexTitleOf() func(id string) string {
+	var path string
+	var asked, loaded bool
+	return func(id string) string {
+		codexTitles.Lock()
+		defer codexTitles.Unlock()
+		// again only when another index was read since, in between
+		if !asked || loaded && codexTitles.path != path {
+			asked, path = true, codexTitleIndexPath()
+			loaded = loadCodexTitles(path)
+		}
+		if !loaded {
+			return ""
+		}
+		return codexTitles.names[id]
+	}
+}
+
 // CodexTitles reads only the append-only name index. It caches unchanged
 // files and reads newly appended complete lines from the previous offset.
 func CodexTitles(ids []string) map[string]string { return codexTitlesAt(codexTitleIndexPath(), ids) }

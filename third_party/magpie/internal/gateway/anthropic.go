@@ -372,7 +372,7 @@ func withThinkingOnToolTurns(body []byte) []byte {
 		return body
 	}
 	q["messages"], _ = json.Marshal(msgs)
-	nb, err := json.Marshal(q)
+	nb, err := marshalJSON(q)
 	if err != nil {
 		return body
 	}
@@ -427,7 +427,7 @@ func withoutThinkingOff(body []byte) ([]byte, bool) {
 		return nil, false
 	}
 	delete(q, "thinking")
-	out, err := json.Marshal(q)
+	out, err := marshalJSON(q)
 	return out, err == nil
 }
 
@@ -790,8 +790,21 @@ func outputEffortAt(host, model string) bool {
 	return host == deepseekHost || effortInOutputConfig.MatchString(model)
 }
 
+// AdaptiveWithEffort is, for agents told how to ask a model, one of
+// effortInOutputConfig's that takes thinking adaptive with its level in
+// output_config.effort: Z.ai's GLM-5.2 and GLM-5.3 (tried live on GLM-5.3,
+// 10-24: max thought about three times high's). An agent whose budget
+// can't say max (pi-ai clamps it to high's) asks them so. MiniMax's
+// M3.1-Flash isn't, until it is tried (#3496).
+func AdaptiveWithEffort(model string) bool { return glmOutputEffort.MatchString(model) }
+
+// glmOutputEffort is effortInOutputConfig's Z.ai half.
+var glmOutputEffort = regexp.MustCompile(`(?i)glm-5\.[23](?:$|[-.:/\[])`)
+
 // withOutputEffort is body asking, in output_config.effort, for the level
 // of levels nearest the reasoning it asks for; body when it asks for none.
+// Thinking asked for adaptively (DSH asks these models so, its Max not
+// clamped to a high budget) stays adaptive: Z.ai takes it with the level.
 func withOutputEffort(body []byte, levels []string) []byte {
 	e := requestEffort(provider.Anthropic, body)
 	var v struct {

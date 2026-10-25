@@ -777,6 +777,10 @@ func (m model) viewProviders() string {
 		}
 		r.models = fmt.Sprintf("%d models", len(p.Exposed()))
 		var notes []string
+		if p.Off {
+			// how to switch it on again, as magpie providers says it
+			notes = append(notes, "o switches it on")
+		}
 		if v, ok := m.bal[p.ID]; ok {
 			notes = append(notes, v)
 		}

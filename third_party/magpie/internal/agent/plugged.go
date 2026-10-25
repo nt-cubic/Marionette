@@ -20,6 +20,7 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/jsonc"
 	"github.com/yetone/magpie/internal/agentplug"
+	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/plugin"
@@ -270,6 +271,16 @@ func plugged(home string, p *agentplug.Agent) *Agent {
 			j := map[string]any{"id": m.ID, "name": m.Name, "context": m.Context, "output": m.Output, "images": m.Images, "efforts": m.Efforts}
 			if j["efforts"] == nil {
 				j["efforts"] = []string{}
+			}
+			// what /v1/models says of it too, by the same names, for an
+			// agent built on the gateway (cleary5779 on Discord): the APIs
+			// a request for it goes on untranslated, and what a token
+			// costs; each left out when not known, never empty or 0
+			if len(m.Endpoints) > 0 {
+				j["native_endpoints"] = m.Endpoints
+			}
+			if m.Price != nil {
+				j["pricing"] = catalog.OpenRouterPricing(*m.Price)
 			}
 			if m.ID == ref {
 				model = j

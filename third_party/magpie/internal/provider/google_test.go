@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -819,5 +820,73 @@ func TestAntigravityRetiredModelNamedWithoutTag(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Gemini 4 Argon has a quota group of its own, with only a week (agy
+// 1.4.0's /usage: "Gemini 4 Argon", bucket gemini-argon-wtu-weekly, "For
+// paid Pro plans, Argon quota is separate"; CodexBar #4585). Its model is
+// in that group, not Gemini's, and the group never takes the other Gemini
+// models, whichever Google lists first and whether or not it has 5 hours
+// (01huadalang on Discord: a Gemini 4 bar of 7 days, and Claude's gone).
+func TestAntigravityQuotaModelGroup(t *testing.T) {
+	argon := func(five bool) string {
+		b := `{"bucketId":"gemini-argon-wtu-weekly","window":"weekly","remainingFraction":0.53,"resetTime":"2099-01-07T00:00:00Z","displayName":"Gemini 4 Argon Weekly Limit"}`
+		if five {
+			b += `,{"bucketId":"gemini-argon-5h","window":"5h","remainingFraction":0.8,"resetTime":"2099-01-01T04:00:00Z"}`
+		}
+		return `{"displayName":"Gemini 4 Argon","description":"For paid Pro plans, Argon quota is separate.","buckets":[` + b + `]}`
+	}
+	gemini := `{"displayName":"Gemini Models","description":"Models within this group: Gemini Flash, Gemini Pro","buckets":[
+		{"bucketId":"gemini-weekly","window":"weekly","remainingFraction":0.99,"resetTime":"2099-01-07T00:00:00Z"},
+		{"bucketId":"gemini-5h","window":"5h","remainingFraction":1,"resetTime":"2099-01-01T05:00:00Z"}]}`
+	claude := `{"displayName":"Claude and GPT models","description":"Models within this group: Claude Opus, Claude Sonnet, GPT-OSS","buckets":[
+		{"bucketId":"3p-weekly","window":"weekly","remainingFraction":0.6,"resetTime":"2099-01-06T00:00:00Z"},
+		{"bucketId":"3p-5h","window":"5h","remainingFraction":0.7,"resetTime":"2099-01-01T03:00:00Z"}]}`
+	f := &fakeGoogle{
+		load:    `{"allowedTiers":[{"id":"free-tier","name":"Antigravity","isDefault":true}]}`,
+		onboard: `{"done":true,"response":{"cloudaicompanionProject":"ag-proj"}}`,
+		models: `{"models":{
+			"gemini-3-flash":{"displayName":"Gemini 3 Flash","quotaInfo":{"remainingFraction":1,"resetTime":"2099-01-01T05:00:00Z"}},
+			"gemini-4-argon":{"displayName":"Gemini 4 Argon","quotaInfo":{"remainingFraction":0.53,"resetTime":"2099-01-07T00:00:00Z"}},
+			"claude-sonnet-4-6":{"displayName":"Claude Sonnet 4.6","quotaInfo":{"remainingFraction":0.7}}}}`,
+	}
+	googleSandbox(t, f)
+	auth := googleAuth{AccessToken: "tok", RefreshToken: "rt-ag", Expiry: time.Now().Add(time.Hour).UnixMilli()}
+	if err := addGoogleLogin("antigravity", "ag@example.com", "", auth); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name, groups string
+		pooled       string
+	}{
+		{"as agy has it", gemini + "," + claude + "," + argon(false),
+			"Gemini 4 Argon,Gemini · 7 days,Gemini · 5 hours,Claude & GPT · 7 days,Claude & GPT · 5 hours,Gemini 4 Argon · 7 days"},
+		{"Argon first", argon(false) + "," + gemini + "," + claude,
+			"Gemini 4 Argon,Gemini 4 Argon · 7 days,Gemini · 7 days,Gemini · 5 hours,Claude & GPT · 7 days,Claude & GPT · 5 hours"},
+		{"Argon first with 5 hours", argon(true) + "," + gemini + "," + claude,
+			"Gemini 4 Argon · 7 days,Gemini 4 Argon · 5 hours,Gemini · 7 days,Gemini · 5 hours,Claude & GPT · 7 days,Claude & GPT · 5 hours"},
+	} {
+		f.mu.Lock()
+		f.summary = `{"groups":[` + c.groups + `]}`
+		f.mu.Unlock()
+		q := googleLogins("antigravity")[0].acct.quota(context.Background(), "")
+		pools := map[string]string{}
+		for _, w := range q.Windows {
+			if w.Model != "" {
+				pools[w.Model] = w.Pool
+			}
+		}
+		want := map[string]string{"gemini-3-flash": "Gemini", "gemini-4-argon": "Gemini 4 Argon", "claude-sonnet-4-6": "Claude & GPT"}
+		if !maps.Equal(pools, want) {
+			t.Errorf("%s: pools %v, want %v", c.name, pools, want)
+		}
+		var names []string
+		for _, w := range PooledWindows(q.Windows) {
+			names = append(names, w.Name)
+		}
+		if got := strings.Join(names, ","); got != c.pooled {
+			t.Errorf("%s: pooled\n%s\nwant\n%s", c.name, got, c.pooled)
+		}
 	}
 }

@@ -173,7 +173,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           assert.equal(await row(page).locator("button.image-gen-tool").count(), 0);
           const sub = await row(page).locator(".who > .sub").first().textContent();
           assert.equal(sub, opts.gateway
-            ? w("The model Magpie Image draws with, for the agents given the Magpie Image tool; images are saved in their project")
+            ? w("The model the Image generation MCP server below draws with, for the agents that add it; images come back in their answer")
             : w("Agents given Magpie Image can't generate images or videos: the tool says it is off"));
           assert.deepEqual(page.errors, []);
           await page.context().close();

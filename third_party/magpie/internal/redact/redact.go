@@ -141,18 +141,19 @@ var rules = append([]rule{
 	{kind: "API_KEY", re: regexp.MustCompile(`(?:hf_[A-Za-z0-9]{30,}|gsk_[A-Za-z0-9]{40,}|xai-[A-Za-z0-9]{40,}|npm_[A-Za-z0-9]{36}|pypi-[A-Za-z0-9_-]{50,}|dop_v1_[a-f0-9]{64}|SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43})`),
 		markers: []string{"hf_", "gsk_", "xai-", "npm_", "pypi-", "dop_v1_", "SG."}, bound: tokenCh},
 	{kind: "TOKEN", re: regexp.MustCompile(`eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`), markers: []string{"eyJ"}, bound: tokenCh},
-	// the password of user:password@host
-	{kind: "PASSWORD", re: regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://[^\s:@/?#"'<>]+:([^\s@/?#"'<>]{3,})@`), markers: []string{"://"}, ok: notAVariable},
+	// the password of user:password@host, or of :password@host as a Redis
+	// URL has it with no user
+	{kind: "PASSWORD", re: regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://[^\s:@/?#"'<>]*:([^\s@/?#"'<>]{3,})@`), markers: []string{"://"}, ok: notAVariable},
 	// password = …, API_KEY: "…", as .env files and configs have them
 	{kind: "SECRET", re: regexp.MustCompile(`(?i)[A-Za-z0-9_.-]*(?:` + secretNames.pattern() + `)[A-Za-z0-9_.-]*` + quote + `[ \t]*[:=][ \t]*` + quote + `(` + secretCh + `{8,})`),
-		markers: secretNames.markers(), ok: secretValue},
+		markers: secretNames.markers(), ok: secretValue, at: notCode},
 	// a field called key and nothing more, as providers.json has one: "key":
 	// "oc_sk_…" (#195). Only a long value of letters and digits both, since
 	// code calls anything a key: a map's "key": "value", sort_key, keyboard.
 	{kind: "SECRET", re: regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_.-])` + quote + `key` + quote + `[ \t]*[:=][ \t]*` + quote + `(` + secretCh + `{16,})`),
-		markers: fieldNames{{"key", "key"}}.markers(), ok: secretValue},
+		markers: fieldNames{{"key", "key"}}.markers(), ok: secretValue, at: notCode},
 
-	{kind: "EMAIL", re: regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}`), markers: []string{"@"}, bound: alnum + "._%+-", ok: realEmail, cat: catPersonal},
+	{kind: "EMAIL", re: regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}`), markers: []string{"@"}, bound: alnum + "._%+-", ok: realEmail, at: notUserinfo, cat: catPersonal},
 	{kind: "ID_CARD", re: regexp.MustCompile(`[1-9]\d{5}(?:18|19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]`), bound: alnum, ok: chineseID, cat: catPersonal},
 	{kind: "PHONE", re: regexp.MustCompile(`(?:\+?86[- ]?)?1[3-9]\d{9}`), bound: digits, cat: catPersonal},
 	{kind: "BANK_CARD", re: regexp.MustCompile(`[3-6]\d{3}(?:[ -]?\d{4}){2,3}(?:[ -]?\d{1,3})?`), bound: digits, ok: luhn, cat: catPersonal},
@@ -221,6 +222,64 @@ func secretValue(v string) bool {
 		return false
 	}
 	return strings.ContainsAny(v, digits) && strings.IndexFunc(v, func(r rune) bool { return r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' }) >= 0
+}
+
+// identPath is a name in code, or a field read through one: Uint8Array,
+// details.2, opts.token2.
+var identPath = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*$`)
+
+// notCode turns away a value at s[a:b] that is code naming a secret, not
+// the secret: a call (privateKey: toBase64Url(…), secretKey =
+// fromBase64Url(…)), or, unquoted after a colon, a type or a read that
+// code goes on from (secretKey: Uint8Array;, private_key: details.2,).
+// A secret written in code is a string, so in quotes; one after = or at a
+// line's end (.env files, logs, YAML) is kept (Kieran Zhang on X, 10-25).
+func notCode(s string, a, b int) bool {
+	if !identPath.MatchString(s[a:b]) {
+		return true
+	}
+	rest := strings.TrimLeft(s[b:], " \t")
+	if strings.HasPrefix(rest, "(") {
+		return false
+	}
+	if a > 0 && (s[a-1] == '"' || s[a-1] == '\'') || !strings.HasSuffix(strings.TrimRight(s[:a], " \t"), ":") {
+		return true
+	}
+	return rest == "" || !strings.ContainsRune(";,)}]|?&<>", rune(rest[0]))
+}
+
+// notUserinfo turns away what looks like an email at s[a:b] but is a
+// URL's user:password@host or user@host: its @ ends the userinfo, so
+// what is before it is a user name or a password and what is after it
+// the host. postgres://app:hunter2pass@db.acme-corp.cn:5432/x went as
+// app:{{EMAIL_…}}:5432, the password and the host one address, where the
+// password is the PASSWORD rule's and the host stays (#3538). An address
+// in a URL's path or query (?to=bob@acme.cn) and in mailto: is an
+// email still.
+func notUserinfo(s string, a, _ int) bool {
+	return !inUserinfo(s, a)
+}
+
+// inUserinfo says s[a] is inside a URL's authority, after its scheme://
+// and before the host: nothing from there back to the // is a /, ?, #,
+// space, quote, < or > or @.
+func inUserinfo(s string, a int) bool {
+	i := a
+	for i > 0 && !strings.ContainsRune(" \t\r\n/?#\"'<>@`", rune(s[i-1])) {
+		i--
+	}
+	if i < 3 || s[i-1] != '/' || s[i-2] != '/' || s[i-3] != ':' {
+		return false
+	}
+	j := i - 3 // the scheme ends at s[j], its colon
+	k := j
+	for k > 0 && (s[k-1] >= 'a' && s[k-1] <= 'z' || s[k-1] >= 'A' && s[k-1] <= 'Z' || s[k-1] >= '0' && s[k-1] <= '9' || strings.IndexByte("+.-", s[k-1]) >= 0) {
+		k--
+	}
+	for k < j && !(s[k] >= 'a' && s[k] <= 'z' || s[k] >= 'A' && s[k] <= 'Z') {
+		k++ // a scheme starts with a letter
+	}
+	return k < j
 }
 
 func realEmail(v string) bool {

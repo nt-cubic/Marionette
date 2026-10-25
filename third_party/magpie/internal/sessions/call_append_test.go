@@ -79,6 +79,10 @@ func TestAbandonedCallTempsAndLRU(t *testing.T) {
 	os.WriteFile(live, []byte("partial"), 0600)
 	then := time.Now().Add(-2 * time.Hour)
 	os.Chtimes(old, then, then)
+	// the folder is looked over once a minute
+	callsMu.Lock()
+	callSwept = time.Time{}
+	callsMu.Unlock()
 	Calls(time.Time{})
 	if _, err := os.Stat(old); !os.IsNotExist(err) {
 		t.Fatal("abandoned temp remains")
@@ -95,6 +99,32 @@ func TestAbandonedCallTempsAndLRU(t *testing.T) {
 	keepCalls("next", &callFile{Calls: []Call{{}}})
 	if callCache["0"] == nil || callCache["1"] != nil {
 		t.Fatal("cache evicts recent entry instead of least recent")
+	}
+}
+
+// Listing the sources reads the shard folder at most once a minute, not
+// on every Requests page, and a shard no file names goes when it does.
+func TestCallShardsSweptOnceAMinute(t *testing.T) {
+	d := setupCalls(t)
+	writeLines(t, filepath.Join(d.claude, "projects", "p", "s.jsonl"), claudeMsg("m", "m", 1, 1, 0, 0, 1))
+	Calls(time.Time{})
+	orphan := filepath.Join(callCacheDir(), hashHead("gone.jsonl")+".gob")
+	if err := os.WriteFile(orphan, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	CallSources()
+	if _, err := os.Stat(orphan); err != nil {
+		t.Fatalf("the folder was read again within the minute: %v", err)
+	}
+	callsMu.Lock()
+	callSwept = time.Now().Add(-callSweepEvery)
+	callsMu.Unlock()
+	CallSources()
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Fatal("an orphan shard outlived the next sweep")
+	}
+	if len(Calls(time.Time{})) != 1 {
+		t.Fatal("the sweep lost a live shard")
 	}
 }
 

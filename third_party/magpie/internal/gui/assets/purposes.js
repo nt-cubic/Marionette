@@ -12,6 +12,10 @@ const REQUEST_KINDS = {
     "purpose": "kind:ambient_suggestions",
     "name": "Suggestions"
   },
+  "api_detect": {
+    "purpose": "kind:api_detect",
+    "name": "Detect APIs"
+  },
   "auto_review": {
     "purpose": "kind:guardian",
     "name": "Approval check"
@@ -51,6 +55,14 @@ const REQUEST_KINDS = {
   "memory_consolidation": {
     "purpose": "kind:memory_consolidation",
     "name": "Memory"
+  },
+  "model_list": {
+    "purpose": "kind:model_list",
+    "name": "Model list"
+  },
+  "provider_test": {
+    "purpose": "kind:provider_test",
+    "name": "Test"
   },
   "review": {
     "purpose": "kind:review",

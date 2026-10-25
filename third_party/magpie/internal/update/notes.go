@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -45,6 +46,31 @@ func NotesBetween(ctx context.Context, after, upto, lang string) ([]Note, error)
 	if after != "" {
 		q.Set("after", after)
 	}
+	notes, err := askNotes(ctx, q, lang)
+	if err != nil {
+		return nil, err
+	}
+	return Between(notes, after, upto), nil
+}
+
+// BackCounts are the ranges Settings' What's new offers besides the notes
+// since the last update: this version and that many before it (Linka on
+// Discord).
+var BackCounts = []int{10, 20, 50, 100}
+
+// NotesBack asks the site for the notes of upto and the n releases before
+// it, newest first, in lang. The site is asked for those alone (limit); one
+// from before it took a limit sends them all, and Back keeps n+1.
+func NotesBack(ctx context.Context, upto string, n int, lang string) ([]Note, error) {
+	notes, err := askNotes(ctx, url.Values{"upto": {upto}, "limit": {strconv.Itoa(n + 1)}}, lang)
+	if err != nil {
+		return nil, err
+	}
+	return Back(notes, upto, n), nil
+}
+
+// askNotes is the site's list for q, each release's notes in lang.
+func askNotes(ctx context.Context, q url.Values, lang string) ([]Note, error) {
 	if lang != "" {
 		q.Set("lang", lang)
 	}
@@ -69,7 +95,7 @@ func NotesBetween(ctx context.Context, after, upto, lang string) ([]Note, error)
 	for i := range out.Releases {
 		out.Releases[i].Notes = InLang(out.Releases[i].Notes, lang)
 	}
-	return Between(out.Releases, after, upto), nil
+	return out.Releases, nil
 }
 
 // zhMarker is where a release's notes turn from English to Chinese: the
@@ -140,6 +166,35 @@ func Between(notes []Note, after, upto string) []Note {
 	sort.SliceStable(out, func(i, j int) bool { return Newer(out[i].Version, out[j].Version) })
 	if len(out) > MaxNotes {
 		out = out[:MaxNotes]
+	}
+	return out
+}
+
+// Back keeps upto and the n releases before it, newest first: n+1
+// releases counted before any is dropped, so a release whose notes are
+// empty once its Install section is out still counts as one. A release
+// newer than upto, or one listed twice, isn't counted.
+func Back(notes []Note, upto string, n int) []Note {
+	var keep []Note
+	seen := map[string]bool{}
+	for _, r := range notes {
+		v := strings.TrimPrefix(strings.TrimSpace(r.Version), "v")
+		if parse(v) == nil || seen[v] || Newer(v, upto) {
+			continue
+		}
+		seen[v] = true
+		r.Version = v
+		keep = append(keep, r)
+	}
+	sort.SliceStable(keep, func(i, j int) bool { return Newer(keep[i].Version, keep[j].Version) })
+	if len(keep) > n+1 {
+		keep = keep[:n+1]
+	}
+	out := []Note{}
+	for _, r := range keep {
+		if r.Notes = StripInstall(r.Notes); strings.TrimSpace(r.Notes) != "" {
+			out = append(out, r)
+		}
 	}
 	return out
 }

@@ -158,19 +158,19 @@ func TestWindowHoldsNeedsTheWholeWindowLogged(t *testing.T) {
 		}
 	}
 	priceOf := func(Record) *catalog.Price { return nil }
-	if got := windowHolds(qs, now, now.Add(-2*24*time.Hour), priceOf, nil, nil, read); got[0].Windows[0].Holds != nil || got[0].Windows[0].HoldsWhy != provider.HoldsBeforeLog {
+	if got := windowHolds(qs, now, now.Add(-2*24*time.Hour), priceOf, provider.Renames{}, nil, read); got[0].Windows[0].Holds != nil || got[0].Windows[0].HoldsWhy != provider.HoldsBeforeLog {
 		t.Fatalf("the log began 2 days into the week, and the week was reckoned: %+v, why %q", got[0].Windows[0].Holds, got[0].Windows[0].HoldsWhy)
 	}
-	got := windowHolds(qs, now, now.Add(-30*24*time.Hour), priceOf, nil, nil, read)
+	got := windowHolds(qs, now, now.Add(-30*24*time.Hour), priceOf, provider.Renames{}, nil, read)
 	if h := got[0].Windows[0].Holds; h == nil || h.Tokens != 500 || h.Priced {
 		t.Fatalf("logged since before the week: %+v, want 500 tokens, unpriced", h)
 	}
-	if got := windowHolds(qs, now, now.Add(-30*24*time.Hour), priceOf, nil, nil, func(func(Record)) {}); got[0].Windows[0].Holds != nil || got[0].Windows[0].HoldsWhy != provider.HoldsNoneRouted {
+	if got := windowHolds(qs, now, now.Add(-30*24*time.Hour), priceOf, provider.Renames{}, nil, func(func(Record)) {}); got[0].Windows[0].Holds != nil || got[0].Windows[0].HoldsWhy != provider.HoldsNoneRouted {
 		t.Fatalf("nothing routed, and the week was reckoned: %+v, why %q", got[0].Windows[0].Holds, got[0].Windows[0].HoldsWhy)
 	}
 	// a provider since renamed: its calls under the old id are the account's
 	recs[0].Provider = "claude-old"
-	if got := windowHolds(qs, now, now.Add(-30*24*time.Hour), priceOf, map[string]string{"claude-old": "claude"}, nil, read); got[0].Windows[0].Holds == nil {
+	if got := windowHolds(qs, now, now.Add(-30*24*time.Hour), priceOf, provider.RenamesOf(map[string]string{"claude-old": "claude"}), nil, read); got[0].Windows[0].Holds == nil {
 		t.Fatal("a call under the provider's old id wasn't counted")
 	}
 }
@@ -223,7 +223,7 @@ func TestWindowHoldsLeavesOutCallsPaidOtherwise(t *testing.T) {
 	}
 	var whys [2]string
 	holds := func(qs []provider.SubscriptionQuota, h []provider.QuotaHistory, recs ...Record) (five, week *provider.WindowHolds) {
-		got := windowHolds(qs, now, first, priceOf, nil, dryRuns(qs, h, now), reads(recs...))
+		got := windowHolds(qs, now, first, priceOf, provider.Renames{}, dryRuns(qs, h, now), reads(recs...))
 		whys = [2]string{got[0].Windows[0].HoldsWhy, got[0].Windows[1].HoldsWhy}
 		return got[0].Windows[0].Holds, got[0].Windows[1].Holds
 	}
@@ -288,7 +288,7 @@ func TestWindowHoldsResetBeforeRefillReading(t *testing.T) {
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					call := Record{Time: tc.at, Provider: providerID, ProviderAccount: "sample@example.com", Model: "m", Input: 1000, Status: 200}
-					got := windowHolds(qs, now, now.Add(-30*24*time.Hour), func(Record) *catalog.Price { return nil }, nil, dryRuns(qs, hist, now), func(fn func(Record)) { fn(call) })
+					got := windowHolds(qs, now, now.Add(-30*24*time.Hour), func(Record) *catalog.Price { return nil }, provider.Renames{}, dryRuns(qs, hist, now), func(fn func(Record)) { fn(call) })
 					h := got[0].Windows[1].Holds
 					if (h != nil) != tc.want {
 						t.Fatalf("week holds = %+v, want present %v", h, tc.want)
@@ -329,7 +329,7 @@ func TestWindowHoldsDryAgainAfterReset(t *testing.T) {
 		{Time: now.Add(-3 * 24 * time.Hour), Input: 1000, Status: 200},
 		{Time: r1.Add(time.Hour), Input: 1000, Status: 200}, // after the reset, before the next dry reading
 	}
-	got := windowHolds(qs, now, now.Add(-30*24*time.Hour), func(Record) *catalog.Price { return nil }, nil, dryRuns(qs, hist, now), func(fn func(Record)) {
+	got := windowHolds(qs, now, now.Add(-30*24*time.Hour), func(Record) *catalog.Price { return nil }, provider.Renames{}, dryRuns(qs, hist, now), func(fn func(Record)) {
 		for _, c := range calls {
 			c.Provider, c.ProviderAccount, c.Model = "codex", "u", "m"
 			fn(c)

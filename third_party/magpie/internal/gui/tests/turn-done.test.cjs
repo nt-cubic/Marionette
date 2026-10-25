@@ -116,6 +116,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.waitForTimeout(300);
         assert.equal(await scrolled(), top, "no click moved the page");
 
+        // back up past Currency's rows, taller now their lines wrap whole
+        // (arculongus on Discord)
+        await reach(page, opts.nth(0));
         await opts.nth(0).click();
         assert.equal((await posted(3)).turnDoneAlert, 0, "Off saves 0");
         assert.equal(await page.locator("#turnDoneRow").evaluate((e) => getComputedStyle(e).borderLeftWidth), "0px");

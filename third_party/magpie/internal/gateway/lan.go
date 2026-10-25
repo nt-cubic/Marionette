@@ -249,6 +249,11 @@ func lanGuard(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		// a WSL distro's agent, at the address Windows has on its network
+		// (wsl.go), is one of this computer's
+		if fromWSL(r) {
+			r = asFromLoopback(r)
+		}
 		// the allow list comes before the key: one that leaked is of no
 		// use from an address left out of it
 		if refuseNotAllowed(w, r) {
