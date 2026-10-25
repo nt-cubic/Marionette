@@ -38,6 +38,7 @@ import {
   PhysicalSize,
   type Monitor,
 } from "@tauri-apps/api/window";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { isTauriRuntime } from "./api";
 import { readDetachedSessionId } from "./detachedWindow";
 
@@ -49,10 +50,16 @@ export type DockPrefs = {
   /** "dock" = window is docked to a screen edge (live state, reset on launch); "off" = floating. */
   mode: "off" | "dock";
   edge: DockEdge;
-  /** Strip width in logical px, 320–480. */
+  /** Strip width in logical px, 320–560. */
   width: number;
   /** Stage 0: closing the window retracts to background instead of quitting. */
   autoHideOnClose: boolean;
+  /**
+   * 侧边栏常驻 (2026-10-25): while expanded, mouseleave / focus loss no longer
+   * retracts the strip. Manual retract (close path, drag-out, undock) still
+   * works; a re-entered sliver expands and then stays.
+   */
+  pinned: boolean;
 };
 
 const DEFAULT_PREFS: DockPrefs = {
@@ -60,10 +67,11 @@ const DEFAULT_PREFS: DockPrefs = {
   edge: "right",
   width: 400,
   autoHideOnClose: true,
+  pinned: false,
 };
 
 const WIDTH_MIN = 320;
-const WIDTH_MAX = 480;
+const WIDTH_MAX = 560;
 
 /**
  * On-screen part of the parked window, logical px (plan §1 said 4 physical;
@@ -109,6 +117,7 @@ export function readDockPrefs(): DockPrefs {
       width: clampWidth(parsed.width),
       autoHideOnClose:
         typeof parsed.autoHideOnClose === "boolean" ? parsed.autoHideOnClose : DEFAULT_PREFS.autoHideOnClose,
+      pinned: typeof parsed.pinned === "boolean" ? parsed.pinned : DEFAULT_PREFS.pinned,
     };
   } catch {
     return { ...DEFAULT_PREFS };
@@ -166,6 +175,11 @@ export function toggleAutoHideOnClose(): boolean {
   const next = patchDockPrefs({ autoHideOnClose: !readDockPrefs().autoHideOnClose });
   void syncBackgroundMode();
   return next.autoHideOnClose;
+}
+
+/** 侧边栏常驻 toggle (⋯ menu). Returns the next value. */
+export function toggleDockPinned(): boolean {
+  return patchDockPrefs({ pinned: !readDockPrefs().pinned }).pinned;
 }
 
 // ── Stage 1: dock engine ─────────────────────────────────────────────────
@@ -521,6 +535,51 @@ export async function retract(): Promise<void> {
   await slideTo(hiddenX(dockArea, dockWidthPhys, dockEdge));
 }
 
+// ── Strip width: drag the inner edge (2026-10-25) ─────────────────────────
+// The grip turns pointer clientX into a new logical width. A right-docked
+// strip drags its left (inner) edge, so the width is "current width −
+// clientX" measured against the client rect the event saw; left-docked it is
+// plain clientX (its left edge is fixed). Both are relative to the geometry
+// of the moment, which is why the grip re-reads getDockWidth() per move:
+// every apply lands the edge back on the pointer, so the next clientX starts
+// near 0 again and rounding never accumulates.
+
+let widthApplyChain: Promise<unknown> = Promise.resolve();
+
+/** Current strip width in logical px (live while docked, prefs otherwise). */
+export function getDockWidth(): number {
+  if (dockArea && dockWidthPhys > 0) return dockWidthPhys / dockArea.scale;
+  return readDockPrefs().width;
+}
+
+/**
+ * Live-apply a new width while docked-expanded. Serialized — one step's
+ * setSize + flush setPosition must not interleave with the next; each step
+ * reads the latest dockWidthPhys so the chain converges on the last request.
+ */
+export function applyDockWidth(logical: number): void {
+  if (dockState !== "docked-expanded" || !dockArea) return;
+  const area = dockArea;
+  dockWidthPhys = Math.max(1, Math.round(clampWidth(logical) * area.scale));
+  const run = widthApplyChain.then(async () => {
+    try {
+      const win = getCurrentWindow();
+      await win.setSize(clientSize(area));
+      await win.setPosition(
+        new PhysicalPosition(expandedX(area, dockWidthPhys, dockEdge), outerY(area)),
+      );
+    } catch {
+      // window gone mid-drag — the next move recomputes from live geometry
+    }
+  });
+  widthApplyChain = run.catch(() => undefined);
+}
+
+/** Persist the live width (grip pointerup / undock). */
+export function persistDockWidth(): void {
+  patchDockPrefs({ width: Math.round(getDockWidth()) });
+}
+
 /**
  * Leave dock mode: restore the floating geometry and default window params.
  *
@@ -622,6 +681,9 @@ function scheduleRetract(): void {
   cancelRetract();
   retractTimer = setTimeout(() => {
     retractTimer = null;
+    // 常驻: an explicitly pinned strip never auto-retracts; manual paths
+    // (close, drag-out, undock) call retract() directly and still work.
+    if (readDockPrefs().pinned) return;
     if (!pointerInside && !focused && dockState === "docked-expanded") void retract();
   }, RETRACT_DELAY_MS);
 }
@@ -797,6 +859,26 @@ export function initDockMode(): () => void {
             outerSizeCache = await win.outerSize();
           } catch {
             // window gone — keep the last known size
+          }
+        }),
+      );
+      // Dragging a file over the parked sliver must open the strip: OLE
+      // drags suppress mouse events, so the sliver's mouseenter never fires —
+      // tao's drag-drop channel is the only expand signal while hidden
+      // (2026-10-25). MemoBox / Composer listen on the same event for their
+      // own hit-testing; this one only drives the dock engine.
+      unlisteners.push(
+        await getCurrentWebview().onDragDropEvent((event) => {
+          const type = event.payload.type;
+          if (type === "enter" || type === "over") {
+            pointerInside = true;
+            cancelRetract();
+            if (dockState === "docked-hidden") void expand();
+          } else if (type === "leave") {
+            // Mouse events stayed suppressed through the drag; resync the
+            // pointer flag so an unfocused strip can retract again.
+            pointerInside = false;
+            scheduleRetract();
           }
         }),
       );

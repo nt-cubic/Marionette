@@ -2396,6 +2396,41 @@ body.is-tab-detaching .floating-trigger {
   background: color-mix(in srgb, var(--green) 14%, transparent);
 }
 
+/* 收纳盒 pseudo-tab: sits in the strip beside conversation tabs. */
+.editor-tab.is-memo .editor-tab__select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.editor-tab.is-memo svg {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+}
+
+.editor-tab.is-memo.is-active svg {
+  color: var(--accent);
+}
+
+.editor-tab__memo-count {
+  flex: 0 0 auto;
+  min-width: 15px;
+  margin-left: 2px;
+  padding: 0 4px;
+  border-radius: 999px;
+  color: var(--text-faint);
+  background: color-mix(in srgb, var(--text-muted) 16%, transparent);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 15px;
+  text-align: center;
+}
+
+.editor-tab.is-active .editor-tab__memo-count {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
 .editor-tab__done {
   flex: 0 0 auto;
   width: 6px;

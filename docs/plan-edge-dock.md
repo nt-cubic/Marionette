@@ -4,6 +4,13 @@
 > 五阶段实施，每阶段做完可验收再做下一阶段。
 > 状态：**阶段 0–3 已落地**（2026-10-24，commits cef3afd / 5b9978e / 3212135 / 0d16a5b + 打磨批）；
 > 阶段 4 剩：上边缘横向变体、拖标题吸附、收回曲线微调、sliver 轮询兜底（本节内原样保留）。
+> 2026-10-25 增补六件（用户反馈批次）：① 收起态拖文件到把手也展开（OLE 拖拽抑制鼠标事件，
+> 改听 tao onDragDropEvent，enter/over=expand、leave=重排收回）；② ⋯ 菜单「侧边栏常驻」
+> （`prefs.pinned`，抑制自动收回，手动路径不变）；③ 新建对话改为目的地菜单（聊天/各项目/全部对话）；
+> ④ 贴边 composer 工具栏收成单入口（模式/权限/模型/Agent 分组菜单再进原列表，＋与发送保留）；
+> ⑤ 窄条内缘可拖宽 320–560（`applyDockWidth` 串行 setSize+setPosition，clientX 相对活客户区换算，
+> 松手 `persistDockWidth`）；⑥ 进行中列表：waiting 且安静 60s（`DOCK_DONE_GRACE_MS`）自动退场，
+> 有 pending 卡/排队的不退，进程与 30 分钟自动挂起不动。
 > 实施偏差两处：`monitors_work_areas` 未做——Tauri 2.8 `Monitor.workArea` 已带工作区，全走 JS API；
 > capability 实名是 `core:window:allow-set-skip-taskbar`（计划里的 `allow-skip-taskbar` 不存在）。
 > 行为描述已并入 `CURRENT.md`「贴边停靠」行；全部阶段完成后本文件挪入 `archive/`。

@@ -1,4 +1,4 @@
-import { Check, ChevronDown, Columns2, Copy, Eye, EyeOff, FileText, Globe, Merge, MessageSquareQuote, Pencil, Plus, Split, Square, SquareArrowOutUpRight, X } from "lucide-react";
+import { Check, ChevronDown, Columns2, Copy, Eye, EyeOff, FileText, Globe, Inbox, Merge, MessageSquareQuote, Pencil, Plus, Split, Square, SquareArrowOutUpRight, X } from "lucide-react";
 import {
   memo,
   useCallback,
@@ -181,6 +181,7 @@ export function SessionTabs({
   ghostHint,
   onOpenBeside,
   titlebarDragRegion = false,
+  memoTab,
 }: {
   openSessions: Session[];
   session: Session;
@@ -227,6 +228,17 @@ export function SessionTabs({
   onOpenBeside?: (session: Session, edge: DropEdge) => void;
   /** Titlebar mount: empty strip area drags the window (data-tauri-drag-region). */
   titlebarDragRegion?: boolean;
+  /**
+   * 收纳盒 pseudo-tab: a page that sits in this strip beside conversation
+   * tabs (not a session — no drag/tear-off/split). Rendered after the
+   * session tabs; `count` is the memo badge when > 0.
+   */
+  memoTab?: {
+    active: boolean;
+    count: number;
+    onSelect: () => void;
+    onClose: () => void;
+  };
 }) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
@@ -673,6 +685,38 @@ export function SessionTabs({
             </div>
         );
       })}
+      {memoTab && !detachedMode && (
+        <div
+          className={`editor-tab is-memo${memoTab.active ? " is-active" : ""}`}
+          role="tab"
+          aria-selected={memoTab.active}
+          data-tauri-drag-region="false"
+        >
+          <button
+            className="editor-tab__select"
+            type="button"
+            title="收纳盒"
+            onClick={memoTab.onSelect}
+          >
+            <Inbox size={12} />
+            <span>收纳盒</span>
+            {memoTab.count > 0 && <b className="editor-tab__memo-count">{memoTab.count}</b>}
+          </button>
+          <button
+            className="pill-action pill-action--icon pill-action--sm editor-tab__close"
+            type="button"
+            title="Close 收纳盒"
+            aria-label="Close 收纳盒"
+            data-tauri-drag-region="false"
+            onClick={(e) => {
+              e.stopPropagation();
+              memoTab.onClose();
+            }}
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
       {!detachedMode && (
         <button className="pill-action pill-action--icon pill-action--sm editor-tab__new" type="button" title="New conversation" aria-label="New conversation" data-tauri-drag-region="false" onClick={onNewTab}>
           <Plus size={13} />

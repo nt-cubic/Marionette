@@ -276,13 +276,98 @@ body::after {
   display: none;
 }
 
-.dock-mode .composer-select--model {
-  max-width: 132px;
+/* Docked strip (2026-10-25): the five selector chips collapse into the single
+   composer hub (＋ stays — attaching a file stays one tap). The chips' anchors
+   remain in the flow so their menus still open, positioned by the clamp pass. */
+.dock-mode .composer-mode-chip,
+.dock-mode .composer-select--model,
+.dock-mode .composer-select--agent {
+  display: none;
 }
 
-.dock-mode .composer-select--agent,
-.dock-mode .composer-mode-chip {
-  max-width: 108px;
+/* The hub button itself: model label + sliders glyph, one row, never wraps. */
+.composer-dock-hub {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  max-width: 220px;
+  padding: 0 5px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.composer-dock-hub:hover,
+.composer-dock-hub[aria-expanded="true"] {
+  color: var(--text);
+  background: var(--panel-soft);
+  border-color: var(--border);
+}
+
+.composer-dock-hub__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-dock-hub > svg {
+  flex: none;
+  color: var(--text-faint);
+}
+
+/* Hub menu: one row per axis — name, current value, chevron into the
+   original menu (model / agent / mode / permission). Row rules are scoped one
+   level up so they win over the `.composer-menu button` base (class+type
+   beats class). */
+.composer-menu--hub {
+  right: auto;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 232px;
+}
+
+.composer-menu .composer-menu__hub-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.composer-menu .composer-menu__hub-row:hover {
+  background: var(--panel-soft);
+}
+
+.composer-menu .composer-menu__hub-name {
+  flex: none;
+  color: var(--text-faint);
+}
+
+.composer-menu .composer-menu__hub-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-menu .composer-menu__hub-row > svg {
+  flex: none;
+  color: var(--text-faint);
 }
 
 /* The strip's composer sizes to its content: a fixed 104px row left a tall
@@ -515,6 +600,8 @@ body::after {
   display: flex;
   flex-direction: column;
   min-width: 196px;
+  max-height: min(420px, calc(100vh - 120px));
+  overflow-y: auto;
   padding: 4px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
@@ -562,6 +649,68 @@ body::after {
   height: 1px;
   margin: 3px 4px;
   background: var(--border);
+}
+
+/* Non-button hint line inside a menu (e.g. 新建对话 picker with no projects). */
+.dock-menu__hint {
+  padding: 6px 8px;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+/* Left-anchored variant (新建对话 destination picker sits at the strip's
+   left edge — the base .dock-menu is right:0 and would spill off-screen). */
+.dock-menu--left {
+  right: auto;
+  left: 0;
+  transform-origin: top left;
+}
+
+/* ── Width grip: drag the strip's inner edge (2026-10-25) ────────────────
+   Fixed to the viewport side away from the screen edge, full height, above
+   the strip content but below the ⋯ menu. Rendered only on the home view
+   (App gates on docked-expanded + no page). Pointer math in DockResizeGrip. */
+.dock-resize-grip {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  z-index: 60;
+  width: 7px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.dock-mode.dock-mode--right .dock-resize-grip {
+  left: 0;
+}
+
+.dock-mode.dock-mode--left .dock-resize-grip {
+  right: 0;
+}
+
+.dock-resize-grip::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 3px;
+  border-radius: 2px;
+  background: transparent;
+  transition: background-color var(--dur-fast, 120ms) var(--ease-standard, ease);
+}
+
+.dock-resize-grip:hover::after,
+.dock-resize-grip.is-dragging::after {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* Pointer capture spans the whole window while resizing — keep the cursor
+   honest over every element it crosses and freeze text selection. */
+html.dock-resizing,
+html.dock-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
 }
 
 /* Actions: one primary, one quiet. */
@@ -899,10 +1048,10 @@ body::after {
 
 .memo-box {
   position: fixed;
-  top: 34px; /* floating: just below the workspace title bar */
+  top: 32px; /* dock strip page: below the strip chrome (non-dock mounts override to fill the tab page) */
   left: 0;
   right: 0;
-  bottom: 0;
+  bottom: 40px;
   z-index: 75;
   display: flex;
   flex-direction: column;
@@ -913,45 +1062,35 @@ body::after {
   animation: dock-page-in var(--dur-slow, 280ms) var(--ease-out, ease-out);
 }
 
-/* Docked: the strip's title bar carries the page title + 返回, and the footer
-   bar sits below the page. */
-.dock-mode .memo-box {
-  top: 32px;
-  bottom: 40px;
+/* Floating window, tab form: 收纳盒 is a tab in the titlebar strip — the page
+   fills only the conversation column (shelf and context panel stay visible);
+   there is no composer row for this page. */
+.memo-tab-page {
+  position: absolute;
+  inset: 0;
+  /* Below the edge-reveal chevrons (z 10) so the side panels stay reachable. */
+  z-index: 5;
+  display: flex;
+  min-height: 0;
 }
 
-.memo-box__close {
-  display: grid;
-  place-items: center;
-  flex-shrink: 0;
-  width: 26px;
-  height: 26px;
-  margin: 0;
-  border: 0;
-  border-radius: var(--radius);
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-
-.memo-box__close:hover {
-  color: var(--text);
-  background: var(--panel-soft);
+.memo-tab-page .memo-box {
+  position: relative;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  left: auto;
+  z-index: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  border-top: 0;
+  animation: none;
 }
 
 .memo-box__head {
   display: flex;
   align-items: center;
   gap: 6px;
-}
-
-/* Floating window has no strip title bar, so the page names itself. */
-.memo-box__title-label {
-  flex-shrink: 0;
-  padding-right: 4px;
-  color: var(--text-strong);
-  font-size: 12.5px;
-  font-weight: 600;
 }
 
 .memo-box__spacer {

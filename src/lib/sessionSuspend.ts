@@ -13,6 +13,14 @@
 /** How long a warm, idle dialog may sit untouched before it is parked. */
 export const SUSPEND_IDLE_MS = 30 * 60 * 1000;
 
+/**
+ * How long a finished (waiting) dialog stays on the dock strip's 进行中 list
+ * before it leaves on its own — opened or not (2026-10-25). This only drops
+ * the row from the strip; the process and the 30-min auto-suspend above are
+ * untouched, and 全部对话 keeps the unread-done badge.
+ */
+export const DOCK_DONE_GRACE_MS = 60 * 1000;
+
 export type SuspendableSession = {
   id: string;
   status: string;

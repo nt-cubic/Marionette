@@ -26,6 +26,9 @@ const EXACT_ALIASES: Record<string, string> = {
   changes: "edit",
   write_to_file: "write",
   replace_in_file: "edit",
+  // Grok Build's search+replace edit (names the *mechanism*, but it is an edit;
+  // unaliased it fell through `startsWith("search")` into the search lane).
+  search_replace: "edit",
   writefile: "write",
   editfile: "edit",
   searchtext: "grep",

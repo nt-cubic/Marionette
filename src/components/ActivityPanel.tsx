@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
+  activitySpanWidthPct,
   activityTimeline,
   clipTeaser,
   formatSpanDuration,
@@ -194,13 +195,17 @@ export function ActivityTimeline({ data }: { data: ActivityTimelineData }) {
                   ev.type === "tool_call"
                     ? `${bucket === "thought" ? "Thought" : toolKindVerb(bucket)} · ${clipTeaser(oneLine(ev.title || ev.path || ""), 60)}`
                     : clipTeaser(oneLine(ev.type === "thought" ? ev.text : ""), 60);
+                const widthPct = activitySpanWidthPct(span, data.durationMs);
                 return (
                   <i
                     key={i}
                     className={`activity-timeline__span is-${bucket === "thought" ? "thought" : "tool"}${
                       span.failed ? " is-failed" : ""
                     }${span.open ? " is-open" : ""}`}
-                    style={{ left: pct(span.start), width: pct(span.end - span.start) }}
+                    style={{
+                      left: `min(${pct(span.start)}, ${100 - widthPct}%)`,
+                      width: `${widthPct}%`,
+                    }}
                     title={`${what} · ${formatSpanDuration(span.end - span.start)}`}
                   />
                 );
