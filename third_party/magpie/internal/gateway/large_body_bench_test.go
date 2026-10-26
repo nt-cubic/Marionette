@@ -63,7 +63,9 @@ func largeConversation(proto provider.Protocol, model string, words int) []byte 
 		body["system"] = []any{schema{"type": "text", "text": para + para, "cache_control": schema{"type": "ephemeral"}}}
 		body["messages"] = msgs
 	case provider.Chat:
-		msgs[len(msgs)-1] = schema{"role": "user", "content": "go on"}
+		// the user's message follows the last call's answer: a call left
+		// unanswered is mended before it is relayed (toolPairsOut)
+		msgs = append(msgs, schema{"role": "user", "content": "go on"})
 		body["messages"] = append([]any{schema{"role": "system", "content": para + para}}, msgs...)
 	default:
 		delete(body, "max_tokens")

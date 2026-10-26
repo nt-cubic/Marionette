@@ -228,7 +228,7 @@ func removeEverySkill(args []string) (*library.Result, error) {
 		}
 		fmt.Printf("Remove all %s (%s) from the library and every agent? Folders magpie keeps go to its backups; folders of your own are only unlinked. [y/N] ",
 			plural(len(names), "skill"), strings.Join(names, ", "))
-		line, _ := stdin.ReadString('\n')
+		line, _ := stdin().ReadString('\n')
 		if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
 			return nil, fmt.Errorf("nothing removed")
 		}
@@ -287,7 +287,7 @@ func removeGoneSkills(args []string) (*library.Result, error) {
 		}
 		fmt.Printf("Remove %s removed from their source (%s) from the library and every agent? The library's folders go to magpie's backups. [y/N] ",
 			plural(len(names), "skill"), strings.Join(shown, ", "))
-		line, _ := stdin.ReadString('\n')
+		line, _ := stdin().ReadString('\n')
 		if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
 			return nil, fmt.Errorf("nothing removed")
 		}

@@ -139,7 +139,7 @@
   }
   function logo(ic, big, kind) {
     const box = el("span", "pm-logo" + (big ? " big" : ""));
-    if (ic) box.append(icon(ic));
+    if (ic) box.append(icon(ic, !big));
     else box.append(glyph({ mw: PIPE, ag: TERM, tl: TOOL, pg: PAGE }[kind] || PUZZLE, big ? 22 : 17, 1.4));
     return box;
   }

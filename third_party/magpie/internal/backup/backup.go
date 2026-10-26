@@ -247,7 +247,7 @@ func Collect(keys bool, app string) (Bundle, error) {
 func Secret(name string) bool { return provider.SecretHeader(name) }
 
 func withoutKeys(p provider.Provider) provider.Provider {
-	p.Key, p.KeyName, p.Keys, p.KeyProtocol, p.KeyWeight = "", "", nil, "", 0
+	p.Key, p.KeyName, p.Keys, p.KeyProtocol, p.KeyWeight, p.KeyPlan = "", "", nil, "", 0, ""
 	p.BalanceToken = ""
 	p.AccessKeyID, p.SecretAccessKey = "", ""
 	if len(p.Headers) > 0 {

@@ -18,6 +18,11 @@ func TestModelMisreadsNotMasked(t *testing.T) {
 		{"ba319a758 gateway: the lone tool_choice none", "ba319a758", "account_number"},
 		{"Update to v0.1.1442 now", "0.1.1442", "account_number"},
 		{"a screenshot of 1624x1487 pixels", "1624x1487", "private_phone"},
+		// a model's and a toolchain's names in a setting
+		{`groqAPIModel = "llama3-70b-8192"`, "llama3-70b-8192", "secret"},
+		{`claudeAPIModel = "claude-3-5-sonnet-20241022"`, "claude-3-5-sonnet-20241022", "secret"},
+		{"--model mixtral-8x7b-32768 --max-tokens 4096", "mixtral-8x7b-32768", "secret"},
+		{`channel = "nightly-2026-09-01"`, "nightly-2026-09-01", "secret"},
 		// the model's and the assistant's own names
 		{"You are powered by the model named Opus 5.5.", "Opus", "private_person"},
 		{"Claude publishes it as an Artifact.", "Claude", "private_person"},
@@ -82,6 +87,9 @@ func TestModelFindsStillMasked(t *testing.T) {
 		{"ring 020 7946 0958 after six", "020 7946 0958", "private_phone"},
 		{"send it to 42 Wallaby Way, Sydney", "42 Wallaby Way, Sydney", "private_address"},
 		{"the vault phrase is Zq8vR2mT6wLp", "Zq8vR2mT6wLp", "secret"},
+		// dashed words in lower case are a passphrase without a size or a date
+		{"the wifi passphrase is correct-horse-battery-staple", "correct-horse-battery-staple", "secret"},
+		{"password: maple-4-river-77", "maple-4-river-77", "secret"},
 		{"api key: 9f2c4e1a7b3d5c8e9f2c4e1a7b3d5c8e", "9f2c4e1a7b3d5c8e9f2c4e1a7b3d5c8e", "secret"},
 		{"write to rina.k@kowalczyk.pl", "rina.k@kowalczyk.pl", "private_email"},
 		// beside what the checks above leave out

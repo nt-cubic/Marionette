@@ -27,14 +27,14 @@ import (
 // a title on one of magpie's models goes through codexTitle whoever picked
 // it (#743: Codex as magpie's provider had none at all, the model's plain
 // answer turned down).
-func codexTitlesTo(h http.Header, body []byte, ours bool) string {
+func codexTitlesTo(h http.Header, body []byte, ours bool, session func() string) string {
 	if !isTitleKind(requestCallKind(h, requestSessionMetadata(h, body))) {
 		return ""
 	}
 	if to := settings.Load().CodexTitles; to != "" {
 		return to
 	}
-	return codexSideTo(body, ours)
+	return codexSideTo(body, ours, session)
 }
 
 // CodexSideModel is the model this machine's Codex is set to when it is
@@ -51,14 +51,15 @@ var CodexSideModel func() string
 // models picked beside the ChatGPT sign-in every one of them went to
 // ChatGPT and spent its allowance, and failed with it once it was used up
 // (atom_Ray on X: an hour on a third-party model took 2% of the 5-hour
-// window). Those go to the model picked, as the conversation's turns do.
-func codexSideTo(body []byte, ours bool) string {
+// window). Those go on the session's model (session: Server.codexSessionOf),
+// as the conversation's turns do; on Codex's own, as Codex sent them.
+func codexSideTo(body []byte, ours bool, session func() string) string {
 	m := modelOf(body)
 	if m != "" && (ours || strings.Contains(m, "/")) {
 		return m
 	}
-	if !ours && CodexSideModel != nil {
-		return CodexSideModel()
+	if !ours && session != nil {
+		return session()
 	}
 	return ""
 }
@@ -67,7 +68,7 @@ func codexSideTo(body []byte, ours bool) string {
 // description goes. "" leaves the request as Codex sent it; a model's id
 // writes it. A description is not a title: Codex asks for {"description"}
 // alone, which the title wrapper cannot answer.
-func codexDescriptionsTo(h http.Header, body []byte, ours bool) string {
+func codexDescriptionsTo(h http.Header, body []byte, ours bool, session func() string) string {
 	if !isDescriptionKind(requestCallKind(h, requestSessionMetadata(h, body))) {
 		return ""
 	}
@@ -76,7 +77,7 @@ func codexDescriptionsTo(h http.Header, body []byte, ours bool) string {
 	}
 	// Codex on a magpie model gets no schema upstream (#743), so an empty
 	// setting still wraps the model it asked for, as titles do.
-	return codexSideTo(body, ours)
+	return codexSideTo(body, ours, session)
 }
 
 // codexSummariesTo is where the Codex app's request for a thread's
@@ -84,11 +85,11 @@ func codexDescriptionsTo(h http.Header, body []byte, ours bool) string {
 // of a thread): the model codexSideTo names, its answer handed back as the
 // {"summary": …} the request's schema asks for; "" leaves it as Codex sent
 // it.
-func codexSummariesTo(h http.Header, body []byte, ours bool) string {
+func codexSummariesTo(h http.Header, body []byte, ours bool, session func() string) string {
 	if !isSummaryKind(requestCallKind(h, requestSessionMetadata(h, body))) {
 		return ""
 	}
-	return codexSideTo(body, ours)
+	return codexSideTo(body, ours, session)
 }
 
 // codexPredictionsTo is where the Codex app's request to predict the
@@ -97,19 +98,19 @@ func codexSummariesTo(h http.Header, body []byte, ours bool) string {
 // thread's own model, so a long thread on an expensive model pays for
 // every prediction. "" leaves the request as Codex sent it; "off", or a
 // model's id that writes it: settings.CodexPredictions, else the model
-// Codex asked for when it is one of magpie's, whose plain answer is
-// wrapped as titles' and descriptions' are.
-func codexPredictionsTo(h http.Header, body []byte, ours bool) string {
+// Codex asked for when it is one of magpie's, else the session's
+// (codexSideTo), whose plain answer is wrapped as titles' and
+// descriptions' are.
+func codexPredictionsTo(h http.Header, body []byte, ours bool, session func() string) string {
 	if !isPredictionKind(requestCallKind(h, requestSessionMetadata(h, body))) {
 		return ""
 	}
 	if to := settings.Load().CodexPredictions; to != "" {
 		return to
 	}
-	if m := modelOf(body); m != "" && (ours || strings.Contains(m, "/")) {
-		return m
-	}
-	return ""
+	// the app asks on the thread's model, but one of Codex's own when the
+	// thread is new to it: the session's, as titles' (codexSideTo)
+	return codexSideTo(body, ours, session)
 }
 
 // titleCheckKey holds, in a request's context, what serve asks of the

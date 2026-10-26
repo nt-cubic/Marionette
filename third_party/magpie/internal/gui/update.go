@@ -326,6 +326,13 @@ func (u *updater) run() {
 	rel, err := update.LatestIn(ctx, lang)
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	// the feed names an older version than the one found before: Settings'
+	// Update channel went to Stable since (ssharpcc on X). What was
+	// downloaded from every version isn't put in, and the version found
+	// is the feed's again, as if never found.
+	if err == nil && u.latest != nil && update.Newer(u.latest.Version, rel.Version) {
+		u.staged, u.latest = "", nil
+	}
 	// a version downloaded on a click stays the one restarted into while
 	// downloads wait for a click: a newer one out since isn't fetched
 	if u.staged != "" && u.latest != nil && (err != nil || !update.Newer(rel.Version, u.latest.Version) || hold) {

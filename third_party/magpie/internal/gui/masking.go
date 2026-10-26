@@ -69,6 +69,8 @@ func shownRecord(r maskrec.Record, t gwmw.Teller) maskedRecord {
 //   - POST /api/masking/values {ps} what each placeholder stood for, of
 //     those the masker still remembers, for the page to show the request
 //     as the agent sent it;
+//   - POST /api/masking/clear deletes every record kept (maskrec.Clear),
+//     at once rather than after 30 days (maxyou2090 on Discord);
 //   - POST /api/masking/preview {text} the text as a vendor would get it
 //     under the settings now, and what was found, each told by its kind
 //     and hint, never its value; nothing of it is remembered (#1977).
@@ -98,6 +100,13 @@ func maskingRoutes(mux *http.ServeMux) {
 			out = append(out, hit{h.Kind, h.By, h.Action, h.Placeholder, h.Head, h.Len})
 		}
 		writeJSON(rw, map[string]any{"text": text, "hits": out, "off": off})
+	})
+	mux.HandleFunc("POST /api/masking/clear", func(rw http.ResponseWriter, r *http.Request) {
+		if err := maskrec.Clear(); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, map[string]bool{"cleared": true})
 	})
 	mux.HandleFunc("GET /api/masking/summary", func(rw http.ResponseWriter, r *http.Request) {
 		days, _ := strconv.Atoi(r.URL.Query().Get("days"))

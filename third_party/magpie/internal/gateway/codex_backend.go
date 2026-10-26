@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net/http"
@@ -108,19 +109,20 @@ func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
 		// still on Codex's own model, through its sign-in, when it says
 		// nothing of them
 		if rest == "/responses" {
-			if to := codexTitlesTo(r.Header, body, false); to != "" {
+			session := func() string { return s.codexSessionOf(r, body) }
+			if to := codexTitlesTo(r.Header, body, false, session); to != "" {
 				s.codexTitle(w, r, body, to)
 				return
 			}
-			if to := codexDescriptionsTo(r.Header, body, false); to != "" {
+			if to := codexDescriptionsTo(r.Header, body, false, session); to != "" {
 				s.codexDescription(w, r, body, to)
 				return
 			}
-			if to := codexSummariesTo(r.Header, body, false); to != "" {
+			if to := codexSummariesTo(r.Header, body, false, session); to != "" {
 				s.codexSummary(w, r, body, to)
 				return
 			}
-			if to := codexPredictionsTo(r.Header, body, false); to != "" {
+			if to := codexPredictionsTo(r.Header, body, false, session); to != "" {
 				s.codexPrediction(w, r, body, to)
 				return
 			}
@@ -1222,7 +1224,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 			end(res.StatusCode, res.Status, 0, 0)
 			return
 		}
-		if rest == "/responses" && res.StatusCode >= 400 {
+		if (rest == "/responses" || rest == "/responses/compact") && res.StatusCode >= 400 {
 			msg, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 			res.Body = io.NopCloser(bytes.NewReader(msg))
 			if overload && codexBusy(res.StatusCode, msg) && s.codexFallsBack(modelOf(body), body) {
@@ -1233,10 +1235,11 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 				s.codexFallBack(w0, r, body0, kept)
 				return
 			}
-			if len(bytes.TrimSpace(msg)) == 0 {
+			if said, ok := codexSaidNothing(rest, modelOf(body), codexWho(base, on), res, msg); ok {
 				// a failure with nothing said of it, which Codex shows as
-				// "Unknown error" alone (#409): said where the turn went
-				said := codexFailedEmpty(modelOf(body), res.Status)
+				// "Unknown error" alone (#409), or a web page Codex shows
+				// as its markup: said where the turn, or the compaction
+				// (outrageous_piglet on Discord), went
 				failWith(res.StatusCode, said)
 				s.record(Call{Time: start, From: provider.Responses, To: provider.Responses, Model: modelOf(body),
 					Provider: "openai", Agent: agentOf(r), Kind: callKind(r.Header), Status: res.StatusCode,
@@ -1576,6 +1579,51 @@ func codexFailedEmpty(model, status string) string {
 		"(provider/model, or set it in magpie's Agents view), or try again later"
 }
 
+// codexWho names who a request relayed to OpenAI went to: Codex's own
+// sign-in, its API key, or one of magpie's ChatGPT accounts (on).
+func codexWho(base string, on *provider.Provider) string {
+	switch {
+	case on != nil && on.Account != nil && on.Account.User != "":
+		return "OpenAI (" + on.Account.User + ")"
+	case base == codexAPIBase:
+		return "OpenAI's API"
+	}
+	return "OpenAI"
+}
+
+// codexSaidNothing is what Codex is told of a failure OpenAI answered a
+// turn or a compaction with that it can't show: an empty body, which
+// Codex shows as "unexpected status 502 Bad Gateway: Unknown error"
+// (#409, outrageous_piglet on Discord: a compaction), or a web page in
+// place of an API error, which it shows as markup. ok is false for an
+// error Codex reads as it came.
+func codexSaidNothing(rest, model, who string, res *http.Response, msg []byte) (string, bool) {
+	t := bytes.TrimSpace(msg)
+	page := len(t) > 0 && (htmlStart.Match(t) || strings.HasPrefix(strings.ToLower(res.Header.Get("Content-Type")), "text/html"))
+	if len(t) > 0 && !page {
+		return "", false
+	}
+	if rest == "/responses" && len(t) == 0 && who == "OpenAI" {
+		return codexFailedEmpty(model, res.Status), true
+	}
+	what := "this turn"
+	if rest == "/responses/compact" {
+		what = "this compaction"
+	}
+	said := " and said nothing more"
+	if page {
+		said = " with a web page in place of an API error"
+		if m := pageTitle.FindSubmatch(msg); m != nil {
+			if title := strings.Join(strings.Fields(html.UnescapeString(string(m[1]))), " "); title != "" {
+				said += " (“" + clipRunes(title, 120) + "”)"
+			}
+		}
+	}
+	return who + " answered " + what + " for " + model + " " + res.Status + said +
+		". " + model + " is one of Codex's own models, which goes to OpenAI, not to a provider in magpie; try again later, " +
+		"or pick one of magpie's models in Codex (provider/model, or set it in magpie's Agents view)", true
+}
+
 // apiKey reports whether Codex signed in with an API key rather than a
 // ChatGPT account.
 func apiKey(h http.Header) bool {
@@ -1825,9 +1873,10 @@ func (s *Server) codexModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// and the auto-review model the user picked (#938)
+	autoReview := codexcat.AutoReviewModel()
 	for _, m := range own {
 		if o, ok := m.(map[string]any); ok {
-			codexcat.AutoReview(o)
+			codexcat.AutoReview(o, autoReview)
 		}
 	}
 	// a Codex here for account failover alone, not connected to magpie,
@@ -2625,7 +2674,7 @@ func userMessage(text string) map[string]any { return codexsummary.UserMessage(t
 //
 // A provider that answers the summary 404 — a relay that serves the
 // conversation turn by turn but not the summary of it, "Upstream request
-// failed" (#866) — or 400 for an item of it it doesn't have (#1008) is
+// failed" (#866) — or 405 or 501 (lacksEndpoint), or 400 for an item of it it doesn't have (#1008) is
 // asked once more with the conversation as plain text, none of its items'
 // ids or sealed reasoning in it; when that fails too the summary is
 // magpie's own, the conversation's user messages and last reply,
@@ -2634,7 +2683,8 @@ func userMessage(text string) map[string]any { return codexsummary.UserMessage(t
 // Discord): the same long history failed so on every account and model,
 // and as plain text was summarised — and one it breaks off with that
 // refusal after the reply began, HTTP 200 and an error event (#1270). Any
-// other failure (401, 429, 500) goes back to Codex as it came.
+// other failure (401, 429, 500) goes back to Codex with its status, said
+// as the compaction's, with who answered it (compactFailed).
 //
 // The summary is asked for whole (askWhole): a reply that breaks off, or
 // ends incomplete, is a failure the next account or member answers, as
@@ -2669,7 +2719,7 @@ func (s *Server) codexCompact(w http.ResponseWriter, r *http.Request, body []byt
 	}
 	rec, res, err := ask(body)
 	local := ""
-	if first := rec.status; first == http.StatusNotFound || itemNotFound(rec) || upstreamFailed(rec) || protectionRefused(first, rec.body.Bytes()) ||
+	if first := rec.status; lacksEndpoint(first) || itemNotFound(rec) || upstreamFailed(rec) || protectionRefused(first, rec.body.Bytes()) ||
 		err != nil && protectionWords.MatchString(err.Error()) {
 		who, msg := compactFailure(body, rec)
 		if err != nil {
@@ -2690,13 +2740,18 @@ func (s *Server) codexCompact(w http.ResponseWriter, r *http.Request, body []byt
 		}
 	}
 	if rec.status >= 400 {
-		_, msg := compactFailure(body, rec)
+		// said as the compaction's failure, with who answered it: a bare
+		// "Fake: 502 Bad Gateway" read as Codex's own, and a body with
+		// nothing in it as "Unknown error" (outrageous_piglet on Discord);
+		// the vendor's code, param and Retry-After go with it
+		who, msg := compactFailure(body, rec)
 		s.compactFails.failed(key, rec.status, msg)
 		for k, vs := range rec.header {
-			w.Header()[k] = vs
+			if k != "Content-Length" && k != "Content-Type" {
+				w.Header()[k] = vs
+			}
 		}
-		w.WriteHeader(rec.status)
-		w.Write(rec.body.Bytes())
+		writeVendorError(w, provider.Responses, rec.status, compactFailed(who, rec.status, msg), rec.body.Bytes())
 		return
 	}
 	if err == nil && local == "" && res.Status == "incomplete" {
@@ -2763,6 +2818,24 @@ func (s *Server) codexCompact(w http.ResponseWriter, r *http.Request, body []byt
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// compactFailed is what Codex is told of a summary request that failed:
+// that it was the compaction's, who answered it and what they said —
+// never nothing, which Codex shows as "Unknown error".
+func compactFailed(who string, status int, msg string) string {
+	if strings.TrimSpace(msg) == "" {
+		msg = "nothing more"
+	}
+	return fmt.Sprintf("compaction: %s answered the summary request %d %s: %s", who, status, http.StatusText(status), msg)
+}
+
+// lacksEndpoint is a status saying the provider has no summary request to
+// answer at that address: 404, 405 (a relay that takes GETs there) or 501.
+// The summary is asked again as plain text, and made without a model when
+// that fails too, as for a relay's 404 (#866).
+func lacksEndpoint(status int) bool {
+	return status == http.StatusNotFound || status == http.StatusMethodNotAllowed || status == http.StatusNotImplemented
 }
 
 // upstreamFailed is a relay's own word that the provider behind it turned

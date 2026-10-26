@@ -655,26 +655,28 @@ func PlanQuotas(ctx context.Context) []SubscriptionQuota {
 		if p.Hidden || p.Off || p.Account != nil || p.Key == "" {
 			continue
 		}
-		src, ok := planQuotaSourceOf(p)
-		if !ok {
-			continue
-		}
-		keys := []string{p.Key}
-		names := []string{p.KeyName}
+		keys := []KeyAccount{p.first()}
 		for _, k := range p.Keys {
 			if !k.Off && k.Key != "" && k.Key != p.Key {
-				keys, names = append(keys, k.Key), append(names, k.Name)
+				keys = append(keys, k)
 			}
 		}
-		for i, k := range keys {
+		for _, k := range keys {
+			// each key told at its own plan's source: a GLM Coding Plan
+			// key beside a pay-as-you-go one (KeyAccount.Plan)
+			q := p.atKeyPlan(k.Plan)
+			src, ok := planQuotaSourceOf(q)
+			if !ok {
+				continue
+			}
 			user := ""
 			if len(keys) > 1 {
-				if user = names[i]; user == "" {
-					user = Mask(k)
+				if user = k.Name; user == "" {
+					user = Mask(k.Key)
 				}
 			}
 			if wantsCard(ctx, p.ID, user) {
-				jobs = append(jobs, job{p, src, k, user})
+				jobs = append(jobs, job{q, src, k.Key, user})
 			}
 		}
 	}

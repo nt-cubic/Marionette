@@ -42,6 +42,27 @@ const ImageMCPPath = "/mcp/magpie/image"
 // ImageMCPFiles is where the images it made are served from.
 const ImageMCPFiles = ImageMCPPath + "/files/"
 
+// Under these keys of a tool result's _meta the image server tells a
+// client that saves what it made (magpie tool) what its text tells an
+// agent: the id to wait on with generation_result, and each file made, at
+// its URL, and whether it is in the answer itself.
+const (
+	PendingMeta = "usemagpie.ai/pending"
+	FilesMeta   = "usemagpie.ai/files"
+)
+
+// MadeFile is one file a tool result's FilesMeta names.
+type MadeFile struct {
+	URL    string `json:"url"`
+	Inline bool   `json:"inline,omitempty"`
+}
+
+// withMeta is res with v under its _meta's key k.
+func withMeta(res map[string]any, k string, v any) map[string]any {
+	res["_meta"] = map[string]any{k: v}
+	return res
+}
+
 // The tools Magpie Image and the image MCP server have.
 const (
 	GenerateImageTool    = "generate_image"
@@ -303,6 +324,7 @@ func (s *Server) imageMCPDrawn(rec *replyRecorder, key, base string) map[string]
 	}
 	var content []any
 	var urls, lost, revised []string
+	var files []MadeFile
 	for i, d := range out.Data {
 		var img []byte
 		mt := d.Mime
@@ -332,9 +354,11 @@ func (s *Server) imageMCPDrawn(rec *replyRecorder, key, base string) map[string]
 			mt = "image/png"
 		}
 		urls = append(urls, base+ImageMCPFiles+s.imageMCPKeepFile(img, mt, key))
-		if len(img) <= imageMCPInline {
+		inline := len(img) <= imageMCPInline
+		if inline {
 			content = append(content, map[string]any{"type": "image", "data": base64.StdEncoding.EncodeToString(img), "mimeType": mt})
 		}
+		files = append(files, MadeFile{URL: urls[len(urls)-1], Inline: inline})
 		if d.Revised != "" {
 			revised = append(revised, d.Revised)
 		}
@@ -364,7 +388,7 @@ func (s *Server) imageMCPDrawn(rec *replyRecorder, key, base string) map[string]
 		fmt.Fprintf(&b, "The model said: %s\n", t)
 	}
 	content = append([]any{map[string]any{"type": "text", "text": b.String()}}, content...)
-	return map[string]any{"content": content, "isError": false}
+	return withMeta(map[string]any{"content": content, "isError": false}, FilesMeta, files)
 }
 
 // imageMCPFilm starts generate_video's video and answers with where to
@@ -476,7 +500,8 @@ func (s *Server) imageMCPVideo(r *http.Request, id string) map[string]any {
 			if v.Seconds != "" {
 				length = v.Seconds + "-second "
 			}
-			return toolResult(fmt.Sprintf("Generated a %svideo with %s. Download the mp4 from (with the same Authorization header as this server, from another computer):\n- %s/v1/videos/%s/content\n", length, v.Model, imageMCPBase(r), id), false)
+			at := imageMCPBase(r) + "/v1/videos/" + id + "/content"
+			return withMeta(toolResult(fmt.Sprintf("Generated a %svideo with %s. Download the mp4 from (with the same Authorization header as this server, from another computer):\n- %s\n", length, v.Model, at), false), FilesMeta, []MadeFile{{URL: at}})
 		case "failed":
 			msg := "it gave no reason"
 			if v.Error != nil && v.Error.Message != "" {
@@ -485,8 +510,8 @@ func (s *Server) imageMCPVideo(r *http.Request, id string) map[string]any {
 			return toolResult("the video failed: "+msg, true)
 		}
 		if !time.Now().Add(imageMCPPoll).Before(deadline) {
-			return toolResult(fmt.Sprintf("The video is still being made (%s, %d s so far; it can take a few minutes). It goes on without this call. "+
-				"Don't ask for it again: call %s with id %q to wait for it and get where to download it.\n", cmp.Or(v.Status, "queued"), int(time.Since(started)/time.Second), GenerationResultTool, id), false)
+			return withMeta(toolResult(fmt.Sprintf("The video is still being made (%s, %d s so far; it can take a few minutes). It goes on without this call. "+
+				"Don't ask for it again: call %s with id %q to wait for it and get where to download it.\n", cmp.Or(v.Status, "queued"), int(time.Since(started)/time.Second), GenerationResultTool, id), false), PendingMeta, id)
 		}
 		select {
 		case <-r.Context().Done():
@@ -553,8 +578,8 @@ func (s *Server) imageMCPAwait(r *http.Request, j *imageJob) map[string]any {
 	case <-limit.C:
 	case <-r.Context().Done():
 	}
-	return toolResult(fmt.Sprintf("The image is still being made (%d s so far; it can take a few minutes). It goes on without this call. "+
-		"Don't ask for it again: call %s with id %q to wait for it and get it.\n", int(time.Since(j.started)/time.Second), GenerationResultTool, j.id), false)
+	return withMeta(toolResult(fmt.Sprintf("The image is still being made (%d s so far; it can take a few minutes). It goes on without this call. "+
+		"Don't ask for it again: call %s with id %q to wait for it and get it.\n", int(time.Since(j.started)/time.Second), GenerationResultTool, j.id), false), PendingMeta, j.id)
 }
 
 // imageMCPKeepFile keeps img for an hour, for key, and is its file's name.

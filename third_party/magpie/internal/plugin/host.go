@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1196,7 +1197,39 @@ func (h *host) enqueueOwned(ctx context.Context, v any, done chan error, c *call
 	if err != nil {
 		return err
 	}
-	req := writeReq{b: append(b, '\n'), done: done}
+	return h.enqueueLine(ctx, append(b, '\n'), done, c, state)
+}
+
+// fetchLine is Fetch's call id for r, as the line the host reads, byte
+// for byte what json.Marshal wrote of it: its body in base64, written
+// once into a line made for it. json.Marshal grew its buffer to the
+// encoded body twice over and copied it out twice more, so a 1 MB request
+// was some 5 MB more before it reached the plugin (#3472).
+func fetchLine(id int64, r FetchRequest) ([]byte, error) {
+	head, err := json.Marshal(map[string]any{"id": id, "method": "fetch", "params": r})
+	if err != nil {
+		return nil, err
+	}
+	// head ends in params' "}" and the call's: body and window go before
+	// them, in the order the params struct gave them
+	tail := `,"window":` + strconv.Itoa(streamWindow) + "}}\n"
+	n := len(head) - 2 + len(tail)
+	if len(r.Body) > 0 {
+		n += len(`,"body":""`) + base64.StdEncoding.EncodedLen(len(r.Body))
+	}
+	b := make([]byte, 0, n)
+	b = append(b, head[:len(head)-2]...)
+	if len(r.Body) > 0 {
+		b = append(b, `,"body":"`...)
+		b = base64.StdEncoding.AppendEncode(b, r.Body)
+		b = append(b, '"')
+	}
+	return append(b, tail...), nil
+}
+
+// enqueueLine is enqueueOwned for a call already a line.
+func (h *host) enqueueLine(ctx context.Context, line []byte, done chan error, c *call, state callState) error {
+	req := writeReq{b: line, done: done}
 	for {
 		h.mu.Lock()
 		if !h.alive() {
@@ -1664,13 +1697,13 @@ func Fetch(ctx context.Context, r FetchRequest) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	params := struct {
-		FetchRequest
-		Body   []byte `json:"body,omitempty"`
-		Window int    `json:"window"`
-	}{r, r.Body, streamWindow}
+	line, err := fetchLine(id, r)
+	if err != nil {
+		c.settle(err)
+		return nil, err
+	}
 	c.watchCtx(ctx)
-	err = h.enqueueCall(ctx, map[string]any{"id": id, "method": "fetch", "params": params}, nil, c)
+	err = h.enqueueLine(ctx, line, nil, c, callSending)
 	if err != nil {
 		c.settle(err)
 		return nil, err

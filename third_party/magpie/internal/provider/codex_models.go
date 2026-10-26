@@ -524,7 +524,7 @@ func buildCodexListTag(kind string) string {
 		ms = append(ms, catalog.Model{ID: "~compact", Context: n})
 	}
 	// and the model Codex's auto-review runs on (#938)
-	if v := settings.Load().CodexAutoReview; v != "" {
+	if v := codexcat.AutoReviewModel(); v != "" {
 		ms = append(ms, catalog.Model{ID: "~autoreview:" + v})
 	}
 	// and the effort new sessions start at, which magpie's models take as

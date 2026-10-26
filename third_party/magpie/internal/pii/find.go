@@ -35,6 +35,9 @@ func FindContext(ctx context.Context, texts []string) ([][]redact.Found, error) 
 	if ctx.Err() != nil {
 		return nil, waitErr(ctx)
 	}
+	if err := heldBack(); err != nil {
+		return nil, err
+	}
 	waiting.Add(1)
 	select {
 	case turn <- struct{}{}:
@@ -54,6 +57,12 @@ func FindContext(ctx context.Context, texts []string) ([][]redact.Found, error) 
 		// a history in common with it, and asked already
 		out, miss := cached(texts)
 		if len(miss) > 0 {
+			// the one ahead may have failed: those queued behind it
+			// don't each try again, minutes apiece
+			if err := heldBack(); err != nil {
+				done <- result{nil, err}
+				return
+			}
 			chunks, parts := join(texts, miss)
 			got, err := classify(chunks)
 			if err != nil {

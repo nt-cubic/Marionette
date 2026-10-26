@@ -46,6 +46,10 @@ magpie.strings({
     "In the answer": "回复里",
     "Not named": "没有出现",
     "A value itself is in this computer's memory only: shown while it is pointed at or picked, and gone once magpie restarts. The record on disk keeps its kind, length and first characters.": "原值只存在这台电脑的内存里：指向或选中时才显示，magpie 重启后就没有了。磁盘上的记录只留下种类、长度和开头几个字。",
+    "Clear records…": "清空记录…",
+    "Clear masking records?": "清空脱敏记录？",
+    "Every request's record of what was masked is deleted from this computer. Masking stays as it is, and requests from now on are recorded again.": "这台电脑上每条请求的脱敏记录都会删除。脱敏设置不变，之后的请求照常记录。",
+    "Masking records cleared": "脱敏记录已清空",
   },
   "zh-TW": {
     "Turn on masking": "開啟脫敏",
@@ -92,6 +96,10 @@ magpie.strings({
     "In the answer": "回覆裡",
     "Not named": "沒有出現",
     "A value itself is in this computer's memory only: shown while it is pointed at or picked, and gone once magpie restarts. The record on disk keeps its kind, length and first characters.": "原值只存在這台電腦的記憶體裡：指向或選取時才顯示，magpie 重新啟動後就沒有了。磁碟上的記錄只留下種類、長度和開頭幾個字。",
+    "Clear records…": "清空記錄…",
+    "Clear masking records?": "清空脫敏記錄？",
+    "Every request's record of what was masked is deleted from this computer. Masking stays as it is, and requests from now on are recorded again.": "這台電腦上每條請求的脫敏記錄都會刪除。脫敏設定不變，之後的請求照常記錄。",
+    "Masking records cleared": "脫敏記錄已清空",
   },
   ja: {
     "Turn on masking": "マスクをオンにする",
@@ -138,6 +146,10 @@ magpie.strings({
     "In the answer": "返答で",
     "Not named": "出てこなかった",
     "A value itself is in this computer's memory only: shown while it is pointed at or picked, and gone once magpie restarts. The record on disk keeps its kind, length and first characters.": "値そのものはこのコンピュータのメモリにだけあります：ポイントするか選んだときだけ表示され、magpie を再起動すると消えます。ディスク上の記録に残るのは種類・長さ・先頭の数文字です。",
+    "Clear records…": "記録を消去…",
+    "Clear masking records?": "マスクの記録を消去しますか？",
+    "Every request's record of what was masked is deleted from this computer. Masking stays as it is, and requests from now on are recorded again.": "このコンピュータにある各リクエストのマスク記録がすべて削除されます。マスクの設定はそのままで、これからのリクエストはまた記録されます。",
+    "Masking records cleared": "マスクの記録を消去しました",
   },
   de: {
     "Turn on masking": "Maskierung einschalten",
@@ -184,5 +196,9 @@ magpie.strings({
     "In the answer": "In der Antwort",
     "Not named": "Nicht genannt",
     "A value itself is in this computer's memory only: shown while it is pointed at or picked, and gone once magpie restarts. The record on disk keeps its kind, length and first characters.": "Ein Wert selbst liegt nur im Speicher dieses Computers: gezeigt, solange er angezeigt oder gewählt ist, und weg, sobald magpie neu startet. Der Eintrag auf der Festplatte behält Art, Länge und erste Zeichen.",
+    "Clear records…": "Einträge löschen…",
+    "Clear masking records?": "Maskierungseinträge löschen?",
+    "Every request's record of what was masked is deleted from this computer. Masking stays as it is, and requests from now on are recorded again.": "Der Eintrag jeder Anfrage dazu, was maskiert wurde, wird von diesem Computer gelöscht. Die Maskierung bleibt, wie sie ist, und Anfragen ab jetzt werden wieder erfasst.",
+    "Masking records cleared": "Maskierungseinträge gelöscht",
   },
 });

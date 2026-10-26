@@ -546,6 +546,16 @@
 			}
 		]
 	},
+	"rust-toolchain": {
+		"text": "5e982c7d912ab858",
+		"found": [
+			{
+				"Start": 67,
+				"End": 85,
+				"Label": "private_person"
+			}
+		]
+	},
 	"session-tokens": {
 		"text": "6170ea7af28ec9e2",
 		"found": [
@@ -562,6 +572,26 @@
 			{
 				"Start": 39,
 				"End": 81,
+				"Label": "secret"
+			}
+		]
+	},
+	"settings-model": {
+		"text": "24b9db62bf272ec3",
+		"found": [
+			{
+				"Start": 26,
+				"End": 34,
+				"Label": "secret"
+			},
+			{
+				"Start": 52,
+				"End": 67,
+				"Label": "secret"
+			},
+			{
+				"Start": 130,
+				"End": 156,
 				"Label": "secret"
 			}
 		]

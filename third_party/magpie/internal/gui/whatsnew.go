@@ -39,7 +39,7 @@ type whatsNew struct {
 	pending bool                     // an upgrade whose notes are still to be shown
 	quiet   bool                     // the upgrade was the user's own restart to update: not shown by itself
 	shown   bool                     // a page has shown them
-	notes   map[string][]update.Note // by language
+	notes   map[string][]update.Note // by language and channel (notesKey)
 	back    map[string]backNotes     // Settings' "this version and n before it", by language
 }
 
@@ -162,7 +162,8 @@ func (n *whatsNew) get(ctx context.Context, all bool, lang string) whatsNewJSON 
 	if !pending {
 		after = ""
 	}
-	notes := n.notes[lang]
+	key := notesKey(lang)
+	notes := n.notes[key]
 	// shown by itself: not after a restart to update, nor on a day it was
 	// asked not to be
 	popup := pending && !shown && !n.quiet && !quietToday()
@@ -183,7 +184,7 @@ func (n *whatsNew) get(ctx context.Context, all bool, lang string) whatsNewJSON 
 			if n.notes == nil {
 				n.notes = map[string][]update.Note{}
 			}
-			n.notes[lang] = notes
+			n.notes[key] = notes
 			n.mu.Unlock()
 		}
 	}
@@ -192,6 +193,16 @@ func (n *whatsNew) get(ctx context.Context, all bool, lang string) whatsNewJSON 
 	}
 	j.Show = popup && len(j.Releases) > 0
 	return j
+}
+
+// notesKey is what the notes since the last update are kept by: their
+// language, and the channel, whose cap on how many are shown (MostNotes)
+// differs.
+func notesKey(lang string) string {
+	if update.Stable() {
+		return lang + "|" + settings.UpdateStable
+	}
+	return lang
 }
 
 // before is Settings' other ranges (Linka on Discord): this version's notes
@@ -272,8 +283,8 @@ func withWaiting(ctx context.Context, list []update.Note, u updateJSON, lang str
 		}
 	}
 	out = append(out, list...)
-	if len(out) > update.MaxNotes {
-		out = out[:update.MaxNotes]
+	if most := update.MostNotes(); len(out) > most {
+		out = out[:most]
 	}
 	return out
 }

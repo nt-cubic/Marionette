@@ -102,7 +102,7 @@ func tencentPlanQuotas(ctx context.Context) []SubscriptionQuota {
 	var jobs []job
 	keyed := map[string]bool{}
 	var keyless []job
-	for _, p := range All() {
+	for _, p := range planViews(All()) {
 		if p.Hidden || p.Off {
 			continue
 		}

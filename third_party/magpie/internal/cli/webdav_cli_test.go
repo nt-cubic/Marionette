@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -110,10 +109,10 @@ func piped(t *testing.T, lines ...string) {
 		w.WriteString(strings.Join(lines, "\n") + "\n")
 	}
 	w.Close()
-	oldFile, oldReader := os.Stdin, stdin
-	os.Stdin, stdin = r, bufio.NewReader(r)
+	old := os.Stdin
+	os.Stdin = r
 	t.Cleanup(func() {
-		os.Stdin, stdin = oldFile, oldReader
+		os.Stdin = old
 		r.Close()
 	})
 }

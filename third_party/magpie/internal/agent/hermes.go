@@ -20,7 +20,10 @@ package agent
 // into every profile's too, so magpie is offered in every bot's picker, not
 // the main one's alone (lijiho96940561 on X). A profile's own model and
 // provider are left as its user set them, and Disconnect takes the provider
-// out of each.
+// out of each. A profile still on the model magpie last set in the
+// connected config (one Hermes seeded or cloned from it) follows the next
+// one magpie sets there (hermesFollow; tjhhhh_84378 on Discord: another
+// bot kept the old model).
 
 import (
 	"errors"
@@ -57,6 +60,9 @@ func hermesIn(at place) *Agent {
 		return errors.Join(errs...)
 	}
 	key := "hermes:" + path + ":"
+	// setKey holds the model magpie last set in the connected config,
+	// which the profiles still on it follow
+	setKey := key + "magpie.default"
 	getKey := func(k string) string { v, _ := edit.GetYAML(path, k); return v }
 	onMagpie := func() bool { return getKey("model.provider") == magpieID }
 	// joined: magpie's provider is in providers, though the model is one of
@@ -108,6 +114,7 @@ func hermesIn(at place) *Agent {
 			if joined() {
 				errs = append(errs, edit.DelYAML(path, "providers."+magpieID))
 			}
+			forget(setKey)
 			for _, p := range hermesOthers(at, dir) {
 				errs = append(errs, hermesUnwireProfile(p))
 			}
@@ -155,6 +162,12 @@ func hermesIn(at place) *Agent {
 					return edit.DelYAML(path, "model.default")
 				}
 				if ref, ok := strings.CutPrefix(v, magpieID+"/"); ok && isMagpie(ref) {
+					// the model magpie had set: recorded, or, before the
+					// record was kept, the one the config is on through magpie
+					was := stashLoad()[setKey]
+					if was == "" && onMagpie() {
+						was = getKey("model.default")
+					}
 					if !onMagpie() {
 						stash(map[string]string{
 							key + "model.provider": getKey("model.provider"),
@@ -168,7 +181,8 @@ func hermesIn(at place) *Agent {
 					); err != nil {
 						return err
 					}
-					return spread()
+					stash(map[string]string{setKey: ref})
+					return errors.Join(spread(), hermesFollow(at, dir, was, ref))
 				}
 				if onMagpie() {
 					if err := restore(); err != nil {
@@ -253,6 +267,37 @@ func hermesOthers(at place, dir string) []string {
 		out = append(out, p)
 	}
 	return out
+}
+
+// hermesFollow moves every profile but the one at dir that is on magpie's
+// model was, the one magpie had set in the connected config, onto ref, the
+// one it sets now. Hermes gives a new profile a copy of the launch
+// profile's model (_seed_model_config, or --clone's config.yaml) and never
+// reads it again, so without this each bot stayed on the model magpie set
+// when it was made. A profile on another model, magpie's or its own, was
+// set there by its user and is left alone.
+func hermesFollow(at place, dir, was, ref string) error {
+	if was == "" || was == ref {
+		return nil
+	}
+	var errs []error
+	for _, p := range hermesOthers(at, dir) {
+		if v, _ := edit.GetYAML(p, "model.provider"); v != magpieID {
+			continue
+		}
+		k := "model.default"
+		v, _ := edit.GetYAML(p, k)
+		if v == "" {
+			// Hermes reads model.model when default is unset
+			// (_read_config_model)
+			k = "model.model"
+			v, _ = edit.GetYAML(p, k)
+		}
+		if v == was {
+			errs = append(errs, edit.SetYAML(p, edit.KV{Path: k, Value: ref}))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // hermesUnwireProfile takes magpie's provider out of a profile's config. A

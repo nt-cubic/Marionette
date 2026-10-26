@@ -154,12 +154,38 @@ func namesThing(v string) bool {
 	if u, n, ok := strings.Cut(v, ":"); ok && n != "" && strings.Trim(n, digits) == "" {
 		v = u
 	}
-	if uuidRe.MatchString(v) || digestRe.MatchString(v) || slugRe.MatchString(v) || fileNameRe.MatchString(v) {
+	if uuidRe.MatchString(v) || digestRe.MatchString(v) || slugRe.MatchString(v) || fileNameRe.MatchString(v) || modelName(v) {
 		return true
 	}
 	return !strings.ContainsAny(v, " \t\n") && (strings.HasPrefix(v, "/") || strings.HasPrefix(v, "~/") ||
 		strings.HasPrefix(v, "./") || strings.HasPrefix(v, "../") || len(v) > 3 && v[1] == ':' && v[2] == '\\')
 }
+
+// modelName says v is a model's or a toolchain's name: words in lower
+// case joined by dashes, one of them a size (70b, 8x7b, 32k) or a date
+// (20241022, 2026-09-01). The model took groqAPIModel = "llama3-70b-8192"
+// and claudeAPIModel's claude-3-5-sonnet-20241022 for secrets (10-26).
+// A key is written in neither case nor shape.
+func modelName(v string) bool {
+	if !dashedRe.MatchString(v) {
+		return false
+	}
+	if dateIn.MatchString(v) {
+		return true
+	}
+	for _, p := range strings.Split(v, "-") {
+		if sizePartRe.MatchString(p) {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	dashedRe   = regexp.MustCompile(`^[a-z][a-z0-9.]*(?:-[a-z0-9.]+)+$`)
+	sizePartRe = regexp.MustCompile(`^(?:\d+x)?\d+(?:\.\d+)?[bkm]$|^20\d{6}$`)
+	dateIn     = regexp.MustCompile(`(?:^|-)20\d\d-[01]\d-[0-3]\d(?:-|$)`)
+)
 
 var (
 	uuidRe = regexp.MustCompile(`^(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)

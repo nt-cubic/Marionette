@@ -1465,12 +1465,14 @@ func KeyBalances(ctx context.Context) []SubscriptionQuota {
 		if first == "" {
 			first = Mask(p.Key)
 		}
-		jobs = append(jobs, job{p, first})
+		// each key asked at its own plan's host (KeyAccount.Plan):
+		// SiliconFlow's China key and its international one
+		jobs = append(jobs, job{p.atKeyPlan(p.KeyPlan), first})
 		for _, k := range p.Keys {
 			if k.Off || k.Key == "" || k.Key == p.Key {
 				continue
 			}
-			q := p
+			q := p.atKeyPlan(k.Plan)
 			q.Key = k.Key
 			name := k.Name
 			if name == "" {

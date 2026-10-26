@@ -29,6 +29,16 @@ import (
 // segments under /mcp/, so it can't hide a signed-in server's /mcp/{name}.
 const SearchMCPPath = "/mcp/magpie/web-search"
 
+// OwnMCPServers are the MCP servers the gateway serves itself, by the
+// names `magpie tools` lists their tools under, in the order a tool name
+// two of them have is looked for.
+var OwnMCPServers = []struct{ Name, Path string }{
+	{"image", ImageMCPPath},
+	{"vision", VisionMCPPath},
+	{"web-search", SearchMCPPath},
+	{"tools", ToolsMCPPath},
+}
+
 // searchMCPVersions are the MCP versions the server speaks, newest first:
 // a client asking for one of them is answered in it, any other in the first.
 var searchMCPVersions = []string{"2025-06-18", "2025-03-26", "2024-11-05"}

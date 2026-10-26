@@ -20,7 +20,8 @@ import (
 // account rather than where the user had routed Codex (cybercaius on
 // Discord). With nothing set for them, a subagent and the memories follow
 // the session: they go on the model the conversation's own turns go on,
-// when that is one of magpie's. The auto-review follows it when set to
+// when that is one of magpie's (codexSessionOf), as the app's titles,
+// descriptions, summaries and composer predictions do (codexSideTo). The auto-review follows it when set to
 // (settings.CodexAutoReviewSession, which codexcat writes into each of
 // magpie's entries); left to Codex it stays on codex-auto-review, which a
 // ChatGPT sign-in runs free (#1593).
@@ -118,8 +119,34 @@ func (s *Server) codexFollowTo(r *http.Request, agent, kind, asked string, body 
 	default:
 		return ""
 	}
+	to := s.codexSessionOf(r, body)
+	if to == "" || to == asked {
+		return ""
+	}
+	// the user's own pick in Codex's config is kept; read last, as it
+	// reads the config
+	if CodexSideSet == nil || CodexSideSet(which) {
+		return ""
+	}
+	return to
+}
+
+// codexSessionOf is the model of magpie's a Codex side call with nothing
+// set for it follows: the one its conversation's own turns go on
+// (codexLeads), else, before any turn of Codex's has come through magpie
+// (Codex consolidates its memories as it starts), the model Codex's config
+// is set to when it is one of magpie's (CodexSideModel). cybercaius on
+// Discord: with the model picked in the Codex app, not its config, the
+// memories went to ChatGPT, and so did the titles, descriptions and
+// composer predictions, which followed the config alone. "" when the
+// conversation is on one of Codex's own models, or magpie can't serve its
+// model now (turned off, gone, or one the caller's key is held from).
+func (s *Server) codexSessionOf(r *http.Request, body []byte) string {
 	to := s.codexLeads.of(r, body)
-	if !strings.Contains(to, "/") || to == asked {
+	if to == "" && CodexSideModel != nil {
+		to = CodexSideModel()
+	}
+	if !strings.Contains(to, "/") {
 		return ""
 	}
 	if _, off := idOff(to); off {
@@ -127,11 +154,6 @@ func (s *Server) codexFollowTo(r *http.Request, agent, kind, asked string, body 
 	}
 	p, model, ok := provider.Resolve(to)
 	if !ok {
-		return ""
-	}
-	// the user's own pick in Codex's config is kept; read last, as it
-	// reads the config
-	if CodexSideSet == nil || CodexSideSet(which) {
 		return ""
 	}
 	if who, held := keyHolds(r); held && !modelAllowed(who, p, model) {

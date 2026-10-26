@@ -4,8 +4,8 @@
 // subagent squares, and wasn't found), in its settings on its opened row
 // (Settings had them till the owner, 10-20). The row sits under "Codex auto-review
 // model" with its name alone (1ooogle on X); unset it is
-// Codex's own pick. It opens the app's model picker (no native select), and
-// a pick posts Codex's memories field, and Default puts Codex's own back.
+// the same as the session (cybercaius). It opens the app's model picker (no native select), and
+// a pick posts Codex's memories field, and Default puts the session's back.
 // The card has no square for it beside the row, the same setting twice (the
 // owner, 10-25). No Codex with the field: no row, and Claude Code's settings
 // haven't it. No click
@@ -74,10 +74,10 @@ function server(lang, sets, codex) {
 
 // the words as i18n.js has them
 const W = {
-  en: { name: "Codex memories model", own: "Codex’s own pick", def: "Default" },
-  zh: { name: "Codex 记忆整理模型", own: "由 Codex 决定", def: "默认" },
-  ja: { name: "Codex メモリ整理のモデル", own: null, def: null },
-  de: { name: "Codex-Modell für Erinnerungen", own: null, def: null },
+  en: { name: "Codex memories model", own: "Same as the session", def: "Default" },
+  zh: { name: "Codex 记忆整理模型", own: "跟随当前会话", def: "默认" },
+  ja: { name: "Codex メモリ整理のモデル", own: "セッションと同じ", def: null },
+  de: { name: "Codex-Modell für Erinnerungen", own: "Wie die Sitzung", def: null },
 };
 const view = (page) => page.locator("#view-agents").evaluate((v) => v.scrollTop);
 
@@ -110,7 +110,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(await page.evaluate(() => document.querySelector("#codexAutoReviewRow").nextElementSibling?.id), "codexMemoriesRow");
         assert.equal(await row.locator("select").count(), 0, "no native select");
         assert.equal((await row.locator(".name").textContent()).trim(), w.name);
-        if (w.own) assert.equal((await pick.textContent()).trim(), w.own, "Codex's own pick by default");
+        if (w.own) assert.equal((await pick.textContent()).trim(), w.own, "the session's by default (cybercaius)");
         assert.equal(await row.locator(".sub").count(), 0, "the row says its name alone, its button the choice (1ooogle on X)");
         // the title, its line and the button fit the row
         const fit = await row.evaluate((r) => {
@@ -153,7 +153,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         for (let i = 0; i < 100 && sets.length < 2; i++) await page.waitForTimeout(50);
         assert.deepEqual(sets.at(-1), { agent: "codex", field: "memories", value: "" });
 
-        // and the row shows Codex's own again
+        // and the row shows the session's again
         if (w.own) await page.locator("#codexMemoriesPick button", { hasText: w.own }).waitFor();
         assert.equal(await row.locator(".sub").count(), 0);
         assert.deepEqual(errors, []);

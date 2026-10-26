@@ -64,6 +64,10 @@ function routingPage(part) {
   const wires = document.createElementNS(NS, "svg");
   wires.setAttribute("class", "rt-wires");
   wires.setAttribute("aria-hidden", "true");
+  // the wires flowing, drawn over the rest in an svg of their own (flowNear)
+  const flows = document.createElementNS(NS, "svg");
+  flows.setAttribute("class", "rt-flows");
+  flows.setAttribute("aria-hidden", "true");
   const srcs = el("div", "rt-srcs"); // an agent's node each
   const hub = el("div", "rt-node rt-hub");
   const logo = document.createElementNS(NS, "svg");
@@ -77,7 +81,7 @@ function routingPage(part) {
   const sky = document.createElementNS(NS, "svg");
   sky.setAttribute("class", "rt-sky");
   sky.setAttribute("aria-hidden", "true");
-  stage.append(wires, srcs, hub, list, sky);
+  stage.append(wires, flows, srcs, hub, list, sky);
   const foot = el("div", "rt-foot");
   const cap = el("p", "rt-cap");
   cap.setAttribute("aria-live", "polite");
@@ -1500,13 +1504,16 @@ function routingPage(part) {
   // sight (dashFor). Nothing is laid out for it: where the
   // stage and what is in sight were is kept by layout, which reads them
   // anyway (sight), and the view's scroll since by its scroll events.
-  // Reading them here laid the stage out again after each update
+  // Reading them here laid the stage out again after each update.
+  // Each is drawn by a copy in flows, a layer of its own, and itself hidden:
+  // in the svg of every wire, Chromium (WebView2) drew all 800 again on the
+  // GPU each frame one flowed, 31 fps with both groups open (#3164)
   const flowing = new Map();
   let flowAsked = 0, sight = null, scrolled = 0;
   const flowSoon = () => { if (!flowAsked) flowAsked = requestAnimationFrame(() => { flowAsked = 0; flowNear(); }); };
   function flowNear() {
     const live = new Set([...wires.querySelectorAll("path.live[d]")].filter((p) => !p.classList.contains("rest")));
-    for (const p of flowing.keys()) if (!live.has(p)) { p.style.removeProperty("stroke-dasharray"); flowing.delete(p); }
+    for (const [p, f] of flowing) if (!live.has(p)) { f.copy.remove(); p.classList.remove("flown"); flowing.delete(p); }
     if (!live.size || !sight) return;
     // in the stage's own terms, a screen more each way, in steps of 200px
     // so a scroll redashes a wire only now and then
@@ -1515,14 +1522,18 @@ function routingPage(part) {
     for (const p of live) {
       // the same wire with the same in sight is dashed as it was: this is
       // asked after every update
-      const d = p.getAttribute("d"), key = `${d}|${top}|${bottom}`;
-      if (flowing.get(p)?.key === key) continue;
+      const d = p.getAttribute("d"), hue = p.style.getPropertyValue("--agent"), key = `${d}|${hue}|${top}|${bottom}`;
+      let f = flowing.get(p);
+      if (f?.key === key) continue;
+      if (!f) { f = { copy: document.createElementNS(NS, "path"), dash: "" }; flows.appendChild(f.copy); flowing.set(p, f); p.classList.add("flown"); }
+      f.key = key;
+      if (f.copy.getAttribute("d") !== d) f.copy.setAttribute("d", d);
+      if (hue) f.copy.style.setProperty("--agent", hue); else f.copy.style.removeProperty("--agent");
       const dash = dashFor(d, top, bottom);
-      const was = flowing.get(p)?.dash;
-      flowing.set(p, { key, dash });
-      if (was === dash) continue;
-      if (dash) p.style.setProperty("stroke-dasharray", dash);
-      else p.style.removeProperty("stroke-dasharray");
+      if (f.dash === dash) continue;
+      f.dash = dash;
+      if (dash) f.copy.style.setProperty("stroke-dasharray", dash);
+      else f.copy.style.removeProperty("stroke-dasharray");
     }
   }
   // dashFor is a wire's dashes from top to bottom, measured from its d,
@@ -1717,6 +1728,7 @@ function routingPage(part) {
     }
     sight = { at: r.top, scroll: scrolled, lo: Math.max(0, v.top), hi: Math.min(innerHeight, v.bottom) };
     wires.setAttribute("viewBox", `0 0 ${r.width} ${r.height}`);
+    flows.setAttribute("viewBox", `0 0 ${r.width} ${r.height}`);
     sky.setAttribute("viewBox", `0 0 ${r.width} ${r.height}`);
     for (const [p, d] of sets) {
       if (d === null) { if (p.hasAttribute("d")) p.removeAttribute("d"); }

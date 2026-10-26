@@ -592,10 +592,11 @@ const noReasoning = " "
 // reasoning_content one: the thinking it sent back in another field
 // (reasoning, reasoning_details), else noReasoning. DeepSeek turns away a
 // reply after a tool result with none as it does a call (checked against
-// api.deepseek.com on 2026-10-12, #1822). A message with reasoning_content
-// of its own keeps it, any other reply is left as it is (DeepSeek doesn't
-// ask for its thinking), and a body with no tool calls comes back byte for
-// byte.
+// api.deepseek.com on 2026-10-12, #1822). Thinking taken from reasoning
+// goes in reasoning_content alone (asReasoningContent). A message with
+// reasoning_content of its own keeps it, any other reply is left as it is
+// (DeepSeek doesn't ask for its thinking), and a body with no tool calls
+// comes back byte for byte.
 func withReasoningOnToolTurns(body []byte) []byte {
 	afterTool := false
 	return editMessages(body, []string{"tool_calls"}, func(m map[string]json.RawMessage) bool {
@@ -622,9 +623,22 @@ func withReasoningOnToolTurns(body []byte) []byte {
 		if think == "" {
 			think = noReasoning
 		}
-		m["reasoning_content"], _ = marshalPlain(think)
+		asReasoningContent(m, think)
 		return true
 	})
+}
+
+// asReasoningContent puts think in a message's reasoning_content and
+// leaves its reasoning out: a server that reads the two as one field (a
+// self-hosted DeepSeek, as pi sends its thinking back in reasoning) turns
+// a message with both away as "duplicate field reasoning", so the thinking
+// goes once. reasoning_details stays: it is a list of typed entries, not
+// another name for the text, and can hold what the text can't (an
+// encrypted entry, a signature); an upstream that refuses it has it taken
+// out (reasoningDetailsAsContent, withoutMessageReasoning).
+func asReasoningContent(m map[string]json.RawMessage, think string) {
+	m["reasoning_content"], _ = marshalPlain(think)
+	delete(m, "reasoning")
 }
 
 // silentAssistantsOut is withoutSilentAssistants for a Chat request
@@ -747,7 +761,7 @@ func reasoningDetailsAsContent(body []byte) []byte {
 		var own string
 		if decodeJSON(m["reasoning_content"], &own) != nil || own == "" {
 			if think := reasoningText(m); think != "" {
-				m["reasoning_content"], _ = marshalPlain(think)
+				asReasoningContent(m, think)
 			}
 		}
 		delete(m, "reasoning_details")
@@ -862,4 +876,145 @@ func mistralThinking(body []byte) []byte {
 		m["content"], _ = marshalPlain(parts)
 		return true
 	})
+}
+
+// toolPairsOut is pairToolMessages for a Chat request relayed as the
+// client sent it. Kimi's Chat API, like OpenAI's, turns the whole request
+// away when its tool exchange doesn't pair: a call with no tool message
+// answering it ("an assistant message with 'tool_calls' must be followed
+// by tool messages responding to each 'tool_call_id'. The following
+// tool_call_ids did not have response messages: …"), and a tool message
+// with no call before it ("tool_call_id  is not found"), both checked
+// against api.kimi.com/coding on 2026-10-26. A Chat agent's history holds
+// such a turn after a fork at an earlier turn, a reply stopped with its
+// call out, or a call split over two assistant messages, and every later
+// request of the conversation was refused (Paidaixinbao on X, Qoder on
+// Kimi Code). The translations had it mended (#554); the relay sent it
+// as it came. A turn's calls split over consecutive assistant messages
+// join into one first, as joinSplitCalls does for the translations. A
+// body whose exchange pairs comes back byte for byte.
+func toolPairsOut(body []byte) []byte {
+	if !bytes.Contains(body, []byte(`"tool`)) {
+		return body
+	}
+	var q map[string]json.RawMessage
+	if decodeJSON(body, &q) != nil {
+		return body
+	}
+	dec := json.NewDecoder(bytes.NewReader(q["messages"]))
+	dec.UseNumber()
+	var msgs []map[string]any
+	if dec.Decode(&msgs) != nil {
+		return body
+	}
+	for _, m := range msgs {
+		if m == nil {
+			return body
+		}
+		raw, ok := m["tool_calls"]
+		if !ok || raw == nil {
+			continue
+		}
+		list, ok := raw.([]any)
+		if !ok {
+			return body
+		}
+		calls := make([]map[string]any, 0, len(list))
+		for _, c := range list {
+			cm, ok := c.(map[string]any)
+			if !ok {
+				return body
+			}
+			calls = append(calls, cm)
+		}
+		m["tool_calls"] = calls
+	}
+	if toolsPaired(msgs) {
+		return body
+	}
+	q["messages"], _ = marshalPlain(pairToolMessages(joinSplitChatCalls(msgs)))
+	nb, err := marshalPlain(q)
+	if err != nil {
+		return body
+	}
+	return nb
+}
+
+// chatCalls is a Chat message's tool calls, as toolPairsOut typed them.
+func chatCalls(m map[string]any) []map[string]any {
+	calls, _ := m["tool_calls"].([]map[string]any)
+	return calls
+}
+
+// toolsPaired reports whether every assistant message's tool calls are
+// answered, each once, by the tool messages right after it, and every
+// tool message answers such a call: what Kimi and OpenAI hold a Chat
+// request to.
+func toolsPaired(msgs []map[string]any) bool {
+	var pending map[string]bool
+	closed := func() bool {
+		for _, open := range pending {
+			if open {
+				return false
+			}
+		}
+		pending = nil
+		return true
+	}
+	for _, m := range msgs {
+		if m["role"] == "tool" {
+			id := toolMsgID(m)
+			if !pending[id] {
+				return false
+			}
+			pending[id] = false
+			continue
+		}
+		if !closed() {
+			return false
+		}
+		if m["role"] == "assistant" {
+			if calls := chatCalls(m); len(calls) > 0 {
+				pending = map[string]bool{}
+				for _, c := range calls {
+					id, _ := c["id"].(string)
+					if _, twice := pending[id]; twice {
+						return false
+					}
+					pending[id] = true
+				}
+			}
+		}
+	}
+	return closed()
+}
+
+// joinSplitChatCalls joins a turn's calls split over consecutive
+// assistant messages into the first, as joinSplitCalls does for the
+// translations (#1275): the second message's calls follow the first's,
+// its text and thinking join the first's where both are strings, and
+// stand in for the first's when that has none.
+func joinSplitChatCalls(msgs []map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(msgs))
+	for _, m := range msgs {
+		n := len(out)
+		if n == 0 || m["role"] != "assistant" || out[n-1]["role"] != "assistant" || len(chatCalls(out[n-1])) == 0 || len(chatCalls(m)) == 0 {
+			out = append(out, m)
+			continue
+		}
+		prev := out[n-1]
+		prev["tool_calls"] = append(chatCalls(prev), chatCalls(m)...)
+		for _, k := range []string{"content", "reasoning_content"} {
+			was, isText := prev[k].(string)
+			add, _ := m[k].(string)
+			if strings.TrimSpace(add) == "" || prev[k] != nil && !isText {
+				continue
+			}
+			if strings.TrimSpace(was) != "" {
+				add = was + "\n\n" + add
+			}
+			prev[k] = add
+		}
+	}
+	return out
 }

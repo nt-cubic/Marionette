@@ -162,7 +162,7 @@ func TestTextOnlyModelOmitsToolImages(t *testing.T) {
 		{"responses-current", "/v1/responses", "responses", `{"model":"probe/text","input":[{"type":"function_call_output","call_id":"call_1","output":[{"type":"input_text","text":"screenshot"},{"type":"input_image","image_url":"data:image/png;base64,aGVsbG8="}]},{"role":"user","content":[{"type":"input_text","text":"answer"}]}]}`},
 		{"responses-last", "/v1/responses", "responses", `{"model":"probe/text","input":[{"role":"user","content":[{"type":"input_text","text":"read"}]},{"type":"function_call_output","call_id":"call_1","output":[{"type":"input_image","image_url":"data:image/png;base64,aGVsbG8="}]}]}`},
 		{"responses-to-chat", "/v1/responses", "chat", `{"model":"probe/text","input":[{"type":"function_call_output","call_id":"call_1","output":[{"type":"input_text","text":"screenshot"},{"type":"input_image","image_url":"data:image/png;base64,aGVsbG8="}]},{"role":"user","content":[{"type":"input_text","text":"answer"}]}]}`},
-		{"chat-tool", "/v1/chat/completions", "chat", `{"model":"probe/text","messages":[{"role":"tool","tool_call_id":"call_1","content":[{"type":"text","text":"screenshot"},{"type":"image_url","image_url":{"url":"data:image/png;base64,aGVsbG8="}}]}]}`},
+		{"chat-tool", "/v1/chat/completions", "chat", `{"model":"probe/text","messages":[{"role":"user","content":"look"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"shot","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call_1","content":[{"type":"text","text":"screenshot"},{"type":"image_url","image_url":{"url":"data:image/png;base64,aGVsbG8="}}]}]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fresh(t)

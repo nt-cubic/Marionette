@@ -1,8 +1,8 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
 // Codex's "Codex composer predictions" (#1970, pluo): the Codex app's
 // guess at the user's next message, a hidden turn that reads the whole
-// conversation again, goes where this says. By default Codex's own
-// (ChatGPT); Off answers it with no prediction; the app's menu (no native
+// conversation again, goes where this says. By default the
+// session's model (cybercaius); Off answers it with no prediction; the app's menu (no native
 // select) offers magpie's models; a pick posts settings/codex-predictions
 // on its own, the titles' and descriptions' settings untouched, its button
 // shows the choice under a name with no line of its own (as its siblings,
@@ -71,11 +71,11 @@ function server(lang, posted) {
 }
 
 const want = {
-  en: { name: "Codex composer predictions", own: "Codex’s own (ChatGPT)", off: "Off" },
-  zh: { name: "Codex 输入框预测", own: "Codex 自带（ChatGPT）", off: "关闭" },
-  "zh-TW": { name: "Codex 輸入框預測", own: "Codex 自帶（ChatGPT）", off: "關閉" },
-  ja: { name: "Codex の入力予測", own: "Codex 自身（ChatGPT）", off: "オフ" },
-  de: { name: "Codex-Eingabevorhersagen", own: "Eigene von Codex (ChatGPT)", off: "Aus" },
+  en: { name: "Codex composer predictions", own: "Same as the session", off: "Off" },
+  zh: { name: "Codex 输入框预测", own: "跟随当前会话", off: "关闭" },
+  "zh-TW": { name: "Codex 輸入框預測", own: "跟隨目前工作階段", off: "關閉" },
+  ja: { name: "Codex の入力予測", own: "セッションと同じ", off: "オフ" },
+  de: { name: "Codex-Eingabevorhersagen", own: "Wie die Sitzung", off: "Aus" },
 };
 const view = (page) => page.locator("#view-agents").evaluate((v) => v.scrollTop);
 
@@ -106,7 +106,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await pick.waitFor();
         assert.equal(await row.locator("select").count(), 0, "no native select");
         assert.equal((await row.locator(".name").textContent()).trim(), want[lang].name);
-        assert.equal((await pick.textContent()).trim(), want[lang].own, "Codex's own by default");
+        assert.equal((await pick.textContent()).trim(), want[lang].own, "the session's by default (cybercaius)");
         assert.equal(await row.locator(".sub").count(), 0, "the row says its name alone, its button the choice (1ooogle on X)");
         assert.deepEqual(await pick.locator(".ic").evaluate((e) => [e.offsetWidth, e.offsetHeight]), [14, 14]);
         // the chip stays inside its row, the row inside the window
@@ -130,7 +130,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await page.locator("#list li:not(.group)").filter({ hasText: s }).first().click();
         };
 
-        // the app's menu: Codex's own, Off and magpie's models
+        // the app's menu: the session's, Off and magpie's models
         await pick.click();
         await page.locator("#pop:not([hidden]) #list li").first().waitFor();
         const items = (await page.locator("#list li:not(.group)").allTextContents()).join("|");
@@ -153,7 +153,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(await view(page), before, "picking a model scrolled the page");
         assert.equal(await row.locator(".sub").count(), 0);
 
-        // and back to Codex's own
+        // and back to the session's
         await pickItem(want[lang].own);
         await shows(want[lang].own);
         assert.deepEqual(posted.at(-1), ["codex-predictions", { model: "" }]);

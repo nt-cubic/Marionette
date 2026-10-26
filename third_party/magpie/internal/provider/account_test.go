@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/codexcat"
 	"github.com/yetone/magpie/internal/testenv"
 )
 
@@ -628,5 +629,21 @@ func TestClaudeCredentialsMarshalLeavesTheBlob(t *testing.T) {
 	wg.Wait()
 	if o := c.raw["claudeAiOauth"].(map[string]any); o["accessToken"] != "sk-ant-oat01-a" || o["subscriptionType"] != nil {
 		t.Fatalf("the blob was written into: %v", o)
+	}
+}
+
+// CodexSignInPlan reads the plan from Codex's own sign-in, and codexcat
+// asks it there (the auto-review default on a Free plan, cybercaius).
+func TestCodexSignInPlan(t *testing.T) {
+	home := signIn(t)
+	if got := CodexSignInPlan(); got != "pro" {
+		t.Fatalf("plan %q", got)
+	}
+	if codexcat.SignInPlan == nil || codexcat.SignInPlan() != "pro" {
+		t.Fatal("codexcat doesn't read the sign-in's plan")
+	}
+	os.Remove(filepath.Join(home, ".codex", "auth.json"))
+	if got := CodexSignInPlan(); got != "" {
+		t.Fatalf("signed out: plan %q", got)
 	}
 }

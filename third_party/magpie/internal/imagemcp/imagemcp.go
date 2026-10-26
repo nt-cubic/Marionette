@@ -616,6 +616,14 @@ func reference(project, ref string) (string, error) {
 	return "data:" + mt + ";base64," + base64.StdEncoding.EncodeToString(b), nil
 }
 
+// Target is where the i-th of n files made from prompt, of extension ext,
+// goes under dir: path as a file (numbered when n > 1) or a folder, else a
+// name from the prompt in dir's generated-images/ (generated-videos/);
+// never a file that is there. `magpie tool` saves what it is given by it.
+func Target(dir, path, prompt, ext string, i, n int) (string, error) {
+	return target(dir, path, prompt, ext, i, n)
+}
+
 var unslug = regexp.MustCompile(`[^a-z0-9]+`)
 
 // target is where the i-th of n images goes: path as a file (numbered when

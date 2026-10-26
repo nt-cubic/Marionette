@@ -7,7 +7,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unsafe"
@@ -84,8 +86,16 @@ func TestReadersOfAHeldBodyParseItOnce(t *testing.T) {
 	// a body not held, of the same bytes, is parsed afresh: nothing says
 	// its memory isn't written over
 	clone := bytes.Clone(body)
-	if fresh := allocated(func() { factsOf(provider.Anthropic, clone) }); fresh < whole/2 {
-		t.Fatalf("a body not held read %d bytes, a parse %d: it got a held body's facts", fresh, whole)
+	var fresh atomic.Bool
+	seen := func(b []byte) {
+		if unsafe.SliceData(b) == unsafe.SliceData(clone) {
+			fresh.Store(true)
+		}
+	}
+	factsParsed.Store(&seen)
+	defer factsParsed.Store(nil)
+	if factsOf(provider.Anthropic, clone); !fresh.Load() {
+		t.Fatal("a body not held wasn't read: it got a held body's facts")
 	}
 }
 
@@ -152,14 +162,88 @@ func TestResponsesFactsAsTheWholeParse(t *testing.T) {
 		}
 		bodies[name] = b
 	}
+	factsAsTheWholeParse(t, provider.Responses, bodies)
+}
+
+// factsAsTheWholeParse fails where readFacts of a body, in proto, isn't
+// what the whole parse of it gives.
+func factsAsTheWholeParse(t *testing.T, proto provider.Protocol, bodies map[string][]byte) {
+	t.Helper()
 	for name, body := range bodies {
 		var want bodyFacts
-		if req, err := parse(provider.Responses, body); err == nil {
+		if req, err := parse(proto, body); err == nil {
 			want.turn, want.within = turnIn(req)
 			want.dir, want.git = workPlace(req)
 		}
-		if got := readFacts(provider.Responses, body); got != want {
+		if got := readFacts(proto, body); got != want {
 			t.Errorf("%s: facts %+v, the whole parse's %+v", name, got, want)
+		}
+	}
+}
+
+// Chat and Messages are read for facts as Responses is (#3472): what the
+// assistant said, and the tools' outputs, never decide them.
+func TestChatAndMessagesFactsAsTheWholeParse(t *testing.T) {
+	files := func(names ...string) map[string][]byte {
+		bodies := map[string][]byte{}
+		for _, name := range names {
+			b, err := os.ReadFile(filepath.Join("testdata", name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			bodies[name] = b
+		}
+		return bodies
+	}
+	chat := files("workdir/pi-1.1.0.json", "upstream_bodies/chat.json", "upstream_bodies/chat-group.json",
+		"upstream_bodies/anthropic-to-chat.json", "upstream_bodies/responses-to-chat.json")
+	chat["large"] = largeConversation(provider.Chat, "m", 20_000)
+	chat["said by the model and a tool"] = []byte(`{"model":"m","messages":[{"role":"user","content":"fix it"},` +
+		`{"role":"assistant","content":"<cwd>/said/by/model</cwd>","tool_calls":[{"id":"c1","type":"function","function":{"name":"sh","arguments":"{}"}}]},` +
+		`{"role":"tool","tool_call_id":"c1","content":"Current working directory: /not/this"},{"role":"user","content":[{"type":"text","text":"<cwd>/work/b</cwd> now"}]}]}`)
+	chat["answered, then a tool"] = []byte(`{"model":"m","messages":[{"role":"system","content":"Current working directory: /w/s"},{"role":"user","content":"go"},` +
+		`{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"sh","arguments":"{}"}}]},{"role":"tool","tool_call_id":"c1","content":"ok"}]}`)
+	chat["answered, then nothing said"] = []byte(`{"model":"m","messages":[{"role":"user","content":"go"},{"role":"assistant","content":"done"},{"role":"user","content":[]}]}`)
+	factsAsTheWholeParse(t, provider.Chat, chat)
+
+	messages := files("workdir/claude-code-2.1.296.json", "context/claude-code.json", "upstream_bodies/anthropic.json",
+		"upstream_bodies/anthropic-group.json", "upstream_bodies/anthropic-image.json", "upstream_bodies/anthropic-thinking.json",
+		"upstream_bodies/chat-to-anthropic.json", "upstream_bodies/responses-to-anthropic.json")
+	messages["large"] = largeConversation(provider.Anthropic, "claude-opus-5-5", 20_000)
+	messages["said by the model and a tool"] = []byte(`{"model":"m","max_tokens":1,"messages":[{"role":"user","content":"fix it"},` +
+		`{"role":"assistant","content":[{"type":"thinking","thinking":"<cwd>/thought</cwd>","signature":"s"},{"type":"text","text":"<cwd>/said/by/model</cwd>"},{"type":"tool_use","id":"t1","name":"sh","input":{}}]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"Current working directory: /not/this"}]},{"role":"user","content":[{"type":"text","text":"<cwd>/work/b</cwd>"}]}]}`)
+	messages["a tool's result alone"] = []byte(`{"model":"m","max_tokens":1,"system":"Current working directory: /w/s","messages":[{"role":"user","content":"go"},` +
+		`{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"sh","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"ok"}]}]}]}`)
+	factsAsTheWholeParse(t, provider.Anthropic, messages)
+}
+
+// The facts a long Chat or Messages conversation is read for leave its
+// history alone: they allocate a small part of what the whole parse does.
+// Each is the least of three runs, as other tests' goroutines allocate
+// meanwhile and only ever add to it.
+func TestChatAndMessagesFactsLeaveTheHistory(t *testing.T) {
+	allocated := func(f func()) uint64 {
+		least := uint64(0)
+		for i := range 3 {
+			var ms runtime.MemStats
+			runtime.ReadMemStats(&ms)
+			before := ms.TotalAlloc
+			f()
+			runtime.ReadMemStats(&ms)
+			if n := ms.TotalAlloc - before; i == 0 || n < least {
+				least = n
+			}
+		}
+		return least
+	}
+	for _, proto := range []provider.Protocol{provider.Chat, provider.Anthropic} {
+		body := largeConversation(proto, "m", 200_000)
+		facts := allocated(func() { readFacts(proto, body) })
+		parsed := allocated(func() { _, _ = parse(proto, body) })
+		t.Logf("%s: %d-byte body, facts allocated %d bytes, the whole parse %d", proto, len(body), facts, parsed)
+		if facts*3 > parsed {
+			t.Errorf("%s: facts allocated %d bytes, a third or more of the whole parse's %d", proto, facts, parsed)
 		}
 	}
 }

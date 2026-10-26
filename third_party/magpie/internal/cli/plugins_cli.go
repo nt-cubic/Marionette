@@ -498,7 +498,7 @@ func pluginLogin(ctx context.Context, name, method string) error {
 		code := ""
 		if a.Method == "code" {
 			fmt.Print("Code: ")
-			line, err := stdin.ReadString('\n')
+			line, err := stdin().ReadString('\n')
 			if err != nil && line == "" {
 				return err
 			}
@@ -512,7 +512,7 @@ func pluginLogin(ctx context.Context, name, method string) error {
 			fmt.Println("If the page the browser ends on won't load (magpie on a server or in Docker), paste its whole address here and press Enter:")
 			go func() {
 				for wait.Err() == nil {
-					line, err := stdin.ReadString('\n')
+					line, err := stdin().ReadString('\n')
 					if strings.TrimSpace(line) != "" && wait.Err() == nil {
 						if next, err := provider.PastePluginCallback(wait, a.URL, line); err != nil {
 							fmt.Println(err)
@@ -563,7 +563,7 @@ func keyPrompt(name string, m plugin.Method) string {
 func askNumber(n int) (int, error) {
 	for {
 		fmt.Print("> ")
-		line, err := stdin.ReadString('\n')
+		line, err := stdin().ReadString('\n')
 		if i, e := strconv.Atoi(strings.TrimSpace(line)); e == nil && i >= 1 && i <= n {
 			return i - 1, nil
 		}
@@ -609,7 +609,7 @@ func askPrompt(q *plugin.Prompt) (string, error) {
 		fmt.Println()
 		return strings.TrimSpace(string(b)), err
 	}
-	line, err := stdin.ReadString('\n')
+	line, err := stdin().ReadString('\n')
 	if err != nil && line == "" {
 		return "", err
 	}

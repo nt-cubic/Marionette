@@ -102,6 +102,36 @@ func updateMirrorCmd(args []string) error {
 	return nil
 }
 
+// updateChannelCmd is `magpie update channel [stable|every]`: which
+// versions an update is offered (settings.UpdateChannel, ssharpcc on X):
+// Stable, one a week and an urgent one at once, or every version as it
+// comes out. With none, it says which.
+func updateChannelCmd(args []string) error {
+	s := settings.Load()
+	if len(args) > 1 {
+		return fmt.Errorf("magpie update channel takes stable or every")
+	}
+	if len(args) == 1 {
+		switch strings.ToLower(strings.TrimSpace(args[0])) {
+		case "stable":
+			s.UpdateChannel = settings.UpdateStable
+		case "every", "all":
+			s.UpdateChannel = ""
+		default:
+			return fmt.Errorf("magpie update channel takes stable or every, not %q", args[0])
+		}
+		if err := settings.Save(s); err != nil {
+			return err
+		}
+	}
+	if s.UpdateChannel == settings.UpdateStable {
+		fmt.Println("update channel: stable", muted.Render("· a version a week, the newest out three days as the week began, and an urgent one at once · magpie update channel every: each one as it comes out"))
+		return nil
+	}
+	fmt.Println("update channel: every version", muted.Render("· each one as it comes out · magpie update channel stable: one a week, an urgent one at once"))
+	return nil
+}
+
 // updateFlags takes --proxy and --mirror (each as --flag value or
 // --flag=value) out of args.
 func updateFlags(args []string) (rest []string, proxy, mirror string, err error) {
@@ -149,6 +179,9 @@ func updateCmd(args []string) error {
 	if len(args) > 1 && args[1] == "mirror" {
 		return updateMirrorCmd(args[2:])
 	}
+	if len(args) > 1 && args[1] == "channel" {
+		return updateChannelCmd(args[2:])
+	}
 	if len(args) > 2 || len(args) == 2 && args[1] != "check" {
 		return fmt.Errorf("usage: magpie update [check] [--proxy <url>] [--mirror <prefix>]")
 	}
@@ -161,7 +194,11 @@ func updateCmd(args []string) error {
 	}
 	if !update.Newer(rel.Version, version) {
 		if update.Released(version) {
-			fmt.Println(green.Render("✓"), "magpie", version, muted.Render("is the latest"))
+			if update.Stable() {
+				fmt.Println(green.Render("✓"), "magpie", version, muted.Render("is up to date on the stable channel (stable is "+rel.Version+")"))
+			} else {
+				fmt.Println(green.Render("✓"), "magpie", version, muted.Render("is the latest"))
+			}
 		} else {
 			fmt.Println("magpie", version, muted.Render("was built from source; the latest release is "+rel.Version))
 		}
