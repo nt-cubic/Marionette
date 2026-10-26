@@ -336,11 +336,13 @@ export async function createSession(projectId: string, agentId: string, label = 
   };
 }
 
-/** Create a Chat session in the global Chat store. */
+/** Create a Chat session in the global Chat store. `origin: "memo"` files the
+ *  dialog under the shelf's 收纳盒 group (still a Chat session everywhere else). */
 export async function createChatSession(
   agentId: string,
   label = "新对话",
   cwd?: string | null,
+  origin?: "memo",
 ): Promise<Session | null> {
   if (!isTauriRuntime()) {
     const now = new Date().toISOString();
@@ -364,6 +366,7 @@ export async function createChatSession(
     agentId,
     label,
     cwd: cwd ?? null,
+    origin: origin ?? null,
   });
 }
 

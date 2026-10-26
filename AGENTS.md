@@ -65,6 +65,32 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
   收纳盒 → Composer 拖拽是**页内 HTML5 DnD**（自定义 type `application/x-marionette-memo` +
   `text/plain`=绝对路径）；Composer 的 HTML5 drop 守卫只为该自定义 type 放行（Tauri 运行时），
   OS 级文件拖放仍走 tao 的 `onDragDropEvent`（物理像素，除以 devicePixelRatio）。
+- **收纳盒交互梳理（2026-10-26，karakeep 式「收集→整理成对话」）**：
+  1. **memo 页激活时整窗接住 OS 拖放**（普通窗口伪标签页 / 贴边整页两个挂载点，`MemoBox` 的
+     onDragDropEvent）——**不做 rect 命中测试**：旧实现只认页面矩形，拖到侧栏/标签行 = 无声
+     no-op，本机 `~/.marionette/memos/` 从未被创建过（一次都没落过盘）；`enter` 无 paths 不武装
+     （页内 memo 行拖拽保持纯 HTML5 链路）。贴边态 `DockDropRouter` 在 `page==="memo"` 时**整体
+     让路**（memo 页监听拥有整窗），否则路由器标题带分支会与页面监听**双保存**。
+  2. **「开新对话」一律建 `origin:"memo"` 的 Chat 会话**（材料清单照旧预填输入框）：
+     `create_chat_session` 命令新增可选 `origin` 参数，**白名单只认 `"memo"`**（其余回落
+     `"user"`）；`storage::create_chat_session` 签名同步加 `Option<&str>`，另三个调用点传
+     `None`。侧栏在「聊天」下方渲染「收纳盒」分组（`ProjectShelf` 的 `memoSessions` prop +
+     两栏共用的 `renderChatRow`，**非空才显示**；状态过滤/搜索/未读计数已并入；分组拆分在
+     `lib/sessionGroups.ts::splitShelfChatSessions`，命令面板用 chat+memo 合并列表）。
+     「整理成文档」开着项目仍建进项目，没开项目落收纳盒组。memo 会话在运行时**就是普通 Chat
+     会话**（spawn cwd/prefs/标签全走 CHAT_PROJECT_ID 原路径）——别给它开新特判分支。
+  3. **10-22 悬浮球方案的 inbox 幽灵项目过滤**：rootPath 指向 `~/.marionette/inbox` 的项目
+     条目（那代「收集箱会话」的家）用 `lib/sessionGroups.ts::withoutGhostProjects` 在两个
+     `listProjects` 加载口过滤；本机数据已清（projects.json 条目 + inbox 整树删除，旧收集箱里
+     唯一一条真实材料已迁进 memos/index.json）。
+  4. 回归：`npx tsx scripts/verify-memo-box.mts`。
+  5. **呈现（2026-10-26）**：单列帖子流，不是 40px 文件行。顶上 `memo-box__compose`（写下 /
+     粘贴链接，Ctrl+Enter 保存，裸 URL 走既有 `memo_save_text`）；卡片
+     `.memo-box__card--text/image/link/file`，按 `groupMemosByDay` 插「今天 / 昨天 / N月N日」。
+     点文字卡原地展开全文（6 行 clamp），点链接/图片/文件走 `openExternal`。
+     图片卡按横竖比完整显示（`memoImageOrient`：横图铺满宽、竖图触到更高上限后收窄，
+     `object-fit: contain`，禁止定高 `cover` 裁切）。收/找/用通道
+     （整窗拖入、页内拖到输入框、多选开新对话/整理成文档）不动。
 - **2026-10-25 用户反馈批（六件）**：
   1. **拖文件到收起态把手也展开**：OLE 拖拽期间鼠标事件被抑制，sliver 的 mouseenter 不触发——
      `initDockMode` 另听 `getCurrentWebview().onDragDropEvent`（enter/over → `expand()` 并置
@@ -98,6 +124,22 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
      `docked` 时关闭）；拖动中双层 `dock-drop-veil` 虚线提示、悬停侧点亮（仿 composer 落点提示）。
      收纳盒整页开着时标题栏以下归该页自己的落点 UI，其它整页/无对话在开时全条 → 收纳盒。
      `enter` 无 paths 不武装——tao 对页内 HTML5 memo 拖拽也发 enter/over，那些必须留给纯 HTML5 链路。
+  8. **文字/链接拖入（2026-10-26，vendor wry 补丁 + `lib/dragText.ts`）**：浏览器选区/链接这类
+     **无 CF_HDROP 的 OLE 拖拽**在 stock wry 里被静默吞掉（DragEnter 读不到文件就 return，一个事件
+     都不发），WebView2 的 HTML5 外部拖放又被 wry 关死——两头堵，前端怎么监听都收不到。
+     `src-tauri/vendor/wry`（`[patch.crates-io]`，补丁说明 `vendor/wry/MARIONETTE-PATCH.md`）让
+     DragEnter 在无文件时改读 `CF_UNICODETEXT`，经进程级钩子（`wry::marionette_drag::set_text_drag_hook`）
+     交给 `src-tauri/src/drag_text.rs`，按 HWND 路由成对应窗口的 `marionette-drag-text` 事件
+     （payload `{kind: enter|over|drop|leave, text, x, y}`，物理像素，与 onDragDropEvent 同坐标系）。
+     **文件拖放的 paths 事件流一字不动**；钩子未注册时行为与 stock 完全一致。
+     前端消费（`lib/dragText.ts::onDragText`）：收纳盒页激活 → 整窗收成文字/链接 memo（裸 URL 由
+     Rust 端自动转 link 条目）；dock 窄条分区同文件路由（memo 带 → 收纳盒、chat 区 → DOM 事件
+     `marionette:dock-drop-text` → composer 插入光标处）；浮动窗口 composer 输入框 rect 命中 → 插入
+     文字；收起窄条上方悬停 → 展开（与文件拖放同款）。**页内 HTML5 拖拽（memo 行）也会从 WebView2
+     转发到 OLE 目标且带 CF_UNICODETEXT**——App 挂载 `installPageDragSourceTracker()`（window 级
+     dragstart/dragend/drop 标记本页是拖拽源，**别用布尔第三参的 capture 形式**，node EventTarget
+     的 removeEventListener 不认），所有 drag-text 监听在 `isPageDragSource()` 时让路，保证 memo →
+     composer 仍是纯 HTML5 链路。升级 wry 前先看补丁文件。
 
 前端结构：`src/lib/dockMode.ts`（状态机 + 窗口编排 + prefs）、`src/components/DockChrome.tsx`
 （窄条顶部铬：标题栏/操作/额度计量卡/进行中列表，高度量进 `--dock-chrome-top`；无标签行；全部对话/用量/收纳盒是带「返回」的整页）、`src/lib/dockFooter.ts` + `src/components/MemoBox.tsx`
@@ -108,7 +150,7 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
 （`ProjectShelf.tsx` 的 `.shelf-memo-entry`），点开后 `SessionTabs` 尾部出现一枚 `is-memo`
 伪标签（App 的 `memoOpen`=标签存在 / `memoActive`=选中；`SessionTabs` 的 `memoTab` prop），
 中栏只切换对话流那一列（`App.tsx` 的 `.memo-tab-page` 覆盖 `renderConversation`/SplitWorkspace，
-无 composer 行；左右侧栏照常可见）。选中任一对话标签只取消选中（标签保留），× 或 Esc 才关标签；
+无 composer 行；左右侧栏照常可见）。选中收纳盒时对话标签去掉 `is-active`（当前会话 id 仍记着，点回去即切回）；选中任一对话标签只取消收纳盒选中（标签保留），× 或 Esc 才关标签；
 分屏态伪标签渲染在 titlebar 的 fill 前，页面同样覆盖整个中栏。`MemoBox` 组件不再有 `showClose`
 （标题与关闭都在挂载点的铬里：贴边窄条的返回 / 普通窗口的标签 ×）。
 聊天内容上方不放收纳盒或「能力与上下文」工具栏，分屏也不重复添加入口。
@@ -135,7 +177,7 @@ auto + min/max），底边正好压在 footer 上沿；普通窗口仍用记住�
 
 **对话轨迹（clean view）**：连续 thought/tool 从**第一步**起就是一张组卡（稳定 `act-起点` key，
 单步也分组）。运行时**上方实时轨迹面板**（`LiveActivityTimeline` → `ActivityTimeline`，
-thought / other / search 等泳道与时间条），**下方默认关闭的 tally 详情折叠**。
+thought / tool / command / search 等泳道与时间条），**下方默认关闭的 tally 详情折叠**。
 **时间图必须在 details 外面**，不能再用 live 步骤列表代替，也不能等 open 才渲染。
 500ms 时钟局限在图表子组件，第一条未结束 thought 也随时钟增长；工具间 settle 保留尾段图表。
 运行段结束（后续发言 / idle）移除实时图和思考预览，留下折叠 tally；整轮结束清掉详情和步骤开合状态，
@@ -197,7 +239,9 @@ tool 完成 + 新的 agent message，**没有 turnState、没有 turn/complete**
   关窗时 WebView2 双 pump paint **以及** CJK IME 在窗口获得焦点/被点击时嵌套泵消息（日语系统 + 中文输入法最容易中）都会踩
   `assert!(flush_paint_messages(..))`。关窗路径：`main.rs` 的 `is_tao_paint_assert` + `shutdown_and_exit`（不要再改那条）。
   点击/IME 路径：`src-tauri/vendor/tao` 把 assert 改成尊重 re-entrant `false`（见 `vendor/tao/MARIONETTE-PATCH.md`）。
-  Tauri 升到 tao ≥ 0.36 后删掉 `[patch.crates-io]`。
+  Tauri 升到 tao ≥ 0.36 后删掉 `[patch.crates-io]` 的 `tao` 行。
+  另一条 `wry` patch 行是文字/链接拖放（见上文「贴边停靠」第 8 条 + `vendor/wry/MARIONETTE-PATCH.md`），
+  升级 wry/tauri 前两条都要对着补丁文件核对能否撤掉。
 
 ## 排查「exe 双击没反应 / 构建报 esbuild Access is denied」—— 先查完整性标签
 
@@ -335,13 +379,15 @@ ZCode 官方**没有** ACP（CLI 0.16.x 无 `--acp`，ACP registry 未收录）�
 `session/requestRuntimePreferences`；事件流 `state.updated`（revision 补丁）/`v4/telemetry/event`；
 转录走 `session/messages`。**懒启动**：适配器首个 `session/prompt` 才 spawn 后端。
 
-- **spawn 注入两件事**（`acp.rs` zcode 分支，用户自设 `ZCODE_BIN`/PATH `zcode` 时不覆盖）：
+- **spawn 注入三件事**（`acp.rs` zcode 分支，用户自设对应 env 时不覆盖）：
   1. `ZCODE_BIN` = 桌面版内置 `resources\glm\zcode.cjs`。桌面版可装任意目录、**注册表卸载键不登记**
      （本机 D:\Program Files\ZCode），探测链：`%LOCALAPPDATA%\Programs\ZCode` → `%ProgramFiles%\ZCode`
      → 开始菜单/桌面 `ZCode.lnk` 里抽 ANSI LocalBasePath 与 UTF-16 路径（`zcode_bin_path()`；只扫 UTF-16 会命中假路径，见 `docs/pitfalls-zcode-acp.md` 雷 10）。
   2. `ZCODE_NODE` = 起适配器的那台 node。适配器对 .cjs 型 ZCODE_BIN 自己找 sqlite-capable node，
      候选链（ZCODE_NODE → unix 路径 → which node → Zed bundle）在 Windows GUI PATH 下全空，
      最后裸 exec .cjs → **`spawn EFTYPE`**（实测 2026-10-23，0.76.2）。
+  3. `ZCODE_ACP_RUNTIME=node`：桥发现机器装了 Bun ≥1.4 会把自己迁移到 Bun 跑（从未实测的
+     runtime），无条件钉 node（2026-10-26 落，详见 `docs/pitfalls-zcode-acp.md` 雷 15）。
 - **MCP 借贷只借远程**：适配器 `session/new` 的 zod schema 只收 url 型（http/sse/acp）条目，
   **stdio 条目让整个 session/new -32602**——所以 `agent_registry::accepts_stdio_mcp("zcode") = false`，
   stdio 在 `mcp_payload_for_agent` 里跳过并记 note。远程条目 per-load 合并，ZCode 自己 `~/.zcode`

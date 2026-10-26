@@ -14,6 +14,7 @@ mod custom_agents;
 mod data_dir_gate;
 mod debug_log;
 mod dock_support;
+mod drag_text;
 mod dsh_bridge;
 mod dsh_plugins;
 mod engine;
@@ -276,6 +277,8 @@ fn main() {
         .setup(|app| {
             use tauri::Manager;
             spawn_main_thread_watchdog(app.handle().clone());
+            // 文字/链接拖放：vendor wry 补丁的钩子 → marionette-drag-text 事件。
+            drag_text::init(app.handle());
             acp::spawn_pipeline_watchdog();
             // Engine progress/state events are emitted from its background
             // threads — they need an app handle kept for the process lifetime.

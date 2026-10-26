@@ -509,13 +509,16 @@ export function SessionTabs({
 
   const tabClassById = useMemo(() => {
     const map = new Map<string, string>();
+    // 收纳盒伪标签占用这条时，对话标签全部退成未选中——current session id
+    // 仍记着，点回去即切回；两边同时 is-active 会看起来像两个当前页。
+    const memoOwnsStrip = Boolean(memoTab?.active);
     for (const openSession of openSessions) {
       map.set(
         openSession.id,
         [
           "editor-tab",
           `is-${openSession.status}`,
-          openSession.id === session.id ? "is-active" : "",
+          openSession.id === session.id && !memoOwnsStrip ? "is-active" : "",
           draggingTabId === openSession.id ? "is-dragging-out" : "",
           ghost?.session.id === openSession.id ? "is-tear-source" : "",
           doneUnreadIds?.has(openSession.id) ? "is-done" : "",
@@ -525,7 +528,7 @@ export function SessionTabs({
       );
     }
     return map;
-  }, [openSessions, session.id, draggingTabId, ghost, doneUnreadIds]);
+  }, [openSessions, session.id, draggingTabId, ghost, doneUnreadIds, memoTab?.active]);
 
   return (
     <>
@@ -554,7 +557,7 @@ export function SessionTabs({
               key={openSession.id}
               className={tabClassById.get(openSession.id)}
               role="tab"
-              aria-selected={openSession.id === session.id}
+              aria-selected={openSession.id === session.id && !memoTab?.active}
               data-tauri-drag-region="false"
               onContextMenu={(e) => {
                 if (detachedMode || !onOpenBeside || openSessions.length <= 1) return;

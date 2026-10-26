@@ -427,6 +427,8 @@ body::after {
 .memo-box__text-btn,
 .memo-box__chip,
 .memo-box__delete,
+.memo-box__compose-save,
+.memo-box__check,
 .memo-box__act {
   margin: 0;
   border: 0;
@@ -1101,7 +1103,9 @@ html.dock-resizing * {
   z-index: 75;
   display: flex;
   flex-direction: column;
+  min-width: 0;
   padding: 8px;
+  overflow-x: hidden;
   border-top: 1px solid var(--border);
   background: var(--panel);
   outline: none;
@@ -1137,6 +1141,7 @@ html.dock-resizing * {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
 }
 
 .memo-box__spacer {
@@ -1156,6 +1161,7 @@ html.dock-resizing * {
   border-radius: var(--radius);
   color: var(--text-muted);
   font-size: 12px;
+  white-space: nowrap;
 }
 
 .memo-box__text-btn:hover {
@@ -1168,7 +1174,7 @@ html.dock-resizing * {
 }
 
 .memo-box__search {
-  flex: 1;
+  flex: 1 1 0;
   min-width: 0;
   display: flex;
   align-items: center;
@@ -1187,7 +1193,8 @@ html.dock-resizing * {
 }
 
 .memo-box__search input {
-  flex: 1;
+  flex: 1 1 0;
+  width: 0;
   min-width: 0;
   border: 0;
   background: transparent;
@@ -1199,7 +1206,7 @@ html.dock-resizing * {
 .memo-box__filters {
   display: flex;
   gap: 4px;
-  padding: 8px 0 4px;
+  padding: 6px 0 8px;
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -1236,12 +1243,80 @@ html.dock-resizing * {
   background: var(--accent-soft);
 }
 
+.memo-box__compose {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+  min-width: 0;
+  margin: 0 0 8px;
+  padding: 8px 10px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-raised);
+  transition: border-color var(--dur-fast, 120ms) var(--ease-standard, ease);
+}
+
+.memo-box__compose:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+.memo-box__compose textarea {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  max-height: 160px;
+  padding: 0;
+  border: 0;
+  resize: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  outline: none;
+}
+
+.memo-box__compose textarea::placeholder {
+  color: var(--text-faint);
+}
+
+.memo-box__compose-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-faint);
+  font-size: 10.5px;
+}
+
+.memo-box__compose-save {
+  flex-shrink: 0;
+  height: 22px;
+  padding: 0 10px;
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 11.5px;
+  background: var(--accent-soft);
+}
+
+.memo-box__compose-save:hover:not(:disabled) {
+  color: var(--text-strong);
+}
+
+.memo-box__compose-save:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 .memo-box__list {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   overflow-y: auto;
   margin: 0 -4px;
-  padding: 2px 4px;
+  padding: 2px 4px 8px;
 }
 
 .memo-box__empty {
@@ -1249,7 +1324,7 @@ html.dock-resizing * {
   flex-direction: column;
   align-items: center;
   gap: 4px;
-  padding: 40px 16px;
+  padding: 32px 16px;
   color: var(--text-faint);
   font-size: 11.5px;
   text-align: center;
@@ -1269,62 +1344,193 @@ html.dock-resizing * {
   text-align: center;
 }
 
-.memo-box__row {
+.memo-box__group {
+  min-width: 0;
+}
+
+.memo-box__group + .memo-box__group {
+  margin-top: 4px;
+}
+
+.memo-box__day {
+  margin: 0;
+  padding: 10px 6px 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.memo-box__group:first-child .memo-box__day {
+  padding-top: 4px;
+}
+
+.memo-box__feed {
   display: flex;
-  align-items: center;
-  gap: 9px;
-  min-height: 40px;
-  padding: 5px 6px;
-  border: 1px solid transparent;
-  border-radius: var(--radius);
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.memo-box__card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-raised);
+  cursor: pointer;
   transition:
     background-color var(--dur-fast, 120ms) var(--ease-standard, ease),
     border-color var(--dur-fast, 120ms) var(--ease-standard, ease);
 }
 
-.memo-box__row[draggable="true"] {
+.memo-box__card[draggable="true"] {
   cursor: grab;
 }
 
-.memo-box__row:hover {
-  background: var(--panel-soft);
+.memo-box__card:hover {
+  border-color: var(--border-strong);
 }
 
-.memo-box.is-selecting .memo-box__row {
+.memo-box.is-selecting .memo-box__card {
   cursor: pointer;
 }
 
-.memo-box__row.is-picked {
-  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
-  background: var(--accent-soft);
+.memo-box__card.is-picked {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 70%, var(--panel-raised));
+}
+
+.memo-box__card--image {
+  padding: 0;
+  overflow: hidden;
+  gap: 0;
+}
+
+/* Telegram / Discord box: keep the whole bitmap. Landscape fills the
+   card width; portrait hits a taller cap and shrinks in width; never crop. */
+.memo-box__shot-wrap {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex: 0 0 auto;
+  width: 100%;
+  min-width: 0;
+  background: var(--panel-muted);
+  line-height: 0;
+}
+
+.memo-box__shot {
+  display: block;
+  max-width: 100%;
+  width: auto;
+  height: auto;
+  max-height: min(64vh, 34rem);
+  object-fit: contain;
+  object-position: center;
+}
+
+.memo-box__shot[data-orient="landscape"] {
+  max-height: min(44vh, 24rem);
+}
+
+.memo-box__shot[data-orient="square"] {
+  max-height: min(52vh, 28rem);
+}
+
+.memo-box__shot[data-orient="portrait"] {
+  max-height: min(68vh, 36rem);
+}
+
+.memo-box__card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px 10px;
+}
+
+.memo-box__note {
+  margin: 0;
+  min-width: 0;
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.memo-box__card--text:not(.is-open) .memo-box__note {
+  max-height: calc(1.55em * 6);
+  overflow: hidden;
+}
+
+.memo-box__link-kicker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.memo-box__link-host {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-strong);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.memo-box__url {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.memo-box__file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
 }
 
 .memo-box__icon {
   display: grid;
   place-items: center;
   flex-shrink: 0;
-  width: 24px;
-  height: 24px;
-  border-radius: var(--radius);
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
   background: var(--panel-soft);
   color: var(--text-muted);
 }
 
-.memo-box.is-selecting .memo-box__icon {
-  background: transparent;
-}
-
 .memo-box__check {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
   display: grid;
   place-items: center;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   border: 1px solid var(--border-strong);
-  border-radius: 3px;
+  border-radius: 4px;
+  background: var(--panel-raised);
   color: var(--bg);
   transition:
     background-color var(--dur-fast, 120ms) var(--ease-standard, ease),
     border-color var(--dur-fast, 120ms) var(--ease-standard, ease);
+}
+
+.memo-box__card--image .memo-box__check {
+  background: color-mix(in srgb, var(--panel-raised) 82%, transparent);
 }
 
 .memo-box__check.is-on {
@@ -1349,7 +1555,7 @@ html.dock-resizing * {
 
 .memo-box__title {
   color: var(--text);
-  font-size: 12px;
+  font-size: 12.5px;
 }
 
 .memo-box__meta {
@@ -1357,8 +1563,16 @@ html.dock-resizing * {
   font-size: 10.5px;
 }
 
+.memo-box__foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 18px;
+}
+
 .memo-box__age {
-  flex-shrink: 0;
+  flex: 1;
+  min-width: 0;
   color: var(--text-faint);
   font-size: 10.5px;
 }
@@ -1367,20 +1581,17 @@ html.dock-resizing * {
   display: grid;
   place-items: center;
   flex-shrink: 0;
-  width: 0;
+  width: 22px;
   height: 22px;
-  overflow: hidden;
+  margin-right: -4px;
   border-radius: var(--radius-sm);
   color: var(--text-muted);
   opacity: 0;
-  transition:
-    width var(--dur-fast, 120ms) var(--ease-out, ease-out),
-    opacity var(--dur-fast, 120ms) var(--ease-out, ease-out);
+  transition: opacity var(--dur-fast, 120ms) var(--ease-out, ease-out);
 }
 
-.memo-box__row:hover .memo-box__delete,
+.memo-box__card:hover .memo-box__delete,
 .memo-box__delete:focus-visible {
-  width: 22px;
   opacity: 1;
 }
 
@@ -1397,6 +1608,9 @@ html.dock-resizing * {
   color: var(--text-faint);
   font-size: 11px;
   text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   transition:
     border-color var(--dur-fast, 120ms) var(--ease-standard, ease),
     background-color var(--dur-fast, 120ms) var(--ease-standard, ease),

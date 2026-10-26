@@ -507,3 +507,16 @@ v2\config.json)`——非致命，桥模型照常工作；桌面设置页动一�
 
 **快速确诊**：zcode 日志 grep `manualProviderModelRules`；`provider_config.json` 的
 `modelConfigRules` 里有没有 `"manualProviderModelRules"` 键。
+
+## 雷 15：桥会自我迁移到 Bun——`ZCODE_ACP_RUNTIME=node` 必须钉（2026-10-26）
+
+zcode-acp-server 检测到机器上装了 Bun ≥1.4 时，会把自己的运行时从 node 迁移到 Bun
+（Codeg `docs/agents/zcode.md` 的结论，见 `research-codeg.md` §三.1）。我们在
+`acp.rs` 钉的 `ZCODE_NODE` 只管 .cjs 后端找 node，管不到适配器本体——用户装了 Bun
+时桥会在一个我们从未实测过的 runtime 上跑。
+
+**修复**：spawn 时（`acp.rs` zcode 分支）无条件注入 `ZCODE_ACP_RUNTIME=node`，
+用户自设值不覆盖（与 `ZCODE_BIN`/`ZCODE_NODE` 同一原则）。2026-10-26 已落。
+
+**快速确诊**：`~/.zcode/v2/logs/` 或桥的启动输出里出现 Bun 字样 =
+迁移已发生；确认 env 里有没有 `ZCODE_ACP_RUNTIME`。

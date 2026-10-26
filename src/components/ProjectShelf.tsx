@@ -41,7 +41,7 @@ function DockedLayer({ docked, children }: { docked: boolean; children: ReactNod
   return docked ? createPortal(children, document.body) : <>{children}</>;
 }
 
-/** Visible sessions per project before "Show more". Projects always list fully. */
+/** Visible sessions per project before "Show more". Chat/memo lists use the same count as a scroll window. */
 const SESSION_LIST_PREVIEW = 5;
 const EMPTY_DONE_UNREAD: ReadonlySet<string> = new Set();
 
@@ -69,22 +69,21 @@ function magpieCredit(version?: string | null): string {
 
 /** Pin toggle shared by project session rows and chat rows. */
 function SessionPinButton({
-  label,
   pinned,
   className,
   onToggle,
 }: {
-  label: string;
   pinned: boolean;
   className: string;
   onToggle: (next: boolean) => void;
 }) {
+  const name = pinned ? "取消置顶" : "置顶";
   return (
     <button
       className={pinned ? `${className} is-pinned` : className}
       type="button"
-      title={pinned ? `取消置顶 ${label}` : `置顶 ${label}`}
-      aria-label={pinned ? `Unpin ${label}` : `Pin ${label} to the top`}
+      title={name}
+      aria-label={name}
       aria-pressed={pinned}
       onClick={(event) => {
         event.stopPropagation();
@@ -161,6 +160,8 @@ type ProjectShelfProps = {
   defaultFolderPath?: string;
   /** Chat sessions to display in the Chat section. */
   chatSessions?: Session[];
+  /** 收纳盒-grown dialogs (origin "memo") — their own section below 聊天. */
+  memoSessions?: Session[];
   /** Open a chat session from the Chat section. */
   onChatSessionSelect?: (session: Session) => void;
   /** Create a new chat session. */
@@ -286,6 +287,7 @@ export function ProjectShelf({
   onTestProxy,
   defaultFolderPath = "",
   chatSessions = [],
+  memoSessions = [],
   onChatSessionSelect,
   onNewChat,
   onOpenMemo,
@@ -718,13 +720,13 @@ export function ProjectShelf({
   const [statusFilter, setStatusFilter] = useState<ShelfStatusFilter | null>(null);
   const statusCounts = useMemo(() => {
     const counts: Record<ShelfStatusFilter, number> = { running: 0, waiting: 0, done: 0, error: 0 };
-    for (const session of [...sessions, ...chatSessions]) {
+    for (const session of [...sessions, ...chatSessions, ...memoSessions]) {
       for (const { id } of SHELF_STATUS_ORDER) {
         if (sessionMatchesStatus(session, id, unreadDone)) counts[id] += 1;
       }
     }
     return counts;
-  }, [sessions, chatSessions, unreadDone]);
+  }, [sessions, chatSessions, memoSessions, unreadDone]);
   // A filter whose count drops to zero (the run finished) lets go by itself.
   const activeStatusFilter = statusFilter && statusCounts[statusFilter] > 0 ? statusFilter : null;
   // 归零不只是显示上放手——状态本身也要清掉。旧实现把 statusFilter 留在
@@ -1124,6 +1126,151 @@ export function ProjectShelf({
         (!activeStatusFilter || sessionMatchesStatus(session, activeStatusFilter, unreadDone)),
     );
   }, [chatSessions, query, searching, activeStatusFilter, unreadDone]);
+  const visibleMemoSessions = useMemo(() => {
+    if (!searching) return memoSessions;
+    const q = query.trim().toLowerCase();
+    return memoSessions.filter(
+      (session) =>
+        (!q || session.label.toLowerCase().includes(q)) &&
+        (!activeStatusFilter || sessionMatchesStatus(session, activeStatusFilter, unreadDone)),
+    );
+  }, [memoSessions, query, searching, activeStatusFilter, unreadDone]);
+
+  /** One chat-row, shared by the 聊天 section and the 收纳盒 dialog group. */
+  const renderChatRow = (session: Session) => {
+    const busy = sessionIsBusy(session.status);
+    const park = suspendControl(session, session.label);
+    const isActive = session.id === currentSessionId;
+    const isRenaming = renamingId === session.id;
+    const pinned = pinStamp(session) != null;
+    const doneUnread = unreadDone.has(session.id);
+    const beginRename = () => {
+      if (!onRenameSession) return;
+      setRenamingId(session.id);
+      setRenameDraft(session.label);
+    };
+    const chatDot = (
+      <span
+        className={`chat-row__dot${busy ? ` is-${session.status}` : doneUnread ? " is-done" : ""}`}
+        title={doneUnread ? "任务已完成" : undefined}
+        aria-label={doneUnread ? "任务已完成" : undefined}
+        aria-hidden={!doneUnread}
+      />
+    );
+    return (
+      <div
+        className={[
+          "chat-row",
+          isActive ? "is-active" : "",
+          busy ? "is-running" : "",
+          pinned ? "is-pinned" : "",
+          doneUnread ? "is-done" : "",
+        ].filter(Boolean).join(" ")}
+        key={session.id}
+        onContextMenu={(event) => {
+          if (!onOpenBeside) return;
+          event.preventDefault();
+          event.stopPropagation();
+          setBesideMenu({ session, x: event.clientX, y: event.clientY });
+        }}
+      >
+        {isRenaming ? (
+          <form
+            className="chat-row__rename"
+            onSubmit={(event) => {
+              event.preventDefault();
+              commitRename();
+            }}
+          >
+            {chatDot}
+            <input
+              ref={renameInputRef}
+              className="chat-row__rename-input"
+              value={renameDraft}
+              aria-label="Rename chat"
+              onChange={(event) => setRenameDraft(event.target.value)}
+              onBlur={() => commitRename()}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  setRenamingId(null);
+                }
+              }}
+            />
+          </form>
+        ) : (
+          <button
+            className="chat-row__select"
+            type="button"
+            onClick={() => {
+              setStatusFilter(null);
+              onChatSessionSelect?.(session);
+            }}
+            onDoubleClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              beginRename();
+            }}
+          >
+            {chatDot}
+            <span className="chat-row__content" title={session.label}>
+              {pinned && <PinnedMark className="chat-row__pin" />}
+              <strong>{session.label}</strong>
+            </span>
+          </button>
+        )}
+        <span className="chat-row__actions">
+          {onToggleSessionPin && !isRenaming && (
+            <SessionPinButton
+              pinned={pinned}
+              className="chat-row__action"
+              onToggle={(next) => onToggleSessionPin(session.id, next)}
+            />
+          )}
+          {onRenameSession && !isRenaming && (
+            <button
+              className="chat-row__action"
+              type="button"
+              title="重命名"
+              aria-label="重命名"
+              onClick={(event) => {
+                event.stopPropagation();
+                beginRename();
+              }}
+            >
+              <Pencil size={12} />
+            </button>
+          )}
+          {park.shown && onSuspendSession && !isRenaming && (
+            <button
+              className="chat-row__action"
+              type="button"
+              title="挂起"
+              aria-label="挂起"
+              onClick={(event) => {
+                event.stopPropagation();
+                onSuspendSession(session.id);
+              }}
+            >
+              <Pause size={12} />
+            </button>
+          )}
+          <button
+            className="chat-row__action chat-row__action--danger"
+            type="button"
+            title="删除"
+            aria-label="删除"
+            onClick={(event) => {
+              event.stopPropagation();
+              setPendingDelete({ kind: "chat", id: session.id, label: session.label });
+            }}
+          >
+            <Trash2 size={12} />
+          </button>
+        </span>
+      </div>
+    );
+  };
   const hasStatusCounts = SHELF_STATUS_ORDER.some(({ id }) => statusCounts[id] > 0);
   // Pin the Explorer "open here" project to the top of the shelf (still filterable).
   const allVisibleProjects = useMemo(() => {
@@ -1141,7 +1288,7 @@ export function ProjectShelf({
    * Chat list below is showing its own hits.
    */
   const noShelfMatch =
-    searching && allVisibleProjects.length === 0 && visibleChatSessions.length === 0;
+    searching && allVisibleProjects.length === 0 && visibleChatSessions.length === 0 && visibleMemoSessions.length === 0;
 
   return (
     <>
@@ -1490,7 +1637,6 @@ export function ProjectShelf({
                         <span className="session-row__actions">
                           {onToggleSessionPin && !isRenaming && (
                             <SessionPinButton
-                              label={session.label}
                               pinned={pinned}
                               className="session-row__action"
                               onToggle={(next) => onToggleSessionPin(session.id, next)}
@@ -1500,8 +1646,8 @@ export function ProjectShelf({
                             <button
                               className="session-row__action"
                               type="button"
-                              title={`Rename ${session.label}`}
-                              aria-label={`Rename ${session.label}`}
+                              title="重命名"
+                              aria-label="重命名"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 beginRename();
@@ -1514,8 +1660,8 @@ export function ProjectShelf({
                             <button
                               className="session-row__action"
                               type="button"
-                              title={park.title}
-                              aria-label={park.ariaLabel}
+                              title="挂起"
+                              aria-label="挂起"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 onSuspendSession(session.id);
@@ -1527,8 +1673,8 @@ export function ProjectShelf({
                           <button
                             className="session-row__action session-row__action--danger"
                             type="button"
-                            title={`Delete ${session.label}`}
-                            aria-label={`Delete ${session.label}`}
+                            title="删除"
+                            aria-label="删除"
                             onClick={() => {
                               setPendingDelete({ kind: "session", id: session.id, label: session.label });
                             }}
@@ -1620,150 +1766,34 @@ export function ProjectShelf({
               </button>
             )}
           </div>
-          <div className="chat-list custom-scrollbar scrollbar-autohide" aria-label="Chat conversations">
+          <div
+            className="chat-list custom-scrollbar scrollbar-autohide"
+            aria-label="Chat conversations"
+            style={{ ["--chat-list-preview" as string]: String(SESSION_LIST_PREVIEW) }}
+          >
             {visibleChatSessions.length === 0 && !searching && (
               <div className="chat-list__empty">暂无对话</div>
             )}
-            {sortSessionsNewestFirst(visibleChatSessions).map((session) => {
-              const busy = sessionIsBusy(session.status);
-              const park = suspendControl(session, session.label);
-              const isActive = session.id === currentSessionId;
-              const isRenaming = renamingId === session.id;
-              const pinned = pinStamp(session) != null;
-              const doneUnread = unreadDone.has(session.id);
-              const beginRename = () => {
-                if (!onRenameSession) return;
-                setRenamingId(session.id);
-                setRenameDraft(session.label);
-              };
-              const chatDot = (
-                <span
-                  className={`chat-row__dot${busy ? ` is-${session.status}` : doneUnread ? " is-done" : ""}`}
-                  title={doneUnread ? "任务已完成" : undefined}
-                  aria-label={doneUnread ? "任务已完成" : undefined}
-                  aria-hidden={!doneUnread}
-                />
-              );
-              return (
-                <div
-                  className={[
-                    "chat-row",
-                    isActive ? "is-active" : "",
-                    busy ? "is-running" : "",
-                    pinned ? "is-pinned" : "",
-                    doneUnread ? "is-done" : "",
-                  ].filter(Boolean).join(" ")}
-                  key={session.id}
-                  onContextMenu={(event) => {
-                    if (!onOpenBeside) return;
-                    event.preventDefault();
-                    event.stopPropagation();
-                    setBesideMenu({ session, x: event.clientX, y: event.clientY });
-                  }}
-                >
-                  {isRenaming ? (
-                    <form
-                      className="chat-row__rename"
-                      onSubmit={(event) => {
-                        event.preventDefault();
-                        commitRename();
-                      }}
-                    >
-                      {chatDot}
-                      <input
-                        ref={renameInputRef}
-                        className="chat-row__rename-input"
-                        value={renameDraft}
-                        aria-label="Rename chat"
-                        onChange={(event) => setRenameDraft(event.target.value)}
-                        onBlur={() => commitRename()}
-                        onKeyDown={(event) => {
-                          if (event.key === "Escape") {
-                            event.preventDefault();
-                            setRenamingId(null);
-                          }
-                        }}
-                      />
-                    </form>
-                  ) : (
-                    <button
-                      className="chat-row__select"
-                      type="button"
-                      title={
-                        doneUnread
-                          ? `${session.label} · 任务已完成`
-                          : `${session.label} · ${session.agentId} · double-click or pencil to rename`
-                      }
-                      onClick={() => {
-                        setStatusFilter(null);
-                        onChatSessionSelect(session);
-                      }}
-                      onDoubleClick={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        beginRename();
-                      }}
-                    >
-                      {chatDot}
-                      <span className="chat-row__content">
-                        {pinned && <PinnedMark className="chat-row__pin" />}
-                        <strong>{session.label}</strong>
-                      </span>
-                    </button>
-                  )}
-                  <span className="chat-row__actions">
-                    {onToggleSessionPin && !isRenaming && (
-                      <SessionPinButton
-                        label={session.label}
-                        pinned={pinned}
-                        className="chat-row__action"
-                        onToggle={(next) => onToggleSessionPin(session.id, next)}
-                      />
-                    )}
-                    {onRenameSession && !isRenaming && (
-                      <button
-                        className="chat-row__action"
-                        type="button"
-                        title={`Rename ${session.label}`}
-                        aria-label={`Rename ${session.label}`}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          beginRename();
-                        }}
-                      >
-                        <Pencil size={12} />
-                      </button>
-                    )}
-                    {park.shown && onSuspendSession && !isRenaming && (
-                      <button
-                        className="chat-row__action"
-                        type="button"
-                        title={park.title}
-                        aria-label={park.ariaLabel}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onSuspendSession(session.id);
-                        }}
-                      >
-                        <Pause size={12} />
-                      </button>
-                    )}
-                    <button
-                      className="chat-row__action chat-row__action--danger"
-                      type="button"
-                      title={`Delete ${session.label}`}
-                      aria-label={`Delete ${session.label}`}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setPendingDelete({ kind: "chat", id: session.id, label: session.label });
-                      }}
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  </span>
-                </div>
-              );
-            })}
+            {sortSessionsNewestFirst(visibleChatSessions).map(renderChatRow)}
+          </div>
+        </section>
+      )}
+
+      {/* ── 收纳盒 dialogs: conversations grown from memo materials ── */}
+      {onChatSessionSelect && visibleMemoSessions.length > 0 && (
+        <section className="chat-section chat-section--memo" aria-label="收纳盒对话">
+          <div className="chat-section__header" title="从收纳盒材料开出的对话">
+            <span className="chat-section__title">
+              <Archive size={13} aria-hidden />
+              收纳盒
+            </span>
+          </div>
+          <div
+            className="chat-list custom-scrollbar scrollbar-autohide"
+            aria-label="收纳盒对话"
+            style={{ ["--chat-list-preview" as string]: String(SESSION_LIST_PREVIEW) }}
+          >
+            {sortSessionsNewestFirst(visibleMemoSessions).map(renderChatRow)}
           </div>
         </section>
       )}
@@ -2267,7 +2297,8 @@ export function ProjectShelf({
             </div>
           )}
           <div className="shelf-peek__meta">
-            {projects.find((p) => p.id === hoverCard.session.projectId)?.name ?? "聊天"}
+            {projects.find((p) => p.id === hoverCard.session.projectId)?.name ??
+              (hoverCard.session.origin === "memo" ? "收纳盒" : "聊天")}
             {hoverCard.session.origin === "import" ? " · 导入" : ""}
           </div>
           <div className="shelf-peek__meta">

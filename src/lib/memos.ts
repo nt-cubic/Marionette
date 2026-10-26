@@ -67,20 +67,94 @@ export function formatMemoSize(size?: number): string {
 }
 
 /** Unix-ms string → `刚刚 / 5 分钟前 / 昨天 / 10-24 / 2025-10-24`. */
-export function formatMemoAge(createdAt: string): string {
+export function formatMemoAge(createdAt: string, now = Date.now()): string {
   const ms = Number(createdAt);
   if (!Number.isFinite(ms) || ms <= 0) return "";
-  const diff = Date.now() - ms;
+  const diff = now - ms;
   if (diff < 60_000) return "刚刚";
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
   const date = new Date(ms);
-  const today = new Date();
+  const today = new Date(now);
   const sameYear = date.getFullYear() === today.getFullYear();
   const pad = (n: number) => String(n).padStart(2, "0");
   return sameYear
     ? `${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
     : `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+export type MemoImageOrient = "landscape" | "portrait" | "square";
+
+/**
+ * Chat-app image box (Telegram / Discord / iMessage): pick which side of the
+ * card the bitmap fills, then scale the other side so the whole picture
+ * stays visible. 5:4 and wider is landscape, 4:5 and taller is portrait.
+ */
+export function memoImageOrient(width: number, height: number): MemoImageOrient {
+  if (!(width > 0) || !(height > 0)) return "square";
+  const ratio = width / height;
+  if (ratio >= 5 / 4) return "landscape";
+  if (ratio <= 4 / 5) return "portrait";
+  return "square";
+}
+
+/** Host of a link memo (`www.` stripped). Bad URLs fall back to the raw string. */
+export function memoLinkHost(content?: string): string {
+  if (!content) return "";
+  try {
+    return new URL(content).host.replace(/^www\./i, "");
+  } catch {
+    return content;
+  }
+}
+
+export type MemoDayGroup = {
+  key: string;
+  label: string;
+  entries: MemoEntry[];
+};
+
+function localDayKey(ms: number): string {
+  const date = new Date(ms);
+  return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`;
+}
+
+function localDayLabel(ms: number, now: number): string {
+  const date = new Date(ms);
+  const today = new Date(now);
+  const startToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+  const startThat = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const diffDays = Math.round((startToday - startThat) / 86_400_000);
+  if (diffDays === 0) return "今天";
+  if (diffDays === 1) return "昨天";
+  if (date.getFullYear() === today.getFullYear()) {
+    return `${date.getMonth() + 1}月${date.getDate()}日`;
+  }
+  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
+}
+
+/**
+ * Consecutive day buckets for a newest-first list. Invalid timestamps keep
+ * their own unlabeled group so they still render.
+ */
+export function groupMemosByDay(entries: MemoEntry[], now = Date.now()): MemoDayGroup[] {
+  const groups: MemoDayGroup[] = [];
+  for (const entry of entries) {
+    const ms = Number(entry.createdAt);
+    const valid = Number.isFinite(ms) && ms > 0;
+    const key = valid ? localDayKey(ms) : `unknown:${entry.id}`;
+    const last = groups[groups.length - 1];
+    if (last && last.key === key) {
+      last.entries.push(entry);
+      continue;
+    }
+    groups.push({
+      key,
+      label: valid ? localDayLabel(ms, now) : "",
+      entries: [entry],
+    });
+  }
+  return groups;
 }
 
 /**
