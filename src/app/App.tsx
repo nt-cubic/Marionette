@@ -148,6 +148,7 @@ import {
 } from "../lib/sessionHistory";
 import { formatPinsForSend } from "../lib/quoteComment";
 import { findLinkTargets } from "../lib/linkTargets";
+import { SPEC_ACTION_EVENT } from "../lib/specSchema";
 import {
   classifyAgentError,
   formatAcpRpcError,
@@ -5204,6 +5205,18 @@ export function App() {
   const prefillComposer = useCallback((text: string) => {
     setComposerPrefill({ text, token: Date.now() });
   }, []);
+
+  // Spec-card action buttons (```spec fences, SpecCard.tsx) only dispatch this
+  // event; routing the prompt into the composer happens here. Prefill, never
+  // auto-send — the user stays in control of what goes to the agent.
+  useEffect(() => {
+    const onSpecAction = (event: Event) => {
+      const prompt = (event as CustomEvent<string>).detail;
+      if (typeof prompt === "string" && prompt.trim()) prefillComposer(prompt);
+    };
+    window.addEventListener(SPEC_ACTION_EVENT, onSpecAction);
+    return () => window.removeEventListener(SPEC_ACTION_EVENT, onSpecAction);
+  }, [prefillComposer]);
 
   const handleAbsorbPlan = useCallback(() => {
     const sid = currentSessionIdRef.current;

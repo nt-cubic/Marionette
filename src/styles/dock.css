@@ -253,37 +253,9 @@ body::after {
   display: none;
 }
 
-/* Composer toolbar: everything in one flowing group, send pinned last.
-   The agent version and the model's provider prefix live in the menus. */
-.dock-mode .composer__toolbar {
-  flex-wrap: wrap;
-  justify-content: flex-start;
-  gap: 6px 4px;
-}
-
-.dock-mode .composer__controls,
-.dock-mode .composer__actions {
-  display: contents;
-}
-
-.dock-mode .composer-menu-anchor--send {
-  order: 99;
-  margin-left: auto;
-}
-
-.dock-mode .composer-select__agent-version,
-.dock-mode .composer-select__source {
-  display: none;
-}
-
-/* Docked strip (2026-10-25): the five selector chips collapse into the single
-   composer hub (＋ stays — attaching a file stays one tap). The chips' anchors
-   remain in the flow so their menus still open, positioned by the clamp pass. */
-.dock-mode .composer-mode-chip,
-.dock-mode .composer-select--model,
-.dock-mode .composer-select--agent {
-  display: none;
-}
+/* Composer toolbar collapse (hub / wrap / send-last) lives on
+   `.composer.is-compact` in stream-cards.css. Docked always sets that class;
+   a floating/split composer under ~580px does too. */
 
 /* The hub button itself: model label + sliders glyph, one row, never wraps. */
 .composer-dock-hub {
@@ -396,13 +368,36 @@ body::after {
   height: auto;
   min-height: 38px;
   max-height: min(28vh, 190px);
+  /* Auto mode follows the typed content (bounded above) so a long draft is
+     not stuck in a 2-row scrolling slit. Pinned mode below reverts this. */
+  field-sizing: content;
 }
 
-/* The strip has no free vertical space to trade: hide the height drag handle
-   and the expand toggle (the auto-height composer already follows its rows). */
-.dock-mode .composer__resize,
+/* The expand toggle has no tall/short presets in the strip; the height drag
+   handle stays live — dragging pins the height (block below), double-click
+   returns to content-driven auto sizing. */
 .dock-mode .composer-expand {
   display: none;
+}
+
+/* Pinned height (user dragged the handle; inline height + is-dock-fixed come
+   from Composer): the field refills the composer and the textarea scrolls
+   inside its 1fr row, exactly like the floating window. Box bounds still come
+   from the min/max on .dock-mode .composer above. */
+.dock-mode .composer.is-dock-fixed .composer__field {
+  height: 100%;
+  grid-template-rows: minmax(36px, 1fr) auto;
+}
+
+.dock-mode .composer.is-dock-fixed .composer__field.has-attachments {
+  grid-template-rows: auto minmax(36px, 1fr) auto;
+}
+
+.dock-mode .composer.is-dock-fixed textarea {
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+  field-sizing: fixed;
 }
 
 .dock-mode .composer-mode-chip__label,

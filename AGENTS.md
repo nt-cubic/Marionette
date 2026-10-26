@@ -103,9 +103,10 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
      `onNewChatIn`。菜单状态与 ⋯ 合并成 `openMenu: "more" | "new" | null`。
   4. **贴边 composer 工具栏收成单入口**：`<Composer docked>` 只渲染 hub（滑杆图标 + 当前模型名；
      menu 状态新增 `"hub"`），hub 行 `setMenu("mode"/"permission"/"model"/"agent")` 复用原有菜单
-     与提交链路；芯片本体 dock 态 `display:none`（dock.css），但**锚点必须保留在流里**（菜单挂在
+     与提交链路；芯片本体在 `.composer.is-compact` 下 `display:none`（stream-cards.css），但**锚点必须保留在流里**（菜单挂在
      锚点内，夹边 effect 靠锚点几何定位）。always-approve 无子菜单，hub 行内直切
      （`toggleAlwaysApprove` 抽出与浮窗芯片共用，冷会话只落盘偏好）。＋ 附文件与发送钮不进 hub。
+     **普通窗口 / 分屏过窄也走同一套**：composer 自身宽度 ≤580px 加 `is-compact`（贴边始终加），≥640px 才卸；量的是这一格 footer，不是整窗。
   5. **窄条宽度可拖（320–560）**：`DockResizeGrip`（DockChrome.tsx 导出；App 只在 docked-expanded
      且无整页时渲染，`position:fixed` 贴内缘全高）。换算**相对活的客户区**：右贴
      `新宽 = 当前宽 − clientX`、左贴 `新宽 = clientX`——每次 apply 后内缘正好落在指针下，下一个
@@ -156,10 +157,17 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
 聊天内容上方不放收纳盒或「能力与上下文」工具栏，分屏也不重复添加入口。
 `.center-workspace` 与 `.session-pane__body` 都是「对话 1fr | composer auto」两行；
 分屏时 `.center-workspace` 只有 SplitWorkspace，行改成 `1fr`。贴边入口仍由 DockChrome 提供。
-**贴边 composer** 由 `<Composer docked>` 关掉 inline 高度与拖拽/展开按钮，改由内容撑高（`.dock-mode .composer`
-auto + min/max），底边正好压在 footer 上沿；普通窗口仍用记住的 inline 高度。
+**贴边 composer（2026-10-26 改）**：默认内容撑高（`.dock-mode .composer` auto + min/max，
+textarea `field-sizing: content` 跟着正文长、上限 min(28vh,190px)，底边正好压在 footer 上沿）；
+**顶边拖拽把手在贴边态保留**——拖动即钉住高度（`.is-dock-fixed`：field 回到浮窗式
+`minmax(36px,1fr)` 填满 + textarea 内部滚动，clamp 84–min(340,52vh)），**双击把手恢复自动高度**。
+钉住值存独立 key `marionette-dock-composer-height`（无 key = 自动），浮窗自己的
+`marionette-composer-height` 互不干扰；拖拽 effect 里 **没实际移动的 mouseup 不落值**（别把
+自动态一碰就冻住）。展开按钮（`composer-expand`）在 dock 态仍隐藏。
 **Composer 下拉夹边**：`Composer.tsx` 的 menu 布局 effect 会在打开后测量每个 `.composer-menu`，按视口
 8px 边距改写 `left/right`（400px 窄条里右对齐的模型菜单原先向左溢出，被 WebView 裁到只剩一条）。
+**窄格 / 窄窗底栏**：分屏或撕窗把某一格 composer 压到 ≤580px 时，走与贴边相同的 hub（`.composer.is-compact`）；
+≥640px 摊开芯片。阈值带 60px 回差，拖分屏条不会在边界闪。
 
 **2026-10-25 反馈批二（侧栏状态过滤 + 挂起豁免）**：
 1. **状态过滤不再「看起来像数据丢了」**（`ProjectShelf.tsx`）：点「运行中/等你/已完成/出错」chip 后，
@@ -199,6 +207,18 @@ thought / tool / command / search 等泳道与时间条），**下方默认关�
 `endedAt`（turn/complete 只盖最后一张 Reply），要把后面 Reply 的 `createdAt` 当 `untilMs`
 收尾，否则组标题会只剩工具那几秒。实时最后一帧与冻结图的 span 起止必须一致。
 回归：`npx tsx scripts/verify-activity-cluster.mts`。
+
+## 富文本渲染管线（2026-10-26 接线定稿）
+
+MarkdownBody 之上的懒加载富文本（公式/代码高亮/流程图/生成式卡片）。库件在 `5adf569` 入库、本次接线；改前先过这几条：
+
+- **分流顺序**：`MarkdownBody` 先跑 `richMarkdown.ts::scanRichFeatures`（纯字符串扫描，围栏状态机与 micromark 同口径——info string 按**首 token** 小写比对）→ `mathPack.ts::useMathPack` 懒载 remark-math + rehype-katex（`singleDollarTextMath:false`，单 `$` 恒字面）→ `MdPre` 按 code 子元素 className 的语言路由：`mermaid` → `MdMermaid`、`spec` → `SpecCard`、其余 → `MdCodeBlock`（shiki 200ms 防抖 + 120 块缓存，虚拟列表重挂载不重高亮）。
+- **math 归一化别动围栏内**：`normalizeMathDelimiters` 只在围栏外做两件事——`\[..\]`→`$$..$$`，**整行只有一对 `$$..$$`**（body 无 `$`）的转成多行 block 形式。后者是因为 micromark 的 math **flow**（display）要求 `$$` 后接行尾，单行 `$$E=mc^2$$` 原本只解析成段落内 text math（inline）。prose 里嵌着的 `$$..$$` 保持 inline。先跑 `prepareMarkdownForRender` 再归一化（修好围栏才判得准）。
+- **hooks 顺序红线**：`MarkdownBody` 的 hooks（scan/useMemo/useMathPack）必须在 `if (!text) return null` **之前**——text 在空/非空间翻转时早退会打断 hook 链。
+- **spec 卡片（生成式 UI）**：`SpecCard.tsx` 渲染 `specSchema.ts` 校验过的 card/table/steps/chart；chart 是零依赖手绘（bar=flex 条、line=SVG polyline、pie=stroke-dasharray 圆环），系列色走 `.md-spec__series-N` 自定义属性（主题 token 派生，深浅主题免费）。actions 按钮**只派发** `SPEC_ACTION_EVENT`（`marionette:spec-action`，detail=prompt 字符串），`App.tsx` 监听后 `prefillComposer`（只预填不自动发）。解析三道防护（JSON 容错/原型污染+深度/形状+尺寸上限）+ React 错误边界兜渲染异常；流式未完 JSON 安静显示「等待数据完整」+ 源码。
+- **类型坑**：`requireStr` 必须是 `{ok:true|false}` 判别联合——可选属性联合在真值检查下不收窄，`string|undefined` 会漏进严格调用点。CSS 导入类型来自 `src/vite-env.d.ts` 的 `vite/client`（katex css 动态 import 靠它）。`remarkPlugins` 里带配置的插件要显式元组类型，数组推断进不了 `PluggableList`。
+- 样式在 `src/styles/rich-markdown.css`（经 app.css @import，位于 transcript.css 之后）；shiki 双主题 span 颜色 = `var(--shiki-dark)`，`[data-theme="white"]` 下切 `--shiki-light`。
+- 回归：`npx tsx scripts/verify-rich-markdown.mts`（scan/归一化/spec schema，24 项）。
 
 ## 再次进入对话（agent re-entry，2026-10-25）
 

@@ -807,6 +807,8 @@
   padding: 0;
   background: var(--editor-toolbar-bg);
   transition: height 140ms ease;
+  container-type: inline-size;
+  container-name: composer;
 }
 
 /* Anchor for the queued-strip floating above the composer. */
@@ -1650,6 +1652,48 @@ body.is-composer-resizing .composer {
   overflow: visible;
 }
 
+/* Compact toolbar: hub is in the tree always; hidden until this composer
+   is too narrow. The container query covers the first paint of a split
+   pane; `.is-compact` is the JS hysteresis (enter 580 / exit 640). */
+.composer-menu-anchor--hub {
+  display: none;
+}
+
+.composer.is-compact .composer-menu-anchor--hub {
+  display: block;
+}
+
+.composer.is-compact .composer__toolbar {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 6px 4px;
+}
+
+.composer.is-compact .composer__controls,
+.composer.is-compact .composer__actions {
+  display: contents;
+}
+
+.composer.is-compact .composer-menu-anchor--send {
+  order: 99;
+  margin-left: auto;
+}
+
+.composer.is-compact .composer-mode-chip,
+.composer.is-compact .composer-select--model,
+.composer.is-compact .composer-select--agent {
+  display: none;
+}
+
+.composer.is-compact .composer-select__agent-version,
+.composer.is-compact .composer-select__source {
+  display: none;
+}
+
+.composer.is-compact .composer-dock-hub {
+  max-width: min(220px, 46%);
+}
+
 .composer-tool,
 .composer-select {
   display: inline-flex;
@@ -1772,6 +1816,45 @@ body.is-composer-resizing .composer {
 .composer-select__effort {
   flex: 0 0 auto;
   color: var(--text-faint);
+}
+
+/* First paint of a pane already under 580px — same collapse as `.is-compact`,
+   no JS wait. After the chip display rules so these win on specificity. */
+@container composer (max-width: 580px) {
+  .composer-menu-anchor--hub {
+    display: block;
+  }
+
+  .composer__toolbar {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    gap: 6px 4px;
+  }
+
+  .composer__controls,
+  .composer__actions {
+    display: contents;
+  }
+
+  .composer-menu-anchor--send {
+    order: 99;
+    margin-left: auto;
+  }
+
+  .composer-mode-chip,
+  .composer-select.composer-select--model,
+  .composer-select.composer-select--agent {
+    display: none;
+  }
+
+  .composer-select__agent-version,
+  .composer-select__source {
+    display: none;
+  }
+
+  .composer-dock-hub {
+    max-width: min(220px, 46%);
+  }
 }
 
 .composer__error-toast {

@@ -225,9 +225,9 @@ type ComposerProps = {
    */
   onEmptyActivate?: () => void;
   /**
-   * Docked strip: height follows the content (no remembered inline height, no
-   * drag-resize), so the composer sits directly on the footer bar instead of
-   * carrying a tall empty slab from the last floating-window size.
+   * Docked strip: height starts content-driven (auto); dragging the top-edge
+   * handle pins it (persisted separately from the floating height — key
+   * absent = auto), double-click the handle returns to auto.
    */
   docked?: boolean;
 };
@@ -310,6 +310,23 @@ const COMPOSER_HEIGHT_MIN = 100;
 const COMPOSER_HEIGHT_MAX = 480;
 const COMPOSER_HEIGHT_DEFAULT = 112;
 const COMPOSER_HEIGHT_KEY = "marionette-composer-height";
+/**
+ * Collapse the chip row into the dock hub once the composer itself (not the
+ * window) is too narrow. Enter/exit are split so dragging a split sash across
+ * the boundary does not flicker. 580 is about where even truncated chips
+ * (mode + permission + always-approve + model + agent + send) collide.
+ */
+const COMPACT_TOOLBAR_ENTER_PX = 580;
+const COMPACT_TOOLBAR_EXIT_PX = 640;
+/**
+ * Docked strip composer height. Absent key = content-driven auto sizing
+ * (default); a number is the height the user pinned by dragging the top-edge
+ * handle. Kept separate from the floating-window height so docking never
+ * drags the remembered floating size along.
+ */
+const DOCK_COMPOSER_HEIGHT_KEY = "marionette-dock-composer-height";
+const DOCK_COMPOSER_HEIGHT_MIN = 84;
+const DOCK_COMPOSER_HEIGHT_MAX = 340;
 /** Enter sends immediately (vs default Ctrl+Enter). */
 const SEND_ON_ENTER_KEY = "marionette-send-on-enter";
 
@@ -338,6 +355,25 @@ function readSendOnEnter(): boolean {
 
 function clampComposerHeight(n: number): number {
   return Math.min(COMPOSER_HEIGHT_MAX, Math.max(COMPOSER_HEIGHT_MIN, Math.round(n)));
+}
+
+function clampDockComposerHeight(n: number): number {
+  // The dock css caps the box at min(52vh, 340px); honor the vh leg too so a
+  // drag stops exactly where the stylesheet would clamp it anyway.
+  const vhCap = Math.round(window.innerHeight * 0.52);
+  const max = Math.min(DOCK_COMPOSER_HEIGHT_MAX, Math.max(DOCK_COMPOSER_HEIGHT_MIN, vhCap));
+  return Math.min(max, Math.max(DOCK_COMPOSER_HEIGHT_MIN, Math.round(n)));
+}
+
+function readDockComposerHeight(): number | null {
+  try {
+    const raw = window.localStorage.getItem(DOCK_COMPOSER_HEIGHT_KEY);
+    const n = raw ? Number(raw) : NaN;
+    if (Number.isFinite(n)) return clampDockComposerHeight(n);
+  } catch {
+    // ignore
+  }
+  return null;
 }
 
 function applyCapabilities(
@@ -630,6 +666,10 @@ export function Composer({
   /** Mirror of composingRef so chip visibility re-renders on IME start/end. */
   const [isComposing, setIsComposing] = useState(false);
   const [composerHeight, setComposerHeight] = useState(readComposerHeight);
+  /** Docked strip: null = content-driven auto; a number = user-pinned height. */
+  const [dockComposerHeight, setDockComposerHeight] = useState<number | null>(readDockComposerHeight);
+  /** Floating/split: composer narrower than COMPACT_TOOLBAR_ENTER_PX. */
+  const [compactByWidth, setCompactByWidth] = useState(false);
   const [resizingComposer, setResizingComposer] = useState(false);
   /** Enter sends immediately instead of Ctrl+Enter. Persisted globally. */
   const [sendOnEnter, setSendOnEnter] = useState(readSendOnEnter);
@@ -708,6 +748,10 @@ export function Composer({
   const pinsRef = useRef<{ pins: OptionPins; until: number } | null>(null);
   const composerHeightRef = useRef(composerHeight);
   composerHeightRef.current = composerHeight;
+  const dockComposerHeightRef = useRef(dockComposerHeight);
+  dockComposerHeightRef.current = dockComposerHeight;
+  const compactByWidthRef = useRef(compactByWidth);
+  compactByWidthRef.current = compactByWidth;
   /** Latest disk prefs, read by effects that must not re-run on every write. */
   const sessionPrefsRef = useRef(sessionPrefs);
   sessionPrefsRef.current = sessionPrefs;
@@ -820,6 +864,31 @@ export function Composer({
     return () => ro.disconnect();
   }, [imageAttachments.length]);
 
+  // Collapse chips into the dock hub when *this* composer is too narrow
+  // (split pane, torn-off window, or a squeezed floating center). Docked
+  // always uses the hub regardless of width.
+  useLayoutEffect(() => {
+    if (docked) return;
+    const el = composerRef.current;
+    if (!el) return;
+    const apply = (width: number) => {
+      const next =
+        width <= COMPACT_TOOLBAR_ENTER_PX
+          ? true
+          : width >= COMPACT_TOOLBAR_EXIT_PX
+            ? false
+            : compactByWidthRef.current;
+      if (next !== compactByWidthRef.current) setCompactByWidth(next);
+    };
+    apply(el.getBoundingClientRect().width);
+    const ro = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? el.getBoundingClientRect().width;
+      apply(width);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [docked]);
+
   // Persist composer height.
   useEffect(() => {
     try {
@@ -828,6 +897,19 @@ export function Composer({
       console.warn("[Composer] failed to persist composer height", error);
     }
   }, [composerHeight]);
+
+  // Persist docked composer height (absent key = auto sizing).
+  useEffect(() => {
+    try {
+      if (dockComposerHeight == null) {
+        window.localStorage.removeItem(DOCK_COMPOSER_HEIGHT_KEY);
+      } else {
+        window.localStorage.setItem(DOCK_COMPOSER_HEIGHT_KEY, String(dockComposerHeight));
+      }
+    } catch (error) {
+      console.warn("[Composer] failed to persist docked composer height", error);
+    }
+  }, [dockComposerHeight]);
 
   // Persist send-on-Enter preference.
   useEffect(() => {
@@ -838,28 +920,37 @@ export function Composer({
     }
   }, [sendOnEnter]);
 
-  // Drag-resize composer from the top edge (no React thrash mid-drag).
+  // Drag-resize composer from the top edge (no React thrash mid-drag). Docked
+  // drags pin the strip composer's height (double-click the handle returns to
+  // auto); floating drags keep the shared remembered height as before.
   useEffect(() => {
     if (!resizingComposer) return;
     let raf = 0;
+    let moved = false;
     const onMove = (event: MouseEvent) => {
       if (raf) cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
         raf = 0;
         const el = composerRef.current;
         if (!el) return;
+        moved = true;
         const bottom = el.getBoundingClientRect().bottom;
-        const next = clampComposerHeight(bottom - event.clientY);
+        const clamp = docked ? clampDockComposerHeight : clampComposerHeight;
         // Persist the base height without the attachment strip; the strip is
         // added on top when pills are present.
-        const base = clampComposerHeight(next - attachmentsExtraRef.current);
-        composerHeightRef.current = base;
+        const base = clamp(clamp(bottom - event.clientY) - attachmentsExtraRef.current);
+        if (docked) dockComposerHeightRef.current = base;
+        else composerHeightRef.current = base;
         el.style.height = `${base + attachmentsExtraRef.current}px`;
       });
     };
     const onUp = () => {
       if (raf) cancelAnimationFrame(raf);
-      setComposerHeight(composerHeightRef.current);
+      // A press without movement must not pin an auto-height strip composer.
+      if (moved) {
+        if (docked) setDockComposerHeight(dockComposerHeightRef.current);
+        else setComposerHeight(composerHeightRef.current);
+      }
       setResizingComposer(false);
     };
     document.body.classList.add("is-composer-resizing");
@@ -871,7 +962,7 @@ export function Composer({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [resizingComposer]);
+  }, [resizingComposer, docked]);
 
   // HARD RULE: capability state is rebound whenever dialog identity changes.
   // Prevents "OpenCode selected but Claude models still listed". Re-seeding from
@@ -2673,6 +2764,14 @@ export function Composer({
     });
   };
 
+  const dockFixedHeight = docked && dockComposerHeight != null ? dockComposerHeight : null;
+  /** Same hub as the docked strip: chips collapse, ＋ and send stay out. */
+  const compactToolbar = docked || compactByWidth;
+
+  useEffect(() => {
+    if (!compactToolbar && menu === "hub") setMenu(null);
+  }, [compactToolbar, menu]);
+
   return (
     <footer
       ref={composerRef}
@@ -2683,23 +2782,35 @@ export function Composer({
         resizingComposer ? "is-resizing" : "",
         hasModes ? "has-mode" : "",
         docked ? "is-docked" : "",
+        compactToolbar ? "is-compact" : "",
+        dockFixedHeight != null ? "is-dock-fixed" : "",
       ]
         .filter(Boolean)
         .join(" ")}
       data-mode-tone={tone}
-      style={docked ? undefined : { height: composerHeight + attachmentsExtra }}
+      style={
+        docked
+          ? dockFixedHeight != null
+            ? { height: dockFixedHeight + attachmentsExtra }
+            : undefined
+          : { height: composerHeight + attachmentsExtra }
+      }
       aria-label="Composer"
       onPointerDown={activateEmpty}
     >
-      {/* Drag handle: top edge — free height between MIN/MAX, remembered. */}
+      {/* Drag handle: top edge — free height between MIN/MAX, remembered.
+          Docked: double-click returns to content-driven auto height. */}
       <button
         type="button"
         className="composer__resize"
         aria-label="Resize composer height"
-        title="Drag to resize"
+        title={docked ? "Drag to resize · double-click to reset" : "Drag to resize"}
         onMouseDown={(event) => {
           event.preventDefault();
           setResizingComposer(true);
+        }}
+        onDoubleClick={() => {
+          if (docked) setDockComposerHeight(null);
         }}
       />
       {/* Left rail — always-on mode cue, colored by tone. */}
@@ -3054,12 +3165,10 @@ export function Composer({
             >
               <Plus size={14} />
             </button>
-            {/* Docked strip (2026-10-25): one hub entry instead of the chip row.
-                At 400px the five selector chips wrapped into a ragged two-line
-                tray; the hub lists every axis with its current value and opens
-                the very same menus the (dock-hidden) chips own. */}
-            {docked && (
-              <div className="composer-menu-anchor composer-menu-anchor--hub">
+            {/* Compact toolbar hub. Always in the tree so a container query
+                can reveal it on the first paint of a narrow pane (JS hysteresis
+                lags one frame). Hidden by CSS when the composer is wide. */}
+            <div className="composer-menu-anchor composer-menu-anchor--hub">
                 <button
                   className="composer-dock-hub"
                   type="button"
@@ -3140,22 +3249,19 @@ export function Composer({
                     </button>
                   </div>
                 )}
-              </div>
-            )}
+            </div>
             {/* Execution mode — flat control beside the tools, matching model/agent. */}
             {hasModes && displayMode && (
               <div className="composer-menu-anchor composer-menu-anchor--mode">
-                {!docked && (
-                  <button
-                    className="composer-mode-chip"
-                    type="button"
-                    title="Execution mode (Tab to cycle)"
-                    aria-expanded={menu === "mode"}
-                    onClick={() => setMenu(menu === "mode" ? null : "mode")}
-                  >
-                    <span className="composer-mode-chip__label">{displayModeLabel}</span>
-                  </button>
-                )}
+                <button
+                  className="composer-mode-chip"
+                  type="button"
+                  title="Execution mode (Tab to cycle)"
+                  aria-expanded={menu === "mode"}
+                  onClick={() => setMenu(menu === "mode" ? null : "mode")}
+                >
+                  <span className="composer-mode-chip__label">{displayModeLabel}</span>
+                </button>
                 {menu === "mode" && (
                   <div className="composer-menu composer-menu--mode" role="menu" aria-label="Execution mode">
                     {caps!.modes.map((m) => (
@@ -3189,23 +3295,21 @@ export function Composer({
                 level allows it, so the two must not be merged. */}
             {hasPermission && (
               <div className="composer-menu-anchor composer-menu-anchor--permission">
-                {!docked && (
-                  <button
-                    className={
-                      permissionIsLoose(currentPermission)
-                        ? "composer-mode-chip composer-mode-chip--perm composer-mode-chip--perm-loose"
-                        : permissionIsReadOnly(currentPermission)
-                          ? "composer-mode-chip composer-mode-chip--perm composer-mode-chip--perm-readonly"
-                          : "composer-mode-chip composer-mode-chip--perm"
-                    }
-                    type="button"
-                    title={`${permissionTitle}: ${displayPermissionLabel}`}
-                    aria-expanded={menu === "permission"}
-                    onClick={() => setMenu(menu === "permission" ? null : "permission")}
-                  >
-                    <span className="composer-mode-chip__label">{displayPermissionLabel}</span>
-                  </button>
-                )}
+                <button
+                  className={
+                    permissionIsLoose(currentPermission)
+                      ? "composer-mode-chip composer-mode-chip--perm composer-mode-chip--perm-loose"
+                      : permissionIsReadOnly(currentPermission)
+                        ? "composer-mode-chip composer-mode-chip--perm composer-mode-chip--perm-readonly"
+                        : "composer-mode-chip composer-mode-chip--perm"
+                  }
+                  type="button"
+                  title={`${permissionTitle}: ${displayPermissionLabel}`}
+                  aria-expanded={menu === "permission"}
+                  onClick={() => setMenu(menu === "permission" ? null : "permission")}
+                >
+                  <span className="composer-mode-chip__label">{displayPermissionLabel}</span>
+                </button>
                 {menu === "permission" && (
                   <div
                     className="composer-menu composer-menu--permission"
@@ -3246,7 +3350,7 @@ export function Composer({
               </div>
             )}
             {/* Grok always-approve: the important permission axis (not plan/build). */}
-            {alwaysApproveSpec && !docked && (
+            {alwaysApproveSpec && (
               <button
                 className={
                   alwaysApprove
@@ -3275,20 +3379,18 @@ export function Composer({
             {/* Always show when caps exist (even empty for add-key prompt), or has effort */}
             {(hasModels || hasEffort || showKeyPrompt) && (
               <div className="composer-menu-anchor" ref={modelMenuAnchorRef}>
-                {!docked && (
-                  <button
-                    className="composer-select composer-select--model"
-                    type="button"
-                    title={bridgeChipTitle ?? displayModelTitle}
-                    aria-expanded={menu === "model" || menu === "effort"}
-                    onClick={() => setMenu(menu === "model" ? null : "model")}
-                  >
+                <button
+                  className="composer-select composer-select--model"
+                  type="button"
+                  title={bridgeChipTitle ?? displayModelTitle}
+                  aria-expanded={menu === "model" || menu === "effort"}
+                  onClick={() => setMenu(menu === "model" ? null : "model")}
+                >
                     <ModelChipLabel
                       text={bridgeChipLabel ?? displayModelLabel ?? "Choose model"}
                       effort={displayEffort != null && hasEffort ? String(displayEffort) : null}
                     />
-                  </button>
-                )}
+                </button>
 
                 {menu === "model" && (
                   <div
@@ -3611,24 +3713,23 @@ export function Composer({
 
             {/* ── Agent switcher ──────────────────────────────────────── */}
             <div className="composer-menu-anchor">
-              {!docked && (
-                <button
-                  className={
-                    currentHasUpdate
-                      ? "composer-select composer-select--agent has-update"
-                      : "composer-select composer-select--agent"
-                  }
-                  type="button"
-                  title={
-                    currentAgentVersion?.installed
-                      ? currentHasUpdate
-                        ? `${agent.label} v${currentAgentVersion.installed} · update ${currentAgentVersion.latest} available`
-                        : `${agent.label} v${currentAgentVersion.installed}`
-                      : `Agent for this dialog (bound to session · ${agent.id})`
-                  }
-                  aria-expanded={menu === "agent"}
-                  onClick={() => setMenu(menu === "agent" ? null : "agent")}
-                >
+              <button
+                className={
+                  currentHasUpdate
+                    ? "composer-select composer-select--agent has-update"
+                    : "composer-select composer-select--agent"
+                }
+                type="button"
+                title={
+                  currentAgentVersion?.installed
+                    ? currentHasUpdate
+                      ? `${agent.label} v${currentAgentVersion.installed} · update ${currentAgentVersion.latest} available`
+                      : `${agent.label} v${currentAgentVersion.installed}`
+                    : `Agent for this dialog (bound to session · ${agent.id})`
+                }
+                aria-expanded={menu === "agent"}
+                onClick={() => setMenu(menu === "agent" ? null : "agent")}
+              >
                   <span className="composer-select__agent-label">{agent.label}</span>
                   {currentAgentVersion?.installed && (
                     <span className="composer-select__agent-version">
@@ -3640,8 +3741,7 @@ export function Composer({
                       ↑
                     </span>
                   )}
-                </button>
-              )}
+              </button>
               {menu === "agent" && (
                 <div className="composer-menu composer-menu--agent" role="listbox" aria-label="Switch agent">
                   {agents
