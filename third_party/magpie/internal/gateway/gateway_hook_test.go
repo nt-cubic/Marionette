@@ -434,3 +434,52 @@ export async function onResponse(reply,ctx){await fetch(ctx.options.url,{method:
 		t.Fatal("onResponse never ran after the client hung up on a whole reply")
 	}
 }
+
+// A hooks package with its own page saves its options from that page. The
+// host hands each hook the options it loaded with, so the save starts the
+// host again; one that didn't left the hook on the old options until magpie
+// restarted (magpie-community/plugins#117's PowerContext page).
+func TestGatewayHookSeesOptionsSavedFromItsPage(t *testing.T) {
+	t.Setenv("MAGPIE_BUN", testenv.Bun(t))
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Cleanup(plugin.Settle)
+	dir := filepath.Join(t.TempDir(), "paged-hook")
+	if err := os.MkdirAll(filepath.Join(dir, "page"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"package.json":    `{"name":"paged-hook","version":"0.0.1","magpie":{"hooks":"./paged.hooks.mjs","page":{"title":"Paged","file":"page/index.html"}}}`,
+		"paged.hooks.mjs": `export function onRequest(body,ctx){body.tag=ctx.options.tag;return body}`,
+		"page/index.html": `<!doctype html><title>Paged</title>`,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := plugin.Add(t.Context(), dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := plugin.SetOptions(dir, map[string]any{"tag": "first"}); err != nil {
+		t.Fatal(err)
+	}
+	tag := func() any {
+		req := httptest.NewRequest("POST", "http://127.0.0.1/v1/chat/completions", nil)
+		req.RemoteAddr = "127.0.0.1:1234"
+		var got map[string]any
+		w := httptest.NewRecorder()
+		_, b, done := gatewayHooks(w, req, provider.Chat, []byte(`{"model":"fake/m1","messages":[{"role":"user","content":"hello"}]}`))
+		done()
+		json.Unmarshal(b, &got)
+		return got["tag"]
+	}
+	if got := tag(); got != "first" {
+		t.Fatalf("tag=%v before the page saved, want first", got)
+	}
+	if err := plugin.SetPageOptions(dir, map[string]any{"tag": "second"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := tag(); got != "second" {
+		t.Fatalf("tag=%v after the page saved, want second", got)
+	}
+}

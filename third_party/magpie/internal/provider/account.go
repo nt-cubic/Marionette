@@ -66,6 +66,11 @@ type Account struct {
 	// Code's own while Claude Code is signed out (claude_dirs.go).
 	standIn bool
 
+	// unnamed is Claude Code's own sign-in while it is known by no name:
+	// User is a name made from its plan ("Claude Max") until Claude Code
+	// puts the account's profile in its config, as its first run does.
+	unnamed bool
+
 	// codeAssist is where a Gemini CLI or Antigravity account's requests
 	// go (google.go).
 	codeAssist string
@@ -786,13 +791,29 @@ func claudeAccount() (Provider, bool) {
 		}
 		user = claudeSignInOwner(readLogins(), l).User
 	}
-	if user == "" {
+	unnamed := user == ""
+	if unnamed {
 		user = "Claude account"
 		if plan != "" {
 			user = "Claude " + strings.ToUpper(plan[:1]) + plan[1:]
 		}
 	}
-	return claudeProvider(&Account{Agent: "claude", User: user, Plan: plan}), true
+	return claudeProvider(&Account{Agent: "claude", User: user, Plan: plan, unnamed: unnamed}), true
+}
+
+// Unnamed says the account is Claude Code's own sign-in known by no name
+// yet: its User is made from its plan, and it is named by its email once
+// Claude Code's first run has put its profile in Claude Code's config.
+func (a *Account) Unnamed() bool { return a != nil && a.unnamed }
+
+// ClaudeOwnName is the name Claude Code's own sign-in is served by now,
+// and false while it has none (Unnamed) or Claude Code is signed out.
+func ClaudeOwnName() (string, bool) {
+	p, ok := claudeAccount()
+	if !ok || p.Account == nil || !p.Account.AgentsOwn() || p.Account.standIn || p.Account.unnamed {
+		return "", false
+	}
+	return p.Account.User, true
 }
 
 // StandIn says the account is a saved one served in the place of the

@@ -313,6 +313,28 @@ const renewing = new Map() // account → its sign-in's renewal under way
 const unrenewed = new Map() // account → its last renewal that failed: {at, secret, gone}
 let config = { provider: {} } // what the plugins' config hooks made of it
 
+// loadWait bounds one plugin's load (its import and its plugin function)
+// and one config hook; listWait bounds one provider's models hook in a
+// listing. A plugin stuck on its vendor (a sign-in answered 401 and tried
+// again, a vendor that never answers) is then given up on alone: the
+// plugins load side by side and every other one is listed meanwhile,
+// rather than all waiting behind it until magpie's own deadline fails the
+// whole host or the whole list. magpie sets both at init.
+let loadWait = 20 * 1000
+let listWait = 20 * 1000
+
+// late is what a step that took longer than ms gives instead of its own
+// result: an error saying so. The step goes on by itself; what it gives
+// later is dropped.
+class Late extends Error {}
+function inTime(step, ms, what) {
+  let timer
+  const late = new Promise((_, no) => {
+    timer = setTimeout(() => no(Object.assign(new Late(`${what} didn't finish in ${Math.round(ms / 1000)}s`), { plain: true })), ms)
+  })
+  return Promise.race([Promise.resolve().then(step), late]).finally(() => clearTimeout(timer))
+}
+
 // ---- a provider's own proxy ---------------------------------------------------
 
 // A request made for a provider or an account with a proxy of its own
@@ -1217,41 +1239,56 @@ async function loadPlugins(list) {
       loaded.push(r.error ? { spec: r.spec, error: r.error } : { spec: r.spec })
     }
   }
-  for (const p of list) {
-    const isPi = pis.includes(p)
-    if (isPi && !p.gateway) continue
-    try {
-      let gateway
-      if (p.gateway) {
-        gateway = await import(pathToFileURL(p.gateway).href)
-        if (typeof gateway.onRequest !== "function") throw new Error("magpie.hooks exports no onRequest")
-      }
-      let fns = []
-      // A gateway-only package needs no OpenCode entry. Mixed packages
-      // still load their provider hooks through the usual entry rules.
-      const pkg = readJSON(path.join(p.target, "package.json"))
-      const onlyGateway = isPi || (p.gateway && (p.gateway === p.target || (!pkg?.main && !pkg?.exports && !INDEX_FILES.some((f) => fs.existsSync(path.join(p.target, f))))))
-      for (const file of onlyGateway ? [] : entries(p.target)) {
-        fns = servers(await import(pathToFileURL(file).href))
-        if (fns.length) break
-      }
-      if (fns.length === 0 && !gateway) throw new Error("exports no OpenCode plugin function")
-      for (const fn of fns) hooks.push({ spec: p.spec, target: p.target, hooks: (await fn(input, p.options)) ?? {} })
-      if (gateway) gatewayHooks.push({ spec: p.spec, options: p.options ?? {}, onRequest: gateway.onRequest,
-        onResponse: gateway.onResponse,
-        state: { calls: 0, failures: 0, totalMillis: 0, lastOutcome: "idle", lastBytes: 0 } })
-      if (!isPi) loaded.push({ spec: p.spec })
-    } catch (e) {
-      const error = e?.plain ? e.message : String(e?.stack ?? e)
-      if (isPi) loaded.find((r) => r.spec === p.spec).error = error
-      else loaded.push({ spec: p.spec, error })
+  // each plugin loads by itself, side by side, so one that is slow or
+  // stuck holds up none of the others; what they add is kept in the
+  // list's order all the same, as a later plugin's hooks win
+  const one = async (p, isPi) => {
+    let gateway
+    if (p.gateway) {
+      gateway = await import(pathToFileURL(p.gateway).href)
+      if (typeof gateway.onRequest !== "function") throw new Error("magpie.hooks exports no onRequest")
     }
+    let fns = []
+    // A gateway-only package needs no OpenCode entry. Mixed packages
+    // still load their provider hooks through the usual entry rules.
+    const pkg = readJSON(path.join(p.target, "package.json"))
+    const onlyGateway = isPi || (p.gateway && (p.gateway === p.target || (!pkg?.main && !pkg?.exports && !INDEX_FILES.some((f) => fs.existsSync(path.join(p.target, f))))))
+    for (const file of onlyGateway ? [] : entries(p.target)) {
+      fns = servers(await import(pathToFileURL(file).href))
+      if (fns.length) break
+    }
+    if (fns.length === 0 && !gateway) throw new Error("exports no OpenCode plugin function")
+    const got = []
+    for (const fn of fns) got.push({ spec: p.spec, target: p.target, hooks: (await fn(input, p.options)) ?? {} })
+    return { got, gateway }
+  }
+  const results = await Promise.all(list.map((p) => {
+    const isPi = pis.includes(p)
+    if (isPi && !p.gateway) return null
+    return inTime(() => one(p, isPi), loadWait, "the plugin's load").then((r) => ({ p, isPi, ...r }), (e) => ({ p, isPi, e }))
+  }))
+  for (const r of results) {
+    if (!r) continue
+    const { p, isPi } = r
+    if (r.e) {
+      const e = r.e
+      const error = e?.plain ? e.message : String(e?.stack ?? e)
+      if (isPi) loaded.find((x) => x.spec === p.spec).error = error
+      else loaded.push({ spec: p.spec, error })
+      continue
+    }
+    for (const x of r.got) hooks.push(x)
+    if (r.gateway) gatewayHooks.push({ spec: p.spec, options: p.options ?? {}, onRequest: r.gateway.onRequest,
+      onResponse: r.gateway.onResponse,
+      state: { calls: 0, failures: 0, totalMillis: 0, lastOutcome: "idle", lastBytes: 0 } })
+    if (!isPi) loaded.push({ spec: p.spec })
   }
   config = { provider: {}, ...structuredClone(userConfig) }
   for (const h of hooks) {
     if (typeof h.hooks.config !== "function") continue
     try {
-      await h.hooks.config(config)
+      // one at a time, as each may build on the last, but none for long
+      await inTime(() => h.hooks.config(config), loadWait, "config hook")
     } catch (e) {
       send({ event: "log", level: "error", message: `${h.spec}: config hook: ${e?.message ?? e}` })
     }
@@ -1670,7 +1707,7 @@ function fromModelsDev(p, m) {
 // info is what OpenCode knows of provider id, its models as the plugin
 // lists them for account key (the first when none); strict fails where the
 // plugin's list does, rather than keeping the list it was given.
-async function info(id, key, strict) {
+async function info(id, key, strict, limit) {
   const md = mdev()[id]
   const cfg = config.provider?.[id]
   const out = {
@@ -1732,7 +1769,8 @@ async function info(id, key, strict) {
     try {
       const given = JSON.parse(JSON.stringify(out))
       const l = { tried: false, lastOk: false }
-      const next = await listing.run(l, () => inScope(id, k, () => ph.models(given, { auth: authCopy(k) })))
+      const ask = () => listing.run(l, () => inScope(id, k, () => ph.models(given, { auth: authCopy(k) })))
+      const next = limit > 0 ? await inTime(ask, limit, "the plugin's model list") : await ask()
       // a hook that asked its vendor, got no list and gave back the one it
       // was given fell back: magpie keeps the list it had, as a built-in
       // whose fetch failed keeps the one it fetched last; so does one that
@@ -1744,6 +1782,9 @@ async function info(id, key, strict) {
       if (out.fellBack) out.listError = l.said || "the plugin couldn't get its vendor's list"
       out.models = Object.fromEntries(Object.entries(next ?? {}).map(([k, m]) => [k, { ...m, id: k, providerID: id }]))
     } catch (e) {
+      // a listing that gave up waiting: what the hook gives later is no
+      // list a request should be built from
+      if (e instanceof Late) out.late = true
       // an error the models hook throws may say what it means for the
       // sign-in, as an answer's X-Magpie-Sign-In does: a built-in whose
       // model list the vendor refused marked the account
@@ -1782,7 +1823,7 @@ async function infoOf(id, key) {
 // keepInfo keeps p, info(id, key) just built by a listing, for the
 // account's requests.
 function keepInfo(key, p, gen) {
-  if (gen === infoGen && !p.failed) infos.set(key, { gen, md: mdev(), info: p })
+  if (gen === infoGen && !p.failed && !p.late) infos.set(key, { gen, md: mdev(), info: p })
 }
 
 // shown is a plugin's string as magpie shows it: trimmed and at most n
@@ -1900,23 +1941,24 @@ function tiersOf(v) {
 // built-in fetches each account's list through the account's.
 async function providers({ proxies } = {}) {
   const stored = readAuth()
-  const out = []
-  for (const [id, a] of auths()) {
+  // every provider is listed side by side, each models hook given
+  // listWait: one whose vendor is stuck holds up no other's row
+  const row = async ([id, a]) => {
     const keys = accountsOf(stored, id)
     const through = (k) => proxies?.[id]?.[k ?? keys[0] ?? ""] ?? proxies?.[id]?.[""] ?? ""
     const gen = infoGen
-    const p = await via.run(through(), () => info(id))
+    const p = await via.run(through(), () => info(id, undefined, false, listWait))
     keepInfo(keys[0] ?? id, p, gen)
     // each account's own models, as the built-ins read each account's: a
     // plan may serve fewer, or others, than the first account's. One that
     // can't be read is taken to have them all, or the ones it was last
     // told to have, as a built-in account whose fetch failed keeps its own.
-    const own = await Promise.all(keys.slice(1).map((k) => via.run(through(k), () => info(id, k, true)).then((q) => (keepInfo(k, q, gen), q)).catch((e) => ({ failed: true, listError: e?.message ?? String(e) }))))
+    const own = await Promise.all(keys.slice(1).map((k) => via.run(through(k), () => info(id, k, true, listWait)).then((q) => (keepInfo(k, q, gen), q)).catch((e) => ({ failed: true, listError: e?.message ?? String(e) }))))
     const models = { ...p.models }
     for (const q of own) for (const [k, m] of Object.entries(q?.models ?? {})) models[k] ??= m
     const ids = (q) => Object.values(q.models).filter((m) => m.status !== "deprecated").map((m) => m.id)
     const first = stored[keys[0]]
-    out.push({
+    return {
       id,
       spec: a.spec,
       name: p.name,
@@ -1982,9 +2024,9 @@ async function providers({ proxies } = {}) {
           // words, which magpie may search with for other models
           searches: m.searches === true,
         })),
-    })
+    }
   }
-  return out
+  return Promise.all([...auths()].map(row))
 }
 
 // ---- signing in --------------------------------------------------------------
@@ -2584,6 +2626,8 @@ const handlers = {
     userConfig = p.config ?? {}
     prefer = p.prefer ?? {}
     chosen = p.options ?? {}
+    if (p.loadMillis > 0) loadWait = p.loadMillis
+    if (p.listMillis > 0) listWait = p.listMillis
     await loadPlugins(p.plugins ?? [])
     return { plugins: loaded.map(withProviders) }
   },

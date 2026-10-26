@@ -1177,9 +1177,14 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 // the refusal is read whoever answered). Its key refused, or the computer
 // unreachable, still rests it whole, and so does the key's own limit there
 // (keyLimited's 429, with remoteKeyLimitHeader), which refuses every model
-// alike (#2077).
+// alike (#2077). A magpie added by hand, as an OpenAI-compatible provider
+// of its own name, is one all the same: its reply names the provider that
+// answered there (providerHeader, which keepRetry notes as
+// answeredThereHeader), as no vendor's does (lagrangepoint1813
+// on Discord: "Remote Magpie: Claude Code: You've hit your session
+// limit" answered every model of it for the five hours it named).
 func remoteModelRest(c candidate, why string, header http.Header) bool {
-	if !c.p.IsRemoteMagpie() || header.Get(remoteKeyLimitHeader) != "" {
+	if !c.p.IsRemoteMagpie() && header.Get(answeredThereHeader) == "" || header.Get(remoteKeyLimitHeader) != "" {
 		return false
 	}
 	return why == failQuota || why == failCredit || why == failRate || why == failRestricted || why == failVerify
@@ -1357,6 +1362,12 @@ func keepRetry(dst, src http.Header, body []byte) {
 			dst.Set("Retry-After", strconv.Itoa(int(d.Seconds())))
 		}
 	}
+	if who := src.Get(providerHeader); who != "" {
+		// another magpie refused it, naming its provider that did: this
+		// magpie's own name for the provider goes in the same header
+		// (noteMember), so it is noted beside it, for restAfter
+		dst.Set(answeredThereHeader, who)
+	}
 	if note, ok := policyRefusal(body); ok {
 		// the error the agent gets keeps the vendor's words but not its
 		// code (bio_policy): that it was the safety filter goes on beside
@@ -1369,6 +1380,11 @@ func keepRetry(dst, src http.Header, body []byte) {
 		dst.Set(zdrHeader, "1")
 	}
 }
+
+// answeredThereHeader carries, from keepRetry to restAfter, the provider
+// another magpie named on its refusal (providerHeader): the refusal is
+// that magpie's model's (remoteModelRest).
+const answeredThereHeader = "X-Magpie-Answered-There"
 
 // refusedHeader carries, from keepRetry to settle, that an error status
 // was the safety filter refusing the request, and what it said.

@@ -40,7 +40,8 @@ func TestClaudeSubscriptionReplySaysTheAllowance(t *testing.T) {
 		t.Helper()
 		s := New()
 		start := func(_ context.Context, req *Request) (*subscriptionRun, <-chan Event, error) {
-			run := &subscriptionRun{bridge: s.subscription, owner: owner, token: "hud", pending: map[string]chan mcpToolResult{}}
+			run := &subscriptionRun{bridge: s.subscription, token: "hud", pending: map[string]chan mcpToolResult{}}
+			run.owner.Store(&owner)
 			events := run.attach()
 			go run.readOutput(strings.NewReader(strings.Join(lines, "\n") + "\n"))
 			return run, events, nil

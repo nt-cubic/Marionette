@@ -118,9 +118,9 @@ func holdBody(ctx context.Context, body []byte) {
 	if old != nil {
 		cur = *old
 	}
-	if len(cur) >= heldBodiesMost {
+	if len(cur) >= heldBodiesMost || slices.ContainsFunc(cur, func(b []byte) bool { return unsafe.SliceData(b) == unsafe.SliceData(body) }) {
 		heldBodies.Unlock()
-		return
+		return // held already: one release ends it
 	}
 	next := append(slices.Clip(cur), body)
 	heldBodies.list.Store(&next)

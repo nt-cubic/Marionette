@@ -50,6 +50,28 @@ func goroutinesRefused(r *http.Request) string {
 	return profileRefused(r, "goroutine dump", "magpie goroutines")
 }
 
+// dumpFirst answers the goroutine dump ahead of next, for every caller
+// goroutinesRefused lets in; everything else, the dump's refusals too, goes
+// to next as before. The dump is asked for when magpie hangs while it runs,
+// and what the gateway's requests pass through first takes locks that a
+// stuck request can hold: lanGuard's allow list reads settings.json under
+// settings' file lock, holdCatalog takes provider.Hold's and filememo's,
+// and each stats files under them. goroutinesRefused and goroutineDump
+// read only the request, the environment and the runtime, so the dump
+// answers while any of those is stuck, and names who holds it. A caller it
+// lets in is one lanGuard and corsGuard let in too: loopback, which the
+// allow list always passes, unproxied, no Origin or other browser mark, a
+// loopback Host.
+func (s *Server) dumpFirst(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == GoroutinesPath && goroutinesRefused(r) == "" {
+			s.goroutineDump(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // goroutineDump answers GoroutinesPath: the dump as text, with
 // GoroutineStats in GoroutineStatsHeader.
 func (s *Server) goroutineDump(w http.ResponseWriter, r *http.Request) {

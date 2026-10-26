@@ -384,6 +384,37 @@ func TestRetiredBuiltinQuiet(t *testing.T) {
 	}
 }
 
+// plugins#404 (Gruu6y): Grok moved onto its plugin, then the plugin, the
+// provider and its sign-ins removed. migrations.json says "removed", but a
+// login row of the built-in's left behind kept it a move candidate, and the
+// Providers page said for good that its accounts hadn't moved yet, with a
+// Move that would install the plugin again. Removed is the user's answer:
+// no candidate, until the plugin is installed again (HandOver).
+func TestRemovedPluginIsNoMoveCandidate(t *testing.T) {
+	claudeHome(t)
+	loginsMu.Lock()
+	_ = writeLogins([]savedLogin{{Agent: "zed", User: "left@example.com", On: true, First: true, Auth: []byte(`{"userId":"u1","accessToken":"a"}`)}})
+	loginsMu.Unlock()
+	if c := MoveCandidates(); len(c) != 1 || c[0].ID != "zed" {
+		t.Fatalf("the unmoved account isn't offered its move: %+v", c)
+	}
+	if err := setMigration("zed", func(m *Migration) {
+		*m = Migration{State: MoveRemoved, Package: MovePackage("zed"), Installed: true}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if c := MoveCandidates(); len(c) != 0 {
+		t.Fatalf("one whose plugin the user removed is still offered a move: %+v", c)
+	}
+	// one whose move failed still is, with why
+	if err := setMigration("zed", func(m *Migration) { m.State, m.Err = MoveFailed, "boom" }); err != nil {
+		t.Fatal(err)
+	}
+	if c := MoveCandidates(); len(c) != 1 || c[0].Error != "boom" {
+		t.Fatalf("a failed move isn't offered again: %+v", c)
+	}
+}
+
 // A moved built-in's plugin is updated to the version its move needs, as
 // the built-in came up to date with magpie; one whose plugin the user
 // removed isn't installed again.

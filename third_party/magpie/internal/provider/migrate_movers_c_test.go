@@ -2,6 +2,7 @@ package provider
 
 import (
 	"encoding/json"
+	"fmt"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/update"
 	"os"
@@ -190,6 +191,40 @@ func TestWorkBuddyMover(t *testing.T) {
 	}
 	if ls2, user, err := movers["workbuddy"].back(ls, "Me", own.Auth); err != nil || user != "Me" || len(ls2) != len(ls) {
 		t.Fatalf("desktop's back: %v %q %+v", err, user, ls2)
+	}
+}
+
+// Two WorkBuddy accounts of one nickname are two accounts, told apart by
+// uid: the desktop's goes beside one magpie signed in under its name, and
+// neither reads as renewed by the other (wakkana on Discord). The same uid
+// under the desktop's name is the desktop's account, moved once.
+func TestWorkBuddyMoverSameNameOtherUID(t *testing.T) {
+	home := signIn(t)
+	wbWriteOwn(t, home, "own-access") // "Me", u1
+	other := wbCreds{UID: "u9", Access: "a9", Refresh: "r9", ExpiresAt: 1_900_000_000_000}
+	saveLogins(t, savedLogin{Agent: "workbuddy", User: "Me", On: true, Auth: json.RawMessage(jsonText(other))})
+	ms, err := movers["workbuddy"].out()
+	if err != nil {
+		t.Fatal(err)
+	}
+	uids := map[string]bool{}
+	var moved []movedAccount
+	for i, m := range ms {
+		uids[str(m.Auth["uid"])+map[bool]string{true: " desktop"}[m.Own]] = true
+		moved = append(moved, movedAccount{Key: fmt.Sprint("k", i), User: m.User, Own: m.Own, ID: m.ID, Sent: signinHash(m.Auth)})
+	}
+	if len(ms) != 2 || !uids["u1 desktop"] || !uids["u9"] {
+		t.Fatalf("moving %+v", ms)
+	}
+	if r := renewedSince(movers["workbuddy"], moved); len(r) != 0 {
+		t.Fatalf("read as renewed: %+v", r)
+	}
+
+	same := other
+	same.UID = "u1"
+	saveLogins(t, savedLogin{Agent: "workbuddy", User: "Me", On: true, Auth: json.RawMessage(jsonText(same))})
+	if ms := movingOf(t, "workbuddy"); len(ms) != 1 || ms["Me"].Auth["access"] != "a9" {
+		t.Fatalf("the same uid: %+v", ms)
 	}
 }
 

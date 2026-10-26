@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 // allKinds is Mask personal data with every category turned on.
@@ -150,6 +151,35 @@ func TestMoreKindsLeaveAlone(t *testing.T) {
 		"claude-opus-4-1-20250805", "gpt-5.1-codex-mini", "3f786850e387550fdab836ed7e6dc881de23001b", "123e4567-e89b-12d3-a456-426614174000",
 		"go 1.26.8", "uses: actions/checkout@v4", "const url = 'https://api.acme.io/v1/users'", "2026-10-10 12:00:00",
 	} {
+		if out, n := Mask(s, allKinds()); n != 0 || out != s {
+			t.Errorf("%q masked as %q", s, out)
+		}
+	}
+}
+
+// A date in the last year or ahead after a birthday's word is the day the
+// agent runs on (JackyCcao on X: 2026-10-24 masked in 122 requests), not a
+// birthday; one over a year ago still is. Today is held, and then real.
+func TestBirthdayNotRecent(t *testing.T) {
+	defer func(c func() time.Time) { dateClock = c }(dateClock)
+	dateClock = func() time.Time { return time.Date(2026, 10, 24, 9, 30, 0, 0, time.Local) }
+	for _, s := range []string{
+		"生日：2026-10-24", "birthday: 2026-10-23", "DOB: 10/24/2026", "出生于2026年4月1日", "born on May 1, 2026",
+		`{"birth_date": "2025-10-25"}`, "生日：2026-12-01", "Geburtsdatum: 01.01.2027",
+	} {
+		if out, n := Mask(s, allKinds()); n != 0 || out != s {
+			t.Errorf("%q masked as %q", s, out)
+		}
+	}
+	for _, s := range []string{"生日：2025-10-23", "DOB: 10/24/2024", "born on May 1, 1990"} {
+		if out, _ := Mask(s, allKinds()); !strings.Contains(out, "BIRTHDAY") {
+			t.Errorf("%q not masked: %q", s, out)
+		}
+	}
+	dateClock = time.Now
+	now := time.Now()
+	for _, d := range []time.Time{now, now.AddDate(0, 0, -1), now.AddDate(0, 0, 1)} {
+		s := "生日：" + d.Format("2006-01-02")
 		if out, n := Mask(s, allKinds()); n != 0 || out != s {
 			t.Errorf("%q masked as %q", s, out)
 		}

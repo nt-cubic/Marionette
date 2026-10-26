@@ -259,7 +259,7 @@ func listed(s *Session) {
 	if s.Carry == nil {
 		s.Carry = carries(*s)
 	}
-	s.Transcript = HasTranscript(s.Agent)
+	s.Transcript = readable(*s)
 }
 
 // TrashDir is where deleted sessions are kept: <magpie dir>/trash/sessions.

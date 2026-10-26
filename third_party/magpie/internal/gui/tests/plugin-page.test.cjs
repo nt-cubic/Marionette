@@ -79,9 +79,11 @@ function server(lang, seen, plugins) {
     if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:${JSON.stringify(lang)},theme:"light",web:false};` });
     if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
     if (url.pathname === "/api/state") return json({ agents: [], profiles: [], settings: { lang, theme: "light" } });
+    if (url.pathname === "/api/providers" && seen.slow) await new Promise((r) => setTimeout(r, seen.slow));
     if (url.pathname === "/api/providers") return json({ providers: [], presets: [], excluded: [], gateway: { running: true, window: true }, plugins: [] });
     if (url.pathname === "/api/groups") return json({ groups: [], pools: [] });
-    if (url.pathname === "/api/plugin-pages") return json(pages);
+    if (url.pathname === "/api/plugin-pages") return json(seen.pages ? seen.pages() : pages);
+    if (url.pathname === "/api/plugins/off" && seen.off) return json(seen.off(req.postDataJSON()));
     if (url.pathname === "/api/plugin-pages/read") {
       const b = req.postDataJSON();
       seen.reads.push(b);
@@ -256,6 +258,46 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.deepEqual(errors.filter((e) => e !== "fixture: the page broke"), [], where);
         await context.close();
       }
+    }
+  });
+
+  // a page plugin switched on gets its tab at once, not when the Plugins
+  // page is next opened (the owner: it took a long while to show), and
+  // switched off loses it; the providers' answer, slow here, isn't
+  // waited for
+  test(`${engine}: a page plugin's tab comes and goes with it`, async (t) => {
+    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
+    t.after(() => browser.close());
+    for (const lang of ["en", "zh"]) {
+      const where = `${engine} ${lang}`;
+      const page = await (await browser.newContext({ viewport: { width: 980, height: 820 } })).newPage();
+      page.setDefaultTimeout(5000);
+      const errors = [];
+      page.on("pageerror", (e) => errors.push(e.message));
+      const mine = structuredClone(plugins);
+      const quiet = mine.plugins.find((e) => e.spec === "/x/quiet-page");
+      const seen = { api: [], reads: [], options: [] };
+      seen.pages = () => quiet.off ? [] : [entry(PROBE, "quiet-page", "Quiet", [])];
+      seen.off = (b) => { quiet.off = b.off; seen.slow = 4000; return mine; };
+      await page.route("**/*", server(lang, seen, mine));
+      await page.goto("http://magpie.test/?view=plugins");
+      const view = page.locator("#view-plugins");
+      const installed = await page.evaluate(() => t("Installed"));
+      await page.locator(":is(.lib-tabs .opt, .nav-s):visible", { hasText: installed }).first().click();
+      const row = view.locator(".pm-row").filter({ has: page.locator(".name", { hasText: "quiet-page" }) });
+      const tab = page.locator('#nav button[data-plugin-page][data-view="plugin-quiet-page"]');
+      const tr = (k) => page.evaluate((k) => t(k), k);
+      await row.waitFor();
+      assert.equal(await tab.count(), 0, where);
+      await row.getByRole("button", { name: await tr("Switch on"), exact: true }).click();
+      await tab.waitFor({ timeout: 2000 });
+      assert.ok(await view.isVisible(), `${where}: the page stays`);
+      await page.waitForTimeout(4200);
+      seen.slow = 0;
+      await row.getByRole("button", { name: await tr("Switch off"), exact: true }).click();
+      await tab.waitFor({ state: "detached", timeout: 2000 });
+      assert.deepEqual(errors, [], where);
+      await page.context().close();
     }
   });
 

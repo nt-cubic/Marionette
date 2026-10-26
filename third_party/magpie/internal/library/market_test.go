@@ -233,12 +233,22 @@ func TestFeaturedSkills(t *testing.T) {
 	t.Cleanup(func() { popular.Lock(); popular.list = nil; popular.Unlock() })
 
 	list, _ := MarketSkills("")
-	if len(list) != 2 || list[0].ID != "magpie-community/plugins/magpie-quota" || !list[0].Official || !list[0].Featured ||
-		list[0].Description == "" || list[0].Icon != gh("magpie-community") || !offered(list[0].Icon) || list[1].ID != "o/r/pdf" {
+	if len(list) != 3 || list[0].ID != "magpie-community/plugins/magpie-setup" || list[1].ID != "magpie-community/plugins/magpie-quota" || list[2].ID != "o/r/pdf" {
 		t.Fatalf("market: %+v", list)
 	}
-	if list, _ := MarketSkills("quota"); len(list) == 0 || list[0].SkillID != "magpie-quota" {
+	for _, m := range list[:2] {
+		if !m.Official || !m.Featured || m.Description == "" || m.Icon != gh("magpie-community") || !offered(m.Icon) {
+			t.Fatalf("magpie's own: %+v", m)
+		}
+	}
+	if list, _ := MarketSkills("quota"); len(list) == 0 || list[0].SkillID != "magpie-quota" || slices.ContainsFunc(list, func(m MarketSkill) bool { return m.SkillID == "magpie-setup" }) {
 		t.Fatalf("quota: %+v", list)
+	}
+	// Leyuu_5 on X: an agent sets magpie up; found by what a user searches
+	for _, q := range []string{"setup", "routing", "gateway key"} {
+		if list, _ := MarketSkills(q); len(list) == 0 || list[0].SkillID != "magpie-setup" {
+			t.Fatalf("%s: %+v", q, list)
+		}
 	}
 	if list, _ := MarketSkills("pdf"); slices.ContainsFunc(list, func(m MarketSkill) bool { return m.Featured }) {
 		t.Fatalf("pdf: %+v", list)

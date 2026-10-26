@@ -663,6 +663,17 @@ func (t *trace) trim() {
 	}
 }
 
+// drop takes rt off the trace, a route that only stood for a request
+// until its own began (unrouted.go).
+func (t *trace) drop(rt *Route) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if i := slices.Index(t.routes, rt); i >= 0 {
+		t.routes = slices.Delete(t.routes, i, i+1)
+		t.changed()
+	}
+}
+
 // update changes a route under the lock.
 // maskedOf is r's Masked, read under the lock.
 func (t *trace) maskedOf(r *Route) *Masked {

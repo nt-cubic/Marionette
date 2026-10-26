@@ -15,7 +15,8 @@ import (
 func TestClaudeHandOverLetsGoOfTheAccountsRuns(t *testing.T) {
 	b := newSubscriptionBridge()
 	run := func(owner string) *subscriptionRun {
-		r := &subscriptionRun{bridge: b, owner: owner, pending: map[string]chan mcpToolResult{}}
+		r := &subscriptionRun{bridge: b, pending: map[string]chan mcpToolResult{}}
+		r.owner.Store(&owner)
 		b.mu.Lock()
 		b.idle[owner] = r
 		r.idleKey = owner

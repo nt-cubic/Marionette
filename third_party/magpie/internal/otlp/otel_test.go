@@ -1,10 +1,12 @@
 package otlp
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -398,5 +400,47 @@ func TestOTelQueueBodiesBudgetConcurrent(t *testing.T) {
 		if len(e.queue) != 1 || e.dropped.Load() != 31 {
 			t.Fatalf("queued=%d dropped=%d, want 1 and 31", len(e.queue), e.dropped.Load())
 		}
+	}
+}
+
+// Settings › Observability's Langfuse setup saves an endpoint and headers
+// made from the host and the project's keys (plugins/otel/page.js); sent
+// from saved settings, with no MAGPIE_OTEL_* in the way, a batch reaches
+// Langfuse's OTLP traces path with the Basic sign-in and the ingestion
+// header, and metrics, off, send nothing.
+func TestOTelLangfuseSetup(t *testing.T) {
+	type got struct{ path, auth, version string }
+	var mu sync.Mutex
+	var seen []got
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, got{r.URL.Path, r.Header.Get("Authorization"), r.Header.Get("x-langfuse-ingestion-version")})
+		mu.Unlock()
+		io.WriteString(w, `{}`)
+	}))
+	defer collector.Close()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
+	for _, k := range []string{"MAGPIE_OTEL_ENABLED", "MAGPIE_OTEL_ENDPOINT", "MAGPIE_OTEL_HEADERS", "MAGPIE_OTEL_METRICS", "MAGPIE_OTEL_SESSIONS", "MAGPIE_OTEL_BODIES", "MAGPIE_OTEL_BODIES_WHOLE"} {
+		t.Setenv(k, "")
+		os.Unsetenv(k)
+	}
+	auth := "Basic " + base64.StdEncoding.EncodeToString([]byte("pk-lf-1:sk-lf-2"))
+	if err := settings.Save(settings.Settings{OTel: settings.OTel{
+		Enabled: true, Endpoint: collector.URL + "/api/public/otel",
+		Headers: map[string]string{"Authorization": auth, "x-langfuse-ingestion-version": "4"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := settings.OTelExport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := newOTelExporter()
+	defer e.cancel()
+	e.flush([]otelItem{{record: Record{Time: time.Now(), Status: 200, Agent: "codex", Provider: "openai", Model: "gpt-5"}, config: cfg}})
+	mu.Lock()
+	defer mu.Unlock()
+	if want := []got{{"/api/public/otel/v1/traces", auth, "4"}}; len(seen) != 1 || seen[0] != want[0] {
+		t.Fatalf("collector saw %+v, want %+v", seen, want)
 	}
 }

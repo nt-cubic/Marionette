@@ -151,3 +151,25 @@ func TestHoldMissing(t *testing.T) {
 		t.Fatalf("unheld, %d looks for 3 reads", n)
 	}
 }
+
+// Written is closed by the next Forget, and a wait begun after it waits for
+// the one after.
+func TestWritten(t *testing.T) {
+	w := Written()
+	select {
+	case <-w:
+		t.Fatal("closed before any write")
+	default:
+	}
+	Forget()
+	select {
+	case <-w:
+	case <-time.After(5 * time.Second):
+		t.Fatal("not closed by Forget")
+	}
+	select {
+	case <-Written():
+		t.Fatal("the next wait is closed already")
+	default:
+	}
+}

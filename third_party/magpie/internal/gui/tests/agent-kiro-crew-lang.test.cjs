@@ -3,7 +3,8 @@
 // magpie. Connecting it with none connected, or with its harness set in
 // its config.local.json, is refused, and the refusal reads in the
 // window's language; connected, the notice that new sessions take the new
-// harness does too. In every language, in Chromium and WebKit, at a wide
+// harness does too, and so does the one that magpie connected the harness
+// Crew is set to along with it (wuping9525: Claude Code, not connected). In every language, in Chromium and WebKit, at a wide
 // and a narrow window. No backend: the API is faked.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
@@ -15,6 +16,8 @@ const assets = path.resolve(__dirname, "../assets");
 const NO_HARNESS = "Kiro Crew runs on a harness: connect Codex, Claude Code, OpenCode, Pi or Goose to magpie first, then connect Kiro Crew";
 const PINNED = "Kiro Crew's config.local.json sets its harness, and that wins over config.json: magpie leaves it alone. Change agent.acp_backend there, or take it out, then connect again";
 const NEW_SESSIONS = "Kiro Crew takes the new harness for new sessions; sessions already open keep theirs.";
+const JOINED = "Kiro Crew runs on {harness}, so magpie connected {harness} too; turning Kiro Crew off disconnects it again.";
+const CONNECTED = NEW_SESSIONS + " " + JOINED.replaceAll("{harness}", "Claude Code");
 const NOTE = "its harness, an agent connected to magpie, runs on magpie's models";
 const crew = (on) => ({
   id: "kirocrew", name: "Kiro Crew", icon: "generic", path: "/test/kiro/crew/config.json", wired: on,
@@ -36,7 +39,7 @@ function server(lang, answers) {
       const a = answers.shift();
       if (a) return route.fulfill({ status: 400, json: { error: a } });
       on = true;
-      return route.fulfill({ json: { ...st(), connected: { how: "magpie" }, notice: NEW_SESSIONS } });
+      return route.fulfill({ json: { ...st(), connected: { how: "magpie" }, notice: CONNECTED } });
     }
     if (url.pathname === "/api/usage/quotas") return route.fulfill({ json: [] });
     if (url.pathname === "/api/groups") return route.fulfill({ json: { groups: [] } });
@@ -69,7 +72,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           const sw = page.locator('.row.agent[data-id="kirocrew"] .ag-conn');
           await sw.waitFor();
           // each word is said in this language, not English
-          const words = await page.evaluate((ws) => ws.map((w) => [w, t(w)]), [NO_HARNESS, PINNED, NEW_SESSIONS, NOTE, "harness"]);
+          const words = await page.evaluate((ws) => ws.map((w) => [w, t(w)]), [NO_HARNESS, PINNED, NEW_SESSIONS, JOINED, NOTE, "harness"]);
           for (const [en, said] of words) if (lang !== "en" && en !== "harness" || lang === "de" && en === "harness") assert.notEqual(said, en, `${lang}: ${en}`);
           for (const refusal of [NO_HARNESS, PINNED]) {
             const want = await page.evaluate((w) => t(w), refusal);
@@ -83,9 +86,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await page.waitForFunction(() => document.querySelector('.row.agent[data-id="kirocrew"] .ag-conn')?.getAttribute("aria-checked") === "true", null, { timeout: 30000 });
           await page.waitForFunction(() => document.querySelector("#status")?.textContent.trim(), null, { timeout: 30000 });
           const said = (await page.locator("#status").textContent()).trim();
-          const want = await page.evaluate((n) => tNotice(n), NEW_SESSIONS);
+          const want = await page.evaluate((n) => tNotice(n), CONNECTED);
           assert.ok(said.endsWith(want), said);
-          if (lang !== "en") assert.ok(!said.includes("sessions already open"), said);
+          if (lang !== "en") assert.ok(!said.includes("sessions already open") && !said.includes("magpie connected"), said);
+          assert.ok(said.includes("Claude Code") && !said.includes("{harness}"), said);
           const fits = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
           assert.ok(fits, "the page runs past the window");
         });

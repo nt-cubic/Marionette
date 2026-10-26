@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -175,6 +176,7 @@ func fakeCodex(t *testing.T, exit int) (out string) {
 	script := "#!/bin/sh\n" +
 		"echo \"$@\" > '" + out + ".args'\n" +
 		"echo \"$CODEX_HOME\" > '" + out + ".home'\n" +
+		"echo \"$HTTPS_PROXY\" > '" + out + ".proxy'\n" +
 		"if [ -p /dev/stdin ]; then echo pipe; else echo other; fi > '" + out + ".stdin'\n" +
 		"echo 'starting…'\n"
 	if exit != 0 {
@@ -182,9 +184,12 @@ func fakeCodex(t *testing.T, exit int) (out string) {
 	}
 	exe := filepath.Join(dir, "codex")
 	testenv.Program(t, exe, script)
-	old := codexExecutable
-	t.Cleanup(func() { codexExecutable = old })
+	old, oldEnv, oldPath := codexExecutable, daemonLoginEnv, daemonLoginPath
+	t.Cleanup(func() { codexExecutable, daemonLoginEnv, daemonLoginPath = old, oldEnv, oldPath })
 	codexExecutable = func() string { return exe }
+	// no login shell is asked
+	daemonLoginEnv = func(string) string { return "" }
+	daemonLoginPath = func() string { return "" }
 	return out
 }
 
@@ -192,6 +197,13 @@ func TestRestartCodexDaemon(t *testing.T) {
 	pid := fakeDaemon(t)
 	t.Setenv("CODEX_HOME", "/somewhere/else")
 	out := fakeCodex(t, 0)
+	t.Setenv("HTTPS_PROXY", "")
+	daemonLoginEnv = func(k string) string {
+		if k == "HTTPS_PROXY" {
+			return "http://127.0.0.1:7890"
+		}
+		return ""
+	}
 	*pid = 50
 	noteCodexSwitch("a@x", "b@x")
 	if err := RestartCodexDaemon(context.Background()); err != nil {
@@ -208,6 +220,10 @@ func TestRestartCodexDaemon(t *testing.T) {
 	// user's own CODEX_HOME when that is set
 	if got, want := read(".home"), "/somewhere/else"; got != want || filepath.Clean(got) != filepath.Dir(codexAuthPath()) {
 		t.Errorf("CODEX_HOME %q, want %q (where magpie writes auth.json)", got, want)
+	}
+	// the proxy a terminal has, which magpie opened from the desktop hasn't
+	if got := read(".proxy"); got != "http://127.0.0.1:7890" {
+		t.Errorf("HTTPS_PROXY %q, want the login shell's", got)
 	}
 	if got := read(".stdin"); got != "other" {
 		t.Errorf("stdin is a %s, want the null device", got)
@@ -514,5 +530,28 @@ func TestCodexAppStale(t *testing.T) {
 	DismissCodexApp()
 	if got := CodexAppStale(); got != "" {
 		t.Fatalf("dismissed: %q", got)
+	}
+}
+
+// The daemon magpie restarts runs with the login shell's proxy and PATH,
+// as one a terminal started would (guotianci6 on X): magpie opened from
+// the desktop has neither.
+func TestCodexDaemonEnvIsTheTerminals(t *testing.T) {
+	oldEnv, oldPath := daemonLoginEnv, daemonLoginPath
+	t.Cleanup(func() { daemonLoginEnv, daemonLoginPath = oldEnv, oldPath })
+	login := map[string]string{"https_proxy": "http://127.0.0.1:7890", "NO_PROXY": "localhost"}
+	daemonLoginEnv = func(k string) string { return login[k] }
+	daemonLoginPath = func() string { return "/home/u/.local/bin:/usr/bin" }
+	got := codexDaemonEnv([]string{"HOME=/home/u", "PATH=/usr/bin", "no_proxy=*", "LANG=C"})
+	want := []string{"HOME=/home/u", "LANG=C", "PATH=/home/u/.local/bin:/usr/bin", "https_proxy=http://127.0.0.1:7890", "NO_PROXY=localhost"}
+	if !slices.Equal(got, want) {
+		t.Errorf("env %q, want %q", got, want)
+	}
+	// a login shell with no proxy and no PATH to say leaves magpie's own
+	login = nil
+	daemonLoginPath = func() string { return "" }
+	in := []string{"PATH=/usr/bin", "HTTPS_PROXY=http://p:1"}
+	if got := codexDaemonEnv(in); !slices.Equal(got, in) {
+		t.Errorf("env %q, want %q", got, in)
 	}
 }

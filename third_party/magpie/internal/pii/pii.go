@@ -37,15 +37,18 @@ var (
 
 // pf-serve, as the privacy-filter workflow built it at serveTag: a zip for
 // each system, by its sha256. A system with none can't run the model.
+// oldTags are the tags pinned before, newest first: one of theirs on disk
+// is run until serveTag's is downloaded (upgrade).
 var (
-	serveTag  = "pf-v1"
+	serveTag  = "pf-v2"
+	oldTags   = []string{"pf-v1"}
 	serveBase = "https://github.com/yetone/magpie/releases/download/"
 	serveSHA  = map[string]string{
-		"darwin-amd64":  "7d5512ed24ff865bb0e84009b0adecd3addf0444891990cbc78634d78390c607",
-		"darwin-arm64":  "07eb79dd1d74a6dc8e2e59eefed1094a4c1dafa27051343fac65d6c2172617f0",
-		"linux-amd64":   "b172f39b2b5446cb92ef14f996b65157f5e1c0e4e673ee9c61a0214cc67c78af",
-		"linux-arm64":   "7a344515e35676d0da21b448c6c4bc49de7cf34f8f28604c6889c092ae963961",
-		"windows-amd64": "dd06aa4e656cbebff348ad3fdfd66eca5f899b244dff65235d47a2c878b49c6c",
+		"darwin-amd64":  "4b68c9f06b14b909ec35e491ba58fcb06df500a5a0985465dd1115f9e7a5d753",
+		"darwin-arm64":  "13ea258cc139dd0fc024f8eab70ee3566aa12ce6b5ab71f890b68bc8507159d3",
+		"linux-amd64":   "ff0af5cd1a3d350e7c93ca45c0b5285088c9666340826e87fbb14e5dcb23f772",
+		"linux-arm64":   "05970f7c5ba202e0e577cb22e0d12f009789c321583574a1ae1196d9522f7181",
+		"windows-amd64": "f4993000cc09500c907d3dd7042d783fa0b9310f272bc0bdf323ba9d012556f0",
 	}
 )
 
@@ -65,13 +68,28 @@ var dir = func() string { return filepath.Join(appdir.Cache(), "privacy-filter")
 
 func modelPath() string { return filepath.Join(dir(), "privacy-filter-q8-"+modelSHA[:12]+".gguf") }
 
-func serveDir() string { return filepath.Join(dir(), serveTag+"-"+target()) }
+func serveDir() string { return tagDir(serveTag) }
 
-func exe(name string) string {
+func tagDir(tag string) string { return filepath.Join(dir(), tag+"-"+target()) }
+
+// exe is a program of pf-serve's: serveTag's, or, until that is
+// downloaded, the newest of oldTags' on disk.
+func exe(name string) string { return exeIn(binDir(), name) }
+
+func exeIn(d, name string) string {
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 	}
-	return filepath.Join(serveDir(), name)
+	return filepath.Join(d, name)
+}
+
+func binDir() string {
+	for _, tag := range append([]string{serveTag}, oldTags...) {
+		if _, err := os.Stat(exeIn(tagDir(tag), "pf-serve")); err == nil {
+			return tagDir(tag)
+		}
+	}
+	return serveDir()
 }
 
 // Installed says the model and pf-serve are on disk, as downloaded and
@@ -108,6 +126,10 @@ type Status struct {
 	GPUError string `json:"gpuError,omitempty"`
 	// why the last request got no answer
 	Failed string `json:"failed,omitempty"`
+	// pf-serve is loading the model, and how many requests wait for it
+	// (or for the one it is on)
+	Loading bool `json:"loading,omitempty"`
+	Waiting int  `json:"waiting,omitempty"`
 }
 
 // Now is the model's status.
@@ -121,11 +143,12 @@ func Now() Status {
 	if srv.h != nil {
 		s.Running, s.Device, s.GPU, s.LoadMS, s.GPUError = true, srv.h.hello.Device, srv.h.hello.GPU, srv.h.hello.MS, srv.h.hello.GPUError
 	}
-	s.Failed = srv.failed
+	s.Failed, s.Loading = srv.failed, srv.loading
 	if s.GPUError == "" {
 		s.GPUError = srv.gpuLost
 	}
 	srv.mu.Unlock()
+	s.Waiting = int(waiting.Load())
 	return s
 }
 

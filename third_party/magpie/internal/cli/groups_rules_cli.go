@@ -15,7 +15,7 @@ import (
 const ruleUsage = `usage:
   magpie group rule <group>               the group's rules
   magpie group rule add <group> use=<model> [use-effort=low|medium|high|xhigh|max] [tokens=<n>] [images] [effort=on|low|medium|high|xhigh|max] [agents=a,b…]
-                        [intent="<what the message asks for>"] [compact] [time=HH:MM-HH:MM] [days=mon-fri]
+                        [intent="<what the message asks for>"] [compact] [time=HH:MM-HH:MM] [days=mon-fri] [tz=<zone>]
                         [folders=<folder>,…] [except-folders=<folder>,…] [classifier=<model>] [at=<n>]
                                           a rule: a turn that matches it goes to <model>, one of the group's
                                           (or group/<id>, a group in it), first; a model in the group at an
@@ -25,7 +25,7 @@ const ruleUsage = `usage:
                                           use-effort= is the reasoning <model> is asked for on the requests
                                           the rule sends it, whatever the agent asked: at the model's nearest
                                           level, or as the agent asked when its levels aren't known
-  magpie group rule add <group> pause=<model> [time=HH:MM-HH:MM] [days=mon-fri] [agents=a,b…]
+  magpie group rule add <group> pause=<model> [time=HH:MM-HH:MM] [days=mon-fri] [tz=<zone>] [agents=a,b…]
                         [folders=<folder>,…] [except-folders=<folder>,…] [at=<n>]
                                           a pause: while it holds, <model> is left out of the group — sent
                                           nothing, not even when the others fail or a conversation was on it
@@ -54,10 +54,13 @@ const ruleUsage = `usage:
            OpenCode's, Pi's, Gemini CLI's, Qwen Code's, Kimi's): a cheaper, faster model can write the
            summary. The request is as long as the conversation, so a model known to take less is passed
            over; it is not the turn's model, and the requests after it go on as before
-  time     the turn begins within these hours, on this computer's clock (09:00-18:00; 22:00-08:00
-           runs past midnight) — a provider's peak-price hours sent to another, say
+  time     the turn begins within these hours (09:00-18:00; 22:00-08:00 runs past midnight) — a
+           provider's peak-price hours sent to another, say
   days     only on these days (mon-fri, sat,sun); with time, a window past midnight is of the day it
            begins on. Days alone hold all day
+  tz       the time zone time and days are in, an IANA name: tz=Asia/Shanghai, or
+           time=09:00-18:00@Asia/Shanghai. Without it, this computer's zone ($TZ, or the system's),
+           so magpie on a server in another zone keeps your hours
   folders  the agent works in one of these folders, or a folder inside one (~/work/acme, ~/oss;
            C:\work, which is /mnt/c/work in WSL): a project, or every project under a folder. The
            folder is the one the agent tells its model in the request (Claude Code, Codex, OpenCode,
@@ -75,6 +78,7 @@ const ruleUsage = `usage:
        magpie group rule add opus-anywhere use=deepseek/deepseek-v4-flash compact
        magpie group rule add cheap use=glm/glm-5.3 time=14:00-18:00 days=mon-fri
        magpie group rule add cheap pause=glm/glm-5.3 time=14:00-18:00 days=mon-fri
+       magpie group rule add cheap pause=glm/glm-5.3 time=09:00-18:00 days=mon-fri tz=Asia/Shanghai
        magpie group rule add opus-anywhere use=kimi/kimi-k2.6 folders=~/oss
        magpie group rule add auto-claude-opus-5-5 pause=claude/claude-opus-5-5 except-folders=~/big-task
        magpie group rule add opus-anywhere use=deepseek/deepseek-v4-flash intent="a quick question" classifier=groq/llama-3.1-8b-instant
@@ -89,6 +93,9 @@ func parseRule(g provider.Group, words []string) (provider.Rule, int, string, er
 	r, at, classifier, err := provider.ParseRule(g, words)
 	if err != nil && strings.HasPrefix(err.Error(), provider.UnknownRuleWord) {
 		err = fmt.Errorf("%w\n\n%s", err, ruleUsage)
+	}
+	if err == nil {
+		r.InZoneHere()
 	}
 	return r, at, classifier, err
 }

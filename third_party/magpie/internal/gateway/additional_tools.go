@@ -84,29 +84,45 @@ const liteNamespace = "functions"
 
 // liftAdditionalTools is a Responses request with its additional_tools items
 // moved into its tools, or the request as it was when it has none.
+//
+// Only the additional_tools items and the tools are decoded; every other
+// item, and every other member of the request, goes byte for byte as it
+// came. Decoding the whole conversation into maps to move one item cost
+// ~7.5 times the body on every read of a Lite request, and each Codex
+// request was read so twice (its turn and its folder): ~110 MB of a
+// 4 MB conversation, held at once by each request in flight, so a few
+// subagents at once took the app toward 2 GB (XiaoYin_OK on X).
 func liftAdditionalTools(body []byte) []byte {
 	if !bytes.Contains(body, []byte(`"additional_tools"`)) {
 		return body
 	}
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-	var m map[string]any
-	if dec.Decode(&m) != nil || m == nil {
+	in, found, ok := topMember(body, "input")
+	if !ok || !found || len(in) == 0 || in[0] != '[' {
 		return body
 	}
-	items, ok := m["input"].([]any)
-	if !ok {
-		return body
+	var tools []any
+	if raw, has, _ := topMember(body, "tools"); has {
+		if t, ok := decodeAny(raw).([]any); ok {
+			tools = t
+		}
 	}
-	tools, _ := m["tools"].([]any)
 	have := toolsByName(tools)
-	kept := items[:0:0]
-	lifted := false
-	for _, it := range items {
-		im, _ := it.(map[string]any)
-		if im["type"] != "additional_tools" {
+	var kept [][]byte
+	lifted, bad := false, false
+	eachElement(in, func(it []byte) bool {
+		if ty, ok := stringBytes(memberOrNil(it, "type")); !ok || string(ty) != "additional_tools" {
+			// a call the model made to one of Codex's own tools, under the
+			// namespace they were grouped in, is the plain call it now is
+			if ns, ok := stringBytes(memberOrNil(it, "namespace")); ok && string(ns) == liteNamespace {
+				it = withoutTopMember(it, "namespace")
+			}
 			kept = append(kept, it)
-			continue
+			return true
+		}
+		im, _ := decodeAny(it).(map[string]any)
+		if im == nil {
+			bad = true
+			return false
 		}
 		lifted = true
 		more, _ := im["tools"].([]any)
@@ -126,26 +142,63 @@ func liftAdditionalTools(body []byte) []byte {
 			}
 			tools = addTool(tools, have, tm)
 		}
-	}
-	if !lifted {
+		return true
+	})
+	if !lifted || bad {
 		return body
 	}
-	// a call the model made to one of Codex's own tools, under the
-	// namespace they were grouped in, is the plain call it now is
-	for _, it := range kept {
-		if im, _ := it.(map[string]any); im != nil && im["namespace"] == liteNamespace {
-			delete(im, "namespace")
-		}
-	}
-	m["input"] = kept
+	var toolsJSON []byte
 	if len(tools) > 0 {
-		m["tools"] = tools
+		t, err := marshalPlain(tools)
+		if err != nil {
+			return body
+		}
+		toolsJSON = t
 	}
-	out, err := marshalPlain(m)
-	if err != nil {
-		return body
+	// written once, at its size: the input with the kept items, the tools
+	// given again, every other byte of the body as it was
+	raw := trimJSON(body)
+	out := make([]byte, 0, len(raw)+len(toolsJSON)+len(`,"tools":`))
+	last, hadTools := 0, false
+	eachMemberAt(raw, func(k0, k1, v0, v1 int) bool {
+		switch key := raw[k0:k1]; {
+		case keyIs(key, "input"):
+			out = append(append(out, raw[last:v0]...), '[')
+			for i, it := range kept {
+				if i > 0 {
+					out = append(out, ',')
+				}
+				out = append(out, it...)
+			}
+			out = append(out, ']')
+			last = v1
+		case keyIs(key, "tools"):
+			hadTools = true
+			if toolsJSON != nil {
+				out = append(append(out, raw[last:v0]...), toolsJSON...)
+				last = v1
+			}
+		}
+		return true
+	})
+	out = append(out, raw[last:len(raw)-1]...)
+	if toolsJSON != nil && !hadTools {
+		out = append(append(out, `,"tools":`...), toolsJSON...)
 	}
-	return out
+	return append(out, '}')
+}
+
+// decodeAny is raw, a valid JSON value, decoded as encoding/json decodes
+// into an any, its numbers as they were written; nil when it doesn't
+// decode.
+func decodeAny(raw []byte) any {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var v any
+	if dec.Decode(&v) != nil {
+		return nil
+	}
+	return v
 }
 
 // toolsByName is a request's tools by their names, a hosted tool without

@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/Calcium-Ion/moejs"
+	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/jsmod"
 	"github.com/yetone/magpie/internal/plugin"
 )
@@ -84,17 +85,22 @@ var (
 	loadMu    sync.Mutex
 	cur       atomic.Pointer[set]
 	nextCheck atomic.Int64
+	// checkedGen is filememo's generation when current last looked
+	checkedGen atomic.Uint64
 )
 
 // current is the middleware in force, loaded again when plugins.json or a
-// middleware's file changed, which is looked at once a second.
+// middleware's file changed, which is looked at once a second, and at
+// once after magpie wrote a file of its own.
 func current() *set {
 	s := cur.Load()
 	now := time.Now().UnixNano()
 	n := nextCheck.Load()
-	if s != nil && (now < n || !nextCheck.CompareAndSwap(n, now+int64(time.Second))) {
+	g := filememo.Gen()
+	if s != nil && g == checkedGen.Load() && (now < n || !nextCheck.CompareAndSwap(n, now+int64(time.Second))) {
 		return s
 	}
+	checkedGen.Store(g)
 	st := stamp()
 	if s != nil && s.stamp == st {
 		return s

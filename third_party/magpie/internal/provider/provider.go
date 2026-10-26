@@ -660,17 +660,7 @@ var AllBuilt atomic.Int64
 func allProviders() []Provider {
 	AllBuilt.Add(1)
 	f := load()
-	stored := f.Providers
-	picks := map[string]Provider{}
-	var out []Provider
-	for _, p := range stored {
-		p = normalize(p)
-		if !hasEndpoint(p) {
-			picks[p.ID] = p
-			continue
-		}
-		out = append(out, p)
-	}
+	out, picks := ownOf(f)
 	for _, a := range Accounts() {
 		if _, taken := find(out, a.ID); taken || picks[a.ID].Hidden {
 			continue
@@ -685,6 +675,21 @@ func allProviders() []Provider {
 		out = append(out, a)
 	}
 	return ordered(out, f.Order)
+}
+
+// ownOf is f's providers of the user's own, and the model picks it keeps
+// for the signed-in accounts by id.
+func ownOf(f file) (own []Provider, picks map[string]Provider) {
+	picks = map[string]Provider{}
+	for _, p := range f.Providers {
+		p = normalize(p)
+		if !hasEndpoint(p) {
+			picks[p.ID] = p
+			continue
+		}
+		own = append(own, p)
+	}
+	return own, picks
 }
 
 // withPicks is the signed-in account a with what the user set on its
@@ -740,23 +745,33 @@ func Find(id string) (*Provider, error) {
 }
 
 func findIn(all []Provider, id string) (*Provider, error) {
+	if p := lookIn(all, id); p != nil {
+		return p, nil
+	}
+	return nil, fmt.Errorf("no provider %q — magpie providers lists them%s", id, readElsewhere())
+}
+
+// lookIn is findIn without its error, which looks on disk for where else
+// this magpie's files may be (readElsewhere): a request's model not found
+// among the providers asked it twice, for nothing (#3394).
+func lookIn(all []Provider, id string) *Provider {
 	q := strings.ToLower(strings.TrimSpace(id))
 	// an id before a name: a provider of the user's called WorkBuddy isn't
 	// the workbuddy subscription
 	if i := slices.IndexFunc(all, func(p Provider) bool { return p.ID == q }); i >= 0 {
-		return &all[i], nil
+		return &all[i]
 	}
 	for _, p := range all {
 		if strings.ToLower(p.Name) == q {
-			return &p, nil
+			return &p
 		}
 	}
 	for _, p := range all {
 		if slices.Contains(p.Was, q) {
-			return &p, nil
+			return &p
 		}
 	}
-	return nil, fmt.Errorf("no provider %q — magpie providers lists them%s", id, readElsewhere())
+	return nil
 }
 
 // readElsewhere says, for a provider not found, that this magpie reads its

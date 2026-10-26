@@ -3623,10 +3623,22 @@ function refreshUsage(now = false) {
   return flight;
 }
 renderUsageEvery();
-setInterval(() => {
-  if (!usageEvery || view !== "usage" || document.hidden || document.querySelector(".pop:not([hidden])")) return;
-  if (performance.now() - usageLast >= usageEvery * 1000) refreshUsage();
-}, 1000);
+// the refresh is looked at each second only while the page is in sight: a
+// look with nothing to do wakes the web content process all the same
+// (#3185), so out of sight there is none until it is shown again
+let usageSecond = 0;
+function usageTicks() {
+  if ($("#view-usage").hidden || document.hidden) { clearInterval(usageSecond); usageSecond = 0; return; }
+  usageSecond ||= setInterval(() => {
+    if ($("#view-usage").hidden || document.hidden) return usageTicks();
+    if (!usageEvery || view !== "usage" || document.querySelector(".pop:not([hidden])")) return;
+    if (performance.now() - usageLast >= usageEvery * 1000) refreshUsage();
+  }, 1000);
+}
+new MutationObserver(usageTicks).observe($("#view-usage"), { attributes: true, attributeFilter: ["hidden"] });
+document.addEventListener("visibilitychange", usageTicks);
+window.addEventListener("focus", usageTicks);
+usageTicks();
 // opened from the tray panel's Usage tab: on the Requests of one provider or agent
 if (mode === "window" && params.get("view") === "usage") {
   // An explicit destination takes precedence over the remembered tab.

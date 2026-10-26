@@ -241,8 +241,14 @@ func TestKeepListsFreshFetchesWhatIsDue(t *testing.T) {
 	}
 	// fetched just now: not due for 6 hours
 	r.set("gpt-7", "gpt-6", "llama-5")
+	built := AllBuilt.Load()
 	if got := refreshDueLists(context.Background(), now.Add(5*time.Hour)); len(got) != 0 {
 		t.Fatalf("asked %v before its 6 hours", got)
+	}
+	// a look with nothing due asks no agent for its sign-in: All reads
+	// each one's, the Claude keychain's `security` among them (#3185)
+	if n := AllBuilt.Load() - built; n != 0 {
+		t.Fatalf("a look with nothing due built All %d times", n)
 	}
 	got := refreshDueLists(context.Background(), now.Add(6*time.Hour+time.Minute))
 	if !slices.Equal(got, []string{"relay"}) || r.asked.Load() != 2 {

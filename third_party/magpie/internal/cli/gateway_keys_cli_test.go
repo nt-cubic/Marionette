@@ -208,6 +208,16 @@ func TestGatewayKeyLimitCLI(t *testing.T) {
 			t.Error("accepted", args)
 		}
 	}
+	// month ends in an h, and is the month, not a count of hours
+	if got, err = call("limit", id, "month", "--cost", "20"); err != nil || !strings.Contains(got, "this month") {
+		t.Fatal(got, err)
+	}
+	if keys, _ = access.List(); keys[0].Limit == nil || keys[0].Limit.Period != "month" || keys[0].Limit.Cost != 20 {
+		t.Fatalf("limit kept as %+v", keys[0].Limit)
+	}
+	if got, err = call("limit", id, "add", "week", "--tokens", "1m"); err != nil || !strings.Contains(got, "Limit 2") {
+		t.Fatal(got, err)
+	}
 	if got, err := call("limit", id, "off"); err != nil || !strings.Contains(got, "no limit") {
 		t.Fatal(got, err)
 	}

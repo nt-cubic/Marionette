@@ -155,6 +155,9 @@ func statuslineCard(q provider.Quota, now time.Time) string {
 		switch {
 		case w.Unlimited:
 			cells = append(cells, n+" ∞")
+		case w.Text:
+			// a row of text alone (a plugin's balance) has no share
+			cells = append(cells, n+" "+w.Display)
 		case w.ResetsAt != nil && !w.ResetsAt.After(now):
 			// its window has started again since it was read
 			cells = append(cells, n+" 0%")

@@ -32,6 +32,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/yetone/magpie/internal/beat"
 )
 
 // MinRefreshEvery is the shortest RefreshEvery: a vendor's list changes
@@ -268,14 +270,16 @@ var listsEvery = time.Minute
 func KeepListsFresh(ctx context.Context) {
 	t := time.NewTimer(30 * time.Second)
 	defer t.Stop()
+	var wait <-chan time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		case <-wait:
 		}
 		refreshDueLists(ctx, time.Now())
-		t.Reset(listsEvery)
+		wait = beat.Next(listsEvery)
 	}
 }
 
@@ -283,7 +287,13 @@ func KeepListsFresh(ctx context.Context) {
 // answers the ids it asked.
 func refreshDueLists(ctx context.Context, now time.Time) []string {
 	var asked []string
-	for _, p := range All() {
+	// the user's own providers alone, as All lists them: only those keep a
+	// list on a schedule (ownList), and All asks every agent for its
+	// sign-in, the Claude keychain's `security` among them, each minute
+	// of an idle magpie (#3185)
+	f := load()
+	own, _ := ownOf(f)
+	for _, p := range ordered(own, f.Order) {
 		every := p.RefreshInterval()
 		// one that lists nothing (Preset.NoList) has no list to keep fresh
 		if every == 0 || p.Off || !p.lists() {

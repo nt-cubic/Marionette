@@ -35,6 +35,10 @@ import (
 	"github.com/yetone/magpie/internal/steady"
 )
 
+// CodexAutoReviewSession is the CodexAutoReview that runs Codex's
+// auto-review on the session's own model.
+const CodexAutoReviewSession = "session"
+
 // Settings is what the user chose. "" and "system" both mean "follow the OS".
 type Settings struct {
 	Theme string `json:"theme,omitempty"` // system | light | dark
@@ -511,7 +515,10 @@ type Settings struct {
 	// in every entry of the list magpie hands Codex as
 	// auto_review_model_override, which Codex takes before its own
 	// codex-auto-review or the conversation's model at low effort. ""
-	// leaves the list as it was.
+	// leaves the list as it was. CodexAutoReviewSession has each of
+	// magpie's entries name itself, so the review runs on the session's
+	// model when that is one of magpie's, not on codex-auto-review through
+	// the ChatGPT sign-in (cybercaius on Discord).
 	CodexAutoReview string `json:"codexAutoReview,omitempty"`
 	// CodexSubagentModel is the model the gateway puts every subagent
 	// Codex spawns on (a request x-openai-subagent names collab_spawn),
@@ -1521,7 +1528,7 @@ func save(s Settings, recording bool) error {
 		return fmt.Errorf("the model for Codex's composer predictions must be a model's id such as openai/gpt-5-mini, or off, not %q", s.CodexPredictions)
 	}
 	s.CodexAutoReview = strings.TrimSpace(s.CodexAutoReview)
-	if s.CodexAutoReview != "" && !strings.Contains(s.CodexAutoReview, "/") {
+	if s.CodexAutoReview != "" && s.CodexAutoReview != CodexAutoReviewSession && !strings.Contains(s.CodexAutoReview, "/") {
 		return fmt.Errorf("the model for Codex's auto-review must be a model's id such as openai/gpt-5-mini, not %q", s.CodexAutoReview)
 	}
 	s.CodexSubagentModel = strings.TrimSpace(s.CodexSubagentModel)

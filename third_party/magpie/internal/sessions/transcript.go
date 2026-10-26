@@ -30,10 +30,17 @@ var ErrNoTranscript = errors.New("this agent's conversations can't be shown")
 // transcript.
 func HasTranscript(agent string) bool {
 	switch agent {
-	case "claude", "qoder", "qoder-cn", "codex", "pi", "omp", "cursor", "opencode", "kimi":
+	case "claude", "qoder", "qoder-cn", "codex", "pi", "omp", "cursor", "opencode", "kimi", "agy":
 		return true
 	}
 	return false
+}
+
+// readable says whether a session's conversation can be read: its agent's
+// can, and its file is the one they are read from (an agy conversation
+// listed from its row alone has none).
+func readable(s Session) bool {
+	return HasTranscript(s.Agent) && !(s.Agent == "agy" && agyRowOnly(s.Path))
 }
 
 func (t *Transcript) add(_ bool, p Part) bool {
@@ -82,6 +89,8 @@ func readTranscriptOf(s Session, keep func([]byte) bool, add func(bool, Part) bo
 		return piTranscript(s.Path, add)
 	case "kimi":
 		return kimiTranscript(s.Path, keep, add)
+	case "agy":
+		return agyTranscript(s.Path, keep, add)
 	default:
 		return claudeContentOf(whole, keep, add)
 	}

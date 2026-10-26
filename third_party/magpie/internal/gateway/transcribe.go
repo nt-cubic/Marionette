@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -93,11 +94,11 @@ func readAudioForm(ctype string, body []byte) (*audioForm, error) {
 
 // mask masks the prompt, the form's only text a vendor is sent; the
 // audio can't be, and the transcript gets the masked values back.
-func (a *audioForm) mask(w http.ResponseWriter) (http.ResponseWriter, func(), maskHits, string, error) {
+func (a *audioForm) mask(ctx context.Context, w http.ResponseWriter) (http.ResponseWriter, func(), maskHits, string, error) {
 	if a.prompt == "" {
 		return w, func() {}, maskHits{}, "", nil
 	}
-	w, masked, done, hits, err := redactedPromptHits(w, a.prompt)
+	w, masked, done, hits, err := redactedPromptHits(ctx, w, a.prompt)
 	if masked != a.prompt {
 		a.masked = &masked
 	}

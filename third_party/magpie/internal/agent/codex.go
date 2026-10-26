@@ -2024,6 +2024,28 @@ func CodexSideModel() string {
 	return codex(home).SideModel()
 }
 
+// CodexSideSet says whether this machine's Codex config names the model
+// for a side call itself: "subagent" for [agents] default_subagent_model,
+// "memories" for [memories] extract_model or consolidation_model. A config
+// that can't be read counts as set, so the gateway leaves the call as Codex
+// sent it (gateway.CodexSideSet).
+func CodexSideSet(which string) bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return true
+	}
+	path := filepath.Join(here(home).codexHome(), "config.toml")
+	switch which {
+	case "subagent":
+		t, err := edit.GetTOMLTable(path, "agents")
+		return err != nil || t["default_subagent_model"] != ""
+	case "memories":
+		t, err := edit.GetTOMLTable(path, "memories")
+		return err != nil || t["extract_model"] != "" || t["consolidation_model"] != ""
+	}
+	return true
+}
+
 // codexChatGPT reports whether Codex is signed in to a ChatGPT account:
 // its built-in provider then runs and asks for the model list at
 // openai_base_url. Signed in with an API key alone, it asks for none.

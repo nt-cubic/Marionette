@@ -217,7 +217,7 @@ func (a *Agent) AppBehind() *AppRun {
 // appReads are the files the agent's desktop app reads magpie's part from
 // at start, and that part. Claude Desktop: deploymentMode, the profile
 // applied and magpie's profile, with the models the gateway lists it.
-// WorkBuddy: its models.json.
+// WorkBuddy: magpie's models in its models.json (workbuddyPart).
 func (a *Agent) appReads() (files []string, reads func() string) {
 	switch a.ID {
 	case "claude-desktop":
@@ -243,10 +243,7 @@ func (a *Agent) appReads() (files []string, reads func() string) {
 			return b.String()
 		}
 	case "workbuddy", "workbuddy-ai":
-		return []string{a.Path}, func() string {
-			c, _ := edit.Read(a.Path)
-			return string(c)
-		}
+		return []string{a.Path}, func() string { return workbuddyPart(a.Path) }
 	}
 	return nil, nil
 }

@@ -158,6 +158,10 @@ func quotaOfPlugin(q SubscriptionQuota, u plugin.Usage) SubscriptionQuota {
 		w := QuotaWindow{Name: x.Name, Used: x.Used, ResetSecs: x.ResetSecs, Display: x.Display,
 			Amount: x.Amount, Limit: x.Limit, Unit: x.Unit,
 			Span: time.Duration(x.Span * float64(time.Second)), Model: strings.ToLower(x.Model), Aside: x.Aside}
+		// a row set aside with text and nothing counted is that text: a
+		// window that counts nothing yet says 0 with a count, or with no
+		// text, and one that stops the account is a reading at 0
+		w.Text = x.Aside && x.Display != "" && x.Used == 0 && x.Amount == 0 && x.Limit == 0
 		if t, err := time.Parse(time.RFC3339, x.ResetsAt); err == nil {
 			w.ResetsAt = &t
 		}

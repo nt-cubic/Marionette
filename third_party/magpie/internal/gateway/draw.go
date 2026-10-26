@@ -469,7 +469,7 @@ func (s *Server) images(edit bool) http.HandlerFunc {
 		}
 		var unmask func()
 		var hits maskHits
-		w, d.Prompt, unmask, hits, err = redactedPromptHits(w, d.Prompt)
+		w, d.Prompt, unmask, hits, err = redactedPromptHits(r.Context(), w, d.Prompt)
 		defer unmask()
 		if err != nil {
 			fail(maskStatus(err), err.Error())

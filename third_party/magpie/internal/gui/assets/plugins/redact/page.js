@@ -1,11 +1,27 @@
 // Insights › Masking's code (client.js has its markup and hooks): run after
 // app.js, whose masking helpers it shares (maskTip, maskColor,
 // maskShape, maskValue: Settings' Try it and the masked calls' badges use
-// them too). What a placeholder stood for is in this magpie's memory alone,
-// never on disk, so after a restart it is gone; so is the text a request
-// went out with (/api/masking/sent), kept for the newest requests only.
+// them too; Try it uses this page's maskMatches in turn). What a
+// placeholder stood for is in this magpie's memory alone, never on disk,
+// so after a restart it is gone; so is the text a request went out with
+// (/api/masking/sent), kept for the newest requests only.
 
 const stillMotion = calm;
+// maskMatches is text's stand-ins as matchAll gives them: its {{…}}
+// placeholders, and the made-up keys "Keep a key's form" sent (redact's
+// shape.go), the keys of info that are no placeholder, which only the
+// record's own list tells from the text around them (#3599)
+const maskLookRes = new WeakMap();
+function maskMatches(text, info) {
+  let re = maskLookRes.get(info);
+  if (!re) {
+    const looks = [...info.keys()].filter((p) => p && !p.startsWith("{{")).sort((a, b) => b.length - a.length)
+      .map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    re = looks.length ? new RegExp(PLACEHOLDER.source + "|" + looks.join("|"), "g") : PLACEHOLDER;
+    maskLookRes.set(info, re);
+  }
+  return text.matchAll(re);
+}
 // the providers' names, read once when the page opened before any page
 // that loads them
 let maskProv = null, maskProvAsked = false;
@@ -251,12 +267,12 @@ function maskFlow(sum, move) {
     for (const r of rows) {
       const b = el("button", "mo-node" + (r.id && maskL[kind] === r.id ? " on" : ""));
       b.type = "button";
-      // its logo on the side the lines are: an agent's after its name, a
-      // provider's before it; "N more" keeps the room so the names line up
+      // its logo first, then its name, on both sides; "N more" keeps the
+      // logo's room so the names line up
       const ic = r.id ? icon(r.icon || "generic") : el("span", "ic");
       const tx = el("span", "tx");
       tx.append(el("span", "nm", r.name), el("span", "ct", fmtN(r.n)));
-      b.append(...(kind === "agent" ? [tx, ic] : [ic, tx]));
+      b.append(ic, tx);
       if (r.id) {
         b.title = t("Show what {name} sent masked", { name: r.name });
         b.onclick = () => maskNarrow({ [kind]: maskL[kind] === r.id ? "" : r.id });
@@ -301,7 +317,9 @@ function maskFlow(sum, move) {
           if (q === ks[i] >> 1 && !still) for (let k = 0, dots = 1 + Math.round(2 * r.n / max); k < dots; k++) {
             const dur = 1.7 + i * .5, begin = (out ? dur : 0) + k * 2 * dur / dots + "s";
             const z = out ? 1.8 : 1.7, dot = add("rect", { x: -z, y: -z, width: 2 * z, height: 2 * z, rx: out ? .6 : z, class: "mo-dot" + (out ? " out" : "") });
-            const a = { dur: dur + "s", begin, repeatCount: "indefinite" };
+            // twice round when drawn, not forever: an endless motion lays the
+            // page out each frame, ~16% of a core while it sits open (#3185)
+            const a = { dur: dur + "s", begin, repeatCount: 2 };
             add("animateMotion", { path: d, ...a }, dot);
             add("animate", { attributeName: "opacity", values: "0;1;1;0", keyTimes: "0;.1;.85;1", ...a }, dot);
           }
@@ -709,7 +727,7 @@ function maskBlocked(r) {
 // got them or, here, as they were written
 function maskInk(into, text, here, o, info) {
   let at = 0;
-  for (const m of text.matchAll(PLACEHOLDER)) {
+  for (const m of maskMatches(text, info)) {
     const x = info.get(m[0]);
     if (!x) continue;
     into.append(document.createTextNode(text.slice(at, m.index)));
@@ -731,7 +749,7 @@ function maskInk(into, text, here, o, info) {
 // side, the rest left out
 function maskWindows(text, info) {
   const rs = [];
-  for (const m of text.matchAll(PLACEHOLDER)) if (info.has(m[0])) rs.push([Math.max(0, m.index - 120), Math.min(text.length, m.index + m[0].length + 120)]);
+  for (const m of maskMatches(text, info)) if (info.has(m[0])) rs.push([Math.max(0, m.index - 120), Math.min(text.length, m.index + m[0].length + 120)]);
   const out = [];
   for (const r of rs) {
     const last = out.at(-1);
@@ -761,7 +779,7 @@ function maskContent(r, o, info) {
     items = [];
     let fold = null;
     for (const l of o.leaves) {
-      const changed = [...l.text.matchAll(PLACEHOLDER)].some((m) => info.has(m[0]));
+      const changed = [...maskMatches(l.text, info)].some((m) => info.has(m[0]));
       if (changed) { fold = null; items.push({ leaf: l }); continue; }
       if (!fold) items.push(fold = { fold: [] });
       fold.fold.push(l);
@@ -804,7 +822,7 @@ function maskContent(r, o, info) {
       return list.append(f);
     }
     const l = it.leaf, m = el("div", "msk-msg");
-    const n = [...l.text.matchAll(PLACEHOLDER)].filter((x) => info.has(x[0])).length;
+    const n = [...maskMatches(l.text, info)].filter((x) => info.has(x[0])).length;
     const mh = el("div", "msk-mhead");
     if (l.role) mh.append(el("span", "msk-role", l.role));
     if (l.path) mh.append(el("span", "msk-path", l.path));
@@ -845,7 +863,7 @@ function maskHow(r, o, info) {
   head.append(el("h2", "", t("How it was masked")), el("span", "msk-hint", t(vs.length === 1 ? "1 value" : "{n} values", { n: fmtN(vs.length) }) + " · " + t(r.n === 1 ? "1 place" : "{n} places", { n: fmtN(r.n) })));
   aside.append(head);
   const where = new Map();
-  for (const l of o.leaves || []) for (const m of l.text.matchAll(PLACEHOLDER)) if (info.has(m[0]) && l.path) {
+  for (const l of o.leaves || []) for (const m of maskMatches(l.text, info)) if (info.has(m[0]) && l.path) {
     const w = where.get(m[0]) || new Set();
     w.add(l.path);
     where.set(m[0], w);

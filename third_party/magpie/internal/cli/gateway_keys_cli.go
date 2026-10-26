@@ -296,7 +296,9 @@ func perPhrase(l *access.Limit) string {
 // --cost and --cache-reads.
 func parseKeyLimit(window string, rest []string, usage error) (*access.Limit, error) {
 	lim := &access.Limit{Period: window}
-	if n, ok := strings.CutSuffix(window, "d"); ok {
+	if window == "day" || window == "week" || window == "month" {
+		// a period by its name: month ends in an h, and is no count of hours
+	} else if n, ok := strings.CutSuffix(window, "d"); ok {
 		days, err := strconv.Atoi(n)
 		if err != nil || days < 1 || days > access.MaxDays {
 			return nil, fmt.Errorf("an N-day cycle is a whole number of days from 1 to %d, like 10d: %q", access.MaxDays, window)

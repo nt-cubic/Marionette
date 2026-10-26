@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yetone/magpie/internal/beat"
+	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -72,32 +74,52 @@ func codexDaemonNotice(path string) (string, bool) {
 	return "", false
 }
 
-// codexDaemonEvery is how often KeepCodexDaemonCurrent looks.
+// codexDaemonEvery is how often KeepCodexDaemonCurrent looks while the
+// daemon is behind, for the codex sessions on it to end.
 const codexDaemonEvery = 15 * time.Second
 
 // KeepCodexDaemonCurrent restarts this machine's Codex daemon whenever it
 // is behind what Codex reads at start and no codex session is on it,
-// looking every so often until ctx ends.
+// until ctx ends. It looks again when magpie writes a file (what Codex
+// reads is among them), every so often while the daemon is behind, and
+// otherwise only now and then, for another process's write (#3185: a
+// look every 15s woke an idle magpie).
 func KeepCodexDaemonCurrent(ctx context.Context) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return
 	}
 	path := filepath.Join(here(home).codexHome(), "config.toml")
-	t := time.NewTicker(codexDaemonEvery)
-	defer t.Stop()
+	every, written := codexDaemonEvery, filememo.Written()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
+		case <-written:
+		case <-beat.Next(every):
 		}
+		// taken before the look, so a write made during it isn't missed
+		written = filememo.Written()
+		var c provider.CodexDaemonCheck
 		if _, err := os.Stat(path); err == nil {
-			if c := codexDaemonCheck(path); c.Restarted {
+			if c = daemonCheck(path); c.Restarted {
 				log.Println("codex app-server: restarted, it had the model list from before", c.Since.Format(time.RFC3339))
 			}
 		}
+		every = codexDaemonNext(c)
 	}
+}
+
+// daemonCheck is codexDaemonCheck; a test stands in for it.
+var daemonCheck = codexDaemonCheck
+
+// codexDaemonNext is how long KeepCodexDaemonCurrent waits, with nothing
+// written, after a look that found c.
+func codexDaemonNext(c provider.CodexDaemonCheck) time.Duration {
+	if c.Behind && !c.Restarted {
+		return codexDaemonEvery
+	}
+	return filememo.OthersEvery()
 }
 
 // CodexDaemonRestarted forgets the daemon last found behind, once the user

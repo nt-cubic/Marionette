@@ -227,3 +227,57 @@ func TestGroupRuleSeveralModelsCmd(t *testing.T) {
 		t.Fatalf("a rule left with no model kept: %+v", rs)
 	}
 }
+
+// A rule's hours typed with no zone are this computer's ($TZ here), kept
+// as its IANA name so a server on another clock reads them as meant; a
+// zone typed is kept, and one magpie doesn't know is refused.
+func TestGroupRuleTimeZoneCmd(t *testing.T) {
+	groupsHome(t)
+	t.Setenv("TZ", "Asia/Shanghai")
+	if _, err := addGroup("Peak", []string{"models=a/claude-opus-5-5,b/gpt-5.5"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, words := range [][]string{
+		{"add", "peak", "pause=claude-opus-5-5", "time=09:00-18:00", "days=mon-fri"},
+		{"add", "peak", "use=gpt-5.5", "time=22:00-08:00@Europe/Berlin"},
+		{"add", "peak", "use=gpt-5.5", "days=sat", "tz=America/New_York"},
+	} {
+		if err := ruleCmd(words); err != nil {
+			t.Fatalf("%v: %v", words, err)
+		}
+	}
+	g, err := findGroup("peak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var zones []string
+	for _, r := range g.Rules {
+		zones = append(zones, r.Time.Zone)
+	}
+	if got := strings.Join(zones, " "); got != "Asia/Shanghai Europe/Berlin America/New_York" {
+		t.Fatalf("zones %q", got)
+	}
+	if got := g.Rules[0].Line(); got != "pause=a/claude-opus-5-5 time=09:00-18:00 days=mon-fri tz=Asia/Shanghai" {
+		t.Errorf("line %q", got)
+	}
+	for _, words := range [][]string{
+		{"add", "peak", "use=gpt-5.5", "time=09:00-18:00", "tz=Beijing"},
+		{"add", "peak", "use=gpt-5.5", "time=09:00-18:00@Asia/Shangai"},
+		{"add", "peak", "use=gpt-5.5", "tz=Asia/Shanghai"},
+	} {
+		if err := ruleCmd(words); err == nil {
+			t.Errorf("%v: saved", words)
+		}
+	}
+	if g, _ = findGroup("peak"); len(g.Rules) != 3 {
+		t.Errorf("%d rules after the refused ones", len(g.Rules))
+	}
+	// with no zone name to be had, none is kept: magpie's clock, as before
+	t.Setenv("TZ", "UTC+8")
+	if err := ruleCmd([]string{"add", "peak", "use=gpt-5.5", "time=01:00-02:00"}); err != nil {
+		t.Fatal(err)
+	}
+	if g, _ = findGroup("peak"); g.Rules[3].Time.Zone != "" {
+		t.Errorf("zone %q from TZ=UTC+8", g.Rules[3].Time.Zone)
+	}
+}

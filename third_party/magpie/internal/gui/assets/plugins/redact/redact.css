@@ -38,10 +38,17 @@
 .msk-fl { min-width: 0; }
 .mo-flow { position: relative; display: grid; grid-template-columns: minmax(0, 140px) minmax(80px, 1fr) minmax(0, 140px); gap: 14px; }
 .mo-col { display: flex; flex-direction: column; justify-content: center; min-width: 0; }
-.mo-node { display: flex; align-items: center; justify-content: flex-end; gap: 8px; height: 34px; min-width: 0; padding: 0 10px; border: 0; border-radius: 9px; background: none; color: var(--fg); font: inherit; cursor: default; }
-.mo-col.provider .mo-node { justify-content: flex-start; }
-.mo-node .tx { display: flex; flex-direction: column; align-items: flex-end; min-width: 0; }
-.mo-col.provider .mo-node .tx { align-items: flex-start; }
+/* the agents' nodes as one block against the lines, as wide as the widest,
+   so their logos make one column and their names one edge, as the
+   providers' do */
+.mo-col.agent { display: grid; grid-template-columns: minmax(0, max-content); justify-content: end; align-content: center; }
+.mo-node { display: flex; align-items: center; gap: 8px; height: 34px; min-width: 0; padding: 0 10px 0 6px; border: 0; border-radius: 9px; background: none; color: var(--fg); font: inherit; text-align: left; cursor: default; }
+.mo-node .tx { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
+/* each logo on the same disc: a logo's own drawing fills its box or not
+   (Pi's edge to edge, Codex's a tile of its own), and bare they read as
+   three sizes */
+.mo-node .ic { box-sizing: border-box; width: 24px; height: 24px; padding: 5px; border-radius: 50%; background: var(--card); box-shadow: 0 0 0 1px var(--line); }
+.mo-node .ic > svg { width: 14px; height: 14px; }
 .mo-node:disabled .ic { visibility: hidden; }
 .mo-node:not(:disabled):hover { background: var(--pill); }
 .mo-node:disabled { color: var(--muted); }
@@ -58,7 +65,7 @@
 .mo-th.one { stroke-width: .9; }
 .mo-mem { stroke: var(--accent); stroke-opacity: .55; stroke-width: 1; }
 .mo-tick { stroke: var(--accent); stroke-opacity: .35; stroke-width: .6; }
-.mo-scan { fill: var(--accent); opacity: 0; animation: mo-scan 5.5s cubic-bezier(.45, 0, .55, 1) infinite; }
+.mo-scan { fill: var(--accent); opacity: 0; animation: mo-scan 5.5s cubic-bezier(.45, 0, .55, 1) 2; }
 @keyframes mo-scan { 0% { transform: translateY(0); opacity: 0; } 15%, 85% { opacity: 1; } 100% { transform: translateY(var(--h)); opacity: 0; } }
 .mo-dot { fill: var(--fg); opacity: 0; }
 .mo-dot.out { fill: var(--accent); }
@@ -81,7 +88,7 @@
 .msk-list { margin-top: 14px; }
 .msk-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .msk-live { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--muted); }
-.msk-live i { width: 6px; height: 6px; border-radius: 50%; background: var(--green, var(--accent)); animation: msk-live 2.4s ease-in-out infinite; }
+.msk-live i { width: 6px; height: 6px; border-radius: 50%; background: var(--green, var(--accent)); animation: msk-live 2.4s ease-in-out; }
 @keyframes msk-live { 50% { opacity: .35; } }
 .msk-facets { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
 .msk-facet { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border: 1px solid var(--line); border-radius: 99px; background: var(--card); color: var(--fg-2); font: inherit; font-size: 12px; cursor: default; white-space: nowrap; }
@@ -228,10 +235,13 @@ body.window .msk-onebar::before { inset: -6px -16px; }
 /* below this the flow beside the number leaves its middle under ~120px:
    the lines bunch up and the providers' names are cut, so it goes under */
 @container (max-width: 780px) {
-  .msk-band { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .msk-band { grid-template-columns: minmax(0, 1fr); gap: 28px; }
+  /* under the number the flow has the card's width: the names take what
+     they need, the middle the rest, not a third of it */
+  .mo-flow { grid-template-columns: fit-content(150px) minmax(80px, 1fr) fit-content(150px); }
 }
 @container (max-width: 640px) {
-  .mo-flow { grid-template-columns: minmax(0, 1fr) minmax(48px, 1fr) minmax(0, 1fr); gap: 4px; }
+  .mo-flow { grid-template-columns: fit-content(120px) minmax(48px, 1fr) fit-content(120px); gap: 4px; }
   .msk-model, .msk-kind:not(:first-child), .msk-kind.more { display: none; }
   .msk-msgs.both .msk-mbody, .msk-cols { grid-template-columns: minmax(0, 1fr); }
   .msk-cols span:last-child { display: none; }

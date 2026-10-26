@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -271,5 +273,103 @@ func TestChangedAtWithoutAWrite(t *testing.T) {
 	os.Chtimes(f, later, later)
 	if got := a.changedAt([]string{f}, reads); !got.Equal(later) {
 		t.Fatalf("with a write: %v, want %v", got, later)
+	}
+}
+
+// WorkBuddy saves models.json itself seconds after every start (it purges
+// local models the computer can't run, and writes the file even when none
+// were): JSON.stringify's two-space indent with no trailing newline, and
+// on Windows 5.6 the apiKey encrypted. That write is WorkBuddy's, not a
+// change of magpie's, so after a restart the row says nothing more; a
+// change of magpie's models still asks for one (Sac2333o on X: the row
+// kept saying "已连接 · 重启 WorkBuddy 后生效" after every restart).
+func TestWorkBuddyOwnSaveAfterStartIsNoChange(t *testing.T) {
+	for _, osName := range []string{"darwin", "windows"} {
+		t.Run(osName, func(t *testing.T) {
+			home := restartSandbox(t)
+			start := time.Now().Add(-time.Hour)
+			if osName == "windows" {
+				restartOnWindows = true
+				winProcs = func(name string) []winProc {
+					if !strings.EqualFold(name, "WorkBuddy.exe") {
+						return nil
+					}
+					return []winProc{{pid: 10, parent: 4, image: `C:\Program Files\WorkBuddy\WorkBuddy.exe`, start: start}}
+				}
+			} else {
+				apps := filepath.Join(home, "Applications")
+				bundle := macApp(t, apps, "WorkBuddy.app", "com.tencent.workbuddy.mac", "Electron")
+				restartOnMac = true
+				appFolders = func() []string { return []string{apps} }
+				running = func(pat string) []runningProc {
+					p := runningProc{time.Since(start), bundle + "/Contents/MacOS/Electron"}
+					if regexp.MustCompile(pat).MatchString(p.cmd) {
+						return []runningProc{p}
+					}
+					return nil
+				}
+			}
+			a := workbuddy(home)
+			if err := a.Field("provider").Set("magpie"); err != nil {
+				t.Fatal(err)
+			}
+			wrote := time.Now().Add(-30 * time.Minute)
+			os.Chtimes(a.Path, wrote, wrote)
+			if a.AppBehind() == nil {
+				t.Fatal("no Restart for WorkBuddy started half an hour before magpie wrote its models")
+			}
+
+			// restarted: WorkBuddy starts, then saves models.json 4s later
+			start = time.Now().Add(-10 * time.Second)
+			workbuddySaves(t, a.Path, osName == "windows", start.Add(4*time.Second))
+			if got := a.AppBehind(); got != nil {
+				t.Fatalf("WorkBuddy's own save after its start read as magpie's change: behind since %v", got.Since)
+			}
+			// magpie's next sync writes the same models again
+			if err := workbuddyWrite(a.Path, true); err != nil {
+				t.Fatal(err)
+			}
+			if got := a.AppBehind(); got != nil {
+				t.Fatalf("magpie's rewrite of the same models read as a change: behind since %v", got.Since)
+			}
+			// a model magpie adds is a change WorkBuddy hasn't read
+			if err := provider.Save(provider.Provider{ID: "deepseek", Name: "DeepSeek", Chat: "https://api.deepseek.com/v1", Key: "k", Models: []string{"pro", "flash"}}); err != nil {
+				t.Fatal(err)
+			}
+			if err := workbuddyWrite(a.Path, true); err != nil {
+				t.Fatal(err)
+			}
+			if a.AppBehind() == nil {
+				t.Fatal("no Restart after magpie added a model WorkBuddy started without")
+			}
+		})
+	}
+}
+
+// workbuddySaves writes models.json as WorkBuddy saves it,
+// JSON.stringify(models, null, 2) with no trailing newline, the apiKey
+// encrypted when encrypt, and dates the write at.
+func workbuddySaves(t *testing.T, path string, encrypt bool, at time.Time) {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := json.Indent(&out, bytes.TrimSpace(b), "", "  "); err != nil {
+		t.Fatal(err)
+	}
+	s := out.String()
+	if encrypt {
+		s = regexp.MustCompile(`"apiKey": "[^"]*"`).ReplaceAllString(s, `"apiKey": "WBEF1:bm90LXRoZS1rZXk="`)
+	}
+	if s == string(b) {
+		t.Fatal("WorkBuddy's save came out as magpie's bytes; the test proves nothing")
+	}
+	if err := os.WriteFile(path, []byte(s), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, at, at); err != nil {
+		t.Fatal(err)
 	}
 }

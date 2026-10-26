@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -18,14 +19,15 @@ import (
 // writes what the wrapper still holds. Nothing masked, nothing wrapped. It
 // fails closed: masking wanted with no masker serving, or a masker that
 // fails, is an error, and the request goes nowhere (gwmw.Masking).
-func redacted(w http.ResponseWriter, body []byte) (http.ResponseWriter, []byte, func(), error) {
-	w, body, done, _, err := redactedHits(w, body)
+func redacted(ctx context.Context, w http.ResponseWriter, body []byte) (http.ResponseWriter, []byte, func(), error) {
+	w, body, done, _, err := redactedHits(ctx, w, body)
 	return w, body, done, err
 }
 
 // redactedHits is redacted with what it swapped, for the record of it
-// (noteMasked).
-func redactedHits(w http.ResponseWriter, body []byte) (http.ResponseWriter, []byte, func(), maskHits, error) {
+// (noteMasked). A masker that waits (for the local model's turn) stops
+// waiting when ctx ends, and the request goes nowhere.
+func redactedHits(ctx context.Context, w http.ResponseWriter, body []byte) (http.ResponseWriter, []byte, func(), maskHits, error) {
 	m, err := gwmw.Masking(redactionWanted())
 	if m == nil {
 		return w, body, func() {}, maskHits{}, err
@@ -35,7 +37,12 @@ func redactedHits(w http.ResponseWriter, body []byte) (http.ResponseWriter, []by
 		h maskHits
 	}
 	began := time.Now()
+	defer noteMasking(ctx)()
 	o, err := gwmw.Safely(func() out {
+		if t, ok := m.(gwmw.ContextTeller); ok {
+			b, hits := t.JSONHitsContext(ctx, body)
+			return out{b, hitsOf(hits)}
+		}
 		if t, ok := m.(gwmw.Teller); ok {
 			b, hits := t.JSONHits(body)
 			return out{b, hitsOf(hits)}
@@ -76,14 +83,14 @@ func toldBack(rw http.ResponseWriter, done func(), h *maskHits) func() {
 // redactedPrompt masks a parsed image or video prompt before any vendor
 // body is built, including multipart forms, and restores the reply's text.
 // It fails closed as redacted does.
-func redactedPrompt(w http.ResponseWriter, prompt string) (http.ResponseWriter, string, func(), error) {
-	w, masked, done, _, err := redactedPromptHits(w, prompt)
+func redactedPrompt(ctx context.Context, w http.ResponseWriter, prompt string) (http.ResponseWriter, string, func(), error) {
+	w, masked, done, _, err := redactedPromptHits(ctx, w, prompt)
 	return w, masked, done, err
 }
 
 // redactedPromptHits is redactedPrompt with what it swapped.
-func redactedPromptHits(w http.ResponseWriter, prompt string) (http.ResponseWriter, string, func(), maskHits, error) {
-	m, masked, h, err := maskTextHits(prompt)
+func redactedPromptHits(ctx context.Context, w http.ResponseWriter, prompt string) (http.ResponseWriter, string, func(), maskHits, error) {
+	m, masked, h, err := maskTextHits(ctx, prompt)
 	if err != nil {
 		return w, prompt, func() {}, maskHits{}, err
 	}
@@ -97,14 +104,15 @@ func redactedPromptHits(w http.ResponseWriter, prompt string) (http.ResponseWrit
 
 // maskedText is s masked as the settings say, and how many values it
 // swapped; an error when it can't be (fail closed).
-func maskedText(s string) (string, int, error) {
-	_, masked, h, err := maskTextHits(s)
+func maskedText(ctx context.Context, s string) (string, int, error) {
+	_, masked, h, err := maskTextHits(ctx, s)
 	return masked, h.n, err
 }
 
 // maskTextHits is maskedText with the masker that masked it and what it
-// swapped.
-func maskTextHits(s string) (gwmw.Masker, string, maskHits, error) {
+// swapped. Its wait for the local model ends with ctx, as redactedHits'
+// does.
+func maskTextHits(ctx context.Context, s string) (gwmw.Masker, string, maskHits, error) {
 	m, err := gwmw.Masking(redactionWanted())
 	if m == nil {
 		return nil, s, maskHits{}, err
@@ -114,7 +122,12 @@ func maskTextHits(s string) (gwmw.Masker, string, maskHits, error) {
 		h maskHits
 	}
 	began := time.Now()
+	defer noteMasking(ctx)()
 	o, err := gwmw.Safely(func() out {
+		if t, ok := m.(gwmw.ContextTeller); ok {
+			got, hits := t.TextHitsContext(ctx, s)
+			return out{got, hitsOf(hits)}
+		}
 		if t, ok := m.(gwmw.Teller); ok {
 			got, hits := t.TextHits(s)
 			return out{got, hitsOf(hits)}
@@ -212,11 +225,11 @@ func redactionWanted() bool {
 // its query from a request already masked, but an agent's call to the
 // search MCP carries it as the agent's model wrote it, values put back
 // (lc on Discord). It fails closed as redacted does.
-func maskedQuery(query string, p *provider.Provider) (string, error) {
+func maskedQuery(ctx context.Context, query string, p *provider.Provider) (string, error) {
 	if p != nil && p.SkipsRedaction() {
 		return query, nil
 	}
-	_, masked, h, err := maskTextHits(query)
+	_, masked, h, err := maskTextHits(ctx, query)
 	if err == nil {
 		id := ""
 		if p != nil {

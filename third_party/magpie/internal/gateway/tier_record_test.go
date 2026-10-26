@@ -41,6 +41,12 @@ func TestUpstreamTierShapes(t *testing.T) {
 		{provider.Responses, `{"service_tier":"ultrafast"}`, "ultrafast"},
 		{provider.Chat, `{"service_tier":1}`, ""},
 		{provider.Gemini, `{"service_tier":"priority"}`, ""},
+		// a long body, asked through its split (topValue): the tier after the
+		// conversation, one inside it that isn't the request's, none at all
+		{provider.Responses, `{"input":[{"role":"user","content":"` + strings.Repeat("words ", 8000) + `"}],"service_tier":"priority"}`, "priority"},
+		{provider.Responses, `{"input":[{"role":"user","content":"x","service_tier":"flex","pad":"` + strings.Repeat("words ", 8000) + `"}]}`, ""},
+		{provider.Anthropic, `{"messages":[{"role":"user","content":"` + strings.Repeat("words ", 8000) + `"}],"speed":"fast"}`, "fast"},
+		{provider.Chat, `{"messages":[{"role":"user","content":"` + strings.Repeat("words ", 8000) + `"}],"service_tier":1}`, ""},
 	} {
 		if got := bodyTier(c.proto, []byte(c.body)); got != c.want {
 			t.Errorf("%s %s: %q", c.proto, c.body, got)

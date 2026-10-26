@@ -34,6 +34,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/lastgood"
 	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/proc"
@@ -83,7 +85,36 @@ var installMu sync.Mutex
 func runBun(ctx context.Context, bun string, args ...string) ([]byte, error) {
 	installMu.Lock()
 	defer installMu.Unlock()
+	mendPackageJSON()
+	defer mendPackageJSON()
 	return bunCommand(ctx, bun, Dir(), args...).CombinedOutput()
+}
+
+// mendPackageJSON cuts what follows plugins/package.json's object off. Bun
+// on Windows can write a shorter package.json over a longer one without
+// truncating it (klmno1993, plugins#405: a bun remove left the old file's
+// last 56 bytes after the closing brace), and every bun add after it
+// fails on bun's "failed to read/parse package.json", whatever
+// the plugin. The object is kept as written; the whole file is kept as
+// package.json.broken. A file whose start isn't an object is left alone.
+// installMu held.
+func mendPackageJSON() {
+	pj := filepath.Join(Dir(), "package.json")
+	b, err := os.ReadFile(pj)
+	if err != nil || json.Valid(b) {
+		return
+	}
+	d := json.NewDecoder(bytes.NewReader(b))
+	var obj map[string]any
+	if d.Decode(&obj) != nil || obj == nil {
+		return
+	}
+	head := append(bytes.Clone(bytes.TrimRight(b[:d.InputOffset()], " \t\r\n")), '\n')
+	if !json.Valid(head) {
+		return
+	}
+	_ = os.WriteFile(pj+".broken", b, 0o644)
+	_ = edit.WriteAtomic(pj, head)
 }
 
 // Dir is the folder magpie installs npm plugins into.
@@ -228,6 +259,7 @@ func save(l List) error {
 	if err := lastgood.Keep(listPath(), lastgood.JSON, 0o600); err != nil {
 		return err
 	}
+	defer filememo.Forget() // what follows plugins.json looks again (Written)
 	if err := writeWhole(listPath(), append(b, '\n')); err != nil {
 		return err
 	}
@@ -719,6 +751,8 @@ func install(ctx context.Context, spec string) error {
 		}
 	}
 	defer installMu.Unlock()
+	mendPackageJSON()
+	defer mendPackageJSON()
 	err = bunAdd(ctx, bun, spec)
 	// a @magpie-community package or version npm doesn't have (a new
 	// one waits for an owner to publish it there) comes from the

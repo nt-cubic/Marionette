@@ -88,7 +88,34 @@ func Forget() {
 	mu.Lock()
 	gen++
 	gens.Store(gen)
+	close(written)
+	written = make(chan struct{})
 	mu.Unlock()
+}
+
+// wake has every loop waiting on Written look at its files, with nothing
+// read forgotten: another process wrote one (Watch), which a look at the
+// disk tells.
+func wake() {
+	mu.Lock()
+	close(written)
+	written = make(chan struct{})
+	mu.Unlock()
+}
+
+// written is closed, and made anew, by every Forget.
+var written = make(chan struct{})
+
+// Written is closed by the next write magpie makes (Forget), or by
+// another process's that Watch is told of: a loop that follows magpie's
+// files waits on it, and looks at them only every so often (OthersEvery)
+// for what another process wrote, rather than polling each second for its
+// own writes too (#3185: those polls woke an idle magpie ~12 times a
+// second).
+func Written() <-chan struct{} {
+	mu.Lock()
+	defer mu.Unlock()
+	return written
 }
 
 // gens is gen, read without mu.

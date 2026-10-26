@@ -114,6 +114,25 @@ func TestVulkanThatWontStartFallsBack(t *testing.T) {
 	}
 }
 
+// Every pf-serve starts with ggml's Metal residency heartbeat off: it
+// woke an idle one ~146 times a second (#3185). The CPU one after a GPU
+// death too.
+func TestServeStartsWithoutResidencyHeartbeat(t *testing.T) {
+	log := fakeInstall(t, "gpudies", false)
+	if _, err := Find([]string{"hi Alice"}); err != nil {
+		t.Fatal(err)
+	}
+	got := fakeLines(t, log, "residency")
+	if len(got) != 2 {
+		t.Fatalf("residency lines = %q, want a GPU and a CPU start", got)
+	}
+	for _, l := range got {
+		if l != "residency 1" {
+			t.Fatalf("residency lines = %q, want GGML_METAL_NO_RESIDENCY=1 on each", got)
+		}
+	}
+}
+
 // A pf-serve that doesn't answer is killed, and the request fails rather
 // than wait for good.
 func TestHungServeIsKilled(t *testing.T) {

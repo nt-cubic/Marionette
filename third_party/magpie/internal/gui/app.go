@@ -430,8 +430,9 @@ func Run(version string, showMain bool, link string) error {
 	watchHide()
 	// The Dock icon opens the window, or goes to it where it is open. Wails
 	// would show every hidden window on it, the panel too, so the hook
-	// answers first and stops it.
+	// answers first and stops it. The icon flaps as the header logo does.
 	h.app.Event.RegisterApplicationEventHook(events.Mac.ApplicationShouldHandleReopen, func(e *application.ApplicationEvent) {
+		go dockFlap()
 		application.InvokeSync(h.reopenMain)
 		e.Cancel()
 	})

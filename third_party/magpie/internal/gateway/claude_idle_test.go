@@ -127,7 +127,9 @@ func TestClaudeRunEndedMidReplyIsNotKeptIdle(t *testing.T) {
 	b := idleTestBridge()
 	in, out := io.Pipe()
 	defer in.Close()
-	r := &subscriptionRun{bridge: b, stdin: out, owner: "owner"}
+	r := &subscriptionRun{bridge: b, stdin: out}
+	owner := "owner"
+	r.owner.Store(&owner)
 	fired := make(chan struct{}, 2)
 	r.timer = time.AfterFunc(time.Hour, func() { r.abort(); fired <- struct{}{} })
 	// the timer fires while the reply is going out, and abort is through

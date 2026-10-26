@@ -217,10 +217,20 @@ func (e *otelExporter) run(every time.Duration) {
 	defer close(e.done)
 	defer e.cancel()
 	defer e.client.CloseIdleConnections()
-	ticker := time.NewTicker(every)
-	defer ticker.Stop()
+	// the timer runs only while the batch holds something, so an idle
+	// exporter doesn't wake every few seconds (#3185)
+	timer := time.NewTimer(every)
+	timer.Stop()
+	defer timer.Stop()
 	batch := make([]otelItem, 0, otelBatchSize)
+	add := func(it otelItem) {
+		if len(batch) == 0 {
+			timer.Reset(every)
+		}
+		batch = append(batch, it)
+	}
 	flush := func() {
+		timer.Stop()
 		e.flush(batch)
 		for _, it := range batch {
 			if n := int64(recordBytes(it.record)); n > 0 {
@@ -232,11 +242,11 @@ func (e *otelExporter) run(every time.Duration) {
 	for {
 		select {
 		case it := <-e.queue:
-			batch = append(batch, it)
+			add(it)
 			if len(batch) == otelBatchSize {
 				flush()
 			}
-		case <-ticker.C:
+		case <-timer.C:
 			flush()
 		case <-e.stop:
 			for {

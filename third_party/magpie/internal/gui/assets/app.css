@@ -540,11 +540,12 @@ body.window :is(#view-agents, #view-sessions, #view-providers, #view-routing, #v
 /* a page, a dialog and a framed editor that run longer than the window
    show where the reader is in them with a thin thumb, on the Mac too
    (PAMI on Discord: no page had a scrollbar) — the WebView draws the
-   Mac's overlay one only while a trackpad scrolls, and a mouse never */
-body.mac :is(.view, .modal .dialog, .modal .editor.framed > .ebody)::-webkit-scrollbar { width: 8px; height: 8px; background: transparent; } /* across as thin as at the side (#1623) */
-body.mac :is(.view, .modal .dialog, .modal .editor.framed > .ebody)::-webkit-scrollbar-thumb { background: var(--faint); border: 2px solid transparent; border-radius: 8px; background-clip: padding-box; }
-body.mac :is(.view, .modal .dialog, .modal .editor.framed > .ebody)::-webkit-scrollbar-thumb:hover { background-color: var(--muted); }
-body.mac :is(.view, .modal .dialog, .modal .editor.framed > .ebody)::-webkit-scrollbar-corner { background: transparent; }
+   Mac's overlay one only while a trackpad scrolls, and a mouse never;
+   the heatmap's weeks that scroll sideways in their card too */
+body.mac :is(.view, .modal .dialog, .modal .editor.framed > .ebody, .heat-scroll)::-webkit-scrollbar { width: 8px; height: 8px; background: transparent; } /* across as thin as at the side (#1623) */
+body.mac :is(.view, .modal .dialog, .modal .editor.framed > .ebody, .heat-scroll)::-webkit-scrollbar-thumb { background: var(--faint); border: 2px solid transparent; border-radius: 8px; background-clip: padding-box; }
+body.mac :is(.view, .modal .dialog, .modal .editor.framed > .ebody, .heat-scroll)::-webkit-scrollbar-thumb:hover { background-color: var(--muted); }
+body.mac :is(.view, .modal .dialog, .modal .editor.framed > .ebody, .heat-scroll)::-webkit-scrollbar-corner { background: transparent; }
 /* WebKit lays a framed editor's grid out at the full width and then lets
    the 8px bar take its right edge, so a body that scrolled ran 8px wide
    and scrolled sideways; the bar's room is always kept, out of the right
@@ -1040,16 +1041,17 @@ body.window .field.solo { grid-column: auto; }
 /* Inherited text supplies the inline baseline; the icon shares its centered cell. */
 .quota-refresh::before { content: "\00a0"; grid-area: 1 / 1; }
 .quota-refresh svg { grid-area: 1 / 1; }
-.subscription-card:hover .quota-refresh, .pq-card:hover .quota-refresh, .quota-refresh.busy, .quota-refresh.kept { width: 14px; margin: 0 -2px 0 3px; opacity: 1; }
+.subscription-card:hover .quota-refresh, .pq-card:hover .quota-refresh, .quota-refresh.busy, .quota-refresh.kept, .quota-refresh.reading { width: 14px; margin: 0 -2px 0 3px; opacity: 1; }
 /* apart: Safari before 15.4 drops a whole selector list with :focus-visible in it */
 .quota-refresh:focus-visible { width: 14px; margin: 0 -2px 0 3px; opacity: 1; }
 .quota-refresh:hover { color: var(--fg); background: var(--pill-hover); }
 .quota-refresh.busy { cursor: default; }
-.quota-refresh.busy svg > * { transform-box: view-box; transform-origin: 50% 50%; }
+.quota-refresh.busy svg > *, .quota-refresh.reading svg > * { transform-box: view-box; transform-origin: 50% 50%; }
 /* the other place's copy of a control that is turning (the tray panel's and the
-   Usage page's draw the same account) turns by itself */
-.quota-refresh.spun svg > * { animation: spin .8s linear infinite; }
-@media (prefers-reduced-motion: reduce) { .quota-refresh.spun svg > * { animation: none; } }
+   Usage page's draw the same account) turns by itself, as does a card kept
+   from the last read while it is read again */
+.quota-refresh.spun svg > *, .quota-refresh.reading svg > * { animation: spin .8s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .quota-refresh.spun svg > *, .quota-refresh.reading svg > * { animation: none; } }
 @media (hover: none) { .quota-refresh { width: 14px; margin: 0 -2px 0 3px; opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .quota-refresh { transition: none; } }
 .skeleton { display: block; border-radius: 5px; background: linear-gradient(90deg, var(--skel, var(--pill)) 25%, var(--skel-hi, var(--pill-hover)) 45%, var(--skel, var(--pill)) 65%); background-size: 240% 100%; animation: skeleton-shift 1.4s ease-in-out infinite; }
@@ -1313,7 +1315,10 @@ body.window .field.solo { grid-column: auto; }
 .heat-title { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .heat-title b { font-size: 12.5px; font-weight: 600; }
 .heat-title span { font-size: 11px; color: var(--muted); }
-.heat-scroll { overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scrollbar-width: thin; padding-bottom: 4px; }
+/* no scrollbar-width: Chromium (WebView2) then drops every ::-webkit-scrollbar
+   rule and draws the system's bar under the weeks, not the app's thin thumb
+   every other list has (cybercaius on Discord) */
+.heat-scroll { overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; padding-bottom: 4px; }
 .heat-grid { display: grid; grid-template-columns: auto repeat(53, minmax(10px, 1fr)); grid-template-rows: auto repeat(7, auto); gap: 3px; min-width: min-content; max-width: calc(3em + 53 * 21px); font-size: 10px; color: var(--muted); }
 .heat-grid i { aspect-ratio: 1; border-radius: 3px; min-width: 0; }
 .heat-grid i:hover { outline: 1px solid var(--fg-2); outline-offset: -1px; }
@@ -3385,6 +3390,8 @@ img.nav-ic { border-radius: 3px; object-fit: contain; }
 #otelList .otel-stacked > .val { width: 100%; max-width: none; margin-left: 0; }
 #otelList input.words { width: 100%; }
 #otelList .otel-stacked .segs { margin-left: 0; max-width: 100%; flex-wrap: wrap; }
+#otelList .otel-host, #otelList .otel-keys { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; width: 100%; }
+#otelList .otel-host > [hidden] { display: none; }
 #otelList .otel-env { padding: 12px 14px; border-top: 1px solid var(--line-2); font-size: 11.5px; color: var(--muted); }
 
 .session-terminal-select, .pref-pick { max-width: min(230px, 45%); height: 26px; color: var(--fg); }
@@ -3624,6 +3631,11 @@ html.theming, html.theming *, html.theming *::before, html.theming *::after {
 .whatsnew .wn-notes ul { margin: 2px 0; padding-left: 18px; }
 .whatsnew .wn-notes li + li { margin-top: 2px; }
 .whatsnew .wn-notes p { margin: 4px 0; }
+.whatsnew .wn-span { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.whatsnew .wn-merged .wn-h { display: flex; align-items: baseline; gap: 6px; margin-top: 14px; }
+.whatsnew .wn-merged .wn-n { font-size: 11px; font-weight: 500; color: var(--muted); font-variant-numeric: tabular-nums; }
+.whatsnew .wn-merged li + li { margin-top: 4px; }
+.whatsnew .wn-v { margin-left: 8px; font-size: 11px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .whatsnew .wn-notes code { font: var(--code-style, normal) var(--code-weight, 400) 11.5px/1.4 var(--code-font, var(--code)); font-stretch: var(--code-stretch, 100%); padding: 0 4px; border-radius: 4px; background: var(--pill); }
 .whatsnew .wn-link { color: var(--accent); text-decoration: none; }
 .whatsnew .wn-link:hover { text-decoration: underline; }
@@ -4218,6 +4230,9 @@ body.window .row + .row.agent.conn > .who { min-height: 41px; } /* the line abov
 .ag-diff-line .ind { text-decoration: none; }
 .ag-diff-line.del code .t { text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--red) 45%, transparent); }
 .ag-diff-line.back .op { color: var(--green); }
+/* the row's view, before → now: what connecting put in, and what it replaced */
+.ag-diff-line.add .op, .ag-diff-line.add code { color: var(--green); }
+.ag-diff-line.old .op, .ag-diff-line.old code { color: var(--red); }
 .ag-tag { flex: none; padding: 0 6px; border-radius: 4px; background: var(--pill); font-family: inherit; font-size: 10.5px; line-height: 16px; color: var(--muted); }
 .ag-tag.del { background: color-mix(in srgb, var(--red) 12%, transparent); color: var(--red); }
 /* 短窗口只滚动正文，不压缩预览所在的行，以免与下方说明重叠。 */

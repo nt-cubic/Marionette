@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -55,8 +56,12 @@ func (e *echoing) last() string {
 }
 
 // panicky is a masker that fails, on each way the gateway asks it to
-// mask (a Teller is asked through JSONHits and TextHits).
+// mask (a Teller is asked through JSONHits and TextHits, a ContextTeller
+// through JSONHitsContext and TextHitsContext, which masking.Masker has).
 type panicky struct{ masking.Masker }
+
+func (panicky) JSONHitsContext(context.Context, []byte) ([]byte, []gwmw.Hit) { panic("masker broke") }
+func (panicky) TextHitsContext(context.Context, string) (string, []gwmw.Hit) { panic("masker broke") }
 
 func (panicky) JSON([]byte) ([]byte, int)            { panic("masker broke") }
 func (panicky) JSONHits([]byte) ([]byte, []gwmw.Hit) { panic("masker broke") }
@@ -134,17 +139,17 @@ func TestMaskedQueryFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	const secret = "sk-proj-abcdEFGH1234ijklMNOP5678qrst"
-	if q, err := maskedQuery("find "+secret, nil); err != nil || strings.Contains(q, secret) {
+	if q, err := maskedQuery(context.Background(), "find "+secret, nil); err != nil || strings.Contains(q, secret) {
 		t.Fatalf("on: %q %v", q, err)
 	}
 	withoutMasker(t)
 	gwmw.ForgetRefreshForTest()
-	if q, err := maskedQuery("find "+secret, nil); err == nil {
+	if q, err := maskedQuery(context.Background(), "find "+secret, nil); err == nil {
 		t.Fatalf("off: sent %q", q)
 	}
 	// one the user set to go unmasked keeps it, plugin or not
 	p := &provider.Provider{ID: "local", Unredacted: true, Chat: "http://127.0.0.1:1/v1"}
-	if q, err := maskedQuery("find "+secret, p); err != nil || q != "find "+secret {
+	if q, err := maskedQuery(context.Background(), "find "+secret, p); err != nil || q != "find "+secret {
 		t.Fatalf("off, to a provider set unmasked: %q %v", q, err)
 	}
 }

@@ -32,6 +32,8 @@
     return String(n);
   };
   const pct = (x) => Math.round(x * 100) + "%";
+  // a count of tokens that a redraw counts on from what it said (morph)
+  const num = (tag, cls, n) => { const e = el(tag, cls, fmtK(n)); e.dataset.n = Math.round(n); return e; };
   const median = (xs) => {
     if (!xs.length) return 0;
     const s = [...xs].sort((a, b) => a - b);
@@ -210,11 +212,36 @@
   function morph(old, neu) {
     if (old.nodeName !== neu.nodeName || (old.nodeType !== 1 && old.nodeType !== 3)) { old.replaceWith(neu); return neu; }
     if (old.nodeType === 3) { if (old.data !== neu.data) old.data = neu.data; return old; }
+    // a count (data-n) is counted on from what it said to the new one
+    const from = old._at ?? (old.dataset?.n ? +old.dataset.n : undefined);
     for (const a of [...old.attributes]) if (!neu.hasAttribute(a.name)) old.removeAttribute(a.name);
     for (const a of neu.attributes) if (old.getAttribute(a.name) !== a.value) old.setAttribute(a.name, a.value);
     for (const h of HANDLERS) if (old[h] !== neu[h]) old[h] = neu[h];
     morphKids(old, [...neu.childNodes]);
+    if (neu.dataset?.n) roll(old, from, +neu.dataset.n, fmtK, calm());
     return old;
+  }
+  // roll counts node's text from one number to another as the map's tiles
+  // glide, in their time (flohoeller's map counts up as its window fills);
+  // fmt says a number. quiet, or with nothing to count from, it says the
+  // new one at once
+  function roll(node, from, to, fmt, quiet) {
+    cancelAnimationFrame(node._raf);
+    if (quiet || from === undefined || from === to || !node.isConnected) {
+      delete node._at;
+      if (node.textContent !== fmt(to)) node.textContent = fmt(to);
+      return;
+    }
+    const t0 = performance.now();
+    const step = (now) => {
+      // a frame's time can be before t0 (it is when the frame began)
+      const k = Math.min(1, Math.max(0, (now - t0) / 620));
+      node._at = from + (to - from) * (1 - Math.pow(1 - k, 4));
+      node.textContent = fmt(node._at);
+      if (k < 1) node._raf = requestAnimationFrame(step);
+      else delete node._at;
+    };
+    step(t0);
   }
   function morphKids(box, kids) {
     const old = [...box.childNodes];
@@ -461,6 +488,18 @@
       }
       placeTip(n);
     };
+    // the tip told again as its tile grows, and kept over it as it glides
+    const followTip = (n) => {
+      if (!n.isConnected || n.classList.contains("gone")) { tip.hidden = true; return; }
+      showMapTip(n);
+      const t0 = performance.now();
+      const go = (now) => {
+        if (tip.hidden || !n.classList.contains("on")) return;
+        placeTip(n);
+        if (now - t0 < 660) requestAnimationFrame(go);
+      };
+      requestAnimationFrame(go);
+    };
     const tileAt = (e) => {
       const n = e.target.closest?.(".ctx-tile");
       return cur && n && n.parentElement === map && n._tile && !n.classList.contains("gone") ? n : null;
@@ -508,16 +547,28 @@
         n._tile = tl;
         const cls = "ctx-tile " + (tl.free ? "free" : "k-" + tl.kind) + (tl.w < 54 || tl.h < 30 ? " bare" : tl.h < 46 ? " low" : "") + (n.classList.contains("on") ? " on" : "");
         if (n.className !== cls) n.className = cls;
-        let name, v;
-        if (tl.free) { name = t("Free space"); v = fmtK(tl.tokens) + " · " + pct(tl.tokens / Math.max(window, p.tokens, 1)); }
+        // the value counts on to its tokens as the tile glides (roll)
+        let name, v = (x) => fmtK(x) + " · " + partName(tl.kind);
+        if (tl.free) { name = t("Free space"); v = (x) => fmtK(x) + " · " + pct(x / Math.max(window, p.tokens, 1)); }
         else if (tl.it) {
           name = itemName(tl.it);
           if (tl.kind === "files" || tl.kind === "memory") name = name.slice(name.lastIndexOf("/", name.length - 2) + 1) || name;
-          v = fmtK(tl.tokens) + " · " + partName(tl.kind);
-        } else if (tl.key === tl.kind) { name = partName(tl.kind); v = fmtK(tl.tokens); }
-        else { name = t("{n} more", { n: tl.its.length }); v = fmtK(tl.tokens) + " · " + partName(tl.kind); }
+          // a tool's results gathered, how many: "web__run ×20"
+          if (tl.it.n > 1 && tl.it.tag !== "turns" && tl.it.tag !== "more") name += " ×" + tl.it.n;
+        } else if (tl.key === tl.kind) { name = partName(tl.kind); v = fmtK; }
+        else {
+          // the small files gathered: their folder, when they share one
+          // ("src/api/ · 12 files"), as the reader would name them
+          const dirs = new Set(tl.its.map((it) => it.name.slice(0, it.name.lastIndexOf("/") + 1)));
+          const [dir] = dirs;
+          if (tl.kind === "files" && dirs.size === 1 && dir) {
+            name = dir.slice(dir.lastIndexOf("/", dir.length - 2) + 1);
+            v = (x) => fmtK(x) + " · " + t("{n} files", { n: tl.its.length });
+          } else name = t("{n} more", { n: tl.its.length });
+        }
         if (n.firstChild.textContent !== name) n.firstChild.textContent = name;
-        if (n.lastChild.textContent !== v) n.lastChild.textContent = v;
+        roll(n.lastChild, fresh ? undefined : n.lastChild._at ?? n.lastChild._n, tl.tokens, v, quiet || enter);
+        n.lastChild._n = tl.tokens;
         // a gap of 3px between tiles: each 1.5px in from its rect
         const pc = (a, b) => +((a / b) * 100).toFixed(3);
         n.style.left = `calc(${pc(tl.x, W)}% + 1.5px)`;
@@ -682,7 +733,9 @@
         : "Estimated from what the agent sent: the vendor didn't say how many tokens it read");
       head.append(title);
       if (opts.foldable) {
-        head.append(el("span", "ctx-short", fmtK(p.tokens) + (window ? " / " + fmtK(window) + " · " + pct(full) : "")));
+        const short = el("span", "ctx-short");
+        short.append(num("span", "", p.tokens), window ? " / " + fmtK(window) + " · " + pct(full) : "");
+        head.append(short);
         // folded, a thin bar of what fills the window, a part each; it is
         // morphed with the head, so a live request moves its widths only
         const bar = el("span", "ctx-stack");
@@ -713,7 +766,7 @@
         k.append(h);
       }
       const big = el("div", "ctx-big");
-      big.append(el("b", "", fmtK(p.tokens)));
+      big.append(num("b", "", p.tokens));
       big.append(el("span", "", window ? "/ " + fmtK(window) + " " + t("tokens") : t("tokens")));
       const sub = el("div", "ctx-sub");
       if (window) {
@@ -775,9 +828,12 @@
         else if (e.dataset.it !== String(c.item)) e.dataset.it = c.item;
       });
       cur = { p, window, cells, partOf };
-      if (!tip.hidden) tip.hidden = true;
+      // a tile pointed at keeps its tip through a live request's draws
+      const over = !tip.hidden && map.dataset.f === "tile" ? [...tiles.values()].find((n) => n.classList.contains("on")) : null;
+      if (!tip.hidden && !over) tip.hidden = true;
       map.setAttribute("aria-label", grid.getAttribute("aria-label"));
       drawMap(false);
+      if (over) followTip(over);
 
       // the legend: a part hovered lights its cells
       const legend = el("div", "ctx-legend");
@@ -786,7 +842,7 @@
         if (!part || part.tokens <= 0) continue;
         const li = el("span", "ctx-leg");
         li.title = t(PART_NOTES[kind]);
-        li.append(el("i", "dot k-" + kind), el("span", "n", partName(kind)), el("span", "v", fmtK(part.tokens)));
+        li.append(el("i", "dot k-" + kind), el("span", "n", partName(kind)), num("span", "v", part.tokens));
         clickable(li, () => openCtxText(rid, kind));
         li.onpointerenter = () => focusOn(kind);
         li.onpointerleave = unfocus;
@@ -794,7 +850,7 @@
       }
       if (window && window > p.tokens) {
         const li = el("span", "ctx-leg");
-        li.append(el("i", "dot free"), el("span", "n", t("Free space")), el("span", "v", fmtK(window - p.tokens)));
+        li.append(el("i", "dot free"), el("span", "n", t("Free space")), num("span", "v", window - p.tokens));
         li.onpointerenter = () => focusOn("free");
         li.onpointerleave = unfocus;
         legend.append(li);

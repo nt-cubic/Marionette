@@ -31,6 +31,11 @@ type groupsJSON struct {
 	// Templates: groups for common needs made of the user's own models,
 	// which the page adds in a click (provider.Templates)
 	Templates []provider.Template `json:"templates"`
+	// Clock: this computer's time zone, which the gateway reads a rule's
+	// hours on when they name no zone of their own; the page tells a rule's
+	// zone beside its hours when the two differ (gaubeebangeel on X: magpie
+	// on a server in UTC, its user in Beijing)
+	Clock clockJSON `json:"clock"`
 	// Shared: share's answer, the group as text to paste into another
 	// magpie (provider.ShareGroup)
 	Shared string `json:"shared,omitempty"`
@@ -221,8 +226,17 @@ func keyPools(p provider.Provider) []poolJSON {
 	return out
 }
 
+// clockJSON is a computer's time zone: its IANA name when it has one,
+// and how far ahead of UTC it is now, in seconds.
+type clockJSON struct {
+	Zone   string `json:"zone,omitempty"`
+	Offset int    `json:"offset"`
+}
+
 func groupsState() groupsJSON {
-	out := groupsJSON{Groups: []groupJSON{}, Models: []modelRef{}, Pools: []poolJSON{}, Deciders: []modelRef{}, Found: provider.AutoGroupsOn(), Templates: provider.Templates()}
+	_, offset := time.Now().Zone()
+	out := groupsJSON{Groups: []groupJSON{}, Models: []modelRef{}, Pools: []poolJSON{}, Deciders: []modelRef{}, Found: provider.AutoGroupsOn(), Templates: provider.Templates(),
+		Clock: clockJSON{Zone: provider.LocalZone(), Offset: offset}}
 	for i := range out.Templates {
 		if out.Templates[i].Group.Members == nil {
 			out.Templates[i].Group.Members = []string{} // one that can't be made has none

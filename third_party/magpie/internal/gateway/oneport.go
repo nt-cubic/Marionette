@@ -12,7 +12,9 @@ import (
 // one on the gateway's port: the allow list, a key from another machine
 // or through a proxy, a rebound page's Host, and corsGuard's Origin rules.
 func (s *Server) Front() http.Handler {
-	s.frontOnce.Do(func() { s.front = lanGuard(s.Handler()) })
+	// the goroutine dump ahead of lanGuard too, whose allow list reads
+	// settings.json under its lock (dumpFirst)
+	s.frontOnce.Do(func() { s.front = s.dumpFirst(lanGuard(s.Handler())) })
 	return s.front
 }
 

@@ -93,6 +93,13 @@ type pluginLogin struct {
 	acct plugin.Account
 }
 
+// cliMarked says a sign-in carries the "cli" mark of the agent's own
+// sign-in: true as a mover wrote it before, "true" as the Devin plugin
+// writes it since 0.1.24 (plugins #396).
+func cliMarked(md map[string]any) bool {
+	return md["cli"] == true || md["cli"] == "true"
+}
+
 // pluginOwn says a plugin sign-in is the agent's own (its CLI's, its
 // app's), which the plugin reads where the agent keeps it. The movers mark
 // it so (migrate_side.go, migrate_kiro.go, migrate_workbuddy.go,
@@ -101,7 +108,7 @@ func pluginOwn(id string, auth map[string]any) bool {
 	md, _ := auth["metadata"].(map[string]any)
 	switch id {
 	case "devin", CommandCodePlanID:
-		return md["cli"] == true
+		return cliMarked(md)
 	case "grok":
 		return samePath(str(auth["refresh"]), GrokHome())
 	case "cursor":

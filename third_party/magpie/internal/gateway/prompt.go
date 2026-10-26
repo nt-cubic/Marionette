@@ -738,9 +738,18 @@ var (
 // without the reminders in it, and after the Codex app's context. Routing
 // (turnIn, userText, firstWords) and the prompt's turns go by it alike.
 func userWords(text string) string {
-	t := strings.TrimSpace(reminders.ReplaceAllString(text, ""))
-	if at := myRequest.FindAllStringIndex(t, -1); len(at) > 0 {
-		t = strings.TrimSpace(t[at[len(at)-1][1]:])
+	// each pattern is looked for only where its words are: run over every
+	// user text of a long conversation on each request, the line-anchored
+	// myRequest alone took a seventh of a Codex request's CPU (#3394)
+	t := text
+	if strings.Contains(t, "<system-reminder") {
+		t = reminders.ReplaceAllString(t, "")
+	}
+	t = strings.TrimSpace(t)
+	if strings.Contains(t, "## My request") {
+		if at := myRequest.FindAllStringIndex(t, -1); len(at) > 0 {
+			t = strings.TrimSpace(t[at[len(at)-1][1]:])
+		}
 	}
 	if t == "" || agentsFor.MatchString(t) {
 		return ""

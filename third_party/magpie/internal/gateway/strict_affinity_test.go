@@ -1,8 +1,11 @@
 package gateway
 
 import (
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/yetone/magpie/internal/provider"
@@ -144,5 +147,88 @@ func TestStrictAffinityHeldForCreditsIsRefused(t *testing.T) {
 	}
 	if code, _, tried := strictPost(t, srv, b, "s2"); code != 200 || tried != "acct-2" {
 		t.Fatalf("a new conversation: %d tried %s", code, tried)
+	}
+}
+
+// A strict group's member whose stream breaks off mid-reply, its 200
+// already sent (imwhatiam123 on Discord: a group of Qoder CN and WorkBuddy
+// AI set to Stays: Strict moved a session to WorkBuddy AI mid-way): the
+// conversation isn't forgotten as it is under the other modes (#733), so
+// the agent's retry goes back to the member it is on, failing there as
+// strict says, and goes on there once it answers again. A new conversation
+// goes to the other member while the broken one rests.
+func TestStrictGroupKeepsItsMemberPastABrokenReply(t *testing.T) {
+	fresh(t)
+	const broke = "Unable to reach the model provider"
+	var mu sync.Mutex
+	var tried []string
+	breaking := false
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		who := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		mu.Lock()
+		tried = append(tried, who)
+		br := breaking && who == "first"
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		if br {
+			io.WriteString(w, sse(`data: {"id":"c1","choices":[{"index":0,"delta":{"role":"assistant","content":"Let me look"}}]}`,
+				`data: {"error":{"message":"`+broke+`"}}`))
+			return
+		}
+		io.WriteString(w, sse(`data: {"id":"c2","choices":[{"index":0,"delta":{"role":"assistant","content":"from `+who+`"}}]}`,
+			`data: {"id":"c2","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			`data: [DONE]`))
+	}))
+	defer up.Close()
+	for _, p := range []provider.Provider{
+		{ID: "qoder-like", Name: "Qoder-like", Key: "first", Chat: up.URL + "/v1", Models: []string{"m"}},
+		{ID: "workbuddy-like", Name: "WorkBuddy-like", Key: "second", Chat: up.URL + "/v1", Models: []string{"m"}},
+	} {
+		if err := provider.Save(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"qoder-like/m", "workbuddy-like/m"}, Routing: provider.Ordered, Affinity: "strict"}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	post := func(session string) (string, string) {
+		mu.Lock()
+		tried = nil
+		mu.Unlock()
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"group/g","stream":true,"messages":[{"role":"user","content":"hi `+session+`"}]}`))
+		req.Header.Set("x-session-id", session)
+		s.Handler().ServeHTTP(rec, req)
+		mu.Lock()
+		defer mu.Unlock()
+		return rec.Body.String(), strings.Join(tried, ",")
+	}
+	if out, got := post("s1"); !strings.Contains(out, "from first") || got != "first" {
+		t.Fatalf("first turn: %s tried %s", out, got)
+	}
+	mu.Lock()
+	breaking = true
+	mu.Unlock()
+	if out, got := post("s1"); !strings.Contains(out, broke) || got != "first" {
+		t.Fatalf("the broken reply: %s tried %s", out, got)
+	}
+	// the agent's retry stays on the member, resting or not
+	if out, got := post("s1"); !strings.Contains(out, broke) || got != "first" {
+		t.Fatalf("strict, the retry after a broken reply moved: %s tried %s", out, got)
+	}
+	if why := lastWhy(t, s); why != "strict" {
+		t.Fatalf("the retry traced as %q, want strict", why)
+	}
+	// a new conversation goes elsewhere meanwhile
+	if out, got := post("s2"); !strings.Contains(out, "from second") || got != "second" {
+		t.Fatalf("a new conversation: %s tried %s", out, got)
+	}
+	mu.Lock()
+	breaking = false
+	mu.Unlock()
+	if out, got := post("s1"); !strings.Contains(out, "from first") || got != "first" {
+		t.Fatalf("strict, the member back: %s tried %s", out, got)
 	}
 }

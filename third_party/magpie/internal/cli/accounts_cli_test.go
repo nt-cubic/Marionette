@@ -143,6 +143,14 @@ func TestQuotaCell(t *testing.T) {
 	if got := quotaCell(quotaSpan{Name: "Limit", Unlimited: true}, now); got != "Limit unlimited" {
 		t.Fatalf("unlimited: %q", got)
 	}
+	// a plugin's row of text alone is its text, not 0% (its used 0)
+	if got := quotaCell(quotaSpan{Name: "积分余额", Display: "1,234 积分", Text: true}, now); got != "积分余额 1,234 积分" {
+		t.Fatalf("text: %q", got)
+	}
+	// and the status line's cell too
+	if got := statuslineCard(provider.Quota{Provider: "autoclaw-plugin", Windows: []provider.QuotaSpan{{Name: "积分余额", Display: "1,234 积分", Text: true}, {Name: "5 hours", Used: 40}}}, now); got != "autoclaw-plugin 积分余额 1,234 积分 5h 40%" {
+		t.Fatalf("status line: %q", got)
+	}
 }
 
 // accountRows shows a pool's own windows in place of its models', as the

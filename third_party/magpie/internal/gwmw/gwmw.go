@@ -16,6 +16,7 @@
 package gwmw
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"slices"
@@ -119,6 +120,15 @@ type Teller interface {
 	// Value is the value behind a placeholder, while the masker remembers
 	// it
 	Value(placeholder string) (string, bool)
+}
+
+// ContextTeller is a Teller whose masking can wait (for a local model's
+// turn) and stops waiting when ctx ends: the client went away, or the
+// gateway gave up on the request. It then fails, as a masker that can't
+// mask does, and nothing is sent.
+type ContextTeller interface {
+	JSONHitsContext(ctx context.Context, body []byte) ([]byte, []Hit)
+	TextHitsContext(ctx context.Context, s string) (string, []Hit)
 }
 
 var (

@@ -218,6 +218,9 @@ func entriesAt(ms []catalog.Model, after int, effort string) []any {
 			Tiers: []tier{}, SearchTool: true, Parallel: true,
 			AutoReview: work.CodexAutoReview,
 		}
+		if e.AutoReview == settings.CodexAutoReviewSession {
+			e.AutoReview = m.ID
+		}
 		// Fast mode: a ChatGPT account's GPT model Codex has no entry for,
 		// or a group one is in, gets the tier Codex's own catalog gives its
 		// GPT models
@@ -608,14 +611,17 @@ func unstamp(e map[string]any, was string) {
 // place) runs on the auto_review_model_override of the conversation's
 // model's entry, else on codex-auto-review when the list has it, else on the
 // conversation's model at low effort (#938). With settings.CodexAutoReview
-// every entry magpie hands Codex names that model.
+// every entry magpie hands Codex names that model; set to
+// settings.CodexAutoReviewSession, each of magpie's names itself and Codex's
+// own are left as OpenAI gave them, so the review runs on the session's
+// model.
 
 // AutoReview has one of Codex's own entries name the auto-review model the
 // user picked. With none picked, one magpie put there before — a magpie id,
 // which has a "/" where OpenAI's slugs have none, kept in Codex's cache — is
 // taken out, and one OpenAI gave it is left.
 func AutoReview(e map[string]any) {
-	if v := settings.Load().CodexAutoReview; v != "" {
+	if v := settings.Load().CodexAutoReview; v != "" && v != settings.CodexAutoReviewSession {
 		e["auto_review_model_override"] = v
 	} else if was, _ := e["auto_review_model_override"].(string); strings.Contains(was, "/") {
 		delete(e, "auto_review_model_override")
