@@ -307,11 +307,22 @@ func sentRaw(v json.RawMessage) json.RawMessage {
 	return v
 }
 
-func parseResponses(body []byte) (*Request, error) {
+func parseResponses(body []byte) (*Request, error) { return readResponses(body, false) }
+
+// readResponses is parseResponses; for facts (readFacts) it leaves out what
+// they never read: the assistant's words, its calls' arguments and the
+// tools' outputs, each decoded into strings of their own, and the copies
+// of raw values a parse kept would need. Run on every request, a long
+// Codex conversation's tool outputs were most of the parse (#3394).
+func readResponses(body []byte, facts bool) (*Request, error) {
+	decode := decodeJSON
+	if facts {
+		decode = decodeJSONView
+	}
 	// Responses Lite's tools, sent as the first input item (#350)
 	body = liftAdditionalTools(body)
 	var q rRequest
-	if err := decodeJSON(body, &q); err != nil {
+	if err := decode(body, &q); err != nil {
 		return nil, fmt.Errorf("invalid request: %v", err)
 	}
 	r := &Request{Model: q.Model, System: q.Instructions, MaxTokens: q.MaxOutputTokens, Temp: q.Temperature,
@@ -329,7 +340,7 @@ func parseResponses(body []byte) (*Request, error) {
 		r.Messages = append(r.Messages, Message{Role: "user", Parts: []Part{{Kind: Text, Text: s}}})
 	} else {
 		var items []rItem
-		if err := decodeJSON(q.Input, &items); err != nil {
+		if err := decode(q.Input, &items); err != nil {
 			return nil, fmt.Errorf("invalid input: %v", err)
 		}
 		// replied: the conversation has had a turn answered. Codex adds a
@@ -350,7 +361,10 @@ func parseResponses(body []byte) (*Request, error) {
 				if it.Role == "assistant" {
 					role = "assistant"
 				}
-				parts := responsesParts(it.Content)
+				var parts []Part
+				if !facts || role != "assistant" {
+					parts = responsesParts(it.Content)
+				}
 				if (it.Role == "system" || it.Role == "developer") && replied {
 					// in place, told as the system's, not the user's words
 					if t := text(parts); t != "" {
@@ -393,6 +407,8 @@ func parseResponses(body []byte) (*Request, error) {
 			case it.Type == "tool_search_output":
 				found = append(found, it.Tools...)
 				r.Messages = append(r.Messages, Message{Role: "user", Parts: []Part{{Kind: ToolResult, CallID: it.CallID, Text: searchFound(it.Tools)}}})
+			case (it.Type == "function_call_output" || it.Type == "custom_tool_call_output") && facts:
+				r.Messages = append(r.Messages, Message{Role: "user", Parts: []Part{{Kind: ToolResult, CallID: it.CallID}}})
 			case it.Type == "function_call_output" || it.Type == "custom_tool_call_output":
 				out, images := toolOutput(it.Output)
 				part := Part{Kind: ToolResult, CallID: it.CallID, Text: out, Images: images}

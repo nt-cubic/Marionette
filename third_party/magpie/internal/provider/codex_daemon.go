@@ -323,10 +323,57 @@ func codexDaemonCommand(ctx context.Context, home, verb string) (*exec.Cmd, erro
 		return nil, errors.New("the codex CLI isn't installed, or magpie can't find it")
 	}
 	cmd := proc.CommandContext(ctx, exe, "app-server", "daemon", verb)
-	env := slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "CODEX_HOME=") })
+	env := slices.DeleteFunc(codexDaemonEnv(os.Environ()), func(kv string) bool { return strings.HasPrefix(kv, "CODEX_HOME=") })
 	cmd.Env = append(env, "CODEX_HOME="+home)
 	cmd.Stdin = nil // os/exec reads it from the null device
 	return cmd, nil
+}
+
+// daemonProxyVars are the proxy variables Codex reads, as proc.ProxyVars
+// names them for the login shell.
+var daemonProxyVars = []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"}
+
+// daemonLoginEnv and daemonLoginPath are the login shell's variables and
+// PATH ("" for none); vars so tests can say.
+var (
+	daemonLoginEnv  = proc.LoginEnv
+	daemonLoginPath = func() string { return strings.Join(proc.LoginPath(), string(os.PathListSeparator)) }
+)
+
+// codexDaemonEnv is env with the PATH and proxy variables a terminal opened
+// now has, from the login shell: the daemon outlives the restart and
+// serves every codex started after it, so it runs as one started from a
+// terminal would. magpie opened from the desktop has neither: on Linux,
+// with the proxy set in .zshrc, the daemon magpie restarted after a
+// ChatGPT sign-in reached chatgpt.com directly, and every codex after it
+// stopped at "account/read failed: workspace routing discovery timed out"
+// until the daemon was restarted from a terminal (guotianci6 on X, Codex
+// 0.164). The proxy variables are taken as a set: when the login shell
+// names any, magpie's own are dropped, so a NO_PROXY only magpie has
+// doesn't ride along; when it names none, env's stay.
+func codexDaemonEnv(env []string) []string {
+	if runtime.GOOS == "windows" {
+		return env // a terminal's environment is the registry's, as magpie's is
+	}
+	var login []string
+	for _, k := range daemonProxyVars {
+		if v := daemonLoginEnv(k); v != "" {
+			login = append(login, k+"="+v)
+		}
+	}
+	path := daemonLoginPath()
+	out := make([]string, 0, len(env)+len(login))
+	for _, kv := range env {
+		k, _, _ := strings.Cut(kv, "=")
+		if (len(login) > 0 && slices.Contains(daemonProxyVars, k)) || (path != "" && k == "PATH") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	if path != "" {
+		out = append(out, "PATH="+path)
+	}
+	return append(out, login...)
 }
 
 // The daemon also builds Codex's model list once, as it starts, from

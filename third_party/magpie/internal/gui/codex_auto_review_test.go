@@ -57,9 +57,10 @@ func TestCodexAutoReviewSetting(t *testing.T) {
 	if code, _ := call("/api/settings", `{"theme":"dark"}`); code != 200 || settings.Load().CodexAutoReview != "fake/m1" {
 		t.Errorf("another save (%d) lost the setting: %q", code, settings.Load().CodexAutoReview)
 	}
-	// Groups and models of an unlisted provider are still valid targets.
+	// Groups and models of an unlisted provider are still valid targets, and
+	// "session", the session's own model.
 	// Restore m1 before checking that rejected choices leave it in place.
-	for _, id := range []string{"group/checks", "hidden/reviewer", "fake/m1"} {
+	for _, id := range []string{"group/checks", "hidden/reviewer", "session", "fake/m1"} {
 		if code, _ := call("/api/settings/codex-auto-review", `{"model":"`+id+`"}`); code != 200 || settings.Load().CodexAutoReview != id {
 			t.Fatalf("valid reviewer %s: %d, %q", id, code, settings.Load().CodexAutoReview)
 		}

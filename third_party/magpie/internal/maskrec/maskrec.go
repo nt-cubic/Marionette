@@ -16,6 +16,7 @@ package maskrec
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -120,8 +121,21 @@ var ownTest = false
 // placeholder, counted. It returns r as recorded. Errors are swallowed:
 // keeping the record must never break a request.
 func Add(r Record) Record {
+	r, done := Hold(r)
+	done("", "")
+	return r
+}
+
+// Hold is Add for a request whose provider isn't known yet: a group's
+// member that fails passes it to the next, so the one it is planned for
+// may never get it (Max You and Linka on Discord: the records named the
+// group's first member, which no request had reached). r is in memory at
+// once, for its route's badge and the answer's Restored, and goes on disk,
+// where the summary counts it, once done is told the provider and model
+// that had it last ("" keeps r's). Only done's first call counts.
+func Hold(r Record) (Record, func(provider, model string)) {
 	if len(r.Values) == 0 && r.N == 0 {
-		return r
+		return r, func(string, string) {}
 	}
 	r.Values = merged(r.Values)
 	if r.Time.IsZero() {
@@ -154,23 +168,36 @@ func Add(r Record) Record {
 		store.snips = append([]Record(nil), store.snips[len(store.snips)-keepSnips:]...)
 	}
 	r.Sent = ""
+	var once sync.Once
+	return r, func(provider, model string) { once.Do(func() { settle(r, provider, model) }) }
+}
+
+// settle gives r the provider and model that had it, in memory, and
+// writes it to its day.
+func settle(r Record, provider, model string) {
+	r.Provider, r.Model = cmp.Or(provider, r.Provider), cmp.Or(model, r.Model)
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if i := at(r.Key); i >= 0 {
+		store.snips[i].Provider, store.snips[i].Model = r.Provider, r.Model
+	}
 	if inTest() {
-		return r
+		return
 	}
 	disk := r
 	disk.Snips, disk.Back = nil, nil
 	b, err := json.Marshal(disk)
 	if err != nil {
-		return r
+		return
 	}
 	dir := Dir()
 	if os.MkdirAll(dir, 0o700) != nil {
-		return r
+		return
 	}
 	path := filepath.Join(dir, r.Time.Local().Format(dayForm)+".jsonl")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
-		return r
+		return
 	}
 	before, _ := f.Seek(0, 2)
 	_, err = f.Write(append(b, '\n'))
@@ -185,7 +212,6 @@ func Add(r Record) Record {
 		store.pruned = now
 		prune(dir, now)
 	}
-	return r
 }
 
 // merged is vs with one Value for each placeholder, its N the sum, in the
@@ -374,6 +400,10 @@ func List(before int64, limit int, f Filter) ([]Record, bool) {
 				day = append(day, r)
 			}
 		})
+		// a record goes on disk once its request is done (Hold), so a
+		// long one comes after later ones: the list is in key order, as
+		// the next page's before needs
+		slices.SortStableFunc(day, func(a, b Record) int { return cmp.Compare(a.Key, b.Key) })
 		for j := len(day) - 1; j >= 0; j-- {
 			if len(out) == limit {
 				return out, true

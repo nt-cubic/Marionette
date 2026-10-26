@@ -230,6 +230,16 @@ func wbLogins(w *wbSite) []wbAccount {
 		}
 		out = append(out, a)
 	}
+	// one magpie signed in under the desktop's name stands for the
+	// desktop's only when it is the same uid: a nickname is no one's own, so
+	// another account of that name leaves the desktop's its own place
+	// (wakkana on Discord), as the plugin keeps both
+	// (one removed in magpie stays out)
+	if hasOwn && !slices.ContainsFunc(out, func(a wbAccount) bool { return a.own || a.creds.UID == own.UID }) &&
+		slices.ContainsFunc(out, func(a wbAccount) bool { return strings.EqualFold(a.User, ownUser) }) &&
+		!slices.ContainsFunc(readLogins(), func(l savedLogin) bool { return l.Agent == w.id && l.own() && l.Hidden != "" }) {
+		out = append(out, wbAccount{Login: Login{Agent: w.id, User: ownUser, On: true, Own: true}, site: w, own: true, creds: own})
+	}
 	return out
 }
 

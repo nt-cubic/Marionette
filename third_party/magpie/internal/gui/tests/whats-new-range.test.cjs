@@ -66,11 +66,11 @@ function serve(lang, ctl) {
 }
 
 const words = {
-  en: { open: "Open", since: "Since the last update", back: (n) => `This version and ${n} before`, head: "Release notes shown", failed: "Couldn't load the release notes", retry: "Try again" },
-  zh: { open: "打开", since: "上次更新以来", back: (n) => `当前版本及之前 ${n} 个版本`, head: "显示的更新说明", failed: "无法获取更新说明", retry: "重试" },
-  "zh-TW": { open: "開啟", since: "上次更新以來", back: (n) => `目前版本及之前 ${n} 個版本`, head: "顯示的更新說明", failed: "無法取得更新說明", retry: "重試" },
-  ja: { open: "開く", since: "前回のアップデート以降", back: (n) => `このバージョンと前の ${n} 件`, head: "表示するリリースノート", failed: "リリースノートを読み込めませんでした", retry: "再試行" },
-  de: { open: "Öffnen", since: "Seit dem letzten Update", back: (n) => `Diese Version und ${n} davor`, head: "Angezeigte Versionshinweise", failed: "Versionshinweise konnten nicht geladen werden", retry: "Erneut versuchen" },
+  en: { span: (n, a, b) => `${n} releases · ${a} – ${b}`, open: "Open", since: "Since the last update", back: (n) => `This version and ${n} before`, head: "Release notes shown", failed: "Couldn't load the release notes", retry: "Try again" },
+  zh: { span: (n, a, b) => `${n} 个版本 · ${a} – ${b}`, open: "打开", since: "上次更新以来", back: (n) => `当前版本及之前 ${n} 个版本`, head: "显示的更新说明", failed: "无法获取更新说明", retry: "重试" },
+  "zh-TW": { span: (n, a, b) => `${n} 個版本 · ${a} – ${b}`, open: "開啟", since: "上次更新以來", back: (n) => `目前版本及之前 ${n} 個版本`, head: "顯示的更新說明", failed: "無法取得更新說明", retry: "重試" },
+  ja: { span: (n, a, b) => `${n} リリース · ${a} – ${b}`, open: "開く", since: "前回のアップデート以降", back: (n) => `このバージョンと前の ${n} 件`, head: "表示するリリースノート", failed: "リリースノートを読み込めませんでした", retry: "再試行" },
+  de: { span: (n, a, b) => `${n} Versionen · ${a} – ${b}`, open: "Öffnen", since: "Seit dem letzten Update", back: (n) => `Diese Version und ${n} davor`, head: "Angezeigte Versionshinweise", failed: "Versionshinweise konnten nicht geladen werden", retry: "Erneut versuchen" },
 };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
@@ -104,7 +104,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.waitForTimeout(200);
       const at = await view.evaluate((v) => v.scrollTop);
       const still = async (what) => assert.equal(await view.evaluate((v) => v.scrollTop), at, what + " moved the page");
-      const shown = () => dialog.locator(".wn-rel:not(.wn-none) .wn-ver b").allTextContents();
+      // the releases are merged (the owner): each line says its version
+      const shown = () => dialog.locator(".wn-merged li .wn-v").allTextContents();
       const vs = (list) => list.map((r) => "v" + r.version);
       const pill = dialog.locator(".ehead .wn-range");
       const pick = async (name) => {
@@ -128,7 +129,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
       // this version and the 10 before it: eleven, newest first
       await pick(w.back(10));
-      await dialog.locator(".wn-rel").nth(10).waitFor();
+      await dialog.locator(".wn-merged li").nth(10).waitFor();
+      assert.equal(await dialog.locator(".wn-span").textContent(), w.span(11, "v0.1.1399", "v0.1.1410"));
       assert.deepEqual(ctl.asked, ["", "10"]);
       assert.deepEqual(await shown(), vs(back(10)));
       assert.equal(await pill.textContent(), w.back(10));
@@ -140,7 +142,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
       // 100: past the 40 the default stops at
       await pick(w.back(100));
-      await dialog.locator(".wn-rel").nth(100).waitFor();
+      await dialog.locator(".wn-merged li").nth(100).waitFor();
       assert.deepEqual(await shown(), vs(back(100)));
 
       // a range that fails keeps the notes shown, says so above them, and
@@ -155,7 +157,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.match(firstRel, /wn-failed/, "the failure is said above the kept notes");
       ctl.down = false;
       await dialog.getByRole("button", { name: w.retry }).click();
-      await page.waitForFunction(() => !document.querySelector("#modal .wn-failed") && document.querySelectorAll("#modal .wn-rel").length === 51);
+      await page.waitForFunction(() => !document.querySelector("#modal .wn-failed") && document.querySelectorAll("#modal .wn-merged li").length === 51);
       assert.deepEqual(ctl.asked.slice(-2), ["50", "50"]);
       assert.deepEqual(await shown(), vs(back(50)));
       await still("Try again");

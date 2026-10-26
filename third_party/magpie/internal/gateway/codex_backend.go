@@ -100,6 +100,10 @@ func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
 			writeError(w, provider.Responses, 400, err.Error())
 			return
 		}
+		// a turn of the conversation's own: the model its side calls may
+		// follow (codexFollowTo)
+		kind := requestCallKind(r.Header, requestSessionMetadata(r.Header, body))
+		s.codexLeads.saw(r, kind, model)
 		// a thread's title, where Settings sends it (#705) — the request
 		// still on Codex's own model, through its sign-in, when it says
 		// nothing of them
@@ -123,9 +127,19 @@ func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
 			// a subagent on one of Codex's own models, put on the model
 			// set for Codex's subagents, a ChatGPT account's in magpie;
 			// the request on the model asked for when it can't be, the
-			// trace saying why (codexUpstreamOn, serve)
+			// trace saying why (codexUpstreamOn, serve). One with nothing
+			// set for it, a subagent's or a memory call,
+			// on the model its conversation is on when that is one of
+			// magpie's, not on the ChatGPT sign-in (codexFollowTo)
 			if !strings.Contains(model, "/") {
-				pick := codexSubagentPick(r, agentOf(r), requestCallKind(r.Header, requestSessionMetadata(r.Header, body)), model, body)
+				pick := codexSubagentPick(r, agentOf(r), kind, model, body)
+				if to := s.codexFollowTo(r, agentOf(r), kind, model, body); to != "" && pick == nil {
+					if usage.PurposeOf(kind) == "kind:collab_spawn" {
+						pick = &SubagentPick{Asked: model, To: to}
+					} else {
+						body, model = withModel(body, to), to
+					}
+				}
 				r = withSubagentPick(r, pick)
 				if pick.Moved() {
 					body, model = withModel(body, pick.To), pick.To
@@ -880,7 +894,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 	if r.Method == http.MethodPost {
 		var unmask func()
 		var err error
-		w, body, unmask, maskedHits, err = redactedHits(w, body)
+		w, body, unmask, maskedHits, err = redactedHits(r.Context(), w, body)
 		defer unmask()
 		if err != nil {
 			writeError(w, provider.Responses, maskStatus(err), err.Error())

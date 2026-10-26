@@ -36,9 +36,11 @@ func kiroCrewSandbox(t *testing.T, wired []string, found []string) (home string,
 	if err := provider.Save(provider.Provider{ID: "deepseek", Name: "DeepSeek", Chat: "https://api.deepseek.com/v1", Key: "k", Models: []string{"pro", "flash"}}); err != nil {
 		t.Fatal(err)
 	}
-	w, h := kiroCrewWired, kiroCrewHasAdapter
-	t.Cleanup(func() { kiroCrewWired, kiroCrewHasAdapter = w, h })
+	w, h, j := kiroCrewWired, kiroCrewHasAdapter, kiroCrewJoin
+	t.Cleanup(func() { kiroCrewWired, kiroCrewHasAdapter, kiroCrewJoin = w, h, j })
 	kiroCrewWired = func(id string) bool { return slices.Contains(wired, id) }
+	// none of the harnesses is installed here, so none is connected along
+	kiroCrewJoin = func(string) (bool, error) { return false, nil }
 	kiroCrewHasAdapter = func(h kiroCrewHarness) bool { return slices.Contains(found, h.id) }
 	a = kiroCrew(home)
 	if err := os.MkdirAll(a.Dir, 0o700); err != nil {
@@ -487,6 +489,201 @@ func TestKiroCrewOnRealCodexWiring(t *testing.T) {
 	}
 }
 
+// kiroCrewOnClaude is a sandbox HOME with Claude Code installed but not
+// connected to magpie, nothing else, and Kiro Crew's config.json set to
+// run on Claude Code, as wuping9525's Windows had it.
+func kiroCrewOnClaude(t *testing.T) (a, cc *Agent, before []byte) {
+	t.Helper()
+	home := syncHome(t)
+	t.Setenv("KIROCREW_HOME", "")
+	t.Setenv("PATH", t.TempDir())
+	if err := provider.Save(provider.Provider{ID: "deepseek", Name: "DeepSeek", Chat: "https://api.deepseek.com/v1", Key: "k", Models: []string{"pro", "flash"}}); err != nil {
+		t.Fatal(err)
+	}
+	h := kiroCrewHasAdapter
+	t.Cleanup(func() { kiroCrewHasAdapter = h })
+	kiroCrewHasAdapter = func(kiroCrewHarness) bool { return true }
+	cc = claude(home)
+	if err := os.MkdirAll(cc.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(cc.Path, []byte("{\"theme\": \"dark\"}\n"), 0o600)
+	if !cc.Detected() || cc.Wired() {
+		t.Fatalf("Claude Code detected %v, wired %v", cc.Detected(), cc.Wired())
+	}
+	a = kiroCrew(home)
+	os.MkdirAll(a.Dir, 0o700)
+	before = []byte(strings.Replace(kiroCrewUser, `"default_agent": "kirocrew",`, `"acp_backend": "claude",
+    "default_agent": "kirocrew",`, 1))
+	if err := os.WriteFile(a.Path, before, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return a, cc, before
+}
+
+// wuping9525: Kiro Crew set to Claude Code, Claude Code installed and not
+// connected to magpie. Connecting Kiro Crew connects Claude Code too, in
+// the one step, and runs Crew on it; Disconnect takes both off again and
+// leaves the files as they were.
+func TestKiroCrewConnectsItsHarness(t *testing.T) {
+	a, cc, before := kiroCrewOnClaude(t)
+	ccBefore, _ := os.ReadFile(cc.Path)
+	if _, err := a.ConnectHow(); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if !cc.Wired() {
+		t.Fatal("Claude Code not connected along with Kiro Crew")
+	}
+	if v := a.Values(); v["provider"] != magpieID || v["harness"] != "claude" {
+		t.Errorf("values %v", v)
+	}
+	if n := a.Notice(); !strings.Contains(n, "magpie connected Claude Code too") {
+		t.Errorf("notice %q", n)
+	}
+	if err := a.Disconnect(); err != nil {
+		t.Fatal(err)
+	}
+	if cc.Wired() {
+		t.Error("Claude Code still connected after Kiro Crew's Disconnect")
+	}
+	if cc.Disconnected() {
+		t.Error("Claude Code recorded as the user's own disconnect")
+	}
+	if b, _ := os.ReadFile(a.Path); string(b) != string(before) {
+		t.Errorf("config.json\n%s\nwant\n%s", b, before)
+	}
+	// as Claude Code's own Disconnect leaves it: the user's settings kept,
+	// nothing of magpie's
+	if b, _ := os.ReadFile(cc.Path); !strings.Contains(string(b), `"theme": "dark"`) || strings.Contains(string(b), "ANTHROPIC") || strings.Contains(string(b), "magpie") {
+		t.Errorf("Claude Code's settings.json\n%s\nwas\n%s", b, ccBefore)
+	}
+	if _, ok := stashLoad()[kiroCrewJoinedKey]; ok {
+		t.Error("joined mark left")
+	}
+}
+
+// A harness the user connected before is theirs: Kiro Crew runs on it and
+// its Disconnect leaves it on. So is one the user disconnected and
+// connected again themselves after Kiro Crew's connect.
+func TestKiroCrewLeavesTheUsersHarness(t *testing.T) {
+	t.Run("connected before", func(t *testing.T) {
+		a, cc, _ := kiroCrewOnClaude(t)
+		if _, err := cc.ConnectHow(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := a.ConnectHow(); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(a.Notice(), "magpie connected") {
+			t.Errorf("notice %q", a.Notice())
+		}
+		if err := a.Disconnect(); err != nil {
+			t.Fatal(err)
+		}
+		if !cc.Wired() {
+			t.Error("the user's Claude Code taken off")
+		}
+	})
+	t.Run("taken back after", func(t *testing.T) {
+		a, cc, _ := kiroCrewOnClaude(t)
+		if _, err := a.ConnectHow(); err != nil {
+			t.Fatal(err)
+		}
+		if err := cc.Disconnect(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := cc.ConnectHow(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := a.ConnectHow(); err != nil {
+			t.Fatal(err)
+		}
+		if err := a.Disconnect(); err != nil {
+			t.Fatal(err)
+		}
+		if !cc.Wired() {
+			t.Error("Claude Code the user connected again taken off")
+		}
+	})
+	t.Run("off before", func(t *testing.T) {
+		// the user's disconnect from before stays theirs once Kiro Crew is off
+		a, cc, _ := kiroCrewOnClaude(t)
+		if _, err := cc.ConnectHow(); err != nil {
+			t.Fatal(err)
+		}
+		if err := cc.Disconnect(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := a.ConnectHow(); err != nil {
+			t.Fatal(err)
+		}
+		if !cc.Wired() {
+			t.Fatal("Claude Code not connected along with Kiro Crew")
+		}
+		if err := a.Disconnect(); err != nil {
+			t.Fatal(err)
+		}
+		if cc.Wired() || !cc.Disconnected() {
+			t.Errorf("Claude Code wired %v, the user's disconnect %v", cc.Wired(), cc.Disconnected())
+		}
+	})
+}
+
+// Set to a harness that isn't installed here, Kiro Crew runs on one that
+// is connected, as before; with none, it still says to connect one.
+func TestKiroCrewHarnessNotHere(t *testing.T) {
+	a, cc, _ := kiroCrewOnClaude(t)
+	os.RemoveAll(cc.Dir)
+	if cc.Detected() {
+		t.Skip("Claude Code found here anyway")
+	}
+	if _, err := a.ConnectHow(); !errors.Is(err, errKiroCrewNoHarness) {
+		t.Fatalf("connect: %v", err)
+	}
+	if cc.Wired() {
+		t.Error("Claude Code connected while not installed")
+	}
+}
+
+// On Windows Kiro Crew's home is under the user's profile the same way,
+// its app is found by its venv's kirocrew.exe, and an adapter npm put in
+// as a .cmd shim is found where Crew's which finds it.
+func TestKiroCrewOnWindows(t *testing.T) {
+	was := kiroCrewOS
+	t.Cleanup(func() { kiroCrewOS = was })
+	kiroCrewOS = "windows"
+	home := syncHome(t)
+	t.Setenv("KIROCREW_HOME", "")
+	t.Setenv("PATH", t.TempDir())
+	env := map[string]string{"USERPROFILE": home, "APPDATA": filepath.Join(home, "AppData", "Roaming"), "LOCALAPPDATA": filepath.Join(home, "AppData", "Local")}
+	getenv := func(k string) string { return env[k] }
+	put := func(p string) {
+		t.Helper()
+		if err := mkFile(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a := kiroCrew(home)
+	if a.Path != filepath.Join(home, ".kiro", "crew", "config.json") {
+		t.Errorf("path %s", a.Path)
+	}
+	if a.Detected() {
+		t.Fatal("detected with nothing here")
+	}
+	put(filepath.Join(home, ".kirocrew-app", ".venv", "Scripts", "kirocrew.exe"))
+	if !a.Detected() {
+		t.Error("Kiro Crew's app not detected by its venv's kirocrew.exe")
+	}
+	cl, _ := kiroCrewHarnessOf("claude")
+	if kiroCrewFinds(cl, home, getenv) {
+		t.Fatal("found with none")
+	}
+	put(filepath.Join(home, ".npm-global", "bin", "claude-agent-acp.cmd"))
+	if !kiroCrewFinds(cl, home, getenv) {
+		t.Error("claude-agent-acp.cmd not found")
+	}
+}
+
 // setJSONFile sets dotted keys in a JSON file, as a user's editor would.
 func setJSONFile(path string, kv map[string]any) error {
 	b, err := os.ReadFile(path)
@@ -515,4 +712,12 @@ func setJSONFile(path string, kv map[string]any) error {
 		return err
 	}
 	return os.WriteFile(path, out, 0o600)
+}
+
+// mkFile makes an empty file and its folders.
+func mkFile(p string) error {
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(p, nil, 0o755)
 }

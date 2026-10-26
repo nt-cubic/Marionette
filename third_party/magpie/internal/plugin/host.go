@@ -998,6 +998,8 @@ func startOn(ctx context.Context, bun string) (*host, bool, error) {
 		"prefer":        l.Prefer,
 		"options":       settings.Load().PluginOptions,
 		"plugins":       items,
+		"loadMillis":    pluginLoadWait.Milliseconds(),
+		"listMillis":    pluginListWait.Milliseconds(),
 	}, &res)
 	if err != nil {
 		crashed := !h.alive()
@@ -1013,6 +1015,16 @@ func startOn(ctx context.Context, bun string) (*host, bool, error) {
 	}
 	return h, false, nil
 }
+
+// pluginLoadWait bounds one plugin's load in the host, and
+// pluginListWait one provider's model list in a listing: a plugin stuck on
+// its vendor (a sign-in refused and tried again) is given up on by itself,
+// within init's and refreshDeadline's own bounds, rather than holding up
+// every plugin loaded or listed with it. Tests shorten them.
+var (
+	pluginLoadWait = 20 * time.Second
+	pluginListWait = 20 * time.Second
+)
 
 // drainStderr logs the child's stderr a line at a time. A line over 4 MiB
 // stops the scanner; the rest is read and dropped, so the child is never left

@@ -119,6 +119,27 @@ func TestStrategiesServedWhileOn(t *testing.T) {
 	}
 }
 
+// A module turned off here (the Plugins page) is no longer served at once,
+// without waiting for the look for other processes' writes, which is
+// seconds apart (#3185).
+func TestStrategiesFollowOwnWrite(t *testing.T) {
+	e := file(t, `export const strategies = { a: (p, s) => s.map((_, i) => i) };`)
+	use(t, e)
+	serve(t)
+	if !routes.Served("x/a") {
+		t.Fatal("not served")
+	}
+	if err := plugin.SetOff(plugin.Name(e.Spec), true); err != nil {
+		t.Fatal(err)
+	}
+	for end := time.Now().Add(2 * time.Second); routes.Served("x/a"); {
+		if time.Now().After(end) {
+			t.Fatal("still served 2s after it was turned off here")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // Not served (plugins/middleware off), nothing is registered.
 func TestStrategiesStopWithServe(t *testing.T) {
 	use(t, file(t, `export const strategies = { a: (p, s) => s.map((_, i) => i) };`))

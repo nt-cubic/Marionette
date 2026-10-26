@@ -167,7 +167,8 @@ func TestBrokenFileIsKept(t *testing.T) {
 }
 
 // A plugin turned off or on in plugins.yml by another process is disposed
-// or applied in the one keeping fresh, without a restart.
+// or applied in the one keeping fresh, without a restart; turned off or on
+// in that process, at once.
 func TestKeepFreshFollowsPluginsYml(t *testing.T) {
 	home(t)
 	var applied atomic.Int32
@@ -176,10 +177,14 @@ func TestKeepFreshFollowsPluginsYml(t *testing.T) {
 		c.OnDispose(func() { applied.Add(-1) })
 		return nil
 	}})
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { KeepFresh(ctx, 10*time.Millisecond); close(done) }()
-	defer func() { cancel(); <-done; Set("fresh-test", false); Refresh() }()
+	keep := func(every time.Duration) (stop func()) {
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { KeepFresh(ctx, func() time.Duration { return every }); close(done) }()
+		return func() { cancel(); <-done }
+	}
+	stop := keep(10 * time.Millisecond)
+	defer func() { stop(); Set("fresh-test", false); Refresh() }()
 	wait := func(want int32) {
 		t.Helper()
 		deadline := time.Now().Add(5 * time.Second)
@@ -191,6 +196,21 @@ func TestKeepFreshFollowsPluginsYml(t *testing.T) {
 		}
 	}
 	wait(1) // no plugins.yml: every plugin on
+	if err := Set("fresh-test", false); err != nil {
+		t.Fatal(err)
+	}
+	wait(0)
+	if err := Set("fresh-test", true); err != nil {
+		t.Fatal(err)
+	}
+	wait(1)
+
+	// turned off or on in this process, it follows at once, not on the
+	// next look for another process's writes (#3185: those looks woke an
+	// idle magpie, so they are seconds apart now)
+	stop()
+	stop = keep(time.Hour)
+	wait(1)
 	if err := Set("fresh-test", false); err != nil {
 		t.Fatal(err)
 	}

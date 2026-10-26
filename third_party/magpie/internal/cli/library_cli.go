@@ -46,8 +46,9 @@ func libraryCmd(args []string) error {
 		return libraryStatus()
 	}
 	var (
-		res *library.Result
-		err error
+		res    *library.Result
+		err    error
+		unused string // a server just added that no agent is given
 	)
 	switch sub, rest := args[1], args[2:]; sub {
 	case "sync":
@@ -106,6 +107,9 @@ func libraryCmd(args []string) error {
 				s.Agents = agents
 			}
 			res, err = library.SaveServer("", s)
+			if len(s.Agents) == 0 {
+				unused = s.Name
+			}
 		case len(rest) == 3 && rest[0] == "agents":
 			var as []string
 			if as, err = libraryAgents(rest[2], "mcp"); err == nil {
@@ -179,6 +183,13 @@ func libraryCmd(args []string) error {
 	}
 	if err != nil {
 		return err
+	}
+	if unused != "" && len(res.Changed) == 0 && len(res.Problems) == 0 {
+		// a server added with no agents= is given to none, which isn't
+		// every agent having it already
+		fmt.Println(green.Render("✓"), unused, "is in the library, given to no agent yet")
+		fmt.Println(muted.Render("  magpie library mcp agents " + unused + " <a,b…> gives it to them"))
+		return nil
 	}
 	printLibraryResult(res)
 	return nil

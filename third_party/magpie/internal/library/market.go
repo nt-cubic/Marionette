@@ -367,7 +367,7 @@ func fetchRegistry(q string) ([]listed, error) {
 			} `json:"_meta"`
 		} `json:"servers"`
 	}
-	if err := getJSON(u, &body); err != nil {
+	if err := getJSONBy(registryClient, u, &body); err != nil {
 		return nil, &SearchError{Source: "the MCP Registry", Err: err}
 	}
 	var list []listed
@@ -784,9 +784,14 @@ type MarketSkill struct {
 }
 
 // featuredSkills are magpie's own skills, first in the market: in
-// magpie-community/plugins, beside its plugins (ttmouse on X: an official
-// skill for an agent to read what magpie quota tells).
+// magpie-community/plugins, beside its plugins. magpie-setup has an agent
+// set magpie up as the user asks, through its commands (Leyuu_5 on X: so
+// many features that an AI could do the setting up); magpie-quota reads
+// what magpie quota tells (ttmouse on X).
 var featuredSkills = []MarketSkill{{
+	Source: "magpie-community/plugins", SkillID: "magpie-setup", Name: "magpie-setup", Official: true, Featured: true,
+	Description: "Set magpie up as you ask, through its own commands: add keys and subscriptions, point agents at models, build routing groups with fallbacks and time-of-day rules, give devices gateway keys with budgets, and share MCP servers and instructions with every agent.",
+}, {
 	Source: "magpie-community/plugins", SkillID: "magpie-quota", Name: "magpie-quota", Official: true, Featured: true,
 	Description: "Check how much is left of the user's AI subscriptions, coding plans and API key balances through magpie: each usage window's percent used and when it resets, each key's balance, and wait until a subscription has allowance again.",
 }}
@@ -1134,6 +1139,17 @@ func fetchImage(u string) ([]byte, string, error) {
 
 var client = &http.Client{Timeout: 20 * time.Second}
 
+// registryTimeout is the MCP Registry's own budget: its search answers in
+// 13-37 s often enough (9 of 33 tries past 13 s, 6 past 20 s, the slowest
+// 37.3 s - measured in #3043) that the market's 20 s client emptied the
+// search with "context deadline exceeded". Its asks go with a longer one;
+// skills.sh and the icons keep the short one.
+var registryTimeout = 60 * time.Second
+
+// registryClient is the client the registry is asked with, a variable for
+// tests.
+var registryClient = &http.Client{Timeout: registryTimeout}
+
 // SearchError is a source the market searches that didn't answer; what
 // the market has of its own is still listed beside it (#1589).
 type SearchError struct {
@@ -1160,6 +1176,11 @@ func metaDescription(page []byte) string {
 }
 
 func get(u, accept string, limit int64) ([]byte, error) {
+	return getBy(client, u, accept, limit)
+}
+
+// getBy is get with the client: the registry's own budget (#3043).
+func getBy(c *http.Client, u, accept string, limit int64) ([]byte, error) {
 	req, err := http.NewRequest("GET", u, nil)
 	if err != nil {
 		return nil, err
@@ -1167,7 +1188,7 @@ func get(u, accept string, limit int64) ([]byte, error) {
 	// skills.sh answers a client it doesn't know with a page of its own
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 magpie")
 	req.Header.Set("Accept", accept)
-	resp, err := client.Do(req)
+	resp, err := c.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -1176,7 +1197,7 @@ func get(u, accept string, limit int64) ([]byte, error) {
 	if resp.StatusCode == http.StatusServiceUnavailable {
 		resp.Body.Close()
 		time.Sleep(retryPause)
-		if resp, err = client.Do(req); err != nil {
+		if resp, err = c.Do(req); err != nil {
 			return nil, err
 		}
 	}
@@ -1196,6 +1217,15 @@ func get(u, accept string, limit int64) ([]byte, error) {
 
 func getJSON(u string, v any) error {
 	b, err := get(u, "application/json", 8<<20)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(b, v)
+}
+
+// getJSONBy is getJSON with the client (the registry's own budget, #3043).
+func getJSONBy(c *http.Client, u string, v any) error {
+	b, err := getBy(c, u, "application/json", 8<<20)
 	if err != nil {
 		return err
 	}

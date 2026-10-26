@@ -103,7 +103,7 @@ func (s *Server) kimiSearch(ctx context.Context, p provider.Provider, query stri
 	// through the plan's own proxy, if it has one (#237, #1522)
 	ctx, cancel := context.WithTimeout(s.metered(p.Via(ctx), p, ""), searchTimeout/2)
 	defer cancel()
-	q, err := maskedQuery(query, &p)
+	q, err := maskedQuery(ctx, query, &p)
 	if err != nil {
 		return "", nil, err
 	}

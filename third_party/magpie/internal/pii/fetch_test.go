@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -147,14 +148,17 @@ func TestDownloadInstalls(t *testing.T) {
 	d := t.TempDir()
 	root := filepath.Join(d, "cache")
 	wasDir, wasURL, wasSize, wasSHA := dir, modelURL, modelSize, modelSHA
-	wasTag, wasBase, wasServe := serveTag, serveBase, serveSHA
+	wasTag, wasOld, wasBase, wasServe := serveTag, oldTags, serveBase, serveSHA
 	t.Cleanup(func() {
 		dir, modelURL, modelSize, modelSHA = wasDir, wasURL, wasSize, wasSHA
-		serveTag, serveBase, serveSHA = wasTag, wasBase, wasServe
+		serveTag, oldTags, serveBase, serveSHA = wasTag, wasOld, wasBase, wasServe
 	})
 	dir = func() string { return root }
 	modelURL, modelSize, modelSHA = s.URL+"/model.gguf", int64(len(model)), sum(model)
-	serveTag, serveBase, serveSHA = "pf-v9", s.URL+"/rel/", map[string]string{target(): sum(zb.Bytes())}
+	serveTag, oldTags, serveBase, serveSHA = "pf-v9", []string{"pf-v8"}, s.URL+"/rel/", map[string]string{target(): sum(zb.Bytes())}
+	// an older tag's pf-serve, left from before: the download replaces it
+	os.MkdirAll(tagDir("pf-v8"), 0o755)
+	os.WriteFile(exeIn(tagDir("pf-v8"), "pf-serve"), []byte("old"), 0o755)
 
 	if Installed() {
 		t.Fatal("installed before the download")
@@ -179,6 +183,9 @@ func TestDownloadInstalls(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(exe("pf-serve")); string(b) != "serve" {
 		t.Fatalf("pf-serve = %q", b)
+	}
+	if _, err := os.Stat(tagDir("pf-v8")); err == nil {
+		t.Fatal("the older tag's pf-serve was left")
 	}
 	if b, _ := os.ReadFile(filepath.Join(serveDir(), "LICENSE-ggml")); string(b) != "mit" {
 		t.Fatalf("LICENSE-ggml = %q", b)
@@ -207,5 +214,95 @@ func TestDownloadUnsupported(t *testing.T) {
 	t.Cleanup(func() { serveSHA = was })
 	if err := Download(nil); err == nil || !strings.Contains(err.Error(), "doesn't run on") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// oldInstall is fakeInstall's, in the folder of a tag pinned before
+// (pf-old), and serveTag (pf-new) is fetched from a server serving want's
+// paths; it gives the stand-in's log and the server.
+func oldInstall(t *testing.T, want map[string][]byte) (string, *files) {
+	t.Helper()
+	wasTag, wasOld, wasBase, wasServe := serveTag, oldTags, serveBase, serveSHA
+	t.Cleanup(func() { serveTag, oldTags, serveBase, serveSHA = wasTag, wasOld, wasBase, wasServe })
+	serveTag = "pf-old"
+	log := fakeInstall(t, "ok", false)
+	f := &files{m: want}
+	s := httptest.NewServer(f)
+	t.Cleanup(s.Close)
+	zipSum := sum([]byte("nothing"))
+	if z, ok := want["/rel/pf-new/pf-serve-"+target()+".zip"]; ok {
+		zipSum = sum(z)
+	}
+	serveTag, oldTags, serveBase, serveSHA = "pf-new", []string{"pf-old"}, s.URL+"/rel/", map[string]string{target(): zipSum}
+	return log, f
+}
+
+// A pf-serve of a tag pinned before magpie was updated answers while
+// serveTag's is fetched; then it is ended, the next request starts
+// serveTag's, and the old one is deleted.
+func TestOldServeRunsUntilUpgraded(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var zb bytes.Buffer
+	zw := zip.NewWriter(&zb)
+	w, _ := zw.Create(filepath.Base(exeIn("", "pf-serve")))
+	w.Write(b)
+	zw.Close()
+	log, _ := oldInstall(t, map[string][]byte{"/rel/pf-new/pf-serve-" + target() + ".zip": zb.Bytes()})
+	if !Installed() {
+		t.Fatal("the old pf-serve wasn't taken for installed")
+	}
+	if _, err := Find([]string{"hi Alice"}); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		_, err := os.Stat(tagDir("pf-old"))
+		if os.IsNotExist(err) && !upgrading.Load() {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("not upgraded: old folder %v, upgrading %v", err, upgrading.Load())
+		}
+	}
+	if _, err := Find([]string{"new Alice"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"path pf-old-" + target(), "path pf-new-" + target()}
+	if got := fakeLines(t, log, "path "); !reflect.DeepEqual(got, want) {
+		t.Fatalf("started from %q, want %q", got, want)
+	}
+}
+
+// One that can't be fetched leaves the old pf-serve on disk, answering.
+func TestUpgradeThatFailsKeepsTheOld(t *testing.T) {
+	log, f := oldInstall(t, map[string][]byte{})
+	if _, err := Find([]string{"hi Alice"}); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		f.mu.Lock()
+		asked := len(f.ranges) > 0
+		f.mu.Unlock()
+		if asked && !upgrading.Load() {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the upgrade never tried")
+		}
+	}
+	if _, err := os.Stat(exeIn(tagDir("pf-old"), "pf-serve")); err != nil {
+		t.Fatalf("the old pf-serve was deleted: %v", err)
+	}
+	if _, err := Find([]string{"new Alice"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(fakeLines(t, log, "start")); n != 1 {
+		t.Fatalf("pf-serve started %d times, want once: the old one runs on", n)
 	}
 }

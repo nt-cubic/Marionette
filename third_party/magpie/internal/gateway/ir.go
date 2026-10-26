@@ -161,6 +161,11 @@ type Request struct {
 	// leanPrompt has the Claude bridge give the caller's instructions as
 	// the run's system prompt, in place of Claude Code's (ClaudeLeanPrompt).
 	leanPrompt bool
+	// envElsewhere: the caller's instructions name a working directory the
+	// Claude bridge's run is not in (a client on another computer, or in
+	// Windows with Claude Code in WSL), so the run's own prompt describes
+	// another machine than the one the tools run on (envElsewhereNote).
+	envElsewhere bool
 
 	Model      string
 	System     string

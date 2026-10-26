@@ -2654,7 +2654,7 @@ func resolveIn(entries []Entry, id string) (Provider, string, bool) {
 	if pid, model, ok := strings.Cut(id, "/"); ok {
 		// the providers a request holds (All): an agent's value of a
 		// model not listed lands here
-		if p, err := findIn(All(), pid); err == nil && p.On() && !p.ServesNone() {
+		if p := lookIn(All(), pid); p != nil && p.On() && !p.ServesNone() {
 			return *p, model, true
 		}
 	}

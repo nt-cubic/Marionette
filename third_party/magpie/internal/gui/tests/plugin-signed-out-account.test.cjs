@@ -100,14 +100,31 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
             // and nothing covers them or runs out of the row
             const aq = row.locator(".aq");
             await aq.locator(".aq-none").waitFor();
-            const box = await row.boundingBox(), line = await aq.boundingBox();
             for (const b of [again, rm]) {
               await b.scrollIntoViewIfNeeded();
               assert.ok(await b.isVisible());
-              const r = await b.boundingBox();
-              assert.ok(!overlap(r, line), `${await b.innerText()} is under the reason`);
-              assert.ok(r.x >= box.x - 1 && r.x + r.width <= box.x + box.width + 1, `${await b.innerText()} runs out of the row`);
-              assert.ok(r.y + r.height <= line.y + 1, `${await b.innerText()} is below the reason`);
+            }
+            // the row, its reason and its buttons read in one go, once they
+            // hold still: read one by one, a row still laying itself out (at
+            // 420 Remove wraps under Sign in again, 5px over the reason) put a
+            // button against where the reason was a moment before (#3642)
+            const at = () => row.evaluate((acc, names) => {
+              const rect = (e) => { const r = e.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; };
+              const btn = (n) => [...acc.querySelectorAll("button")].find((b) => b.textContent.trim() === n);
+              return { box: rect(acc), line: rect(acc.querySelector(".aq")), buttons: names.map((n) => ({ name: n, r: rect(btn(n)) })) };
+            }, [w.again, w.remove]);
+            let laid = await at();
+            for (let i = 0; i < 40; i++) {
+              await page.waitForTimeout(50);
+              const now = await at();
+              if (JSON.stringify(now) === JSON.stringify(laid)) break;
+              laid = now;
+            }
+            const { box, line } = laid;
+            for (const { name, r } of laid.buttons) {
+              assert.ok(!overlap(r, line), `${name} is under the reason`);
+              assert.ok(r.x >= box.x - 1 && r.x + r.width <= box.x + box.width + 1, `${name} runs out of the row`);
+              assert.ok(r.y + r.height <= line.y + 1, `${name} is below the reason`);
             }
             // shown as it is, not only while the pointer is on the row
             await page.mouse.move(1, 1);

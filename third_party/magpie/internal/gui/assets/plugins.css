@@ -253,8 +253,19 @@ button.pm-chip:disabled { cursor: default; opacity: .6; }
 .pm-link { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 9px; border-radius: 7px; background: var(--pill); color: var(--fg-2); font-size: 11.5px; text-decoration: none; }
 .pm-link:hover { background: var(--pill-hover); color: var(--fg); }
 .pm-readme { border-top: 1px solid var(--line-2); padding-top: 12px; min-height: 60px; }
-.pm-rskel { height: 11px; margin: 8px 0; border-radius: 5px; background: var(--pill); animation: pm-pulse 1.3s ease-in-out infinite; }
-.pm-rskel.short { width: 55%; }
+/* the README's skeleton: strings the bird bounces down (bounceLoader) */
+.pm-bounce { position: relative; height: 108px; }
+.pm-bounce[data-gone] { position: absolute; z-index: 2; pointer-events: none; }
+.pm-bounce > svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; transition: opacity .3s ease-out; }
+.pm-bounce[data-gone] > svg { opacity: 0; }
+.pm-bounce path { fill: none; stroke: var(--skel, var(--pill)); stroke-width: 10; stroke-linecap: round; transition: stroke .35s ease-out; }
+.pm-bounce path[data-lit] { stroke: color-mix(in srgb, var(--accent) 18%, var(--skel, var(--pill))); }
+.pm-bird { position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 1; }
+.pm-bird svg { position: absolute; left: -13.2px; top: -19.6px; width: 22px; height: 22px; color: var(--fg); fill: currentColor; overflow: visible; }
+.pm-bird .tail { transform-box: view-box; transform-origin: 14px 22px; }
+.pm-bird .wing { transform-box: view-box; transform-origin: 30px 19.8px; }
+.pm-bird[data-flap] .wing { animation: pm-flap .16s ease-in-out infinite alternate; }
+@keyframes pm-flap { from { transform: rotate(-22deg); } to { transform: rotate(18deg); } }
 
 /* a README */
 .pm-md { font-size: 12.5px; line-height: 1.6; color: var(--fg-2); overflow-wrap: anywhere; }
@@ -292,6 +303,6 @@ button.pm-chip:disabled { cursor: default; opacity: .6; }
 }
 @media (prefers-reduced-motion: reduce) {
   .pm-card { transition: none; }
-  .pm-card.ghost .sk, .pm-rskel, .pm-ghlook, .pm-ghlook .dots i, .pm-arrive .pm-card { animation: none; }
+  .pm-card.ghost .sk, .pm-bird .wing, .pm-ghlook, .pm-ghlook .dots i, .pm-arrive .pm-card { animation: none; }
   .pm-ghlook .dots i { opacity: .5; }
 }

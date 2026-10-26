@@ -21,6 +21,9 @@ import (
 	"context"
 	"log"
 	"time"
+
+	"github.com/yetone/magpie/internal/beat"
+	"github.com/yetone/magpie/internal/filememo"
 )
 
 // Grace is how long after the last request ended sleep is still held off.
@@ -68,10 +71,9 @@ func Keep(ctx context.Context, level func() Level, state func() State) {
 	}
 	defer let()
 	failed := false
-	t := time.NewTicker(tick)
-	defer t.Stop()
 	for {
-		if l := level(); l != Off && want(state(), time.Now()) {
+		l := level()
+		if l != Off && want(state(), time.Now()) {
 			if release != nil && held != l {
 				release()
 				release = nil
@@ -95,10 +97,18 @@ func Keep(ctx context.Context, level func() Level, state func() State) {
 			let()
 			failed = false
 		}
+		// turned off (as it is unless the user turns it on), only a change
+		// to settings can turn it on: waited for, not looked for each few
+		// seconds (#3185: these looks woke an idle magpie)
+		every, changed := tick, (<-chan struct{})(nil)
+		if l == Off {
+			every, changed = filememo.OthersEvery(), filememo.Written()
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
+		case <-changed:
+		case <-beat.Next(every):
 		}
 	}
 }

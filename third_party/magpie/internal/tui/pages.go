@@ -1440,6 +1440,10 @@ func quotaCell(w provider.QuotaWindow, left bool, now time.Time) string {
 		pct = c + " · " + pct
 	}
 	c := sMuted.Render(w.Name) + " " + fill.Render(strings.Repeat("█", on)) + sFaint.Render(strings.Repeat("░", cells-on)) + " " + sText.Render(pct)
+	if w.Text {
+		// a row of text alone: no meter, no share to tell
+		c = sMuted.Render(w.Name) + " " + sText.Render(w.Display)
+	}
 	var at time.Time
 	if w.ResetsAt != nil {
 		at = *w.ResetsAt

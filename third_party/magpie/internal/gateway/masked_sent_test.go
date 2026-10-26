@@ -57,3 +57,47 @@ func TestMaskedRecordKeepsSentAndBack(t *testing.T) {
 		t.Fatalf("sent %q %v", sent, ok)
 	}
 }
+
+// A masked request a group's first member fails is recorded on the member
+// that had it last, not on the first: Max You and Linka on Discord found
+// Privacy's records, and the flow on Insights › Masking, naming the
+// group's first provider, which no request had reached. A chat and an
+// embedding both.
+func TestMaskedRecordNamesTheProviderThatHadIt(t *testing.T) {
+	const key = "sk-proj-abcdEFGH1234ijklMNOP5678qrst"
+	const embedded = `{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2]}],"model":"m","usage":{"prompt_tokens":3,"total_tokens":3}}`
+	for _, x := range []struct{ path, body, ok string }{
+		{"/v1/chat/completions", `{"model":"group/g","messages":[{"role":"user","content":"key ` + key + `"}]}`, chatOK},
+		{"/v1/embeddings", `{"model":"group/g","input":"key ` + key + `"}`, embedded},
+	} {
+		t.Run(x.path, func(t *testing.T) {
+			fresh(t)
+			a := &scripted{replies: []reply{{500, "", `{"error":{"message":"down"}}`}}}
+			b := &scripted{replies: []reply{{200, "", x.ok}}}
+			scriptedOn(t, "a", provider.Chat, a)
+			scriptedOn(t, "b", provider.Chat, b)
+			if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"a/m", "b/m"}, Routing: provider.Ordered}); err != nil {
+				t.Fatal(err)
+			}
+			if err := settings.Save(settings.Settings{Redact: true}); err != nil {
+				t.Fatal(err)
+			}
+			s := New()
+			rec := httptest.NewRecorder()
+			s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", x.path, strings.NewReader(x.body)))
+			if rec.Code != 200 || a.n != 1 || b.n != 1 {
+				t.Fatalf("%d %s (a %d, b %d)", rec.Code, rec.Body, a.n, b.n)
+			}
+			rs, _ := maskrec.List(0, 1, maskrec.Filter{})
+			if len(rs) != 1 || rs[0].N == 0 {
+				t.Fatalf("records %+v", rs)
+			}
+			if got := rs[0].Provider; got != "b" {
+				t.Fatalf("recorded on %q, the request went to b", got)
+			}
+			if r, _ := maskrec.Get(rs[0].Key); r.Provider != "b" || r.Model != "m" {
+				t.Fatalf("record %s/%s", r.Provider, r.Model)
+			}
+		})
+	}
+}

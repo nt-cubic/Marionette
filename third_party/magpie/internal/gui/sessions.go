@@ -9,6 +9,7 @@ import (
 	"os"
 	"runtime"
 	"runtime/debug"
+	"runtime/metrics"
 	"slices"
 	"strconv"
 	"strings"
@@ -576,13 +577,34 @@ func warmUp(steps ...func()) {
 // and Codex's effort, which reads the whole ledger again while the page
 // still holds its rows, run under it: the warm-up as a whole did too for
 // ~11 s more CPU.
+//
+// It also holds the memory Go asks of the system to what it held when fn
+// began, as a soft limit (a lower one the user set is kept, and GOGC off
+// has none). A build of the request index after an update reads every
+// session again and allocates ~1.2 GB to keep ~40 MB more, and the heap
+// overshot its goal into pages it then kept: 308–323 MB in Activity
+// Monitor for 15.7k sessions, where a start that reads the index peaked at
+// 247–255 MB. Under the limit, 241–251 MB and 211–228 MB, for 1–7 s more
+// CPU in that build.
 func underTightGC(fn func()) {
-	if was := debug.SetGCPercent(tightGCPercent); was < tightGCPercent {
+	was := debug.SetGCPercent(tightGCPercent)
+	if was < tightGCPercent {
 		debug.SetGCPercent(was)
 	} else {
 		defer debug.SetGCPercent(was)
 	}
+	if limit := heldMemory(); was >= 0 && limit < debug.SetMemoryLimit(-1) {
+		defer debug.SetMemoryLimit(debug.SetMemoryLimit(limit))
+	}
 	fn()
+}
+
+// heldMemory is what Go holds of the system's memory: all it mapped, less
+// the pages it gave back.
+func heldMemory() int64 {
+	s := []metrics.Sample{{Name: "/memory/classes/total:bytes"}, {Name: "/memory/classes/heap/released:bytes"}}
+	metrics.Read(s)
+	return int64(s[0].Value.Uint64() - s[1].Value.Uint64())
 }
 
 const tightGCPercent = 25

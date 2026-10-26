@@ -378,7 +378,7 @@ func strictKeep(scope, mode string, in http.Header, body []byte, cs []candidate,
 		return cs, pl, nil
 	}
 	sticks.Lock()
-	st, had := stickOf(scope + "|" + conversationID(in, body))
+	st, had := stickOf(stickKey(scope, in, body))
 	sticks.Unlock()
 	if !had || time.Since(st.at) > stickKeep || slices.ContainsFunc(cs, func(c candidate) bool { return c.who() == st.who }) {
 		return cs, pl, nil
@@ -452,12 +452,36 @@ func strictOnly(cs []candidate, pl planned, at int) ([]candidate, planned) {
 	return out, pl
 }
 
-// affine puts first whoever answered the conversation last, while its
-// affinity says to keep it there.
-func affine(scope, mode string, rotate bool, in http.Header, from provider.Protocol, body []byte, cs []candidate, pl planned) ([]candidate, planned, *Affinity, string) {
+// stickKey is the conversation a stick is kept for: scope's, by the
+// conversation's id, and a Claude Code subagent's apart from its lead's.
+// Claude Code sends its session's id with every request of the session,
+// its subagents' too, which say only by x-claude-code-agent-id that they
+// are one (subagentOf). Under the session's key, a subagent's answer took
+// the lead's stick over: the lead's next turn was judged by the cache of
+// the subagent's conversation, moved to another account as "no-cache" or
+// "cold" or to wherever the subagent had gone, and the lead's whole
+// conversation written to that account's cache again (slkassinthehood on
+// X: two Pro accounts' 5 hours spent in ten minutes). The lead's key is
+// the session's as before, so what is kept of it, and Codex's leadFirst,
+// which reads a lead's stick by its thread id, are as they were.
+func stickKey(scope string, in http.Header, body []byte) string {
 	key := scope + "|" + conversationID(in, body)
+	if sub := subOf(in); sub != "" {
+		key += "|agent:" + sub
+	}
+	return key
+}
+
+// affine puts first whoever answered the conversation last, while its
+// affinity says to keep it there. Its turn is counted in written, the body
+// as the agent wrote it, which the turn's folder is read from too
+// (dirOf): one parse of a held body serves both (factsOf), where counting
+// it in the masked body parsed the conversation a second time, ~27 MB
+// more for each 4 MB Codex request in flight.
+func affine(scope, mode string, rotate bool, in http.Header, from provider.Protocol, body, written []byte, cs []candidate, pl planned) ([]candidate, planned, *Affinity, string) {
+	key := stickKey(scope, in, body)
 	a := &Affinity{Mode: mode}
-	a.Turn, a.Within = turnOf(from, body)
+	a.Turn, a.Within = turnOf(from, written)
 	sticks.Lock()
 	st, had := stickOf(key)
 	sticks.Unlock()

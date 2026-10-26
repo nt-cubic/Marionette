@@ -257,13 +257,18 @@ func FileIn(dir, rel string) (string, bool) {
 
 // SetPageOptions sets the options of a plugin from its page or a panel.
 // One whose page and panels are all it has is never loaded by the host, so the host goes on as
-// it was; any other is SetOptions, which starts the host again for it.
+// it was; any other (a middleware, an agent, a gateway hook, a provider) is SetOptions, which
+// starts the host again for it.
 func SetPageOptions(spec string, opts map[string]any) error {
 	t := Target(spec)
 	if mw, _ := Middleware(t); mw != "" {
 		return SetOptions(spec, opts)
 	}
 	if ag, _ := Agent(t); ag != "" {
+		return SetOptions(spec, opts)
+	}
+	// a gateway hook is handed the options the host loaded it with
+	if Gateway(t) != "" {
 		return SetOptions(spec, opts)
 	}
 	if w, only := Window(t); w == nil || !only {

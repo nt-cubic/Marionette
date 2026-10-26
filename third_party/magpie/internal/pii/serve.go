@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yetone/magpie/internal/proc"
@@ -37,8 +38,13 @@ type helper struct {
 	exited chan struct{}
 }
 
-// srv is the pf-serve magpie runs, one at a time: its requests take
-// turns.
+// srv is the pf-serve magpie runs, one at a time. Its requests take
+// turns on its one pipe: turn is held for each, from start to answer, and
+// a request's caller can stop waiting for it (FindContext). mu guards
+// only the fields below, and is never held while pf-serve loads or
+// answers: the status (Now), Stop and the idle timer took it, and on a
+// cold start every request and the Settings page waited minutes behind
+// one load (#3682).
 var srv struct {
 	mu   sync.Mutex
 	h    *helper
@@ -49,6 +55,25 @@ var srv struct {
 	gpuLost string
 	// failed is why the last request got no answer, until one does
 	failed string
+	// loading is set while pf-serve loads the model
+	loading bool
+	// stop is closed by Stop: a load under way gives up, and the request
+	// it was for fails rather than start pf-serve again
+	stop chan struct{}
+}
+
+// turn is pf-serve's pipe, held by the one request on it.
+var turn = make(chan struct{}, 1)
+
+// waiting counts the requests waiting for their turn.
+var waiting atomic.Int32
+
+// stopCh is srv.stop, made the first time; mu is held.
+func stopCh() chan struct{} {
+	if srv.stop == nil {
+		srv.stop = make(chan struct{})
+	}
+	return srv.stop
 }
 
 // loadTimeout is how long pf-serve has to load the model: 1.6 GB read
@@ -76,24 +101,45 @@ func candidates(cpu bool) []string {
 }
 
 // start runs pf-serve, the first of candidates that loads the model.
-func start(cpu bool) (*helper, error) {
+// stop ends a load under way.
+func start(cpu bool, stop <-chan struct{}) (*helper, error) {
 	if !Installed() {
 		return nil, ErrNotInstalled
 	}
+	upgrades.Add(1)
+	go func() {
+		defer upgrades.Done()
+		upgrade()
+	}()
 	var errs []error
 	for _, path := range candidates(cpu) {
-		h, err := startOne(path, cpu)
+		h, err := startOne(path, cpu, stop)
 		if err == nil {
 			return h, nil
+		}
+		if errors.Is(err, errStopped) {
+			return nil, err
 		}
 		errs = append(errs, err)
 	}
 	return nil, fmt.Errorf("the local masking model didn't start: %w", errors.Join(errs...))
 }
 
-func startOne(path string, cpu bool) (*helper, error) {
+// upgrades are the upgrade checks start set going, for a test to wait for.
+var upgrades sync.WaitGroup
+
+// errStopped is a request's when Stop ended pf-serve under it.
+var errStopped = errors.New("the local masking model was stopped")
+
+func startOne(path string, cpu bool, stop <-chan struct{}) (*helper, error) {
 	cmd := proc.Command(path, modelPath())
-	cmd.Env = os.Environ()
+	// Without GGML_METAL_NO_RESIDENCY, ggml's Metal residency set keeps a
+	// heartbeat that woke an idle pf-serve ~146 times a second for the 10
+	// minutes it stays up after a request, and macOS's Energy Impact
+	// counted magpie among the top for it (#3185). With it set: 0.3 a
+	// second, and the first request after an idle spell takes 0.1-0.45s
+	// more (51-78ms hot either way).
+	cmd.Env = append(os.Environ(), "GGML_METAL_NO_RESIDENCY=1")
 	if cpu {
 		cmd.Env = append(cmd.Env, "PF_DEVICE=cpu")
 	}
@@ -125,6 +171,9 @@ func startOne(path string, cpu bool) (*helper, error) {
 	case <-time.After(loadTimeout):
 		h.kill()
 		return nil, fmt.Errorf("%s: the model didn't load in %s", baseName(path), loadTimeout)
+	case <-stop:
+		h.kill()
+		return nil, errStopped
 	}
 	if err := json.Unmarshal([]byte(s), &h.hello); err != nil || h.hello.Error != "" || h.hello.Device == "" {
 		h.kill()
@@ -171,82 +220,174 @@ func (h *helper) kill() {
 // where it runs.
 func Warm() {
 	if Installed() {
-		go classify([]string{"warm"})
+		go func() {
+			turn <- struct{}{}
+			defer func() { <-turn }()
+			classify([]string{"warm"})
+		}()
 	}
 }
 
-// Stop ends pf-serve, if it runs.
+// Stop ends pf-serve, if it runs, and a load under way, at once: it
+// waits for no request's turn. A request on it fails, and pf-serve is
+// killed rather than given the 5s an idle one has to end.
 func Stop() {
+	free := false
+	select {
+	case turn <- struct{}{}:
+		free = true
+		defer func() { <-turn }()
+	default:
+	}
 	srv.mu.Lock()
-	defer srv.mu.Unlock()
-	stopLocked()
+	h := detachLocked()
+	if srv.stop != nil {
+		close(srv.stop)
+		srv.stop = nil
+	}
+	srv.mu.Unlock()
+	if h != nil && !free {
+		h.kill()
+		return
+	}
+	end(h)
 }
 
-func stopLocked() {
+// stopWhenFree ends pf-serve once no request is on it, so that the next
+// one starts the pf-serve on disk now (upgrade).
+func stopWhenFree() {
+	turn <- struct{}{}
+	defer func() { <-turn }()
+	srv.mu.Lock()
+	h := detachLocked()
+	srv.mu.Unlock()
+	end(h)
+}
+
+// detachLocked takes pf-serve out of srv, for end; mu is held.
+func detachLocked() *helper {
 	if srv.idle != nil {
 		srv.idle.Stop()
 		srv.idle = nil
 	}
-	if h := srv.h; h != nil {
-		srv.h = nil
-		// stdin ending ends it; one that doesn't is killed
-		h.in.Close()
-		select {
-		case <-h.exited:
-		case <-time.After(5 * time.Second):
-			h.kill()
-		}
+	h := srv.h
+	srv.h = nil
+	return h
+}
+
+// end ends h, with no lock held: stdin ending ends it, and one that
+// doesn't is killed.
+func end(h *helper) {
+	if h == nil {
+		return
+	}
+	h.in.Close()
+	select {
+	case <-h.exited:
+	case <-time.After(5 * time.Second):
+		h.kill()
 	}
 }
 
 // classify asks pf-serve, started if it isn't, what is in texts. One that
 // fails is ended and started again; one that failed on the GPU is started
-// on the CPU, for good.
+// on the CPU, for good. The caller holds turn.
 func classify(texts []string) ([][]redact.Found, error) {
+	out, err := classifyTurn(texts)
 	srv.mu.Lock()
-	defer srv.mu.Unlock()
-	out, err := classifyLocked(texts)
 	srv.failed = ""
 	if err != nil {
 		srv.failed = err.Error()
 	}
+	srv.mu.Unlock()
 	return out, err
 }
 
-func classifyLocked(texts []string) ([][]redact.Found, error) {
+func classifyTurn(texts []string) ([][]redact.Found, error) {
 	var last error
 	for try := 0; try < 2; try++ {
-		if srv.h == nil {
-			h, err := start(srv.cpu)
+		srv.mu.Lock()
+		h, cpu, stop := srv.h, srv.cpu, stopCh()
+		if h == nil {
+			srv.loading = true
+		}
+		srv.mu.Unlock()
+		if h == nil {
+			var err error
+			h, err = start(cpu, stop)
+			srv.mu.Lock()
+			srv.loading = false
+			if err == nil && stopped(stop) {
+				err = errStopped
+			}
 			if err != nil {
+				srv.mu.Unlock()
+				if h != nil {
+					h.kill()
+				}
 				return nil, err
 			}
 			srv.h = h
+			srv.mu.Unlock()
 		}
-		out, err := srv.h.classify(texts)
+		out, err := h.classify(texts)
+		srv.mu.Lock()
 		if err == nil {
-			if srv.idle != nil {
-				srv.idle.Stop()
+			if srv.h == h {
+				idleLocked(h)
 			}
-			h := srv.h
-			srv.idle = time.AfterFunc(idleAfter, func() {
-				srv.mu.Lock()
-				defer srv.mu.Unlock()
-				if srv.h == h {
-					stopLocked()
-				}
-			})
+			srv.mu.Unlock()
 			return out, nil
 		}
 		last = err
-		gpu := srv.h.hello.GPU
-		srv.h.kill()
-		srv.h = nil
-		if gpu {
+		if srv.h == h {
+			srv.h = nil
+		}
+		if stopped(stop) {
+			srv.mu.Unlock()
+			h.kill()
+			return nil, errStopped
+		}
+		if h.hello.GPU {
 			srv.cpu, srv.gpuLost = true, err.Error()
 		}
+		srv.mu.Unlock()
+		h.kill()
 	}
 	return nil, fmt.Errorf("the local masking model failed: %w", last)
+}
+
+func stopped(stop <-chan struct{}) bool {
+	select {
+	case <-stop:
+		return true
+	default:
+		return false
+	}
+}
+
+// idleLocked ends h after idleAfter with no request; mu is held. The timer
+// takes the turn only when it is free: a request on it sets the timer
+// again when it is answered.
+func idleLocked(h *helper) {
+	if srv.idle != nil {
+		srv.idle.Stop()
+	}
+	srv.idle = time.AfterFunc(idleAfter, func() {
+		select {
+		case turn <- struct{}{}:
+		default:
+			return
+		}
+		defer func() { <-turn }()
+		srv.mu.Lock()
+		var gone *helper
+		if srv.h == h {
+			gone = detachLocked()
+		}
+		srv.mu.Unlock()
+		end(gone)
+	})
 }
 
 // classify is one request: n, then each text's length and bytes; the

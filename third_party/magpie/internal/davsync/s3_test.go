@@ -36,6 +36,9 @@ type fakeS3 struct {
 	log                []string // each request: method, and the condition sent
 	onWrite            func()   // runs once, at the next PUT or HEAD (a write's look first), before it is answered
 	sent               int      // the bytes of objects read
+	// reread, when set, is how the server reads a header back before it
+	// checks the signature over it
+	reread func(name, value string) string
 }
 
 func newFakeS3(t *testing.T) (*fakeS3, *httptest.Server) {
@@ -145,7 +148,13 @@ func (f *fakeS3) signed(r *http.Request, body []byte) bool {
 	again := &http.Request{Method: r.Method, URL: u, Host: r.Host, Header: http.Header{}}
 	for _, n := range strings.Split(names, ";") {
 		if n != "host" {
-			again.Header[http.CanonicalHeaderKey(n)] = r.Header.Values(n)
+			vs := slices.Clone(r.Header.Values(n))
+			for i := range vs {
+				if f.reread != nil {
+					vs[i] = f.reread(n, vs[i])
+				}
+			}
+			again.Header[http.CanonicalHeaderKey(n)] = vs
 		}
 	}
 	signer{id: f.id, secret: f.secret, region: f.region, service: "s3"}.sign(again, sum(body), at)
@@ -575,5 +584,51 @@ func TestS3Live(t *testing.T) {
 	}
 	if got := ids(); !slices.Equal(got, []string{"deepseek=k1"}) {
 		t.Fatalf("b's providers: %v", got)
+	}
+}
+
+// A server that checks the signature over a condition as it reads it back
+// (here an ETag without its quotes), not as it arrived, still syncs once
+// the ETag is kept: the conditions go outside the signature, and are
+// still honoured (CyberCaius on Discord: HTTP 403 SignatureDoesNotMatch
+// after a while, with a working key, until the sync started afresh).
+func TestS3ConditionsOutsideTheSignature(t *testing.T) {
+	f, srv := newFakeS3(t)
+	f.reread = func(name, v string) string {
+		if strings.HasPrefix(name, "if-") {
+			return strings.Trim(v, `"`)
+		}
+		return v
+	}
+	ctx := context.Background()
+	cfg := f.config(srv)
+	newComputer(t).use(t)
+	provider.Save(provider.Provider{ID: "deepseek", Name: "DeepSeek", Chat: "https://api.deepseek.com/v1", Key: "k1"})
+	if err := Configure(cfg); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 3 {
+		if err := Now(ctx); err != nil {
+			t.Fatalf("sync %d: %v", i+1, err)
+		}
+		if v := Status(); v.Error != "" {
+			t.Fatalf("sync %d: %s", i+1, v.Error)
+		}
+	}
+	provider.Save(provider.Provider{ID: "two", Name: "Two", Chat: "https://y/v1", Key: "k2"})
+	if err := Now(ctx); err != nil {
+		t.Fatalf("a change pushed over the ETag: %v", err)
+	}
+	var get, put bool
+	for _, l := range f.log {
+		get = get || strings.HasPrefix(l, "GET none:\"")
+		put = put || strings.HasPrefix(l, "PUT \"")
+	}
+	if !get || !put {
+		t.Fatalf("the conditions didn't reach the server: %q", f.log)
+	}
+	remote, err := backup.Open(f.objects["team x+y/magpie/magpie.magpie-backup"], "correct horse")
+	if err != nil || len(remote.Providers) != 2 {
+		t.Fatalf("in the bucket: %v %+v", err, remote.Providers)
 	}
 }

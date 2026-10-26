@@ -33,10 +33,17 @@ package agent
 // (agent_sdk/backend_install.py); magpie looks for it where Crew does and
 // says how to install it when it isn't there, and installs nothing.
 //
-// Connecting picks the first harness connected to magpie (Codex, Claude
-// Code, OpenCode, Pi, Goose), one whose adapter is here first, and keeps
-// what the two keys said before, which Disconnect puts back. A harness set
-// in config.local.json is the user's: magpie writes none over it.
+// Connecting keeps the harness Kiro Crew is set to when it is one of
+// these, and connects that agent to magpie too when it isn't yet (Crew's
+// first run picks one, Claude Code on a Windows without kiro-cli: wuping9525
+// on Discord had to connect it by hand first). Disconnect takes that agent
+// off magpie again only when this connect is what put it on, and the user
+// hasn't disconnected it since. On a harness magpie doesn't wire (KAS,
+// kiro-cli, deepseek) it picks the first harness connected to magpie
+// (Codex, Claude Code, OpenCode, Pi, Goose), one whose adapter is here
+// first. It keeps what the two keys said before, which Disconnect puts
+// back. A harness set in config.local.json is the user's: magpie writes
+// none over it.
 
 import (
 	"encoding/json"
@@ -49,6 +56,10 @@ import (
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/edit"
 )
+
+// kiroCrewOS is the system Kiro Crew's files are looked for as; a var so
+// a test on a Mac can say Windows.
+var kiroCrewOS = runtime.GOOS
 
 // kiroCrewApp is Kiro Crew's macOS bundle.
 var kiroCrewApp = desktopApp{id: "com.amazon.kiro.crew", names: []string{"KiroCrew.app", "Kiro Crew.app"}}
@@ -90,12 +101,16 @@ const (
 	// magpie wrote (there while magpie has set the harness)
 	kiroCrewWasKey   = "kirocrew.was"
 	kiroCrewWroteKey = "kirocrew.wrote"
+	// the harness agent magpie connected along with Kiro Crew, for
+	// Disconnect to take off again (kiroCrewJoin)
+	kiroCrewJoinedKey = "kirocrew.joined"
 )
 
 var (
 	noticeKiroCrew        = newNotice("Kiro Crew takes the new harness for new sessions; sessions already open keep theirs.")
 	noticeKiroCrewAdapter = newNotice("Kiro Crew runs {harness} through {adapter}, which magpie didn't find here: install it with {install}, then start a new session.")
 	noticeKiroCrewPinned  = newNotice("Kiro Crew's config.local.json sets its harness (agent.acp_backend), and that wins over config.json, so magpie leaves it alone: set it there to a harness connected to magpie.")
+	noticeKiroCrewJoined  = newNotice("Kiro Crew runs on {harness}, so magpie connected {harness} too; turning Kiro Crew off disconnects it again.")
 )
 
 // the provider's note: how magpie is its provider, or that its harness is
@@ -111,26 +126,89 @@ var (
 	errKiroCrewHarness   = errors.New("that harness isn't connected to magpie: connect it first")
 )
 
+// kiroCrewAgent is the magpie agent of a harness, nil for none.
+func kiroCrewAgent(id string) *Agent {
+	home, cfg := homes()
+	switch id {
+	case "codex":
+		return codex(home)
+	case "claude":
+		return claude(home)
+	case "opencode":
+		return opencode(home, cfg)
+	case "pi":
+		return pi(home)
+	case "goose":
+		return goose(home, cfg)
+	}
+	return nil
+}
+
 // kiroCrewWired says whether the magpie agent id is connected to magpie;
 // a var so tests can say.
 var kiroCrewWired = func(id string) bool {
-	home, cfg := homes()
-	var a *Agent
-	switch id {
-	case "codex":
-		a = codex(home)
-	case "claude":
-		a = claude(home)
-	case "opencode":
-		a = opencode(home, cfg)
-	case "pi":
-		a = pi(home)
-	case "goose":
-		a = goose(home, cfg)
-	default:
-		return false
+	a := kiroCrewAgent(id)
+	return a != nil && a.Wired()
+}
+
+// kiroCrewJoined is the harness agent magpie connected along with Kiro
+// Crew, and whether the user had disconnected it before that.
+type kiroCrewJoined struct {
+	Agent string `json:"agent"`
+	Off   bool   `json:"off,omitempty"`
+}
+
+func kiroCrewJoinedNow() (kiroCrewJoined, bool) {
+	var j kiroCrewJoined
+	s := stashLoad()[kiroCrewJoinedKey]
+	return j, s != "" && json.Unmarshal([]byte(s), &j) == nil && j.Agent != ""
+}
+
+// kiroCrewJoin connects the harness agent id to magpie for Kiro Crew, and
+// says whether it could: false, with no error, for one not installed here.
+var kiroCrewJoin = func(id string) (bool, error) {
+	a := kiroCrewAgent(id)
+	if a == nil || !a.Detected() {
+		return false, nil
 	}
-	return a.Wired()
+	off := a.Disconnected()
+	if _, err := a.ConnectHow(); err != nil {
+		return false, err
+	}
+	b, _ := json.Marshal(kiroCrewJoined{Agent: id, Off: off})
+	stash(map[string]string{kiroCrewJoinedKey: string(b)})
+	return true, nil
+}
+
+// kiroCrewLeave takes the harness agent magpie connected along with Kiro
+// Crew off magpie again, the user's own disconnect of it, from before,
+// kept as it was.
+var kiroCrewLeave = func() error {
+	j, ok := kiroCrewJoinedNow()
+	forget(kiroCrewJoinedKey)
+	if !ok {
+		return nil
+	}
+	a := kiroCrewAgent(j.Agent)
+	if a == nil || !a.Wired() {
+		return nil
+	}
+	if err := a.Disconnect(); err != nil {
+		return err
+	}
+	if !j.Off {
+		forget(a.ID + disconnectedKey)
+	}
+	return nil
+}
+
+// kiroCrewUserLeft forgets that magpie connected the agent id along with
+// Kiro Crew once the user disconnects it themselves: connected again
+// after, it is theirs, and Kiro Crew's Disconnect leaves it on.
+func kiroCrewUserLeft(id string) {
+	if j, ok := kiroCrewJoinedNow(); ok && j.Agent == id {
+		forget(kiroCrewJoinedKey)
+	}
 }
 
 // kiroCrewHasAdapter says whether Crew would find harness h's adapter; a
@@ -173,7 +251,7 @@ func kiroCrewFinds(h kiroCrewHarness, home string, getenv func(string) string) b
 		filepath.Join(mise, "shims"),
 		filepath.Join(home, ".volta", "bin"),
 	}
-	if runtime.GOOS != "windows" {
+	if kiroCrewOS != "windows" {
 		dirs = append(dirs, "/opt/homebrew/bin", "/usr/local/bin")
 	}
 	or := func(v, d string) string {
@@ -192,9 +270,17 @@ func kiroCrewFinds(h kiroCrewHarness, home string, getenv func(string) string) b
 		m, _ := filepath.Glob(g)
 		dirs = append(dirs, m...)
 	}
+	// on Windows npm's shim is the name with .cmd, as Crew's shutil.which
+	// finds it through PATHEXT
+	names := []string{bin}
+	if kiroCrewOS == "windows" {
+		names = []string{bin + ".cmd", bin + ".exe", bin + ".bat", bin}
+	}
 	for _, d := range dirs {
-		if isFile(filepath.Join(d, bin)) {
-			return true
+		for _, n := range names {
+			if isFile(filepath.Join(d, n)) {
+				return true
+			}
 		}
 	}
 	return false
@@ -225,7 +311,7 @@ func kiroCrewUnsafe(p string) bool {
 	if filepath.Dir(p) == p {
 		return true
 	}
-	if runtime.GOOS == "windows" {
+	if kiroCrewOS == "windows" {
 		return false
 	}
 	for _, d := range []string{"/usr", "/System", "/etc", "/private/etc"} {
@@ -396,19 +482,34 @@ func kiroCrew(home string) *Agent {
 			}
 		}
 		forget(kiroCrewWasKey, kiroCrewWroteKey)
-		return nil
+		return kiroCrewLeave()
 	}
-	pick := func() (kiroCrewHarness, error) {
+	// pick is the harness to run: the one Kiro Crew is set to, when it is
+	// one of magpie's, connected to magpie now if it isn't yet (joined);
+	// else the first connected to magpie
+	pick := func() (h kiroCrewHarness, joined bool, err error) {
+		if h, ok := kiroCrewHarnessOf(backend()); ok {
+			if kiroCrewWired(h.agent) {
+				return h, false, nil
+			}
+			ok, err := kiroCrewJoin(h.agent)
+			if err != nil {
+				return h, false, err
+			}
+			if ok {
+				return h, true, nil
+			}
+		}
 		hs := connected()
 		if len(hs) == 0 {
-			return kiroCrewHarness{}, errKiroCrewNoHarness
+			return kiroCrewHarness{}, false, errKiroCrewNoHarness
 		}
 		for _, h := range hs {
 			if kiroCrewHasAdapter(h) {
-				return h, nil
+				return h, false, nil
 			}
 		}
-		return hs[0], nil
+		return hs[0], false, nil
 	}
 	return atomic(&Agent{
 		ID: "kirocrew", Name: "Kiro Crew", Icon: "generic", Aliases: []string{"kiro-crew", "crew"},
@@ -417,7 +518,8 @@ func kiroCrew(home string) *Agent {
 		// ~/.kiro alone, which is Kiro's and kiro-cli's
 		detect: func() bool {
 			return isFile(path) || macBundle(kiroCrewApp) || binAt("kirocrew") != "" ||
-				isFile(filepath.Join(home, ".kirocrew-app", ".venv", "bin", "kirocrew"))
+				isFile(filepath.Join(home, ".kirocrew-app", ".venv", "bin", "kirocrew")) ||
+				kiroCrewOS == "windows" && isFile(filepath.Join(home, ".kirocrew-app", ".venv", "Scripts", "kirocrew.exe"))
 		},
 		Notice: func() string {
 			id := on()
@@ -428,6 +530,11 @@ func kiroCrew(home string) *Agent {
 				return ""
 			}
 			notes := []string{noticeKiroCrew.String()}
+			if j, ok := kiroCrewJoinedNow(); ok {
+				if h, ok := kiroCrewHarnessOf(id); ok && h.agent == j.Agent {
+					notes = append(notes, noticeKiroCrewJoined.say("harness", h.name))
+				}
+			}
 			if h, _ := kiroCrewHarnessOf(id); h.adapter != "" && !kiroCrewHasAdapter(h) {
 				notes = append(notes, noticeKiroCrewAdapter.say("harness", h.name, "adapter", h.adapter, "install", "npm i -g "+h.npm))
 			}
@@ -452,11 +559,17 @@ func kiroCrew(home string) *Agent {
 				if id := on(); id != "" {
 					return nil
 				}
-				h, err := pick()
+				h, joined, err := pick()
 				if err != nil {
 					return err
 				}
-				return write(h)
+				if err := write(h); err != nil {
+					if joined {
+						kiroCrewLeave()
+					}
+					return err
+				}
+				return nil
 			},
 			Options: func(map[string]string) []Option {
 				note := kiroCrewNote

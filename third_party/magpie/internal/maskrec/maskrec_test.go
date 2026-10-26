@@ -152,3 +152,43 @@ func TestSumWarnedAndBlocked(t *testing.T) {
 		t.Fatalf("held back: %+v", got)
 	}
 }
+
+// A held record goes on disk with the provider and model done names, and
+// the summary counts that provider, never the planned one. A long request
+// held before a short one is written after it, and the list is still in
+// key order, so the next page's before skips nothing.
+func TestHoldNamesWhoHadIt(t *testing.T) {
+	now := time.Date(2026, 10, 26, 12, 0, 0, 0, time.Local)
+	sandbox(t, now)
+	v := []Value{{Placeholder: "{{API_KEY_aaaabbbb}}", Kind: "API_KEY", By: "rule", Head: "sk-", Len: 40}}
+	long, done := Hold(Record{Time: now, What: "chat", Provider: "first", Model: "m1", N: 1, Values: v})
+	if got, ok := Get(long.Key); !ok || got.Provider != "first" {
+		t.Fatalf("held record not in memory: %+v %v", got, ok)
+	}
+	short := Add(Record{Time: now, What: "chat", Provider: "other", N: 1, Values: v})
+	done("second", "m2")
+	done("third", "m3") // only the first call counts
+	sum := Sum(1)
+	names := []string{}
+	for _, p := range sum.Providers {
+		names = append(names, p.Name)
+	}
+	if strings.Join(names, ",") != "other,second" && strings.Join(names, ",") != "second,other" {
+		t.Fatalf("summary counts %v", names)
+	}
+	store.mu.Lock()
+	store.snips = nil // after a restart: what disk has
+	store.mu.Unlock()
+	got, ok := Get(long.Key)
+	if !ok || got.Provider != "second" || got.Model != "m2" {
+		t.Fatalf("on disk: %+v %v", got, ok)
+	}
+	page, more := List(0, 1, Filter{})
+	if len(page) != 1 || page[0].Key != short.Key || !more {
+		t.Fatalf("first page %+v %v", page, more)
+	}
+	page, _ = List(page[0].Key, 1, Filter{})
+	if len(page) != 1 || page[0].Key != long.Key {
+		t.Fatalf("second page %+v", page)
+	}
+}

@@ -376,7 +376,7 @@ func (s *Server) askJev(p provider.Provider, model string, intents []string, pre
 	// remote Jev is none of those members
 	if !p.SkipsRedaction() {
 		var err error
-		if text, prev.User, prev.Reply, err = maskedState(text, prev.User, prev.Reply); err != nil {
+		if text, prev.User, prev.Reply, err = maskedState(ctx, text, prev.User, prev.Reply); err != nil {
 			return verdict{}, err // fails closed: never sent unmasked
 		}
 	}
@@ -395,14 +395,14 @@ func (s *Server) askJev(p provider.Provider, model string, intents []string, pre
 }
 
 // maskedState masks what Jev is told of a turn, each as maskedText does.
-func maskedState(text, user, reply string) (string, string, string, error) {
+func maskedState(ctx context.Context, text, user, reply string) (string, string, string, error) {
 	out := [3]string{text, user, reply}
 	var all maskHits
 	for i, v := range out {
 		if v == "" {
 			continue
 		}
-		_, m, h, err := maskTextHits(v)
+		_, m, h, err := maskTextHits(ctx, v)
 		if err != nil {
 			return "", "", "", err
 		}

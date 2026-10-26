@@ -55,7 +55,7 @@ func (s *Server) wbSearch(ctx context.Context, p provider.Provider, query string
 	// its client gives the service 20 s
 	ctx, cancel := context.WithTimeout(s.metered(p.Via(ctx), p, ""), searchTimeout/2)
 	defer cancel()
-	q, err := maskedQuery(query, &p)
+	q, err := maskedQuery(ctx, query, &p)
 	if err != nil {
 		return "", nil, err
 	}

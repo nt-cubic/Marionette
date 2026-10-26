@@ -84,7 +84,7 @@ const L = {
 };
 const HIDDEN = ["agents", "library"];
 // in the order the pages are grouped in (work, models, insights, extend)
-const KEPT = ["sessions", "providers", "routing", "gateway", "usage", "plugins"];
+const KEPT = ["sessions", "providers", "routing", "gateway", "usage", "masking", "plugins"];
 
 // the tabs shown, the page shown
 const tabs = (page) => page.evaluate(() => [...document.querySelectorAll("#nav button[data-view]")].filter((b) => !b.hidden && b.offsetParent).map((b) => b.dataset.view));
@@ -154,7 +154,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await clickStill(page, "#gatewayModeSegs .opt:nth-child(4)", `${where}: Off`);
       await page.waitForFunction(() => !document.querySelector('#nav button[data-view="agents"]').hidden);
       assert.deepEqual(posts.filter((p) => p[0] === "gateway-mode"), [["gateway-mode", "off"]], where);
-      assert.deepEqual(await tabs(page), ["agents", "sessions", "library", "providers", "routing", "gateway", "usage", "plugins"], `${where}: off`);
+      assert.deepEqual(await tabs(page), ["agents", "sessions", "library", "providers", "routing", "gateway", "usage", "masking", "plugins"], `${where}: off`);
       assert.deepEqual(await viewShown(page), ["view-settings"], `${where}: Settings stays`);
       assert.deepEqual(await agentRows(page), [true, true, true, true, true], `${where}: rows back`);
       assert.doesNotMatch(await page.locator("#gatewayModeSub").textContent(), new RegExp(L[lang].noAgents), where);
@@ -187,7 +187,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.route("**/*", server(lang, [], { web, gateway: false, agents: true }));
         await page.goto("http://magpie.test/");
         await page.waitForSelector("#nav button.on");
-        assert.deepEqual(await tabs(page), ["agents", "sessions", "library", "providers", "routing", "gateway", "usage", "plugins"], where);
+        assert.deepEqual(await tabs(page), ["agents", "sessions", "library", "providers", "routing", "gateway", "usage", "masking", "plugins"], where);
         assert.deepEqual(await viewShown(page), ["view-agents"], where);
         await page.locator("#prefs").click();
         await page.waitForSelector("#langPick span");

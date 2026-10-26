@@ -295,7 +295,7 @@ func (m *model) openClassifier(g provider.Group) {
 // ruleHint is what a rule is typed as.
 const ruleHint = `use=<model>, and any of: tokens=200k · images · effort=on|low|medium|high|xhigh|max · agents=codex,claude
 intent="a quick question" (the group's classifier=<model> tells it) · compact
-time=09:00-18:00 (local; 22:00-08:00 runs past midnight) · days=mon-fri · folders=~/work/acme,~/oss · except-folders=~/old · at=<n> for its place
+time=09:00-18:00 (22:00-08:00 runs past midnight) · days=mon-fri · tz=Asia/Shanghai (this computer's zone if none) · folders=~/work/acme,~/oss · except-folders=~/old · at=<n> for its place
 use-effort=low|medium|high|xhigh|max: the reasoning the model is asked for, whatever the agent asked
 or pause=<model> time=… days=… agents=… folders=… except-folders=…: the model is left out of the group then, not even a fallback`
 
@@ -327,6 +327,7 @@ func putRule(g *provider.Group, i int, line string) error {
 	if err != nil {
 		return err
 	}
+	r.InZoneHere()
 	if classifier != "" {
 		g.Classifier = classifier
 	}

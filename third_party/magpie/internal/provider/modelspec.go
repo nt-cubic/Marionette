@@ -415,7 +415,7 @@ func ModelSpecs() []SpecRow {
 	for _, k := range slices.Sorted(maps.Keys(rows)) {
 		r := *rows[k]
 		pid, _, _ := strings.Cut(k, "/")
-		if _, err := findIn(All(), pid); err != nil {
+		if lookIn(All(), pid) == nil {
 			r.Gone = true
 		}
 		out = append(out, r)

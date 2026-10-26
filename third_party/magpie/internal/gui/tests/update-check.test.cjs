@@ -54,6 +54,7 @@ function server(lang, ctl) {
     }
     if (url.pathname === "/api/update") {
       ctl.gets++;
+      if (url.searchParams.get("fresh") === "1") ctl.freshGets++;
       const body = ctl.inflight ? { state: "checking", current: ctl.update.current || "0.1.400" } : { ...ctl.update };
       if (ctl.holdGets) await new Promise((go) => getWait.push(go));
       return json(body);
@@ -68,7 +69,7 @@ function server(lang, ctl) {
 }
 
 function fresh(over) {
-  return { update: { state: "latest", current: "0.1.400" }, posts: 0, gets: 0, inflight: 0, holdPost: false, holdGets: false, ...over };
+  return { update: { state: "latest", current: "0.1.400" }, posts: 0, gets: 0, freshGets: 0, inflight: 0, holdPost: false, holdGets: false, ...over };
 }
 
 const viewTop = (page) => page.locator("#view-settings").evaluate((v) => v.scrollTop);
@@ -127,6 +128,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await button.waitFor();
         assert.equal(await button.isEnabled(), true);
         assert.equal((await row.locator(".sub").textContent()).trim(), w.latest);
+        // the row's read asks for a fresh answer: an old "latest" is asked
+        // again (RickyWei: 已是最新 on 0.1.1402 with 0.1.1517 out)
+        assert(ctl.freshGets > 0, "the Version row must read with fresh=1");
         const top = await showRow(page, row);
 
         await button.click();

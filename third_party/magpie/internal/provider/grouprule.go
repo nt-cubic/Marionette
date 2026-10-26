@@ -5,7 +5,8 @@ package provider
 // image, how hard the agent asked the model to think, which agent sent it.
 // Those are never guessed: the same request is always routed the same way,
 // and the trace tells which rule did it. A rule may also hold only at some
-// hours of the day (a vendor's peak-price hours, say), on magpie's clock. The one exception is a rule with
+// hours of the day (a vendor's peak-price hours, say), in the time zone
+// they were set in (magpie's clock when they name none). The one exception is a rule with
 // an intent (what the user asks for, in the user's words): as a turn
 // begins, a model the group names (its Classifier) is asked which of the
 // intents the user's message is, once, and the trace tells what it said.
@@ -28,9 +29,11 @@ package provider
 
 import (
 	"fmt"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -77,8 +80,9 @@ type Rule struct {
 	// Codex's, OpenCode's, Pi's…) — which a cheaper, faster model can do
 	// in place of the one the conversation is on.
 	Compact bool `json:"compact,omitempty"`
-	// Time: the turn begins within these hours of the day, local time — a
-	// vendor's peak-price hours sent to another, say.
+	// Time: the turn begins within these hours of the day, in the window's
+	// zone (TimeWindow.Zone) — a vendor's peak-price hours sent to another,
+	// say.
 	Time *TimeWindow `json:"time,omitempty"`
 	// Folders: the request's working folder, as the agent states it in
 	// the request, is one of these or inside one — a project, or every
@@ -152,15 +156,74 @@ func (r Rule) Without(m string) (Rule, bool) {
 // Names reports whether the rule sends to m.
 func (r Rule) Names(m string) bool { return r.Use == m || slices.Contains(r.More, m) }
 
-// TimeWindow is hours of the day, local time: From until To, "HH:MM" each,
-// past midnight when To comes before From (22:00–08:00), the whole day
-// when they are the same. Days, when set, are the days it holds on ("mon"
-// … "sun"); a window past midnight is of the day it begins on, so Friday's
+// TimeWindow is hours of the day: From until To, "HH:MM" each, past
+// midnight when To comes before From (22:00–08:00), the whole day when
+// they are the same. Days, when set, are the days it holds on ("mon" …
+// "sun"); a window past midnight is of the day it begins on, so Friday's
 // 22:00–08:00 takes Saturday's early hours too.
 type TimeWindow struct {
 	From string   `json:"from"`
 	To   string   `json:"to"`
 	Days []string `json:"days,omitempty"`
+	// Zone: the IANA time zone the hours and days were set in
+	// ("Asia/Shanghai"): the browser's on the Routing page, the terminal's
+	// for magpie group rule. magpie on a server in UTC keeps a Beijing
+	// user's 09:00–18:00 at Beijing's 09:00 (gaubeebangeel on X). A window
+	// with none — every one set before zones were kept — is on this
+	// computer's clock, as it was.
+	Zone string `json:"zone,omitempty"`
+}
+
+// zones are the zones windows were read in, each loaded once: Holds is
+// asked on every request a pause rule may hold for.
+var zones sync.Map // name → *time.Location
+
+// zoneOf is the window's zone: time.Local when it names none; false when
+// it names one this magpie doesn't know.
+func zoneOf(name string) (*time.Location, bool) {
+	if name == "" {
+		return time.Local, true
+	}
+	if l, ok := zones.Load(name); ok {
+		return l.(*time.Location), true
+	}
+	l, err := time.LoadLocation(name)
+	if err != nil {
+		return nil, false // not kept: a file's text can be anything
+	}
+	zones.Store(name, l)
+	return l, true
+}
+
+// ValidZone reports whether name is a time zone a window can be in: an
+// IANA name this magpie knows, or "" for this computer's clock.
+func ValidZone(name string) bool {
+	_, ok := zoneOf(name)
+	return ok
+}
+
+// LocalZone is the IANA name of this computer's time zone, as a window
+// set here records it: $TZ when it names one, else what /etc/localtime
+// links to (macOS, Linux). "" when neither says (Windows, a TZ of "UTC+8"
+// that names no zone): the window is then on the clock of whichever
+// computer runs the gateway, as before.
+func LocalZone() string {
+	if tz, ok := os.LookupEnv("TZ"); ok {
+		tz = strings.TrimPrefix(tz, ":")
+		if tz != "" && tz != "Local" && ValidZone(tz) {
+			return tz
+		}
+		return ""
+	}
+	if n := time.Local.String(); n != "Local" && n != "" && ValidZone(n) {
+		return n
+	}
+	if dst, err := os.Readlink("/etc/localtime"); err == nil {
+		if _, name, ok := strings.Cut(dst, "zoneinfo/"); ok && name != "" && ValidZone(name) {
+			return name
+		}
+	}
+	return ""
 }
 
 // Weekdays are the days a TimeWindow names, as time.Weekday counts them.
@@ -226,17 +289,25 @@ func (w *TimeWindow) clean() error {
 	if len(w.Days) == len(dayOrder) {
 		w.Days = nil
 	}
+	w.Zone = strings.TrimSpace(w.Zone)
+	if !ValidZone(w.Zone) {
+		return fmt.Errorf("the time zone %q is not one magpie knows: an IANA name such as Asia/Shanghai or America/New_York", w.Zone)
+	}
 	return nil
 }
 
-// Holds reports whether at is within the window, on the machine's clock.
+// Holds reports whether at is within the window, in its zone. A zone
+// this magpie doesn't know (a file edited by hand; saving refuses one)
+// is an unknown clock, and the window doesn't hold: the rule is as if it
+// weren't there, rather than at hours that may be a day's half off.
 func (w TimeWindow) Holds(at time.Time) bool {
 	from, ok1 := clockMinutes(w.From)
 	to, ok2 := clockMinutes(w.To)
-	if at.IsZero() || !ok1 || !ok2 {
+	loc, ok3 := zoneOf(w.Zone)
+	if at.IsZero() || !ok1 || !ok2 || !ok3 {
 		return false
 	}
-	at = at.Local()
+	at = at.In(loc)
 	m, day := at.Hour()*60+at.Minute(), at.Weekday()
 	switch {
 	case from == to: // the whole day
@@ -282,7 +353,8 @@ func (w TimeWindow) DaysText() string {
 	return strings.Join(out, ",")
 }
 
-// Text is the window as a rule's conditions show it: "09:00–18:00 Mon–Fri".
+// Text is the window as a rule's conditions show it: "09:00–18:00 Mon–Fri",
+// its zone after it when it has one: "09:00–18:00 (Asia/Shanghai)".
 func (w TimeWindow) Text() string {
 	s := w.From + "–" + w.To
 	if w.From == w.To {
@@ -290,6 +362,9 @@ func (w TimeWindow) Text() string {
 	}
 	if d := w.DaysText(); d != "" {
 		s += " " + d
+	}
+	if w.Zone != "" {
+		s += " (" + w.Zone + ")"
 	}
 	return s
 }

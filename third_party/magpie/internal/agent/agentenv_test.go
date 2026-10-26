@@ -38,6 +38,7 @@ var notAnAgent = map[string]string{
 	"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "Claude Code's behaviour flag, not an agent's folder",
 	"GIT_SSH":         "the user's own SSH program for git, which a skill fetched with their git keeps",
 	"GIT_SSH_COMMAND": "the same, as a command",
+	"TZ":              "the machine's time zone, which a routing rule's hours fall back to (c888ef272), not a folder",
 }
 
 // TestFolderVarsAreListed says every variable the packages that find an

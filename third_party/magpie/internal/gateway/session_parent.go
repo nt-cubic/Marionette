@@ -43,8 +43,10 @@ func requestSessionMetadata(h http.Header, body []byte) sessionMetadata {
 	var m sessionMetadata
 	// Every Codex request asks this four or five times, so only the member
 	// is decoded: decoding the whole body walked the conversation each time
-	// (#3394). A long body is checked and split once (topMember).
-	if bytes.Contains(body, []byte("client_metadata")) && metadataOf(body, &metadata) {
+	// (#3394). A long body is checked and split once (topMember), so it is
+	// asked straight away: Codex sends client_metadata last, after the
+	// conversation, and looking for the word walked all of it each time.
+	if (len(body) >= validMemoMin || bytes.Contains(body, []byte("client_metadata"))) && metadataOf(body, &metadata) {
 		if raw := metadata["x-codex-turn-metadata"]; len(raw) > 0 {
 			var text string
 			if json.Unmarshal(raw, &text) == nil {

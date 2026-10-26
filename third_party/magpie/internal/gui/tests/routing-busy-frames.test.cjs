@@ -5,7 +5,8 @@
 // wire ends it meets anew — getTotalLength and getPointAtLength took ~10 s
 // of a 40 s look at a busy page — and each render formatted every row's
 // token counts with a new formatter. A path is measured again only when it
-// moves, and the numbers still read in the page's language.
+// moves, its points are read from its d, and the numbers still read in
+// the page's language.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -57,10 +58,28 @@ function serve(lang, feed) {
 
 // counts of what the page measures, and of the frames it draws
 const init = () => {
-  const n = window.__n = { len: 0, pt: 0, fmt: 0, frames: 0 };
+  const n = window.__n = { len: 0, pt: 0, lenAgain: 0, ptAgain: 0, fmt: 0, frames: 0 };
   const P = SVGGeometryElement.prototype, len = P.getTotalLength, pt = P.getPointAtLength, fmt = Number.prototype.toLocaleString;
-  P.getTotalLength = function () { n.len++; return len.call(this); };
-  P.getPointAtLength = function (d) { n.pt++; return pt.call(this, d); };
+  // what each path was measured at last, by its d: a length measured again
+  // for the d it had then, or a point again along the same d, is one the
+  // page measured before and asked for anew
+  const lenAt = new WeakMap(), ptAt = new WeakMap();
+  P.getTotalLength = function () {
+    n.len++;
+    const d = this.getAttribute("d");
+    if (d && lenAt.get(this) === d) n.lenAgain++;
+    lenAt.set(this, d);
+    return len.call(this);
+  };
+  P.getPointAtLength = function (s) {
+    n.pt++;
+    const d = this.getAttribute("d");
+    let m = ptAt.get(this);
+    if (!m || m.d !== d) ptAt.set(this, m = { d, at: new Set() });
+    if (d && m.at.has(s)) n.ptAgain++;
+    m.at.add(s);
+    return pt.call(this, s);
+  };
   Number.prototype.toLocaleString = function (...a) { n.fmt++; return fmt.apply(this, a); };
   const raf = window.requestAnimationFrame.bind(window);
   window.requestAnimationFrame = (cb) => raf((ts) => { n.frames++; cb(ts); });
@@ -97,14 +116,25 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.waitForTimeout(3000);
       const after = await page.evaluate(() => ({ ...window.__n }));
       clearInterval(pump);
-      const frames = after.frames - before.frames, len = after.len - before.len, pt = after.pt - before.pt, fmt = after.fmt - before.fmt;
-      t.diagnostic(`${frames} frames, ${len} lengths, ${pt} points, ${fmt} formats`);
+      const [frames, len, pt, lenAgain, ptAgain, fmt] = ["frames", "len", "pt", "lenAgain", "ptAgain", "fmt"].map((k) => after[k] - before[k]);
+      t.diagnostic(`${frames} frames, ${len} lengths (${lenAgain} again), ${pt} points (${ptAgain} again), ${fmt} formats`);
       assert(frames > 20, `only ${frames} frames drawn`);
       // a path is measured when it is new or moved, not again for every
-      // flight on it every frame: ~15 a frame before, ~4 now (the wires
-      // the stage moves — rows sliding to their new places, an agent
-      // ticking — are measured again as they move)
-      assert(len < 8 * frames, `${len} path lengths measured over ${frames} frames`);
+      // flight on it every frame (the wires the stage moves — rows sliding
+      // to their new places, an agent ticking — are measured again as they
+      // move, so they are new d's). Counted against the d's measured, not
+      // the frames: a busy machine draws fewer frames while the flights'
+      // paths stay as many, and the bar by frames went red there (#3557).
+      assert(lenAgain <= len / 20, `${lenAgain} of ${len} path lengths measured again for a d already measured`);
+      // a wire's two ends are asked for once by its tips and once among
+      // the points along it: two a d at most, never one a frame
+      assert(ptAgain <= 2 * len, `${ptAgain} of ${pt} points measured again along the ${len} d's measured`);
+      // and the points along it are read from its d by the page: the
+      // browser walks a path from its start for each point, and along the
+      // wires to keys hundreds of rows down that was a sixth of WebKit's
+      // time (#3164). The browser is asked for the ends (~1.2 a d), not
+      // for points along the way (~3.3 a d here, ~20 on long wires)
+      assert(pt <= 2 * len, `${pt} points asked of the browser along the ${len} d's measured`);
       // the rows' numbers come from one formatter, not one per number
       assert(fmt < 200, `${fmt} numbers formatted one formatter each over ${frames} frames`);
       // and they still read in the page's language

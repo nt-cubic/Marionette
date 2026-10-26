@@ -89,11 +89,10 @@ func install(ctx context.Context) error {
 	if err := os.MkdirAll(dir(), 0o755); err != nil {
 		return err
 	}
-	if _, err := os.Stat(exe("pf-serve")); err != nil {
-		if err := installServe(ctx); err != nil {
-			return fmt.Errorf("downloading pf-serve: %w", err)
-		}
+	if err := ensureServe(ctx); err != nil {
+		return fmt.Errorf("downloading pf-serve: %w", err)
 	}
+	removeOld()
 	if fi, err := os.Stat(modelPath()); err == nil && fi.Size() == modelSize {
 		dl.done.Store(modelSize)
 		return nil
@@ -102,6 +101,53 @@ func install(ctx context.Context) error {
 		return fmt.Errorf("downloading the model: %w", err)
 	}
 	return nil
+}
+
+// serveMu keeps install and upgrade from fetching serveTag's pf-serve at
+// once.
+var serveMu sync.Mutex
+
+// ensureServe fetches serveTag's pf-serve unless it is on disk.
+func ensureServe(ctx context.Context) error {
+	serveMu.Lock()
+	defer serveMu.Unlock()
+	if _, err := os.Stat(exeIn(serveDir(), "pf-serve")); err == nil {
+		return nil
+	}
+	return installServe(ctx)
+}
+
+// upgrading is set while upgrade runs.
+var upgrading atomic.Bool
+
+// upgrade fetches serveTag's pf-serve where only an older one is on disk
+// (magpie was updated since the model was downloaded), ends the old one so
+// that the next request starts the new, and deletes the old. One that
+// can't be fetched leaves the old to run, and is tried again on the next
+// start.
+func upgrade() {
+	if binDir() == serveDir() {
+		removeOld() // what a pf-serve still running kept (Windows)
+		return
+	}
+	if !upgrading.CompareAndSwap(false, true) {
+		return
+	}
+	defer upgrading.Store(false)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	if err := ensureServe(ctx); err != nil {
+		return
+	}
+	stopWhenFree()
+	removeOld()
+}
+
+// removeOld deletes oldTags' pf-serve.
+func removeOld() {
+	for _, tag := range oldTags {
+		os.RemoveAll(tagDir(tag))
+	}
 }
 
 // installServe fetches pf-serve's zip and puts what is in it in

@@ -5,6 +5,8 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -125,5 +127,39 @@ func TestHeldFactsGoWithTheirBody(t *testing.T) {
 	factsOf(provider.Anthropic, body[:len(body)-1])
 	if listed() {
 		t.Fatal("a held body's prefix got facts listed under the body")
+	}
+}
+
+// The facts of a Responses body read without the assistant's words and the
+// tools' outputs (readResponses for facts) are those its whole parse says:
+// real Codex requests, and the items that move a turn or a folder.
+func TestResponsesFactsAsTheWholeParse(t *testing.T) {
+	bodies := map[string][]byte{
+		"large": largeConversation(provider.Responses, "gpt-5.5", 20_000),
+		"reminder after a reply": []byte(`{"model":"m","input":[{"role":"user","content":"fix it"},{"type":"function_call","call_id":"c1","name":"sh","arguments":"{}"},` +
+			`{"type":"function_call_output","call_id":"c1","output":"Current working directory: /not/this"},{"role":"developer","content":"<cwd>/work/b</cwd>"},{"role":"user","content":"and now"}]}`),
+		"standalone output": []byte(`{"model":"m","input":[{"role":"user","content":"go"},{"type":"function_call_output","output":[{"type":"input_text","text":"done"}]}]}`),
+		"sealed reasoning": []byte(`{"model":"m","input":[{"role":"user","content":"go"},{"type":"reasoning","summary":[],"encrypted_content":"x"},` +
+			`{"type":"reasoning","summary":[]},{"role":"assistant","content":[{"type":"output_text","text":"<cwd>/said/by/model</cwd>"}]},{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,AA=="}]}]}`),
+		"required, no tools": []byte(`{"model":"m","tool_choice":"required","input":[{"role":"user","content":"<cwd>/w</cwd> go"}]}`),
+		"bad allowed_tools":  []byte(`{"model":"m","tool_choice":{"type":"allowed_tools","mode":"none","tools":[]},"input":[{"role":"user","content":"go"}]}`),
+		"string input":       []byte(`{"model":"m","instructions":"Current working directory: /w/s","input":"hello"}`),
+	}
+	for _, name := range []string{"workdir/codex-0.162.0.json", "workdir/codex-0.162.1-tool-search.json", "context/codex.json", "codex-26.1007-compaction.json", "upstream_bodies/responses.json"} {
+		b, err := os.ReadFile(filepath.Join("testdata", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		bodies[name] = b
+	}
+	for name, body := range bodies {
+		var want bodyFacts
+		if req, err := parse(provider.Responses, body); err == nil {
+			want.turn, want.within = turnIn(req)
+			want.dir, want.git = workPlace(req)
+		}
+		if got := readFacts(provider.Responses, body); got != want {
+			t.Errorf("%s: facts %+v, the whole parse's %+v", name, got, want)
+		}
 	}
 }

@@ -43,6 +43,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/yetone/magpie/internal/appdir"
+	"github.com/yetone/magpie/internal/beat"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/gateway"
@@ -1848,7 +1849,7 @@ func keepDshWired(ctx context.Context, every time.Duration) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(every):
+		case <-beat.Next(every):
 		}
 	}
 }

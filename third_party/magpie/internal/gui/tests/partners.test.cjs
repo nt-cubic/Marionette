@@ -170,11 +170,17 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const dot = await add.evaluate((b) => { const s = getComputedStyle(b, "::after"); const r = b.getBoundingClientRect(); return { w: s.width, h: s.height, bg: s.backgroundColor, over: b.scrollWidth > b.clientWidth + 1, right: r.right <= innerWidth }; });
         assert.deepEqual([dot.w, dot.h, dot.over, dot.right], ["6px", "6px", false, true]);
         assert.notEqual(dot.bg, "rgba(0, 0, 0, 0)");
+        // Providers in the sidebar has the same news, a still dot
+        const nav = page.locator('#nav button[data-view="providers"]');
+        assert.equal(await nav.evaluate((b) => b.classList.contains("has-dot")), true);
+        assert.equal(await nav.getAttribute("title"), title);
 
         // the sheet shows them: no dot, then or after the page comes back
         await add.click();
         await page.locator("#addSheet .tile").first().waitFor();
         assert.equal(await add.evaluate((b) => b.classList.contains("has-new")), false);
+        assert.equal(await nav.evaluate((b) => b.classList.contains("has-dot")), false);
+        assert.equal(await nav.getAttribute("title"), null);
         // each new partner's tile has its own dot, inside the tile, and one
         // listed only in another language isn't there to have one
         const tileDots = () => page.locator("#addSheet .tile").evaluateAll((ts) => ts.filter((x) => x.querySelector(".new-dot")).map((x) => {
@@ -223,6 +229,45 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.context().close();
       });
     }
+    // the app opened on another page reads the list in the background and
+    // dots Providers in the sidebar from it: small, still, inside the row,
+    // in the accent; the page opened keeps it until the sheet shows them
+    // 1280 has the sidebar, 900 the header's tabs
+    for (const lang of ["en", "zh"]) for (const width of [1280, 900]) await t.test(`new partner dot in the nav ${lang} ${width}`, async () => {
+      const page = await (await browser.newContext({ viewport: { width, height: 800 } })).newPage();
+      const errors = [];
+      page.on("pageerror", (e) => errors.push(e.message));
+      const counted = [];
+      await page.route("**/*", server(lang, partners.map((p) => ({ ...p, new: true })), counted));
+      await page.goto("http://magpie.test/?view=agents");
+      const nav = page.locator('#nav button[data-view="providers"]');
+      await nav.waitFor();
+      await page.waitForFunction(() => document.querySelector('#nav button[data-view="providers"]').classList.contains("has-dot"));
+      assert.equal(await nav.getAttribute("title"), lang === "en" ? "New in Partners: Acme AI" : "合作伙伴有新成员：Acme AI, China Only");
+      const dot = await nav.evaluate((b) => {
+        const s = getComputedStyle(b, "::after"), r = b.getBoundingClientRect();
+        return { side: document.body.classList.contains("side-nav"), w: s.width, h: s.height, bg: s.backgroundColor, anim: s.animationName, inside: parseFloat(s.right) + parseFloat(s.width) <= r.width };
+      });
+      const px = width === 1280 ? "6px" : "5px";
+      assert.deepEqual([dot.side, dot.w, dot.h, dot.anim, dot.inside], [width === 1280, px, px, "none", true]);
+      assert.notEqual(dot.bg, "rgba(0, 0, 0, 0)");
+      await nav.click();
+      const add = page.locator("#addProvider");
+      await add.waitFor();
+      assert.equal(await nav.evaluate((b) => b.classList.contains("has-dot")), true);
+      await add.click();
+      await page.locator("#addSheet .tile").first().waitFor();
+      assert.equal(await nav.evaluate((b) => b.classList.contains("has-dot")), false);
+      await page.keyboard.press("Escape");
+      await page.locator("#addSheet").waitFor({ state: "hidden" });
+      // read again, the list says they were shown
+      await page.reload();
+      await nav.waitFor();
+      await page.waitForTimeout(300);
+      assert.equal(await nav.evaluate((b) => b.classList.contains("has-dot")), false);
+      assert.deepEqual(errors, []);
+      await page.context().close();
+    });
     await t.test("no partners, no heading", async () => {
       const page = await (await browser.newContext({ viewport: { width: 900, height: 800 } })).newPage();
       await page.route("**/*", server("en", []));

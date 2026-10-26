@@ -42,6 +42,8 @@ type inflight struct {
 	// begun: every route begun for it, the first its own, for endBroken
 	mu    sync.Mutex
 	begun []*Route
+	// unrouted: its watch while no route is begun for it (unrouted.go)
+	unrouted *unroutedHold
 }
 
 type inflightKey struct{}
@@ -99,7 +101,15 @@ func noteRoute(ctx context.Context, rt *Route) {
 		f.route.CompareAndSwap(nil, rt)
 		f.mu.Lock()
 		f.begun = append(f.begun, rt)
+		var shown *Route
+		if f.unrouted != nil {
+			shown = f.unrouted.routed()
+		}
 		f.mu.Unlock()
+		if shown != nil {
+			// the route that showed it while it waited gives way to its own
+			f.unrouted.s.trace.drop(shown)
+		}
 	}
 }
 

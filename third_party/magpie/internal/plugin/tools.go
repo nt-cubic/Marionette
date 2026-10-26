@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/steady"
 )
@@ -107,6 +108,7 @@ func noteTools(loaded []Loaded) {
 	if len(m) == 0 && errors.Is(err, fs.ErrNotExist) {
 		return
 	}
+	defer filememo.Forget() // the gateway follows this note (Written)
 	if err := writeWhole(toolsPath(), append(b, '\n')); err != nil {
 		log.Printf("plugin tools: noting them: %v", err)
 	}

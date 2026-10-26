@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // More kinds of personal data, each a category the user turns on or off
@@ -238,12 +239,22 @@ func ibanAt(s string, a, b int) (int, int, bool) {
 
 var dateNums = regexp.MustCompile(`\d+`)
 
+// dateClock is what dateOK takes today from; a test holds it.
+var dateClock = time.Now
+
 // dateOK says v is a date that can be someone's birthday: a real month and
-// day, in a year from 1900 on.
+// day, in a year from 1900 on, and over a year ago. A date in the last year
+// or ahead is the day an agent runs on, a deadline or a log's, which a
+// prompt holds far more often than a baby's birthday (JackyCcao on X: today's
+// date after a birthday field was masked in 122 requests).
 func dateOK(v string) bool {
 	ns := dateNums.FindAllString(v, -1)
 	num := func(s string) int { n, _ := strconv.Atoi(s); return n }
-	valid := func(y, m, d int) bool { return y >= 1900 && y <= 2099 && m >= 1 && m <= 12 && d >= 1 && d <= 31 }
+	yearAgo := dateClock().AddDate(-1, 0, 0)
+	valid := func(y, m, d int) bool {
+		return y >= 1900 && y <= 2099 && m >= 1 && m <= 12 && d >= 1 && d <= 31 &&
+			time.Date(y, time.Month(m), d, 0, 0, 0, 0, time.Local).Before(yearAgo)
+	}
 	if len(ns) == 2 { // March 5, 1990 or 5 March 1990
 		l := strings.ToLower(v)
 		for i, m := range []string{"jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"} {

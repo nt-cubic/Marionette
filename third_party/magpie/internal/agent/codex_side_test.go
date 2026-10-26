@@ -38,3 +38,26 @@ func TestCodexSideModel(t *testing.T) {
 		t.Fatalf("magpie Codex's provider: %q", got)
 	}
 }
+
+// CodexSideSet says whether Codex's config names the model for its
+// subagents or its memories itself, the gateway then leaving those calls
+// as Codex sent them; a config it can't read counts as naming one.
+func TestCodexSideSet(t *testing.T) {
+	home, _ := codexHome(t, `{}`, "model = \"gpt-a\"\n")
+	if CodexSideSet("subagent") || CodexSideSet("memories") {
+		t.Fatal("nothing set")
+	}
+	config := filepath.Join(home, ".codex", "config.toml")
+	os.WriteFile(config, []byte("[agents]\ndefault_subagent_model = \"gpt-b\"\n[memories]\nextract_model = \"gpt-c\"\n"), 0o644)
+	if !CodexSideSet("subagent") || !CodexSideSet("memories") {
+		t.Fatal("both set")
+	}
+	os.WriteFile(config, []byte("[agents]\ndefault_subagent_model = \"gpt-b\"\n"), 0o644)
+	if !CodexSideSet("subagent") || CodexSideSet("memories") {
+		t.Fatal("the subagents' alone")
+	}
+	os.WriteFile(config, []byte("[agents\n"), 0o644)
+	if !CodexSideSet("memories") {
+		t.Fatal("an unreadable config counts as set")
+	}
+}

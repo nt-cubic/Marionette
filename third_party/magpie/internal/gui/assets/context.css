@@ -2,9 +2,15 @@
    Context tab) and each agent's score and tags. */
 :root {
   --k-system: var(--c6); --k-tools: var(--c2); --k-skills: var(--c7); --k-memory: var(--c4);
-  --k-files: var(--c3); --k-results: var(--c5); --k-chat: var(--c1);
+  --k-files: var(--c3); --k-chat: var(--c1);
   --k-free: color-mix(in srgb, var(--fg) 7%, transparent);
 }
+/* results in orange, its own hue: the palette's pink sank to maroon on a
+   dark tile. Colorblind mode keeps its palette's */
+:root { --k-results: #ea580c; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --k-results: #fdba74; } }
+:root[data-theme="dark"] { --k-results: #fdba74; }
+:root[data-colorblind="1"] { --k-results: var(--c5); }
 .k-system { --k: var(--k-system); }
 .k-tools { --k: var(--k-tools); }
 .k-skills { --k: var(--k-skills); }

@@ -116,8 +116,10 @@ const providerUsage = `usage:
        magpie provider set my-relay search=yes
                                    (the relay answers Claude Code's WebSearch and Codex's web_search itself:
                                     those go to it as sent, not through magpie's own search)
-       magpie provider add ollama url=http://192.168.1.5:11434/v1 anthropic=http://192.168.1.5:11434
-                                   (Ollama, LM Studio, oMLX or MLX-Serve on another port or computer)
+       magpie provider add lmstudio address=http://192.168.1.5:1234
+       magpie provider set lmstudio address=192.168.1.5:1234
+                                   (Ollama, LM Studio, oMLX or MLX-Serve on another port or computer: each of its
+                                    URLs moves there, keeping its path; address= alone puts it back at the default)
        magpie provider set ollama unmasked=yes
                                    (a model on this computer or the local network: Settings' redaction leaves its
                                     requests as written; not for a local relay that passes them on to a vendor)
@@ -924,6 +926,29 @@ func showProvider(p provider.Provider) error {
 	return nil
 }
 
+// atAddress moves p's URLs to addr (provider.AtAddress). A provider
+// saved with none, the gateway taking its preset's, is moved from the
+// preset's; an empty addr puts a local server's back at its preset's.
+func atAddress(p *provider.Provider, addr string) error {
+	pr := provider.Preset(p.Preset)
+	if pr != nil && pr.Kind != provider.KindLocal {
+		pr = nil
+	}
+	if pr != nil && (strings.TrimSpace(addr) == "" || p.Chat+p.Responses+p.Anthropic+p.Decide == "") {
+		p.Chat, p.Responses, p.Anthropic, p.Decide = pr.Chat, pr.Responses, pr.Anthropic, pr.Decide
+	}
+	if strings.TrimSpace(addr) == "" {
+		if pr == nil {
+			return fmt.Errorf("address= needs an address, such as http://192.168.1.5:1234")
+		}
+		return nil
+	}
+	if p.Chat+p.Responses+p.Anthropic+p.Decide == "" {
+		return fmt.Errorf("%s has no URL to move: url= gives its base URL", cmp.Or(p.Name, p.ID))
+	}
+	return p.AtAddress(addr)
+}
+
 func applyPairs(p *provider.Provider, pairs []string) error {
 	workspace := ""
 	for _, kv := range pairs {
@@ -931,7 +956,7 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 		if !ok {
 			return fmt.Errorf("expected key=value, got %q\n\n%s", kv, providerUsage)
 		}
-		if p.IsVertex() && slices.Contains([]string{"url", "chat", "openai", "responses", "anthropic", "decide"}, strings.ToLower(k)) {
+		if p.IsVertex() && slices.Contains([]string{"url", "chat", "openai", "responses", "anthropic", "decide", "address"}, strings.ToLower(k)) {
 			// asked only at the address its project and location make, so
 			// that its Google token goes nowhere else: one given here would
 			// be dropped without a word
@@ -946,6 +971,13 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 			p.Chat = v
 		case "responses":
 			p.Responses = v
+		case "address":
+			// a local server (Ollama, LM Studio, oMLX …) on another port
+			// or computer: every URL it has moves there, each API keeping
+			// its path, as the window's Server address does
+			if err := atAddress(p, v); err != nil {
+				return err
+			}
 		case "anthropic":
 			p.Anthropic = v
 		case "gemini":

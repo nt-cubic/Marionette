@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/yetone/magpie/internal/provider"
@@ -59,7 +60,10 @@ func factsOf(proto provider.Protocol, body []byte) bodyFacts {
 
 // readFacts parses body for its bodyFacts.
 func readFacts(proto provider.Protocol, body []byte) bodyFacts {
-	req, err := parse(proto, body)
+	if f := factsParsed.Load(); f != nil {
+		(*f)(body)
+	}
+	req, err := parseIn(proto, body, true)
 	if err != nil {
 		return bodyFacts{}
 	}
@@ -75,3 +79,6 @@ type heldFacts struct {
 	proto provider.Protocol
 	facts bodyFacts
 }
+
+// factsParsed, when set (tests), is told of each body readFacts parses.
+var factsParsed atomic.Pointer[func(body []byte)]

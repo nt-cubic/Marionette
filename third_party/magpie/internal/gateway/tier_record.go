@@ -24,16 +24,31 @@ import (
 func bodyTier(proto provider.Protocol, body []byte) string {
 	switch proto {
 	case provider.Anthropic:
-		if gjson.GetBytes(body, "speed").String() == "fast" {
+		if topValue(body, "speed").String() == "fast" {
 			return "fast"
 		}
 		fallthrough
 	case provider.Chat, provider.Responses:
-		if t := gjson.GetBytes(body, "service_tier"); t.Type == gjson.String {
+		if t := topValue(body, "service_tier"); t.Type == gjson.String {
 			return tierWord(t.String())
 		}
 	}
 	return ""
+}
+
+// topValue is gjson's value of body's top-level member key. A long body is
+// asked through its split (topMember), made once a request: gjson walked
+// the whole conversation for a member Codex sends after it (#3394).
+func topValue(body []byte, key string) gjson.Result {
+	if len(body) >= validMemoMin {
+		if v, found, ok := topMember(body, key); ok {
+			if !found {
+				return gjson.Result{}
+			}
+			return gjson.ParseBytes(v)
+		}
+	}
+	return gjson.GetBytes(body, key)
 }
 
 // tierWord is a tier as the log keeps it: short, and nothing else.

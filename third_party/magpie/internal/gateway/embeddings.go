@@ -53,7 +53,7 @@ type retrieval interface {
 	// mask masks what goes to the vendors, and gives the writer that puts
 	// the masked values back in their answer, what it swapped, and the
 	// text it sent
-	mask(w http.ResponseWriter) (http.ResponseWriter, func(), maskHits, string, error)
+	mask(ctx context.Context, w http.ResponseWriter) (http.ResponseWriter, func(), maskHits, string, error)
 	// forModel is the body and its Content-Type for the provider's own id
 	// of the model
 	forModel(model string) ([]byte, string, error)
@@ -65,11 +65,11 @@ type retrieval interface {
 // jsonRetrieval is an embeddings or rerank body: a JSON object.
 type jsonRetrieval struct{ req map[string]json.RawMessage }
 
-func (j *jsonRetrieval) mask(w http.ResponseWriter) (http.ResponseWriter, func(), maskHits, string, error) {
+func (j *jsonRetrieval) mask(ctx context.Context, w http.ResponseWriter) (http.ResponseWriter, func(), maskHits, string, error) {
 	// masked once, as the settings say: a document a reranker gives back
 	// has its secrets again
 	all, _ := json.Marshal(j.req)
-	w, all, done, hits, err := redactedHits(w, all)
+	w, all, done, hits, err := redactedHits(ctx, w, all)
 	json.Unmarshal(all, &j.req)
 	return w, done, hits, string(all), err
 }
@@ -173,6 +173,7 @@ func (s *Server) serveRetrieval(w http.ResponseWriter, r *http.Request, path, op
 	}
 	tries = probeOne(tries) // of those resting, only the one back soonest (#1799)
 	var skipped []string
+	went := asked // the model the last try asked for
 	// unless every try is on this machine or the local network, set
 	// to go unmasked (provider.SkipsRedaction)
 	if slices.ContainsFunc(tries, func(c candidate) bool { return !c.p.SkipsRedaction() }) {
@@ -180,7 +181,7 @@ func (s *Server) serveRetrieval(w http.ResponseWriter, r *http.Request, path, op
 		var err error
 		var hits maskHits
 		var sent string
-		w, done, hits, sent, err = req.mask(w)
+		w, done, hits, sent, err = req.mask(r.Context(), w)
 		defer done()
 		if err != nil { // fails closed
 			call.Status, call.Error = maskStatus(err), err.Error()
@@ -192,11 +193,14 @@ func (s *Server) serveRetrieval(w http.ResponseWriter, r *http.Request, path, op
 		if _, audio := req.(*audioForm); audio {
 			what = "audio"
 		}
-		noteMasked(r, what, hits, sent, 0, tries[0].p.ID, asked)
+		// the record names the try that had it last, not the first
+		// planned (noteMaskedUntil)
+		_, noted := noteMaskedUntil(r, what, hits, sent, 0, tries[0].p.ID, asked)
+		defer func() { noted(call.Provider, went) }()
 	}
 	for i, c := range tries {
 		last := i == len(tries)-1
-		call.Provider = c.p.ID
+		call.Provider, went = c.p.ID, c.model
 		base := strings.TrimRight(c.p.Base(provider.Chat), "/")
 		if base == "" {
 			msg := fmt.Sprintf("%s has no OpenAI-style API for %s", c.p.Name, path)

@@ -3,7 +3,6 @@ package tui
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -12,6 +11,7 @@ import (
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/autostart"
 	"github.com/yetone/magpie/internal/daemon"
+	"github.com/yetone/magpie/internal/proc"
 )
 
 // On Linux with no desktop session (a WSL distro, a server over SSH)
@@ -99,7 +99,7 @@ func serveInBackground() (int, string, error) {
 		return 0, "", err
 	}
 	defer f.Close()
-	cmd := exec.Command(exe, "serve")
+	cmd := proc.Command(exe, "serve")
 	cmd.Stdout, cmd.Stderr = f, f
 	detach(cmd)
 	if err := cmd.Start(); err != nil {

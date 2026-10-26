@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/yetone/magpie/internal/filememo"
 )
 
 func TestWant(t *testing.T) {
@@ -39,7 +41,8 @@ func TestKeep(t *testing.T) {
 	}
 	var mu sync.Mutex
 	on, st := true, State{}
-	set := func(o bool, s State) { mu.Lock(); on, st = o, s; mu.Unlock() }
+	// the setting is written as settings.Save writes it (filememo.Forget)
+	set := func(o bool, s State) { mu.Lock(); on, st = o, s; mu.Unlock(); filememo.Forget() }
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -102,7 +105,7 @@ func TestKeepDisplay(t *testing.T) {
 		return func() { mu.Lock(); live--; mu.Unlock() }, nil
 	}
 	level := System
-	set := func(l Level) { mu.Lock(); level = l; mu.Unlock() }
+	set := func(l Level) { mu.Lock(); level = l; mu.Unlock(); filememo.Forget() }
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -142,4 +145,45 @@ func TestKeepDisplay(t *testing.T) {
 	waitFor("off", func() bool { return live == 0 })
 	cancel()
 	<-done
+}
+
+// Turned off, Keep looks at the setting again when it is written, not each
+// few seconds (#3185), and turning it on is still taken at once.
+func TestKeepOffWaitsForTheSetting(t *testing.T) {
+	oldHold, oldTick := hold, tick
+	defer func() { hold, tick = oldHold, oldTick }()
+	tick = time.Millisecond
+	var held atomic.Int32
+	hold = func(bool) (func(), error) { held.Add(1); return func() { held.Add(-1) }, nil }
+	var looks atomic.Int32
+	var on atomic.Bool
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		Keep(ctx, func() Level {
+			looks.Add(1)
+			if on.Load() {
+				return System
+			}
+			return Off
+		}, func() State { return State{Busy: true} })
+		close(done)
+	}()
+	defer func() { cancel(); <-done }()
+	for end := time.Now().Add(2 * time.Second); looks.Load() == 0; time.Sleep(time.Millisecond) {
+		if time.Now().After(end) {
+			t.Fatal("Keep never looked at the setting")
+		}
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := looks.Load(); n != 1 {
+		t.Fatalf("turned off, Keep looked at the setting %d times in 50ms with nothing written", n)
+	}
+	on.Store(true)
+	filememo.Forget()
+	for end := time.Now().Add(2 * time.Second); held.Load() != 1; time.Sleep(time.Millisecond) {
+		if time.Now().After(end) {
+			t.Fatal("turning the setting on held nothing")
+		}
+	}
 }

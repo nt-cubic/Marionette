@@ -53,6 +53,14 @@
 .rt-accts { position: relative; z-index: 1; list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; min-width: 0; }
 .rt-accts li { position: relative; display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; column-gap: 10px; row-gap: 6px; padding: 9px 12px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; font-size: 13px; transition: opacity .3s, border-color .3s, transform .5s cubic-bezier(.2, .8, .2, 1); }
 .rt-accts li { margin-left: calc(var(--depth, 0) * 18px); }
+/* a key off screen is not laid out or painted (#3164): with hundreds of
+   keys open, WebKit painted every row again on each frame a magpie flew.
+   One not drawn yet is as tall as a key drawn is (--rt-row, client.js's
+   layout). A row a 429 hit keeps its tag up over its top edge, which this
+   would cut, so it is drawn whole */
+.rt-accts li:not(.hit) { content-visibility: auto; contain-intrinsic-size: auto var(--rt-row, 38px); }
+/* a run of keys far from sight, out of the list (client.js place, #3164) */
+.rt-accts li.rt-gap { display: block; padding: 0; border: 0; background: none; content-visibility: visible; contain: strict; pointer-events: none; }
 /* a group in the group: a heading its models hang from, set in under it */
 .rt-accts li.rt-sub { display: flex; align-items: center; gap: 7px; padding: 5px 10px; font-size: 12px; color: var(--muted); background: var(--card-2); border-style: dashed; }
 .rt-accts li.rt-sub.on { border-style: solid; border-color: var(--fg-2); color: var(--fg); }
@@ -742,6 +750,8 @@ button.rt-session { cursor: pointer; }
 .rt-cond.tm { cursor: text; }
 .rt-cond.tm input.clock, .editor .rt-cond.tm input.clock[type="text"] { width: 5.5ch; text-align: center; }
 .rt-cond.tm.bad { border-style: solid; border-color: var(--amber, var(--muted)); }
+/* the time zone a rule's hours are in, when the server's clock is another */
+.rt-zone { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .rt-cond[hidden] { display: none; }
 .rt-classifier { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
 .rt-classifier[hidden] { display: none; }

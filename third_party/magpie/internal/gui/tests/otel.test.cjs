@@ -162,7 +162,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
           const layout = await page.locator("#otelList").evaluate((list) => {
             const sub = list.querySelector("#otelSessionsRow .sub");
-            const row = list.querySelector("#otelEndpointRow");
+            // the saved endpoint is Langfuse's, so after the reload the
+            // Langfuse fields stand where the endpoint's was
+            const row = list.querySelector("#otelEndpointRow, #otelLangfuseKeysRow");
             const field = row.querySelector("input");
             return {
               wraps: getComputedStyle(sub).whiteSpace === "normal",

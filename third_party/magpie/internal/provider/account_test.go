@@ -301,7 +301,7 @@ func TestClaudeAccountIsProvider(t *testing.T) {
 	t.Cleanup(catalog.Reset)
 
 	p, ok := find(All(), "claude")
-	if !ok || p.Account == nil || p.Account.User != "Claude Max" || p.Account.Plan != "max" || !p.Ready() {
+	if !ok || p.Account == nil || p.Account.User != "Claude Max" || !p.Account.Unnamed() || p.Account.Plan != "max" || !p.Ready() {
 		t.Fatalf("claude: %+v %v", p, ok)
 	}
 	if p.Anthropic != claudeBase || p.Chat != "" || p.Responses != "" || p.Host() == "" {

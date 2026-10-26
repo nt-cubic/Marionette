@@ -3,11 +3,14 @@ package gateway
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yetone/magpie/internal/settings"
 )
@@ -98,5 +101,109 @@ func TestGoroutineDumpOnlyToThisComputer(t *testing.T) {
 		if !strings.Contains(w.Header().Get("Cache-Control"), "no-store") || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/plain") {
 			t.Errorf("at %s: headers %v", host, w.Header())
 		}
+	}
+}
+
+// stuckSave holds settings.json's lock as a save that never finishes
+// would (a write held by another program, a disk that doesn't answer),
+// until release is closed; held is closed once it holds it.
+func stuckSave(t *testing.T, held, release chan struct{}) {
+	err := settings.EditUsageAliases(func(m map[string]string) (map[string]string, error) {
+		close(held)
+		<-release
+		return nil, errors.New("the test's save: nothing is written")
+	})
+	if err == nil {
+		t.Error("the stuck save wrote settings.json")
+	}
+}
+
+// The dump is asked for while magpie hangs, so it answers ahead of what
+// the gateway's requests pass through first (dumpFirst): here a save
+// holds settings.json's lock, which lanGuard's allow list reads under, so
+// /v1/models on the gateway's own listener (Front) waits on it, and the
+// dump still answers, naming the save that holds the lock and the request
+// waiting on it. Routed behind lanGuard, as every other route is, the
+// dump waits too and this is red.
+func TestGoroutineDumpAnswersWhileRequestsWait(t *testing.T) {
+	fresh(t)
+	t.Setenv("MAGPIE_ADDR", "")
+	t.Setenv("MAGPIE_PUBLIC_URL", "")
+	t.Setenv(AllowIPsEnv, "") // the list is read from settings.json
+	ts := httptest.NewServer(New().Front())
+	defer ts.Close()
+	// room for a loaded machine; a dump stuck behind the lock never ends
+	c := &http.Client{Timeout: 20 * time.Second}
+	dump := func() string {
+		t.Helper()
+		res, err := c.Get(ts.URL + GoroutinesPath)
+		if err != nil {
+			t.Fatalf("the dump didn't answer while settings.json's lock was held: %v", err)
+		}
+		defer res.Body.Close()
+		b, err := io.ReadAll(res.Body)
+		if err != nil || res.StatusCode != http.StatusOK {
+			t.Fatalf("the dump: %d %v %.200q", res.StatusCode, err, b)
+		}
+		return string(b)
+	}
+
+	held, release := make(chan struct{}), make(chan struct{})
+	saved := make(chan struct{})
+	go func() {
+		defer close(saved)
+		stuckSave(t, held, release)
+	}()
+	released := false
+	unstick := func() {
+		if !released {
+			released = true
+			close(release)
+			<-saved
+		}
+	}
+	defer unstick()
+	<-held
+
+	models := make(chan error, 1)
+	go func() {
+		res, err := http.Get(ts.URL + "/v1/models")
+		if err == nil {
+			io.Copy(io.Discard, res.Body)
+			res.Body.Close()
+		}
+		models <- err
+	}()
+
+	// the dump until it shows /v1/models waiting at the allow list: each
+	// one answered while the lock was held
+	var body string
+	for deadline := time.Now().Add(30 * time.Second); ; {
+		body = dump()
+		if strings.Contains(body, "gateway.allowList(") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("/v1/models never waited at the allow list; the last dump:\n%s", body)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case err := <-models:
+		t.Fatalf("/v1/models answered while settings.json's lock was held (%v): it isn't the lock it waits on", err)
+	default:
+	}
+	if !strings.Contains(body, "gateway.stuckSave(") || !strings.Contains(body, "settings.EditUsageAliases(") {
+		t.Errorf("the dump doesn't name the save holding the lock:\n%s", body)
+	}
+
+	unstick()
+	select {
+	case err := <-models:
+		if err != nil {
+			t.Errorf("/v1/models once the lock was let go: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("/v1/models never answered once the lock was let go")
 	}
 }

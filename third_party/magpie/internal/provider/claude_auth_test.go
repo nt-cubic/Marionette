@@ -33,6 +33,9 @@ func claudeAuthFixture(t *testing.T, lapse string) (Provider, savedLogin) {
 	if !ok {
 		t.Fatal("own Claude account missing")
 	}
+	if p.Account.User != "own@example.com" || p.Account.Unnamed() {
+		t.Fatalf("own account named by its profile: %q unnamed %v", p.Account.User, p.Account.Unnamed())
+	}
 	return p, side
 }
 

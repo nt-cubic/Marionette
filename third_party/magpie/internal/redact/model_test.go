@@ -1,6 +1,7 @@
 package redact
 
 import (
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -107,6 +108,27 @@ func TestModelSpansFiltered(t *testing.T) {
 	}
 	if out, _ := Mask("é名字abc", Options{Personal: true, Secrets: true, Model: bad}); out != "é名字abc" {
 		t.Fatalf("bad spans: %q", out)
+	}
+}
+
+// A span the model starts at the delimiter before a value is the value's:
+// a phone number in JSON or a CSV row is masked, and the delimiter goes as
+// written (#3591, from the evaluation's json-contact and tool-result-mixed).
+func TestModelSpanLeavesDelimiters(t *testing.T) {
+	f := &fakeModel{values: map[string]string{
+		`":"+86 139 1234 5678`: "private_phone",
+		`,+81 90-1234-5678`:    "private_phone",
+		`,rina.k@fastmail.com`: "private_email",
+		`"Wei Zhang"`:          "private_person",
+	}}
+	o := Options{Personal: true, Model: f.find}
+	for _, c := range []struct{ in, want string }{
+		{`{"name":"Wei Zhang","phone":"+86 139 1234 5678"}`, `^\{"name":"\{\{PERSON_[a-z2-7]{8}\}\}","phone":"\{\{PHONE_[a-z2-7]{8}\}\}"\}$`},
+		{"Rina,rina.k@fastmail.com,+81 90-1234-5678\n", `^Rina,\{\{EMAIL_[a-z2-7]{8}\}\},\{\{PHONE_[a-z2-7]{8}\}\}\n$`},
+	} {
+		if out, _ := Mask(c.in, o); !regexp.MustCompile(c.want).MatchString(out) {
+			t.Errorf("%q went as %q", c.in, out)
+		}
 	}
 }
 

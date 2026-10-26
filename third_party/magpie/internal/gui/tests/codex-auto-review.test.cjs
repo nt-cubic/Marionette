@@ -5,7 +5,8 @@
 // magpie's models and groups; a pick posts settings/codex-auto-review on its
 // own, its button shows the choice under a name alone (1ooogle on X), a refusal is said and the row keeps
 // what it had, and no click scrolls the Agents page, where Codex's row holds it.
-// English and Chinese, Chromium and WebKit; no backend, the API is faked here.
+// "Same as the session" runs it on the session's own model (cybercaius on
+// Discord). Every language, Chromium and WebKit; no backend, the API is faked here.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -70,13 +71,16 @@ function server(lang, posted) {
 }
 
 const want = {
-  en: { name: "Codex auto-review model", own: "Codex’s own pick" },
-  zh: { name: "Codex 自动审批模型", own: "由 Codex 决定" },
+  en: { name: "Codex auto-review model", own: "Codex’s own pick", session: "Same as the session" },
+  zh: { name: "Codex 自动审批模型", own: "由 Codex 决定", session: "跟随当前会话" },
+  "zh-TW": { name: "Codex 自動審批模型", own: "由 Codex 決定", session: "跟隨目前工作階段" },
+  ja: { name: "Codex 自動レビューのモデル", own: "Codex に任せる", session: "セッションと同じ" },
+  de: { name: "Modell für Codex’ Auto-Review", own: "Wie Codex es wählt", session: "Wie die Sitzung" },
 };
 const view = (page) => page.locator("#view-agents").evaluate((v) => v.scrollTop);
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
-  for (const lang of ["en", "zh"]) {
+  for (const lang of Object.keys(want)) {
     test(`${engine} ${lang}: Codex's auto-review runs on the model Codex's settings pick`, async (t) => {
       const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
       const context = await browser.newContext({ viewport: { width: 900, height: 480 }, reducedMotion: "reduce" });
@@ -118,7 +122,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await pick.click();
       await page.locator("#pop:not([hidden]) #list li").first().waitFor();
       const items = (await page.locator("#list li:not(.group)").allTextContents()).join("|");
-      for (const s of [want[lang].own, "DeepSeek V4 Flash", "cheap"]) assert(items.includes(s), `${s} in ${items}`);
+      for (const s of [want[lang].own, want[lang].session, "DeepSeek V4 Flash", "cheap"]) assert(items.includes(s), `${s} in ${items}`);
       await page.locator("#list li:not(.group)").filter({ hasText: "DeepSeek V4 Flash" }).first().click();
       await page.locator("#codexAutoReviewPick button", { hasText: "DeepSeek V4 Flash" }).waitFor();
       assert.deepEqual(posted, [["codex-auto-review", { model: "deepseek/deepseek-v4-flash" }]]);
@@ -131,6 +135,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.waitForTimeout(300);
       assert.deepEqual(posted.at(-1), ["codex-auto-review", { model: "group/cheap" }]);
       assert.match(await pick.textContent(), /DeepSeek V4 Flash/, "a refused pick changed the row");
+
+      // the session's own model
+      await choose(want[lang].session);
+      await page.locator("#codexAutoReviewPick button", { hasText: want[lang].session }).waitFor();
+      assert.deepEqual(posted.at(-1), ["codex-auto-review", { model: "session" }]);
 
       // and back to Codex's own pick
       await choose(want[lang].own);

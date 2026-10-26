@@ -122,6 +122,17 @@ func TestUnlimitedQuotaCell(t *testing.T) {
 	}
 }
 
+// A plugin's row of text alone (AutoClaw's 积分余额) reads as its text: no
+// meter and no share after it, where its used 0 read "100% left".
+func TestTextQuotaCell(t *testing.T) {
+	for _, left := range []bool{false, true} {
+		got := quotaCell(provider.QuotaWindow{Name: "积分余额", Display: "1,234 积分", Text: true}, left, time.Now())
+		if !strings.Contains(got, "1,234 积分") || strings.Contains(got, "%") || strings.Contains(got, "░") {
+			t.Fatalf("text: %q", got)
+		}
+	}
+}
+
 // The Usage page shows, under the gateway's calls, those the agents made
 // on their own, read from their session files, as the app's Usage page
 // counts them (Kumo31 on Discord: Codex used outside magpie wasn't in the

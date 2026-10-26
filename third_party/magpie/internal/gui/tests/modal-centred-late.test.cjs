@@ -91,4 +91,53 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       });
     }
   });
+
+  test(engine + ": a dialog grows to its README over frames, centred all the way, not in one jump", async (t) => {
+    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
+    t.after(() => browser.close());
+    for (const height of [820, 560]) {
+      await t.test(height + "px", async () => {
+        const page = await (await browser.newContext({ viewport: { width: 980, height } })).newPage();
+        page.setDefaultTimeout(5000);
+        const errors = [];
+        page.on("pageerror", (e) => errors.push(e.message));
+        let release;
+        const next = new Promise((r) => { release = r; });
+        await page.route("**/*", server(() => next));
+        await page.goto("http://magpie.test/?view=plugins");
+        await page.locator("#view-plugins .pm-find input").fill("copilot");
+        const card = page.locator('.pm-card[data-pkg="opencode-copilot-auth"]');
+        await card.locator(".pm-dl", { hasText: "48k/week" }).waitFor();
+        await page.waitForLoadState("networkidle");
+        await card.locator(".pm-sum").click();
+        await page.locator("#modal .pm-detail").waitFor();
+        // the open's morph over, so each frame's box is the dialog's own
+        await page.waitForFunction(() => document.querySelector("#modal .dialog").getAnimations().length === 0);
+        const before = await gaps(page);
+        // each frame's gaps, from the README's arrival until the dialog settles
+        const frames = page.evaluate(() => new Promise((done) => {
+          const m = document.querySelector("#modal"), c = getComputedStyle(m), d = m.querySelector(".dialog"), out = [];
+          const step = () => {
+            if (d.querySelector(".pm-md")) {
+              const a = m.getBoundingClientRect(), b = d.getBoundingClientRect();
+              out.push({ top: b.top - a.top - parseFloat(c.paddingTop), bottom: a.bottom - parseFloat(c.paddingBottom) - b.bottom, height: b.height });
+              if (out.length > 3 && !d.getAnimations().length) return done(out);
+            }
+            requestAnimationFrame(step);
+          };
+          step();
+        }));
+        release({ readme: readme(height > 600 ? 12 : 60), updated: "2026-09-01T00:00:00Z" });
+        const seen = await frames;
+        const end = seen.at(-1);
+        assert(end.height > before.height + 40, `grew: ${JSON.stringify({ before, end })}`);
+        // drawn at heights between the two, not the skeleton's then the README's
+        const between = seen.filter((f) => f.height > before.height + 4 && f.height < end.height - 4);
+        assert(between.length >= 3, `grew over frames: ${JSON.stringify(seen.map((f) => Math.round(f.height)))}`);
+        for (const f of seen) assert(Math.abs(f.top - f.bottom) <= 2, `centred in every frame: ${JSON.stringify(f)}`);
+        assert.deepEqual(errors, []);
+        await page.context().close();
+      });
+    }
+  });
 }

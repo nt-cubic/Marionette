@@ -5,9 +5,10 @@
 // (Settings had them till the owner, 10-20). The row sits under "Codex auto-review
 // model" with its name alone (1ooogle on X); unset it is
 // Codex's own pick. It opens the app's model picker (no native select), and
-// a pick posts Codex's memories field as the card's square does: the square
-// lights with it, and Default picked on the square puts the row back. No
-// Codex with the field: no row, and Claude Code's settings haven't it. The square's label names it. No click
+// a pick posts Codex's memories field, and Default puts Codex's own back.
+// The card has no square for it beside the row, the same setting twice (the
+// owner, 10-25). No Codex with the field: no row, and Claude Code's settings
+// haven't it. No click
 // scrolls the page. Chromium and WebKit, en/zh/ja/de, 440px and wide; no
 // backend, the API is faked here.
 const assert = require("node:assert/strict");
@@ -15,7 +16,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
-const { watchSettingsReads, openAgentSettings, reach } = require("./reader.cjs");
+const { watchSettingsReads, openAgentSettings } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const models = [{ value: "gpt-5.5", label: "GPT-5.5", ref: "openai/gpt-5.5" }, { value: "gpt-5.4-mini", label: "GPT-5.4 mini", ref: "openai/gpt-5.4-mini" }];
@@ -73,17 +74,17 @@ function server(lang, sets, codex) {
 
 // the words as i18n.js has them
 const W = {
-  en: { name: "Codex memories model", own: "Codex’s own pick", square: "Codex memories model: GPT-5.4 mini", def: "Default" },
-  zh: { name: "Codex 记忆整理模型", own: "由 Codex 决定", square: "Codex 记忆整理模型：GPT-5.4 mini", def: "默认" },
-  ja: { name: "Codex メモリ整理のモデル", own: null, square: null, def: null },
-  de: { name: "Codex-Modell für Erinnerungen", own: null, square: null, def: null },
+  en: { name: "Codex memories model", own: "Codex’s own pick", def: "Default" },
+  zh: { name: "Codex 记忆整理模型", own: "由 Codex 决定", def: "默认" },
+  ja: { name: "Codex メモリ整理のモデル", own: null, def: null },
+  de: { name: "Codex-Modell für Erinnerungen", own: null, def: null },
 };
 const view = (page) => page.locator("#view-agents").evaluate((v) => v.scrollTop);
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
   for (const width of [440, 1100]) {
     for (const lang of ["en", "zh", "ja", "de"]) {
-      test(`${engine} ${width}px ${lang}: Codex's settings pick the model it writes its memories with, the card's square in step`, async (t) => {
+      test(`${engine} ${width}px ${lang}: Codex's settings pick the model it writes its memories with, no square beside them`, async (t) => {
         const w = W[lang];
         const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
         const context = await browser.newContext({ viewport: { width, height: 520 }, reducedMotion: "reduce" });
@@ -143,19 +144,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.waitForTimeout(300);
         assert.equal(await view(page), before, "picking a model scrolled the page");
 
-        // the card's square, on the same opened row, is the same setting,
-        // and says what it is
-        const codex = '.row.agent[data-id="codex"]';
-        const square = page.locator(`${codex} .extras-cell .field.extra.set[data-key="memories"]`);
-        await square.waitFor();
-        if (w.square) assert.equal(await square.getAttribute("aria-label"), w.square);
-        assert.equal(await square.getAttribute("title"), await square.getAttribute("aria-label"));
-        assert((await square.getAttribute("title")).startsWith(w.name), "the square's tooltip names it");
-        await reach(page, square);
-        await square.click();
+        // the card has no square for it beside the row: that was the same
+        // setting twice (the owner, 10-25). Default is picked on the row.
+        assert.equal(await page.locator('.row.agent[data-id="codex"] .field[data-key="memories"]').count(), 0, "a memories square on Codex's card");
+        await pick.click();
         await page.locator("#pop:not([hidden]) #list li").first().waitFor();
         await page.locator("#pop #list li").first().click();
-        await page.waitForFunction(() => !document.querySelector('.row.agent[data-id="codex"] .field.extra.set[data-key="memories"]'));
+        for (let i = 0; i < 100 && sets.length < 2; i++) await page.waitForTimeout(50);
         assert.deepEqual(sets.at(-1), { agent: "codex", field: "memories", value: "" });
 
         // and the row shows Codex's own again

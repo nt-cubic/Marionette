@@ -37,6 +37,8 @@ const (
 //	ok           as pf-serve does
 //	gpudies      on the GPU, ends at its first request
 //	hang         never answers a request
+//	loadhang     never says the model is loaded
+//	slow         answers each request after 300ms
 //	noload       says it couldn't load the model
 //	novulkan     as pf-serve-vulkan, says Vulkan is missing; else ok
 func fakeServe(mode string) {
@@ -56,9 +58,14 @@ func fakeServe(mode string) {
 		}
 	}
 	logf("start %s %s", name, device)
+	logf("path %s", filepath.Base(filepath.Dir(os.Args[0])))
+	logf("residency %s", os.Getenv("GGML_METAL_NO_RESIDENCY"))
 	if mode == "noload" || mode == "novulkan" && name == "pf-serve-vulkan" {
 		json.NewEncoder(os.Stdout).Encode(map[string]string{"error": "can't load " + mode})
 		os.Exit(1)
+	}
+	if mode == "loadhang" {
+		time.Sleep(time.Hour)
 	}
 	json.NewEncoder(os.Stdout).Encode(map[string]any{"device": device, "gpu": gpu, "ms": 7})
 	in := bufio.NewReader(os.Stdin)
@@ -88,6 +95,8 @@ func fakeServe(mode string) {
 			os.Exit(3)
 		case mode == "hang":
 			time.Sleep(time.Hour)
+		case mode == "slow":
+			time.Sleep(300 * time.Millisecond)
 		}
 		put(uint32(0))
 		for _, t := range texts {
@@ -118,11 +127,23 @@ func fakeServe(mode string) {
 // test's own; it gives the file the stand-in logs to.
 func fakeInstall(t *testing.T, mode string, vulkan bool) string {
 	t.Helper()
+	upgrades.Wait() // one started before reads dir
 	d := t.TempDir()
 	was, wasSize, wasIdle := dir, modelSize, idleAfter
 	dir, modelSize = func() string { return d }, 4
 	t.Cleanup(func() {
 		Stop()
+		// a request Stop failed lets its turn go
+		turn <- struct{}{}
+		<-turn
+		upgrades.Wait()
+		disk.mu.Lock()
+		if disk.timer != nil {
+			disk.timer.Stop()
+			disk.timer = nil
+		}
+		disk.loaded = ""
+		disk.mu.Unlock()
 		srv.mu.Lock()
 		srv.cpu, srv.gpuLost, srv.failed = false, "", ""
 		srv.mu.Unlock()

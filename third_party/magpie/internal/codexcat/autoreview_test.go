@@ -80,3 +80,32 @@ func TestCodexAutoReviewChecked(t *testing.T) {
 		t.Fatalf("saved %q", got)
 	}
 }
+
+// Set to "session" (cybercaius on Discord: left to Codex, a conversation
+// on magpie's model had its auto-review on codex-auto-review through the
+// ChatGPT sign-in), each of magpie's entries names itself, so the review
+// runs on the session's model; Codex's own entries are left as OpenAI
+// gave them, and one magpie put there before is taken out.
+func TestCodexAutoReviewFollowsTheSession(t *testing.T) {
+	v1Home(t, `{"etag":"W/\"a\"","models":[{"slug":"gpt-6","base_instructions":"x"},{"slug":"gpt-7","base_instructions":"x","auto_review_model_override":"deepseek/old"},{"slug":"gpt-8","base_instructions":"x","auto_review_model_override":"codex-auto-review"}]}`)
+	s := settings.Load()
+	s.CodexAutoReview = settings.CodexAutoReviewSession
+	if err := settings.Save(s); err != nil {
+		t.Fatal(err)
+	}
+	ms := []catalog.Model{
+		{ID: "codex/gpt-6", Name: "GPT-6 · Codex"},
+		{ID: "codex/gpt-7", Name: "GPT-7 · Codex"},
+		{ID: "codex/gpt-8", Name: "GPT-8 · Codex"},
+		{ID: "group/smart", Name: "smart"},
+		{ID: "token/gpt-6.1-sol", Name: "GPT-6.1 Sol"},
+	}
+	got := overrides(t, ms)
+	want := map[string]any{"codex/gpt-6": "none", "codex/gpt-7": "none", "codex/gpt-8": "codex-auto-review",
+		"group/smart": "group/smart", "token/gpt-6.1-sol": "token/gpt-6.1-sol"}
+	for k, v := range want {
+		if got[k] != v {
+			t.Fatalf("%s = %v, want %v (%v)", k, got[k], v, got)
+		}
+	}
+}
