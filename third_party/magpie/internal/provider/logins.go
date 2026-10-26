@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/appdir"
+	"github.com/yetone/magpie/internal/codexcat"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/filelock"
 	"github.com/yetone/magpie/internal/filememo"
@@ -701,6 +702,18 @@ func liveLogin(agent string) (savedLogin, bool) {
 	}
 	return savedLogin{}, false
 }
+
+// CodexSignInPlan is the plan of the ChatGPT account this machine's Codex
+// is signed in to, as its ID token's chatgpt_plan_type names it ("free",
+// "plus", "pro" …), "" when Codex isn't signed in or it can't be read.
+// Codex's auto-review follows the session on a Free plan by default
+// (codexcat.AutoReviewModel).
+func CodexSignInPlan() string {
+	l, _ := liveLogin("codex")
+	return l.Plan
+}
+
+func init() { codexcat.SignInPlan = CodexSignInPlan }
 
 // codexLoginIn is the ChatGPT account Codex is signed in to in its folder
 // home, as Codex keeps it there (auth.json, or the keychain item named by

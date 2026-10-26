@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"cmp"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -212,6 +213,28 @@ func settle(r Record, provider, model string) {
 		store.pruned = now
 		prune(dir, now)
 	}
+}
+
+// Clear deletes every record kept: each day's file, and what memory has
+// of them (their snips, the requests' text). A day goes whole, never
+// rewritten, so nothing is left half-cleared for a reader; a request still
+// going is written to a new day's file once it is done. A day that can't
+// be removed stays, and is named in the error. What a placeholder stood
+// for is the masker's, in memory alone, and stays there for the answers
+// still to come.
+func Clear() error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	var errs []error
+	for _, d := range files(Dir()) {
+		if err := os.Remove(d.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, err)
+			continue
+		}
+		delete(store.days, d.path)
+	}
+	store.snips, store.sent, store.sentBytes = nil, nil, 0
+	return errors.Join(errs...)
 }
 
 // merged is vs with one Value for each placeholder, its N the sum, in the

@@ -1,8 +1,12 @@
 package gateway
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -262,5 +266,35 @@ func TestAccountCapLetsAutoReviewThrough(t *testing.T) {
 		if tried, _ := b.seen(); code != 429 || !strings.Contains(body, "usage cap reached") || tried != "" {
 			t.Errorf("%s %s: %d %s tried %q", c.path, c.model, code, body, tried)
 		}
+	}
+}
+
+// On a Free ChatGPT plan codex-auto-review is not free (cybercaius on
+// Discord), so the account's usage cap holds it as any call.
+func TestAccountCapHoldsAutoReviewOnAFreePlan(t *testing.T) {
+	codexSignedIn(t)
+	home, _ := os.UserHomeDir()
+	claims := func(m map[string]any) string {
+		b, _ := json.Marshal(m)
+		return "h." + base64.RawURLEncoding.EncodeToString(b) + ".s"
+	}
+	os.WriteFile(filepath.Join(home, ".codex", "auth.json"), mustJSON(map[string]any{"auth_mode": "chatgpt", "tokens": map[string]any{
+		"id_token":      claims(map[string]any{"email": "me@example.com", "https://api.openai.com/auth": map[string]any{"chatgpt_plan_type": "free"}}),
+		"access_token":  claims(map[string]any{"exp": time.Now().Add(time.Hour).Unix(), "who": "acct-1"}),
+		"refresh_token": "r-acct-1", "account_id": "acct-1"}}), 0o600)
+	provider.ForgetAccounts()
+	b := newResetBackend(t)
+	capUsage(t, map[string]float64{"me@example.com": 92})
+	if err := provider.SetAccountCap("codex", "me@example.com", 90); err != nil {
+		t.Fatal(err)
+	}
+	srv := New()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(`{"model":"codex-auto-review","stream":true,"input":"review this"}`))
+	req.Header.Set("Authorization", "Bearer chatgpt-token")
+	req.Header.Set("chatgpt-account-id", "acct-1")
+	srv.Handler().ServeHTTP(rec, req)
+	if tried, _ := b.seen(); rec.Code != 429 || !strings.Contains(rec.Body.String(), "usage cap reached") || tried != "" {
+		t.Errorf("free plan: %d %s tried %q", rec.Code, rec.Body.String(), tried)
 	}
 }

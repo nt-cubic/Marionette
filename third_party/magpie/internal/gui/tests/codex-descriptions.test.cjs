@@ -1,7 +1,7 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
 // Codex's "Codex thread descriptions" (#1198, congee949): Codex's
 // thread_description requests go where this says, apart from the titles'
-// setting. By default Codex's own (ChatGPT); the app's menu (no native
+// setting. By default the session's model (cybercaius); the app's menu (no native
 // select) offers magpie's models; a pick posts settings/codex-descriptions
 // on its own, the titles' setting untouched, its button shows the choice
 // under a name with no line of its own (as the titles' row, 1ooogle on X),
@@ -69,8 +69,8 @@ function server(lang, posted) {
 }
 
 const want = {
-  en: { name: "Codex thread descriptions", own: "Codex’s own (ChatGPT)" },
-  zh: { name: "Codex 会话描述", own: "Codex 自带（ChatGPT）" },
+  en: { name: "Codex thread descriptions", own: "Same as the session" },
+  zh: { name: "Codex 会话描述", own: "跟随当前会话" },
 };
 const view = (page) => page.locator("#view-agents").evaluate((v) => v.scrollTop);
 
@@ -99,7 +99,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await pick.waitFor();
       assert.equal(await page.locator("#codexDescriptionsRow select").count(), 0, "no native select");
       assert.equal((await row.locator(".name").textContent()).trim(), want[lang].name);
-      assert.equal((await pick.textContent()).trim(), want[lang].own, "Codex's own by default");
+      assert.equal((await pick.textContent()).trim(), want[lang].own, "the session's by default (cybercaius)");
       assert.equal(await row.locator(".sub").count(), 0, "the row says its name alone, its button the choice (1ooogle on X)");
       // the chip's icon is the chip's size, not the row's 18–22px (duanckham on X)
       assert.deepEqual(await pick.locator(".ic").evaluate((e) => [e.offsetWidth, e.offsetHeight]), [14, 14]);
@@ -110,7 +110,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const before = await view(page);
       assert(before > 0, "the agents list must scroll to the row");
 
-      // the app's menu: Codex's own and magpie's models
+      // the app's menu: the session's and magpie's models
       await pick.click();
       await page.locator("#pop:not([hidden]) #list li").first().waitFor();
       const items = (await page.locator("#list li:not(.group)").allTextContents()).join("|");
@@ -129,7 +129,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await view(page), before, "picking a model scrolled the page");
       assert.equal(await row.locator(".sub").count(), 0);
 
-      // and back to Codex's own
+      // and back to the session's
       await pick.click();
       await page.locator("#pop:not([hidden]) #list li").first().waitFor();
       await page.locator("#list li:not(.group)").filter({ hasText: want[lang].own }).first().click();

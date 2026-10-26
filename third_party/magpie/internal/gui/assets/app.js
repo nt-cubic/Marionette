@@ -84,11 +84,6 @@ let providerDiscovery = []; // only opaque fingerprints and app names, never cre
 let discoveryAt = 0, discoveryRun = 0, discoveryPending = false;
 let discoveryIgnored = new Set();
 try { discoveryIgnored = new Set(JSON.parse(localStorage.getItem("magpie.discoveryIgnored") || "[]")); } catch {}
-// a streamed reply's body is read as its reply, its events or as it came;
-// the pick is one for every call and kept, the events drawn per call
-let sseView = "events";
-try { sseView = localStorage.getItem("magpie.sseView") || "events"; } catch {}
-const sseShown = new Map(); // call id → how many events are drawn
 let savedModelFavorites = [];
 try { savedModelFavorites = JSON.parse(localStorage.getItem("magpie.modelFavorites") || "[]"); } catch {}
 const modelFavorites = new Set(Array.isArray(savedModelFavorites) ? savedModelFavorites : []);
@@ -295,7 +290,10 @@ function maskSpan(src, failed) {
 }
 const pngIcons = new Set(["crush", "zcode", "alma", "hanako", "cindy", "lody", "typesafe", "atomcode", "snow", "mlx-serve", "mothx", "zoo-code"]);
 
-function icon(name) {
+// lazy: a picture in a long list (Plugins' rows) is asked for when it
+// nears the screen. Each SVG an <img> draws is a document of its own in
+// the webview, ~0.6 MB, kept while the page is open (#909)
+function icon(name, lazy) {
   const kept = keptIcons?.get(name || "")?.shift();
   if (kept) { kept.removeAttribute("title"); return kept; }
   const e = el("span", "ic");
@@ -308,6 +306,7 @@ function icon(name) {
   if (name?.startsWith("file:")) {
     // a picture the user gave their own provider
     const img = el("img");
+    if (lazy) img.loading = "lazy";
     img.src = "/api/icons/" + encodeURIComponent(name.slice(5));
     img.alt = "";
     img.draggable = false;
@@ -318,6 +317,7 @@ function icon(name) {
   if (name) {
     if (name.endsWith("-color") || pngIcons.has(name)) {
       const img = el("img");
+      if (lazy) img.loading = "lazy";
       img.src = `icons/${name}.${pngIcons.has(name) ? "png" : "svg"}`;
       img.alt = "";
       img.draggable = false;
@@ -6896,336 +6896,6 @@ function modelInfo(m) {
   return box;
 }
 
-function formatWireBody(raw) {
-  if (!raw) return "";
-  try { return JSON.stringify(JSON.parse(raw), null, 2); } catch { return raw; }
-}
-
-// A JSON body as a tree: each object and array folds at its bracket, its
-// parts in the snippets' colours; the copy button a line shows on hover
-// copies its value, and a click on a key copies the key. The text is the
-// JSON pretty-printed, as before, so what is selected and copied by hand
-// still reads as JSON. What is folded is kept by the body's key and the
-// node's path, across the redraws a new call brings.
-const jsonFolds = new Set();
-function jsonTree(v, key) {
-  const code = el("code", "jt");
-  code.append(jtNode(v, undefined, "", key + "|", ""));
-  return code;
-}
-function jtNode(v, k, indent, path, comma) {
-  const f = document.createDocumentFragment();
-  const head = el("span", "jt-head");
-  f.append(indent, head);
-  if (k !== undefined) {
-    const ks = el("span", "jt-key", JSON.stringify(k));
-    ks.title = t("Click to copy the key");
-    // a click copies; a drag selects, as in any text
-    ks.onclick = (ev) => {
-      ev.stopPropagation();
-      if (!String(getSelection())) copy(String(k), String(k), null);
-    };
-    head.append(ks, ": ");
-  }
-  const copyV = el("button", "jt-copy");
-  copyV.type = "button";
-  copyV.title = t("Copy value");
-  copyV.append(svg(COPY_ICON, 11, 1.5));
-  // a string's value is its text, not the JSON that quotes it
-  copyV.onclick = (ev) => {
-    ev.stopPropagation();
-    copy(typeof v === "string" ? v : JSON.stringify(v, null, 2), k !== undefined ? String(k) : t("Value"), copyV);
-  };
-  if (v === null || typeof v !== "object") {
-    head.append(el("span", typeof v === "string" ? "tk-s" : typeof v === "number" ? "tk-n" : "tk-k", JSON.stringify(v)), copyV);
-    f.append(comma);
-    return f;
-  }
-  const arr = Array.isArray(v);
-  const keys = arr ? v.map((_, i) => i) : Object.keys(v);
-  const [o, c] = arr ? ["[", "]"] : ["{", "}"];
-  if (!keys.length) {
-    head.append(o + c, copyV);
-    f.append(comma);
-    return f;
-  }
-  const tog = el("button", "jt-fold");
-  tog.type = "button";
-  tog.append(svg(CHEV_R, 10, 1.6));
-  const kids = el("span", "jt-kids");
-  const sum = el("button", "jt-sum", "…");
-  sum.type = "button";
-  sum.title = t("Unfold");
-  sum.dataset.n = t(keys.length === 1 ? "1 item" : "{n} items", { n: keys.length });
-  // the summary is on the head's line: what a click on it holds in place is
-  // then its neighbours there, not the line after, which the unfolding pushes down
-  head.prepend(tog);
-  head.append(o, sum, copyV);
-  f.append(kids, c, comma);
-  let built = false;
-  const set = (folded) => {
-    if (!folded && !built) { // its insides are drawn the first time it opens
-      built = true;
-      keys.forEach((kk, i) => kids.append("\n", jtNode(v[kk], arr ? undefined : kk, indent + "  ", path + "/" + kk, i < keys.length - 1 ? "," : "")));
-      kids.append("\n" + indent);
-    }
-    kids.hidden = folded;
-    sum.hidden = !folded;
-    tog.classList.toggle("open", !folded);
-    tog.setAttribute("aria-expanded", String(!folded));
-    tog.title = t(folded ? "Unfold" : "Fold");
-    if (folded) jsonFolds.add(path); else jsonFolds.delete(path);
-  };
-  // the box keeps its height across a fold, so what is below it, and the
-  // page, stay where they are
-  const keep = () => { const pre = tog.closest("pre"); if (pre) pre.style.minHeight = pre.offsetHeight + "px"; };
-  tog.onclick = (ev) => { ev.stopPropagation(); keep(); set(!kids.hidden); };
-  sum.onclick = (ev) => { ev.stopPropagation(); keep(); set(false); };
-  set(jsonFolds.has(path));
-  return f;
-}
-
-// A streamed body (server-sent events) as its events: each one's name and
-// its data, the data lines joined. Anything else is not one: null.
-function parseSSE(raw) {
-  if (!raw || !/^\s*(?::[^\n]*\n\s*)*(event|data|id|retry):/.test(raw)) return null;
-  const events = [];
-  let ev = null;
-  const done = () => { if (ev && ev.data.length) events.push({ event: ev.event, data: ev.data.join("\n") }); ev = null; };
-  for (const line of raw.split(/\r?\n/)) {
-    if (line === "") { done(); continue; }
-    if (line[0] === ":") continue; // a comment, a keep-alive
-    const i = line.indexOf(":");
-    const field = i < 0 ? line : line.slice(0, i);
-    let value = i < 0 ? "" : line.slice(i + 1);
-    if (value[0] === " ") value = value.slice(1);
-    ev = ev || { event: "", data: [] };
-    if (field === "event") ev.event = value;
-    else if (field === "data") ev.data.push(value);
-  }
-  done();
-  return events.length ? events : null;
-}
-
-const jsonOr = (s) => { try { return JSON.parse(s); } catch { return undefined; } };
-
-// What a stream adds up to — its text, reasoning and tool calls, how it
-// stopped and what it used — for the Anthropic Messages, OpenAI Responses,
-// Chat Completions and Gemini streams; null for one it can't read.
-function sseReply(events) {
-  const out = {};
-  const blocks = [];      // Anthropic content blocks, Chat tool calls, Responses items, in order
-  const byKey = new Map();
-  const block = (key, init) => { let b = byKey.get(key); if (!b) { b = { ...init }; byKey.set(key, b); blocks.push(b); } return b; };
-  let kind = "";
-  for (const e of events) {
-    const d = jsonOr(e.data);
-    if (!d || typeof d !== "object") continue;
-    const type = d.type || e.event || "";
-    if (d.error) { out.error = d.error; continue; }
-    if (type === "message_start" && d.message) {
-      kind = "anthropic";
-      out.id = d.message.id; out.model = d.message.model;
-      if (d.message.usage) out.usage = { ...d.message.usage };
-    } else if (type === "content_block_start" && d.content_block) {
-      kind = "anthropic";
-      const cb = d.content_block;
-      const b = block("a" + d.index, { type: cb.type });
-      if (cb.type === "tool_use" || cb.type === "server_tool_use") { b.id = cb.id; b.name = cb.name; b.input = ""; }
-      else if (cb.type === "text") b.text = cb.text || "";
-      else if (cb.type === "thinking") b.thinking = cb.thinking || "";
-      else Object.assign(b, cb);
-    } else if (type === "content_block_delta" && d.delta) {
-      const b = block("a" + d.index, { type: "text" });
-      const x = d.delta;
-      if (x.type === "text_delta") b.text = (b.text || "") + x.text;
-      else if (x.type === "thinking_delta") b.thinking = (b.thinking || "") + x.thinking;
-      else if (x.type === "input_json_delta") b.input = (b.input || "") + x.partial_json;
-    } else if (type === "message_delta") {
-      if (d.delta?.stop_reason) out.stop_reason = d.delta.stop_reason;
-      if (d.usage) out.usage = { ...out.usage, ...d.usage };
-    } else if (type.startsWith("response.")) {
-      kind = "responses";
-      if (d.response) {
-        out.id = d.response.id; out.model = d.response.model; out.status = d.response.status;
-        if (d.response.usage) out.usage = d.response.usage;
-        if (d.response.error) out.error = d.response.error;
-        if (d.response.incomplete_details) out.incomplete = d.response.incomplete_details;
-        if (type === "response.completed" && d.response.output?.length) out.output = d.response.output;
-      }
-      const key = "r" + (d.item_id || d.item?.id || d.output_index);
-      if (type === "response.output_item.added" || type === "response.output_item.done") {
-        const it = d.item || {};
-        const b = block(key, { type: it.type });
-        if (it.type === "function_call" || it.type === "custom_tool_call") { b.call_id = it.call_id; b.name = it.name; }
-        if (type === "response.output_item.done") {
-          if (it.arguments !== undefined) b.arguments = it.arguments;
-          if (it.input !== undefined) b.input = it.input;
-          const text = (it.content || []).map((c) => c.text || c.refusal || "").join("");
-          if (text) b.text = text;
-          const sum = (it.summary || []).map((c) => c.text || "").join("\n\n");
-          if (sum) b.summary = sum;
-        }
-      } else if (type === "response.output_text.delta" || type === "response.refusal.delta") {
-        const b = block(key, { type: "message" }); b.text = (b.text || "") + d.delta;
-      } else if (type === "response.reasoning_summary_text.delta") {
-        const b = block(key, { type: "reasoning" }); b.summary = (b.summary || "") + d.delta;
-      } else if (type === "response.reasoning_text.delta") {
-        const b = block(key, { type: "reasoning" }); b.text = (b.text || "") + d.delta;
-      } else if (type === "response.function_call_arguments.delta") {
-        const b = block(key, { type: "function_call" }); b.arguments = (b.arguments || "") + d.delta;
-      } else if (type === "response.custom_tool_call_input.delta") {
-        const b = block(key, { type: "custom_tool_call" }); b.input = (b.input || "") + d.delta;
-      }
-    } else if (Array.isArray(d.choices)) {
-      kind = "chat";
-      if (d.id) out.id = d.id;
-      if (d.model) out.model = d.model;
-      if (d.usage) out.usage = d.usage;
-      for (const c of d.choices) {
-        const x = c.delta || c.message || {};
-        const msg = block("c" + (c.index || 0), { type: "message" });
-        if (typeof x.content === "string") msg.content = (msg.content || "") + x.content;
-        const r = x.reasoning_content ?? x.reasoning;
-        if (typeof r === "string") msg.reasoning = (msg.reasoning || "") + r;
-        for (const tc of x.tool_calls || []) {
-          const b = block("c" + (c.index || 0) + ":" + (tc.index ?? tc.id), { type: "tool_call" });
-          if (tc.id) b.id = tc.id;
-          if (tc.function?.name) b.name = (b.name || "") + tc.function.name;
-          if (tc.function?.arguments) b.arguments = (b.arguments || "") + tc.function.arguments;
-        }
-        if (c.finish_reason) out.finish_reason = c.finish_reason;
-      }
-    } else if (Array.isArray(d.candidates)) {
-      kind = "gemini";
-      if (d.modelVersion) out.model = d.modelVersion;
-      if (d.usageMetadata) out.usage = d.usageMetadata;
-      for (const c of d.candidates) {
-        for (const p of c.content?.parts || []) {
-          if (typeof p.text === "string") {
-            const b = block("g" + (c.index || 0) + (p.thought ? "t" : ""), { type: p.thought ? "thought" : "text" });
-            b.text = (b.text || "") + p.text;
-          } else if (p.functionCall) blocks.push({ type: "functionCall", ...p.functionCall });
-        }
-        if (c.finishReason) out.finishReason = c.finishReason;
-      }
-    }
-  }
-  if (!kind && !out.error) return null;
-  // the Responses API's own finished output is the reply, when it came
-  const content = (out.output || blocks).filter((b) => !(kind === "chat" && b.type === "message" && !b.content && !b.reasoning));
-  // a tool's arguments read as the object they spell, when they are whole
-  for (const b of content) {
-    for (const k of ["input", "arguments"]) {
-      if (typeof b[k] !== "string") continue;
-      const v = b[k] === "" && k === "input" ? {} : jsonOr(b[k]);
-      if (v !== undefined) b[k] = v;
-    }
-  }
-  const reply = {};
-  for (const k of ["id", "model", "status"]) if (out[k] !== undefined) reply[k] = out[k];
-  if (content.length) reply[{ anthropic: "content", responses: "output", gemini: "parts" }[kind] || "choices"] = content;
-  for (const k of ["stop_reason", "finish_reason", "finishReason", "incomplete", "usage", "error"]) if (out[k] !== undefined) reply[k] = out[k];
-  return reply;
-}
-
-// The data of each event, as JSON where it is JSON, under its name.
-function sseEventNode(e, key) {
-  const box = el("span", "sse-ev");
-  if (e.event) box.append(el("span", "sse-name", "event: " + e.event + "\n"));
-  const d = jsonOr(e.data);
-  box.append(d !== null && typeof d === "object" ? jtNode(d, undefined, "", key + "|", "") : e.data); // [DONE] as it is
-  return box;
-}
-function sseData(data) {
-  const d = jsonOr(data);
-  return d !== null && typeof d === "object" ? JSON.stringify(d, null, 2) : data; // [DONE] as it is
-}
-const SSE_PAGE = 200; // events drawn at a time: a long stream stays quick to open
-
-function sseBodyPanel(label, raw, truncated, id) {
-  const events = parseSSE(raw);
-  if (!events) return null;
-  const reply = sseReply(events);
-  const panel = el("section", "call-body sse");
-  const head = el("div", "call-body-head");
-  head.append(el("span", "call-body-label", t(label)));
-  if (truncated) head.append(el("span", "call-body-truncated", typeof truncated === "string" ? truncated : t("first 256 KB")));
-  const views = [["reply", t("Reply")], ["events", t("Events")], ["raw", t("Raw")]].filter(([v]) => v !== "reply" || reply);
-  let view = views.some(([v]) => v === sseView) ? sseView : "events";
-  const count = el("span", "call-body-count", t(events.length === 1 ? "1 event" : "{n} events", { n: events.length }));
-  const pick = segs(views, view, (v) => { view = sseView = v; try { localStorage.setItem("magpie.sseView", v); } catch {} draw(); });
-  pick.classList.add("sse-views");
-  const copyB = copyBtn("", t(label)); // what it copies is set below
-  head.append(count, el("span", "grow"), pick, copyB);
-  panel.append(head);
-  const pre = el("pre");
-  // a long stream's events come a page at a time; what draws more sits
-  // under the box, where it stays as they come in rather than at the end
-  // of what is drawn
-  const foot = el("div", "call-body-foot");
-  const shownNote = el("span");
-  const moreB = el("button", "link", "");
-  foot.append(shownNote, el("span", "grow"), moreB);
-  panel.append(pre, foot);
-  let code = null, shown = 0;
-  const more = () => {
-    const upto = Math.min(events.length, Math.max(sseShown.get(id) || 0, shown + SSE_PAGE));
-    for (; shown < upto; shown++) code.append(sseEventNode(events[shown], id + "|ev" + shown));
-    if (shown > SSE_PAGE) sseShown.set(id, shown);
-    foot.hidden = view !== "events" || shown >= events.length;
-    shownNote.textContent = t("{n} of {total} events shown", { n: shown, total: events.length });
-    moreB.textContent = t("Show {n} more events", { n: Math.min(SSE_PAGE, events.length - shown) });
-  };
-  moreB.onclick = (ev) => { ev.stopPropagation(); more(); };
-  const draw = () => {
-    // the box keeps its height across a switch, so what is below it, and
-    // the page, stay where they are
-    if (pre.isConnected) pre.style.minHeight = pre.offsetHeight + "px";
-    code = view === "reply" ? jsonTree(reply, id + "|reply") : el("code", view === "events" ? "jt" : "");
-    pre.replaceChildren(code);
-    pre.scrollTop = 0;
-    shown = 0;
-    if (view === "raw") code.textContent = raw;
-    if (view === "events") more(); else foot.hidden = true;
-  };
-  // what is copied is what is shown: the reply, every event, or the body
-  copyB.onclick = (ev) => {
-    ev.stopPropagation();
-    const text = view === "reply" ? JSON.stringify(reply, null, 2) : view === "raw" ? raw
-      : events.map((e) => (e.event ? "event: " + e.event + "\n" : "") + sseData(e.data)).join("\n\n");
-    copy(text, t(label), copyB);
-  };
-  draw();
-  return panel;
-}
-
-// id, given, is a response's, whose stream reads as its events; key names
-// the body for what is folded in it
-function callBodyPanel(label, raw, truncated, id, key = id) {
-  if (id) {
-    const sse = sseBodyPanel(label, raw, truncated, id);
-    if (sse) return sse;
-  }
-  const panel = el("section", "call-body");
-  const head = el("div", "call-body-head");
-  head.append(el("span", "call-body-label", t(label)));
-  if (truncated) head.append(el("span", "call-body-truncated", typeof truncated === "string" ? truncated : t("first 256 KB")));
-  const formatted = formatWireBody(raw);
-  if (formatted) head.append(el("span", "grow"), copyBtn(raw, t(label)));
-  panel.append(head);
-  const pre = el("pre");
-  const v = formatted ? jsonOr(raw) : undefined;
-  if (v !== null && typeof v === "object") pre.append(jsonTree(v, key));
-  else {
-    const code = el("code", "", formatted || t("No body captured"));
-    if (!formatted) code.classList.add("empty");
-    pre.append(code);
-  }
-  panel.append(pre);
-  return panel;
-}
-
 // The request archive: each call, secrets out, kept in sync's S3 bucket or
 // else a folder here (gateway/archive*.go), read back by its Usage row. Its
 // switch is over that list (Jorben); where it keeps is its tooltip, a failed
@@ -9387,7 +9057,7 @@ function drawEditor(p, presetID) {
       if (p.move) ed.append(...renderMove(p));
     } else {
       const acct = el("div", "acct");
-      acct.append(icon(a.agentIcon), el("span", "n", a.user), el("span", "plan", accountPlan(a)));
+      acct.append(icon(a.agentIcon), el("span", "n", a.user), hideAccounts.eye(a.user), el("span", "plan", accountPlan(a)));
       ed.append(...field(t("Account"), acct, t("{agent}'s sign-in, read from its own files. Sign out there and this provider goes away.", { agent: a.agentName })));
     }
     ed.append(...field(t("Models"), renderModels(p), ""));
@@ -13746,6 +13416,7 @@ function accountNameButton(p, user) {
     s.title = t("The same seat as the key plan {name}, shown once, on this account's card", { name: seat });
     wrap.append(s);
   }
+  wrap.append(hideAccounts.eye(user));
   return wrap;
 }
 function accountCapOf(p, user) { return p?.accountCaps?.[String(user).toLowerCase()] || 0; }
@@ -14474,6 +14145,8 @@ function renderKeyAccounts(p) {
     if (k.on && several) row.append(keyWeight(p, k, weightOf(k), weights));
     const proto = protoPicker(p, k.protocol, (v) => accountAction("keys/protocol", { id: p.id, ref: k.id, protocol: v }));
     if (proto) row.append(proto);
+    const plan = planPicker(p, k, several);
+    if (plan) row.append(plan);
     // set to a protocol the provider has no URL for (#1702): the gateway
     // can't send it there, so the row says so rather than the request
     // quietly going out on another URL
@@ -14748,22 +14421,36 @@ function protoPicker(p, value, onChange) {
   value = value || "";
   const have = ["anthropic", "chat", "responses"].filter((x) => p[x]);
   if (have.length < 2 && !value) return null;
-  const opts = PROTO_OPTS.filter((o) => !o.v || have.includes(o.v) || o.v === value);
-  const pill = el("button", "proto" + (value ? " set" : ""));
+  return pickPill(PROTO_OPTS.filter((o) => !o.v || have.includes(o.v) || o.v === value), value, "", "Some relays give out a key per protocol. Set it here and the gateway sends each request to the key that fits: Claude models to the Anthropic key, GPT models to the OpenAI one.", undefined, onChange);
+}
+
+// planPicker is the key row's plan badge, for a vendor whose plans take
+// keys of their own (keyPlans): each key goes to its plan's endpoints.
+function planPicker(p, k, several) {
+  const pr = providers.presets.find((x) => x.id === p.preset), rs = pr?.keyPlans && pr.regions;
+  if (!(rs?.length > 1) || (!several && !k.plan)) return null;
+  const own = (regionAt(pr, p) || rs[0]).id;
+  return pickPill(rs.map((r) => ({ v: r.id, pill: r.name, name: r.name, note: (r.chat || r.anthropic || "").replace(/^https?:\/\//, "") })), rs.some((r) => r.id === k.plan) ? k.plan : own, own,
+    "The plan this key is for: its requests go to that plan's endpoints, and it is asked only for that plan's models.", "Plan this key is for", (v) => accountAction("keys/plan", { id: p.id, ref: k.id, plan: v === own ? "" : v }));
+}
+
+// pickPill is a key row's badge of one of opts, set when not dflt; a
+// click drops the menu of them.
+function pickPill(opts, value, dflt, title, head, onChange) {
+  const pill = el("button", "proto");
   pill.type = "button";
-  pill.title = t("Some relays give out a key per protocol. Set it here and the gateway sends each request to the key that fits: Claude models to the Anthropic key, GPT models to the OpenAI one.");
-  const paint = () => pill.replaceChildren(el("span", "", t(PROTO_OPTS.find((o) => o.v === value).pill)), svg(CHEV, 11, 1.6));
+  pill.title = t(title);
+  const paint = () => {
+    pill.classList.toggle("set", value !== dflt);
+    pill.replaceChildren(el("span", "", t(opts.find((o) => o.v === value).pill)), svg(CHEV, 11, 1.6));
+  };
   paint();
   pill.onclick = (e) => {
     e.stopPropagation();
     if (pill.classList.contains("open")) return closeProtoMenu();
     openProtoMenu(pill, opts, value, (v) => {
-      if (v === value) return;
-      value = v;
-      pill.classList.toggle("set", !!v);
-      paint();
-      onChange(v);
-    });
+      if (v !== value) { value = v; paint(); onChange(v); }
+    }, head);
   };
   return pill;
 }
@@ -19595,11 +19282,11 @@ function renderSettings() {
   // alone as Settings › General does (#2120); Open at login's says where
   // the Mac lists it: a launch agent, under App Background Activity
   for (const [row, en] of [
-    ["#codexTitlesRow", "Names each thread in a hidden request of its own; at Codex’s own, it goes as Codex sends it, through its ChatGPT sign-in"],
-    ["#codexDescriptionsRow", "Writes each thread’s short description in a hidden request of its own; at Codex’s own, it goes as Codex sends it, through its ChatGPT sign-in"],
-    ["#codexPredictionsRow", "Guesses your next message for the composer, reading the whole conversation again each time; at Codex’s own, it goes on the thread’s model through its ChatGPT sign-in"],
-    ["#codexAutoReviewRow", "Decides an approval in your place when Codex’s approvals are on auto-review; Codex’s own pick is codex-auto-review, else the conversation’s model at low effort"],
-    ["#codexMemoriesRow", "Writes Codex’s memories of past threads, in the background; Codex’s own: gpt-5.6-terra, with gpt-5.6-luna summing up each thread"],
+    ["#codexTitlesRow", "Names each thread in a hidden request of its own; same as the session, it goes on the session’s model, as Codex sends it when that is one of Codex’s own"],
+    ["#codexDescriptionsRow", "Writes each thread’s short description in a hidden request of its own; same as the session, it goes on the session’s model, as Codex sends it when that is one of Codex’s own"],
+    ["#codexPredictionsRow", "Guesses your next message for the composer, reading the whole conversation again each time; same as the session, it goes on the session’s model"],
+    ["#codexAutoReviewRow", "Decides an approval in your place when Codex’s approvals are on auto-review; Codex’s own pick is codex-auto-review, else the conversation’s model at low effort; on a ChatGPT Free plan, where codex-auto-review isn’t free, unset follows the session"],
+    ["#codexMemoriesRow", "Writes Codex’s memories of past threads, in the background; same as the session, on the session’s model, or on gpt-5.6-terra and gpt-5.6-luna when that is one of Codex’s own"],
     ["#loginRow", document.body.classList.contains("mac")
       ? "Opens in the menu bar with no window. System Settings › General › Login Items lists it under App Background Activity, not Open at Login"
       : "Opens in the tray with no window"],
@@ -19732,6 +19419,15 @@ function renderSettings() {
   row(t("Check every"), s.noAutoUpdate ? t("While automatic updates are on") : t("How often magpie looks for a newer version"), "",
     segs(UPDATE_EVERY.map((m) => [m, m < 60 ? t("{n} min", { n: m }) : t("{n} h", { n: m / 60 })]), s.updateEvery || 360,
       (updateEvery) => savePrefs({ ...keep, updateEvery }))).classList.add("update-every-row", ...(s.noAutoUpdate ? ["off"] : []));
+  // which versions an update offers (ssharpcc on X): every one as it comes
+  // out, or Stable, one a week and an urgent one at once, chosen by the
+  // update feed. It holds for the version row's Check too, so it stays lit
+  // with automatic updates off.
+  row(t("Update channel"), s.updateChannel === "stable"
+    ? t("One version a week, out for three days first, and urgent fixes at once. What's new lists every change since yours")
+    : t("Every version as soon as it is out"), "",
+    segs([["every", t("Every version")], ["stable", t("Stable")]], s.updateChannel === "stable" ? "stable" : "every",
+      (v) => savePrefs({ ...keep, updateChannel: v === "stable" ? "stable" : "" }))).classList.add("update-channel-row");
   // whether a newer version found is downloaded at once, or only said to
   // be out and downloaded on a click (#2296): a metered network or a
   // proxy billed by traffic. It holds for the version row's Check too.
@@ -21121,9 +20817,9 @@ function renderCodexDescriptions(s) {
   b.type = "button";
   b.setAttribute("aria-label", t("Codex thread descriptions"));
   if (v) b.append(icon(models.find((x) => x.id === v)?.icon || "generic"), el("span", "", named(v)));
-  else b.append(icon("openai"), el("span", "", t("Codex’s own (ChatGPT)")));
+  else b.append(icon("generic"), el("span", "", t(SAME_SESSION)));
   b.onclick = (ev) => openPicker({ id: "", name: "", fields: [] }, { key: "codexDescriptions", label: "model", value: v, options: [
-    { value: "", label: t("Codex’s own (ChatGPT)"), note: t("as Codex sends them"), icon: "openai", reset: true },
+    { value: "", label: t(SAME_SESSION), note: t("as Codex sends them when the session is on Codex’s own model"), icon: "generic", reset: true },
     ...models.map(modelOpt)],
   onPick: (id) => {
     if (id === v) return;
@@ -21147,9 +20843,9 @@ function renderCodexPredictions(s) {
   b.setAttribute("aria-label", t("Codex composer predictions"));
   if (v === "off") b.append(el("span", "", t("Off")));
   else if (v) b.append(icon(models.find((x) => x.id === v)?.icon || "generic"), el("span", "", named(v)));
-  else b.append(icon("openai"), el("span", "", t("Codex’s own (ChatGPT)")));
+  else b.append(icon("generic"), el("span", "", t(SAME_SESSION)));
   b.onclick = (ev) => openPicker({ id: "", name: "", fields: [] }, { key: "codexPredictions", label: "model", value: v, options: [
-    { value: "", label: t("Codex’s own (ChatGPT)"), note: t("as Codex sends them"), icon: "openai", reset: true },
+    { value: "", label: t(SAME_SESSION), note: t("as Codex sends them when the session is on Codex’s own model"), icon: "generic", reset: true },
     { value: "off", label: t("Off"), note: t("no prediction, nothing sent"), reset: true },
     ...models.map(modelOpt)],
   onPick: (id) => {
@@ -21175,9 +20871,9 @@ function renderCodexTitles(s) {
   b.setAttribute("aria-label", t("Codex thread titles"));
   if (v === "off") b.append(el("span", "", t("Off")));
   else if (v) b.append(icon(models.find((x) => x.id === v)?.icon || "generic"), el("span", "", named(v)));
-  else b.append(icon("openai"), el("span", "", t("Codex’s own (ChatGPT)")));
+  else b.append(icon("generic"), el("span", "", t(SAME_SESSION)));
   b.onclick = (ev) => openPicker({ id: "", name: "", fields: [] }, { key: "codexTitles", label: "model", value: v, options: [
-    { value: "", label: t("Codex’s own (ChatGPT)"), note: t("as Codex sends them"), icon: "openai", reset: true },
+    { value: "", label: t(SAME_SESSION), note: t("as Codex sends them when the session is on Codex’s own model"), icon: "generic", reset: true },
     { value: "off", label: t("Off"), note: t("no title, nothing sent"), reset: true },
     ...models.map(modelOpt)],
   onPick: (id) => {
@@ -21232,7 +20928,7 @@ function renderCodexMemories() {
   b.type = "button";
   b.setAttribute("aria-label", t("Codex memories model"));
   if (f.value) b.append(icon(opt?.icon || "generic"), el("span", "", opt?.label || f.value));
-  else b.append(icon("openai"), el("span", "", t("Codex’s own pick")));
+  else b.append(icon("generic"), el("span", "", t(SAME_SESSION)));
   b.onclick = (ev) => openPicker(a, f, b, ev);
   $("#codexMemoriesPick").replaceChildren(b);
 }
@@ -23128,7 +22824,7 @@ function prefsKeep(s) {
     claudeWarmup: s.claudeWarmup || "", codexWarmAt: s.codexWarmAt || "", claudeWarmAt: s.claudeWarmAt || "",
     codexWarmAts: warmTimes(s.codexWarmAts, s.codexWarmAt), claudeWarmAts: warmTimes(s.claudeWarmAts, s.claudeWarmAt), workbuddyCheckin: !!s.workbuddyCheckin, traeCheckin: !!s.traeCheckin, minimaxCheckin: !!s.minimaxCheckin, qoderCheckin: !!s.qoderCheckin, noStats: !!s.noStats, noUsageStats: !!s.noUsageStats,
     memberModel: !!s.memberModel, noLoopGuard: !!s.noLoopGuard, claudeLeanPrompt: !!s.claudeLeanPrompt, refusalRetries: s.refusalRetries ?? null,
-    noUpdatePill: !!s.noUpdatePill, noAutoUpdate: !!s.noAutoUpdate, updateEvery: s.updateEvery || 360, autoRestart: !!s.autoRestart, noAutoDownload: !!s.noAutoDownload,
+    noUpdatePill: !!s.noUpdatePill, noAutoUpdate: !!s.noAutoUpdate, updateEvery: s.updateEvery || 360, autoRestart: !!s.autoRestart, noAutoDownload: !!s.noAutoDownload, updateChannel: s.updateChannel || "",
     trayUsage: s.trayUsage || "", trayUsageEvery: s.trayUsageEvery || 3, trayNoLogos: !!s.trayNoLogos, trayNoBird: !!s.trayNoBird, trayPace: !!s.trayPace, trayNoCost: !!s.trayNoCost, vision: s.vision || "", visionEffort: s.visionEffort || "", searcherEffort: s.searcherEffort || "", imageGen: s.imageGen || "", imageTimeout: s.imageTimeout || 0, classifyTimeout: s.classifyTimeout || 0, searcher: s.searcher || "", searchFirst: s.searchFirst || "", currency: s.currency || "usd",
     chineseUnits: !!s.chineseUnits, usageAlert: s.usageAlert || 0, balanceAlert: s.balanceAlert || 0, resetReminder: s.resetReminder || 0,
     turnDoneAlert: s.turnDoneAlert || 0 };
@@ -24671,9 +24367,12 @@ window.noteAccounts = noteAccounts;
   // an address always is
   const WORD = /[A-Za-z0-9_]/, JOIN = /[-.]/;
   const joined = (s, i, step) => WORD.test(s[i] || "") || (JOIN.test(s[i] || "") && WORD.test(s[i + step] || ""));
+  // accounts shown while the rest stay hidden, this window's only (yogurt36)
+  const shown = new Set(), low = (x) => String(x).trim().toLowerCase();
   function* hits(s, re) {
     re.lastIndex = 0; // matchAll starts where the pattern's last test ended
     for (const m of s.matchAll(re)) {
+      if (shown.has(low(m[0]))) continue;
       const name = !m[0].includes("@"), end = m.index + m[0].length;
       if (name && ((WORD.test(m[0][0]) && joined(s, m.index - 1, -1)) || (WORD.test(m[0].at(-1)) && joined(s, end, 1)))) continue;
       yield m;
@@ -24796,8 +24495,41 @@ window.noteAccounts = noteAccounts;
     if (!keep) { chosen = on ? "1" : "0"; try { localStorage.setItem("magpie.maskEmails", chosen); } catch {} }
     for (const set of pages) set(on);
   }
+  const kin = (u) => {
+    const k = [u];
+    for (const p of providers?.providers || []) for (const [a, n] of Object.entries(p.accountNames || {})) if (a === low(u) || n === u) k.push(a, n);
+    for (const q of quotas || []) if (q.user === u || q.alias === u) k.push(q.user, q.alias);
+    return k.filter(Boolean).map(low);
+  };
+  const paint = (b) => {
+    const on = shown.has(low(b._u));
+    b.setAttribute("aria-pressed", on);
+    b.title = t(on ? "Hide this account" : "Show this account");
+    b.querySelector("path").setAttribute("d", on ? EYE : EYE_OFF);
+  };
+  const redraw = () => {
+    document.querySelectorAll(".acct-eye").forEach(paint);
+    if (masked) for (const set of pages) set(true);
+  };
   // Settings' Privacy has the same switch, and the settings follow
   window.hideAccounts = {
+    eye: (u) => {
+      const b = el("button", "acct-eye");
+      b._u = u;
+      b.setAttribute("aria-label", t("Show this account"));
+      b.append(svg("", 13, 2));
+      b.firstChild.setAttribute("viewBox", "0 0 24 24");
+      paint(b);
+      b.onclick = (e) => {
+        e.stopPropagation();
+        const on = !shown.has(low(u));
+        for (const k of kin(u)) on ? shown.add(k) : shown.delete(k);
+        redraw();
+      };
+      return b;
+    },
+    // the window closed (hideMain): every account hidden again
+    closed: () => { shown.clear(); redraw(); },
     on: () => masked,
     set: (on) => setMasked(on),
     follow: (personal) => { if (chosen === null && personal !== masked) setMasked(personal, true); },

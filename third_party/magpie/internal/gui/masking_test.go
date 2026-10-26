@@ -105,6 +105,39 @@ func TestMaskingRecordsAPI(t *testing.T) {
 	if err := json.Unmarshal(rw.Body.Bytes(), &vs); err != nil || len(vs.Values) != 1 || vs.Values[p] != key || rw.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("values %d %s %v", rw.Code, rw.Body, rw.Header())
 	}
+
+	// Clear takes every record and its text, by POST alone; what a
+	// placeholder stood for stays with the masker for answers to come
+	// (maxyou2090 on Discord)
+	rw = httptest.NewRecorder()
+	srv.ServeHTTP(rw, httptest.NewRequest("GET", "/api/masking/clear", nil))
+	if rw.Code == http.StatusOK {
+		t.Fatalf("GET clear: %d", rw.Code)
+	}
+	if get("/api/masking/records?limit=5", &page); len(page.Records) == 0 {
+		t.Fatal("a GET cleared the records")
+	}
+	rw = httptest.NewRecorder()
+	srv.ServeHTTP(rw, httptest.NewRequest("POST", "/api/masking/clear", nil))
+	if rw.Code != http.StatusOK || !strings.Contains(rw.Body.String(), `"cleared":true`) {
+		t.Fatalf("clear: %d %s", rw.Code, rw.Body)
+	}
+	page.Records, page.More = nil, false
+	if get("/api/masking/records?limit=5", &page); len(page.Records) != 0 || page.More {
+		t.Fatalf("records after clear %+v", page)
+	}
+	sum = maskrec.Summary{}
+	if get("/api/masking/summary?days=30", &sum); sum.Requests != 0 {
+		t.Fatalf("summary after clear %+v", sum)
+	}
+	for _, path := range []string{"/api/masking/record?key=" + strconv.FormatInt(rec.Key, 10), "/api/masking/sent?key=" + strconv.FormatInt(whole.Key, 10)} {
+		if code := get(path, nil); code != http.StatusNotFound {
+			t.Fatalf("%s after clear: %d", path, code)
+		}
+	}
+	if get("/api/masking/value?p="+url.QueryEscape(p), &v); v.Value != key {
+		t.Fatalf("value after clear %q", v.Value)
+	}
 }
 
 // Try it under Settings › Privacy shows what a request would send: with

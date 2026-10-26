@@ -558,3 +558,86 @@ func TestKeyHoldsTakesAGatewayKey(t *testing.T) {
 		t.Fatalf("wiringOff: %s", d)
 	}
 }
+
+// A bot Hermes seeded or cloned from the connected config holds a copy of
+// the model magpie set there and never reads the main config again: it
+// follows the next model magpie sets, while a bot on a model its user
+// picked keeps it (tjhhhh_84378 on Discord: another profile still showed
+// the old model).
+func TestHermesProfilesFollowMagpieModel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HERMES_HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	if err := provider.Save(provider.Provider{ID: "deepseek", Name: "DeepSeek", Chat: "https://api.deepseek.com/v1", Key: "k", Models: []string{"pro", "flash", "max", "lite"}}); err != nil {
+		t.Fatal(err)
+	}
+	root := appdir.HermesHomeIn(home)
+	write := func(rel, s string) string {
+		p := filepath.Join(root, rel)
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		os.WriteFile(p, []byte(s), 0o644)
+		return p
+	}
+	model := func(p string) (string, string) {
+		var c struct {
+			Model struct{ Default, Model, Provider string }
+		}
+		b, _ := os.ReadFile(p)
+		yaml.Unmarshal(b, &c)
+		return c.Model.Default + c.Model.Model, c.Model.Provider
+	}
+	// connected before magpie kept a record of the model it set
+	write("config.yaml", "model:\n  default: deepseek/pro\n  provider: magpie\n")
+	// seeded by `hermes profile create` from that config
+	seeded := write("profiles/writer/config.yaml", "# writer bot\nmodel:\n  default: deepseek/pro\n  provider: magpie\n")
+	// a model its user picked in that bot, magpie's or its own
+	picked := write("profiles/coder/config.yaml", "model:\n  default: deepseek/lite\n  provider: magpie\n")
+	own := write("profiles/chat/config.yaml", "model:\n  default: deepseek/pro\n  provider: deepseek\n")
+	// model.model, which Hermes reads with default unset
+	old := write("profiles/old/config.yaml", "model:\n  model: deepseek/pro\n  provider: magpie\n")
+
+	a := hermes(home)
+	if err := a.Apply("model", "magpie/deepseek/flash"); err != nil {
+		t.Fatal(err)
+	}
+	check := func(when, p, want, wantProv string) {
+		t.Helper()
+		if m, prov := model(p); m != want || prov != wantProv {
+			b, _ := os.ReadFile(p)
+			t.Fatalf("%s: %s is on %s/%s, want %s/%s:\n%s", when, filepath.Base(filepath.Dir(p)), prov, m, wantProv, want, b)
+		}
+	}
+	check("flash", seeded, "deepseek/flash", "magpie")
+	check("flash", old, "deepseek/flash", "magpie")
+	check("flash", picked, "deepseek/lite", "magpie")
+	check("flash", own, "deepseek/pro", "deepseek")
+	if b, _ := os.ReadFile(seeded); !strings.Contains(string(b), "# writer bot") {
+		t.Fatalf("writer lost its comment:\n%s", b)
+	}
+
+	// the connected config on a model of its own between: the bots on
+	// magpie's last model still follow the next one magpie sets
+	if err := a.Apply("model", "moonshotai/kimi-k3"); err != nil {
+		t.Fatal(err)
+	}
+	check("own", seeded, "deepseek/flash", "magpie")
+	if err := a.Apply("model", "magpie/deepseek/max"); err != nil {
+		t.Fatal(err)
+	}
+	check("max", seeded, "deepseek/max", "magpie")
+	check("max", old, "deepseek/max", "magpie")
+	check("max", picked, "deepseek/lite", "magpie")
+	check("max", own, "deepseek/pro", "deepseek")
+
+	// a bot whose user moves it off magpie's model, onto the one magpie
+	// had before, keeps it
+	edit.SetYAML(seeded, edit.KV{Path: "model.default", Value: "deepseek/flash"})
+	if err := a.Apply("model", "magpie/deepseek/pro"); err != nil {
+		t.Fatal(err)
+	}
+	check("pro", seeded, "deepseek/flash", "magpie")
+	check("pro", old, "deepseek/pro", "magpie")
+}

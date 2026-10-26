@@ -10,6 +10,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -36,6 +38,8 @@ type helper struct {
 	stderr *tail
 	hello  hello
 	exited chan struct{}
+	// slow says magpie ended it, given too long to answer
+	slow atomic.Pointer[string]
 }
 
 // srv is the pf-serve magpie runs, one at a time. Its requests take
@@ -53,8 +57,15 @@ var srv struct {
 	// the CPU; gpuLost says why
 	cpu     bool
 	gpuLost string
-	// failed is why the last request got no answer, until one does
-	failed string
+	// failed is why the last request got no answer, until one does;
+	// lastErr is that error, fails how many requests in a row got none,
+	// and retryAt when the model is tried again: until then a request
+	// that needs it is held back at once (heldBack) rather than wait
+	// minutes for a load that failed the time before
+	failed  string
+	lastErr error
+	fails   int
+	retryAt time.Time
 	// loading is set while pf-serve loads the model
 	loading bool
 	// stop is closed by Stop: a load under way gives up, and the request
@@ -76,9 +87,35 @@ func stopCh() chan struct{} {
 	return srv.stop
 }
 
-// loadTimeout is how long pf-serve has to load the model: 1.6 GB read
-// from a slow disk, and the GPU's kernels built.
+// loadTimeout is how long pf-serve has to load the model on the CPU:
+// 1.6 GB read from a slow disk, and the warm-up's texts read on a slow
+// CPU (20s on an M4 Pro's).
 var loadTimeout = 3 * time.Minute
+
+// gpuLoadTimeout is how long it has on a GPU, where it takes seconds
+// (0.9-10s on an M4 Pro): one that takes longer is taken for hung, and
+// the CPU is tried, for the rest of magpie's run. It is well under the 2
+// minutes the gateway holds a request for (unroutedMost), so a GPU's
+// hung load and the CPU's after it fit in one request's wait: with 3
+// minutes for either, every request in a hung load was answered 504.
+var gpuLoadTimeout = 40 * time.Second
+
+// giveUp is when a load is given up on; a test ends one when its state
+// says so rather than after a duration.
+var giveUp = time.After
+
+// retryAfter is how long after the model failed a request that needs it
+// is held back at once, its n-th failure in a row: 30s, doubled each
+// time, 10 minutes at most. A model that fails on each try (a GPU's
+// driver that hangs, a CPU too slow for the requests) held every
+// request for its 2 minutes before, and each one tried it again.
+func retryAfter(n int) time.Duration {
+	d := 30 * time.Second
+	for i := 1; i < n && d < 10*time.Minute; i++ {
+		d *= 2
+	}
+	return min(d, 10*time.Minute)
+}
 
 // classifyTimeout is how long one request may take before pf-serve is
 // taken for hung and ended: a second for each 4 KB on the slowest CPU,
@@ -87,17 +124,28 @@ var classifyTimeout = func(bytes int) time.Duration {
 	return 30*time.Second + time.Duration(bytes/4096)*time.Second
 }
 
-// candidates are the programs to start, in turn: pf-serve-vulkan, where
-// there is one, needs the Vulkan loader a GPU's driver installs and
-// can't start without it; pf-serve runs anywhere.
-func candidates(cpu bool) []string {
-	var out []string
+// candidate is a program to start, and whether on the CPU.
+type candidate struct {
+	path string
+	cpu  bool
+}
+
+// candidates are the programs to start, in turn: on a GPU,
+// pf-serve-vulkan where there is one (it needs the Vulkan loader a GPU's
+// driver installs, and can't start without it), and macOS's pf-serve,
+// which runs on Metal; then pf-serve on the CPU, which runs anywhere.
+// macOS's was tried on Metal alone: one whose load hung there, or ended,
+// was tried again on Metal by every request (lazyeo, an M2).
+func candidates(cpu bool) []candidate {
+	var out []candidate
 	if !cpu {
 		if _, err := os.Stat(exe("pf-serve-vulkan")); err == nil {
-			out = append(out, exe("pf-serve-vulkan"))
+			out = append(out, candidate{exe("pf-serve-vulkan"), false})
+		} else if runtime.GOOS == "darwin" {
+			out = append(out, candidate{exe("pf-serve"), false})
 		}
 	}
-	return append(out, exe("pf-serve"))
+	return append(out, candidate{exe("pf-serve"), true})
 }
 
 // start runs pf-serve, the first of candidates that loads the model.
@@ -112,13 +160,24 @@ func start(cpu bool, stop <-chan struct{}) (*helper, error) {
 		upgrade()
 	}()
 	var errs []error
-	for _, path := range candidates(cpu) {
-		h, err := startOne(path, cpu, stop)
+	gpuLost := ""
+	for _, c := range candidates(cpu) {
+		h, err := startOne(c.path, c.cpu, stop)
 		if err == nil {
+			if gpuLost != "" {
+				// the GPU's failed and the CPU's loaded: the CPU for
+				// the rest of the run, as for a GPU that dies answering
+				srv.mu.Lock()
+				srv.cpu, srv.gpuLost = true, gpuLost
+				srv.mu.Unlock()
+			}
 			return h, nil
 		}
 		if errors.Is(err, errStopped) {
 			return nil, err
+		}
+		if !c.cpu {
+			gpuLost = err.Error()
 		}
 		errs = append(errs, err)
 	}
@@ -142,6 +201,10 @@ func startOne(path string, cpu bool, stop <-chan struct{}) (*helper, error) {
 	cmd.Env = append(os.Environ(), "GGML_METAL_NO_RESIDENCY=1")
 	if cpu {
 		cmd.Env = append(cmd.Env, "PF_DEVICE=cpu")
+	}
+	wait := loadTimeout
+	if !cpu {
+		wait = gpuLoadTimeout
 	}
 	in, err := cmd.StdinPipe()
 	if err != nil {
@@ -168,9 +231,9 @@ func startOne(path string, cpu bool, stop <-chan struct{}) (*helper, error) {
 	var s string
 	select {
 	case s = <-line:
-	case <-time.After(loadTimeout):
+	case <-giveUp(wait):
 		h.kill()
-		return nil, fmt.Errorf("%s: the model didn't load in %s", baseName(path), loadTimeout)
+		return nil, fmt.Errorf("%s: the model didn't load in %s%s", baseName(path), wait, onWhat(cpu))
 	case <-stop:
 		h.kill()
 		return nil, errStopped
@@ -191,20 +254,62 @@ func baseName(path string) string {
 	return path[strings.LastIndexByte(path, '/')+1:]
 }
 
-// died says why pf-serve ended: what it wrote to stderr last, or how it
-// exited.
+func onWhat(cpu bool) string {
+	if cpu {
+		return " on the CPU"
+	}
+	return " on the GPU"
+}
+
+// died says why pf-serve ended: that magpie ended it, given too long to
+// answer, or how it exited; and what it said last that isn't ggml's
+// startup lines. Those were all a user saw of a pf-serve magpie had
+// ended for being slow (lazyeo: "pf-serve ended: ggml_metal_device_init:
+// tensor API disabled for pre-M5 …", which every Mac before the M5
+// prints and means nothing).
 func (h *helper) died() string {
+	exited := true
 	select {
 	case <-h.exited:
 	case <-time.After(2 * time.Second):
+		exited = false
 	}
-	if t := strings.TrimSpace(h.stderr.String()); t != "" {
-		return t
+	var why []string
+	if s := h.slow.Load(); s != nil {
+		why = append(why, *s)
+	} else if exited && h.cmd.ProcessState != nil {
+		why = append(why, "ended ("+h.cmd.ProcessState.String()+")")
+	} else {
+		why = append(why, "ended")
 	}
-	if st := h.cmd.ProcessState; st != nil {
-		return st.String()
+	if t := lastSaid(h.stderr.String(), 3); t != "" {
+		why = append(why, t)
 	}
-	return "it ended"
+	return strings.Join(why, ": ")
+}
+
+// startup are the lines ggml writes as it starts, every time, on a GPU
+// and on the CPU alike: what the device is, the kernels it built.
+var startup = regexp.MustCompile(`^(ggml_metal_(device_init|library_init|init|free|library_compile_pipeline)|ggml_vulkan|load_backend|register_backend|register_device):`)
+
+// trouble is a line that says something went wrong, startup's or not.
+var trouble = regexp.MustCompile(`(?i)error|fail|assert|abort|unable|cannot|can't|could not|out of memory|exception|lost`)
+
+// lastSaid is the last n lines of stderr that say more than ggml's
+// startup, joined.
+func lastSaid(stderr string, n int) string {
+	var out []string
+	for _, l := range strings.Split(stderr, "\n") {
+		l = strings.TrimSpace(l)
+		if l == "" || startup.MatchString(l) && !trouble.MatchString(l) {
+			continue
+		}
+		out = append(out, l)
+	}
+	if len(out) > n {
+		out = out[len(out)-n:]
+	}
+	return strings.Join(out, " | ")
 }
 
 func (h *helper) kill() {
@@ -241,6 +346,8 @@ func Stop() {
 	}
 	srv.mu.Lock()
 	h := detachLocked()
+	// turned on again, it is tried at once
+	srv.lastErr, srv.fails, srv.retryAt = nil, 0, time.Time{}
 	if srv.stop != nil {
 		close(srv.stop)
 		srv.stop = nil
@@ -295,12 +402,32 @@ func end(h *helper) {
 func classify(texts []string) ([][]redact.Found, error) {
 	out, err := classifyTurn(texts)
 	srv.mu.Lock()
-	srv.failed = ""
-	if err != nil {
+	srv.failed, srv.lastErr = "", nil
+	switch {
+	case err == nil:
+		srv.fails, srv.retryAt = 0, time.Time{}
+	case errors.Is(err, errStopped):
+		// turned off, not failed
 		srv.failed = err.Error()
+	default:
+		srv.failed, srv.lastErr = err.Error(), err
+		srv.fails++
+		srv.retryAt = time.Now().Add(retryAfter(srv.fails))
 	}
 	srv.mu.Unlock()
 	return out, err
+}
+
+// heldBack is the error of a request that needs the model while it isn't
+// tried again yet, after it failed; nil when it may be tried.
+func heldBack() error {
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	if srv.lastErr == nil || !time.Now().Before(srv.retryAt) {
+		return nil
+	}
+	return fmt.Errorf("%w; it is tried again in %s, and until then a request it hasn't read is held back at once. To send requests masked by the rules alone, turn the model off in Settings → Privacy",
+		srv.lastErr, time.Until(srv.retryAt).Round(time.Second))
 }
 
 func classifyTurn(texts []string) ([][]redact.Found, error) {
@@ -409,11 +536,13 @@ func (h *helper) classify(texts []string) ([][]redact.Found, error) {
 		case <-done:
 		case <-time.After(timeout):
 			// a hung pf-serve: killed, its pipe ends the read below
+			s := fmt.Sprintf("didn't answer in %s (%d KB%s), so magpie ended it", timeout, (size+1023)/1024, onWhat(!h.hello.GPU))
+			h.slow.Store(&s)
 			h.cmd.Process.Kill()
 		}
 	}()
 	if _, err := h.in.Write(b.Bytes()); err != nil {
-		return nil, fmt.Errorf("%v (%s)", err, h.died())
+		return nil, fmt.Errorf("pf-serve %s (%v)", h.died(), err)
 	}
 	r := &reader{r: h.out}
 	status := r.u32()
@@ -482,7 +611,7 @@ func (r *reader) bytes(n int) []byte {
 
 func (r *reader) fail(h *helper) error {
 	if errors.Is(r.err, io.EOF) || errors.Is(r.err, io.ErrUnexpectedEOF) {
-		return fmt.Errorf("pf-serve ended: %s", h.died())
+		return fmt.Errorf("pf-serve %s", h.died())
 	}
 	return r.err
 }

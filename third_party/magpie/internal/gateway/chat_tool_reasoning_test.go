@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -62,7 +63,7 @@ func chatProvider(t *testing.T, up string, p provider.Provider) {
 // A Chat request relayed as it came to a DeepSeek model, here behind
 // OpenCode Go whose host doesn't say DeepSeek, gives every tool call
 // without reasoning_content one, so DeepSeek takes it (#1462). The
-// thinking a turn has keeps it, one sent in another field goes there too,
+// thinking a turn has keeps it, one sent in reasoning goes there instead,
 // and every other message goes as it was sent.
 func TestChatToolTurnWithoutReasoningRelayed(t *testing.T) {
 	f := &fake{t: t, reply: chatWholeOK, ctype: "application/json", refuse: deepseekRefuseToolTurns}
@@ -84,7 +85,7 @@ func TestChatToolTurnWithoutReasoningRelayed(t *testing.T) {
 		sameJSON(t, ms[1], `{"role":"assistant","content":"Hello!"}`)
 		sameJSON(t, ms[3], `{"role":"assistant","content":null,"tool_calls":[`+timeCall+`],"reasoning_content":" "}`)
 		sameJSON(t, ms[5], `{"role":"assistant","content":null,"tool_calls":[{"id":"call_2","type":"function","function":{"name":"get_time","arguments":"{}"}}],"reasoning_content":"Once more."}`)
-		sameJSON(t, ms[7], `{"role":"assistant","content":null,"tool_calls":[{"id":"call_3","type":"function","function":{"name":"get_time","arguments":"{}"}}],"reasoning":"OpenRouter's field.","reasoning_content":"OpenRouter's field."}`)
+		sameJSON(t, ms[7], `{"role":"assistant","content":null,"tool_calls":[{"id":"call_3","type":"function","function":{"name":"get_time","arguments":"{}"}}],"reasoning_content":"OpenRouter's field."}`)
 		sameJSON(t, ms[4], `{"role":"tool","tool_call_id":"call_1","content":"12:00"}`)
 	}
 
@@ -152,4 +153,63 @@ func TestTranslatedToolTurnWithoutReasoning(t *testing.T) {
 	if _, ok := reply["reasoning_content"]; reply == nil || ok {
 		t.Errorf("the reply was given reasoning: %s", f.got)
 	}
+}
+
+// selfHostedRefuseDuplicate answers as the reporter's self-hosted DeepSeek
+// server does: it reads reasoning and reasoning_content as one field, so a
+// message carrying both is turned away, and DeepSeek's own rule that a
+// tool turn needs its thinking back holds too.
+func selfHostedRefuseDuplicate(body []byte) (int, string) {
+	var q struct {
+		Messages []map[string]json.RawMessage `json:"messages"`
+	}
+	json.Unmarshal(body, &q)
+	for i, m := range q.Messages {
+		if m["reasoning"] != nil && m["reasoning_content"] != nil {
+			return 400, fmt.Sprintf(`{"error":{"message":"Failed to deserialize the JSON body into the target type: messages[%d]: duplicate field `+"`reasoning`"+`","type":"invalid_request_error"}}`, i)
+		}
+	}
+	return deepseekRefuseToolTurns(body)
+}
+
+// ArvinCharl on X (v0.1.1560): pi on a self-hosted DeepSeek through the
+// Chat path keeps the thinking the server gave in reasoning and sends it
+// back there. magpie gave the tool turn reasoning_content with the same
+// text and left reasoning in, and the server refused "duplicate field
+// reasoning". The thinking goes once, in reasoning_content; a message with
+// no tool turn to mend keeps its reasoning, and a body with no tool calls
+// goes byte for byte.
+func TestSelfHostedDeepSeekGetsReasoningOnce(t *testing.T) {
+	f := &fake{t: t, reply: chatWholeOK, ctype: "application/json", refuse: selfHostedRefuseDuplicate}
+	up := setup(t, provider.Chat, f)
+	chatProvider(t, up.URL, provider.Provider{ID: "ds-local", Models: []string{"deepseek-v4"}})
+	srv := New()
+	code, body := postTo(t, srv, "/v1/chat/completions", `{"model":"ds-local/deepseek-v4","stream":false,"tools":[{"type":"function","function":{"name":"read","parameters":{"type":"object","properties":{}}}}],"messages":[
+		{"role":"user","content":"Read note.txt."},
+		{"role":"assistant","content":"","reasoning":"I should read the file first.","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read","arguments":"{\"path\":\"note.txt\"}"}}]},
+		{"role":"tool","tool_call_id":"call_1","content":"hello"},
+		{"role":"assistant","content":"It says hello.","reasoning":"The file says hello.","reasoning_details":[{"type":"reasoning.encrypted","data":"gAAAA"}]},
+		{"role":"user","content":"Thanks."}]}`)
+	if code != 200 || f.calls != 1 {
+		t.Fatalf("%d after %d calls, sent %s: %s", code, f.calls, f.got, body)
+	}
+	ms := sentMessages(t, f.got)
+	sameJSON(t, ms[1], `{"role":"assistant","content":"","reasoning_content":"I should read the file first.","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read","arguments":"{\"path\":\"note.txt\"}"}}]}`)
+	// a reply to a tool result is given it as well (#1822); its
+	// reasoning_details, not another name for the text, stays
+	sameJSON(t, ms[3], `{"role":"assistant","content":"It says hello.","reasoning_content":"The file says hello.","reasoning_details":[{"type":"reasoning.encrypted","data":"gAAAA"}]}`)
+
+	// with no tool calls, the body goes as it was sent, reasoning and all
+	f.refuse, f.calls = nil, 0
+	plain := `{"model":"deepseek-v4","stream":false,"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"Hello!","reasoning":"Greet back."},{"role":"user","content":"bye"}]}`
+	if got := withReasoningOnToolTurns([]byte(plain)); string(got) != plain {
+		t.Errorf("a body with no tool calls changed:\n%s", got)
+	}
+}
+
+// Kimi, given reasoning_details' thinking as reasoning_content (#1765),
+// is not also sent the message's reasoning with the same text.
+func TestKimiReasoningDetailsWithReasoningGoOnce(t *testing.T) {
+	m := `{"messages":[{"role":"assistant","content":"91 = 7 x 13.","reasoning":"7*13=91.","reasoning_details":[{"type":"reasoning.text","text":"7*13=91.","index":0}]}]}`
+	sameJSON(t, sentMessages(t, reasoningDetailsAsContent([]byte(m)))[0], `{"role":"assistant","content":"91 = 7 x 13.","reasoning_content":"7*13=91."}`)
 }

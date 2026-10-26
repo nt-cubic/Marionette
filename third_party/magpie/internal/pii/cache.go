@@ -37,6 +37,9 @@ var disk struct {
 	loaded string // the file read into cache, once
 	timer  *time.Timer
 	saving sync.Mutex
+	// saves counts a timer's write from when it is set until it is
+	// done, so a test's cleanup can wait for one under way.
+	saves sync.WaitGroup
 }
 
 // loadCache reads the file into cache, the first time Find is asked.
@@ -70,7 +73,9 @@ func saveSoon() {
 	disk.mu.Lock()
 	defer disk.mu.Unlock()
 	if disk.timer == nil {
+		disk.saves.Add(1)
 		disk.timer = time.AfterFunc(saveAfter, func() {
+			defer disk.saves.Done()
 			disk.mu.Lock()
 			disk.timer = nil
 			disk.mu.Unlock()

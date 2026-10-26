@@ -38,8 +38,12 @@ func (s *Server) serveAgent(w http.ResponseWriter, r *http.Request, from provide
 	info := gwmw.Info{Protocol: string(from), Model: modelOf(body), Stream: streamOf(body), Path: r.URL.Path, Agent: agentOf(r)}
 	var tried []gwmw.Tried
 	for _, a := range agents {
+		// the user's middleware runs before a route is begun: a wait
+		// magpie knows of (unrouted.go)
+		waited := noteWait(r.Context())
 		run := a.Begin(info)
 		if run == nil {
+			waited()
 			continue
 		}
 		defer run.End()
@@ -48,6 +52,7 @@ func (s *Server) serveAgent(w http.ResponseWriter, r *http.Request, from provide
 		}
 		var turned *gwmw.Reject
 		body, turned = run.Request(body)
+		waited()
 		if turned != nil {
 			writeError(w, from, turned.Status, turned.Message)
 			return
@@ -98,7 +103,11 @@ func gatewayHooks(w http.ResponseWriter, r *http.Request, from provider.Protocol
 		info.Cwd = workDir(req)
 		info.Query = gatewayQuery(req)
 	}
+	// the plugin host, started for it if need be: a wait magpie knows of
+	// before a route is begun (unrouted.go)
+	waited := noteWait(r.Context())
 	run := plugin.GatewayBegin(r.Context(), body, info)
+	waited()
 	if run == nil {
 		return w, body, func() {}
 	}

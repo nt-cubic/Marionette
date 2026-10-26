@@ -80,6 +80,8 @@ type Provider struct {
 	KeyProtocol Protocol `json:"keyProtocol,omitempty"`
 	// KeyWeight is the first key's weight (see KeyAccount.Weight).
 	KeyWeight int `json:"keyWeight,omitempty"`
+	// KeyPlan is the first key's plan (see KeyAccount.Plan).
+	KeyPlan string `json:"keyPlan,omitempty"`
 
 	// Base URLs, one per protocol the vendor serves natively. magpie appends
 	// the usual paths: chat/responses bases end in /v1 (OpenAI style),
@@ -437,6 +439,10 @@ type Provider struct {
 	// Account is set when the provider is an agent the user signed in to
 	// (see account.go); it is derived, never stored.
 	Account *Account `json:"-"`
+
+	// keyView is set on p.WithKey(k): p as that one key is asked with,
+	// at its plan, whose keys no longer tell plans apart (plansMixed)
+	keyView bool
 }
 
 type file struct {
@@ -1026,7 +1032,7 @@ func AddCopy(p Provider, from string) (string, error) {
 		return "", fmt.Errorf("%s is a signed-in account, which can't be copied", src.Name)
 	}
 	if p.Key == "" {
-		p.Key, p.KeyName, p.KeyProtocol, p.KeyWeight = src.Key, src.KeyName, src.KeyProtocol, src.KeyWeight
+		p.Key, p.KeyName, p.KeyProtocol, p.KeyWeight, p.KeyPlan = src.Key, src.KeyName, src.KeyProtocol, src.KeyWeight, src.KeyPlan
 		p.Keys = slices.Clone(src.Keys)
 		p.Routing, p.Sink, p.Affinity = src.Routing, src.Sink, src.Affinity
 	}
@@ -1269,7 +1275,7 @@ func normalize(p Provider) Provider {
 		// in for neither that token nor a project, and the provider as
 		// found still saves
 		p.Chat, p.Responses, p.Anthropic, p.Gemini, p.Decide = "", "", "", "", ""
-		p.Key, p.KeyName, p.Keys, p.KeyProtocol, p.KeyWeight = "", "", nil, "", 0
+		p.Key, p.KeyName, p.Keys, p.KeyProtocol, p.KeyWeight, p.KeyPlan = "", "", nil, "", 0, ""
 	}
 	p.remoteMagpieEndpoints()
 	for _, u := range []*string{&p.Chat, &p.Responses, &p.Anthropic, &p.Gemini, &p.Decide, &p.Website, &p.KeysURL} {

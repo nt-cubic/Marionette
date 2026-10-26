@@ -1,0 +1,120 @@
+package agent
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/klauspost/compress/zstd"
+
+	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/settings"
+)
+
+// notnico64 on Discord: with Codex connected to magpie, `codex resume`
+// said "No sessions yet". Codex's resume picker (and the app's thread
+// list) shows only the threads of the provider Codex is on, and with no
+// ChatGPT sign-in magpie is Codex's provider, so every thread started on
+// OpenAI before was out of the list. Tried with Codex 0.162.1's real
+// picker: model_provider = "magpie" listed the magpie thread alone.
+//
+// Now the threads Codex started on OpenAI move to magpie while it is
+// Codex's provider, in place (the id is one length), the file's time
+// kept, and back at the Disconnect, with no copy of each. Threads Codex
+// has packed (.zst) stay, a provider of the user's stays, and OpenAI's
+// stay when Codex was on another provider before magpie.
+func TestCodexThreadsFollowMagpieIn(t *testing.T) {
+	const (
+		plain  = "019a0000-0000-7000-8000-0000000000c1"
+		packed = "019a0000-0000-7000-8000-0000000000c2"
+		theirs = "019a0000-0000-7000-8000-0000000000c3"
+	)
+	t.Run("on OpenAI before", func(t *testing.T) {
+		home, _ := codexHome(t, "", "model = \"gpt-5.4\"\n")
+		dir := filepath.Join(home, ".codex")
+		plainPath := codexThreadOn(t, dir, plain, "openai")
+		packThread(t, codexThreadOn(t, dir, packed, "openai"))
+		codexThreadOn(t, dir, theirs, "custom")
+		before, _ := os.Stat(plainPath)
+		cx := codex(home)
+		if err := cx.Fields[0].Set("fake/m1"); err != nil {
+			t.Fatal(err)
+		}
+		if p, _ := edit.GetTOMLTop(filepath.Join(dir, "config.toml"), "model_provider"); p != "magpie" {
+			t.Fatalf("provider %q, want magpie as Codex's provider with no sign-in", p)
+		}
+		// listed where Codex is now, at the switch itself
+		for id, want := range map[string]string{plain: "magpie", packed: "openai", theirs: "custom"} {
+			if p := codexRowOn(t, dir, id); p != want {
+				t.Errorf("connected: thread %s on %q, want %q", id, p, want)
+			}
+		}
+		b, _ := os.ReadFile(plainPath)
+		if !strings.Contains(string(b), `"model_provider":"magpie"`) {
+			t.Fatalf("rollout still on OpenAI:\n%s", b)
+		}
+		after, _ := os.Stat(plainPath)
+		if !after.ModTime().Equal(before.ModTime()) || after.Size() != before.Size() {
+			t.Fatalf("file changed beyond its provider: %v %d, was %v %d", after.ModTime(), after.Size(), before.ModTime(), before.Size())
+		}
+		// a sync leaves them so
+		if err := cx.Sync(); err != nil {
+			t.Fatal(err)
+		}
+		if p := codexRowOn(t, dir, plain); p != "magpie" {
+			t.Fatalf("after a sync: %q", p)
+		}
+		if err := cx.Unwire(); err != nil {
+			t.Fatal(err)
+		}
+		for id, want := range map[string]string{plain: "openai", packed: "openai", theirs: "custom"} {
+			if p := codexRowOn(t, dir, id); p != want {
+				t.Errorf("disconnected: thread %s on %q, want %q", id, p, want)
+			}
+		}
+		if b2, _ := os.ReadFile(plainPath); string(b2) != strings.Replace(string(b), `"model_provider":"magpie"`, `"model_provider":"openai"`, 1) {
+			t.Fatalf("rollout not as it was:\n%s", b2)
+		}
+		// moved in place both ways: no copy of the history in the trash
+		if l, _ := filepath.Glob(filepath.Join(settings.Dir(), "trash", "codex-provider", "*"+plain)); len(l) > 0 {
+			t.Fatalf("copied: %v", l)
+		}
+	})
+	t.Run("on a provider of the user's before", func(t *testing.T) {
+		cfg := "model = \"m\"\nmodel_provider = \"custom\"\n\n[model_providers.custom]\nname = \"custom\"\nbase_url = \"https://relay.example/v1\"\nwire_api = \"responses\"\n"
+		home, _ := codexHome(t, "", cfg)
+		dir := filepath.Join(home, ".codex")
+		codexThreadOn(t, dir, plain, "openai")
+		codexThreadOn(t, dir, theirs, "custom")
+		cx := codex(home)
+		if err := cx.Fields[0].Set("fake/m1"); err != nil {
+			t.Fatal(err)
+		}
+		cx.Sync()
+		for id, want := range map[string]string{plain: "openai", theirs: "custom"} {
+			if p := codexRowOn(t, dir, id); p != want {
+				t.Errorf("thread %s on %q, want %q", id, p, want)
+			}
+		}
+	})
+}
+
+// packThread packs a rollout as Codex does a week after its last turn:
+// the .zst beside it, the plain file gone, its row still naming the plain
+// path.
+func packThread(t *testing.T, path string) {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fi, _ := os.Stat(path)
+	z, _ := zstd.NewWriter(nil)
+	if err := os.WriteFile(path+".zst", z.EncodeAll(b, nil), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	z.Close()
+	os.Chtimes(path+".zst", fi.ModTime(), fi.ModTime())
+	os.Remove(path)
+}

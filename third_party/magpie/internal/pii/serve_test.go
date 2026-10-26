@@ -1,8 +1,12 @@
 package pii
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"os"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -109,8 +113,181 @@ func TestVulkanThatWontStartFallsBack(t *testing.T) {
 	if _, err := Find([]string{"hi Alice"}); err != nil {
 		t.Fatal(err)
 	}
-	if starts := fakeLines(t, log, "start"); !reflect.DeepEqual(starts, []string{"start pf-serve-vulkan MTL0", "start pf-serve MTL0"}) {
+	if starts := fakeLines(t, log, "start"); !reflect.DeepEqual(starts, []string{"start pf-serve-vulkan MTL0", "start pf-serve CPU"}) {
 		t.Fatalf("starts = %q", starts)
+	}
+}
+
+// A GPU whose load hangs (lazyeo's M2: pf-serve kept loading for over a
+// minute while every request was answered 504 after 2) is given
+// gpuLoadTimeout, then the CPU is tried, and kept for the rest of the
+// run. On macOS, whose pf-serve is Metal's, too: there it was the only
+// one tried.
+func TestHungGPULoadMovesToCPU(t *testing.T) {
+	for _, vulkan := range []bool{false, true} {
+		if !vulkan && runtime.GOOS != "darwin" {
+			continue // pf-serve is the CPU's alone there
+		}
+		t.Run(fmt.Sprint("vulkan=", vulkan), func(t *testing.T) {
+			log := fakeInstall(t, "gpuloadhang", vulkan)
+			gpu := "start pf-serve MTL0"
+			if vulkan {
+				gpu = "start pf-serve-vulkan MTL0"
+			}
+			// The GPU's load is given up once the stand-in has started
+			// on it, not after a duration a busy machine can outlast.
+			was, wasGiveUp := gpuLoadTimeout, giveUp
+			gpuLoadTimeout = 3 * time.Second
+			done := make(chan struct{})
+			giveUp = func(d time.Duration) <-chan time.Time {
+				if d != gpuLoadTimeout {
+					return wasGiveUp(d)
+				}
+				c := make(chan time.Time, 1)
+				go func() {
+					for {
+						b, _ := os.ReadFile(log)
+						if strings.Contains(string(b), gpu+"\n") {
+							c <- time.Now()
+							return
+						}
+						select {
+						case <-done:
+							return
+						case <-time.After(10 * time.Millisecond):
+						}
+					}
+				}()
+				return c
+			}
+			t.Cleanup(func() { close(done); gpuLoadTimeout, giveUp = was, wasGiveUp })
+			got := within10s(t, "a request in a hung GPU load", func() found {
+				fs, err := Find([]string{"hi Alice"})
+				return found{fs, err}
+			})
+			if got.err != nil || !reflect.DeepEqual(got.fs, [][]redact.Found{{person(3, 8)}}) {
+				t.Fatalf("Find = %v, %v", got.fs, got.err)
+			}
+			if starts := fakeLines(t, log, "start"); !reflect.DeepEqual(starts, []string{gpu, "start pf-serve CPU"}) {
+				t.Fatalf("starts = %q, want the GPU, then the CPU", starts)
+			}
+			if st := Now(); st.GPU || !strings.Contains(st.GPUError, "didn't load in 3s on the GPU") {
+				t.Fatalf("Now = %+v, want on the CPU saying the GPU didn't load", st)
+			}
+			Stop()
+			if _, err := Find([]string{"Alice again"}); err != nil {
+				t.Fatal(err)
+			}
+			if starts := fakeLines(t, log, "start"); len(starts) != 3 || starts[2] != "start pf-serve CPU" {
+				t.Fatalf("starts = %q, want the CPU straight away after", starts)
+			}
+		})
+	}
+}
+
+// The GPU's load budget leaves room in a request's 2 minutes (the
+// gateway's unroutedMost) for the CPU's load after it.
+func TestGPULoadBudgetFitsARequest(t *testing.T) {
+	if gpuLoadTimeout > time.Minute {
+		t.Fatalf("gpuLoadTimeout = %s: a hung GPU load and the CPU's after it don't fit in a request's 2m", gpuLoadTimeout)
+	}
+}
+
+// pf-serve that magpie ended for taking too long says so, not ggml's
+// startup lines, which were all lazyeo's Settings showed ("pf-serve
+// ended: ggml_metal_device_init: tensor API disabled for pre-M5 …").
+func TestEndedForSlownessSaysSo(t *testing.T) {
+	fakeInstall(t, "hang", false)
+	was := classifyTimeout
+	classifyTimeout = func(int) time.Duration { return 300 * time.Millisecond }
+	t.Cleanup(func() { classifyTimeout = was })
+	_, err := Find([]string{"hi Alice"})
+	if err == nil || !strings.Contains(err.Error(), "didn't answer in 300ms (1 KB") || !strings.Contains(err.Error(), "magpie ended it") {
+		t.Fatalf("err = %v, want it said magpie ended it for not answering", err)
+	}
+	if strings.Contains(err.Error(), "ggml_metal") || strings.Contains(Now().Failed, "ggml_metal") {
+		t.Fatalf("err = %v, want no ggml startup lines", err)
+	}
+}
+
+// One that dies says how it exited and its last words, past the startup.
+func TestDeathSaysExitAndLastWords(t *testing.T) {
+	fakeInstall(t, "asserts", false)
+	_, err := Find([]string{"hi Alice"})
+	if err == nil || !strings.Contains(err.Error(), "exit status 3") || !strings.Contains(err.Error(), "GGML_ASSERT(ne00 % 4 == 0) failed") {
+		t.Fatalf("err = %v, want the exit status and the assert", err)
+	}
+	if strings.Contains(err.Error(), "tensor API") || strings.Contains(err.Error(), "compiling pipeline") {
+		t.Fatalf("err = %v, want no ggml startup lines", err)
+	}
+}
+
+func TestLastSaid(t *testing.T) {
+	for _, x := range []struct{ in, want string }{
+		{"ggml_metal_device_init: tensor API disabled for pre-M5 and pre-A19 devices\nggml_metal_library_init: loaded in 0.323 sec\n", ""},
+		{"ggml_metal_init: allocating\nggml_metal_device_init: failed to allocate buffer\n", "ggml_metal_device_init: failed to allocate buffer"},
+		{"ggml_vulkan: Found 1 Vulkan devices:\nggml_metal: device lost\n", "ggml_metal: device lost"},
+		{"a\nb\nc\nd\n", "b | c | d"},
+	} {
+		if got := lastSaid(x.in, 3); got != x.want {
+			t.Errorf("lastSaid(%q) = %q, want %q", x.in, got, x.want)
+		}
+	}
+}
+
+func TestRetryAfter(t *testing.T) {
+	for n, want := range map[int]time.Duration{1: 30 * time.Second, 2: time.Minute, 3: 2 * time.Minute, 5: 8 * time.Minute, 6: 10 * time.Minute, 40: 10 * time.Minute} {
+		if got := retryAfter(n); got != want {
+			t.Errorf("retryAfter(%d) = %s, want %s", n, got, want)
+		}
+	}
+}
+
+// A model that failed holds the requests that need it back at once until
+// it is tried again, the ones queued behind the failing one too: each
+// tried it again before, a load and a timeout apiece, and every request
+// waited out its 2 minutes for a 504. They are still held back, never
+// sent masked by the rules alone. Stop (the model turned off and on)
+// tries it at once.
+func TestFailedModelHoldsRequestsBackAtOnce(t *testing.T) {
+	log := fakeInstall(t, "hang", false)
+	was := classifyTimeout
+	classifyTimeout = func(int) time.Duration { return 300 * time.Millisecond }
+	t.Cleanup(func() { classifyTimeout = was })
+	first := findAsync(context.Background(), "hi Alice")
+	waitFor(t, "the first request reaching pf-serve", func() bool { return len(fakeLines(t, log, "request")) == 1 })
+	queued := findAsync(context.Background(), "another Alice")
+	if r := within10s(t, "the first request", func() found { return <-first }); r.err == nil {
+		t.Fatal("the first request was answered by a hung pf-serve")
+	}
+	r := within10s(t, "the queued request", func() found { return <-queued })
+	if r.err == nil || !strings.Contains(r.err.Error(), "tried again in") || !strings.Contains(r.err.Error(), "didn't answer") {
+		t.Fatalf("the queued request: %v, want held back with the model's failure", r.err)
+	}
+	if _, err := Find([]string{"a third Alice"}); err == nil || !strings.Contains(err.Error(), "tried again in") {
+		t.Fatalf("a later request: %v, want held back", err)
+	}
+	if n := len(fakeLines(t, log, "start")); n != 2 {
+		t.Fatalf("started %d times, want 2: the first request's try and its one again", n)
+	}
+	srv.mu.Lock()
+	srv.retryAt = time.Now().Add(-time.Second)
+	srv.mu.Unlock()
+	if _, err := Find([]string{"a fourth Alice"}); err == nil || strings.Contains(err.Error(), "tried again in") {
+		t.Fatalf("once it's due: %v, want it tried and failing again", err)
+	}
+	if n := len(fakeLines(t, log, "start")); n != 4 {
+		t.Fatalf("started %d times, want 4 once it was due", n)
+	}
+	srv.mu.Lock()
+	again := srv.retryAt.Sub(time.Now())
+	srv.mu.Unlock()
+	if again < 40*time.Second {
+		t.Fatalf("tried again in %s after the second failure, want a minute", again)
+	}
+	Stop()
+	if err := heldBack(); err != nil {
+		t.Fatalf("after Stop: %v, want tried at once", err)
 	}
 }
 

@@ -5,7 +5,7 @@
 // plugin's picture, not its first provider's; the providers keep theirs in
 // the Add sheet. One whose package gives none still wears its first
 // provider's, as before. Every language, both engines, wide and narrow;
-// the API is faked here.
+// the API is faked here. A row's picture loads lazily, the page's at once.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -67,6 +67,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await suite.waitFor();
         assert.equal(await suite.locator(".pm-logo img").getAttribute("src"), "/api/icons/suite.png", "the plugin's own, not its first provider's");
         assert.equal(await row("plain").locator(".pm-logo img").getAttribute("src"), "/api/icons/pc.png", "none of its own: its first provider's, as before");
+        // a row's picture is asked for as it nears the screen: each SVG an
+        // <img> draws is a document of its own in the webview (#909); one
+        // on screen still loads
+        assert.equal(await suite.locator(".pm-logo img").getAttribute("loading"), "lazy");
+        await page.waitForFunction(() => document.querySelector("#view-plugins .pm-row .pm-logo img")?.naturalWidth > 0);
         const box = await suite.boundingBox();
         assert.ok(box.x >= 0 && box.x + box.width <= width, `the row fits: ${JSON.stringify(box)}`);
 
@@ -75,6 +80,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const dlg = page.locator("#modal .pm-detail");
         await dlg.waitFor();
         assert.equal(await dlg.locator(".pm-dhead .pm-logo img").getAttribute("src"), "/api/icons/suite.png");
+        assert.equal(await dlg.locator(".pm-dhead .pm-logo img").getAttribute("loading"), null, "the page's own picture loads at once");
         assert.deepEqual(errors, []);
         await page.context().close();
       });

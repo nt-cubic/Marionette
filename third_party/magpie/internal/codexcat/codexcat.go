@@ -195,6 +195,7 @@ func entriesAt(ms []catalog.Model, after int, effort string) []any {
 	own := CacheEntries()
 	v1 := V1()
 	work := settings.Load()
+	autoReview := AutoReviewModel()
 	var entries []any
 	for i, m := range ms {
 		if raw, ok := own[strings.TrimPrefix(m.ID, "codex/")]; ok && strings.HasPrefix(m.ID, "codex/") {
@@ -206,7 +207,7 @@ func entriesAt(ms []catalog.Model, after int, effort string) []any {
 			if v1 {
 				Stamp(e)
 			}
-			AutoReview(e)
+			AutoReview(e, autoReview)
 			entries = append(entries, e)
 			continue
 		}
@@ -216,7 +217,7 @@ func entriesAt(ms []catalog.Model, after int, effort string) []any {
 			Shell: "unified_exec", Visibility: "list", InAPI: true, Priority: after + i + 1,
 			ApplyPatch: "freeform", Tools: []string{}, Modalities: []string{"text"},
 			Tiers: []tier{}, SearchTool: true, Parallel: true,
-			AutoReview: work.CodexAutoReview,
+			AutoReview: autoReview,
 		}
 		if e.AutoReview == settings.CodexAutoReviewSession {
 			e.AutoReview = m.ID
@@ -616,12 +617,34 @@ func unstamp(e map[string]any, was string) {
 // own are left as OpenAI gave them, so the review runs on the session's
 // model.
 
-// AutoReview has one of Codex's own entries name the auto-review model the
-// user picked. With none picked, one magpie put there before — a magpie id,
+// SignInPlan is the plan of the ChatGPT account this machine's Codex is
+// signed in to, as its ID token names it ("free", "plus", "pro" …), ""
+// when it is unknown or Codex isn't signed in (provider.CodexSignInPlan).
+var SignInPlan func() string
+
+// AutoReviewModel is the auto-review setting in effect:
+// settings.CodexAutoReview, but with nothing picked and Codex signed in
+// to a Free ChatGPT plan, the session's (settings.CodexAutoReviewSession).
+// Left to Codex the review runs on codex-auto-review, kept as the default
+// for being free on a ChatGPT sign-in (#1593, from a paid account); on a
+// Free plan it is not (cybercaius on Discord measured it spending the
+// plan's allowance), so there it follows the session as Codex's other
+// side calls do. A plan magpie can't read keeps Codex's pick.
+func AutoReviewModel() string {
+	v := settings.Load().CodexAutoReview
+	if v == "" && SignInPlan != nil && strings.EqualFold(strings.TrimSpace(SignInPlan()), "free") {
+		return settings.CodexAutoReviewSession
+	}
+	return v
+}
+
+// AutoReview has one of Codex's own entries name the auto-review model in
+// effect, v (AutoReviewModel, read once for a whole list: it reads Codex's
+// sign-in). With none picked, one magpie put there before — a magpie id,
 // which has a "/" where OpenAI's slugs have none, kept in Codex's cache — is
 // taken out, and one OpenAI gave it is left.
-func AutoReview(e map[string]any) {
-	if v := settings.Load().CodexAutoReview; v != "" && v != settings.CodexAutoReviewSession {
+func AutoReview(e map[string]any, v string) {
+	if v != "" && v != settings.CodexAutoReviewSession {
 		e["auto_review_model_override"] = v
 	} else if was, _ := e["auto_review_model_override"].(string); strings.Contains(was, "/") {
 		delete(e, "auto_review_model_override")

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -33,7 +34,20 @@ import (
 // and is answered with an error once it has waited unroutedMost, with
 // magpie's log saying where every goroutine stood. Its context ends then
 // too, so what waits on it lets go.
-var unroutedShow, unroutedMost = 15 * time.Second, 2 * time.Minute
+//
+// Two minutes of a spinner before that error was a torment of its own
+// (sharwowwow on X). Most of what comes before a route is a wait magpie
+// knows of and that may rightly be long: the body still arriving (an
+// image over a slow link), masking (the local model), the routing
+// group's decision model, an image described for a model that can't see,
+// a Codex reset spent, the plugins' gateway hooks and JS middleware, a
+// slot or a minute's room (noteWait, notePhase). The rest is magpie's own
+// work: parsing, the catalog, the plan. A request that has spent
+// unroutedUnknown in none of those waits, added up however they came, is
+// answered then with the same error; one in those waits still has
+// unroutedMost. 30s is three times the slowest such work a report has
+// measured (a cold catalog sync, ~8.5s) and leaves a loaded machine room.
+var unroutedShow, unroutedUnknown, unroutedMost = 15 * time.Second, 30 * time.Second, 2 * time.Minute
 
 // unroutedWatched is whether a request to path is an agent's turn, which
 // is given a route once magpie knows where it goes: Chat, Responses,
@@ -178,6 +192,16 @@ type unroutedHold struct {
 	// masking counts the maskings under way for it: one held there waits
 	// for Settings → Privacy's local model, and its error says so
 	masking atomic.Int32
+
+	// the waits magpie knows it is in (noteWait), under wmu: how many are
+	// under way, since when one has been, the time spent in one before
+	// that, and whether unknown fired in one and looks again at its end
+	wmu     sync.Mutex
+	waits   int
+	since   time.Time
+	excused time.Duration
+	due     bool
+	unknown *time.Timer
 }
 
 type unroutedKey struct{}
@@ -191,14 +215,107 @@ func noteAsked(ctx context.Context, model string) {
 }
 
 // noteMasking tells ctx's watch its request is being masked, until the
-// func it answers is called.
+// func it answers is called: a wait it knows of.
 func noteMasking(ctx context.Context) func() {
 	u, _ := ctx.Value(unroutedKey{}).(*unroutedHold)
 	if u == nil {
 		return func() {}
 	}
 	u.masking.Add(1)
-	return func() { u.masking.Add(-1) }
+	waited := u.wait()
+	return func() { waited(); u.masking.Add(-1) }
+}
+
+// noteWait tells ctx's watch its request is in a wait magpie knows of
+// until the func it answers is called: the time it spends there counts
+// toward unroutedMost alone, not unroutedUnknown.
+func noteWait(ctx context.Context) (done func()) {
+	u, _ := ctx.Value(unroutedKey{}).(*unroutedHold)
+	if u == nil {
+		return func() {}
+	}
+	return u.wait()
+}
+
+// wait begins a known wait, and answers the func that ends it, once.
+func (u *unroutedHold) wait() func() {
+	u.wmu.Lock()
+	if u.waits == 0 {
+		u.since = time.Now()
+	}
+	u.waits++
+	u.wmu.Unlock()
+	var once sync.Once
+	return func() { once.Do(u.waited) }
+}
+
+// waited ends a known wait: the last to end adds its time to excused,
+// and if unknown fired meanwhile it is set for what is left of it.
+func (u *unroutedHold) waited() {
+	u.wmu.Lock()
+	defer u.wmu.Unlock()
+	if u.waits--; u.waits > 0 {
+		return
+	}
+	now := time.Now()
+	u.excused += now.Sub(u.since)
+	if u.due {
+		u.due = false
+		u.unknown.Reset(max(unroutedUnknown-u.unknownLocked(now), 0))
+	}
+}
+
+// unknownLocked is how long the request has been held in no known wait;
+// wmu is held.
+func (u *unroutedHold) unknownLocked(now time.Time) time.Duration {
+	d := now.Sub(u.f.start) - u.excused
+	if u.waits > 0 {
+		d -= now.Sub(u.since)
+	}
+	return d
+}
+
+// excusedFor is how long the request has been held in a known wait.
+func (u *unroutedHold) excusedFor() time.Duration {
+	u.wmu.Lock()
+	defer u.wmu.Unlock()
+	d := u.excused
+	if u.waits > 0 {
+		d += time.Since(u.since)
+	}
+	return d
+}
+
+// checkUnknown is unknown's timer: a request held unroutedUnknown in no
+// known wait is answered for; one in a wait now is looked at again when
+// it ends, and one with time left, when that is up.
+func (u *unroutedHold) checkUnknown() {
+	u.wmu.Lock()
+	if u.waits > 0 {
+		u.due = true
+		u.wmu.Unlock()
+		return
+	}
+	if left := unroutedUnknown - u.unknownLocked(time.Now()); left > 0 {
+		u.unknown.Reset(left)
+		u.wmu.Unlock()
+		return
+	}
+	u.wmu.Unlock()
+	u.giveUp(true)
+}
+
+// waitedBody is a watched request's body: the time spent waiting for it
+// to arrive is a known wait, however much of it is read where.
+type waitedBody struct {
+	io.ReadCloser
+	u *unroutedHold
+}
+
+func (b waitedBody) Read(p []byte) (int, error) {
+	done := b.u.wait()
+	defer done()
+	return b.ReadCloser.Read(p)
 }
 
 // watchUnrouted watches r, counted as f, until the func it answers is
@@ -210,15 +327,24 @@ func (s *Server) watchUnrouted(w http.ResponseWriter, r *http.Request, f *inflig
 	ctx, cancel := context.WithCancelCause(r.Context())
 	u := &unroutedHold{s: s, f: f, w: newHeldWriter(w), cancel: cancel}
 	r = r.WithContext(context.WithValue(ctx, unroutedKey{}, u))
+	if r.Body != nil && r.Body != http.NoBody {
+		r.Body = waitedBody{r.Body, u}
+	}
 	u.r = r
 	f.mu.Lock()
 	f.unrouted = u
 	f.mu.Unlock()
+	u.wmu.Lock()
+	u.unknown = time.AfterFunc(unroutedUnknown, u.checkUnknown)
+	u.wmu.Unlock()
 	show := time.AfterFunc(unroutedShow, u.show)
-	most := time.AfterFunc(unroutedMost, u.giveUp)
+	most := time.AfterFunc(unroutedMost, func() { u.giveUp(false) })
 	return u.w, r, func() {
 		show.Stop()
 		most.Stop()
+		u.wmu.Lock()
+		u.unknown.Stop()
+		u.wmu.Unlock()
 		f.mu.Lock()
 		// a timer that fired as the handler returned does nothing now
 		u.over = true
@@ -270,8 +396,9 @@ func (u *unroutedHold) routed() (drop *Route) {
 
 // giveUp answers the request with an error, when no route was begun for it
 // and its handler wrote nothing, ends its context, and says on its route
-// and in the log what held it.
-func (u *unroutedHold) giveUp() {
+// and in the log what held it. unknown: it was held unroutedUnknown in no
+// wait magpie knows of, rather than unroutedMost in all.
+func (u *unroutedHold) giveUp(unknown bool) {
 	f := u.f
 	f.mu.Lock()
 	if len(f.begun) > 0 || u.ended || u.over {
@@ -280,7 +407,10 @@ func (u *unroutedHold) giveUp() {
 	}
 	held := time.Since(f.start).Round(time.Second)
 	msg, where := unroutedMsg(held, u.masking.Load() > 0), ""
-	if u.masking.Load() > 0 {
+	switch {
+	case unknown:
+		where = fmt.Sprintf(" %s of it in no wait magpie knows of", unroutedUnknown)
+	case u.masking.Load() > 0:
 		where = " masking it"
 	}
 	if !u.w.answer(unroutedProto(u.r.URL.Path), http.StatusGatewayTimeout, msg) {

@@ -23,7 +23,7 @@ func SecretHeader(name string) bool { return secretHeader.MatchString(name) }
 // is another account's, whose access key this one's isn't.
 func KeepSecrets(in, here Provider, keyless bool) Provider {
 	if keyless {
-		in.Key, in.KeyName, in.Keys, in.KeyProtocol, in.KeyWeight = here.Key, here.KeyName, here.Keys, here.KeyProtocol, here.KeyWeight
+		in.Key, in.KeyName, in.Keys, in.KeyProtocol, in.KeyWeight, in.KeyPlan = here.Key, here.KeyName, here.Keys, here.KeyProtocol, here.KeyWeight, here.KeyPlan
 		// the headers a copy without keys left out, in a map of its own:
 		// in's may be shared with the list it came in
 		cloned := false

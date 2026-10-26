@@ -47,11 +47,18 @@ func closeStep(goos string, fullscreen bool) closeAction {
 	return closeHide
 }
 
+// mainClosedJS tells the page its window was closed: an account shown
+// while Hide accounts is on (its eye) is hidden again, as each is shown for
+// the window's session only (yogurt36 on Discord). The page stays loaded
+// while the window is hidden, so it can't tell by itself.
+const mainClosedJS = "window.hideAccounts?.closed?.()"
+
 // hideMain hides the main window, and takes magpie out of the Dock if it is
 // there only while the window is shown.
 func (h *host) hideMain() {
 	application.InvokeSync(func() {
 		if h.main != nil {
+			h.main.ExecJS(mainClosedJS)
 			h.main.Hide()
 		}
 	})

@@ -64,6 +64,8 @@ func helpFor(args []string) string {
 		return sessionsUsage
 	case "search":
 		return searchUsage
+	case "tool", "tools":
+		return toolUsage
 	case "visible":
 		return visibleUsage
 	case "webdav", "dav":

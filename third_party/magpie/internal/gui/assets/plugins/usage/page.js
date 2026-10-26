@@ -375,6 +375,7 @@ function quotaWho(q) {
     s.title = t("The same seat as the key plan {name}, shown once, on this account's card", { name: q.seat });
     out.push(s);
   } else if (q.seat) out[0].title += "\n" + t("The same seat as the key plan {name}, shown once, on this account's card", { name: q.seat });
+  if (q.user || q.alias) out.push(hideAccounts.eye(q.user || q.alias));
   return out;
 }
 

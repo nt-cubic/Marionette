@@ -293,6 +293,18 @@ var evalCases = []evalCase{
 		Text: "The 14:55Z errors came from our own org; Dana Whitfield is the lead if this turns out to be a settlement failure, and Priya wants it fixed first.",
 		Mask: []evalValue{{V: "Dana Whitfield", Kind: "PERSON"}, {V: "Priya", Kind: "PERSON"}},
 	},
+	// the owner's 脱敏 page, 10-26: a model's id beside a setting's key,
+	// and a toolchain's
+	{
+		ID: "settings-model", From: "owner",
+		Text: `[providers]` + "\n" + `groqAPIKey = "gsk_x…"` + "\n" + `groqAPIModel = "llama3-70b-8192"` + "\n" + `claudeAPIURL = "https://api.anthropic.com"` + "\n" + `claudeAPIModel = "claude-3-5-sonnet-20241022"`,
+		Keep: []evalValue{{V: "llama3-70b-8192", Kind: "SECRET"}, {V: "claude-3-5-sonnet-20241022", Kind: "SECRET"}},
+	},
+	{
+		ID: "rust-toolchain", From: "owner",
+		Text: "- MSRV check. The repo's minimum rust-version is 1.78. Pinning to `nightly-2026-09-01` (about 7 weeks old) is plausible.\n- Risk: the pinned toolchain lacks fixes.",
+		Keep: []evalValue{{V: "nightly-2026-09-01", Kind: "PERSON"}},
+	},
 
 	// ---- what masking is for --------------------------------------------
 	{

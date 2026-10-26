@@ -363,6 +363,16 @@ func classifyEffort(model string) string {
 // any other model through the gateway itself, as a client would: which of
 // intents the message is and, when effort, how hard the turn is, each in a
 // call of its own, at once.
+// askWaited is ask with each question a wait ctx's watch knows of
+// (noteWait): a routing group's decision model is asked before the
+// request's route is begun.
+func askWaited(ctx context.Context, ask classifier) classifier {
+	return func(model string, intents []string, prev before, effort bool, text string) (verdict, error) {
+		defer noteWait(ctx)()
+		return ask(model, intents, prev, effort, text)
+	}
+}
+
 func (s *Server) askClassifier(model string, intents []string, prev before, effort bool, text string) (verdict, error) {
 	if p, m, ok := provider.Resolve(model); ok && p.DecidesModel(m) {
 		return s.askDecider(p, m, intents, prev, effort, text)

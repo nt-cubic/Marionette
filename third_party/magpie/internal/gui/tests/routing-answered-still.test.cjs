@@ -104,6 +104,23 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(s.moving, 1);
         assert.equal(s.flowing, 2, "the agent's wire and the fold's");
         assert.equal(s.lit, 0);
+        // each flows as its copy in .rt-flows, a layer of its own, and is
+        // itself hidden: in the svg of every wire, WebView2 drew all of them
+        // again each frame one flowed (#3164)
+        // (a wire's d set anew is copied on the next frame)
+        const same = () => {
+          const ds = (q) => [...document.querySelectorAll(q)].map((p) => p.getAttribute("d")).sort().join();
+          return document.querySelectorAll(".rt-flows path[d]").length === 2 && ds(".rt-wires path.live[d]") === ds(".rt-flows path[d]");
+        };
+        await page.waitForFunction(same);
+        assert.deepEqual(await page.evaluate(() => {
+          const live = [...document.querySelectorAll(".rt-wires path.live[d]")], copies = [...document.querySelectorAll(".rt-flows path[d]")];
+          return {
+            hidden: live.filter((p) => getComputedStyle(p).visibility === "hidden" && getComputedStyle(p).animationName === "none").length,
+            moving: copies.filter((p) => getComputedStyle(p).animationName === "rtflow").length,
+            layer: getComputedStyle(document.querySelector(".rt-flows")).willChange,
+          };
+        }), { hidden: 2, moving: 2, layer: "transform" });
         assert.match((await fold.locator("em").textContent()).trim(), new RegExp("^ag-2: " + (await say("answering…")).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 
         // opened, the key with the request is the one that flows
@@ -120,6 +137,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(s.moving, 0);
         assert.equal(s.flowing, 0);
         assert.equal(s.lit, 2, "the fold's wire and the key's");
+        await page.waitForFunction(() => !document.querySelector(".rt-flows path"));
+        assert.equal(await page.locator(".rt-wires path.flown").count(), 0);
 
         // a reload shows it the same: lit and still
         await page.reload();

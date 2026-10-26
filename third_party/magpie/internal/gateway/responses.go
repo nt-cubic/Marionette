@@ -763,7 +763,7 @@ func orphanedToolOutputs(body []byte) []byte {
 			content = append(content, map[string]any{"type": "input_text", "text": text})
 		}
 		for _, image := range images {
-			content = append(content, map[string]any{"type": "input_image", "detail": "auto", "image_url": dataURL(image)})
+			content = append(content, map[string]any{"type": "input_image", "detail": responsesDetail(image.Detail), "image_url": dataURL(image)})
 		}
 		if len(content) == 0 {
 			content = append(content, map[string]any{"type": "input_text", "text": "Tool result received."})
@@ -887,6 +887,7 @@ func responsesParts(raw json.RawMessage) []Part {
 		Type     string `json:"type"`
 		Text     string `json:"text"`
 		ImageURL string `json:"image_url"`
+		Detail   string `json:"detail"`
 	}
 	decodeJSON(raw, &items)
 	var out []Part
@@ -896,7 +897,9 @@ func responsesParts(raw json.RawMessage) []Part {
 			out = append(out, Part{Kind: Text, Text: it.Text})
 		case "input_image":
 			if it.ImageURL != "" {
-				out = append(out, imagePart(it.ImageURL))
+				im := imagePart(it.ImageURL)
+				im.Detail = it.Detail
+				out = append(out, im)
 			}
 		}
 	}
@@ -1160,7 +1163,7 @@ func buildResponses(r *Request, model, host string, rejectTemp bool) []byte {
 				content = append(content, map[string]any{"type": t, "text": attachmentText(p)})
 			case Image:
 				if m.Role != "assistant" {
-					content = append(content, map[string]any{"type": "input_image", "detail": "auto", "image_url": dataURL(p)})
+					content = append(content, map[string]any{"type": "input_image", "detail": responsesDetail(p.Detail), "image_url": dataURL(p)})
 				}
 			case Thinking:
 				if !replay && sealedReasoning(p) {
@@ -1197,7 +1200,7 @@ func buildResponses(r *Request, model, host string, rejectTemp bool) []byte {
 						items = append(items, map[string]any{"type": "input_text", "text": p.Text})
 					}
 					for _, im := range p.Images {
-						items = append(items, map[string]any{"type": "input_image", "detail": "auto", "image_url": dataURL(im)})
+						items = append(items, map[string]any{"type": "input_image", "detail": responsesDetail(im.Detail), "image_url": dataURL(im)})
 					}
 					output = items
 				}

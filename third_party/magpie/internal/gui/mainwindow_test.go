@@ -3,6 +3,8 @@
 package gui
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -74,5 +76,40 @@ func TestFullscreenKeepsDock(t *testing.T) {
 		if got := inDock(c.s, c.shown, c.fullscreen); got != c.want {
 			t.Errorf("inDock(%+v, shown=%v, fullscreen=%v) = %v, want %v", c.s, c.shown, c.fullscreen, got, c.want)
 		}
+	}
+}
+
+// yogurt36 on Discord: an account shown by its eye while Hide accounts is on
+// is shown for the window's session only. Closing the window only hides it,
+// so hideMain tells the page; the call it makes is one app.js answers, and
+// what answers it forgets every account shown.
+func TestClosingHidesShownAccounts(t *testing.T) {
+	if mainClosedJS != "window.hideAccounts?.closed?.()" {
+		t.Fatalf("hideMain runs %q", mainClosedJS)
+	}
+	src, err := os.ReadFile("mainwindow.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, hide, _ := strings.Cut(string(src), "func (h *host) hideMain() {")
+	hide, _, _ = strings.Cut(hide, "\n}\n")
+	if i, j := strings.Index(hide, "h.main.ExecJS(mainClosedJS)"), strings.Index(hide, "h.main.Hide()"); i < 0 || j < i {
+		t.Fatalf("hideMain doesn't tell the page before it hides the window:%s", hide)
+	}
+	js, err := os.ReadFile("assets/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, fn, ok := strings.Cut(string(js), "window.hideAccounts = {")
+	if !ok {
+		t.Fatal("app.js has no window.hideAccounts")
+	}
+	_, fn, ok = strings.Cut(fn, "\n    closed: () => {")
+	if !ok {
+		t.Fatal("window.hideAccounts has no closed")
+	}
+	fn, _, _ = strings.Cut(fn, "\n")
+	if !strings.Contains(fn, "shown.clear()") {
+		t.Fatalf("closed forgets no shown account: %q", fn)
 	}
 }

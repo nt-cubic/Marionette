@@ -1,11 +1,11 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"regexp"
 	"slices"
@@ -506,12 +506,15 @@ func pluginFetch(pp plugin.Provider, account string, req *http.Request) (*http.R
 	ctx := req.Context()
 	var body []byte
 	if req.Body != nil {
-		b, err := io.ReadAll(req.Body)
+		// read into the length said: io.ReadAll grows from 512 bytes, so a
+		// 1 MB request was some 3 MB read (#3472)
+		buf := bytes.NewBuffer(make([]byte, 0, max(req.ContentLength, 0)+bytes.MinRead))
+		_, err := buf.ReadFrom(req.Body)
 		req.Body.Close()
 		if err != nil {
 			return nil, err
 		}
-		body = b
+		body = buf.Bytes()
 	}
 	rest := strings.TrimPrefix(req.URL.String(), pluginBase+pp.ID)
 	model := bodyModel(body)

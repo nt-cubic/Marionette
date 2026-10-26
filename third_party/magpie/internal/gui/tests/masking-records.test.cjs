@@ -67,6 +67,7 @@ const records = [
 
 function serve(lang, sum, asked, opts = {}) {
   const settings = { theme: "light", lang, tray: "panel", currency: "usd", redact: !opts.off, redactPersonal: !opts.off, redactActions: { PRIVATE_KEY: "block" }, ...opts.settings };
+  let cleared = false;
   return async (route) => {
     const req = route.request(), url = new URL(req.url());
     const json = (data) => route.fulfill({ json: data });
@@ -89,11 +90,20 @@ function serve(lang, sum, asked, opts = {}) {
     if (url.pathname === "/api/groups") return json({ groups: [], models: [] });
     if (url.pathname === "/api/plugins") return json({ plugins: [] });
     if (url.pathname === "/api/privacy-model") return json({ supported: true, installed: false, size: 1.6e9 });
-    if (url.pathname === "/api/masking/summary") return json(sum(+url.searchParams.get("days")));
+    if (url.pathname === "/api/masking/clear") {
+      asked.push("clear " + req.method());
+      if (opts.clearFails) return route.fulfill({ status: 500, body: "remove 2026-10-26.jsonl: permission denied" });
+      cleared = true;
+      return json({ cleared: true });
+    }
+    if (url.pathname === "/api/masking/summary") {
+      const s = sum(+url.searchParams.get("days"));
+      return json(cleared ? { ...s, days: s.days.map((d) => ({ ...d, requests: 0, n: 0, distinct: 0 })), requests: 0, n: 0, distinct: 0, blocked: 0, kinds: [], by: {}, agents: [], providers: [], values: [] } : s);
+    }
     if (url.pathname === "/api/masking/records") {
       asked.push(url.search);
       const q = url.searchParams, kinds = q.get("kind")?.split(",");
-      const rs = (opts.none ? [] : opts.records || records).filter((r) => (!kinds || r.values.some((v) => kinds.includes(v.k))) && (!q.get("by") || r.values.some((v) => v.b === q.get("by")))
+      const rs = (opts.none || cleared ? [] : opts.records || records).filter((r) => (!kinds || r.values.some((v) => kinds.includes(v.k))) && (!q.get("by") || r.values.some((v) => v.b === q.get("by")))
         && (!q.get("agent") || r.agent === q.get("agent")) && (!q.get("provider") || r.provider === q.get("provider")) && (!q.get("blocked") || r.blocked));
       return json({ records: rs, more: false });
     }
@@ -442,4 +452,59 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.deepEqual(errors, []);
     });
   }
+}
+
+// Clear records… deletes what masking kept, after a confirm (maxyou2090:
+// strict masking had kept many records): Cancel sends nothing, Clear posts
+// once and the page reads again to nothing; a failed clear says why and
+// lists what is still there
+for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
+  for (const lang of ["en", "zh", "zh-TW", "ja", "de"]) {
+    for (const width of [1100, 640]) {
+      test(`${engine} ${lang} ${width}px: Clear records asks first, then empties the page`, async (t) => {
+        const { browser, page, errors, asked } = await open(engine, lang, width, summary);
+        t.after(() => browser.close());
+        const list = page.locator("#maskList"), clear = list.locator(".msk-foot .msk-clear");
+        await list.locator(".msk-row").first().waitFor();
+        await clear.waitFor();
+        assert.deepEqual(await wide(page), { page: false, over: [] });
+        await shot(page, `clear-${engine}-${lang}-${width}`);
+        await stillClick(page, clear);
+        const dialog = page.locator("dialog.action-confirm");
+        await dialog.waitFor();
+        await shot(page, `confirm-${engine}-${lang}-${width}`);
+        if (lang !== "en") {
+          const said = await dialog.innerText();
+          for (const w of ["Clear masking records", "is deleted from this computer", "Cancel"]) assert(!said.includes(w), `${w} left in English: ${said}`);
+        }
+        await dialog.locator("button:not(.primary)").click();
+        await dialog.waitFor({ state: "detached" });
+        await page.waitForTimeout(100);
+        assert(!asked.some((a) => a.startsWith("clear")), "Cancel sends nothing");
+        assert(await list.locator(".msk-row").count() > 0, "Cancel keeps the list");
+        await clear.click();
+        await dialog.locator("button.primary").click();
+        await list.locator(".msk-none").waitFor();
+        assert.deepEqual(asked.filter((a) => a.startsWith("clear")), ["clear POST"]);
+        assert.equal(await list.locator(".msk-row").count(), 0);
+        await clear.waitFor({ state: "detached" });
+        await untranslated(page, lang);
+        assert.deepEqual(await wide(page), { page: false, over: [] });
+        assert.deepEqual(errors, []);
+      });
+    }
+  }
+  test(`${engine}: a clear that fails says why and keeps the list`, async (t) => {
+    const { browser, page, errors, asked } = await open(engine, "en", 1100, summary, "", { clearFails: true });
+    t.after(() => browser.close());
+    const list = page.locator("#maskList");
+    await list.locator(".msk-row").first().waitFor();
+    await list.locator(".msk-foot .msk-clear").click();
+    await page.locator("dialog.action-confirm button.primary").click();
+    await until(() => asked.includes("clear POST"));
+    await page.locator("#status", { hasText: "permission denied" }).waitFor();
+    await list.locator(".msk-row").first().waitFor();
+    assert.equal(await list.locator(".msk-row").count(), 3, "every record still listed");
+    assert.deepEqual(errors, []);
+  });
 }

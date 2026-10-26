@@ -84,6 +84,9 @@ func inflightOf(ctx context.Context) *inflight {
 // func that puts back where it stood before: a try out at the vendor whose
 // own requests wait for room in the minute (rpmTransport) is out at the
 // vendor again once they go.
+//
+// A phase is a wait magpie knows of (noteWait): one before a route is
+// begun has unroutedMost, not unroutedUnknown.
 func notePhase(ctx context.Context, phase string) (restore func()) {
 	f := inflightOf(ctx)
 	if f == nil {
@@ -91,7 +94,8 @@ func notePhase(ctx context.Context, phase string) (restore func()) {
 	}
 	was, _ := f.phase.Load().(string)
 	f.phase.Store(phase)
-	return func() { f.phase.Store(was) }
+	waited := noteWait(ctx)
+	return func() { waited(); f.phase.Store(was) }
 }
 
 // noteRoute ties ctx's request in flight to its routing trace, the first

@@ -339,6 +339,13 @@ type Settings struct {
 	// checked against the SHA-256 the update feed at usemagpie.ai gives,
 	// never one from the mirror. magpie update mirror sets it.
 	UpdateMirror string `json:"updateMirror,omitempty"`
+	// UpdateChannel is which versions an update is offered: "" every
+	// version as it comes out, the default; UpdateStable ("stable") one a
+	// week, the newest that had been out three days as the week began, or
+	// an urgent one (a security hole, a ban risk, lost data) at once, from
+	// the update feed's ?channel=stable (ssharpcc on X). Settings' Update
+	// channel and magpie update channel set it.
+	UpdateChannel string `json:"updateChannel,omitempty"`
 	// Vision is the model that describes an image to a model that can't see
 	// it: a model's id (provider/model, group/<id>), "off" to turn such an
 	// image away, or empty for one magpie picks (see gateway.seer).
@@ -853,6 +860,10 @@ func CheckModelPrice(key string, m ModelPrice) error {
 // provider it came through, its id lower-cased after it.
 const AnyProvider = "*/"
 
+// UpdateStable is UpdateChannel's Stable: a version a week, an urgent one
+// at once.
+const UpdateStable = "stable"
+
 // anArticle is the article a word takes where a message names it, so that an
 // input price is not "a input price".
 func anArticle(word string) string {
@@ -946,6 +957,8 @@ var (
 	Warmups = []string{"", "week", "all"}
 	// TrayEvery are TrayUsageEvery's values, in minutes.
 	TrayEvery = []int{1, 3, 5, 10, 30}
+	// UpdateChannels are UpdateChannel's values: every version, Stable.
+	UpdateChannels = []string{"", UpdateStable}
 	// UpdateEveries are UpdateEvery's values, in minutes.
 	UpdateEveries = []int{30, 60, 360, 1440}
 	// TextSizes are TextSize's values, in percent. None is under 100: the
@@ -1467,6 +1480,9 @@ func save(s Settings, recording bool) error {
 	}
 	if !slices.Contains(UpdateEveries, s.UpdateEvery) {
 		return fmt.Errorf("magpie checks for updates every %v minutes, not %d", UpdateEveries, s.UpdateEvery)
+	}
+	if !slices.Contains(UpdateChannels, s.UpdateChannel) {
+		return fmt.Errorf("the update channel is %q (stable) or empty (every version), not %q", UpdateStable, s.UpdateChannel)
 	}
 	if m := s.UpdateMirror; m != "" {
 		if u, err := url.Parse(m); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {

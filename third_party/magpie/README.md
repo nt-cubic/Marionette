@@ -67,6 +67,7 @@ magpie group add "Opus anywhere" models=claude/claude-opus-5-5,copilot/claude-op
 magpie claude group/opus-anywhere               # fails over between subscriptions
 magpie save work && magpie use work             # profiles
 magpie quota                                    # what's left on every plan
+magpie tool generate_image "a magpie, watercolour" -o hero.png   # magpie's image, vision and search tools, called directly
 magpie tui                                      # the whole thing, in a terminal
 ```
 

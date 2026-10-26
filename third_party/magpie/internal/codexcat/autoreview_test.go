@@ -109,3 +109,44 @@ func TestCodexAutoReviewFollowsTheSession(t *testing.T) {
 		}
 	}
 }
+
+// cybercaius on Discord: codex-auto-review, kept as the default for being
+// free on a ChatGPT sign-in (#1593), is not free on a Free plan. With
+// nothing picked and Codex signed in to one, the review follows the
+// session; on another plan, or one magpie can't read, it stays Codex's
+// pick, and a model the user picked is kept on any plan.
+func TestCodexAutoReviewOnAFreePlan(t *testing.T) {
+	v1Home(t, `{"etag":"W/\"a\"","models":[{"slug":"gpt-6","base_instructions":"x"},{"slug":"gpt-8","base_instructions":"x","auto_review_model_override":"codex-auto-review"}]}`)
+	plan := "free"
+	was := SignInPlan
+	SignInPlan = func() string { return plan }
+	t.Cleanup(func() { SignInPlan = was })
+	ms := []catalog.Model{
+		{ID: "codex/gpt-6", Name: "GPT-6 · Codex"},
+		{ID: "codex/gpt-8", Name: "GPT-8 · Codex"},
+		{ID: "token/gpt-6.1-sol", Name: "GPT-6.1 Sol"},
+	}
+	check := func(what string, want map[string]any) {
+		t.Helper()
+		got := overrides(t, ms)
+		for k, v := range want {
+			if got[k] != v {
+				t.Fatalf("%s: %s = %v, want %v (%v)", what, k, got[k], v, got)
+			}
+		}
+	}
+	check("free", map[string]any{"codex/gpt-6": "none", "codex/gpt-8": "codex-auto-review", "token/gpt-6.1-sol": "token/gpt-6.1-sol"})
+	if got := AutoReviewModel(); got != settings.CodexAutoReviewSession {
+		t.Fatalf("free: in effect %q", got)
+	}
+	for _, plan = range []string{"plus", ""} {
+		check("plan "+plan, map[string]any{"codex/gpt-6": "none", "codex/gpt-8": "codex-auto-review", "token/gpt-6.1-sol": "none"})
+	}
+	plan = "free"
+	s := settings.Load()
+	s.CodexAutoReview = "deepseek/deepseek-flash"
+	if err := settings.Save(s); err != nil {
+		t.Fatal(err)
+	}
+	check("picked", map[string]any{"codex/gpt-6": "deepseek/deepseek-flash", "codex/gpt-8": "deepseek/deepseek-flash", "token/gpt-6.1-sol": "deepseek/deepseek-flash"})
+}

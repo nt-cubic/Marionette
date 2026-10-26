@@ -185,12 +185,16 @@ func claudeDesktop(home string) *Agent {
 			},
 		}}, append(desktopTierFields(ps), desktopSubagentField(ps), desktopSubagentEffortField(ps))...),
 		// a Desktop already on magpie gets the import policy too
-		// (desktopSeedImport); nothing else is written here
+		// (desktopSeedImport), and a profile for magpie's gateway it
+		// applies a key the gateway takes (desktopKeyApplied)
 		Sync: func() error {
 			var errs []error
 			for _, p := range ps {
 				if desktopWired(p) {
 					if err := desktopSeedImport(p); err != nil {
+						errs = append(errs, err)
+					}
+					if err := desktopKeyApplied(p); err != nil {
 						errs = append(errs, err)
 					}
 					// a Desktop on magpie from before the servers were
@@ -237,11 +241,79 @@ func desktopCheck(p desktopPaths) string {
 	if m != "3p" || m3 != "3p" {
 		return "Claude Desktop's deploymentMode (claude_desktop_config.json) is no longer 3p, so it signs in with Anthropic rather than using magpie"
 	}
+	prof := p.prof
 	if id, _ := edit.GetJSON(p.meta, "appliedId"); id != desktopProfileID {
-		return "Claude Desktop uses another gateway configuration now (appliedId in configLibrary/_meta.json), not magpie's"
+		// one for magpie's gateway the user applied is on magpie too
+		if prof = desktopAppliedGateway(p); prof == "" {
+			return "Claude Desktop uses another gateway configuration now (appliedId in configLibrary/_meta.json), not magpie's"
+		}
 	}
-	return wiringOff("Claude Desktop", p.prof, func(k string) (string, bool) { return edit.GetJSON(p.prof, k) },
-		"inferenceGatewayBaseUrl", gateway.URL(), "inferenceGatewayApiKey", agentKey("claude-desktop"))
+	want := agentKey("claude-desktop")
+	return wiringOff("Claude Desktop", prof, func(k string) (string, bool) {
+		v, ok := edit.GetJSON(prof, k)
+		if k == "inferenceGatewayApiKey" && prof != p.prof && desktopKeyTaken(v, want) {
+			return want, true // a key of magpie's other than Desktop's own
+		}
+		return v, ok
+	}, "inferenceGatewayBaseUrl", gateway.URL(), "inferenceGatewayApiKey", want)
+}
+
+// desktopKeyTaken: the gateway takes v where magpie gives Desktop want,
+// as keyHolds says, or v is a key of magpie's own (gateway.Token, or one
+// naming an agent) where want is one too: the gateway takes those alike.
+func desktopKeyTaken(v, want string) bool {
+	return keyHolds(v, want) || gatewayKey(want) && v != "" && gatewayKey(v)
+}
+
+// desktopAppliedGateway is the configLibrary profile Desktop applies when
+// it is not magpie's own but a gateway profile for magpie's gateway, ""
+// for none. Desktop's "Import configuration" makes one: it adds the file
+// it is given as a new entry under an id of its own (configLibrary's
+// createConfig, a random UUID) and writes the file's settings into it, so
+// magpie's profile exported on one computer and imported on another is
+// applied there under another id, with the connectors (managedMcpServers)
+// and settings the user made in it (aa86222 on Discord: 配置已变更 while
+// Desktop ran on magpie). It is the user's profile: magpie keeps it
+// applied and sets nothing in it but a key the gateway refuses.
+func desktopAppliedGateway(p desktopPaths) string {
+	id, _ := edit.GetJSON(p.meta, "appliedId")
+	if id == "" || id == desktopProfileID || filepath.Base(id) != id || strings.HasPrefix(id, ".") {
+		return ""
+	}
+	f := filepath.Join(p.library, id+".json")
+	b, err := os.ReadFile(f)
+	if err != nil || !desktopObjectBytes(b) {
+		return ""
+	}
+	var prof struct {
+		Provider string `json:"inferenceProvider"`
+		BaseURL  string `json:"inferenceGatewayBaseUrl"`
+	}
+	if json.Unmarshal(b, &prof) != nil || prof.Provider != "gateway" || !desktopIsOurGateway(prof.BaseURL) {
+		return ""
+	}
+	return f
+}
+
+// desktopKeyApplied gives the profile desktopAppliedGateway finds the
+// key magpie gives Desktop, only where the one it holds is a key this
+// gateway won't take (another magpie's, from the computer it was exported
+// on): one it takes stays. Its address and every other setting, its
+// connectors among them, stay as they are.
+func desktopKeyApplied(p desktopPaths) error {
+	f := desktopAppliedGateway(p)
+	if f == "" {
+		return nil
+	}
+	want := agentKey("claude-desktop")
+	if v, _ := edit.GetJSON(f, "inferenceGatewayApiKey"); desktopKeyTaken(v, want) {
+		return nil
+	}
+	kvs := []edit.KV{{Path: "inferenceGatewayApiKey", Value: want}}
+	if v, _ := edit.GetJSON(f, "inferenceGatewayAuthScheme"); v == "" {
+		kvs = append(kvs, edit.KV{Path: "inferenceGatewayAuthScheme", Value: "bearer"})
+	}
+	return edit.SetJSON(f, kvs...)
 }
 
 // desktopTierFields pick the model each of Claude Code's tiers runs on in
@@ -509,6 +581,17 @@ func desktopOn(p desktopPaths) error {
 		return err
 	}
 
+	// a profile for magpie's gateway the user applied since magpie's
+	// (one imported from another computer) stays applied, its connectors
+	// with it; it gets a key the gateway takes. Switching on the first
+	// time, one applied starts magpie's profile instead (#2035, above).
+	theirs := wired && desktopAppliedGateway(p) != ""
+	if theirs {
+		if err := desktopKeyApplied(p); err != nil {
+			return err
+		}
+	}
+
 	// _meta.json: magpie's entry (where it was, if it was), applied
 	if !wired {
 		entry, _ := json.Marshal(map[string]string{"id": desktopProfileID, "name": "magpie"})
@@ -517,8 +600,10 @@ func desktopOn(p desktopPaths) error {
 			return err
 		}
 	}
-	if err := edit.SetJSON(p.meta, edit.KV{Path: "appliedId", Value: desktopProfileID}); err != nil {
-		return err
+	if !theirs {
+		if err := edit.SetJSON(p.meta, edit.KV{Path: "appliedId", Value: desktopProfileID}); err != nil {
+			return err
+		}
 	}
 
 	desktopCarryLocale(p)

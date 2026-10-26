@@ -54,9 +54,14 @@ type imageReply struct {
 			Type, Text, Data, MimeType string
 		}
 		IsError bool
+		Meta    map[string]json.RawMessage `json:"_meta"`
 	}
 	Error *struct{ Message string }
 }
+
+// meta is what the answer's _meta holds at k, as JSON ("" for nothing):
+// what `magpie tool` waits on and saves by, beside the text an agent reads
+func (m imageReply) meta(k string) string { return string(m.Result.Meta[k]) }
 
 func readImageReply(t *testing.T, w *httptest.ResponseRecorder) imageReply {
 	t.Helper()
@@ -133,6 +138,9 @@ func TestImageMCPDrawsAndServesTheImage(t *testing.T) {
 	urls := urlsIn(m.Result.Content[0].Text)
 	if len(urls) != 1 || !strings.HasPrefix(urls[0], "http://127.0.0.1:3425"+ImageMCPFiles) || !strings.HasSuffix(urls[0], ".png") || !strings.Contains(m.Result.Content[0].Text, "art/") {
 		t.Fatalf("text: %q", m.Result.Content[0].Text)
+	}
+	if got, want := m.meta(FilesMeta), `[{"url":"`+urls[0]+`","inline":true}]`; got != want || m.meta(PendingMeta) != "" {
+		t.Fatalf("_meta %v, want files %s", m.Result.Meta, want)
 	}
 	got := imageGet(h, "127.0.0.1:5000", urls[0])
 	if got.Code != 200 || got.Body.String() != string(pngBytes) || got.Header().Get("Content-Type") != "image/png" || got.Header().Get("X-Content-Type-Options") != "nosniff" {
@@ -304,6 +312,9 @@ func TestImageMCPSlowDrawingIsWaitedOn(t *testing.T) {
 		t.Fatalf("still drawing: %+v", m)
 	}
 	id := strings.Trim(strings.Fields(text[i:])[0], `".,`)
+	if got := m.meta(PendingMeta); got != `"`+id+`"` || m.meta(FilesMeta) != "" {
+		t.Fatalf("_meta %v, want pending %s", m.Result.Meta, id)
+	}
 	// another key's call can't have it
 	m = readImageReply(t, imagePost(h, "127.0.0.1:5000", imageToolCall(GenerationResultTool, map[string]any{"id": id}), "Authorization", "Bearer "+secrets[1]))
 	if !m.Result.IsError || !strings.Contains(m.Result.Content[0].Text, "no image is being made") {
@@ -314,6 +325,9 @@ func TestImageMCPSlowDrawingIsWaitedOn(t *testing.T) {
 	m = readImageReply(t, imagePost(h, "127.0.0.1:5000", imageToolCall(GenerationResultTool, map[string]any{"id": id}), "Authorization", "Bearer "+secrets[0]))
 	if m.Result.IsError || len(m.Result.Content) != 2 || m.Result.Content[1].Data != base64.StdEncoding.EncodeToString(pngBytes) {
 		t.Fatalf("waited on: %+v", m)
+	}
+	if m.meta(PendingMeta) != "" || !strings.Contains(m.meta(FilesMeta), `"inline":true`) {
+		t.Fatalf("waited on _meta: %v", m.Result.Meta)
 	}
 	if n := len(e.got("/v1/images/generations")); n != 1 {
 		t.Fatalf("drew %d times", n)
@@ -340,12 +354,18 @@ func TestImageMCPMakesVideos(t *testing.T) {
 		t.Fatalf("still making: %+v", m)
 	}
 	id := strings.Trim(strings.Fields(text[i:])[0], `".,`)
+	if got := m.meta(PendingMeta); got != `"`+id+`"` {
+		t.Fatalf("_meta %v, want pending %s", m.Result.Meta, id)
+	}
 	imageMCPWithin = time.Minute
 	m = readImageReply(t, imagePost(h, "127.0.0.1:5000", imageToolCall(GenerationResultTool, map[string]any{"id": id})))
 	text = m.Result.Content[0].Text
 	urls := urlsIn(text)
 	if m.Result.IsError || len(urls) != 1 || urls[0] != "http://127.0.0.1:3425/v1/videos/"+id+"/content" || !strings.Contains(text, "6-second") || !strings.Contains(text, "grok/grok-imagine-video") {
 		t.Fatalf("video: %+v", m)
+	}
+	if got, want := m.meta(FilesMeta), `[{"url":"`+urls[0]+`"}]`; got != want || m.meta(PendingMeta) != "" {
+		t.Fatalf("video _meta %v, want files %s", m.Result.Meta, want)
 	}
 	if w := imageGet(h, "127.0.0.1:5000", urls[0]); w.Code != 200 || w.Body.String() != "fake-mp4-bytes" {
 		t.Fatalf("content: %d %s", w.Code, w.Body.String())

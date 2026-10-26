@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // Note is one release's notes, as the app shows them after an update.
@@ -138,8 +140,46 @@ func withLang(feed, lang string) string {
 // often, and a long-unopened one would have pages of them.
 const MaxNotes = 40
 
+// StableMaxNotes is MaxNotes on the Stable channel, where an update is a
+// week of releases and its notes are read as one list (ssharpcc on X):
+// every one of them, as far as the site keeps them.
+const StableMaxNotes = 1500
+
+// MostNotes is how many releases' notes are shown at most on the channel
+// Settings name.
+func MostNotes() int {
+	if Stable() {
+		return StableMaxNotes
+	}
+	return MaxNotes
+}
+
+// Stable is whether Settings' Update channel is Stable: the update feed is
+// asked for a version a week, the newest that had been out three days as
+// the week began (Monday 00:00 UTC), or an urgent one (a security hole, a
+// ban risk, lost data) as soon as it is out. usemagpie.ai chooses it from
+// the release list (site/worker.js, "The Stable channel"); a release is
+// urgent when a line of its notes starts with "**Urgent release:**".
+func Stable() bool { return settings.Load().UpdateChannel == settings.UpdateStable }
+
+// withChannel is feed asking for Stable's release on the Stable channel,
+// and feed as it is on every version.
+func withChannel(feed string) string {
+	if !Stable() {
+		return feed
+	}
+	u, err := url.Parse(feed)
+	if err != nil {
+		return feed
+	}
+	q := u.Query()
+	q.Set("channel", settings.UpdateStable)
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
 // Between keeps the notes of the releases after after up to and including
-// upto, newest first, at most MaxNotes; with after "" only upto's. Each
+// upto, newest first, at most MostNotes; with after "" only upto's. Each
 // one's Install section is taken out, and one left empty is dropped.
 func Between(notes []Note, after, upto string) []Note {
 	var out []Note
@@ -164,8 +204,8 @@ func Between(notes []Note, after, upto string) []Note {
 		out = append(out, n)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return Newer(out[i].Version, out[j].Version) })
-	if len(out) > MaxNotes {
-		out = out[:MaxNotes]
+	if most := MostNotes(); len(out) > most {
+		out = out[:most]
 	}
 	return out
 }

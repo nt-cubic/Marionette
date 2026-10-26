@@ -559,6 +559,14 @@ func videoMaker(id string) (p provider.Provider, vendorID string, started time.T
 	if ferr != nil || !drawsGrok(*found) && !found.IsRemoteMagpie() && len(found.PlanVideos()) == 0 {
 		return p, "", started, fmt.Errorf("no provider %q makes videos here", pid)
 	}
+	if found.Account == nil && found.PlansMixed() {
+		// asked on the key that started it, at its plan's endpoint
+		q, ok := markedKey(*found, by)
+		if !ok {
+			return p, "", started, fmt.Errorf("this video was started with a key of %s that is no longer on: turn it back on to get the video", found.Name)
+		}
+		return q, vendorID, started, nil
+	}
 	if signer(*found) != by {
 		return p, "", started, fmt.Errorf("this video was started with another %s account than the one signed in now: sign back in to it to get the video", found.Name)
 	}
@@ -787,7 +795,7 @@ func (s *Server) videosCreate(w http.ResponseWriter, r *http.Request) {
 		fail(code, msg)
 		return
 	}
-	b, remote, custom, field := v.answer, v.remote, v.custom, v.field
+	b, remote, custom, field, onKey := v.answer, v.remote, v.custom, v.field, v.onKey
 	call.Millis, call.Status = time.Since(start).Milliseconds(), code
 	var started map[string]any
 	theirs := ""
@@ -824,7 +832,11 @@ func (s *Server) videosCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, obj)
 		return
 	}
-	writeJSON(w, 200, videoObject(videoID(p, theirs, start), p.ID+"/"+model, start, videoState{}, f))
+	id := videoID(p, theirs, start)
+	if onKey {
+		id = strings.TrimSuffix(id, "."+signer(p)) + "." + keyMark(p)
+	}
+	writeJSON(w, 200, videoObject(id, p.ID+"/"+model, start, videoState{}, f))
 }
 
 // videoStart is how starting a video on one model went: the key or
@@ -836,6 +848,9 @@ type videoStart struct {
 	remote, custom bool
 	asked          bool // a vendor was asked: what it answered is recorded
 	unfit          bool // the model makes no videos: none was asked
+	// onKey: started on one of keys on plans of their own, which its id
+	// names (keyMark) to be asked after on, at that plan's endpoint
+	onKey bool
 }
 
 // startVideo starts f's video on p's model: at another magpie's videos
@@ -846,6 +861,7 @@ func (s *Server) startVideo(ctx context.Context, r *http.Request, p provider.Pro
 	// the provider's other keys to start the video on, when the first
 	// says it doesn't serve the model
 	var keys []candidate
+	onKey := false
 	if !p.IsRemoteMagpie() && filmsCustom(p, model) {
 		// at a provider's own videos API: sent on the first key a chat
 		// for the model would go to (#1657), never one whose own list of
@@ -856,6 +872,16 @@ func (s *Server) startVideo(ctx context.Context, r *http.Request, p provider.Pro
 			return videoStart{p: p}, code, errors.New(msg)
 		}
 		p, keys = cs[0].p, cs[1:]
+	} else if !p.IsRemoteMagpie() && p.PlansMixed() {
+		// keys on plans of their own (KeyAccount.Plan): sent on a key
+		// whose plan makes the model, the Agent Plan's Seedance on the
+		// Agent Plan's key, never a pay-as-you-go key beside it
+		cs, code, msg := s.onKeys(r, p, model, f.Model)
+		if code != 0 {
+			return videoStart{p: p}, code, errors.New(msg)
+		}
+		p = cs[0].p
+		onKey = true
 	} else if keyWho, held := accountHolds(r); held {
 		// held to some accounts (#905): sent on a key the calling key may
 		// use, of those in use — not the provider's first alone, which a
@@ -865,7 +891,7 @@ func (s *Server) startVideo(ctx context.Context, r *http.Request, p provider.Pro
 			return videoStart{p: p}, 403, errors.New(keyAccountsError(keyWho, f.Model))
 		}
 	}
-	v := videoStart{p: p, remote: p.IsRemoteMagpie()}
+	v := videoStart{p: p, remote: p.IsRemoteMagpie(), onKey: onKey}
 	v.custom = !v.remote && filmsCustom(p, model)
 	volcengine := p.Preset == "volcengine" && slices.ContainsFunc(p.PlanVideos(), func(m catalog.Model) bool { return m.ID == model })
 	// any grok-imagine-video*, not only those listed: the vendor's newer ones work before magpie names them

@@ -8,8 +8,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/yetone/magpie/internal/gwmw"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // unroutedLimits sets when a request held before routing shows, and when
@@ -19,6 +23,250 @@ func unroutedLimits(t *testing.T, show, most time.Duration) {
 	s, m := unroutedShow, unroutedMost
 	unroutedShow, unroutedMost = show, most
 	t.Cleanup(func() { unroutedShow, unroutedMost = s, m })
+}
+
+// unknownLimit sets how long a request may be held before routing in no
+// wait magpie knows of.
+func unknownLimit(t *testing.T, d time.Duration) {
+	t.Helper()
+	was := unroutedUnknown
+	unroutedUnknown = d
+	t.Cleanup(func() { unroutedUnknown = was })
+}
+
+// watchedHold is the watch of s's one request held before routing, once
+// it is there.
+func watchedHold(t *testing.T, s *Server) *unroutedHold {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		s.active.mu.Lock()
+		var u *unroutedHold
+		for _, f := range s.active.m {
+			f.mu.Lock()
+			if f.unrouted != nil {
+				u = f.unrouted
+			}
+			f.mu.Unlock()
+		}
+		s.active.mu.Unlock()
+		if u != nil {
+			return u
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no request was held before routing")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// unroutedReply is a reply postWhole got.
+type unroutedReply struct {
+	code int
+	body string
+	err  error
+}
+
+// heldPast waits until u's request has been held in known waits for d,
+// and answers nil then; or answers its reply, if it is answered first.
+func heldPast(t *testing.T, u *unroutedHold, d time.Duration, got chan unroutedReply) *unroutedReply {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for u.excusedFor() < d {
+		select {
+		case r := <-got:
+			return &r
+		case <-time.After(5 * time.Millisecond):
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("held in known waits for %s only", u.excusedFor())
+		}
+	}
+	return nil
+}
+
+// posted posts body to srv in the background, its reply to the channel.
+func posted(srv *httptest.Server, body io.Reader) chan unroutedReply {
+	got := make(chan unroutedReply, 1)
+	go func() {
+		code, b, err := postWhole(srv, body)
+		got <- unroutedReply{code, b, err}
+	}()
+	return got
+}
+
+// postWhole posts body to srv's Chat API and answers its reply.
+func postWhole(srv *httptest.Server, body io.Reader) (int, string, error) {
+	c := &http.Client{Timeout: 30 * time.Second}
+	resp, err := c.Post(srv.URL+"/v1/chat/completions", "application/json", body)
+	if err != nil {
+		return 0, "", err
+	}
+	b, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, string(b), err
+}
+
+const unroutedHi = `{"model":"probe/text","messages":[{"role":"user","content":"hi"}]}`
+
+// sharwowwow on X: two minutes of a spinner before the 504. A request
+// held before routing in no wait magpie knows of (here a lock routing
+// needs, held and never let go) is answered once it has been held
+// unroutedUnknown, long before unroutedMost.
+func TestUnroutedUnknownHoldAnsweredSooner(t *testing.T) {
+	unroutedLimits(t, 20*time.Millisecond, time.Hour)
+	unknownLimit(t, 300*time.Millisecond)
+	s, _ := slowEyed(t, 0)
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+	sticks.Lock()
+	var once sync.Once
+	unlock := func() { once.Do(sticks.Unlock) }
+	t.Cleanup(unlock)
+
+	got := posted(srv, strings.NewReader(unroutedHi))
+	var r unroutedReply
+	select {
+	case r = <-got:
+	case <-time.After(20 * time.Second):
+		unlock()
+		t.Fatal("a request held in no known wait was not answered before unroutedMost")
+	}
+	unlock()
+	if r.err != nil || r.code != http.StatusGatewayTimeout || !strings.Contains(r.body, "without routing it to any provider") {
+		t.Fatalf("held request answered %d %q %v", r.code, r.body, r.err)
+	}
+}
+
+// A body still arriving (an image over a slow link) is a known wait: a
+// request whose body takes longer than unroutedUnknown is routed and
+// answered, not cut off.
+func TestUnroutedSlowBodyNotCutOff(t *testing.T) {
+	unroutedLimits(t, 20*time.Millisecond, time.Hour)
+	unknownLimit(t, 100*time.Millisecond)
+	s, _ := slowEyed(t, 0)
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { pw.Close() })
+	got := posted(srv, pr)
+	half := len(unroutedHi) / 2
+	if _, err := pw.Write([]byte(unroutedHi[:half])); err != nil {
+		t.Fatal(err)
+	}
+	if r := heldPast(t, watchedHold(t, s), 3*unroutedUnknown, got); r != nil {
+		t.Fatalf("answered %d %q %v while its body was still arriving", r.code, r.body, r.err)
+	}
+	if _, err := pw.Write([]byte(unroutedHi[half:])); err != nil {
+		t.Fatal(err)
+	}
+	pw.Close()
+	r := <-got
+	if r.err != nil || r.code != http.StatusOK {
+		t.Fatalf("a slow body was answered %d %q %v", r.code, r.body, r.err)
+	}
+}
+
+// gatedMasker is masking that waits for the local model until gate is
+// closed, then sends the body as it came.
+type gatedMasker struct {
+	waitingMasker
+	gate chan struct{}
+}
+
+func (m gatedMasker) JSONHitsContext(ctx context.Context, b []byte) ([]byte, []gwmw.Hit) {
+	select {
+	case <-m.gate:
+	case <-ctx.Done():
+	}
+	return b, nil
+}
+
+func (m gatedMasker) TextHitsContext(ctx context.Context, s string) (string, []gwmw.Hit) {
+	return s, nil
+}
+
+func (m gatedMasker) JSONHits(b []byte) ([]byte, []gwmw.Hit) {
+	return m.JSONHitsContext(context.Background(), b)
+}
+func (m gatedMasker) TextHits(s string) (string, []gwmw.Hit) { return s, nil }
+func (m gatedMasker) JSON(b []byte) ([]byte, int)            { b, _ = m.JSONHits(b); return b, 0 }
+func (m gatedMasker) Text(s string) (string, int)            { return s, 0 }
+
+// Masking (the local model loading) is a known wait: a request masked
+// for longer than unroutedUnknown is routed once masked, not cut off.
+func TestUnroutedMaskingNotCutOff(t *testing.T) {
+	unroutedLimits(t, 20*time.Millisecond, time.Hour)
+	unknownLimit(t, 100*time.Millisecond)
+	s, _ := slowEyed(t, 0)
+	if err := settings.Save(settings.Settings{Redact: true}); err != nil {
+		t.Fatal(err)
+	}
+	withoutMasker(t)
+	m := gatedMasker{gate: make(chan struct{})}
+	var once sync.Once
+	open := func() { once.Do(func() { close(m.gate) }) }
+	t.Cleanup(open)
+	t.Cleanup(gwmw.Mask(m))
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+	got := posted(srv, strings.NewReader(unroutedHi))
+	u := watchedHold(t, s)
+	if r := heldPast(t, u, 3*unroutedUnknown, got); r != nil {
+		t.Fatalf("answered %d %q %v while it was masked", r.code, r.body, r.err)
+	}
+	if u.masking.Load() == 0 {
+		t.Fatal("held past the limit, but not while masking")
+	}
+	open()
+	r := <-got
+	if r.err != nil || r.code != http.StatusOK {
+		t.Fatalf("a request masked past the limit was answered %d %q %v", r.code, r.body, r.err)
+	}
+}
+
+// A request waiting in a key's queue (MaxConcurrency) past
+// unroutedUnknown is not cut off: the queue is a known wait.
+func TestUnroutedSlotWaitNotCutOff(t *testing.T) {
+	unroutedLimits(t, 20*time.Millisecond, time.Hour)
+	unknownLimit(t, 100*time.Millisecond)
+	s, up := slowEyed(t, 0)
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+	codes := make(chan int, 2)
+	go func() {
+		code, _, _ := postWhole(srv, strings.NewReader(`{"model":"probe/text","messages":[{"role":"user","content":"hold"}]}`))
+		codes <- code
+	}()
+	<-up.held // the one slot is taken
+	go func() {
+		code, _, _ := postWhole(srv, strings.NewReader(unroutedHi))
+		codes <- code
+	}()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		queued := false
+		s.active.mu.Lock()
+		for _, f := range s.active.m {
+			if p, _ := f.phase.Load().(string); p == "slot" && time.Since(f.start) > 3*unroutedUnknown {
+				queued = true
+			}
+		}
+		s.active.mu.Unlock()
+		if queued {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the second request never waited in the queue past the limit")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	up.open()
+	for range 2 {
+		if code := <-codes; code != http.StatusOK {
+			t.Fatalf("a request queued past the limit was answered %d", code)
+		}
+	}
 }
 
 // heldSight holds pastedImage before it is routed: its image's

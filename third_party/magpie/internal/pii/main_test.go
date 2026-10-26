@@ -41,6 +41,10 @@ const (
 //	slow         answers each request after 300ms
 //	noload       says it couldn't load the model
 //	novulkan     as pf-serve-vulkan, says Vulkan is missing; else ok
+//	gpuloadhang  on the GPU, never says the model is loaded; else ok
+//	asserts      fails a ggml assert at its first request
+//
+// Like pf-serve, it first writes ggml's startup lines to stderr.
 func fakeServe(mode string) {
 	name := strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe")
 	gpu := os.Getenv("PF_DEVICE") != "cpu"
@@ -58,13 +62,18 @@ func fakeServe(mode string) {
 		}
 	}
 	logf("start %s %s", name, device)
+	// as ggml_metal writes them on an M2, GPU or CPU alike
+	fmt.Fprintln(os.Stderr, "ggml_metal_device_init: tensor API disabled for pre-M5 and pre-A19 devices")
+	fmt.Fprintln(os.Stderr, "ggml_metal_library_init: using embedded metal library")
+	fmt.Fprintln(os.Stderr, "ggml_metal_device_init: GPU name:   MTL0 (Apple M2)")
+	fmt.Fprintln(os.Stderr, "ggml_metal_device_init: recommendedMaxWorkingSetSize  = 12713.12 MB")
 	logf("path %s", filepath.Base(filepath.Dir(os.Args[0])))
 	logf("residency %s", os.Getenv("GGML_METAL_NO_RESIDENCY"))
 	if mode == "noload" || mode == "novulkan" && name == "pf-serve-vulkan" {
 		json.NewEncoder(os.Stdout).Encode(map[string]string{"error": "can't load " + mode})
 		os.Exit(1)
 	}
-	if mode == "loadhang" {
+	if mode == "loadhang" || mode == "gpuloadhang" && gpu {
 		time.Sleep(time.Hour)
 	}
 	json.NewEncoder(os.Stdout).Encode(map[string]any{"device": device, "gpu": gpu, "ms": 7})
@@ -95,6 +104,10 @@ func fakeServe(mode string) {
 			os.Exit(3)
 		case mode == "hang":
 			time.Sleep(time.Hour)
+		case mode == "asserts":
+			fmt.Fprintln(os.Stderr, "ggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_add_id'")
+			fmt.Fprintln(os.Stderr, "/ggml/src/ggml-metal/ggml-metal-ops.cpp:1234: GGML_ASSERT(ne00 % 4 == 0) failed")
+			os.Exit(3)
 		case mode == "slow":
 			time.Sleep(300 * time.Millisecond)
 		}
@@ -138,14 +151,16 @@ func fakeInstall(t *testing.T, mode string, vulkan bool) string {
 		<-turn
 		upgrades.Wait()
 		disk.mu.Lock()
-		if disk.timer != nil {
-			disk.timer.Stop()
-			disk.timer = nil
+		if disk.timer != nil && disk.timer.Stop() {
+			disk.saves.Done()
 		}
+		disk.timer = nil
 		disk.loaded = ""
 		disk.mu.Unlock()
+		disk.saves.Wait() // a write under way reads dir
 		srv.mu.Lock()
 		srv.cpu, srv.gpuLost, srv.failed = false, "", ""
+		srv.lastErr, srv.fails, srv.retryAt = nil, 0, time.Time{}
 		srv.mu.Unlock()
 		cache.mu.Lock()
 		cache.ll.Init()
