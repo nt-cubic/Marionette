@@ -1,5 +1,5 @@
 import { Check, Copy } from "lucide-react";
-import { createContext, isValidElement, memo, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, isValidElement, memo, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
@@ -8,9 +8,14 @@ import { isTauriRuntime, readImageDataUrl } from "../lib/api";
 import { copyText } from "../lib/clipboard";
 import { stripFileUri } from "../lib/imageAttachments";
 import { prepareMarkdownForRender } from "../lib/markdownText";
+import { useMathPack } from "../lib/mathPack";
+import { normalizeMathDelimiters, scanRichFeatures } from "../lib/richMarkdown";
 import { resolveToolImagePath } from "../lib/toolBody";
 import { ImageLightbox } from "./ImageLightbox";
 import { linkifyChildren, useLinkMenu } from "./LinkedText";
+import { MdMermaid } from "./MdMermaid";
+import { useShikiHtml } from "./MdShikiCode";
+import { SpecCard } from "./SpecCard";
 import type { LinkTarget } from "../lib/linkTargets";
 
 type MarkdownBodyProps = {
@@ -34,6 +39,11 @@ const CODE_FOLDED_LINES = 14;
 /**
  * Fenced code: a quiet header (language · lines) with copy, and long blocks
  * folded to a few lines under a soft fade until "显示全部".
+ *
+ * Shiki: once the language is known and the text has been quiet for 200ms,
+ * the plain <pre> swaps in place for highlighted HTML (dual theme — CSS
+ * picks light/dark). Until then it renders exactly like the old pipeline,
+ * so streaming never flashes.
  */
 function MdCodeBlock({ children }: { children?: ReactNode }) {
   const text = nodeText(children).replace(/\n$/, "");
@@ -41,11 +51,13 @@ function MdCodeBlock({ children }: { children?: ReactNode }) {
   const child = Array.isArray(children) ? children[0] : children;
   const codeClass = isValidElement<{ className?: string }>(child) ? child.props.className ?? "" : "";
   const lang = /language-([\w+#.-]+)/.exec(codeClass)?.[1] ?? "";
+  const html = useShikiHtml(lang.toLowerCase(), text);
   const foldable = lines > CODE_FOLD_AFTER;
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearTimeout(timer.current), []);
+  const foldedStyle = foldable && !open ? { maxHeight: `${CODE_FOLDED_LINES * 1.45 + 1.4}em` } : undefined;
   return (
     <div className={`md-code${foldable && !open ? " is-folded" : ""}`}>
       <div className="md-code__bar">
@@ -67,7 +79,15 @@ function MdCodeBlock({ children }: { children?: ReactNode }) {
           {copied ? <Check size={11} /> : <Copy size={11} />}
         </button>
       </div>
-      <pre style={foldable && !open ? { maxHeight: `${CODE_FOLDED_LINES * 1.45 + 1.4}em` } : undefined}>{children}</pre>
+      {html ? (
+        <div
+          className={`md-code__hl${foldable && !open ? " is-clipped" : ""}`}
+          style={foldedStyle}
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
+      ) : (
+        <pre style={foldedStyle}>{children}</pre>
+      )}
       {foldable && (
         <button type="button" className="md-code__more" onClick={() => setOpen((value) => !value)}>
           {open ? "收起" : `显示全部 ${lines} 行`}
@@ -75,6 +95,28 @@ function MdCodeBlock({ children }: { children?: ReactNode }) {
       )}
     </div>
   );
+}
+
+/** Language + text of a fenced block, as seen by the `pre` override. */
+function fenceInfo(children: ReactNode): { lang: string; text: string } {
+  const text = nodeText(children).replace(/\n$/, "");
+  const child = Array.isArray(children) ? children[0] : children;
+  const codeClass = isValidElement<{ className?: string }>(child) ? child.props.className ?? "" : "";
+  const lang = /language-([\w+#.-]+)/.exec(codeClass)?.[1] ?? "";
+  return { lang, text };
+}
+
+/**
+ * `pre` override: fenced blocks route by info string. `mermaid` / `spec`
+ * become their rich cards (engine chunks load lazily and only then); every
+ * other fence keeps the code-card chrome above.
+ */
+function MdPre({ children }: { children?: ReactNode }) {
+  const { lang, text } = fenceInfo(children);
+  const route = lang.toLowerCase();
+  if (route === "mermaid") return <MdMermaid code={text} />;
+  if (route === "spec") return <SpecCard raw={text} />;
+  return <MdCodeBlock>{children}</MdCodeBlock>;
 }
 
 /** The only scheme the webview can hand straight to a browser. */
@@ -349,16 +391,42 @@ export function PreviewImage({ src, alt }: { src?: string; alt?: string }) {
  * can parse it (fences glued to Chinese, short table delimiter rows). It does
  * not invent a dialect.
  *
+ * Rich pipeline (research-codeg.md B1/B3/B4): a cheap scan (richMarkdown.ts)
+ * decides per message whether the heavy engines are worth loading. Math adds
+ * remark-math (singleDollarTextMath off — `$9.99` stays literal) plus
+ * rehype-katex and rewrites LaTeX `\[ … \]` to `$$ … $$`; fenced info strings
+ * route `mermaid`/`spec` to their cards, and every other fenced language gets
+ * shiki highlighting once the text has been quiet. Everything degrades to the
+ * plain pipeline, so a failed lazy chunk load never breaks the transcript.
+ *
  * Memoized on text/className: parent stream ticks must not rebuild the markdown
  * tree for unchanged cards — that remounts text nodes and wipes browser selection.
  */
 export const MarkdownBody = memo(function MarkdownBody({ text, className }: MarkdownBodyProps) {
+  // Hooks first: text can flip empty ⇄ non-empty between renders, so no early
+  // return may come before them.
+  const features = useMemo(() => scanRichFeatures(text), [text]);
+  const math = useMathPack(features.math);
+  const remarkPlugins = useMemo(() => {
+    if (!math) return [remarkGfm, remarkBreaks];
+    const mathPlugin = [
+      math.remarkMath,
+      { singleDollarTextMath: false },
+    ] as [typeof math.remarkMath, { singleDollarTextMath: boolean }];
+    return [remarkGfm, remarkBreaks, mathPlugin];
+  }, [math]);
+  const rehypePlugins = useMemo(() => (math ? [math.rehypeKatex] : []), [math]);
+  const source = useMemo(
+    () => (features.math ? normalizeMathDelimiters(prepareMarkdownForRender(text)) : prepareMarkdownForRender(text)),
+    [text, features.math],
+  );
   if (!text) return null;
 
   return (
     <div className={className ? `md-body ${className}` : "md-body"}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkBreaks]}
+        remarkPlugins={remarkPlugins}
+        rehypePlugins={rehypePlugins}
         // Default urlTransform kills any href whose "protocol" isn't http(s) —
         // `file:///D:/x` and even `D:\x` drive paths render as href="". Local
         // targets are the whole point here, and clicks never navigate the
@@ -384,7 +452,7 @@ export const MarkdownBody = memo(function MarkdownBody({ text, className }: Mark
           p: ({ children }) => <p className="md-body__p">{linkifyChildren(children)}</p>,
           li: ({ children }) => <li className="md-body__li">{linkifyChildren(children)}</li>,
           td: ({ children }) => <td>{linkifyChildren(children)}</td>,
-          pre: ({ children }) => <MdCodeBlock>{children}</MdCodeBlock>,
+          pre: ({ children }) => <MdPre>{children}</MdPre>,
           code: ({ children, className: codeClassName }) => {
             // Fenced blocks are `pre > code` (often `language-*`); inline is
             // short / single-line — that's where models usually put a path.
@@ -404,7 +472,7 @@ export const MarkdownBody = memo(function MarkdownBody({ text, className }: Mark
           },
         }}
       >
-        {prepareMarkdownForRender(text)}
+        {source}
       </ReactMarkdown>
     </div>
   );

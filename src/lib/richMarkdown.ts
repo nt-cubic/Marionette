@@ -58,7 +58,8 @@ export function scanRichFeatures(text: string): RichFeatures {
       const open = FENCE_OPEN_RE.exec(rawLine);
       if (open) {
         features.code = true;
-        const info = open[2]!.trim().toLowerCase();
+        // First token only — same word micromark takes as the code `lang`.
+        const info = open[2]!.trim().toLowerCase().split(/\s+/)[0];
         if (info === "mermaid") features.mermaid = true;
         else if (info === "spec") features.spec = true;
       } else if (!features.math && MATH_HINT_RE.test(rawLine)) {
@@ -105,17 +106,43 @@ function mapOutsideFences(text: string, mapOutside: (segment: string) => string)
 /** `\[ … \]` (LaTeX display math) → `$$ … $$`, the delimiter remark-math reads. */
 const DISPLAY_MATH_DELIMS = /\\\[([\s\S]+?)\\\]/g;
 
+/** A line that is nothing but a `$$ … $$` pair — whole-line display intent.
+ *  The body may not contain `$` (two pairs on one line is prose, not math). */
+const LONE_DISPLAY_RE = /^([ \t]{0,3})\$\$([^\n$]+?)\$\$[ \t]*$/;
+
 /**
- * Rewrite `\[ … \]` display math to `$$ … $$` outside fenced code.
+ * Rewrite single-line `$$ … $$` paragraphs to the multi-line fence form.
+ *
+ * micromark's math *flow* construct (→ display math) only matches `$$` with
+ * end-of-line after it; a one-liner like `$$E = mc^2$$` parses as paragraph
+ * text math and renders inline — yet models write one-liners when they mean
+ * display. Lines whose entire content is one `$$ … $$` pair become
+ * `$$\nbody\n$$`; pairs embedded in prose stay inline, as the author chose.
+ */
+function toDisplayBlocks(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => {
+      const match = LONE_DISPLAY_RE.exec(line);
+      if (!match) return line;
+      const body = match[2]!.trim();
+      return `${match[1]}$$\n${body}\n${match[1]}$$`;
+    })
+    .join("\n");
+}
+
+/**
+ * Normalize math delimiters outside fenced code: LaTeX `\[ … \]` becomes
+ * `$$ … $$`, and whole-line `$$ … $$` pairs become display blocks.
  *
  * Models trained on LaTeX emit `\[` often; remark-math only reads dollars.
- * Inside fences the sequence stays untouched (regex examples, escaped
- * brackets in code). `\( … \)` inline math is intentionally left alone: with
+ * Inside fences everything stays untouched (regex examples, escaped brackets
+ * in code). `\( … \)` inline math is intentionally left alone: with
  * single-dollar math disabled there is no inline delimiter to map it to.
  */
 export function normalizeMathDelimiters(text: string): string {
-  if (!text.includes("\\[")) return text;
+  if (!text.includes("\\[") && !text.includes("$$")) return text;
   return mapOutsideFences(text, (segment) =>
-    segment.replace(DISPLAY_MATH_DELIMS, (_all, body: string) => `$$${body}$$`),
+    toDisplayBlocks(segment.replace(DISPLAY_MATH_DELIMS, (_all, body: string) => `$$${body}$$`)),
   );
 }

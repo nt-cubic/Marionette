@@ -3,6 +3,7 @@
 @import "./base-chrome.css";
 @import "./controls.css";
 @import "./transcript.css";
+@import "./rich-markdown.css";
 @import "./stream-cards.css";
 @import "./dialogs.css";
 @import "./composer-popovers.css";

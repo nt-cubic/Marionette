@@ -128,18 +128,22 @@ function readStr(
   return { value };
 }
 
-/** Required string field with a non-empty constraint. */
+/**
+ * Required string field with a non-empty constraint. Proper discriminated
+ * union ({ok}) — optional-property unions don't narrow on truthiness and
+ * leaked `string | undefined` into the strict call sites.
+ */
 function requireStr(
   obj: Record<string, unknown>,
   key: string,
   max: number,
   what: string,
-): { value: string; error?: never } | { value?: never; error: string } {
+): { ok: true; value: string } | { ok: false; error: string } {
   const field = readStr(obj, key, max);
-  if (field.error) return { error: field.error };
-  if (field.value === undefined) return { error: `${what} 缺少 "${key}" 字符串字段` };
-  if (!field.value.trim()) return { error: `${what} 的 "${key}" 不能为空` };
-  return { value: field.value };
+  if (field.error) return { ok: false, error: field.error };
+  if (field.value === undefined) return { ok: false, error: `${what} 缺少 "${key}" 字符串字段` };
+  if (!field.value.trim()) return { ok: false, error: `${what} 的 "${key}" 不能为空` };
+  return { ok: true, value: field.value };
 }
 
 function readActions(obj: Record<string, unknown>): SpecAction[] | string {
@@ -151,9 +155,9 @@ function readActions(obj: Record<string, unknown>): SpecAction[] | string {
   for (const item of raw) {
     if (!isPlainObject(item)) return "actions[] 必须是对象";
     const label = requireStr(item, "label", LIMITS.actionLabel, "actions[]");
-    if (label.error) return label.error;
+    if (!label.ok) return label.error;
     const prompt = requireStr(item, "prompt", LIMITS.actionPrompt, "actions[]");
-    if (prompt.error) return prompt.error;
+    if (!prompt.ok) return prompt.error;
     out.push({ label: label.value, prompt: prompt.value });
   }
   return out;
@@ -186,9 +190,9 @@ function validateSpec(obj: Record<string, unknown>): SpecParseResult {
     for (const item of obj.fields) {
       if (!isPlainObject(item)) return fail("fields[] 必须是对象");
       const name = requireStr(item, "name", LIMITS.fieldName, "fields[]");
-      if (name.error) return fail(name.error);
+      if (!name.ok) return fail(name.error);
       const value = requireStr(item, "value", LIMITS.fieldValue, "fields[]");
-      if (value.error) return fail(value.error);
+      if (!value.ok) return fail(value.error);
       const hint = readStr(item, "hint", LIMITS.note);
       if (hint.error) return fail(hint.error);
       fields.push(hint.value ? { name: name.value, value: value.value, hint: hint.value } : { name: name.value, value: value.value });
@@ -245,7 +249,7 @@ function validateSpec(obj: Record<string, unknown>): SpecParseResult {
     for (const item of obj.items) {
       if (!isPlainObject(item)) return fail("items[] 必须是对象");
       const label = requireStr(item, "label", LIMITS.stepLabel, "items[]");
-      if (label.error) return fail(label.error);
+      if (!label.ok) return fail(label.error);
       if (!STATES.includes(item.state as SpecState))
         return fail('items[].state 只能是 "done" | "active" | "todo" | "error"');
       const note = readStr(item, "note", LIMITS.note);
