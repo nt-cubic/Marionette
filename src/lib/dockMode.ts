@@ -40,6 +40,7 @@ import {
 } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { isTauriRuntime } from "./api";
+import { isPageDragSource, onDragText } from "./dragText";
 import { readDetachedSessionId } from "./detachedWindow";
 
 const STORAGE_KEY = "marionette-dock-prefs";
@@ -877,6 +878,22 @@ export function initDockMode(): () => void {
           } else if (type === "leave") {
             // Mouse events stayed suppressed through the drag; resync the
             // pointer flag so an unfocused strip can retract again.
+            pointerInside = false;
+            scheduleRetract();
+          }
+        }),
+      );
+      // Text/link drags (browser selections, URLs) never reach the channel
+      // above — they ride the vendor wry patch event. Same expand signal.
+      // Page-sourced HTML5 drags (memo rows) must not expand the strip.
+      unlisteners.push(
+        await onDragText((event) => {
+          if (isPageDragSource()) return;
+          if (event.kind === "enter" || event.kind === "over") {
+            pointerInside = true;
+            cancelRetract();
+            if (dockState === "docked-hidden") void expand();
+          } else if (event.kind === "leave") {
             pointerInside = false;
             scheduleRetract();
           }

@@ -14,6 +14,13 @@
 > 行内 ⏸ / 进程退出把状态翻成 `exited` 才消失；`DOCK_DONE_GRACE_MS` 已删）。2026-10-26 又增：
 > 拖文件进窄条分区接住（`DockDropRouter`：上半条 → 收纳盒、下半条对话区 → composer 附件，
 > 拖动中双层虚线提示；dock 态 composer 的原生落点处理关闭，路径经 `lib/dockDrop.ts` 事件转交）。
+> 2026-10-26 收纳盒梳理：memo 页开着时页面监听**整窗**接住拖放（不做 rect 命中——旧实现拖到
+> 页面外无声失败，memos 目录从未落过盘），`DockDropRouter` 对 memo 页整体让路防双保存；§4.1 的
+> 「开新对话」改为在侧栏「收纳盒」分组（`origin:"memo"` 的 Chat 会话）里建出，10-22 方案的
+> inbox 幽灵项目在加载口过滤（`lib/sessionGroups.ts`）。
+> 2026-10-26 呈现：收纳盒从 40px 文件行改成 Karakeep 手机 Home 式单列帖子流（文字铺正文、
+> 图片按横竖比完整显示、链接域名+网址、文件扁卡；「今天 / 昨天 / N月N日」分段），顶上加「写一条」
+> 输入卡。设计稿 ③ 的「一行一条」作废。
 > 实施偏差两处：`monitors_work_areas` 未做——Tauri 2.8 `Monitor.workArea` 已带工作区，全走 JS API；
 > capability 实名是 `core:window:allow-set-skip-taskbar`（计划里的 `allow-skip-taskbar` 不存在）。
 > 行为描述已并入 `CURRENT.md`「贴边停靠」行；全部阶段完成后本文件挪入 `archive/`。

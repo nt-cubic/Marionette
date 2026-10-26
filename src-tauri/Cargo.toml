@@ -38,6 +38,8 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 base64 = "0.22"
 # Engine download SHA256 verification (already in the graph via tauri/tao — zero size cost).
 sha2 = "0.10"
+# Only to reach the vendored wry text-drag hook (see [patch.crates-io] note).
+wry = { path = "vendor/wry", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
@@ -66,8 +68,14 @@ embedded-engine = []
 # focus/click and trips that assert → process abort (tao#1140 / tauri#14088).
 # Patched copy honors the function's own "return false if re-entrant" contract.
 # Drop when tauri ships tao 0.36+ (subclassing removed, #1231).
+#
+# wry 0.55.1 drops OLE text drags (no CF_HDROP → DragEnter emits nothing) while
+# WebView2 HTML5 external drop is disabled — text/link drags from other apps
+# never reach the page. Patched copy forwards them through a text hook
+# (vendor/wry/MARIONETTE-PATCH.md). Drop when upstream ships text drag events.
 [patch.crates-io]
 tao = { path = "vendor/tao" }
+wry = { path = "vendor/wry" }
 
 [profile.release]
 strip = true

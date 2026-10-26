@@ -108,6 +108,7 @@ impl StorageService {
         agent_id: String,
         label: String,
         cwd: &str,
+        origin: Option<&str>,
     ) -> Result<Session, String> {
         let cwd_path = fs::canonicalize(Path::new(cwd.trim()))
             .map_err(|error| format!("Chat folder is not accessible: {error}"))?;
@@ -156,7 +157,7 @@ impl StorageService {
             preferred_effort_id: None,
             preferred_always_approve: None,
             parent_session_id: None,
-            origin: Some("user".to_string()),
+            origin: Some(origin.unwrap_or("user").to_string()),
             native_session_ids: Vec::new(),
             pinned_at: None,
         };
@@ -324,7 +325,7 @@ impl StorageService {
     ) -> Result<Session, String> {
         if project_id == crate::app_paths::CHAT_PROJECT_ID {
             let cwd = crate::app_paths::current_dir()?;
-            return self.create_chat_session(agent_id, label, &cwd);
+            return self.create_chat_session(agent_id, label, &cwd, None);
         }
         let project = self.project_by_id(project_id)?;
         let project_path = Path::new(&project.root_path);
@@ -1566,7 +1567,7 @@ mod tests {
 
         let service = StorageService::from_global_dir(global_dir.clone()).unwrap();
         let session = service
-            .create_chat_session("opencode".to_string(), "Chat".to_string(), &workspace.to_string_lossy())
+            .create_chat_session("opencode".to_string(), "Chat".to_string(), &workspace.to_string_lossy(), None)
             .unwrap();
 
         assert!(service.list_projects().unwrap().is_empty());

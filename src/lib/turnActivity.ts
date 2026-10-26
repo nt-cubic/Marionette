@@ -20,68 +20,100 @@ export type ToolActivityKind =
 
 export type ToolCallEvent = Extract<SessionEvent, { type: "tool_call" }>;
 
+/**
+ * Leading identifier of a normalized name. Grok titles land as
+ * `bash: ls d:/…` (kind + command in one string); matching the whole
+ * string missed every known kind and dumped the run into `other`.
+ */
+function nameHead(name: string): string {
+  return /^[a-z][a-z0-9_]*/.exec(name)?.[0] ?? name;
+}
+
 /** Map a normalized tool name to a display bucket. */
 function classifyName(name: string): ToolActivityKind {
   if (!name) return "other";
-  if (name === "read" || name.startsWith("read_")) return "read";
+  const key = nameHead(name);
+  if (key === "read" || key.startsWith("read_")) return "read";
   if (
-    name === "edit" ||
-    name === "write" ||
-    name === "multi_edit" ||
-    name === "apply_patch" ||
-    name === "replace" ||
-    name.startsWith("edit") ||
-    name.startsWith("write") ||
-    name.startsWith("patch") ||
-    name.startsWith("change")
+    key === "edit" ||
+    key === "write" ||
+    key === "multi_edit" ||
+    key === "apply_patch" ||
+    key === "replace" ||
+    key.startsWith("edit") ||
+    key.startsWith("write") ||
+    key.startsWith("patch") ||
+    key.startsWith("change")
   ) {
-    return name.startsWith("write") ? "write" : "edit";
+    return key.startsWith("write") ? "write" : "edit";
   }
   if (
-    name === "bash" ||
-    name === "shell" ||
-    name === "cmd" ||
-    name === "powershell" ||
-    name === "pwsh" ||
-    name === "terminal" ||
-    name.startsWith("exec") ||
-    name.startsWith("run") ||
-    name.startsWith("command")
+    key === "bash" ||
+    key === "shell" ||
+    key === "cmd" ||
+    key === "powershell" ||
+    key === "pwsh" ||
+    key === "terminal" ||
+    key.startsWith("exec") ||
+    key.startsWith("run") ||
+    key.startsWith("command")
   ) {
     return "command";
   }
   if (
-    name === "grep" ||
-    name === "glob" ||
-    name.startsWith("search") ||
-    name.startsWith("find") ||
-    name.startsWith("list")
+    key === "grep" ||
+    key === "glob" ||
+    key.startsWith("search") ||
+    key.startsWith("find") ||
+    key.startsWith("list")
   ) {
     return "search";
   }
   if (
-    name === "web_fetch" ||
-    name === "web_search" ||
-    name.startsWith("web") ||
-    name.startsWith("browser") ||
-    name.startsWith("http")
+    key === "web_fetch" ||
+    key === "web_search" ||
+    key.startsWith("web") ||
+    key.startsWith("browser") ||
+    key.startsWith("http")
   ) {
     return "web";
   }
   if (
-    name === "task" ||
-    name === "agent" ||
-    name === "subagent" ||
-    /(task|agent|delegate|spawn)/.test(name)
+    key === "task" ||
+    key === "agent" ||
+    key === "subagent" ||
+    /(task|agent|delegate|spawn)/.test(key)
   ) {
     return "agent";
   }
   return "other";
 }
 
-/** Stable bucket for a tool-call event (normalized name, title fallback). */
+/** Grok bash/etc. stamp identity in `rawInput.variant` (`{"variant":"Bash",…}`). */
+function inputVariant(input: string | undefined): string {
+  if (!input) return "";
+  try {
+    const parsed = JSON.parse(input) as Record<string, unknown>;
+    if (typeof parsed.variant === "string" && parsed.variant.trim()) {
+      return parsed.variant.trim();
+    }
+  } catch {
+    const clipped = /"variant"\s*:\s*"((?:[^"\\]|\\.)*)/.exec(input);
+    if (clipped?.[1]?.trim()) return clipped[1].trim();
+  }
+  return "";
+}
+
+/** Stable bucket for a tool-call event (normalized name, title, then variant). */
 export function classifyToolCall(event: ToolCallEvent): ToolActivityKind {
-  return classifyName(normalizeToolName(event.toolName || event.title));
+  const fromName = classifyName(normalizeToolName(event.toolName || event.title));
+  if (fromName !== "other") return fromName;
+  const variant = inputVariant(event.input);
+  if (variant) {
+    const fromVariant = classifyName(normalizeToolName(variant));
+    if (fromVariant !== "other") return fromVariant;
+  }
+  return "other";
 }
 
 /** Claude-Code-style verb for the tool row: Read / Edited / Ran a command… */
@@ -376,7 +408,6 @@ export function summarizeKindGroup(group: ActivityKindGroup): ActivitySummary {
 /** Plural of `tallyWord` for counts above one (`3 commands`, `2 searches`). */
 function tallyPlural(bucket: ActivityKindBucket): string {
   const word = tallyWord(bucket);
-  if (word === "other") return word;
   return /(ch|sh|s|x)$/.test(word) ? `${word}es` : `${word}s`;
 }
 
@@ -400,7 +431,7 @@ export function tallyWord(bucket: ActivityKindBucket): string {
     case "agent":
       return "task";
     default:
-      return "other";
+      return "tool";
   }
 }
 

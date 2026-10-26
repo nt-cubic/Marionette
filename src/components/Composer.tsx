@@ -59,7 +59,8 @@ import {
 import { detectCapabilityDrift } from "../lib/capabilityDrift";
 import { ensureModelSources, expandHiddenProviders, libraryGroups, refreshModelSources, visibleLibraryGroups, useModelLibrary } from "../lib/modelLibrary";
 import { modeTone } from "../lib/modeTone";
-import { DOCK_DROP_PATHS_EVENT } from "../lib/dockDrop";
+import { DOCK_DROP_PATHS_EVENT, DOCK_DROP_TEXT_EVENT } from "../lib/dockDrop";
+import { isPageDragSource, onDragText } from "../lib/dragText";
 import { foldLocalSingleGroups, splitModelMeta } from "../lib/modelMenu";
 import {
   modelProviderGroup,
@@ -1808,6 +1809,31 @@ export function Composer({
     });
   }, [draft]);
 
+  /** Text/link drops (vendor wry patch channel): insert at the caret, no attachments. */
+  const insertDroppedText = useCallback((raw: string) => {
+    const chunk = raw.trim();
+    if (!chunk) return;
+    const el = textareaRef.current;
+    if (!el) {
+      setDraft((current) => (current ? `${current}\n${chunk}` : chunk));
+      return;
+    }
+    const start = el.selectionStart ?? el.value.length;
+    const end = el.selectionEnd ?? start;
+    const before = el.value.slice(0, start);
+    const after = el.value.slice(end);
+    const needsLead = before.length > 0 && !before.endsWith("\n") && !before.endsWith(" ");
+    const needsTrail = after.length > 0 && !after.startsWith("\n") && !after.startsWith(" ");
+    const inserted = `${needsLead ? "\n" : ""}${chunk}${needsTrail ? "\n" : ""}`;
+    const next = `${before}${inserted}${after}`;
+    setDraft(next);
+    requestAnimationFrame(() => {
+      const caret = before.length + inserted.length;
+      el.focus();
+      el.setSelectionRange(caret, caret);
+    });
+  }, []);
+
   /** Encode a File/Blob as base64 (chunked — large screenshots blow the call stack with spread). */
   const fileToBase64 = async (file: Blob): Promise<string> => {
     const bytes = new Uint8Array(await file.arrayBuffer());
@@ -2061,9 +2087,59 @@ export function Composer({
       const paths = (event as CustomEvent<string[]>).detail;
       if (Array.isArray(paths) && paths.length > 0) insertDroppedPaths(paths);
     };
+    const onDockDropText = (event: Event) => {
+      const text = (event as CustomEvent<string>).detail;
+      if (typeof text === "string" && text.trim()) insertDroppedText(text);
+    };
     window.addEventListener(DOCK_DROP_PATHS_EVENT, onDockDropPaths);
-    return () => window.removeEventListener(DOCK_DROP_PATHS_EVENT, onDockDropPaths);
-  }, [docked, insertDroppedPaths]);
+    window.addEventListener(DOCK_DROP_TEXT_EVENT, onDockDropText);
+    return () => {
+      window.removeEventListener(DOCK_DROP_PATHS_EVENT, onDockDropPaths);
+      window.removeEventListener(DOCK_DROP_TEXT_EVENT, onDockDropText);
+    };
+  }, [docked, insertDroppedPaths, insertDroppedText]);
+
+  // Text/link drags over the field (vendor wry patch channel) while floating.
+  // Rect-tested like the file effect above; the memo tab page replaces the
+  // composer column while open, so no second consumer competes for the drop.
+  useEffect(() => {
+    if (!isTauriRuntime() || docked) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    const field = () => textareaRef.current?.closest(".composer__field") as HTMLElement | null;
+
+    void onDragText((event) => {
+      if (disposed || isPageDragSource()) return;
+      const el = field();
+      if (!el) return;
+      if (event.kind === "leave") {
+        setDropActive(false);
+        return;
+      }
+      const rect = el.getBoundingClientRect();
+      // The channel reports physical pixels, same as onDragDropEvent.
+      const scale = window.devicePixelRatio || 1;
+      const x = event.x / scale;
+      const y = event.y / scale;
+      const over = x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+      if (event.kind === "enter" || event.kind === "over") {
+        setDropActive(over);
+        return;
+      }
+      setDropActive(false);
+      if (event.kind === "drop" && over && event.text.trim()) insertDroppedText(event.text);
+    })
+      .then((dispose) => {
+        if (disposed) dispose();
+        else unlisten = dispose;
+      })
+      .catch(() => undefined);
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [docked, insertDroppedText]);
 
   /** OpenCode-style: Tab cycles execution mode when ≥2 modes exist. */
   const cycleMode = useCallback(

@@ -3,6 +3,21 @@
 依据：[`research-codeg.md`](./research-codeg.md) 的全量调研，对照 Marionette 现状（2026-10-25，dock 阶段 0–4 落地后）逐项核实写成。
 工作量标记：S ≈ 半天内，M ≈ 1–2 天，L ≈ 一个迭代以上。条目后括号是 Codeg 实现指针（相对 `D:\Projects\codeg`）。
 
+## 2026-10-26 复核（用户逐条过 P0/P1，含代码实证）
+
+- **P0.1 权限卡排队计数——确认缺**：`App.tsx` 的 `permissionPrompt` 是单槽 state，第二条请求直接顶替当前卡（2819 行无条件 set）；无任何排队计数。多会话并发权限时才有感，保留待做。
+- **P0.2 命令活尾巴——用户关闭**：现有折叠（运行中 force-open + 完成收拢）够用。真实差异只有「折叠行露末 3 行输出」与「失败自动展开锚底」，不追。
+- **P0.3 折叠状态外置——基本已有，关闭**：tool/thought/kind 开合存在 SessionView 父级 Set（`expandedToolKeys` 等），虚拟化卸载不丢；回合结束清空是有意设计。残余：FileChangeCard 的局部 `open` state（虚拟化卸载会丢，随手修）。
+- **P0.4 通知门控——核心已有，关闭**：focus 门控（focused 不闪不响，除 audibleWhenFocused）+ 同类 1s 去重（`DEDUPE_MS`）+ 350ms settle 调度 + 根本没有系统弹窗（闪烁/声音/标题徽章形态，天然无叠加弹窗问题）。差的两条边角（第二屏可见未聚焦抑制、断线重连回放抑制）按需再说。
+- **P0.5 `ZCODE_ACP_RUNTIME=node`——已落（2026-10-26）**：`acp.rs` zcode 分支无条件注入（用户自设不覆盖），`pitfalls-zcode-acp.md` 雷 15 补课。
+- **P0.6 防御性排雷——部分已有**：PTY 输出 char-boundary 截断已修（AGENTS.md 崩溃历史）；**确认缺口：退出路径无杀子进程树兜底**（无 Job Object、无 kill_tree），保留工程项，按需做。
+- **P1.1 回合活动胶囊——用户关闭**：现有 tally + 交付卡形态满意。
+- **P1.2 命令组走过即收——结构上已有，关闭**：整段活动收进 tally 折叠、活跃命令在顶部实时轨迹面板，行为等价。
+- **P1.3 Steer + 消息队列——核心已有，降级为按需增强**：busy 队列（`pendingSendsRef`）+ **插话 = `cancelLiveTurn` 立即打断当前回合再发**（App.tsx 6955-6990）+ 有序 drain + composer 上方 queued-strip（「插话 ×N」）。缺的只是队列条目编辑/删除/拖拽与 ⚡/🕐 如实标注，增强项不单独立项。
+- **P1.4 markdown 富渲染——保留，用户批准（下一个主项）**：现状 react-markdown + gfm + breaks（`MarkdownBody.tsx`），无 shiki/katex/mermaid。
+- **P1.5 图片补齐——范围缩小**：markdown 本地图片内联**已有**（`PreviewImage` + `MarkdownImageCwdContext` 按 session cwd 解析相对路径 + LRU 字节缓存 + lightbox）；工具读图已有 ToolImageStrip。剩：agent **生图**原位卡片（带改写后 prompt）。
+- **P1.6 PDF 旁聊预览——用户关闭**。
+
 ## 定位原则（取舍的依据，先于一切条目）
 
 1. **轻壳不做 IDE**。Marionette 的差异化是贴边停靠 + 收纳盒 + 模型共享引擎；编辑器/画布/merge editor 这类重工作台件不进。

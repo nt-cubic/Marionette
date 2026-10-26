@@ -603,6 +603,16 @@ impl AcpService {
                     );
                 }
             }
+            // Pin the bridge's own runtime to node: zcode-acp-server
+            // self-migrates to Bun when it finds Bun >= 1.4 on the machine
+            // (codeg `docs/agents/zcode.md`, research-codeg.md §三.1) — a
+            // runtime we never probed. ZCODE_NODE only covers the .cjs
+            // backend, not the adapter itself. A user-set value always wins.
+            if matches!(id, "zcode" | "zcode-acp")
+                && std::env::var_os("ZCODE_ACP_RUNTIME").is_none()
+            {
+                child_command.env("ZCODE_ACP_RUNTIME", "node");
+            }
             // ZCode (`zcode-acp-server`): the bridge spawns `zcode app-server`
             // itself and resolves the runtime ZCODE_BIN → `zcode` on PATH →
             // %LOCALAPPDATA%\Programs\ZCode. Desktop installs in custom dirs

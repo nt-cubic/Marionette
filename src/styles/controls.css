@@ -722,8 +722,10 @@
 }
 
 .chat-list {
+  --chat-row-h: 25px;
+  /* Preview count comes from --chat-list-preview (SESSION_LIST_PREVIEW). */
   min-height: 0;
-  max-height: 200px;
+  max-height: calc(var(--chat-list-preview, 5) * var(--chat-row-h));
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -742,7 +744,7 @@
   gap: 6px;
   width: 100%;
   min-width: 0;
-  min-height: 25px;
+  min-height: var(--chat-row-h, 25px);
   padding: 0;
   border: none;
   background: none;
@@ -826,7 +828,7 @@
   align-items: center;
   gap: 6px;
   min-width: 0;
-  min-height: 25px;
+  min-height: var(--chat-row-h, 25px);
   padding: 4px 8px;
   border: 0;
   color: inherit;
@@ -834,6 +836,12 @@
   cursor: pointer;
   text-align: left;
   font: inherit;
+}
+
+.chat-row:hover .chat-row__select,
+.chat-row:focus-within .chat-row__select {
+  /* Keep the title span out from under the overlay actions. */
+  padding-right: 96px;
 }
 
 .chat-row__select:hover {

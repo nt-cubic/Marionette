@@ -86,6 +86,7 @@ pub fn open_here(
         resolved_agent,
         format!("Chat · {}", folder_name(&path)),
         &path,
+        None,
     )?;
     Ok(serde_json::json!({
         "kind": "chat",
@@ -101,12 +102,15 @@ fn folder_name(path: &str) -> String {
         .to_string()
 }
 
-/// Create a Chat session in the global Chat store.
+/// Create a Chat session in the global Chat store. `origin` only accepts
+/// `"memo"` (收纳盒-derived dialogs, listed in the shelf's own group);
+/// anything else falls back to `"user"`.
 #[tauri::command(async)]
 pub fn create_chat_session(
     agent_id: String,
     label: String,
     cwd: Option<String>,
+    origin: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Session, String> {
     let _trace = crate::debug_log::CmdTrace::new("create_chat_session");
@@ -116,7 +120,11 @@ pub fn create_chat_session(
         .or_else(|| crate::app_paths::current_dir().ok())
         .ok_or_else(|| "Unable to determine Chat folder".to_string())?;
     let storage = state.storage.lock().map_err(|_| "Storage lock poisoned".to_string())?;
-    storage.create_chat_session(agent_id, label, &default_folder)
+    let origin = match origin.as_deref() {
+        Some("memo") => Some("memo"),
+        _ => None,
+    };
+    storage.create_chat_session(agent_id, label, &default_folder, origin)
 }
 
 /// (Re)install Explorer context menu entries pointing at this exe.

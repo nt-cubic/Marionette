@@ -91,6 +91,8 @@ import { DockChrome, DockResizeGrip, type DockPage } from "../components/DockChr
 import { DockDropRouter } from "../components/DockDropRouter";
 import { MemoBox } from "../components/MemoBox";
 import { memoList, memoPrompt } from "../lib/memos";
+import { installPageDragSourceTracker } from "../lib/dragText";
+import { splitShelfChatSessions, withoutGhostProjects } from "../lib/sessionGroups";
 import { parseAvailableCommandsUpdate } from "../lib/slashCommands";
 import type { PlanEntry } from "../lib/acpPlan";
 import { parseAcpPlanUpdate } from "../lib/acpPlan";
@@ -1005,6 +1007,10 @@ export function App() {
     void memoList().then((rows) => setMemoCount(rows.length));
   }, []);
 
+  // Text-drag channel (vendor wry patch): mark drags that start inside this
+  // page so the OLE-side listeners leave them on the pure HTML5 path.
+  useEffect(() => installPageDragSourceTracker(), []);
+
   // Edge dock stage 1: dock engine bindings (close handoff, sliver hover,
   // focus tracking) + footer button state. Stage 2: overlays only live while
   // the strip is expanded — closing them on retract keeps the hidden state
@@ -1668,8 +1674,9 @@ export function App() {
         listAgents(),
         getProxyConfig(),
       ]);
-      let resolvedProjects =
-        nextProjects.length > 0 || isTauriRuntime() ? nextProjects : projects;
+      let resolvedProjects = withoutGhostProjects(
+        nextProjects.length > 0 || isTauriRuntime() ? nextProjects : projects
+      );
       const resolvedAgents = nextAgents.length > 0 ? nextAgents : agents;
       setAvailableAgents(resolvedAgents);
       setProxyConfigState(nextProxy);
@@ -4080,10 +4087,13 @@ export function App() {
     [availableSessions, currentProject]
   );
 
-  const chatSessions = useMemo(
-    () => availableSessions.filter((session) => session.projectId === CHAT_PROJECT_ID),
+  const shelfChatSplit = useMemo(
+    () => splitShelfChatSessions(availableSessions),
     [availableSessions]
   );
+  const chatSessions = shelfChatSplit.chat;
+  /** 收纳盒-grown dialogs (origin "memo") — their own shelf group. */
+  const memoSessions = shelfChatSplit.memo;
 
   /**
    * Edge dock strip (instead of tabs): every dialog still holding a process,
@@ -4515,8 +4525,9 @@ export function App() {
     });
   };
 
-  /** Create a new Chat session in the current/default working folder. */
-  const handleCreateChatSession = useCallback(async (agentId?: string) => {
+  /** Create a new Chat session in the current/default working folder. `origin:
+   *  "memo"` files it under the shelf's 收纳盒 group. */
+  const handleCreateChatSession = useCallback(async (agentId?: string, opts?: { origin?: "memo" }) => {
     if (createChatInFlightRef.current) return createChatInFlightRef.current;
     const work = (async (): Promise<Session | undefined> => {
       try {
@@ -4525,7 +4536,7 @@ export function App() {
             ? agentId
             : (availableAgents[0]?.id ?? agents[0]!.id);
         const cwd = defaultFolderPath || (await getDefaultFolder());
-        const session = await createChatSession(resolvedAgentId, "新对话", cwd || null);
+        const session = await createChatSession(resolvedAgentId, "新对话", cwd || null, opts?.origin);
         if (!session) return undefined;
         if (!defaultFolderPath && session.cwd) {
           setDefaultFolderPath(session.cwd);
@@ -4928,7 +4939,8 @@ export function App() {
         next.splice(insertAt, 0, item!);
         void reorderProjectsApi(next.map((p) => p.id)).catch(() => {
           void listProjects().then((projects) => {
-            if (projects.length > 0) setAvailableProjects(projects);
+            const visible = withoutGhostProjects(projects);
+            if (visible.length > 0) setAvailableProjects(visible);
           });
         });
         return next;
@@ -8081,8 +8093,14 @@ export function App() {
       onClose={close}
       onChanged={setMemoCount}
       onUse={(picked, intent) => {
+        // 开新对话 always lands in the shelf's 收纳盒 group; 整理成文档 keeps
+        // targeting the project in view (falls back to the group when none is).
         const projectId = currentProjectId && currentProjectId !== CHAT_PROJECT_ID ? currentProjectId : null;
-        void (projectId ? createSessionForProject(projectId) : handleCreateChatSession()).then((session) => {
+        const create =
+          intent === "dialog" || !projectId
+            ? handleCreateChatSession(undefined, { origin: "memo" })
+            : createSessionForProject(projectId);
+        void create.then((session) => {
           if (!session) return;
           setComposerPrefill({ sessionId: session.id, text: memoPrompt(picked, intent), token: Date.now() });
         });
@@ -8139,6 +8157,7 @@ export function App() {
             onRevealProject={shelfStable.onRevealProject}
             defaultFolderPath={defaultFolderPath}
             chatSessions={chatSessions}
+            memoSessions={memoSessions}
             onChatSessionSelect={openChatSession}
             onNewChat={shelfStable.onNewChat}
             onOpenMemo={dockActive ? undefined : () => {
@@ -8165,7 +8184,7 @@ export function App() {
         {paletteOpen && (
           <CommandPalette
             sessions={availableSessions}
-            chatSessions={chatSessions}
+            chatSessions={[...chatSessions, ...memoSessions]}
             projects={shelfProjects}
             currentSessionId={displaySession.id}
             doneUnreadIds={doneUnreadIds}

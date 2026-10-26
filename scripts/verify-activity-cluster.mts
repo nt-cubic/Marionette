@@ -11,12 +11,14 @@ import {
   activitySpanLayout,
   activitySpanWidthPct,
   activityTimeline,
+  classifyToolCall,
   formatActivityTally,
   groupConsecutiveByKind,
   LIVE_AXIS_FLOOR_MS,
   liveAxisMs,
   summarizeActivity,
   tailActivityFoldKey,
+  tallyWord,
   kindGroupTitle,
 } from "../src/lib/turnActivity.ts";
 
@@ -502,6 +504,45 @@ check("the finished chart is a freeze-frame of the last live chart", () => {
   );
   const summary = summarizeActivity(steps, { untilMs });
   assert.equal(summary.elapsed, "14s");
+});
+
+check("Grok Bash: title classifies as command, not the other dump", () => {
+  const bash = tool({
+    toolName: "Bash: ls D:/Myself/Marionette/src/components/",
+    title: "Bash: ls D:/Myself/Marionette/src/components/",
+    input: '{"variant":"Bash","command":"ls D:/Myself/Marionette/src/components/"}',
+  });
+  const grep = tool({
+    title: 'Bash: grep -rn "onDragDropEvent" D:/Myself/Marionette',
+    input: '{"variant":"Bash","command":"grep -rn onDragDropEvent"}',
+  });
+  assert.equal(classifyToolCall(bash), "command");
+  assert.equal(classifyToolCall(grep), "command");
+  const pair = [
+    { event: bash, index: 0 },
+    { event: grep, index: 1 },
+  ];
+  assert.equal(summarizeActivity(pair).title, "2 commands");
+  assert.equal(kindGroupTitle(groupConsecutiveByKind(pair)[0]!), "Ran 2 commands");
+});
+
+check("input variant still classifies when the name is an ACP other kind", () => {
+  const ev = tool({
+    toolName: "other",
+    title: "other",
+    input: '{"variant":"Bash","command":"ls"}',
+  });
+  assert.equal(classifyToolCall(ev), "command");
+});
+
+check("unclassified tools tally as tool, not other", () => {
+  assert.equal(tallyWord("other"), "tool");
+  const unknown = [
+    { event: tool({ toolName: "todowrite", title: "Update todos" }), index: 0 },
+    { event: tool({ toolName: "use_mcp_tool", title: "mcp ping" }), index: 1 },
+  ];
+  assert.equal(summarizeActivity(unknown).title, "2 tools");
+  assert.equal(kindGroupTitle(groupConsecutiveByKind(unknown)[0]!), "2 tools");
 });
 
 check("the trailing run is found through delivery cards", () => {
