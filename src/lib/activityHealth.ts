@@ -125,43 +125,10 @@ export function activityBarLabel(
  * `title` matters: OpenCode often renames the card to the agent/prompt while
  * the stable tool name is still `task` (or arrives late).
  */
-/** Parent wait / harvest tools — not a nested agent card of their own. */
-export function isSubagentWaitTool(
-  toolName: string | null | undefined,
-  title?: string | null,
-): boolean {
-  const hay = `${toolName ?? ""} ${title ?? ""}`;
-  return /get_command_or_subagent_output|wait_agent|close_agent|background_task_action|multi-wait|wait_all|task output/i.test(
-    hay,
-  );
-}
-
-export function isSubagentTool(
-  toolName: string | null | undefined,
-  title?: string | null,
-): boolean {
-  if (isSubagentWaitTool(toolName, title)) return false;
-  const name = (toolName ?? "").trim();
-  if (
-    /^(task|agent|subagent|delegate|dispatch_agent|spawn_agent|spawn_subagent|call_omo_agent|invoke_agent|run_agent|launch_agent|background_agent)$/i.test(
-      name,
-    )
-  ) {
-    return true;
-  }
-  // Normalized aliases / partial names (not todowrite / wait harvest).
-  if (name && /task|subagent|spawn_agent|dispatch_agent|invoke_agent|launch_agent/i.test(name) && !/todo/i.test(name)) {
-    return true;
-  }
-  const t = (title ?? "").trim();
-  if (!t) return false;
-  if (/\b(subagent|sub-agent|nested agent|task agent|delegate agent)\b/i.test(t)) return true;
-  if (/子代理|子\s*agent/i.test(t)) return true;
-  // OpenCode task cards often look like: "Task (general)" / "general · explore …"
-  if (/^task\b/i.test(t)) return true;
-  if (/\(general\)|\(explore\)|\(scout\)/i.test(t)) return true;
-  return false;
-}
+export {
+  isSubagentTool,
+  isSubagentWaitTool,
+} from "./subagentAdapters";
 
 export function stallBannerCopy(health: ActivityHealth, opts: {
   midTurn: boolean;

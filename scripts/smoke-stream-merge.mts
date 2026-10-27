@@ -897,11 +897,8 @@ console.log("OpenCode v2 child-session streams stay off the parent Reply");
       index,
     })),
   );
-  assert.equal(clustered.length, 1);
-  assert.equal(clustered[0].kind, "activity");
-  if (clustered[0].kind === "activity") {
-    assert.equal(clustered[0].items.length, 3);
-  }
+  assert.equal(clustered.length, 3);
+  assert.ok(clustered.every((unit) => unit.kind === "row"));
 }
 
 // ── Thought-after-Reply interleave (2026-10-24 incident regression) ────────

@@ -3987,7 +3987,7 @@ export function App() {
           if (
             e.type === "tool_call" &&
             isToolInProgress(e.status) &&
-            isSubagentTool(e.toolName, e.title)
+            isSubagentTool(e.toolName, e.title, e.input)
           ) {
             openSubagent = true;
             break;

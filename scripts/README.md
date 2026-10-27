@@ -19,7 +19,8 @@
 | `usage-smoke.mts` | `npx tsx scripts/usage-smoke.mts` | usage 面板解析，断言用的是真实 adapter 抓到的报文 |
 | `title-smoke.mts` | `npx tsx scripts/title-smoke.mts` | 会话标题：拒绝 Marionette 自己注入的 prompt 抬头被当成标题，修复时从转录里取用户真正打的第一句 |
 | `suspend-smoke.mts` | `npx tsx scripts/suspend-smoke.mts` | 挂起规则两套：手动 ⏸ 按钮对**任何还持有进程**的会话都可按（starting / running / waiting / error，running 时按下去直接中断），只有已挂起的不画按钮；而 2 小时空闲自动挂起仍只碰「热但空闲且没有待办」的会话（子代理/后台命令/定时发送算在运作） |
-| `verify-live-subagents.mts` | `npx tsx scripts/verify-live-subagents.mts` | 嵌套子代理仍在跑：OpenCode/Claude `in_progress` Task，以及 Grok「Subagent started in background」完成桩 |
+| `verify-live-subagents.mts` | `npx tsx scripts/verify-live-subagents.mts` | 嵌套子代理仍在跑：OpenCode/Claude `in_progress` Task、Grok「Subagent started in background」完成桩、ZCode `[background]`、Codex collab `spawnAgent`、Hermes `delegate_task`；`create_goal` / collab `wait` 不算 |
+| `verify-subagent-adapters.mts` | `npx tsx scripts/verify-subagent-adapters.mts` | 各 agent 走私方式都能认成独立子代理卡：ZCode 标题是任务描述 + `_meta.claudeCode.toolName`、Codex collab `rawInput` / 无 spawn 的 `_meta.codex.subagent`、Hermes `delegate_task`；wait/close/goal 排除 |
 | `fork-smoke.mts` | `npx tsx scripts/fork-smoke.mts` | 分叉的切点与拷贝：按 message id（退化为文本）定位那条回复，子任务/交接卡片不带过去，事件原对象不被改 |
 | `image-path-smoke.mts` | `npx tsx scripts/image-path-smoke.mts` | 对话里图片的路径：相对路径按会话工作目录拼成绝对路径，`file://` 去协议，绝对路径原样（用的是真实转录里的路径） |
 | `verify-usage-row-layout.mts` | `npx tsx scripts/verify-usage-row-layout.mts` | usage 行布局：不再渲染 Last turn / Session total |

@@ -55,7 +55,7 @@ function classifyName(name: string): ToolActivityKind {
     key === "pwsh" ||
     key === "terminal" ||
     key.startsWith("exec") ||
-    key.startsWith("run") ||
+    (key.startsWith("run") && !/agent|task/.test(key)) ||
     key.startsWith("command")
   ) {
     return "command";
@@ -270,7 +270,10 @@ export type ActivityClusterUnit =
 ;
 
 export function isSubagentEvent(event: SessionEvent): boolean {
-  return event.type === "tool_call" && isSubagentTool(event.toolName, event.title);
+  return (
+    event.type === "tool_call" &&
+    isSubagentTool(event.toolName, event.title, event.input)
+  );
 }
 
 /**

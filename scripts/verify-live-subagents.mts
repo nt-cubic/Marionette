@@ -80,5 +80,51 @@ check("parked / exited dialogs are not process-alive", () => {
   assert.equal(sessionProcessAlive("running"), true);
   assert.equal(sessionProcessAlive("exited"), false);
 });
+check("ZCode [background] completed card stays live while the process is up", () => {
+  const event = tool({
+    toolName: "agent",
+    title: "[background] 扫一遍 src/",
+    status: "completed",
+    detail: "working in the background agentId: ag_9",
+  });
+  assert.equal(isLiveSubagentEvent(event), true);
+  assert.equal(isLiveSubagentEvent(event, { processAlive: false }), false);
+});
+check("Codex collab spawnAgent in_progress is live; wait is not", () => {
+  const input = JSON.stringify({
+    prompt: "write tests",
+    senderThreadId: "p",
+    receiverThreadIds: ["c"],
+    agentsStates: { c: { status: "running" } },
+  });
+  assert.equal(
+    isLiveSubagentEvent(
+      tool({ toolName: "collab_agent", title: "spawnAgent", status: "in_progress", input }),
+    ),
+    true,
+  );
+  assert.equal(
+    isLiveSubagentEvent(tool({ toolName: "wait", title: "wait", status: "in_progress", input })),
+    false,
+  );
+});
+check("Hermes delegate_task in_progress is live", () => {
+  assert.equal(
+    isLiveSubagentEvent(tool({ toolName: "delegate_task", title: "Write the tests", status: "in_progress" })),
+    true,
+  );
+});
+check("create_goal is never a live nested agent", () => {
+  assert.equal(
+    isLiveSubagentEvent(
+      tool({
+        toolName: "create_goal",
+        title: "Goal updated (active): ship it",
+        status: "in_progress",
+      }),
+    ),
+    false,
+  );
+});
 
 console.log(`\n${passed} checks passed.`);

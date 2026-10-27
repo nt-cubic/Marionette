@@ -16,6 +16,11 @@ import { looksLikeUnifiedDiff } from "./toolBody";
 import { isImagePath, stripFileUri } from "./imageAttachments";
 import { inferToolNameFromMeta } from "./toolCallNormalize";
 import { parseWebReply, type WebReply } from "./webReply";
+import {
+  parseCodeBuddyTeamMembers,
+  parseCodexSubagentActivity,
+  recoverSubagentToolName,
+} from "./subagentAdapters";
 
 export type AcpTextPart = {
   role: "assistant" | "thought" | "tool" | "other" | "system";
@@ -81,17 +86,42 @@ export function getSessionUpdateKind(update: UpdateObj): string {
   return String(update.sessionUpdate ?? update.type ?? update.kind ?? "");
 }
 
-/** Grok spawn_subagent completes immediately with this stub while the child still runs. */
+/** Grok spawn_subagent / ZCode Agent complete immediately while the child still runs. */
 export function parseBackgroundSubagentStart(
   text: string | null | undefined,
 ): { id: string; description: string } | null {
   const raw = (text ?? "").trim();
-  if (!raw || !/Subagent started in background/i.test(raw)) return null;
-  const id = raw.match(/subagent_id:\s*(\S+)/i)?.[1]?.trim() ?? "";
-  if (!id) return null;
-  const description =
-    raw.match(/description:\s*(.+)/i)?.[1]?.trim().split(/\n/)[0]?.trim() ?? "";
-  return { id, description };
+  if (!raw) return null;
+  const firstLine = raw.split(/\n/)[0]?.trim() ?? "";
+  if (/^\[background\]/i.test(firstLine)) {
+    const description = firstLine.replace(/^\[background\]\s*/i, "").trim();
+    const id =
+      raw.match(/agentId["\s:=]+([A-Za-z0-9._-]+)/i)?.[1]?.trim() ||
+      raw.match(/agent_id["\s:=]+([A-Za-z0-9._-]+)/i)?.[1]?.trim() ||
+      raw.match(/taskId["\s:=]+([A-Za-z0-9._-]+)/i)?.[1]?.trim() ||
+      "";
+    return { id, description };
+  }
+  if (/Subagent started in background/i.test(raw)) {
+    const id = raw.match(/subagent_id:\s*(\S+)/i)?.[1]?.trim() ?? "";
+    if (!id) return null;
+    const description =
+      raw.match(/description:\s*(.+)/i)?.[1]?.trim().split(/\n/)[0]?.trim() ?? "";
+    return { id, description };
+  }
+  // ZCode Agent (run_in_background): "working in the background" + agentId.
+  if (/working in the background/i.test(raw)) {
+    const id =
+      raw.match(/agentId["\s:=]+([A-Za-z0-9._-]+)/i)?.[1]?.trim() ||
+      raw.match(/agent_id["\s:=]+([A-Za-z0-9._-]+)/i)?.[1]?.trim() ||
+      raw.match(/taskId["\s:=]+([A-Za-z0-9._-]+)/i)?.[1]?.trim() ||
+      "";
+    if (!id) return null;
+    const description =
+      raw.match(/description["\s:=]+(.+)/i)?.[1]?.trim().split(/\n/)[0]?.trim() ?? "";
+    return { id, description };
+  }
+  return null;
 }
 
 function grokSubagentMetaLine(info: {
@@ -705,6 +735,46 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
         toolDetail: goal.objective,
       };
     }
+    const codexSub = parseCodexSubagentActivity(update);
+    if (codexSub) {
+      return {
+        role: "tool",
+        text: renderToolText({
+          title: codexSub.title,
+          status: codexSub.status,
+          detail: codexSub.detail,
+        }),
+        isDelta: false,
+        sessionUpdate,
+        messageId,
+        toolCallId: codexSub.toolCallId,
+        toolStatus: codexSub.status,
+        toolTitle: codexSub.title,
+        toolName: "agent",
+        toolDetail: codexSub.detail,
+        toolInput: codexSub.threadId ? `threadId: ${codexSub.threadId}` : undefined,
+      };
+    }
+    const team = parseCodeBuddyTeamMembers(update);
+    if (team.length > 0) {
+      const live = team.find((row) => row.status === "in_progress") ?? team[0]!;
+      return {
+        role: "tool",
+        text: renderToolText({
+          title: live.title,
+          status: live.status,
+          detail: live.detail,
+        }),
+        isDelta: false,
+        sessionUpdate,
+        messageId,
+        toolCallId: live.toolCallId,
+        toolStatus: live.status,
+        toolTitle: live.title,
+        toolName: "agent",
+        toolDetail: live.detail,
+      };
+    }
     const compaction = parseCompactionUpdate(update);
     if (compaction) {
       const how =
@@ -722,6 +792,51 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
       };
     }
     return null;
+  }
+
+  // Codex native team-of-agents / CodeBuddy teamUpdate on a non-session_info
+  // envelope (no spawn tool_call — the card is synthesized from `_meta`).
+  if (!sessionUpdate.includes("tool_call")) {
+    const codexSubLoose = parseCodexSubagentActivity(update);
+    if (codexSubLoose) {
+      return {
+        role: "tool",
+        text: renderToolText({
+          title: codexSubLoose.title,
+          status: codexSubLoose.status,
+          detail: codexSubLoose.detail,
+        }),
+        isDelta: false,
+        sessionUpdate,
+        messageId,
+        toolCallId: codexSubLoose.toolCallId,
+        toolStatus: codexSubLoose.status,
+        toolTitle: codexSubLoose.title,
+        toolName: "agent",
+        toolDetail: codexSubLoose.detail,
+        toolInput: codexSubLoose.threadId ? `threadId: ${codexSubLoose.threadId}` : undefined,
+      };
+    }
+    const teamLoose = parseCodeBuddyTeamMembers(update);
+    if (teamLoose.length > 0) {
+      const live = teamLoose.find((row) => row.status === "in_progress") ?? teamLoose[0]!;
+      return {
+        role: "tool",
+        text: renderToolText({
+          title: live.title,
+          status: live.status,
+          detail: live.detail,
+        }),
+        isDelta: false,
+        sessionUpdate,
+        messageId,
+        toolCallId: live.toolCallId,
+        toolStatus: live.status,
+        toolTitle: live.title,
+        toolName: "agent",
+        toolDetail: live.detail,
+      };
+    }
   }
 
   // OpenCode v2 child_update status (created/running/completed/…) — no inner
@@ -783,14 +898,22 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
     // Only report what this update actually carried: ACP updates are partial,
     // and a fabricated fallback here would rename a finished tool back to
     // "tool" (or flip "completed" to "updated") on a bare status ping.
-    const rawTitle =
+    const displayTitle =
       (typeof update.title === "string" && update.title) ||
+      undefined;
+    const wireName =
       (typeof update.name === "string" && update.name) ||
+      (typeof update.toolName === "string" && update.toolName) ||
+      undefined;
+    const kindName =
       (typeof update.kind === "string" && update.kind !== "other" && update.kind) ||
       undefined;
-    // Prefer meta identity (Grok x.ai/tool.kind) over mutating titles.
+    const rawTitle = displayTitle || wireName || kindName || undefined;
+    // Prefer vendor `_meta` / wire name over the human title. ZCode and Claude
+    // put "Agent" in meta and the task description in title — classifying by
+    // title turns the spawn into a Read and folds it into the tally.
     const meta = update._meta ?? update.meta;
-    const normalized = inferToolNameFromMeta(rawTitle, meta);
+    const normalized = inferToolNameFromMeta(wireName || displayTitle, meta);
     const title = rawTitle || (normalized ? normalized : undefined);
     const status =
       (typeof update.status === "string" && update.status) ||
@@ -844,14 +967,28 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
     const toolInput =
       synthesized || inputIsOnlyPath(rawInput, toolPath) ? "" : clippedInput;
 
-    const bgStart = parseBackgroundSubagentStart(toolDetail);
+    const bgStart =
+      parseBackgroundSubagentStart(toolDetail) || parseBackgroundSubagentStart(displayTitle);
     const toolStatus = bgStart ? "in_progress" : status;
-    const spawnInput = bgStart ? `subagent_id: ${bgStart.id}` : toolInput;
-    const spawnTitle = bgStart?.description || title;
-    const spawnName =
-      bgStart || /spawn_subagent/i.test(normalized || title || "")
-        ? "spawn_subagent"
-        : normalized || title;
+    const spawnInput = bgStart?.id ? `subagent_id: ${bgStart.id}` : toolInput;
+    const spawnTitle =
+      (displayTitle && /^\[background\]/i.test(displayTitle) ? displayTitle : null) ||
+      bgStart?.description ||
+      displayTitle ||
+      title;
+    const recovered = recoverSubagentToolName({
+      name: wireName,
+      title: displayTitle || title,
+      kind: kindName,
+      input: inputPreview,
+      meta,
+    });
+    const grokSpawn =
+      /spawn_subagent/i.test(`${normalized || ""} ${wireName || ""} ${title || ""}`) ||
+      Boolean(
+        bgStart && /Subagent started in background/i.test(`${toolDetail ?? ""} ${displayTitle ?? ""}`),
+      );
+    const spawnName = grokSpawn ? "spawn_subagent" : recovered || normalized || title;
 
     return {
       role: "tool",
@@ -1248,6 +1385,16 @@ export function thoughtEvent(sessionId: string, text: string, messageId?: string
   };
 }
 
+function preferStableToolName(
+  prev: string | undefined,
+  next: string | undefined,
+  title?: string,
+  input?: string,
+): string | undefined {
+  if (next && isSubagentTool(next, title, input) && !isSubagentTool(prev, title)) return next;
+  return prev ?? next;
+}
+
 export function toolCallEvent(
   sessionId: string,
   text: string,
@@ -1295,7 +1442,7 @@ function findNestedSubagentCard(
   for (let i = lastUser + 1; i < events.length; i += 1) {
     const e = events[i]!;
     if (e.sessionId !== sessionId || e.type !== "tool_call") continue;
-    if (!isSubagentTool(e.toolName, e.title)) continue;
+    if (!isSubagentTool(e.toolName, e.title, e.input)) continue;
     const hay = `${e.input ?? ""}\n${e.detail ?? ""}\n${e.toolCallId ?? ""}\n${e.title ?? ""}`;
     if (childId && hay.includes(childId)) return i;
     if (titleHint && e.title === titleHint && titled < 0) titled = i;
@@ -1732,8 +1879,9 @@ export function applyAcpPartToEvents(
           ...(prev.completedAt == null && merged.status && !isToolInProgress(merged.status)
             ? { completedAt: new Date().toISOString() }
             : {}),
-          // Never overwritten: `title` becomes a summary, the name must not.
-          toolName: prev.toolName ?? part.toolName ?? part.toolTitle,
+          // Never overwritten by a later summary title. Upgrade a description
+          // that was stored as the name once the real spawn identity arrives.
+          toolName: preferStableToolName(prev.toolName, part.toolName, part.toolTitle, part.toolInput),
           text: renderToolText(merged),
           ...(images && images.length > 0 ? { images } : {}),
         };
@@ -1767,7 +1915,7 @@ export function applyAcpPartToEvents(
       // mint a second card or complete the Task early. Parallel Grok
       // spawn_subagent calls each have their own toolCallId — the single-open
       // fallback would swallow the 2nd…Nth spawn into the first card.
-      if (isSubagentTool(part.toolName, part.toolTitle) && part.toolCallId) {
+      if (isSubagentTool(part.toolName, part.toolTitle, part.toolInput) && part.toolCallId) {
         const allowFallback = !/spawn_subagent/i.test(`${part.toolName ?? ""} ${part.toolTitle ?? ""}`);
         if (
           findNestedSubagentCard(base, sessionId, part.toolCallId, nestTitleHint, allowFallback) >= 0
