@@ -526,6 +526,25 @@ var wslKinds = []wslKind{
 				return out
 			}
 		}},
+	// Antigravity CLI, by its own folder under ~/.gemini or its command
+	// (mimi001234 on Discord: magpie didn't find agy in WSL); it takes the
+	// gateway only from how it is started, so the distro's shells get the
+	// function agy (agyDistroFunction)
+	{id: "agy", name: "Antigravity CLI", dir: ".gemini/antigravity-cli", bin: "agy", in: agyIn,
+		restart: newNotice("{agent} in WSL {distro} takes magpie's gateway and model only from how it is started — type agy in a new terminal there: magpie put it in the shell's profile."),
+		asleep: func(key string) func(map[string]string) []Option {
+			if key != "model" {
+				return nil
+			}
+			// its custom models are the distro's settings.json
+			return func(cur map[string]string) []Option {
+				var own []Option
+				if c := cur["model"]; c != "" && !usesMagpie(c) {
+					own = append(own, Option{Value: c, Icon: modelIcon("", c), Direct: "Google"})
+				}
+				return append(group("Antigravity CLI", own), viaMagpie("agy", magpieID+"/")...)
+			}
+		}},
 	// Block's goose, by its folder alone: a goose command may be pressly's
 	// database migration tool
 	{id: "goose", name: "Goose", dir: ".config/goose", in: func(at place) *Agent { return gooseIn(at, filepath.Join(at.home, ".config")) },
@@ -538,6 +557,10 @@ var wslKinds = []wslKind{
 	{id: "mothx", name: "MothX", dir: ".mothx", bin: "mothx", in: mothxIn,
 		restart: newNotice("{agent} in WSL {distro} reads its settings at start-up — restart open mothx sessions to use this."),
 		asleep:  wslOwnAsleep("mothx", "model")},
+	// PenguinHarness's ~/.penguin/data in the distro: its PENGUIN_HOME
+	// there isn't read; its server reads the file again as it changes
+	{id: "penguin", name: "PenguinHarness", dir: ".penguin", bin: "penguin", in: penguinIn,
+		asleep: wslOwnAsleep("penguin", "model")},
 	{id: "reasonix", name: "Reasonix", bin: "reasonix", in: reasonixIn, version: true,
 		accept: func(d distro) bool {
 			v := d.Versions["reasonix"]

@@ -1099,7 +1099,7 @@ func (s *Server) sendWith(ctx context.Context, p provider.Provider, method, url,
 		if drawsCodex(p) && res.StatusCode == http.StatusForbidden {
 			hint = fmt.Sprintf(" — ChatGPT turned %s's images away: its plan or workspace may not draw, or not with this model (Codex CLI draws with %s)", p.Name, codexDrawer)
 		}
-		return b, res.StatusCode, fmt.Errorf("%s: %d %s%s%s", provider.HostOf(url), res.StatusCode, http.StatusText(res.StatusCode), vendorSaid(vendorMessage(b)), hint)
+		return b, res.StatusCode, fmt.Errorf("%s: %d %s%s%s", provider.HostOf(url), res.StatusCode, http.StatusText(res.StatusCode), errorSaid(b), hint)
 	}
 	return b, res.StatusCode, nil
 }
@@ -1175,7 +1175,21 @@ func vendorMessage(b []byte) string {
 			return s
 		}
 	}
+	// a web page is said for what it is, not as markup
+	if said, ok := provider.WebPage(b); ok {
+		return said
+	}
 	return string(b)
+}
+
+// errorSaid is what an HTTP error's body said, for after its status: the
+// vendor's message, a web page by its title, or, for an empty body, that
+// it was refused with no details.
+func errorSaid(b []byte) string {
+	if said, ok := provider.Unsaid(b); ok {
+		return ": " + said
+	}
+	return vendorSaid(vendorMessage(b))
 }
 
 // drawImages asks an images API: generations, or edits with the images

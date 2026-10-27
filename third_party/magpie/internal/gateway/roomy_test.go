@@ -56,6 +56,11 @@ func TestMemberTooSmallIsNotAsked(t *testing.T) {
 	if slices.ContainsFunc(r.Order, func(w Weighed) bool { return w.Provider == "free" }) {
 		t.Fatalf("the free member is still in the order: %+v", r.Order)
 	}
+	// but the trace keeps it as left out, with the window it lacked, so
+	// the Routing page keeps its row and says why (#3749)
+	if i := slices.IndexFunc(r.Left, func(w Weighed) bool { return w.Provider == "free" }); i < 0 || r.Left[i].Window != 2000 {
+		t.Fatalf("the free member isn't left out with its window: %+v", r.Left)
+	}
 
 	// a request it holds goes to it, first
 	free.replies = []reply{{200, "", chatOK}}
@@ -98,8 +103,12 @@ func TestMemberTooSmallIsTheLastResort(t *testing.T) {
 	if len(r.Tries) != 2 || r.Tries[0].ID != "paid" || r.Tries[0].Rest == nil || r.Tries[1].ID != "free" {
 		t.Fatalf("tries %+v", r.Tries)
 	}
-	if !slices.ContainsFunc(r.Order, func(w Weighed) bool { return w.Provider == "free" }) {
+	if !slices.ContainsFunc(r.Order, func(w Weighed) bool { return w.Provider == "free" && w.Window == 0 }) {
 		t.Fatalf("the free member asked isn't in the order: %+v", r.Order)
+	}
+	// asked after all, it is no longer told as left out (#3749)
+	if slices.ContainsFunc(r.Left, func(w Weighed) bool { return w.Provider == "free" }) {
+		t.Fatalf("the free member asked is still left out: %+v", r.Left)
 	}
 }
 

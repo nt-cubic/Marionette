@@ -109,6 +109,12 @@ export const FakePlugin = async ({ client }) => ({
       const budget = { low: 4096, high: 16000, max: 31999 }
       const variants = Object.fromEntries(["low", "high", "max"].map((e) => [e, { thinking: { type: "enabled", budgetTokens: budget[e] } }]))
       cfg.provider[ID].models["GLM-5.3"] = { name: "GLM-5.3", provider: { npm: "@ai-sdk/anthropic" }, reasoning: true, variants, limit: { context: 1000000, output: 128000 } }
+      // $FAKE_ZCODE_TRIAL: the Start Plan trial models beside the
+      // subscription's, as a ZCode account that once had them lists them
+      if (process.env.FAKE_ZCODE_TRIAL) {
+        cfg.provider[ID].models["GLM-5.3-Flash-Trial"] = { name: "GLM 5.3 Flash Trial", provider: { npm: "@ai-sdk/anthropic" }, reasoning: true, limit: { context: 1000000, output: 128000 } }
+        cfg.provider[ID].models["GLM-5.3-Trial"] = { name: "GLM 5.3 Trial", provider: { npm: "@ai-sdk/anthropic" }, reasoning: true, limit: { context: 1000000, output: 128000 } }
+      }
     }
     // $FAKE_SEARCHES: the provider's upstream searches by itself (#2027),
     // as a plugin in front of Claude's API says
@@ -268,7 +274,7 @@ export const FakePlugin = async ({ client }) => ({
               case "ck-throw":
                 throw new Error("FakeCo's check-in is down")
               case "ck-odd":
-                return { outcome: "yes" }
+                return { outcome: "yes", message: "the daily credits were refreshed" }
             }
             return { outcome: "inactive" }
           },
@@ -291,8 +297,9 @@ export const FakePlugin = async ({ client }) => ({
       if (auth?.type === "oauth" && auth.refresh?.startsWith("rot-")) {
         await client.auth.set({ path: { id: ID }, body: { ...auth, refresh: auth.refresh + "+" } })
       }
-      // fake-1 costs the plan nothing, as a WorkBuddy model of x0.00 credits
-      p.models["fake-1"].free = true
+      // fake-1 costs the plan nothing, as a WorkBuddy model of x0.00
+      // credits ($FAKE_NO_FREE: a list with no free model, as ZCode's is)
+      if (!process.env.FAKE_NO_FREE) p.models["fake-1"].free = true
       // fake-claude's credits are a number, discounted; fake-gemini's as
       // WorkBuddy's picker writes them
       if (p.models["fake-claude"]) Object.assign(p.models["fake-claude"], { rate: 0.5, rateWas: 1 })

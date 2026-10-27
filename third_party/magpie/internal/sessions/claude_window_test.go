@@ -99,7 +99,7 @@ func TestClaudeWindowBoundsOneLongMessage(t *testing.T) {
 		}
 	}
 	want := Tokens{Output: claudeRevisionEntries * 2}
-	if s.Models["m"] != want || claudeUsageReplies(s) != 1 {
+	if s.Models.of("m") != want || claudeUsageReplies(s) != 1 {
 		t.Fatal("window reset lost the current contribution")
 	}
 	copy := s.clone()

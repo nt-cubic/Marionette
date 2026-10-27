@@ -32,7 +32,9 @@ func cachePath() string { return filepath.Join(dir(), "found-"+modelSHA[:12]+".b
 // for a burst of requests.
 var saveAfter = 2 * time.Second
 
-var disk struct {
+// diskState is a backend's cache file: read once, written saveAfter
+// after an answer.
+type diskState struct {
 	mu     sync.Mutex
 	loaded string // the file read into cache, once
 	timer  *time.Timer
@@ -42,11 +44,14 @@ var disk struct {
 	saves sync.WaitGroup
 }
 
+var disk diskState
+
 // loadCache reads the file into cache, the first time Find is asked.
-func loadCache() {
+func (bk *backend) loadCache() {
+	disk, cache := bk.disk, bk.cache
 	disk.mu.Lock()
 	defer disk.mu.Unlock()
-	p := cachePath()
+	p := bk.path()
 	if disk.loaded == p {
 		return
 	}
@@ -69,7 +74,8 @@ func loadCache() {
 }
 
 // saveSoon writes the file saveAfter from now, unless a write is due.
-func saveSoon() {
+func (bk *backend) saveSoon() {
+	disk := bk.disk
 	disk.mu.Lock()
 	defer disk.mu.Unlock()
 	if disk.timer == nil {
@@ -79,20 +85,23 @@ func saveSoon() {
 			disk.mu.Lock()
 			disk.timer = nil
 			disk.mu.Unlock()
-			saveCache()
+			bk.saveCache()
 		})
 	}
 }
 
 // saveCache writes what cache holds, oldest first, to a file beside the
 // old one and renames it over it: a reader never sees half of it.
-func saveCache() error {
+func saveCache() error { return pf.saveCache() }
+
+func (bk *backend) saveCache() error {
+	disk, cache := bk.disk, bk.cache
 	disk.saving.Lock()
 	defer disk.saving.Unlock()
 	cache.mu.Lock()
 	b := encodeCache(cache)
 	cache.mu.Unlock()
-	p := cachePath()
+	p := bk.path()
 	f, err := os.CreateTemp(filepath.Dir(p), "found-*.tmp")
 	if err != nil {
 		return err

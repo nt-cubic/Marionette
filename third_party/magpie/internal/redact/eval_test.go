@@ -1,6 +1,7 @@
 package redact_test
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -28,25 +29,53 @@ import (
 //   - both:  the rules and the model with magpie's checks on what it found,
 //     as a user with the model on gets.
 //
-// What the model said is recorded in testdata/eval-model.json, so the
-// test runs the whole of "both" without the model or the network, and
-// fails when a value that came out right comes out wrong. A value known
-// to come out wrong says so (evalValue.Known, an issue), and fails once
-// it comes out right, to have its Known taken off.
+// Each local model (pii.Models) is scored on its own. What it said is
+// recorded in testdata (evalModels), so the test runs the whole of
+// "both" without the model or the network, and fails when a value that
+// came out right comes out wrong. A value known to come out wrong with a
+// model says so (evalValue.Known for Privacy Filter, GuardKnown for
+// AstrLink Guard, an issue), and fails once it comes out right, to have
+// it taken off.
 //
-// To ask the real model again, after a case is added or a new model,
-// point MAGPIE_EVAL_CACHE at the cache folder it was downloaded into
-// (the folder that holds magpie/privacy-filter):
+// To ask the real models again, after a case is added or a new model,
+// point MAGPIE_EVAL_CACHE at the cache folder they were downloaded into
+// (the folder that holds magpie/privacy-filter, magpie/astrlink-guard);
+// each one there is asked:
 //
 //	MAGPIE_EVAL_CACHE=$HOME/.cache go test -run TestMaskEval -v ./internal/redact
 //
 // which writes the recording again and logs the table.
 func TestMaskEval(t *testing.T) {
-	rec := readRecording(t)
-	if dir := os.Getenv("MAGPIE_EVAL_CACHE"); dir != "" {
-		rec = askModel(t, dir)
-		writeRecording(t, rec)
+	asked := 0
+	for _, em := range evalModels {
+		t.Run(em.id, func(t *testing.T) {
+			rec := readRecording(t, em.path)
+			if dir := os.Getenv("MAGPIE_EVAL_CACHE"); dir != "" {
+				if r, ok := askModel(t, dir, pii.Of(em.id)); ok {
+					rec = r
+					writeRecording(t, em.path, rec)
+					asked++
+				}
+			}
+			evalModel(t, rec, em.known)
+		})
 	}
+	if os.Getenv("MAGPIE_EVAL_CACHE") != "" && asked == 0 {
+		t.Fatal("no model is in MAGPIE_EVAL_CACHE")
+	}
+}
+
+// evalModels are the local models, each with its recording and the
+// values known to come out wrong with it.
+var evalModels = []struct {
+	id, path string
+	known    func(evalValue) string
+}{
+	{pii.PrivacyFilter, "testdata/eval-model.json", func(v evalValue) string { return v.Known }},
+	{pii.AstrLinkGuard, "testdata/eval-astrlink.json", func(v evalValue) string { return v.GuardKnown }},
+}
+
+func evalModel(t *testing.T, rec map[string]recorded, known func(evalValue) string) {
 	var stale []string
 	for _, c := range evalCases {
 		if r, ok := rec[c.ID]; !ok || r.Text != textHash(c.Text) {
@@ -74,10 +103,10 @@ func TestMaskEval(t *testing.T) {
 		rules := redact.Preview(c.Text, redact.Options{Secrets: true, Personal: true})
 		both := redact.Preview(c.Text, redact.Options{Secrets: true, Personal: true, Model: replay})
 		for _, v := range c.Mask {
-			checkValue(t, c, v, true, &tally, gone(rules, v.V), modelFound(c.Text, v.V, rec[c.ID].Found), gone(both, v.V))
+			checkValue(t, c, v, known(v), true, &tally, gone(rules, v.V), modelFound(c.Text, v.V, rec[c.ID].Found), gone(both, v.V))
 		}
 		for _, v := range c.Keep {
-			checkValue(t, c, v, false, &tally, gone(rules, v.V), modelFound(c.Text, v.V, rec[c.ID].Found), gone(both, v.V))
+			checkValue(t, c, v, known(v), false, &tally, gone(rules, v.V), modelFound(c.Text, v.V, rec[c.ID].Found), gone(both, v.V))
 		}
 	}
 	t.Log("\n" + tally.table())
@@ -85,16 +114,16 @@ func TestMaskEval(t *testing.T) {
 
 // checkValue counts one value in each way, and holds "both" to what the
 // case says of it.
-func checkValue(t *testing.T, c evalCase, v evalValue, mask bool, tally *evalTally, rules, model, both bool) {
+func checkValue(t *testing.T, c evalCase, v evalValue, known string, mask bool, tally *evalTally, rules, model, both bool) {
 	t.Helper()
 	tally.add(v.Kind, mask, rules, model, both)
 	if rules != mask || model != mask || both != mask {
 		tally.wrong = append(tally.wrong, fmt.Sprintf("%-18s %-6s %-7s %-5s %-5s %-5s %q",
 			c.ID, map[bool]string{true: "mask", false: "keep"}[mask], v.Kind, mark(rules == mask), mark(model == mask), mark(both == mask), v.V))
 	}
-	if v.Known != "" {
+	if known != "" {
 		if both == mask {
-			t.Errorf("%s: %q now comes out right; take its Known (%s) off", c.ID, v.V, v.Known)
+			t.Errorf("%s: %q now comes out right; take its known issue (%s) off", c.ID, v.V, known)
 		}
 		return
 	}
@@ -221,8 +250,6 @@ func frac(n, of int) string {
 
 // ---- the recording ----------------------------------------------------------
 
-const recordingPath = "testdata/eval-model.json"
-
 // recorded is what the model found in one case's text, and the text's
 // hash, to tell a recording made of another text.
 type recorded struct {
@@ -235,7 +262,7 @@ func textHash(s string) string {
 	return hex.EncodeToString(h[:8])
 }
 
-func readRecording(t *testing.T) map[string]recorded {
+func readRecording(t *testing.T, recordingPath string) map[string]recorded {
 	rec := map[string]recorded{}
 	b, err := os.ReadFile(recordingPath)
 	if os.IsNotExist(err) {
@@ -250,7 +277,7 @@ func readRecording(t *testing.T) map[string]recorded {
 	return rec
 }
 
-func writeRecording(t *testing.T, rec map[string]recorded) {
+func writeRecording(t *testing.T, recordingPath string, rec map[string]recorded) {
 	b, err := json.MarshalIndent(rec, "", "\t")
 	if err != nil {
 		t.Fatal(err)
@@ -264,18 +291,19 @@ func writeRecording(t *testing.T, rec map[string]recorded) {
 	}
 }
 
-// askModel runs every case's text through the real model, downloaded
+// askModel runs every case's text through the real model m, downloaded
 // into the cache folder dir, one text at a time, as a request's text
-// that has the model to itself is.
-func askModel(t *testing.T, dir string) map[string]recorded {
+// that has the model to itself is; false if m isn't there.
+func askModel(t *testing.T, dir string, m pii.Model) (map[string]recorded, bool) {
 	t.Setenv("XDG_CACHE_HOME", dir)
-	if !pii.Installed() {
-		t.Fatalf("the model isn't in %s", filepath.Join(dir, "magpie", "privacy-filter"))
+	if !m.Installed() {
+		t.Logf("%s isn't in %s; its recording is kept", m.ID(), filepath.Join(dir, "magpie"))
+		return nil, false
 	}
-	defer pii.Stop()
+	defer m.Stop()
 	rec := map[string]recorded{}
 	for _, c := range evalCases {
-		got, err := pii.Find([]string{c.Text})
+		got, err := m.Find(context.Background(), []string{c.Text})
 		if err != nil {
 			t.Fatalf("%s: %v", c.ID, err)
 		}
@@ -285,5 +313,5 @@ func askModel(t *testing.T, dir string) map[string]recorded {
 		}
 		rec[c.ID] = recorded{Text: textHash(c.Text), Found: fs}
 	}
-	return rec
+	return rec, true
 }

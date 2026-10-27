@@ -66,10 +66,10 @@ func TestStatsToolsAndSkills(t *testing.T) {
 	if cc.Prompts != 2 || cc.Replies != 2 || cc.ToolCalls != 5 {
 		t.Fatalf("claude: %d prompts, %d replies, %d calls (%v)", cc.Prompts, cc.Replies, cc.ToolCalls, cc.tools)
 	}
-	if cc.tools["Bash"] != 1 || cc.tools["Grep"] != 1 || cc.tools["mcp__slack__send"] != 1 || cc.skills["artifact-design"] != 1 {
+	if cc.tools.of("Bash") != 1 || cc.tools.of("Grep") != 1 || cc.tools.of("mcp__slack__send") != 1 || cc.skills.of("artifact-design") != 1 {
 		t.Fatalf("claude tools %v skills %v", cc.tools, cc.skills)
 	}
-	if cxs.Prompts != 2 || cxs.Replies != 1 || cxs.ToolCalls != 2 || cxs.tools["exec_command"] != 1 || cxs.tools["apply_patch"] != 1 {
+	if cxs.Prompts != 2 || cxs.Replies != 1 || cxs.ToolCalls != 2 || cxs.tools.of("exec_command") != 1 || cxs.tools.of("apply_patch") != 1 {
 		t.Fatalf("codex: %+v %v", cxs, cxs.tools)
 	}
 

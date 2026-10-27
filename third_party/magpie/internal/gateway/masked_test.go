@@ -2,9 +2,11 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -77,6 +79,10 @@ func TestMaskedRequestIsRecorded(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("route %d not in the trace", r.Route)
+	}
+	// the GUI opens the record by this key: a JS number would round it
+	if b, _ := json.Marshal(Masked{Key: r.Key}); !strings.Contains(string(b), `"key":"`+strconv.FormatInt(r.Key, 10)+`"`) {
+		t.Fatalf("masked's key not a string: %s", b)
 	}
 	if c, ok := s.RouteCall(r.Route); !ok || c.Masked == nil || c.Masked.Distinct != 2 {
 		t.Fatalf("call's masked: %+v %v", c.Masked, ok)

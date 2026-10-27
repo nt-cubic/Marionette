@@ -187,6 +187,21 @@ var cliSpecs = map[string]cliSpec{
 	// MothX: its npm installer package, which brings the native binary
 	// for the platform as an optional dependency
 	"mothx": {npm: []string{"mothx-installer"}},
+	// PenguinHarness: its npm package, or install.sh's tarball in
+	// ~/.penguin (bin, lib, node; ~/.local/bin/penguin links there), which
+	// penguin update re-runs the installer for. On Windows its update
+	// refuses a tarball (update.ts planUpdate, "windows-installer"), so
+	// none is offered there.
+	"penguin": {npm: []string{"@prismshadow/penguin-cli"},
+		self: func(bin, real string) []string {
+			if runtime.GOOS == "windows" {
+				return nil
+			}
+			if l := strings.ToLower(real); strings.Contains(l, "/.penguin/bin/") || strings.Contains(l, "/.penguin/lib/") {
+				return []string{bin, "update", "--yes"}
+			}
+			return nil
+		}},
 	// omo update, however it was installed: OmO's own updater, which moves
 	// the engine it pins (senpi) with it
 	"omo": {npm: []string{"omo-ai"},

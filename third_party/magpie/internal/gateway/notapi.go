@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
-	"html"
 	"io"
 	"net/http"
 	"regexp"
@@ -59,9 +58,6 @@ func notAnAPIReply(res *http.Response, name string) *http.Response {
 // htmlStart is how a web page begins.
 var htmlStart = regexp.MustCompile(`(?i)^<(!doctype\s+html|html[\s>]|head[\s>]|body[\s>])`)
 
-// pageTitle is a web page's title.
-var pageTitle = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
-
 // webPage says what a page served in place of a reply was, by its title,
 // and for a firewall's block page what to do about it.
 func webPage(res *http.Response, ct string) string {
@@ -70,10 +66,8 @@ func webPage(res *http.Response, ct string) string {
 		ct = "no Content-Type"
 	}
 	why := "answered " + res.Status + " with a web page (" + strings.TrimSpace(strings.SplitN(ct, ";", 2)[0]) + "), not an API reply"
-	if m := pageTitle.FindSubmatch(b); m != nil {
-		if t := strings.Join(strings.Fields(html.UnescapeString(string(m[1]))), " "); t != "" {
-			why += ": “" + clipRunes(t, 120) + "”"
-		}
+	if t := provider.PageTitle(b); t != "" {
+		why += ": “" + t + "”"
 	}
 	if provider.EdgeBlocked(b) {
 		why += " — " + provider.BlockedHint

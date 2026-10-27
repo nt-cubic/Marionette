@@ -105,6 +105,42 @@ func TestCodexModelEffortAnswersLastWhileBuilding(t *testing.T) {
 	}
 }
 
+// A history that changes between polls, as a working Codex's does, is
+// built into the answer at most once a minute: an ask inside the minute is
+// told the last answer without reading the ledger or the sources' state,
+// and the first ask after it builds the change in.
+func TestCodexModelEffortHeldForAMinute(t *testing.T) {
+	now, rollout := effortFixture(t)
+	effortFresh = time.Hour
+	t.Cleanup(func() { effortFresh = 0 })
+	var built atomic.Int32
+	effortBuilt = func() { built.Add(1) }
+	t.Cleanup(func() { effortBuilt = nil })
+	CodexModelEffort(All)
+
+	writeCodexCall(t, rollout, "main-a", "main-a", `"vscode"`, "resp-1", "m", "low", now.Add(-time.Hour), 2000, 30)
+	later := now.Add(time.Minute)
+	if err := os.Chtimes(rollout, later, later); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := findModelEffort(CodexModelEffort(All)["main-a"], "m", "low"); built.Load() != 1 || got.Input != 20 {
+		t.Fatalf("inside the minute: builds %d, %+v, want 1 and the last answer", built.Load(), got)
+	}
+	codexEffort.Lock()
+	codexEffort.periods[All].at = time.Now().Add(-2 * time.Hour)
+	codexEffort.Unlock()
+	if got, _ := findModelEffort(CodexModelEffort(All)["main-a"], "m", "low"); built.Load() != 2 || got.Input != 2000 {
+		t.Fatalf("after the minute: builds %d, %+v, want 2 and the change", built.Load(), got)
+	}
+
+	// another home's answer is never held for this one
+	effortFixture(t)
+	CodexModelEffort(All)
+	if n := built.Load(); n != 3 {
+		t.Fatalf("a new home was told the last one's answer: builds %d, want 3", n)
+	}
+}
+
 // An answer is kept when there is no gateway log yet, and when the log grew
 // while it was built: the next ask builds again only if the state did change.
 func TestCodexModelEffortKeptWithoutLogAndAcrossAWrite(t *testing.T) {

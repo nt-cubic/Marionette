@@ -1127,6 +1127,11 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	if why == failQuota && clineModelLimited(c, body) {
 		id = c.restID()
 	}
+	// a ZCode Start Plan trial entry ended or spent is that entry's: the
+	// account's GLM Coding Plan models still answer (#3661)
+	if why == failQuota && zcodeTrialRefused(c, status, body) {
+		id = c.restID()
+	}
 	// out of credit, or of a quota, on a model that costs credits where
 	// the subscription serves other models free is that model's: the free
 	// ones draw on no credits, and the account still serves them (Creat.wu
@@ -1461,6 +1466,11 @@ type weighing struct {
 	// free is each seat's model costing nothing there, by rest key: filled
 	// only when the routing weighs by it (routes.Strategy.ByFree)
 	free map[string]bool
+
+	// speed is each seat's speed lately, by restID (a group's heads can
+	// be two models on one key): filled only when the routing weighs by
+	// it (routes.Strategy.BySpeed)
+	speed map[string][2]float64
 }
 
 type allowanceKey struct {
@@ -1601,6 +1611,15 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 		for i, c := range cs {
 			free := c.p.FreeModel(c.model)
 			seats[i].Free, wg.free[c.rest] = free, free
+		}
+	}
+	if st.BySpeed {
+		// a map lookup each (speed.go): what was measured as answers
+		// ended, never the usage history
+		wg.speed = map[string][2]float64{}
+		for i, c := range cs {
+			seats[i].TTFT, seats[i].TPS = speedOf(c, now)
+			wg.speed[c.restID()] = [2]float64{seats[i].TTFT, seats[i].TPS}
 		}
 	}
 	order := routes.Apply(st, p.ID, seats)

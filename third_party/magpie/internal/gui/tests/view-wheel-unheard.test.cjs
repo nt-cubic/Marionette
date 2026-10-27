@@ -102,8 +102,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await p.waitForTimeout(300);
         assert.equal(await rested(p, view), up, "a scroll by code at rest is put back");
 
-        // a click holds what it clicked: scrolls by code each frame after it
-        // are no reader's, and are put back
+        // a click holds what it clicked: a scroll by code after it is no
+        // reader's, and is put back. (A run of scrolls with nothing redrawn
+        // is the reader's, a click before it or not: view-wheel-after-click.)
         const [x, y] = await p.evaluate(([x, y]) => {
           const row = window.__clicked = document.elementFromPoint(x, y)?.closest(".row.agent");
           const b = row?.getBoundingClientRect();
@@ -113,7 +114,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const rowTop = () => p.evaluate(() => window.__clicked.getBoundingClientRect().top);
         await p.mouse.click(x, y);
         const at = await rowTop();
-        await view.evaluate((v) => new Promise((done) => { let n = 0; const step = () => { if (n++ > 30) return done(); v.scrollTop += 4; requestAnimationFrame(step); }; requestAnimationFrame(step); }));
+        await view.evaluate((v) => { v.scrollTop += 120; });
         await rested(p, view);
         const after = await rowTop();
         assert(Math.abs(after - at) <= 12, `the row clicked stays: at ${at} after the click, ${after} once at rest`);

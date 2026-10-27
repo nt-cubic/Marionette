@@ -200,11 +200,11 @@ func TestAlmaSessions(t *testing.T) {
 		t.Errorf("chat A stats: prompts %d replies %d tools %d", sum.Prompts, sum.Replies, sum.ToolCalls)
 	}
 	for _, tool := range []string{"Bash", "Skill", "Task", "mcp_search", "Read"} {
-		if sum.tools[tool] != 1 {
-			t.Errorf("tool %s called %d times, want 1 (%v)", tool, sum.tools[tool], sum.tools)
+		if sum.tools.of(tool) != 1 {
+			t.Errorf("tool %s called %d times, want 1 (%v)", tool, sum.tools.of(tool), sum.tools)
 		}
 	}
-	if sum.skills["image-gen"] != 1 {
+	if sum.skills.of("image-gen") != 1 {
 		t.Errorf("skills %v", sum.skills)
 	}
 

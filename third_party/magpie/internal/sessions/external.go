@@ -110,11 +110,10 @@ func MergeExternalStats(st Stats, days []ExternalDayUsage, external []ExternalSe
 			for j := range s.Days {
 				s.Days[j] += shift
 			}
-			pd := map[int]*summaryDay{}
-			for d, v := range s.perDay {
-				pd[d+shift] = v
+			s.perDay = slices.Clone(s.perDay)
+			for j := range s.perDay {
+				s.perDay[j].day += shift
 			}
-			s.perDay = pd
 		}
 	}
 	byDate := map[string]int{}
@@ -151,7 +150,8 @@ func MergeExternalStats(st Stats, days []ExternalDayUsage, external []ExternalSe
 		if e.ID == "" || e.Agent == "" {
 			continue
 		}
-		s := Summary{Key: e.Agent + ":" + e.ID, Agent: e.Agent, ID: e.ID, Title: cmp.Or(names[e.Agent+"|"+e.ID], e.Title), Gateway: true, Last: e.Last, Tokens: e.Tokens, Cost: e.Cost, Priced: true, Models: []string{}, Days: []int{}, perDay: map[int]*summaryDay{}}
+		s := Summary{Key: e.Agent + ":" + e.ID, Agent: e.Agent, ID: e.ID, Title: cmp.Or(names[e.Agent+"|"+e.ID], e.Title), Gateway: true, Last: e.Last, Tokens: e.Tokens, Cost: e.Cost, Priced: true, Models: []string{}, Days: []int{}}
+		perDay := map[int]*summaryDay{}
 		for _, u := range e.Daily {
 			day, err := time.ParseInLocation(time.DateOnly, u.Date, time.Local)
 			if err != nil {
@@ -161,15 +161,18 @@ func MergeExternalStats(st Stats, days []ExternalDayUsage, external []ExternalSe
 			if first.IsZero() || u.Date < st.From || u.Date > st.To {
 				continue
 			}
-			pd := s.perDay[d]
+			pd := perDay[d]
 			if pd == nil {
-				pd = &summaryDay{}
-				s.perDay[d] = pd
+				pd = &summaryDay{day: d}
+				perDay[d] = pd
 				s.Days = append(s.Days, d)
 			}
 			pd.output += u.Output
 		}
 		sort.Ints(s.Days)
+		for _, d := range s.Days {
+			s.perDay = append(s.perDay, *perDay[d])
+		}
 		for _, m := range e.Models {
 			s.Models = append(s.Models, m.Model)
 			s.Priced = s.Priced && m.Priced

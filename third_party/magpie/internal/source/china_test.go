@@ -34,9 +34,11 @@ func TestChinaFirst(t *testing.T) {
 		"https://raw.githubusercontent.com/magpie-community/plugins/main/registry.json":                "https://cdn.jsdelivr.net/gh/magpie-community/plugins@main/registry.json",
 		"https://huggingface.co/LocalAI-io/privacy-filter-GGUF/resolve/935d868/privacy-filter-q8.gguf": "https://hf-mirror.com/LocalAI-io/privacy-filter-GGUF/resolve/935d868/privacy-filter-q8.gguf",
 		// no other model, and no page of Hugging Face's
-		"https://huggingface.co/someone/else/resolve/main/x.gguf":                   "",
-		"https://huggingface.co/LocalAI-io/privacy-filter-GGUF":                     "",
-		"https://huggingface.co/LocalAI-io/privacy-filter-GGUF/resolve/main/x?dl=1": "",
+		"https://huggingface.co/someone/else/resolve/main/x.gguf":                                     "",
+		"https://huggingface.co/QuantumNous/astrlink-guard/resolve/7216b6a/int8/model_int8.onnx_data": "https://hf-mirror.com/QuantumNous/astrlink-guard/resolve/7216b6a/int8/model_int8.onnx_data",
+		"https://huggingface.co/QuantumNous/other/resolve/7216b6a/x":                                  "",
+		"https://huggingface.co/LocalAI-io/privacy-filter-GGUF":                                       "",
+		"https://huggingface.co/LocalAI-io/privacy-filter-GGUF/resolve/main/x?dl=1":                   "",
 		// npm's download counts are npmjs's own: npmmirror counts its own
 		"https://api.npmjs.org/downloads/point/last-week/pkg": "",
 		// nothing else of GitHub's: no proxy stands in for it

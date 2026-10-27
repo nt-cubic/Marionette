@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTOMLArrayTableEditsOnlyNamedEntry(t *testing.T) {
@@ -107,5 +108,130 @@ func TestTOMLArrayTableInterleavedChildren(t *testing.T) {
 	got, _ := os.ReadFile(path)
 	if strings.Contains(string(got), "context_window = 10") || !strings.Contains(string(got), "[ui]\ntheme = \"dark\"") || !strings.Contains(string(got), "name = \"native\"") {
 		t.Fatalf("interleaved subtree: %s", got)
+	}
+}
+
+// SetTOMLArrayTables replaces every matching entry in one place, keeps the
+// others and what lies between them, and a second run with the same blocks
+// leaves the file's bytes and time alone.
+func TestTOMLArrayTablesReplaceEveryMatch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	before := `default_model = { provider = "custom", model_id = "own" }
+
+[[models]]
+provider = "magpie"
+model_id = "old-1"
+
+[models.pricing]
+output = 1.0
+
+[[models]]
+provider = "magpie"
+model_id = "old-2"
+
+[[models]]
+provider = "custom"
+model_id = "own"
+[models.pricing]
+output = 2.0
+
+[[models]]
+provider = "magpie"
+model_id = "old-3"
+[[command_policy.rules]]
+pattern = "rm"
+`
+	if err := os.WriteFile(path, []byte(before), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	blocks := []string{
+		"[[models]]\nprovider = \"magpie\"\nmodel_id = \"new-1\"\n\n[models.pricing]\noutput = 3.0\n",
+		"[[models]]\nprovider = \"magpie\"\nmodel_id = \"new-2\"\n",
+	}
+	if err := SetTOMLArrayTables(path, "models", "provider", "magpie", blocks); err != nil {
+		t.Fatal(err)
+	}
+	want := `default_model = { provider = "custom", model_id = "own" }
+
+[[models]]
+provider = "magpie"
+model_id = "new-1"
+
+[models.pricing]
+output = 3.0
+
+[[models]]
+provider = "magpie"
+model_id = "new-2"
+
+[[models]]
+provider = "custom"
+model_id = "own"
+[models.pricing]
+output = 2.0
+
+[[command_policy.rules]]
+pattern = "rm"
+`
+	got, _ := os.ReadFile(path)
+	if string(got) != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+	old := time.Now().Add(-time.Hour).Truncate(time.Second)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetTOMLArrayTables(path, "models", "provider", "magpie", blocks); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = os.ReadFile(path)
+	if string(got) != want {
+		t.Fatalf("a second run changed the file:\n%s", got)
+	}
+	if st, err := os.Stat(path); err != nil || !st.ModTime().Equal(old) {
+		t.Fatalf("a second run wrote the file again: %v %v", st.ModTime(), err)
+	}
+
+	if err := SetTOMLArrayTables(path, "models", "provider", "magpie", nil); err != nil {
+		t.Fatal(err)
+	}
+	want = `default_model = { provider = "custom", model_id = "own" }
+
+[[models]]
+provider = "custom"
+model_id = "own"
+[models.pricing]
+output = 2.0
+
+[[command_policy.rules]]
+pattern = "rm"
+`
+	got, _ = os.ReadFile(path)
+	if string(got) != want {
+		t.Fatalf("after removal got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestTOMLArrayTablesAppendAndRefuse(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("x = 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetTOMLArrayTables(path, "models", "provider", "magpie", []string{"[[models]]\nprovider = \"magpie\"\nmodel_id = \"a\"\n"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != "x = 1\n\n[[models]]\nprovider = \"magpie\"\nmodel_id = \"a\"\n" {
+		t.Fatalf("append got %q", got)
+	}
+	for _, bad := range []string{
+		"[[models]]\nprovider = \"other\"\n",
+		"[[models]]\nprovider = \"magpie\"\n[[models]]\nprovider = \"magpie\"\n",
+		"[[models]]\nprovider = \"magpie\"\n[ui]\nx = 1\n",
+		"y = 2\n[[models]]\nprovider = \"magpie\"\n",
+		"[models]\nprovider = \"magpie\"\n",
+	} {
+		if err := SetTOMLArrayTables(path, "models", "provider", "magpie", []string{bad}); err == nil {
+			t.Errorf("block %q was taken", bad)
+		}
 	}
 }

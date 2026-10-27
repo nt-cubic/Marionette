@@ -501,11 +501,11 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 			}
 			turnedAway := res.StatusCode == http.StatusTooManyRequests && antigravityTurnedAway(p, request.System, string(b))
 			if turnedAway {
-				failed += " — " + antigravityTurnedAwayHint
+				failed += " — " + antigravityHint(request.System)
 			}
 			if !cont.resume {
 				if turnedAway {
-					markAntigravityTurnsAway(w)
+					markAntigravityTurnsAway(w, request.System)
 				}
 				if p.Preset == "openrouter" && openRouterSharedPool(b) {
 					markOpenRouterSharedPool(w)
@@ -658,8 +658,8 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 	}
 	if failed != "" && markAntigravityRefused(w, p, request.System, failed) {
 		// the same refusal as the 429's, said inside the reply
-		if !strings.HasSuffix(failed, antigravityTurnedAwayHint) {
-			failed += " — " + antigravityTurnedAwayHint
+		if hint := antigravityHint(request.System); !strings.HasSuffix(failed, hint) {
+			failed += " — " + hint
 		}
 		u.ErrType = turnedAwayErrType
 	}

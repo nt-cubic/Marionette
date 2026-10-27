@@ -26,6 +26,7 @@ import (
 	"html"
 	"io"
 	"io/fs"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -82,6 +83,14 @@ var ErrNoSignIn = errors.New("this server already works without signing in, so t
 // magpie isn't signed in to is given to the agents at its own address, so
 // each agent signs in there itself. The GUI has it in every language.
 var ErrClientRefused = errors.New("this server's sign-in admits only the apps it lists and turned magpie away, so magpie can't sign in for the agents. The agents given it still have the server's own address: sign in from each agent itself (in Claude Code, run /mcp and pick the server)")
+
+// ErrTurnedAway is a server whose address answered 403 with a web page
+// rather than the server's own reply: a firewall in front of it (Cloudflare's,
+// as agents.stackoverflow.com has) judged the network the request came from
+// and stopped it before the server could offer a sign-in (fremontdango on
+// Discord, where magpie said only "answered 403 and says nothing of a
+// sign-in"). The GUI has it in every language.
+var ErrTurnedAway = errors.New("a firewall in front of this server turned magpie's request away (403) before the server could offer a sign-in. It judges the network the request came from: try again on another network, or give magpie a proxy in Settings")
 
 // ErrNoRegistration is a server whose sign-in doesn't let an app register
 // itself (GitHub's, 新v学员 on Discord): magpie signs in to it only as an
@@ -638,9 +647,22 @@ func discover(ctx context.Context, serverURL string) (meta, error) {
 		return meta{}, fmt.Errorf("couldn't read the metadata of %s, the server's authorization server", issuer)
 	}
 	if resp.StatusCode != http.StatusUnauthorized && !found && !got {
+		if turnedAway(resp) {
+			return meta{}, ErrTurnedAway
+		}
 		return meta{}, fmt.Errorf("the server answered %d and says nothing of a sign-in", resp.StatusCode)
 	}
 	return m, nil
+}
+
+// turnedAway is a 403 from a firewall rather than the MCP server: a web page
+// to a JSON-RPC request, or Cloudflare saying it stopped it.
+func turnedAway(resp *http.Response) bool {
+	if resp.StatusCode != http.StatusForbidden {
+		return false
+	}
+	ct, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	return ct == "text/html" || resp.Header.Get("Cf-Mitigated") != ""
 }
 
 // withOffline asks for offline_access too when the authorization server

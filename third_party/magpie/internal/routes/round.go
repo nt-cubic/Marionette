@@ -84,13 +84,16 @@ func MoveRound(pool, picked, kept string) {
 func Forget(pools ...string) {
 	rounds.Lock()
 	turns.Lock()
+	probes.Lock()
 	defer rounds.Unlock()
 	defer turns.Unlock()
+	defer probes.Unlock()
 	if len(pools) == 0 {
-		rounds.m, turns.m = map[string]*round{}, map[string]int{}
+		rounds.m, turns.m, probes.m = map[string]*round{}, map[string]int{}, map[string]probe{}
 	}
 	for _, p := range pools {
 		delete(rounds.m, p)
 		delete(turns.m, p)
+		delete(probes.m, p)
 	}
 }

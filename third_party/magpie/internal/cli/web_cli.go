@@ -10,6 +10,7 @@ import (
 	"github.com/yetone/magpie/internal/daemon"
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/gui"
+	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/stats"
 )
 
@@ -60,6 +61,10 @@ func webCmd(args []string) error {
 		}
 		return nil
 	}
+	// what this page's gateway starts (agents, MCP servers) gets the node a
+	// version manager put on PATH only in the shell's profile, as the app's
+	// does: a service or autostart has none of it (#3803)
+	proc.UserPath()
 	w, err := gui.StartWeb(addr, version)
 	if err != nil {
 		return err
@@ -185,6 +190,7 @@ func serveCmd(args []string) error {
 			return fmt.Errorf("magpie serve: unknown %q · magpie serve [--web[=host:port]] [--tls-cert <file> --tls-key <file>]", a)
 		}
 	}
+	proc.UserPath() // as magpie web's (#3803)
 	if web == "" {
 		return serve()
 	}

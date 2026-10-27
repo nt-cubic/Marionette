@@ -456,19 +456,3 @@ func parseShellEnv(s, mark string) (string, map[string]string) {
 	}
 	return f[0], vars
 }
-
-// addPath adds the folders PATH lacks, after the ones it has.
-func addPath(dirs []string) {
-	cur := filepath.SplitList(os.Getenv("PATH"))
-	seen := map[string]bool{}
-	for _, d := range cur {
-		seen[d] = true
-	}
-	for _, d := range dirs {
-		if d != "" && filepath.IsAbs(d) && !seen[d] {
-			seen[d] = true
-			cur = append(cur, d)
-		}
-	}
-	os.Setenv("PATH", strings.Join(cur, string(os.PathListSeparator)))
-}

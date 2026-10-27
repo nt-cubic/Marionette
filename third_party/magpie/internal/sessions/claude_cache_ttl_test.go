@@ -22,8 +22,8 @@ func TestClaudeCacheWriteSplit(t *testing.T) {
 			claudeLine(s, []byte(fmt.Sprintf(`{"type":"assistant","timestamp":%q,"requestId":"req-a","message":{%s,"role":"assistant","content":[],"usage":{"input_tokens":10,"output_tokens":2,"cache_read_input_tokens":30,"cache_creation_input_tokens":3000,"cache_creation":{"ephemeral_5m_input_tokens":1000,"ephemeral_1h_input_tokens":2000}}}}`,
 				at.Format(time.RFC3339Nano), id)), true)
 			claudeLine(s, claudeUsageLine(at.Add(time.Second), "b", "req-b", "m", Tokens{Input: 1, CacheWrite: 500}, "", fast), true)
-			if want := (Tokens{Input: 11, Output: 2, CacheRead: 30, CacheWrite: 3500, CacheWrite1h: 2000}); s.Models["m"] != want {
-				t.Fatalf("tokens = %+v, want %+v", s.Models["m"], want)
+			if want := (Tokens{Input: 11, Output: 2, CacheRead: 30, CacheWrite: 3500, CacheWrite1h: 2000}); s.Models.of("m") != want {
+				t.Fatalf("tokens = %+v, want %+v", s.Models.of("m"), want)
 			}
 		})
 	}

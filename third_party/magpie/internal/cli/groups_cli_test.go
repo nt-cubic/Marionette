@@ -76,12 +76,12 @@ func storedGroups(t *testing.T) []map[string]any {
 }
 
 func TestParseRoutingStays(t *testing.T) {
-	for in, want := range map[string]string{"smart": "", "": "", "order": "order", "In-Order": "order", "rotate": "rotate", "usage": "usage", "least-used": "usage"} {
+	for in, want := range map[string]string{"smart": "", "": "", "order": "order", "In-Order": "order", "rotate": "rotate", "usage": "usage", "least-used": "usage", "fast": "fast", "Fastest": "fast", "speed": "fast", "speed-first": "fast"} {
 		if got, err := parseRouting(in); err != nil || got != want {
 			t.Errorf("routing %q: %q %v, want %q", in, got, err, want)
 		}
 	}
-	if _, err := parseRouting("fastest"); err == nil || !strings.Contains(err.Error(), "smart, order, rotate, usage") || !strings.Contains(err.Error(), "<plugin>/<name>") {
+	if _, err := parseRouting("cheapest"); err == nil || !strings.Contains(err.Error(), "smart, order, rotate, usage") || !strings.Contains(err.Error(), "fast") || !strings.Contains(err.Error(), "<plugin>/<name>") {
 		t.Errorf("unknown routing: %v", err)
 	}
 	// a gateway plugin's routing is taken as it is written, and named so
@@ -144,7 +144,7 @@ func TestApplyGroupPairs(t *testing.T) {
 	if err := applyGroupPairs(&g, []string{"listed=YES"}, resolve, false); err != nil || g.Unlists {
 		t.Fatalf("listed=yes: %v %v", g.Unlists, err)
 	}
-	for _, bad := range [][]string{{"models"}, {"colour=red"}, {"id=x"}, {"models=nope"}, {"routing=fast"}, {"models-=a/m"}, {"context=lots"}, {"listed=maybe"}} {
+	for _, bad := range [][]string{{"models"}, {"colour=red"}, {"id=x"}, {"models=nope"}, {"routing=cheapest"}, {"models-=a/m"}, {"context=lots"}, {"listed=maybe"}} {
 		h := g
 		if err := applyGroupPairs(&h, bad, resolve, false); err == nil {
 			t.Errorf("%v: no error", bad)

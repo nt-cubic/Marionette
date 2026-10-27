@@ -85,7 +85,7 @@ const usage = `magpie — one place to pick every agent's model
                                   or only the models ticked for it, a new one off until it is ticked
   magpie search [add <api> <key>|rm <api>]   Tavily, Brave, Exa, Firecrawl, You.com, DeepSeek or SearXNG for web search when no provider can search
   magpie groups                   routing groups: several models agents pick as one, group/<id>
-  magpie group add <name> models=<m1>,<m2> [routing=smart|order|rotate|usage|pace] [stays=auto|session|turn|off]
+  magpie group add <name> models=<m1>,<m2> [routing=smart|order|rotate|usage|pace|weight|free|fast] [stays=auto|session|turn|off]
   magpie group <id> | set <id> k=v… | rm <id>   show, change or remove one (magpie group help for more)
   magpie accounts [agent] [--json]  every subscription magpie knows, with each one's allowance used and when it resets
   magpie accounts add <agent>     sign in to one more Claude, ChatGPT or Google (Gemini CLI, Antigravity) subscription
@@ -241,6 +241,11 @@ var startUp = func() {
 	if _, err := pluginrt.Refresh(); err != nil {
 		fmt.Fprintf(os.Stderr, "magpie: plugins.yml: %v\n", err)
 	}
+	// a vendor's keys saved a provider each ("NVIDIA #001"…) are one
+	// provider with those keys, before anything lists them
+	if _, err := provider.FoldCopies(); err != nil {
+		fmt.Fprintf(os.Stderr, "magpie: providers.json: %v\n", err)
+	}
 	// the providers and settings read once for every agent's fields, which
 	// the moves below look at (a write among them reads them again)
 	release := provider.Hold()
@@ -260,6 +265,11 @@ func run(args []string) error {
 		agent.SyncCatalogSettled()
 		catalog.Changed = was
 	}()
+	// what a shell's agy runs (agy_cli.go): every argument after run is
+	// agy's, --help too, and nothing is moved or started first
+	if ok, err := agyCmd(args); ok {
+		return err
+	}
 	// before anything is read, moved or started: --help on any command
 	// prints its usage and does nothing else
 	if helpAsked(args) {

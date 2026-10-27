@@ -16,9 +16,9 @@ func TestAllowancePooled(t *testing.T) {
 	month := now.Add(20 * 24 * time.Hour)
 	pool := map[string]bool{"auto": true, "composer-2": true}
 	q := quotaOfPlugin(SubscriptionQuota{}, plugin.Usage{Windows: []plugin.UsageWindow{
-		{Name: "Cursor Models", Used: 12, Models: []string{"auto", "composer-2"}},
-		{Name: "Other Models", Used: 100, NotModels: []string{"auto", "composer-2"}},
-		{Name: "Total", Used: 60, Aside: true},
+		{Name: "Cursor Models", Used: fptr(12), Models: []string{"auto", "composer-2"}},
+		{Name: "Other Models", Used: fptr(100), NotModels: []string{"auto", "composer-2"}},
+		{Name: "Total", Used: fptr(60), Aside: true},
 	}})
 	cursor := allowanceOf(q.Windows, now)
 	for _, m := range []string{"auto", "composer-2", "claude-4.6-sonnet", "gpt-5.5"} {
@@ -59,9 +59,9 @@ func TestPluginPoolCountsBareIDOfSizes(t *testing.T) {
 	now := time.Now()
 	pool := []string{"auto", "grok-4.7@256k", "grok-4.7@500k", "composer-2.5", "default"}
 	q := quotaOfPlugin(SubscriptionQuota{}, plugin.Usage{Windows: []plugin.UsageWindow{
-		{Name: "Cursor Models", Used: 16, Models: pool},
-		{Name: "Other Models", Used: 100, NotModels: pool},
-		{Name: "Total", Used: 60, Aside: true},
+		{Name: "Cursor Models", Used: fptr(16), Models: pool},
+		{Name: "Other Models", Used: fptr(100), NotModels: pool},
+		{Name: "Total", Used: fptr(60), Aside: true},
 	}})
 	a := allowanceOf(q.Windows, now)
 	for m, want := range map[string]float64{
@@ -89,8 +89,8 @@ func TestPluginPoolCountsBareIDOfSizes(t *testing.T) {
 	// the other way: the pool lists a bare id (Cursor's autoBucketModels),
 	// and the model is asked for at a size
 	q = quotaOfPlugin(SubscriptionQuota{}, plugin.Usage{Windows: []plugin.UsageWindow{
-		{Name: "Cursor Models", Used: 16, Models: []string{"auto", "grok-4.8"}},
-		{Name: "Other Models", Used: 100, NotModels: []string{"auto", "grok-4.8"}},
+		{Name: "Cursor Models", Used: fptr(16), Models: []string{"auto", "grok-4.8"}},
+		{Name: "Other Models", Used: fptr(100), NotModels: []string{"auto", "grok-4.8"}},
 	}})
 	a = allowanceOf(q.Windows, now)
 	if used, _ := a.For("grok-4.8@1m", now); used != 16 {

@@ -21,6 +21,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -852,81 +853,166 @@ func WithProgress(ctx context.Context, f func(done, total int64)) context.Contex
 	return context.WithValue(ctx, progressKey{}, f)
 }
 
+// retryWaits are the pauses before each try after the first: a
+// connection that drops at the start or part way (GitHub's asset host from
+// some networks: AIMetaPhD on X, "EOF" at 0.1.1618) is tried again, from
+// where it broke off. A var for tests.
+var retryWaits = []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 30 * time.Second}
+
 // download fetches a to path and checks its hash. A connection that drops
-// part way — GitHub from some networks — gets two more tries.
+// is tried again after each of retryWaits, asking with Range for what is
+// still missing; the hash is checked over the whole file, the bytes kept
+// from the tries before included.
 func download(ctx context.Context, a Asset, path string) error {
 	if a.SHA256 == "" {
 		return errors.New("the release lists no checksum for " + filepath.Base(path))
 	}
+	os.Remove(path) // a file left by an earlier run is no part of this one
 	var err error
-	for try := 0; try < 3; try++ {
+	for try := 0; try <= len(retryWaits); try++ {
 		if try > 0 {
 			select {
 			case <-ctx.Done():
 				return err
-			case <-time.After(time.Duration(try) * 2 * time.Second):
+			case <-time.After(retryWaits[try-1]):
 			}
 		}
-		if err = fetch(ctx, a, path); err == nil || ctx.Err() != nil {
+		if err = fetch(ctx, a, path); err == nil || ctx.Err() != nil || !Network(err) {
 			break
 		}
-	}
-	return err
-}
-
-func fetch(ctx context.Context, a Asset, path string) error {
-	// through a mirror when one is given (mirror.go): the hash checked
-	// below is still the feed's
-	u := mirrored(mirrorOf(ctx), a.URL)
-	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
-	if err != nil {
-		return err
-	}
-	res, err := source.Do(client, req)
-	if err != nil {
-		if u != a.URL {
-			return &MirrorError{Mirror: strings.TrimSuffix(u, a.URL), Err: err}
-		}
-		return err
-	}
-	defer res.Body.Close()
-	if res.StatusCode != 200 {
-		if u != a.URL {
-			return &MirrorError{Mirror: strings.TrimSuffix(u, a.URL), Err: fmt.Errorf("download %s through the mirror %s: %s", filepath.Base(path), strings.TrimSuffix(u, a.URL), res.Status)}
-		}
-		return fmt.Errorf("download %s: %s", filepath.Base(path), res.Status)
-	}
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	h := sha256.New()
-	var body io.Reader = res.Body
-	if report, ok := ctx.Value(progressKey{}).(func(done, total int64)); ok {
-		total := res.ContentLength
-		if total <= 0 {
-			total = a.Size
-		}
-		body = &counter{r: res.Body, total: max(total, 0), report: report}
-		report(0, max(total, 0))
-	}
-	_, err = io.Copy(io.MultiWriter(f, h), body)
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil && !strings.EqualFold(hex.EncodeToString(h.Sum(nil)), a.SHA256) {
-		err = fmt.Errorf("%s does not match its checksum", filepath.Base(path))
-		if u != a.URL {
-			err = fmt.Errorf("%s from the mirror %s does not match its checksum from %s; not installed", filepath.Base(path), strings.TrimSuffix(u, a.URL), Site)
-		}
-	}
-	if err != nil && u != a.URL && !errors.As(err, new(*MirrorError)) {
-		err = &MirrorError{Mirror: strings.TrimSuffix(u, a.URL), Err: err}
 	}
 	if err != nil {
 		os.Remove(path)
 	}
 	return err
+}
+
+// NetError is a download the network broke off: the connection failed or
+// dropped part way. It names the file and the cause, never the address:
+// GitHub's redirect is a signed URL, hundreds of characters of signature
+// and token that say nothing to the user.
+type NetError struct {
+	File string
+	Err  error
+}
+
+func (e *NetError) Error() string {
+	cause := e.Err
+	var ue *url.Error
+	if errors.As(cause, &ue) {
+		cause = ue.Err
+	}
+	return fmt.Sprintf("the download of %s broke off (%v)", e.File, cause)
+}
+
+func (e *NetError) Unwrap() error { return e.Err }
+
+// Network reports whether err is a download the network broke off, which
+// trying again may get through.
+func Network(err error) bool { return errors.As(err, new(*NetError)) }
+
+// fetch downloads a to path, or the rest of it when path holds the start
+// already (a try before broke off): what is there is asked for no more
+// (Range), and a host that sends the whole file again has it written from
+// the beginning. A try the network breaks off keeps what came, for the next
+// one; any other failure removes it.
+func fetch(ctx context.Context, a Asset, path string) error {
+	// through a mirror when one is given (mirror.go): the hash checked
+	// below is still the feed's
+	u := mirrored(mirrorOf(ctx), a.URL)
+	mirror := strings.TrimSuffix(u, a.URL)
+	name := filepath.Base(path)
+	var have int64
+	if fi, err := os.Stat(path); err == nil && fi.Mode().IsRegular() {
+		have = fi.Size()
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	if err != nil {
+		return err
+	}
+	if have > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", have))
+	}
+	fail := func(err error) error {
+		if !Network(err) {
+			os.Remove(path)
+		}
+		if u != a.URL && !errors.As(err, new(*MirrorError)) {
+			err = &MirrorError{Mirror: mirror, Err: err}
+		}
+		return err
+	}
+	res, err := source.Do(client, req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return fail(err)
+		}
+		return fail(&NetError{File: name, Err: err})
+	}
+	defer res.Body.Close()
+	flag := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+	switch {
+	case res.StatusCode == http.StatusPartialContent && have > 0 && strings.HasPrefix(res.Header.Get("Content-Range"), fmt.Sprintf("bytes %d-", have)):
+		flag = os.O_WRONLY | os.O_APPEND
+	case res.StatusCode == http.StatusOK:
+		have = 0 // the whole file again
+	default:
+		if u != a.URL {
+			return fail(&MirrorError{Mirror: mirror, Err: fmt.Errorf("download %s through the mirror %s: %s", name, mirror, res.Status)})
+		}
+		return fail(fmt.Errorf("download %s: %s", name, res.Status))
+	}
+	f, err := os.OpenFile(path, flag, 0o644)
+	if err != nil {
+		return fail(err)
+	}
+	// a read that fails is the network's; a write that fails (a full
+	// disk) is not, and isn't tried again
+	in := &readErr{r: res.Body}
+	var body io.Reader = in
+	if report, ok := ctx.Value(progressKey{}).(func(done, total int64)); ok {
+		total := res.ContentLength
+		if total > 0 {
+			total += have
+		} else {
+			total = a.Size
+		}
+		body = &counter{r: in, done: have, total: max(total, 0), report: report}
+		report(have, max(total, 0))
+	}
+	_, err = io.Copy(f, body)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		if ctx.Err() == nil && in.err != nil {
+			err = &NetError{File: name, Err: err}
+		}
+		return fail(err)
+	}
+	// the whole file, what earlier tries kept included, against the feed's
+	if !strings.EqualFold(fileHash(path), a.SHA256) {
+		err = fmt.Errorf("%s does not match its checksum", name)
+		if u != a.URL {
+			err = fmt.Errorf("%s from the mirror %s does not match its checksum from %s; not installed", name, mirror, Site)
+		}
+		return fail(err)
+	}
+	return nil
+}
+
+// readErr keeps the error its reader returned, io.EOF aside.
+type readErr struct {
+	r   io.Reader
+	err error
+}
+
+func (r *readErr) Read(p []byte) (int, error) {
+	n, err := r.r.Read(p)
+	if err != nil && err != io.EOF {
+		r.err = err
+	}
+	return n, err
 }
 
 // counter reports bytes as they are read.

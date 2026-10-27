@@ -37,7 +37,7 @@ func redactedHits(ctx context.Context, w http.ResponseWriter, body []byte) (http
 		h maskHits
 	}
 	began := time.Now()
-	defer noteMasking(ctx)()
+	defer noteRedacting(ctx)()
 	o, err := gwmw.Safely(func() out {
 		if t, ok := m.(gwmw.ContextTeller); ok {
 			b, hits := t.JSONHitsContext(ctx, body)
@@ -122,7 +122,7 @@ func maskTextHits(ctx context.Context, s string) (gwmw.Masker, string, maskHits,
 		h maskHits
 	}
 	began := time.Now()
-	defer noteMasking(ctx)()
+	defer noteRedacting(ctx)()
 	o, err := gwmw.Safely(func() out {
 		if t, ok := m.(gwmw.ContextTeller); ok {
 			got, hits := t.TextHitsContext(ctx, s)

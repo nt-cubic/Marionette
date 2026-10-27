@@ -7,10 +7,13 @@ package usage
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -123,7 +126,12 @@ type Record struct {
 	// sending it the body. #1532: a vendor that held a try ~100 s and
 	// said 503 read as 104 s "In magpie". 0 in a record written before
 	// they were, where Sent is all that is known.
-	Own     int64 `json:"own_ms,omitempty"`
+	Own int64 `json:"own_ms,omitempty"`
+	// Masking: the ms of Own that went on masking the request (Settings
+	// → Privacy: the rules, and the local model with its wait for a
+	// turn); 0 where nothing was masked, or in a record from before it
+	// was kept.
+	Masking int64 `json:"masking_ms,omitempty"`
 	Retried int64 `json:"retried_ms,omitempty"`
 	Queued  int64 `json:"queued_ms,omitempty"`
 	// Flow: the ms the reply's content took to come, from where its speed
@@ -243,19 +251,67 @@ func Append(r Record) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if err := os.MkdirAll(filepath.Dir(Path()), 0o755); err != nil {
+	path := Path()
+	f, before := openLog(path)
+	if f == nil {
 		return
 	}
-	f, err := os.OpenFile(Path(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if !holdLog {
+		defer f.Close()
+	}
+	if _, err := f.Write(append(b, '\n')); err != nil {
+		if holdLog {
+			f.Close()
+			heldLog.f = nil
+		}
+		return
+	}
+	after, _ := statLogHandle(f)
+	noteLogAppend(path, before, after)
+}
+
+// heldLog is the log Append keeps open between calls, under mu: every
+// request appends, and an open and a close of usage.jsonl each time was
+// most of Append's time (#3725). It is written to only while Path still
+// names that same file, so a log moved, removed or replaced is opened
+// again. Windows closes it after each write, since a file open there
+// can't be removed or renamed.
+var heldLog struct {
+	path string
+	f    *os.File
+}
+
+const holdLog = runtime.GOOS != "windows"
+
+// openLog returns the log to append to and its state before the write,
+// or nil when it can't be opened.
+func openLog(path string) (*os.File, os.FileInfo) {
+	if f := heldLog.f; f != nil {
+		heldLog.f = nil
+		if heldLog.path == path {
+			before, err := statLogHandle(f)
+			now, nerr := statLogFile(path)
+			if err == nil && nerr == nil && sameLogFile(before, now) {
+				heldLog.f = f
+				return f, before
+			}
+		}
+		f.Close()
+	}
+	// the folder is made only when it is missing: every request appends,
+	// and MkdirAll stat'ed it each time (#3725)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if errors.Is(err, fs.ErrNotExist) && os.MkdirAll(filepath.Dir(path), 0o755) == nil {
+		f, err = os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	}
 	if err != nil {
-		return
+		return nil, nil
 	}
-	defer f.Close()
 	before, _ := statLogHandle(f)
-	if _, err := f.Write(append(b, '\n')); err == nil {
-		after, _ := statLogHandle(f)
-		noteLogAppend(Path(), before, after)
+	if holdLog {
+		heldLog.path, heldLog.f = path, f
 	}
+	return f, before
 }
 
 // IsRejected also recognizes local rejections written before the explicit flag.

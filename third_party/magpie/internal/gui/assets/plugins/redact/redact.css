@@ -162,7 +162,9 @@ body.window .msk-onebar::before { inset: -6px -16px; }
 .msk-chip { display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: 6px; background: var(--pill); font-size: 11.5px; font-weight: 400; color: var(--fg-2); }
 .msk-steps { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin: 14px 0 0; padding: 0; list-style: none; counter-reset: none; }
 .msk-steps li { position: relative; min-width: 0; }
-.msk-steps li + li::before { content: ""; position: absolute; left: -10px; top: 10px; width: 10px; height: 1px; background: var(--line-2); }
+/* the line runs from the step before's number to this one's, 6px clear of
+   each: the columns are as wide as this one, 10px apart, numbers 20px */
+.msk-steps li + li::before { content: ""; position: absolute; left: calc(16px - 100%); top: 10px; width: calc(100% - 22px); height: 1px; background: var(--line-2); }
 .msk-sdot { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .msk-steps li.held .msk-sdot { background: var(--red-soft); color: var(--red); }
 .msk-steps li.none .msk-sdot { background: var(--pill); color: var(--muted); }

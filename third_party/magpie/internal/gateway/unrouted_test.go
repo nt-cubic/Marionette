@@ -423,3 +423,41 @@ func TestUnroutedQuickRequestLeavesNoTrace(t *testing.T) {
 		}
 	}
 }
+
+// #3682: masking's time counts toward unroutedMost no more, while what
+// comes after it still does. A request masked for well past unroutedMost
+// isn't answered; then held by an image's description that never ends,
+// it is answered 504 once that wait has had unroutedMost.
+func TestUnroutedMostLeavesOutMasking(t *testing.T) {
+	unroutedLimits(t, 20*time.Millisecond, 300*time.Millisecond)
+	s, _ := slowEyed(t, 0)
+	heldSight(t, s)
+	if err := settings.Save(settings.Settings{Redact: true}); err != nil {
+		t.Fatal(err)
+	}
+	withoutMasker(t)
+	m := gatedMasker{gate: make(chan struct{})}
+	var once sync.Once
+	open := func() { once.Do(func() { close(m.gate) }) }
+	t.Cleanup(open)
+	t.Cleanup(gwmw.Mask(m))
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+	got := posted(srv, strings.NewReader(pastedImage))
+	u := watchedHold(t, s)
+	if r := heldPast(t, u, 3*unroutedMost, got); r != nil {
+		t.Fatalf("answered %d %q %v while it was masked", r.code, r.body, r.err)
+	}
+	if u.masking.Load() == 0 {
+		t.Fatal("held past unroutedMost, but not while masking")
+	}
+	open()
+	select {
+	case r := <-got:
+		if r.code != http.StatusGatewayTimeout || !strings.Contains(r.body, "without routing") {
+			t.Fatalf("held after masking: %d %q %v", r.code, r.body, r.err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("a request held after masking was never answered")
+	}
+}

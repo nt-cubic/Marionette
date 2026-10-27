@@ -2,7 +2,13 @@
 // masking rules can't (internal/redact's Model): a name or an address in
 // free text, a password with nothing around it to say so.
 //
-// The model is OpenAI's Privacy Filter (Apache-2.0), 1.6 GB as the q8 GGUF
+// It runs one of two models, the user's pick (Choose, Models):
+// AstrLink Guard (astrlink.go), a 39 MB int8 token classifier for Chinese
+// and English, run in this process by internal/pii/guard, the default for
+// a user who never had the other; or Privacy Filter, below, which masks
+// many more ordinary values in code (go.sum hashes, product names; #3578).
+//
+// Privacy Filter is OpenAI's (Apache-2.0), 1.6 GB as the q8 GGUF
 // LocalAI made of it, run by pf-serve (native/privacy-filter), a program
 // built from privacy-filter.cpp on ggml. Neither ships with magpie: both
 // are downloaded when the user turns the model on, each checked against
@@ -13,13 +19,15 @@
 //
 // A process of its own, not linked in: 1.7 GB the gateway would otherwise
 // hold for good, and a GPU driver's crash that would end the gateway with
-// it. One that dies is started again; one that dies on the GPU, or doesn't
-// load there in gpuLoadTimeout, is started on the CPU for the rest of
-// magpie's run. One that keeps failing holds requests back at once, not
+// it. One that dies is started again; one that dies on the GPU, doesn't
+// load there in gpuLoadTimeout, or hangs there twice in a row, is started
+// on the CPU until the GPU is tried again (gpuRetryAfter), with no restart
+// of magpie. One that keeps failing holds requests back at once, not
 // after a load each, until it is tried again (retryAfter).
 package pii
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -27,6 +35,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/appdir"
+	"github.com/yetone/magpie/internal/redact"
 )
 
 // The model, at a revision of LocalAI's repo, so the file is always the
@@ -111,9 +120,10 @@ var ErrNotInstalled = errors.New("the local masking model isn't downloaded; down
 
 // Status is what Settings → Privacy shows of the model.
 type Status struct {
-	Supported bool  `json:"supported"`
-	Installed bool  `json:"installed"`
-	Size      int64 `json:"size"`
+	Model     string `json:"model"`
+	Supported bool   `json:"supported"`
+	Installed bool   `json:"installed"`
+	Size      int64  `json:"size"`
 	// a download under way, or the last one's error
 	Downloading bool   `json:"downloading,omitempty"`
 	Done        int64  `json:"done,omitempty"`
@@ -136,11 +146,8 @@ type Status struct {
 
 // Now is the model's status.
 func Now() Status {
-	s := Status{Supported: Supported(), Installed: Installed(), Size: modelSize}
-	dl.mu.Lock()
-	s.Downloading, s.Error = dl.cancel != nil, dl.err
-	s.Done, s.Total = dl.done.Load(), dl.total
-	dl.mu.Unlock()
+	s := Status{Model: PrivacyFilter, Supported: Supported(), Installed: Installed(), Size: modelSize}
+	dl.fill(&s)
 	srv.mu.Lock()
 	if srv.h != nil {
 		s.Running, s.Device, s.GPU, s.LoadMS, s.GPUError = true, srv.h.hello.Device, srv.h.hello.GPU, srv.h.hello.MS, srv.h.hello.GPUError
@@ -162,6 +169,78 @@ func Remove() error {
 	dl.err = ""
 	dl.mu.Unlock()
 	return os.RemoveAll(dir())
+}
+
+// The local models Settings → Privacy offers, by the id the settings keep
+// (settings.RedactModelName).
+const (
+	PrivacyFilter = "privacy-filter"
+	AstrLinkGuard = "astrlink-guard"
+)
+
+// Model is one local model.
+type Model interface {
+	ID() string
+	Supported() bool
+	Installed() bool
+	// Size is how much turning it on downloads.
+	Size() int64
+	Find(ctx context.Context, texts []string) ([][]redact.Found, error)
+	Now() Status
+	// Download fetches it in the background and calls done once it is on
+	// disk; Cancel stops that.
+	Download(done func()) error
+	Cancel()
+	// Warm loads it in the background, where it is on disk.
+	Warm()
+	// Stop lets it go; Remove stops it and deletes it.
+	Stop()
+	Remove() error
+}
+
+// Models are the local models, Privacy Filter first.
+func Models() []Model { return []Model{pfModel{}, guardModel{}} }
+
+// Of is the model id names; AstrLink Guard's for an id there's none of.
+func Of(id string) Model {
+	if id == PrivacyFilter {
+		return pfModel{}
+	}
+	return guardModel{}
+}
+
+// Choose is the model masking uses: the one the user picked (name);
+// with none picked, Privacy Filter where it was turned on (on) or
+// downloaded before there was a choice, so its user keeps the model they
+// had and downloads nothing; else AstrLink Guard, a 38 MB download that
+// runs on every CPU and, measured on code (docs/subsystems), masks far
+// fewer ordinary values.
+func Choose(name string, on bool) string {
+	switch name {
+	case PrivacyFilter, AstrLinkGuard:
+		return name
+	}
+	if on || Installed() {
+		return PrivacyFilter
+	}
+	return AstrLinkGuard
+}
+
+// pfModel is Privacy Filter as a Model.
+type pfModel struct{}
+
+func (pfModel) ID() string                 { return PrivacyFilter }
+func (pfModel) Supported() bool            { return Supported() }
+func (pfModel) Installed() bool            { return Installed() }
+func (pfModel) Size() int64                { return Size() }
+func (pfModel) Now() Status                { return Now() }
+func (pfModel) Download(done func()) error { return Download(done) }
+func (pfModel) Cancel()                    { Cancel() }
+func (pfModel) Warm()                      { Warm() }
+func (pfModel) Stop()                      { Stop() }
+func (pfModel) Remove() error              { return Remove() }
+func (pfModel) Find(ctx context.Context, texts []string) ([][]redact.Found, error) {
+	return FindContext(ctx, texts)
 }
 
 // idleAfter is how long pf-serve runs with no request before it is ended.

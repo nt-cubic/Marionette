@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -491,6 +492,43 @@ func checkStdio(ctx context.Context, s *Server) ServerHealth {
 	return *first
 }
 
+// stdioProgram is the program checkStdio starts for a server's command,
+// and the folder it was found in when magpie's PATH lacks it. A bare name
+// PATH doesn't have is looked for as a terminal would find it
+// (proc.FindTool: the folders a user's tools are installed in, fnm's Nodes
+// among them, #2685), and that folder goes on the child's PATH, as it is
+// on a terminal's: npx's package runs the node beside it by name. A path
+// is taken as it is.
+func stdioProgram(name string) (prog, found string) {
+	if name == "" || strings.ContainsAny(name, `/\`) {
+		return name, ""
+	}
+	if _, err := exec.LookPath(name); err == nil {
+		return name, ""
+	}
+	if p := proc.FindTool(name); p != "" {
+		return p, filepath.Dir(p)
+	}
+	return name, ""
+}
+
+// withPath is env with dir after the folders its PATH has (Path, as
+// Windows spells it, too).
+func withPath(env []string, dir string) []string {
+	out := slices.Clone(env)
+	for i := len(out) - 1; i >= 0; i-- {
+		k, v, ok := strings.Cut(out[i], "=")
+		if ok && (k == "PATH" || runtime.GOOS == "windows" && strings.EqualFold(k, "PATH")) {
+			if v != "" {
+				v += string(os.PathListSeparator)
+			}
+			out[i] = k + "=" + v + dir
+			return out
+		}
+	}
+	return append(out, "PATH="+dir)
+}
+
 // checkStdioAt starts the command on this machine, or in WSL distro.
 func checkStdioAt(ctx context.Context, s *Server, distro string) ServerHealth {
 	// started as the agents start it: in the environment magpie has, with
@@ -502,8 +540,11 @@ func checkStdioAt(ctx context.Context, s *Server, distro string) ServerHealth {
 	var cmd *exec.Cmd
 	var t wslrun.Tool
 	stop := func() {}
+	found := ""
 	if distro == "" {
-		cmd = proc.Command(s.Command, s.Args...)
+		var prog string
+		prog, found = stdioProgram(s.Command)
+		cmd = proc.Command(prog, s.Args...)
 	} else {
 		var err error
 		t, err = wslrun.In(distro, s.Command)
@@ -536,6 +577,9 @@ func checkStdioAt(ctx context.Context, s *Server, distro string) ServerHealth {
 		if runtime.GOOS != "windows" && distro == "" {
 			cmd.Env = append(cmd.Env, "PWD="+d)
 		}
+	}
+	if found != "" {
+		cmd.Env = withPath(cmd.Env, found)
 	}
 	var names []string
 	for k, v := range env {

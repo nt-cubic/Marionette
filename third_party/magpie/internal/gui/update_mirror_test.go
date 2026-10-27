@@ -75,7 +75,7 @@ func TestUpdateMirrorSetting(t *testing.T) {
 	defer os.Remove(exe + ".new")
 	u.check()
 	j := u.json()
-	if j.State != "error" || !j.Retry || j.Mirror != mirror.URL+"/" || !strings.Contains(j.Error, mirror.URL) {
+	if j.State != "error" || !j.Retry || j.Mirror != mirror.URL+"/" || j.Network || !strings.Contains(j.Error, mirror.URL) {
 		t.Fatalf("through the mirror: %+v", j)
 	}
 	// the next check starts afresh: no mirror said while it runs

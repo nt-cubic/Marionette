@@ -94,8 +94,8 @@ func TestAgyCounts(t *testing.T) {
 		t.Fatal("no transcript")
 	}
 	s := parseAgy(f, nil)
-	d := s.Days["2026-10-25"]
-	if d == nil || d.Prompts != 1 || d.Replies != 1 || d.Tools["read_file"] != 1 {
+	d := s.Days.of("2026-10-25")
+	if d == nil || d.Prompts != 1 || d.Replies != 1 || d.Tools.of("read_file") != 1 {
 		t.Fatalf("day: %+v", d)
 	}
 	if s.Title != "read a.txt" {
@@ -145,17 +145,17 @@ func TestAgyGrows(t *testing.T) {
 	whole := parseAgy(f, nil)
 	want := Tokens{Input: 3010, CacheRead: 1000, Output: 112}
 	for name, s := range map[string]*state{"read on": on, "read whole": whole} {
-		if got := s.Models["agy"]; got != want {
+		if got := s.Models.of("agy"); got != want {
 			t.Errorf("%s: %+v, want %+v", name, got, want)
 		}
-		if d := s.Days["2026-10-25"]; d == nil || d.Prompts != 2 || d.Replies != 2 {
+		if d := s.Days.of("2026-10-25"); d == nil || d.Prompts != 2 || d.Replies != 2 {
 			t.Errorf("%s: day %+v", name, d)
 		}
 		if !s.Last.Equal(at("2026-10-25T10:00:01Z")) {
 			t.Errorf("%s: last %s", name, s.Last)
 		}
 	}
-	if first.Models["agy"] != (Tokens{Input: 3000, CacheRead: 1000, Output: 100}) {
+	if first.Models.of("agy") != (Tokens{Input: 3000, CacheRead: 1000, Output: 100}) {
 		t.Errorf("the read before was changed: %+v", first.Models)
 	}
 }

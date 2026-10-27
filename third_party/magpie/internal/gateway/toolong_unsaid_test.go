@@ -31,10 +31,12 @@ func TestOverflowTheVendorDidntSay(t *testing.T) {
 		// Text alone well past the window is enough to ask for compaction.
 		{"413 bytes", "/v1/messages", big, 413, `{"error":{"message":"Request Entity Too Large"}}`, 400, 1, "prompt is too long"},
 		{"413 request_too_large", "/v1/messages", big, 413, `{"error":{"type":"request_too_large","message":"Request exceeds the maximum size"}}`, 400, 1, "prompt is too long"},
-		// not the conversation's length
-		{"small 502", "/v1/messages", small, 502, `{"error":{"message":"We are experiencing capacity issues"}}`, 502, 1 + lastRetries, "capacity issues"},
-		{"near the window", "/v1/messages", near, 502, `{"error":{"message":"We are experiencing capacity issues"}}`, 502, 1 + lastRetries, "capacity issues"},
-		{"429", "/v1/messages", big, 429, `{"error":{"message":"Rate limit reached"}}`, 429, 1 + rateRetries, "Rate limit"},
+		// not the conversation's length: a plain provider's busy reply is
+		// asked again past the same-one retries, within its patience,
+		// until replan's rounds run out
+		{"small 502", "/v1/messages", small, 502, `{"error":{"message":"We are experiencing capacity issues"}}`, 502, 1 + lastRetries + replanRounds, "capacity issues"},
+		{"near the window", "/v1/messages", near, 502, `{"error":{"message":"We are experiencing capacity issues"}}`, 502, 1 + lastRetries + replanRounds, "capacity issues"},
+		{"429", "/v1/messages", big, 429, `{"error":{"message":"Rate limit reached"}}`, 429, 1 + rateRetries + replanRounds, "Rate limit"},
 		{"401", "/v1/messages", big, 401, `{"error":{"message":"invalid token"}}`, 401, 1, "invalid token"},
 		{"quota", "/v1/messages", big, 400, `{"error":{"message":"insufficient balance"}}`, 400, 1, "insufficient balance"},
 	} {

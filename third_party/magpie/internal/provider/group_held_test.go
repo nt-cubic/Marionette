@@ -39,6 +39,28 @@ func groupHeldFixture(t *testing.T) {
 	Changed()
 }
 
+// A request asks Served for each model it may go to (the reply's length
+// twice, the window), and each was a copy of the whole catalog: ~380KB a
+// request with 12 providers of 20 models (#3725). While a request holds
+// the catalog it is one, shared for reading.
+func TestServedSharedWhileHeld(t *testing.T) {
+	groupHeldFixture(t)
+	release := Hold()
+	defer release()
+	first := Served()
+	if len(first) == 0 {
+		t.Fatal("nothing served")
+	}
+	if again := Served(); &again[0] != &first[0] {
+		t.Fatal("Served was copied again under one Hold")
+	}
+	// clipped: a caller's append is its own
+	grown := append(first, Entry{ID: "added"})
+	if &grown[0] == &first[0] || len(Served()) != len(first) {
+		t.Fatal("an append to Served reached the next caller's")
+	}
+}
+
 // A request to a group asks for the catalog's groups several times —
 // Resolve's Catalog, and Served for the members' images, the reply's
 // length and the window — and each built every group's entry again, from

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -159,7 +160,7 @@ func (s *Server) codexTitle(w http.ResponseWriter, r *http.Request, body []byte,
 		// caller's key (#882)
 		ctx = magpieChose(ctx)
 	}
-	s.serve(rec, r.WithContext(ctx), provider.Responses, withModel(body, to))
+	s.serve(rec, r.WithContext(ctx), provider.Responses, codexSideEffort(withModel(body, to), to))
 	if rec.status >= 400 {
 		for k, vs := range rec.header {
 			w.Header()[k] = vs
@@ -227,7 +228,7 @@ func (s *Server) codexShaped(w http.ResponseWriter, r *http.Request, body []byte
 	if chose {
 		ctx = magpieChose(ctx)
 	}
-	s.serve(rec, r.WithContext(ctx), provider.Responses, withModel(body, to))
+	s.serve(rec, r.WithContext(ctx), provider.Responses, codexSideEffort(withModel(body, to), to))
 	if rec.status >= 400 {
 		for k, vs := range rec.header {
 			w.Header()[k] = vs
@@ -280,7 +281,7 @@ func (s *Server) codexPrediction(w http.ResponseWriter, r *http.Request, body []
 	if to == settings.Load().CodexPredictions {
 		ctx = magpieChose(ctx)
 	}
-	s.serve(rec, r.WithContext(ctx), provider.Responses, withModel(body, to))
+	s.serve(rec, r.WithContext(ctx), provider.Responses, codexSideEffort(withModel(body, to), to))
 	if rec.status >= 400 {
 		for k, vs := range rec.header {
 			w.Header()[k] = vs
@@ -672,4 +673,34 @@ func titleJSON(said string, shape titleShape) string {
 	}
 	b, _ := json.Marshal(out)
 	return string(b)
+}
+
+// codexSideEffort is a Codex side call's body for to, one of magpie's
+// models, asking a reasoning effort to takes. Codex asks low for a title
+// only on its own title model, and none (no effort) on any other; its
+// auto-review asks low only where the model lists low, else the model's
+// default, which Codex has none of for a model of magpie's whose levels
+// it isn't told. A model that needs an effort turned those away with 400
+// (cybercaius on Discord). With the model's levels known, a call asking
+// no effort, or an off one the model hasn't, is asked at its lowest on
+// level, low where it has it; any other effort, a group, or a model whose
+// levels aren't known goes as asked (serve's effortRequired retry then
+// asks the last at low if it turns the request away).
+func codexSideEffort(body []byte, to string) []byte {
+	if provider.IsGroupRef(to) {
+		return body
+	}
+	e := bodyEffort(provider.Responses, body)
+	if e != "" && !offEffort(e) {
+		return body
+	}
+	levels := ModelEfforts(to)
+	if len(levels) == 0 || slices.Contains(levels, e) {
+		return body
+	}
+	p, model, ok := provider.Resolve(to)
+	if !ok {
+		return body
+	}
+	return withFixedEffort(provider.Responses, body, onEffort(p, model))
 }

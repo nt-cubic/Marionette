@@ -227,7 +227,7 @@ func entriesAt(ms []catalog.Model, after int, effort string) []any {
 		// GPT models
 		if slug, ok := strings.CutPrefix(m.ID, "codex/"); m.Fast || ok && strings.HasPrefix(slug, "gpt-") {
 			e.Tiers = append(e.Tiers, fastTier)
-		} else if m.OwnTier {
+		} else if m.OwnTier && (len(m.Tiers) == 0 || len(ownTiers(own, m)) > 0) {
 			e.Tiers = ownTiers(own, m)
 		} else if len(m.Tiers) > 0 {
 			// another magpie's model: the tiers it offers its own Codex

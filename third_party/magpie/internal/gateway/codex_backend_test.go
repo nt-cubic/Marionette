@@ -24,6 +24,7 @@ import (
 func chatgpt(t *testing.T, h http.HandlerFunc) *httptest.Server {
 	t.Helper()
 	setHome(t, t.TempDir()) // no sign-ins but the test's
+	forgetCodexLists(t)
 	up := httptest.NewServer(h)
 	t.Cleanup(up.Close)
 	was := provider.CodexBase

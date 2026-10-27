@@ -116,6 +116,7 @@ func sessionManageRoutes(mux *http.ServeMux, w Windows) {
 	// manage is the agents with sessions, and every session of ?agent=
 	// (the one with the most when none is named), and the trash.
 	mux.HandleFunc("GET /api/sessions/manage", func(rw http.ResponseWriter, r *http.Request) {
+		defer sessions.OneListing()()
 		looks := agentLooks()
 		out := struct {
 			Agents   []manageAgentJSON `json:"agents"`

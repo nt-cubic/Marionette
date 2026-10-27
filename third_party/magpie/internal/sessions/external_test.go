@@ -6,7 +6,7 @@ import (
 )
 
 func TestGatewayStatsRebaseNativeCalendar(t *testing.T) {
-	native := Stats{From: "2026-10-06", To: "2026-10-07", Sessions: []Summary{{Agent: "claude", ID: "native", Days: []int{0}, perDay: map[int]*summaryDay{0: {output: 4}}}}}
+	native := Stats{From: "2026-10-06", To: "2026-10-07", Sessions: []Summary{{Agent: "claude", ID: "native", Days: []int{0}, perDay: []summaryDay{{day: 0, output: 4}}}}}
 	merged := MergeExternalStats(native, []ExternalDayUsage{{Date: "2026-10-04", Agent: "opencode"}}, nil)
 	view := merged.Overview("claude", "", "", 8)
 	if !reflect.DeepEqual(view.Days, []int{0, 0, 1, 0}) || !reflect.DeepEqual(view.Output, []int{0, 0, 4, 0}) {

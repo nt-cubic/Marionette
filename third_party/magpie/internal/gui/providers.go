@@ -1562,10 +1562,20 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				if !in.CodexAsSent && old != nil {
 					in.CodexAsSent = old.CodexAsSent
 				}
+				// and Antigravity's prompt as written, set with `magpie
+				// provider set antigravity prompt=as-written`
+				if !in.PromptAsWritten && old != nil {
+					in.PromptAsWritten = old.PromptAsWritten
+				}
 				// and additional_tools taken, set with `magpie provider
 				// set <id> additional-tools=on` (#2660)
 				if !in.AdditionalTools && old != nil {
 					in.AdditionalTools = old.AdditionalTools
+				}
+				// and how long a request to it alone is kept while it is
+				// busy, set with `magpie provider set <id> patience=`
+				if in.Patience == 0 && old != nil {
+					in.Patience = old.Patience
 				}
 				// each account's own proxy likewise: {} clears them
 				if in.AccountProxies == nil && old != nil {

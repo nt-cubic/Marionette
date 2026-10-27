@@ -22,6 +22,6 @@ magpie.plugin("redact", (ctx) => {
     refresh(again) { return maskPageLoad(again); },
     reload() { return maskPageLoad(true); },
     leave() { maskTipOff(); },
-    focus(key) { maskOneOpen(+key); },
+    focus(key) { maskOneOpen(String(key)); },
   });
 });

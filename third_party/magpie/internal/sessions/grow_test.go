@@ -204,11 +204,11 @@ func TestDroidReadsOnlyWhatWasAppended(t *testing.T) {
 	if at := g.read(); at != was {
 		t.Fatalf("read from %d, not %d", at, was)
 	}
-	if d := g.old.Days["2026-09-27"]; d == nil || len(d.Models) != 0 {
+	if d := g.old.Days.of("2026-09-27"); d == nil || len(d.Models) != 0 {
 		t.Fatalf("the total is still on the day before: %+v", d)
 	}
-	if m := g.old.Days["2026-09-28"].Models["claude-opus-4-5"]; m.Input != 300 {
-		t.Fatalf("the total on its day: %+v", g.old.Days["2026-09-28"])
+	if m := g.old.Days.of("2026-09-28").Models.of("claude-opus-4-5"); m.Input != 300 {
+		t.Fatalf("the total on its day: %+v", g.old.Days.of("2026-09-28"))
 	}
 	// only the settings changed: nothing of the transcript read
 	os.WriteFile(filepath.Join(dir, droidMain+".settings.json"), []byte(`{"model":"claude-opus-4-5","tokenUsage":{"inputTokens":400,"outputTokens":90}}`), 0o644)
@@ -286,7 +286,7 @@ func TestKimiForkMarkerAcrossReads(t *testing.T) {
 	g.read()
 	g.append(`{"type":"usage.record","model":"kimi-code/k3","usage":{"inputOther":7,"output":3,"inputCacheRead":0,"inputCacheCreation":0},"usageScope":"turn","time":1791700005000}` + "\n")
 	g.read()
-	if g.old.Models["kimi-code/k3"] != (Tokens{Input: 7, Output: 3}) || len(g.old.Models) != 1 {
+	if g.old.Models.of("kimi-code/k3") != (Tokens{Input: 7, Output: 3}) || len(g.old.Models) != 1 {
 		t.Fatalf("the fork's own: %+v", g.old.Models)
 	}
 }
@@ -357,7 +357,7 @@ func TestDshPackedReadsOnlyWhatWasAppended(t *testing.T) {
 	if at := g.read(); at != was {
 		t.Fatalf("the line finished in the next frame, read from %d, not its frame's %d", at, was)
 	}
-	if m := g.old.Models["deepseek-v4-flash"]; m.Input != 10+6+7+8+9 {
+	if m := g.old.Models.of("deepseek-v4-flash"); m.Input != 10+6+7+8+9 {
 		t.Fatalf("flash, each reply once: %+v", m)
 	}
 	// cut short: read whole again
@@ -397,7 +397,7 @@ func TestDshEndSeedAcrossReads(t *testing.T) {
 	g.read()
 	g.append(string(b[rest:]))
 	g.read()
-	if m := g.old.Models["deepseek-v4-pro"]; m.Input != 50 || len(g.old.Models) != 1 || g.old.Title != "Tidy the build script" {
+	if m := g.old.Models.of("deepseek-v4-pro"); m.Input != 50 || len(g.old.Models) != 1 || g.old.Title != "Tidy the build script" {
 		t.Fatalf("the fork's own: %+v, title %q", g.old.Models, g.old.Title)
 	}
 }
@@ -492,7 +492,7 @@ func TestClineReadsMessagesOnlyWhenTheyChange(t *testing.T) {
 	}
 	// made a fork after its first reply: what came before is its source's
 	edit(manifest, `"metadata": {`, `"metadata": {"fork": {"forkedAt": "2026-09-27T10:01:00.000Z"},`)
-	if !read() || old.Models["claude-opus-5-5"] != (Tokens{}) {
+	if !read() || old.Models.of("claude-opus-5-5") != (Tokens{}) {
 		t.Fatalf("forked: %+v", old.Models)
 	}
 	// started at another time: read again

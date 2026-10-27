@@ -230,7 +230,7 @@ func listAgent(agent string, all []file) []Managed {
 		for _, f := range fs {
 			m.Size += f.size
 			if st := cache[f.path]; st != nil && f.main {
-				for _, d := range st.Days {
+				for _, d := range st.Days.all() {
 					m.Messages += d.Prompts + d.Replies
 				}
 			}

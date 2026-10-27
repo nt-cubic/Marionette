@@ -204,7 +204,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           }
         }
         // the folded head waits for a prompt in its place, then tells of it
-        const bar = (f, r, c) => `3.31%,4.41%,0%,${f}%,${r}%,${c}%`;
+        // system, tools, skills, memory, then files, results and chat
+        const bar = (f, r, c) => `3.31%,4.41%,0%,0%,${f}%,${r}%,${c}%`;
         assert.deepEqual(said, [
           "114K / 272K · 42% #103 " + bar(15.44, 9.56, 9.19),
           ...Array(3).fill("122K / 272K · 45% #104 " + bar(16.91, 10.29, 9.93)),

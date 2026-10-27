@@ -1,0 +1,143 @@
+package gateway
+
+import (
+	"io"
+	"net/http"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/yetone/magpie/internal/provider"
+)
+
+// The ZCode plugin's refusals of a Start Plan trial entry, as it writes them
+// (zcode 0.1.31's fetch, JSON.stringify of its error): the trial ended, in
+// the words of #3661's routing log, and a trial's bucket spent.
+const (
+	zcodeFlashTrialEnded = `{"type":"error","error":{"type":"invalid_request_error","message":"ZCode has no active limited quota for GLM-5.3-Flash-Trial"}}`
+	zcodeTrialEnded      = `{"type":"error","error":{"type":"invalid_request_error","message":"ZCode has no active limited quota for GLM-5.3-Trial"}}`
+	zcodeTrialSpent      = `{"type":"error","error":{"type":"rate_limit_error","message":"ZCode's limited quota for glm-5.3 is exhausted or temporarily unavailable"}}`
+)
+
+// A ZCode account's Start Plan trial entry that ended, or whose bucket is
+// spent, rests that entry alone: the next request for the account's GLM
+// Coding Plan model is still served by it (#3661,
+// orion-nebula-dev: GLM-5.3-Flash-Trial and GLM-5.3-Trial rested
+// "zcode@zcode", and GLM-5.3 and GLM-5.3-Flash with it). A refusal of the
+// account — its quota, its key, another model named, a model that isn't a
+// trial — and the same words from another vendor still rest the account.
+// After skygunner's TestZCodeTrialQuotaRestsTheModelAlone (e04a1b994).
+func TestZCodeTrialRefusalRestsTheTrialAlone(t *testing.T) {
+	for _, tc := range []struct {
+		name, vendor, model, body string
+		status                    int
+		listed                    bool // the plugin still lists the trial entry
+		accountRest               bool
+	}{
+		{"flash trial ended", "zcode", "GLM-5.3-Flash-Trial", zcodeFlashTrialEnded, 400, false, false},
+		{"trial ended", "zcode", "GLM-5.3-Trial", zcodeTrialEnded, 400, false, false},
+		{"trial ended, still listed", "zcode", "GLM-5.3-Trial", zcodeTrialEnded, 400, true, false},
+		{"trial spent", "zcode", "GLM-5.3-Trial", zcodeTrialSpent, 429, true, false},
+		{"account quota", "zcode", "GLM-5.3", `{"error":{"type":"rate_limit_error","message":"quota exhausted"}}`, 429, false, true},
+		{"account quota 400", "zcode", "GLM-5.3", `{"error":{"type":"invalid_request_error","message":"quota exhausted for this account"}}`, 400, false, true},
+		{"account key", "zcode", "GLM-5.3", `{"error":{"message":"invalid api key"}}`, 401, false, true},
+		{"another trial named", "zcode", "GLM-5.3-Flash-Trial", zcodeTrialEnded, 400, false, true},
+		{"spent names another", "zcode", "GLM-5.3-Flash-Trial", zcodeTrialSpent, 429, true, true},
+		{"not a trial", "zcode", "GLM-5.3", `{"type":"error","error":{"type":"invalid_request_error","message":"ZCode has no active limited quota for GLM-5.3"}}`, 400, false, true},
+		{"ended words on a 429", "zcode", "GLM-5.3-Trial", zcodeTrialEnded, 429, false, true},
+		{"another vendor's words", "factory", "GLM-5.3-Trial", zcodeTrialEnded, 400, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// a ZCode list with no free model, which would rest a paid
+			// model alone whatever it said (PaidBesideFree)
+			t.Setenv("FAKE_ZCODE", "1")
+			t.Setenv("FAKE_NO_FREE", "1")
+			if tc.listed {
+				t.Setenv("FAKE_ZCODE_TRIAL", "1")
+			}
+			var mu sync.Mutex
+			var asked []string
+			good := &adaptiveVendor{}
+			movedFake(t, tc.vendor, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
+					w.WriteHeader(500)
+					return
+				}
+				model := modelOf(body)
+				mu.Lock()
+				asked = append(asked, model)
+				mu.Unlock()
+				if model == tc.model {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(tc.status)
+					io.WriteString(w, tc.body)
+					return
+				}
+				r.Body = io.NopCloser(strings.NewReader(string(body)))
+				good.ServeHTTP(w, r)
+			}))
+			p, err := provider.Find(tc.vendor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c := candidate{p: *p, rest: tc.vendor, model: tc.model}
+			// the account's windows were read, so its rest isn't narrowed
+			// later by a read that comes in
+			old := allowances
+			allowances = func(string) map[string]provider.Allowance {
+				return map[string]provider.Allowance{p.Account.User: {{Used: 10}}}
+			}
+			t.Cleanup(func() { allowances = old })
+			b := &scripted{replies: []reply{{200, "", chatOK}, {200, "", chatOK}}}
+			scriptedOn(t, "b", provider.Chat, b)
+			// the trial, then the account's own model, each with another
+			// provider behind it
+			for name, first := range map[string]string{"T": tc.model, "S": "GLM-5.3"} {
+				if err := provider.SaveGroup(provider.Group{Name: name, Members: []string{tc.vendor + "/" + first, "b/m"}, Routing: provider.Ordered}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			s := New()
+			// the trial refused, and the other provider answers
+			code, body := postAs(t, s, "", `{"model":"group/t","messages":[{"role":"user","content":"hi"}]}`)
+			if code != 200 {
+				t.Fatalf("trial request: %d %s", code, body)
+			}
+			tries := s.trace.routes[len(s.trace.routes)-1].Tries
+			if len(tries) != 2 || tries[0].Status != tc.status || tries[0].Rest == nil {
+				t.Fatalf("trial request tries: %+v", tries)
+			}
+			want := c.restID()
+			if tc.accountRest {
+				want = c.restKey()
+			}
+			if tries[0].Rest.Key != want {
+				t.Fatalf("the refusal rested %q, want %q", tries[0].Rest.Key, want)
+			}
+			if _, ok := restOf(c.restKey()); ok != tc.accountRest {
+				t.Fatalf("account resting = %v, want %v", ok, tc.accountRest)
+			}
+			if _, ok := restOf(c.restID()); !tc.accountRest && !ok {
+				t.Fatalf("%s isn't resting", tc.model)
+			}
+			// then the account's own GLM-5.3: served by the account unless
+			// the account was refused
+			if code, body := postAs(t, s, "", `{"model":"group/s","messages":[{"role":"user","content":"hi"}]}`); code != 200 {
+				t.Fatalf("GLM-5.3 request: %d %s", code, body)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if tc.accountRest {
+				if b.n != 2 || len(asked) != 1 {
+					t.Fatalf("account fault: asked %v, the other provider %d times", asked, b.n)
+				}
+				return
+			}
+			if b.n != 1 || len(asked) != 2 || asked[1] != "GLM-5.3" {
+				t.Fatalf("the trial's refusal kept the account's GLM-5.3 out: asked %v, the other provider %d times", asked, b.n)
+			}
+		})
+	}
+}

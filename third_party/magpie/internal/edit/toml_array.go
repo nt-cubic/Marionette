@@ -32,7 +32,7 @@ func editTOMLArrayTable(path, name, key, value, block string) error {
 	if err != nil {
 		return err
 	}
-	spans, err := namedTOMLArray(doc, name, key, value)
+	spans, err := namedTOMLArray(doc, name, key, value, false)
 	if err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
@@ -46,7 +46,7 @@ func editTOMLArrayTable(path, name, key, value, block string) error {
 		if err != nil {
 			return err
 		}
-		matches, err := namedTOMLArray(newDoc, name, key, value)
+		matches, err := namedTOMLArray(newDoc, name, key, value, false)
 		if err != nil || len(matches) == 0 || len(newDoc.root.keys) > 0 {
 			return fmt.Errorf("replacement must declare one %s entry with %s = %q", name, key, value)
 		}
@@ -84,9 +84,96 @@ func editTOMLArrayTable(path, name, key, value, block string) error {
 	return writeTOML(path, out)
 }
 
+// SetTOMLArrayTables replaces every entry of the array table name whose key
+// is value, with its child tables, by blocks: where the first of them was,
+// else at the end of the file. Entries with another value stay as they are,
+// and no blocks removes the matching ones. Each block is one complete entry,
+// its header included, with key = value; anything else in one is an error.
+func SetTOMLArrayTables(path, name, key, value string, blocks []string) error {
+	raw, err := Read(path)
+	if err != nil {
+		return err
+	}
+	if err := validateTOML(raw); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	lines := splitLines(string(raw))
+	doc, err := parseTOMLFile(lines)
+	if err != nil {
+		return err
+	}
+	spans, err := namedTOMLArray(doc, name, key, value, true)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	var replacement []string
+	want := tomlHeaderParts(name)
+	for _, block := range blocks {
+		if err := validateTOML([]byte(block)); err != nil {
+			return fmt.Errorf("replacement: %w", err)
+		}
+		bl := splitLines(block)
+		newDoc, err := parseTOMLFile(bl)
+		if err != nil {
+			return err
+		}
+		matches, err := namedTOMLArray(newDoc, name, key, value, true)
+		if err != nil || len(matches) == 0 || len(newDoc.root.keys) > 0 || !newDoc.tables[0].array ||
+			!slices.Equal(tomlHeaderParts(newDoc.tables[0].name), want) {
+			return fmt.Errorf("replacement must declare one %s entry with %s = %q", name, key, value)
+		}
+		for i, table := range newDoc.tables {
+			parts := tomlHeaderParts(table.name)
+			if i > 0 && (slices.Equal(parts, want) || !tomlDescendant(parts, want)) {
+				return fmt.Errorf("replacement contains another table")
+			}
+		}
+		if len(replacement) > 0 {
+			replacement = append(replacement, "")
+		}
+		replacement = append(replacement, trimBlank(bl)...)
+	}
+	if len(spans) == 0 {
+		if len(replacement) == 0 {
+			return nil
+		}
+		out := trimBlank(lines)
+		if len(out) > 0 {
+			out = append(out, "")
+		}
+		out = append(out, replacement...)
+		return writeTOML(path, append(out, ""))
+	}
+	var out []string
+	at := 0
+	for i, span := range spans {
+		gap := lines[at:span.from]
+		// The blank lines between two entries replaced went with them, or
+		// every sync would add another.
+		if i == 0 || len(trimBlank(gap)) > 0 {
+			out = append(out, gap...)
+		}
+		if i == 0 {
+			if len(replacement) == 0 {
+				out = trimBlank(out)
+			}
+			out = append(out, replacement...)
+		}
+		at = span.to
+	}
+	out = append(out, lines[at:]...)
+	if joinLinesLike(out, string(raw)) == string(raw) {
+		return nil
+	}
+	return writeTOML(path, out)
+}
+
 type tomlArraySpan struct{ from, to int }
 
-func namedTOMLArray(doc tomlFile, name, key, value string) ([]tomlArraySpan, error) {
+// namedTOMLArray are the line spans of the entries of the array table name
+// whose key is value, each followed by its child tables'; more than one such
+// entry is an error unless all is set.
+func namedTOMLArray(doc tomlFile, name, key, value string, all bool) ([]tomlArraySpan, error) {
 	want := tomlHeaderParts(name)
 	if len(want) == 0 {
 		return nil, fmt.Errorf("invalid table name %q", name)
@@ -114,7 +201,7 @@ func namedTOMLArray(doc tomlFile, name, key, value string) ([]tomlArraySpan, err
 		if !matched {
 			continue
 		}
-		if len(spans) > 0 {
+		if len(spans) > 0 && !all {
 			return nil, fmt.Errorf("multiple %s entries have %s = %q", name, key, value)
 		}
 		spans = append(spans, tomlArraySpan{table.from, tomlContentEnd(table)})

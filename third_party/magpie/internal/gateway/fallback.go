@@ -1428,7 +1428,9 @@ func windowIn(served func() []provider.Entry, p provider.Provider, model string)
 	if n := p.Contexts[model]; n > 0 {
 		return n
 	}
-	for _, e := range served() {
+	cat := served()
+	for i := range cat {
+		e := &cat[i]
 		if e.Group == "" && e.Provider.ID == p.ID && (e.Model == model || e.ID == model) && e.Context > 0 {
 			return e.Context
 		}
@@ -1444,10 +1446,12 @@ const (
 	// clear than a busy moment: pauses of 1, 2 and 4s, or what Retry-After
 	// says, under half a minute in all
 	rateRetries = 3
-	// longestPause is the longest the vendor's Retry-After is waited for
-	// before that; longer, and the agent gets the error.
-	longestPause = 8 * time.Second
 )
+
+// longestPause is the longest the vendor's Retry-After is waited for by
+// the same-one retries; longer, and a plain provider or a group waits it
+// out within its patience (replan), else the agent gets the error.
+var longestPause = 8 * time.Second
 
 // retryPause is the first pause before the last one left is tried again;
 // each pause after is twice the one before.
@@ -1519,7 +1523,9 @@ func holds(c candidate, tokens int) bool {
 // to compact.
 //
 // Those left out are handed back (small, their rows in smallW when the
-// order has one each), kept for the last resort: when every candidate
+// order has one each, with Window set to the window: the trace lists
+// them as left out, so the Routing page keeps their rows and says why,
+// #3749), kept for the last resort: when every candidate
 // with room is out of its allowance, a fallback too small is asked all
 // the same (Kai on Discord: both Claude accounts at their limit until
 // the next day, the Claude provider's Fallback a Codex model of 272K
@@ -1559,7 +1565,9 @@ func roomy(cs []candidate, pl planned, from provider.Protocol, body []byte) (out
 		if w := windows[key(c)]; w > 0 && tokens >= w {
 			small = append(small, c)
 			if parallel {
-				smallW = append(smallW, pl.order[i])
+				x := pl.order[i]
+				x.Window = w
+				smallW = append(smallW, x)
 			}
 			continue
 		}
@@ -1654,6 +1662,8 @@ type holdWriter struct {
 	// answers with a 429 whatever quota it has left — Claude Code's, its
 	// Agent SDK's — so the account isn't at fault and doesn't rest (#666)
 	turnedAway bool
+	// turnedAwayHint says why, for that system prompt (antigravityHint)
+	turnedAwayHint string
 
 	// refused: the vendor's safety filter ended the reply before any of it
 	// was said — Anthropic's stop_reason "refusal", OpenAI's content_filter

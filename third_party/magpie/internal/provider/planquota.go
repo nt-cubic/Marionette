@@ -581,6 +581,9 @@ func vendorSaid(b []byte, status string) string {
 		Message string          `json:"message"`
 	}
 	if json.Unmarshal(b, &e) != nil {
+		if said, ok := Unsaid(b); ok {
+			return status + ": " + said
+		}
 		return status
 	}
 	msg := e.Message

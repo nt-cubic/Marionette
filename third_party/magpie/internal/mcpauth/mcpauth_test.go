@@ -2,6 +2,9 @@ package mcpauth_test
 
 import (
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -332,5 +335,44 @@ func TestSignInAsksForOfflineAccess(t *testing.T) {
 	defer mcpauth.Cancel(st.ID)
 	if u, _ := url.Parse(st.URL); u.Query().Get("scope") != "read write" {
 		t.Errorf("scope %q", u.Query().Get("scope"))
+	}
+}
+
+// A firewall's 403 page in front of a server is said to be one: it judged
+// the network, and the server never got to offer a sign-in. A 403 the
+// server gives in its own words is not (fremontdango on Discord: Cloudflare
+// at agents.stackoverflow.com, told as "says nothing of a sign-in").
+func TestFirewallTurnedAway(t *testing.T) {
+	home(t)
+	for _, c := range []struct {
+		name   string
+		header map[string]string
+		body   string
+		away   bool
+	}{
+		{"cloudflare page", map[string]string{"Content-Type": "text/html; charset=UTF-8", "Server": "cloudflare"}, "<title>Attention Required! | Cloudflare</title>", true},
+		{"cloudflare challenge", map[string]string{"Content-Type": "text/plain", "Cf-Mitigated": "challenge"}, "", true},
+		{"server's own 403", map[string]string{"Content-Type": "application/json"}, `{"error":"forbidden"}`, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				for k, v := range c.header {
+					w.Header().Set(k, v)
+				}
+				w.WriteHeader(http.StatusForbidden)
+				io.WriteString(w, c.body)
+			}))
+			defer srv.Close()
+			_, err := mcpauth.Start(t.Context(), "sofa", srv.URL+"/mcp")
+			if err == nil {
+				t.Fatal("signed in past a 403")
+			}
+			if got := errors.Is(err, mcpauth.ErrTurnedAway); got != c.away {
+				t.Fatalf("turned away %v, want %v: %v", got, c.away, err)
+			}
+			if !c.away && !strings.Contains(err.Error(), "answered 403") {
+				t.Fatalf("error %v", err)
+			}
+		})
 	}
 }

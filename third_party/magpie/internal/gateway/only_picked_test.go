@@ -78,6 +78,7 @@ func TestOnlyPickedModelsList(t *testing.T) {
 // gains after it is off Codex's list until ticked.
 func TestCodexModelListOnlyPicked(t *testing.T) {
 	codexSignedIn(t)
+	forgetCodexLists(t)
 	if err := provider.Save(provider.Provider{ID: "codex", Models: []string{"gpt-5.5"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +114,10 @@ func TestCodexModelListOnlyPicked(t *testing.T) {
 	if native := list(); len(native) != 1 || native[0] != "gpt-5.5" {
 		t.Fatalf("switched on: %v", native)
 	}
+	// the account gains a model: the backend's list, kept codexListFor,
+	// is asked again
 	slugs += `,{"slug":"gpt-6","priority":2}`
+	forgetCodexLists(t)
 	if err := provider.Save(provider.Provider{ID: "codex", Models: []string{"gpt-5.5", "gpt-6"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -128,6 +132,7 @@ func TestCodexModelListOnlyPicked(t *testing.T) {
 		t.Errorf("switched off: %v", native)
 	}
 	slugs += `,{"slug":"gpt-6-mini","priority":3}`
+	forgetCodexLists(t)
 	if err := provider.Save(provider.Provider{ID: "codex", Models: []string{"gpt-5.5", "gpt-6", "gpt-6-mini"}}); err != nil {
 		t.Fatal(err)
 	}

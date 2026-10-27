@@ -119,7 +119,7 @@ func TestEvictedClaudeRevisionsReleasedAndRebuilt(t *testing.T) {
 	want := Tokens{10338, 37363, 281066, 63398, 0}
 	List(0)
 	var got Tokens
-	for _, v := range cache[path].Models {
+	for _, v := range cache[path].Models.all() {
 		got.add(v)
 	}
 	if got != want {

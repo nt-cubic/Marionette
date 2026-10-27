@@ -7,7 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/yetone/magpie/internal/filememo"
 )
 
 // Gateway is the asynchronous request-hook entry a package runs in Bun:
@@ -122,14 +125,36 @@ func GatewayStates(ctx context.Context) map[string]GatewayState {
 }
 
 // HasGateway avoids starting Bun for users who have no asynchronous hooks.
+// Every request asks it, so the plugins are looked at once a second, and at
+// once after magpie wrote a file of its own (filememo.Gen): reading
+// plugins.json and each plugin's package.json took ~1ms a request with 12
+// plugins on Windows (#3725).
 func HasGateway() bool {
+	now, g, list := time.Now().UnixNano(), filememo.Gen(), listPath()
+	if c := hasGateway.Load(); c != nil && c.gen == g && c.list == list && now < c.until {
+		return c.on
+	}
+	on := false
 	for _, e := range Load().Plugins {
 		if !e.Off && Gateway(Target(e.Spec)) != "" {
-			return true
+			on = true
+			break
 		}
 	}
-	return false
+	hasGateway.Store(&gatewaySeen{on: on, gen: g, list: list, until: now + int64(time.Second)})
+	return on
 }
+
+// gatewaySeen is HasGateway's last look: for the plugins.json at list,
+// while filememo's generation is gen, until until (UnixNano).
+type gatewaySeen struct {
+	on    bool
+	gen   uint64
+	list  string
+	until int64
+}
+
+var hasGateway atomic.Pointer[gatewaySeen]
 
 // GatewayRun belongs to the host that began it, even if the plugin list changes
 // before the response. Close releases its private state and cancels active I/O.

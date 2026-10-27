@@ -2371,7 +2371,8 @@ async function load({ provider, account, proxy }) {
 //       ms; none: it never runs out), window? ("fiveHour", "weekly") }]
 //       (every reset still to be used) } (the rate-limit resets the
 //       account may spend),
-//     windows?: [{ name, used (percent, 0–100), resetsAt? (ISO or ms),
+//     windows?: [{ name, used (percent, 0–100; left out: the plugin didn't
+//       say, which is no share and not 0%), resetsAt? (ISO or ms),
 //       resetSecs?, display?, amount? / limit? / unit? (the window's own
 //       count, when it counts in amounts: amount of limit used, in unit,
 //       "credits"), span? (seconds the window runs), model? (a
@@ -2427,7 +2428,7 @@ async function usageOf(provider, account) {
         : null,
     windows: (Array.isArray(u.windows) ? u.windows : []).map((w) => ({
       name: text(w?.name),
-      used: Math.max(0, num(w?.used)), // past 100 when overspent
+      used: w?.used == null ? null : Math.max(0, num(w?.used)), // past 100 when overspent; null: not said
       resetsAt: when(w?.resetsAt),
       resetSecs: Math.max(0, Math.round(num(w?.resetSecs))),
       display: text(w?.display),
@@ -2477,7 +2478,8 @@ async function checkinOf(provider, account) {
   const num = (v) => (typeof v === "number" && isFinite(v) ? Math.max(0, v) : 0)
   const message = typeof r.message === "string" ? r.message : ""
   if (!checkinOutcomes.includes(r.outcome)) {
-    return { outcome: "failed", credit: 0, streak: 0, message: message || `the plugin answered no outcome (${JSON.stringify(r.outcome ?? null)})` }
+    const said = r.outcome === undefined || r.outcome === null ? "no outcome" : JSON.stringify(r.outcome)
+    return { outcome: "failed", credit: 0, streak: 0, message: message ? `the plugin answered ${said}: ${message}` : `the plugin answered ${said}` }
   }
   return { outcome: r.outcome, credit: num(r.credit), streak: Math.round(num(r.streak)), message }
 }

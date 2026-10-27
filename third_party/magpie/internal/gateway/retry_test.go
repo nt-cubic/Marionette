@@ -197,7 +197,10 @@ func TestLastOneLeftIsTriedAgain(t *testing.T) {
 	fresh(t)
 	a = &scripted{replies: []reply{{503, "", `{"error":{"message":"down"}}`}}}
 	scriptedOn(t, "a", provider.Chat, a)
-	if code, _ := postAs(t, New(), "", `{"model":"a/m","messages":[{"role":"user","content":"hi"}]}`); code != 503 || a.n != 1+lastRetries {
+	// down for good: the same-one retries, then the rounds of its
+	// patience (singlePatience; with retryPause at 1ms the rounds'
+	// backstop comes first), then the agent has the 503
+	if code, _ := postAs(t, New(), "", `{"model":"a/m","messages":[{"role":"user","content":"hi"}]}`); code != 503 || a.n != 1+lastRetries+replanRounds {
 		t.Fatalf("gave up with %d after %d tries", code, a.n)
 	}
 
@@ -226,7 +229,11 @@ func TestRateLimitIsWaitedOut(t *testing.T) {
 		{"no retry-after", limited, nil, 1, 200, 2},
 		{"relay's own words", `{"error":{"message":"当前分组上游负载已饱和，请稍后再试"}}`, nil, 2, 200, 3},
 		{"thrice", limited, nil, 3, 200, 4},
-		{"too long", limited, nil, 9, 429, 1 + rateRetries},
+		// past the same-one retries, it is waited out within the plain
+		// provider's patience (zoecats on Discord), and given up on once
+		// that is spent (the rounds' backstop, with retryPause at 1ms)
+		{"past the same-one retries", limited, nil, 9, 200, 10},
+		{"never clears", limited, nil, 99, 429, 1 + rateRetries + replanRounds},
 		{"usage limit", `{"error":{"message":"You've hit your usage limit. Your limit resets in 5 hours."}}`, nil, 9, 429, 1},
 		{"no balance", `{"error":{"message":"余额不足"}}`, nil, 9, 429, 1},
 		{"an hour away", limited, http.Header{"Retry-After": {"3600"}}, 9, 429, 1},

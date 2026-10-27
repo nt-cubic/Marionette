@@ -2467,10 +2467,14 @@ func unlistedByGroups(entries []Entry) map[string]bool {
 }
 
 // Served is the catalog with the unlisted providers' models as well: every
-// model a routing group can be made of, or a request can name.
+// model a routing group can be made of, or a request can name. Like
+// providerEntries it is shared, only for reading: a request asks it for
+// each model it may go to, and a copy each time was ~380KB with 12
+// providers of 20 models (#3725).
 func Served() []Entry {
-	entries := providerEntries()
-	return append(slices.Clone(groupEntries(entries)), entries...)
+	return heldFrom("served", providerEntries(), func(entries []Entry) []Entry {
+		return slices.Clip(append(slices.Clone(groupEntries(entries)), entries...))
+	})
 }
 
 // Unlisted are the models Served has and Catalog doesn't: those of the

@@ -39,8 +39,8 @@ func TestClaudeReplyDecodesWithoutCopyingTheLine(t *testing.T) {
 	line := claudeUsageLine(at, "a", "req-a", "m", Tokens{Input: 10, Output: 2}, content, true)
 	s := &state{}
 	claudeLine(s, line, true)
-	if s.Models["m"] != (Tokens{Input: 10, Output: 2}) {
-		t.Fatalf("tokens %+v", s.Models["m"])
+	if s.Models.of("m") != (Tokens{Input: 10, Output: 2}) {
+		t.Fatalf("tokens %+v", s.Models.of("m"))
 	}
 	const n = 20
 	var before, after runtime.MemStats

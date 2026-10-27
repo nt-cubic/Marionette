@@ -5,7 +5,7 @@
 // failover itself; a Strategy only says the order.
 //
 // Smart, the default, is the core's. The others a provider or group can be
-// routed by (order, rotate, usage, pace, weight) are here for a plugin to
+// routed by (order, rotate, usage, pace, weight, free, fast) are here for a plugin to
 // register: plugins/rotation does, and off, a pool routed by one of them is
 // tried in its listed order, as an unknown routing always was.
 package routes
@@ -50,6 +50,12 @@ type Seat struct {
 	// credits, and is let spend them. All but used up, it goes before
 	// those used up with nothing to go on with.
 	Credits bool
+	// TTFT is how long it took lately to the first of its reply, in ms,
+	// for the model this seat would be asked for: a decayed average of its
+	// recent streamed answers, 0 when it hasn't answered one lately.
+	// TPS is how fast it wrote them, output tokens a second, 0 when not
+	// told (a reply let go in a burst tells none). Fastest goes by them.
+	TTFT, TPS float64
 }
 
 // Strategy orders a pool.
@@ -69,6 +75,9 @@ type Strategy struct {
 	// model costs nothing there, and the routing trace then shows it.
 	// Only when set: working it out reads each provider's model list.
 	ByFree bool
+	// BySpeed: it weighs by TTFT and TPS, so the gateway reads each seat's
+	// recent speed, and the routing trace then shows it.
+	BySpeed bool
 }
 
 var reg = struct {

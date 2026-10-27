@@ -19,14 +19,17 @@ import (
 	"github.com/yetone/magpie/internal/source"
 )
 
-// dl is the download under way, one at a time.
-var dl struct {
+// dlState is a model's download under way, one at a time.
+type dlState struct {
 	mu     sync.Mutex
 	cancel context.CancelFunc // nil when none is under way
 	err    string             // the last one's, "" when it worked
 	total  int64
 	done   atomic.Int64
 }
+
+// dl is Privacy Filter's.
+var dl dlState
 
 // client has no timeout: the model takes minutes on a slow line. A
 // download that stops getting bytes is ended by stall instead, and one
@@ -49,25 +52,31 @@ func Download(done func()) error {
 	if !Supported() {
 		return fmt.Errorf("the local masking model doesn't run on %s yet", target())
 	}
-	dl.mu.Lock()
-	defer dl.mu.Unlock()
-	if dl.cancel != nil {
+	return dl.run(modelSize, install, done)
+}
+
+// run runs install in the background, unless a download is under way,
+// and calls done once it worked.
+func (d *dlState) run(total int64, install func(context.Context) error, done func()) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.cancel != nil {
 		return nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	dl.cancel, dl.err, dl.total = cancel, "", modelSize
-	dl.done.Store(0)
+	d.cancel, d.err, d.total = cancel, "", total
+	d.done.Store(0)
 	go func() {
 		err := install(ctx)
-		dl.mu.Lock()
-		dl.cancel = nil
+		d.mu.Lock()
+		d.cancel = nil
 		if err != nil {
-			dl.err = err.Error()
+			d.err = err.Error()
 			if ctx.Err() != nil {
-				dl.err = ""
+				d.err = ""
 			}
 		}
-		dl.mu.Unlock()
+		d.mu.Unlock()
 		cancel()
 		if err == nil && done != nil {
 			done()
@@ -77,12 +86,22 @@ func Download(done func()) error {
 }
 
 // Cancel stops the download under way, keeping what it fetched.
-func Cancel() {
-	dl.mu.Lock()
-	if dl.cancel != nil {
-		dl.cancel()
+func Cancel() { dl.stop() }
+
+func (d *dlState) stop() {
+	d.mu.Lock()
+	if d.cancel != nil {
+		d.cancel()
 	}
-	dl.mu.Unlock()
+	d.mu.Unlock()
+}
+
+// fill puts d's state in s.
+func (d *dlState) fill(s *Status) {
+	d.mu.Lock()
+	s.Downloading, s.Error = d.cancel != nil, d.err
+	s.Done, s.Total = d.done.Load(), d.total
+	d.mu.Unlock()
 }
 
 func install(ctx context.Context) error {

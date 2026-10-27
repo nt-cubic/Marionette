@@ -133,6 +133,62 @@ func TestEdgeBlockedSaidPlainly(t *testing.T) {
 	}
 }
 
+// A custom Responses relay refusing with 403 and no message of its own
+// tells the agent what it was, not a bare "403 Forbidden" (maralica on
+// Discord): Cloudflare's block page as a firewall's, another page by its
+// title, an empty body as a refusal with no details. Its JSON error still
+// reads as its message.
+func TestRelayRefusalSaysWhatItWas(t *testing.T) {
+	cf := `<!DOCTYPE html>
+<html class="no-js" lang="en-US"><head><title>Attention Required! | Cloudflare</title></head>
+<body><div id="cf-error-details"><h1 data-translate="block_headline">Sorry, you have been blocked</h1>
+<span class="cf-footer-item">Cloudflare Ray ID: <strong>8d1c2f3a4b5c6d7e</strong></span></div></body></html>`
+	for _, c := range []struct {
+		name, ct, body string
+		want           []string
+	}{
+		{"cloudflare", "text/html; charset=UTF-8", cf, []string{"403 Forbidden: a web page, not an API reply: “Attention Required! | Cloudflare”", provider.BlockedHint}},
+		{"page", "text/html", "<html><head><title>403 Forbidden</title></head><body><center><h1>403 Forbidden</h1></center><hr><center>nginx</center></body></html>", []string{"403 Forbidden: a web page, not an API reply: “403 Forbidden”"}},
+		{"empty", "", "", []string{"403 Forbidden: " + provider.NoDetails}},
+		{"json", "application/json", `{"error":{"message":"this key may not use gpt-5.5","type":"forbidden"}}`, []string{"this key may not use gpt-5.5"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			fresh(t)
+			relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if c.ct != "" {
+					w.Header().Set("Content-Type", c.ct)
+				}
+				w.WriteHeader(http.StatusForbidden)
+				io.WriteString(w, c.body)
+			}))
+			t.Cleanup(relay.Close)
+			if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Key: "k", Models: []string{"gpt-5.5"}, Responses: relay.URL + "/v1"}); err != nil {
+				t.Fatal(err)
+			}
+			code, reply := postTo(t, New(), "/v1/responses", `{"model":"relay/gpt-5.5","input":"hi"}`)
+			if code != http.StatusForbidden || strings.Contains(reply, "<") || strings.Contains(reply, "&lt;") {
+				t.Fatalf("%d %s", code, reply)
+			}
+			var v struct {
+				Error struct {
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal([]byte(reply), &v); err != nil {
+				t.Fatalf("%v: %s", err, reply)
+			}
+			if strings.Contains(v.Error.Message, "<") {
+				t.Fatalf("markup in %q", v.Error.Message)
+			}
+			for _, w := range c.want {
+				if !strings.Contains(v.Error.Message, w) {
+					t.Errorf("missing %q in %q", w, v.Error.Message)
+				}
+			}
+		})
+	}
+}
+
 // The ZCode plugin's answer to the Start Plan's 405 code 3012 (0.1.27 on,
 // plugins#348) is an account ZCode's risk control blocked: it rests two
 // hours as restricted, the account rather than one model, and is lifted

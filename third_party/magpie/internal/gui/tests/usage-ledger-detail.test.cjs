@@ -30,7 +30,7 @@ const ROWS = [
   { t: new Date(now - 240e3).toISOString(), agent: "claude-desktop", agentName: "Claude Desktop", icon: "claude-color", provider: "claude", providerName: "Claude", model: "", in: 0, out: 0, status: 0, err: "You've hit your limit · resets 3am", err_type: "rate_limit", rid: "req_lim", session: "s3", source: "log", cost: 0, priced: false },
   // the gateway's, answered on its second try (#1532): the vendor held the
   // first ~103 s before its 503, which isn't magpie's time
-  { t: new Date(now - 300e3).toISOString(), agent: "codex", agentName: "Codex", icon: "codex-color", provider: "opencode-go", providerName: "OpenCode Go", host: "opencode.ai", req: "opencode-go/deepseek-flash", model: "deepseek-flash", served: "deepseek-flash", effort: "max", in: 7064, out: 5373, cache_read: 314624, reasoning: 4946, ms: 160000, ttft_ms: 141000, sent_ms: 104000, own_ms: 180, retried_ms: 103000, tries: 2, status: 200, ep: "/backend-api/codex/responses", session: "01a12671", cost: 0.005, priced: true },
+  { t: new Date(now - 300e3).toISOString(), agent: "codex", agentName: "Codex", icon: "codex-color", provider: "opencode-go", providerName: "OpenCode Go", host: "opencode.ai", req: "opencode-go/deepseek-flash", model: "deepseek-flash", served: "deepseek-flash", effort: "max", in: 7064, out: 5373, cache_read: 314624, reasoning: 4946, ms: 160000, ttft_ms: 141000, sent_ms: 104000, own_ms: 180, masking_ms: 150, retried_ms: 103000, tries: 2, status: 200, ep: "/backend-api/codex/responses", session: "01a12671", cost: 0.005, priced: true },
 ];
 
 function page(q) {
@@ -66,14 +66,14 @@ function server(lang, refreshed) {
 const L = {
   en: {
     statuses: ["429 · rate_limit_error", "200", "Succeeded", "rate_limit", "200 · 2 tries"], badge: "Local session",
-    split: [["In magpie", "180 ms"], ["Tries that failed first", "103 s"], ["Connecting and sending", "820 ms"], ["Vendor's first token", "37 s"]],
+    split: [["Masking", "150 ms"], ["In magpie", "30 ms"], ["Tries that failed first", "103 s"], ["Connecting and sending", "820 ms"], ["Vendor's first token", "37 s"]],
     speed: "24 tok/s", tokens: "300 in · 40 out · 0 cache read · 0 cache creation", labels: { fail: ["Status", "Error type", "Upstream said", "Duration", "Request ID", "Endpoint", "Protocol", "Session ID"], ok: ["Status", "Duration", "Tokens", "Speed", "Request ID", "Endpoint", "Protocol", "Called for", "First token", "In magpie", "Vendor's first token"], log: ["Request ID", "Session ID", "Data source"], logFail: ["Status", "Error type", "Error", "Request ID", "Session ID", "Data source"] },
     subagent: "Subagent",
     noStatus: "Read from the agent's session file. The account is shown only when local metadata identifies it; no service provider is inferred.",
   },
   zh: {
     statuses: ["429 · rate_limit_error", "200", "成功", "rate_limit", "200 · 2 次尝试"], badge: "本地会话",
-    split: [["magpie 内耗时", "180 毫秒"], ["之前失败的尝试", "103 秒"], ["连接并发送请求", "820 毫秒"], ["厂商首字等待", "37 秒"]],
+    split: [["脱敏", "150 毫秒"], ["magpie 内耗时", "30 毫秒"], ["之前失败的尝试", "103 秒"], ["连接并发送请求", "820 毫秒"], ["厂商首字等待", "37 秒"]],
     speed: "24 token/秒", tokens: "输入 300 · 输出 40 · 缓存读取 0 · 缓存创建 0", labels: { fail: ["状态", "错误类型", "上游返回", "耗时", "请求 ID", "终结点", "协议", "会话 ID"], ok: ["状态", "耗时", "Token", "速度", "请求 ID", "终结点", "协议", "用途", "首字耗时", "magpie 内耗时", "厂商首字等待"], log: ["请求 ID", "会话 ID", "数据来源"], logFail: ["状态", "错误类型", "错误", "请求 ID", "会话 ID", "数据来源"] },
     subagent: "子代理",
     noStatus: "读自 Agent 的会话文件；仅在本地元数据能够明确识别时显示账号，不推断供应商。",
@@ -183,11 +183,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // #1532: of the 104 s before the vendor had the request, magpie's own
         // 180 ms, the try that failed first 103 s, connecting and sending the
         // rest; the 40 ms of a record from before the split was kept stays
-        // "In magpie" (above)
+        // "In magpie" (above). Of magpie's own, the 150 ms masking it took
+        // is told apart (fremontdango on Discord)
         await reader.click(p, rows.nth(4));
         const pairs = await p.locator(".led-detail").nth(3).evaluate((d) => [...d.querySelectorAll("dt")].map((dt) => [dt.textContent, dt.nextElementSibling.textContent]));
         const at = pairs.findIndex(([k]) => k === w.split[0][0]);
-        assert.deepEqual(pairs.slice(at, at + 4), w.split);
+        assert.deepEqual(pairs.slice(at, at + w.split.length), w.split);
         await reader.click(p, rows.nth(4));
 
         // a refresh of the list keeps the rows open

@@ -4,9 +4,10 @@
 // on the provider editor's row and on its Usage card has a quiet eye, in
 // sight on hover or keyboard focus. A click shows that account, by its
 // address and the name the user gave it, wherever the window draws it,
-// tooltips too; the others stay hidden. It is the window's alone: the tray
-// panel keeps hiding it, and closing the window (hideMain's closed) hides
-// it again. With Hide accounts off there is no eye. A click moves nothing;
+// tooltips too; the others stay hidden. The tray panel's Usage cards have
+// the same eye. Each page's shown accounts are its own: one shown in the
+// window stays hidden in the panel and the other way round. Closing the
+// window (hideMain's closed) or putting the panel away hides them again. With Hide accounts off there is no eye. A click moves nothing;
 // no native select, no border stripe; it fits at 360px. In every language.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
@@ -162,7 +163,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.waitForFunction((id) => document.querySelector(`.editor .acc[data-account-id="${id}"] .pii`), TEAM);
         assert.ok(!(await seen(row(TEAM))).includes(TEAM), "pressed again, hidden again");
 
-        // the tray panel follows the window's setting, not its eye
+        // the tray panel follows the window's setting, not its eye: one
+        // shown in the window stays hidden in a screenshot of the panel
+        assert.equal(await eye(ME).getAttribute("aria-pressed"), "true", "still shown in the window");
         const panel = await open("http://magpie.test/?mode=panel");
         await panel.evaluate(() => setPanelTab("usage"));
         await panel.locator("#panelQuota .pq-user").first().waitFor();
@@ -186,6 +189,83 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(await wide(page), 0, `no sideways scroll at ${width}px`);
         const missing = await page.evaluate(([keys, lang]) => lang === "en" ? [] : keys.filter((k) => !I18N[lang]?.[k]), [KEYS, lang]);
         assert.deepEqual(missing, [], `every string has its ${lang}`);
+        assert.deepEqual(errors, []);
+        await context.close();
+      }
+    });
+
+    test(`${engine} ${lang}: the tray panel's eye shows one account there, until the panel is put away`, async (t) => {
+      const browser = await launch(t);
+      for (const width of [360, 440]) {
+        const context = await browser.newContext({ viewport: { width, height: 640 }, reducedMotion: "reduce" });
+        const errors = [];
+        const open = async (url) => {
+          const page = await context.newPage();
+          page.setDefaultTimeout(5000);
+          page.on("pageerror", (e) => errors.push(e.message));
+          await page.route("**/*", serve(lang, url.includes("mode=panel")));
+          await page.goto(url);
+          return page;
+        };
+        const panel = await open("http://magpie.test/?mode=panel");
+        await panel.evaluate(() => setPanelTab("usage"));
+        await panel.locator("#panelQuota .pq-user").first().waitFor();
+        // the group's second account is under its "more"
+        await panel.locator("#panelQuota .pq-group .pq-more:not(.pq-arrange)").first().click();
+        await panel.waitForFunction(() => document.querySelectorAll("#panelQuota .pq-card").length === 2);
+        const card = (u) => panel.locator(`#panelQuota .pq-card:has(.pq-user:text-is("${u}")), #panelQuota .pq-card:has(.pq-user .pii[data-raw="${u}"])`).first();
+        const eye = (u) => card(u).locator(".acct-eye");
+        assert.equal(await eye("Personal").count(), 1, "the panel's card has an eye");
+        assert.equal(await opacity(eye("Personal")), "none", "no eye while Hide accounts is off");
+
+        await panel.evaluate(() => hideAccounts.set(true));
+        await panel.waitForFunction(() => document.querySelectorAll("#panelQuota .pq-user .pii").length === 2);
+        await panel.mouse.move(0, 0);
+        assert.equal(await opacity(eye("Personal")), "0");
+        await card("Personal").hover();
+        assert.equal(await opacity(eye("Personal")), "1", "the eye shows on hover over its card");
+        assert.equal(await eye("Personal").getAttribute("aria-label"), await tr(panel, KEYS[0]));
+        assert.equal(await eye("Personal").getAttribute("title"), await tr(panel, KEYS[0]));
+
+        // a click shows that one, its card's tooltip too; the other stays hidden; nothing moves
+        const sc = await scrolled(panel);
+        await eye("Personal").click();
+        await panel.waitForFunction(() => document.querySelectorAll("#panelQuota .pq-user .pii").length === 1);
+        assert.equal(await scrolled(panel), sc, "a click scrolled");
+        assert.equal(await card("Personal").locator(".pq-user").textContent(), "Personal");
+        assert.ok((await card("Personal").getAttribute("title")).includes(ME), "its tooltip names it");
+        assert.equal(await eye("Personal").getAttribute("aria-pressed"), "true");
+        assert.equal(await eye("Personal").getAttribute("title"), await tr(panel, KEYS[1]));
+        assert.equal(await opacity(eye("Personal")), "1", "a shown account's eye stays in sight");
+        assert.ok(!(await seen(card(SEAT))).includes(TEAM) && !(await seen(card(SEAT))).includes(SEAT), "the other card stays hidden");
+        assert.equal(await eye(SEAT).getAttribute("aria-pressed"), "false");
+        // redrawn (a refresh, a tab), it stays shown
+        await panel.evaluate(() => renderPanelQuota());
+        assert.equal(await panel.locator("#panelQuota .pq-user .pii").count(), 1);
+        assert.equal(await eye("Personal").getAttribute("aria-pressed"), "true");
+
+        // the window has its own: the account shown in the panel stays hidden there
+        const win = await open("http://magpie.test/?view=usage");
+        await win.locator(".subscription-account .quota-alias").first().waitFor();
+        await win.waitForFunction(() => document.querySelectorAll(".subscription-account .quota-of .pii").length === 2);
+        const ws = await win.evaluate(() => [...document.querySelectorAll(".subscription-account")].map((c) => c.textContent).join(" "));
+        assert.ok(!ws.includes(ME) && !ws.includes("Personal"), "the window still hides it: " + ws);
+        await win.close();
+
+        // put away (the panel's page goes hidden): hidden again
+        await panel.evaluate(() => {
+          Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+          document.dispatchEvent(new Event("visibilitychange"));
+        });
+        await panel.waitForFunction(() => document.querySelectorAll("#panelQuota .pq-user .pii").length === 2);
+        assert.ok(!(await seen(card("Personal"))).includes(ME), "hidden once the panel is put away");
+        assert.equal(await eye("Personal").getAttribute("aria-pressed"), "false");
+
+        assert.equal(await panel.locator("select").count(), 0, "no native select");
+        assert.deepEqual(await stripes(panel, ".pq-card, .pq-card *"), [], "no border stripes");
+        assert.equal(await wide(panel), 0, `no sideways scroll at ${width}px`);
+        const fits = await panel.evaluate(() => [...document.querySelectorAll("#panelQuota .pq-card")].every((c) => { const r = c.getBoundingClientRect(), e = c.querySelector(".acct-eye").getBoundingClientRect(); return e.right <= r.right && e.width > 0; }));
+        assert.ok(fits, "each eye sits inside its card");
         assert.deepEqual(errors, []);
         await context.close();
       }

@@ -65,6 +65,11 @@ func (s *Server) counted(h http.Handler) http.Handler {
 		}
 		s.inFlight.Add(1)
 		r, done := s.active.add(r)
+		if f := inflightOf(r.Context()); f != nil {
+			f.mu.Lock()
+			f.tr = &s.trace
+			f.mu.Unlock()
+		}
 		w, r, unwatch := s.watchUnrouted(w, r, inflightOf(r.Context()))
 		defer func() {
 			// a panic is net/http's to recover, as before; the routes it

@@ -7,13 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"io"
 	"log"
 	"net/http"
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tidwall/gjson"
@@ -109,7 +109,7 @@ func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
 		// still on Codex's own model, through its sign-in, when it says
 		// nothing of them
 		if rest == "/responses" {
-			session := func() string { return s.codexSessionOf(r, body) }
+			session := func() string { return s.codexSideSession(r, body) }
 			if to := codexTitlesTo(r.Header, body, false, session); to != "" {
 				s.codexTitle(w, r, body, to)
 				return
@@ -166,6 +166,11 @@ func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
 			if rest == "/responses/compact" {
 				writeError(w, provider.Responses, 400, "/responses/compact is not supported for Magpie models; use a compaction_trigger on /responses")
 				return
+			}
+			if kind == "guardian" || isMemoryKind(kind) {
+				// an auto-review or a memory call, at an effort the
+				// model takes (codexSideEffort)
+				body = codexSideEffort(body, model)
 			}
 			// a sealed subagent task goes to a ChatGPT account the model
 			// or group has, or is turned away (serve, sealedReader)
@@ -1613,10 +1618,8 @@ func codexSaidNothing(rest, model, who string, res *http.Response, msg []byte) (
 	said := " and said nothing more"
 	if page {
 		said = " with a web page in place of an API error"
-		if m := pageTitle.FindSubmatch(msg); m != nil {
-			if title := strings.Join(strings.Fields(html.UnescapeString(string(m[1]))), " "); title != "" {
-				said += " (“" + clipRunes(title, 120) + "”)"
-			}
+		if title := provider.PageTitle(msg); title != "" {
+			said += " (“" + title + "”)"
 		}
 	}
 	return who + " answered " + what + " for " + model + " " + res.Status + said +
@@ -1739,40 +1742,162 @@ func copyHeaders(dst, src http.Header) {
 // them, held magpie's answer past that (#539). A var so tests can say.
 var codexModelsWait = 3 * time.Second
 
+// codexListFor is how long the backend's list is handed out again without
+// asking it; past that it is still handed out at once while it is asked
+// again (#3734). A var so tests can say.
+var codexListFor = time.Minute
+
+// codexListFetch bounds one ask of the backend, which goes on past
+// codexModelsWait for the callers after.
+const codexListFetch = 30 * time.Second
+
+// codexLists is the backend's last list for each sign-in. Twenty Codex
+// app-servers asked it at once, each on its own and each given up at
+// codexModelsWait, so a backend slower than that never got a list through
+// and Codex fell back to its own metadata, without tool_search for
+// magpie's groups, and inlined every Apps tool: ~500K tokens a turn
+// (#3734, 1,906 timeouts in a day).
+var codexLists = struct {
+	sync.Mutex
+	at map[string]*codexListed
+	// asking is the asks going, for tests to wait on
+	asking sync.WaitGroup
+}{at: map[string]*codexListed{}}
+
+type codexListed struct {
+	body []byte // the list as the backend said it, nil for none yet
+	etag string
+	got  time.Time
+	// deny is a 401 or 403 the last ask got, Codex's to see
+	deny     *http.Response
+	denyBody []byte
+	// asked is closed when the ask going ends; nil when none is
+	asked chan struct{}
+}
+
+// codexListKey is whose list it is: the backend's, the account's (a
+// token renewed is the same account), the version Codex says.
+func codexListKey(r *http.Request) string {
+	who := r.Header.Get("chatgpt-account-id")
+	if who == "" {
+		who = r.Header.Get("Authorization")
+	}
+	return provider.CodexBase + "\x00" + who + "\x00" + r.URL.RawQuery
+}
+
+// codexBackendList is the backend's model list for r's sign-in: the last
+// one asked when it is fresh, or at once while it is asked again; else
+// what an ask brings within codexModelsWait. One ask at a time for each
+// sign-in, whoever is waiting on it. body is nil when there is none;
+// deny, when the backend refused the sign-in.
+func (s *Server) codexBackendList(r *http.Request) (body []byte, etag string, deny *http.Response, denyBody []byte) {
+	key := codexListKey(r)
+	codexLists.Lock()
+	e := codexLists.at[key]
+	if e == nil {
+		e = &codexListed{}
+		codexLists.at[key] = e
+	}
+	if e.body != nil && time.Since(e.got) < codexListFor {
+		defer codexLists.Unlock()
+		return e.body, e.etag, nil, nil
+	}
+	if e.asked == nil {
+		// a refusal an ask before had is no answer for this one
+		e.asked, e.deny, e.denyBody = make(chan struct{}), nil, nil
+		codexLists.asking.Add(1)
+		go s.askCodexList(r.Context(), r.Header.Clone(), r.URL.RawQuery, e, e.asked)
+	}
+	asked, stale := e.asked, e.body != nil
+	codexLists.Unlock()
+	if !stale {
+		t := time.NewTimer(codexModelsWait)
+		select {
+		case <-asked:
+		case <-t.C:
+		case <-r.Context().Done():
+		}
+		t.Stop()
+	}
+	codexLists.Lock()
+	defer codexLists.Unlock()
+	return e.body, e.etag, e.deny, e.denyBody
+}
+
+// askCodexList asks the backend for its list into e, past the request
+// that started it, and closes done.
+func (s *Server) askCodexList(rctx context.Context, h http.Header, query string, e *codexListed, done chan struct{}) {
+	defer codexLists.asking.Done()
+	var body, denyBody []byte
+	var etag string
+	var deny *http.Response
+	defer func() {
+		codexLists.Lock()
+		if body != nil {
+			e.body, e.etag, e.got, e.deny, e.denyBody = body, etag, time.Now(), nil, nil
+		} else if deny != nil {
+			// a sign-in to renew: the next caller waits on the backend
+			// again and sees it, nothing stale handed out meanwhile
+			e.body, e.deny, e.denyBody = nil, deny, denyBody
+		}
+		e.asked = nil
+		codexLists.Unlock()
+		close(done)
+	}()
+	u := provider.CodexBase + "/models"
+	if query != "" {
+		u += "?" + query
+	}
+	ctx, cancel := context.WithTimeout(provider.ViaSignedIn(context.WithoutCancel(rctx), "codex"), codexListFetch)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return
+	}
+	copyHeaders(req.Header, h)
+	// the whole list, shared by every caller, whatever one of them had
+	for _, k := range []string{"Accept-Encoding", "If-None-Match", "If-Modified-Since"} {
+		req.Header.Del(k)
+	}
+	res, err := s.client.Do(req)
+	if err != nil {
+		return
+	}
+	b, _ := io.ReadAll(io.LimitReader(res.Body, 16<<20))
+	res.Body.Close()
+	var list struct {
+		Models []any `json:"models"`
+	}
+	if res.StatusCode < 300 && json.Unmarshal(b, &list) == nil && list.Models != nil {
+		body, etag = b, res.Header.Get("ETag")
+		// the versions as the backend says them, before any is stamped
+		// (see codexcat.V1)
+		codexcat.Remember(list.Models)
+	} else if res.StatusCode == 401 || res.StatusCode == 403 {
+		deny, denyBody = &http.Response{StatusCode: res.StatusCode, Header: res.Header}, b
+	}
+}
+
 // codexModels is the ChatGPT backend's model list for this sign-in, with
 // magpie's models after it. Should the backend not answer, or not in
 // time, Codex's last list of its own stands in.
 func (s *Server) codexModels(w http.ResponseWriter, r *http.Request) {
 	var own []any
-	etag := ""
-	u := provider.CodexBase + "/models"
-	if r.URL.RawQuery != "" {
-		u += "?" + r.URL.RawQuery
+	body, etag, deny, denyBody := s.codexBackendList(r)
+	if deny != nil {
+		// a sign-in to renew is Codex's to see
+		w.Header().Set("Content-Type", deny.Header.Get("Content-Type"))
+		w.WriteHeader(deny.StatusCode)
+		w.Write(denyBody)
+		return
 	}
-	ctx, cancel := context.WithTimeout(provider.ViaSignedIn(r.Context(), "codex"), codexModelsWait)
-	defer cancel()
-	if req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil); err == nil {
-		copyHeaders(req.Header, r.Header)
-		req.Header.Del("Accept-Encoding")
-		if res, err := s.client.Do(req); err == nil {
-			var list struct {
-				Models []any `json:"models"`
-			}
-			b, _ := io.ReadAll(io.LimitReader(res.Body, 16<<20))
-			res.Body.Close()
-			if res.StatusCode < 300 && json.Unmarshal(b, &list) == nil {
-				own, etag = list.Models, res.Header.Get("ETag")
-				// the versions as the backend says them, before any is
-				// stamped below (see codexcat.V1)
-				codexcat.Remember(own)
-			} else if res.StatusCode == 401 || res.StatusCode == 403 {
-				// a sign-in to renew is Codex's to see
-				w.Header().Set("Content-Type", res.Header.Get("Content-Type"))
-				w.WriteHeader(res.StatusCode)
-				w.Write(b)
-				return
-			}
+	if body != nil {
+		// each caller's own copy: what follows writes into the entries
+		var list struct {
+			Models []any `json:"models"`
 		}
+		json.Unmarshal(body, &list)
+		own = list.Models
 	}
 	// what follows reads the providers seven times over (the catalog, the
 	// codex provider's picks and windows, the list's tag): held, they are

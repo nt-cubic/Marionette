@@ -311,3 +311,21 @@ func TestRequestPageRanksModelAtEachProvider(t *testing.T) {
 		})
 	}
 }
+
+// A Claude message written again in another file (a resumed or forked
+// session's copy) is counted once, at its first file, and only it: a
+// message id seen once, or none, is never left out.
+func TestVisibleLocalLeavesOutRepeatedMessages(t *testing.T) {
+	a, b := &rowChunk{}, &rowChunk{}
+	a.add(Row{}, "msg_1", 0, false)
+	a.add(Row{}, "msg_2", 1, false)
+	b.add(Row{}, "msg_1", 0, false)
+	b.add(Row{}, "", 1, false)
+	b.add(Row{}, "msg_3", 2, false)
+	b.add(Row{}, "msg_2", 3, false)
+	a, b = a.pack(), b.pack()
+	got := visibleLocal([]*rowChunk{a, b})
+	if len(got) != 2 || !got[rowRef{b, 0}] || !got[rowRef{b, 3}] {
+		t.Fatalf("left out %v, want b's rows 0 and 3 only", got)
+	}
+}

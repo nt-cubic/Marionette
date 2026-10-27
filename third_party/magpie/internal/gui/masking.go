@@ -23,6 +23,8 @@ const valuesMax = 2000
 // only where it can.
 type maskedRecord struct {
 	maskrec.Record
+	// Key is a string, as gateway.Masked's: a JS number rounds it
+	Key    int64         `json:"key,string"`
 	Values []maskedValue `json:"values,omitempty"`
 }
 
@@ -43,7 +45,7 @@ func teller() (gwmw.Teller, bool) {
 }
 
 func shownRecord(r maskrec.Record, t gwmw.Teller) maskedRecord {
-	out := maskedRecord{Record: r}
+	out := maskedRecord{Record: r, Key: r.Key}
 	for _, v := range r.Values {
 		mv := maskedValue{Value: v}
 		if t != nil {

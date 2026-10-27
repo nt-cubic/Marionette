@@ -53,10 +53,17 @@ var srv struct {
 	mu   sync.Mutex
 	h    *helper
 	idle *time.Timer
-	// cpu is set once pf-serve died on the GPU: from then on it runs on
-	// the CPU; gpuLost says why
-	cpu     bool
-	gpuLost string
+	// cpu is set once pf-serve died on the GPU, didn't load there, or
+	// hung there twice in a row: it runs on the CPU until gpuAgain, when
+	// the GPU is tried again (gpuRetryAfter); gpuLost says why, gpuFails
+	// how many times in a row the GPU was lost. A GPU that answers clears
+	// them. Before, nothing did short of a restart of magpie, and one
+	// request too slow for its time on a weak GPU left every request after
+	// it on a CPU 3x slower (#3682).
+	cpu      bool
+	gpuLost  string
+	gpuFails int
+	gpuAgain time.Time
 	// failed is why the last request got no answer, until one does;
 	// lastErr is that error, fails how many requests in a row got none,
 	// and retryAt when the model is tried again: until then a request
@@ -94,10 +101,10 @@ var loadTimeout = 3 * time.Minute
 
 // gpuLoadTimeout is how long it has on a GPU, where it takes seconds
 // (0.9-10s on an M4 Pro): one that takes longer is taken for hung, and
-// the CPU is tried, for the rest of magpie's run. It is well under the 2
-// minutes the gateway holds a request for (unroutedMost), so a GPU's
-// hung load and the CPU's after it fit in one request's wait: with 3
-// minutes for either, every request in a hung load was answered 504.
+// the CPU is tried, until the GPU is tried again. With 3 minutes for
+// either, every request in a hung load waited out the gateway's 2
+// minutes and was answered 504; the gateway no longer counts masking's
+// time (#3682), and 40s still keeps a hung GPU's wait short.
 var gpuLoadTimeout = 40 * time.Second
 
 // giveUp is when a load is given up on; a test ends one when its state
@@ -115,6 +122,26 @@ func retryAfter(n int) time.Duration {
 		d *= 2
 	}
 	return min(d, 10*time.Minute)
+}
+
+// gpuRetryAfter is how long after the GPU was lost, the n-th time in a
+// row, the GPU is tried again: 10 minutes, doubled each time, 2 hours at
+// most. A try costs a load (seconds; gpuLoadTimeout for one that hangs)
+// and the request it is for goes on to the CPU's if it fails.
+func gpuRetryAfter(n int) time.Duration {
+	d := 10 * time.Minute
+	for i := 1; i < n && d < 2*time.Hour; i++ {
+		d *= 2
+	}
+	return min(d, 2*time.Hour)
+}
+
+// lostGPULocked moves the model to the CPU, why being what went wrong on
+// the GPU, until the GPU is tried again; mu is held.
+func lostGPULocked(why string) {
+	srv.gpuFails++
+	srv.cpu, srv.gpuLost = true, why
+	srv.gpuAgain = time.Now().Add(gpuRetryAfter(srv.gpuFails))
 }
 
 // classifyTimeout is how long one request may take before pf-serve is
@@ -165,10 +192,11 @@ func start(cpu bool, stop <-chan struct{}) (*helper, error) {
 		h, err := startOne(c.path, c.cpu, stop)
 		if err == nil {
 			if gpuLost != "" {
-				// the GPU's failed and the CPU's loaded: the CPU for
-				// the rest of the run, as for a GPU that dies answering
+				// the GPU's failed and the CPU's loaded: the CPU until
+				// the GPU is tried again, as for a GPU that dies
+				// answering
 				srv.mu.Lock()
-				srv.cpu, srv.gpuLost = true, gpuLost
+				lostGPULocked(gpuLost)
 				srv.mu.Unlock()
 			}
 			return h, nil
@@ -201,6 +229,8 @@ func startOne(path string, cpu bool, stop <-chan struct{}) (*helper, error) {
 	cmd.Env = append(os.Environ(), "GGML_METAL_NO_RESIDENCY=1")
 	if cpu {
 		cmd.Env = append(cmd.Env, "PF_DEVICE=cpu")
+	} else if v := moeChunk(path); v != "" {
+		cmd.Env = append(cmd.Env, "PF_MOE_CHUNK="+v)
 	}
 	wait := loadTimeout
 	if !cpu {
@@ -247,6 +277,29 @@ func startOne(path string, cpu bool, stop <-chan struct{}) (*helper, error) {
 		return nil, fmt.Errorf("%s: %s", baseName(path), why)
 	}
 	return h, nil
+}
+
+// vulkanMoEChunk is the MoE's token chunk pf-serve-vulkan runs with
+// (privacy-filter.cpp's PF_MOE_CHUNK, src/model.cpp): the expert matmul
+// over a window's tokens in pieces of this many, exactly the same answer
+// either way. Its own default is the window, 4096. On an RX 470/580-class
+// GPU through Vulkan, 2048 read the same texts 1.77x faster at every size
+// from 24 KB to 480 KB (#3682: 480 KB in 90s, not 159s), and was the
+// fastest of 1024 to 3072. On Metal it is a little slower (an M4 Pro: 96
+// KB in 2.00s, 1.87s at 4096), so macOS's pf-serve keeps the default, and
+// the CPU's is the window either way.
+const vulkanMoEChunk = "2048"
+
+// moeChunk is the PF_MOE_CHUNK magpie gives the GPU's pf-serve at path:
+// pf-serve-vulkan's, unless the user set their own, which it inherits.
+func moeChunk(path string) string {
+	if _, set := os.LookupEnv("PF_MOE_CHUNK"); set {
+		return ""
+	}
+	if strings.TrimSuffix(baseName(path), ".exe") == "pf-serve-vulkan" {
+		return vulkanMoEChunk
+	}
+	return ""
 }
 
 func baseName(path string) string {
@@ -397,8 +450,11 @@ func end(h *helper) {
 }
 
 // classify asks pf-serve, started if it isn't, what is in texts. One that
-// fails is ended and started again; one that failed on the GPU is started
-// on the CPU, for good. The caller holds turn.
+// fails is ended and started again; one that died on the GPU is started
+// on the CPU, until the GPU is tried again. One that magpie ended on the
+// GPU for taking too long is started again on the GPU: a request too
+// slow for its time is no lost GPU. Twice in a row there is, and the CPU
+// is tried for the next. The caller holds turn.
 func classify(texts []string) ([][]redact.Found, error) {
 	out, err := classifyTurn(texts)
 	srv.mu.Lock()
@@ -435,10 +491,21 @@ func classifyTurn(texts []string) ([][]redact.Found, error) {
 	for try := 0; try < 2; try++ {
 		srv.mu.Lock()
 		h, cpu, stop := srv.h, srv.cpu, stopCh()
+		var gone *helper
+		if cpu && !time.Now().Before(srv.gpuAgain) {
+			// the GPU is tried again: a pf-serve on the CPU makes way.
+			// One that fails there moves back to the CPU (start, or
+			// below), with longer until the next try.
+			cpu = false
+			if h != nil && !h.hello.GPU {
+				gone, h = detachLocked(), nil
+			}
+		}
 		if h == nil {
 			srv.loading = true
 		}
 		srv.mu.Unlock()
+		end(gone)
 		if h == nil {
 			var err error
 			h, err = start(cpu, stop)
@@ -463,6 +530,10 @@ func classifyTurn(texts []string) ([][]redact.Found, error) {
 			if srv.h == h {
 				idleLocked(h)
 			}
+			if h.hello.GPU {
+				// the GPU answers: it is the model's again
+				srv.cpu, srv.gpuLost, srv.gpuFails = false, "", 0
+			}
 			srv.mu.Unlock()
 			return out, nil
 		}
@@ -476,7 +547,13 @@ func classifyTurn(texts []string) ([][]redact.Found, error) {
 			return nil, errStopped
 		}
 		if h.hello.GPU {
-			srv.cpu, srv.gpuLost = true, err.Error()
+			if h.slow.Load() != nil && try == 0 {
+				// ended for taking too long: a slow request, or a
+				// GPU's hang that a new pf-serve gets past, is no lost
+				// GPU, and the try again is on the GPU
+			} else {
+				lostGPULocked(err.Error())
+			}
 		}
 		srv.mu.Unlock()
 		h.kill()

@@ -31,18 +31,21 @@ func optionsCtx(ctx context.Context) redact.Options {
 	o := redact.Options{Secrets: st.Redact, Personal: st.RedactPersonal, Kinds: st.RedactKinds, Words: st.RedactWords, WordsAnyCase: st.RedactWordsAnyCase, Rules: st.RedactRules,
 		Actions: st.RedactActions, Allow: st.RedactAllow, Shape: st.RedactShape}
 	if st.RedactModel {
-		o.Model = model(ctx)
+		o.Model = model(ctx, picked(st))
 	}
 	return o
 }
 
-// model is the local model (internal/pii) as redact's Model, waited for
+// picked is the local model st has masking use; a var for tests.
+var picked = func(st settings.Settings) pii.Model { return pii.Of(pii.Choose(st.RedactModelName, true)) }
+
+// model is the local model m (internal/pii) as redact's Model, waited for
 // until ctx ends. One that can't answer, or isn't waited for any longer,
 // panics, and the request is held back (gwmw.Safely) rather than sent
 // with only the rules' masking: the user asked for the model's.
-func model(ctx context.Context) redact.Model {
+func model(ctx context.Context, m pii.Model) redact.Model {
 	return func(texts []string) [][]redact.Found {
-		got, err := pii.FindContext(ctx, texts)
+		got, err := m.Find(ctx, texts)
 		if err != nil {
 			panic(err)
 		}
@@ -56,7 +59,11 @@ func ModelOn() bool { return settings.Shared().RedactModel }
 // ModelBusy says what the local model is doing that a request may wait
 // on, for the error of one that waited too long: "" when nothing.
 func ModelBusy() string {
-	st := pii.Now()
+	st := settings.Shared()
+	return busy(picked(st).Now())
+}
+
+func busy(st pii.Status) string {
 	var what string
 	switch {
 	case st.Loading:

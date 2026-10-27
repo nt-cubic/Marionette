@@ -80,6 +80,14 @@ var vendorInstall = map[string]func(goos string) []InstallCmd{
 		}
 		return []InstallCmd{{Via: "script", Command: "curl -fsSL https://chatgpt.com/codex/install.sh | sh"}}
 	},
+	// PenguinHarness's (penguin.ooo; its README): a tarball in ~/.penguin
+	// that brings its own Node.js, which it needs at 24 or later
+	"penguin": func(goos string) []InstallCmd {
+		if goos == "windows" {
+			return []InstallCmd{{Via: "powershell", Command: "irm https://penguin.ooo/install.ps1 | iex"}}
+		}
+		return []InstallCmd{{Via: "script", Command: "curl -fsSL https://penguin.ooo/install.sh | sh"}}
+	},
 	"gemini": func(goos string) []InstallCmd {
 		if goos == "windows" {
 			return nil

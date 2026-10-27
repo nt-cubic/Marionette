@@ -22,6 +22,7 @@ import (
 // made from Codex's cache, which keeps what magpie handed it.
 func TestCodexNativeModelsTakeSetWindows(t *testing.T) {
 	codexSignedIn(t)
+	forgetCodexLists(t)
 	if err := provider.Save(provider.Provider{ID: "codex", Contexts: map[string]int{"gpt-6.1-sol": 600000, "gpt-5.5": 400000}}); err != nil {
 		t.Fatal(err)
 	}
@@ -108,6 +109,7 @@ func TestCodexNativeModelsTakeSetWindows(t *testing.T) {
 		{ID: "gpt-5.5", Context: 272000},
 	})
 	down = true
+	forgetCodexLists(t) // its list, kept codexListFor, gone too
 	got, _ = list()
 	if c, x := window(got["gpt-6.1-sol"]); c != 272000 || x != 872000 {
 		t.Errorf("cached gpt-6.1-sol %d/%d, want 272000/872000", c, x)
