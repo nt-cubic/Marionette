@@ -27,10 +27,12 @@
 
 - **隔离**：`USERPROFILE` 与 `WEBVIEW2_USER_DATA_FOLDER` 都指向该 profile，所以 `projects.json`、会话、日志、单实例锁、WebView2 存储（主题 / 布局 / localStorage）全在临时目录里 —— 真实数据不会被读写，正在用的实例也不会被踢（单实例锁在 `<USERPROFILE>\.marionette\instance.lock`，换 profile 就互不相干）。
 - **预置**：`demo-app` 演示项目（一个小 git 仓库，带一个未提交改动）已经写进演示 profile 的 `projects.json`，所以窗口里看不到任何真实项目或对话。
+- **拍图状态**：默认再写一份预置对话——`demo-seed\session.json.tmpl` 落成 `<demo-app>\.marionette\sessions\index.json` 里的一条会话，`demo-seed\transcript.jsonl.tmpl` 落成同目录 `transcripts\<id>.jsonl`。内容是「读文件 → 改文件 → 跑命令 → 回复带代码块」的一整回合（SessionEvent JSONL，`parseTranscriptEvents` 直接吃得下），**不跑 agent、不耗额度、每次构图一样**；模板里的中文和文案随便改，时间戳由脚本填。`-NoSeed` 跳过。
+- **语言**：`-Lang zh-CN`（默认）给 WebView2 传 `--lang`，时钟按中文排版；机器是日文/英文区域设置时也不会冒出「午後 0:26」。
 - **agent**：默认把 `~/.grok/config.toml` 拷进演示 profile，否则实例里没有可用的 agent 能回答。**这份副本含凭据**，用完删掉整个演示目录即可；`-AgentConfig none` 可跳过。
-- 重复运行会复用同一个 profile（对话历史保留）；同一 profile 再次启动会按单实例逻辑交给已在运行的那个，不会开第二个窗口。
+- 重复运行会复用同一个 profile（对话历史保留）；同一 profile 再次启动会按单实例逻辑交给已在运行的那个，不会开第二个窗口。预置会话用固定 id，重跑会原地替换，不会长出第二条。
 
-参数：`-DemoRoot <path>`、`-AgentConfig grok|none`、`-Exe <path>`。
+参数：`-DemoRoot <path>`、`-AgentConfig grok|none`、`-Exe <path>`、`-Lang <tag>`、`-NoSeed`。
 
 抓图：对目标窗口句柄用 `PrintWindow(hwnd, hdc, PW_RENDERFULLCONTENT)`。不要用 `SetForegroundWindow` + 屏幕截图 —— Windows 会拒绝后台进程抢前台，结果抓到的是上层窗口（也就是你真实在用的那个实例）的画面。
 

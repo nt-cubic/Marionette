@@ -10,6 +10,7 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
 - 前端构建：`npm run build`（`tsc && vite build`）
 - Rust 检查：`cargo check`（在 `src-tauri/` 下）
 - 发布版本号：`tools\bump-version.ps1`（或 `tools\bump-version.bat`）
+- 演示实例 / 拍图：`tools\demo-instance.bat`（隔离 profile + 预置对话，窗口在 `%TEMP%\marionette-demo`，抓图用 `PrintWindow`；参数与抓图禁忌见 `tools/README.md`）
 
 ## 目录
 
