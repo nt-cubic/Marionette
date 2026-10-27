@@ -1188,7 +1188,7 @@ function NineDotSpinner({
  * working block. Ordinary read/edit/grep stay collapsed — expanding them is noise.
  */
 function isLongRunningToolKind(event: ToolCallEvent): boolean {
-  if (isSubagentTool(event.toolName, event.title)) return true;
+  if (isSubagentTool(event.toolName, event.title, event.input)) return true;
   const name = (event.toolName ?? "").trim().toLowerCase();
   // ACP tool names seen in the wild for process execution.
   if (
@@ -1345,7 +1345,7 @@ function ToolCallBody({
       (isFileEditTool || /\[diff\]/i.test(body)) &&
       isWorkspaceDiffPath(event.path, cwd),
   );
-  const isSubagent = isSubagentTool(event.toolName, event.title);
+  const isSubagent = isSubagentTool(event.toolName, event.title, event.input);
 
   useEffect(() => {
     setWorkspaceDiff(null);
@@ -1755,7 +1755,7 @@ function CleanPlaceholder({
     return null;
   }, [isRunning, processAlive, visibleEvents]);
   const openToolIsSubagent = Boolean(
-    openTool && isSubagentTool(openTool.toolName, openTool.title),
+    openTool && isSubagentTool(openTool.toolName, openTool.title, openTool.input),
   );
 
   // When a shell/subagent tool leaves force-open (running → done), drop any
@@ -2410,7 +2410,7 @@ function CleanPlaceholder({
               ) : (
                 "Thought"
               )
-            ) : event.type === "tool_call" && isSubagentTool(event.toolName, event.title) ? (
+            ) : event.type === "tool_call" && isSubagentTool(event.toolName, event.title, event.input) ? (
               "Subagent"
             ) : event.type === "tool_call" ? (
               toolKindVerb(toolKind ?? "other")

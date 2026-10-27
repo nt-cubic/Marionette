@@ -47,10 +47,17 @@ const EXACT_ALIASES: Record<string, string> = {
   ask_followup_question: "question",
   request_user_input: "question",
   spawn_agent: "agent",
+  spawnagent: "agent",
   spawn_subagent: "agent",
+  collab_agent: "agent",
+  collabagent: "agent",
+  delegate_task: "agent",
+  delegatetask: "agent",
   list_agents: "list_agents",
   wait_agent: "task",
+  waitagent: "task",
   close_agent: "task",
+  closeagent: "task",
   update_plan: "task",
   use_mcp_tool: "tool",
   // Codex structured goal (session_info_update → synthetic tool)
@@ -105,6 +112,24 @@ export function inferToolNameFromMeta(
       return normalizeToolName(tool.name);
     }
   }
+  const claude =
+    m && typeof m.claudeCode === "object" && m.claudeCode && !Array.isArray(m.claudeCode)
+      ? (m.claudeCode as Record<string, unknown>)
+      : m && typeof m["claude-code"] === "object" && m["claude-code"] && !Array.isArray(m["claude-code"])
+        ? (m["claude-code"] as Record<string, unknown>)
+        : null;
+  if (typeof claude?.toolName === "string" && claude.toolName.trim()) {
+    return normalizeToolName(claude.toolName);
+  }
+  if (m?.subagent && typeof m.subagent === "object") return "agent";
+  const codex =
+    m && typeof m.codex === "object" && m.codex && !Array.isArray(m.codex)
+      ? (m.codex as Record<string, unknown>)
+      : null;
+  if (codex?.subagent) return "agent";
+  if (codex?.collaboration) return "collab_agent";
+  if (m?.isSubagent === true || m?.["codebuddy.ai/isSubagent"] === true) return "agent";
+  if (m?.backgroundTask && typeof m.backgroundTask === "object") return "agent";
   return normalizeToolName(title);
 }
 

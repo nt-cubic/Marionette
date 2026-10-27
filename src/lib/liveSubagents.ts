@@ -10,6 +10,7 @@
 import type { SessionEvent } from "./types";
 import { isSubagentTool, isToolInProgress } from "./activityHealth";
 import { parseBackgroundSubagentStart } from "./acpTranscript";
+import { extractNestedAgentId } from "./subagentAdapters";
 import { toolMainText } from "./turnActivity";
 
 export type LiveSubagent = {
@@ -33,7 +34,8 @@ function backgroundStub(event: Extract<SessionEvent, { type: "tool_call" }>): bo
   return Boolean(
     parseBackgroundSubagentStart(event.detail) ||
       parseBackgroundSubagentStart(event.text) ||
-      parseBackgroundSubagentStart(event.input),
+      parseBackgroundSubagentStart(event.input) ||
+      parseBackgroundSubagentStart(event.title),
   );
 }
 
@@ -44,7 +46,7 @@ export function isLiveSubagentEvent(
 ): boolean {
   if (event.type !== "tool_call") return false;
   if (opts?.processAlive === false) return false;
-  if (!isSubagentTool(event.toolName, event.title)) return false;
+  if (!isSubagentTool(event.toolName, event.title, event.input)) return false;
   if (isToolInProgress(event.status)) return true;
   return backgroundStub(event);
 }
@@ -56,12 +58,21 @@ export function listLiveSubagents(
 ): LiveSubagent[] {
   if (opts?.processAlive === false) return [];
   const rows: LiveSubagent[] = [];
+  const seen = new Set<string>();
   for (const event of events) {
     if (event.sessionId !== sessionId) continue;
     if (event.type !== "tool_call") continue;
     if (!isLiveSubagentEvent(event, opts)) continue;
-    const startedAtMs = Date.parse(event.createdAt);
     const stub = parseBackgroundSubagentStart(event.detail);
+    const agentId =
+      stub?.id ||
+      extractNestedAgentId(event.input) ||
+      extractNestedAgentId(event.detail) ||
+      event.toolCallId ||
+      event.createdAt;
+    if (seen.has(agentId)) continue;
+    seen.add(agentId);
+    const startedAtMs = Date.parse(event.createdAt);
     rows.push({
       sessionId,
       key: event.toolCallId || event.createdAt,

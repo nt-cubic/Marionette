@@ -96,6 +96,24 @@ const thought = {
   createdAt: "t0",
 };
 
+check("ZCode Agent whose title is the task stays its own card", () => {
+  const clustered = clusterActivityRuns([
+    { key: "read", event: tool({ toolName: "read", path: "a.ts" }), index: 0 },
+    {
+      key: "agent",
+      event: tool({
+        toolName: "agent",
+        title: "调研 README 并列出风险",
+        status: "in_progress",
+      }),
+      index: 1,
+    },
+  ]);
+  assert.equal(clustered.length, 2);
+  assert.equal(clustered[0].kind, "activity");
+  assert.equal(clustered[1].kind, "row");
+});
+
 check("parallel spawn_subagent tools stay as their own cards", () => {
   const units = [0, 1, 2, 3, 4, 5, 6].map((index) => ({
     key: `spawn-${index}`,
