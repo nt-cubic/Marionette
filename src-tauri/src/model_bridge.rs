@@ -38,7 +38,7 @@
 
 use crate::credentials::{AgentScan, CredentialEntry, CredentialKind};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -121,7 +121,9 @@ static PRESETS: [ProviderPreset; 6] = [
     // docs.bigmodel.cn/cn/coding-plan/quick-start（GLM Coding Plan 官方）：
     // Anthropic 协议 https://open.bigmodel.cn/api/anthropic；OpenAI Chat
     // 协议 https://open.bigmodel.cn/api/coding/paas/v4。注意普通按量 key 用
-    // /api/paas/v4（用户 ~/.grok 实配即此），coding 端点只吃套餐 key。
+    // /api/paas/v4。用户 ~/.grok 的 zhipu-* 表曾经实配按量端点；spawn 时若
+    // api_key 是已知 Coding Plan 钥匙，rewrite_grok_zhipu_coding_plan_bases
+    // 会改到 coding 端点（否则智谱 1113「余额不足或无可用资源包」）。
     // models：动态拉取（GET coding …/models，magpie model_names_test 同款）
     // 为主；静态兜底取实测套餐主打两模型（2026-10-17 本机带 key 实测：
     // chat 与 anthropic 两协议的 /models 目录完全一致，各 11 个 id，均含
@@ -2332,6 +2334,166 @@ pub fn remove_grok_model_tables() -> Result<bool, String> {
     remove_grok_model_tables_at(&path)
 }
 
+/// 智谱 Coding Plan 的 OpenAI Chat 端点。套餐 key 打到按量 `/api/paas/v4`
+/// 会 429 / code 1113「余额不足或无可用资源包,请充值。」——ZCode 能用、Grok
+/// 自定义 `zhipu-glm-*` 表不能用，就是这个差。
+const ZHIPU_PAYG_CHAT: &str = "https://open.bigmodel.cn/api/paas/v4";
+const ZHIPU_CODING_CHAT: &str = "https://open.bigmodel.cn/api/coding/paas/v4";
+
+/// Grok spawn 时：把用户 `~/.grok/config.toml` 里、api_key 是已知 Coding Plan
+/// 钥匙、却指向按量 `/api/paas/v4` 的 model 表改到 coding 端点。
+///
+/// 只动匹配到套餐钥匙的表；按量钥匙、`$ENV` 展开（我们自己的 owned 表）、
+/// 已经是 coding 端点的，一律不碰。失败不阻塞 spawn。
+pub fn rewrite_grok_zhipu_coding_plan_bases() -> Result<bool, String> {
+    let path = grok_config_path().ok_or_else(|| "无法定位用户目录".to_string())?;
+    rewrite_grok_zhipu_coding_plan_bases_at(&path, &glm_coding_plan_keys())
+}
+
+pub fn rewrite_grok_zhipu_coding_plan_bases_at(
+    config_path: &Path,
+    coding_plan_keys: &[String],
+) -> Result<bool, String> {
+    if coding_plan_keys.is_empty() {
+        return Ok(false);
+    }
+    let original = match fs::read_to_string(config_path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("读取 grok config.toml 失败: {error}")),
+    };
+    if original.trim().is_empty() {
+        return Ok(false);
+    }
+    toml::from_str::<toml::Value>(&original)
+        .map_err(|e| format!("grok config.toml 解析失败（{e}）— 拒绝写入半截"))?;
+
+    let keys: HashSet<&str> = coding_plan_keys
+        .iter()
+        .map(|key| key.trim())
+        .filter(|key| !key.is_empty())
+        .collect();
+    if keys.is_empty() {
+        return Ok(false);
+    }
+
+    let mut blocks = split_blocks(&original);
+    let mut changed = false;
+    for block in &mut blocks {
+        if block.header.as_deref().and_then(model_table_name).is_none() {
+            continue;
+        }
+        let Some(api_key) = toml_field_in_block(block, "api_key").map(str::to_string) else {
+            continue;
+        };
+        if api_key.starts_with('$') || !keys.contains(api_key.trim()) {
+            continue;
+        }
+        let Some(base) = toml_field_in_block(block, "base_url").map(str::to_string) else {
+            continue;
+        };
+        if !is_zhipu_payg_chat(&base) {
+            continue;
+        }
+        for line in &mut block.lines {
+            if toml_field_name(line) != Some("base_url") {
+                continue;
+            }
+            let rewritten = rewrite_zhipu_payg_line(line);
+            if rewritten != *line {
+                *line = rewritten;
+                changed = true;
+            }
+        }
+    }
+    if !changed {
+        return Ok(false);
+    }
+
+    let output = blocks_to_text(&blocks);
+    toml::from_str::<toml::Value>(&output).map_err(|e| {
+        format!("生成的 grok config.toml 未通过 TOML 校验（{e}）— 已放弃写入")
+    })?;
+    write_text_atomic(config_path, &output)?;
+    Ok(true)
+}
+
+fn glm_coding_plan_keys() -> Vec<String> {
+    let mut keys: Vec<String> = crate::credentials::peek_zcode_coding_plan_keys()
+        .into_iter()
+        .filter(|(preset, key)| preset == "glm" && !key.trim().is_empty())
+        .map(|(_, key)| key)
+        .collect();
+    for (provider, key) in crate::credentials::peek_opencode_api_keys() {
+        if key.trim().is_empty() {
+            continue;
+        }
+        if preset_for_opencode_provider(&provider).is_some_and(|preset| preset.id == "glm") {
+            keys.push(key);
+        }
+    }
+    if let Some(path) = credentials_path() {
+        if let Ok(store) = crate::credentials::load_store_at(&path) {
+            for entry in store.entries.iter().filter(|entry| {
+                entry.kind == CredentialKind::KeyPlan && entry.preset.as_deref() == Some("glm")
+            }) {
+                if let Ok(Some(key)) = crate::credentials::peek_secret_at(&path, &entry.id) {
+                    if !key.trim().is_empty() {
+                        keys.push(key);
+                    }
+                }
+            }
+        }
+    }
+    keys
+}
+
+fn is_zhipu_payg_chat(url: &str) -> bool {
+    url.trim().trim_end_matches('/') == ZHIPU_PAYG_CHAT
+}
+
+fn rewrite_zhipu_payg_line(line: &str) -> String {
+    line.replace(&format!("{ZHIPU_PAYG_CHAT}/"), &format!("{ZHIPU_CODING_CHAT}/"))
+        .replace(ZHIPU_PAYG_CHAT, ZHIPU_CODING_CHAT)
+}
+
+fn toml_field_name(line: &str) -> Option<&str> {
+    let t = line.trim();
+    if t.is_empty() || t.starts_with('#') {
+        return None;
+    }
+    let (key, _) = t.split_once('=')?;
+    Some(key.trim())
+}
+
+fn toml_field_in_block<'a>(block: &'a TomlBlock, name: &str) -> Option<&'a str> {
+    for line in &block.lines {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        let Some((key, rest)) = t.split_once('=') else {
+            continue;
+        };
+        if key.trim() != name {
+            continue;
+        }
+        return Some(toml_unquote(rest.trim()));
+    }
+    None
+}
+
+fn toml_unquote(value: &str) -> &str {
+    let value = value.trim();
+    if let Some(inner) = value.strip_prefix('"') {
+        return inner.split('"').next().unwrap_or(inner);
+    }
+    if let Some(inner) = value.strip_prefix('\'') {
+        return inner.split('\'').next().unwrap_or(inner);
+    }
+    value.split_whitespace().next().unwrap_or(value)
+}
+
 // ─── spawn 注入解析（D；acp.rs 的 env 注入段调用）───────────────────────────
 
 /// 一个会话该拿到的注入形态。key 明文**不在这里** —— acp.rs 用
@@ -3143,6 +3305,67 @@ official_marketplace_auto_installed = true\n";
         let text = fs::read_to_string(&config).unwrap();
         assert!(text.contains("marionette/fake"), "用户字符串里的伪表头必须保留");
         assert!(!text.contains("[model.\"marionette/deepseek-flash\"]"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn grok_rewrites_coding_plan_key_off_payg_endpoint() {
+        let dir = temp_dir("grok_zhipu_coding");
+        let config = dir.join("config.toml");
+        fs::write(&config, USER_CONFIG).unwrap();
+        let plan = "sk-zhipu-plan";
+        let text = fs::read_to_string(&config).unwrap().replace("user-own-key", plan);
+        fs::write(&config, &text).unwrap();
+
+        assert!(rewrite_grok_zhipu_coding_plan_bases_at(&config, &[plan.to_string()]).unwrap());
+        let text = fs::read_to_string(&config).unwrap();
+        assert!(text.contains("https://open.bigmodel.cn/api/coding/paas/v4"));
+        assert!(
+            !text.contains("https://open.bigmodel.cn/api/paas/v4\""),
+            "pay-as-you-go chat URL must be gone:\n{text}"
+        );
+        assert!(text.contains("http://100.94.137.45:8082/v1"), "unrelated tables stay");
+        assert!(text.contains("default = \"grok-4.6\""));
+        // 幂等
+        assert!(!rewrite_grok_zhipu_coding_plan_bases_at(&config, &[plan.to_string()]).unwrap());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn grok_leaves_payg_key_on_payg_endpoint() {
+        let dir = temp_dir("grok_zhipu_payg");
+        let config = dir.join("config.toml");
+        fs::write(&config, USER_CONFIG).unwrap();
+        assert!(!rewrite_grok_zhipu_coding_plan_bases_at(
+            &config,
+            &["sk-other-plan".to_string()]
+        )
+        .unwrap());
+        let text = fs::read_to_string(&config).unwrap();
+        assert!(text.contains("https://open.bigmodel.cn/api/paas/v4"));
+        assert!(!text.contains("/api/coding/paas/v4"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn grok_skips_env_expanded_owned_tables() {
+        let dir = temp_dir("grok_zhipu_env");
+        let config = dir.join("config.toml");
+        fs::write(
+            &config,
+            "[model.\"marionette/glm-5.3\"]\n\
+             model = \"glm-5.3\"\n\
+             base_url = \"https://open.bigmodel.cn/api/paas/v4\"\n\
+             api_key = \"$MARIONETTE_PROVIDER_KEY\"\n",
+        )
+        .unwrap();
+        assert!(!rewrite_grok_zhipu_coding_plan_bases_at(
+            &config,
+            &["$MARIONETTE_PROVIDER_KEY".to_string()]
+        )
+        .unwrap());
+        let text = fs::read_to_string(&config).unwrap();
+        assert!(text.contains("/api/paas/v4"));
         fs::remove_dir_all(&dir).ok();
     }
 

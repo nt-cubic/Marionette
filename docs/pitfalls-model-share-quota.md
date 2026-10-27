@@ -1,7 +1,8 @@
 # 模型共享与额度面板踩坑集（2026-10-23 全天实弹排查）
 
 同日排掉的一串连环坑：opencode 凭据搬家、双钥匙抢槽、智谱别名缺口、ZCode Coding Plan
-钥匙藏位。每条都有实机证据链；改引擎注册 / 凭据扫描 / USAGE 探测前先过一遍。
+钥匙藏位、Grok 自定义 zhipu 表打到按量端点。每条都有实机证据链；改引擎注册 /
+凭据扫描 / USAGE 探测 / grok config.toml 写入前先过一遍。
 
 ## 0. 快速确诊表
 
@@ -12,6 +13,7 @@
 | 共享模型组在 DSH 里整个消失 | `cordis.patch.yml` 的 marionette 路由在上次 spawn 时因引擎 Absent 被移除 | 引擎运行时**新开一个 DSH 会话**即重建 |
 | opencode 新出的免费模型别的 agent 里看不到 | 三层缓存 + 只在 spawn 时重建（见 §5），非 bug | 新开会话；magpie 目录最长 24h 跟进 |
 | ZCode 里配的智谱 Coding Plan 余额不显示 | 钥匙在 ZCode 个人 provider 层，Marionette 没读 | 已修：注册时扫 `provider_config.json`（见 §4） |
+| ZCode 里 GLM 5.3 有 5h/周限，Grok Build 选 `zhipu-glm-5.3` 报 1113「余额不足或无可用资源包」 | `~/.grok/config.toml` 的 `zhipu-*` 表把 **Coding Plan 钥匙**打到按量 `https://open.bigmodel.cn/api/paas/v4`；ZCode / magpie `zhipu`（`region=coding`）走的是 `/api/coding/paas/v4` | 已修：Grok spawn 时 `rewrite_grok_zhipu_coding_plan_bases` 把匹配套餐钥匙的表改到 coding 端点。改完要**新开会话**（Grok 只在进程启动读 config.toml） |
 
 排查额度先分清两条链路：**A** USAGE 的 provider 行（`probe_provider_usage`，只读
 opencode 凭据，只在 opencode agent 会话驱动）；**B** 引擎行 + 悬浮球余额

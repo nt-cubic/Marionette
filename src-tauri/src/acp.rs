@@ -440,6 +440,25 @@ impl AcpService {
                 "grok folder trust ensured for project MCP",
                 Some(&cwd),
             );
+            // Coding Plan 钥匙打到 ~/.grok 里 zhipu-* 表的按量 /api/paas/v4
+            // 会 1113「余额不足」；ZCode 走的是 coding 端点所以看起来「有额度」。
+            match crate::model_bridge::rewrite_grok_zhipu_coding_plan_bases() {
+                Ok(true) => crate::debug_log::append(
+                    "bridge",
+                    "info",
+                    &session_id,
+                    "rewrote grok zhipu tables from pay-as-you-go to Coding Plan endpoint",
+                    None,
+                ),
+                Ok(false) => {}
+                Err(error) => crate::debug_log::append(
+                    "bridge",
+                    "warn",
+                    &session_id,
+                    "grok zhipu Coding Plan endpoint rewrite failed",
+                    Some(&error),
+                ),
+            }
         }
 
         emit_acp_event(
