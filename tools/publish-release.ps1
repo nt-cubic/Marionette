@@ -32,7 +32,22 @@ if (-not (Test-Path $asset)) {
 }
 
 function Get-Sha256([string]$path) {
-    (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash
+    # Not Get-FileHash: PowerShell 5.1 refuses to autoload
+    # Microsoft.PowerShell.Utility when PSModulePath points at a PowerShell 7
+    # module dir (the winget install does exactly that), and the publish would
+    # die right before creating the release.
+    $stream = [System.IO.File]::OpenRead($path)
+    try {
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $hash = $sha.ComputeHash($stream)
+        } finally {
+            $sha.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+    return ([System.BitConverter]::ToString($hash) -replace '-', '').ToLowerInvariant()
 }
 
 $bytes = (Get-Item $asset).Length
