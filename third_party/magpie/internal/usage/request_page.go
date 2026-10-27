@@ -825,7 +825,7 @@ func codexEffortOfIndex(st requestState, p Period, now time.Time) map[string][]s
 	b := readRequestBlocks(idx, st, p, now, sessions.ReadCallSource)
 	sums := effortSums{}
 	ps, next := pairRowsMemo(p, now, b.gateways, b.chunks, b.others, st.codexIdentities, memo)
-	ps.visit(func(_ timedRef, r *Row) { sums.add(r) })
+	ps.visitActors(func(r *Row) { sums.add(r) })
 	b.priced.release()
 	shared.Lock()
 	if shared.keep(idx, b.on) {
@@ -1575,6 +1575,28 @@ func (ps *pairedRows) visit(fn func(timedRef, *Row)) {
 		ps.visitChunk(&rows, c, &r, fn)
 	}
 }
+
+// visitActors is visit of the rows of the chunks a Codex thread is known
+// for some row of (codexActors), the only rows Codex's effort adds up: it
+// decoded every session file's chunk, ~90 MB of what eight Sessions polls
+// allocated, for the few that are Codex's. The rows' strings are lent
+// (lentRows), so fn clones what it keeps.
+func (ps *pairedRows) visitActors(fn func(*Row)) {
+	rows := lentRows()
+	defer rows.release()
+	var r Row
+	for _, c := range ps.all {
+		if slices.ContainsFunc(c.codexActors, func(a string) bool { return a != "" }) {
+			if visitingActors != nil {
+				visitingActors(c)
+			}
+			ps.visitChunk(&rows, c, &r, func(_ timedRef, r *Row) { fn(r) })
+		}
+	}
+}
+
+// visitingActors, in tests, is told each chunk visitActors reads.
+var visitingActors func(*rowChunk)
 
 // visitChunk is visit of c's rows alone, read through rows into r.
 func (ps *pairedRows) visitChunk(rows *chunkRows, c *rowChunk, r *Row, fn func(timedRef, *Row)) {

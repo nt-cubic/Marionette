@@ -180,13 +180,12 @@ func idInFile(agent string) bool {
 }
 
 func nativeIDs(agents map[string]bool, all []file) map[string]map[string]bool {
-	groups := map[string][]file{}
+	groups := byKey(all, func(f *file) bool { return agents[f.agent] })
 	var want []file
 	for _, f := range all {
 		if !agents[f.agent] {
 			continue
 		}
-		groups[f.key] = append(groups[f.key], f)
 		if idInFile(f.agent) {
 			want = append(want, f)
 		}
@@ -203,11 +202,10 @@ func nativeIDs(agents map[string]bool, all []file) map[string]map[string]bool {
 }
 
 func listAgent(agent string, all []file) []Managed {
-	groups := map[string][]file{}
+	groups := byKey(all, func(f *file) bool { return f.agent == agent })
 	var mine []file
 	for _, f := range all {
 		if f.agent == agent {
-			groups[f.key] = append(groups[f.key], f)
 			mine = append(mine, f)
 		}
 	}
@@ -313,11 +311,10 @@ func Delete(agent, id string) (Trashed, error) {
 	loadCache()
 	defer useDBs()()
 	all := allFiles()
-	groups := map[string][]file{}
+	groups := byKey(all, func(f *file) bool { return f.agent == agent })
 	var mine []file
 	for _, f := range all {
 		if f.agent == agent {
-			groups[f.key] = append(groups[f.key], f)
 			mine = append(mine, f)
 		}
 	}

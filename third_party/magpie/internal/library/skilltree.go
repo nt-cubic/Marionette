@@ -72,11 +72,15 @@ var rawURL = func(repo, ref, path string) string {
 }
 
 // fetchSkillFiles fetches, into a new folder laid out as the repository
-// is, every folder of it with a SKILL.md, whatever is in it, and the
-// repository's other folders empty: what candidates, origin and an update
-// read of a fetched repository.
-func fetchSkillFiles(src Source) (string, error) {
-	tree, err := repoTree(src.Repo, src.Ref)
+// is, every folder of it with a SKILL.md under src.Path, whatever is in
+// it, and the other folders there empty: what candidates, origin and an
+// update read of a fetched repository. With name, only the skills whose
+// folder is called that are fetched, if any is: the market installs one
+// skill by its name, and sickn33/agentic-awesome-skills' 8,589 skills
+// come to 287 MB, over maxFetch (#2794). A skill's folder is its name
+// (agentskills.io's SKILL.md spec).
+func fetchSkillFiles(src Source, name string) (string, error) {
+	tree, err := treeUnder(src.Repo, src.Ref, src.Path)
 	if err != nil {
 		return "", err
 	}
@@ -84,11 +88,19 @@ func fetchSkillFiles(src Source) (string, error) {
 		// too many files for GitHub to list in one answer
 		return "", errTooBig
 	}
-	var skillDirs []string
+	var skillDirs, named []string
 	for _, e := range tree.Tree {
 		if e.Type == "blob" && slash.Base(e.Path) == "SKILL.md" {
-			skillDirs = append(skillDirs, slash.Dir(e.Path))
+			if d := slash.Dir(e.Path); inRepoDir(d, src.Path) {
+				skillDirs = append(skillDirs, d)
+				if name != "" && slash.Base(d) == name {
+					named = append(named, d)
+				}
+			}
 		}
+	}
+	if len(named) > 0 {
+		skillDirs = named
 	}
 	inSkill := func(p string) bool {
 		for _, d := range skillDirs {
@@ -134,7 +146,9 @@ func fetchSkillFiles(src Source) (string, error) {
 			left = append(left, LeftOut{Path: p, Size: size[d]})
 		}
 	}
-	if len(left) == len(skillDirs) && len(left) > 0 {
+	// a folder asked for whose skills are all too big is listed empty,
+	// naming them, as the whole repository's list would
+	if len(left) == len(skillDirs) && len(left) > 0 && src.Path == "" {
 		return "", fmt.Errorf("the skills in %s are too big to install (over %s)", src.Repo, mb(maxFetch))
 	}
 	var files []file
@@ -157,7 +171,9 @@ func fetchSkillFiles(src Source) (string, error) {
 		return dst, strings.HasPrefix(dst, tmp+string(filepath.Separator)) // never outside
 	}
 	for _, e := range tree.Tree {
-		if e.Type == "tree" {
+		// only the named skills' folders when narrowed to them: the rest
+		// of a big repository is thousands of empty folders
+		if e.Type == "tree" && inRepoDir(e.Path, src.Path) && (len(named) == 0 || inSkill(e.Path)) {
 			if dst, ok := place(e.Path); ok {
 				if err := os.MkdirAll(dst, 0o755); err != nil {
 					os.RemoveAll(tmp)
@@ -206,6 +222,12 @@ func fetchSkillFiles(src Source) (string, error) {
 		leftOut.Unlock()
 	}
 	return tmp, nil
+}
+
+// inRepoDir is whether a repository's path p is under the folder dir, or
+// is it; everything is under "". A skill at the repository's root is ".".
+func inRepoDir(p, dir string) bool {
+	return dir == "" || p == dir || strings.HasPrefix(p, dir+"/")
 }
 
 // LeftOut is a skill of a repository too big to install on its own

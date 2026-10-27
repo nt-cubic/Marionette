@@ -1,6 +1,6 @@
 [package]
 name = "marionette"
-version = "0.5.1"
+version = "0.5.2"
 description = "Marionette — agent harness, all in one. Lightweight local shell for multiple agent CLIs."
 authors = ["Marionette"]
 edition = "2021"

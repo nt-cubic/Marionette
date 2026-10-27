@@ -43,7 +43,10 @@ Windows 本地 **多 Agent CLI 图形壳**（Tauri + React）。不替代 OpenCo
 
 ## ChatGPT 网页桥的原排版回复
 
-ChatGPT 网页桥（`tools/web-chat-bridge`）复制本轮回复的 HTML 与原站 CSS，在 Reply 卡片的 Shadow DOM 中显示，保留表格、代码高亮、卡片和网格图；字体与中性色适配 Marionette 主题，整页纵向滚动，宽内容可横向滚动。HTML 与纯文本一起流式更新、保存和恢复；纯文本继续用于复制、搜索和历史上下文。CSS 与可导出的图片按内容哈希缓存在 `BRIDGE_STATE_DIR/rich-replies/`；缓存缺失则回退文字。链接、代码复制和图片放大由壳接管，原站引用浮窗等脚本交互不迁移。旧记录不自动补 HTML。首次升级需重新构建前端与 Rust。
+ChatGPT 网页版与 DeepSeek 网页版是内置 agent，新建会话可直接选择，无需注册脚本。
+桥源码（`tools/web-chat-bridge`）通过 `web_chat_bridge.rs` 编译进 exe，便携版同样携带；启动会话时按内容哈希自动释放到 `~/.marionette/bundled/web-chat-bridge/`，不依赖源码目录。需要 Node.js 22+ 与 Edge / Chrome，首次使用登录网页。旧版同 id 自定义条目不重复展示，恢复会话也使用内置桥。
+
+ChatGPT 网页桥复制本轮回复的 HTML 与原站 CSS，在 Reply 卡片的 Shadow DOM 中显示，保留表格、代码高亮、卡片和网格图；字体与中性色适配 Marionette 主题，整页纵向滚动，宽内容可横向滚动。HTML 与纯文本一起流式更新、保存和恢复；纯文本继续用于复制、搜索和历史上下文。CSS 与可导出的图片按内容哈希缓存在 `BRIDGE_STATE_DIR/rich-replies/`；缓存缺失则回退文字。链接、代码复制和图片放大由壳接管，原站引用浮窗等脚本交互不迁移。旧记录不自动补 HTML。首次升级需重新构建前端与 Rust。
 
 DeepSeek 正文按网页语义转成 Markdown，保留标题、强调、嵌套列表、引用、链接、表格与代码块，沿用 Marionette 的字体和主题；公式暂显示 TeX 文本。流式更新使用 `marionette.textSnapshot` 完整正文快照，明确替换当前未封口回复，支持网站回写格式和删改短文本；历史仍保存普通 Markdown。思考区继续使用独立思考事件。Telegram 转发同步按快照替换，避免重复累加。首次升级需重新构建前端与 Rust 并重启，旧记录不自动补排版。
 

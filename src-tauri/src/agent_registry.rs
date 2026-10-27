@@ -90,6 +90,22 @@ fn dist_label(d: DistributionKind) -> &'static str {
 /// Built-in launch metadata. Prefer PATH binary over npx cold start.
 pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
     match agent_id {
+        "web-chatgpt" | "web-deepseek" => AgentHarnessMeta {
+            id: if agent_id == "web-chatgpt" { "web-chatgpt" } else { "web-deepseek" },
+            label: if agent_id == "web-chatgpt" { "ChatGPT 网页版" } else { "DeepSeek 网页版" },
+            subagent_transcript: false,
+            mcp_wire: McpWirePolicy::SkipForward,
+            mcp_wire_label: mcp_label(McpWirePolicy::SkipForward),
+            distribution: DistributionKind::Manual,
+            distribution_label: dist_label(DistributionKind::Manual),
+            cmd: "node",
+            args: &[],
+            node_required: Some("22.0.0"),
+            uv_required: None,
+            python_pin: None,
+            requires_commands: &[],
+            launch_env: &[],
+        },
         "codex" | "codex-acp" => AgentHarnessMeta {
             id: "codex",
             label: "Codex CLI",

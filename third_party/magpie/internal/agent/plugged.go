@@ -53,6 +53,11 @@ type pluggedStash struct {
 	// Wrote are the strings magpie wrote, by key, for Check to tell
 	// one changed since
 	Wrote map[string]string `json:"wrote,omitempty"`
+	// Spec and Format are the plugin's and its file's, so what the user
+	// had can be put back with the plugin gone (#3810); a stash written
+	// before them has neither, and its file's name says its format
+	Spec   string `json:"spec,omitempty"`
+	Format string `json:"format,omitempty"`
 }
 
 // PluginErrors is why an agent a plugin adds isn't listed, by plugin
@@ -208,6 +213,38 @@ func (f pluggedFile) del(keys []string) error {
 	return edit.DelEnvFile(f.path, keys...)
 }
 
+// wired says the agent id's file is still as magpie wired it, by st: the
+// gateway's key magpie wrote is there.
+func (f pluggedFile) wired(id string, st pluggedStash) bool {
+	if st.Mark == "" {
+		return true
+	}
+	v, _ := f.get(st.Mark)
+	return v == st.Value || ourKey(v) || v == gateway.TokenFor(id)
+}
+
+// restore puts back what the user had under every key magpie wrote, as st
+// stashed it under key, and forgets it.
+func (f pluggedFile) restore(key string, st pluggedStash) error {
+	var del []string
+	var kvs []edit.KV
+	for _, k := range sortedKeys(st.Had) {
+		if v := st.Had[k]; v == "\x00" {
+			del = append(del, k)
+		} else {
+			kvs = append(kvs, edit.KV{Path: k, Value: f.back(v)})
+		}
+	}
+	if err := f.del(del); err != nil {
+		return err
+	}
+	if err := f.set(kvs); err != nil {
+		return err
+	}
+	forget(key)
+	return nil
+}
+
 // plugged is the Agent of a plugin's agent at home.
 func plugged(home string, p *agentplug.Agent) *Agent {
 	d := p.Desc
@@ -228,37 +265,9 @@ func plugged(home string, p *agentplug.Agent) *Agent {
 	// still there
 	onMagpie := func() (pluggedStash, bool) {
 		st, ok := saved()
-		if !ok {
-			return st, false
-		}
-		if st.Mark != "" {
-			v, _ := f.get(st.Mark)
-			if v != st.Value && !ourKey(v) && v != gateway.TokenFor(id) {
-				return st, false
-			}
-		}
-		return st, true
+		return st, ok && f.wired(id, st)
 	}
-	// restore puts back what the user had under every key magpie wrote
-	restore := func(st pluggedStash) error {
-		var del []string
-		var kvs []edit.KV
-		for _, k := range sortedKeys(st.Had) {
-			if v := st.Had[k]; v == "\x00" {
-				del = append(del, k)
-			} else {
-				kvs = append(kvs, edit.KV{Path: k, Value: f.back(v)})
-			}
-		}
-		if err := f.del(del); err != nil {
-			return err
-		}
-		if err := f.set(kvs); err != nil {
-			return err
-		}
-		forget(key)
-		return nil
-	}
+	restore := func(st pluggedStash) error { return f.restore(key, st) }
 	// only: the agent picks its model itself among those connect writes
 	// (#2374), so magpie writes no model, and the switch is its one field
 	only := d.Model == ""
@@ -354,6 +363,7 @@ func plugged(home string, p *agentplug.Agent) *Agent {
 			delete(st.Had, k)
 		}
 		st.Ref, st.Mark, st.Value, st.Wrote = ref, mark, gk, strs
+		st.Spec, st.Format = p.Spec, f.format
 		if err := f.del(del); err != nil {
 			return err
 		}

@@ -151,6 +151,7 @@ func builtins(home, cfg string) []*Agent {
 		codebuddy(home),
 		pencil(home),
 		openPencil(home, cfg),
+		newMax(home),
 		raycast(home),
 		kiroCrew(home),
 		t3code(home),

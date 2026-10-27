@@ -62,6 +62,15 @@ var Formats = map[string]string{
 	".env": "env",
 }
 
+// FormatOf is the format a config file's name says it is in, "" for one
+// it doesn't say.
+func FormatOf(config string) string {
+	if strings.HasPrefix(strings.ToLower(filepath.Base(config)), ".env") {
+		return "env"
+	}
+	return Formats[strings.ToLower(filepath.Ext(config))]
+}
+
 // Desc is what a module's agent export says.
 type Desc struct {
 	ID     string   `json:"id"`
@@ -284,10 +293,7 @@ func (d *Desc) check() error {
 		d.Name = d.ID
 	}
 	if d.Format == "" {
-		d.Format = Formats[strings.ToLower(filepath.Ext(d.Config))]
-		if strings.HasPrefix(strings.ToLower(filepath.Base(d.Config)), ".env") {
-			d.Format = "env"
-		}
+		d.Format = FormatOf(d.Config)
 	}
 	switch d.Format {
 	case "json", "yaml", "env":

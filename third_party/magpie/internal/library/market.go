@@ -1043,7 +1043,9 @@ func InstallMarketSkill(source, id string, agents []string) (*Result, error) {
 	if !repoRe.MatchString(source) {
 		return nil, fmt.Errorf("%s isn't a GitHub repository", source)
 	}
-	p, err := cachedProbe(source)
+	// only this skill's folder, when the repository is too big to
+	// download whole (#2794)
+	p, err := cachedProbeFor(source, id)
 	if err != nil {
 		return nil, err
 	}

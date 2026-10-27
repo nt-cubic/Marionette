@@ -480,6 +480,13 @@ func run(args []string) error {
 		return claudeCodeCmd(args[1:])
 	}
 
+	// the agent of a plugin that is gone (deleted on disk) is no agent
+	// here, but what magpie stashed of its file puts it back (#3810)
+	if len(args) == 2 && strings.EqualFold(args[1], "default") {
+		if g, ok, err := agent.RestoreGone(args[0]); ok {
+			return goneDefault(args[0], g, err)
+		}
+	}
 	a, err := agent.Find(args[0])
 	if err != nil {
 		return err
@@ -657,6 +664,27 @@ func disconnect(a *agent.Agent) error {
 		if n := a.Notice(); n != "" {
 			fmt.Println(muted.Render("  ↻ " + n))
 		}
+	}
+	return nil
+}
+
+// goneDefault says what `magpie <id> default` did for the agent of a
+// plugin that is gone.
+func goneDefault(id string, g agent.Gone, err error) error {
+	for _, p := range g.Put {
+		fmt.Println(green.Render("✓"), bold.Render(id), muted.Render(p))
+	}
+	for _, p := range g.Off {
+		fmt.Println(green.Render("✓"), bold.Render(id), muted.Render(p+": magpie was out of it already"))
+	}
+	if len(g.Put) > 0 {
+		fmt.Println(muted.Render("  its plugin is gone; disconnected from magpie, back to what it had before"))
+	}
+	if g.PluginOff != "" {
+		fmt.Println(green.Render("✓"), bold.Render(g.PluginOff), muted.Render("is not on magpie: its plugin is off, and magpie put back what it had when the plugin was turned off"))
+	}
+	if err != nil {
+		return fmt.Errorf("%s's plugin is gone, and magpie couldn't put its config back: %w", id, err)
 	}
 	return nil
 }

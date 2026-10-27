@@ -425,6 +425,16 @@ impl AcpService {
             .set_session_cwd(&session_id, PathBuf::from(&cwd));
 
         // Prefer global ACP bins over `npx -y …` (npx cold start can hang UI for minutes).
+        // Resolve by stable id so restored sessions also stop using old repo paths.
+        let (command, args) = if let Some(site) = agent_id
+            .as_deref()
+            .and_then(crate::web_chat_bridge::site)
+        {
+            let bridge = crate::web_chat_bridge::ensure_extracted()?;
+            ("node".to_string(), vec![bridge.to_string_lossy().into_owned(), site.into()])
+        } else {
+            (command, args)
+        };
         let (command, mut args) =
             crate::process_util::prefer_fast_acp_launch(&command, &args);
         // Grok: project-scoped MCP is gated by folder trust. Marionette opens
