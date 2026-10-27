@@ -14,6 +14,9 @@ import (
 	"github.com/yetone/magpie/internal/testenv"
 )
 
+// fptr is a plugin's window share, for the tests' literals.
+func fptr(v float64) *float64 { return &v }
+
 // A plugin's accounts show their allowance as the built-ins' do: beside
 // each account, on the usage page, and to the gateway, a window counting
 // only some models holding back those alone.

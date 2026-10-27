@@ -1139,7 +1139,11 @@ func (s *Server) remoteVideoContent(ctx context.Context, w http.ResponseWriter, 
 	defer res.Body.Close()
 	if res.StatusCode != 200 {
 		b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
-		writeError(w, provider.Chat, res.StatusCode, p.Name+": "+vendorMessage(b))
+		said, ok := provider.Unsaid(b)
+		if !ok {
+			said = vendorMessage(b)
+		}
+		writeError(w, provider.Chat, res.StatusCode, p.Name+": "+said)
 		return
 	}
 	w.Header().Set("Content-Type", cmp.Or(res.Header.Get("Content-Type"), "video/mp4"))

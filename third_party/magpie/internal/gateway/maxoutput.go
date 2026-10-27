@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/tidwall/gjson"
 
@@ -15,7 +16,9 @@ import (
 // known: its catalog entry's (the user's setting, else the vendor's list
 // or models.dev).
 func outputLimit(p provider.Provider, model string) int {
-	for _, e := range provider.Served() {
+	cat := provider.Served()
+	for i := range cat {
+		e := &cat[i] // an Entry is ~1.3KB, the catalog hundreds
 		if e.Group == "" && e.Provider.ID == p.ID && (e.Model == model || e.ID == model) && e.Output > 0 {
 			return e.Output
 		}
@@ -31,7 +34,9 @@ func outputLimit(p provider.Provider, model string) int {
 // as max_tokens times the price turned every turn away, and the field the
 // editor says caps max_tokens did nothing (YaCo on Discord).
 func userOutput(p provider.Provider, model string) int {
-	for _, e := range provider.Served() {
+	cat := provider.Served()
+	for i := range cat {
+		e := &cat[i] // an Entry is ~1.3KB, the catalog hundreds
 		if e.Group == "" && e.Provider.ID == p.ID && (e.Model == model || e.ID == model) && e.OutputSet && e.Output > 0 {
 			return e.Output
 		}
@@ -47,7 +52,9 @@ func userOutput(p provider.Provider, model string) int {
 // turn ran out of, Codex showing "Incomplete response returned, reason:
 // max_output_tokens" (#1792, tensornull).
 func askedOutput(p provider.Provider, model string) int {
-	for _, e := range provider.Served() {
+	cat := provider.Served()
+	for i := range cat {
+		e := &cat[i] // an Entry is ~1.3KB, the catalog hundreds
 		if e.Group == "" && e.Provider.ID == p.ID && (e.Model == model || e.ID == model) {
 			return e.PublishedOutput()
 		}
@@ -179,9 +186,105 @@ func withReplyCap(proto provider.Protocol, body []byte, limit int) ([]byte, bool
 			return nil, false
 		}
 		key = "max_output_tokens"
+	case provider.Gemini:
+		gc := gjson.GetBytes(body, "generationConfig")
+		if gc.Get("maxOutputTokens").Exists() {
+			return nil, false
+		}
+		m := map[string]any{}
+		if gc.IsObject() {
+			dec := json.NewDecoder(strings.NewReader(gc.Raw))
+			dec.UseNumber()
+			if dec.Decode(&m) != nil {
+				return nil, false
+			}
+		}
+		m["maxOutputTokens"] = limit
+		return withFields(body, map[string]any{"generationConfig": m}), true
 	default:
-		// Anthropic's always names one; Gemini's is lowered above
+		// Anthropic's always names one
 		return nil, false
 	}
 	return withFields(body, map[string]any{key: limit}), true
 }
+
+// namesOutput is whether body, in proto's words, names a reply limit.
+func namesOutput(proto provider.Protocol, body []byte) bool {
+	switch proto {
+	case provider.Chat:
+		return gjson.GetBytes(body, "max_tokens").Exists() || gjson.GetBytes(body, "max_completion_tokens").Exists()
+	case provider.Responses:
+		return gjson.GetBytes(body, "max_output_tokens").Exists()
+	case provider.Anthropic:
+		return gjson.GetBytes(body, "max_tokens").Exists()
+	case provider.Gemini:
+		return gjson.GetBytes(body, "generationConfig.maxOutputTokens").Exists()
+	}
+	return true
+}
+
+// shortByDefault is whether p's API cuts a reply that names no limit far
+// short of what its model can give: DeepSeek's gives 8K without thinking
+// and 64K with it (api-docs.deepseek.com, create-chat-completion:
+// "When not set, the default is 8K in non-thinking mode, 64K in thinking
+// mode"), on /v1/responses too, where its models go to 384K. Codex names
+// no max_output_tokens, so its turns there stopped at 8192 tokens, "Incomplete
+// response returned, reason: max_output_tokens" (xuanwo on X). Checked
+// against api.deepseek.com on 2026-10-27: deepseek-flash, effort none, no
+// limit: incomplete at 8192; max_output_tokens 393216: completed at 17602.
+func shortByDefault(p provider.Provider) bool {
+	return p.Host() == "api.deepseek.com"
+}
+
+// withOwnOutput is body, in proto's words, asking p's model for the reply
+// its own limit allows (askedOutput) when it names none and p's API would
+// otherwise cut it short (shortByDefault). A limit the client named goes
+// as it is.
+func withOwnOutput(p provider.Provider, model string, proto provider.Protocol, body []byte) []byte {
+	if !shortByDefault(p) || namesOutput(proto, body) {
+		return body
+	}
+	n := askedOutput(p, model)
+	if n <= 0 {
+		return body
+	}
+	if b, ok := withReplyCap(proto, body, n); ok {
+		return b
+	}
+	return body
+}
+
+// fillsOutput is whether a request translated for p's API on to that
+// names no reply limit is sent its model's own (askedOutput): the client's
+// API reads none as the model's whole, which another vendor's needn't
+// (DeepSeek's reads it as 8K, shortByDefault). Anthropic's always is, as
+// it needs one. An account's own backend (the ChatGPT one turns
+// max_output_tokens away) and another magpie, which fills its own, aren't.
+func fillsOutput(p provider.Provider, to provider.Protocol) bool {
+	if to == provider.Anthropic {
+		return true
+	}
+	return (to == provider.Chat || to == provider.Responses) &&
+		(p.Account == nil || p.IsPlugin()) && !p.IsRemoteMagpie()
+}
+
+// outputFieldRefused is a request error about the reply limit itself
+// ("max_tokens must be at most 32768"), not the window it shares with the
+// prompt, which replyLeft reads and the request is asked again for.
+func outputFieldRefused(status int, body []byte) bool {
+	if !badRequest(status) {
+		return false
+	}
+	w := wordsOf(body)
+	if replyLeft(w) > 0 {
+		return false
+	}
+	m := strings.ToLower(string(w))
+	return strings.Contains(m, "max_tokens") || strings.Contains(m, "max_output_tokens") ||
+		strings.Contains(m, "max_completion_tokens") || strings.Contains(m, "maxoutputtokens")
+}
+
+// outputFillRefused names, for markUnfit, a model whose vendor turned
+// away the reply limit magpie filled in: a request naming none is sent
+// none there from then on, as before.
+func outputFillRefused(model string) string { return "filled-output:" + model }

@@ -1025,7 +1025,10 @@ function ledDetail(r, cols) {
   // before they were kept has only the whole
   if (r.ttft_ms && r.sent_ms) {
     const split = r.own_ms != null;
-    add("In magpie", ledTook(split ? r.own_ms : r.sent_ms));
+    // of magpie's own, what went on masking it (Settings → Privacy)
+    const masking = split && r.masking_ms > 0 ? Math.min(r.masking_ms, r.own_ms) : 0;
+    if (masking) add("Masking", ledTook(masking));
+    add("In magpie", ledTook((split ? r.own_ms : r.sent_ms) - masking));
     if (split) {
       if (r.retried_ms > 0) add("Tries that failed first", ledTook(r.retried_ms));
       if (r.queued_ms > 0) add("Waiting for a slot", ledTook(r.queued_ms));
@@ -2304,7 +2307,8 @@ async function loadSessions() {
   } finally { stop(); }
   if (range !== sessRange) return; // another range was picked meanwhile; its load draws
   const fresh = q === sessOverQ(); // no filter changed meanwhile
-  if (sessions && sessStats && JSON.stringify(s) === JSON.stringify(sessions) && JSON.stringify(st) === JSON.stringify(sessStats) &&
+  // an answer the same as the last is the object read then (api's sameReads)
+  if (sessions && sessStats && sameRead(s, sessions) && sameRead(st, sessStats) &&
     (!fresh || JSON.stringify(o) === JSON.stringify(sessOver))) return;
   sessions = s;
   sessStats = st;

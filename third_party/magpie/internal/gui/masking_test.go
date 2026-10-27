@@ -77,6 +77,15 @@ func TestMaskingRecordsAPI(t *testing.T) {
 	if get("/api/masking/record?key="+strconv.FormatInt(rec.Key, 10), &one); one.Snips[p] != sent || !one.Values[0].Known {
 		t.Fatalf("record %+v", one)
 	}
+	// the key goes as a string: a JS number holds a nanosecond key only
+	// to 256ns, and the rounded key found no record
+	for _, path := range []string{"/api/masking/record?key=" + strconv.FormatInt(rec.Key, 10), "/api/masking/records?limit=1"} {
+		rw := httptest.NewRecorder()
+		srv.ServeHTTP(rw, httptest.NewRequest("GET", path, nil))
+		if !strings.Contains(rw.Body.String(), `"key":"`) {
+			t.Fatalf("%s: key not a string: %s", path, rw.Body)
+		}
+	}
 	if code := get("/api/masking/record?key=1", nil); code != http.StatusNotFound {
 		t.Fatalf("no such record: %d", code)
 	}

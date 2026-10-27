@@ -515,15 +515,90 @@ func TestAPIErrorShapes(t *testing.T) {
 	if !strings.HasPrefix(got, `400 Bad Request: {"code":400`) || !strings.HasSuffix(got, "…") || len([]rune(got)) > 320 {
 		t.Fatal(got)
 	}
-	if got := APIError([]byte("<html><body>bad</body></html>"), "400 Bad Request"); got != "400 Bad Request" {
+	if got := APIError([]byte("<html><body>bad</body></html>"), "400 Bad Request"); got != "400 Bad Request: a web page, not an API reply" {
 		t.Fatal(got)
 	}
-	if got := APIError(nil, "400 Bad Request"); got != "400 Bad Request" {
+	// other markup still says nothing worth showing
+	if got := APIError([]byte("<Error><Code>AccessDenied</Code></Error>"), "403 Forbidden"); got != "403 Forbidden" {
 		t.Fatal(got)
 	}
 	// Command Code's refusal of a Go plan's key says where it works (#969)
 	goKey := `{"error":{"type":"forbidden","message":"Your Go plan doesn't include API access. Upgrade to Provider or higher at https://commandcode.ai/billing to use these endpoints."}}`
 	if got := APIError([]byte(goKey), "403 Forbidden"); got != "Your Go plan doesn't include API access. Upgrade to Provider or higher at https://commandcode.ai/billing to use these endpoints. — "+CommandCodeGoHint {
+		t.Fatal(got)
+	}
+}
+
+// An upstream refusal with no message of its own says what it was, not a
+// bare "403 Forbidden" (maralica's relay on Discord): Cloudflare's block
+// page as a firewall's, with its title; any other page by its title, as
+// plain words; an empty body as a refusal with no details. A JSON error
+// still reads as its message.
+func TestAPIErrorUnsaid(t *testing.T) {
+	cf := `<!DOCTYPE html>
+<!--[if lt IE 7]> <html class="no-js ie6 oldie" lang="en-US"> <![endif]-->
+<!--[if gt IE 8]><!--> <html class="no-js" lang="en-US"> <!--<![endif]-->
+<head>
+<title>Attention Required! | Cloudflare</title>
+<meta charset="UTF-8" />
+</head>
+<body>
+  <div id="cf-wrapper">
+    <div id="cf-error-details" class="cf-error-details-wrapper">
+      <div class="cf-wrapper cf-header cf-error-overview">
+        <h1 data-translate="block_headline">Sorry, you have been blocked</h1>
+        <h2 class="cf-subheadline"><span data-translate="unable_to_access">You are unable to access</span> relay.example.com</h2>
+      </div>
+      <span class="cf-footer-item sm:block sm:mb-1">Cloudflare Ray ID: <strong class="font-semibold">8d1c2f3a4b5c6d7e</strong></span>
+    </div>
+  </div>
+</body>
+</html>`
+	got := APIError([]byte(cf), "403 Forbidden")
+	if got != "403 Forbidden: a web page, not an API reply: “Attention Required! | Cloudflare” — "+BlockedHint {
+		t.Fatal(got)
+	}
+	if !EdgeBlocked([]byte(cf)) || !EdgeBlocked([]byte("error code: 1020")) {
+		t.Fatal("Cloudflare's block page isn't a firewall's")
+	}
+	if got := APIError([]byte("error code: 1020"), "403 Forbidden"); got != "403 Forbidden — "+BlockedHint {
+		t.Fatal(got)
+	}
+
+	page := "<!doctype html>\n<html><head><title>\n  403 <b>Forbidden</b> &amp; denied by nginx\n</title></head><body><h1>403</h1></body></html>"
+	if got := APIError([]byte(page), "403 Forbidden"); got != "403 Forbidden: a web page, not an API reply: “403 Forbidden & denied by nginx”" {
+		t.Fatal(got)
+	}
+	long := "<html><title>" + strings.Repeat("页", 200) + "</title></html>"
+	if got := APIError([]byte(long), "403 Forbidden"); !strings.HasSuffix(got, strings.Repeat("页", 120)+"…”") {
+		t.Fatal(got)
+	}
+	if EdgeBlocked([]byte(page)) {
+		t.Fatal("nginx's 403 page isn't a firewall's block")
+	}
+
+	for _, b := range []string{"", " \r\n "} {
+		for _, status := range []string{"403 Forbidden", "Forbidden", "502"} {
+			if got := APIError([]byte(b), status); got != status+": "+NoDetails {
+				t.Fatalf("%q, %s: %s", b, status, got)
+			}
+		}
+	}
+	// an empty stream event, or a reader's own words, is no HTTP refusal
+	for _, fallback := range []string{"upstream stream failed", "unexpected reply", ""} {
+		if got := APIError(nil, fallback); got != fallback {
+			t.Fatalf("%q: %s", fallback, got)
+		}
+	}
+
+	if got := APIError([]byte(`{"error":{"message":"Your IP is not allowed","type":"forbidden"}}`), "403 Forbidden"); got != "Your IP is not allowed" {
+		t.Fatal(got)
+	}
+	// the plan-quota reader says the same of a body with no message
+	if got := vendorSaid([]byte(cf), "403 Forbidden"); got != "403 Forbidden: a web page, not an API reply: “Attention Required! | Cloudflare”" {
+		t.Fatal(got)
+	}
+	if got := vendorSaid(nil, "403 Forbidden"); got != "403 Forbidden: "+NoDetails {
 		t.Fatal(got)
 	}
 }

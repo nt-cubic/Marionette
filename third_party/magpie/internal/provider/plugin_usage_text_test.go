@@ -18,9 +18,9 @@ import (
 func TestPluginTextRowIsText(t *testing.T) {
 	q := quotaOfPlugin(SubscriptionQuota{Provider: "autoclaw-plugin", User: "u"}, plugin.Usage{Windows: []plugin.UsageWindow{
 		{Name: "积分余额", Display: "1,234 积分", Aside: true},
-		{Name: "5 hours", Used: 40, Display: "40 / 100"},
+		{Name: "5 hours", Used: fptr(40), Display: "40 / 100"},
 		{Name: "Credits", Display: "0 / 50", Limit: 50, Aside: true},
-		{Name: "On-demand", Display: "$0 / $20"},
+		{Name: "On-demand", Used: fptr(0), Display: "$0 / $20"},
 		{Name: "Bare", Aside: true},
 	}})
 	want := []bool{true, false, false, false, false}

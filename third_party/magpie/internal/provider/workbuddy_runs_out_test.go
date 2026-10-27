@@ -17,7 +17,7 @@ import (
 func TestWorkBuddyCreditsRunOutForRouting(t *testing.T) {
 	now := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
 	credits := func(runsOutAt string) plugin.Usage {
-		return plugin.Usage{Plan: "Pro", Windows: []plugin.UsageWindow{{Name: "Credits", Used: 100 * 17.6 / 2250,
+		return plugin.Usage{Plan: "Pro", Windows: []plugin.UsageWindow{{Name: "Credits", Used: fptr(100 * 17.6 / 2250),
 			Display: "17.6 / 2250", Amount: 17.6, Limit: 2250, Unit: "credits", RunsOutAt: runsOutAt, RunsOut: 232.4}}}
 	}
 	q := quotaOfPlugin(SubscriptionQuota{}, credits("2026-10-12T16:39:27.000Z"))

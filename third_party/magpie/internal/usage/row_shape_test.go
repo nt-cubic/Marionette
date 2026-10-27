@@ -21,7 +21,7 @@ func TestRowsOfOneSessionShareAShape(t *testing.T) {
 	var want []Row
 	for i := range 200 {
 		r := Row{Record: Record{Time: at.Add(time.Duration(i) * time.Second), Agent: "claude", Provider: "anthropic", Model: "claude-opus-5-5",
-			Session: "s1", Endpoint: "/v1/messages", Input: i, Output: 2 * i, Status: 200,
+			Session: "s1", Endpoint: "/v1/messages", Input: i, Output: 2 * i, Own: int64(3 * i), Masking: int64(i), Status: 200,
 			RequestID: fmt.Sprint("req", i), ResponseID: fmt.Sprint("resp", i), Archive: fmt.Sprint("a", i)}, Source: "log"}
 		if i%7 == 0 {
 			r.Error, r.Status = fmt.Sprint("overloaded ", i), 529

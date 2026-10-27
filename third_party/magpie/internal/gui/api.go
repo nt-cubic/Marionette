@@ -197,6 +197,9 @@ type agentJSON struct {
 	// Launch: the command that starts an agent taking the gateway only
 	// from its environment (agy) on magpie, to copy
 	Launch string `json:"launch,omitempty"`
+	// Typed: what starts it on magpie typed in a new terminal, a function
+	// magpie gave the user's shells (agy); the launch is for one open now
+	Typed string `json:"typed,omitempty"`
 	// Models: how many of the catalog its lists show, for an agent that
 	// picks among it (agent_models.go)
 	Models *modelCountJSON `json:"models,omitempty"`
@@ -1276,6 +1279,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		in.GatewayConversations = cur.GatewayConversations // Sessions' explicit recording consent
 		in.RedactRules = cur.RedactRules                   // the masking rules, set on their own
 		in.RedactModel = cur.RedactModel                   // set on its own (privacy-model)
+		in.RedactModelName = cur.RedactModelName           // set on its own (privacy-model)
 		in.RedactActions = cur.RedactActions               // set on their own (redact-actions below)
 		in.RedactAllow = cur.RedactAllow                   // set on its own (redact-allow below)
 		in.DisabledModels = cur.DisabledModels             // set on their own (disabled-models below, #1867)
@@ -2387,6 +2391,8 @@ func held(h http.Handler) http.Handler {
 			// a page waits on the session files: the warm-up reading
 			// them reads at full speed meanwhile
 			defer sessions.Ask()()
+			// and what the read threw away goes back once the page rests
+			defer readingPage()()
 		}
 		if !(api && r.Method == http.MethodGet) {
 			// anything that may have written drops what was held, once it
@@ -2449,6 +2455,9 @@ func state() stateJSON {
 		if a.Launch != nil {
 			aj.Launch = a.Launch()
 		}
+		if a.Typed != nil && aj.Launch != "" {
+			aj.Typed = a.Typed()
+		}
 		aj.CLIMissing = a.CLIMissing()
 		if a.Native != nil {
 			native := a.Native.Read()
@@ -2499,6 +2508,146 @@ func openError(w Windows, url string) string {
 func writeJSON(rw http.ResponseWriter, v any) {
 	rw.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(rw).Encode(v)
+}
+
+// writeJSONSame is writeJSON for a read the page asks for again and again:
+// the answer's X-Magpie-Tag is a hash of its bytes, and a request whose
+// X-Magpie-Had is that tag gets X-Magpie-Same and no body, which the page
+// reads as the answer it has (api in app.js). The Sessions tab read a long
+// history's ~8 MB list and ~0.7 MB of stats every 15 s, and parsed and
+// compared them whole to find them the same. Not an ETag and a 304:
+// WebView2 is sent no If-None-Match, and Wails turns its 304 into a 505.
+func writeJSONSame(rw http.ResponseWriter, r *http.Request, v any) {
+	var b bytes.Buffer
+	if err := json.NewEncoder(&b).Encode(v); err != nil {
+		fail(rw, err)
+		return
+	}
+	sum := sha256.Sum256(b.Bytes())
+	tag := hex.EncodeToString(sum[:16])
+	rw.Header().Set("X-Magpie-Tag", tag)
+	if r.Header.Get("X-Magpie-Had") == tag {
+		rw.Header().Set("X-Magpie-Same", "1")
+		rw.WriteHeader(http.StatusOK)
+		return
+	}
+	rw.Header().Set("Content-Type", "application/json")
+	_, _ = rw.Write(b.Bytes())
+}
+
+// sentRows is each row's hash in the last few lists writeJSONRows sent, by
+// the answer's tag, oldest first: a few, for a window and a browser tab or
+// two asking at once.
+var sentRows struct {
+	sync.Mutex
+	tags []string
+	rows map[string][][16]byte
+}
+
+const sentRowsKept = 4
+
+// writeJSONRows is writeJSONSame for an answer that is a long list, key,
+// beside the fields of rest: one asked with the tag of a list sent before
+// that changed since gets X-Magpie-Delta: key, and its list holds only the
+// rows not in that one, each run of rows that was, in its order, written
+// [from, count] of the list the page has. While an agent works, its
+// session's row changes every poll, and the Sessions tab read all ~5000
+// rows (~8 MB) again for it.
+func writeJSONRows[T any](rw http.ResponseWriter, r *http.Request, key string, rows []T, rest any) {
+	raw := make([][]byte, len(rows))
+	sums := make([][16]byte, len(rows))
+	for i, row := range rows {
+		b, err := json.Marshal(row)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		raw[i] = b
+		sum := sha256.Sum256(b)
+		sums[i] = [16]byte(sum[:16])
+	}
+	tail, err := json.Marshal(rest)
+	if err != nil {
+		fail(rw, err)
+		return
+	}
+	k, _ := json.Marshal(key)
+	body := func(items [][]byte) []byte {
+		var b bytes.Buffer
+		b.WriteByte('{')
+		b.Write(k)
+		b.WriteString(":[")
+		b.Write(bytes.Join(items, []byte(",")))
+		b.WriteByte(']')
+		if len(tail) > 2 {
+			b.WriteByte(',')
+			b.Write(tail[1:])
+		} else {
+			b.WriteByte('}')
+		}
+		b.WriteByte('\n')
+		return b.Bytes()
+	}
+	whole := body(raw)
+	sum := sha256.Sum256(whole)
+	tag := hex.EncodeToString(sum[:16])
+	rw.Header().Set("X-Magpie-Tag", tag)
+	had := r.Header.Get("X-Magpie-Had")
+	if had == tag {
+		rw.Header().Set("X-Magpie-Same", "1")
+		rw.WriteHeader(http.StatusOK)
+		return
+	}
+	sentRows.Lock()
+	was, ok := sentRows.rows[had]
+	if _, kept := sentRows.rows[tag]; !kept {
+		if sentRows.rows == nil {
+			sentRows.rows = map[string][][16]byte{}
+		}
+		if len(sentRows.tags) == sentRowsKept {
+			delete(sentRows.rows, sentRows.tags[0])
+			sentRows.tags = sentRows.tags[1:]
+		}
+		sentRows.tags = append(sentRows.tags, tag)
+		sentRows.rows[tag] = sums
+	}
+	sentRows.Unlock()
+	rw.Header().Set("Content-Type", "application/json")
+	if !ok || had == "" {
+		_, _ = rw.Write(whole)
+		return
+	}
+	at := make(map[[16]byte][]int, len(was))
+	for j, s := range was {
+		at[s] = append(at[s], j)
+	}
+	var items [][]byte
+	from, n := 0, 0
+	run := func() {
+		if n > 0 {
+			items = append(items, []byte("["+strconv.Itoa(from)+","+strconv.Itoa(n)+"]"))
+		}
+		n = 0
+	}
+	for i, s := range sums {
+		js := at[s]
+		if len(js) == 0 {
+			run()
+			items = append(items, raw[i])
+			continue
+		}
+		j := js[0]
+		at[s] = js[1:]
+		if n > 0 && j == from+n {
+			n++
+			continue
+		}
+		run()
+		from, n = j, 1
+	}
+	run()
+	rw.Header().Set("X-Magpie-Delta", key)
+	_, _ = rw.Write(body(items))
 }
 
 func fail(rw http.ResponseWriter, err error) {

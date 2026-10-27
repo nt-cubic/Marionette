@@ -221,7 +221,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     releaseRead();
     await page.evaluate(() => quotasLoading);
     assert.equal(await row.evaluate(e => e.querySelector(".quota-refresh") === window.refreshMotion.button), true, "a background reading replaced the spinning control");
-    assert.equal(await row.evaluate(e => e.querySelector("path").getAnimations()[0] === window.refreshMotion.animation), true, "a background reading restarted the turn");
+    assert.equal(await row.evaluate(e => e.querySelector(".quota-refresh path").getAnimations()[0] === window.refreshMotion.animation), true, "a background reading restarted the turn");
     release();
     await page.locator('.subscription-card[data-provider="codex"] .quota-n', { hasText: "61%" }).waitFor();
     const end = await row.evaluate(e => {
@@ -236,8 +236,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     // A response already available still gets one complete turn.
     state.gate = undefined;
     await row.locator(".quota-refresh").click();
-    await page.waitForFunction(() => document.querySelector('.subscription-card[data-provider="codex"] path').getAnimations()[0]?.effect.getTiming().iterations === 1);
-    await row.evaluate(e => e.querySelector("path").getAnimations()[0].finish());
+    await page.waitForFunction(() => document.querySelector('.subscription-card[data-provider="codex"] .quota-refresh path').getAnimations()[0]?.effect.getTiming().iterations === 1);
+    await row.evaluate(e => e.querySelector(".quota-refresh path").getAnimations()[0].finish());
     await row.locator(".quota-refresh:not(.busy)").waitFor();
     assert.deepEqual(errors, []);
   });

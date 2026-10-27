@@ -267,4 +267,5 @@ var Builtin = map[string]Strategy{
 	provider.Pace:      Pace,
 	provider.Weighted:  Weighted,
 	provider.FreeFirst: FreeFirst,
+	provider.Fastest:   Fastest,
 }

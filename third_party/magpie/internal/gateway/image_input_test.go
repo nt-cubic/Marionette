@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -582,6 +583,55 @@ func TestImageWalkReadsTextOnlyTurnsInPlace(t *testing.T) {
 	} {
 		if !hasImage(c.proto, []byte(strings.ReplaceAll(c.body, "%u", "\x5cu"))) {
 			t.Errorf("case %d (%v): its image was not found", i, c.proto)
+		}
+	}
+}
+
+// An agent's turns are mostly tool results, and nearly all of them text:
+// the image walk looks into each one where it is, as it does a turn,
+// rather than decoding the request whenever a tool_result or a
+// functionResponse is there (#3725). An image a tool gave back is still
+// found, however its block is spelled.
+func TestImageWalkReadsToolResultsInPlace(t *testing.T) {
+	var turns []string
+	for i := range 60 {
+		turns = append(turns,
+			`{"role":"assistant","content":[{"type":"tool_use","id":"t`+fmt.Sprint(i)+`","name":"Read","input":{"path":"a.go"}}]}`,
+			`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t`+fmt.Sprint(i)+`","content":[{"type":"text","text":"`+strings.Repeat("package a ", 100)+`"}]},{"type":"tool_result","tool_use_id":"u","content":"done"}]}`)
+	}
+	body := []byte(`{"model":"m","messages":[` + strings.Join(turns, ",") + `]}`)
+	if hasImage(provider.Anthropic, body) {
+		t.Fatal("an image found in a text-only body")
+	}
+	if per := testing.AllocsPerRun(5, func() { hasImage(provider.Anthropic, body) }); per > 4 {
+		t.Fatalf("looking for an image in a %d-byte body of text tool results took %v allocations", len(body), per)
+	}
+	gem := []byte(`{"contents":[{"role":"user","parts":[{"functionResponse":{"name":"f","response":{"out":"` + strings.Repeat("x", 4000) + `"}}}]}]}`)
+	if hasImage(provider.Gemini, gem) {
+		t.Fatal("an image found in a Gemini text-only function response")
+	}
+	if per := testing.AllocsPerRun(5, func() { hasImage(provider.Gemini, gem) }); per > 4 {
+		t.Fatalf("looking for an image in a Gemini function response took %v allocations", per)
+	}
+
+	img := `{"type":"image","source":{"type":"url","url":"https://x/a.png"}}`
+	for i, c := range []struct {
+		proto provider.Protocol
+		body  string
+		want  bool
+	}{
+		{provider.Anthropic, `{"messages":[{"role":"user","content":[{"content":[` + img + `],"type":"tool_result","tool_use_id":"t"}]}]}`, true},
+		{provider.Anthropic, `{"messages":[{"role":"user","content":[{"type":"tool_result","content":[{"type":"text","text":"a"}],"content":[` + img + `]}]}]}`, true},
+		{provider.Anthropic, `{"messages":[{"role":"user","content":[{"type":"tool_result","content":[{"type":"tool_result","content":[` + img + `]}]}]}]}`, true},
+		{provider.Anthropic, `{"messages":[{"role":"user","content":[{"%u0074ype":"tool_result","content":[` + img + `]}]}]}`, true},
+		{provider.Anthropic, `{"messages":[{"role":"user","content":[{"type":"text","content":[` + img + `]}]}]}`, false},
+		{provider.Anthropic, `{"messages":[{"role":"user","content":[{"type":"tool_result","content":"see a.png"}]}]}`, false},
+		{provider.Gemini, `{"contents":[{"role":"user","parts":[{"functionResponse":{"parts":[{"inlineData":{"mimeType":"image/png","data":"AAAA"}}],"name":"f"}}]}]}`, true},
+		{provider.Gemini, `{"contents":[{"role":"user","parts":[{"functionResponse":{"name":"f","parts":[{"functionResponse":{"parts":[{"fileData":{"fileUri":"gs://a"}}]}}]}}]}]}`, true},
+		{provider.Gemini, `{"contents":[{"role":"user","parts":[{"functionResponse":{"name":"f","parts":[{"text":"a"}]}}]}]}`, false},
+	} {
+		if got := hasImage(c.proto, []byte(strings.ReplaceAll(c.body, "%u", "\x5cu"))); got != c.want {
+			t.Errorf("case %d (%v): hasImage = %v, want %v", i, c.proto, got, c.want)
 		}
 	}
 }

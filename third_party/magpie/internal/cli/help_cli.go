@@ -127,6 +127,10 @@ func agentHelp(a *agent.Agent) string {
 	fmt.Fprintf(&b, "  magpie %s <field> <value>  set another field\n", id)
 	fmt.Fprintf(&b, "  magpie %s default          take magpie out: back on what it had before\n", id)
 	fmt.Fprintf(&b, "  magpie %s <field> default  that field back to its own default\n", id)
+	if a.ID == "agy" {
+		fmt.Fprintf(&b, "  magpie %s run [args…]      start agy, on magpie while its model is magpie's (what your shell's agy runs)\n", id)
+		fmt.Fprintf(&b, "  magpie %s env              the variables and model it is started with\n", id)
+	}
 	var keys []string
 	for _, f := range a.Fields {
 		keys = append(keys, f.Key)

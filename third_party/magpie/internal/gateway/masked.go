@@ -21,7 +21,9 @@ type Masked struct {
 	Warned   int            `json:"warned,omitempty"` // places a value went as written, the user told
 	Kinds    map[string]int `json:"kinds,omitempty"`  // different values by kind
 	By       map[string]int `json:"by,omitempty"`     // different values by finder
-	Key      int64          `json:"key,omitempty"`
+	// Key is a string in JSON: nanoseconds are past what a JS number
+	// holds exactly, and a rounded key finds no record
+	Key int64 `json:"key,omitempty,string"`
 }
 
 // maskHits are what a masker swapped: each value from a gwmw.Teller, and

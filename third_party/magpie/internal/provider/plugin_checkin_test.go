@@ -113,12 +113,17 @@ func TestPluginCheckinRunsAsTheBuiltinsDo(t *testing.T) {
 	}
 	failed := 0
 	for k := range got {
-		if strings.Contains(k, "check-in is down") || strings.Contains(k, "no outcome") {
+		if strings.Contains(k, "check-in is down") || strings.Contains(k, "the plugin answered") {
 			failed++
 		}
 	}
 	if failed != 2 {
 		t.Fatalf("the failures (ck-throw, ck-odd): %+v", rs)
+	}
+	// an outcome magpie doesn't know keeps the plugin's message, marked as
+	// the plugin's own word, so "failed" can't read as contradicting it (#3650)
+	if _, ok := got[CheckinFailed+`:the plugin answered "yes": the daily credits were refreshed`]; !ok {
+		t.Fatalf("ck-odd's message: %+v", rs)
 	}
 	if p := pressed(t, presses); len(p) != len(keys) {
 		t.Fatalf("pressed %q", p)

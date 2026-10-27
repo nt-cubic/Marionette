@@ -673,11 +673,31 @@ func CodexTiers(m *catalog.Model, e Entry, members func(id string) []Member) {
 		m.Tiers = e.Tiers
 	}
 	if e.Group != "" {
+		fast := false
 		for _, mb := range members(e.ID) {
 			if a := mb.Provider.Account; a != nil && a.Agent == "codex" && strings.HasPrefix(mb.Model, "gpt-") {
 				m.Fast = true
 				break
 			}
+			fast = fast || CanFast(mb.Provider, mb.Model)
 		}
+		// a group with another member that has a fast mode (an OpenAI or
+		// Anthropic key's, a relay's GPT, Cursor's, a plugin's) is offered
+		// Fast too: Codex sends /fast's service_tier only on a model whose
+		// entry lists it, and the gateway asks each member for it in its
+		// vendor's words, or not at all where it has none (cute_lynx_36404
+		// on Discord: /fast did nothing through a group)
+		if !m.Fast && fast {
+			m.Tiers = []string{codexFastTier}
+		}
+		return
+	}
+	// so is a model of its own that has one, which no tier above names
+	// (an Anthropic key's Opus, an OpenAI key's GPT, a Cursor account's)
+	if len(m.Tiers) == 0 && CanFast(e.Provider, e.Model) {
+		m.Tiers = []string{codexFastTier}
 	}
 }
+
+// codexFastTier is Fast's service tier as Codex sends it.
+const codexFastTier = "priority"

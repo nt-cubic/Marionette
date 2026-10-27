@@ -103,13 +103,17 @@ type Settings struct {
 	// under Redact and RedactPersonal; it is this computer's own, as the
 	// model is downloaded on it. RedactShape sends a key as a made-up key
 	// of its own form (sk_… as another sk_…) instead of a placeholder
-	// (redact.Options.Shape; Charles Cao on X).
-	Redact         bool            `json:"redact,omitempty"`
-	RedactShape    bool            `json:"redactShape,omitempty"`
-	RedactModel    bool            `json:"redactModel,omitempty"`
-	RedactPersonal bool            `json:"redactPersonal,omitempty"`
-	RedactKinds    map[string]bool `json:"redactKinds,omitempty"`
-	RedactWords    []string        `json:"redactWords,omitempty"`
+	// (redact.Options.Shape; Charles Cao on X). RedactModelName is the
+	// local model picked (pii.PrivacyFilter, pii.AstrLinkGuard); "" for
+	// none picked, which pii.Choose reads. It is this computer's, as
+	// RedactModel is.
+	Redact          bool            `json:"redact,omitempty"`
+	RedactShape     bool            `json:"redactShape,omitempty"`
+	RedactModel     bool            `json:"redactModel,omitempty"`
+	RedactModelName string          `json:"redactModelName,omitempty"`
+	RedactPersonal  bool            `json:"redactPersonal,omitempty"`
+	RedactKinds     map[string]bool `json:"redactKinds,omitempty"`
+	RedactWords     []string        `json:"redactWords,omitempty"`
 	// RedactWordsAnyCase matches RedactWords in any case (ZoeCats on
 	// Discord); off, the default, a word is matched as written.
 	RedactWordsAnyCase bool          `json:"redactWordsAnyCase,omitempty"`
@@ -1112,7 +1116,7 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.LAN, s.AllowIPs = cur.LAN, cur.AllowIPs
 	s.FetchPrivate = cur.FetchPrivate
 	s.SessionTerminal = cur.SessionTerminal
-	s.RedactModel = cur.RedactModel
+	s.RedactModel, s.RedactModelName = cur.RedactModel, cur.RedactModelName
 	s.ClaudeRunsMost = cur.ClaudeRunsMost
 	s.RequestArchiveLocal, s.RequestArchiveLocalMB = cur.RequestArchiveLocal, cur.RequestArchiveLocalMB
 }
@@ -1432,6 +1436,26 @@ func SetRedactModel(on bool) error {
 	defer fileMu.Unlock()
 	s := load()
 	s.RedactModel = on
+	return save(s, false)
+}
+
+// SetRedactModelName keeps the local model the user picked while it is
+// off, for turning it on.
+func SetRedactModelName(name string) error {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+	s := load()
+	s.RedactModelName = name
+	return save(s, false)
+}
+
+// UseRedactModel turns the local masking model on as name, the model
+// the user picked, once that model is downloaded.
+func UseRedactModel(name string) error {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+	s := load()
+	s.RedactModel, s.RedactModelName = true, name
 	return save(s, false)
 }
 

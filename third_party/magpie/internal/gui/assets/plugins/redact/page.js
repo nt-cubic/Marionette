@@ -78,7 +78,7 @@ function maskPageOpen() {
   // a masked call in the tray panel opens the window on its request
   if (!maskKeyRead) {
     maskKeyRead = true;
-    const k = +params.get("key");
+    const k = params.get("key");
     if (k) {
       const q = new URLSearchParams(location.search);
       q.delete("key");
@@ -401,7 +401,7 @@ function maskRefresh() {
   const seq = maskSeq;
   return api(maskQuery(0)).then((r) => {
     if (seq !== maskSeq || !maskL.records.length) return;
-    const fresh = (r?.records || []).filter((x) => x.key > maskL.records[0].key);
+    const fresh = (r?.records || []).filter((x) => BigInt(x.key) > BigInt(maskL.records[0].key));
     if (!fresh.length) return;
     maskL.records = [...fresh, ...maskL.records];
     if (!maskO) drawMaskList();

@@ -454,7 +454,9 @@ func TestQueuedStreamFailureIsTheStreamsError(t *testing.T) {
 	for _, a := range queueAsks {
 		t.Run(a.name, func(t *testing.T) {
 			one := 1
-			v := &streamVendor{fail: 10, block: make(chan struct{})}
+			// failing every time it is asked: past the same-one retries
+			// and the plain provider's patience (singlePatience) too
+			v := &streamVendor{fail: 1000, block: make(chan struct{})}
 			gw := queueGateway(t, v, func(p *provider.Provider) { p.MaxConcurrency = &one })
 			first := holdSlot(t, gw, v, a.path, a.body)
 			code, body, _, err := askHeard(gw, a.path, a.body, first.free)

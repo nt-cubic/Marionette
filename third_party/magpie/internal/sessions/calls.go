@@ -292,9 +292,24 @@ func callFiles() []file { return callFilesWith(codexFiles()) }
 
 // callFilesWith is callFiles with codex the rollouts codexFiles found.
 func callFilesWith(codex []file) []file {
-	var out []file
-	seen := map[string]bool{}
-	add := func(fs []file) {
+	lists := [][]file{ccFiles("claude", ClaudeDir())}
+	for _, d := range callDesktopDirs() {
+		// Cowork keeps a Claude Code folder of its own for each session
+		homes, _ := SessionGlob(filepath.Join(d, "local-agent-mode-sessions", "*", "*", "local_*", ".claude"))
+		for _, h := range homes {
+			lists = append(lists, ccFiles("claude-desktop", h))
+		}
+	}
+	lists = append(lists, codex, wslFiles("claude", "codex"))
+	// sized once: a file is ~200 bytes, and growing a list of ~20k of them
+	// on every 15 s poll was ~36 MB a read
+	n := 0
+	for _, fs := range lists {
+		n += len(fs)
+	}
+	out := make([]file, 0, n)
+	seen := make(map[string]bool, n)
+	for _, fs := range lists {
 		for _, f := range fs {
 			if !seen[f.path] {
 				seen[f.path] = true
@@ -302,16 +317,6 @@ func callFilesWith(codex []file) []file {
 			}
 		}
 	}
-	add(ccFiles("claude", ClaudeDir()))
-	for _, d := range callDesktopDirs() {
-		// Cowork keeps a Claude Code folder of its own for each session
-		homes, _ := SessionGlob(filepath.Join(d, "local-agent-mode-sessions", "*", "*", "local_*", ".claude"))
-		for _, h := range homes {
-			add(ccFiles("claude-desktop", h))
-		}
-	}
-	add(codex)
-	add(wslFiles("claude", "codex"))
 	return out
 }
 

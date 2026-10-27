@@ -107,6 +107,7 @@ func builtins(home, cfg string) []*Agent {
 		pi(home),
 		stepcode(home),
 		mothx(home),
+		penguin(home),
 		aside(home),
 		omo(home),
 		primeAgent(home),

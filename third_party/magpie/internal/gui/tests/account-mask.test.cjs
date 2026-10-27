@@ -4,7 +4,8 @@
 // the page was told of — an allowance's user, a route's account — is
 // blurred in its row, a sentence and a tooltip, on Usage and Routing; a
 // card's own name ("ZCode" signed in with no name of its own, WorkBuddy)
-// stays, as does a name inside a longer word. The tray panel follows the
+// stays, as do magpie's own labels for a nameless account ("API key") and
+// a name inside a longer word. The tray panel follows the
 // window's setting, as it is turned. English and Chinese; no backend, the
 // API is faked here.
 const assert = require("node:assert/strict");
@@ -20,6 +21,9 @@ const quotas = () => [
   { provider: "zcode", name: "ZCode", icon: "zcode", plan: "Start", user: "ZCode", windows: [{ name: "5 hours", used: 10 }] },
   { provider: "qoder", name: "Qoder", icon: "qoder", plan: "Pro", user: "Lee", windows: [{ name: "Credits", used: 3 }] },
   { provider: "codex", name: "Codex", icon: "openai", plan: "Plus", user: "dev.one@example.com", windows: [{ name: "5 hours", used: 20 }] },
+  // a plugin's accounts with no name, as magpie labels them (pluginLabels)
+  { provider: "kiro", name: "Kiro", icon: "kiro-color", plan: "Pro", user: "API key", windows: [{ name: "Credits", used: 2 }] },
+  { provider: "kiro", name: "Kiro", icon: "kiro-color", plan: "Pro", user: "Signed in (2)", windows: [{ name: "Credits", used: 4 }] },
 ];
 
 function serve(lang, panel) {
@@ -75,7 +79,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.evaluate(() => {
         const d = document.createElement("div");
         d.id = "sample";
-        d.textContent = "李雷 checked in · Sleeper Lee · ZCode";
+        d.textContent = "李雷 checked in · Sleeper Lee · ZCode · or an API key · Signed in";
         d.title = "WorkBuddy · 138****5678";
         document.querySelector("#view-usage").append(d);
       });
@@ -102,7 +106,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.ok(got.users.some((u) => u.raw === null && u.text === "ZCode"), "ZCode's own name stays");
       assert.ok(got.heads.includes("WorkBuddy") && got.heads.includes("ZCode"), got.heads.join());
       assert.deepEqual(got.sampleRaws, ["李雷", "Lee"]);
-      assert.match(got.sample, /^\S+ checked in · Sleeper \S+ · ZCode$/);
+      // magpie's labels for a plugin's nameless accounts are words, kept
+      // (outloudvi: Kiro's summary "…or an API key" was blurred)
+      assert.match(got.sample, /^\S+ checked in · Sleeper \S+ · ZCode · or an API key · Signed in$/);
       assert.equal(got.sampleTitle, "WorkBuddy · •••••••••••");
 
       // Routing: a route's account, learnt from what the gateway answered
@@ -141,7 +147,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await panel.locator("#pickRow").textContent(), "GPT-6-Astra via magpie dev.one@example.com");
       assert.ok(await panel.evaluate(() => [...document.querySelectorAll("#panelQuota .pq-user")].some((e) => e.textContent === "李雷")));
       // and back as they were in the window
-      assert.equal(await page.locator("#sample").textContent(), "李雷 checked in · Sleeper Lee · ZCode");
+      assert.equal(await page.locator("#sample").textContent(), "李雷 checked in · Sleeper Lee · ZCode · or an API key · Signed in");
       assert.equal(await page.locator("#sample").getAttribute("title"), "WorkBuddy · 138****5678");
       assert.equal(await page.locator(".subscription-account .user", { hasText: "李雷" }).getAttribute("title"), "李雷");
       assert.deepEqual(errors, []);

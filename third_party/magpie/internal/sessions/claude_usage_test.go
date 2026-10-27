@@ -23,7 +23,7 @@ func claudeUsageLine(at time.Time, id, request, model string, tokens Tokens, con
 
 func claudeUsageReplies(s *state) int {
 	n := 0
-	for _, d := range s.Days {
+	for _, d := range s.Days.all() {
 		n += d.Replies
 	}
 	return n
@@ -40,10 +40,10 @@ func TestClaudeUsageNonAdjacentReplay(t *testing.T) {
 			claudeLine(s, claudeUsageLine(at.Add(48*time.Hour), "a", "req-a", "m", a, "", fast), true)
 			want := a
 			want.add(b)
-			if s.Models["m"] != want || claudeUsageReplies(s) != 2 {
+			if s.Models.of("m") != want || claudeUsageReplies(s) != 2 {
 				t.Fatalf("tokens=%+v replies=%d, want %+v / 2", s.Models, claudeUsageReplies(s), want)
 			}
-			if s.Days[dateOf(at)].Models["m"] != want {
+			if s.Days.of(dateOf(at)).Models.of("m") != want {
 				t.Fatal("replay moved the original contribution to its observation date")
 			}
 		})
@@ -65,24 +65,24 @@ func TestClaudeUsageRevisionAndTools(t *testing.T) {
 			claudeLine(s, line(time.Second, "m", updated, newTool), true)
 			claudeLine(s, line(2*time.Second, "m", old, tool), true)
 			claudeLine(s, line(time.Millisecond, "m", Tokens{10, 99, 30, 4, 0}, tool), true)
-			if s.Models["m"] != updated || claudeUsageReplies(s) != 1 {
+			if s.Models.of("m") != updated || claudeUsageReplies(s) != 1 {
 				t.Fatalf("old replay undid newer usage: %+v", s)
 			}
-			d := s.Days[dateOf(at)]
-			if d.Tools["Read"] != 1 || d.Tools["Skill"] != 1 || d.Skills["review"] != 1 {
+			d := s.Days.of(dateOf(at))
+			if d.Tools.of("Read") != 1 || d.Tools.of("Skill") != 1 || d.Skills.of("review") != 1 {
 				t.Fatalf("tools=%v skills=%v", d.Tools, d.Skills)
 			}
 			// A genuinely newer correction can reduce tokens and change model.
 			correction := Tokens{8, 5, 20, 0, 0}
 			claudeLine(s, line(48*time.Hour, "m2", correction, ""), true)
-			if !s.Models["m"].zero() || s.Models["m2"] != correction || d.Replies != 1 {
+			if !s.Models.of("m").zero() || s.Models.of("m2") != correction || d.Replies != 1 {
 				t.Fatalf("correction failed: %+v", s)
 			}
-			if !d.Models["m"].zero() || s.Days[dateOf(at.Add(48*time.Hour))].Models["m2"] != correction {
+			if !d.Models.of("m").zero() || s.Days.of(dateOf(at.Add(48*time.Hour))).Models.of("m2") != correction {
 				t.Fatal("correction did not replace both date/model buckets")
 			}
 			claudeLine(s, line(49*time.Hour, "m", updated, newTool), true)
-			if s.Models["m2"] != correction || !s.Models["m"].zero() {
+			if s.Models.of("m2") != correction || !s.Models.of("m").zero() {
 				t.Fatal("known old snapshot with new observation time replaced correction")
 			}
 		})
@@ -117,7 +117,7 @@ func TestClaudeUsageIdentity(t *testing.T) {
 			for range tc.calls {
 				want.add(tok)
 			}
-			if s.Models["m"] != want || claudeUsageReplies(s) != tc.calls || len(st.Calls) != tc.calls {
+			if s.Models.of("m") != want || claudeUsageReplies(s) != tc.calls || len(st.Calls) != tc.calls {
 				t.Fatalf("tokens=%+v replies=%d calls=%d, want %+v / %d", s.Models, claudeUsageReplies(s), len(st.Calls), want, tc.calls)
 			}
 			if tc.name == "missing request upgrade" && st.Calls[0].RequestID != "r1" {
@@ -135,7 +135,7 @@ func TestClaudeUsageMissingToolIdentityAndSubagent(t *testing.T) {
 	for i := range 2 {
 		claudeLine(s, claudeUsageLine(at.Add(time.Duration(i)*time.Second), "a", "r", "m", tok, content, true), false)
 	}
-	if s.Models["m"] != tok || claudeUsageReplies(s) != 0 || s.Days[dateOf(at)].Tools["Read"] != 2 {
+	if s.Models.of("m") != tok || claudeUsageReplies(s) != 0 || s.Days.of(dateOf(at)).Tools.of("Read") != 2 {
 		t.Fatalf("subagent/missing tool ID behavior changed: %+v", s)
 	}
 }
@@ -147,8 +147,8 @@ func TestClaudeToolRevisionRejectsReplayedName(t *testing.T) {
 		content := fmt.Sprintf(`[{"type":"tool_use","id":"tool-1","name":%q,"input":{}}]`, name)
 		claudeLine(s, claudeUsageLine(at.Add(time.Duration(i)*time.Second), "a", "r", "m", Tokens{Input: 3}, content, true), true)
 	}
-	d := s.Days[dateOf(at)]
-	if d.Tools["Read"] != 0 || d.Tools["Write"] != 1 {
+	d := s.Days.of(dateOf(at))
+	if d.Tools.of("Read") != 0 || d.Tools.of("Write") != 1 {
 		t.Fatalf("old tool snapshot undid newer name: %v", d.Tools)
 	}
 }
@@ -179,7 +179,7 @@ func TestClaudeRepeatedBlockRejectsZeroedHistoricalSnapshot(t *testing.T) {
 				claudeLine(s, b, true)
 				claudeCallLine(calls, b)
 			}
-			if s.Models["m"] != tokens || len(calls.Calls) != 1 || calls.Calls[0].Tokens != tokens {
+			if s.Models.of("m") != tokens || len(calls.Calls) != 1 || calls.Calls[0].Tokens != tokens {
 				t.Fatalf("zeroed historical blocks removed original usage: summary=%v calls=%+v", s.Models, calls.Calls)
 			}
 		})

@@ -52,7 +52,7 @@ func TestQoderUsageAfterWindowLoss(t *testing.T) {
 				}
 				appendText(t, path, string(claudeUsageLine(at.Add(time.Second), "a", "r", "m", Tokens{Input: 100, Output: 50}, "", true))+"\n")
 				List(0)
-				if got := cache[path].Models["m"]; got != (Tokens{Input: 100, Output: 50}) {
+				if got := cache[path].Models.of("m"); got != (Tokens{Input: 100, Output: 50}) {
 					t.Fatalf("after window loss: %+v, want input=100 output=50", got)
 				}
 			})
@@ -121,7 +121,7 @@ func TestClaudeLargeWindowSurvivesIdleAndSmallFiles(t *testing.T) {
 			if cache[path].Named != "must resume this summary" {
 				t.Fatal("summary reparsed the large prefix")
 			}
-			if got := cache[path].Models["m"]; got != (Tokens{Input: 4001, Output: 8002}) {
+			if got := cache[path].Models.of("m"); got != (Tokens{Input: 4001, Output: 8002}) {
 				t.Fatal(got)
 			}
 			after, err := os.Stat(callCachePath(path))

@@ -123,13 +123,21 @@ func importSources(asked bool) []AppSource {
 }
 
 // ImportFromApps adds what the user picked, reading the sources again so
-// keys never pass through the window. It answers the names added.
-func ImportFromApps(picks []AppPick) ([]string, error) {
+// keys never pass through the window. It answers the names added. The
+// providers it adds alike but for their keys — an app that keeps an entry
+// a key, as CC Switch does, gives hundreds — are one provider with those
+// keys (see foldAdded).
+func ImportFromApps(picks []AppPick) (added []string, err error) {
 	sources := map[string]AppSource{}
 	for _, s := range ImportSources() {
 		sources[s.ID] = s
 	}
-	var added []string
+	var ids []string
+	defer func() {
+		if _, ferr := foldAdded(ids); ferr != nil && err == nil {
+			err = ferr
+		}
+	}()
 	for _, pk := range picks {
 		var it *AppImport
 		for i, x := range sources[pk.Source].Items {
@@ -204,6 +212,7 @@ func ImportFromApps(picks []AppPick) ([]string, error) {
 		if err := Save(p); err != nil {
 			return added, errorf("%s: %v", p.Name, err)
 		}
+		ids = append(ids, p.ID)
 		added = append(added, p.Name)
 	}
 	return added, nil

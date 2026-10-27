@@ -183,7 +183,7 @@ func wbFetchImageModels(ctx context.Context, client *http.Client, p provider.Pro
 	defer res.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(res.Body, 8<<20))
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s's config: %d%s", p.Name, res.StatusCode, vendorSaid(vendorMessage(b)))
+		return nil, fmt.Errorf("%s's config: %d%s", p.Name, res.StatusCode, errorSaid(b))
 	}
 	var env struct {
 		Code json.RawMessage `json:"code"`

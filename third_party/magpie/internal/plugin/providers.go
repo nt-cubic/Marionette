@@ -1072,7 +1072,7 @@ type UsageResets struct {
 
 type UsageWindow struct {
 	Name      string   `json:"name"`
-	Used      float64  `json:"used"`     // percent
+	Used      *float64 `json:"used"`     // percent; nil when the plugin didn't say
 	ResetsAt  string   `json:"resetsAt"` // RFC 3339
 	ResetSecs int64    `json:"resetSecs"`
 	Display   string   `json:"display"`

@@ -16,8 +16,10 @@ import (
 // been routed; Phase is said only when the gateway knows it: "slot" while
 // it waits in a key's or account's queue (MaxConcurrency), "rpm" while it
 // waits for room in the minute (MaxRPM), "upstream" while a try is out at
-// the vendor (the request sent, or its reply streaming). A request served
-// another way (a subscription bridge, a title helper) has none.
+// the vendor (the request sent, or its reply streaming), "redact" while
+// it is masked (noteRedacting: the rules, and the local model with its
+// wait for a turn). A request served another way (a subscription bridge,
+// a title helper) has none.
 type Active struct {
 	ID       int64     `json:"id"`
 	Agent    string    `json:"agent"`
@@ -44,6 +46,10 @@ type inflight struct {
 	begun []*Route
 	// unrouted: its watch while no route is begun for it (unrouted.go)
 	unrouted *unroutedHold
+	// tr: the trace its routes are in, for the phase they say (under mu)
+	tr *trace
+	// redaction: its maskings, their phase and time (redact_phase.go)
+	redaction redaction
 }
 
 type inflightKey struct{}

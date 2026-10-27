@@ -54,11 +54,29 @@ func withTypes(body []byte, ins []typeInsert) []byte {
 		}
 		start := last + 1
 		out.Write(body[start : in.at+1])
-		out.WriteString(`"type":` + in.typ + `,`)
+		out.WriteString(`"type":` + in.typ)
+		if !emptyObjectAt(body, in.at) {
+			out.WriteByte(',')
+		}
 		last = in.at
 	}
 	out.Write(body[last+1:])
 	return out.Bytes()
+}
+
+// emptyObjectAt is whether the object opening at body[at] is {}, spaces
+// aside: a type written into it has nothing after it to be parted from.
+func emptyObjectAt(body []byte, at int) bool {
+	for i := at + 1; i < len(body); i++ {
+		switch body[i] {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '}':
+			return true
+		}
+		return false
+	}
+	return false
 }
 
 // isKimi is whether p is served by Moonshot: the Kimi platform's API or a

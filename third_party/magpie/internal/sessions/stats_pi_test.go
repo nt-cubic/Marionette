@@ -58,10 +58,10 @@ func TestPiToolsAndMessages(t *testing.T) {
 	if p.Prompts != 2 || p.Replies != 4 || p.ToolCalls != 7 {
 		t.Fatalf("pi: %d prompts, %d replies, %d calls (%v)", p.Prompts, p.Replies, p.ToolCalls, p.tools)
 	}
-	if p.tools["bash"] != 1 || p.tools["read"] != 2 || p.tools["codemode"] != 1 || p.tools["mcp__opencli_mcp__open"] != 1 || p.tools["edit"] != 1 {
+	if p.tools.of("bash") != 1 || p.tools.of("read") != 2 || p.tools.of("codemode") != 1 || p.tools.of("mcp__opencli_mcp__open") != 1 || p.tools.of("edit") != 1 {
 		t.Fatalf("pi tools %v", p.tools)
 	}
-	if p.skills["pdf"] != 1 || p.skills["review"] != 1 || len(p.skills) != 2 {
+	if p.skills.of("pdf") != 1 || p.skills.of("review") != 1 || len(p.skills) != 2 {
 		t.Fatalf("pi skills %v", p.skills)
 	}
 	// the fork's own prompt and reply; what it copied is the first's

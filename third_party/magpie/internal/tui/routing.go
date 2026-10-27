@@ -34,7 +34,7 @@ func (m *model) reloadGroups() {
 	m.grow = clamp(m.grow, len(m.groups))
 }
 
-var routings = []string{"", provider.Ordered, provider.Rotate, provider.LeastUsed, provider.Pace, provider.Weighted, provider.FreeFirst, provider.Manual}
+var routings = []string{"", provider.Ordered, provider.Rotate, provider.LeastUsed, provider.Pace, provider.Weighted, provider.FreeFirst, provider.Fastest, provider.Manual}
 
 func routingName(v string) string {
 	switch v {
@@ -50,6 +50,8 @@ func routingName(v string) string {
 		return "by weight"
 	case provider.FreeFirst:
 		return "free first"
+	case provider.Fastest:
+		return "speed first"
 	case provider.Manual:
 		return "manual"
 	}

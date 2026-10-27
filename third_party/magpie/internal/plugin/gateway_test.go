@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yetone/magpie/internal/filememo"
 )
 
 func gatewayFixture(t *testing.T, source string) string {
@@ -26,6 +28,38 @@ func gatewayFixture(t *testing.T, source string) string {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+// TestHasGatewayLooksOnceASecond: every request asks HasGateway, so it
+// reads the plugins at most once a second (#3725), and at once after magpie
+// wrote a file of its own.
+func TestHasGatewayLooksOnceASecond(t *testing.T) {
+	sandbox(t)
+	dir := gatewayFixture(t, `export function onRequest(body){return body}`)
+	if !HasGateway() {
+		t.Fatal("a plugin with hooks has no gateway")
+	}
+	pkg := filepath.Join(dir, "package.json")
+	if err := os.WriteFile(pkg, []byte(`{"name":"x"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !HasGateway() {
+		t.Fatal("the plugins were read again within the second")
+	}
+	filememo.Forget()
+	if HasGateway() {
+		t.Fatal("magpie's own write wasn't looked at")
+	}
+	if err := os.WriteFile(pkg, []byte(`{"magpie":{"hooks":"./request.js"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// a second later: the look is due
+	c := *hasGateway.Load()
+	c.until = time.Now().UnixNano()
+	hasGateway.Store(&c)
+	if !HasGateway() {
+		t.Fatal("another program's change wasn't seen a second later")
+	}
 }
 
 func TestGatewayHookWaitsForStartingHost(t *testing.T) {

@@ -2,10 +2,12 @@ package gateway
 
 import (
 	"cmp"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -45,15 +47,127 @@ func accountAgent(p provider.Provider) string {
 }
 
 // antigravityTurnsAway: a system prompt Antigravity answers with a 429
-// "Resource has been exhausted (e.g. check quota)" whatever the quota left,
-// the one Claude Code and its Agent SDK (Claude Desktop's chats) send: its
-// billing line or the SDK's identity line anywhere in the system
-// instruction turns the request away, on every model, while the same words
-// in a message go through (#666). magpie doesn't hide them from Google; it
-// says why, so no one chases a quota that isn't spent.
+// "Resource has been exhausted (e.g. check quota)" whatever the quota left:
+// one that carries a line of agTurnedAway anywhere in the system
+// instruction, in any case, is turned away on every model, while the same
+// words in a message go through (#666). magpie breaks those lines up before
+// they go (antigravityCloak); this still tells the refusal for what it is
+// when the user has the prompt sent as written, or Google turns away one
+// that was broken up, so no one chases a quota that isn't spent.
 func antigravityTurnsAway(system string) bool {
-	return strings.Contains(system, "x-anthropic-billing-header:") ||
-		strings.Contains(system, "built on Anthropic's Claude Agent SDK")
+	low := strings.ToLower(system)
+	for _, line := range agTurnedAway {
+		if strings.Contains(low, line) {
+			return true
+		}
+	}
+	return false
+}
+
+// agTurnedAway are the lines, lower-cased, that Antigravity turns a system
+// instruction away for, each tried on a real account:
+//   - Claude Code's billing line and the Claude Agent SDK's identity line
+//     (Claude Desktop's chats) (#666);
+//   - the identity lines of Codex's own prompts for its GPT-5 models
+//     (gpt-5.6-sol's "You are Codex, an agent based on GPT-5. You and the
+//     user share one workspace…"). Codex sends its model's prompt as the
+//     conversation's first developer message, and a thread begun on a GPT
+//     model keeps it when it is switched to another (/model, resume -m) or
+//     forked as an agent's thread, so such a thread on an Antigravity model
+//     never got an answer (Jodiezzzzzz on X, 10-27). magpie's own Codex
+//     prompt for other models ("You are Codex, based on GPT-5."), "an AI
+//     agent based on GPT-5" and GPT-6's prompt go through;
+//   - Hermes Agent's earlier default persona (its SOUL.md until Hermes
+//     replaced it: "You are Hermes Agent, an intelligent AI assistant
+//     created by Nous Research. …"), which a SOUL.md the user edited keeps
+//     (zgoodz on X, 10-27). The line without "Research", "AI" or "Hermes"
+//     goes through, and so does today's "You are Hermes Agent, built by
+//     Nous Research."
+//
+// Each is broken up before it goes by a zero-width space after its first
+// letter (antigravityCloak), which Google lets through: each line so
+// broken ("Y", U+200B, "ou are Codex, an agent based on GPT-5"; "b",
+// U+200B, "uilt on Anthropic's Claude Agent SDK"; and so on) was answered
+// on a real account where the line as written was turned away. A mention
+// of the Claude Agent SDK elsewhere ("running within the Claude Agent
+// SDK") goes through as written, and is sent so.
+var agTurnedAway = []string{
+	"x-anthropic-billing-header:",
+	"built on anthropic's claude agent sdk",
+	"you are codex, an agent based on gpt-5",
+	"you are codex, a coding agent based on gpt-5",
+	"hermes agent, an intelligent ai assistant created by nous research",
+}
+
+// antigravityTurnsCodexAway says whether system carries Codex's GPT-5
+// identity line that Antigravity turns away.
+func antigravityTurnsCodexAway(system string) bool {
+	low := strings.ToLower(system)
+	return strings.Contains(low, "you are codex, an agent based on gpt-5") ||
+		strings.Contains(low, "you are codex, a coding agent based on gpt-5")
+}
+
+// antigravityTurnsHermesAway says whether system carries Hermes Agent's
+// earlier default persona that Antigravity turns away.
+func antigravityTurnsHermesAway(system string) bool {
+	return strings.Contains(strings.ToLower(system), "hermes agent, an intelligent ai assistant created by nous research")
+}
+
+// zeroWidth is what antigravityCloak puts inside a line Antigravity turns
+// away: U+200B, which the model reads past and Google's check doesn't.
+const zeroWidth = "\u200b"
+
+// antigravityCloak is system with each line of agTurnedAway in it broken up
+// by a zero-width space after its first letter, wherever and in whatever
+// case it is, and every other word as the agent wrote it: what an
+// Antigravity account's system instruction is sent as, unless the user has
+// it sent as written (Provider.PromptAsWritten). A line already broken up
+// (the antigravity-cloak plugin's) isn't one any more and is left alone.
+func antigravityCloak(system string) string {
+	if !antigravityTurnsAway(system) {
+		return system
+	}
+	// lower-casing keeps every byte offset here: each line is ASCII, and
+	// a match is found in low at the offset it has in system only while
+	// the two are the same length, which ToLower can change outside ASCII
+	low := strings.ToLower(system)
+	if len(low) != len(system) {
+		low = asciiLower(system)
+	}
+	var at []int
+	for _, line := range agTurnedAway {
+		for i := 0; ; {
+			j := strings.Index(low[i:], line)
+			if j < 0 {
+				break
+			}
+			at = append(at, i+j+1)
+			i += j + len(line)
+		}
+	}
+	slices.Sort(at)
+	at = slices.Compact(at)
+	var b strings.Builder
+	b.Grow(len(system) + len(at)*len(zeroWidth))
+	prev := 0
+	for _, i := range at {
+		b.WriteString(system[prev:i])
+		b.WriteString(zeroWidth)
+		prev = i
+	}
+	b.WriteString(system[prev:])
+	return b.String()
+}
+
+// asciiLower lower-cases only ASCII letters, keeping every byte where it is.
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + 'a' - 'A'
+		}
+	}
+	return string(b)
 }
 
 // antigravityRefuses is what Antigravity says when it turns such a request
@@ -85,22 +199,48 @@ const agForeseeing = 6 * time.Hour
 // Antigravity has refused it within agForeseeing. It holds for exactly the
 // requests antigravityTurnedAway would tell as the refusal, and it changes
 // nothing about the account.
-func (s *Server) antigravityForeseen(p provider.Provider, from provider.Protocol, body []byte) bool {
+// What it gives is the hint for that system prompt, or "" when p would be
+// asked.
+func (s *Server) antigravityForeseen(p provider.Provider, from provider.Protocol, body []byte) string {
 	if accountAgent(p) != "antigravity" {
-		return false
+		return ""
 	}
 	at := s.agTurnedAway.Load()
 	if at == 0 || time.Since(time.Unix(0, at)) > agForeseeing {
-		return false
+		return ""
 	}
 	req, err := parse(from, body)
-	return err == nil && antigravityTurnsAway(req.System)
+	if err != nil || !antigravityTurnsAway(req.System) {
+		return ""
+	}
+	return antigravityHint(req.System)
 }
 
 // antigravityTurnedAwayHint is what magpie adds to Antigravity's words, after
 // " — ", for the agent and the Routing page, which says it apart from them in
 // its own language (routing/client.js AG_TURNED_AWAY).
 const antigravityTurnedAwayHint = "Antigravity answers this 429 to the system prompt of Claude Code and the Claude Agent SDK (Claude Desktop's chats) whatever quota is left, so it is not a quota and waiting won't help; use another provider for these chats, or put one after Antigravity in a routing group"
+
+// antigravityCodexHint is the hint for Codex's GPT-5 system prompt
+// (routing/client.js AG_CODEX): the thread keeps the prompt it began with,
+// and a new one on the Antigravity model is sent magpie's own.
+const antigravityCodexHint = "Antigravity answers this 429 to Codex's own system prompt for GPT-5 models whatever quota is left, so it is not a quota and waiting won't help; a Codex chat begun on a GPT model keeps that prompt after a model switch or a fork, so start a new chat on this model"
+
+// antigravityHermesHint is the hint for Hermes Agent's earlier default
+// persona (routing/client.js AG_HERMES).
+const antigravityHermesHint = "Antigravity answers this 429 to Hermes Agent's earlier default persona (its SOUL.md) whatever quota is left, so it is not a quota and waiting won't help; Hermes' current default persona goes through, so put it in SOUL.md, or use another provider for these chats"
+
+// antigravityHint is the hint for what Antigravity turned away with system
+// as its system instruction.
+func antigravityHint(system string) string {
+	if antigravityTurnsCodexAway(system) {
+		return antigravityCodexHint
+	}
+	if antigravityTurnsHermesAway(system) {
+		return antigravityHermesHint
+	}
+	return antigravityTurnedAwayHint
+}
 
 // turnedAwayStatus is what the agent is told when nobody is left to answer
 // what Antigravity turned away: a request it shouldn't send again as it is.
@@ -142,6 +282,16 @@ func codeAssistID(model, effort, agent string) string {
 // asking twice reads the vendor's catalogue twice over for one answer.
 func codeAssistBody(p provider.Provider, r *Request, model string, wires map[string]string) []byte {
 	sent := codeAssistID(model, r.Effort, p.Account.Agent)
+	if p.Account.Agent == "antigravity" && !p.PromptAsWritten {
+		// the lines Google turns away, broken up; the request the
+		// caller holds keeps the system prompt as written, which the
+		// refusal is told against (antigravityTurnedAway)
+		if cloaked := antigravityCloak(r.System); cloaked != r.System {
+			rc := *r
+			rc.System = cloaked
+			r = &rc
+		}
+	}
 	body := buildCodeAssistSent(r, sent, p.Account.Agent)
 	if wire := provider.UpstreamNameAsIn(wires, p.ID, model, sent); wire != sent {
 		body = rewriteModel(body, wire)
@@ -1227,4 +1377,43 @@ func hasResponse(parts []map[string]any) bool {
 		}
 	}
 	return false
+}
+
+// antigravityRound is ask, a round of magpie's own search for p, told as
+// the refusal it is when Antigravity turns the system prompt away: its 429
+// or the reply's own error event gets the hint, and the attempt is marked
+// so the account doesn't rest. Codex asks every turn with its web_search
+// tool, which an Antigravity model is given magpie's search for, so its
+// turns went this way and came back as the plain 429 that Codex retried to
+// its limit (Jodiezzzzzz on X, 10-27).
+func antigravityRound(w http.ResponseWriter, p provider.Provider, ask round) round {
+	if accountAgent(p) != "antigravity" {
+		return ask
+	}
+	return func(ctx context.Context, req *Request) (<-chan Event, int, string) {
+		in, status, msg := ask(ctx, req)
+		if in == nil {
+			if status == http.StatusTooManyRequests && antigravityTurnedAway(p, req.System, msg) {
+				markAntigravityTurnsAway(w, req.System)
+				msg += " — " + antigravityHint(req.System)
+			}
+			return in, status, msg
+		}
+		out := make(chan Event, cap(in))
+		go func() {
+			defer close(out)
+			for ev := range in {
+				if ev.Kind == KError && markAntigravityRefused(w, p, req.System, ev.Text) {
+					ev.Text += " — " + antigravityHint(req.System)
+				}
+				select {
+				case out <- ev:
+				case <-ctx.Done():
+					// in's own reader stops sending once ctx is done
+					return
+				}
+			}
+		}()
+		return out, status, msg
+	}
 }

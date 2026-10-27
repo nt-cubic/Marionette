@@ -1427,7 +1427,16 @@ magpie.plugin("library", (ctx) => {
     if (s.transport === "stdio") return [s.command, ...(s.args || [])].map(quote).join(" ");
     return s.url;
   }
-  function quote(a) { return /^[\w@%+=:,./-]+$/.test(a) ? a : "'" + a.replace(/'/g, `'\\''`) + "'"; }
+  // quote: an argument as this system's shell reads it, and words() reads
+  // back. On Windows that is cmd's double quotes, and a \ is a path's, not an
+  // escape: sh's 'C:\…\npx.cmd' read as quotes magpie had added to the
+  // command (fremontdango on Discord), and a path typed as it is lost its \
+  // and : on save (#2685).
+  const WIN_LINE = /^Win/.test(navigator.platform);
+  function quote(a) {
+    if (WIN_LINE) return a && !/[\s"'&|<>^%]/.test(a) ? a : '"' + a.replace(/"/g, '""') + '"';
+    return /^[\w@%+=:,./-]+$/.test(a) ? a : "'" + a.replace(/'/g, `'\\''`) + "'";
+  }
 
   function sseBlocked(s) {
     return (a) => {
@@ -1975,11 +1984,13 @@ magpie.plugin("library", (ctx) => {
     for (let i = 0; i < s.length; i++) {
       const c = s[i];
       if (q) {
-        if (c === q) q = "";
-        else if (c === "\\" && q === '"' && i + 1 < s.length) cur += s[++i];
+        // on Windows "" in quotes is one ", as quote() writes it
+        if (c === q && WIN_LINE && q === '"' && s[i + 1] === '"') cur += s[++i];
+        else if (c === q) q = "";
+        else if (c === "\\" && q === '"' && !WIN_LINE && i + 1 < s.length) cur += s[++i];
         else cur += c;
       } else if (c === "'" || c === '"') { q = c; any = true; }
-      else if (c === "\\" && i + 1 < s.length) { cur += s[++i]; any = true; }
+      else if (c === "\\" && !WIN_LINE && i + 1 < s.length) { cur += s[++i]; any = true; }
       else if (/\s/.test(c)) { if (cur || any) out.push(cur); cur = ""; any = false; }
       else cur += c;
     }

@@ -4,7 +4,10 @@
 // it on magpie, once it is connected (right before the model picker beside
 // its switch, agy picking no model once started): the command in its tooltip, one click copying it (posted to /api/copy) and saying so, with the
 // page left where it was; none on an agent without one; in the tray panel's
-// opened row too; the words in Chinese. No backend: the API is faked here.
+// opened row too; the words in Chinese. Once magpie has given the user's
+// shells a function agy (typed), the square and the opened row say plain
+// agy starts it in a new terminal, and the command is for one open now.
+// No backend: the API is faked here.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -18,6 +21,7 @@ const agent = (id, name, launch) => ({
   id, name, path: "/test/" + id, launch, wired: true, // on a magpie model (#726: a connected one is in view)
   fields: [{ key: "model", label: "model", value: "magpie/deepseek/pro", options: models }],
 });
+let typed = false;
 const state = {
   agents: [agent("claude", "Claude Code"), ...Array.from({ length: 4 }, (_, i) => agent("agent-" + i, "agent-" + i)),
     agent("agy", "Antigravity CLI", LAUNCH), ...Array.from({ length: 8 }, (_, i) => agent("more-" + i, "more-" + i))],
@@ -29,7 +33,10 @@ function server(lang, copies) {
     const req = route.request(), url = new URL(req.url());
     if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:true};` });
     if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
-    if (url.pathname === "/api/state") return route.fulfill({ json: { ...state, settings: { lang, theme: "light" } } });
+    if (url.pathname === "/api/state") {
+      const agents = state.agents.map((a) => (typed && a.id === "agy" ? { ...a, typed: "agy" } : a));
+      return route.fulfill({ json: { ...state, agents, settings: { lang, theme: "light" } } });
+    }
     if (url.pathname === "/api/copy") { copies.push(req.postDataJSON().text); return route.fulfill({ json: {} }); }
     if (url.pathname === "/api/usage/quotas") return route.fulfill({ json: [] });
     if (url.pathname === "/api/groups") return route.fulfill({ json: { groups: [] } });
@@ -114,6 +121,38 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await b.click();
       await page.waitForTimeout(300);
       assert.match(await page.locator("#status").textContent(), /已复制，运行它即可让 Antigravity CLI 走 magpie/);
+    });
+
+    await t.test("typed in a new terminal", async () => {
+      typed = true;
+      try {
+        for (const [lang, square, start, now] of [
+          ["en", /^Type agy in a new terminal to start Antigravity CLI on magpie · click to copy the command for a terminal open now:\n/, "Start it with", "In a terminal open now"],
+          ["zh", /^在新终端输入 agy 即可让 Antigravity CLI 走 magpie · 点击复制在已打开终端中用的命令：\n/, "启动命令", "已打开的终端"],
+        ]) {
+          const copies = [];
+          const page = await open("http://magpie.test/", lang, copies);
+          const b = page.locator(`${row("agy")} .field.launch`);
+          const title = await b.getAttribute("title");
+          assert.match(title, square);
+          assert(title.endsWith(LAUNCH), title);
+          await b.click();
+          await page.waitForTimeout(300);
+          assert.deepEqual(copies, [LAUNCH], "the square still copies the command, for a terminal open now");
+          // the opened row: agy, then the command
+          await page.locator(`${row("agy")} .ag-link`).click();
+          await page.locator(`${row("agy")} .ag-kv`).first().waitFor();
+          const kvs = await page.evaluate((r) => [...document.querySelectorAll(r + " .ag-kv")].map((k) => [k.querySelector(".ag-k").textContent, k.querySelector(".ag-v").textContent]), row("agy"));
+          const i = kvs.findIndex(([k]) => k === start);
+          assert(i >= 0, JSON.stringify(kvs));
+          assert.equal(kvs[i][1], "agy" + (lang === "en" ? "in a new terminal" : "在新打开的终端中"));
+          assert.equal(kvs[i + 1][0], now);
+          assert(kvs[i + 1][1].startsWith(LAUNCH), kvs[i + 1][1]);
+          await page.close();
+        }
+      } finally {
+        typed = false;
+      }
     });
 
     assert.deepEqual(errors, []);

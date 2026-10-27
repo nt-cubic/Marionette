@@ -249,6 +249,10 @@ type Agent struct {
 	// environment (agy), is the command that starts it on magpie, while
 	// it is on one of magpie's models; "" otherwise.
 	Launch func() string
+	// Typed, for such an agent, is what the user types in a new terminal
+	// to start it on magpie, a function magpie gave their shells (agy);
+	// "" when there is none, and Launch is the way.
+	Typed func() string
 	// SplitSuffix, for an agent whose model values carry something of its
 	// own after the model that varies from value to value (omp's thinking
 	// level, "…:max"), splits a value into the model the picker offers and

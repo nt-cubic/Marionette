@@ -118,6 +118,7 @@ const groupUsage = `usage:
        magpie group set fast models+=gcloud/gemini-3.8-flash:medium
        magpie group add my-free-pool models='openrouter/*:free,opencode-zen/*-free' routing=order
        magpie group set opus-anywhere routing=weight weight=claude/claude-opus-5-5=3
+       magpie group set deepseek-anywhere routing=fast   # the provider that answered it fastest lately first
        magpie group pick opus-anywhere copilot/claude-opus-5.5
        magpie claude group/opus-anywhere`
 
@@ -134,6 +135,7 @@ var routingNames = []struct {
 	{provider.Pace, "pace", []string{"weekly-pace"}},
 	{provider.Weighted, "weight", []string{"weighted", "by-weight", "weighted-round-robin", "wrr"}},
 	{provider.FreeFirst, "free", []string{"free-first", "freest", "no-cost"}},
+	{provider.Fastest, "fast", []string{"fastest", "speed", "speed-first"}},
 	{provider.Manual, "manual", []string{"pick", "picked", "pinned"}},
 }
 

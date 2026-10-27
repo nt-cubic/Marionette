@@ -103,26 +103,26 @@ func TestDecodeCacheSharesOneDaysModels(t *testing.T) {
 	if !ok || len(files) != 3 {
 		t.Fatalf("decoded %d files, %v", len(files), ok)
 	}
-	same := func(a, b map[string]Tokens) bool {
-		return reflect.ValueOf(a).UnsafePointer() == reflect.ValueOf(b).UnsafePointer()
+	same := func(a, b named[Tokens]) bool {
+		return unsafe.SliceData(a) == unsafe.SliceData(b)
 	}
 	one, other, two := files["/one"], files["/other"], files["/two"]
-	if !same(one.Models, one.Days["2026-10-24"].Models) {
+	if !same(one.Models, one.Days.of("2026-10-24").Models) {
 		t.Errorf("a file of one day holds its models twice")
 	}
-	if same(other.Models, other.Days["2026-10-24"].Models) || same(two.Models, two.Days["2026-10-23"].Models) {
+	if same(other.Models, other.Days.of("2026-10-24").Models) || same(two.Models, two.Days.of("2026-10-23").Models) {
 		t.Errorf("models held once that aren't the same, or of a file of two days")
 	}
 	c := one.clone()
 	c.use("2026-10-24", "gpt-5.5", Tokens{Input: 1})
-	if c.Models["gpt-5.5"].Input != 11 || c.Days["2026-10-24"].Models["gpt-5.5"].Input != 11 {
-		t.Fatalf("a parse counted %d and %d, want 11 in each", c.Models["gpt-5.5"].Input, c.Days["2026-10-24"].Models["gpt-5.5"].Input)
+	if c.Models.of("gpt-5.5").Input != 11 || c.Days.of("2026-10-24").Models.of("gpt-5.5").Input != 11 {
+		t.Fatalf("a parse counted %d and %d, want 11 in each", c.Models.of("gpt-5.5").Input, c.Days.of("2026-10-24").Models.of("gpt-5.5").Input)
 	}
 	c.dropUse("2026-10-24", "gpt-5.5", Tokens{Input: 11, Output: 2})
-	if len(c.Models) != 0 || c.Days["2026-10-24"] == nil || len(c.Days["2026-10-24"].Models) != 0 {
-		t.Fatalf("a parse took back to %v and %+v", c.Models, c.Days["2026-10-24"])
+	if len(c.Models) != 0 || c.Days.of("2026-10-24") == nil || len(c.Days.of("2026-10-24").Models) != 0 {
+		t.Fatalf("a parse took back to %v and %+v", c.Models, c.Days.of("2026-10-24"))
 	}
-	if one.Models["gpt-5.5"].Input != 10 || one.Days["2026-10-24"].Models["gpt-5.5"].Input != 10 {
+	if one.Models.of("gpt-5.5").Input != 10 || one.Days.of("2026-10-24").Models.of("gpt-5.5").Input != 10 {
 		t.Fatalf("the kept state was written: %v", one.Models)
 	}
 }
@@ -132,7 +132,7 @@ func TestDecodeCacheSharesOneDaysModels(t *testing.T) {
 // no parse, an empty index and none at all.
 func TestEncodeCacheIsMarshal(t *testing.T) {
 	at := time.Date(2026, 10, 25, 7, 0, 0, 0, time.UTC)
-	files := map[string]*state{"/b/<a&b>.jsonl": {Size: 3, Mod: 9, Title: "a <b> & \"c\"  ", Start: at, Last: at, Models: map[string]Tokens{"m": {Input: 1}}}, "/a/x.jsonl": nil}
+	files := map[string]*state{"/b/<a&b>.jsonl": {Size: 3, Mod: 9, Title: "a <b> & \"c\"  ", Start: at, Last: at, Models: named[Tokens]{{"m", Tokens{Input: 1}}}}, "/a/x.jsonl": nil}
 	for i := range 3000 {
 		files[fmt.Sprintf("/s/%04d.jsonl", i)] = &state{Size: int64(i), Cwd: strings.Repeat("d", i%300), Start: at, Last: at.Add(time.Duration(i) * time.Second)}
 	}

@@ -326,7 +326,7 @@ func (s *Server) retrieveAs(ctx context.Context, p provider.Provider, url, ctype
 		if res.StatusCode == http.StatusNotFound || res.StatusCode == http.StatusMethodNotAllowed {
 			hint = " — " + p.Name + " may not serve this API"
 		}
-		return b, got, res.StatusCode, fmt.Errorf("%s: %d %s%s%s", provider.HostOf(url), res.StatusCode, http.StatusText(res.StatusCode), vendorSaid(vendorMessage(b)), hint)
+		return b, got, res.StatusCode, fmt.Errorf("%s: %d %s%s%s", provider.HostOf(url), res.StatusCode, http.StatusText(res.StatusCode), errorSaid(b), hint)
 	}
 	return b, got, res.StatusCode, nil
 }

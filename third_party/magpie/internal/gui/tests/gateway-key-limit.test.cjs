@@ -117,7 +117,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await row("server").getByRole("button", { name: w.change, exact: true }).click();
       await row("server").locator(".key-limit-ed").waitFor();
       await page.setViewportSize({ width: 560, height: 740 });
-      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), false);
+      // the header's tabs are fitted by a ResizeObserver a moment after the
+      // resize, so wait for the state rather than reading it at once
+      await page.waitForFunction(() => document.documentElement.scrollWidth <= window.innerWidth, null, { timeout: 3000 }).catch(async () => {
+        assert.fail(`sideways scroll at 560px: ${await page.evaluate(() => document.documentElement.scrollWidth)}`);
+      });
       assert.deepEqual(errors, []);
     });
   }

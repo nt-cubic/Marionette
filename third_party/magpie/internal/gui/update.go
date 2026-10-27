@@ -28,19 +28,20 @@ import (
 // restart asks for the administrator's password; only an app that can't be
 // replaced at all (run from its disk image, say) is sent to the release page.
 type updater struct {
-	mu     sync.Mutex
-	state  string // checking | latest | found | downloading | ready | available | source | error | blocked
-	latest *update.Release
-	err    string
-	bundle string      // the .app to replace, "" when not in one or stuck
-	stuck  string      // why the .app or binary can't be replaced where it is (update.Stuck, exeStuck)
-	exe    string      // not in a .app: the binary to replace, "" when not writable
-	exeDir string      // not in a .app: the binary's folder, named when it is stuck there
-	self   os.FileInfo // exe as this process started from it
-	retry  bool        // error: the download failed, and may be tried again
-	mirror string      // error: the mirror the failed download came through (#893)
-	staged string
-	aside  string // Windows: where install moved the running exe, to put back
+	mu      sync.Mutex
+	state   string // checking | latest | found | downloading | ready | available | source | error | blocked
+	latest  *update.Release
+	err     string
+	bundle  string      // the .app to replace, "" when not in one or stuck
+	stuck   string      // why the .app or binary can't be replaced where it is (update.Stuck, exeStuck)
+	exe     string      // not in a .app: the binary to replace, "" when not writable
+	exeDir  string      // not in a .app: the binary's folder, named when it is stuck there
+	self    os.FileInfo // exe as this process started from it
+	retry   bool        // error: the download failed, and may be tried again
+	mirror  string      // error: the mirror the failed download came through (#893)
+	network bool        // error: the network broke the download off (update.Network)
+	staged  string
+	aside   string // Windows: where install moved the running exe, to put back
 	// a version this computer wouldn't start (Smart App Control, #894),
 	// which the clock's checks don't download again; byClock, the check
 	// under way is the clock's
@@ -90,8 +91,11 @@ type updateJSON struct {
 	// error: the download failed through this mirror (Settings' UpdateMirror),
 	// and GitHub itself may do (#893)
 	Mirror string `json:"mirror,omitempty"`
-	Error  string `json:"error,omitempty"`
-	Done   int64  `json:"done,omitempty"` // downloading: bytes so far
+	// error: the network broke the download off, tried again already; the
+	// row says so in the app's language instead of the raw error
+	Network bool   `json:"network,omitempty"`
+	Error   string `json:"error,omitempty"`
+	Done    int64  `json:"done,omitempty"` // downloading: bytes so far
 	// blocked: the version this computer wouldn't start, and why (#894)
 	Blocked *update.Blocked `json:"blocked,omitempty"`
 	Total   int64           `json:"total,omitempty"`
@@ -306,7 +310,7 @@ func (u *updater) begin() bool {
 	if u.state == "checking" || u.state == "downloading" {
 		return false
 	}
-	u.state, u.err, u.retry, u.mirror, u.asked, u.byClock, u.fetch = "checking", "", false, "", time.Now(), false, false
+	u.state, u.err, u.retry, u.mirror, u.network, u.asked, u.byClock, u.fetch = "checking", "", false, "", false, time.Now(), false, false
 	return true
 }
 
@@ -399,7 +403,7 @@ func (u *updater) run() {
 	u.mu.Lock()
 	if err != nil {
 		log.Println("update:", err)
-		u.state, u.err, u.retry, u.mirror = "error", err.Error(), true, update.MirrorOf(err)
+		u.state, u.err, u.retry, u.mirror, u.network = "error", err.Error(), true, update.MirrorOf(err), update.Network(err)
 		return
 	}
 	u.state, u.staged = "ready", staged
@@ -504,7 +508,7 @@ func (u *updater) jsonIn(lang string) updateJSON {
 		j.State = "" // not asked lately: no claim to be up to date
 	}
 	if u.state == "error" {
-		j.Mirror = u.mirror
+		j.Mirror, j.Network = u.mirror, u.network
 	}
 	if u.state == "checking" && u.staged != "" {
 		j.State = "ready" // what was downloaded can still be restarted into

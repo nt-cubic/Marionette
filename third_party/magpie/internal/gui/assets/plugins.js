@@ -1503,9 +1503,9 @@
   // it; leave() sends it off when the README comes. Its marks are data-*,
   // not classes, so the dialog's observer doesn't place it again each hop
   function bounceLoader() {
-    const box = el("div", "pm-bounce"), s = document.createElementNS("http://www.w3.org/2000/svg", "svg"), b = el("div", "pm-bird");
+    const box = el("div", "pm-bounce"), s = document.createElementNS("http://www.w3.org/2000/svg", "svg"), b = el("div", "sk-bird");
     s.innerHTML = "<path/><path/><path/><path/>";
-    b.innerHTML = `<svg viewBox="0 0 44 44"><use href="#bird" clip-path="url(#bird-body)"/><g class="tail"><use href="#bird" clip-path="url(#bird-tail)"/></g><g class="wing"><use href="#bird" clip-path="url(#bird-wing)"/></g></svg>`;
+    b.innerHTML = BIRD;
     box.append(s, b);
     const ps = [...s.children], ws = [1, .94, .6, .82], at = [.16, .44, .3, .58];
     const L = ws.map((w, i) => ({ y: 31 + i * 22, d: 0, v: 0, bx: 0, hold: false }));

@@ -11,5 +11,9 @@ import (
 // on Windows, its APPDATA and LOCALAPPDATA. The package's ledger reads what
 // sessions finds, which asks each agent's own variable before its folder in
 // the home: one left in the shell would point a test at the runner's real
-// agent (#522), so testenv clears those too.
-func TestMain(m *testing.M) { testenv.Main(m) }
+// agent (#522), so testenv clears those too. A test's answers are built
+// again as soon as the history changes, unless it holds them (effortFresh).
+func TestMain(m *testing.M) {
+	effortFresh = 0
+	testenv.Main(m)
+}

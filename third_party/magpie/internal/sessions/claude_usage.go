@@ -311,10 +311,10 @@ func ccTool(s *state, m *claudeContribution, at time.Time, id, name, skill strin
 		previous = append(append([]claudeToolVersion(nil), old.Previous...), claudeToolVersion{old.Name, old.Skill})
 		d := s.day(dateOf(old.At))
 		if old.Name != "" {
-			d.Tools[old.Name]--
+			*d.Tools.at(old.Name)--
 		}
 		if old.Skill != "" {
-			d.Skills[old.Skill]--
+			*d.Skills.at(old.Skill)--
 		}
 	}
 	m.Tools[id] = claudeToolUsage{At: at, Updated: at, Name: name, Skill: skill, Previous: previous}

@@ -49,58 +49,6 @@ func nvmBins(dir string) (bins []string, def string, system bool) {
 	return bins, def, system
 }
 
-// nodeVersions are the names of the version folders under root that have
-// a folder bin (root/<version>/<bin>), highest version first (nodeVersionLess); a name that is
-// no version (mise's "lts", "latest") after every one that is.
-func nodeVersions(root, bin string) []string {
-	es, _ := os.ReadDir(root)
-	var names []string
-	for _, e := range es {
-		if st, err := os.Stat(filepath.Join(root, e.Name(), bin)); err == nil && st.IsDir() {
-			names = append(names, e.Name())
-		}
-	}
-	slices.SortStableFunc(names, func(a, b string) int {
-		switch {
-		case nodeVersionLess(b, a):
-			return -1
-		case nodeVersionLess(a, b):
-			return 1
-		}
-		return strings.Compare(a, b)
-	})
-	return names
-}
-
-// parseNodeVersion reads v22.12.0 (or 22.12.0, mise's, or 22, a partial
-// one) as its numbers; false for a name that isn't one.
-func parseNodeVersion(s string) ([3]int, int, bool) {
-	var v [3]int
-	parts := strings.Split(strings.TrimPrefix(s, "v"), ".")
-	if len(parts) > 3 || parts[0] == "" {
-		return v, 0, false
-	}
-	for i, p := range parts {
-		n, err := strconv.Atoi(p)
-		if err != nil || n < 0 {
-			return v, 0, false
-		}
-		v[i] = n
-	}
-	return v, len(parts), true
-}
-
-// nodeVersionLess says a is a lower version than b, by number: v9 before
-// v22. A name that is no version is lower than one that is.
-func nodeVersionLess(a, b string) bool {
-	va, _, oka := parseNodeVersion(a)
-	vb, _, okb := parseNodeVersion(b)
-	if oka != okb {
-		return okb
-	}
-	return oka && slices.Compare(va[:], vb[:]) < 0
-}
-
 // nvmDefault is the installed version (one of names, highest first) nvm's
 // default alias resolves to, as nvm.sh does when a shell loads it
 // (nvm_auto use → nvm_resolve_local_alias default): alias/default, then
@@ -234,9 +182,4 @@ func nodeBins(root string) []string {
 		bins = append(bins, filepath.Join(root, n, "bin"))
 	}
 	return bins
-}
-
-func isDir(p string) bool {
-	st, err := os.Stat(p)
-	return err == nil && st.IsDir()
 }

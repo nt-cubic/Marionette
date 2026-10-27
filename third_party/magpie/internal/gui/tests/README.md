@@ -2352,6 +2352,18 @@ is faked.
 node --test internal/gui/tests/update-mirror.test.cjs
 ```
 
+`update-network.test.cjs` checks the Version row after a download the
+network broke off (`network` in `/api/update`, AIMetaPhD on X): it says
+the download broke off, a network problem, and that Check tries again or
+the release page has it, with no address and no raw error in the row.
+Check asks `/api/update/check` again, and the release page is offered.
+Every language, Chromium and WebKit, at 1100 and 390 wide, no sideways
+scroll; the API is faked.
+
+```sh
+node --test internal/gui/tests/update-network.test.cjs
+```
+
 `lane-limit.test.cjs` checks each key's and account's own limit on requests
 at once (#892): its row's pill says what runs and waits under it while
 requests are out ("1/1 running · 2 queued"), read again from `/api/lanes`

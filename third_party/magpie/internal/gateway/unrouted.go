@@ -47,6 +47,16 @@ import (
 // answered then with the same error; one in those waits still has
 // unroutedMost. 30s is three times the slowest such work a report has
 // measured (a cold catalog sync, ~8.5s) and leaves a loaded machine room.
+//
+// Masking's time, its wait for the local model's turn with it, counts
+// toward neither (noteMasking). The model is slow but bounded: each piece
+// of text it reads has classifyTimeout, a load gpuLoadTimeout or
+// loadTimeout, and one that fails holds requests back at once
+// (internal/pii). A 480 KB request on an RX 470/580 took 90s of the
+// model's work, more on its CPU, and was answered 504 at 2 minutes, its
+// work thrown away, however often it was sent again (#3682). What isn't
+// masking still has unroutedMost, so a hook or a describe that hangs
+// after masking is still answered.
 var unroutedShow, unroutedUnknown, unroutedMost = 15 * time.Second, 30 * time.Second, 2 * time.Minute
 
 // unroutedWatched is whether a request to path is an agent's turn, which
@@ -202,6 +212,15 @@ type unroutedHold struct {
 	excused time.Duration
 	due     bool
 	unknown *time.Timer
+
+	// the same for the maskings under way (noteMasking), whose time
+	// counts toward unroutedMost no more: how many, since when, the time
+	// spent masking before that, and whether most fired while masking
+	mwaits   int
+	msince   time.Time
+	mexcused time.Duration
+	mdue     bool
+	most     *time.Timer
 }
 
 type unroutedKey struct{}
@@ -215,7 +234,8 @@ func noteAsked(ctx context.Context, model string) {
 }
 
 // noteMasking tells ctx's watch its request is being masked, until the
-// func it answers is called: a wait it knows of.
+// func it answers is called: a wait it knows of, whose time counts
+// toward neither unroutedUnknown nor unroutedMost.
 func noteMasking(ctx context.Context) func() {
 	u, _ := ctx.Value(unroutedKey{}).(*unroutedHold)
 	if u == nil {
@@ -223,7 +243,65 @@ func noteMasking(ctx context.Context) func() {
 	}
 	u.masking.Add(1)
 	waited := u.wait()
-	return func() { waited(); u.masking.Add(-1) }
+	u.wmu.Lock()
+	if u.mwaits == 0 {
+		u.msince = time.Now()
+	}
+	u.mwaits++
+	u.wmu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			u.masking.Add(-1)
+			waited()
+			u.masked()
+		})
+	}
+}
+
+// masked ends a masking: the last to end adds its time to mexcused, and
+// if most fired meanwhile it is set for what is left of it.
+func (u *unroutedHold) masked() {
+	u.wmu.Lock()
+	defer u.wmu.Unlock()
+	if u.mwaits--; u.mwaits > 0 {
+		return
+	}
+	now := time.Now()
+	u.mexcused += now.Sub(u.msince)
+	if u.mdue {
+		u.mdue = false
+		u.most.Reset(max(unroutedMost-u.unmaskedLocked(now), 0))
+	}
+}
+
+// unmaskedLocked is how long the request has been held other than
+// masking; wmu is held.
+func (u *unroutedHold) unmaskedLocked(now time.Time) time.Duration {
+	d := now.Sub(u.f.start) - u.mexcused
+	if u.mwaits > 0 {
+		d -= now.Sub(u.msince)
+	}
+	return d
+}
+
+// checkMost is most's timer: a request held unroutedMost other than
+// masking is answered for; one masking now is looked at again when that
+// ends, and one with time left, when that is up.
+func (u *unroutedHold) checkMost() {
+	u.wmu.Lock()
+	if u.mwaits > 0 {
+		u.mdue = true
+		u.wmu.Unlock()
+		return
+	}
+	if left := unroutedMost - u.unmaskedLocked(time.Now()); left > 0 {
+		u.most.Reset(left)
+		u.wmu.Unlock()
+		return
+	}
+	u.wmu.Unlock()
+	u.giveUp(false)
 }
 
 // noteWait tells ctx's watch its request is in a wait magpie knows of
@@ -336,14 +414,14 @@ func (s *Server) watchUnrouted(w http.ResponseWriter, r *http.Request, f *inflig
 	f.mu.Unlock()
 	u.wmu.Lock()
 	u.unknown = time.AfterFunc(unroutedUnknown, u.checkUnknown)
+	u.most = time.AfterFunc(unroutedMost, u.checkMost)
 	u.wmu.Unlock()
 	show := time.AfterFunc(unroutedShow, u.show)
-	most := time.AfterFunc(unroutedMost, func() { u.giveUp(false) })
 	return u.w, r, func() {
 		show.Stop()
-		most.Stop()
 		u.wmu.Lock()
 		u.unknown.Stop()
+		u.most.Stop()
 		u.wmu.Unlock()
 		f.mu.Lock()
 		// a timer that fired as the handler returned does nothing now
@@ -381,6 +459,9 @@ func (u *unroutedHold) showLocked() {
 	if rt.Agent == "" {
 		rt.Agent = u.f.agent
 	}
+	if u.f.redacting() {
+		rt.Phase = phaseRedact
+	}
 	rt.callerKey = access.Caller(u.r.Context()).KeyID
 	u.shown = u.s.trace.begin(rt)
 }
@@ -397,7 +478,7 @@ func (u *unroutedHold) routed() (drop *Route) {
 // giveUp answers the request with an error, when no route was begun for it
 // and its handler wrote nothing, ends its context, and says on its route
 // and in the log what held it. unknown: it was held unroutedUnknown in no
-// wait magpie knows of, rather than unroutedMost in all.
+// wait magpie knows of, rather than unroutedMost other than masking.
 func (u *unroutedHold) giveUp(unknown bool) {
 	f := u.f
 	f.mu.Lock()
@@ -434,14 +515,15 @@ func (u *unroutedHold) giveUp(unknown bool) {
 // unroutedMsg is the error of a request held for held before routing:
 // one held while it was masked, with Settings → Privacy's local model on,
 // waited for that model (#3682), and is told so, and how to send without
-// waiting for it.
+// waiting for it. Masking's time no longer counts toward unroutedMost,
+// so that is a masking begun as the rest of the wait ran out.
 func unroutedMsg(held time.Duration, masking bool) string {
 	if masking && modelOn() {
 		why := ""
 		if b := modelBusy(); b != "" {
 			why = " (" + b + ")"
 		}
-		return fmt.Sprintf("magpie held this request for %s waiting for the local masking model (Settings → Privacy) to mask it%s, so it was stopped rather than sent masked by the rules alone. Send it again: what the model has already read is kept, so it goes quicker. To send requests without waiting for the model, turn it off in Settings → Privacy.", held, why)
+		return fmt.Sprintf("magpie held this request for %s waiting for the local masking model (Settings → Privacy) to mask it%s, so it was stopped rather than sent masked by the rules alone. Send it again. To send requests without waiting for the model, turn it off in Settings → Privacy.", held, why)
 	}
 	if masking {
 		return fmt.Sprintf("magpie held this request for %s while masking it (Settings → Privacy), before routing it to any provider, so it was stopped rather than left waiting. Send it again; if it keeps happening, restart magpie and report it with magpie's log, which says where it was held.", held)

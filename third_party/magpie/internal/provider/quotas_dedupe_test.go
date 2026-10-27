@@ -76,7 +76,7 @@ func TestGLMPlanMatchesZCodePlugin(t *testing.T) {
 	for _, id := range []string{"zcode", "zcode-plugin"} {
 		t.Run(id, func(t *testing.T) {
 			sub := quotaOfPlugin(SubscriptionQuota{Provider: id, User: "me@example.com"}, plugin.Usage{
-				Windows: []plugin.UsageWindow{{Name: "Weekly", Span: 7 * 24 * 60 * 60, ResetsAt: reset.Format(time.RFC3339)}},
+				Windows: []plugin.UsageWindow{{Name: "Weekly", Used: fptr(0), Span: 7 * 24 * 60 * 60, ResetsAt: reset.Format(time.RFC3339)}},
 			})
 			for _, provider := range []string{"zhipu", "zai", "custom-glm"} {
 				plan := SubscriptionQuota{Provider: provider, glmPlan: true, User: "work key",
