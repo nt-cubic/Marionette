@@ -13,7 +13,7 @@ Claude 用 Claude Code，Grok 用 Grok Build，GPT 用 Codex，DeepSeek 用 Deep
   <img src="docs/screenshots/main.png" alt="Marionette 主界面">
 </picture>
 
-`v0.5.1` · Windows 10 / 11 x64 · 单文件便携版，打开即用
+`v0.5.2` · Windows 10 / 11 x64 · 单文件便携版，打开即用
 
 [下载](https://github.com/nt-cubic/Marionette/releases/latest) · [现状与细节](docs/CURRENT.md)
 
@@ -32,6 +32,8 @@ Marionette 不替代它们。Marionette 把它们连接起来。
 ## 一个窗口，所有 Agent
 
 OpenCode、Claude Code、Codex、Grok Build、ZCode、DeepSeek Harness、Pi、Hermes。一个窗口，全部装下。
+
+ChatGPT 和 DeepSeek 的网页版也在里面——登录一次网页，它们就是两个纯聊天 Agent。
 
 按需启动——你不输入，它不运行。会话是标签页，最多四格分屏，不同的 Agent 可以并排干活。
 
