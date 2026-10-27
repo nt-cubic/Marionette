@@ -173,6 +173,16 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
 }
 
 pub fn version_info(agent: &AgentConfig, check_registry: bool) -> AgentVersionInfo {
+    if crate::web_chat_bridge::site(&agent.id).is_some() {
+        return AgentVersionInfo {
+            id: agent.id.clone(),
+            package: None,
+            installed: Some(env!("CARGO_PKG_VERSION").into()),
+            latest: None,
+            update_available: false,
+            note: Some("内置网页聊天桥，随 Marionette 更新".into()),
+        };
+    }
     let installed = installed_version(&agent.command);
     // Always surface bare package name so install/auto-update track **latest**.
     let package = agent

@@ -203,11 +203,10 @@ func MoveCodexProvider(id, to string) (CodexMove, error) {
 	loadCache()
 	defer useDBs()()
 	all := allFiles()
-	groups := map[string][]file{}
+	groups := byKey(all, func(f *file) bool { return f.agent == "codex" })
 	var mine []file
 	for _, f := range all {
 		if f.agent == "codex" {
-			groups[f.key] = append(groups[f.key], f)
 			mine = append(mine, f)
 		}
 	}

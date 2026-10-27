@@ -3284,7 +3284,11 @@ async function openAgentModels(a, anchor, ev) {
     groups.sort((x, y) => (y.name === ROUTING_GROUPS) - (x.name === ROUTING_GROUPS));
   };
   regroup();
-  const shut = new Set(groups.filter((g) => groups.length > 1 && g.models.length > 8 && !g.models.some((m) => m.inUse)).map((g) => g.name));
+  // folding is for telling providers apart: routing groups don't count,
+  // so a group switched on never folds away the one provider's models
+  // (shiqi_40904 on Discord)
+  const providers = groups.filter((g) => g.name !== ROUTING_GROUPS).length;
+  const shut = new Set(groups.filter((g) => providers > 1 && g.models.length > 8 && !g.models.some((m) => m.inUse)).map((g) => g.name));
   // with a few providers, a rail of them down the left: one picked shows
   // its models alone, so a long list is one click away rather than a
   // scroll down past the others (蓝猫 on Discord); a search looks in all

@@ -660,7 +660,9 @@ func (groups effortSums) add(row *Row) {
 	key := modelEffortKey{row.Model, row.Effort}
 	entry := byModel[key]
 	if entry == nil {
-		entry = &effortTotal{value: sessions.ModelEffort{Model: row.Model, Effort: row.Effort}, priced: true}
+		// the row's strings can be lent (visitActors): what is kept is a copy
+		key = modelEffortKey{strings.Clone(row.Model), strings.Clone(row.Effort)}
+		entry = &effortTotal{value: sessions.ModelEffort{Model: key.model, Effort: key.effort}, priced: true}
 		byModel[key] = entry
 	}
 	entry.priced = entry.priced && row.Priced

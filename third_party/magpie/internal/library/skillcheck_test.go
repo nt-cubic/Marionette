@@ -1,6 +1,7 @@
 package library
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -181,4 +182,71 @@ func check(t *testing.T) map[string]SkillCheck {
 		m[c.Name] = c
 	}
 	return m
+}
+
+// An answer over the cap is an error that says so, never a cut body for a
+// JSON parse to trip on; a cut-off answer is a read error; a rate limit is
+// told from the status and headers even then; and an answer the cap lets
+// through but cacheBody doesn't isn't kept for a 304 to answer with.
+func TestApiGetWholeAnswer(t *testing.T) {
+	var mu sync.Mutex
+	var ifNone []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		ifNone = append(ifNone, r.Header.Get("If-None-Match"))
+		mu.Unlock()
+		w.Header().Set("ETag", `"v1"`)
+		fmt.Fprint(w, strings.Repeat(`{"path":"a","type":"blob"},`, 1<<20)) // ~27 MB
+	}))
+	defer srv.Close()
+
+	if _, _, _, err := apiGet(srv.URL, 8<<20); err == nil || !strings.Contains(err.Error(), "over 8 MB") {
+		t.Fatalf("over the cap: %v", err)
+	}
+	for range 2 {
+		if _, _, _, err := apiGet(srv.URL, 64<<20); err != nil {
+			t.Fatalf("whole answer under the cap: %v", err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ifNone) != 3 || slices.Contains(ifNone, `"v1"`) {
+		t.Errorf("an over-cacheBody answer was kept for a 304: %q", ifNone)
+	}
+
+	// a connection that drops mid-body is a read error, not a part body
+	drop := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "100")
+		fmt.Fprint(w, `{"sha":`)
+	}))
+	defer drop.Close()
+	if _, _, _, err := apiGet(drop.URL, 8<<20); err == nil || !strings.Contains(err.Error(), "couldn't read GitHub's answer") {
+		t.Fatalf("dropped connection: %v", err)
+	}
+
+	// so is a cut-off rate limit, but it's told from the status and
+	// headers: CheckSkills stops asking once GitHub limits it
+	limited := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("X-RateLimit-Reset", "2000000000")
+		w.Header().Set("Content-Length", "100")
+		w.WriteHeader(403)
+		fmt.Fprint(w, `{"message":`)
+	}))
+	defer limited.Close()
+	_, _, _, err := apiGet(limited.URL, 8<<20)
+	var el errLimited
+	if !errors.As(err, &el) {
+		t.Fatalf("cut-off rate limit: %v", err)
+	}
+
+	// a non-200's size never masks the status the caller reports
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(502)
+		fmt.Fprint(w, strings.Repeat("bad gateway ", 1<<20)) // ~12 MB
+	}))
+	defer bad.Close()
+	if _, code, _, err := apiGet(bad.URL, 8<<20); err != nil || code != 502 {
+		t.Fatalf("502 over the cap: code %d, err %v", code, err)
+	}
 }

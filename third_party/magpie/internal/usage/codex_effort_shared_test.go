@@ -191,7 +191,20 @@ func TestCodexModelEffortIsTheWholeLedgers(t *testing.T) {
 	if len(whole) != 2 {
 		t.Fatalf("fixture: the whole ledger has %d Codex threads: %+v", len(whole), whole)
 	}
+	// and only the chunks a Codex thread is known for are read for it:
+	// the Claude Code session's isn't
+	var read []sessions.CallSource
+	visitingActors = func(c *rowChunk) { read = append(read, c.Source) }
+	t.Cleanup(func() { visitingActors = nil })
 	if got := CodexModelEffort(All); !reflect.DeepEqual(got, whole) {
 		t.Fatalf("Codex-only ledger:\n got %+v\nwant %+v", got, whole)
+	}
+	if len(read) == 0 {
+		t.Fatal("no chunk was read for Codex's effort")
+	}
+	for _, src := range read {
+		if src.Path == claude {
+			t.Fatalf("the Claude Code session's chunk was read for Codex's effort: %v", read)
+		}
 	}
 }

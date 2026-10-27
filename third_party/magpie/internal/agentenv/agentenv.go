@@ -65,6 +65,8 @@ var Vars = []string{
 	"QWEN_HOME",
 	// Ante
 	"ANTE_HOME",
+	// NewMax's data folder (its newmax.db), ~/.newmax without it
+	"NEWMAX_USER_DATA_DIR",
 	// AstrBot's root, the folder holding its data/ (else ~/.astrbot, the desktop app's)
 	"ASTRBOT_ROOT",
 	// jcode's folder, ~/.jcode without it

@@ -151,7 +151,10 @@ pub fn all_agents_merged() -> Vec<AgentConfig> {
     let mut out = AgentConfig::defaults();
     if let Ok(custom) = load_all() {
         for def in custom {
-            out.push(to_agent_config(&def));
+            // Built-ins take precedence over legacy script registrations.
+            if !out.iter().any(|agent| agent.id == def.id) {
+                out.push(to_agent_config(&def));
+            }
         }
     }
     out

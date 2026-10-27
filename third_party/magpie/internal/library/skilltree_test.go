@@ -4,12 +4,14 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	slash "path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -27,6 +29,8 @@ type fakeBigRepo struct {
 	tarballs int
 	files    map[string]string
 	serve    map[string]string // what raw hands out, where it differs
+	trees    []string          // the tree-ish each file list was asked at
+	pad      int               // files of the app's own, in the whole list only
 }
 
 func gitSHA(body string) string {
@@ -57,10 +61,18 @@ func newFakeBigRepo(t *testing.T) *fakeBigRepo {
 		w.Write(tarball(t, g.files))
 	}))
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/repos/vectorize-io/hindsight/git/trees/") {
+		ish, found := strings.CutPrefix(r.URL.Path, "/repos/vectorize-io/hindsight/git/trees/")
+		if !found {
 			http.NotFound(w, r)
 			return
 		}
+		g.mu.Lock()
+		g.trees = append(g.trees, ish)
+		pad := g.pad
+		g.mu.Unlock()
+		// git's ref:path is that folder's own list, its paths from there,
+		// as GitHub answers it; no such folder is a 404
+		_, under, _ := strings.Cut(ish, ":")
 		// GitHub's answer, as it lists hindsight: folders, then files with
 		// their mode, git hash and size
 		var tree []map[string]any
@@ -76,16 +88,32 @@ func newFakeBigRepo(t *testing.T) *fakeBigRepo {
 			paths = append(paths, d)
 		}
 		sort.Strings(paths)
+		if under != "" && !dirs[under] {
+			http.NotFound(w, r)
+			return
+		}
 		for _, p := range paths {
+			at := p
+			if under != "" {
+				var in bool
+				if at, in = strings.CutPrefix(p, under+"/"); !in {
+					continue
+				}
+			}
 			if dirs[p] {
-				tree = append(tree, map[string]any{"mode": "040000", "path": p, "sha": "e488653ba64c6cfc3551ec46454b965421d50176", "type": "tree"})
+				tree = append(tree, map[string]any{"mode": "040000", "path": at, "sha": "e488653ba64c6cfc3551ec46454b965421d50176", "type": "tree"})
 				continue
 			}
 			mode := "100644"
 			if strings.HasSuffix(p, ".sh") {
 				mode = "100755"
 			}
-			tree = append(tree, map[string]any{"mode": mode, "path": p, "sha": gitSHA(g.files[p]), "size": len(g.files[p]), "type": "blob"})
+			tree = append(tree, map[string]any{"mode": mode, "path": at, "sha": gitSHA(g.files[p]), "size": len(g.files[p]), "type": "blob"})
+		}
+		for i := 0; under == "" && i < pad; i++ {
+			tree = append(tree, map[string]any{"mode": "100644", "path": fmt.Sprintf("hindsight-app/src/renderer/components/panels/sidebar/file%05d.ts", i),
+				"sha": "e488653ba64c6cfc3551ec46454b965421d50176", "size": 321, "type": "blob",
+				"url": "https://api.github.com/repos/vectorize-io/hindsight/git/blobs/e488653ba64c6cfc3551ec46454b965421d50176"})
 		}
 		json.NewEncoder(w).Encode(map[string]any{"sha": "52ef60fad332184c3b8a1f9fff4756247fc07146", "tree": tree, "truncated": false})
 	}))
@@ -239,5 +267,70 @@ func TestOneSkillTooBigLeavesTheOthers(t *testing.T) {
 	p, err = ProbeSkills("https://github.com/vectorize-io/hindsight/tree/HEAD/skills/hindsight-local")
 	if err != nil || len(p.Candidates) != 0 || len(p.Left) != 1 {
 		t.Fatalf("the big skill's folder: %+v, %v", p, err)
+	}
+}
+
+// #2794 (CaiusLuo): the market installs clean-code from
+// sickn33/agentic-awesome-skills, whose whole download is too big, whose
+// file list is 11 MB (over the 8 MB GitHub's answers were cut at, so it
+// failed as "unexpected end of JSON input"), and whose 8,589 skills come
+// to 287 MB, over the limit together. The list is read whole, only the
+// skill by that name is fetched, and an update asks for its folder's list
+// alone. Two skills of it updated together are each fetched, neither
+// taken for removed.
+func TestMarketSkillFromAHugeRepository(t *testing.T) {
+	sandbox(t)
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+	g := newFakeBigRepo(t)
+	g.pad = 60_000 // ~11 MB of list, as sickn33/agentic-awesome-skills'
+	// each under the limit, together over it
+	g.files["skills/hindsight-local/references/big.md"] = strings.Repeat("local ", 10<<10)
+	g.files["hindsight-integrations/cursor/skills/hindsight-recall/references/big.md"] = strings.Repeat("recall ", 10<<10)
+
+	ok(t)(InstallMarketSkill("vectorize-io/hindsight", "hindsight-docs", []string{"claude"}))
+	if b, err := os.ReadFile(filepath.Join(skillDir("hindsight-docs"), "references/changelog/index.md")); err != nil || string(b) != "# Changelog\n" {
+		t.Fatalf("hindsight-docs: %q, %v", b, err)
+	}
+	g.mu.Lock()
+	for _, r := range g.raw {
+		if !strings.HasPrefix(r, "skills/hindsight-docs/") {
+			t.Errorf("raw was asked for %s, outside the one skill the market installs", r)
+		}
+	}
+	g.raw, g.trees = nil, nil
+	g.mu.Unlock()
+
+	ok(t)(InstallMarketSkill("vectorize-io/hindsight", "hindsight-recall", []string{"claude"}))
+	g.mu.Lock()
+	g.trees = nil
+	g.mu.Unlock()
+	r, err := UpdateSkills()
+	if err != nil || len(r.Gone) > 0 || len(r.Unupdated) > 0 || len(r.Updated) != 2 {
+		t.Fatalf("update: %+v, %v", r, err)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	sort.Strings(g.trees)
+	if want := []string{"HEAD:hindsight-integrations/cursor/skills/hindsight-recall", "HEAD:skills/hindsight-docs"}; !slices.Equal(g.trees, want) {
+		t.Errorf("an update listed %q, want each skill's own folder %q", g.trees, want)
+	}
+}
+
+// A list GitHub cut off itself (over 100,000 files) says the repository
+// is too big; it is never read as the whole of it.
+func TestTruncatedListIsTooBig(t *testing.T) {
+	sandbox(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"sha":"x","tree":[{"path":"skills/a/SKILL.md","type":"blob","mode":"100644","sha":"y","size":3}],"truncated":true}`)
+	}))
+	defer srv.Close()
+	oldA := githubAPI
+	githubAPI = srv.URL
+	defer func() { githubAPI = oldA }()
+	for _, path := range []string{"", "skills/a"} {
+		if _, err := fetchSkillFiles(Source{Kind: "github", Repo: "o/r", Path: path}, ""); !errors.Is(err, errTooBig) {
+			t.Errorf("path %q: %v", path, err)
+		}
 	}
 }

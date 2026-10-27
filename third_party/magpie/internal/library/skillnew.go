@@ -98,6 +98,11 @@ func newBase(skills []*Skill) string {
 	return base
 }
 
+// maxTree is the most of a repository's file list magpie reads; a list can
+// be tens of MB for a big app (stablyai/orca's is ~10 MB, and GitHub
+// answers one whole under its own 100,000-entry cap).
+const maxTree = 64 << 20
+
 // gitTree is a repository's files as GitHub's API lists them.
 type gitTree struct {
 	Truncated bool       `json:"truncated"`
@@ -169,10 +174,24 @@ func hiddenThroughSkills(parts []string) bool {
 
 // repoTree is a repository's files at a ref, from GitHub's API.
 func repoTree(repo, ref string) (*gitTree, error) {
+	return listTree(repo, ref, "")
+}
+
+// listTree is GitHub's list of the files at a ref under path (the whole
+// repository's for ""), with paths from that folder. A list over maxTree,
+// or one cut off, is an error that says so, never a list read in part.
+func listTree(repo, ref, path string) (*gitTree, error) {
 	if ref == "" {
 		ref = "HEAD"
 	}
-	body, code, _, err := apiGet(githubAPI + "/repos/" + repo + "/git/trees/" + url.PathEscape(ref) + "?recursive=1")
+	ish := ref
+	if path != "" {
+		ish += ":" + path // git's ref:path, a folder's own tree
+	}
+	body, code, _, err := apiGet(githubAPI+"/repos/"+repo+"/git/trees/"+url.PathEscape(ish)+"?recursive=1", maxTree)
+	if errors.Is(err, errOverCap) {
+		return nil, fmt.Errorf("GitHub's list of %s's files is over %s", repo, mb(maxTree))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -184,6 +203,31 @@ func repoTree(repo, ref string) (*gitTree, error) {
 		return nil, fmt.Errorf("GitHub's list of %s's files wasn't understood: %w", repo, err)
 	}
 	return &t, nil
+}
+
+// treeUnder is a repository's files at a ref under path, with their paths
+// from its root. With a path it asks for that folder's list alone: one
+// skill's folder is a few KB where the whole repository's list is over
+// 11 MB for sickn33/agentic-awesome-skills (#2794). When that can't be
+// had (no such folder, a ref git's ref:path doesn't read, a list cut
+// off) the whole repository's is read, which says for sure what is there.
+// A rate limit is said at once.
+func treeUnder(repo, ref, path string) (*gitTree, error) {
+	if path != "" {
+		t, err := listTree(repo, ref, path)
+		var e errLimited
+		if errors.As(err, &e) {
+			return nil, err
+		}
+		if err == nil && !t.Truncated {
+			for i := range t.Tree {
+				t.Tree[i].Path = path + "/" + t.Tree[i].Path
+			}
+			t.Tree = append([]gitEntry{{Path: path, Type: "tree", Mode: "040000"}}, t.Tree...)
+			return t, nil
+		}
+	}
+	return repoTree(repo, ref)
 }
 
 // findNew looks in one repository at one ref for skills beside the
@@ -210,7 +254,7 @@ func findNew(l *Library, repo, ref string, f *fetcher, limited *atomic.Pointer[e
 			known[s.Source.Path] = true
 		}
 	}
-	tree, err := repoTree(repo, ref)
+	tree, err := treeUnder(repo, ref, base)
 	if err != nil {
 		var e errLimited
 		if errors.As(err, &e) {
@@ -221,7 +265,9 @@ func findNew(l *Library, repo, ref string, f *fetcher, limited *atomic.Pointer[e
 	if !tree.Truncated && !slices.ContainsFunc(skillDirsIn(tree, base), func(d string) bool { return !known[d] }) {
 		return []NewSkill{}, true
 	}
-	src := Source{Kind: "github", Repo: repo, Ref: ref}
+	// only base's folder: candidates looks nowhere else, and a
+	// repository too big to download whole is then fetched only there
+	src := Source{Kind: "github", Repo: repo, Ref: ref, Path: base}
 	tmp, err := f.fetch(src)
 	if err != nil {
 		return nil, false

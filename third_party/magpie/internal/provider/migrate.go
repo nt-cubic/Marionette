@@ -1181,12 +1181,36 @@ func MovedOnto(name string) []string {
 	return out
 }
 
+// PluginAgentGoing, set by internal/agent, takes magpie out of the config
+// of the agent the plugin spec adds and puts back what the user had, as
+// `magpie <agent> default` does. It runs before the plugin is turned off
+// or removed, while magpie still knows the agent: after, nothing could
+// (#3810).
+var PluginAgentGoing func(spec string) error
+
+// agentGoing runs PluginAgentGoing for the installed plugin named; an
+// error keeps the plugin as it is.
+func agentGoing(name, left string) error {
+	spec := installedSpec(name)
+	if spec == "" || PluginAgentGoing == nil {
+		return nil
+	}
+	if err := PluginAgentGoing(spec); err != nil {
+		return fmt.Errorf("%s is left %s: magpie couldn't put back its agent's config as it was (%w); switch the agent off magpie first", name, left, err)
+	}
+	return nil
+}
+
 // RemovePlugin removes the plugin named and sets aside the model picks of
 // its providers it leaves in providers.json (plugin_left.go). A built-in
 // moved onto it isn't moved back, as the built-in is going: it is
 // MoveRemoved, its accounts kept with the plugin's sign-ins for when the
-// plugin is installed again.
+// plugin is installed again. The agent it adds is taken off magpie first
+// (PluginAgentGoing).
 func RemovePlugin(ctx context.Context, name string) error {
+	if err := agentGoing(name, "installed"); err != nil {
+		return err
+	}
 	// what it served is read while it is still on the list
 	moved := MovedOnto(name)
 	spec := installedSpec(name)
@@ -1213,7 +1237,14 @@ func RemovePlugin(ctx context.Context, name string) error {
 
 // SetPluginOff turns the plugin named off, or back on. A built-in moved
 // onto it stays moved, off with it: nothing moves it back, as the built-in
-// is going.
+// is going. The agent it adds is taken off magpie before it is off
+// (PluginAgentGoing), and stays off when it is on again: the agent's
+// switch puts back the model it was on.
 func SetPluginOff(_ context.Context, name string, off bool) error {
+	if off {
+		if err := agentGoing(name, "on"); err != nil {
+			return err
+		}
+	}
 	return plugin.SetOff(name, off)
 }

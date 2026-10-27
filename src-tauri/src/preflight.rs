@@ -63,6 +63,13 @@ pub fn run_preflight_with_cmd(agent_id: &str, command_override: Option<&str>) ->
     }
 
     // 3) Runtime by distribution
+    if crate::web_chat_bridge::site(agent_id).is_some() {
+        if let Some(version) = run_version("node", &["--version"]) {
+            checks.push(version_at_least_check(
+                "node_version", "Node version", version.trim_start_matches('v'), "22.0.0",
+            ));
+        }
+    }
     match meta.distribution {
         DistributionKind::Npx => {
             checks.extend(check_node_npm(meta.node_required));

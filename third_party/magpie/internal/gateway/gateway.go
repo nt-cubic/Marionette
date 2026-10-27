@@ -648,6 +648,8 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	// and fetches the partner list every hour, asked for or not
 	go provider.KeepPartnersFresh(ctx)
 	go provider.KeepPluginsListed(ctx) // models a plugin's vendor drops or adds, while magpie runs
+	// and those a signed-in account's vendor adds (a ChatGPT plan's new GPT)
+	go provider.KeepAccountsListed(ctx)
 	// and fetches the lists of the providers the user asked to keep fresh (#2135)
 	go provider.KeepListsFresh(ctx)
 	// and keeps the community's plugins up to date, noting others' updates, and the Bun they run on

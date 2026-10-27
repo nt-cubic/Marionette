@@ -293,6 +293,12 @@ func TestSingleProviderOwnPatienceWins(t *testing.T) {
 			}}
 			s := busyProviderWaiting(t, u, c.patience)
 			scaled(t, c.byDefault)
+			if c.want != 200 {
+				// the 429 is the agent's status, however long a busy
+				// machine takes to have it: past a scaled keepHeldAfter
+				// the stream's 200 went first, and the 429 in it
+				keepHeldAfter = time.Minute
+			}
 			gw := httptest.NewServer(s.Handler())
 			t.Cleanup(gw.Close)
 			// a failure ends the request with the test, not when a pause

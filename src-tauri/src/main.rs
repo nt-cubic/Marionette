@@ -11,6 +11,7 @@ mod commands;
 mod context_inventory;
 mod credentials;
 mod custom_agents;
+mod web_chat_bridge;
 mod data_dir_gate;
 mod debug_log;
 mod dock_support;

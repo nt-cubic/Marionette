@@ -401,6 +401,12 @@ group's "Show all" comes on hover, "Hide all" at the foot sends every one
 but the model in use, "Show all" there sends none, and Esc or a
 click elsewhere closes it.
 
+`agent-models-group-on.test.cjs` opens Codex's model list with only Codex
+serving, a routing group of the user's off and on, in Chromium and WebKit,
+English and Chinese: Codex's 10 models stay open either way, and the group
+is there to pick (shiqi_40904 on Discord: with a group on, the provider's
+models started folded and looked gone).
+
 `omp-roles.test.cjs` draws omp's subagents, smol and slow roles in Chromium
 and WebKit, English and Chinese: each is a square after the model's picker,
 not a picker of its own, as they follow the model while unset; unset it is

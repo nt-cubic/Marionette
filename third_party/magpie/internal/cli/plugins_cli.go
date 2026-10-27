@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/middleware"
 	"github.com/yetone/magpie/internal/plugin"
@@ -72,10 +73,12 @@ func pluginCmd(args []string) error {
 		}
 		rest[0] = installedName(rest[0])
 		moved := provider.MovedOnto(rest[0])
+		wired := wiredPluginAgent(rest[0])
 		if err := provider.RemovePlugin(ctx, rest[0]); err != nil {
 			return err
 		}
 		fmt.Println(green.Render("✓"), "removed", rest[0])
+		sayAgentBack(wired)
 		for _, id := range moved {
 			fmt.Println(faint.Render("  " + id + " is off until the plugin is added again; its accounts are kept"))
 		}
@@ -92,10 +95,15 @@ func pluginCmd(args []string) error {
 			return errors.New(pluginUsage)
 		}
 		rest[0] = installedName(rest[0])
+		var wired *agent.Agent
+		if sub == "off" {
+			wired = wiredPluginAgent(rest[0])
+		}
 		if err := provider.SetPluginOff(ctx, rest[0], sub == "off"); err != nil {
 			return err
 		}
 		fmt.Println(green.Render("✓"), rest[0], "is", sub)
+		sayAgentBack(wired)
 		if sub == "off" {
 			for _, id := range provider.MovedOnto(rest[0]) {
 				fmt.Println(faint.Render("  " + id + " is off with it; its accounts are kept"))
@@ -672,4 +680,24 @@ func readsText(reads []string) string {
 		return "reads nothing"
 	}
 	return "reads " + strings.Join(reads, ", ")
+}
+
+// wiredPluginAgent is the agent the plugin named adds, while magpie is in
+// its config: turning the plugin off or removing it takes magpie out
+// first (provider.PluginAgentGoing, #3810).
+func wiredPluginAgent(name string) *agent.Agent {
+	for _, a := range agent.All() {
+		if a.Plugin != "" && (a.Plugin == name || plugin.Name(a.Plugin) == name) && a.Wired() {
+			return a
+		}
+	}
+	return nil
+}
+
+// sayAgentBack says that the agent a plugin added was taken off magpie.
+func sayAgentBack(a *agent.Agent) {
+	if a == nil {
+		return
+	}
+	fmt.Println(faint.Render("  " + a.Name + " is disconnected from magpie, back to what it had before; with the plugin back, connecting it (its switch on the Agents page) puts back the model it was on"))
 }

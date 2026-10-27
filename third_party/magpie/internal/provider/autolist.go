@@ -18,8 +18,8 @@ package provider
 //
 // Both are the user's own settings, kept by every save that doesn't set
 // them (the window's editor among them), and only a provider of the user's
-// own has them: an account's list is fetched for it (FetchNew), and a
-// plugin's by the plugin (KeepPluginsListed).
+// own has them: an account's list is fetched for it (FetchNew, then
+// KeepAccountsListed), and a plugin's by the plugin (KeepPluginsListed).
 
 import (
 	"context"

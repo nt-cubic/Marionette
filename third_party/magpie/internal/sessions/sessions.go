@@ -393,6 +393,35 @@ type file struct {
 	cold bool
 }
 
+// byKey groups the files keep takes by session, each group in the files'
+// order. The groups are cut from one copy of the kept files rather than
+// grown an append at a time: a file is a few hundred bytes, and a Sessions
+// poll grouped every one of ~16k files three times, ~150 MB in eight polls.
+// A nil keep takes every file.
+func byKey(files []file, keep func(*file) bool) map[string][]file {
+	count := map[string]int{}
+	n := 0
+	for i := range files {
+		if keep == nil || keep(&files[i]) {
+			count[files[i].key]++
+			n++
+		}
+	}
+	kept := make([]file, n)
+	groups := make(map[string][]file, len(count))
+	at := 0
+	for k, c := range count {
+		groups[k] = kept[at : at : at+c]
+		at += c
+	}
+	for i := range files {
+		if f := &files[i]; keep == nil || keep(f) {
+			groups[f.key] = append(groups[f.key], *f)
+		}
+	}
+	return groups
+}
+
 // ClaudeDir is Claude Code's folder: $CLAUDE_CONFIG_DIR, else ~/.claude.
 func ClaudeDir() string { return appdir.ClaudeDir() }
 
@@ -907,7 +936,8 @@ func loadCache() {
 // for a long history) takes a second or more, so it is done behind the
 // request: the parses in the cache are never changed once put there (a new
 // parse starts from a clone), so a copy of the map is a snapshot; saves in a
-// row are folded into the latest.
+// row are folded into the latest, and one is written saveGap after the
+// last at the soonest.
 func saveCache() {
 	snap := save{cacheFile{Version: cacheVersion, Zone: zone(), Files: maps.Clone(cache)}, CachePath()}
 	saving.Lock()
@@ -920,25 +950,57 @@ func saveCache() {
 	go func() {
 		for {
 			saving.Lock()
+			wait := saveGap - time.Since(saving.wrote)
+			if saving.hurry {
+				wait = 0
+			}
+			saving.Unlock()
+			if wait > 0 {
+				select {
+				case <-time.After(wait):
+				case <-saveNow:
+				}
+			}
+			saving.Lock()
 			f := saving.next
 			saving.next = nil
 			if f == nil {
-				saving.running = false
+				saving.running, saving.hurry = false, false
+				select { // a Saved's wake-up, unused, cuts no later gap
+				case <-saveNow:
+				default:
+				}
 				saving.Broadcast()
 				saving.Unlock()
 				return
 			}
 			saving.Unlock()
 			writeCache(f)
+			saving.Lock()
+			saving.wrote = time.Now()
+			saving.Unlock()
 		}
 	}()
 }
+
+// saveGap is how long a save waits after the last one written. A Sessions
+// or Usage page polls every 15 s, and a live session changes its file
+// between any two, so each poll wrote the whole index again: tens of MB
+// for a long history, ~20 MB allocated to encode it each time. The index
+// only spares the next start a read; what a save not yet written misses is
+// read again then. Saved does not wait it out.
+var saveGap = time.Minute
+
+// saveNow wakes a save waiting out saveGap once saving.hurry is set.
+var saveNow = make(chan struct{}, 1)
 
 var saving struct {
 	sync.Mutex
 	*sync.Cond
 	running bool
 	next    *save
+	wrote   time.Time // when the last save was written
+	hurry   bool      // Saved is waiting: no save waits out saveGap
 }
 
 type save struct {
@@ -952,9 +1014,16 @@ func init() { saving.Cond = sync.NewCond(&saving.Mutex) }
 // it on disk.
 func Saved() { saved() }
 
-// saved waits for the saves under way.
+// saved waits for the saves under way, written without their saveGap.
 func saved() {
 	saving.Lock()
+	if saving.running {
+		saving.hurry = true
+		select {
+		case saveNow <- struct{}{}:
+		default:
+		}
+	}
 	for saving.running {
 		saving.Wait()
 	}
@@ -1308,10 +1377,9 @@ func listSessions(limit int) []Session {
 
 	defer useDBs()()
 	files := allFiles()
-	groups := map[string][]file{}
+	groups := byKey(files, nil)
 	latest := map[string]time.Time{}
 	for _, f := range files {
-		groups[f.key] = append(groups[f.key], f)
 		if f.mod.After(latest[f.key]) {
 			latest[f.key] = f.mod
 		}
@@ -2267,11 +2335,10 @@ func Titles(keys []string) map[string]string {
 	loadCache()
 	defer useDBs()()
 	files := allFiles()
-	groups := map[string][]file{}
+	groups := byKey(files, func(f *file) bool { return want[f.key] })
 	var fs []file
 	for _, f := range files {
 		if want[f.key] {
-			groups[f.key] = append(groups[f.key], f)
 			fs = append(fs, f)
 		}
 	}
