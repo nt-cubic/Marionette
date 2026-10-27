@@ -50,6 +50,12 @@ check("a dialog with a question / plan / permission card is never parked", () =>
 check("a dialog with a queued follow-up is never parked", () => {
   assert.equal(shouldAutoSuspend(warm(), NOW, { queuedSessionIds: new Set(["s1"]) }), false);
 });
+check("a dialog with a live subagent / terminal / scheduled send is never parked", () => {
+  assert.equal(shouldAutoSuspend(warm(), NOW, { busySessionIds: new Set(["s1"]) }), false);
+});
+check("idle window is two hours", () => {
+  assert.equal(SUSPEND_IDLE_MS, 2 * 60 * 60 * 1000);
+});
 check("only warm idle dialogs are parked, even though a working one can be", () => {
   for (const status of ["running", "starting", "exited", "error"]) {
     assert.equal(isSuspendable(warm({ status })), false, status);

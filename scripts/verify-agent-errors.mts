@@ -4,7 +4,7 @@
  * Run: npx tsx scripts/verify-agent-errors.mts
  */
 import assert from "node:assert/strict";
-import { classifyAgentError } from "../src/lib/errors.ts";
+import { classifyAgentError, isSessionNotRunningError } from "../src/lib/errors.ts";
 
 let passed = 0;
 function check(name: string, fn: () => void) {
@@ -82,6 +82,15 @@ check("Claude Authentication required stays login", () => {
   });
   assert.equal(err.kind, "auth");
   assert.match(err.actionHint ?? "", /claude auth login/);
+});
+
+check("ACP session is not running is offline, not Agent 错误", () => {
+  const err = classifyAgentError("ACP session is not running");
+  assert.equal(err.kind, "offline");
+  assert.equal(err.title, "Agent 进程已结束");
+  assert.equal(isSessionNotRunningError("ACP session is not running"), true);
+  assert.equal(isSessionNotRunningError("ACP session is not initialized"), true);
+  assert.equal(isSessionNotRunningError("turn is already in flight"), false);
 });
 
 check("Grok 426 still needs update, not login", () => {

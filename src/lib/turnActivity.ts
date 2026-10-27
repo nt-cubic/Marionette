@@ -284,14 +284,22 @@ export function clusterActivityRuns(
   let i = 0;
   while (i < units.length) {
     const unit = units[i]!;
-    if (!isActivityEvent(unit.event)) {
+    // Nested agents stay their own cards (Codeg agent-row): folding them
+    // into a thought/read tally hides the fact that a subagent was spawned.
+    if (!isActivityEvent(unit.event) || isSubagentEvent(unit.event)) {
       clustered.push({ kind: "row", ...unit });
       i += 1;
       continue;
     }
     const start = i;
     i += 1;
-    while (i < units.length && isActivityEvent(units[i]!.event)) i += 1;
+    while (
+      i < units.length &&
+      isActivityEvent(units[i]!.event) &&
+      !isSubagentEvent(units[i]!.event)
+    ) {
+      i += 1;
+    }
     const slice = units.slice(start, i);
     clustered.push({
       kind: "activity",

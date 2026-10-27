@@ -26,6 +26,7 @@ import {
   isToolInProgress,
   stallBannerCopy,
 } from "../lib/activityHealth";
+import { isLiveSubagentEvent, sessionProcessAlive } from "../lib/liveSubagents";
 import { getFileDiff } from "../lib/api";
 import { detectForceWebSearchInText, stripForceWebSearchPrefix } from "../lib/forceWebSearch";
 import { collectToolImageSrcs, fileNameFromPath } from "../lib/imageAttachments";
@@ -1741,17 +1742,18 @@ function CleanPlaceholder({
   // StallBanner owns its own clock so transcript cards are not re-rendered every
   // 2s (that rebuild wiped browser text selection). Tool stall styling uses
   // lastActivityAt snapshots when events update, not a parent ticker.
+  const processAlive = sessionProcessAlive(session.status);
   const openTool = useMemo(() => {
-    // Only meaningful mid-turn; ignore orphan pending tools in saved history.
-    if (!isRunning) return null;
+    // Live nested agents still own the process after the parent turn
+    // completes (Grok background spawn). Ignore orphan tools once parked.
     for (let i = visibleEvents.length - 1; i >= 0; i -= 1) {
       const e = visibleEvents[i]!;
-      if (e.type === "tool_call" && isToolInProgress(e.status)) {
-        return e;
-      }
+      if (e.type !== "tool_call") continue;
+      if (isLiveSubagentEvent(e, { processAlive })) return e;
+      if (isRunning && isToolInProgress(e.status)) return e;
     }
     return null;
-  }, [isRunning, visibleEvents]);
+  }, [isRunning, processAlive, visibleEvents]);
   const openToolIsSubagent = Boolean(
     openTool && isSubagentTool(openTool.toolName, openTool.title),
   );
@@ -2341,8 +2343,8 @@ function CleanPlaceholder({
           // the process died — that forced open shell cards and froze long chats.
           const toolRunning =
             event.type === "tool_call" &&
-            isToolInProgress(event.status) &&
-            viewRunning;
+            (isLiveSubagentEvent(event, { processAlive }) ||
+              (isToolInProgress(event.status) && viewRunning));
 
           // Thought is "live" only while the session is running and nothing
           // (tool / reply / newer thought) has followed it in this turn.
@@ -2408,6 +2410,8 @@ function CleanPlaceholder({
               ) : (
                 "Thought"
               )
+            ) : event.type === "tool_call" && isSubagentTool(event.toolName, event.title) ? (
+              "Subagent"
             ) : event.type === "tool_call" ? (
               toolKindVerb(toolKind ?? "other")
             ) : event.type === "user_message" ? (
@@ -2546,8 +2550,14 @@ function CleanPlaceholder({
                 (!isToolEvent.toolCallId &&
                   isToolEvent.createdAt === openTool.createdAt &&
                   isToolEvent.text === openTool.text));
+            const liveSubagent =
+              isToolEvent != null &&
+              isLiveSubagentEvent(isToolEvent, { processAlive });
+            // Every live nested agent keeps its working card — parallel
+            // spawns must all stay visible, including in the collapsed view.
             const showWorkingBlock = Boolean(
-              !foldAll && longRunningTool && isLatestOpenTool,
+              longRunningTool &&
+                (liveSubagent || (!foldAll && isLatestOpenTool)),
             );
             const forceOpen =
               (!compact && thoughtLive) ||

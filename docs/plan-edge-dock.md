@@ -10,7 +10,7 @@
 > ④ 贴边 composer 工具栏收成单入口（模式/权限/模型/Agent 分组菜单再进原列表，＋与发送保留）；
 > ⑤ 窄条内缘可拖宽 320–560（`applyDockWidth` 串行 setSize+setPosition，clientX 相对活客户区换算，
 > 松手 `persistDockWidth`）；⑥ 进行中列表：~~waiting 且安静 60s（`DOCK_DONE_GRACE_MS`）自动退场~~
-> （2026-10-26 用户反馈改为：完成（waiting）的对话不退场，一直留到真正挂起——30 分钟自动挂起 /
+> （2026-10-26 用户反馈改为：完成（waiting）的对话不退场，一直留到真正挂起——2 小时自动挂起 /
 > 行内 ⏸ / 进程退出把状态翻成 `exited` 才消失；`DOCK_DONE_GRACE_MS` 已删）。2026-10-26 又增：
 > 拖文件进窄条分区接住（`DockDropRouter`：上半条 → 收纳盒、下半条对话区 → composer 附件，
 > 拖动中双层虚线提示；dock 态 composer 的原生落点处理关闭，路径经 `lib/dockDrop.ts` 事件转交）。

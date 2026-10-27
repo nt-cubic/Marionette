@@ -18,7 +18,8 @@
 | `verify-agent-reentry.mts` | `npx tsx scripts/verify-agent-reentry.mts` | 再次进入对话（post-turn 续跑）：waiting+优雅期才武装、迟到回声/运行中/无回合边界不武装；安静收尾只封本会话尾卡（Reply→durationMs、Thought→endedAt），已封卡与他窗事件不动；zcode 真实形状回放不被粘进前一张卡 |
 | `usage-smoke.mts` | `npx tsx scripts/usage-smoke.mts` | usage 面板解析，断言用的是真实 adapter 抓到的报文 |
 | `title-smoke.mts` | `npx tsx scripts/title-smoke.mts` | 会话标题：拒绝 Marionette 自己注入的 prompt 抬头被当成标题，修复时从转录里取用户真正打的第一句 |
-| `suspend-smoke.mts` | `npx tsx scripts/suspend-smoke.mts` | 挂起规则两套：手动 ⏸ 按钮对**任何还持有进程**的会话都可按（starting / running / waiting / error，running 时按下去直接中断），只有已挂起的不画按钮；而 30 分钟空闲自动挂起仍只碰「热但空闲且没有待办」的会话 |
+| `suspend-smoke.mts` | `npx tsx scripts/suspend-smoke.mts` | 挂起规则两套：手动 ⏸ 按钮对**任何还持有进程**的会话都可按（starting / running / waiting / error，running 时按下去直接中断），只有已挂起的不画按钮；而 2 小时空闲自动挂起仍只碰「热但空闲且没有待办」的会话（子代理/后台命令/定时发送算在运作） |
+| `verify-live-subagents.mts` | `npx tsx scripts/verify-live-subagents.mts` | 嵌套子代理仍在跑：OpenCode/Claude `in_progress` Task，以及 Grok「Subagent started in background」完成桩 |
 | `fork-smoke.mts` | `npx tsx scripts/fork-smoke.mts` | 分叉的切点与拷贝：按 message id（退化为文本）定位那条回复，子任务/交接卡片不带过去，事件原对象不被改 |
 | `image-path-smoke.mts` | `npx tsx scripts/image-path-smoke.mts` | 对话里图片的路径：相对路径按会话工作目录拼成绝对路径，`file://` 去协议，绝对路径原样（用的是真实转录里的路径） |
 | `verify-usage-row-layout.mts` | `npx tsx scripts/verify-usage-row-layout.mts` | usage 行布局：不再渲染 Last turn / Session total |

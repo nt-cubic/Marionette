@@ -302,6 +302,10 @@ function backgroundTaskKindLabel(row: BackgroundTaskRow): string {
       return "后台命令";
     case "queued":
       return "排队发送";
+    case "subagent":
+      return "子代理";
+    case "scheduled":
+      return "定时发送";
     default:
       return "需要你";
   }
@@ -321,8 +325,8 @@ const BackgroundTaskRowView = memo(function BackgroundTaskRowView({
   const mark = backgroundTaskStateMark(row);
   const kind = backgroundTaskKindLabel(row);
   const killable = row.kind === "terminal" && row.state === "running";
-  // 排队发送在会话回合结束后自动冲走，行不可点；其余行点击切到发起会话。
-  const clickable = row.kind !== "queued";
+  // 排队/定时发送在会话回合结束后自动冲走，行不可点；其余行点击切到发起会话。
+  const clickable = row.kind !== "queued" && row.kind !== "scheduled";
   const meta = [kind, sessionLabel].filter(Boolean).join(" · ");
   return (
     <li className={`bg-task-row bg-task-row--${row.state}`}>
