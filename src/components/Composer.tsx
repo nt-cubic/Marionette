@@ -177,6 +177,22 @@ type ComposerProps = {
       effortLabel?: string | null;
     },
   ) => void;
+  /** Right-click send → 定时发送. Same payload as onSend, plus fire time. */
+  onScheduleSend?: (
+    atMs: number,
+    text: string,
+    droppedPaths?: string[],
+    imageAttachments?: import("../lib/imageAttachments").ImageAttachment[],
+    opts?: {
+      modeId?: string | null;
+      modeLabel?: string | null;
+      modelId?: string | null;
+      modelLabel?: string | null;
+      effortId?: string | null;
+      effort?: number | null;
+      effortLabel?: string | null;
+    },
+  ) => void;
   /** Notify parent when the active model id changes (for provider balance probes). */
   onActiveModelChange?: (modelId: string | null) => void;
   /** Lazy ACP: warm the agent process without blocking the composer. */
@@ -246,6 +262,12 @@ const OPENCODE_AUTH_AGENTS = new Set(["opencode"]);
  * picker never shows them there: the cross-use sections are the single entry
  * point for shared models.
  */
+
+function toDatetimeLocalValue(ms: number): string {
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
 
 function formatRecentTime(timestamp: number): string {
   const diff = Date.now() - timestamp;
@@ -566,6 +588,7 @@ export function Composer({
   onInterrupt,
   onRestartAgentSession,
   onSend,
+  onScheduleSend,
   onActiveModelChange,
   onWarmAgent,
   onEnsureAgentReady,
@@ -641,6 +664,7 @@ export function Composer({
   const [menu, setMenu] = useState<
     "mode" | "model" | "effort" | "permission" | "agent" | "send" | "hub" | null
   >(null);
+  const [scheduleCustom, setScheduleCustom] = useState("");
   const [modelQuery, setModelQuery] = useState("");
   const [draft, setDraft] = useState(() => readDraftCache(sessionId));
   /** Image attachments as Codex-style pills (not raw paths in the textarea). */
@@ -1721,13 +1745,14 @@ export function Composer({
   }, []);
 
   const submitText = useCallback(
-    (text: string) => {
+    (text: string, scheduleAtMs?: number) => {
       // Busy turns barge in via App (cancel the live prompt, then send).
       // Empty draft while busy still uses the Stop button / Esc×2 for interrupt.
       if (!sessionId) return;
       // Allow send with only images / empty text when attachments exist.
       if (!text.trim() && imageAttachments.length === 0) return;
-      onWarmAgent?.();
+      if (scheduleAtMs != null && !onScheduleSend) return;
+      if (scheduleAtMs == null) onWarmAgent?.();
       // Images go as ACP image blocks, not as files the agent must open.
       const dropped = [...droppedPathsRef.current].filter(
         (p, i, arr) => arr.indexOf(p) === i,
@@ -1766,20 +1791,21 @@ export function Composer({
       // Keep draft text clean for the You card. Flush the cache now so an
       // in-flight empty→Chat create cannot resurrect the sent text.
       writeDraftCache(sessionId, "");
-      onSend(
-        text,
-        droppedInText,
-        imageAttachments.length > 0 ? imageAttachments : undefined,
-        {
-          modeId,
-          modeLabel,
-          modelId,
-          modelLabel,
-          effortId: currentEffortId,
-          effort: currentEffort,
-          effortLabel: effortLabelVal,
-        },
-      );
+      const snap = {
+        modeId,
+        modeLabel,
+        modelId,
+        modelLabel,
+        effortId: currentEffortId,
+        effort: currentEffort,
+        effortLabel: effortLabelVal,
+      };
+      const images = imageAttachments.length > 0 ? imageAttachments : undefined;
+      if (scheduleAtMs != null && onScheduleSend) {
+        onScheduleSend(scheduleAtMs, text, droppedInText, images, snap);
+      } else {
+        onSend(text, droppedInText, images, snap);
+      }
       droppedPathsRef.current.clear();
       setDraft("");
       setImageAttachments([]);
@@ -1795,6 +1821,7 @@ export function Composer({
       currentEffortId,
       caps,
       onSend,
+      onScheduleSend,
       clearDropSuggest,
       imageAttachments,
       bridgeActive,
@@ -3943,7 +3970,7 @@ export function Composer({
                       ? "Interrupt (or double-press Esc)"
                       : isBusy && !canCancel
                         ? "Agent is busy"
-                        : "Send · 右键切换 Enter / Ctrl+Enter 发送"
+                        : "Send · 右键：快捷键 / 定时发送"
                 }
                 aria-label={
                   isBusy && (draft.trim() || imageAttachments.length > 0)
@@ -3972,7 +3999,11 @@ export function Composer({
                 }}
                 onContextMenu={(event) => {
                   event.preventDefault();
-                  setMenu(menu === "send" ? null : "send");
+                  const opening = menu !== "send";
+                  if (opening) {
+                    setScheduleCustom(toDatetimeLocalValue(Date.now() + 30 * 60_000));
+                  }
+                  setMenu(opening ? "send" : null);
                 }}
               >
                 {isBusy &&
@@ -3988,7 +4019,7 @@ export function Composer({
                 <div
                   className="composer-menu composer-menu--send"
                   role="menu"
-                  aria-label="发送快捷键"
+                  aria-label="发送选项"
                 >
                   <div className="composer-menu__label">发送快捷键</div>
                   <button
@@ -4013,6 +4044,60 @@ export function Composer({
                   >
                     Enter 发送
                   </button>
+                  {onScheduleSend && (
+                    <>
+                      <div className="composer-menu__divider" />
+                      <div className="composer-menu__label">定时发送</div>
+                      {(
+                        [
+                          [5, "5 分钟后"],
+                          [15, "15 分钟后"],
+                          [30, "30 分钟后"],
+                          [60, "1 小时后"],
+                        ] as const
+                      ).map(([minutes, label]) => (
+                        <button
+                          key={minutes}
+                          type="button"
+                          role="menuitem"
+                          disabled={!draft.trim() && imageAttachments.length === 0}
+                          onClick={() => {
+                            submitText(draft, Date.now() + minutes * 60_000);
+                            setMenu(null);
+                          }}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                      <div className="composer-menu__schedule">
+                        <input
+                          type="datetime-local"
+                          aria-label="自定义发送时间"
+                          min={toDatetimeLocalValue(Date.now() + 60_000)}
+                          value={scheduleCustom}
+                          onChange={(event) => setScheduleCustom(event.target.value)}
+                          onClick={(event) => event.stopPropagation()}
+                        />
+                        <button
+                          type="button"
+                          role="menuitem"
+                          disabled={
+                            (!draft.trim() && imageAttachments.length === 0) ||
+                            !scheduleCustom ||
+                            Date.parse(scheduleCustom) <= Date.now()
+                          }
+                          onClick={() => {
+                            const at = Date.parse(scheduleCustom);
+                            if (!Number.isFinite(at) || at <= Date.now()) return;
+                            submitText(draft, at);
+                            setMenu(null);
+                          }}
+                        >
+                          指定时间发送
+                        </button>
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
             </div>

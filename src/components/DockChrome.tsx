@@ -7,7 +7,7 @@
  *   actions     新建对话 (destination picker: 聊天 / projects / 全部对话) · 收纳盒
  *   quota       one compact meter per subscription + balance chips, tap = usage page
  *   active      dialogs still holding a process + the one in view; replaces tabs.
- *   A finished dialog stays listed until it is really parked (30-min
+ *   A finished dialog stays listed until it is really parked (2-hour
  *   auto-suspend, the row's ⏸, or agent exit) — App's dockActiveSessions.
  * Pages (all dialogs / usage / memo box) cover everything below the title bar
  * and come back with ‹ 返回 or Esc. ⋯ also holds 侧边栏常驻 (pinned strip),

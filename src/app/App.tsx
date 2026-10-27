@@ -153,13 +153,14 @@ import {
   classifyAgentError,
   formatAcpRpcError,
   formatClassifiedError,
+  isSessionNotRunningError,
   isTurnInFlightError,
 } from "../lib/errors";
 import { prettyEffortLabel } from "../lib/modelLabel";
 import { classifyToolCall } from "../lib/turnActivity";
 import { selectTurnWorkspaceChanges } from "../lib/turnDelivery";
 import { getLastUsedDefaults } from "../lib/recentModels";
-import { pickRestoredSession, saveUiRestore, saveQueuedSends, loadQueuedSends, saveClosedTabs, loadClosedTabs, loadDetailsVisible, saveDetailsVisible } from "../lib/uiRestore";
+import { pickRestoredSession, saveUiRestore, saveQueuedSends, loadQueuedSends, saveScheduledSends, loadScheduledSends, saveClosedTabs, loadClosedTabs, loadDetailsVisible, saveDetailsVisible } from "../lib/uiRestore";
 import {
   MAX_PANES,
   activateTab,
@@ -190,6 +191,7 @@ import {
 } from "../lib/splitWorkspace";
 import type { QuotePin } from "../lib/quoteComment";
 import { canPark, lastActiveMs, shouldAutoSuspend } from "../lib/sessionSuspend";
+import { listLiveSubagents, sessionHasLiveSubagents, sessionProcessAlive } from "../lib/liveSubagents";
 import { forkCopyEvents, forkCutIndex } from "../lib/sessionFork";
 import { type AskQuestionPrompt } from "../components/AskQuestionCard";
 import { buildBackgroundTaskRows } from "../lib/backgroundTasks";
@@ -684,6 +686,19 @@ export function App() {
   >(new Map());
   /** Bumps to re-render the queued-strip (source of truth is pendingSendsRef). */
   const [queuedStripTick, setQueuedStripTick] = useState(0);
+  const scheduledSendsRef = useRef<
+    Map<
+      string,
+      Array<{
+        id: string;
+        atMs: number;
+        composed: string;
+        imageAttachments: ImageAttachment[];
+        composerSnap?: ComposerChipSnapshot;
+      }>
+    >
+  >(new Map());
+  const runningTerminalSessionIdsRef = useRef<Set<string>>(new Set());
   const lastClosedTabsRef = useRef<string[]>(loadClosedTabs());
   const lastSendBySessionRef = useRef<
     Map<
@@ -3306,11 +3321,29 @@ export function App() {
           .filter((id): id is string => Boolean(id)),
       );
       const queuedSessionIds = new Set(pendingSendsRef.current.keys());
+      const busySessionIds = new Set<string>();
+      for (const session of sessionsRef.current) {
+        if (!sessionProcessAlive(session.status)) continue;
+        const events = shadowBySessionRef.current.get(session.id) ?? EMPTY_EVENTS;
+        if (sessionHasLiveSubagents(events, session.id, { processAlive: true })) {
+          busySessionIds.add(session.id);
+        }
+      }
+      for (const sessionId of runningTerminalSessionIdsRef.current) {
+        busySessionIds.add(sessionId);
+      }
+      for (const meta of delegateMetaRef.current.values()) {
+        if (!meta.finished) busySessionIds.add(meta.parentId);
+      }
+      for (const sessionId of scheduledSendsRef.current.keys()) {
+        const items = scheduledSendsRef.current.get(sessionId);
+        if (items && items.length > 0) busySessionIds.add(sessionId);
+      }
       // 「当前对话不挂起」只保护看得见的窗口：窗口藏进后台（background
-      // mode/最小化，visibilityState=hidden）时用户根本不在看，30 分钟到了
+      // mode/最小化，visibilityState=hidden）时用户根本不在看，2 小时到了
       // 连当前对话一起挂起——否则它会永远停在「等你」并养着一个活进程
       // （2026-10-25 反馈）。贴边停靠的窄条窗口并没有 hide，仍是 visible，
-      // 照旧豁免。
+      // 照旧豁免。子代理 / 后台命令 / 定时发送仍算在运作，不挂起。
       const exemptCurrent =
         typeof document !== "undefined" && document.visibilityState === "visible"
           ? currentSessionIdRef.current
@@ -3321,6 +3354,7 @@ export function App() {
             currentSessionId: exemptCurrent,
             pendingSessionIds,
             queuedSessionIds,
+            busySessionIds,
           })
         ) {
           continue;
@@ -4099,7 +4133,7 @@ export function App() {
   /**
    * Edge dock strip (instead of tabs): every dialog still holding a process,
    * plus the one in view, newest first. A finished (waiting) dialog stays
-   * listed until its process is really gone — the 30-min auto-suspend, a
+   * listed until its process is really gone — the 2-hour auto-suspend, a
    * manual park, or an agent exit flips it to `exited` and only then does the
    * row leave (2026-10-26; the 60s-after-quiet eviction read as "finished
    * dialogs vanish the moment they complete"). 全部对话 keeps the unread-done
@@ -4123,7 +4157,17 @@ export function App() {
   }, [availableSessions, currentSessionId, dockActive, dockListTick]);
 
   // Strip sliver: the parked handle breathes while any dialog is working.
-  const dockAnyBusy = dockActive && availableSessions.some((s) => s.status === "running" || s.status === "starting");
+  const dockAnyBusy =
+    dockActive &&
+    (availableSessions.some((s) => s.status === "running" || s.status === "starting") ||
+      availableSessions.some((s) =>
+        sessionProcessAlive(s.status) &&
+        sessionHasLiveSubagents(
+          shadowBySessionRef.current.get(s.id) ?? EMPTY_EVENTS,
+          s.id,
+          { processAlive: true },
+        ),
+      ));
   useEffect(() => {
     document.documentElement.classList.toggle("dock-live", dockAnyBusy);
   }, [dockAnyBusy]);
@@ -4138,7 +4182,13 @@ export function App() {
     let alive = true;
     const pull = () => {
       void listAcpTerminals().then((rows) => {
-        if (alive) setAcpTerminals((prev) => (sameTerminals(prev, rows) ? prev : rows));
+        if (!alive) return;
+        const running = new Set<string>();
+        for (const row of rows) {
+          if (row.running) running.add(row.sessionId);
+        }
+        runningTerminalSessionIdsRef.current = running;
+        setAcpTerminals((prev) => (sameTerminals(prev, rows) ? prev : rows));
       });
     };
     pull();
@@ -4153,6 +4203,27 @@ export function App() {
     // 排队入列都会 bump queuedStripTick，会话状态翻转走这里重算。
     setBackgroundTick((t) => t + 1);
   }, [queuedStripTick, availableSessions, permissionPrompt, askPrompt, planApproval]);
+  const liveWorkSigRef = useRef("");
+  useEffect(() => {
+    const tick = () => {
+      let sig = "";
+      for (const session of sessionsRef.current) {
+        if (!sessionProcessAlive(session.status)) continue;
+        const live = listLiveSubagents(
+          shadowBySessionRef.current.get(session.id) ?? EMPTY_EVENTS,
+          session.id,
+          { processAlive: true },
+        );
+        if (live.length > 0) sig += `${session.id}:${live.map((row) => row.key).join(",")};`;
+      }
+      if (sig === liveWorkSigRef.current) return;
+      liveWorkSigRef.current = sig;
+      setBackgroundTick((t) => t + 1);
+    };
+    tick();
+    const id = window.setInterval(tick, 1000);
+    return () => window.clearInterval(id);
+  }, []);
 
   const backgroundTasks = useMemo(() => {
     void backgroundTick;
@@ -4168,12 +4239,36 @@ export function App() {
         queuedSendLabels.set(session.id, session.label?.trim() || "排队发送");
       }
     }
+    const liveSubagents: import("../lib/backgroundTasks").LiveSubagentSnapshot[] = [];
+    const scheduledSends: import("../lib/backgroundTasks").ScheduledSendSnapshot[] = [];
+    for (const session of availableSessions) {
+      if (!sessionProcessAlive(session.status)) continue;
+      liveSubagents.push(
+        ...listLiveSubagents(
+          shadowBySessionRef.current.get(session.id) ?? EMPTY_EVENTS,
+          session.id,
+          { processAlive: true },
+        ),
+      );
+    }
+    for (const [sessionId, items] of scheduledSendsRef.current) {
+      for (const item of items) {
+        scheduledSends.push({
+          sessionId,
+          id: item.id,
+          atMs: item.atMs,
+          preview: item.composed.length > 48 ? `${item.composed.slice(0, 48)}…` : item.composed,
+        });
+      }
+    }
     return buildBackgroundTaskRows({
       delegateMeta: delegateMetaRef.current,
       delegateQueue: delegateQueueRef.current,
       terminals: acpTerminals,
+      liveSubagents,
       queuedSends,
       queuedSendLabels,
+      scheduledSends,
       currentSessionId,
       permissionSessionId: permissionPrompt?.sessionId,
       permissionTitle: permissionPrompt?.title ?? null,
@@ -5068,6 +5163,7 @@ export function App() {
     transcriptLoadedRef.current.delete(sessionId);
     acpNeedsHistoryRef.current.delete(sessionId);
     pendingSendsRef.current.delete(sessionId);
+    scheduledSendsRef.current.delete(sessionId);
     flushingSendRef.current.delete(sessionId);
     const saveTimer = transcriptSaveTimers.current.get(sessionId);
     if (saveTimer) {
@@ -6132,6 +6228,21 @@ export function App() {
       );
       restored += 1;
     }
+    const scheduled = loadScheduledSends();
+    for (const [id, items] of Object.entries(scheduled)) {
+      if (!items.length) continue;
+      scheduledSendsRef.current.set(
+        id,
+        items.map((item) => ({
+          id: item.id,
+          atMs: item.atMs,
+          composed: item.composed,
+          imageAttachments: (item.imageAttachments ?? []) as ImageAttachment[],
+          composerSnap: item.composerSnap,
+        })),
+      );
+      restored += 1;
+    }
     if (restored > 0) setQueuedStripTick((t) => t + 1);
   }, []);
 
@@ -6141,6 +6252,11 @@ export function App() {
       map[id] = items;
     });
     saveQueuedSends(map);
+    const scheduled: Record<string, ReturnType<typeof loadScheduledSends>[string]> = {};
+    scheduledSendsRef.current.forEach((items, id) => {
+      scheduled[id] = items;
+    });
+    saveScheduledSends(scheduled);
   }, [queuedStripTick]);
 
   // P2-UX-3: double Esc → interrupt (after closing overlays).
@@ -6809,6 +6925,59 @@ export function App() {
     await performSend(sid, composed, imageAttachments, opts);
   };
 
+  const handleScheduleSend = async (
+    atMs: number,
+    text: string,
+    droppedPaths: string[] = [],
+    imageAttachments: ImageAttachment[] = [],
+    opts?: ComposerChipSnapshot,
+    sessionId?: string,
+  ) => {
+    opts = { ...opts, filePaths: [...new Set(droppedPaths)] };
+    let sid = sessionId ?? currentSessionId;
+    const row = sessionsRef.current.find((s) => s.id === sid);
+    if (!sid || sid.startsWith("session-empty-")) {
+      setComposerAutoFocus(true);
+      const created = await handleCreateChatSession(row?.agentId ?? displaySession.agentId);
+      if (!created) return;
+      sid = created.id;
+    }
+    const pins = quotePinsById[sid] ?? [];
+    let composed = pins.length > 0 ? formatPinsForSend(pins, text) : text;
+    const markBlock = formatImageMarksForSend(imageAttachments);
+    if (markBlock) {
+      composed = composed.trim() ? `${markBlock}\n\n${composed.trim()}` : markBlock;
+    }
+    if (!composed.trim() && imageAttachments.length === 0) return;
+    if (!Number.isFinite(atMs) || atMs <= Date.now() + 5_000) {
+      await handleSend(text, droppedPaths, imageAttachments, opts, sid);
+      return;
+    }
+    setQuotePinsById((current) => {
+      if (!(sid in current)) return current;
+      const next = { ...current };
+      delete next[sid];
+      return next;
+    });
+    const queue = scheduledSendsRef.current.get(sid) ?? [];
+    queue.push({
+      id: `sched-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      atMs,
+      composed,
+      imageAttachments,
+      composerSnap: opts,
+    });
+    scheduledSendsRef.current.set(sid, queue);
+    setQueuedStripTick((t) => t + 1);
+    renameSessionFromText(sid, composed || imageAttachments[0]?.name || "定时发送");
+    pushDebug({
+      sessionId: sid,
+      level: "info",
+      source: "composer",
+      summary: `scheduled send at ${new Date(atMs).toLocaleString()}`,
+    });
+  };
+
   /** One-click: ask the active agent to commit local changes and push. */
   const handleCommitAndPush = () => {
     if (changedFiles.length === 0) return;
@@ -7186,7 +7355,23 @@ export function App() {
       if (sendRow?.projectId !== CHAT_PROJECT_ID && projectId) {
         startTurnBaseline(sid, projectId);
       }
-      await sendPromptWithTurnWait(sid, wireText, imagePaths, composerSnap?.filePaths);
+      try {
+        await sendPromptWithTurnWait(sid, wireText, imagePaths, composerSnap?.filePaths);
+      } catch (wireError) {
+        if (!isSessionNotRunningError(wireError)) throw wireError;
+        pushDebug({
+          sessionId: sid,
+          level: "warn",
+          source: "composer",
+          summary: "session/prompt: process gone — respawning and retrying",
+          detail: wireError instanceof Error ? wireError.message : String(wireError),
+        });
+        await restartAcpProcess(sid);
+        await ensureAcpReady(sid);
+        // This prompt already carries the transcript; do not inject twice.
+        acpNeedsHistoryRef.current.delete(sid);
+        await sendPromptWithTurnWait(sid, wireText, imagePaths, composerSnap?.filePaths);
+      }
       clearSendSilenceWatchdog(sid);
       touchActivity(sid);
       pushDebug({
@@ -7283,6 +7468,33 @@ export function App() {
   // 本会话并固化）。performSend 内部吞错，所以按会话状态判定成败。
   const telegramPerformSendRef = useRef(performSend);
   telegramPerformSendRef.current = performSend;
+
+  useEffect(() => {
+    const fireDue = () => {
+      const now = Date.now();
+      let fired = false;
+      for (const [sessionId, items] of [...scheduledSendsRef.current.entries()]) {
+        const due = items.filter((item) => item.atMs <= now);
+        if (due.length === 0) continue;
+        const rest = items.filter((item) => item.atMs > now);
+        if (rest.length === 0) scheduledSendsRef.current.delete(sessionId);
+        else scheduledSendsRef.current.set(sessionId, rest);
+        fired = true;
+        for (const item of due) {
+          void telegramPerformSendRef.current(
+            sessionId,
+            item.composed,
+            item.imageAttachments,
+            item.composerSnap,
+          );
+        }
+      }
+      if (fired) setQueuedStripTick((t) => t + 1);
+    };
+    fireDue();
+    const id = window.setInterval(fireDue, 1000);
+    return () => window.clearInterval(id);
+  }, []);
   useEffect(() => {
     if (!isTauriRuntime() || IS_DETACHED_WINDOW) return;
     let unlisten: (() => void) | undefined;
@@ -7827,6 +8039,7 @@ export function App() {
       agents[0]!;
     const caps = capsById[session.id] ?? (session.id === currentSessionId ? sessionCapabilities : null);
     const queuedSends = pendingSendsRef.current.get(session.id) ?? [];
+    const scheduledSends = scheduledSendsRef.current.get(session.id) ?? [];
     const prefill =
       composerPrefill &&
       (composerPrefill.sessionId
@@ -7986,6 +8199,33 @@ export function App() {
             </div>
           );
         })()}
+        {scheduledSends.length > 0 && (() => {
+          const pad = (n: number) => String(n).padStart(2, "0");
+          const fmt = (ms: number) => {
+            const d = new Date(ms);
+            return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+          };
+          const preview = scheduledSends
+            .map((item) => `${fmt(item.atMs)} ${item.composed.length > 28 ? `${item.composed.slice(0, 28)}…` : item.composed}`)
+            .join("、");
+          return (
+            <div className="queued-strip" title="定时发送 — 到点自动发出">
+              <span className="queued-strip__badge">定时 ×{scheduledSends.length}</span>
+              <span className="queued-strip__text">{preview}</span>
+              <button
+                type="button"
+                className="queued-strip__dismiss"
+                title="取消定时发送"
+                onClick={() => {
+                  scheduledSendsRef.current.delete(session.id);
+                  setQueuedStripTick((t) => t + 1);
+                }}
+              >
+                取消
+              </button>
+            </div>
+          );
+        })()}
         </div>
         <div
           className={
@@ -8042,6 +8282,9 @@ export function App() {
           onInterrupt={() => void cancelLiveTurn(session.id, { announce: true })}
           onSend={(text, droppedPaths, imageAttachments, opts) =>
             void handleSend(text, droppedPaths, imageAttachments, opts, session.id)
+          }
+          onScheduleSend={(atMs, text, droppedPaths, imageAttachments, opts) =>
+            void handleScheduleSend(atMs, text, droppedPaths, imageAttachments, opts, session.id)
           }
           onActiveModelChange={session.id === currentSessionId ? setActiveModelId : undefined}
           sessionEvents={events}

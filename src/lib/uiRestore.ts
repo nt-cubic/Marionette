@@ -139,6 +139,51 @@ export function saveQueuedSends(map: Record<string, QueuedSendSnap[]>): void {
   }
 }
 
+export type ScheduledSendSnap = QueuedSendSnap & {
+  id: string;
+  atMs: number;
+};
+
+const SCHEDULED_SENDS_KEY = "marionette-scheduled-sends";
+
+export function saveScheduledSends(map: Record<string, ScheduledSendSnap[]>): void {
+  try {
+    const trimmed: Record<string, ScheduledSendSnap[]> = {};
+    for (const [id, items] of Object.entries(map)) {
+      if (items.length > 0) trimmed[id] = items;
+    }
+    window.localStorage.setItem(SCHEDULED_SENDS_KEY, JSON.stringify(trimmed));
+  } catch {
+    /* ignore */
+  }
+}
+
+export function loadScheduledSends(): Record<string, ScheduledSendSnap[]> {
+  try {
+    const raw = window.localStorage.getItem(SCHEDULED_SENDS_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Record<string, ScheduledSendSnap[]> = {};
+    for (const [id, items] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!Array.isArray(items)) continue;
+      out[id] = items.filter((item): item is ScheduledSendSnap => {
+        if (!item || typeof item !== "object") return false;
+        const row = item as ScheduledSendSnap;
+        return (
+          typeof row.composed === "string" &&
+          typeof row.id === "string" &&
+          typeof row.atMs === "number" &&
+          Number.isFinite(row.atMs)
+        );
+      });
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 export function loadQueuedSends(): Record<string, QueuedSendSnap[]> {
   try {
     const raw = window.localStorage.getItem(QUEUED_SENDS_KEY);

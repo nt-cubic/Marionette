@@ -1429,6 +1429,14 @@ impl AcpService {
             .and_then(|map| map.get(session_id).cloned())
     }
 
+    /// Caps of a process that is still alive. Stale caps after a crash or park
+    /// must not look like a live session — the UI's `ensureAcpReady` would skip
+    /// spawn and the next prompt would fail with "ACP session is not running".
+    pub fn live_capabilities(&self, session_id: &str) -> Option<CapabilitySnapshot> {
+        let sessions = self.sessions.lock().ok()?;
+        self.alive_session_caps(&sessions, session_id)
+    }
+
     /// 该 agent 任一活跃会话的能力快照（模型/模式目录随 agent，不随会话）。
     /// Telegram 远程命令用它在不新建会话的前提下枚举某个 agent 的模型清单。
     pub fn agent_capability_snapshot(&self, agent_id: &str) -> Option<CapabilitySnapshot> {

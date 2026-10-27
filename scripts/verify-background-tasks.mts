@@ -110,6 +110,36 @@ check(
     runningRows.some((r) => r.kind === "terminal" && r.title === "cargo watch"),
 );
 
+const withSub = buildBackgroundTaskRows({
+  delegateMeta: new Map(),
+  delegateQueue: new Map(),
+  terminals: [],
+  liveSubagents: [
+    {
+      sessionId: "parent-1",
+      key: "spawn-1",
+      title: "审计模块 A",
+      detail: "subagent_id: abc",
+      startedAtMs: 1200,
+    },
+  ],
+  queuedSends: new Map(),
+  queuedSendLabels: new Map(),
+  scheduledSends: [
+    { sessionId: "parent-1", id: "sched-1", atMs: 9999, preview: "明早再问" },
+  ],
+  currentSessionId: "parent-1",
+  sessionLabels: new Map([["parent-1", "会话甲"]]),
+});
+check(
+  "native subagent is a running row",
+  withSub.some((r) => r.kind === "subagent" && r.state === "running" && r.title === "审计模块 A"),
+);
+check(
+  "scheduled send is a queued row",
+  withSub.some((r) => r.kind === "scheduled" && r.state === "queued" && r.detail === "明早再问"),
+);
+
 // finished delegate child never listed
 check("finished delegate excluded", !rows.some((r) => r.key === "delegate:child-done"));
 

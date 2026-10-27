@@ -11,7 +11,7 @@
  */
 
 /** How long a warm, idle dialog may sit untouched before it is parked. */
-export const SUSPEND_IDLE_MS = 30 * 60 * 1000;
+export const SUSPEND_IDLE_MS = 2 * 60 * 60 * 1000;
 
 export type SuspendableSession = {
   id: string;
@@ -26,6 +26,12 @@ export type SuspendRules = {
   pendingSessionIds?: ReadonlySet<string>;
   /** Sessions with a queued follow-up that has not gone out yet. */
   queuedSessionIds?: ReadonlySet<string>;
+  /**
+   * Sessions that still have nested work inside the process: live subagents,
+   * ACP terminals, @-delegate children, or a scheduled send. Parking would
+   * kill that work.
+   */
+  busySessionIds?: ReadonlySet<string>;
 };
 
 /** `lastActiveAt` is an epoch-ms string on new rows and ISO on legacy ones. */
@@ -92,6 +98,7 @@ export function isSuspendable(session: SuspendableSession, rules: SuspendRules =
   if (session.id === rules.currentSessionId) return false;
   if (rules.pendingSessionIds?.has(session.id)) return false;
   if (rules.queuedSessionIds?.has(session.id)) return false;
+  if (rules.busySessionIds?.has(session.id)) return false;
   return true;
 }
 

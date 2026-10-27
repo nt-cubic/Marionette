@@ -12,6 +12,7 @@ export type AgentErrorKind =
   | "limit"
   | "archived"
   | "busy"
+  | "offline"
   | "generic";
 
 export type ClassifiedError = {
@@ -237,6 +238,15 @@ export function classifyAgentError(
     };
   }
 
+  if (isSessionNotRunningError(raw)) {
+    return {
+      kind: "offline",
+      title: "Agent 进程已结束",
+      message,
+      actionHint: "点重试会重新拉起进程并把这段历史接上去，不必新开对话。",
+    };
+  }
+
   return {
     kind: "generic",
     title: "Agent 错误",
@@ -250,16 +260,31 @@ export function classifyAgentError(
  * not an agent failure — the caller should wait for `turn/complete` and retry
  * (see `performSend` in App.tsx) instead of painting an "Agent 错误" card.
  */
+function errorMessageOf(raw: unknown): string {
+  return typeof raw === "string"
+    ? raw
+    : raw instanceof Error
+      ? raw.message
+      : typeof (raw as { message?: unknown } | null)?.message === "string"
+        ? String((raw as { message: string }).message)
+        : "";
+}
+
 export function isTurnInFlightError(raw: unknown): boolean {
-  const message =
-    typeof raw === "string"
-      ? raw
-      : raw instanceof Error
-        ? raw.message
-        : typeof (raw as { message?: unknown } | null)?.message === "string"
-          ? String((raw as { message: string }).message)
-          : "";
-  return /turn is already in flight/i.test(message);
+  return /turn is already in flight/i.test(errorMessageOf(raw));
+}
+
+/**
+ * The ACP process map no longer has this dialog — parked, crashed, or a
+ * race with `stop`. Callers must respawn and retry rather than paint
+ * "Agent 错误: ACP session is not running".
+ */
+export function isSessionNotRunningError(raw: unknown): boolean {
+  const message = errorMessageOf(raw);
+  return (
+    /ACP session is not running/i.test(message) ||
+    /ACP session is not initialized/i.test(message)
+  );
 }
 
 export function formatClassifiedError(err: ClassifiedError): string {

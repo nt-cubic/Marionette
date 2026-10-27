@@ -117,7 +117,7 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
      不挡程序化 setSize；onMoved 在 docked-expanded 且无 `dockBarDrag` 时早退，宽度拖拽不会被
      误判成拖出贴边。
   6. **进行中列表退场时机（2026-10-26 改）**：~~waiting 安静 60s（`DOCK_DONE_GRACE_MS`）退场~~——用户反馈
-     「对话一完成就消失」观感不对。现在完成（waiting）的行**一直留着，直到真正挂起**：30 分钟自动挂起 /
+     「对话一完成就消失」观感不对。现在完成（waiting）的行**一直留着，直到真正挂起**：2 小时自动挂起 /
      行内 ⏸ / 进程退出把状态翻成 `exited`（`canPark` 为 false）才从 `dockActiveSessions` 消失。
      `DOCK_DONE_GRACE_MS` 常量已删；15s tick 只用于保鲜「5m」新鲜度标签。
   7. **窄条分区接住拖放（2026-10-26，`DockDropRouter.tsx` + `lib/dockDrop.ts`）**：dock 态 App 级
@@ -178,11 +178,13 @@ textarea `field-sizing: content` 跟着正文长、上限 min(28vh,190px)，底�
    不显 "No sessions"）；过滤激活时常驻 `shelf-filter-note` 提示条（标签 + 匹配数 + × 清除）；计数
    归零 `setStatusFilter(null)` 彻底清掉；**点项目/对话/聊天行即清状态过滤**（query 搜索词不动，
    搜索仍只留命中项——那是明确的收窄意图）。
-2. **30 分钟自动挂起不再无条件豁免当前对话**（`App.tsx` 挂起巡检）：旧规则「当前对话永不挂起」在
+2. **2 小时自动挂起不再无条件豁免当前对话**（`App.tsx` 挂起巡检）：旧规则「当前对话永不挂起」在
    窗口藏后台几小时后 = 对话永远停在「等你」+ 养着一个活 agent 进程（本次反馈的直接来源；另有
    lazy warm 在点开对话时把状态置回 waiting，等你还以为它是几小时前的残留）。现在豁免只在
    `document.visibilityState === "visible"` 时生效——藏后台/最小化到期照挂，下次发消息自动接上；
-   贴边窄条窗口没有 hide、仍是 visible，照旧豁免。
+   贴边窄条窗口没有 hide、仍是 visible，照旧豁免。**子代理仍在跑、ACP 后台命令、定时发送**
+   的会话一律不自动挂起（Grok `spawn_subagent` 会立刻把工具卡标成 completed，子进程其实还在
+   父进程里，必须按「Subagent started in background」桩识别）。
 
 **对话轨迹（clean view）**：连续 thought/tool 从**第一步**起就是一张组卡（稳定 `act-起点` key，
 单步也分组）。运行时**上方实时轨迹面板**（`LiveActivityTimeline` → `ActivityTimeline`，

@@ -3,15 +3,24 @@
  *
  * 来源与行类型：
  * - @-delegate 子代理（`delegateMetaRef` 未完成 + `delegateQueueRef` 排队）→ "delegate"
+ * - ACP 原生嵌套子代理（Grok spawn_subagent / Claude Task / OpenCode task）→ "subagent"
  * - ACP `terminal/*` 宿主里的后台命令（Rust `list_acp_terminals`）→ "terminal"
  * - 排队发送（`pendingSendsRef`，等回合空位）→ "queued"
+ * - 定时发送 → "scheduled"
  * - 待审批 / 待回答 / 计划审批（permission / ask / plan）→ "attention"（需要你）
  *
  * 会话的 running/starting 状态本身不进列表：侧栏与贴边窄条已经覆盖，
  * 这里只收「不是当前对话也能在跑的东西」。
  */
 
-export type BackgroundTaskKind = "delegate" | "delegate_queued" | "terminal" | "queued" | "attention";
+export type BackgroundTaskKind =
+  | "delegate"
+  | "delegate_queued"
+  | "subagent"
+  | "terminal"
+  | "queued"
+  | "scheduled"
+  | "attention";
 
 export type BackgroundTaskState = "running" | "queued" | "attention" | "done" | "failed" | "stopped";
 
@@ -93,13 +102,31 @@ function clip(text: string, max: number): string {
   return raw.length > max ? `${raw.slice(0, max)}…` : raw;
 }
 
+export type LiveSubagentSnapshot = {
+  sessionId: string;
+  key: string;
+  title: string;
+  detail?: string;
+  startedAtMs: number;
+};
+
+export type ScheduledSendSnapshot = {
+  sessionId: string;
+  id: string;
+  atMs: number;
+  preview: string;
+};
+
 export type BuildBackgroundTasksInput = {
   delegateMeta: Map<string, DelegateMetaSnapshot>;
   delegateQueue: Map<string, DelegateQueueSnapshot[]>;
   terminals: TerminalRowRaw[];
+  /** ACP-native nested agents still running inside a parent process. */
+  liveSubagents?: LiveSubagentSnapshot[];
   /** sessionId → 排队发送条数（0 条或缺失 = 无）。 */
   queuedSends: Map<string, number>;
   queuedSendLabels: Map<string, string>;
+  scheduledSends?: ScheduledSendSnapshot[];
   currentSessionId: string | null;
   permissionSessionId?: string | null;
   permissionTitle?: string | null;
@@ -127,6 +154,19 @@ export function buildBackgroundTaskRows(input: BuildBackgroundTasksInput): Backg
       fromCurrent: input.currentSessionId === meta.parentId,
     });
   }
+  for (const child of input.liveSubagents ?? []) {
+    rows.push({
+      key: `subagent:${child.sessionId}:${child.key}`,
+      kind: "subagent",
+      state: "running",
+      sessionId: child.sessionId,
+      title: child.title || "子代理",
+      detail: child.detail,
+      startedAtMs: child.startedAtMs || now,
+      fromCurrent: input.currentSessionId === child.sessionId,
+    });
+  }
+
   for (const [parentId, jobs] of input.delegateQueue) {
     for (let i = 0; i < jobs.length; i++) {
       const job = jobs[i]!;
@@ -161,7 +201,7 @@ export function buildBackgroundTaskRows(input: BuildBackgroundTasksInput): Backg
     });
   }
 
-  // 3) 排队发送：等当前回合结束才发出的插话。
+  // 3) 排队发送：等当前回合结束才发出的插话。定时发送另列。
   for (const [sessionId, count] of input.queuedSends) {
     if (count <= 0) continue;
     rows.push({
@@ -172,6 +212,19 @@ export function buildBackgroundTaskRows(input: BuildBackgroundTasksInput): Backg
       title: input.queuedSendLabels.get(sessionId) || "排队发送",
       detail: `${count} 条消息等回合结束`,
       startedAtMs: now,
+    });
+  }
+
+  for (const item of input.scheduledSends ?? []) {
+    rows.push({
+      key: `scheduled:${item.sessionId}:${item.id}`,
+      kind: "scheduled",
+      state: "queued",
+      sessionId: item.sessionId,
+      title: input.sessionLabels.get(item.sessionId) || "定时发送",
+      detail: item.preview,
+      startedAtMs: item.atMs,
+      fromCurrent: input.currentSessionId === item.sessionId,
     });
   }
 

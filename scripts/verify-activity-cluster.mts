@@ -96,7 +96,7 @@ const thought = {
   createdAt: "t0",
 };
 
-check("parallel spawn_subagent tools fold like any other activity", () => {
+check("parallel spawn_subagent tools stay as their own cards", () => {
   const units = [0, 1, 2, 3, 4, 5, 6].map((index) => ({
     key: `spawn-${index}`,
     event: tool({
@@ -108,11 +108,8 @@ check("parallel spawn_subagent tools fold like any other activity", () => {
     index,
   }));
   const clustered = clusterActivityRuns(units);
-  assert.equal(clustered.length, 1);
-  assert.equal(clustered[0].kind, "activity");
-  if (clustered[0].kind === "activity") {
-    assert.equal(clustered[0].items.length, 7);
-  }
+  assert.equal(clustered.length, 7);
+  assert.ok(clustered.every((unit) => unit.kind === "row"));
 });
 
 check("thought sits in the same cluster as following tools", () => {

@@ -2497,6 +2497,24 @@ body.is-composer-resizing .composer {
   left: auto;
   right: 0;
   bottom: calc(100% + 6px);
-  min-width: 170px;
+  min-width: 196px;
+}
+
+.composer-menu__schedule {
+  display: grid;
+  gap: 4px;
+  padding: 4px 7px 6px;
+}
+
+.composer-menu__schedule input[type="datetime-local"] {
+  width: 100%;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elevated, var(--bg));
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
 }
 

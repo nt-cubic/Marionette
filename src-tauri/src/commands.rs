@@ -2414,7 +2414,7 @@ pub fn get_session_capabilities(
     state: State<'_, AppState>,
 ) -> Result<Option<crate::acp::CapabilitySnapshot>, String> {
     let _trace = crate::debug_log::CmdTrace::new("get_session_capabilities");
-    Ok(state.acp.get_capabilities(&session_id))
+    Ok(state.acp.live_capabilities(&session_id))
 }
 
 /// Blocks on a 60s RPC round-trip, and `expand_config_updates` can issue several
