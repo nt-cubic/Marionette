@@ -164,7 +164,7 @@ func (s *Server) alphaSearchOn(w http.ResponseWriter, r *http.Request, body []by
 		}
 		noteSignIn(ctx, on.Account, req, res)
 		c := Call{Time: start, From: provider.Responses, To: provider.Responses, Model: model, Provider: on.ID,
-			Agent: agentOf(r), Kind: "web_search", Status: res.StatusCode}
+			Agent: callerOf(r).agent, Via: callerOf(r).via, Kind: "web_search", Status: res.StatusCode}
 		if res.StatusCode < 200 || res.StatusCode > 299 {
 			msg, _ := io.ReadAll(io.LimitReader(res.Body, 4<<10))
 			res.Body.Close()

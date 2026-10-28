@@ -6,8 +6,11 @@
 // and nothing was saved. Pressed, redrawn and let go on the same option,
 // Lightweight mode → On is saved once; dragged off to another option, or to
 // the same option of another control, nothing is; a click with no redraw
-// is saved once. Every segs control on every Settings tab is pressed the
-// same way and its new self clicked once. Chromium and WebKit, in English,
+// is saved once. Pressed, redrawn, let go and redrawn again before its
+// click comes, as a draw that asks for its state draws once more with the
+// answer (Browser access, #3922), the newest On is saved once. Every segs
+// control on every Settings tab is pressed the same way and its new self
+// clicked once. Chromium and WebKit, in English,
 // Chinese, Japanese and German, in a wide and a narrow window, the API faked.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
@@ -65,18 +68,35 @@ async function open(engine, lang, width, tab, posted, st, t, touch = false) {
 
 const settle = (page) => page.evaluate(() => new Promise((ok) => setTimeout(ok, 80)));
 // brought out from under the header and the foot by the reader's wheel, as
-// code's scrolls are put back, till the pointer at its middle is on it
+// code's scrolls are put back, till the pointer at its middle is on it.
+// Each wheel's scroll lands before the option is looked at again: WebKit's
+// glides on for some 200ms (a wheel of 150px is at 9, 111, 142, 149 and
+// 150 by its frames), and a box read on the way was pressed where the
+// option had been, off it (#3922)
 async function reveal(page, loc) {
   for (let i = 0; i < 40; i++) {
     const b = await loc.boundingBox();
     const h = page.viewportSize().height;
     if (b && await loc.evaluate((o, [x, y]) => o.contains(document.elementFromPoint(x, y)), mid(b))) return b;
     await page.mouse.move(page.viewportSize().width / 2, h / 2);
+    const was = await page.evaluate(() => document.getElementById("view-settings").scrollTop);
     await page.mouse.wheel(0, b && b.y < h / 2 ? -150 : 150);
-    await page.waitForTimeout(60);
+    await landed(page, was);
   }
   throw new Error("could not bring the option into view");
 }
+// landed: Settings' view moved from where it was and then held still for
+// three frames in turn, or didn't move in a second (it is at its end)
+const landed = (page, was) => page.evaluate((was) => new Promise((ok) => {
+  const v = document.getElementById("view-settings"), t0 = performance.now();
+  let last = v.scrollTop, still = 0;
+  const frame = () => {
+    still = v.scrollTop === last ? still + 1 : 0;
+    last = v.scrollTop;
+    if (last !== was ? still >= 3 : performance.now() - t0 > 1000) ok(); else requestAnimationFrame(frame);
+  };
+  requestAnimationFrame(frame);
+}), was);
 const mid = (b) => [b.x + b.width / 2, b.y + b.height / 2];
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
@@ -147,6 +167,21 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.waitForTimeout(300);
         assert.deepEqual(saves(), [true, false], `posted ${JSON.stringify(posted)}`);
         assert.equal(await on(), w.off);
+
+        // pressed, redrawn, let go, and redrawn again before the click it
+        // set off comes, as Browser access is when its state's answer lands
+        // then (#3922): the newest On is clicked, once
+        await page.mouse.move(...mid(await reveal(page, opt("lightweightSegs", w.on))));
+        await page.mouse.down();
+        await page.evaluate(() => {
+          renderSettings();
+          addEventListener("pointerup", () => renderSettings(), { capture: true, once: true });
+        });
+        await page.mouse.up();
+        for (let i = 0; i < 40 && saves().length < 3; i++) await page.waitForTimeout(50);
+        await page.waitForTimeout(300);
+        assert.deepEqual(saves(), [true, false, true], `redrawn twice, posted ${JSON.stringify(posted)}`);
+        assert.equal(await on(), w.on);
         assert.deepEqual(errors, []);
       });
 

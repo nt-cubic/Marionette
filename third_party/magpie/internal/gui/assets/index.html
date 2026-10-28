@@ -5,6 +5,20 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>magpie</title>
 <link rel="icon" href="icons/favicon.svg" type="image/svg+xml">
+<!-- added to a phone's home screen, magpie web opens as an app of its own,
+     with no browser bars (ninja_s6114 on Discord); webGuard serves these
+     few files without the key, as a home screen may ask for them without
+     the page's cookie.
+     The theme colours are the window's in standalone alone, so a browser's
+     tab and the app's own windows look as they did -->
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="magpie">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" media="(display-mode: standalone) and (prefers-color-scheme: light)" content="#f4f4f6">
+<meta name="theme-color" media="(display-mode: standalone) and (prefers-color-scheme: dark)" content="#1a1a1e">
 <script src="boot.js"></script>
 <script src="theme.js"></script>
 <script src="omarchy.js"></script>
@@ -30,8 +44,11 @@
   <div class="side-foot">
     <button type="button" class="side-gw" id="sideGw" data-feature="gateway" hidden><i></i><span></span></button>
   </div>
-  <!-- its edge, dragged to make it wider or narrower (app.js sideDrag) -->
-  <div class="side-edge" id="sideEdge" role="separator" aria-orientation="vertical" tabindex="0" style="--wails-draggable:no-drag"></div>
+  <!-- its edge, dragged to make it wider or narrower (app.js sideDrag).
+       Out of Tab's reach, as a Mac split view's divider is: a Mac window
+       shown has WebKit focus the first stop Tab reaches, and its ring
+       showed on every open (ysm119) -->
+  <div class="side-edge" id="sideEdge" role="separator" aria-orientation="vertical" tabindex="-1" style="--wails-draggable:no-drag"></div>
 </aside>
 <header class="top" style="--wails-draggable:drag">
   <div class="brand">
@@ -155,6 +172,10 @@
         <div class="who"><div class="name" data-t>Colorblind mode</div></div>
         <div id="colorblindSegs"></div>
       </div>
+      <div class="row pref" id="reduceMotionRow">
+        <div class="who"><div class="name" data-t>Reduce motion</div></div>
+        <div id="reduceMotionSegs"></div>
+      </div>
       <div class="row pref">
         <div class="who"><div class="name" data-t>Language</div></div>
         <button type="button" id="langPick" class="sess-pick pref-pick" aria-label="Language" aria-haspopup="menu" aria-expanded="false"></button>
@@ -163,7 +184,7 @@
         <div class="who"><div class="name" data-t>Gateway mode</div><div class="sub" id="gatewayModeSub"></div></div>
         <div id="gatewayModeSegs"></div>
       </div>
-      <div class="row pref" id="textSizeRow">
+      <div class="row pref app-only" id="textSizeRow">
         <div class="who"><div class="name" data-t>Text size</div></div>
         <div id="textSizeSegs"></div>
       </div>
@@ -183,7 +204,7 @@
           <div class="font-preview">Aa 0123 · 中文</div>
         </div>
       </div>
-      <div class="row pref">
+      <div class="row pref app-only">
         <div class="who"><div class="name" data-t>Click the tray icon to</div></div>
         <div id="traySegs"></div>
       </div>
@@ -197,7 +218,7 @@
       </div>
       <!-- Codex's and Claude Code's own settings are on the Agents page (AGENT_PREFS); while searching, a row here says where -->
       <div id="agentPrefLinks"></div>
-      <div class="row pref" id="loginRow">
+      <div class="row pref app-only" id="loginRow">
         <div class="who"><div class="name" data-t>Open at login</div></div>
         <div id="loginSegs"></div>
       </div>
@@ -225,7 +246,7 @@
   </section>
   <section class="set-page" id="setPage-usage" role="tabpanel" aria-labelledby="setTab-usage">
     <div class="list prefs">
-      <div class="row pref" id="trayUsageRow">
+      <div class="row pref app-only" id="trayUsageRow">
         <div class="who"><div class="name" data-t>Allowances in the menu bar</div><div class="sub" id="trayUsageSub"></div></div>
         <div id="trayUsagePick"></div>
       </div>
@@ -364,6 +385,8 @@
     <div class="list prefs" id="allowList"></div>
     <div class="row-head"><span class="label" data-t>Web pages</span></div>
     <div class="list prefs" id="corsList"></div>
+    <div class="row-head" id="webPageHead"><span class="label" data-t>Browser access</span></div>
+    <div class="list prefs" id="webPageList"></div>
   </section>
   <section class="set-page" id="setPage-models" role="tabpanel" aria-labelledby="setTab-models">
     <div class="row-head"><span class="label" data-t>Images</span></div>
@@ -495,7 +518,9 @@
 <script src="context.js"></script>
 <script src="plugins/usage/page.js"></script>
 <script src="plugins/redact/page.js"></script>
+<script src="plugins/redact/demo.js"></script>
 <script src="plugins/otel/page.js"></script>
+<script src="plugins/gateway/settings.js"></script>
 <script src="start.js"></script>
 </body>
 </html>

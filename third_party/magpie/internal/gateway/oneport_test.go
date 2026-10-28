@@ -1,11 +1,14 @@
 package gateway
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/yetone/magpie/internal/access"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -26,7 +29,7 @@ func TestClientPathCoversHandler(t *testing.T) {
 	consts := map[string]string{
 		"claudeMCPPath": claudeMCPPath, "CodexPath": CodexPath, "CodexCatalogPath": CodexCatalogPath,
 		"AlphaSearchPath": AlphaSearchPath, "HeapPath": HeapPath, "CPUPath": CPUPath,
-		"GoroutinesPath": GoroutinesPath, "SearchMCPPath": SearchMCPPath, "VisionMCPPath": VisionMCPPath,
+		"GoroutinesPath": GoroutinesPath, "ClaudeRunsPath": ClaudeRunsPath, "SearchMCPPath": SearchMCPPath, "VisionMCPPath": VisionMCPPath,
 		"ImageMCPPath": ImageMCPPath, "ImageMCPFiles": ImageMCPFiles,
 		"ToolsMCPPath": ToolsMCPPath, "provider.RemoteCardsPath": provider.RemoteCardsPath,
 		"provider.RemoteRefreshPath": provider.RemoteRefreshPath,
@@ -72,5 +75,54 @@ func TestClientPathOnlyClean(t *testing.T) {
 		if !ClientPath(p) {
 			t.Errorf("%q is not a client path", p)
 		}
+	}
+}
+
+// A request the page's port marked (FromPagePort, or the header toGateway
+// passes on) is never local, and lanGuard takes the header off before any
+// handler, so nothing passes it on upstream. One without the mark, from
+// loopback, is an agent here as before.
+func TestPagePortMarkIsNeverLocal(t *testing.T) {
+	fresh(t)
+	t.Setenv("MAGPIE_TRUST_PROXY", "1")
+	var sawLocal, reached, sawHeader bool
+	h := lanGuard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawLocal, reached, sawHeader = local(r), true, r.Header.Get(PagePortHeader) != ""
+	}))
+	r := httptest.NewRequest("GET", "/v1/models", nil)
+	r.RemoteAddr = "127.0.0.1:50001"
+	h.ServeHTTP(httptest.NewRecorder(), r)
+	if !sawLocal {
+		t.Fatal("an agent here, unmarked: not local")
+	}
+	if local(FromPagePort(r)) {
+		t.Fatal("marked by the page's port: local")
+	}
+	for _, m := range []*http.Request{FromPagePort(r), takePagePort(FromPagePort(r))} {
+		if !viaPagePort(m) {
+			t.Fatal("the mark was lost")
+		}
+	}
+	if takePagePort(FromPagePort(r)).Header.Get(PagePortHeader) != "" {
+		t.Fatal("takePagePort left the header on")
+	}
+	reached = false
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, FromPagePort(r))
+	if w.Code != http.StatusForbidden || reached {
+		t.Fatalf("marked, not shared: %d, handler reached %v", w.Code, reached)
+	}
+	// shared, with a key: answered, the mark kept in the context alone
+	t.Setenv("MAGPIE_ADDR", "0.0.0.0:3499")
+	secret, err := access.Update("add-key", access.Change{Name: "Laptop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	k := FromPagePort(r)
+	k.Header.Set("Authorization", "Bearer "+secret)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, k)
+	if !reached || sawLocal || sawHeader {
+		t.Fatalf("marked, with a key: %d, handler reached %v, saw local %v, the header %v", w.Code, reached, sawLocal, sawHeader)
 	}
 }

@@ -24,8 +24,25 @@ func cancelTree(cmd *exec.Cmd) {
 // killDescendants ends every process started under pid, at any depth. A
 // pid Windows has given again to a later process is told apart by its
 // start: a child starts after its parent.
-func killDescendants(pid int) {
-	for _, d := range descendants(uint32(pid)) {
+func killDescendants(pid int) { killAll(descendants(uint32(pid))) }
+
+// endTree is end, with every process pid started ended too. TerminateProcess
+// ends pid alone, where a SIGTERM lets a program end its children first: the
+// Codex app's codex.exe app-server, ended so the app starts it again, left
+// the MCP servers it ran (node.exe under npx, uvx…) running with no parent,
+// one set more for every restart (liam_8829, 10-27). Its descendants are
+// listed while it is alive, as descendants needs it to be.
+func endTree(pid int) error {
+	kids := descendants(uint32(pid))
+	if err := end(pid); err != nil {
+		return err
+	}
+	killAll(kids)
+	return nil
+}
+
+func killAll(pids []uint32) {
+	for _, d := range pids {
 		h, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, d)
 		if err != nil {
 			continue

@@ -96,7 +96,7 @@ func grokFiles() []file {
 		// its title, its cwd and whose subagent it is are in its summary
 		m := file{path: filepath.Join(dir, "summary.json")}
 		if stat(&m) {
-			f.manifest = m.path
+			f.w().manifest = m.path
 			f.size += m.size
 			if m.mod.After(f.mod) {
 				f.mod = m.mod
@@ -178,8 +178,8 @@ func parseGrok(f file, old *state) *state {
 	var c grokCarry
 	var m grokSummary
 	hasM := false
-	if f.manifest != "" {
-		if m, hasM = readGrokSummary(f.manifest); hasM {
+	if f.m().manifest != "" {
+		if m, hasM = readGrokSummary(f.m().manifest); hasM {
 			c.Model = m.CurrentModel
 			c.Created, _ = time.Parse(time.RFC3339Nano, m.CreatedAt)
 			if m.Parent != "" {

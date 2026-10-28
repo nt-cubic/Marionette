@@ -18,7 +18,7 @@ import (
 // GetJSONItem returns the raw JSON of the first element of the file's
 // top-level array that has every member of where.
 func GetJSONItem(path string, where map[string]string) (string, bool) {
-	raw, err := Read(path)
+	raw, err := readHeld(path)
 	if err != nil || len(bytes.TrimSpace(raw)) == 0 {
 		return "", false
 	}

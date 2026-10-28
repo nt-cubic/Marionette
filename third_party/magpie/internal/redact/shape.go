@@ -263,3 +263,60 @@ func outsideShapes(s string, found []span) []span {
 	}
 	return found
 }
+
+// A user name goes to the vendor as a made-up name, not a placeholder:
+// C:\Users\eerttreeeert as C:\Users\qmzvkrta, never C:\Users\{{USERNAME_…}}.
+// A path with braces in it reads as a template's or a temporary folder's,
+// and an agent on mimo-v2.6-flash took the user's home for a temporary
+// folder and set out to delete it (eerttreeeert on X, 10-28). A made-up
+// name keeps the path a home folder's, which is what it is, and still
+// tells the vendor nothing of the user. It is made from the name as a
+// made-up key is (shapeOf), so it is the same every turn and a vendor's
+// cache still matches, and it is put back wherever the vendor writes it
+// (restoreShapes), in a tool call's path too. Only USERNAME's: what the
+// user chose to mask (their words) goes as they chose.
+
+// standInLen is a made-up name's length: eight lowercase letters, which
+// read as a login name and are in no other text by chance.
+const standInLen = 8
+
+// standInOf is the made-up name the user name v goes as.
+func standInOf(v string) string {
+	h := hmac.New(sha256.New, key())
+	h.Write([]byte("user\x00" + v))
+	sum := h.Sum(nil)
+	out := make([]byte, standInLen)
+	for i := range out {
+		out[i] = 'a' + sum[i]%26
+	}
+	return string(out)
+}
+
+// standIn is put with a user name sent as its made-up name, which is
+// kept to be put back as a made-up key is; put's own where that name is
+// another value's already.
+func standIn(put func(kind, v string) string) func(kind, v string) string {
+	return func(kind, v string) string {
+		if kind != "USERNAME" {
+			return put(kind, v)
+		}
+		f := standInOf(v)
+		if f == v {
+			return put(kind, v)
+		}
+		mu.Lock()
+		have, taken := values[f]
+		if !taken {
+			makeRoom()
+			values[f] = v
+			kinds[kind] = true
+			shapes[f] = kind
+			addKnown(f, v)
+		}
+		mu.Unlock()
+		if taken && have != v {
+			return put(kind, v)
+		}
+		return f
+	}
+}

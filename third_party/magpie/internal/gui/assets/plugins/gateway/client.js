@@ -690,6 +690,9 @@ magpie.plugin("gateway", (ctx) => {
         backToReader($("#view-gateway"));
       };
       $("#openLanSettings").onclick = () => { openSettings(); setSetTab("network", true); };
+      new MutationObserver(gatewayKeysTicks).observe($("#view-gateway"), { attributes: true, attributeFilter: ["hidden"] });
+      document.addEventListener("visibilitychange", gatewayKeysTicks);
+      gatewayKeysTicks();
     },
     // nothing read yet: the page's skeleton (#123)
     loading: renderGatewayLoading,
@@ -707,6 +710,8 @@ magpie.plugin("gateway", (ctx) => {
       if (was && !$("#view-gateway").classList.contains("loading") && same({ ...was, gateway: { ...was.gateway, calls: 0 } }, { ...providers, gateway: { ...providers.gateway, calls: 0 } })) {
         if (!same(was.gateway.calls, providers.gateway.calls)) renderActivity();
       } else renderGatewayView();
+      // and what each key has used of its limits, read on open only before
+      refreshGatewayKeys();
     },
     // the recent calls again, a page of them (the setting changed)
     calls() {

@@ -16,24 +16,50 @@ import (
 
 // caEnv has Bun trust what this machine trusts. Bun checks TLS against
 // the roots it ships, not the system's, so behind a box that re-signs
-// HTTPS (a company proxy, a VPN, Surge's or Proxyman's MITM) whose root
-// the user installed, magpie gets through and Bun doesn't: `bun add`
-// fails with "UNABLE_TO_VERIFY_LEAF_SIGNATURE downloading package
-// manifest", and a plugin's requests fail the same way. NODE_EXTRA_CA_CERTS
-// adds the system's roots to Bun's, for installs and for the host alike.
-// One the environment sets already is the user's and is left as it is.
-// dir is where Bun runs.
+// HTTPS (a company proxy, a VPN, Surge's or Proxyman's MITM, an
+// antivirus's HTTPS scan) whose root the user installed, magpie gets
+// through and Bun doesn't: `bun add` fails with
+// "UNABLE_TO_VERIFY_LEAF_SIGNATURE downloading package manifest" or
+// UNABLE_TO_GET_ISSUER_CERT_LOCALLY, and a plugin's requests with "self
+// signed certificate in certificate chain" (明霞 on Discord, Windows).
+//
+// NODE_USE_SYSTEM_CA=1 has Bun read the system's store itself, for the
+// runtime's fetch and for bun add's downloads alike (both take
+// us_get_default_ca_store, Bun 1.4.2): on Windows the ROOT, CA and
+// TrustedPeople stores of the machine, the user, group policy and the
+// enterprise, each certificate valid for server auth (an intermediate a
+// proxy doesn't send, and a root a policy installed, among them); on
+// macOS the keychains' trust settings; elsewhere $SSL_CERT_FILE and
+// $SSL_CERT_DIR, else the distribution's bundle and folder. One the
+// environment sets already, 0 too, is the user's and is left as it is.
+//
+// NODE_EXTRA_CA_CERTS adds a file of the system's roots as magpie reads
+// them, as before: an older Bun the user points MAGPIE_BUN at has no
+// NODE_USE_SYSTEM_CA. One the environment sets already is the user's and
+// is left as it is; Bun takes it beside the system's store. dir is where
+// Bun runs.
 func caEnv(env []string, dir string) []string {
-	for _, kv := range env {
-		k, v, _ := strings.Cut(kv, "=")
-		if strings.ToUpper(k) == "NODE_EXTRA_CA_CERTS" && strings.TrimSpace(v) != "" {
-			return nil
+	var out []string
+	if !envSet(env, "NODE_USE_SYSTEM_CA") {
+		out = append(out, "NODE_USE_SYSTEM_CA=1")
+	}
+	if !envSet(env, "NODE_EXTRA_CA_CERTS") {
+		if p := systemCAFile(); p != "" {
+			out = append(out, "NODE_EXTRA_CA_CERTS="+bunReadable(p, dir, runtime.GOOS))
 		}
 	}
-	if p := systemCAFile(); p != "" {
-		return []string{"NODE_EXTRA_CA_CERTS=" + bunReadable(p, dir, runtime.GOOS)}
+	return out
+}
+
+// envSet is whether env gives name a value that isn't blank.
+func envSet(env []string, name string) bool {
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		if strings.EqualFold(k, name) && strings.TrimSpace(v) != "" {
+			return true
+		}
 	}
-	return nil
+	return false
 }
 
 // bunReadable is p as a Bun on goos can open it. Bun on Windows reads

@@ -832,8 +832,13 @@ func (a *Agent) CLI() (c CLI, ok bool) {
 
 // InstalledVersion is what the agent's CLI on PATH says its version is: ""
 // for an agent without a CLI magpie knows, one not on PATH, or one that
-// didn't say. Asked once per binary, like CLI's; nothing is fetched.
+// didn't say. Asked once per binary, like CLI's; nothing is fetched. An
+// agent in a WSL distro's is what the distro's own CLI said at its probe,
+// for the kinds that ask (wslKind.version), never this machine's.
 func (a *Agent) InstalledVersion() string {
+	if a.WSL != "" {
+		return a.wslVersion
+	}
 	bin, _ := a.cliBin()
 	if bin == "" {
 		return ""

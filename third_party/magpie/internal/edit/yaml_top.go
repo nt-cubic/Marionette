@@ -13,7 +13,7 @@ import (
 // GetYAMLTop reads a top-level scalar key from a YAML file. Quoted keys and
 // string values are decoded; malformed files return ("", false).
 func GetYAMLTop(path, key string) (string, bool) {
-	raw, err := Read(path)
+	raw, err := readHeld(path)
 	if err != nil {
 		return "", false
 	}

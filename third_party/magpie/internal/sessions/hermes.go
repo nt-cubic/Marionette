@@ -342,12 +342,14 @@ func hermesFiles() []file {
 				agent:    "hermes",
 				key:      "hermes:" + id,
 				path:     path + "#" + url.QueryEscape(sid),
-				sid:      sid,
 				main:     true,
 				mod:      mod,
-				hermes:   store,
-				rev:      prints[sid], // "" when unknown: parsed again
 				readOnly: true,
+				more: &fileMore{
+					sid:    sid,
+					hermes: store,
+					rev:    prints[sid], // "" when unknown: parsed again
+				},
 			})
 		}
 		rows.Close()
@@ -572,23 +574,23 @@ func (h *hermesDB) eachMessage(q hermesQuery, sid string, fn func(hermesMessage)
 // the WAL: usage and titles can change without a DB-file mtime change.
 func parseHermes(f file) *state {
 	s := &state{Size: f.size, Mod: f.mod.UnixNano()}
-	if f.hermes == nil {
+	if f.m().hermes == nil {
 		return s
 	}
 	// The connection enforces mode=ro; the transaction needs only a snapshot.
-	tx, err := f.hermes.db.BeginTx(context.Background(), nil)
+	tx, err := f.m().hermes.db.BeginTx(context.Background(), nil)
 	if err != nil {
 		return s
 	}
 	defer tx.Rollback()
-	u, err := f.hermes.metadata(tx, f.sid, s)
+	u, err := f.m().hermes.metadata(tx, f.m().sid, s)
 	if err != nil {
 		return &state{}
 	}
 	// Activity comes from message gaps, not the entire duration of the session.
 	last := s.Last
 	s.Last = s.Start
-	if err := f.hermes.eachMessage(tx, f.sid, func(m hermesMessage) {
+	if err := f.m().hermes.eachMessage(tx, f.m().sid, func(m hermesMessage) {
 		at := hermesTime(m.at)
 		s.saw(at, true)
 		d := s.day(dateOf(at))
@@ -610,7 +612,7 @@ func parseHermes(f file) *state {
 	if last.After(s.Last) {
 		s.Last = last
 	}
-	usage, err := f.hermes.usages(tx, f.sid, u)
+	usage, err := f.m().hermes.usages(tx, f.m().sid, u)
 	if err != nil {
 		return &state{}
 	}
@@ -624,7 +626,7 @@ func parseHermes(f file) *state {
 			s.Last = at
 		}
 	}
-	s.DBRevision = f.rev
+	s.DBRevision = f.m().rev
 	return s
 }
 

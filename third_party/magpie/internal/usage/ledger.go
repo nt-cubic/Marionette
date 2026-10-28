@@ -441,7 +441,7 @@ func ledgerMatched(since, until time.Time, f Filter, recs []Record, logs []sessi
 		if source == "" {
 			sent = provider.SentNameIn(wires, r.Provider, r.Model, r.Effort)
 		}
-		row := codexIdentityRow(Row{Record: r, Swapped: r.Served != "" && Swapped(sent, r.Served), Routed: GroupRouted(sent, r.Served), Source: source}, actor, codexIdentities)
+		row := codexIdentityRow(Row{Record: r, Swapped: r.Served != "" && Swapped(sent, r.Served) && !ListedAs(r.Provider, r.Model, r.Served), Routed: GroupRouted(sent, r.Served), Source: source}, actor, codexIdentities)
 		if !f.keepsRow(&row) {
 			return
 		}
@@ -459,7 +459,7 @@ func ledgerMatched(since, until time.Time, f Filter, recs []Record, logs []sessi
 		if !since.IsZero() && r.Time.Before(since) || after(until, r.Time) {
 			continue
 		}
-		r.Provider = renamed.Of(r.Provider, r.Time)
+		r.renameBy(renamed)
 		actor := ""
 		if call, ok := pairs[i]; ok && call >= 0 && call < len(logs) {
 			actor = logs[call].ThreadID
@@ -494,7 +494,7 @@ func ledgerMatched(since, until time.Time, f Filter, recs []Record, logs []sessi
 		if !since.IsZero() && r.Time.Before(since) || after(until, r.Time) {
 			continue
 		}
-		r.Provider = renamed.Of(r.Provider, r.Time)
+		r.renameBy(renamed)
 		add(r, priceOf(r), c.Source, "")
 	}
 	// the two logs, by when each call began
@@ -530,14 +530,15 @@ func Pricer() func(Record) *catalog.Price {
 		if served == r.Model {
 			served = ""
 		}
-		k := [3]string{r.Provider, r.Model, served}
+		id := r.priceID()
+		k := [3]string{id, r.Model, served}
 		if pr, ok := prices[k]; ok {
 			return pr
 		}
 		var pr *catalog.Price
-		v, ok := provider.EffectivePriceIn(s, r.Provider, r.Model)
+		v, ok := provider.EffectivePriceIn(s, id, r.Model)
 		if !ok && served != "" {
-			v, ok = provider.EffectivePriceIn(s, r.Provider, served)
+			v, ok = provider.EffectivePriceIn(s, id, served)
 		}
 		if ok {
 			pr = &v
@@ -557,7 +558,7 @@ func NewPricer() func([]Record) Totals {
 	return func(recs []Record) Totals {
 		var sum Totals
 		for _, r := range recs {
-			r.Provider = renamed.Of(r.Provider, r.Time)
+			r.renameBy(renamed)
 			sum.add(r, priceOf(r))
 		}
 		return sum
@@ -1120,7 +1121,7 @@ func Visit(since time.Time, fn func(Record)) { readLogSnapshot().visit(since, fn
 func NewCoster() func(Record) (float64, bool) {
 	priceOf, renamed := Pricer(), provider.UsageRenames()
 	return func(r Record) (float64, bool) {
-		r.Provider = renamed.Of(r.Provider, r.Time)
+		r.renameBy(renamed)
 		var t Totals
 		t.add(r, priceOf(r))
 		return t.Cost, t.Unpriced == 0

@@ -3,7 +3,10 @@
 package main
 
 import (
+	_ "embed"
+
 	"github.com/yetone/magpie/internal/cli"
+	"github.com/yetone/magpie/internal/notices"
 	// the built-in plugins, registered with the runtime (internal/pluginrt)
 	_ "github.com/yetone/magpie/plugins/all"
 )
@@ -12,4 +15,14 @@ import (
 // Dockerfile, magpie-releases), so it stays in package main.
 var version = "dev"
 
-func main() { cli.Main(version) }
+// the notices of what is compiled into every build (moejs's Intl data and
+// code), carried by the binary itself, since most release assets are a
+// bare binary
+//
+//go:embed THIRD_PARTY_NOTICES
+var thirdParty string
+
+func main() {
+	notices.Text = thirdParty
+	cli.Main(version)
+}

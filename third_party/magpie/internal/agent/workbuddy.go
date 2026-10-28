@@ -9,6 +9,7 @@ package agent
 //	[{"id":"deepseek/pro","name":…,"vendor":"magpie","apiKey":"magpie-workbuddy",
 //	  "url":"http://127.0.0.1:3425/v1/chat/completions",
 //	  "maxInputTokens":…,"maxOutputTokens":…,
+//	  "contextWindow":{"supportedLengths":[200000,…],"defaultLength":…},
 //	  "supportsToolCall":true,"supportsImages":…,"supportsReasoning":true,
 //	  "reasoning":{"supportedEfforts":[…],"canDisableThinking":…,"defaultEffort":…}}]
 //
@@ -350,6 +351,10 @@ func buddyWriteAt(path, agent string, on bool, where place) error {
 	return edit.WriteAtomic(path, append(b, '\n'))
 }
 
+// buddySmallWindow is the smaller context WorkBuddy offers beside a
+// model's whole window, the size its own models offer.
+const buddySmallWindow = 200000
+
 // buddyModel is one of magpie's models as a models.json entry, under
 // agent's key.
 func buddyModel(agent, id, name string, context, output int, images bool, efforts []string) map[string]any {
@@ -361,6 +366,13 @@ func buddyModel(agent, id, name string, context, output int, images bool, effort
 		"apiKey": agentKey(agent), "url": gatewayV1() + "/chat/completions",
 		"maxInputTokens":   context,
 		"supportsToolCall": true, "supportsImages": images, "supportsReasoning": false,
+	}
+	// WorkBuddy offers a choice of context in its model menu only for a
+	// model whose contextWindow lists two sizes or more (its own Opus has
+	// 200K and 1M); the session's budget is defaultLength, or the smallest
+	// size when it is missing, so it is set to the whole window as before
+	if context > buddySmallWindow {
+		e["contextWindow"] = map[string]any{"supportedLengths": []int{buddySmallWindow, context}, "defaultLength": context}
 	}
 	// without it WorkBuddy caps every reply at its own default; output
 	// comes already trimmed (zcodeOutput) unless the user set it (outputOr)

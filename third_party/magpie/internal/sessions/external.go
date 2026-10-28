@@ -37,6 +37,9 @@ func MergeExternal(native []Session, external []ExternalSession) []Session {
 	seen := map[string]bool{}
 	for _, s := range native {
 		seen[s.Agent+"|"+s.ID] = true
+		for _, id := range s.Copies {
+			seen[s.Agent+"|"+id] = true
+		}
 	}
 	out := append([]Session(nil), native...)
 	for _, e := range external {

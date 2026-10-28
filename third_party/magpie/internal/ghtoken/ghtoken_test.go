@@ -119,26 +119,55 @@ func TestEnvTokenRefusedNotSentAgain(t *testing.T) {
 	}
 }
 
-// The token set in Settings is the user's own choice: its refusal comes
-// back as GitHub's 401, asked once, and Refused names it.
-func TestSettingsTokenRefusedStaysAnError(t *testing.T) {
+// The token set in Settings is the user's own choice, so its refusal is
+// said — and the check goes on: the request is asked again without it, the
+// anonymous answer is the one given back, and the token isn't sent again
+// while that field holds it (#3926).
+func TestSettingsTokenRefusedAskedAgainWithout(t *testing.T) {
 	f := newFakeAPI(t)
-	setToken(t, "ghp_settings_bad", "", "")
-	resp, token, _ := f.get(t)
-	if resp.StatusCode != 401 || !token {
-		t.Fatalf("got %d token=%v, want 401 with the token", resp.StatusCode, token)
+	setToken(t, "ghp_settings_stale", "", "")
+	resp, token, body := f.get(t)
+	if resp.StatusCode != 200 || token || string(body) != `{"ok":true}` {
+		t.Fatalf("got %d token=%v %s", resp.StatusCode, token, body)
 	}
-	if a := f.asked(); len(a) != 1 || a[0] != "Bearer ghp_settings_bad" {
-		t.Errorf("GitHub was asked with %q", a)
+	if a := f.asked(); len(a) != 2 || a[0] != "Bearer ghp_settings_stale" || a[1] != "" {
+		t.Errorf("GitHub was asked with %q, want the token then none", a)
+	}
+	if _, ok := SettingsRefused(); !ok {
+		t.Error("SettingsRefused() says the Settings token was not refused")
 	}
 	err := Refused()
-	if !strings.Contains(err.Error(), "the GitHub token in Settings") || strings.Contains(err.Error(), "ghp_settings_bad") {
+	if !strings.Contains(err.Error(), "the GitHub token in Settings") || strings.Contains(err.Error(), "ghp_settings_stale") {
 		t.Errorf("Refused() = %v", err)
 	}
-	// and it is sent again next time: Settings' token is never dropped
+	// it isn't sent again: the next request goes without it at once
+	n := len(f.asked())
+	if _, token, _ := f.get(t); token {
+		t.Error("the refused Settings token was sent again")
+	}
+	if a := f.asked()[n:]; len(a) != 1 || a[0] != "" {
+		t.Errorf("after the refusal GitHub was asked with %q, want one request without a token", a)
+	}
+	if tok, from := Token(); tok != "" || from != "" {
+		t.Errorf("Token() = %q from %q after its refusal", tok, from)
+	}
+}
+
+// A token typed into Settings after one was refused is another token: it is
+// sent, and the page stops saying the old one was refused.
+func TestSettingsTokenReplacedAfterRefusalIsSent(t *testing.T) {
+	f := newFakeAPI(t)
+	setToken(t, "ghp_settings_old", "", "")
 	f.get(t)
-	if a := f.asked(); len(a) != 2 || a[1] != "Bearer ghp_settings_bad" {
-		t.Errorf("Settings' token wasn't sent again: %q", a)
+	f.mu.Lock()
+	f.good = "ghp_settings_new"
+	f.mu.Unlock()
+	setToken(t, "ghp_settings_new", "", "")
+	if _, token, _ := f.get(t); !token {
+		t.Error("the token typed after the refusal wasn't sent")
+	}
+	if _, ok := SettingsRefused(); ok {
+		t.Error("SettingsRefused() still says a token was refused after another was typed")
 	}
 }
 
@@ -180,5 +209,58 @@ func TestOtherHostUntouched(t *testing.T) {
 	}
 	if a := f.asked(); len(a) != 1 || a[0] != "" {
 		t.Errorf("another host was asked with %q", a)
+	}
+}
+
+// A refused Settings token isn't swapped for the environment's: the user
+// chose the one in Settings over it, and the page says requests go without
+// a token, so they do (#3926).
+func TestSettingsTokenRefusedGoesWithoutEnvToken(t *testing.T) {
+	f := newFakeAPI(t)
+	f.mu.Lock()
+	f.good = "ghp_env_good"
+	f.mu.Unlock()
+	setToken(t, "ghp_settings_gone", "ghp_env_good", "")
+	f.get(t)
+	n := len(f.asked())
+	if _, token, _ := f.get(t); token {
+		t.Error("a token was sent after the Settings one was refused")
+	}
+	if a := f.asked()[n:]; len(a) != 1 || a[0] != "" {
+		t.Errorf("after the Settings token's refusal GitHub was asked with %q, want none", a)
+	}
+	if tok, from := Token(); tok != "" || from != "" {
+		t.Errorf("Token() = %q from %q, want none", tok, from)
+	}
+}
+
+// A mirror answers a request sent it without the token (source.Do,
+// #3923): that answer didn't carry the token, and a 401 from it isn't
+// GitHub refusing the token, which goes on being sent.
+func TestMirrorAnswerIsNotTheToken(t *testing.T) {
+	setToken(t, "ghp_settings_good", "", "")
+	for _, status := range []int{200, 401} {
+		var asked []string
+		send := func(r *http.Request) (*http.Response, error) {
+			asked = append(asked, r.Header.Get("Authorization"))
+			bare := r.Clone(r.Context())
+			bare.Header.Del("Authorization")
+			return &http.Response{StatusCode: status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("{}")), Request: bare}, nil
+		}
+		req, _ := http.NewRequest("GET", "https://api.github.com/repos/o/r", nil)
+		resp, token, err := Do(req, "https://api.github.com", send)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if token || resp.StatusCode != status || len(asked) != 1 {
+			t.Fatalf("%d from a mirror: token=%v, status %d, asked %q", status, token, resp.StatusCode, asked)
+		}
+		if _, ok := SettingsRefused(); ok {
+			t.Fatalf("%d from a mirror: the Settings token counted refused", status)
+		}
+		if tok, _ := Token(); tok != "ghp_settings_good" {
+			t.Fatalf("%d from a mirror: Token() = %q", status, tok)
+		}
 	}
 }

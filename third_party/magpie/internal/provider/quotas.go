@@ -4,6 +4,8 @@ import (
 	"context"
 	"math"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -85,8 +87,11 @@ type Quota struct {
 	// BalanceSplit is what the Balance is made of, when the vendor tells
 	// it (SubscriptionQuota's)
 	BalanceSplit []BalancePart `json:"balanceSplit,omitempty"`
-	Error        string        `json:"error,omitempty"`
-	AsOf         *time.Time    `json:"asOf,omitempty"` // the cached reading's time, nil for a new one
+	// SharedBalance is the first of the keys whose Balance is this key's
+	// account's too (SubscriptionQuota's)
+	SharedBalance string     `json:"sharedBalance,omitempty"`
+	Error         string     `json:"error,omitempty"`
+	AsOf          *time.Time `json:"asOf,omitempty"` // the cached reading's time, nil for a new one
 	// ReadDeferred says no request was made this time, rather than one failed.
 	ReadDeferred bool `json:"readDeferred,omitempty"`
 	// ReadAt is when the windows or balance shown were read, nil when not
@@ -139,6 +144,9 @@ type QuotaSpan struct {
 	// account's have no reset at all (#3762).
 	RunsOutAt *time.Time `json:"runsOutAt,omitempty"`
 	RunsOut   float64    `json:"runsOut,omitempty"`
+	// Balance is how much is left in Unit, a prepaid wallet's reading
+	// (QuotaWindow.Balance, #3950): Used and Remaining are then no share.
+	Balance *float64 `json:"balance,omitempty"`
 	// Holds and HoldsWhy are the window's whole as the Usage page's card
 	// tells it (QuotaWindow.Holds, #2333): reckoned when ReckonHolds is
 	// set, else left out.
@@ -190,12 +198,12 @@ func quotaReport(subs, plans, balances []SubscriptionQuota, now time.Time) []Quo
 	}{{"subscription", subs}, {"plan", plans}, {"balance", balances}} {
 		for _, q := range g.qs {
 			r := Quota{Provider: q.Provider, Name: q.Name, Kind: g.kind, Plan: q.Plan, User: q.User, AsOf: q.AsOf, ReadAt: q.ReadAt, ReadDeferred: q.ReadDeferred,
-				Windows: []QuotaSpan{}, Balance: q.Balance, BalanceSplit: q.BalanceSplit, Error: q.Error, Until: q.Until, Renew: q.Renew, Resets: q.Resets, ResetsUsed: q.ResetsUsed, From: q.From, Alias: q.Alias, Seat: q.Seat}
+				Windows: []QuotaSpan{}, Balance: q.Balance, BalanceSplit: q.BalanceSplit, SharedBalance: q.SharedBalance, Error: q.Error, Until: q.Until, Renew: q.Renew, Resets: q.Resets, ResetsUsed: q.ResetsUsed, From: q.From, Alias: q.Alias, Seat: q.Seat}
 			// a pool's own windows stand in for the models' drawing on it,
 			// as the usage page shows them
 			for _, w := range PooledWindows(q.Windows) {
 				s := QuotaSpan{Unlimited: w.Unlimited, Name: w.Name, Used: w.Used, Remaining: max(0, 100-w.Used), ResetsAt: w.ResetsAt, Display: w.Display, Text: w.Text,
-					Amount: w.Amount, Limit: w.Limit, Unit: w.Unit, Pool: w.Pool, RunsOutAt: w.RunsOutAt, RunsOut: w.RunsOut, Holds: w.Holds, HoldsWhy: w.HoldsWhy}
+					Amount: w.Amount, Limit: w.Limit, Unit: w.Unit, Pool: w.Pool, RunsOutAt: w.RunsOutAt, RunsOut: w.RunsOut, Balance: w.Balance, Holds: w.Holds, HoldsWhy: w.HoldsWhy}
 				if s.ResetsAt == nil && w.ResetSecs > 0 {
 					t := now.Add(time.Duration(w.ResetSecs) * time.Second)
 					s.ResetsAt = &t
@@ -206,6 +214,23 @@ func quotaReport(subs, plans, balances []SubscriptionQuota, now time.Time) []Quo
 		}
 	}
 	return out
+}
+
+// BalanceText is a wallet's balance as told, the figure in its unit:
+// "6,291 points left" (QuotaWindow.Balance).
+func BalanceText(b float64, unit string) string {
+	s := strconv.FormatFloat(math.Round(b*100)/100, 'f', -1, 64)
+	whole, frac, _ := strings.Cut(strings.TrimPrefix(s, "-"), ".")
+	for i := len(whole) - 3; i > 0; i -= 3 {
+		whole = whole[:i] + "," + whole[i:]
+	}
+	if frac != "" {
+		whole += "." + frac
+	}
+	if b < 0 {
+		whole = "-" + whole
+	}
+	return strings.TrimSpace(whole+" "+unit) + " left"
 }
 
 // ResetClock is when a window starts again, on the clock: "14:30" today,

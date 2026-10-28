@@ -240,7 +240,7 @@ func TestHermesOlderSchemaAndNullFields(t *testing.T) {
 	defer closeDBs()
 	found := false
 	for _, f := range hermesFiles() {
-		if f.sid == "old" {
+		if f.m().sid == "old" {
 			found = true
 			st := parseHermes(f)
 			if st == nil || st.Title != "hello" || !st.Start.IsZero() {

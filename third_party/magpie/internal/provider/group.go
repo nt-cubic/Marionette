@@ -119,6 +119,26 @@ func (g Group) Live() Group {
 	return g
 }
 
+// Within is g, a group in the group in, as in routes it: one left on the
+// default (Smart) is routed as in is, as a provider left on the default
+// is weighed with the group it is in (ownRouting, #3847, mycf_711) —
+// Free first on the outer group reaches the seats of a group in it that
+// says nothing of its own. One that sets a routing keeps it (#576), and
+// so does every one in a group In order, By weight or Manual: those try
+// each member whole, by its own routing, as they do a provider's keys.
+func (g Group) Within(in Group) Group {
+	if g.Routing == "" && pools(in.Routing) {
+		g.Routing = in.Routing
+	}
+	return g
+}
+
+// pools: a group routed so weighs its members' keys and accounts as one
+// pool, a provider left on the default among them.
+func pools(routing string) bool {
+	return routing != "" && routing != Ordered && routing != Weighted && routing != Manual
+}
+
 // PatienceOff, PatienceDefault and PatienceLongest are a group's
 // Patience: none, the seconds a group waits that hasn't set it, and the
 // most it may.
@@ -870,6 +890,7 @@ func membersOff(entries []Entry, all []Group, g Group, off func(pid, model strin
 	var out []Member
 	seen := map[string]int{} // where in out
 	at := 0
+	find := entriesBy(entries)
 	var walk func(g Group, path []string, via []Group, in []string)
 	walk = func(g Group, path []string, via []Group, in []string) {
 		for _, id := range g.routes() {
@@ -879,14 +900,15 @@ func membersOff(entries []Entry, all []Group, g Group, off func(pid, model strin
 				if !ok || sub.Disabled || slices.Contains(in, gid) || len(via) >= maxNest {
 					continue // gone, switched off, a loop, or deeper than anyone nests
 				}
+				sub = sub.Within(g)
 				walk(sub, here, append(slices.Clone(via), sub.Live()), append(slices.Clone(in), gid))
 				continue
 			}
 			model, effort := memberEffortIn(entries, id)
 			p, m, ok := resolveIn(entries, model)
 			key := WithMemberEffort(p.ID+"/"+m, effort)
-			if !ok {
-				continue
+			if !ok || unpicked(find, p, m) {
+				continue // none serves it, or the user unchecked it (#3911)
 			}
 			mem := Member{ID: here[0], Path: here, Via: via, Provider: p, Model: m, Effort: effort, Fast: g.IsFast(id), At: at}
 			at++
@@ -905,6 +927,42 @@ func membersOff(entries []Entry, all []Group, g Group, off func(pid, model strin
 	}
 	walk(g, nil, nil, []string{g.ID})
 	return out
+}
+
+// unpicked reports whether p's model m is one the user unchecked in p's
+// model list since a group took it (timonwong, #3911): p has picks and
+// its served models (entries, as find has them) lack m. resolveIn takes
+// any "provider/model" of a provider that is on, so that a request can
+// name a model its list lacks; a group's member is the user's pick of a
+// model they now said not to serve, and the Routing page strikes it.
+// A provider with no picks still routes a model its list lacks (#2642),
+// and a decision model, never in the catalog, is still a decision
+// group's.
+func unpicked(find entryOf, p Provider, m string) bool {
+	return len(p.Models) > 0 && find(p.ID, m) < 0 && !p.DecidesModel(m)
+}
+
+// ResolveRoute is Resolve for a model a route names, a routing group's
+// member or a provider's fallback, as routing reaches it: not one the
+// user unchecked (unpicked). A request naming the model itself goes by
+// Resolve, which still takes it.
+func ResolveRoute(id string) (Provider, string, bool) {
+	entries := providerEntries()
+	p, m, ok := resolveIn(entries, strings.TrimSuffix(strings.TrimSpace(id), "[1m]"))
+	// one pass for the one model, not a map of every entry (entriesBy):
+	// a request asks it for each fallback it may go to
+	find := func(pid, model string) int {
+		for i := range entries {
+			if entries[i].Provider.ID == pid && entries[i].Model == model {
+				return i
+			}
+		}
+		return -1
+	}
+	if !ok || unpicked(find, p, m) {
+		return Provider{}, "", false
+	}
+	return p, m, true
 }
 
 // groupEntries are the catalog's groups: each with a member ready, named

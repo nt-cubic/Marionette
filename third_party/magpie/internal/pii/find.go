@@ -91,6 +91,13 @@ func (b *backend) find(ctx context.Context, texts []string) ([][]redact.Found, e
 		out, miss := b.known(texts, got)
 		for c := 0; len(miss) > 0; c++ {
 			if c > 0 {
+				// a caller that stopped waiting leaves the chunks after
+				// this one: the turn isn't taken again for them (a
+				// select on a free turn and an ended ctx picks either)
+				if ctx.Err() != nil {
+					done <- result{nil, waitErr(ctx)}
+					return
+				}
 				// give way to a request waiting for the turn: it goes
 				// before the next chunk
 				<-b.turn
@@ -206,7 +213,7 @@ func (b *backend) known(texts []string, got map[[32]byte][]redact.Found) (out []
 				break
 			}
 			for _, f := range fs {
-				all = append(all, redact.Found{Start: f.Start + p.at, End: f.End + p.at, Label: f.Label})
+				all = append(all, redact.Found{Start: f.Start + p.at, End: f.End + p.at, Label: f.Label, Score: f.Score})
 			}
 		}
 		if !ok {
@@ -312,6 +319,8 @@ func merge(fs []redact.Found) []redact.Found {
 					last.Label = f.Label
 				}
 				last.End = max(last.End, f.End)
+				// as sure as the surer: what either would mask is masked
+				last.Score = max(last.Score, f.Score)
 				continue
 			}
 		}
@@ -396,7 +405,7 @@ func within(fs []redact.Found, a, b int) []redact.Found {
 	for _, f := range fs {
 		s, e := max(f.Start, a), min(f.End, b)
 		if s < e {
-			out = append(out, redact.Found{Start: s - a, End: e - a, Label: f.Label})
+			out = append(out, redact.Found{Start: s - a, End: e - a, Label: f.Label, Score: f.Score})
 		}
 	}
 	return out

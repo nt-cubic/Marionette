@@ -44,6 +44,15 @@ func TestPluginThinkingOff(t *testing.T) {
 		{"suffix off", "/v1/chat/completions", `{"model":"` + pid + `/fake-off:off","messages":[{"role":"user","content":"hi"}]}`, "none"},
 		{"no off, off", "/v1/chat/completions", `{"model":"` + pid + `/fake-on","reasoning_effort":"off","messages":[{"role":"user","content":"hi"}]}`, "low"},
 		{"no off", "/v1/responses", `{"model":"` + pid + `/fake-on","reasoning":{"effort":"none"},"input":[{"role":"user","content":"hi"}]}`, "low"},
+		// a level in the vendor's own words, as dsh and Pi send it for
+		// their low and xhigh (modelEffort in internal/agent), reaches
+		// the plugin as it is (nianshou5)
+		{"chat light", "/v1/chat/completions", `{"model":"` + pid + `/fake-trae","reasoning_effort":"light","messages":[{"role":"user","content":"hi"}]}`, "light"},
+		{"chat extra_high", "/v1/chat/completions", `{"model":"` + pid + `/fake-trae","reasoning_effort":"extra_high","messages":[{"role":"user","content":"hi"}]}`, "extra_high"},
+		// and an agent's low and xhigh are sent in the model's words
+		{"chat low as light", "/v1/chat/completions", `{"model":"` + pid + `/fake-trae","reasoning_effort":"low","messages":[{"role":"user","content":"hi"}]}`, "light"},
+		{"chat xhigh as extra_high", "/v1/chat/completions", `{"model":"` + pid + `/fake-trae","reasoning_effort":"xhigh","messages":[{"role":"user","content":"hi"}]}`, "extra_high"},
+		{"responses extra_high", "/v1/responses", `{"model":"` + pid + `/fake-trae","reasoning":{"effort":"extra_high"},"input":[{"role":"user","content":"hi"}]}`, "extra_high"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			mu.Lock()

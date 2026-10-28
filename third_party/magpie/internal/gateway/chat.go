@@ -312,11 +312,12 @@ var failedAsText = map[string]bool{"devin": true, "qoder": true, "qoder-cn": tru
 // chatReplaysReasoning is whether a Chat upstream wants a turn's reasoning
 // back in reasoning_content: DeepSeek's models wherever they are served
 // (#388), the model named as the provider names it (OpenCode Go's
-// deepseek-v4.1-flash, whose host doesn't say so), and Command Code's
+// deepseek-v4.1-flash, whose host doesn't say so), Command Code's
 // plugin, which replays it for a Go key as the built-in did to
-// /alpha/generate.
+// /alpha/generate, and Qoder's, which sends it on as Qoder's own client
+// does (uk.jent on Discord; plugin 0.2.42).
 func chatReplaysReasoning(host, model string) bool {
-	return strings.Contains(host, "deepseek") || strings.Contains(strings.ToLower(model), "deepseek") || host == provider.CommandCodePlanID
+	return strings.Contains(host, "deepseek") || strings.Contains(strings.ToLower(model), "deepseek") || host == provider.CommandCodePlanID || host == "qoder" || host == "qoder-cn"
 }
 
 func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
@@ -583,7 +584,7 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 		// OpenRouter's own search, for any of its models
 		out["plugins"] = []map[string]any{{"id": "web"}}
 	}
-	b, _ := json.Marshal(out)
+	b, _ := marshalBody(out)
 	return b
 }
 

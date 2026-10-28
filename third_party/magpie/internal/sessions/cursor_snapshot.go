@@ -24,6 +24,10 @@ var (
 	// left behind; a shared copy in use is touched on every reuse
 	cursorSnapStale = time.Hour
 	cursorCopies    atomic.Int64
+	// editor stores read in place beside a live Cursor (openCursorEditorStore)
+	cursorInPlace atomic.Int64
+	// false only in a test of the copy path
+	cursorReadInPlace = true
 )
 
 type cursorSnap struct {

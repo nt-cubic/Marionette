@@ -1,6 +1,8 @@
 package redact
 
 import (
+	"encoding/json"
+	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -29,7 +31,7 @@ func (f *fakeModel) find(texts []string) [][]Found {
 				if a > 0 && t[a-1] == ' ' {
 					a--
 				}
-				out[i] = append(out[i], Found{a, at + j + len(v), label})
+				out[i] = append(out[i], Found{Start: a, End: at + j + len(v), Label: label})
 				at += j + len(v)
 			}
 		}
@@ -104,7 +106,7 @@ func TestModelSpansFiltered(t *testing.T) {
 	}
 	// a span outside the text, or splitting a character, is no span
 	bad := func([]string) [][]Found {
-		return [][]Found{{{-1, 3, "secret"}, {0, 99, "secret"}, {1, 4, "private_person"}}}
+		return [][]Found{{{Start: -1, End: 3, Label: "secret"}, {Start: 0, End: 99, Label: "secret"}, {Start: 1, End: 4, Label: "private_person"}}}
 	}
 	if out, _ := Mask("é名字abc", Options{Personal: true, Secrets: true, Model: bad}); out != "é名字abc" {
 		t.Fatalf("bad spans: %q", out)
@@ -147,13 +149,101 @@ func TestModelAskedOnceForRequest(t *testing.T) {
 	}
 	got := slices.Clone(f.asked[0])
 	slices.Sort(got)
-	// "ok" is too short to hold anything
-	if want := []string{"find " + name, "hi " + name}; !slices.Equal(got, want) {
+	// "ok" is too short to hold anything, and the tool's description is
+	// the rules' alone (TestModelNotAskedAboutDefinitions)
+	if want := []string{"hi " + name}; !slices.Equal(got, want) {
 		t.Fatalf("asked about %q, want %q", got, want)
 	}
 	// the description and the two messages; the thinking block goes back
 	// as the vendor wrote it but for the value masked elsewhere
 	if strings.Contains(string(out), "hi "+name) || strings.Contains(string(out), "find "+name) || n < 3 {
 		t.Fatalf("%d masked: %s", n, out)
+	}
+}
+
+// What an agent defines for the vendor (its tools' and schemas'
+// descriptions) is never read by the model: it was most of a request's
+// text, and the model reading it held a 4-core server's first Claude Code
+// request past the gateway's 2 minutes (niuniu_8964 on X). On Claude Code
+// 2.1.296's own request the model was asked about 67,532 bytes, 52,577 of
+// them its tools' descriptions; on Codex 0.162.1's, its tools too. What
+// the user and the agent say (the system prompt, the messages) still is.
+func TestModelNotAskedAboutDefinitions(t *testing.T) {
+	for _, p := range []string{"../gateway/testdata/workdir/claude-code-2.1.296.json", "testdata/codex-0.162.1-request.json"} {
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var v any
+		if err := json.Unmarshal(raw, &v); err != nil {
+			t.Fatal(err)
+		}
+		defs := definitions(v)
+		var inDefs, said []string
+		walk(raw, func(path, key, s string) string {
+			if len(s) >= 3 && !kept[key] && !isID(key) {
+				if under(path, defs) {
+					inDefs = append(inDefs, s)
+				} else {
+					said = append(said, s)
+				}
+			}
+			return s
+		})
+		if len(inDefs) == 0 || len(said) == 0 {
+			t.Fatalf("%s: %d texts in definitions, %d said: not the request the test is about", p, len(inDefs), len(said))
+		}
+		var asked []string
+		MaskJSON(raw, Options{Secrets: true, Personal: true, Model: func(ts []string) [][]Found {
+			asked = append(asked, ts...)
+			return make([][]Found, len(ts))
+		}})
+		n := 0
+		for _, s := range asked {
+			n += len(s)
+		}
+		for _, d := range inDefs {
+			if slices.Contains(asked, d) && !slices.Contains(said, d) {
+				t.Errorf("%s: the model was asked about a definition's %.80q", p, d)
+			}
+		}
+		for _, s := range said {
+			if len(s) > 200 && !slices.Contains(asked, s) {
+				t.Errorf("%s: the model wasn't asked about %.80q", p, s)
+			}
+		}
+		t.Logf("%s: %d texts, %d bytes asked", p, len(asked), n)
+	}
+}
+
+// A definition is masked as it is with the model off: by the rules (an
+// email, a key), and not by what the model would have found in it.
+func TestDefinitionMaskedAsWithoutModel(t *testing.T) {
+	const name, other = "Rina Kowalczyk", "Tomasz Brzezinski"
+	f := &fakeModel{values: map[string]string{name: "private_person", other: "private_person"}}
+	body := `{"model":"claude-x","tools":[{"name":"crm","description":"Ask ` + other + ` (tomasz.b@acme-corp.com) with key sk-ant-api03-` + strings.Repeat("Ab3", 30) + `",` +
+		`"input_schema":{"type":"object","properties":{"who":{"type":"string","description":"a customer, e.g. ` + other + `, tel 13800138000"}}}}],` +
+		`"messages":[{"role":"user","content":"call ` + name + ` today"}]}`
+	without, _ := MaskJSON([]byte(body), Options{Secrets: true, Personal: true})
+	with, _ := MaskJSON([]byte(body), Options{Secrets: true, Personal: true, Model: f.find})
+	var a, b map[string]any
+	if err := json.Unmarshal(without, &a); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(with, &b); err != nil {
+		t.Fatal(err)
+	}
+	ta, _ := json.Marshal(a["tools"])
+	tb, _ := json.Marshal(b["tools"])
+	if string(ta) != string(tb) {
+		t.Fatalf("tools with the model:\n%s\nwithout:\n%s", tb, ta)
+	}
+	for _, v := range []string{"tomasz.b@acme-corp.com", "sk-ant-api03-", "13800138000"} {
+		if strings.Contains(string(tb), v) {
+			t.Errorf("%q went as written in a definition: %s", v, tb)
+		}
+	}
+	if strings.Contains(string(with), name) {
+		t.Errorf("the message's name went as written: %s", with)
 	}
 }

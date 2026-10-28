@@ -209,11 +209,26 @@ func withoutCursorCapacity(ms []catalog.Model) []catalog.Model {
 	return out
 }
 
+// builtinCursorList is the list the built-in fetched from `cursor-agent
+// models`, while the built-in serves Cursor. Once the plugin does (the
+// built-in is retired), what is left of that list is a stale cache: the
+// plugin lists its own ids and maps a family and effort to a real one
+// itself. Folding the user's claude-opus-5-5-low into claude-opus-5-5 by
+// the stale list showed a pick the plugin then sent as a model Cursor
+// doesn't know (ysm119, "AI Model Not Found").
+func builtinCursorList() ([]catalog.Model, bool) {
+	if PluginServes("cursor") {
+		return nil, false
+	}
+	raw, _, ok := catalog.Live("cursor")
+	return raw, ok
+}
+
 // CursorVariants are Cursor's ids a model magpie offers stands for, by
 // effort, "" the default; ok is false for a model that stands for none,
 // which goes to Cursor as it is.
 func CursorVariants(model string) (map[string]string, bool) {
-	raw, _, ok := catalog.Live("cursor")
+	raw, ok := builtinCursorList()
 	if !ok {
 		return nil, false
 	}
@@ -235,7 +250,7 @@ func cursorVariantsIn(raw []catalog.Model, model string) (map[string]string, boo
 // itself a model magpie offers, or that no family has. Picks and agents'
 // models saved before the families were one model still name these ids.
 func CursorBase(id string) (base, effort string, ok bool) {
-	raw, _, live := catalog.Live("cursor")
+	raw, live := builtinCursorList()
 	if !live {
 		return "", "", false
 	}
@@ -259,7 +274,7 @@ func cursorBaseIn(raw []catalog.Model, id string) (string, string, bool) {
 // Cursor's own ids the model magpie offers for it, in the order picked,
 // each once.
 func cursorPicks(ids []string) []string {
-	raw, _, live := catalog.Live("cursor")
+	raw, live := builtinCursorList()
 	if !live {
 		return ids
 	}

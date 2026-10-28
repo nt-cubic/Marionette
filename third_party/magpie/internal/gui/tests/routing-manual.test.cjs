@@ -11,6 +11,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { settled } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const models = [
@@ -129,6 +130,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // the reader wheels the editor's routing into the middle (code that
       // scrolls is put back: only the reader moves the view)
       const wheelTo = async (x) => {
+        // the distance is read once the editor has stopped moving
+        await settled(page);
         const d = await x.evaluate((e) => { const v = document.querySelector("#view-routing");
           return Math.round(e.getBoundingClientRect().top - v.getBoundingClientRect().top - v.clientHeight / 2); });
         await page.mouse.move(550, 400);

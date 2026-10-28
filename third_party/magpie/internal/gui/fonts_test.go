@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -19,7 +20,7 @@ func TestFontDiscoveryCacheAndFailure(t *testing.T) {
 	want := []fonts.Family{{Name: face.Family, Styles: []fonts.Face{face}}}
 	calls, broken := 0, false
 	mux := http.NewServeMux()
-	fontRoutes(mux, false, func() ([]fonts.Family, error) {
+	fontRoutes(mux, false, false, func() ([]fonts.Family, error) {
 		calls++
 		if broken {
 			return nil, errors.New("font service unavailable")
@@ -57,12 +58,67 @@ func TestFontDiscoveryCacheAndFailure(t *testing.T) {
 	if calls != 3 {
 		t.Fatalf("refresh did not re-read fonts: %d", calls)
 	}
-	web := http.NewServeMux()
-	fontRoutes(web, true, func() ([]fonts.Family, error) { t.Fatal("browser enumerated server fonts"); return nil, nil })
+	off := http.NewServeMux()
+	fontRoutes(off, false, true, func() ([]fonts.Family, error) { t.Fatal("fonts read where they can't be"); return nil, nil })
 	r = httptest.NewRecorder()
-	web.ServeHTTP(r, httptest.NewRequest("GET", "/api/fonts", nil))
+	off.ServeHTTP(r, httptest.NewRequest("GET", "/api/fonts", nil))
 	if r.Code != 404 {
-		t.Fatalf("web font discovery returned %d", r.Code)
+		t.Fatalf("font discovery turned off returned %d", r.Code)
+	}
+}
+
+// Norcleeh: a nogui magpie's browser tab had no font rows. A tab is offered
+// the server's families and the common ones, whatever the server can read.
+func TestBrowserTabFontsWithoutInstalledFonts(t *testing.T) {
+	read := func(off bool, discover func() ([]fonts.Family, error)) []fonts.Family {
+		t.Helper()
+		mux := http.NewServeMux()
+		fontRoutes(mux, true, off, discover)
+		r := httptest.NewRecorder()
+		mux.ServeHTTP(r, httptest.NewRequest("GET", "/api/fonts", nil))
+		if r.Code != 200 {
+			t.Fatalf("a browser tab's fonts answered %d %s", r.Code, r.Body)
+		}
+		var got []fonts.Family
+		if err := json.Unmarshal(r.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	names := func(list []fonts.Family) []string {
+		var out []string
+		for _, f := range list {
+			out = append(out, f.Name)
+		}
+		return out
+	}
+	nogui := read(true, func() ([]fonts.Family, error) { t.Fatal("fonts read where they can't be"); return nil, nil })
+	if len(nogui) != len(commonFamilies) {
+		t.Fatalf("a nogui magpie's tab got %v", names(nogui))
+	}
+	for _, f := range nogui {
+		if len(f.Styles) != 2 || f.Styles[0].Family != f.Name || fonts.Validate(&f.Styles[0]) != nil || fonts.Validate(&f.Styles[1]) != nil {
+			t.Fatalf("common family %#v", f)
+		}
+	}
+	if failed := read(false, func() ([]fonts.Family, error) { return nil, errors.New("no font service") }); len(failed) != len(commonFamilies) {
+		t.Fatalf("a failed read left the tab %v", names(failed))
+	}
+	own := fonts.Face{Family: "georgia", Name: "Light", Weight: 300, Style: "normal", Stretch: 100}
+	odd := fonts.Face{Family: "Zzz Own Family", Name: "Regular", Weight: 400, Style: "normal", Stretch: 100}
+	got := read(false, func() ([]fonts.Family, error) {
+		return []fonts.Family{{Name: own.Family, Styles: []fonts.Face{own}}, {Name: odd.Family, Styles: []fonts.Face{odd}}}, nil
+	})
+	if len(got) != len(commonFamilies)+1 {
+		t.Fatalf("the server's own families and the common ones: %v", names(got))
+	}
+	if !slices.IsSortedFunc(got, func(a, b fonts.Family) int { return strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name)) }) {
+		t.Fatalf("not in name order: %v", names(got))
+	}
+	for _, f := range got {
+		if strings.EqualFold(f.Name, "Georgia") && !reflect.DeepEqual(f.Styles, []fonts.Face{own}) {
+			t.Fatalf("the server's Georgia was replaced: %#v", f)
+		}
 	}
 }
 
@@ -110,8 +166,15 @@ func TestFontSettingsAPIAndBoot(t *testing.T) {
 	if !reflect.DeepEqual(settings.Load().UIFont, face) {
 		t.Fatal("browser save replaced a desktop font")
 	}
-	if _, ok := boot(web)["uiFont"]; ok {
+	webBoot := boot(web)
+	if _, ok := webBoot["uiFont"]; ok {
 		t.Fatal("browser received a desktop font override")
+	}
+	// a browser tab's rows show wherever it is served, nogui too
+	r := httptest.NewRecorder()
+	web.ServeHTTP(r, httptest.NewRequest("GET", "/api/fonts", nil))
+	if r.Code != 200 || !strings.Contains(r.Body.String(), `"Georgia"`) {
+		t.Fatalf("a browser tab's fonts answered %d", r.Code)
 	}
 	post(h, map[string]any{"uiFont": map[string]any{"family": "bad", "name": "Regular", "weight": 1001}}, 400)
 	if !reflect.DeepEqual(settings.Load().UIFont, face) {

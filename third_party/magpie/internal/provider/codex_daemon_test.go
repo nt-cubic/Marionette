@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -254,6 +255,47 @@ func TestRestartCodexDaemonFails(t *testing.T) {
 	}
 }
 
+// The daemon a restart leaves running answers for itself to macOS's
+// privacy prompts, not to magpie: every codex attached to it works in its
+// own folder, and the first one in ~/Desktop had macOS say magpie wants
+// the Desktop folder (reformed9448 on Discord).
+func TestRestartedCodexDaemonIsNotMagpies(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS's responsibility for a process")
+	}
+	self := proc.Responsible(os.Getpid())
+	if self == 0 {
+		t.Skip("macOS doesn't say who is responsible for this process")
+	}
+	fakeCodex(t, 0)
+	// a codex whose restart leaves a daemon (a sleep) running, and says
+	// its pid
+	dir := t.TempDir()
+	left := filepath.Join(dir, "daemon.pid")
+	exe := filepath.Join(dir, "codex")
+	testenv.Program(t, exe, "#!/bin/sh\nsleep 30 >/dev/null 2>&1 </dev/null &\necho $! > '"+left+"'\n")
+	codexExecutable = func() string { return exe }
+	if err := RestartCodexDaemon(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(left)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		t.Fatalf("pid %q", b)
+	}
+	t.Cleanup(func() {
+		if p, err := os.FindProcess(pid); err == nil {
+			p.Kill()
+		}
+	})
+	if got := proc.Responsible(pid); got == 0 || got == self {
+		t.Fatalf("the daemon answers to %d, magpie to %d: want one of its own", got, self)
+	}
+}
+
 // Switching Codex's account notes the daemon left on the one before; the
 // switch to the account Codex is on already changes nothing.
 func TestSwitchLoginNotesCodexDaemon(t *testing.T) {
@@ -297,6 +339,7 @@ func TestIsCodexClient(t *testing.T) {
 		"/Users/me/.vscode/extensions/openai.chatgpt-1.0/bin/darwin-aarch64/codex app-server":                                                 false,
 		"codex mcp-server": false,
 		`"C:\Program Files\WindowsApps\OpenAI.Codex_1.0\app\resources\codex.exe" app-server`: false,
+		codexWindowsAppServer: false,
 		// other programs
 		"/Users/me/.codex/plugins/cache/chrome/extension-host ChatGPT for Chrome": false,
 		// a path with a space, as the user's own ps showed it
@@ -451,8 +494,9 @@ func TestFindCodexApp(t *testing.T) {
 	// (ChatGPT 26.1007), beside a terminal codex and the managed daemon
 	app := "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex -c features.code_mode_host=true app-server --analytics-default-enabled -c plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=true"
 	for want, ps := range map[int][]proc.Process{
-		9: {{PID: 3, Args: "codex"}, {PID: 4, Args: "/Users/me/.codex/packages/app-server-daemon/releases/0.162.0-aarch64-apple-darwin/bin/codex app-server --listen unix:///x --managed-daemon"}, {PID: 9, Args: app}},
-		8: {{PID: 8, Args: `"C:\Program Files\WindowsApps\OpenAI.Codex_1.0\app\resources\codex.exe" app-server`}},
+		9:     {{PID: 3, Args: "codex"}, {PID: 4, Args: "/Users/me/.codex/packages/app-server-daemon/releases/0.162.0-aarch64-apple-darwin/bin/codex app-server --listen unix:///x --managed-daemon"}, {PID: 9, Args: app}},
+		8:     {{PID: 8, Args: `"C:\Program Files\WindowsApps\OpenAI.Codex_1.0\app\resources\codex.exe" app-server`}},
+		61552: {{PID: 3, Args: `C:\Users\yeton\AppData\Local\Microsoft\WinGet\Links\codex.exe`}, {PID: 61552, Args: codexWindowsAppServer}},
 		0: {
 			{PID: 3, Args: "codex app-server proxy"},
 			{PID: 5, Args: "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex exec-server --remote x"},

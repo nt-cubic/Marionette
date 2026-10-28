@@ -4,6 +4,7 @@ package gui
 
 import (
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -111,5 +112,36 @@ func TestClosingHidesShownAccounts(t *testing.T) {
 	fn, _, _ = strings.Cut(fn, "\n")
 	if !strings.Contains(fn, "shown.clear()") {
 		t.Fatalf("closed forgets no shown account: %q", fn)
+	}
+}
+
+// shangyuan0818 on Discord: on Windows the top of the page, under the
+// title bar, resized the window's height as its frame does. Wails' page
+// script arms that edge whenever it is told the window is resizable, which
+// Wails says once its script is ready, before or after magpie's hook runs;
+// either way, and with the hook run twice, the edge stays off. Its stand-in
+// here keeps what each setResizable call said, as drag.ts does.
+func TestFrameOnlyResizeStaysOff(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatal("node is needed to run the page's script: ", err)
+	}
+	stub := `const said=[];window._wails={setResizable:v=>said.push(v)};`
+	ready := `window._wails.setResizable(true);` // what Wails runs once its script is ready
+	last := `if(said.at(-1)!==false){console.log(JSON.stringify(said));process.exit(1)}`
+	for name, js := range map[string]string{
+		"hook after Wails":  stub + ready + frameOnlyResizeJS + last,
+		"hook before Wails": stub + frameOnlyResizeJS + ready + last,
+		"hook twice":        stub + frameOnlyResizeJS + frameOnlyResizeJS + ready + ready + last,
+		"no runtime":        `const window={};` + frameOnlyResizeJS,
+	} {
+		script := "const window=globalThis;" + js
+		if name == "no runtime" {
+			script = "(()=>{" + js + "})()"
+		}
+		out, err := exec.Command(node, "-e", script).CombinedOutput()
+		if err != nil {
+			t.Errorf("%s: the page's edge is armed: %v %s", name, err, out)
+		}
 	}
 }

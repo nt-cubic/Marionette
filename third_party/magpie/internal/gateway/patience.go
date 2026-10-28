@@ -122,6 +122,20 @@ func replan(list []busyTry, round int, waitFrom time.Time, fallback time.Duratio
 	}
 	now := time.Now()
 	wait := min(retryPause<<(round+1), replanLongest())
+	// a vendor's time is read in whole seconds: one back within a second
+	// past a member's budget is asked as the budget ends, not given up on
+	// (zoecats on Discord: "will reset in 1 minutes" against the minute a
+	// lone provider waits by default, which the moment between the
+	// failure and its note put a hair past)
+	list = slices.Clone(list)
+	for i, b := range list {
+		if budget := waitsOf(b.c.patience, fallback); budget > 0 {
+			end := waitFrom.Add(budget)
+			if b.ready.After(end) && !b.ready.After(end.Add(time.Second)) {
+				list[i].ready = end
+			}
+		}
+	}
 	soonest := list[0].ready
 	for _, b := range list[1:] {
 		soonest = minTime(soonest, b.ready)
@@ -134,7 +148,7 @@ func replan(list []busyTry, round int, waitFrom time.Time, fallback time.Duratio
 		if budget <= 0 {
 			continue
 		}
-		if !at.Before(waitFrom.Add(budget)) {
+		if at.After(waitFrom.Add(budget)) {
 			continue // this member's budget is spent
 		}
 		alive = append(alive, b)

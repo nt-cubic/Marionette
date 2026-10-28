@@ -91,7 +91,7 @@
 .rt-accts b .ic { display: inline-flex; width: 16px; height: 16px; margin-right: 7px; vertical-align: -3px; }
 .rt-accts b .ic img, .rt-accts b .ic svg { width: 16px; height: 16px; }
 .rt-accts b .fb { margin-left: 6px; font-size: 10.5px; font-weight: 560; padding: 0 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
-.rt-accts b code.mdl, .rt-req code, .rt-act code.mdl { font: var(--code-style, normal) 500 11px/1.5 var(--code-font, var(--code)); font-stretch: var(--code-stretch, 100%); color: var(--fg-2); background: var(--card-2); border-radius: 5px; padding: 0 5px; }
+.rt-accts b code.mdl, :is(.rt-req, .rt-probe) code, .rt-act code.mdl { font: var(--code-style, normal) 500 11px/1.5 var(--code-font, var(--code)); font-stretch: var(--code-stretch, 100%); color: var(--fg-2); background: var(--card-2); border-radius: 5px; padding: 0 5px; }
 .rt-accts b code.mdl { margin-left: 7px; font-weight: 450; }
 .rt-accts em { font-style: normal; font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .rt-accts .bar { grid-column: 2 / 4; height: 3px; border-radius: 2px; background: var(--card-2); overflow: hidden; }
@@ -242,74 +242,92 @@
    of a narrower list) and the metrics wrap in theirs, up to 40%: an auto
    column took the widest row's metrics for every row, and the model went
    to "· hi…" (#1926, hibaliqya-yonma) */
-.rt-reqs { padding: 4px; max-height: 420px; overflow-y: auto; display: grid; grid-template-columns: auto fit-content(32%) minmax(min(14em, 30%), 1fr) fit-content(40%); }
-.rt-req { grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: center; column-gap: 12px; padding: 6px 8px; font: inherit; font-size: 12px; text-align: left; color: var(--fg-2); background: none; border: 1px solid transparent; border-radius: 8px; cursor: pointer; }
+/* Each row has columns of its own, as wide as the measuring grid's (a
+   hidden .rt-sizer holding one probe of each row's shape) found its own
+   (--rt-cols, set by the page); until it is measured, a row sizes its
+   own. A row was a subgrid of the list: Safari 16 (macOS 13) recursed in
+   sizing the list's fit-content() columns through it, and its WebContent
+   process crashed and reloaded the page, up to 93 times a minute under
+   traffic (#3731, gpboyer2). */
+.rt-reqs { --rt-tpl: auto fit-content(32%) minmax(min(14em, 30%), 1fr) fit-content(40%); padding: 4px; max-height: 420px; overflow-y: auto; display: flex; flex-direction: column; }
+.rt-reqs > * { flex: none; }
+.rt-req { display: grid; grid-template-columns: var(--rt-cols, var(--rt-tpl)); align-items: center; column-gap: 12px; padding: 6px 8px; font: inherit; font-size: 12px; text-align: left; color: var(--fg-2); background: none; border: 1px solid transparent; border-radius: 8px; cursor: pointer; }
 .rt-req:hover { background: var(--card-2); }
 /* a long list draws only the rows near its sight, between gaps as tall as
    the rest; a probe is a row unlike any drawn, there for the columns'
    widths only (#2524) */
 .rt-reqs.win { overflow-anchor: none; }
-.rt-reqs .rt-gap { grid-column: 1 / -1; }
-.rt-req.probe { height: 0; padding-block: 0; border-block-width: 0; overflow: hidden; visibility: hidden; pointer-events: none; }
+/* the measuring grid: as wide as a row's content, with its gaps, and no
+   height. Each probe's cells are in the columns a row's are (a layout's
+   placing them wins over these), in whatever row: only the columns are
+   measured */
+.rt-sizer { display: grid; grid-template-columns: var(--rt-tpl); column-gap: 12px; padding-inline: 9px; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; font-size: 12px; }
+.rt-sizer > .rt-probe { display: contents; }
+/* a probe is measured, never seen: its dot doesn't pulse */
+.rt-sizer *, .rt-sizer *::before, .rt-sizer *::after { animation: none !important; transition: none !important; }
+:where(.rt-sizer) .at { grid-column: 1; }
+:where(.rt-sizer) .asked { grid-column: 2; }
+:where(.rt-sizer) .to { grid-column: 3; }
+:where(.rt-sizer) .meta { grid-column: 4; }
 .rt-req[aria-pressed="true"] { background: var(--card-2); border-color: var(--line); color: var(--fg); }
-.rt-req .at { font-variant-numeric: tabular-nums; color: var(--muted); }
-.rt-req .asked { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.rt-req .asked i.ag { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--agent); }
-.rt-req .asked .ic, .rt-req .asked .ic img, .rt-req .asked .ic svg { width: 14px; height: 14px; flex: none; }
-.rt-req .m, .rt-req .to span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+:is(.rt-req, .rt-probe) .at { font-variant-numeric: tabular-nums; color: var(--muted); }
+:is(.rt-req, .rt-probe) .asked { display: flex; align-items: center; gap: 6px; min-width: 0; }
+:is(.rt-req, .rt-probe) .asked i.ag { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--agent); }
+:is(.rt-req, .rt-probe) .asked .ic, :is(.rt-req, .rt-probe) .asked .ic img, :is(.rt-req, .rt-probe) .asked .ic svg { width: 14px; height: 14px; flex: none; }
+:is(.rt-req, .rt-probe) .m, :is(.rt-req, .rt-probe) .to span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* the waiting dot's 6px glow fits inside the clip: 6px on its left,
    1px more above and below, given back outside so nothing moves
    (#2553, dumplings) */
-.rt-req .to { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; color: var(--fg); padding: 1px 0 1px 6px; margin: -1px 0 -1px -6px; }
-.rt-req .to .said { flex-shrink: 100000; min-width: min(9em, 60%); }
-.rt-req .to .said.split { display: flex; }
-.rt-req .to .said .who { flex: 0 1000 auto; min-width: 2.5em; }
-.rt-req .to .said .mdl { flex: none; max-width: calc(100% - 2.5em); white-space: pre; }
+:is(.rt-req, .rt-probe) .to { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; color: var(--fg); padding: 1px 0 1px 6px; margin: -1px 0 -1px -6px; }
+:is(.rt-req, .rt-probe) .to .said { flex-shrink: 100000; min-width: min(9em, 60%); }
+:is(.rt-req, .rt-probe) .to .said.split { display: flex; }
+:is(.rt-req, .rt-probe) .to .said .who { flex: 0 1000 auto; min-width: 2.5em; }
+:is(.rt-req, .rt-probe) .to .said .mdl { flex: none; max-width: calc(100% - 2.5em); white-space: pre; }
 /* on a phone the account keeps a few letters, not a sliver of one (40px,
    where phone-rows.test.cjs calls a text cut to a sliver) */
 @media (max-width: 600px) {
-  .rt-req .to .said .who { min-width: 40px; }
-  .rt-req .to .said .mdl { max-width: calc(100% - 40px); }
+  :is(.rt-req, .rt-probe) .to .said .who { min-width: 40px; }
+  :is(.rt-req, .rt-probe) .to .said .mdl { max-width: calc(100% - 40px); }
 }
-.rt-req .to i { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
-.rt-req.moved .to i { background: var(--accent); }
-.rt-req.bad .to { color: var(--red); }
-.rt-req.bad .to i { background: var(--red); }
-.rt-req.wait .to i { background: var(--muted); animation: rtlive 1.8s infinite; }
+:is(.rt-req, .rt-probe) .to i { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+:is(.rt-req, .rt-probe).moved .to i { background: var(--accent); }
+:is(.rt-req, .rt-probe).bad .to { color: var(--red); }
+:is(.rt-req, .rt-probe).bad .to i { background: var(--red); }
+:is(.rt-req, .rt-probe).wait .to i { background: var(--muted); animation: rtlive 1.8s infinite; }
 /* the reasoning keeps to its own box: what it was asked at is cut first,
    then what it was sent at, never drawn over the numbers beside it (#435) */
-.rt-req .to .ef { flex: 0 1 auto; display: flex; min-width: 0; margin-left: -2px; color: var(--muted); }
-.rt-req .ef::before { content: "· "; flex: none; white-space: pre; }
-.rt-req .to .ef span { min-width: 0; white-space: pre; }
-.rt-req .to .ef .was { flex-shrink: 100000; }
-.rt-req .to .ef.picked { color: var(--fg-2); }
-.rt-req .ef .was { opacity: .75; }
+:is(.rt-req, .rt-probe) .to .ef { flex: 0 1 auto; display: flex; min-width: 0; margin-left: -2px; color: var(--muted); }
+:is(.rt-req, .rt-probe) .ef::before { content: "· "; flex: none; white-space: pre; }
+:is(.rt-req, .rt-probe) .to .ef span { min-width: 0; white-space: pre; }
+:is(.rt-req, .rt-probe) .to .ef .was { flex-shrink: 100000; }
+:is(.rt-req, .rt-probe) .to .ef.picked { color: var(--fg-2); }
+:is(.rt-req, .rt-probe) .ef .was { opacity: .75; }
 /* what a call was for (a Codex guardian review, a title…): a quiet grey tag by the model */
-.rt-req .asked .kind, .rp-req .kind, .rt-steps li .kind { flex: none; font-size: 10.5px; line-height: 16px; padding: 0 5px; border-radius: 5px; color: var(--muted); background: var(--card-2); border: 1px solid var(--line); white-space: nowrap; }
+:is(.rt-req, .rt-probe) .asked .kind, .rp-req .kind, .rt-steps li .kind { flex: none; font-size: 10.5px; line-height: 16px; padding: 0 5px; border-radius: 5px; color: var(--muted); background: var(--card-2); border: 1px solid var(--line); white-space: nowrap; }
 .rt-steps li .kind { display: inline-block; vertical-align: 1px; }
 .rt-steps li .rt-named { white-space: nowrap; }
 .rt-steps li .rt-named > .ic { width: 14px; height: 14px; margin-right: 4px; vertical-align: -2px; }
 /* in a narrow row the model keeps its room first: the tag gives way, to an ellipsis */
-.rt-req .asked .kind { flex: 0 100 auto; min-width: 3.2em; max-width: 9em; overflow: hidden; text-overflow: ellipsis; }
-.rt-req .asked.kinded .m { flex: none; max-width: calc(100% - 3.2em - 40px); }
-.rt-req .to .swap, .rt-steps li .swap { font-size: 10.5px; line-height: 16px; padding: 0 5px; border-radius: 5px; color: var(--amber); background: var(--amber-soft); white-space: nowrap; }
-.rt-req .to .swap { flex: none; max-width: 70%; }
-.rt-req .to .routed, .pr-to .routed { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; font-size: 10.5px; line-height: 16px; color: var(--muted); white-space: nowrap; }
+:is(.rt-req, .rt-probe) .asked .kind { flex: 0 100 auto; min-width: 3.2em; max-width: 9em; overflow: hidden; text-overflow: ellipsis; }
+:is(.rt-req, .rt-probe) .asked.kinded .m { flex: none; max-width: calc(100% - 3.2em - 40px); }
+:is(.rt-req, .rt-probe) .to .swap, .rt-steps li .swap { font-size: 10.5px; line-height: 16px; padding: 0 5px; border-radius: 5px; color: var(--amber); background: var(--amber-soft); white-space: nowrap; }
+:is(.rt-req, .rt-probe) .to .swap { flex: none; max-width: 70%; }
+:is(.rt-req, .rt-probe) .to .routed, .pr-to .routed { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; font-size: 10.5px; line-height: 16px; color: var(--muted); white-space: nowrap; }
 .rt-steps li.swap::before { background: var(--amber); }
 /* short of room, where it went gives way down to the provider's name, then this does
    (.upstreamed, set with the tag: Safari before 15.4 has no :has()) */
-.rt-req .to.upstreamed .said { min-width: min(10em, 45%); }
-.rt-req .to .upstream, .pr-to .upstream { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 10.5px; line-height: 16px; color: var(--muted); white-space: nowrap; }
-.rt-req .meta { display: flex; align-items: baseline; justify-content: flex-end; flex-wrap: wrap; gap: 2px 0; color: var(--muted); font-variant-numeric: tabular-nums; }
+:is(.rt-req, .rt-probe) .to.upstreamed .said { min-width: min(10em, 45%); }
+:is(.rt-req, .rt-probe) .to .upstream, .pr-to .upstream { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 10.5px; line-height: 16px; color: var(--muted); white-space: nowrap; }
+:is(.rt-req, .rt-probe) .meta { display: flex; align-items: baseline; justify-content: flex-end; flex-wrap: wrap; gap: 2px 0; color: var(--muted); font-variant-numeric: tabular-nums; }
 .rt-metric { display: inline-flex; align-items: baseline; gap: 4px; white-space: nowrap; min-width: 0; }
 .rt-metric .k { color: var(--muted); }
 .rt-metric .v { font-variant-numeric: tabular-nums; }
-.rt-req .tokens, .rt-session .rt-token-total { cursor: help; }
-.rt-req .meta .retry-count { white-space: nowrap; }
-.rt-req .meta > * + .rt-metric::before { content: "·"; margin: 0 2px; }
-.rt-req .meta .cost-metric { margin-left: 10px; color: var(--fg-2); }
-.rt-req .meta .cost-metric::before { display: none; }
-.rt-req .meta[hidden] { display: none; }
+:is(.rt-req, .rt-probe) .tokens, .rt-session .rt-token-total { cursor: help; }
+:is(.rt-req, .rt-probe) .meta .retry-count { white-space: nowrap; }
+:is(.rt-req, .rt-probe) .meta > * + .rt-metric::before { content: "·"; margin: 0 2px; }
+:is(.rt-req, .rt-probe) .meta .cost-metric { margin-left: 10px; color: var(--fg-2); }
+:is(.rt-req, .rt-probe) .meta .cost-metric::before { display: none; }
+:is(.rt-req, .rt-probe) .meta[hidden] { display: none; }
 .rt-session { grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; padding: 9px 8px; margin-top: 4px; font: inherit; font-size: 12px; text-align: left; color: var(--fg-2); background: var(--card-2); border: 1px solid var(--line); border-radius: 8px; }
 button.rt-session { cursor: pointer; }
 .rt-session .arrow { flex: none; width: 10px; color: var(--muted); }
@@ -350,14 +368,14 @@ button.rt-session { cursor: pointer; }
 /* Where a request's numbers don't fit their column on one line (set by
    metaFit), they go on a line of their own under where it went, which keeps
    its room (#2288, xishuchkui-code). */
-:where(.rt-col.meta-under:not(.max760)) .rt-reqs { grid-template-columns: auto fit-content(45%) minmax(0, 1fr); }
+:where(.rt-col.meta-under:not(.max760)) .rt-reqs { --rt-tpl: auto fit-content(45%) minmax(0, 1fr); }
 :where(.rt-col.meta-under:not(.max760)) .rt-req { row-gap: 2px; }
-:where(.rt-col.meta-under:not(.max760)) .rt-req .meta { grid-column: 2 / -1; grid-row: 2; justify-content: flex-start; }
-:where(.rt-col.max760) .rt-reqs { grid-template-columns: auto minmax(0, 1fr); }
+:where(.rt-col.meta-under:not(.max760)) :is(.rt-req, .rt-probe) .meta { grid-column: 2 / -1; grid-row: 2; justify-content: flex-start; }
+:where(.rt-col.max760) .rt-reqs { --rt-tpl: auto minmax(0, 1fr); }
 :where(.rt-col.max760) .rt-req { row-gap: 2px; }
-:where(.rt-col.max760) .rt-req .asked { grid-column: 2; grid-row: 1; }
-:where(.rt-col.max760) .rt-req .to { grid-column: 2; grid-row: 2; }
-:where(.rt-col.max760) .rt-req .meta { grid-column: 2; grid-row: 3; justify-content: flex-start; }
+:where(.rt-col.max760) :is(.rt-req, .rt-probe) .asked { grid-column: 2; grid-row: 1; }
+:where(.rt-col.max760) :is(.rt-req, .rt-probe) .to { grid-column: 2; grid-row: 2; }
+:where(.rt-col.max760) :is(.rt-req, .rt-probe) .meta { grid-column: 2; grid-row: 3; justify-content: flex-start; }
 .rt-acts { padding: 4px 0; }
 .rt-cols.solo { grid-template-columns: minmax(0, 1fr); }
 .rt-reqs.none { display: block; background: none; border-color: transparent; }
@@ -417,7 +435,7 @@ button.rt-session { cursor: pointer; }
 .rt-livedot { width: 6px; height: 6px; margin-left: 7px; border-radius: 50%; background: var(--green); --fg: var(--green); }
 /* it pulses while a request is under way only (#2827) */
 .rt-livedot.on { animation: rtlive 1.8s infinite; }
-@media (prefers-reduced-motion: reduce) { .rt-livedot { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .rt-livedot.on { animation: none; } }
 /* routing groups, and the providers routing over several of their own */
 .rt-gsec { display: grid; gap: 6px; margin-top: 16px; }
 .rt-gsec .row-head .note { margin-right: 6px; }
@@ -566,9 +584,9 @@ button.rt-session { cursor: pointer; }
   body.web .rt-stats { flex-wrap: wrap; gap: 10px 16px; }
   /* the upstream a request went to takes a line of its own on a phone,
      so the reasoning beside the provider isn't cut to two letters */
-  body.web .rt-req .to.upstreamed { flex-wrap: wrap; row-gap: 0; }
-  body.web .rt-req .to.upstreamed .said { flex: 1 1 0; min-width: 0; }
-  body.web .rt-req .to .upstream { flex-basis: 100%; padding-left: 12px; }
+  body.web :is(.rt-req, .rt-probe) .to.upstreamed { flex-wrap: wrap; row-gap: 0; }
+  body.web :is(.rt-req, .rt-probe) .to.upstreamed .said { flex: 1 1 0; min-width: 0; }
+  body.web :is(.rt-req, .rt-probe) .to .upstream { flex-basis: 100%; padding-left: 12px; }
   body.web #view-routing > .row-head .note { flex: 1 1 100%; order: 1; margin: 0; }
 }
 .rt-gsec .segs .opt { white-space: nowrap; }
@@ -635,14 +653,15 @@ button.rt-session { cursor: pointer; }
 /* a group's rules, each one line read as a sentence: the conditions it
    has, → and the model it sends that turn to first; its acts under ⋯ */
 .rt-rules .fbl:not(:empty) + .rt-gadds { margin-top: 2px; }
-/* the rules share their columns (each rule a subgrid of the list), so
-   every rule's → and model start at one x: the number, the conditions
-   (as wide as the widest rule's, to at most half the width before they wrap), what
-   it does, the ⋯. Where subgrid isn't, each rule keeps the same columns
-   on its own */
-.rt-rules .fbl { display: grid; grid-template-columns: 16px fit-content(50%) minmax(0, 1fr) auto; gap: 0; }
-.rt-rule { grid-column: 1 / -1; display: grid; grid-template-columns: 16px fit-content(50%) minmax(0, 1fr) auto; align-items: start; column-gap: 8px; padding: 7px 0; border-top: 1px solid var(--line); font-size: 12.5px; }
-@supports (grid-template-columns: subgrid) { .rt-rule { grid-template-columns: subgrid; } }
+/* every rule's → and model start at one x: the number, the conditions
+   (as wide as the widest rule's, to at most half the width before they
+   wrap), what it does, the ⋯. Each rule is a grid of its own, its
+   conditions at least --rt-condw wide, the widest rule's conditions as
+   measured (fitConds). The rules were a subgrid of the list once, the way
+   Safari 16 crashed sizing the requests (#3731, #3955) */
+.rt-rules .fbl { display: flex; flex-direction: column; }
+.rt-rule { display: grid; grid-template-columns: 16px fit-content(50%) minmax(0, 1fr) auto; align-items: start; column-gap: 8px; padding: 7px 0; border-top: 1px solid var(--line); font-size: 12.5px; }
+.rt-rule > .rt-line.when { min-width: var(--rt-condw, 0); }
 .rt-rule:first-child { border-top: 0; padding-top: 2px; }
 .rt-rule > .i { line-height: 26px; color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; text-align: right; }
 /* a rule's number is its handle, as a model's is: the grip beside it
@@ -660,8 +679,8 @@ button.rt-session { cursor: pointer; }
 .rt-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
 /* on a narrow page what it does goes under the conditions */
 @media (max-width: 640px) {
-  .rt-rules .fbl { display: flex; flex-direction: column; }
   .rt-rule { grid-template-columns: 16px minmax(0, 1fr) auto; row-gap: 6px; }
+  .rt-rule > .rt-line.when { min-width: 0; }
   .rt-rule > .rt-then { grid-column: 2; grid-row: 2; }
   .rt-rule > .rt-rmore { grid-column: 3; grid-row: 1; }
 }
@@ -883,13 +902,12 @@ button.rt-session { cursor: pointer; }
 .pr-req .meta { flex: none; max-width: 100%; margin-left: auto; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
 @media (prefers-reduced-motion: reduce) { .pr-req.wait .pr-to > i, .ps-dst.wait > i, .ps-hub.busy, .ps-dot.wait { animation: none; } }
 @supports not (grid-template-columns: subgrid) {
-  .rt-req { grid-template-columns: auto fit-content(32%) minmax(min(14em, 30%), 1fr) fit-content(40%); }
   @media (max-width: 700px) {
-    .rt-reqs { grid-template-columns: auto minmax(0, 1fr); }
-    .rt-req { grid-template-columns: auto minmax(0, 1fr); row-gap: 2px; }
-    .rt-req .asked { grid-column: 2; grid-row: 1; }
-    .rt-req .to { grid-column: 2; grid-row: 2; }
-    .rt-req .meta { grid-column: 2; grid-row: 3; justify-content: flex-start; }
+    .rt-reqs { --rt-tpl: auto minmax(0, 1fr); }
+    .rt-req { row-gap: 2px; }
+    :is(.rt-req, .rt-probe) .asked { grid-column: 2; grid-row: 1; }
+    :is(.rt-req, .rt-probe) .to { grid-column: 2; grid-row: 2; }
+    :is(.rt-req, .rt-probe) .meta { grid-column: 2; grid-row: 3; justify-content: flex-start; }
   }
 }
 /* templates: groups for common needs made of the user's own models, each

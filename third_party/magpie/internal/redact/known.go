@@ -137,6 +137,47 @@ func (o Options) coversKind(kind string) bool {
 	return false
 }
 
+// A value the model alone found is known at the score it had: it is
+// masked again as known only while the user's slider (Options.MinScore)
+// is at or below that. Moving the slider up did nothing to what the model
+// had found at a lower score, until magpie started again ("即使把匹配拉到
+// 0.95，也是一样行为", _kaichen on X, 10-28). One any other finder found
+// (a rule, the user's words or rules) is known whatever the slider says,
+// as it was.
+
+// ruleFound is a value's score where no model found it.
+const ruleFound = 2
+
+// scores are the values found, with the model's best score for each
+// (ruleFound where anything else found it); guarded by mu.
+var scores = map[string]float64{}
+
+// noteScores keeps what found's values in s were found at.
+func noteScores(s string, found []span) {
+	if len(found) == 0 {
+		return
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(scores) >= maxValues {
+		// forgotten, a value is known whatever the slider says, as all
+		// were before
+		scores = map[string]float64{}
+	}
+	for _, f := range found {
+		if f.by == ByKnown || f.end-f.start < minKnown {
+			continue
+		}
+		v, sc := s[f.start:f.end], float64(ruleFound)
+		if f.by == ByModel && f.score > 0 {
+			sc = f.score
+		}
+		if old, ok := scores[v]; !ok || sc > old {
+			scores[v] = sc
+		}
+	}
+}
+
 // knownSpans are where s has a known value o masks (coversKind). Where two
 // start at the same place, the longer.
 func knownSpans(s string, o Options) []span {
@@ -158,13 +199,16 @@ func knownSpans(s string, o Options) []span {
 			if !o.coversKind(k.kind) {
 				continue
 			}
+			if sc, ok := scores[k.v]; ok && sc < o.MinScore {
+				continue // the model's alone, under the slider
+			}
 			if best != nil && len(k.v) <= len(best.v) || !strings.HasPrefix(s[i:], k.v) || !standsAlone(k.kind, s, i, i+len(k.v)) {
 				continue
 			}
 			best = &known[s[i:i+minKnown]][j]
 		}
 		if best != nil {
-			out = append(out, span{i, i + len(best.v), best.kind, ByKnown})
+			out = append(out, span{i, i + len(best.v), best.kind, ByKnown, 0})
 			i += len(best.v) - 1
 		}
 	}
@@ -172,7 +216,8 @@ func knownSpans(s string, o Options) []span {
 }
 
 // standsAlone says s[a:b] is the known value itself, not a piece of a
-// longer one: a number with no digit beside it, an email that is not part
+// longer one: a number with no letter or digit beside it (as the rules
+// take one: 9f13800138000abc is a hash's piece), an email that is not part
 // of a longer address (though a full stop may end the sentence after it),
 // a secret with no letter or digit against it (twelve hex digits a rule of
 // the user's took are also in the middle of a hash).
@@ -186,9 +231,7 @@ func standsAlone(kind, s string, a, b int) bool {
 	}
 	is := func(c byte, set string) bool { return c != 0 && strings.IndexByte(set, c) >= 0 }
 	switch kind {
-	case "PHONE", "BANK_CARD":
-		return !is(before, digits) && !is(after, digits)
-	case "ID_CARD", "IBAN", "SSN", "PASSPORT", "SERIAL":
+	case "PHONE", "BANK_CARD", "ID_CARD", "IBAN", "SSN", "PASSPORT", "SERIAL":
 		return !is(before, alnum) && !is(after, alnum)
 	case "IP", "MAC":
 		// not a piece of a longer address or a version: 1.2.3.45, 1.2.3.4.5

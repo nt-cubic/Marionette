@@ -43,7 +43,7 @@ func TestCachedCardsTellHeardClaudeLimits(t *testing.T) {
 	readAt := time.Now()
 	old := SubscriptionQuota{Provider: "claude", User: "a@example.com", ReadAt: &readAt, Windows: []QuotaWindow{{Name: "5 hours", Used: 10, ResetsAt: &resetAt}}, readSeq: before}
 	loginUsageCache.Lock()
-	loginUsageCache.m = map[string]loginUsageEntry{"claude/a@example.com": {time.Now(), old, old}}
+	loginUsageCache.m = map[string]loginUsageEntry{"claude/a@example.com": {at: time.Now(), q: old, read: old}}
 	loginUsageCache.Unlock()
 	if got := used(); got != 42 {
 		t.Fatalf("a reading started before the header took its place: used %v, want 42", got)
@@ -54,7 +54,7 @@ func TestCachedCardsTellHeardClaudeLimits(t *testing.T) {
 	newer.Windows = []QuotaWindow{{Name: "5 hours", Used: 55, ResetsAt: &resetAt}}
 	newer.readSeq = quotaReadSequence.Add(1)
 	loginUsageCache.Lock()
-	loginUsageCache.m = map[string]loginUsageEntry{"claude/a@example.com": {time.Now(), newer, newer}}
+	loginUsageCache.m = map[string]loginUsageEntry{"claude/a@example.com": {at: time.Now(), q: newer, read: newer}}
 	loginUsageCache.Unlock()
 	if got := used(); got != 55 {
 		t.Fatalf("a reading started after the header: used %v, want 55", got)

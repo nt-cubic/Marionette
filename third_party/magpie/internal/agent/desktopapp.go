@@ -53,6 +53,20 @@ var desktopApps = map[string]desktopApp{
 	// registers it under HKCU\Software\1bf39983-… (#2279, read from
 	// 0.2.0-rc.2's dsh-latest-windows-x64.exe installer script).
 	"dsh": {id: "com.deepseek.dsh", names: []string{"DeepSeek Harness.app"}, win: filepath.Join("DeepSeek Harness", "DeepSeek Harness.exe"), guid: "1bf39983-50d0-5fe0-9ef4-cece76f67c5e"},
+	// PenguinHarness's desktop app (packages/desktop's electron-builder.yml,
+	// desktop 0.2.17: appId com.prismshadow.penguinharness, productName
+	// PenguinHarness) runs its own server on the CLI's data root,
+	// ~/.penguin/data (app-identity.ts: "the release profile shares the
+	// CLI's root by design"), and needs no CLI: it links
+	// /usr/local/bin/penguin only when the user lets it (cli-install.ts),
+	// and with no such link magpie took ~/.penguin for a leftover
+	// (rankyurky_80676 on Discord: the app not detected). On Windows its
+	// assisted NSIS installer puts it under %LOCALAPPDATA%\Programs by
+	// default and lets the folder be changed; guid is the key
+	// electron-builder registers it under, the UUID v5 of the appId in its
+	// namespace, as dsh's above is of com.deepseek.dsh. Linux's deb links
+	// /usr/bin/penguin, so Bin finds it there.
+	"penguin": {id: "com.prismshadow.penguinharness", names: []string{"PenguinHarness.app"}, win: filepath.Join("PenguinHarness", "PenguinHarness.exe"), guid: "8bb9acb7-2bdc-596b-9669-7b014ab1c47f"},
 }
 
 // appFolders are where apps are installed; a var so tests can point it

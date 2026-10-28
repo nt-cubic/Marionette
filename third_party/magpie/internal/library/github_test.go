@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yetone/magpie/internal/ghtoken"
 	"github.com/yetone/magpie/internal/settings"
 )
 
@@ -201,7 +202,8 @@ func TestGitHubRateLimitSaid(t *testing.T) {
 		t.Errorf("secondary limit: %+v %+v", c, c.Limited)
 	}
 
-	// a token GitHub refuses says which one when it is Settings'
+	// a token in Settings GitHub refuses: the check goes on without it,
+	// and Settings says it was refused (#3926)
 	g.answer = func(w http.ResponseWriter, r *http.Request) bool {
 		if r.Header.Get("Authorization") == "" {
 			return false
@@ -210,9 +212,20 @@ func TestGitHubRateLimitSaid(t *testing.T) {
 		fmt.Fprint(w, `{"message":"Bad credentials"}`)
 		return true
 	}
+	g.mu.Lock()
+	n := len(g.apiAuth)
+	g.mu.Unlock()
 	c = check(t)["pdf"]
-	if c.Limited != nil || c.Error != "GitHub refused the GitHub token in Settings → Network and sharing: it may have expired or been revoked" {
+	if c.Limited != nil || c.Error != "" || c.Commit == "" {
 		t.Errorf("refused: %+v", c)
+	}
+	g.mu.Lock()
+	if a := g.apiAuth[n:]; len(a) < 2 || !strings.HasPrefix(a[0], "Bearer ") || a[1] != "" {
+		t.Errorf("refused: GitHub was asked with %q, want the token then none", a)
+	}
+	g.mu.Unlock()
+	if _, ok := ghtoken.SettingsRefused(); !ok {
+		t.Error("the refused Settings token isn't said")
 	}
 	// one from the environment (till on Discord: a stale GITHUB_TOKEN)
 	// is dropped: the check is asked again without it, and isn't sent
@@ -220,7 +233,7 @@ func TestGitHubRateLimitSaid(t *testing.T) {
 	setGitHubToken(t, "")
 	t.Setenv("GH_TOKEN", "bad-env-skills")
 	g.mu.Lock()
-	n := len(g.apiAuth)
+	n = len(g.apiAuth)
 	g.mu.Unlock()
 	c = check(t)["pdf"]
 	if c.Error != "" || c.Limited != nil || c.Commit == "" {

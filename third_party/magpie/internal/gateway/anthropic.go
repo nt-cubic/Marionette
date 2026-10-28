@@ -63,14 +63,34 @@ func (b aBlock) MarshalJSON() ([]byte, error) {
 	if b.Type != "thinking" {
 		return json.Marshal(plain(b))
 	}
+	// a thinking block always says its signature, empty for one magpie
+	// sends unsigned (noReasoning, or a turn's thinking replayed): the
+	// Messages API schema has it as a string, and OpenRouter's endpoint
+	// turns a block without one away (#2883)
 	return json.Marshal(struct {
 		plain
-		Thinking string `json:"thinking"`
-	}{plain(b), b.Thinking})
+		Thinking  string `json:"thinking"`
+		Signature string `json:"signature"`
+	}{plain(b), b.Thinking, b.Signature})
 }
 
 // ephemeral marks a prompt-cache breakpoint.
 var ephemeral = map[string]string{"type": "ephemeral"}
+
+// addedMark is the mark anthropicBody puts on what it marks for the cache:
+// Anthropic's default five minutes, or an hour for a request whose turns
+// are often further apart (Request.hourMarks) to a Claude model. A 1h write
+// costs 2x the input price where a 5m one costs 1.25x, and a read 0.1x or
+// less: one turn after a pause of 5 to 60 minutes, read where it would
+// have been written again, pays for the dearer writes of dozens of
+// requests in quick succession. Every mark it adds has the same TTL, so
+// none comes after a shorter one, which Anthropic refuses.
+func addedMark(r *Request, model string) map[string]string {
+	if r.hourMarks && anthropicModel.MatchString(model) {
+		return cacheMark1h()
+	}
+	return ephemeral
+}
 
 type aRequest struct {
 	Model        string          `json:"model"`
@@ -950,11 +970,12 @@ func anthropicBody(r *Request, model, host string, replay bool) []byte {
 	// which only adds to it, reads it from the cache; thinking can't be
 	// marked. Two marks at most, with the one Claude's sign-in adds kept
 	// within Anthropic's four.
+	mark := addedMark(r, model)
 	if n := len(msgs); n > 0 {
 		c := msgs[n-1].Content
 		for i := len(c) - 1; i >= 0; i-- {
 			if c[i].Type != "thinking" && c[i].Type != "redacted_thinking" {
-				c[i].CacheControl = ephemeral
+				c[i].CacheControl = mark
 				break
 			}
 		}
@@ -964,7 +985,7 @@ func anthropicBody(r *Request, model, host string, replay bool) []byte {
 	if r.System != "" {
 		// the tools and system prompt, the same every turn, are cached
 		// apart from the conversation
-		out["system"] = []aBlock{{Type: "text", Text: r.System, CacheControl: ephemeral}}
+		out["system"] = []aBlock{{Type: "text", Text: r.System, CacheControl: mark}}
 	}
 	maxTokens := r.MaxTokens
 	if maxTokens <= 0 {
@@ -1052,7 +1073,7 @@ func anthropicBody(r *Request, model, host string, replay bool) []byte {
 			tools = append(tools, map[string]any{"name": t.Name, "description": t.Description, "input_schema": schema})
 		}
 		if r.System == "" && len(tools) > 0 {
-			tools[len(tools)-1]["cache_control"] = ephemeral
+			tools[len(tools)-1]["cache_control"] = mark
 		}
 		if r.WebSearch {
 			tools = append(tools, map[string]any{"type": "web_search_20250305", "name": "web_search", "max_uses": 5})
@@ -1078,7 +1099,7 @@ func anthropicBody(r *Request, model, host string, replay bool) []byte {
 			out["tool_choice"] = tc
 		}
 	}
-	b, _ := json.Marshal(out)
+	b, _ := marshalBody(out)
 	return b
 }
 
@@ -1295,7 +1316,7 @@ func decodeAnthropic(data string, emit func(Event)) error {
 				emit(Event{Kind: KThink, Text: ev.ContentBlock.Thinking})
 			}
 			if ev.ContentBlock.Signature != "" {
-				emit(Event{Kind: KSig, Text: ev.ContentBlock.Signature})
+				emit(Event{Kind: KSig, Name: sealAnthropic, Text: ev.ContentBlock.Signature})
 			}
 		case "redacted_thinking":
 			// sealed whole: it goes on as it came, to Messages only
@@ -1315,7 +1336,7 @@ func decodeAnthropic(data string, emit func(Event)) error {
 		case "thinking_delta":
 			emit(Event{Kind: KThink, Text: ev.Delta.Thinking})
 		case "signature_delta":
-			emit(Event{Kind: KSig, Text: ev.Delta.Signature})
+			emit(Event{Kind: KSig, Name: sealAnthropic, Text: ev.Delta.Signature})
 		}
 	case "message_delta":
 		if ev.Delta.StopReason != "" {
@@ -1418,6 +1439,7 @@ type anthropicEncoder struct {
 	// apart from the one open with what it says first
 	fresh   bool
 	started bool
+	pinged  time.Time // the last ping keepalive sent
 	col     collector
 	// cite cuts the text said after a search into lines, each naming a
 	// page found its own block with citations (search_cite.go); cited:
@@ -1659,8 +1681,17 @@ func (e *anthropicEncoder) event(ev Event) {
 }
 
 // keepalive is Anthropic's own: a ping event, which its SDKs skip and
-// Claude Code's stream watchdog counts.
+// Claude Code's stream watchdog counts, at most one each pingEvery
+// (Claude Code counts 30 in a row); a comment in between. Before
+// message_start it is a comment too: the SDKs' MessageStream fails on
+// any event before it ("Unexpected event order, got ping before
+// message_start"), and Anthropic sends none.
 func (e *anthropicEncoder) keepalive() {
+	if !e.started || !e.pinged.IsZero() && time.Since(e.pinged) < pingEvery {
+		e.w.comment("keepalive")
+		return
+	}
+	e.pinged = time.Now()
 	e.w.event("ping", map[string]any{"type": "ping"})
 }
 

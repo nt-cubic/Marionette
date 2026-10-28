@@ -59,6 +59,14 @@ const alertSameRun = 10 * time.Minute
 // (signed out, a key removed) is kept.
 const alertKeep = 40 * 24 * time.Hour
 
+// toldAside is whether a window aside from the account is still told of:
+// a pool's weekly one is (#523) — using it up doesn't stop the account,
+// but the week it would waste is worth knowing of — while the pools'
+// 5-hour ones and the rest aren't.
+func toldAside(w QuotaWindow) bool {
+	return w.Pool != "" && w.Span == 7*24*time.Hour
+}
+
 // dueAlerts is what the readings qs call for with a window alert at pct
 // percent used (0 off) and a balance alert at bal (0 off), and the marks
 // brought up to date with it. A reading that failed, or is one kept from
@@ -78,7 +86,7 @@ func dueAlerts(qs []SubscriptionQuota, marks map[string]alertMark, pct int, bal 
 		// the pools' own windows stand in for the models' drawing on them,
 		// so a pool is told of once, not once per model
 		for _, w := range PooledWindows(q.Windows) {
-			if w.Aside && !(w.Pool != "" && w.Span == 7*24*time.Hour) {
+			if w.Aside && !toldAside(w) {
 				continue // using it up doesn't stop the account
 			}
 			key := alertPrefix(q) + "w|" + w.Name + "|" + w.Model
@@ -160,7 +168,7 @@ func dueReminders(qs []SubscriptionQuota, marks map[string]alertMark, lead time.
 			continue
 		}
 		for _, w := range PooledWindows(q.Windows) {
-			if w.Aside || w.Span < reminderSpan || w.Used >= reminderUnder {
+			if w.Aside && !toldAside(w) || w.Span < reminderSpan || w.Used >= reminderUnder {
 				continue
 			}
 			at := w.ResetsAt

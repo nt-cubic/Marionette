@@ -826,12 +826,13 @@ func claudeProvider(acct *Account) Provider {
 	// account runs Claude Code itself (the gateway's bridge, a test), so
 	// one that would go straight to the API with its sign-in is refused
 	acct.sign = func(context.Context, *http.Request, []byte) error { return errClaudeViaCLI }
-	acct.models = func() []catalog.Model { return catalog.Provider("anthropic") }
+	acct.models = claudeModels
 	acct.magpieList = true
-	// Claude's models are the ones magpie knows: listing them would ask
+	// Claude's models are the ones magpie knows and the ones Claude Code
+	// was told an account has (claude_models.go): listing them would ask
 	// Anthropic with the account's sign-in, which magpie never does
 	acct.fetch = func(context.Context) ([]catalog.Model, error) {
-		ms := catalog.Provider("anthropic")
+		ms := claudeModels()
 		return ms, catalog.SaveLive("claude", claudeBase, ms)
 	}
 	return Provider{ID: "claude", Name: "Claude Code", Icon: "claudecode-color", Anthropic: claudeBase,

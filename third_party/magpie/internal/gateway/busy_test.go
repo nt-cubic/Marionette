@@ -309,3 +309,66 @@ func TestConcurrencyListsEachRequest(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// CodexBusy counts Codex's requests alone: a restart of the Codex app's
+// app-server waits for a Codex turn, never for another agent's.
+func TestCodexBusy(t *testing.T) {
+	fresh(t)
+	started, release := make(chan struct{}, 2), make(chan struct{})
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, `data: {"id":"c","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"hel"}}]}`+"\n\n")
+		w.(http.Flusher).Flush()
+		started <- struct{}{}
+		<-release
+		io.WriteString(w, `data: {"id":"c","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"lo"},"finish_reason":"stop"}]}`+"\n\ndata: [DONE]\n\n")
+	}))
+	defer up.Close()
+	if err := provider.Save(provider.Provider{ID: "up", Name: "Up", Key: "k", Chat: up.URL + "/v1", Models: []string{"m"}}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	gw := httptest.NewServer(s.Handler())
+	defer gw.Close()
+	var hold sync.WaitGroup
+	let := sync.OnceFunc(func() { close(release) })
+	defer hold.Wait()
+	defer let()
+	send := func(key string) {
+		hold.Add(1)
+		go func() {
+			defer hold.Done()
+			req, _ := http.NewRequest("POST", gw.URL+"/v1/chat/completions", strings.NewReader(`{"model":"up/m","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+key)
+			res, err := http.DefaultClient.Do(req)
+			if err == nil {
+				io.Copy(io.Discard, res.Body)
+				res.Body.Close()
+			}
+		}()
+	}
+	if n, last := s.CodexBusy(); n != 0 || !last.IsZero() {
+		t.Fatalf("before any request: %d %v", n, last)
+	}
+	send(Token + "-opencode")
+	<-started
+	if n, last := s.CodexBusy(); n != 0 || !last.IsZero() {
+		t.Fatalf("another agent's request: %d %v", n, last)
+	}
+	send(Token + "-codex")
+	<-started
+	if n, _ := s.CodexBusy(); n != 1 {
+		t.Fatalf("Codex's request in flight: %d, want 1 (%+v)", n, s.Active())
+	}
+	let()
+	hold.Wait()
+	deadline := time.Now().Add(5 * time.Second)
+	for s.Busy().Requests != 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n, last := s.CodexBusy(); n != 0 || time.Since(last) > 5*time.Second {
+		t.Fatalf("after: %d %v", n, last)
+	}
+}

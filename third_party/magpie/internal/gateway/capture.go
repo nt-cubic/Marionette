@@ -155,6 +155,13 @@ func withBodies(rec *usage.Record, c *Call) {
 	if c.wholeIn != nil {
 		in, inCut = string(c.wholeIn), c.wholeInCut
 	}
+	if c.maskIn != nil {
+		if m := c.maskIn.body(); c.wholeIn != nil {
+			in = string(m)
+		} else {
+			in, inCut = captureRequestBody(m)
+		}
+	}
 	out, outCut := c.ResponseBody, c.ResponseTruncated
 	if c.wholeOut != nil {
 		out, outCut = string(c.wholeOut), c.wholeOutCut

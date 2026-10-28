@@ -108,8 +108,11 @@ func tuneOf(cs []sessions.Call, days int, home string) tuneState {
 			}
 			st := settings.Load()
 			window, told := codexWindow(calls, st, provider.Catalog(), provider.GroupFinder())
+			// Long conversations' value is the setting; where Codex runs
+			// now is that as magpie tells it for these models (their
+			// windows, a provider's own Compact at)
 			cur, _ := strconv.Atoi(s.Value)
-			if cur == 0 {
+			if cur == 0 || s.Source == agent.TuneLong {
 				cur = told
 			}
 			// a value the user chose is never past the last one offered

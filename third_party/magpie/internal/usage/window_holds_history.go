@@ -99,7 +99,7 @@ func withRecordedWindowStarts(cards []provider.SubscriptionQuota, hist []provide
 					continue
 				}
 				for _, l := range h.Lines {
-					if l.Name != w.Name {
+					if l.Name != w.LineName() {
 						continue
 					}
 					var observed time.Time

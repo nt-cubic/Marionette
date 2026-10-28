@@ -52,6 +52,13 @@ type QuotaWindow struct {
 	// day. Smart routing takes it for the window's renewal (cdredfox on X).
 	RunsOutAt *time.Time `json:"runsOutAt,omitempty"`
 	RunsOut   float64    `json:"runsOut,omitempty"`
+	// Balance is how much is left of the window in Unit, when the vendor
+	// tells only that: a prepaid wallet, with no total to take a share of
+	// (SuperMagic's points, #3950). Used is then no reading (0); the GUI
+	// says the figure left, and routing knows the account by it and puts
+	// the one with the most left first among a provider's accounts in the
+	// same unit (Allowance.Left). nil when not told.
+	Balance *float64 `json:"balance,omitempty"`
 	// Family is the model family a per-model window belongs to (Antigravity's
 	// "Gemini 3.1 Pro (High)" is Gemini's), for the GUI to show one figure a
 	// family, the tightest; each window is still here, and routing reads
@@ -134,6 +141,10 @@ type SubscriptionQuota struct {
 	// BalanceTrend is the Balance over time, as magpie read it, and when
 	// it runs out at that pace (balance_history.go)
 	BalanceTrend *BalanceTrend `json:"balanceTrend,omitempty"`
+	// SharedBalance is set on each key of a provider found to read one
+	// account's balance with others (balance_shared.go): the name of the
+	// first of them, whose card shows it once for all
+	SharedBalance string `json:"sharedBalance,omitempty"`
 	// Until is when the plan's paid time ends: it renews then when Renew
 	// is "auto", is over when "off", and either when "" (the vendor
 	// doesn't say which).
@@ -174,9 +185,11 @@ type SubscriptionQuota struct {
 	// now (codexHeld): not on a window at 100% alone, which credits get
 	// past.
 	Held bool `json:"held,omitempty"`
-	// Daily is a WorkBuddy account's credits used day by day, as magpie
-	// counted them from its readings (credits_daily.go).
-	Daily *DailyCredits `json:"daily,omitempty"`
+	// Daily is the account's credits used day by day, as magpie counted
+	// them from its readings (credits_daily.go): its first credits
+	// window's, and MoreDaily its other pools', each apart.
+	Daily     *DailyCredits   `json:"daily,omitempty"`
+	MoreDaily []*DailyCredits `json:"moreDaily,omitempty"`
 	// Checkins is set on a WorkBuddy (China) or Trae CN account whose
 	// daily check-in is pressed for, CheckinBy whose ("" WorkBuddy's,
 	// "trae" Trae CN's), and Checkin is how its last one went, nil before
@@ -211,6 +224,9 @@ type SubscriptionQuota struct {
 	// In-process read order, separate from the vendor's ReadAt and never
 	// persisted: restarting starts a new sequence.
 	readSeq uint64
+	// wideBalance marks a balance that is the account's, not the key's
+	// own (balanceAccountWide)
+	wideBalance bool
 	// glmPlan marks a key's quota read from the GLM Coding Plan endpoint,
 	// including custom providers. Only these can share ZCode's allowance.
 	glmPlan bool

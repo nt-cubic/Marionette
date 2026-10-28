@@ -111,7 +111,8 @@ func TestFetchUnionsProtocolLists(t *testing.T) {
 
 // The order the protocols are asked in must not decide which models are
 // kept: a provider with a Responses base and an Anthropic base and no Chat
-// one is asked both.
+// one is asked both, each list once. Codex's own ask of the Responses
+// list (codexEntries) is counted apart (#3854).
 func TestFetchUnionsProtocolListsWithoutChat(t *testing.T) {
 	isolate(t)
 	h := t.TempDir()
@@ -124,13 +125,17 @@ func TestFetchUnionsProtocolListsWithoutChat(t *testing.T) {
 		t.Setenv(v, "")
 	}
 
-	var responsesHits, anthropicHits atomic.Int32
+	var responsesHits, responsesCodexHits, anthropicHits atomic.Int32
 	responses := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/models" {
 			http.NotFound(w, r)
 			return
 		}
-		responsesHits.Add(1)
+		if r.URL.Query().Has("client_version") {
+			responsesCodexHits.Add(1)
+		} else {
+			responsesHits.Add(1)
+		}
 		w.Write([]byte(`{"data":[{"id":"gpt-a"}]}`))
 	}))
 	defer responses.Close()
@@ -166,6 +171,9 @@ func TestFetchUnionsProtocolListsWithoutChat(t *testing.T) {
 	}
 	if responsesHits.Load() != 1 || anthropicHits.Load() != 1 {
 		t.Errorf("asked responses %d times, anthropic %d", responsesHits.Load(), anthropicHits.Load())
+	}
+	if responsesCodexHits.Load() > 1 {
+		t.Errorf("asked responses as Codex asks %d times, want once at most", responsesCodexHits.Load())
 	}
 }
 
@@ -283,7 +291,9 @@ func TestFetchAsksOneProtocolOnce(t *testing.T) {
 }
 
 // Chat and Responses at one base ask it once, as they did when the first
-// answer ended the fetch.
+// answer ended the fetch. Codex's own ask of the Responses list
+// (codexEntries, with client_version) is a request of its own, once a
+// fetch for a provider added by its address, and is counted apart (#3854).
 func TestFetchAsksASharedBaseOnce(t *testing.T) {
 	isolate(t)
 	h := t.TempDir()
@@ -296,13 +306,17 @@ func TestFetchAsksASharedBaseOnce(t *testing.T) {
 		t.Setenv(v, "")
 	}
 
-	var hits atomic.Int32
+	var hits, codexHits atomic.Int32
 	shared := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/models" {
 			http.NotFound(w, r)
 			return
 		}
-		hits.Add(1)
+		if r.URL.Query().Has("client_version") {
+			codexHits.Add(1)
+		} else {
+			hits.Add(1)
+		}
 		w.Write([]byte(`{"data":[{"id":"gpt-a"}]}`))
 	}))
 	defer shared.Close()
@@ -325,6 +339,9 @@ func TestFetchAsksASharedBaseOnce(t *testing.T) {
 	}
 	if hits.Load() != 1 {
 		t.Errorf("asked %d times, want once", hits.Load())
+	}
+	if codexHits.Load() > 1 {
+		t.Errorf("asked as Codex asks %d times, want once at most", codexHits.Load())
 	}
 }
 

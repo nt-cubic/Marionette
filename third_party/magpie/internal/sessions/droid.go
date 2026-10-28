@@ -93,7 +93,7 @@ func droidFiles() []file {
 		// what it spent and on which model are in its settings
 		m := file{path: strings.TrimSuffix(p, ".jsonl") + ".settings.json"}
 		if stat(&m) {
-			f.manifest = m.path
+			f.w().manifest = m.path
 			f.size += m.size
 			if m.mod.After(f.mod) {
 				f.mod = m.mod
@@ -205,9 +205,9 @@ func parseDroid(f file, old *state) *state {
 		c.Tail = markTail(f.path, end, 0, end)
 	}
 	c.Date, c.Model, c.Tokens = "", "", Tokens{}
-	if f.manifest != "" {
+	if f.m().manifest != "" {
 		var st droidSettings
-		if b, err := os.ReadFile(f.manifest); err == nil && json.Unmarshal(b, &st) == nil && st.Usage != nil {
+		if b, err := os.ReadFile(f.m().manifest); err == nil && json.Unmarshal(b, &st) == nil && st.Usage != nil {
 			when := s.Last
 			if when.IsZero() {
 				when = time.Unix(0, s.Mod)

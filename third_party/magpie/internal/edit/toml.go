@@ -300,7 +300,7 @@ func GetTOMLTop(path, key string) (string, bool) {
 // getTOMLTopLines is GetTOMLTop for a file that isn't valid TOML: the first
 // line that looks like `key = value` before one that looks like a header.
 func getTOMLTopLines(path, key string) (string, bool) {
-	raw, err := Read(path)
+	raw, err := readHeld(path)
 	if err != nil || raw == nil {
 		return "", false
 	}

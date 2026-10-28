@@ -116,12 +116,13 @@ func TestCursorPluginFast(t *testing.T) {
 
 // A Command Code Go conversation moved onto its plugin keeps its
 // reasoning, as the built-in replayed it to /alpha/generate: its plugin
-// reads reasoning_content. DeepSeek still gets it, others don't.
+// reads reasoning_content. DeepSeek and Qoder's plugin, which sends it on
+// as Qoder's client does, get it too; others don't.
 func TestCommandCodePluginReasoning(t *testing.T) {
 	reasoning := func(host string) any {
 		return chatBody(t, host)["messages"].([]any)[1].(map[string]any)["reasoning_content"]
 	}
-	for _, host := range []string{provider.CommandCodePlanID, "api.deepseek.com"} {
+	for _, host := range []string{provider.CommandCodePlanID, "api.deepseek.com", "qoder", "qoder-cn"} {
 		if got := reasoning(host); got != "pondered" {
 			t.Errorf("%s got reasoning %v", host, got)
 		}

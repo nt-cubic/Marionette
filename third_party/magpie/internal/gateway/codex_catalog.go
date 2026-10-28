@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/yetone/magpie/internal/access"
 	"github.com/yetone/magpie/internal/codexcat"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/usage"
 )
 
 // CodexCatalogPath is Codex's model list in its own shape, for a Codex that
@@ -40,7 +42,11 @@ func (s *Server) codexCatalog(w http.ResponseWriter, r *http.Request) {
 	var b bytes.Buffer
 	b.Write(head)
 	n, out := 0, 0
-	for _, e := range codexcat.Entries(ms, 0) {
+	// the Codex app reads the first 100 alone (codexcat.AppList): the ones
+	// this key's Codex used are among them, and kept when the end is cut
+	entries := codexcat.Entries(ms, 0)
+	codexcat.Fit(entries, usage.CodexUsedBy(access.Caller(r.Context()).KeyID))
+	for _, e := range entries {
 		var one bytes.Buffer
 		enc := json.NewEncoder(&one)
 		enc.SetEscapeHTML(false)

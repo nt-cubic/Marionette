@@ -88,6 +88,14 @@ func CanFast(p Provider, model string) bool {
 		_, ok = pluginModel(pp, model+"-fast")
 		return ok
 	}
+	if p.IsRemoteMagpie() {
+		// another magpie's model it offers its own Codex Fast on (its
+		// list's service_tiers, #1234): a pick sent fast here goes on to
+		// it with service_tier "priority", which it sends its vendor as
+		// its own Codex's turn would be (littlekk88 on Discord: the
+		// picker had no Fast for a remote magpie's model)
+		return slices.Contains(RemoteTiers(p, model), "priority")
+	}
 	if p.Account != nil {
 		switch p.Account.Agent {
 		case "codex":
@@ -113,6 +121,20 @@ func CanFast(p Provider, model string) bool {
 		return true
 	}
 	return OwnFast(p, model)
+}
+
+// RemoteTiers are the service tiers another magpie's list says it offers
+// on model (#1234), nil for a provider that isn't one.
+func RemoteTiers(p Provider, model string) []string {
+	if !p.IsRemoteMagpie() {
+		return nil
+	}
+	for _, m := range p.liveByID(model) {
+		if len(m.Tiers) > 0 {
+			return m.Tiers
+		}
+	}
+	return nil
 }
 
 // OwnFast reports whether model has a fast mode only as the user's own
@@ -186,7 +208,7 @@ func cleanFast(entries []Entry, g *Group) error {
 			return fmt.Errorf("%s is a group: its models are sent as it says, so it takes no :%s", model, FastWord)
 		}
 		if p, m, ok := resolveIn(entries, model); ok && !CanFast(p, m) {
-			return fmt.Errorf("%s has no fast mode magpie can ask for (ChatGPT and OpenAI GPT models, a GPT model on a provider you added by its address, Cursor's with a fast one, a plugin's it says are served at priority, and Claude Opus 4.8 and 5 on an Anthropic key have)", model)
+			return fmt.Errorf("%s has no fast mode magpie can ask for (ChatGPT and OpenAI GPT models, a GPT model on a provider you added by its address, Cursor's with a fast one, a plugin's it says are served at priority, another magpie's it offers Fast on, and Claude Opus 4.8 and 5 on an Anthropic key have)", model)
 		}
 		out = append(out, f)
 	}

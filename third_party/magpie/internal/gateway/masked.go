@@ -63,7 +63,7 @@ func noteMaskedUntil(r *http.Request, what string, h maskHits, sent string, rout
 	}
 	rec := maskrec.Record{What: what, Route: route, Provider: prov, Model: model, N: h.n}
 	if r != nil {
-		rec.Agent, rec.Session = agentOf(r), sessionOf(r.Header)
+		rec.Agent, rec.Session = callerOf(r).agent, sessionOf(r.Header)
 	}
 	rec.Values = valuesOf(h.hits)
 	rec.Snips = snipsOf(sent, h.hits)

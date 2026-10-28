@@ -21,7 +21,7 @@ const legacyID = "dial"
 // swallowed on purpose — a file magpie cannot rewrite is one the user can
 // still fix from the picker.
 func RenameLegacy() {
-	for _, a := range All() {
+	for _, a := range local() {
 		if _, err := os.Stat(a.Path); err != nil {
 			continue
 		}
@@ -78,7 +78,7 @@ func moveEfforts(pid string, base func(string) (string, string, bool)) {
 	offers := func(opts []Option, v string) bool {
 		return slices.ContainsFunc(opts, func(o Option) bool { return o.Value == v })
 	}
-	for _, a := range All() {
+	for _, a := range local() {
 		if _, err := os.Stat(a.Path); err != nil {
 			continue
 		}

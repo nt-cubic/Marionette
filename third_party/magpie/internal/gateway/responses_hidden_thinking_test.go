@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yetone/magpie/internal/claudeseal"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -66,7 +67,7 @@ func TestResponsesStreamToolThenHiddenThinking(t *testing.T) {
 			}
 			var completed map[string]any
 			var call map[string]any
-			var reasoning int
+			var reasoning []map[string]any
 			for _, ev := range events(string(body)) {
 				switch ev["type"] {
 				case "response.completed":
@@ -77,7 +78,7 @@ func TestResponsesStreamToolThenHiddenThinking(t *testing.T) {
 					case "function_call":
 						call = item
 					case "reasoning":
-						reasoning++
+						reasoning = append(reasoning, item)
 					}
 				}
 			}
@@ -88,8 +89,19 @@ func TestResponsesStreamToolThenHiddenThinking(t *testing.T) {
 				b, _ := json.Marshal(call)
 				t.Fatalf("function_call = %s, want toolu_01 shell {\"command\":[\"ls\"]}\n%s", b, body)
 			}
-			if want := map[bool]int{true: 1, false: 0}[c.visible]; reasoning != want {
-				t.Errorf("%d reasoning items, want %d", reasoning, want)
+			// Thinking Claude didn't show is still given back to it on the
+			// next request (mysterious_dove_96933 on Discord): one reasoning
+			// item carrying the block, its summary empty unless shown.
+			if len(reasoning) != 1 {
+				t.Fatalf("%d reasoning items, want 1\n%s", len(reasoning), body)
+			}
+			enc, _ := reasoning[0]["encrypted_content"].(string)
+			if !claudeseal.Is(enc) {
+				t.Errorf("reasoning item's encrypted_content = %q, want Claude's block sealed", enc)
+			}
+			summary, _ := reasoning[0]["summary"].([]any)
+			if shown := len(summary) > 0; shown != c.visible {
+				t.Errorf("reasoning summary = %v, want shown %v", summary, c.visible)
 			}
 		})
 	}

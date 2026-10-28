@@ -43,9 +43,20 @@ func TestBedrockProfileAnsweredByItsModelIsNoSwap(t *testing.T) {
 		{"global.anthropic.claude-haiku-4-5-20251001-v1:0", "claude-haiku-4-5-20251001", false},
 		{"global.openai.gpt-6-luna", "gpt-6-luna", false},
 		{"apac.anthropic.claude-opus-5-5", "claude-opus-5-5", false},
+		// models.dev's bedrock list has since grown makers whose models
+		// are answered by their own name as Anthropic's are: xAI's, Writer's,
+		// Moonshot's and NVIDIA's, asked for as geography. maker ids
+		{"global.xai.grok-4.7", "grok-4.7", false},
+		{"us.xai.grok-4.6", "xai.grok-4.6", false},
+		{"us.writer.palmyra-x5-v1:0", "palmyra-x5", false},
+		{"us.writer.palmyra-x5-v1:0", "writer.palmyra-x5-v1:0", false},
+		{"moonshot.kimi-k2-thinking", "kimi-k2-thinking", false},
+		{"nvidia.nemotron-nano-12b-v2", "nemotron-nano-12b-v2", false},
 		// another model is still a swap
 		{"global.anthropic.claude-opus-5-5", "claude-sonnet-5", true},
 		{"global.openai.gpt-6-sol", "gpt-6-luna", true},
+		{"global.xai.grok-4.7", "grok-4.6", true},
+		{"us.writer.palmyra-x5-v1:0", "palmyra-x4", true},
 	} {
 		if got := usage.Swapped(c.sent, c.served); got != c.swapped {
 			t.Errorf("Swapped(%q, %q) = %v, want %v", c.sent, c.served, got, c.swapped)

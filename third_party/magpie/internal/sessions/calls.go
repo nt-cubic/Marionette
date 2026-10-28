@@ -369,7 +369,9 @@ func headOf(path string) string {
 }
 
 // prepareCalls clones the continuation so a published index is never changed.
-func prepareCalls(f file, old *callFile) *callFile {
+// owned: old was read from disk for this read alone (loadKept), so its
+// calls are taken as they are rather than copied for st.
+func prepareCalls(f file, old *callFile, owned bool) *callFile {
 	// The disk shard stores final calls, not a second copy of every usage
 	// observation. Rebuild continuation only when a cold source grows.
 	if f.agent == "codex" && old != nil && (old.CX == nil || old.CX.Usage == nil) {
@@ -384,7 +386,11 @@ func prepareCalls(f file, old *callFile) *callFile {
 	head := headOf(f.path)
 	var st *callFile
 	if old != nil && !packed(f.path) && f.size >= old.Size && old.Off <= f.size && sameHead(head, old.Head, old.HeadSize) && old.ContentHash != "" && prefixHash(f.path, old.Off) == old.ContentHash {
-		st = old.clone()
+		if owned {
+			st = old.cloneState()
+		} else {
+			st = old.clone()
+		}
 	} else {
 		st = &callFile{Agent: f.agent}
 		if f.agent == "codex" {
@@ -403,10 +409,21 @@ func prepareCalls(f file, old *callFile) *callFile {
 }
 
 func (st *callFile) clone() *callFile {
-	c := *st
+	c := st.cloneState()
 	c.Calls = append([]Call(nil), st.Calls...)
-	c.Claude = st.Claude.clone()
 	c.Msgs, c.Began, c.Strs = maps.Clone(st.Msgs), maps.Clone(st.Began), maps.Clone(st.Strs)
+	return c
+}
+
+// cloneState is a copy of st's reading state that shares its calls, and
+// their Msgs, Began and Strs. The state may be a kept continuation's
+// (restoreCallContinuation), so it is copied; the calls of a file just
+// read from disk have no other reader, and copying them on every change
+// of a live session was 160 MB of eight Requests polls (of 3.9 GB) on
+// real history.
+func (st *callFile) cloneState() *callFile {
+	c := *st
+	c.Claude = st.Claude.clone()
 	if st.CX != nil {
 		r := *st.CX
 		r.Turns = maps.Clone(r.Turns)

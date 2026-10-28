@@ -3,6 +3,8 @@ package usage
 import (
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 	"unicode"
 
 	"github.com/yetone/magpie/internal/provider"
@@ -22,8 +24,11 @@ var versionTail = regexp.MustCompile(`(?:[-_@:](?:\d{4}-\d{2}-\d{2}|\d{2}-\d{2}|
 
 // vendorDot is Bedrock's region and maker before a model's name
 // (us.anthropic.claude-…), the geography of an inference profile as
-// catalog's bedrockGeos has them: global. and us-gov. among them.
-var vendorDot = regexp.MustCompile(`^(?:(?:global|us-gov|[a-z]{2,4})\.)?(?:anthropic|amazon|meta|mistral|cohere|ai21|deepseek|qwen|openai|google|moonshotai|minimax|zai)\.`)
+// catalog's bedrockGeos has them: global. and us-gov. among them. The
+// makers are those models.dev's bedrock list names ids by (xai.grok-4.7,
+// writer.palmyra-x5, moonshot.kimi-k2-thinking, nvidia.nemotron), which
+// the reply names as Anthropic's own are, without the geography.
+var vendorDot = regexp.MustCompile(`^(?:(?:global|us-gov|[a-z]{2,4})\.)?(?:anthropic|amazon|meta|mistral|cohere|ai21|deepseek|qwen|openai|google|moonshotai|moonshot|minimax|nvidia|writer|xai|zai)\.`)
 
 // contextTail is what Claude Code writes after a model's name for the size of
 // its context: claude-opus-5[1m].
@@ -63,6 +68,84 @@ func bareModel(m string) string {
 func Swapped(sent, served string) bool {
 	a, b := bareModel(sent), bareModel(served)
 	return a != "" && b != "" && squash(a) != squash(b) && a != "auto" && squash(bareModel(provider.EffortFamily(a))) != squash(b) && !GroupRouted(sent, served) && !ServingName(sent, served) && !RelayRenamed(sent, served)
+}
+
+// ListedAs reports whether served is the name the provider's own model
+// list gives the model asked for: Qoder's plugin lists its free Qwen model
+// as qfmodel, named Qwen3.8-Flash, and since 0.2.38 (plugins#412) answers
+// under that name, which was marked a swap to "actual Qwen3.8-Flash"
+// (jzing.draw on Discord, 10-27). The list is the provider's word that
+// the two are one model. It is asked only once a reply already reads as
+// swapped, and each provider's list is read at most once a minute.
+func ListedAs(prov, model, served string) bool {
+	if prov == "" || model == "" || served == "" {
+		return false
+	}
+	n := listedNames(prov)[model]
+	return n != "" && n != model && SameSpelled(n, served)
+}
+
+// listedFor is how long ListedAs keeps a provider's names.
+const listedFor = time.Minute
+
+var listed struct {
+	sync.Mutex
+	by map[string]listedEntry
+}
+
+type listedEntry struct {
+	names map[string]string
+	at    time.Time
+}
+
+// listedModels is the provider's models as magpie lists them; a test
+// replaces it.
+var listedModels = func(prov string) map[string]string {
+	p, err := provider.Find(prov)
+	if err != nil {
+		return nil
+	}
+	out := map[string]string{}
+	for _, m := range p.Available() {
+		if m.Name != "" {
+			out[m.ID] = m.Name
+		}
+	}
+	return out
+}
+
+// ListedForTest gives ListedAs these lists, provider by model id, and
+// forgets every list read before, until restore.
+func ListedForTest(lists map[string]map[string]string) (restore func()) {
+	old := listedModels
+	listedModels = func(prov string) map[string]string { return lists[prov] }
+	forgetListed()
+	return func() { listedModels = old; forgetListed() }
+}
+
+func forgetListed() {
+	listed.Lock()
+	listed.by = nil
+	listed.Unlock()
+}
+
+func listedNames(prov string) map[string]string {
+	listed.Lock()
+	e, ok := listed.by[prov]
+	listed.Unlock()
+	if ok && time.Since(e.at) < listedFor {
+		return e.names
+	}
+	// read outside the lock: a provider's list can take a moment, and
+	// another reader of another provider needn't wait on it
+	names := listedModels(prov)
+	listed.Lock()
+	if listed.by == nil {
+		listed.by = map[string]listedEntry{}
+	}
+	listed.by[prov] = listedEntry{names: names, at: time.Now()}
+	listed.Unlock()
+	return names
 }
 
 // RelayRenamed reports whether sent is served's own name with a relay's

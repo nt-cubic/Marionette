@@ -148,3 +148,38 @@ func TestCursorPluginContext(t *testing.T) {
 		t.Fatalf("fakeco gpt-4o: %d", c)
 	}
 }
+
+// Served by the plugin, a pick of Cursor's own id stays that id: the list
+// the retired built-in left in the cache doesn't fold it into a family the
+// plugin may send as is (ysm119: claude-opus-5-5-low picked, shown and
+// sent as claude-opus-5-5, "AI Model Not Found").
+func TestCursorPicksKeptWhenPluginServes(t *testing.T) {
+	if !PluginServes("cursor") {
+		t.Fatal("cursor isn't plugin-served")
+	}
+	raw := []catalog.Model{
+		{ID: "claude-opus-5-5-low", Name: "Claude Opus 5.5 1M Low"},
+		{ID: "claude-opus-5-5-medium", Name: "Claude Opus 5.5 1M"},
+		{ID: "claude-opus-5-5-high", Name: "Claude Opus 5.5 1M High"},
+		{ID: "claude-opus-5-5-low-fast", Name: "Claude Opus 5.5 1M Low Fast"},
+		{ID: "claude-opus-5-5-medium-fast", Name: "Claude Opus 5.5 1M Fast"},
+	}
+	if err := catalog.SaveLive("cursor", "", raw); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.SaveLive("cursor", "", nil) })
+	// the stale list does fold them: what the guard keeps out
+	if b, _, ok := cursorBaseIn(raw, "claude-opus-5-5-low"); !ok || b != "claude-opus-5-5" {
+		t.Fatalf("fixture doesn't fold: %q %v", b, ok)
+	}
+	picks := []string{"claude-opus-5-5-low", "claude-opus-5-5-medium"}
+	if got := cursorPicks(picks); fmt.Sprint(got) != fmt.Sprint(picks) {
+		t.Errorf("picks = %v, want %v", got, picks)
+	}
+	if b, e, ok := CursorBase("claude-opus-5-5-low"); ok {
+		t.Errorf("CursorBase = %q %q, want none", b, e)
+	}
+	if vs, ok := CursorVariants("claude-opus-5-5"); ok {
+		t.Errorf("CursorVariants = %v, want none", vs)
+	}
+}

@@ -11,9 +11,9 @@ import (
 	"time"
 )
 
-// The Codex app's Restart quits only the app the row lists as left on the
-// old list, waits for its processes to end, and opens it again; an app
-// that doesn't end is said, and not opened a second time.
+// The Codex app's Restart restarts only the app-server of the app the row
+// lists as left on the old list. It never quits the app and opens it
+// again, which opened a new window (yoshi037070, 10-27).
 func TestCodexAppReopen(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip(staleOnWindows)
@@ -29,16 +29,12 @@ func TestCodexAppReopen(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "config.toml"), []byte("model_provider = \"magpie\"\n"), 0o600)
 
 	const bundle = "/Applications/Codex.app"
-	up := true
-	wasRunning, wasQuit, wasOpen, wasWait := running, appQuit, appOpen, appQuitWait
-	t.Cleanup(func() { running, appQuit, appOpen, appQuitWait = wasRunning, wasQuit, wasOpen, wasWait })
+	wasRunning, wasQuit, wasOpen, wasRestart := running, appQuit, appOpen, restartAppServer
+	t.Cleanup(func() { running, appQuit, appOpen, restartAppServer = wasRunning, wasQuit, wasOpen, wasRestart })
 	running = func(pat string) []runningProc {
-		if !up {
-			return nil
-		}
 		ps := []runningProc{
 			{3 * time.Hour, bundle + "/Contents/MacOS/Codex"},
-			{3 * time.Hour, bundle + "/Contents/Resources/codex app-server --listen stdio://"},
+			{3 * time.Hour, bundle + "/Contents/Resources/codex app-server"},
 		}
 		var out []runningProc
 		for _, p := range ps {
@@ -49,8 +45,9 @@ func TestCodexAppReopen(t *testing.T) {
 		return out
 	}
 	var did []string
-	appQuit = func(_ context.Context, b string) error { did = append(did, "quit "+b); up = false; return nil }
+	appQuit = func(_ context.Context, b string) error { did = append(did, "quit "+b); return nil }
 	appOpen = func(_ context.Context, b string) error { did = append(did, "open "+b); return nil }
+	restartAppServer = func(_ context.Context, b string) error { did = append(did, "restart "+b); return nil }
 	a := codex(home)
 
 	if err := reopenApp(context.Background(), a, "/Applications/Other.app"); err == nil || len(did) > 0 {
@@ -59,18 +56,14 @@ func TestCodexAppReopen(t *testing.T) {
 	if err := reopenApp(context.Background(), a, bundle); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(did, ", "); got != "quit "+bundle+", open "+bundle {
-		t.Fatalf("did %q", got)
+	if got := strings.Join(did, ", "); got != "restart "+bundle {
+		t.Fatalf("did %q, want only its app-server restarted", got)
 	}
 
-	// the app asks something and stays open: said, not opened
-	up, did = true, nil
-	appQuit = func(_ context.Context, b string) error { did = append(did, "quit "+b); return nil }
-	appQuitWait = 300 * time.Millisecond
-	if err := reopenApp(context.Background(), a, bundle); !errors.Is(err, ErrCodexAppStillOpen) {
-		t.Fatalf("still open: %v", err)
-	}
-	if got := strings.Join(did, ", "); got != "quit "+bundle {
-		t.Fatalf("did %q", got)
+	// a restart that fails is said
+	did = nil
+	restartAppServer = func(context.Context, string) error { return errors.New("didn't end") }
+	if err := reopenApp(context.Background(), a, bundle); err == nil || len(did) > 0 {
+		t.Fatalf("failed restart: %v, did %v", err, did)
 	}
 }

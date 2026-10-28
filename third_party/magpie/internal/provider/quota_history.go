@@ -172,9 +172,12 @@ func newCycle(a, b QuotaPoint) bool {
 }
 
 // pointOf is what w, read at at, says, if it is something to draw; a
-// reset told in seconds counts from now, when the windows were made.
+// reset told in seconds counts from now, when the windows were made. A
+// pool's window is drawn though it is aside for routing: it is the row
+// the card shows, where its models' own windows are not (max2020 on
+// Discord: an Antigravity card had no curve and no "runs out" line).
 func pointOf(w QuotaWindow, at, now time.Time) (QuotaPoint, bool) {
-	if w.Unlimited || w.Aside || w.Family != "" || w.Name == "" || math.IsNaN(w.Used) {
+	if w.Unlimited || w.Aside && !w.PoolWindow() || w.Family != "" || w.Name == "" || math.IsNaN(w.Used) {
 		return QuotaPoint{}, false
 	}
 	p := QuotaPoint{At: at.UTC().Truncate(time.Second), Left: math.Round(max(0, min(100, 100-w.Used))*100) / 100}
@@ -296,10 +299,7 @@ func noteQuotaHistory(qs []SubscriptionQuota, now time.Time) {
 			if h[key] == nil {
 				h[key] = map[string][]QuotaPoint{}
 			}
-			name := w.Name
-			if w.Pool != "" { // Antigravity's pools each have a 5-hour window
-				name = w.Pool + " · " + w.Name
-			}
+			name := w.LineName() // Antigravity's pools each have a 5-hour window
 			before := h[key][name]
 			k := len(before)
 			var last QuotaPoint

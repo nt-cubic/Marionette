@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -131,5 +132,55 @@ func TestDetectWritesItsRequestsDown(t *testing.T) {
 	res.Body.Close()
 	if len(rows()) != before {
 		t.Fatal("an agent's request was written down as magpie's own")
+	}
+}
+
+// A model's failed test is written down with why it failed: the vendor's
+// error for a refusal, and a stream's error after its 200, not a bare
+// status or a 200 that reads as answered (ysm119 on Discord: a model "didn't
+// answer", and the request log had no error to show).
+func TestFailedModelTestIsWrittenWithItsError(t *testing.T) {
+	probeHome(t)
+	rows := probeRows(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		switch {
+		case strings.Contains(string(b), "refused-model"):
+			rw.WriteHeader(http.StatusBadRequest)
+			_, _ = rw.Write([]byte(`{"error":{"message":"AI Model Not Found: refused-model"}}`))
+		case strings.Contains(string(b), "stream-fails"):
+			rw.Header().Set("Content-Type", "text/event-stream")
+			_, _ = rw.Write([]byte("data: {\"error\":{\"message\":\"the stream broke off\"}}\n\n"))
+		default:
+			rw.Header().Set("Content-Type", "text/event-stream")
+			_, _ = rw.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n"))
+		}
+	}))
+	defer srv.Close()
+	p := Provider{ID: "relay", Name: "Relay", Chat: srv.URL + "/v1", Key: "sk", KeyProtocol: Chat,
+		Models: []string{"refused-model", "stream-fails", "fine"}, Account: &Account{Stream: true}} // a plugin's: streamed
+	res := p.TestModels(context.Background(), []string{"refused-model", "stream-fails", "fine"})
+	errs := map[string]string{}
+	for _, r := range res {
+		errs[r.Model] = r.Error
+	}
+	byModel := map[string]probelog.Row{}
+	for _, r := range rows() {
+		if r.Kind == probelog.KindTest {
+			if _, twice := byModel[r.Model]; twice {
+				t.Errorf("%s written twice", r.Model)
+			}
+			byModel[r.Model] = r
+		}
+	}
+	for model, want := range map[string]string{"refused-model": "AI Model Not Found", "stream-fails": "the stream broke off", "fine": ""} {
+		r, ok := byModel[model]
+		if !ok {
+			t.Errorf("%s: no row in %+v", model, rows())
+			continue
+		}
+		if want == "" && r.Error != "" || !strings.Contains(r.Error, want) || r.Error != errs[model] {
+			t.Errorf("%s: row error %q, the test's %q, want %q", model, r.Error, errs[model], want)
+		}
 	}
 }

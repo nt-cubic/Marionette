@@ -11,6 +11,7 @@ func Forget() {
 	mu.Lock()
 	values = map[string]string{}
 	shapes = map[string]string{}
+	scores = map[string]float64{}
 	reindexKnown()
 	mu.Unlock()
 	resetSent()

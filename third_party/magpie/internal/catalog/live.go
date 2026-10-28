@@ -555,8 +555,16 @@ func fetchPage(ctx context.Context, url, key string, anthropic bool, headers map
 		return nil, false, "", fmt.Errorf("%s: not a model list", url)
 	}
 	rows := v.Data
+	// each row as it was sent too, for one that is a Codex catalog entry
+	// (Model.Codex): rows decoded, so these decode alike
+	var raw struct {
+		Data   []json.RawMessage `json:"data"`
+		Models []json.RawMessage `json:"models"`
+	}
+	json.Unmarshal(b, &raw)
+	raws := raw.Data
 	if len(rows) == 0 {
-		rows = v.Models
+		rows, raws = v.Models, raw.Models
 	}
 	// A list that says it has more is a page of the vendor's catalog, not
 	// the catalog: a model the user picked that lives on a later page is
@@ -569,10 +577,17 @@ func fetchPage(ctx context.Context, url, key string, anthropic bool, headers map
 	// Anthropic's and OpenAI's /v1/models both page with has_more and
 	// last_id.
 	var out []Model
-	for _, r := range rows {
+	for i, r := range rows {
 		id := r.ID
 		if id == "" {
 			id = r.Name
+		}
+		var codex json.RawMessage
+		if i < len(raws) && CodexEntry(raws[i]) {
+			codex = raws[i]
+			if id == "" {
+				id = r.Slug // Codex's catalog names a model by its slug alone
+			}
 		}
 		if id == "" {
 			continue
@@ -628,6 +643,9 @@ func fetchPage(ctx context.Context, url, key string, anthropic bool, headers map
 		var pr *Price
 		if len(r.Price) > 0 && json.Unmarshal(r.Price, &pr) == nil && pr != nil && pr.sane() {
 			m.Price = pr
+		}
+		if codex != nil {
+			codexFacts(&m, r, codex)
 		}
 		out = append(out, m)
 	}
@@ -703,6 +721,37 @@ type liveModel struct {
 	// the protocol family PipeLLM routes the model by: openai, anthropic
 	// or gemini
 	TypeTarget string `json:"type_target"`
+	// a Codex catalog entry's (CodexEntry): its id, its window and the
+	// most it may be raised to, and what it takes. any, as an odd value
+	// mustn't lose the whole list
+	Slug      string `json:"slug"`
+	Window    any    `json:"context_window"`
+	MaxWindow any    `json:"max_context_window"`
+	Inputs    any    `json:"input_modalities"`
+}
+
+// codexFacts reads what a Codex catalog entry says of its model into m:
+// the window, the most it may be raised to and whether it takes images,
+// where the row says nothing else of them. The entry itself is kept
+// whole in m.Codex.
+func codexFacts(m *Model, r liveModel, raw json.RawMessage) {
+	m.Codex = raw
+	if n, ok := r.Window.(float64); ok && n > 0 && m.Context == 0 {
+		m.Context = int(n)
+	}
+	if n, ok := r.MaxWindow.(float64); ok && int(n) > m.Context {
+		m.MaxContext = int(n)
+	}
+	if xs, ok := r.Inputs.([]any); ok && m.InputModalities == nil {
+		in := []string{}
+		for _, x := range xs {
+			if s, ok := x.(string); ok {
+				in = append(in, s)
+			}
+		}
+		m.InputModalities, m.ImageInput = in, imageInput(in)
+		m.Images = *m.ImageInput
+	}
 }
 
 // tiersOf are the ids of a list's service_tiers, as Codex's catalog

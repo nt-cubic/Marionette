@@ -192,21 +192,7 @@ func openCursorStore(path string) (db *sql.DB, closeDB func(), err error) {
 // (SQLite would make its -shm file), so a reader that needs it read
 // whether the app runs or not opens it this way. closeDB removes the copy.
 func OpenUntouched(path string) (db *sql.DB, closeDB func(), err error) {
-	open := func(p, query string) (*sql.DB, error) {
-		u := url.URL{Scheme: "file", Path: filepath.ToSlash(p), RawQuery: query}
-		if len(u.Path) >= 2 && u.Path[1] == ':' {
-			u.Path = "/" + u.Path
-		}
-		db, err := sql.Open("sqlite", u.String())
-		if err != nil {
-			return nil, err
-		}
-		if err := db.Ping(); err != nil {
-			db.Close()
-			return nil, err
-		}
-		return db, nil
-	}
+	open := openSQLite
 	if fi, err := os.Stat(path + "-wal"); err != nil || fi.Size() == 0 {
 		db, err := open(path, "immutable=1")
 		if err != nil {
@@ -222,6 +208,23 @@ func OpenUntouched(path string) (db *sql.DB, closeDB func(), err error) {
 		return nil, nil, err
 	}
 	return db, func() { db.Close(); os.RemoveAll(tmp) }, nil
+}
+
+// openSQLite opens the SQLite database at p, with query as its URI's.
+func openSQLite(p, query string) (*sql.DB, error) {
+	u := url.URL{Scheme: "file", Path: filepath.ToSlash(p), RawQuery: query}
+	if len(u.Path) >= 2 && u.Path[1] == ':' {
+		u.Path = "/" + u.Path
+	}
+	db, err := sql.Open("sqlite", u.String())
+	if err != nil {
+		return nil, err
+	}
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return db, nil
 }
 
 func copyFile(from, to string) error {

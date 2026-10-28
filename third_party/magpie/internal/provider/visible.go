@@ -80,7 +80,7 @@ func CatalogFor(agent string) (shown, hidden []Entry) {
 // ListedFor is the catalog agent's visibility gives it, the models it may
 // pick to show or not among, and what the visibility keeps from it.
 func ListedFor(agent string) (listed, kept []Entry) {
-	all := Catalog()
+	all := catalogOf(agent)
 	names, ok := VisibleTo(agent)
 	if !ok {
 		return InOrder(agent, all), nil

@@ -59,7 +59,7 @@ func TestMoreKinds(t *testing.T) {
 		{in: `C:\Users\Rina Kato\Desktop\a.txt`, gone: []find{{"Rina Kato", "USERNAME"}}, kept: []string{`C:\Users\`, `\Desktop\a.txt`}},
 		{in: `"path":"C:\\Users\\rkato\\proj"`, gone: []find{{"rkato", "USERNAME"}}},
 		{in: "file:///Users/rinak/notes.md", gone: []find{{"rinak", "USERNAME"}}},
-		{in: "see /Users/rinak.", gone: []find{{"rinak", "USERNAME"}}, kept: []string{"}}."}},
+		{in: "see /Users/rinak.", gone: []find{{"rinak", "USERNAME"}}, kept: []string{standInOf("rinak") + "."}},
 		// user@host
 		{in: "rinak@rina-mbp:~/src$ ls", gone: []find{{"rinak", "USERNAME"}, {"rina-mbp", "HOSTNAME"}}, kept: []string{":~/src$ ls"}},
 		{in: "[deploy@build-07 ~]$ make", gone: []find{{"deploy", "USERNAME"}, {"build-07", "HOSTNAME"}}},
@@ -95,7 +95,11 @@ func TestMoreKinds(t *testing.T) {
 			if strings.Contains(unmarked(out), g.value) {
 				t.Errorf("%q: %q still in %q", c.in, g.value, out)
 			}
-			if p := placeholder(g.kind, g.value); !strings.Contains(out, p) {
+			p := placeholder(g.kind, g.value)
+			if g.kind == "USERNAME" {
+				p = standInOf(g.value) // a made-up name (shape.go)
+			}
+			if !strings.Contains(out, p) {
 				t.Errorf("%q: no %s placeholder for %q in %q", c.in, g.kind, g.value, out)
 			}
 		}
@@ -245,9 +249,9 @@ func TestMoreKindsKnown(t *testing.T) {
 	o := allKinds()
 	a, _ := Mask("cwd /Users/rkatodev/src", o)
 	b, _ := Mask("rkatodev@rina-mbp:~$ ls", o)
-	p := placeholder("USERNAME", "rkatodev")
+	p := standInOf("rkatodev")
 	if !strings.Contains(a, p) || !strings.Contains(b, p) {
-		t.Fatalf("not one placeholder: %q %q", a, b)
+		t.Fatalf("not one made-up name: %q %q", a, b)
 	}
 	reply := "Your account rkatodev has no access to 34.117.59.82."
 	Mask("connect 34.117.59.82", o)

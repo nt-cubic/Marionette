@@ -92,7 +92,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const errors = [];
       const page = await (await browser.newContext({ viewport: { width: query.includes("panel") ? 420 : 900, height: 560 }, reducedMotion: "reduce" })).newPage();
       page.setDefaultTimeout(5000);
-      page.on("pageerror", (e) => errors.push(e.message));
+      // WebKit's notice when a layout outruns its observers, not a fault
+      page.on("pageerror", (e) => { if (!/^ResizeObserver loop completed with undelivered notifications/.test(e.message)) errors.push(e.message); });
       await page.route("**/*", server(lang, ctl));
       await watchSettingsReads(page);
       await page.goto("http://magpie.test/" + query);

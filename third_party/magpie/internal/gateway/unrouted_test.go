@@ -461,3 +461,61 @@ func TestUnroutedMostLeavesOutMasking(t *testing.T) {
 		t.Fatal("a request held after masking was never answered")
 	}
 }
+
+// A request another magpie passed on is shown, while it waits to be
+// routed, as the agent that made it there (callerFrom), read once as it
+// comes: the show's timer never reads its headers, which withCaller and
+// decodedBody change meanwhile (#3956's ubuntu race run).
+func TestUnroutedShownAsItsCaller(t *testing.T) {
+	unroutedLimits(t, 20*time.Millisecond, time.Hour)
+	s, _ := slowEyed(t, 0)
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { pw.Close() })
+	got := make(chan unroutedReply, 1)
+	go func() {
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", pr)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", "magpie/0.1.0")
+		req.Header.Set(AgentHeader, "pi")
+		resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+		if err != nil {
+			got <- unroutedReply{err: err}
+			return
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		got <- unroutedReply{resp.StatusCode, string(b), nil}
+	}()
+	if _, err := pw.Write([]byte(unroutedHi[:10])); err != nil {
+		t.Fatal(err)
+	}
+	u := watchedHold(t, s)
+	var agent string
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		u.f.mu.Lock()
+		if u.shown != nil {
+			agent = u.shown.Agent
+		}
+		shown := u.shown != nil
+		u.f.mu.Unlock()
+		if shown {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the held request was never shown")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if agent != "pi" {
+		t.Errorf("shown as %q while held, want pi, the agent another magpie passed it on for", agent)
+	}
+	if _, err := pw.Write([]byte(unroutedHi[10:])); err != nil {
+		t.Fatal(err)
+	}
+	pw.Close()
+	if r := <-got; r.err != nil || r.code != http.StatusOK {
+		t.Fatalf("answered %d %q %v", r.code, r.body, r.err)
+	}
+}

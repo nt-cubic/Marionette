@@ -9,7 +9,8 @@
 # -Tag v0.1.xxxx or env MAGPIE_TAG. build-portable.bat calls this unless
 # SKIP_MAGPIE_IMPORT=1.
 #
-# Kept: main.go, go.mod, go.sum, internal/, plugins/, LICENSE, README.md.
+# Kept: main.go, go.mod, go.sum, internal/, plugins/, LICENSE, README.md,
+#       THIRD_PARTY_NOTICES (embedded by main.go; optional so old tags still pin).
 # Dropped: site/ (marketing, ~59MB), build/ (per-OS packaging assets),
 #          .github/, docs/ — none of them are needed by the nogui build.
 #
@@ -60,6 +61,18 @@ foreach ($item in @('main.go', 'go.mod', 'go.sum', 'internal', 'plugins', 'LICEN
     $src = Join-Path $tmp $item
     if (-not (Test-Path $src)) { throw "upstream is missing expected item: $item" }
     Copy-Item -Recurse -Force $src $dest
+}
+
+# THIRD_PARTY_NOTICES: main.go carries it with `//go:embed` (upstream >= the
+# release that added in-binary third-party notices, v0.1.18xx). Without it the
+# nogui build dies with `pattern THIRD_PARTY_NOTICES: no matching files found`.
+# Optional on purpose: older tags have neither the file nor the embed directive,
+# so pinning one must keep working.
+$notices = Join-Path $tmp 'THIRD_PARTY_NOTICES'
+if (Test-Path $notices) {
+    Copy-Item -Force $notices $dest
+} else {
+    Write-Output "[import] note: $Tag has no THIRD_PARTY_NOTICES (older upstream does not embed it)"
 }
 
 # Version stamp consumed by the portable build (engine-embedded/VERSION).

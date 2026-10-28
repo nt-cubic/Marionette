@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"net/http"
 	"path"
 	"strings"
@@ -45,4 +46,48 @@ func ClientPath(p string) bool {
 		}
 	}
 	return false
+}
+
+// PagePortHeader marks a request `magpie web`'s page port handed to the
+// gateway (FromPagePort). The page's port is the one put behind a proxy
+// or a forward, and a raw TCP forward (frp's tcp, ssh -R, socat) or a
+// proxy that adds no forwarding header reaches it from loopback with
+// nothing to tell it from an agent here. So no request through it is
+// local: each is judged as one from another machine, answered only while
+// magpie is shared and with an enabled gateway key, whatever peer, Host
+// or browser marks it has, and MAGPIE_TRUST_PROXY doesn't change that
+// (reported privately by Coffemon). Agents here call the gateway's own
+// port, which needs no key from loopback, as before the page's port
+// answered client routes. The header only ever takes a request's
+// locality away, so one a client sends itself costs nobody else; lanGuard
+// moves it into the request's context, so it never goes on upstream.
+const PagePortHeader = "X-Magpie-Page-Port"
+
+// pagePort is the context key of a request the page's port handed over.
+type pagePort struct{}
+
+// FromPagePort is r marked as handed over by the page's port: for the
+// gateway this process serves (Front), or the header toGateway passes on.
+func FromPagePort(r *http.Request) *http.Request {
+	r = r.Clone(r.Context())
+	r.Header.Set(PagePortHeader, "1")
+	return r
+}
+
+// viaPagePort: r came through `magpie web`'s page port (FromPagePort).
+func viaPagePort(r *http.Request) bool {
+	ok, _ := r.Context().Value(pagePort{}).(bool)
+	return ok || r.Header.Get(PagePortHeader) != ""
+}
+
+// takePagePort moves the page port's mark from r's headers into its
+// context, so nothing passes the header on to a vendor.
+func takePagePort(r *http.Request) *http.Request {
+	if r.Header.Get(PagePortHeader) == "" {
+		return r
+	}
+	r = r.WithContext(context.WithValue(r.Context(), pagePort{}, true))
+	r.Header = r.Header.Clone()
+	r.Header.Del(PagePortHeader)
+	return r
 }

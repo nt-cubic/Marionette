@@ -70,6 +70,30 @@ func SetSink(id string, sink bool) error {
 	return Save(*p)
 }
 
+// SetCapStop has a subscription answer 429 while every account is held at
+// its usage cap, rather than go on to its fallbacks (Provider.CapStop), or
+// go on to them again.
+func SetCapStop(id string, on bool) error {
+	p, err := Find(id)
+	if err != nil {
+		return err
+	}
+	p.CapStop = on
+	return Save(*p)
+}
+
+// SetCapCareful has a subscription's capped accounts read again near
+// their cap and held while their usage can't be told
+// (Provider.CapCareful), or go by the last reading again.
+func SetCapCareful(id string, on bool) error {
+	p, err := Find(id)
+	if err != nil {
+		return err
+	}
+	p.CapCareful = on
+	return Save(*p)
+}
+
 // SetKeepLogin keeps Codex or Claude Code signed in to the account the
 // user made first (Provider.KeepLogin), or lets magpie move it on again.
 // Either way it is no longer kept on one of the user's choosing
@@ -155,6 +179,9 @@ var usedCache struct {
 	// agent; that reading was asked before an account said it was out,
 	// so what it tells is kept only until the next ask reads again
 	stale map[string]bool
+	// read: when each account's allowance was last read well, and whether
+	// the last try failed, by agent/user (UsageRead)
+	read map[string]readState
 }
 
 // firstWait is how long a request waits for an agent's allowances the
@@ -189,6 +216,9 @@ type Limit struct {
 	// Credits: the account goes on past this window on its credits
 	// (QuotaWindow.Credits)
 	Credits bool
+	// Balance is how much is left in Unit, a wallet's reading with no
+	// share (QuotaWindow.Balance); nil when not told
+	Balance *float64
 }
 
 // OnCredits says whether the account goes on past its allowance on its
@@ -366,6 +396,41 @@ func (a Allowance) Renewal(model string, now time.Time) []time.Time {
 	return out
 }
 
+// Left is how much a wallet that counts model has left, in unit
+// (Limit.Balance): the least of its windows that tell a balance. ok is
+// false when none does. Only balances in the same unit of one provider are
+// compared (routes.Seat.Left).
+func (a Allowance) Left(model string) (left float64, unit string, ok bool) {
+	model = strings.ToLower(model)
+	for _, l := range a {
+		if l.Balance == nil || !l.applies(model) {
+			continue
+		}
+		if !ok || *l.Balance < left {
+			left, unit, ok = *l.Balance, l.Unit, true
+		}
+	}
+	return left, unit, ok
+}
+
+// Lapse is the soonest moment credits left in a window that counts model
+// are lost (Limit.RunsOut), zero when none is told or all have passed.
+// Smart goes by it when the renewals tie: two WorkBuddy free accounts
+// renew together, at the end of the month every one shares, but the
+// credits one was given lapse before the other's, and spent first they
+// aren't lost (zhaocai_83020 on Discord). Renewal already takes it when it
+// comes before the window renews; this tells apart those that come after.
+func (a Allowance) Lapse(model string, now time.Time) time.Time {
+	model = strings.ToLower(model)
+	var t time.Time
+	for _, l := range a {
+		if l.applies(model) && l.RunsOut.After(now) && (t.IsZero() || l.RunsOut.Before(t)) {
+			t = l.RunsOut
+		}
+	}
+	return t
+}
+
 // Full is when an account used up for model can take it again: the last
 // reset of its windows that are full, zero when none is or it isn't known.
 func (a Allowance) Full(model string, share float64, now time.Time) time.Time {
@@ -517,7 +582,7 @@ func Allowances(agent string) map[string]Allowance {
 			defer cancel()
 			share := renewalShare(agent) // read before the lock: it reads providers.json
 			all := map[string]Allowance{}
-			readings, readAt := loginUsageAt(ctx, agent)
+			readings, readAt, states := loginUsageAt(ctx, agent)
 			for user, q := range readings {
 				if q.Error != "" || len(q.Windows) == 0 {
 					continue
@@ -535,6 +600,16 @@ func Allowances(agent string) map[string]Allowance {
 			at := readAt
 			if c.seen == nil {
 				c.seen = map[string]reading{}
+			}
+			if c.read == nil {
+				c.read = map[string]readState{}
+			}
+			for user, st := range states {
+				key := agent + "/" + strings.ToLower(user)
+				if was := c.read[key].at; st.failed && was.After(st.at) {
+					st.at = was // the last good one's time stands
+				}
+				c.read[key] = st
 			}
 			var renewed []string
 			for user, a := range all {
@@ -584,6 +659,50 @@ func Allowances(agent string) map[string]Allowance {
 		return lastAllowances(agent)
 	}
 	return m
+}
+
+// UsageRead is when user's allowance under agent was last read well, and
+// whether the last try to read it failed (or was held back); ok is false
+// when it hasn't been tried since magpie started. A careful provider holds
+// an account whose reading is too old or failed (Provider.CapCareful).
+func UsageRead(agent, user string) (at time.Time, failed, ok bool) {
+	c := &usedCache
+	c.Lock()
+	defer c.Unlock()
+	st, ok := c.read[agent+"/"+strings.ToLower(user)]
+	return st.at, st.failed, ok
+}
+
+// ReadUsageNow has agent's accounts users read again now, past the
+// minute their readings are kept and though allowances are read only when
+// asked, and waits, till ctx ends, for a reading begun after it asked. It
+// says whether one came back (UsageRead then tells how it went).
+func ReadUsageNow(ctx context.Context, agent string, users ...string) bool {
+	for _, u := range users {
+		StaleAllowance(agent, u)
+	}
+	c := &usedCache
+	for range 3 {
+		Allowances(agent)
+		c.Lock()
+		done, back := c.loading[agent], !c.at[agent].IsZero()
+		c.Unlock()
+		if done == nil {
+			return back // read already, the first ask waiting for it; or nothing to read it with
+		}
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return false
+		}
+		c.Lock()
+		back = !c.at[agent].IsZero() // zero: asked before it went stale
+		c.Unlock()
+		if back {
+			return true
+		}
+	}
+	return false
 }
 
 // OnRenewed has f told when an account's usage windows were started again
@@ -784,6 +903,15 @@ func allowanceOf(ws []QuotaWindow, now time.Time) Allowance {
 		}
 		if w.RunsOutAt != nil {
 			l.RunsOut = *w.RunsOutAt
+		}
+		if w.Balance != nil {
+			// a wallet is known by its balance, with no share invented:
+			// one with nothing left is used up, as the vendor refuses it
+			b := *w.Balance
+			l.Balance = &b
+			if b <= 0 {
+				l.Used = max(l.Used, 100)
+			}
 		}
 		a = append(a, l)
 	}

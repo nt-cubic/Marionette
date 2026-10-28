@@ -1834,8 +1834,8 @@ const shown = (v, n) => (typeof v === "string" ? v.trim().slice(0, n) : "")
 // own field (#2038, Vocllum): auth.options, each {key, label, description?,
 // default?, confirm?}. magpie shows each as an Off/On switch in the
 // provider's editor and keeps what the user sets; the plugin reads it with
-// input.magpie.option(provider, key). A switch is only kept and handed
-// over, nothing is run when it changes. Keys are [a-z0-9_-], 1–40 long,
+// input.magpie.option(provider, key). A switch is kept and handed over,
+// and the models listed again (one may go by it); nothing else is run. Keys are [a-z0-9_-], 1–40 long,
 // the first of a key kept; at most MAX_OPTIONS; one without a key or a
 // label is left out.
 const MAX_OPTIONS = 16
@@ -2381,7 +2381,11 @@ async function load({ provider, account, proxy }) {
 //       count as one), aside? (using it up doesn't
 //       stop the account), runsOutAt? (ISO or ms: when the soonest
 //       credits left in it are lost, apart from its reset, as WorkBuddy's
-//       packages end) / runsOut? (how many are lost then) }],
+//       packages end) / runsOut? (how many are lost then), balance?
+//       (how much is left, in unit, of a prepaid wallet with no total:
+//       sent without used, it is no share, yet routing knows the account
+//       and puts the one with the most left first among the provider's
+//       accounts in the same unit, #3950) }],
 //     signIn?: "expired" | "kept" | "renewed" (what the read means for the
 //       account's sign-in, as a model request's X-Magpie-Sign-In says;
 //       without it an error saying to sign in again marks the account and
@@ -2442,6 +2446,7 @@ async function usageOf(provider, account) {
       aside: !!w?.aside,
       runsOutAt: when(w?.runsOutAt),
       runsOut: Math.max(0, num(w?.runsOut)),
+      balance: typeof w?.balance === "number" && isFinite(w.balance) ? Math.max(0, w.balance) : null, // null: not said
     })),
   }
 }
@@ -2456,10 +2461,13 @@ async function usageOf(provider, account) {
 //       "ineligible" (the account can't take part) | "inactive" (no
 //       check-in running) | "captcha" (the vendor asks for a captcha: the
 //       user checks in in its own app; never solved) | "failed",
-//     credit? (what it gave), streak? (days in a row), message?
+//     credit? (what it gave), streak? (days in a row), message?,
+//     until? (when the vendor's own day turns: an RFC 3339 time or epoch
+//       milliseconds; Qoder's daily credits open at 10:00 UTC+8)
 //   }
 // magpie asks once a Beijing day per account while the user has it on, and
-// again later that day after a failure; a hook that throws is a failure.
+// again later that day after a failure, or at until; a hook that throws is
+// a failure.
 // Run in the account's scope, a token it renews is saved to that account.
 async function checkin({ provider, account, proxy }) {
   return via.run(proxy ?? "", () => checkinOf(provider, account))
@@ -2477,11 +2485,14 @@ async function checkinOf(provider, account) {
   const r = (await inScope(provider, key, () => a.checkin(async () => authCopy(key), JSON.parse(JSON.stringify(p))))) ?? {}
   const num = (v) => (typeof v === "number" && isFinite(v) ? Math.max(0, v) : 0)
   const message = typeof r.message === "string" ? r.message : ""
+  // a time that doesn't read is not told
+  const t = typeof r.until === "number" ? r.until : typeof r.until === "string" ? Date.parse(r.until) : NaN
+  const until = Number.isFinite(t) && t > 0 ? new Date(t).toISOString() : ""
   if (!checkinOutcomes.includes(r.outcome)) {
     const said = r.outcome === undefined || r.outcome === null ? "no outcome" : JSON.stringify(r.outcome)
-    return { outcome: "failed", credit: 0, streak: 0, message: message ? `the plugin answered ${said}: ${message}` : `the plugin answered ${said}` }
+    return { outcome: "failed", credit: 0, streak: 0, message: message ? `the plugin answered ${said}: ${message}` : `the plugin answered ${said}`, until }
   }
-  return { outcome: r.outcome, credit: num(r.credit), streak: Math.round(num(r.streak)), message }
+  return { outcome: r.outcome, credit: num(r.credit), streak: Math.round(num(r.streak)), message, until }
 }
 
 // sdkHeaders are what the AI SDK package the model is on sends of the key.

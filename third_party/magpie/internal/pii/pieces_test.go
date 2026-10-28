@@ -80,17 +80,21 @@ func TestPiecesCut(t *testing.T) {
 
 // Spans from overlapping pieces: one found twice is one, one cut by a
 // piece's end and whole in the next is the whole, labels kept apart where
-// spans only touch, and of one label joined.
+// spans only touch, and of one label joined, as sure as the surer.
 func TestMergeAcrossPieces(t *testing.T) {
 	email := func(s, e int) redact.Found { return redact.Found{Start: s, End: e, Label: "private_email"} }
+	sure := email(209, 222)
+	sure.Score = .99
 	got := merge([]redact.Found{
 		person(100, 105), person(10, 15), person(100, 105), // twice, from two pieces
 		person(200, 205), person(200, 211), // cut by a piece's end, whole in the next
-		email(209, 222),                   // runs into the name: one, the longer's label
+		sure,                              // runs into the name: one, the longer's label
 		person(300, 305), email(305, 310), // touching, two labels
 		person(400, 405), person(405, 410), // touching, one label
 	})
-	want := []redact.Found{person(10, 15), person(100, 105), email(200, 222), person(300, 305), email(305, 310), person(400, 410)}
+	joined := email(200, 222)
+	joined.Score = sure.Score
+	want := []redact.Found{person(10, 15), person(100, 105), joined, person(300, 305), email(305, 310), person(400, 410)}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("merge =\n%v\nwant\n%v", got, want)
 	}

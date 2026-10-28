@@ -16,6 +16,12 @@ func wbCard(provider, user string, used, total float64) SubscriptionQuota {
 		Windows: []QuotaWindow{{Name: "Credits", Used: 100 * used / total, Display: compactNumber(used) + " / " + compactNumber(total)}}}
 }
 
+// shareCard is a card whose one window tells a share alone (Cursor's,
+// Grok's): no count, nothing to count by the day.
+func shareCard(provider, user string, used float64) SubscriptionQuota {
+	return SubscriptionQuota{Provider: provider, User: user, Windows: []QuotaWindow{{Name: "Cursor Models", Used: used}}}
+}
+
 func dailyOf(t *testing.T, qs []SubscriptionQuota, user string) *DailyCredits {
 	t.Helper()
 	for _, q := range qs {
@@ -53,7 +59,8 @@ func TestDailyCredits(t *testing.T) {
 		noteDailyCredits([]SubscriptionQuota{wbCard("workbuddy", "李雷", s.used, s.tot)}, s.at)
 	}
 	// another account, the AI build's through its plugin; an error and a
-	// card kept from before count nothing; another vendor isn't counted
+	// card kept from before count nothing; a window telling a share alone
+	// isn't counted
 	noteDailyCredits([]SubscriptionQuota{wbCard("workbuddy-ai", "138****5678", 10, 3000)}, day(4, 9))
 	noteDailyCredits([]SubscriptionQuota{wbCard("workbuddy-ai", "138****5678", 15, 3000)}, day(4, 10))
 	errd := wbCard("workbuddy-ai", "138****5678", 999, 3000)
@@ -61,21 +68,21 @@ func TestDailyCredits(t *testing.T) {
 	asOf := day(4, 11)
 	kept := wbCard("workbuddy-ai", "138****5678", 900, 3000)
 	kept.AsOf = &asOf
-	noteDailyCredits([]SubscriptionQuota{errd, kept, wbCard("cursor", "x", 5, 10)}, day(4, 12))
+	noteDailyCredits([]SubscriptionQuota{errd, kept, shareCard("cursor", "x", 50)}, day(4, 12))
 	noteDailyCredits([]SubscriptionQuota{wbCard("workbuddy-ai", "138****5678", 18, 3000)}, day(4, 13))
 
-	cards := []SubscriptionQuota{wbCard("workbuddy", "李雷", 70, 5600), wbCard("workbuddy-ai", "138****5678", 18, 3000), wbCard("cursor", "x", 5, 10)}
+	cards := []SubscriptionQuota{wbCard("workbuddy", "李雷", 70, 5600), wbCard("workbuddy-ai", "138****5678", 18, 3000), shareCard("cursor", "x", 50)}
 	got := withDailyCredits(cards, day(5, 13))
-	want := &DailyCredits{Since: "2026-10-01", Days: []DayCredits{{"2026-10-01", 30.25}, {"2026-10-02", 30}, {"2026-10-03", 6}, {"2026-10-05", 60}}}
+	want := &DailyCredits{Since: "2026-10-01", Days: []DayCredits{{"2026-10-01", 30.25}, {"2026-10-02", 30}, {"2026-10-03", 6}, {"2026-10-05", 60}}, Window: "Credits"}
 	if d := dailyOf(t, got, "李雷"); !reflect.DeepEqual(d, want) {
 		t.Errorf("WorkBuddy's days: %+v, want %+v", d, want)
 	}
-	want = &DailyCredits{Since: "2026-10-04", Days: []DayCredits{{"2026-10-04", 8}}}
+	want = &DailyCredits{Since: "2026-10-04", Days: []DayCredits{{"2026-10-04", 8}}, Window: "Credits"}
 	if d := dailyOf(t, got, "138****5678"); !reflect.DeepEqual(d, want) {
 		t.Errorf("WorkBuddy AI's days: %+v, want %+v", d, want)
 	}
 	if d := dailyOf(t, got, "x"); d != nil {
-		t.Errorf("another vendor's card has days: %+v", d)
+		t.Errorf("a share alone has days: %+v", d)
 	}
 	if cards[0].Daily != nil {
 		t.Error("the cards given were changed")

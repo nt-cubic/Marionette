@@ -249,6 +249,7 @@ func lanGuard(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		r = takePagePort(r)
 		// a WSL distro's agent, at the address Windows has on its network
 		// (wsl.go), is one of this computer's
 		if fromWSL(r) {
@@ -266,6 +267,11 @@ func lanGuard(next http.Handler) http.Handler {
 			return
 		}
 		if remote && !remoteKeyed() {
+			if viaPagePort(r) {
+				log.Printf("refused %s %s on magpie web's page port: magpie isn't shared", r.Method, r.URL.Path)
+				http.Error(w, "this request came to magpie web's page port, which answers the gateway's routes as from another machine (the port may sit behind a proxy or a forward): only while Settings → Network and sharing → Share on local network is on, with an enabled gateway key (Gateway → Gateway keys) sent as Authorization: Bearer <key> or x-api-key. An agent on this computer calls the gateway's own address ("+URL()+") instead, which needs no key", http.StatusForbidden)
+				return
+			}
 			if proxied(r) {
 				log.Printf("refused %s %s through a proxy or tunnel: magpie isn't shared", r.Method, r.URL.Path)
 				http.Error(w, "this request came through a proxy or tunnel (it carries a forwarding header such as X-Forwarded-For or Cf-Connecting-IP), so magpie answers it as one from another machine: only while Settings → Network and sharing → Share on local network is on, with an enabled gateway key (Gateway → Gateway keys) sent as Authorization: Bearer <key> or x-api-key", http.StatusForbidden)
@@ -555,14 +561,15 @@ func refusedKey(key string) string {
 }
 
 // local is a request from this computer: one that reached the gateway on
-// loopback and wasn't passed on by a proxy or tunnel running here.
+// loopback, wasn't passed on by a proxy or tunnel running here, and didn't
+// come through `magpie web`'s page port (viaPagePort).
 func local(r *http.Request) bool {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return false
 	}
 	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback() && !proxied(r)
+	return ip != nil && ip.IsLoopback() && !proxied(r) && !viaPagePort(r)
 }
 
 // forwardHeaders are what a proxy or tunnel adds to a request it passes

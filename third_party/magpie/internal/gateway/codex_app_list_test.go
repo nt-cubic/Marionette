@@ -1,0 +1,120 @@
+package gateway
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"slices"
+	"testing"
+	"time"
+
+	"github.com/yetone/magpie/internal/codexcat"
+	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/usage"
+)
+
+// The Codex app and its VS Code extension show the first 100 of Codex's
+// model list by priority, hidden ones counted, and never ask for the rest
+// (@ZhenLuoTTAWDTT on X: with magpie's models in it, the ones past that
+// couldn't be shown or chosen). The list magpie hands Codex puts the
+// account's hidden models last and brings the ones the user used into the
+// first 100; its ETag changes when Codex uses another, so Codex asks again.
+func TestCodexModelListKeepsUsedModelsInTheAppsHundred(t *testing.T) {
+	codexSignedIn(t)
+	if err := provider.Save(provider.Provider{ID: "codex", Models: []string{"gpt-5.5"}}); err != nil {
+		t.Fatal(err)
+	}
+	var ms []string
+	for i := range 130 {
+		ms = append(ms, fmt.Sprintf("model-%03d", i))
+	}
+	if err := provider.Save(provider.Provider{ID: "many", Name: "Many", Key: "k", Chat: "http://127.0.0.1:9/v1", Models: ms}); err != nil {
+		t.Fatal(err)
+	}
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"v1"`)
+		io.WriteString(w, `{"models":[{"slug":"codex-auto-review","priority":0,"visibility":"hide"},{"slug":"gpt-5.5","priority":1,"visibility":"list"}]}`)
+	}))
+	defer up.Close()
+	was := provider.CodexBase
+	provider.CodexBase = up.URL + "/backend-api/codex"
+	defer func() { provider.CodexBase = was }()
+	list := func() ([]string, string) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", CodexPath+"/models", nil)
+		req.Header.Set("Authorization", "Bearer chatgpt-token")
+		New().Handler().ServeHTTP(rec, req)
+		var got struct {
+			Models []map[string]any `json:"models"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		slices.SortStableFunc(got.Models, func(a, b map[string]any) int {
+			return int(a["priority"].(float64) - b["priority"].(float64))
+		})
+		var out []string
+		for _, m := range got.Models {
+			out = append(out, m["slug"].(string))
+		}
+		return out, rec.Header().Get("ETag")
+	}
+	usage.Append(usage.Record{Time: time.Now().Add(-time.Hour), Agent: "codex", Provider: "many", Requested: "many/model-120", Status: 200})
+	got, tag := list()
+	if len(got) != 132 {
+		t.Fatalf("%d models", len(got))
+	}
+	first := got[:codexcat.AppList]
+	if slices.Contains(first, "codex-auto-review") || got[len(got)-1] != "codex-auto-review" {
+		t.Errorf("the hidden codex-auto-review is at %d of %d", slices.Index(got, "codex-auto-review")+1, len(got))
+	}
+	if !slices.Contains(first, "many/model-120") {
+		t.Errorf("the used many/model-120 is at %d, past the %d the Codex app reads", slices.Index(got, "many/model-120")+1, codexcat.AppList)
+	}
+	if first[0] != "gpt-5.5" || first[1] != "many/model-000" {
+		t.Errorf("the top is %v", first[:2])
+	}
+	usage.Append(usage.Record{Time: time.Now(), Agent: "codex", Provider: "many", Requested: "many/model-125", Status: 200})
+	got, tag2 := list()
+	if !slices.Contains(got[:codexcat.AppList], "many/model-125") {
+		t.Errorf("the newly used many/model-125 is at %d", slices.Index(got, "many/model-125")+1)
+	}
+	if tag2 == tag {
+		t.Errorf("the ETag %q didn't change with the models used", tag)
+	}
+}
+
+// The catalog a Codex on another computer reads puts the models that key's
+// Codex used in the first 100, and no other key's.
+func TestCodexCatalogKeepsTheKeysUsedModelsFirst(t *testing.T) {
+	fresh(t)
+	var ms []string
+	for i := range 130 {
+		ms = append(ms, fmt.Sprintf("model-%03d", i))
+	}
+	if err := provider.Save(provider.Provider{ID: "many", Name: "Many", Key: "k", Chat: "http://127.0.0.1:9/v1", Models: ms}); err != nil {
+		t.Fatal(err)
+	}
+	usage.Append(usage.Record{Time: time.Now().Add(-time.Hour), Agent: "codex", Provider: "many", Requested: "many/model-110", Status: 200})
+	usage.Append(usage.Record{Time: time.Now().Add(-time.Hour), Agent: "codex", Provider: "many", Requested: "many/model-111", CallerKeyID: "someone-else", Status: 200})
+	w := httptest.NewRecorder()
+	New().Handler().ServeHTTP(w, httptest.NewRequest("GET", CodexCatalogPath, nil))
+	var list struct {
+		Models []map[string]any `json:"models"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	at := map[string]float64{}
+	for _, m := range list.Models {
+		at[m["slug"].(string)] = m["priority"].(float64)
+	}
+	if p := at["many/model-110"]; p == 0 || p > codexcat.AppList {
+		t.Errorf("the used many/model-110's priority is %v", p)
+	}
+	if p := at["many/model-111"]; p <= codexcat.AppList {
+		t.Errorf("another key's many/model-111 was brought up, to %v", p)
+	}
+}

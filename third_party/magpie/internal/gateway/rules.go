@@ -117,6 +117,9 @@ type turnRule struct {
 	// hour is what the vendor said it keeps of the conversation for an
 	// hour (Anthropic's 1-hour cache writes), warm past cacheCold (#2302)
 	hour hourCache
+	// cold is how long the vendor that answered last keeps the
+	// conversation cached unread (coldAfter); 0 is cacheCold
+	cold time.Duration
 }
 
 var turnRules = struct {
@@ -303,7 +306,7 @@ func ruleFor(key string, g provider.Group, ms []provider.Member, req *Request, a
 		case g.Classifier == "":
 			c.Error = "the group has no classifier"
 		case ask == nil:
-			c.Error = "nothing to ask the classifier with: this is a classifier's own call"
+			c.Error = "nothing to ask the classifier with: this is a classifier's own call, or Claude Desktop's connection check"
 		case text == "":
 			c.Error = "the message has no words to classify"
 		default:
@@ -419,7 +422,7 @@ func alsoIDs(m provider.Member) []string {
 
 // ruleAnswered keeps what the vendor counted a conversation's request as,
 // for its next turn's rules to go by.
-func ruleAnswered(key string, u Usage) {
+func ruleAnswered(key string, u Usage, cold time.Duration) {
 	n := u.Input + u.CacheRead + u.CacheWrite
 	if n <= 0 {
 		return
@@ -428,7 +431,7 @@ func ruleAnswered(key string, u Usage) {
 	defer turnRules.Unlock()
 	if tr, ok := turnRules.m[key]; ok {
 		now := ruleClock()
-		tr.input, tr.answered, tr.hour = n, now, tr.hour.after(u, now)
+		tr.input, tr.answered, tr.hour, tr.cold = n, now, tr.hour.after(u, now), cold
 		turnRules.m[key] = tr
 	}
 }
@@ -442,7 +445,8 @@ func ruleAnswered(key string, u Usage) {
 // while the cache is warm the effort only goes up — a hard turn still gets
 // the reasoning it needs, and a conversation pays for at most one miss per
 // level — and a lower pick waits for a turn the cache is lost to anyway:
-// one after cacheCold without an answer (an hour, where the vendor said it
+// one after cacheCold without an answer (tr.cold at the ChatGPT backend,
+// which keeps it longer; an hour, where the vendor said it
 // keeps the conversation that long: tr.hour, #2302), or after the agent
 // compacted the conversation (it is now under half as long as its last
 // request).
@@ -457,7 +461,11 @@ func keepsEffort(tr turnRule, pick string, tokens int, now time.Time) bool {
 	if tr.answered.After(last) {
 		last = tr.answered
 	}
-	if now.Sub(last) > cacheCold && !tr.hour.warm(now) {
+	cold := tr.cold
+	if cold <= 0 {
+		cold = cacheCold
+	}
+	if now.Sub(last) > cold && !tr.hour.warm(now) {
 		return false
 	}
 	if tr.size > 0 && tokens < tr.size/2 {

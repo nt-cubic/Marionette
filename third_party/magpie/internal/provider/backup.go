@@ -91,7 +91,10 @@ func RestoreGroups(gs []Group) error {
 // Mirror makes the providers and groups exactly these, as sync brings them
 // from another computer: one not among them goes, one that came without
 // keys keeps the keys it has here, and an access key or balance token it
-// came without is kept too (KeepSecrets).
+// came without is kept too (KeepSecrets). Which account an agent is kept
+// signed in to (KeepLogin, KeepLoginAs, SwitchOnly) is this computer's own:
+// one person signs in to a personal account at home and a work account at
+// the office, and sync set each computer to the other's every day.
 func Mirror(ps []Provider, gs []Group) error {
 	f, err := read()
 	if err != nil {
@@ -109,6 +112,9 @@ func Mirror(ps []Provider, gs []Group) error {
 		}
 		if h, ok := here[p.ID]; ok {
 			p = KeepSecrets(p, h, p.Key == "" && len(p.Keys) == 0)
+			p.KeepLogin, p.KeepLoginAs, p.SwitchOnly = h.KeepLogin, h.KeepLoginAs, h.SwitchOnly
+		} else {
+			p.KeepLoginAs = "" // an account signed in on the other computer
 		}
 		out = append(out, p)
 	}

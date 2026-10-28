@@ -1,0 +1,124 @@
+package gateway
+
+import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/yetone/magpie/internal/provider"
+)
+
+// codexDeskReset forgets the backend's list for the Codex app, before the
+// test and after it.
+func codexDeskReset(t *testing.T) {
+	t.Helper()
+	reset := func() {
+		codexDesk.Lock()
+		done := codexDesk.done
+		codexDesk.Unlock()
+		if done != nil {
+			<-done
+		}
+		codexDesk.Lock()
+		codexDesk.body, codexDesk.got, codexDesk.tried, codexDesk.asking, codexDesk.done = nil, time.Time{}, time.Time{}, false, nil
+		codexDesk.Unlock()
+	}
+	reset()
+	t.Cleanup(reset)
+	was := CodexDesktopChanged
+	t.Cleanup(func() { CodexDesktopChanged = was })
+}
+
+// codexDeskAsked waits for the ask CodexDesktopCatalog started.
+func codexDeskAsked(t *testing.T) {
+	t.Helper()
+	codexDesk.Lock()
+	done := codexDesk.done
+	codexDesk.Unlock()
+	if done == nil {
+		t.Fatal("the backend was never asked")
+	}
+	<-done
+}
+
+// The list the Codex app reads from a file beside the ChatGPT sign-in
+// (laddieyao on Discord): the backend's entries as it sent them, its
+// base_instructions untouched, asked for with Codex's own sign-in, and
+// magpie's models after them. Not known until the backend has answered,
+// and a failed ask after that keeps the last list it gave: unknown, never
+// an empty list.
+func TestCodexDesktopCatalog(t *testing.T) {
+	codexSignedIn(t)
+	codexDeskReset(t)
+	if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Key: "k", Anthropic: "http://127.0.0.1:1",
+		Models: []string{"claude-opus-5.5"}}); err != nil {
+		t.Fatal(err)
+	}
+	var fail atomic.Bool
+	var auth atomic.Value
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth.Store(r.Header.Get("Authorization"))
+		if fail.Load() {
+			http.Error(w, "down", http.StatusBadGateway)
+			return
+		}
+		io.WriteString(w, `{"models":[{"slug":"gpt-5.5","priority":1,"base_instructions":"You are Codex, based on GPT-5.","visibility":"list"}]}`)
+	}))
+	defer up.Close()
+	was := provider.CodexBase
+	provider.CodexBase = up.URL + "/backend-api/codex"
+	defer func() { provider.CodexBase = was }()
+	var changed atomic.Int32
+	CodexDesktopChanged = func() { changed.Add(1) }
+
+	if b, ok := CodexDesktopCatalog(); ok || b != nil {
+		t.Fatalf("known before the backend answered: %s", b)
+	}
+	codexDeskAsked(t)
+	if changed.Load() != 1 {
+		t.Fatalf("changed told %d times", changed.Load())
+	}
+	if a, _ := auth.Load().(string); a == "" {
+		t.Fatal("asked without Codex's sign-in")
+	}
+	b, ok := CodexDesktopCatalog()
+	if !ok {
+		t.Fatal("not known after the backend answered")
+	}
+	var got struct {
+		Models []map[string]any `json:"models"`
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	slugs := map[string]map[string]any{}
+	for _, m := range got.Models {
+		slugs[m["slug"].(string)] = m
+	}
+	if m := slugs["gpt-5.5"]; m == nil || m["base_instructions"] != "You are Codex, based on GPT-5." {
+		t.Fatalf("the backend's entry: %v", m)
+	}
+	if slugs["relay/claude-opus-5.5"] == nil {
+		t.Fatalf("magpie's models missing: %s", b)
+	}
+
+	// an ask that fails keeps the list the backend gave last
+	fail.Store(true)
+	codexDesk.Lock()
+	codexDesk.got, codexDesk.tried = time.Time{}, time.Time{}
+	codexDesk.Unlock()
+	if _, ok := CodexDesktopCatalog(); !ok {
+		t.Fatal("the last list forgotten as the backend is asked again")
+	}
+	codexDeskAsked(t)
+	if b2, ok := CodexDesktopCatalog(); !ok || string(b2) != string(b) {
+		t.Fatalf("after a failed ask: %v\n%s", ok, b2)
+	}
+	if changed.Load() != 1 {
+		t.Fatalf("a failed ask told as a change")
+	}
+}

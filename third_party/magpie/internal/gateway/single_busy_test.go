@@ -160,6 +160,7 @@ func TestSingleProviderPassesALongLimitThrough(t *testing.T) {
 	}{
 		{"an hour", busyReply{code: 429, retryAfter: "3600", body: rateLimited}},
 		{"quota", busyReply{code: 429, body: `{"type":"error","error":{"type":"rate_limit_error","message":"You exceeded your current quota, please check your plan and billing details"}}`}},
+		{"usage limit back in hours", busyReply{code: 429, body: `{"type":"error","error":{"type":"rate_limit_error","message":"Usage has exceeded the limit. Your usage limit for the original model will reset in 5 hours."}}`}},
 		{"key refused", busyReply{code: 401, body: `{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}`}},
 	} {
 		t.Run(c.name, func(t *testing.T) {

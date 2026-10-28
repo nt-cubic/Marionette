@@ -3,6 +3,7 @@ package sessions
 import (
 	"bytes"
 	"encoding/json"
+	pathpkg "path"
 	"slices"
 	"strings"
 	"time"
@@ -162,7 +163,11 @@ func codexHead(s *state, b []byte, main bool) bool {
 		if payload != "function_call" && payload != "custom_tool_call" || name == "" {
 			name = payload
 		}
+		skills := cxSkillReads(b, name)
 		s.tool(at, name, "")
+		for _, k := range skills {
+			s.tool(at, "", k)
+		}
 		return top == "response_item" && payload == "function_call" && name == "spawn_agent"
 	case payload == "message" && typeAfter(h, cxRole) == "assistant":
 		if main {
@@ -172,6 +177,64 @@ func codexHead(s *state, b []byte, main bool) bool {
 	default:
 		return payload == "message" && (main || s.Title == "") && (!bytes.Contains(h, cxRole) || bytes.Contains(h, cxUserRole))
 	}
+}
+
+// cxSkillReads are the skills a tool call calls up. Codex has no tool for
+// skills: its instructions list each skill's SKILL.md, and the model calls
+// one up by reading that file, through a shell command (exec_command,
+// shell, a local_shell_call) or a code-mode exec script's
+// tools.exec_command. A skill is named by its SKILL.md's folder, once a
+// call; a patch that writes a SKILL.md, a redirect into one and a bare
+// SKILL.md with no folder (a find -name, a grep) call none up.
+func cxSkillReads(b []byte, name string) []string {
+	if !bytes.Contains(b, cxSkillFile) || name == "apply_patch" {
+		return nil
+	}
+	call := gjson.GetBytes(b, "payload")
+	text := call.Get("input").String() + "\n" + call.Get("arguments").String()
+	for _, c := range call.Get("action.command").Array() {
+		text += " " + c.String()
+	}
+	if strings.Contains(text, "*** Begin Patch") {
+		return nil
+	}
+	var out []string
+	for rest := text; ; {
+		i := strings.Index(rest, "SKILL.md")
+		if i < 0 {
+			return out
+		}
+		before, after := rest[:i], rest[i+len("SKILL.md"):]
+		rest = after
+		if after != "" && !cxPathEnd(after[0]) {
+			continue // SKILL.md.bak, SKILL.mdx
+		}
+		start := strings.LastIndexFunc(before, func(r rune) bool { return r < 128 && cxPathEnd(byte(r)) }) + 1
+		path := strings.ReplaceAll(before[start:], `\`, "/")
+		if !strings.HasSuffix(path, "/") || cxWrites(before[:start]) {
+			continue
+		}
+		skill := pathpkg.Base(strings.TrimSuffix(path, "/"))
+		if skill == "" || skill == "." || skill == ".." || skill == "/" || strings.ContainsAny(skill, "*?$") || slices.Contains(out, skill) {
+			continue
+		}
+		out = append(out, skill)
+	}
+}
+
+var cxSkillFile = []byte("SKILL.md")
+
+// cxPathEnd is a byte that ends a path in a command: a space, a quote, or
+// what a shell or a script puts around one.
+func cxPathEnd(c byte) bool {
+	return strings.IndexByte(" \t\n\r'\"`()[]{}<>|;,=&:", c) >= 0
+}
+
+// cxWrites says whether the text before a path ends in a redirect into it
+// (> or >>, a tee): a write, not a read.
+func cxWrites(before string) bool {
+	t := strings.TrimRight(before, " \t'\"")
+	return strings.HasSuffix(t, ">") || strings.HasSuffix(t, "tee") || strings.HasSuffix(t, "tee -a")
 }
 
 // cxCalls are the kinds of response item that call a tool.

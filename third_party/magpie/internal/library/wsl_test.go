@@ -42,7 +42,7 @@ func TestWSLTargets(t *testing.T) {
 	want := map[string][3]string{ // instructions, MCP, skills
 		wslCodex:  {".codex/AGENTS.md", ".codex/config.toml", ".codex/skills"},
 		wslClaude: {".claude/CLAUDE.md", ".claude.json", ".claude/skills"},
-		wslPi:     {".pi/agent/AGENTS.md", "", ".pi/agent/skills"},
+		wslPi:     {".pi/agent/AGENTS.md", ".pi/agent/mcp.json", ".pi/agent/skills"},
 		wslOmO:    {".omo/agent/AGENTS.md", ".omo/agent/mcp.json", ".omo/agent/skills"},
 	}
 	for id, w := range want {

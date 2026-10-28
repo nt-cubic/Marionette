@@ -199,9 +199,12 @@ func statsRead(days int, now time.Time, native map[string]bool) Stats {
 			}
 		}
 	}
+	// a copy of a conversation is counted in the session it copies, which
+	// holds every message of it (ccCopies)
+	copies := ccCopies(files)
 	var want []file
 	for _, f := range files {
-		if !f.mod.Before(since) {
+		if !f.mod.Before(since) && copies[f.key] == "" {
 			want = append(want, f)
 		}
 	}

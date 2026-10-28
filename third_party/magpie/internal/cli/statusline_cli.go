@@ -155,6 +155,9 @@ func statuslineCard(q provider.Quota, now time.Time) string {
 		switch {
 		case w.Unlimited:
 			cells = append(cells, n+" ∞")
+		case w.Balance != nil:
+			// a wallet's figure in its unit, never a share (#3950)
+			cells = append(cells, n+" "+provider.BalanceText(*w.Balance, w.Unit))
 		case w.Text:
 			// a row of text alone (a plugin's balance) has no share
 			cells = append(cells, n+" "+w.Display)

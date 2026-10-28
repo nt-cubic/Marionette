@@ -179,3 +179,42 @@ func TestCodexProviderIn(t *testing.T) {
 		t.Fatalf("profile: %q", p)
 	}
 }
+
+// Codex keeps places in a paginated rollout by byte (xybio on Discord, see
+// TestPortCodexRolloutsKeepsBytePlaces): a move keeps the session_meta
+// line's length, padded after its JSON for a shorter id, and a longer id
+// is refused with the files as they were; moving back gives the bytes it
+// had.
+func TestMoveCodexProviderKeepsBytePlaces(t *testing.T) {
+	_, codex := manageSetup(t)
+	main := filepath.Join(codex, "sessions", "2026", "09", "20", "rollout-2026-09-20T15-48-28-"+mgCX+".jsonl")
+	b, _ := os.ReadFile(main)
+	orig := bytes.Replace(b, []byte(`"model_provider":"openai"`), []byte(`"model_provider":"custom","history_mode":"paginated"`), 1)
+	old := time.Now().Add(-24 * time.Hour).Truncate(time.Second)
+	os.WriteFile(main, orig, 0o644)
+	os.Chtimes(main, old, old)
+
+	if _, err := MoveCodexProvider(mgCX, "cc"); err != nil {
+		t.Fatal(err)
+	}
+	now, _ := os.ReadFile(main)
+	if len(now) != len(orig) {
+		t.Fatalf("%d bytes, was %d", len(now), len(orig))
+	}
+	first := now[:bytes.IndexByte(now, '\n')]
+	if !bytes.HasSuffix(first, []byte("}    ")) || !bytes.Contains(first, []byte(`"model_provider":"cc"`)) || !bytes.Equal(now[len(first):], orig[len(first):]) {
+		t.Fatalf("the file became\n%s", now)
+	}
+	if _, err := MoveCodexProvider(mgCX, "a-longer-provider"); err == nil {
+		t.Fatal("a longer id was written")
+	}
+	if b, _ := os.ReadFile(main); !bytes.Equal(b, now) {
+		t.Fatal("a refused move changed the file")
+	}
+	if _, err := MoveCodexProvider(mgCX, "custom"); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(main); !bytes.Equal(b, orig) {
+		t.Fatalf("moving back gave\n%s", b)
+	}
+}

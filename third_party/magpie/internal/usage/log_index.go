@@ -14,6 +14,7 @@ import (
 	"maps"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -52,6 +53,11 @@ type logSnapshot struct {
 	// out of blocks: every reader of those counts what it reads, and the
 	// request log alone lists these (queryPage)
 	probes []probeRow
+	// hosts are the providers by the host their calls went to, as the log
+	// recorded them: "" for a host two providers were on. A probe made
+	// while a provider was being added, under its host, is that
+	// provider's after it is deleted too (probeChunk; cybercaius).
+	hosts map[string]string
 }
 
 var logIndex struct {
@@ -69,6 +75,24 @@ var logAppends struct {
 	sync.Mutex
 	path       string
 	base, last os.FileInfo
+}
+
+// sawHost notes the provider r's call went to by its host. A probe made
+// before its provider had an id names the host for both, and says nothing.
+func (s *logSnapshot) sawHost(r Record) {
+	h, _, _ := strings.Cut(r.Host, " as ") // a subscription's "host as user"
+	h = strings.ToLower(strings.TrimSpace(h))
+	if h == "" || r.Provider == "" || strings.EqualFold(r.Provider, h) || r.IsRejected() {
+		return
+	}
+	if s.hosts == nil {
+		s.hosts = map[string]string{}
+	}
+	if to, ok := s.hosts[h]; !ok {
+		s.hosts[h] = r.Provider
+	} else if to != r.Provider {
+		s.hosts[h] = ""
+	}
 }
 
 func readLogSnapshot() *logSnapshot {
@@ -103,7 +127,7 @@ func readLogSnapshot() *logSnapshot {
 		logIndex.version++
 	}
 
-	next := &logSnapshot{path: path, info: info, settled: settled, version: logIndex.version, keyProviders: map[string]bool{}}
+	next := &logSnapshot{path: path, info: info, settled: settled, version: logIndex.version, keyProviders: map[string]bool{}, hosts: map[string]string{}}
 	if err != nil {
 		logIndex.snapshot = next
 		return next
@@ -121,6 +145,7 @@ func readLogSnapshot() *logSnapshot {
 		next.blocks = slices.Clone(old.blocks)
 		next.keyProviders = maps.Clone(old.keyProviders)
 		next.probes = slices.Clip(old.probes) // appended to, never written in
+		next.hosts = maps.Clone(old.hosts)
 	}
 	logIndex.reads++
 	f, err := os.Open(path)
@@ -152,8 +177,11 @@ func readLogSnapshot() *logSnapshot {
 		if json.Unmarshal(b, &r) != nil {
 			continue
 		}
+		next.sawHost(r)
 		if r.IsProbe() {
-			next.probes = append(next.probes, probeRow{r, next.off})
+			if !quietProbe(r) { // a model list answered is no row (ferock)
+				next.probes = append(next.probes, probeRow{r, next.off})
+			}
 			continue
 		}
 		if tail == nil {

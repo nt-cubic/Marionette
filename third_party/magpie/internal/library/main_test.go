@@ -25,6 +25,8 @@ func TestMain(m *testing.M) {
 	for _, k := range []string{"TMPDIR", "TMP", "TEMP"} { // TMP, TEMP: Windows'
 		os.Setenv(k, tmp)
 	}
+	// never the machine's own processes (mcp_reap.go)
+	ending = func([]*Server) {}
 	code := testenv.Run(m)
 	forgetProbes()
 	if left := leftDownloads(tmp); len(left) > 0 && code == 0 {

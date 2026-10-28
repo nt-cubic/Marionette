@@ -381,7 +381,7 @@ func (s *Server) askVisionWith(ctx context.Context, model, src, system, text str
 		}
 	}
 	body, _ := json.Marshal(req)
-	r, err := http.NewRequestWithContext(magpieChose(ctx), http.MethodPost, "http://magpie/v1/chat/completions", nil)
+	r, err := http.NewRequestWithContext(ownAsk(magpieChose(ctx)), http.MethodPost, "http://magpie/v1/chat/completions", nil)
 	if err != nil {
 		return "", err
 	}

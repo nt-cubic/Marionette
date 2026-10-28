@@ -24,7 +24,7 @@ const partners = [
     regions: [
       { id: "cn", name: "China", chat: "https://api.acme.example.com/v1", website: "https://usemagpie.ai/go/acme/site/cn", siteHost: "cn.acme.example" },
       { id: "global", name: "Global", chat: "https://global.acme.example.com/v1", website: "https://usemagpie.ai/go/acme/site/global", siteHost: "global.acme.example" },
-    ] }),
+    ], splitAccounts: true }),
   partner("zhonly", "China Only", { langs: ["zh"], notes: { en: "Mainland relay", zh: "国内中转" } }),
   partner("taken", "Taken", { added: true }),
 ];
@@ -55,10 +55,10 @@ function server(lang, list, counted) {
 }
 
 const L = {
-  en: { head: ["Partners", "magpie's sponsors"], subs: "Subscriptions", rows: ["Acme AI", "Taken"], note: "Fast relay" },
-  zh: { head: ["合作伙伴", "赞助 magpie 的服务"], subs: "订阅", rows: ["Acme AI", "China Only", "Taken"], note: "快速中转" },
-  ja: { head: ["パートナー", "magpie のスポンサー"], subs: null, rows: ["Acme AI", "Taken"], note: "高速な中継" },
-  de: { head: ["Partner", "Sponsoren von magpie"], subs: null, rows: ["Acme AI", "Taken"], note: "Fast relay" },
+  en: { head: ["Partners", "magpie's sponsors"], subs: "Subscriptions", rows: ["Acme AI", "Taken"], note: "Fast relay", region: "pick the region of your Acme AI account" },
+  zh: { head: ["合作伙伴", "赞助 magpie 的服务"], subs: "订阅", rows: ["Acme AI", "China Only", "Taken"], note: "快速中转", region: "按你的 Acme AI 账号所在区域选择" },
+  ja: { head: ["パートナー", "magpie のスポンサー"], subs: null, rows: ["Acme AI", "Taken"], note: "高速な中継", region: "Acme AI アカウントのリージョンを選んでください" },
+  de: { head: ["Partner", "Sponsoren von magpie"], subs: null, rows: ["Acme AI", "Taken"], note: "Fast relay", region: "die Region deines Acme AI-Kontos wählen" },
 };
 
 async function openSheet(page) {
@@ -121,6 +121,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // following the region picked
         const site = page.locator("#modal .editor .ehead .link.site");
         assert.equal(await site.textContent(), "cn.acme.example ↗");
+        // China's and Global's accounts don't cross (provider.SplitAccounts):
+        // the picker says to pick by the account
+        assert.equal(await page.locator("#modal .editor .segs.regions").locator("xpath=following-sibling::div[contains(@class,'hint')]").textContent(), w.region);
         await page.locator("#modal .editor .segs.regions .opt").nth(1).click();
         assert.equal(await site.textContent(), "global.acme.example ↗");
         assert.equal(await site.getAttribute("data-url"), "https://usemagpie.ai/go/acme/site/global");

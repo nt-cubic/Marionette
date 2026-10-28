@@ -663,3 +663,112 @@ func TestPluginCheckinEarlyDoneAskedAgain(t *testing.T) {
 		}
 	})
 }
+
+// A plugin whose vendor's day turns at another hour says when (until):
+// Qoder's daily credits open at 10:00 UTC+8 and stay open until 09:59 the
+// next day (sdytman on Discord). A check-in before 10:00 meets the day
+// before's campaign; magpie asks again as the plugin said, a minute past
+// 10:00, not the next Beijing day, and not before, whatever the machine's
+// zone; a failure in the gap is asked again then too.
+func TestPluginCheckinAsksAgainAtUntil(t *testing.T) {
+	presses := pluginCheckinSandbox(t, "ck-until")
+	s := settings.Load()
+	s.PluginCheckins = map[string]bool{"fakeco": true}
+	if err := settings.Save(s); err != nil {
+		t.Fatal(err)
+	}
+	answer := func(outcome string, until time.Time) {
+		t.Helper()
+		b, _ := json.Marshal(map[string]any{"outcome": outcome, "credit": 100, "until": until.UTC().Format(time.RFC3339)})
+		if err := os.WriteFile(presses+".until", b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// the plugin's answer at t: before 10:00 Beijing, the day before's
+	// campaign (claimed at its first ask, done after), until today's 10:01
+	opens := func(at time.Time) time.Time {
+		b := at.In(beijing)
+		o := time.Date(b.Year(), b.Month(), b.Day(), 10, 1, 0, 0, beijing)
+		if !at.Before(o) {
+			o = o.AddDate(0, 0, 1)
+		}
+		return o
+	}
+	defer func(l *time.Location) { time.Local = l }(time.Local)
+	for _, zone := range []*time.Location{time.UTC, time.FixedZone("UTC-8", -8*3600), beijing} {
+		t.Run(zone.String(), func(t *testing.T) {
+			time.Local = zone
+			if err := os.Remove(pluginCheckinPath()); err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			_ = os.Remove(presses)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			now := time.Date(2026, 10, 28, 9, 27, 0, 0, beijing).In(zone)
+			c := pluginCheckiner{now: func() time.Time { return now }, only: func(id string) bool { return PluginCheckinOn(settings.Load(), id) }}
+			var l wbCheckinLoop
+			var at []string
+			claimed := map[string]bool{}
+			end := time.Date(2026, 10, 29, 10, 30, 0, 0, beijing)
+			for ; now.Before(end); now = now.Add(time.Minute) {
+				o := opens(now)
+				if campaign := o.AddDate(0, 0, -1).Format("01-02"); claimed[campaign] {
+					answer(CheckinDone, o)
+				} else {
+					answer(CheckinClaimed, o)
+				}
+				for _, r := range l.tick(ctx, c) {
+					if !r.Asked {
+						continue
+					}
+					at = append(at, now.In(beijing).Format("01-02 15:04"))
+					if r.ValidUntil.IsZero() || !r.ValidUntil.Equal(o) {
+						t.Fatalf("at %v: until %v, want %v (%+v)", now, r.ValidUntil, o, r)
+					}
+					if r.Outcome == CheckinClaimed {
+						claimed[o.AddDate(0, 0, -1).Format("01-02")] = true
+					}
+				}
+			}
+			// 09:27 claims the 10-27 campaign, 10:01 the 10-28 one, the
+			// Beijing day's turn asks once (done), 10:01 claims 10-29's
+			if want := []string{"10-28 09:27", "10-28 10:01", "10-29 00:00", "10-29 10:01"}; !slices.Equal(at, want) {
+				t.Fatalf("asked at %q, want %q", at, want)
+			}
+			if p := pressed(t, presses); len(p) != 4 {
+				t.Fatalf("pressed %q", p)
+			}
+			if len(claimed) != 3 {
+				t.Fatalf("claimed %v", claimed)
+			}
+
+			// in the gap (09:59:30, yesterday's closed, today's not open):
+			// a failure, asked again at 10:01, not half an hour on
+			_ = os.Remove(presses)
+			l = wbCheckinLoop{}
+			now = time.Date(2026, 10, 30, 9, 59, 30, 0, beijing).In(zone)
+			b, _ := json.Marshal(map[string]any{"outcome": CheckinFailed, "message": "today's credits aren't offered yet", "until": opens(now).UTC().Format(time.RFC3339)})
+			if err := os.WriteFile(presses+".until", b, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if rs := l.tick(ctx, c); len(rs) != 1 || rs[0].Outcome != CheckinFailed || !rs[0].Asked {
+				t.Fatalf("the gap: %+v", rs)
+			}
+			answer(CheckinClaimed, opens(now).AddDate(0, 0, 1))
+			var again []string
+			for now = now.Add(30 * time.Second); now.Before(time.Date(2026, 10, 30, 10, 2, 0, 0, beijing)); now = now.Add(30 * time.Second) {
+				for _, r := range l.tick(ctx, c) {
+					if r.Asked {
+						again = append(again, now.In(beijing).Format("15:04:05"))
+					}
+				}
+			}
+			if !slices.Equal(again, []string{"10:01:00"}) {
+				t.Fatalf("after the gap, asked at %q, want 10:01:00", again)
+			}
+			if p := pressed(t, presses); len(p) != 2 {
+				t.Fatalf("after the gap, pressed %q", p)
+			}
+		})
+	}
+}

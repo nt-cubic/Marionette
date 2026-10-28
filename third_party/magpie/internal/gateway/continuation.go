@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -538,7 +539,20 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 				}
 				ended := false // the upstream said its reply ended
 				var tail chatTail
+				// the client is kept alive while the upstream says
+				// nothing at all, its first event yet to come too: the
+				// upstream's 200 is in, and a holdWriter holds what is
+				// written for another candidate to answer still
+				var wmu sync.Mutex
+				heard, stopKeep := keepThroughSilence(&wmu, func() {
+					if failed == "" && !cut && !relooped && sw.quiet() >= keepaliveEvery/2 {
+						enc.keepalive()
+					}
+				})
 				serr = readSSEAlive(rd, func(_, data string) error {
+					wmu.Lock()
+					defer wmu.Unlock()
+					heard()
 					tail.see([]byte(data))
 					st := upstreamStop([]byte(data))
 					u.add(Usage{Upstream: upstreamOf([]byte(data)), Stop: st, Tier: upstreamTier([]byte(data))})
@@ -550,7 +564,13 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 						return errStreamCut
 					}
 					return nil
-				}, alive)
+				}, func() {
+					wmu.Lock()
+					defer wmu.Unlock()
+					heard()
+					alive()
+				})
+				stopKeep()
 				res.Body.Close()
 				if errors.Is(serr, errStreamCut) {
 					serr = nil

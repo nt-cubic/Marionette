@@ -114,7 +114,9 @@ func (a *Agent) startsWith() (pats []string, files []string, reads func() string
 	switch a.ID {
 	case "codex":
 		list := filepath.Join(filepath.Dir(a.Path), "magpie-models.json")
-		return []string{`(^|/)codex( |$)`}, []string{a.Path, list}, func() string {
+		// the list written for the Codex app beside the sign-in (deskList)
+		desk := filepath.Join(filepath.Dir(a.Path), "magpie-desktop-models.json")
+		return []string{`(^|/)codex( |$)`}, []string{a.Path, list, desk}, func() string {
 			var b strings.Builder
 			for _, k := range []string{"model_provider", "model_catalog_json", "openai_base_url"} {
 				v, _ := edit.GetTOMLTop(a.Path, k)
@@ -125,6 +127,8 @@ func (a *Agent) startsWith() (pats []string, files []string, reads func() string
 			b.Write(j)
 			c, _ := os.ReadFile(list)
 			b.Write(c)
+			d, _ := os.ReadFile(desk)
+			b.Write(d)
 			return b.String()
 		}
 	case "claude":

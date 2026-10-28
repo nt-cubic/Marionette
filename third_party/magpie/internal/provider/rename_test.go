@@ -168,3 +168,18 @@ func TestRenamesByWhenTheIDWasTaken(t *testing.T) {
 		t.Fatalf("unreadable: %+v", got)
 	}
 }
+
+// A host's site is its registrable domain whatever its subdomain, case or
+// port, and none for an address, a bare name or a tenant of a hosting
+// platform's suffix (CyberCaius: leee.baby and api.leee.baby are one).
+func TestSiteOf(t *testing.T) {
+	for host, want := range map[string]string{
+		"leee.baby": "leee.baby", "API.Leee.Baby": "leee.baby", "www.leee.baby:443": "leee.baby",
+		"api.example.co.uk": "example.co.uk", "mine.vercel.app": "mine.vercel.app",
+		"127.0.0.1:8080": "", "[::1]:8": "", "localhost:3000": "", "": "",
+	} {
+		if got := SiteOf(host); got != want {
+			t.Errorf("SiteOf(%q) = %q, want %q", host, got, want)
+		}
+	}
+}

@@ -194,14 +194,16 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 }
 
 // the Codex app's line has a Restart of its own (the owner, 10-23): magpie
-// asks, then quits the app named by its bundle and opens it again
+// asks, then restarts only the app-server of the app named by its bundle,
+// and says its window stays (yoshi037070: a quit and open opened a new one)
 const appName = { en: "The Codex app", zh: "Codex 应用", "zh-TW": "Codex 應用", ja: "Codex アプリ", de: "Die Codex-App" };
 const cancelSays = { en: "Cancel", zh: "取消", "zh-TW": "取消", ja: "キャンセル", de: "Abbrechen" };
-const reopened = { en: "The Codex app reopened", zh: "Codex 应用已重新打开", "zh-TW": "Codex 應用已重新打開", ja: "Codex アプリを開き直しました", de: "Codex-App neu geöffnet" };
+const reopened = { en: "Codex app-server restarted", zh: "Codex 的 app-server 已重启", "zh-TW": "Codex 的 app-server 已重新啟動", ja: "Codex の app-server を再起動しました", de: "App-Server von Codex neu gestartet" };
+const windowStays = { en: "window stays", zh: "窗口保持不变", "zh-TW": "視窗保持不變", ja: "ウィンドウはそのまま", de: "Fenster bleibt offen" };
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
   for (const lang of ["en", "zh", "zh-TW", "ja", "de"]) {
     for (const width of [980, 440]) {
-      test(`${engine} ${lang} ${width}px: the app's line reopens it`, async (t) => {
+      test(`${engine} ${lang} ${width}px: the app's line restarts its app-server`, async (t) => {
         const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
         t.after(() => browser.close());
         const page = await browser.newPage({ viewport: { width, height: 800 } });
@@ -235,6 +237,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const ask = page.locator("dialog.action-confirm[open]");
         await ask.waitFor();
         assert.ok((await ask.locator("h2").textContent()).includes(appName[lang]), await ask.locator("h2").textContent());
+        assert.ok((await ask.textContent()).includes(windowStays[lang]), await ask.textContent());
         await ask.locator("button", { hasText: cancelSays[lang] }).click();
         await ask.waitFor({ state: "detached" });
         assert.deepEqual(asked, []);

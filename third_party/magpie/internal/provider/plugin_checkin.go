@@ -90,7 +90,13 @@ var pluginCheckinProviders = func() []pluginCheckinProvider {
 					if err != nil {
 						return wbCheckinFailed(err)
 					}
-					return WorkBuddyCheckin{Outcome: c.Outcome, Credit: c.Credit, Streak: c.Streak, Msg: c.Message}
+					r := WorkBuddyCheckin{Outcome: c.Outcome, Credit: c.Credit, Streak: c.Streak, Msg: c.Message}
+					// the vendor's own day turns then (Qoder's 10:00
+					// UTC+8); a time that doesn't parse is not told
+					if t, err := time.Parse(time.RFC3339, c.Until); err == nil {
+						r.ValidUntil = t
+					}
+					return r
 				}})
 		}
 		if len(p.accounts) > 0 {

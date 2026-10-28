@@ -22,9 +22,15 @@ import (
 // model it came from, so another model's answers are never read as this
 // one's, and lives with the model, in magpie's cache (Remove deletes it).
 
-// cacheMagic starts the file; a file that doesn't start with it, or ends
-// part way, is read as empty.
-const cacheMagic = "pfound01"
+// cacheMagic starts the file; a file that doesn't start with it (or
+// cacheMagic1), or ends part way, is read as empty.
+const cacheMagic = "pfound02"
+
+// cacheMagic1 starts a file written before a span kept its score, and
+// only what was over the model's default threshold. Its spans are read
+// as sure (score 1), masked at any threshold as they were before; a
+// text not in it is asked about with its scores.
+const cacheMagic1 = "pfound01"
 
 func cachePath() string { return filepath.Join(dir(), "found-"+modelSHA[:12]+".bin") }
 
@@ -123,7 +129,8 @@ func (bk *backend) saveCache() error {
 }
 
 // encodeCache is c, oldest first: the magic, a count, then each entry's
-// hash, its spans' count and each span's start, end and label.
+// hash, its spans' count and each span's start, end, score (a float32)
+// and label.
 func encodeCache(c *lru) []byte {
 	var b bytes.Buffer
 	b.WriteString(cacheMagic)
@@ -140,6 +147,7 @@ func encodeCache(c *lru) []byte {
 			}
 			put(uint32(f.Start))
 			put(uint32(f.End))
+			put(float32(f.Score))
 			b.WriteByte(byte(len(label)))
 			b.WriteString(label)
 		}
@@ -150,7 +158,8 @@ func encodeCache(c *lru) []byte {
 var errBadCache = errors.New("not a cache file")
 
 func decodeCache(b []byte) ([]entry, error) {
-	if !bytes.HasPrefix(b, []byte(cacheMagic)) {
+	scored := bytes.HasPrefix(b, []byte(cacheMagic))
+	if !scored && !bytes.HasPrefix(b, []byte(cacheMagic1)) {
 		return nil, errBadCache
 	}
 	r := bufio.NewReader(bytes.NewReader(b[len(cacheMagic):]))
@@ -176,6 +185,15 @@ func decodeCache(b []byte) ([]entry, error) {
 			if err := binary.Read(r, binary.LittleEndian, &se); err != nil {
 				return nil, err
 			}
+			score := float32(1)
+			if scored {
+				if err := binary.Read(r, binary.LittleEndian, &score); err != nil {
+					return nil, err
+				}
+				if !(score >= 0 && score <= 1) {
+					return nil, errBadCache
+				}
+			}
 			l, err := r.ReadByte()
 			if err != nil {
 				return nil, err
@@ -187,7 +205,7 @@ func decodeCache(b []byte) ([]entry, error) {
 			if se[0] >= se[1] {
 				return nil, errBadCache
 			}
-			e.fs = append(e.fs, redact.Found{Start: int(se[0]), End: int(se[1]), Label: string(label)})
+			e.fs = append(e.fs, redact.Found{Start: int(se[0]), End: int(se[1]), Label: string(label), Score: float64(score)})
 		}
 		out = append(out, e)
 	}

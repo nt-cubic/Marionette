@@ -4,7 +4,8 @@
 // 1024 to 65535 can be typed and applied. One out of range is refused in the
 // page; one another program has is refused with the gateway's reason, in the
 // page's language, what was typed kept; a free one moves the gateway and
-// says how many agents moved with it, and the row then says the new URL.
+// says how many agents moved with it, and the row then says the new URL,
+// as does the sidebar's gateway line (noahhrreion on Discord).
 // With MAGPIE_ADDR set the field is off, shows its host:port and says why;
 // the row is titled an address, not a port, since it shows one there
 // (Chicring on Discord), and says only the port is typed. The field is an
@@ -41,7 +42,7 @@ function server(lang, over, posts) {
     const req = route.request();
     const url = new URL(req.url());
     const json = (data, status = 200) => route.fulfill({ status, json: data });
-    if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:false};` });
+    if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:false,sideGateway:{url:"http://127.0.0.1:3425",running:true,boot:true}};` });
     if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
     if (url.pathname === "/api/state") return json({ agents: [], profiles: [], settings: { lang, theme: "light" }, fx: s.fx });
     if (url.pathname === "/api/settings/port") {
@@ -172,6 +173,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await page.waitForFunction((want) => document.querySelector("#portList .sub")?.textContent.trim() === want, w.now("http://127.0.0.1:3591"));
           assert.equal(await field.inputValue(), "3591");
           assert.deepEqual(posts, [3500, 3591]);
+          // the sidebar's gateway line says the new address too, not the
+          // port before until Providers is opened (noahhrreion on Discord)
+          // (the window made wide enough for the sidebar, as the
+          // reporter's was)
+          await page.setViewportSize({ width: 1200, height: 360 });
+          await page.waitForFunction(() => document.body.classList.contains("side-nav") && !document.querySelector("#sideGw").hidden);
+          await page.waitForFunction(() => document.querySelector("#sideGw span")?.textContent.includes("127.0.0.1:3591"));
+          assert(!(await page.locator("#sideGw").getAttribute("title")).includes(":3425"), "the sidebar's tooltip still says 3425");
           assert.equal(await scroll(), before, "applying moved the page");
           assert.deepEqual(errors, []);
         }

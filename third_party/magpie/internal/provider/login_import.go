@@ -98,7 +98,9 @@ func parseLoginImport(agent, data string) ([]loginImport, error) {
 			if line == "" || strings.HasPrefix(line, "#") {
 				continue
 			}
-			if strings.ContainsAny(line, " \t") {
+			// an address (a sign-in's callback among them) is never sent to
+			// the vendor as a token
+			if strings.ContainsAny(line, " \t") || looksLikeAddress(line) {
 				out = append(out, loginImport{err: "not a refresh token"})
 				continue
 			}

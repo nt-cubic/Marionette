@@ -5,6 +5,7 @@
   var mode = new URLSearchParams(location.search).get("mode") || "window";
   var web = !!(window.bootPrefs && window.bootPrefs.web);
   document.body.classList.add(mode);
+  if (window.bootPrefs && window.bootPrefs.reduceMotion) window.holdStill(true);
   if (web) document.body.classList.add("web");
   // Preserve the existing iOS viewport policy before app.js runs.
   if (web && (/iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1))) {

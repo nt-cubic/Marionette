@@ -590,6 +590,12 @@ type RTKView struct {
 	// doesn't know how this rtk was installed
 	Latest  string `json:"latest,omitempty"`
 	Upgrade string `json:"upgrade,omitempty"`
+	// NoUpgrade is why there is no Upgrade when magpie knows: "cargo", an
+	// rtk cargo installed with no cargo to be found to upgrade it, which
+	// the page says with Manual, the command to run in a terminal once
+	// there is (新v学员: its Upgrade button only did nothing)
+	NoUpgrade string `json:"noUpgrade,omitempty"`
+	Manual    string `json:"manual,omitempty"`
 	// Admin is the folder rtk is in when only an administrator can change
 	// it (winget's for every user, under Program Files): Upgrade asks
 	// Windows for one first
@@ -632,10 +638,10 @@ func rtkPath() string {
 	if p, err := proc.Look("rtk"); err == nil {
 		return p
 	}
-	name, dirs := "rtk", []string{filepath.Join(home(), ".local", "bin"), filepath.Join(home(), ".cargo", "bin")}
+	name, dirs := "rtk", append([]string{filepath.Join(home(), ".local", "bin")}, cargoBins()...)
 	if runtime.GOOS == "windows" {
 		winget := filepath.Join(appdir.Getenv("LOCALAPPDATA"), "Microsoft", "WinGet")
-		name, dirs = "rtk.exe", []string{filepath.Join(winget, "Links"), filepath.Join(home(), ".cargo", "bin")}
+		name, dirs = "rtk.exe", append([]string{filepath.Join(winget, "Links")}, cargoBins()...)
 		if appdir.Getenv("LOCALAPPDATA") != "" {
 			pkgs, _ := filepath.Glob(filepath.Join(winget, "Packages", "rtk-ai.rtk_*"))
 			dirs = append(dirs, pkgs...)
@@ -741,6 +747,10 @@ func ReadRTK() *RTKView {
 	}
 	if c := upgraderOf(v.Path); c != nil {
 		v.Upgrade, v.Admin = shown(c), rtkAdminFolder(c, v.Path)
+	} else {
+		if v.NoUpgrade = rtkNoUpgrade(v.Path); v.NoUpgrade == "cargo" {
+			v.Manual = rtkCargoCmd
+		}
 	}
 	v.Gain, v.Days, v.GainErr = rtkGain(v.Path)
 	if runtime.GOOS == "windows" {

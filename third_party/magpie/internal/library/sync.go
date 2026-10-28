@@ -37,6 +37,9 @@ type Result struct {
 	Installed []string  `json:"installed,omitempty"`
 	Had       []string  `json:"had,omitempty"`
 	Skipped   []Problem `json:"skipped,omitempty"`
+	// dropped are the servers taken out of an agent's config, as it had
+	// them, whose processes go once no agent runs them (mcp_reap.go)
+	dropped []*Server
 }
 
 // Problem is one thing that couldn't be given to an agent.
@@ -165,6 +168,9 @@ func Sync() (*Result, error) {
 		pruneBackups()
 		mu.Unlock()
 	}
+	if len(res.dropped) > 0 {
+		ending(res.dropped)
+	}
 	return res, nil
 }
 
@@ -206,10 +212,16 @@ func (l *Library) syncMCP(t *Target, b *backups, res *Result) {
 		if s := l.server(name); s != nil && slices.Contains(s.Agents, id) && t.MCP.supports(s) == nil {
 			continue
 		}
-		if _, ok := entries[name]; (ok || t.MCP.holds(name)) && !write("mcp:"+name, func() error { return t.MCP.del(name) }) {
+		e, ok := entries[name]
+		if !ok && !t.MCP.holds(name) {
+			continue
+		}
+		if !write("mcp:"+name, func() error { return t.MCP.del(name) }) {
 			mine = append(mine, name)
 			toolsOff[name] = a.ToolsOff[name]
 			startup[name] = a.Startup[name]
+		} else if had, ok := t.MCP.decode(name, e); ok && e != nil {
+			res.dropped = append(res.dropped, had)
 		}
 	}
 	base := gatewayOf(t)

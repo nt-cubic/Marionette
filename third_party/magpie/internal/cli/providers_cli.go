@@ -76,6 +76,10 @@ const providerUsage = `usage:
   magpie provider account-cap <id> <account> --window <name> [percent|none|default]
                                           a share for one window alone (e.g. "5 hours" 50): none is no cap on it,
                                           default has it follow the account's cap
+  magpie provider pool <id> [--accounts a,b,…] [--cap percent|off] [--stop on|off] [--careful on|off]
+                                          a subscription's accounts as one pool: which are in use and in what order,
+                                          each one's cap, --stop: answer 429 at the caps rather than go on to the
+                                          fallbacks, --careful: read usage again near a cap, holding what can't be read
   magpie provider account-concurrency <id> [account|key [n|off|default]]
                                           how many requests one account or key has out at once, over every model,
                                           routing group and agent: its own, off for none, default for the provider's
@@ -602,6 +606,8 @@ func providerCmd(args []string) error {
 		return accountModelsCmd(rest)
 	case "account-cap", "account-caps":
 		return accountCapCmd(rest)
+	case "pool":
+		return poolCmd(rest)
 	case "account-concurrency", "account-limit":
 		return accountConcurrencyCmd(rest)
 	case "queue":

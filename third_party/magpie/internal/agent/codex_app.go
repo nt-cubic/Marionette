@@ -3,20 +3,21 @@ package agent
 import (
 	"context"
 	"errors"
-	"regexp"
 	"runtime"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/yetone/magpie/internal/proc"
+	"github.com/yetone/magpie/internal/provider"
 )
 
 // The Codex app on macOS keeps running, its app-server with it, when its
 // window is closed, so a change to Codex's model list reaches it only once
-// it is quit and opened again. The Agents row's Restart does that for the
-// user (the owner, 10-23): it asks the app to quit, as ⌘Q does, waits for
-// every process of its bundle to end, and opens it again.
+// its app-server starts again. The Agents row's Restart does that for the
+// user (the owner, 10-23): it ends the app's own app-server, and the app
+// starts another and keeps its window. Quitting the app and opening it
+// again, as it did before, opened a new window (yoshi037070, 10-27).
 
 // appQuit and appOpen ask macOS to quit a bundle and to open it; vars so
 // tests don't touch a real app.
@@ -41,16 +42,17 @@ func cmdErr(out []byte, err error) error {
 	return err
 }
 
-// ErrCodexAppStillOpen is a quit the app didn't finish: it may be asking
-// something in its window (a task still running).
-var ErrCodexAppStillOpen = errors.New("the Codex app is still open; it may be asking something in its window")
+// restartAppServer ends the app-server the app at a bundle runs for
+// itself; a var so tests don't end a real one.
+var restartAppServer = provider.RestartCodexApp
 
-// ReopenCodexApp quits the Codex desktop app at bundle and opens it again.
-// Only an app the Agents row lists as left on the old list is quit, never
-// a path a request names otherwise.
+// ReopenCodexApp restarts the app-server of the Codex desktop app at
+// bundle; the app starts a new one and its window stays. Only an app the
+// Agents row lists as left on the old list is touched, never a path a
+// request names otherwise.
 func ReopenCodexApp(ctx context.Context, bundle string) error {
 	if runtime.GOOS != "darwin" {
-		return errors.New("only the macOS Codex app is reopened by magpie")
+		return errors.New("only the macOS Codex app is restarted by magpie")
 	}
 	a, err := Find("codex")
 	if err != nil {
@@ -63,20 +65,5 @@ func reopenApp(ctx context.Context, a *Agent, bundle string) error {
 	if bundle == "" || !slices.ContainsFunc(a.StaleCopies(), func(c StaleCopy) bool { return c.Kind == "app" && c.Bundle == bundle }) {
 		return errors.New("that Codex app has the current list already")
 	}
-	if err := appQuit(ctx, bundle); err != nil {
-		return err
-	}
-	pat := regexp.QuoteMeta(bundle + "/Contents/")
-	end := time.Now().Add(appQuitWait)
-	for len(running(pat)) > 0 {
-		if time.Now().After(end) {
-			return ErrCodexAppStillOpen
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(200 * time.Millisecond):
-		}
-	}
-	return appOpen(ctx, bundle)
+	return restartAppServer(ctx, bundle)
 }

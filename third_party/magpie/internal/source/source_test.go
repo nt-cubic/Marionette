@@ -234,10 +234,12 @@ func TestDoBodyOutlivesCandidateTimeout(t *testing.T) {
 
 type recordedTransport struct {
 	requests []string
+	auth     []string // each request's Authorization
 }
 
 func (rt *recordedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	rt.requests = append(rt.requests, req.URL.String())
+	rt.auth = append(rt.auth, req.Header.Get("Authorization"))
 	status := http.StatusBadGateway
 	if strings.HasPrefix(req.URL.String(), "https://gh.example/") {
 		status = http.StatusOK
@@ -251,19 +253,54 @@ func (rt *recordedTransport) RoundTrip(req *http.Request) (*http.Response, error
 	}, nil
 }
 
+// A request to GitHub whose one credential is the user's token reaches a
+// mirror without it (#3923): the official address is asked with it, the
+// mirror never sees it. Any other credential, or a host other than
+// GitHub's, keeps the request official.
 func TestDoKeepsCredentialsOfficial(t *testing.T) {
 	t.Setenv("MAGPIE_MIRRORS", "on")
 	t.Setenv("MAGPIE_GITHUB_MIRROR", "https://gh.example")
-	rt := &recordedTransport{}
-	req, _ := http.NewRequest("GET", "https://api.github.com/repos/o/r", nil)
-	req.Header.Set("Authorization", "Bearer secret")
-	resp, err := Do(&http.Client{Transport: rt}, req)
-	if err != nil {
-		t.Fatal(err)
+	t.Setenv("MAGPIE_NPM_REGISTRY", "https://gh.example/npm")
+	send := func(raw string, h map[string]string, do func(*http.Client, *http.Request) (*http.Response, error)) (*recordedTransport, *http.Response) {
+		t.Helper()
+		rt := &recordedTransport{}
+		req, _ := http.NewRequest("GET", raw, nil)
+		for k, v := range h {
+			req.Header.Set(k, v)
+		}
+		resp, err := do(&http.Client{Transport: rt}, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if req.Header.Get("Authorization") != h["Authorization"] {
+			t.Fatalf("the caller's request lost its token: %q", req.Header.Get("Authorization"))
+		}
+		return rt, resp
 	}
-	resp.Body.Close()
-	if len(rt.requests) != 1 || rt.requests[0] != "https://api.github.com/repos/o/r" {
+
+	rt, resp := send("https://api.github.com/repos/o/r", map[string]string{"Authorization": "Bearer secret"}, Do)
+	if fmt.Sprint(rt.requests) != "[https://api.github.com/repos/o/r https://gh.example/https://api.github.com/repos/o/r]" {
 		t.Fatalf("requests = %q", rt.requests)
+	}
+	if rt.auth[0] != "Bearer secret" || rt.auth[1] != "" {
+		t.Fatalf("Authorization = %q, want the token official only", rt.auth)
+	}
+	if resp.StatusCode != http.StatusOK || resp.Request.Header.Get("Authorization") != "" {
+		t.Fatalf("answer %d, sent with %q", resp.StatusCode, resp.Request.Header.Get("Authorization"))
+	}
+
+	for _, c := range []struct {
+		raw string
+		h   map[string]string
+	}{
+		{"https://api.github.com/repos/o/r", map[string]string{"Authorization": "Bearer secret", "Cookie": "s=1"}},
+		{"https://api.github.com/repos/o/r?access_token=x", map[string]string{"Authorization": "Bearer secret"}},
+		{"https://registry.npmjs.org/pkg", map[string]string{"Authorization": "Bearer secret"}},
+	} {
+		if rt, _ := send(c.raw, c.h, Do); len(rt.requests) != 1 || rt.requests[0] != c.raw {
+			t.Fatalf("%s %v: requests = %q", c.raw, c.h, rt.requests)
+		}
 	}
 }
 

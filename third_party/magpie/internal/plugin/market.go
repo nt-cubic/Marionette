@@ -310,6 +310,12 @@ func npmPath(name string) string { return strings.Replace(url.PathEscape(name), 
 // its answer, when it comes, is kept for the next time. A package npm
 // doesn't have has no Version.
 func Info(ctx context.Context, names []string) map[string]NPM {
+	return infoWithin(ctx, names, time.Hour)
+}
+
+// infoWithin is Info asking npm of each package it last answered for over
+// age ago; 0 asks of every one.
+func infoWithin(ctx context.Context, names []string, age time.Duration) map[string]NPM {
 	out := map[string]NPM{}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -330,7 +336,7 @@ func Info(ctx context.Context, names []string) map[string]NPM {
 		e, hit := cache[n]
 		if hit {
 			out[n] = e.Info // what it said last, until it says otherwise
-			if time.Since(e.At) < time.Hour {
+			if time.Since(e.At) < age {
 				continue
 			}
 		}

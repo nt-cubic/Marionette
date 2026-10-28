@@ -41,3 +41,28 @@ func TestStatWaitsOutAReplace(t *testing.T) {
 		t.Fatalf("a file not there: %v", err)
 	}
 }
+
+// #1665: a file whose folder isn't there is not being renamed into it, and
+// is said gone without the wait; most agents aren't installed, and each
+// one's first look waited the whole of it
+func TestStatOfAFileWithNoFolderWaitsNothing(t *testing.T) {
+	windows = true
+	defer func() { windows, stat = runtime.GOOS == "windows", os.Stat }()
+	looks := 0
+	stat = func(p string) (fs.FileInfo, error) {
+		looks++
+		return nil, &fs.PathError{Op: "stat", Path: p, Err: errors.Join(fs.ErrNotExist, errPathNotFound)}
+	}
+	if _, err := Stat("no-folder/settings.json"); !errors.Is(err, fs.ErrNotExist) || looks != 1 {
+		t.Fatalf("looked %d times: %v", looks, err)
+	}
+	// its folder there, the file not, is waited on as before
+	looks = 0
+	stat = func(p string) (fs.FileInfo, error) {
+		looks++
+		return nil, &fs.PathError{Op: "stat", Path: p, Err: fs.ErrNotExist}
+	}
+	if _, err := Stat("settings.json"); !errors.Is(err, fs.ErrNotExist) || looks < 2 {
+		t.Fatalf("looked %d times: %v", looks, err)
+	}
+}

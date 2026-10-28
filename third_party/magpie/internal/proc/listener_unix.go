@@ -21,3 +21,7 @@ func signal(pid int, s syscall.Signal) error {
 	}
 	return err
 }
+
+// end asks pid to end: SIGTERM, on which a program that handles it exits
+// cleanly (codex app-server exits 0).
+func end(pid int) error { return signal(pid, syscall.SIGTERM) }

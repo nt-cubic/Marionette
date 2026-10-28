@@ -153,13 +153,15 @@ func almaFiles() []file {
 			agent:    "alma",
 			key:      "alma:" + id,
 			path:     path + "#" + url.QueryEscape(id),
-			sid:      id,
 			main:     true,
 			size:     bytes,
 			mod:      mod,
-			alma:     st,
-			rev:      strings.Join([]string{updated, strconv.FormatInt(n, 10), last, strconv.FormatInt(bytes, 10), strconv.FormatInt(usageN, 10), usageLast}, "|"),
 			readOnly: true,
+			more: &fileMore{
+				sid:  id,
+				alma: st,
+				rev:  strings.Join([]string{updated, strconv.FormatInt(n, 10), last, strconv.FormatInt(bytes, 10), strconv.FormatInt(usageN, 10), usageLast}, "|"),
+			},
 		})
 	}
 	return out
@@ -227,8 +229,8 @@ func almaModel(model, providerID string) string {
 // parseAlma reads one chat in a read transaction, a snapshot while Alma
 // writes on.
 func parseAlma(f file) *state {
-	s := &state{Size: f.size, Mod: f.mod.UnixNano(), DBRevision: f.rev}
-	st := f.alma
+	s := &state{Size: f.size, Mod: f.mod.UnixNano(), DBRevision: f.m().rev}
+	st := f.m().alma
 	if st == nil {
 		return s
 	}
@@ -245,7 +247,7 @@ func parseAlma(f file) *state {
 	}
 	var named, created string
 	if err := tx.QueryRow("SELECT "+almaExpr(st.threads, "t", "title", "''")+", "+almaExpr(st.threads, "t", "created_at", "''")+", "+cwd+
-		" FROM chat_threads t"+join+" WHERE t.id = ?", f.sid).Scan(&named, &created, &s.Cwd); err != nil {
+		" FROM chat_threads t"+join+" WHERE t.id = ?", f.m().sid).Scan(&named, &created, &s.Cwd); err != nil {
 		return &state{}
 	}
 	if named = title(named); named != "New Chat" {
@@ -259,7 +261,7 @@ func parseAlma(f file) *state {
 	}
 	order := almaColumn(st.messages, "timestamp", "created_at")
 	rows, err := tx.Query("SELECT message, "+hermesExpr(st.messages, "timestamp", "''")+", "+hermesExpr(st.messages, "metadata", "'{}'")+", "+sub+
-		" FROM chat_messages WHERE thread_id = ? ORDER BY "+order+", rowid", f.sid)
+		" FROM chat_messages WHERE thread_id = ? ORDER BY "+order+", rowid", f.m().sid)
 	if err != nil {
 		return &state{}
 	}
@@ -342,7 +344,7 @@ func parseAlma(f file) *state {
 		q := "SELECT " + hermesSelect(table.cols, []string{"model", "provider_id", "timestamp"}, "''") + ", " +
 			hermesSelect(table.cols, []string{"input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens"}, "0") +
 			" FROM " + table.name + " WHERE thread_id = ?"
-		rows, err := tx.Query(q, f.sid)
+		rows, err := tx.Query(q, f.m().sid)
 		if err != nil {
 			return &state{}
 		}

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -119,5 +120,89 @@ func TestRemoteMagpieOffersItsTiers(t *testing.T) {
 	defer mu.Unlock()
 	if len(hops) != 1 || hops[0] != "priority" || len(vendor) != 1 || vendor[0] != "priority" {
 		t.Errorf("tier sent to the remote magpie %v, by it to its vendor %v; want priority, priority", hops, vendor)
+	}
+}
+
+// An agent's pick of another magpie's model is switched fast where that
+// magpie offers Fast on it (its list's service_tiers, #1234), and the
+// agent's requests then go on to it with service_tier priority, which it
+// sends its vendor: Claude Code's on Anthropic's API too, translated to the
+// Chat Completions that magpie serves the model on (littlekk88 on Discord:
+// no lightning in the picker, SetFastPick refused, tier_sent empty on both
+// computers). A model it offers no tier on can't be picked fast.
+func TestRemoteMagpieFastPick(t *testing.T) {
+	var mu sync.Mutex
+	var hops []any // service_tier as the remote magpie was sent it
+	vendor := &tierUp{}
+	up := httptest.NewServer(vendor)
+	t.Cleanup(up.Close)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	// its vendor serves the model on Chat Completions alone, as the
+	// report's native_endpoints said
+	if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Key: "k", Models: []string{"gpt-6.1-sol", "glm-5"}, Chat: up.URL + "/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	h := s.Handler()
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			b, _ := io.ReadAll(r.Body)
+			r.Body = io.NopCloser(strings.NewReader(string(b)))
+			var v map[string]any
+			json.Unmarshal(b, &v)
+			mu.Lock()
+			hops = append(hops, v["service_tier"])
+			mu.Unlock()
+		}
+		h.ServeHTTP(w, r)
+	}))
+	t.Cleanup(remote.Close)
+	id, err := provider.Add(provider.Provider{ID: "office", Name: "Office", Preset: provider.RemoteMagpiePreset, Chat: strings.TrimPrefix(remote.URL, "http://")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	office, err := provider.Find(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := office.Fetch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !provider.CanFast(*office, "relay/gpt-6.1-sol") || provider.CanFast(*office, "relay/glm-5") {
+		t.Fatalf("CanFast: gpt-6.1-sol %v, glm-5 %v; want true, false", provider.CanFast(*office, "relay/gpt-6.1-sol"), provider.CanFast(*office, "relay/glm-5"))
+	}
+	if err := provider.SetFastPick("claude", "office/relay/glm-5", true); err == nil {
+		t.Error("a model the remote magpie offers no tier on was picked fast")
+	}
+	if err := provider.SetFastPick("claude", "office/relay/gpt-6.1-sol", true); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range []struct{ path, body string }{
+		{"/v1/messages", `{"model":"office/relay/gpt-6.1-sol","max_tokens":1024,"stream":true,"messages":[{"role":"user","content":"hi"}]}`},
+		{"/v1/chat/completions", `{"model":"office/relay/gpt-6.1-sol","stream":true,"messages":[{"role":"user","content":"hi"}]}`},
+	} {
+		mu.Lock()
+		hops = nil
+		mu.Unlock()
+		postFrom(t, s, "claude", a.path, a.body)
+		mu.Lock()
+		got := slices.Clone(hops)
+		mu.Unlock()
+		// the hop to the remote magpie, and its own to its vendor (one
+		// gateway serves both here, so the last trace is the remote's)
+		if len(got) != 1 || got[0] != "priority" || vendor.last(t) != "priority" {
+			t.Errorf("%s: sent the remote magpie %v, by it its vendor %v; want priority, priority", a.path, got, vendor.last(t))
+		}
+	}
+	// another agent's requests for it go as they are
+	mu.Lock()
+	hops = nil
+	mu.Unlock()
+	postFrom(t, s, "opencode", "/v1/chat/completions", `{"model":"office/relay/gpt-6.1-sol","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(hops) != 1 || hops[0] != nil || vendor.last(t) != nil {
+		t.Errorf("another agent's request went fast: remote %v, vendor %v", hops, vendor.last(t))
 	}
 }

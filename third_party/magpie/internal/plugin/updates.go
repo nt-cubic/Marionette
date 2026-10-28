@@ -89,11 +89,15 @@ func Pinned(spec string) bool {
 
 var (
 	updatesMu sync.Mutex
-	// latestOf is the version npm has of each package, "" for one it
-	// didn't tell (tests stub it)
+	// latestOf is the version npm has of each package, asked now, "" for
+	// one it never told (tests stub it). Not Info's answer of up to an
+	// hour ago: a magpie started after a community fix was published, or
+	// the hourly look, found the version before it and updated nothing
+	// for another hour (ysm119 on Discord: Cursor's 0.2.25 a quarter of an
+	// hour after it was published, on a magpie started since).
 	latestOf = func(ctx context.Context, names []string) map[string]string {
 		out := map[string]string{}
-		for n, i := range Info(ctx, names) {
+		for n, i := range infoWithin(ctx, names, 0) {
 			out[n] = i.Version
 		}
 		return out

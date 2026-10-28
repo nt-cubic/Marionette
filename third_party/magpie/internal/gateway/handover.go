@@ -152,17 +152,93 @@ func (s *Server) ListenerFile() (*os.File, error) {
 	return tl.File()
 }
 
-// HandOff has the gateway, once its ctx ends, wait for every request in
-// flight to finish (handedOffDrain at most) rather than 2s: another
-// magpie serves the port meanwhile.
-func (s *Server) HandOff() { s.handedOff.Store(true) }
+// HandOff has the gateway stop accepting at once: the magpie it was
+// handed to takes every connection from now on (one this one took as its
+// end began was closed unanswered, #3568). Once its ctx ends, it waits
+// for every request in flight to finish (handedOffDrain at most) rather
+// than 2s.
+func (s *Server) HandOff() {
+	s.handedOff.Store(true)
+	s.stopAccepting()
+}
+
+// stopAccepting has the gateway take no connection from here on, for the
+// magpie serving the port after it: the copy of the socket handed to that
+// one keeps the socket open, so a connection waits there rather than
+// being refused. (`make dev`'s takes them on a socket of its own.)
+func (s *Server) stopAccepting() {
+	s.lnMu.Lock()
+	defer s.lnMu.Unlock()
+	s.notAccepting.Store(true)
+	if s.ln != nil {
+		s.ln.Close()
+	}
+}
+
+// handingOver is whether another magpie serves the port once this
+// gateway ends: it was handed off, or `make dev` started one beside it.
+func (s *Server) handingOver() bool { return Handover || s.handedOff.Load() }
 
 // drainFor is how long the gateway's end waits for the requests in flight.
 func (s *Server) drainFor() time.Duration {
-	if Handover || s.handedOff.Load() {
+	if s.handingOver() {
 		return handedOffDrain
 	}
 	return shortDrain
+}
+
+// unreadWait is how long a handover's end waits for a connection taken to
+// send its first request: as for net/http's Shutdown, one that sent
+// nothing for 5s is idle.
+var unreadWait = 5 * time.Second
+
+// unreadConns are the connections the gateway took whose first request it
+// hasn't read yet. Shutdown closes such a connection unanswered when its
+// request is read after it began, so a handover's end waits for them
+// first: the agent's request is answered here, not cut.
+type unreadConns struct {
+	mu    sync.Mutex
+	conns map[net.Conn]bool
+	// stopped: the server takes none from here on, its Serve returned
+	stopped bool
+}
+
+// note is the server's ConnState: a connection is unread from StateNew to
+// its next state, whichever it is.
+func (u *unreadConns) note(c net.Conn, state http.ConnState) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if state != http.StateNew {
+		delete(u.conns, c)
+		return
+	}
+	if u.conns == nil {
+		u.conns = map[net.Conn]bool{}
+	}
+	u.conns[c] = true
+}
+
+// stop is called once the server's Serve has returned. net/http notes a
+// connection (StateNew) on the goroutine that took it, before Serve can
+// return, so every one it took is noted by then: one noted after Shutdown
+// began would have its request closed unanswered too.
+func (u *unreadConns) stop() {
+	u.mu.Lock()
+	u.stopped = true
+	u.mu.Unlock()
+}
+
+// wait returns once the server takes no more connections and none it took
+// is unread, after unreadWait at most, or when ctx ends.
+func (u *unreadConns) wait(ctx context.Context) {
+	for deadline := time.Now().Add(unreadWait); ; time.Sleep(10 * time.Millisecond) {
+		u.mu.Lock()
+		done := u.stopped && len(u.conns) == 0
+		u.mu.Unlock()
+		if done || time.Now().After(deadline) || ctx.Err() != nil {
+			return
+		}
+	}
 }
 
 // ServeCallbacks answers, on ln, the tool calls of the Claude Code runs

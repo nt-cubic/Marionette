@@ -287,7 +287,7 @@ func JSONToYAML(src, dst string) error {
 // Unrelated duplicate keys, complex keys or invalid tags must not hide a
 // readable model setting. Writers use loadYAMLForEdit to validate the whole file.
 func loadYAML(path string) (*yaml.Node, error) {
-	raw, err := Read(path)
+	raw, err := readHeld(path)
 	if err != nil || len(bytes.TrimSpace(raw)) == 0 {
 		return nil, err
 	}

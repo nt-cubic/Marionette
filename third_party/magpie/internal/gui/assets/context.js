@@ -1484,6 +1484,7 @@
     const note = el("div", "ctx-tune-src");
     title.after(note);
     if (set.locked) note.textContent = t("{name} is set and comes first", { name: set.locked });
+    else if (set.source == "long") note.textContent = t("Long conversations, shared by Codex and Claude Code");
     else if (set.ours) note.textContent = t("Set by magpie");
     else if (set.value && a.compact && +set.value > a.compact.window && a.compact.window) note.textContent = t("You set {value}; the model's {window} comes first", { value: show(set.value), window: fmtK(a.compact.window) });
     else if (set.value) note.textContent = t("You set {value}", { value: show(set.value) });
@@ -1526,10 +1527,8 @@
       go.onclick = () => send("apply", lean.value);
       foot.append(go);
     }
-    // a window of the reader's own (#1860): one who would spend some tokens
-    // for fewer compactions picks it from the same replay the advice comes
-    // from, each value with what it spends past the leanest and how often
-    // it would have compacted in the range, both estimates
+    // a window of the reader's own (#1860), from the same replay: each
+    // value's tokens past the leanest and compactions, both estimates
     const pts = (a.compact && a.compact.curve) || [];
     if (pts.length > 1 && !set.locked) {
       const other = el("button", "text ctx-tune-pick", t("Other window…"));

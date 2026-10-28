@@ -899,6 +899,14 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 								out["type"] = t
 							}
 						}
+						// Google has one type a node: of a list, the one
+						// its items or properties are for
+						for _, t := range ts {
+							if t == "array" && x["items"] != nil || t == "object" && x["properties"] != nil {
+								out["type"] = t
+								break
+							}
+						}
 					} else {
 						out["type"] = v
 					}
@@ -950,6 +958,26 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 				// items: missing field", Claude Desktop's own MCP tools,
 				// plugins#375): any item is what JSON Schema means by none
 				out["items"] = map[string]any{}
+			}
+			if t, ok := out["type"].(string); ok {
+				// JSON Schema reads an array's keywords only on an array
+				// and an object's only on an object; Google turns the
+				// whole request away over one on another type ("properties
+				// [display].items: field predicate failed: $type ==
+				// Type.ARRAY", ferock on Discord: items beside a string
+				// enum)
+				if t != "array" {
+					delete(out, "items")
+					delete(out, "minItems")
+					delete(out, "maxItems")
+				}
+				if t != "object" {
+					delete(out, "properties")
+					delete(out, "required")
+					delete(out, "minProperties")
+					delete(out, "maxProperties")
+					delete(out, "propertyOrdering")
+				}
 			}
 			if req, ok := out["required"].([]any); ok {
 				// required names only the properties there are

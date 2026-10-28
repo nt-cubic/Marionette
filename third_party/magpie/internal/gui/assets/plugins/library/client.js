@@ -755,7 +755,7 @@ magpie.plugin("library", (ctx) => {
         if (!mk || !window.scrollOnPurpose?.(e, 1500)) return;
         // its heading just under the strip, however many lines that takes
         const top = mk.getBoundingClientRect().top - page.getBoundingClientRect().top + page.scrollTop - head.getBoundingClientRect().height - 8;
-        page.scrollTo({ top, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+        page.scrollTo({ top, behavior: calm() ? "auto" : "smooth" });
         mk.querySelector("input")?.focus({ preventScroll: true });
       });
       go.append(glyph(GLYPH.search, "lib-mini"), el("span", "", t("Discover")));
@@ -871,6 +871,11 @@ magpie.plugin("library", (ctx) => {
       // (#1025), so none is offered until it does
       const waiting = !rtkUpgrading && rtk.waiting;
       const behind = !waiting && rtk.latest && rtk.version && vNewer(rtk.latest, rtk.version);
+      // why there is no upgrade to run: a cargo RTK with no cargo to be
+      // found says what to install or run (新v学员)
+      const noUpgrade = rtk.noUpgrade === "cargo"
+        ? t("RTK was installed with cargo, but magpie can't find cargo to upgrade it. Install Rust from rustup.rs, or run {cmd} in a terminal.", { cmd: rtk.manual })
+        : t("magpie can't tell how this RTK was installed — update it the way you installed it");
       if (rtkUpgrading) ttl.append(tag(t("Upgrading…"), "lib-new"));
       else if (waiting) ttl.append(tag(t("v{v} is out · waiting for {via}", { v: rtk.latest, via: rtk.waiting }), "", t("RTK {v} is out, but {via} has {has} so far — usually within a few days. Upgrade comes back once {via} has it.", { v: rtk.latest, via: rtk.waiting, has: rtk.waitingHas || rtk.version })));
       else if (behind) ttl.append(tag(t("v{v} is out", { v: rtk.latest }), "lib-new", t("RTK {v} is the latest release; this one is {have}", { v: rtk.latest, have: rtk.version })));
@@ -878,7 +883,7 @@ magpie.plugin("library", (ctx) => {
       if (behind || rtkUpgrading) {
         const ub = button(rtkUpgrading ? t("Upgrading…") : t("Upgrade"), "action", upgradeRTK);
         ub.disabled = rtkUpgrading || !rtk.upgrade;
-        ub.title = rtk.upgrade ? (rtk.admin ? t("Runs {cmd}, as administrator: Windows asks first", { cmd: rtk.upgrade }) : t("Runs {cmd}", { cmd: rtk.upgrade })) : t("magpie can't tell how this RTK was installed — update it the way you installed it");
+        ub.title = rtk.upgrade ? (rtk.admin ? t("Runs {cmd}, as administrator: Windows asks first", { cmd: rtk.upgrade }) : t("Runs {cmd}", { cmd: rtk.upgrade })) : noUpgrade;
         ttl.append(ub);
       }
       card.append(ttl);
@@ -886,6 +891,10 @@ magpie.plugin("library", (ctx) => {
       // with the tool's exit code and what it said, until the next try (#741)
       if (rtkUpgrading && rtk.upgrade) card.append(el("p", "lib-rtk-gain", t("Running {cmd} — this can take a few minutes.", { cmd: rtk.upgrade })));
       else if (rtkUpgradeErr) card.append(el("p", "lib-rtk-note lib-rtk-err", t("The upgrade failed: {why}", { why: rtkUpgradeErr })));
+      // no upgrade to run: said on the card, not only in the disabled
+      // button's tooltip, which a click never shows (新v学员: a cargo RTK
+      // on Windows whose Upgrade did nothing)
+      else if (behind && !rtk.upgrade) card.append(el("p", "lib-rtk-note lib-rtk-noupgrade", noUpgrade));
       if (rtk.note) card.append(el("p", "lib-rtk-note", rtk.note));
       // found where magpie looks, but not on the PATH the agents get: their
       // hooks run rtk by name, so it does nothing for them (#601)

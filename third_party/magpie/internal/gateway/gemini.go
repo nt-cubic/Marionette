@@ -116,7 +116,7 @@ func buildGemini(r *Request, model string) ([]byte, error) {
 		return nil, err
 	}
 	req["model"] = model
-	return json.Marshal(req)
+	return marshalBody(req)
 }
 
 // geminiRequest is the request inside the Code Assist envelope that

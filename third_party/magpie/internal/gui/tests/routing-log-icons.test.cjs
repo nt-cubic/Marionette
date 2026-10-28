@@ -14,11 +14,17 @@ const day = [now.getFullYear(), now.getMonth() + 1, now.getDate()].map((n) => St
 const at = (i) => new Date(now.getTime() - (i + 1) * 60e3).toISOString();
 const glm = { id: "zhipu/a1", provider: "zhipu", name: "Zhipu", icon: "zhipu-color", who: "18610345303", kind: "account", agent: "claude", model: "glm-5.3-flash", routing: "order", shared: true, used: 20 };
 const gpt = { id: "openai/k1", provider: "openai", name: "OpenAI", icon: "openai", who: "work", kind: "key", model: "glm-5.3-flash", routing: "order", fallback: true, used: 0 };
+// two named alike (#3953, MYCF711): a key in the order and a member the
+// gateway skipped before trying it (r.left), each "API key"
+const ds = { id: "deepseek/k1", provider: "deepseek", name: "DeepSeek", icon: "deepseek-color", who: "API key", kind: "key", model: "glm-5.3-flash", routing: "order", fallback: true, used: 0 };
+const zen = { id: "opencode-zen-free", provider: "opencode-zen-free", name: "OpenCode Zen Free", icon: "opencode", who: "API key", kind: "account", agent: "claude", model: "deepseek-v4.1-flash-free", routing: "", used: 0, window: 200000 };
 const routes = [{
   id: 100, seq: 100, time: at(0), agent: "claude", model: "glm-5.3-flash", provider: "zhipu",
-  order: [glm, gpt],
+  order: [glm, ds, gpt],
+  left: [zen],
   tries: [
     { id: glm.id, model: glm.model, start: at(0), done: true, status: 429, ms: 400, error: "rate limited" },
+    { id: ds.id, model: ds.model, start: at(0), done: true, status: 500, ms: 300, error: "upstream error" },
     { id: gpt.id, model: gpt.model, start: at(0), done: true, status: 200, ms: 22000 },
   ],
   done: true, status: 200, ms: 22400, tokens: 1200,
@@ -89,6 +95,16 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.deepEqual(l.size, [14, 14], JSON.stringify(l));
         assert(l.before && l.inline, JSON.stringify(l));
       }
+      // a line about one of the two named "API key" leads with that one's
+      // logo: the skipped one's line with Zen's, the order key's try with
+      // DeepSeek's, whichever list is looked in first
+      const skipped = lines.find((l) => l.cls === "aside" && l.text.includes("200K"));
+      assert.equal(skipped?.logo, "opencode", JSON.stringify(lines));
+      assert.equal(skipped.name, "API key", JSON.stringify(skipped));
+      assert(skipped.before && skipped.inline, JSON.stringify(skipped));
+      const dsTry = of("bad")[1];
+      assert.equal(dsTry?.logo, "deepseek-color", JSON.stringify(lines));
+      assert.equal(dsTry.name, "API key", JSON.stringify(dsTry));
       // what the vendor said is word for word, with no logo in it
       assert(!lines.some((l) => /said/.test(l.cls) && l.logo), JSON.stringify(lines));
       assert.deepEqual(errors, []);

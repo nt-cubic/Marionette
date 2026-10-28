@@ -33,9 +33,53 @@ func TestBunIsGivenTheSystemsRoots(t *testing.T) {
 	}
 
 	systemCAFile = func() string { return "" }
-	if got := caEnv(nil, ""); got != nil {
-		t.Fatalf("with nothing to add: %v", got)
+	if got := caEnv(nil, ""); !slices.Equal(got, []string{"NODE_USE_SYSTEM_CA=1"}) {
+		t.Fatalf("with no file to add: %v, want Bun to read the system's store itself", got)
 	}
+}
+
+// Bun reads the system's store itself (NODE_USE_SYSTEM_CA): magpie's copy
+// of the ROOT store missed what Bun's own reading has (the CA store's
+// intermediates a proxy doesn't send, the enterprise's and group
+// policy's roots), and a plugin answered "self signed certificate in
+// certificate chain" while bun add failed with
+// UNABLE_TO_GET_ISSUER_CERT_LOCALLY (明霞 on Discord). A value the user
+// gives it, 0 too, is theirs.
+func TestBunReadsTheSystemsStore(t *testing.T) {
+	old := systemCAFile
+	t.Cleanup(func() { systemCAFile = old })
+	systemCAFile = func() string { return "/cache/bun/system-ca-abc.pem" }
+	t.Setenv("NODE_EXTRA_CA_CERTS", "")
+	t.Setenv("NODE_USE_SYSTEM_CA", "")
+
+	cmd := bunCommand(context.Background(), "bun", t.TempDir(), "run", "host.js")
+	if got := envVars(cmd.Env, "NODE_USE_SYSTEM_CA"); !slices.Equal(got, []string{"NODE_USE_SYSTEM_CA=1"}) {
+		t.Fatalf("Bun isn't told to read the system's store: %v", got)
+	}
+
+	// the user's own file of roots is taken beside the system's store
+	t.Setenv("NODE_EXTRA_CA_CERTS", "/mine.pem")
+	cmd = bunCommand(context.Background(), "bun", t.TempDir(), "add", "x")
+	if got := envVars(cmd.Env, "NODE_USE_SYSTEM_CA"); !slices.Equal(got, []string{"NODE_USE_SYSTEM_CA=1"}) {
+		t.Fatalf("with the user's NODE_EXTRA_CA_CERTS: %v", got)
+	}
+
+	t.Setenv("NODE_USE_SYSTEM_CA", "0")
+	cmd = bunCommand(context.Background(), "bun", t.TempDir(), "add", "x")
+	if got := envVars(cmd.Env, "NODE_USE_SYSTEM_CA"); !slices.Equal(got, []string{"NODE_USE_SYSTEM_CA=0"}) {
+		t.Fatalf("the user's own NODE_USE_SYSTEM_CA = %v, want it alone", got)
+	}
+}
+
+func envVars(env []string, name string) []string {
+	var out []string
+	for _, kv := range env {
+		// a blank one (t.Setenv's "") is no value; exec takes the last
+		if strings.HasPrefix(strings.ToUpper(kv), name+"=") && kv != name+"=" {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 func caVars(env []string) []string {

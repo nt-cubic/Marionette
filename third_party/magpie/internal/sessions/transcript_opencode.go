@@ -22,10 +22,10 @@ func openCodeTranscript(s Session, add func(bool, Part) bool) error {
 		mu.Unlock()
 	}()
 	for _, f := range files {
-		if f.sid != s.ID {
+		if f.m().sid != s.ID {
 			continue
 		}
-		if v, ok := f.oc.(ocV2DB); ok {
+		if v, ok := f.m().oc.(ocV2DB); ok {
 			rows, err := v.db.Query("SELECT type,data FROM session_message WHERE session_id=? AND type IN ('user','assistant') ORDER BY seq", s.ID)
 			if err != nil {
 				return err
@@ -62,7 +62,7 @@ func openCodeTranscript(s Session, add func(bool, Part) bool) error {
 			return rows.Err()
 		}
 		var messages []ocMessage
-		for _, b := range f.oc.messages(f.sid) {
+		for _, b := range f.m().oc.messages(f.m().sid) {
 			var m ocMessage
 			if json.Unmarshal(b, &m) == nil {
 				messages = append(messages, m)
@@ -75,7 +75,7 @@ func openCodeTranscript(s Session, add func(bool, Part) bool) error {
 			return messages[i].ID < messages[j].ID
 		})
 		for _, m := range messages {
-			for _, p := range f.oc.parts(m.ID) {
+			for _, p := range f.m().oc.parts(m.ID) {
 				if !openCodeTranscriptPart(m.Role, m.ModelID, p, add) {
 					return nil
 				}

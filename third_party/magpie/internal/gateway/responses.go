@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/tidwall/gjson"
+	"github.com/yetone/magpie/internal/claudeseal"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -269,11 +270,14 @@ type rRequest struct {
 	ParallelToolCalls *bool           `json:"parallel_tool_calls,omitempty"`
 	ServiceTier       string          `json:"service_tier,omitempty"`
 	PromptCacheKey    string          `json:"prompt_cache_key,omitempty"`
-	Include           []string        `json:"include,omitempty"`
-	ClientMetadata    json.RawMessage `json:"client_metadata,omitempty"`
-	AccessPrograms    json.RawMessage `json:"access_programs,omitempty"`
-	Text              json.RawMessage `json:"text,omitempty"`
-	Reasoning         *struct {
+	// PromptCacheRetention is OpenAI's "in_memory" or "24h": the client's
+	// own say over how long its prompt stays cached (hourMarks)
+	PromptCacheRetention string          `json:"prompt_cache_retention,omitempty"`
+	Include              []string        `json:"include,omitempty"`
+	ClientMetadata       json.RawMessage `json:"client_metadata,omitempty"`
+	AccessPrograms       json.RawMessage `json:"access_programs,omitempty"`
+	Text                 json.RawMessage `json:"text,omitempty"`
+	Reasoning            *struct {
 		Effort  string `json:"effort,omitempty"`
 		Summary string `json:"summary,omitempty"`
 	} `json:"reasoning,omitempty"`
@@ -329,6 +333,9 @@ func readResponses(body []byte, facts bool) (*Request, error) {
 		TopP: q.TopP, Stream: q.Stream, Parallel: q.ParallelToolCalls, Fast: q.ServiceTier == "priority" || q.ServiceTier == "ultrafast", Ultrafast: q.ServiceTier == "ultrafast", Tier: q.ServiceTier, CacheKey: q.PromptCacheKey, Include: q.Include,
 		ClientMetadata: sentRaw(q.ClientMetadata), AccessPrograms: q.AccessPrograms}
 	r.Text, r.Format = textFormat(sentRaw(q.Text))
+	// a Responses client's turns go to Claude with hour-long cache marks,
+	// unless it asked for its prompt to be kept in memory only
+	r.hourMarks = q.PromptCacheRetention != "in_memory"
 	if q.Reasoning != nil {
 		r.Effort = effortOf(q.Reasoning.Effort)
 		r.Thinking = true
@@ -439,7 +446,13 @@ func readResponses(body []byte, facts bool) (*Request, error) {
 					}
 				}
 				part := Part{Kind: Thinking, Text: b.String()}
-				if it.EncryptedContent != "" {
+				if block, ours := claudeseal.Open(it.EncryptedContent); ours {
+					// Claude's block, which magpie gave the client to carry
+					// back: as Claude wrote it, and never to a Responses API
+					// (withoutClaudeSeals). One that can't be read is its
+					// summary, as before.
+					part = claudePart(block, part)
+				} else if it.EncryptedContent != "" {
 					// sealed: the item goes back to a Responses API as it
 					// came, id, summary and all (#1445)
 					if rawItems == nil {
@@ -449,7 +462,7 @@ func readResponses(body []byte, facts bool) (*Request, error) {
 						part.Sealed, part.SealedBy = rawItems[i], sealResponses
 					}
 				}
-				if b.Len() > 0 || part.Sealed != nil {
+				if part.Text != "" || part.Sealed != nil || part.Signature != "" {
 					r.Messages = append(r.Messages, Message{Role: "assistant", Parts: []Part{part}})
 				}
 			}
@@ -1294,9 +1307,12 @@ func buildResponses(r *Request, model, host string, rejectTemp bool) []byte {
 	// input's goes back to a Responses upstream, as it would without magpie
 	// (#1445); an account or vendor that can't read another's turns it away,
 	// and is asked again without it (foreignReasoning, withoutRefused).
+	// Output token replay's include is OpenAI's alone, as Codex sends it
+	// (forVendor): Copilot refuses it (echo_ts).
 	var include []string
 	for _, v := range r.Include {
-		if v == "" || slices.Contains(include, v) || (v == "reasoning.encrypted_content" && out["reasoning"] == nil) {
+		if v == "" || slices.Contains(include, v) || (v == "reasoning.encrypted_content" && out["reasoning"] == nil) ||
+			v == outputReplay && host != "chatgpt.com" && host != "api.openai.com" {
 			continue
 		}
 		include = append(include, v)
@@ -1341,7 +1357,7 @@ func buildResponses(r *Request, model, host string, rejectTemp bool) []byte {
 	if len(include) > 0 {
 		out["include"] = include
 	}
-	b, _ := json.Marshal(out)
+	b, _ := marshalBody(out)
 	// a call the client left unanswered (a turn it interrupted) gets its
 	// synthetic result, as buildChat's pairToolMessages and
 	// buildAnthropic's pairToolBlocks give one: the Responses API refuses
@@ -1689,9 +1705,14 @@ type responsesEncoder struct {
 	// opens an item of its own, by thinkID when the upstream named it
 	thinkNew bool
 	thinkID  string
-	output   []any
-	col      collector
-	named    map[string]nsTool // the request's namespaced tools
+	// sig is Claude's signature of the open reasoning item's block, which
+	// its encrypted_content carries back (claudeseal); bare is an item of
+	// a block signed with no text, opened with no summary part
+	sig    strings.Builder
+	bare   bool
+	output []any
+	col    collector
+	named  map[string]nsTool // the request's namespaced tools
 	// call is the open function_call item's id and name, kept here: the
 	// collector's last part isn't it once a hidden thinking block (signed
 	// with no text, or redacted) has come after the call (#1786)
@@ -1845,10 +1866,19 @@ func (e *responsesEncoder) closeAs(sealed json.RawMessage) {
 		item, e.heldMsg = m, m
 	case Thinking:
 		t := e.text.String()
-		e.send("response.reasoning_summary_text.done", map[string]any{"item_id": e.itemID, "output_index": e.item, "summary_index": 0, "text": t})
-		part := map[string]any{"type": "summary_text", "text": t}
-		e.send("response.reasoning_summary_part.done", map[string]any{"item_id": e.itemID, "output_index": e.item, "summary_index": 0, "part": part})
-		item = map[string]any{"id": e.itemID, "type": "reasoning", "status": "completed", "summary": []map[string]any{part}}
+		summary := []map[string]any{}
+		if !e.bare {
+			e.send("response.reasoning_summary_text.done", map[string]any{"item_id": e.itemID, "output_index": e.item, "summary_index": 0, "text": t})
+			part := map[string]any{"type": "summary_text", "text": t}
+			e.send("response.reasoning_summary_part.done", map[string]any{"item_id": e.itemID, "output_index": e.item, "summary_index": 0, "part": part})
+			summary = append(summary, part)
+		}
+		m := map[string]any{"id": e.itemID, "type": "reasoning", "status": "completed", "summary": summary}
+		if e.sig.Len() > 0 {
+			// Claude's block, signed, for the next request to give back
+			m["encrypted_content"] = claudeThinking(t, e.sig.String())
+		}
+		item = m
 		if sealed != nil {
 			item = sealed
 		}
@@ -1871,6 +1901,7 @@ func (e *responsesEncoder) closeAs(sealed json.RawMessage) {
 	e.send("response.output_item.done", map[string]any{"output_index": e.item, "item": item})
 	e.output = append(e.output, item)
 	e.open, e.text = "", strings.Builder{}
+	e.sig, e.bare = strings.Builder{}, false
 }
 
 func (e *responsesEncoder) openItem(k Kind, prefix string, item map[string]any) {
@@ -1911,8 +1942,11 @@ func (e *responsesEncoder) event(ev Event) {
 		if ev.Text == "" {
 			return
 		}
-		if e.open != Thinking || e.thinkNew {
-			e.openItem(Thinking, "rs_", map[string]any{"type": "reasoning", "summary": []any{}})
+		if e.open != Thinking || e.thinkNew || e.bare {
+			if e.open != Thinking || e.thinkNew {
+				e.openItem(Thinking, "rs_", map[string]any{"type": "reasoning", "summary": []any{}})
+			}
+			e.bare = false
 			e.send("response.reasoning_summary_part.added", map[string]any{"item_id": e.itemID, "output_index": e.item, "summary_index": 0,
 				"part": map[string]any{"type": "summary_text", "text": ""}})
 		}
@@ -1923,7 +1957,32 @@ func (e *responsesEncoder) event(ev Event) {
 		if strings.HasPrefix(ev.ID, "rs_") {
 			e.thinkID = ev.ID
 		}
+	case KSig:
+		if ev.Name != sealAnthropic || ev.Text == "" {
+			break // Gemini's, which goes back on its own path
+		}
+		if e.open != Thinking || e.thinkNew {
+			// a block signed with no text in it: an item all the same,
+			// with no summary, for its signature to come back
+			e.openItem(Thinking, "rs_", map[string]any{"type": "reasoning", "summary": []any{}})
+			e.bare = true
+		}
+		e.sig.WriteString(ev.Text)
 	case KSealed:
+		if ev.Name == sealAnthropic {
+			// Claude's redacted_thinking: an item with no summary, the
+			// block whole in its encrypted_content
+			e.closeItem()
+			e.item++
+			e.thinkNew, e.thinkID = false, ""
+			id := "rs_" + newID()
+			e.send("response.output_item.added", map[string]any{"output_index": e.item,
+				"item": map[string]any{"id": id, "type": "reasoning", "status": "in_progress", "summary": []any{}}})
+			item := map[string]any{"id": id, "type": "reasoning", "status": "completed", "summary": []any{}, "encrypted_content": claudeseal.Seal([]byte(ev.Text))}
+			e.send("response.output_item.done", map[string]any{"output_index": e.item, "item": item})
+			e.output = append(e.output, item)
+			break
+		}
 		if ev.Name != sealResponses {
 			break // another API's, which a Responses client can't read
 		}
@@ -2059,11 +2118,25 @@ func renderResponses(res Result, model string, named map[string]nsTool) []byte {
 				output = append(output, p.Sealed)
 				continue
 			}
-			if p.Text == "" {
+			if p.sealedBy(sealAnthropic) {
+				// Claude's redacted_thinking, whole, to come back (claudeseal)
+				output = append(output, map[string]any{"id": "rs_" + newID(), "type": "reasoning", "status": "completed",
+					"summary": []any{}, "encrypted_content": claudeseal.Seal(p.Sealed)})
+				continue
+			}
+			claude := p.SignedBy == sealAnthropic && p.Signature != ""
+			if p.Text == "" && !claude {
 				continue // another API's sealed thinking, or only its signature
 			}
-			output = append(output, map[string]any{"id": "rs_" + newID(), "type": "reasoning", "status": "completed",
-				"summary": []map[string]any{{"type": "summary_text", "text": p.Text}}})
+			summary := []map[string]any{}
+			if p.Text != "" {
+				summary = append(summary, map[string]any{"type": "summary_text", "text": p.Text})
+			}
+			item := map[string]any{"id": "rs_" + newID(), "type": "reasoning", "status": "completed", "summary": summary}
+			if claude {
+				item["encrypted_content"] = claudeThinking(p.Text, p.Signature)
+			}
+			output = append(output, item)
 		case ToolCall:
 			id := p.ID
 			if id == "" {

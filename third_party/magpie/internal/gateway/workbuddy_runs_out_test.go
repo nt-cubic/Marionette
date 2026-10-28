@@ -63,3 +63,73 @@ func TestSmartSpendsWorkBuddyCreditsRunningOutFirst(t *testing.T) {
 		t.Fatalf("spent last: %s", got)
 	}
 }
+
+// zhaocai_83020 on Discord: several WorkBuddy accounts, and the credits
+// that expire soonest are to be spent first. A free account's Credits
+// window resets at the month's end, the same moment on every account
+// (plugin 0.1.35's cycleOf), and the credits it was given lapse on their
+// own days (runsOutAt). Those lapsing after the month's end ranked alike
+// and kept their order, so the account whose credits were lost first was
+// not spent first. Renewing together, the one lapsing first goes first.
+// The windows are the plugin's for a real China-site free account
+// (packages/workbuddy usage.test.mjs, CN_FREE): reset 10-31 23:59:59 +08
+// over 31 days, given credits lapsing on their own day.
+func TestSmartSpendsCreditsLapsingFirstWhenRenewingTogether(t *testing.T) {
+	old := allowances
+	defer func() { allowances = old }()
+	now := time.Now()
+	share := map[string]provider.Allowance{}
+	allowances = func(string) map[string]provider.Allowance { return share }
+	p := provider.Provider{ID: "workbuddy", Account: &provider.Account{Agent: "workbuddy", User: "a"}}
+	acct := func(user string) candidate {
+		return candidate{p: provider.Provider{ID: "workbuddy", Account: &provider.Account{Agent: "workbuddy", User: user}}, model: "hy3", rest: "workbuddy#" + user}
+	}
+	month := now.Truncate(time.Hour).Add(4*24*time.Hour + 59*time.Minute)
+	credits := func(used float64, lapses time.Duration) provider.Allowance {
+		l := provider.Limit{Used: used, Amount: used * 34, Of: 3400, Unit: "credits", Resets: month, Span: 31*24*time.Hour - time.Second}
+		if lapses > 0 {
+			l.RunsOut = month.Add(lapses)
+		}
+		return provider.Allowance{l}
+	}
+	order := func(cs ...candidate) string {
+		got, _ := weigh(p, cs, "hy3", provider.Chat)
+		var s []string
+		for _, c := range got {
+			s = append(s, c.p.Account.User)
+		}
+		return strings.Join(s, "")
+	}
+
+	// both renew at the month's end; b's given credits lapse 5 days
+	// after it, a's 50: b first, though listed second and more used
+	share["a"] = credits(10, 50*24*time.Hour)
+	share["b"] = credits(30, 5*24*time.Hour)
+	if got := order(acct("a"), acct("b")); got != "ba" {
+		t.Fatalf("lapsing first goes first: %s", got)
+	}
+	// one whose credits never lapse (none given, or an older plugin)
+	// keeps them: after one whose do
+	share["a"] = credits(10, 0)
+	if got := order(acct("a"), acct("b")); got != "ba" {
+		t.Fatalf("not lapsing last: %s", got)
+	}
+	// lapsing within the same hour: their order, for the cache
+	share["a"] = credits(10, 5*24*time.Hour)
+	if got := order(acct("a"), acct("b")); got != "ab" {
+		t.Fatalf("same hour keeps order: %s", got)
+	}
+	// the renewal still decides first: one renewing sooner goes ahead of
+	// one lapsing sooner
+	share["a"] = credits(10, 50*24*time.Hour)
+	share["a"][0].Resets = month.Add(-48 * time.Hour)
+	if got := order(acct("b"), acct("a")); got != "ab" {
+		t.Fatalf("renewal first: %s", got)
+	}
+	// and the share used before both: all but spent waits behind
+	share["a"] = credits(99, 5*24*time.Hour)
+	share["b"] = credits(10, 50*24*time.Hour)
+	if got := order(acct("a"), acct("b")); got != "ba" {
+		t.Fatalf("spent last: %s", got)
+	}
+}

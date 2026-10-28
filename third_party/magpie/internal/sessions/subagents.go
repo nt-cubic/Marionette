@@ -62,16 +62,16 @@ func subagentsOf(s Session, fs []file) []Subagent {
 				sa.Title = ccTask(f.path)
 			}
 		case "opencode":
-			sa.ID = f.sid
-			if f.parent != s.ID {
-				sa.Parent = f.parent
+			sa.ID = f.m().sid
+			if f.m().parent != s.ID {
+				sa.Parent = f.m().parent
 			}
 			sa.Title, sa.Kind = ocSubagentTitle(st.Named)
 			sa.Title = cmp.Or(sa.Title, st.Title, st.First)
 			// OpenCode 2 names the agent in the session's row, and its
 			// titles no longer do (#2290)
-			if v2, ok := f.oc.(ocV2DB); ok {
-				sa.Kind = cmp.Or(v2.agent(f.path, f.sid), sa.Kind)
+			if v2, ok := f.m().oc.(ocV2DB); ok {
+				sa.Kind = cmp.Or(v2.agent(f.path, f.m().sid), sa.Kind)
 			}
 		case "kimi":
 			sa.ID = filepath.Base(filepath.Dir(f.path))

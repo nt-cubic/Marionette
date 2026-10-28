@@ -15,17 +15,19 @@ function section(start, end) {
 const plain = (x) => JSON.parse(JSON.stringify(x));
 const card = (user, used) => ({ provider: "claude", user, windows: [{ name: "7 days", used }] });
 
-function page() {
+function page(m = "window") {
   const context = vm.createContext({ Date, performance, setTimeout });
   vm.runInContext(`
-    let quotas = [], quotasAt = 0, quotaHist = [], quotasAskedAt = 0, view = "usage";
+    let quotas = [], quotasAt = 0, quotasKept = false, quotaHist = [], quotasAskedAt = 0, view = "usage";
+    const mode = ${JSON.stringify(m)}; // the tray panel ("panel") also keeps each reading (#3160)
+    const saved = [], localStorage = { setItem: (k, v) => saved.push([k, v]), getItem: () => null };
     const requests = [], errors = [];
     const usageAcctKey = q => q.provider + "\\n" + (q.user || "").toLowerCase();
     const quotaCycleHolds = new Map(); // past cycles' estimates (#2009), cleared by a refresh
     const t = x => x;
     const calm = () => true;
     const document = { querySelectorAll: () => [] };
-    const el = () => ({ dataset: {}, classList: { add() {}, remove() {} }, setAttribute() {} });
+    const el = () => ({ dataset: {}, classList: { add() {}, remove() {}, toggle() {} }, setAttribute() {} });
     function renderQuotas() {}
     function loadUpstream() {}
     function status(x) { errors.push(x); }
@@ -40,14 +42,18 @@ function page() {
       seed: x => { quotas = x; },
       cards: () => quotas,
       load: () => loadQuotas(),
+      ask: () => loadQuotas(true), // Refresh now
       refresh: q => quotaRefresh(q).onclick({ stopPropagation() {} }),
       answer: (i, x) => requests[i].resolve(x),
       fail: i => requests[i].reject(new Error("offline")),
+      saved: () => saved.map(([k, v]) => [k, JSON.parse(v)]),
     };
   `, context);
   return context.p;
 }
 const tick = () => new Promise(setImmediate);
+// the whole-page reads sent, by query ("" or "?asked=1")
+const gets = (p, q) => p.requests.flatMap((r, i) => r.path === "usage/quotas" + q ? [i] : []);
 
 for (const when of ["before", "during"]) {
   test(`a background read started ${when} a card refresh cannot undo its result`, async () => {
@@ -150,4 +156,107 @@ test("a remote summary becomes its child cards without undoing a local refresh",
   assert.deepEqual(readings(), { "home/claude": 32, codex: 61 });
   p.answer(0, [summary, local]); await loading;
   assert.deepEqual(readings(), { "home/claude": 32, codex: 61 }, "the late GET restored the remote summary or an old local reading");
+});
+
+test("the tray panel keeps the reading it shows, not the older reply a refresh crossed", async () => {
+  // the panel opens next on what it kept (#3160). The read brings another
+  // card's change, so what it shows is neither the reply nor the list
+  // shown before it.
+  const p = page("panel"), old = card("a@x.com", 0), b = card("b@x.com", 0);
+  p.seed([old, b]);
+  const loading = p.load(); await tick();
+  const refreshing = p.refresh(old);
+  const post = p.requests.findIndex(r => r.path.includes("/refresh?"));
+  const get = p.requests.findIndex(r => r.path === "usage/quotas");
+  p.answer(post, [card("a@x.com", 32), b]); await refreshing;
+  p.answer(get, [old, card("b@x.com", 7)]); await loading;
+  assert.deepEqual(plain(p.cards()).map(q => q.windows[0].used), [32, 7], "an older whole-page reply overwrote the refreshed card");
+  const kept = p.saved().filter(([k]) => k === "magpie.panelQuotas").at(-1);
+  assert(kept, "the panel kept nothing");
+  assert.deepEqual(plain(kept[1]).map(q => q.windows[0].used), [32, 7], "the panel kept the older reply, or the list from before the read, for its next open");
+});
+
+test("Refresh now asked behind a background read is newer than a card refresh landing while it waits", async () => {
+  const p = page(), old = card("a@x.com", 0);
+  p.seed([old]);
+  const first = p.load(); await tick();
+  const asked = p.ask(); await tick();
+  const refresh = p.refresh(old);
+  const post = p.requests.findIndex(r => r.path.includes("/refresh?"));
+  p.answer(post, [card("a@x.com", 32)]); await refresh;
+  p.answer(0, [old]); await first; await tick();
+  const g = gets(p, "?asked=1");
+  assert.equal(g.length, 1, "Refresh now never went out");
+  p.answer(g[0], [card("a@x.com", 40)]); await asked;
+  assert.equal(p.cards()[0].windows[0].used, 40, "a read that went out after the card refresh lost to it");
+});
+
+test("an older whole-page read never lands over a newer asked one", async () => {
+  // reads go out one at a time, so the asked one answers last
+  const p = page(), old = card("a@x.com", 0);
+  p.seed([old]);
+  const first = p.load(); await tick();
+  const refresh = p.refresh(old);
+  const post = p.requests.findIndex(r => r.path.includes("/refresh?"));
+  p.answer(post, [card("a@x.com", 32)]); await refresh;
+  const asked = p.ask(); await tick();
+  for (const i of gets(p, "?asked=1")) p.answer(i, [card("a@x.com", 40)]); // answered first, if it is out already
+  await tick();
+  p.answer(0, [old]); await first; await tick();
+  for (const i of gets(p, "?asked=1")) p.answer(i, [card("a@x.com", 40)]);
+  await asked;
+  assert.equal(p.cards()[0].windows[0].used, 40, "an older read landed over a newer one");
+});
+
+test("a whole-page read landing between leaves a newer card protected from a renamed reply", async () => {
+  const p = page(), unnamed = card("", 0), b = card("b@x.com", 0);
+  p.seed([unnamed, b]);
+  const first = p.refresh(unnamed);
+  const loading = p.load(); await tick();
+  const second = p.refresh(b);
+  p.answer(2, [unnamed, card("b@x.com", 61)]); await second;
+  p.answer(1, [unnamed, b]); await loading;
+  p.answer(0, [card("a@x.com", 32), b]); await first;
+  assert.deepEqual(plain(p.cards()).map(q => [q.user, q.windows[0].used]), [["a@x.com", 32], ["b@x.com", 61]], "the renamed reply undid b's refresh once a read had landed");
+});
+
+test("a card a renamed reply leaves out stays out against an older whole-page reply", async () => {
+  const p = page(), unnamed = card("", 0), gone = card("c@x.com", 5);
+  p.seed([unnamed, gone]);
+  const loading = p.load(); await tick();
+  const refresh = p.refresh(unnamed);
+  p.answer(1, [card("a@x.com", 32)]); await refresh;
+  p.answer(0, [unnamed, gone]); await loading;
+  assert.deepEqual(plain(p.cards()).map(q => q.user), ["a@x.com"], "an older read restored a card the refresh had replaced");
+});
+
+test("a background read started while Refresh now is out takes it, so the asked reply can't undo a card refresh", async () => {
+  // reads go out one at a time, so the later read is the asked one
+  const p = page(), old = card("a@x.com", 0);
+  p.seed([old]);
+  const first = p.load(); await tick();
+  const asked = p.ask(); await tick();
+  p.answer(0, [old]); await first; await tick();
+  const refresh = p.refresh(old);
+  const post = p.requests.findIndex(r => r.path.includes("/refresh?"));
+  p.answer(post, [card("a@x.com", 32)]); await refresh;
+  const later = p.load(); await tick();
+  for (const i of gets(p, "").slice(1)) p.answer(i, [card("a@x.com", 32)]); // answered first, if it went out beside the asked one
+  await tick();
+  const g = gets(p, "?asked=1");
+  assert.equal(g.length, 1, "Refresh now never went out");
+  p.answer(g[0], [old]); await asked; await later;
+  assert.equal(p.cards()[0].windows[0].used, 32, "the asked reply, sent before the card refresh, undid it");
+});
+
+test("a card's refresh cannot retire another card's protection against a pending GET", async () => {
+  const p = page(), a = card("a@x.com", 0), b = card("b@x.com", 0);
+  p.seed([a, b]);
+  const loading = p.load(); await tick();
+  const first = p.refresh(a);
+  p.answer(1, [card("a@x.com", 32), b]); await first;
+  const second = p.refresh(b);
+  p.answer(2, [a, card("b@x.com", 61)]); await second;
+  p.answer(0, [a, b]); await loading;
+  assert.deepEqual(plain(p.cards()).map(q => q.windows[0].used), [32, 61], "b's reply retired the marker a's refresh needed against the older GET");
 });

@@ -326,3 +326,72 @@ func TestSettingsRedactWordsAnyCaseKept(t *testing.T) {
 		}
 	}
 }
+
+// Whole words only is the Privacy page's too: a page from before it sends
+// no redactWordsWhole, and its save leaves the user's choice as it was; a
+// page that sends it sets it (acmilan_ on Discord).
+func TestSettingsRedactWordsWholeKept(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	h := Handler(nil, nil)
+	for _, c := range []struct {
+		body string
+		want bool
+	}{
+		{`{"theme":"dark","redactWords":["ABC"],"redactWordsWhole":true}`, true},
+		{`{"theme":"light","redactWords":["ABC"],"redactWordsAnyCase":true}`, true},
+		{`{"theme":"light","redactWords":["ABC"],"redactWordsWhole":false}`, false},
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/settings", strings.NewReader(c.body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("saving %s: %d %s", c.body, rec.Code, rec.Body)
+		}
+		if got := settings.Load(); got.RedactWordsWhole != c.want || !reflect.DeepEqual(got.RedactWords, []string{"ABC"}) {
+			t.Fatalf("after %s: whole words %v, words %v; want %v", c.body, got.RedactWordsWhole, got.RedactWords, c.want)
+		}
+	}
+}
+
+// Reduce motion (#3813) is saved by the Settings page, handed to the page
+// in boot.js so it is still from the first paint, and kept by a save from
+// a page from before it, which doesn't send it.
+func TestSettingsReduceMotion(t *testing.T) {
+	h := t.TempDir()
+	t.Setenv("HOME", h)
+	t.Setenv("USERPROFILE", h)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(h, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(h, ".cache"))
+	handler := Handler(nil, nil)
+
+	getBoot := func() string {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest("GET", "/boot.js", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /boot.js: %d %s", rec.Code, rec.Body)
+		}
+		return rec.Body.String()
+	}
+	if boot := getBoot(); strings.Contains(boot, `"reduceMotion"`) {
+		t.Fatalf("reduceMotion off by default, got boot.js: %s", boot)
+	}
+	for _, tc := range []struct {
+		body string
+		want bool
+	}{
+		{`{"theme":"dark","reduceMotion":true}`, true},
+		{`{"theme":"light"}`, true},
+		{`{"theme":"dark","reduceMotion":false}`, false},
+	} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest("POST", "/api/settings", strings.NewReader(tc.body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", tc.body, rec.Code, rec.Body)
+		}
+		if got := settings.Load().ReduceMotion; got != tc.want {
+			t.Fatalf("%s: ReduceMotion = %v, want %v", tc.body, got, tc.want)
+		}
+		if boot := getBoot(); strings.Contains(boot, `"reduceMotion":true`) != tc.want {
+			t.Fatalf("%s: boot.js = %s, want reduceMotion=%v", tc.body, boot, tc.want)
+		}
+	}
+}

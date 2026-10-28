@@ -83,7 +83,7 @@ func TestHermesUnreadFingerprintsParseAgain(t *testing.T) {
 	}
 	// the same size and time as what was parsed: only the fingerprint can
 	// tell it changed, and it is unknown
-	f := file{agent: "hermes", path: path + "#s", hermes: h, rev: "", mod: time.Unix(1790000000, 0)}
+	f := file{agent: "hermes", path: path + "#s", more: &fileMore{hermes: h}, mod: time.Unix(1790000000, 0)}
 	s := state{Mod: f.mod.UnixNano(), DBRevision: ""}
 	cache = map[string]*state{f.path: &s}
 	t.Cleanup(func() { cache = nil })
@@ -130,7 +130,7 @@ func TestHermesStoreResolvedOncePerListing(t *testing.T) {
 	if got := int(n.Load()); got >= len(files) {
 		t.Fatalf("the store's path was resolved %d times for %d sessions", got, len(files))
 	}
-	if want := "hermes:" + hermesID(path, files[0].sid); files[0].key != want {
+	if want := "hermes:" + hermesID(path, files[0].m().sid); files[0].key != want {
 		t.Fatalf("key %q, want %q", files[0].key, want)
 	}
 }

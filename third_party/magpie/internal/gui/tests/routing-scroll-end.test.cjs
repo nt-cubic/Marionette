@@ -72,14 +72,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // a narrow list, the accounts beside the requests on a wide page
         const narrow = width <= 600;
         assert.equal(await tracks(page, ".rt-stage"), narrow ? 2 : 3, "the stage's columns");
-        assert.equal(await tracks(page, ".rt-reqs"), width < 800 ? 2 : 4, "the requests' columns");
+        assert.equal(await tracks(page, ".rt-reqs > .rt-req"), width < 800 ? 2 : 4, "the requests' columns");
         // by the room the page has, the sidebar's aside (routing/client.js byWidth)
         const room = await page.locator(".rt-more").first().evaluate((e) => e.getBoundingClientRect().width);
         assert.equal(await tracks(page, ".rt-cols"), room >= 1150 ? 2 : 1, "the requests and the accounts, side by side or one under the other");
 
-        // down to the end, by the wheel
+        // down to the end, by the wheel over the page's own gutter: the
+        // requests' list keeps the wheel at its ends (inner-scroll-contain)
         const box = await view.boundingBox();
-        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+        await page.mouse.move(box.x + 3, box.y + box.height / 2);
         for (let i = 0; i < 20; i++) { await page.mouse.wheel(0, 300); await page.waitForTimeout(40); }
         await page.waitForTimeout(300);
         // and on at the end, as the page is redrawn: each turn of the wheel

@@ -21,6 +21,7 @@ import (
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/imagemcp"
 	"github.com/yetone/magpie/internal/netproxy"
+	"github.com/yetone/magpie/internal/notices"
 	"github.com/yetone/magpie/internal/pluginrt"
 	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/profile"
@@ -147,6 +148,7 @@ const usage = `magpie — one place to pick every agent's model
   magpie update auto [on|off] [download|notify] [30m|1h|6h|24h]
                                   whether the app looks for updates by itself, how often (6h), and whether
                                   it downloads one at once or only says it is out (notify: for metered networks)
+  magpie licenses                 the third-party notices of what magpie is built with
 
 agents: claude (cc), codex, gemini, opencode (oc), mimocode, deveco, pi, goose, cursor, zed, copilot, crush, aside
 `
@@ -174,6 +176,9 @@ func Main(v string) {
 				return
 			case "-h", "--help", "help":
 				fmt.Print(usage)
+				return
+			case "licenses":
+				fmt.Print(notices.Text)
 				return
 			}
 		}
@@ -338,6 +343,11 @@ func run(args []string) error {
 	// its ChatGPT sign-in rather than on that account (atom_Ray on X)
 	gateway.CodexSideModel = agent.CodexSideModel
 	gateway.CodexSideSet = agent.CodexSideSet
+	// the list the Codex app reads from a file beside the ChatGPT sign-in,
+	// its picker showing magpie's models only so (laddieyao on Discord),
+	// written again when the backend's list changes
+	agent.CodexDesktopList = gateway.CodexDesktopCatalog
+	gateway.CodexDesktopChanged = agent.SyncCatalogSoon
 	// the setup kept the same on every computer, by whichever serves
 	gateway.WhileServing = append(gateway.WhileServing, davsync.Run)
 	// and dsh's patch lists, which dsh reads live: a route left behind by
@@ -410,6 +420,9 @@ func run(args []string) error {
 		return nil
 	case "-v", "--version", "version":
 		fmt.Println("magpie", version)
+		return nil
+	case "licenses":
+		fmt.Print(notices.Text)
 		return nil
 	case "ls", "list":
 		// in the order the app lists them; those hidden there come last, dimmed

@@ -3,10 +3,11 @@
 // ZCode) read a size bigger than a line logo (Pi, OpenCode, Hermes) in the
 // row beside it: both filled the same box, the tile with ~96% of it inked
 // and the line logo with ~40%. A tile is now drawn at 82% of the box, the
-// size Alma's and Cindy's tiles have of their own. Every file in icons/ is
-// measured, so a new tile logo left out of app.css's list, or a line logo
-// put in it, fails here. In the Agents list the tile is drawn at 82% and the
-// line logo at full size, in Chromium and WebKit.
+// size Alma's and Cindy's tiles have of their own. Every logo in icons/ is
+// measured (the app's own icons, manifest.json's, aren't logos), so a new
+// tile logo left out of app.css's list, or a line logo put in it, fails
+// here. In the Agents list the tile is drawn at 82% and the line logo at
+// full size, in Chromium and WebKit.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -25,9 +26,17 @@ async function tileList() {
   return new Set([...m[1].matchAll(/\[data-icon="([^"]+)"\]/g)].map((x) => x[1]));
 }
 
+// the app's own icons, which manifest.json lists for a phone's home screen
+// (apple-touch-icon is index.html's too), are never a logo drawn in a .ic
+// (#3858)
+async function appIcons() {
+  const manifest = JSON.parse(await fs.readFile(path.join(assets, "manifest.json"), "utf8"));
+  return new Set(manifest.icons.map((i) => i.src.replace(/^icons\//, "")));
+}
+
 test("the tile logos' rule names every logo solid to its edges, and no other", async () => {
-  const listed = await tileList();
-  const files = (await fs.readdir(path.join(assets, "icons"))).filter((f) => /\.(svg|png)$/.test(f));
+  const listed = await tileList(), own = await appIcons();
+  const files = (await fs.readdir(path.join(assets, "icons"))).filter((f) => /\.(svg|png)$/.test(f) && !own.has(f));
   const browser = await chromium.launch();
   try {
     const page = await browser.newPage();

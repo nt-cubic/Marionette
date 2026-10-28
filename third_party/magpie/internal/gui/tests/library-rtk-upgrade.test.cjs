@@ -202,3 +202,72 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     assert.deepEqual(errors, []);
   });
 }
+
+// 新v学员 (10-27): on Windows, an RTK cargo installed had a newer release
+// and a greyed Upgrade that did nothing — magpie found no cargo, and only
+// the button's tooltip, which a click never shows, said anything. Now the
+// card says it: for cargo's RTK, what to install or run; for one magpie
+// can't place, to update it the way it was installed. In every language,
+// at 440px.
+const CARGO = "cargo install --git https://github.com/rtk-ai/rtk --branch master rtk --force";
+const noUpgradeWords = {
+  en: { cargo: `RTK was installed with cargo, but magpie can't find cargo to upgrade it. Install Rust from rustup.rs, or run ${CARGO} in a terminal.`, other: "magpie can't tell how this RTK was installed — update it the way you installed it" },
+  zh: { cargo: `RTK 是用 cargo 安装的，但 magpie 找不到 cargo 来升级它。请从 rustup.rs 安装 Rust，或在终端里运行 ${CARGO}。`, other: "无法判断 RTK 的安装方式，请按原安装方式更新" },
+  "zh-TW": { cargo: `RTK 是用 cargo 安裝的，但 magpie 找不到 cargo 來升級它。請從 rustup.rs 安裝 Rust，或在終端機裡執行 ${CARGO}。`, other: "無法判斷 RTK 的安裝方式，請按原安裝方式更新" },
+  ja: { cargo: `RTK は cargo でインストールされていますが、magpie は更新に使う cargo を見つけられません。rustup.rs から Rust をインストールするか、ターミナルで ${CARGO} を実行してください。`, other: "magpie はこの RTK のインストール方法を判別できません — インストールしたのと同じ方法で更新してください" },
+  de: { cargo: `RTK wurde mit cargo installiert, aber magpie findet kein cargo, um es zu aktualisieren. Installieren Sie Rust von rustup.rs, oder führen Sie ${CARGO} in einem Terminal aus.`, other: "magpie kann nicht erkennen, wie dieses RTK installiert wurde – aktualisieren Sie es auf dem Weg, auf dem Sie es installiert haben" },
+};
+
+function noUpgradeServer(lang, state) {
+  const base = server(lang, state);
+  return async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === "/api/library/rtk") {
+      const v = { ...rtkView("1.0.0"), path: `${HOME}/.cargo/bin/rtk.exe`, latest: "1.1.0", upgrade: "" };
+      return route.fulfill({ json: state.cargo ? { ...v, noUpgrade: "cargo", manual: CARGO } : v });
+    }
+    if (url.pathname === "/api/library/rtk/upgrade") { state.upgrades++; return route.fulfill({ status: 400, json: { error: "no" } }); }
+    return base(route);
+  };
+}
+
+for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
+  test(engine + ": an RTK magpie can't upgrade says why on the card", async (t) => {
+    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
+    const errors = [];
+    t.after(async () => {
+      if (errors.length) console.log(errors);
+      await browser.close();
+    });
+    for (const lang of Object.keys(noUpgradeWords)) {
+      for (const cargo of [true, false]) {
+        await t.test(`${lang} ${cargo ? "cargo" : "unknown"}`, async () => {
+          const want = noUpgradeWords[lang][cargo ? "cargo" : "other"];
+          const state = { cargo, upgrades: 0, reads: 0 };
+          const ctx = await browser.newContext({ viewport: { width: 440, height: 800 } });
+          await ctx.addInitScript(() => { try { localStorage.setItem("magpie.libTab", "rtk"); } catch {} });
+          const page = await ctx.newPage();
+          page.setDefaultTimeout(5000);
+          page.on("pageerror", (e) => errors.push(e.message));
+          await page.route("**/*", noUpgradeServer(lang, state));
+          await page.goto("http://magpie.test/");
+          await page.locator('button[data-view="library"]').click();
+          const v = page.locator("#view-library");
+          const note = v.locator(".lib-rtk-noupgrade");
+          await note.waitFor();
+          assert.equal(await note.textContent(), want);
+          assert(await note.isVisible());
+          const button = v.locator(".lib-cardhead button");
+          assert(await button.isDisabled());
+          assert.equal(await button.getAttribute("title"), want);
+          await button.click({ force: true });
+          assert.equal(state.upgrades, 0);
+          const box = await v.evaluate(() => ({ doc: document.documentElement.scrollWidth, vw: innerWidth }));
+          assert(box.doc <= box.vw, `page scrolls sideways: ${JSON.stringify(box)}`);
+          await ctx.close();
+        });
+      }
+    }
+    assert.deepEqual(errors, []);
+  });
+}

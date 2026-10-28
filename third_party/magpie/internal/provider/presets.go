@@ -41,6 +41,10 @@ type PresetDef struct {
 	Regions   []Region `json:"regions,omitempty"`   // base-URL choices (a relay's regional endpoints, a vendor's plans)
 	// RegionLabel names what the Regions choose between, "Region" if unset.
 	RegionLabel string `json:"regionLabel,omitempty"`
+	// SplitAccounts is set on a partner whose regions are China's and
+	// Global's, whose accounts don't work at each other's endpoints (Kimi
+	// Code): its region picker says to pick by the account.
+	SplitAccounts bool `json:"splitAccounts,omitempty"`
 	// KeyPlans: each key may be on a Region of its own (KeyAccount.Plan),
 	// a vendor whose plans and pay as you go are sold on keys of their own
 	// that only their own endpoints take (Volcengine's Coding and Agent
@@ -153,22 +157,24 @@ var presets = []PresetDef{
 	{ID: "xai", Name: "xAI", Icon: "xai", Kind: KindVendor, Catalog: "xai",
 		Chat: "https://api.x.ai/v1", Responses: "https://api.x.ai/v1", Anthropic: "https://api.x.ai",
 		Website: "https://console.x.ai", KeysURL: "https://console.x.ai"},
+	// Kimi's key pages and sites carry its referral (aff=magpie), as its
+	// partner card's do: Kimi sponsors magpie
 	{ID: "moonshot", Name: "Kimi", Icon: "kimi", Kind: KindVendor, Catalog: "moonshotai",
 		Chat: "https://api.moonshot.ai/v1", Anthropic: "https://api.moonshot.ai/anthropic",
-		Website: "https://platform.moonshot.ai", KeysURL: "https://platform.moonshot.ai/console/api-keys"},
+		Website: "https://platform.kimi.ai?aff=magpie", KeysURL: "https://platform.kimi.ai/console/api-keys?aff=magpie"},
 	{ID: "moonshot-cn", Name: "Kimi (China)", Icon: "kimi", Kind: KindVendor, Catalog: "moonshotai",
 		Chat: "https://api.moonshot.cn/v1", Anthropic: "https://api.moonshot.cn/anthropic",
-		Website: "https://platform.moonshot.cn", KeysURL: "https://platform.moonshot.cn/console/api-keys"},
+		Website: "https://platform.kimi.com?aff=magpie", KeysURL: "https://platform.kimi.com/console/api-keys?aff=magpie"},
 	// a Kimi Code membership's own endpoints (k3, kimi-for-coding …): Kimi
 	// lets members use them from third-party tools, keyed at its console
 	{ID: "kimi-code", Name: "Kimi Code", Icon: "kimi", Kind: KindVendor, Catalog: "kimi-code-plan-global",
 		Chat: "https://api.kimi.ai/coding/v1", Anthropic: "https://api.kimi.ai/coding",
 		Note:    "Membership",
-		Website: "https://www.kimi.com/code", KeysURL: "https://www.kimi.com/code/console"},
+		Website: "https://www.kimi.ai/code?aff=magpie", KeysURL: "https://www.kimi.ai/code/console?aff=magpie"},
 	{ID: "kimi-code-cn", Name: "Kimi Code (China)", Icon: "kimi", Kind: KindVendor, Catalog: "kimi-code-plan-cn",
 		Chat: "https://api.kimi.com/coding/v1", Anthropic: "https://api.kimi.com/coding",
 		Note:    "Membership",
-		Website: "https://www.kimi.com/code", KeysURL: "https://www.kimi.com/code/console"},
+		Website: "https://www.kimi.com/code?aff=magpie", KeysURL: "https://www.kimi.com/code/console?aff=magpie"},
 	{ID: "zhipu", Name: "Zhipu GLM", Icon: "zhipu-color", Kind: KindVendor, Catalog: "zhipuai",
 		Chat: "https://open.bigmodel.cn/api/paas/v4", Anthropic: "https://open.bigmodel.cn/api/anthropic",
 		Website: "https://open.bigmodel.cn", KeysURL: "https://open.bigmodel.cn/usercenter/proj-mgmt/apikeys",

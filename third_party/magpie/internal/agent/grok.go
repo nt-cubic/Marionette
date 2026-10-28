@@ -257,34 +257,39 @@ func grokOwnOptions(dir, path, cur string) []Option {
 		}
 		out = append(out, o)
 	}
-	if raw, err := os.ReadFile(filepath.Join(dir, "models_cache.json")); err == nil {
-		gjson.GetBytes(raw, "models").ForEach(func(k, v gjson.Result) bool {
-			if !v.Get("info.hidden").Bool() {
-				add(k.String(), v.Get("info.name").String(), "xAI")
-			}
-			return true
-		})
+	// dir and path empty: a stopped distro's, whose files aren't read (#3896)
+	if dir != "" {
+		if raw, err := os.ReadFile(filepath.Join(dir, "models_cache.json")); err == nil {
+			gjson.GetBytes(raw, "models").ForEach(func(k, v gjson.Result) bool {
+				if !v.Get("info.hidden").Bool() {
+					add(k.String(), v.Get("info.name").String(), "xAI")
+				}
+				return true
+			})
+		}
 	}
 	ms, _, _ := catalog.Live("grok")
 	for _, m := range ms {
 		add(m.ID, "", "xAI")
 	}
 	// the user's own [model."<id>"] tables, each on its own endpoint
-	if tables, err := edit.TOMLTables(path); err == nil {
-		for _, t := range tables {
-			id, ok := strings.CutPrefix(t, "model.")
-			if !ok {
-				continue
+	if path != "" {
+		if tables, err := edit.TOMLTables(path); err == nil {
+			for _, t := range tables {
+				id, ok := strings.CutPrefix(t, "model.")
+				if !ok {
+					continue
+				}
+				if u, err := strconv.Unquote(id); err == nil {
+					id = u
+				}
+				kv, _ := edit.GetTOMLTable(path, t)
+				direct := "xAI"
+				if h := hostOf(kv["base_url"]); h != "" {
+					direct = h
+				}
+				add(id, kv["name"], direct)
 			}
-			if u, err := strconv.Unquote(id); err == nil {
-				id = u
-			}
-			kv, _ := edit.GetTOMLTable(path, t)
-			direct := "xAI"
-			if h := hostOf(kv["base_url"]); h != "" {
-				direct = h
-			}
-			add(id, kv["name"], direct)
 		}
 	}
 	if cur != "" && !seen[cur] && !strings.HasPrefix(cur, magpieID+"/") {

@@ -151,6 +151,9 @@ type Session struct {
 	// Convs are the ids magpie's gateway keys the session's requests by
 	// when they carry no session id of their own (dshConvs)
 	Convs []string `json:"-"`
+	// Copies are the ids of the sessions that are copies of its
+	// conversation, not listed apart from it (ccCopies)
+	Copies []string `json:"-"`
 }
 
 // PriceOf is the effective price of a model as a session names it, at the
@@ -208,6 +211,14 @@ type state struct {
 	MsgModel string `json:"msg_model,omitempty"`
 	MsgUse   Tokens `json:"msg_use"`
 	MsgDay   string `json:"msg_day,omitempty"`
+	// Claude Code: the uuids of the first and the last message of the
+	// file's own conversation (ccLink)
+	Root string `json:"root,omitempty"`
+	Leaf string `json:"leaf,omitempty"`
+	// Claude Code: the uuids of the summaries its compactions (/compact,
+	// /rewind's summarize) left in the file. A copy made after one starts
+	// with that summary, so its Root is one of these (ccCopies).
+	Compacts []string `json:"compacts,omitempty"`
 	// Codex: the model in use, and its running total (input with cache) last seen
 	Model string  `json:"model,omitempty"`
 	Total *Tokens `json:"total,omitempty"`
@@ -339,6 +350,7 @@ func (s *state) clone() *state {
 	c.Codex = s.Codex.clone()
 	c.Claude = s.Claude.clone()
 	c.Models = slices.Clone(s.Models)
+	c.Compacts = slices.Clone(s.Compacts)
 	if s.Total != nil {
 		t := *s.Total
 		c.Total = &t
@@ -361,14 +373,26 @@ func (s *state) clone() *state {
 	return &c
 }
 
-// file is one session file found on disk.
+// file is one session file found on disk. What only some agents' files
+// have is in more, so a listing of every rollout copies 96 bytes a file,
+// not 232: a Sessions poll copied every agent's list of ~20k files five
+// or six times over, ~50 MB a poll.
 type file struct {
-	agent string
-	key   string // agent:session id — a session may span files
-	path  string
-	main  bool // the session's own file, not a subagent's
-	size  int64
-	mod   time.Time
+	agent    string
+	key      string // agent:session id — a session may span files
+	path     string
+	size     int64
+	mod      time.Time
+	main     bool // the session's own file, not a subagent's
+	readOnly bool
+	// cold: the WSL distro the file is in isn't running, and the file, as
+	// last listed, is not to be opened (that would start the distro)
+	cold bool
+	more *fileMore // nil for a file with none of it; shared by copies
+}
+
+// fileMore is what a file of some agents has besides.
+type fileMore struct {
 	// OpenCode and ZCode: the session, and where it is kept; parent is
 	// the session that started it, "" for one the user did
 	sid    string
@@ -383,14 +407,25 @@ type file struct {
 	alma *almaStore
 	rev  string
 	// agy: what conversation_summaries.db says of the conversation
-	agy      *agySummary
-	readOnly bool
-	editor   *cursorEditorMeta
-	// wsl: the WSL distro whose home it is in; cold: that distro isn't
-	// running, and the file, as last listed, is not to be opened (that
-	// would start the distro)
-	wsl  string
-	cold bool
+	agy    *agySummary
+	editor *cursorEditorMeta
+	// wsl: the WSL distro whose home it is in
+	wsl string
+}
+
+// m is what more holds, or none of it. It is a copy: a write goes through w.
+func (f file) m() fileMore {
+	if f.more == nil {
+		return fileMore{}
+	}
+	return *f.more
+}
+
+// w is f's own more to write: copies of f share it, so it is copied first.
+func (f *file) w() *fileMore {
+	m := f.m()
+	f.more = &m
+	return f.more
 }
 
 // byKey groups the files keep takes by session, each group in the files'
@@ -899,7 +934,10 @@ func CachePath() string { return filepath.Join(filepath.Dir(catalog.CachePath())
 // 20: Codex's source and direct parent thread identity.
 // 21: Codex subagent nicknames and parent spawn task names.
 // 22: dsh's gateway conversation ids (Convs).
-const cacheVersion = 22
+// 23: Claude Code's first and last message uuids (Root, Leaf).
+// 24: Claude Code's compact summaries' uuids (Compacts).
+// 25: the skills Codex calls up by reading their SKILL.md.
+const cacheVersion = 25
 
 type cacheFile struct {
 	Version int               `json:"version"`
@@ -1068,7 +1106,7 @@ func refresh(want, all []file) {
 		if f.cold {
 			continue // in a stopped WSL distro: what was read of it stands
 		}
-		if s := cache[f.path]; s == nil || s.Size != f.size || s.Mod != f.mod.UnixNano() || (f.agent == "hermes" && (f.hermes == nil || f.rev == "" || s.DBRevision != f.rev)) || ((f.agent == "alma" || f.agent == "cursor" || f.agent == "agy") && s.DBRevision != f.rev) {
+		if s := cache[f.path]; s == nil || s.Size != f.size || s.Mod != f.mod.UnixNano() || (f.agent == "hermes" && (f.m().hermes == nil || f.m().rev == "" || s.DBRevision != f.m().rev)) || ((f.agent == "alma" || f.agent == "cursor" || f.agent == "agy") && s.DBRevision != f.m().rev) {
 			if parsing[f.path] != nil {
 				// a refresh is reading it, another or this one (a path
 				// listed twice): its last parse stands until that one is
@@ -1404,10 +1442,17 @@ func listSessions(limit int) []Session {
 	identities := codexIdentitySnapshot(files)
 	taskTitles := codexSubagentTaskTitles(files)
 
+	copies := ccCopies(files)
+	copyIDs := copiesByKeeper(copies, groups)
+
 	price, titles := pricer(), codexTitleOf()
 	out := []Session{}
 	for _, k := range keys {
+		if copies[k] != "" {
+			continue
+		}
 		if s, ok := assemble(groups[k], price, titles); ok {
+			s.Copies = copyIDs[k]
 			setSessionCodexIdentity(&s, identities)
 			setSessionCodexTaskTitle(&s, taskTitles)
 			out = append(out, s)
@@ -1467,7 +1512,7 @@ func assemble(fs []file, price func(string) *catalog.Price, codexTitle func(stri
 // subagent's file again (3.5 GB of a live magpie's 6.3 GB of scans).
 func assembleListed(fs []file, price func(string) *catalog.Price, codexTitle func(string) string) (Session, bool) {
 	sortSessionFiles(fs)
-	s := Session{Agent: fs[0].agent, Path: fs[0].path, Models: []Model{}, WSL: fs[0].wsl}
+	s := Session{Agent: fs[0].agent, Path: fs[0].path, Models: []Model{}, WSL: fs[0].m().wsl}
 	for _, f := range fs {
 		s.ReadOnly = s.ReadOnly || f.readOnly
 	}

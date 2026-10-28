@@ -1426,3 +1426,91 @@ func appendHTMLEscaped(dst, s []byte) []byte {
 	}
 	return append(dst, s[start:]...)
 }
+
+// marshalBody is json.Marshal of a request body being built, byte for
+// byte, its lists (the messages, the input items) written an item at a
+// time into a buffer of the size they come to. json.Marshal writes the
+// whole body into one buffer that doubles as it fills, then copies it
+// out: a 45 MB Codex conversation built for Chat took the heap from 45 to
+// 316 MiB, the buffers it outgrew being garbage until the next GC (#4004,
+// jihuayu's profile on a 2 GiB server). Here no buffer outgrows the
+// largest item. A value json.Marshal refuses gets json.Marshal's answer.
+func marshalBody(out map[string]any) ([]byte, error) {
+	keys := make([]string, 0, len(out))
+	for k := range out {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	vals := make([][]json.RawMessage, len(keys))
+	n := 2
+	for i, k := range keys {
+		items, ok := marshalItems(out[k])
+		if !ok {
+			return json.Marshal(out)
+		}
+		vals[i] = items
+		n += len(k) + 4
+		for _, it := range items {
+			n += len(it) + 1
+		}
+	}
+	dst := make([]byte, 0, n)
+	dst = append(dst, '{')
+	for i, k := range keys {
+		if i > 0 {
+			dst = append(dst, ',')
+		}
+		var ok bool
+		if dst, ok = appendJSONKey(dst, k, true); !ok {
+			return json.Marshal(out)
+		}
+		dst = append(dst, ':')
+		items := vals[i]
+		vals[i] = nil
+		if !isSplitList(out[k]) {
+			dst = append(dst, items[0]...)
+			continue
+		}
+		dst = append(dst, '[')
+		for j, it := range items {
+			if j > 0 {
+				dst = append(dst, ',')
+			}
+			dst = append(dst, it...)
+		}
+		dst = append(dst, ']')
+	}
+	return append(dst, '}'), nil
+}
+
+// isSplitList says whether marshalItems writes v an item at a time: a
+// slice of two or more that isn't bytes and doesn't write itself.
+func isSplitList(v any) bool {
+	if _, ok := v.(json.Marshaler); ok {
+		return false
+	}
+	rv := reflect.ValueOf(v)
+	return rv.Kind() == reflect.Slice && rv.Type().Elem().Kind() != reflect.Uint8 && rv.Len() > 1
+}
+
+// marshalItems is v as json.Marshal writes it: its items each on their
+// own for a list isSplitList takes, or one piece; false when json.Marshal
+// refuses any of it.
+func marshalItems(v any) ([]json.RawMessage, bool) {
+	if !isSplitList(v) {
+		b, err := json.Marshal(v)
+		return []json.RawMessage{b}, err == nil
+	}
+	rv := reflect.ValueOf(v)
+	items := make([]json.RawMessage, rv.Len())
+	for i := range items {
+		// by its address, as json.Marshal reaches a slice's items: a
+		// MarshalJSON on the pointer is called
+		b, err := json.Marshal(rv.Index(i).Addr().Interface())
+		if err != nil {
+			return nil, false
+		}
+		items[i] = b
+	}
+	return items, true
+}

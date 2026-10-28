@@ -18,7 +18,7 @@ type KV struct {
 
 // GetJSON reads a dot-separated key path from a JSON or JSONC file.
 func GetJSON(path, keyPath string) (string, bool) {
-	raw, err := Read(path)
+	raw, err := readHeld(path)
 	if err != nil || len(raw) == 0 {
 		return "", false
 	}
@@ -33,7 +33,7 @@ func GetJSON(path, keyPath string) (string, bool) {
 // the file (a string with its quotes, a number, true), for putting back
 // exactly as it was (a json.RawMessage given to SetJSON).
 func GetJSONRaw(path, keyPath string) (string, bool) {
-	raw, err := Read(path)
+	raw, err := readHeld(path)
 	if err != nil || len(raw) == 0 {
 		return "", false
 	}

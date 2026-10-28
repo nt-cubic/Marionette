@@ -52,7 +52,13 @@ func executable(pid int) (string, error) {
 // and no window a close message would reach.
 func terminate(pid int) error { return kill(pid) }
 
-func kill(pid int) error {
+func kill(pid int) error { return exitWith(pid, 1) }
+
+// end ends pid with exit code 0, which its parent reads as a clean exit:
+// Windows has no SIGTERM for a console program without a window.
+func end(pid int) error { return exitWith(pid, 0) }
+
+func exitWith(pid int, code uint32) error {
 	h, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, uint32(pid))
 	if err != nil {
 		if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
@@ -64,7 +70,7 @@ func kill(pid int) error {
 		return err
 	}
 	defer windows.CloseHandle(h)
-	if err := windows.TerminateProcess(h, 1); err != nil {
+	if err := windows.TerminateProcess(h, code); err != nil {
 		if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
 			return ErrDenied
 		}

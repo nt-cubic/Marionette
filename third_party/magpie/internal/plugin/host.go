@@ -153,6 +153,13 @@ var (
 	// under it, and so is any RPC result, so a child that never ends a line
 	// fails the host rather than making it allocate without bound.
 	maxWireLine = 32 << 20
+	// streamWait is how long a fetch waits for a stream's window to come
+	// free when the budget's are all held, while its request lives. Past
+	// the budget a fetch used to fail at once (errTooManyCalls), and the
+	// gateway counted that as a 502 and tried again: 192 streams at once
+	// through one plugin gave 298 local refusals that never reached the
+	// vendor (#3890).
+	streamWait = time.Minute
 	// maxHeadBytes and maxHeadEntries are magpie's own head-envelope policy,
 	// not HTTP's: a fetch's head carries at most maxHeadBytes of header bytes
 	// (the UTF-8 bytes of every name and value, plus headEntryCost an entry)
@@ -1445,14 +1452,7 @@ func (h *host) dropCtrl() {
 // when the host already holds its limit of live and retiring calls, so a new
 // call fails clearly rather than a legitimate accepted reply being cut short.
 func (h *host) begin(stream bool) (int64, *call, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if !h.alive() {
-		return 0, nil, errHostGone
-	}
-	c := &call{done: make(chan message, 1), stream: stream, wake: make(chan struct{}, 1), state: callSending}
 	if stream {
-		c.window = streamWindow
 		// a stream holds one window of the budget as well as a call slot, so
 		// the RPC reserve is never spent on one more stream
 		select {
@@ -1460,6 +1460,46 @@ func (h *host) begin(stream bool) (int64, *call, error) {
 		default:
 			return 0, nil, errTooManyCalls
 		}
+	}
+	return h.admit(stream)
+}
+
+// beginStream is begin for a fetch: while the budget's windows are all held
+// it waits for one to come free, for streamWait at most and only while ctx
+// lives, rather than failing a request that would have run a moment later.
+// The wait is outside h.mu, which the call that frees a window takes.
+func (h *host) beginStream(ctx context.Context) (int64, *call, error) {
+	select {
+	case h.streams <- struct{}{}:
+	default:
+		t := time.NewTimer(streamWait)
+		defer t.Stop()
+		select {
+		case h.streams <- struct{}{}:
+		case <-ctx.Done():
+			return 0, nil, context.Cause(ctx)
+		case <-h.dead:
+			return 0, nil, errHostGone
+		case <-t.C:
+			return 0, nil, errTooManyCalls
+		}
+	}
+	return h.admit(true)
+}
+
+// admit registers a call whose stream window, if it is a stream, is taken.
+func (h *host) admit(stream bool) (int64, *call, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.alive() {
+		if stream {
+			<-h.streams
+		}
+		return 0, nil, errHostGone
+	}
+	c := &call{done: make(chan message, 1), stream: stream, wake: make(chan struct{}, 1), state: callSending}
+	if stream {
+		c.window = streamWindow
 	}
 	select {
 	case h.slots <- struct{}{}:
@@ -1693,7 +1733,7 @@ func Fetch(ctx context.Context, r FetchRequest) (*http.Response, error) {
 	if r.Proxy == "" {
 		r.Proxy = proxyOf(ctx)
 	}
-	id, c, err := h.begin(true)
+	id, c, err := h.beginStream(ctx)
 	if err != nil {
 		return nil, err
 	}

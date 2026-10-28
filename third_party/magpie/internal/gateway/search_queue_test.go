@@ -21,9 +21,9 @@ import (
 // after the client receives progress, so content cannot hide a lost heartbeat.
 func TestSearchQueueKeepsCodexAlive(t *testing.T) {
 	keepFast(t, 10*time.Millisecond, 20*time.Millisecond, 100*time.Millisecond)
-	held, quiet, watch := keepHeldAfter, agentQuietMost, watchEvery
-	keepHeldAfter, agentQuietMost, watchEvery = 10*time.Millisecond, 50*time.Millisecond, 5*time.Millisecond
-	t.Cleanup(func() { keepHeldAfter, agentQuietMost, watchEvery = held, quiet, watch })
+	held, quiet, watch, silent := keepHeldAfter, agentQuietMost, watchEvery, translatedQuietLongest
+	keepHeldAfter, agentQuietMost, watchEvery, translatedQuietLongest = 10*time.Millisecond, 50*time.Millisecond, 5*time.Millisecond, 40*time.Millisecond
+	t.Cleanup(func() { keepHeldAfter, agentQuietMost, watchEvery, translatedQuietLongest = held, quiet, watch, silent })
 	for _, mode := range []string{"comments", "progress", "cancel", "silent"} {
 		t.Run(mode, func(t *testing.T) {
 			fresh(t)

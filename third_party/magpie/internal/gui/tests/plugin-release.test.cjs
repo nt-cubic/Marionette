@@ -3,6 +3,8 @@
 // removing it or switching it off asks first, in the row, naming the
 // subscription that stops working with it (there is no built-in to go
 // back to) and saying its accounts are kept; only a yes sends the request.
+// A plugin magpie never had as a built-in that signs in to two providers
+// names them in the same chip (#3902), with no "in place of the built-in".
 // English and Chinese; the API is faked here.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
@@ -17,6 +19,7 @@ function server(lang, asked) {
   const installed = [
     { spec: ZED + "@0.1.2", providers: ["Zed"], version: "0.1.2", moved: ["zed"] },
     { spec: "opencode-gemini-auth", providers: ["Gemini"], version: "1.4.0", moved: [] },
+    { spec: "magpie-magicrew-auth", providers: ["超级麦吉", "MagiCrew"], version: "0.2.0", moved: [], serves: ["超级麦吉", "MagiCrew"] },
   ];
   const onPlugins = ["zed"];
   const market = () => ({ listings: [{ package: ZED, name: "Zed", icon: "zed", providers: ["zed"], community: true, replaces: "zed", npm: { version: "0.1.2" } }],
@@ -55,10 +58,10 @@ function server(lang, asked) {
 }
 
 const L = {
-  en: { installed: "Installed", serves: "Serves Zed", off: "Switch off", remove: "Remove", cancel: "Cancel",
+  en: { installed: "Installed", serves: "Serves Zed", two: "Serves 超级麦吉, MagiCrew", off: "Switch off", remove: "Remove", cancel: "Cancel",
     askOff: "Zed stops working while the plugin is off. Its accounts are kept.",
     askRemove: "Zed stops working until the plugin is installed again. Its accounts are kept.", removed: "removed" },
-  zh: { installed: "已安装", serves: "承载 Zed", off: "停用", remove: "移除", cancel: "取消",
+  zh: { installed: "已安装", serves: "承载 Zed", two: "承载 超级麦吉、MagiCrew", off: "停用", remove: "移除", cancel: "取消",
     askOff: "插件停用期间，Zed 也会停用。它的账号会保留。", askRemove: "Zed 会停用，直到再次安装插件。它的账号会保留。", removed: "已移除" },
 };
 
@@ -90,7 +93,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await chip.waitFor();
         assert.equal(await chip.innerText(), w.serves);
         assert.equal(await chip.locator(".dot").count(), 1);
+        assert.notEqual(await chip.getAttribute("title"), null);
         assert.equal(await view.locator(".pm-row").filter({ hasText: "opencode-gemini-auth" }).locator(".pm-chip.moved").count(), 0);
+        const two = view.locator(".pm-row").filter({ hasText: "magpie-magicrew-auth" }).locator(".pm-chip.moved");
+        assert.equal(await two.innerText(), w.two);
+        assert.equal(await two.getAttribute("title"), null, "nothing moved: no built-in to name");
         const top = await view.evaluate((e) => e.scrollTop);
 
         // switching off asks first; No leaves it on and sends nothing
@@ -105,7 +112,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await zed.locator("button", { hasText: new RegExp("^" + w.remove + "$") }).click();
         await zed.locator(".sub.ask", { hasText: w.askRemove }).waitFor();
         await zed.locator("button.primary", { hasText: w.remove }).click();
-        await page.waitForFunction(() => document.querySelectorAll("#view-plugins .pm-row").length === 1);
+        await page.waitForFunction(() => document.querySelectorAll("#view-plugins .pm-row").length === 2);
         assert.deepEqual(asked, [["remove", { spec: ZED + "@0.1.2" }]]);
         await page.locator("#status", { hasText: w.removed }).waitFor();
         assert.doesNotMatch(await page.locator("#status").innerText(), /built-in|内置/);

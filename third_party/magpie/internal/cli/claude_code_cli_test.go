@@ -3,6 +3,7 @@ package cli
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,8 +12,10 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yetone/magpie/internal/claudecode"
+	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/libc"
 	"github.com/yetone/magpie/internal/settings"
 )
@@ -111,6 +114,7 @@ func TestClaudeCodeRunsSetsTheUsersOwn(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("USERPROFILE", os.Getenv("HOME"))
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	noGateway(t)
 	out, err := claudeCodeOut(t, "runs", "3")
 	if err != nil {
 		t.Fatal(err)
@@ -144,5 +148,64 @@ func TestClaudeCodeRunsSetsTheUsersOwn(t *testing.T) {
 	out, err = claudeCodeOut(t, "runs")
 	if err != nil || strings.Contains(out, "your setting") {
 		t.Fatalf("runs after auto said (%v):\n%s", err, out)
+	}
+}
+
+// noGateway has `magpie claude-code runs` find no magpie running, never
+// the one on this computer.
+func noGateway(t *testing.T) {
+	t.Helper()
+	srv := httptest.NewServer(http.NotFoundHandler())
+	base := srv.URL
+	srv.Close()
+	old := claudeCode.gateway
+	claudeCode.gateway = func() string { return base }
+	t.Cleanup(func() { claudeCode.gateway = old })
+}
+
+// `magpie claude-code runs` lists the Claude Code processes the running
+// magpie has for Claude subscriptions, each with its pid, model, what it
+// waits for, until when and its account, and says what they are: a task
+// manager names them by Claude Code's version and "magpie", with nothing
+// to tell why so many run (@Candydidi3 on X). With no magpie answering,
+// it says none of its Claude Code runs.
+func TestClaudeCodeRunsListsTheProcesses(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", os.Getenv("HOME"))
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	now := time.Now()
+	runs := gateway.ClaudeRuns{Object: "claude-runs", Live: 3, IdleMost: 6, IdleFor: time.Hour, Runs: []gateway.ClaudeRun{
+		{PID: 4512, Model: "claude-opus-4-7", Account: "me@example.com", State: "answering", Since: now.Add(-12 * time.Second), Started: now.Add(-time.Minute)},
+		{PID: 4520, Model: "claude-opus-4-7", Account: "me@example.com", State: "idle", Since: now.Add(-4 * time.Minute), Ends: now.Add(56*time.Minute + 30*time.Second), RSS: 180 << 20},
+	}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != gateway.ClaudeRunsPath {
+			http.NotFound(w, r)
+			return
+		}
+		json.NewEncoder(w).Encode(runs)
+	}))
+	defer srv.Close()
+	old := claudeCode.gateway
+	claudeCode.gateway = func() string { return srv.URL }
+	t.Cleanup(func() { claudeCode.gateway = old })
+	out, err := claudeCodeOut(t, "runs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"2 Claude Code running for Claude subscription conversations, 1 more for a test, warm-up or usage read",
+		"pid 4512", "answering 12s",
+		"pid 4520", "kept for its next turn 4m", "ends in 56m", "180.0 MB", "me@example.com",
+		"claude-mcp-helper", "by its version",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("runs says no %q:\n%s", want, out)
+		}
+	}
+	noGateway(t)
+	out, err = claudeCodeOut(t, "runs")
+	if err != nil || !strings.Contains(out, "none of its Claude Code is running") {
+		t.Fatalf("with no magpie running, runs said (%v):\n%s", err, out)
 	}
 }

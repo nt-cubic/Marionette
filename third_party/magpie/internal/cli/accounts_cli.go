@@ -360,7 +360,7 @@ func accountRows(ls []provider.Login, now time.Time) []accountRow {
 			// a pool's own windows stand in for the models' drawing on it,
 			// as the usage page shows them
 			for _, w := range provider.PooledWindows(q.Windows) {
-				s := quotaSpan{Name: w.Name, Used: w.Used, Remaining: max(0, 100-w.Used), ResetsAt: w.ResetsAt, Display: w.Display, Text: w.Text, Pool: w.Pool}
+				s := quotaSpan{Name: w.Name, Used: w.Used, Remaining: max(0, 100-w.Used), ResetsAt: w.ResetsAt, Display: w.Display, Text: w.Text, Pool: w.Pool, Unit: w.Unit, Balance: w.Balance}
 				if s.ResetsAt == nil && w.ResetSecs > 0 {
 					t := now.Add(time.Duration(w.ResetSecs) * time.Second)
 					s.ResetsAt = &t
@@ -382,7 +382,10 @@ func quotaCell(w quotaSpan, now time.Time) string {
 		return name + " unlimited"
 	}
 	cell := fmt.Sprintf("%s %.0f%%", name, w.Used)
-	if w.Text {
+	if w.Balance != nil {
+		// a wallet tells what is left, never a share (#3950)
+		cell = name + " " + provider.BalanceText(*w.Balance, w.Unit)
+	} else if w.Text {
 		// a row of text alone has no share to tell
 		cell = name + " " + w.Display
 	} else if w.Display != "" {

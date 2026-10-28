@@ -483,6 +483,16 @@ func desktopTurn(asked string, body []byte, byClaudeCode, bySubagent bool) strin
 	if m := desktopTierTurn(asked); m != "" {
 		return m
 	}
+	if desktopProbe(body) {
+		// Desktop's check that the gateway answers, as it starts and from
+		// Test connection: on its default model, never the model of
+		// whichever session last ran (desktopPicked), which may be days
+		// old and on another provider
+		if m := desktopDefault(asked); m != "" {
+			return m
+		}
+		return asked
+	}
 	tools := hasTools(body)
 	desktopPicked.Lock()
 	defer desktopPicked.Unlock()
@@ -588,6 +598,43 @@ func desktopDefault(asked string) string {
 	}
 	return shown[0].ID
 }
+
+// desktopProbe: the request is Claude Desktop's check that a gateway
+// answers, which it runs as it starts and from its gateway settings' Test
+// connection (lWt in its app.asar, 2.7032):
+//
+//	{"model":<id>,"max_tokens":1,"messages":[{"role":"user","content":"."}]}
+//
+// on the shortest id of /v1/models with haiku in it, else sonnet, else
+// opus (YT): a model Desktop picks by its name, not one the user chose.
+// It is asked of Desktop's default model instead (desktopDefault, the
+// first listed: "the default model (the first listed model)", as its
+// settings say). Sent as a title is, to the model the last session ran
+// on, it went to a relay's GPT model the user had left days before and
+// was turned away there, shown as the haiku rejected (CyberCaius on
+// Discord, v0.1.1838).
+func desktopProbe(body []byte) bool {
+	var v struct {
+		MaxTokens int               `json:"max_tokens"`
+		System    json.RawMessage   `json:"system"`
+		Tools     json.RawMessage   `json:"tools"`
+		Messages  []json.RawMessage `json:"messages"`
+	}
+	if json.Unmarshal(body, &v) != nil || v.MaxTokens != 1 || len(v.System) > 0 || len(v.Tools) > 0 || len(v.Messages) != 1 {
+		return false
+	}
+	var m struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}
+	return json.Unmarshal(v.Messages[0], &m) == nil && m.Role == "user" && m.Content == "."
+}
+
+// desktopProbeTokens is the reply Desktop's check is asked for upstream:
+// OpenAI's models refuse fewer than 16 output tokens, and a relay in front
+// of one (AnyRouter: "bad response status code 400") passes on no floor
+// to ask again at (tokenFloor). Desktop reads only whether it is answered.
+const desktopProbeTokens = 16
 
 // desktopTitlePrompt is how the system prompt Claude Desktop asks a
 // session's title and branch name with starts (dcr in its app.asar), sent

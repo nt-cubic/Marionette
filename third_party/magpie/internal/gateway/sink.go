@@ -21,6 +21,7 @@ package gateway
 
 import (
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -55,10 +56,27 @@ func unsink(key string) {
 	sunk.Unlock()
 }
 
-// sunkAt is when a candidate sank, if it did.
+// unsinkAll is unsink for key and each of its models (restID, key/model):
+// UnrestAll's lift of them all.
+func unsinkAll(key string) {
+	sunk.Lock()
+	for k := range sunk.m {
+		if k == key || strings.HasPrefix(k, key+"/") {
+			delete(sunk.m, k)
+		}
+	}
+	sunk.Unlock()
+}
+
+// sunkAt is when a candidate sank, if it did: its model alone, as
+// another magpie's model rate limited there sinks (remoteModelRest,
+// #2167), or its whole key or account.
 func sunkAt(c candidate) (sinking, bool) {
 	sunk.Lock()
 	defer sunk.Unlock()
+	if s, ok := sunk.m[c.restID()]; ok {
+		return s, true
+	}
 	s, ok := sunk.m[c.restKey()]
 	return s, ok
 }

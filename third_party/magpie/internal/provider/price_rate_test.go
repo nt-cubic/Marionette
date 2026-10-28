@@ -3,6 +3,7 @@ package provider
 import (
 	"testing"
 
+	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/settings"
 )
 
@@ -36,6 +37,46 @@ func TestPriceRateOK(t *testing.T) {
 	for _, r := range []float64{-1, 1000.5, 0.1234} {
 		if PriceRateOK(r) == "" {
 			t.Errorf("%v taken", r)
+		}
+	}
+}
+
+// A signed-in account's price rate is kept and counted, as a key
+// provider's is (PaulT on Discord: Codex's 价格倍率 wasn't saved). Save
+// kept only an account's picks and limits, and withPicks read none back,
+// so the editor's Save wrote nothing and the field came back empty.
+func TestAccountPriceRateKept(t *testing.T) {
+	signIn(t)
+	catalog.Reset()
+	t.Cleanup(catalog.Reset)
+	priceCatalog(t)
+	for _, id := range []string{"codex", "copilot"} {
+		before, ok := EffectivePrice(id, "sol")
+		if !ok {
+			t.Fatalf("%s: sol has no price", id)
+		}
+		p, err := Find(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		q := *p
+		q.PriceRate = 0.5
+		if err := Save(q); err != nil {
+			t.Fatal(err)
+		}
+		if p, err := Find(id); err != nil || p.PriceRate != 0.5 {
+			t.Fatalf("%s: rate after Save: %+v %v", id, p, err)
+		}
+		if after, ok := EffectivePrice(id, "sol"); !ok || after.Input != before.Input*0.5 || after.Output != before.Output*0.5 {
+			t.Fatalf("%s: %+v at the rate, %+v before", id, after, before)
+		}
+		// cleared, it is the official price again
+		q.PriceRate = 0
+		if err := Save(q); err != nil {
+			t.Fatal(err)
+		}
+		if p, _ := Find(id); p.PriceRate != 0 {
+			t.Fatalf("%s: rate left after clearing: %v", id, p.PriceRate)
 		}
 	}
 }

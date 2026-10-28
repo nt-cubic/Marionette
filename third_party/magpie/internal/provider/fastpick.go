@@ -46,7 +46,8 @@ func UltraPicks(agent string) []string {
 // CanUltra reports whether a fast pick of model on p can be sent as
 // Ultrafast: a ChatGPT model that one of Codex's accounts lists the tier
 // on (Account.Tiers), or a plugin's model, with fast mode, that the plugin
-// says its vendor serves at ultrafast (serviceTiers, #2514). A list that
+// says its vendor serves at ultrafast (serviceTiers, #2514), or another
+// magpie's model its list offers ultrafast on (#1234). A list that
 // doesn't say tiers offers none.
 func CanUltra(p Provider, model string) bool {
 	return UltraOn(p, model, UltraModels())
@@ -61,6 +62,10 @@ func UltraOn(p Provider, model string, ultra map[string]bool) bool {
 		}
 		m, listed := pluginModel(pp, model)
 		return listed && CanFast(p, model) && pluginTierOn(pp.ID, m, "ultrafast")
+	}
+	if p.IsRemoteMagpie() {
+		// another magpie's model it offers Ultrafast on, beside Fast
+		return CanFast(p, model) && slices.Contains(RemoteTiers(p, model), "ultrafast")
 	}
 	return p.Account != nil && p.Account.Agent == "codex" && CanFast(p, model) && ultra[model]
 }

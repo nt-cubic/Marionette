@@ -141,7 +141,9 @@ test("compat.js is the first of the page's own scripts", async () => {
   const all = [...html.matchAll(/<script\s+src="([^"]+)"/g)].map((m) => m[1]);
   const srcs = all.filter((s) => s !== "boot.js" && s !== "theme.js" && s !== "omarchy.js");
   assert.equal(srcs[0], "compat.js", "loaded first: " + srcs.join(", "));
-  for (const f of await scripts()) assert(all.includes(f), f + " is not loaded by index.html");
+  // webfonts.js is imported by app.js in a browser tab only; the checks
+  // above still read it
+  for (const f of await scripts()) if (f !== "webfonts.js") assert(all.includes(f), f + " is not loaded by index.html");
 });
 
 test("the styles hold up in Safari 15.0", async () => {

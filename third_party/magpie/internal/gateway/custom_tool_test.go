@@ -197,13 +197,18 @@ func TestCustomToolRefusalInGroup(t *testing.T) {
 // not taken for one. A group's next member is asked over it where it
 // reaches the group untranslated.
 func TestCustomToolRefusalWordings(t *testing.T) {
-	for _, b := range []string{
+	known := []string{
 		deepSeekCustomRefusal,
 		`{"error":{"message":"Unsupported custom tool: 'exec'. Only 'apply_patch' is supported."}}`,
 		`{"error":{"message":"DeepSeek: Unsupported custom tool: 'exec'. Only 'apply_patch' is supported.","type":"invalid_request_error"}}`,
 		`{"error":{"message":"Invalid tool type: 'custom'"}}`,
 		`{"error":{"message":"custom tools are not supported"}}`,
-	} {
+		// xAI 422s the type with Rust's own wording (#3392, kongkongklng),
+		// in an error body and bare, as magpie reads it off a reply's words
+		`{"error":{"message":"xAI: Failed to deserialize the JSON body into the target type: tools[6].type: unknown variant ` + "`custom`" + `, expected one of ` + "`function`" + `, ` + "`web_search`" + `","type":"invalid_request_error"}}`,
+		`Failed to deserialize the JSON body into the target type: tools[6].type: unknown variant ` + "`custom`" + `, expected one of ` + "`function`" + `, ` + "`shell`" + `, ` + "`tool_search`" + ``,
+	}
+	for _, b := range known {
 		if !customToolRefusal.Match(wordsOf([]byte(b))) {
 			t.Errorf("not known: %s", b)
 		}
@@ -215,6 +220,8 @@ func TestCustomToolRefusalWordings(t *testing.T) {
 		`{"error":{"message":"Invalid schema for function 'exec': 'input' is required"}}`,
 		`{"error":{"message":"tools[0].function.strict is not supported"}}`,
 		`{"error":{"message":"Insufficient Balance"}}`,
+		// a variant other than the type itself says nothing of custom tools
+		`{"error":{"message":"tools[2].type: unknown variant ` + "`web_search_2025`" + `"}}`,
 	} {
 		if customToolRefusal.Match([]byte(b)) {
 			t.Errorf("taken for one: %s", b)

@@ -157,7 +157,7 @@ func TestStreamErrorByteCapInEveryShape(t *testing.T) {
 		{provider.Chat, "A: 413 prompt is too long: 300000 tokens > 200000 maximum", "", `"code":"context_length_exceeded"`},
 	} {
 		rec := httptest.NewRecorder()
-		streamError(rec, c.proto, http.StatusRequestEntityTooLarge, c.msg)
+		streamError(rec, c.proto, "a/m", http.StatusRequestEntityTooLarge, c.msg)
 		body := rec.Body.String()
 		if !strings.Contains(body, c.kind) {
 			t.Errorf("%s %q: want %s in %s", c.proto, c.msg, c.kind, body)

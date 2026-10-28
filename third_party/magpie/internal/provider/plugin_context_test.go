@@ -113,3 +113,26 @@ func TestPluginCatalogClampsInputAboveWindow(t *testing.T) {
 		}
 	}
 }
+
+// #3654 (mycf_711): a plugin's model declared at 1048576, its provider
+// set to 1000000 for all of its models, is told 1000000 alone and in a
+// group of its own that names no size: the same model is never told two
+// windows, which had dsh reassemble its history when it moved between
+// the two.
+func TestGroupOfAPluginModelToldTheWindowSetOnIt(t *testing.T) {
+	clinePlugin(t)
+	p, err := Find("cline")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SetContext(*p, "*", 1_000_000); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveGroup(Group{ID: "flash", Name: "flash", Members: []string{"cline/cline-free/mimo-v2.6-flash"}}); err != nil {
+		t.Fatal(err)
+	}
+	alone, group := pluginWindow(t, "cline/cline-free/mimo-v2.6-flash"), pluginWindow(t, GroupPrefix+"flash")
+	if alone != 1_000_000 || group != alone {
+		t.Errorf("alone %d, in its group %d: want 1000000 both", alone, group)
+	}
+}

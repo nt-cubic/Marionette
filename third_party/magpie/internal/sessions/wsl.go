@@ -190,9 +190,10 @@ func wslFiles(agents ...string) []file {
 	for _, n := range names {
 		l := wslSess.lists[n]
 		cold := !l.Running || !up[n]
+		in := &fileMore{wsl: n} // the distro's files share it
 		for _, e := range l.Files {
 			if want[e.Agent] {
-				out = append(out, file{agent: e.Agent, key: e.Key, path: e.Path, main: e.Main, size: e.Size, mod: e.Mod, wsl: n, cold: cold})
+				out = append(out, file{agent: e.Agent, key: e.Key, path: e.Path, main: e.Main, size: e.Size, mod: e.Mod, more: in, cold: cold})
 			}
 		}
 	}
@@ -329,7 +330,7 @@ func wslHomeOf(distro string) string {
 func wslForget(fs []file) {
 	gone := map[string]bool{}
 	for _, f := range fs {
-		if f.wsl != "" {
+		if f.m().wsl != "" {
 			gone[f.path] = true
 		}
 	}

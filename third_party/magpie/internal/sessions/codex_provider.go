@@ -525,6 +525,13 @@ func rewriteCodexProvider(path, to string) (bool, error) {
 		line, err := br.ReadBytes('\n')
 		if len(line) > 0 {
 			out, ok := setMetaProvider(line, to)
+			if ok {
+				// a session_meta names its own history_mode: Codex keeps
+				// places in a paginated rollout by byte (fitLine)
+				if out, ok = fitLine(line, out, paginated(line)); !ok {
+					return false, fmt.Errorf("%s keeps its history by byte, and %q is longer than the provider it names: Codex couldn't open it moved", filepath.Base(path), to)
+				}
+			}
 			changed = changed || ok
 			if _, werr := bw.Write(out); werr != nil {
 				return false, werr

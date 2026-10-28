@@ -268,6 +268,19 @@ func (s *usageSniffer) drain() {
 	}
 }
 
+// settleWhole reads a reply that came whole, once it has ended, for an
+// error it carried under its success status (errorReply): told as failed,
+// with what it said, not counted as an answer.
+func (s *usageSniffer) settleWhole() {
+	if s.sse || s.over || s.failed != "" {
+		return
+	}
+	if _, msg, ok := errorReply(s.buf); ok {
+		s.failed = msg
+		s.u.ErrType = provider.ErrorType(bytes.TrimSpace(s.buf))
+	}
+}
+
 // usage is what the reply reported, the model it named in Served; call it
 // once the body has ended.
 func (s *usageSniffer) usage() Usage {

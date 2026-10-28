@@ -61,3 +61,31 @@ func commandLine(pid uint32) string {
 	}
 	return strings.TrimSpace((*windows.NTUnicodeString)(unsafe.Pointer(&buf[0])).String())
 }
+
+// family walks a Toolhelp snapshot of every process, with its parent's
+// id and its command line.
+func family(ctx context.Context) ([]Kin, error) {
+	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer windows.CloseHandle(snap)
+	var ps []Kin
+	e := windows.ProcessEntry32{Size: uint32(unsafe.Sizeof(windows.ProcessEntry32{}))}
+	for err = windows.Process32First(snap, &e); err == nil; err = windows.Process32Next(snap, &e) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if e.ProcessID != 0 {
+			ps = append(ps, Kin{PID: int(e.ProcessID), PPID: int(e.ParentProcessID), Args: commandLine(e.ProcessID)})
+		}
+	}
+	if err != windows.ERROR_NO_MORE_FILES {
+		return nil, err
+	}
+	return ps, nil
+}
+
+// endFamily is endTree, which tells what pid started from a later process
+// given an old parent's id by its start.
+func endFamily(pid int, _ []int) { _ = endTree(pid) }

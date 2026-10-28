@@ -13,22 +13,26 @@
 			{
 				"Start": 7,
 				"End": 13,
-				"Label": "private_person"
+				"Label": "private_person",
+				"score": 0.9996709823608398
 			},
 			{
 				"Start": 57,
 				"End": 64,
-				"Label": "private_person"
+				"Label": "private_person",
+				"score": 0.9999828338623047
 			},
 			{
 				"Start": 68,
 				"End": 73,
-				"Label": "private_person"
+				"Label": "private_person",
+				"score": 0.9997822642326355
 			},
 			{
 				"Start": 115,
 				"End": 121,
-				"Label": "private_person"
+				"Label": "private_person",
+				"score": 0.8679556846618652
 			}
 		]
 	},
@@ -38,17 +42,20 @@
 			{
 				"Start": 39,
 				"End": 48,
-				"Label": "secret"
+				"Label": "secret",
+				"score": 0.7519519925117493
 			},
 			{
 				"Start": 195,
 				"End": 204,
-				"Label": "private_person"
+				"Label": "private_person",
+				"score": 0.5430417060852051
 			},
 			{
 				"Start": 236,
 				"End": 245,
-				"Label": "secret"
+				"Label": "secret",
+				"score": 0.6623177528381348
 			}
 		]
 	},
@@ -62,12 +69,14 @@
 			{
 				"Start": 31,
 				"End": 148,
-				"Label": "secret"
+				"Label": "secret",
+				"score": 0.9999741315841675
 			},
 			{
 				"Start": 150,
 				"End": 180,
-				"Label": "private_url"
+				"Label": "private_url",
+				"score": 0.8646273612976074
 			}
 		]
 	},
@@ -81,7 +90,8 @@
 			{
 				"Start": 26,
 				"End": 36,
-				"Label": "account_number"
+				"Label": "account_number",
+				"score": 0.9979659914970398
 			}
 		]
 	},
@@ -91,17 +101,20 @@
 			{
 				"Start": 12,
 				"End": 50,
-				"Label": "secret"
+				"Label": "secret",
+				"score": 0.7302199602127075
 			},
 			{
 				"Start": 67,
 				"End": 108,
-				"Label": "secret"
+				"Label": "secret",
+				"score": 0.9999991059303284
 			},
 			{
 				"Start": 135,
 				"End": 175,
-				"Label": "secret"
+				"Label": "secret",
+				"score": 0.9993591904640198
 			}
 		]
 	},
@@ -115,17 +128,20 @@
 			{
 				"Start": 83,
 				"End": 119,
-				"Label": "account_number"
+				"Label": "account_number",
+				"score": 0.994881808757782
 			},
 			{
 				"Start": 155,
 				"End": 169,
-				"Label": "private_person"
+				"Label": "private_person",
+				"score": 0.9996635317802429
 			},
 			{
 				"Start": 240,
 				"End": 253,
-				"Label": "secret"
+				"Label": "secret",
+				"score": 0.999958872795105
 			}
 		]
 	},
@@ -135,7 +151,8 @@
 			{
 				"Start": 14,
 				"End": 21,
-				"Label": "secret"
+				"Label": "secret",
+				"score": 0.7929887175559998
 			}
 		]
 	},
@@ -145,12 +162,14 @@
 			{
 				"Start": 56,
 				"End": 62,
-				"Label": "private_person"
+				"Label": "private_person",
+				"score": 0.9999889135360718
 			},
 			{
 				"Start": 64,
 				"End": 95,
-				"Label": "private_email"
+				"Label": "private_email",
+				"score": 0.9926241636276245
 			}
 		]
 	},
@@ -160,7 +179,8 @@
 			{
 				"Start": 8,
 				"End": 72,
-				"Label": "secret"
+				"Label": "secret",
+				"score": 0.9951086640357971
 			}
 		]
 	},
@@ -170,12 +190,14 @@
 			{
 				"Start": 15,
 				"End": 63,
-				"Label": "secret"
+				"Label": "secret",
+				"score": 0.9999755620956421
 			},
 			{
 				"Start": 76,
 				"End": 90,
-				"Label": "secret"
+				"Label": "secret",
+				"score": 0.9994818568229675
 			}
 		]
 	},
@@ -185,27 +207,32 @@
 			{
 				"Start": 36,
 				"End": 46,
-				"Label": "account_number"
+				"Label": "account_number",
+				"score": 0.9865620136260986
 			},
 			{
 				"Start": 54,
 				"End": 67,
-				"Label": "account_number"
+				"Label": "account_number",
+				"score": 0.9779103994369507
 			},
 			{
 				"Start": 76,
 				"End": 100,
-				"Label": "private_date"
+				"Label": "private_date",
+				"score": 0.9683437943458557
 			},
 			{
 				"Start": 111,
 				"End": 127,
-				"Label": "private_phone"
+				"Label": "private_phone",
+				"score": 0.9999693632125854
 			},
 			{
 				"Start": 138,
 				"End": 142,
-				"Label": "private_address"
+				"Label": "private_address",
+				"score": 0.9999595880508423
 			}
 		]
 	},
@@ -215,7 +242,8 @@
 			{
 				"Start": 14,
 				"End": 30,
-				"Label": "private_email"
+				"Label": "private_email",
+				"score": 0.9822543263435364
 			}
 		]
 	},
@@ -225,22 +253,26 @@
 			{
 				"Start": 35,
 				"End": 82,
-				"Label": "secret"
+				"Label": "secret",
+				"score": 0.9390993118286133
 			},
 			{
 				"Start": 85,
 				"End": 104,
-				"Label": "secret"
+				"Label": "secret",
+				"score": 0.9990366697311401
 			},
 			{
 				"Start": 109,
 				"End": 132,
-				"Label": "secret"
+				"Label": "secret",
+				"score": 0.999983549118042
 			},
 			{
 				"Start": 141,
 				"End": 161,
-				"Label": "secret"
+				"Label": "secret",
+				"score": 0.852599561214447
 			}
 		]
 	},
@@ -250,12 +282,14 @@
 			{
 				"Start": 23,
 				"End": 33,
-				"Label": "private_person"
+				"Label": "private_person",
+				"score": 0.999956488609314
 			},
 			{
 				"Start": 35,
 				"End": 55,
-				"Label": "private_email"
+				"Label": "private_email",
+				"score": 0.9999942183494568
 			}
 		]
 	},
@@ -269,7 +303,8 @@
 			{
 				"Start": 10,
 				"End": 55,
-				"Label": "private_url"
+				"Label": "private_url",
+				"score": 0.999872088432312
 			}
 		]
 	},
@@ -291,12 +326,14 @@
 			{
 				"Start": 10,
 				"End": 52,
-				"Label": "secret"
+				"Label": "secret",
+				"score": 0.9979620575904846
 			},
 			{
 				"Start": 53,
 				"End": 96,
-				"Label": "secret"
+				"Label": "secret",
+				"score": 0.9856805205345154
 			}
 		]
 	},
@@ -306,7 +343,8 @@
 			{
 				"Start": 4,
 				"End": 40,
-				"Label": "private_url"
+				"Label": "private_url",
+				"score": 0.9622886776924133
 			}
 		]
 	},
@@ -316,7 +354,8 @@
 			{
 				"Start": 24,
 				"End": 51,
-				"Label": "account_number"
+				"Label": "account_number",
+				"score": 0.999630868434906
 			}
 		]
 	},
@@ -326,17 +365,20 @@
 			{
 				"Start": 21,
 				"End": 30,
-				"Label": "private_person"
+				"Label": "private_person",
+				"score": 0.9999991655349731
 			},
 			{
 				"Start": 41,
 				"End": 62,
-				"Label": "private_email"
+				"Label": "private_email",
+				"score": 0.9999995231628418
 			},
 			{
 				"Start": 70,
 				"End": 90,
-				"Label": "private_phone"
+				"Label": "private_phone",
+				"score": 0.9999877214431763
 			}
 		]
 	},
@@ -350,17 +392,20 @@
 			{
 				"Start": 0,
 				"End": 19,
-				"Label": "private_date"
+				"Label": "private_date",
+				"score": 0.6735039949417114
 			},
 			{
 				"Start": 35,
 				"End": 52,
-				"Label": "private_email"
+				"Label": "private_email",
+				"score": 0.7250260710716248
 			},
 			{
 				"Start": 68,
 				"End": 76,
-				"Label": "private_url"
+				"Label": "private_url",
+				"score": 0.9995778203010559
 			}
 		]
 	},
@@ -370,27 +415,32 @@
 			{
 				"Start": 0,
 				"End": 10,
-				"Label": "private_email"
+				"Label": "private_email",
+				"score": 0.755682110786438
 			},
 			{
 				"Start": 15,
 				"End": 18,
-				"Label": "private_person"
+				"Label": "private_person",
+				"score": 0.7198829054832458
 			},
 			{
 				"Start": 59,
 				"End": 70,
-				"Label": "private_email"
+				"Label": "private_email",
+				"score": 0.8445316553115845
 			},
 			{
 				"Start": 86,
 				"End": 90,
-				"Label": "private_address"
+				"Label": "private_address",
+				"score": 0.8700133562088013
 			},
 			{
 				"Start": 91,
 				"End": 97,
-				"Label": "private_date"
+				"Label": "private_date",
+				"score": 0.8610206246376038
 			}
 		]
 	},
@@ -400,32 +450,38 @@
 			{
 				"Start": 0,
 				"End": 19,
-				"Label": "private_date"
+				"Label": "private_date",
+				"score": 0.9984123706817627
 			},
 			{
 				"Start": 21,
 				"End": 38,
-				"Label": "private_phone"
+				"Label": "private_phone",
+				"score": 0.9999645352363586
 			},
 			{
 				"Start": 39,
 				"End": 58,
-				"Label": "private_date"
+				"Label": "private_date",
+				"score": 0.9472267627716064
 			},
 			{
 				"Start": 60,
 				"End": 78,
-				"Label": "private_phone"
+				"Label": "private_phone",
+				"score": 0.9999365210533142
 			},
 			{
 				"Start": 79,
 				"End": 98,
-				"Label": "private_date"
+				"Label": "private_date",
+				"score": 0.9862194061279297
 			},
 			{
 				"Start": 100,
 				"End": 118,
-				"Label": "private_phone"
+				"Label": "private_phone",
+				"score": 0.9995419383049011
 			}
 		]
 	},
@@ -435,17 +491,20 @@
 			{
 				"Start": 67,
 				"End": 99,
-				"Label": "private_person"
+				"Label": "private_person",
+				"score": 0.7719004154205322
 			},
 			{
 				"Start": 154,
 				"End": 180,
-				"Label": "private_person"
+				"Label": "private_person",
+				"score": 0.9730507135391235
 			},
 			{
 				"Start": 198,
 				"End": 225,
-				"Label": "secret"
+				"Label": "secret",
+				"score": 0.5167003273963928
 			}
 		]
 	},
@@ -459,12 +518,14 @@
 			{
 				"Start": 26,
 				"End": 27,
-				"Label": "private_person"
+				"Label": "private_person",
+				"score": 0.9247977137565613
 			},
 			{
 				"Start": 32,
 				"End": 33,
-				"Label": "private_person"
+				"Label": "private_person",
+				"score": 0.9909683465957642
 			}
 		]
 	},
@@ -474,12 +535,14 @@
 			{
 				"Start": 36,
 				"End": 39,
-				"Label": "private_person"
+				"Label": "private_person",
+				"score": 0.9999797940254211
 			},
 			{
 				"Start": 43,
 				"End": 58,
-				"Label": "private_phone"
+				"Label": "private_phone",
+				"score": 0.999995768070221
 			}
 		]
 	},
@@ -493,12 +556,14 @@
 			{
 				"Start": 67,
 				"End": 103,
-				"Label": "private_url"
+				"Label": "private_url",
+				"score": 0.783750057220459
 			},
 			{
 				"Start": 148,
 				"End": 162,
-				"Label": "private_email"
+				"Label": "private_email",
+				"score": 0.6178609132766724
 			}
 		]
 	},
@@ -508,7 +573,8 @@
 			{
 				"Start": 27,
 				"End": 38,
-				"Label": "secret"
+				"Label": "secret",
+				"score": 0.999982476234436
 			}
 		]
 	},
@@ -518,7 +584,8 @@
 			{
 				"Start": 13,
 				"End": 27,
-				"Label": "private_person"
+				"Label": "private_person",
+				"score": 0.9999990463256836
 			}
 		]
 	},
@@ -532,17 +599,20 @@
 			{
 				"Start": 29,
 				"End": 44,
-				"Label": "private_person"
+				"Label": "private_person",
+				"score": 0.7199236154556274
 			},
 			{
 				"Start": 46,
 				"End": 98,
-				"Label": "private_url"
+				"Label": "private_url",
+				"score": 0.9997158050537109
 			},
 			{
 				"Start": 193,
 				"End": 204,
-				"Label": "private_phone"
+				"Label": "private_phone",
+				"score": 0.7728715538978577
 			}
 		]
 	},
@@ -552,7 +622,8 @@
 			{
 				"Start": 67,
 				"End": 85,
-				"Label": "private_person"
+				"Label": "private_person",
+				"score": 0.8553599119186401
 			}
 		]
 	},
@@ -562,7 +633,8 @@
 			{
 				"Start": 0,
 				"End": 83,
-				"Label": "secret"
+				"Label": "secret",
+				"score": 0.9803686738014221
 			}
 		]
 	},
@@ -572,7 +644,8 @@
 			{
 				"Start": 39,
 				"End": 81,
-				"Label": "secret"
+				"Label": "secret",
+				"score": 0.993749737739563
 			}
 		]
 	},
@@ -582,17 +655,20 @@
 			{
 				"Start": 26,
 				"End": 34,
-				"Label": "secret"
+				"Label": "secret",
+				"score": 0.6450760364532471
 			},
 			{
 				"Start": 52,
 				"End": 67,
-				"Label": "secret"
+				"Label": "secret",
+				"score": 0.9475275874137878
 			},
 			{
 				"Start": 130,
 				"End": 156,
-				"Label": "secret"
+				"Label": "secret",
+				"score": 0.997515082359314
 			}
 		]
 	},
@@ -602,7 +678,8 @@
 			{
 				"Start": 25,
 				"End": 30,
-				"Label": "private_address"
+				"Label": "private_address",
+				"score": 0.9985845685005188
 			}
 		]
 	},
@@ -616,7 +693,8 @@
 			{
 				"Start": 116,
 				"End": 125,
-				"Label": "private_address"
+				"Label": "private_address",
+				"score": 0.7423255443572998
 			}
 		]
 	},
@@ -634,12 +712,14 @@
 			{
 				"Start": 8,
 				"End": 26,
-				"Label": "account_number"
+				"Label": "account_number",
+				"score": 0.9553443789482117
 			},
 			{
 				"Start": 43,
 				"End": 85,
-				"Label": "account_number"
+				"Label": "account_number",
+				"score": 0.8112580180168152
 			}
 		]
 	},
@@ -649,12 +729,14 @@
 			{
 				"Start": 41,
 				"End": 55,
-				"Label": "private_person"
+				"Label": "private_person",
+				"score": 0.9999991059303284
 			},
 			{
 				"Start": 118,
 				"End": 123,
-				"Label": "private_person"
+				"Label": "private_person",
+				"score": 0.9996482133865356
 			}
 		]
 	},
@@ -664,7 +746,8 @@
 			{
 				"Start": 31,
 				"End": 39,
-				"Label": "account_number"
+				"Label": "account_number",
+				"score": 0.9996710419654846
 			}
 		]
 	},
@@ -674,12 +757,14 @@
 			{
 				"Start": 37,
 				"End": 67,
-				"Label": "account_number"
+				"Label": "account_number",
+				"score": 0.9796360731124878
 			},
 			{
 				"Start": 93,
 				"End": 121,
-				"Label": "account_number"
+				"Label": "account_number",
+				"score": 0.9456615447998047
 			}
 		]
 	},
@@ -689,32 +774,38 @@
 			{
 				"Start": 36,
 				"End": 50,
-				"Label": "private_person"
+				"Label": "private_person",
+				"score": 0.9950388669967651
 			},
 			{
 				"Start": 50,
 				"End": 70,
-				"Label": "private_email"
+				"Label": "private_email",
+				"score": 0.9999969601631165
 			},
 			{
 				"Start": 70,
 				"End": 87,
-				"Label": "private_phone"
+				"Label": "private_phone",
+				"score": 0.9999991059303284
 			},
 			{
 				"Start": 88,
 				"End": 99,
-				"Label": "private_person"
+				"Label": "private_person",
+				"score": 0.9999955892562866
 			},
 			{
 				"Start": 100,
 				"End": 121,
-				"Label": "private_email"
+				"Label": "private_email",
+				"score": 0.9999992251396179
 			},
 			{
 				"Start": 121,
 				"End": 137,
-				"Label": "private_phone"
+				"Label": "private_phone",
+				"score": 0.9999945163726807
 			}
 		]
 	},
@@ -728,17 +819,20 @@
 			{
 				"Start": 37,
 				"End": 60,
-				"Label": "account_number"
+				"Label": "account_number",
+				"score": 0.9922814965248108
 			},
 			{
 				"Start": 68,
 				"End": 95,
-				"Label": "secret"
+				"Label": "secret",
+				"score": 0.8133253455162048
 			},
 			{
 				"Start": 105,
 				"End": 126,
-				"Label": "secret"
+				"Label": "secret",
+				"score": 0.9985485076904297
 			}
 		]
 	},
@@ -748,7 +842,8 @@
 			{
 				"Start": 82,
 				"End": 108,
-				"Label": "secret"
+				"Label": "secret",
+				"score": 0.6138984560966492
 			}
 		]
 	},
@@ -766,12 +861,14 @@
 			{
 				"Start": 10,
 				"End": 58,
-				"Label": "private_url"
+				"Label": "private_url",
+				"score": 0.9996631741523743
 			},
 			{
 				"Start": 63,
 				"End": 79,
-				"Label": "private_url"
+				"Label": "private_url",
+				"score": 0.9925283789634705
 			}
 		]
 	},
@@ -781,7 +878,8 @@
 			{
 				"Start": 27,
 				"End": 55,
-				"Label": "secret"
+				"Label": "secret",
+				"score": 0.8250589370727539
 			}
 		]
 	},
@@ -791,12 +889,14 @@
 			{
 				"Start": 24,
 				"End": 68,
-				"Label": "private_address"
+				"Label": "private_address",
+				"score": 0.9999116659164429
 			},
 			{
 				"Start": 78,
 				"End": 92,
-				"Label": "private_phone"
+				"Label": "private_phone",
+				"score": 0.998772144317627
 			}
 		]
 	},
@@ -806,12 +906,14 @@
 			{
 				"Start": 11,
 				"End": 54,
-				"Label": "private_url"
+				"Label": "private_url",
+				"score": 0.8804416060447693
 			},
 			{
 				"Start": 84,
 				"End": 116,
-				"Label": "private_url"
+				"Label": "private_url",
+				"score": 0.9207233190536499
 			}
 		]
 	},
@@ -821,17 +923,20 @@
 			{
 				"Start": 12,
 				"End": 18,
-				"Label": "private_person"
+				"Label": "private_person",
+				"score": 0.9999974370002747
 			},
 			{
 				"Start": 28,
 				"End": 39,
-				"Label": "private_phone"
+				"Label": "private_phone",
+				"score": 0.9999875426292419
 			},
 			{
 				"Start": 51,
 				"End": 93,
-				"Label": "private_address"
+				"Label": "private_address",
+				"score": 0.9999922513961792
 			}
 		]
 	},
@@ -841,7 +946,8 @@
 			{
 				"Start": 13,
 				"End": 31,
-				"Label": "account_number"
+				"Label": "account_number",
+				"score": 0.9986587166786194
 			}
 		]
 	},
@@ -851,12 +957,14 @@
 			{
 				"Start": 18,
 				"End": 39,
-				"Label": "private_person"
+				"Label": "private_person",
+				"score": 0.9349985718727112
 			},
 			{
 				"Start": 51,
 				"End": 63,
-				"Label": "private_person"
+				"Label": "private_person",
+				"score": 0.9998366832733154
 			}
 		]
 	},
@@ -866,7 +974,8 @@
 			{
 				"Start": 19,
 				"End": 29,
-				"Label": "secret"
+				"Label": "secret",
+				"score": 0.9998962879180908
 			}
 		]
 	},
@@ -876,7 +985,8 @@
 			{
 				"Start": 0,
 				"End": 15,
-				"Label": "private_person"
+				"Label": "private_person",
+				"score": 0.8192970752716064
 			}
 		]
 	},

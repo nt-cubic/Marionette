@@ -265,8 +265,10 @@ func readCalls(f file) *callFile {
 	callsMu.Lock()
 	old, generation := callCache[f.path], callGeneration
 	callsMu.Unlock()
+	owned := false
 	if old == nil {
 		old = loadKept(f)
+		owned = true
 	}
 	if old != nil && old.Size == f.size && old.Mod == f.mod.UnixNano() {
 		callsMu.Lock()
@@ -325,7 +327,7 @@ func readCalls(f file) *callFile {
 	if r, ok := lineCallReaders[f.agent]; ok && r.kept != nil && old != nil && !r.kept(old) {
 		old = nil
 	}
-	st := prepareCalls(f, withCallRevisions(old))
+	st := prepareCalls(f, withCallRevisions(old), owned)
 	continued := old != nil && st.Off == old.Off && st.Off > 0
 	start := 0
 	if continued {
@@ -398,14 +400,16 @@ func callsAlong(f file) *callsRide {
 	callsMu.Lock()
 	old, generation := callCache[f.path], callGeneration
 	callsMu.Unlock()
+	owned := false
 	if old == nil {
 		old = loadKept(f)
+		owned = true
 	}
 	if old != nil && old.Size == f.size && old.Mod == f.mod.UnixNano() {
 		lock.Unlock()
 		return nil
 	}
-	return &callsRide{f: f, st: prepareCalls(f, old), generation: generation, lock: lock}
+	return &callsRide{f: f, st: prepareCalls(f, old, owned), generation: generation, lock: lock}
 }
 
 // ride is a scan's head and line for both readers: each head sees every

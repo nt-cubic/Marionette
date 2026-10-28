@@ -98,7 +98,7 @@ func parseGoogleImport(agent, data string) ([]googleImport, error) {
 			if line == "" || strings.HasPrefix(line, "#") {
 				continue
 			}
-			if strings.ContainsAny(line, " \t") {
+			if strings.ContainsAny(line, " \t") || looksLikeAddress(line) {
 				add(googleImport{err: "not a refresh token"})
 				continue
 			}

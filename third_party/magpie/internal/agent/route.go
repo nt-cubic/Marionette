@@ -114,18 +114,6 @@ func listLabels(agent string) map[string]string {
 	return out
 }
 
-// viaMagpieFor is viaMagpie without the agent's own account: Codex CLI going
-// through magpie to its own ChatGPT login would only add a hop.
-func viaMagpieFor(agentID, prefix string) []Option {
-	var out []Option
-	for _, o := range viaMagpie(agentID, prefix) {
-		if !strings.HasPrefix(o.Value, prefix+agentID+"/") {
-			out = append(out, o)
-		}
-	}
-	return out
-}
-
 // isMagpie reports whether a model value is a catalog reference.
 func isMagpie(v string) bool {
 	if pid, _, ok := strings.Cut(v, "/"); ok && dryProviders[pid] {
@@ -242,6 +230,11 @@ func magpieModels(agent string) []catalog.Model {
 		// lists offer them: Fast in the Codex CLI magpie writes
 		// magpie-models.json for (#1530)
 		provider.CodexTiers(&m, e, members)
+		if agent == "codex" {
+			// the entry its vendor lists the model under in Codex's own
+			// shape, handed on as it is (codexcat)
+			m.Codex = e.Codex
+		}
 		// the gateway paths it goes on untranslated, as /v1/models says
 		// them: what an agent plugin's connect is told (cleary5779)
 		m.Endpoints = provider.NativeEndpoints(e)

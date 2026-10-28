@@ -114,7 +114,10 @@ func cmdLogins() []cmdLogin {
 
 type cmdSeen struct {
 	plan string
-	at   time.Time
+	// until is, on a key's plan (cmdKeyPlanID), when the plan's period
+	// ends: the month's credits come back then, on the Credits window.
+	until *time.Time
+	at    time.Time
 }
 
 // ---- allowance ----------------------------------------------------------------
@@ -241,14 +244,15 @@ func cmdLeft(c cmdCredits) (monthly, left float64, ok bool) {
 }
 
 // cmdQuotaOf makes the credits reply into the plan's windows: the 5-hour
-// and weekly limits, and the month's credits as one more. A card's
+// and weekly limits, and the month's credits as one more, renewing at
+// until, the plan's period's end (nil when that isn't known). A card's
 // Balance is shown instead of its windows — it is a key's money, not an
 // allowance — so, set beside them, it hid both limits on the Usage page,
 // the panel and the TUI. The dollars are a window when the plan is known,
 // used of the CLI's pool (the plan's month of credits, or what is left of
 // it if more, and the bought and free ones) as its /usage bar is; a reply
 // with neither windows nor a plan is a Balance still.
-func cmdQuotaOf(q SubscriptionQuota, c cmdCredits) SubscriptionQuota {
+func cmdQuotaOf(q SubscriptionQuota, c cmdCredits, until *time.Time) SubscriptionQuota {
 	name, planMonthly := cmdPlanOf(c.Credits.PlanID)
 	if name != "" {
 		q.Plan = name
@@ -260,7 +264,7 @@ func cmdQuotaOf(q SubscriptionQuota, c cmdCredits) SubscriptionQuota {
 	case planMonthly > 0:
 		pool := max(planMonthly, monthly) + left - monthly
 		q.Windows = append(q.Windows, QuotaWindow{Name: "Credits", Used: min(100, 100*(pool-left)/pool),
-			Display: money("$", pool-left) + " / " + money("$", pool)})
+			Display: money("$", pool-left) + " / " + money("$", pool), ResetsAt: until})
 	case len(q.Windows) == 0:
 		q.Balance = money("$", left)
 	}
@@ -315,10 +319,17 @@ func cmdKeyWindows(ctx context.Context, src planQuotaSource, key string) (string
 	if len(cmdWindows(c)) == 0 {
 		return cmdPlanName(c.Credits.PlanID), []QuotaWindow{}, nil
 	}
+	var until *time.Time
 	if c.Credits.PlanID == "" {
-		c.Credits.PlanID = cmdKeyPlanID(ctx, key)
+		c.Credits.PlanID, until = cmdKeyPlanID(ctx, key)
 	}
-	q := cmdQuotaOf(SubscriptionQuota{}, c)
+	if until != nil && !until.After(time.Now()) {
+		// a period end already past (the pair kept while the endpoint
+		// can't be read, or a renewal not yet in its reply) says nothing
+		// about when the credits come back
+		until = nil
+	}
+	q := cmdQuotaOf(SubscriptionQuota{}, c, until)
 	return q.Plan, q.Windows, nil
 }
 
@@ -327,21 +338,24 @@ var cmdKeyPlans = struct {
 	m map[string]cmdSeen // plan is the subscription's id here
 }{m: map[string]cmdSeen{}}
 
-func cmdKeyPlanID(ctx context.Context, key string) string {
+// cmdKeyPlanID is the key's subscription's plan id, and the end of its
+// period, for the Credits window's reset: asked at most every ten minutes,
+// and the pair read before kept while it can't be read.
+func cmdKeyPlanID(ctx context.Context, key string) (string, *time.Time) {
 	cmdKeyPlans.Lock()
 	seen, had := cmdKeyPlans.m[key]
 	cmdKeyPlans.Unlock()
 	if had && time.Since(seen.at) < 10*time.Minute {
-		return seen.plan
+		return seen.plan, seen.until
 	}
-	id, _, _, _, ok := cmdSubscription(ctx, cmdAuth{APIKey: key})
+	id, _, until, _, ok := cmdSubscription(ctx, cmdAuth{APIKey: key})
 	if !ok {
-		return seen.plan
+		return seen.plan, seen.until
 	}
 	cmdKeyPlans.Lock()
-	cmdKeyPlans.m[key] = cmdSeen{id, time.Now()}
+	cmdKeyPlans.m[key] = cmdSeen{plan: id, until: until, at: time.Now()}
 	cmdKeyPlans.Unlock()
-	return id
+	return id, until
 }
 
 // ---- signing in ---------------------------------------------------------------

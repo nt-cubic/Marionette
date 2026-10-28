@@ -42,12 +42,13 @@ func TestCodexHomeEnvTakesThePick(t *testing.T) {
 	if m := StandIn("codex", "gpt-5"); m != "fake/m1" {
 		t.Fatalf("the gateway's stand-in for Codex is %q, read from somewhere else", m)
 	}
-	if err := TuneApply(home, "codex", TuneCompact, "", "200000"); err != nil {
+	// tune reads a compact limit of the user's from $CODEX_HOME's config,
+	// which comes before magpie's window, and writes none of its own
+	if err := os.WriteFile(filepath.Join(ch, "config.toml"), append([]byte("model_auto_compact_token_limit = 180000\n"), b...), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	b, _ = os.ReadFile(filepath.Join(ch, "config.toml"))
-	if !strings.Contains(string(b), "model_auto_compact_token_limit = 200000") {
-		t.Fatalf("tune didn't write $CODEX_HOME/config.toml:\n%s", b)
+	if s, _ := TuneRead(home, "codex", TuneCompact, ""); s.Locked != codexCompactKey || s.Value != "180000" {
+		t.Fatalf("tune didn't read $CODEX_HOME/config.toml: %+v", s)
 	}
 	if _, err := os.Stat(filepath.Join(home, ".codex")); !os.IsNotExist(err) {
 		var names []string

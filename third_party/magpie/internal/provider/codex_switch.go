@@ -45,6 +45,64 @@ import (
 // loginSwitchEvery is how often the account each agent is on is looked at.
 const loginSwitchEvery = 5 * time.Minute
 
+// codexNearOutEvery is how often the account Codex is signed in to is read
+// while it is near out (codexNearOut) or out: the Codex app greys its Send
+// from its own reading, and magpie takes the turns over only once its
+// reading says the account is out too, so five minutes apart left Send
+// grey for up to five (Ethereal499 on X). Read again as soon after the
+// reset, magpie gives the app its ChatGPT side back as soon.
+const codexNearOutEvery = time.Minute
+
+// codexNearShare is the share of a window past which the account counts
+// near out.
+const codexNearShare = 90
+
+// codexLookEvery is when KeepOnAnAccountWithRoom looks again, after
+// reading u: codexNearOutEvery while the account Codex is signed in to is
+// near out or out, else loginSwitchEvery.
+func codexLookEvery(u map[string]SubscriptionQuota) time.Duration {
+	for _, l := range Logins("codex") {
+		q, ok := u[l.User]
+		if !l.Active || !ok || q.Error != "" {
+			continue
+		}
+		if q.Held {
+			return codexNearOutEvery
+		}
+		for _, w := range q.Windows {
+			if !w.Unlimited && !w.Text && w.Used >= codexNearShare {
+				return codexNearOutEvery
+			}
+		}
+	}
+	return loginSwitchEvery
+}
+
+// CodexOutUntil is when the ChatGPT account Codex is signed in to has room
+// again, as last read: the latest reset of the windows used up. Zero when
+// it isn't out or the reading doesn't say.
+func CodexOutUntil() time.Time { return codexOutUntil(knownLoginUsage("codex")) }
+
+// codexOutUntil is CodexOutUntil over the readings u.
+func codexOutUntil(u map[string]SubscriptionQuota) time.Time {
+	var until time.Time
+	for _, l := range Logins("codex") {
+		q, ok := u[l.User]
+		if !l.Active || !ok || q.Error != "" || !q.Held {
+			continue
+		}
+		for _, w := range q.Windows {
+			if w.Unlimited || w.Text || w.Used < 100 || w.ResetsAt == nil {
+				continue
+			}
+			if w.ResetsAt.After(until) {
+				until = *w.ResetsAt
+			}
+		}
+	}
+	return until
+}
+
 // SpentShare is the share of an allowance past which an account is all
 // but used up: Smart routing keeps it for when no other can take a
 // request, and the agent signed in to it is signed in to another.
@@ -244,7 +302,7 @@ func SwitchWhenSpent(ctx context.Context, agent string) (string, error) {
 	}
 	if agent == "codex" {
 		if was := CodexAppStale(); was != "" {
-			log.Printf("codex: the Codex app is still signed in to %s, and shows its limits, until it is quit and opened again", was)
+			log.Printf("codex: the Codex app is still signed in to %s, and shows its limits, until its app-server is restarted once no Codex turn runs", was)
 		}
 	}
 	// the models the agent is offered are the new account's plan's
@@ -324,7 +382,6 @@ var codexWasUsedUp atomic.Bool
 // (#540). Only a change is told.
 func noteCodexUsedUp(now bool) {
 	if codexWasUsedUp.Swap(now) != now {
-		noteCodexAppOut(now)
 		catalog.Touched()
 	}
 }
@@ -368,6 +425,6 @@ func KeepOnAnAccountWithRoom(ctx context.Context) {
 		c, cancel := context.WithTimeout(ctx, time.Minute)
 		noteCodexUsedUp(CodexUsedUp(c))
 		cancel()
-		t.Reset(loginSwitchEvery)
+		t.Reset(codexLookEvery(knownLoginUsage("codex")))
 	}
 }

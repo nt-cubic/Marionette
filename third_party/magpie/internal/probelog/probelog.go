@@ -3,7 +3,9 @@
 // Detect APIs and per-model detection, and a model list's refresh (neiko
 // and gys619 on Discord: a test left no trace in the request log). Each
 // such request is one row of the request log, marked as magpie's own test
-// (usage.SourceProbe) and never counted in a usage or cost total.
+// (usage.SourceProbe) and never counted in a usage or cost total; a model
+// list that was answered is left out there (usage's quietProbe), as magpie
+// asks for lists by itself all day.
 //
 // The provider package marks a context with the kind of test (With); every
 // request sent under it is written down once, by the provider's Do or by

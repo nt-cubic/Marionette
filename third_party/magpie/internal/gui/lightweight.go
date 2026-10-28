@@ -57,6 +57,9 @@ func (h *host) makeMain(url string) *application.WebviewWindow {
 		BackgroundColour: winBg,
 	})
 	h.zoomWhenLoaded(w)
+	if runtime.GOOS == "windows" {
+		w.OnWindowEvent(events.Common.WindowRuntimeReady, func(*application.WindowEvent) { w.ExecJS(frameOnlyResizeJS) })
+	}
 	// A resize is kept once it settles (settle): the size, or that the
 	// window is maximised. Nothing is kept of a window not placed and shown
 	// yet (placeMain: a text size can resize it, unmaximised as yet), one

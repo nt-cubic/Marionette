@@ -97,8 +97,9 @@ func (c checkiner) checkinNow(ctx context.Context, soon bool) []WorkBuddyCheckin
 			settled = false
 		}
 		// and the loop asks again an answer that may be the vendor's
-		// day before (#3326)
-		if settled && prev.provisional() {
+		// day before (#3326), unless the vendor said when its day turns
+		// (ValidUntil, held to in settled)
+		if settled && prev.provisional() && prev.ValidUntil.IsZero() {
 			settled = now.Sub(prev.At) < wbCheckinEvery
 		}
 		if c.recheck {
@@ -112,7 +113,11 @@ func (c checkiner) checkinNow(ctx context.Context, soon bool) []WorkBuddyCheckin
 			out = append(out, prev.shown())
 			continue
 		}
-		r := a.do(ctx)
+		// through the account's own proxy, else its provider's, as its
+		// usage is read (loginQuota), never the global one past them: a
+		// provider set to direct whose check-in went out through the
+		// global proxy was refused there (#2777)
+		r := a.do(ViaLogin(ctx, a.provider, a.User))
 		r.Day, r.At = day, now
 		if r.Offline && seen && prev.Day == day && prev.Offline {
 			r.Tries = prev.Tries + 1

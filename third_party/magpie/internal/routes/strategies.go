@@ -27,6 +27,42 @@ func tier(share float64) int {
 	return 0
 }
 
+// byLeft is how a pool's wallets go by what they have left (Seat.Left):
+// the one with more first, a seat that told none after those that did.
+// It orders only a pool whose balances are all in one provider's one unit;
+// with two kinds, nothing is weighed by them (nil), since points and
+// another vendor's points don't compare.
+func byLeft(seats []Seat) func(a, b Seat) int {
+	in := ""
+	for _, s := range seats {
+		switch {
+		case s.LeftIn == "":
+		case in == "":
+			in = s.LeftIn
+		case in != s.LeftIn:
+			return nil
+		}
+	}
+	if in == "" {
+		return nil
+	}
+	return func(a, b Seat) int {
+		ha, hb := a.LeftIn != "", b.LeftIn != ""
+		switch {
+		case ha != hb:
+			if ha {
+				return -1
+			}
+			return 1
+		case a.Left > b.Left:
+			return -1
+		case a.Left < b.Left:
+			return 1
+		}
+		return 0
+	}
+}
+
 func identity(n int) []int {
 	idx := make([]int, n)
 	for i := range idx {
@@ -45,7 +81,11 @@ func identity(n int) []int {
 // spends a reset about to run out by itself (auto-use on, its windows used)
 // renews when that is spent, if sooner: what it has left is lost there just
 // the same (#718). Only holding one, or one that runs out after the week
-// renews, changes nothing. Those alike stay in their order, keeping the
+// renews, changes nothing. Renewing in the same hours, the one whose
+// credits left lapse first (Seat.Lapse) goes first: WorkBuddy's free
+// accounts all renew at the month's end, but the credits each was given
+// end on their own days (zhaocai_83020 on Discord). Then, of prepaid
+// wallets (Seat.Left), the one with more left (#3950). Those alike stay in their order, keeping the
 // vendor's prompt cache warm. Past that, whichever has the most left, and
 // one all but used up only when nothing else can take it, one that goes
 // on on its credits first of those (spentBefore). Only the windows
@@ -56,6 +96,7 @@ func identity(n int) []int {
 // once: else, kept after those known, it would never answer and never be
 // known (Anthropic's usage endpoint can turn magpie away for hours).
 var Smart = Strategy{Order: func(_ string, seats []Seat) []int {
+	left := byLeft(seats)
 	var fine, low, spent []int
 	for i, s := range seats {
 		switch tier(s.Used) {
@@ -89,7 +130,17 @@ var Smart = Strategy{Order: func(_ string, seats []Seat) []int {
 			}
 			return x.Before(y)
 		}
-		return false
+		// renewing in the same hours: the one whose credits left lapse
+		// first, to the hour; one that tells none after those that do
+		x, y := a.Lapse.Truncate(time.Hour), b.Lapse.Truncate(time.Hour)
+		if x.Equal(y) {
+			// then a wallet with more left (#3950)
+			return left != nil && left(a, b) < 0
+		}
+		if x.IsZero() || y.IsZero() {
+			return y.IsZero()
+		}
+		return x.Before(y)
 	})
 	sort.SliceStable(low, func(i, j int) bool { return seats[low[i]].Used < seats[low[j]].Used })
 	sort.SliceStable(spent, func(i, j int) bool { return spentBefore(seats[spent[i]], seats[spent[j]]) })
@@ -125,9 +176,11 @@ var Rotate = Strategy{Order: func(pool string, seats []Seat) []int {
 
 // LeastUsed puts a subscription, or a key that reads its own windows, by the
 // share of its allowance used, as the vendor says; then, and for other
-// keys, by what magpie sent it lately. Of those all but used up, one that
+// keys, by what magpie sent it lately; prepaid wallets, which have no
+// share, by what they have left first (Seat.Left). Of those all but used up, one that
 // goes on on its credits goes first (spentBefore).
 var LeastUsed = Strategy{ByUse: true, Order: func(_ string, seats []Seat) []int {
+	left := byLeft(seats)
 	idx := identity(len(seats))
 	sort.SliceStable(idx, func(a, b int) bool {
 		sa, sb := seats[idx[a]], seats[idx[b]]
@@ -136,6 +189,11 @@ var LeastUsed = Strategy{ByUse: true, Order: func(_ string, seats []Seat) []int 
 		}
 		if sa.Used != sb.Used {
 			return sa.Used < sb.Used
+		}
+		if left != nil {
+			if c := left(sa, sb); c != 0 {
+				return c < 0
+			}
 		}
 		return sa.Tokens < sb.Tokens
 	})
@@ -154,7 +212,8 @@ var LeastUsed = Strategy{ByUse: true, Order: func(_ string, seats []Seat) []int 
 // that goes on on its credits first (spentBefore). Among the rest, one
 // not known that tells what it has left as it answers goes first while it
 // isn't, as in Smart, else it would never be known; then the pace, those
-// alike within a tenth by what magpie sent them lately, then in their
+// alike within a tenth by what a wallet has left (Seat.Left), then by what
+// magpie sent them lately, then in their
 // order, keeping the vendor's prompt cache warm. An account not known
 // counts as a whole week ahead of it; a key has no week, unless it reads
 // its own windows (a sub2api key's limits). A Codex account that spends a
@@ -186,6 +245,7 @@ var Pace = Strategy{ByUse: true, Order: func(_ string, seats []Seat) []int {
 			band[i] = band[byPace[k-1]]
 		}
 	}
+	left := byLeft(seats)
 	idx := identity(len(seats))
 	sort.SliceStable(idx, func(a, b int) bool {
 		sa, sb := seats[idx[a]], seats[idx[b]]
@@ -201,6 +261,12 @@ var Pace = Strategy{ByUse: true, Order: func(_ string, seats []Seat) []int {
 			return sa.Learns
 		} else if band[idx[a]] != band[idx[b]] {
 			return band[idx[a]] < band[idx[b]]
+		} else if left != nil {
+			// a wallet's pace is a whole week's; the one with more left
+			// first (#3950)
+			if c := left(sa, sb); c != 0 {
+				return c < 0
+			}
 		}
 		return sa.Tokens < sb.Tokens
 	})

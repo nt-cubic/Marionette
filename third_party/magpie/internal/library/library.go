@@ -249,8 +249,17 @@ func set(list []string, id string, on bool) []string {
 }
 
 // change runs f on the library under the lock, saves it, and writes what
-// changed into the agents.
+// changed into the agents. The processes of a server taken out are ended
+// after, with the lock let go (mcp_reap.go).
 func change(f func(l *Library) error) (*Result, error) {
+	res, err := changeLocked(f)
+	if res != nil && len(res.dropped) > 0 {
+		ending(res.dropped)
+	}
+	return res, err
+}
+
+func changeLocked(f func(l *Library) error) (*Result, error) {
 	mu.Lock()
 	defer mu.Unlock()
 	l, err := load()
